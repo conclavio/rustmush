@@ -364,7 +364,7 @@ pub use state::{
     Waypoint, Waypoints, WeaponSummary, spot_letter,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, STOCK_ODDS_ROWS, StepOutput};
-pub use stock_mind::{NativeStockMind, STOCK_MEMORY_KEY_NAMES, StockMemory};
+pub use stock_mind::{NativeStockMind, STOCK_MEMORY_KEY_NAMES, StockMemory, arming_for};
 pub use view::{
     ContactRow, OddsCell, contact_band, fired_by_default, frame_contacts, frame_contacts_held,
     frame_lock, held_range_m, lock_designator, own_scope, range_m_rounded, settle_ranges,

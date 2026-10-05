@@ -74,6 +74,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::arena::conditions::condition_is_lawful;
 use crate::arena::index::range_cm;
 use crate::arena::intents::Refusal;
 use crate::arena::ledger::EventKind;
@@ -88,7 +89,8 @@ pub enum FiredBy {
     Seat,
     /// The reflex controller's own shot (T0), never gated.
     Machine,
-    /// A mind's landed `FIRE`, citing a slot or not (gated from 17b cut M1b.2).
+    /// A mind's landed `FIRE`, citing a slot or not — gated by the law (17b
+    /// cut M1b.2): an uncited one is `Unwarranted`.
     Mind {
         /// The slot it cites.
         slot: Option<u8>,
@@ -863,14 +865,20 @@ impl Arena {
     ///   order, a [`Controller::Reflex`] hull's (a slot on a reflex hull is
     ///   unreachable in production; the arm exists and is pinned), a pilot's
     ///   hull none: [`Refusal::Unwarranted`];
-    /// * **(3c) the warrant** — an uncited mind shot, or a cited one whose slot's
-    ///   [`Arena::warrant`] fails: [`Refusal::Unwarranted`]; a slot's own shot
-    ///   passes (the evaluator has just held it).
+    /// * **(3c) the warrant** — an uncited mind shot (`Mind { slot: None }`),
+    ///   or a cited one whose slot's [`Arena::warrant`] fails on the plot at
+    ///   `at_ms`: [`Refusal::Unwarranted`] (the WARRANT terms only — never
+    ///   readiness or the magazine, which `Cycling`/`Empty` answered above); a
+    ///   slot's own shot passes (the evaluator has just held it).
     ///
-    /// **In 17b cut M1b.1 a [`FiredBy::Mind`] passes every gate as `Machine`
-    /// does**: (3a) and (3c) are a slot's own (3b) and pass for it, and the law
-    /// for minds lands in 17b cut M1b.2 with T1's arming and citation, so the
-    /// M1a.5 mind fixtures and M1b.0's beam tests fire as they did.
+    /// So a [`FiredBy::Mind`] reads, in order: `Cycling`, `Empty`, `Unlawful`
+    /// (its cited slot under the floor; a cited slot that is empty or names
+    /// another gun is `Unwarranted` here, ahead of the floor's test), hold-fire
+    /// (`Unwarranted`), the warrant (`Unwarranted`), `Overheated`,
+    /// `PowerNotOnline` — 17b cut M1b.2, which landed the law for minds with
+    /// T1's arming and citation in one change. A [`FiredBy::Cond`] reads (3b)
+    /// alone: its (3a) was answered at its arming's landing and the floor is a
+    /// per-match constant, and its (3c) by the evaluator.
     ///
     /// The accepted shot's `fired` line carries the attribution: `by: "cond"`
     /// and the slot for [`FiredBy::Cond`], `by: "mind"` and the slot for a
@@ -882,8 +890,8 @@ impl Arena {
     ///
     /// One [`Refusal`] word: [`Refusal::Unknown`], [`Refusal::Wreck`],
     /// [`Refusal::NoWeapon`], [`Refusal::NoLock`], [`Refusal::Cycling`],
-    /// [`Refusal::Empty`], the law's [`Refusal::Unwarranted`] (and, from 17b
-    /// cut M1b.2, [`Refusal::Unlawful`]), [`Refusal::Overheated`],
+    /// [`Refusal::Empty`], the law's [`Refusal::Unlawful`] and
+    /// [`Refusal::Unwarranted`], [`Refusal::Overheated`],
     /// [`Refusal::PowerNotOnline`].
     pub fn resolve_fire_by(
         &mut self,
@@ -927,12 +935,42 @@ impl Arena {
         // (3a)–(3c) **17b cut M1b.1** (doc 17 §5, D-UM-17, D-UM-19): the law,
         // after the weapon's own two refusals and before the platform's — so a
         // law-gated shot on a cycling or empty gun reads `Cycling`/`Empty`.
-        // A seat's and a machine's shot are never gated.
+        // A seat's and a machine's shot are never gated; a mind's from 17b cut
+        // M1b.2.
         match by {
             FiredBy::Seat | FiredBy::Machine => {}
-            // 17b cut M1b.2 gates FiredBy::Mind here (Unlawful, hold-fire, the
-            // warrant).
-            FiredBy::Mind { .. } => {}
+            // **17b cut M1b.2** (D-UM-17 as amended, D-UM-19): a mind's shot.
+            FiredBy::Mind { slot } => {
+                // (3a) the floor, ahead of every `Unwarranted` test: the cited
+                // slot must exist and name this weapon (a citation of an empty
+                // slot, or of another gun's, has no warrant), and its terms must
+                // be lawful against the arena's captured floor.
+                let cited = slot.and_then(|n| {
+                    let at = usize::from(n).checked_sub(1)?;
+                    self.conditions.slots(unit).get(at).cloned().flatten()
+                });
+                if slot.is_some() {
+                    let Some(cond) = cited.as_ref().filter(|cond| cond.weapon == weapon) else {
+                        return Err(Refusal::Unwarranted);
+                    };
+                    condition_is_lawful(cond, self.odds_floor_permille)?;
+                }
+                // (3b) hold-fire: the hull's standing order (the ARENA's row —
+                // a mind that ended its order early is still held until the row
+                // expires; 17b's Q-M7, `hold_after_end`).
+                if self.holds_fire(unit) {
+                    return Err(Refusal::Unwarranted);
+                }
+                // (3c) the warrant: an uncited shot has none; a cited one meets
+                // its slot's WARRANT terms on the plot at this millisecond —
+                // never readiness or the magazine, which (2) and (3) answered.
+                let Some(cond) = cited else {
+                    return Err(Refusal::Unwarranted);
+                };
+                if self.warrant(unit, &cond, at_ms).is_err() {
+                    return Err(Refusal::Unwarranted);
+                }
+            }
             FiredBy::Cond { .. } => {
                 // (3a) a slot's own shot was armed lawful at its landing and the
                 // floor is a per-match constant: nothing to read again. (3b):
@@ -1811,5 +1849,206 @@ mod tests {
             ..row.clone()
         };
         assert!(!row.same_as(&spent));
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M1b.2: the law for a mind's shot
+    // -----------------------------------------------------------------------
+
+    /// A slot on the lock at `min_permille`, any aspect, no reserve, any range.
+    fn on_lock(weapon: &str, min_permille: u16) -> crate::arena::conditions::FireCondition {
+        crate::arena::conditions::FireCondition {
+            weapon: SmolStr::new(weapon),
+            target: crate::arena::conditions::SlotTarget::Lock,
+            min_permille,
+            aspects: crate::arena::conditions::ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: u32::MAX,
+        }
+    }
+
+    /// Two line tanks four cells apart, red a MIND hull carrying a cannon and
+    /// a machine gun, online, locked on blue's classified row, the odds
+    /// pinned at 500 per mille, the cannon armed in S1 at 100.
+    fn a_minds_lock() -> Arena {
+        use crate::arena::test_support::line_tank;
+        let mut red = line_tank(RED, Team::Red, pose(1_500, 3_500));
+        let mut mg = cannon();
+        mg.id = SmolStr::new("machine_gun");
+        red.weapons.push(mg);
+        red.controller = Controller::Mind;
+        let mut arena = arena_of(vec![red, line_tank(BLUE, Team::Blue, pose(5_500, 3_500))]);
+        arena.resolution.p_min = 500;
+        arena.resolution.p_max = 500;
+        let id = hold(&mut arena, RED, BLUE);
+        online(&mut arena, RED);
+        assert_eq!(arena.resolve_lock(RED, id, 0), Ok(()));
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &crate::arena::conditions::Arming::Arm(on_lock("cannon", 100)),
+                0
+            ),
+            Ok(Some(1))
+        );
+        arena
+    }
+
+    /// `arena` with a standing hold-fire order on red's mind row.
+    fn holding_fire(mut arena: Arena) -> Arena {
+        arena
+            .minds
+            .entry(RED)
+            .or_insert_with(|| {
+                crate::arena::mind::MindState::fresh(&crate::config::ReflexConfig::default())
+            })
+            .order = Some(crate::arena::perception::FrameOrder {
+            squad: SmolStr::new("red-1"),
+            objective: crate::arena::perception::MindObjective::Hold,
+            hold_fire: true,
+            max_range_band: None,
+            expires_ms: 600_000,
+        });
+        assert!(arena.holds_fire(RED));
+        arena
+    }
+
+    /// **The law's gate order for a mind's shot** (17b cut M1b.2; doc 17 §5,
+    /// D-UM-17 as amended, D-UM-19): `Cycling`, `Empty`, then (3a)
+    /// `Unlawful` — a cited slot that is empty or names another gun
+    /// `Unwarranted` first —, (3b) hold-fire `Unwarranted`, (3c) the warrant
+    /// `Unwarranted` (an uncited shot has none), then `PowerNotOnline`; a
+    /// lawful, warranted citation fires `by: "mind"` with its slot. (The
+    /// `Overheated` step between the warrant and the power is pinned on the
+    /// shipped laser hull in `tests/conditions.rs`, which needs the content's
+    /// heat cells.)
+    #[test]
+    fn m1b2_a_minds_shot_reads_the_law_in_its_pinned_order() {
+        let mind = |slot: Option<u8>| FiredBy::Mind { slot };
+        let base = a_minds_lock();
+        // Uncited: no warrant.
+        assert_eq!(
+            base.clone().resolve_fire_by(RED, "cannon", 0, mind(None)),
+            Err(Refusal::Unwarranted)
+        );
+        // An empty slot, and a slot that names another gun.
+        assert_eq!(
+            base.clone()
+                .resolve_fire_by(RED, "cannon", 0, mind(Some(2))),
+            Err(Refusal::Unwarranted)
+        );
+        assert_eq!(
+            base.clone()
+                .resolve_fire_by(RED, "machine_gun", 0, mind(Some(1))),
+            Err(Refusal::Unwarranted)
+        );
+        assert_eq!(
+            base.clone()
+                .resolve_fire_by(RED, "cannon", 0, mind(Some(9))),
+            Err(Refusal::Unwarranted),
+            "past the slots"
+        );
+        // Under the floor (the floor raised over a slot armed at 100).
+        let mut under = base.clone();
+        under.odds_floor_permille = 200;
+        assert_eq!(
+            under
+                .clone()
+                .resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Unlawful)
+        );
+        // `Cycling` and `Empty` before the law.
+        let mut cycling = under.clone();
+        if let Some(state) = cycling.unit_mut(RED) {
+            state.ready_at_ms.insert(SmolStr::new("cannon"), 4_000);
+        }
+        assert_eq!(
+            cycling.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Cycling),
+            "a cycling cited fire under the floor reads cycling"
+        );
+        let mut empty = under.clone();
+        if let Some(state) = empty.unit_mut(RED) {
+            state.ammo.insert(SmolStr::new("cannon"), 0);
+        }
+        assert_eq!(
+            empty.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Empty)
+        );
+        // The floor before hold-fire; hold-fire before the warrant.
+        assert_eq!(
+            holding_fire(under).resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Unlawful),
+            "an unlawful citation under hold-fire reads unlawful"
+        );
+        assert_eq!(
+            holding_fire(base.clone()).resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Unwarranted),
+            "a lawful citation under hold-fire reads unwarranted"
+        );
+        // The warrant: a slot whose odds term the plot does not meet.
+        let mut picky = base.clone();
+        assert_eq!(
+            picky.resolve_arming(
+                RED,
+                &crate::arena::conditions::Arming::Arm(on_lock("cannon", 600)),
+                0
+            ),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            picky.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Unwarranted)
+        );
+        // The law before the power: cold, an uncited shot is unwarranted and
+        // a warranted one reads the power.
+        let mut cold = base.clone();
+        if let Some(state) = cold.unit_mut(RED) {
+            state.power = Power::Off;
+        }
+        assert_eq!(
+            cold.clone().resolve_fire_by(RED, "cannon", 0, mind(None)),
+            Err(Refusal::Unwarranted)
+        );
+        assert_eq!(
+            cold.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::PowerNotOnline)
+        );
+        // Lawful and warranted: fired by the mind, citing S1.
+        let mut fires = base.clone();
+        assert_eq!(
+            fires.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Ok(1)
+        );
+        let mut journal = Vec::new();
+        fires.ledger.flush();
+        for chunk in fires.ledger.take_chunks() {
+            journal.extend_from_slice(&chunk.bytes);
+        }
+        let text = String::from_utf8(journal).unwrap_or_default();
+        assert!(
+            text.contains("\"by\":\"mind\"") && text.contains("\"slot\":1"),
+            "{text}"
+        );
+        // A seat's and a machine's shot on the same hull are never gated.
+        for by in [FiredBy::Seat, FiredBy::Machine] {
+            assert!(
+                holding_fire(nothing_armed_at_nought(&base))
+                    .resolve_fire_by(RED, "cannon", 0, by)
+                    .is_ok(),
+                "{by:?}"
+            );
+        }
+    }
+
+    /// `arena` with nothing armed and the odds at nought: what the law would
+    /// refuse a mind for three ways over.
+    fn nothing_armed_at_nought(arena: &Arena) -> Arena {
+        let mut arena = arena.clone();
+        arena.conditions.clear(RED);
+        arena.resolution.p_min = 0;
+        arena.resolution.p_max = 0;
+        arena
     }
 }

@@ -48,7 +48,9 @@ use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::command::SquadSignal;
 use tacsim::arena::condition::{Condition, Reading};
-use tacsim::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
+use tacsim::arena::conditions::{
+    ASPECTS_ANY, Arming, FireCondition, STOCK_CONDITION_SLOTS, SlotTarget,
+};
 use tacsim::arena::intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal,
     apply_control, apply_intent,
@@ -360,6 +362,55 @@ fn think_at(unit: ObjId, n: i64) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// 17b cut M1b.2: a mind's FIRE cites a slot (doc 17 §5, D-UM-17)
+// ---------------------------------------------------------------------------
+
+/// **The arming a scripted mind lands before the `Fire` that cites it**: the
+/// cannon in S1, on the lock, at the Compact floor (100 per mille), every
+/// aspect, no reserve, any range. Since 17b cut M1b.2 an uncited mind `FIRE`
+/// has no warrant.
+///
+/// A slot armed on a held classified lock FIRES at the `Landing` evaluation
+/// of the think that armed it when its gun is ready and no cited `Fire`
+/// landed in that think, and again at the gun's every `WeaponReady` — so the
+/// scripts below land the arming in the same think as the cited `Fire` (the
+/// `Fire` after it in the vec, as a mind emits them), and let the slot go
+/// ([`disarm_cannon`]) before the gun's next `WeaponReady` wherever the run
+/// would reach it, so every recorded `fired` millisecond is the one the
+/// uncited script fired at.
+fn arm_cannon() -> IntentKind {
+    IntentKind::Condition(Arming::Arm(slot_on_lock(100)))
+}
+
+/// The cannon's `Fire`, citing S1.
+fn cited_fire() -> IntentKind {
+    IntentKind::Fire {
+        weapon: SmolStr::new("cannon"),
+        slot: Some(1),
+    }
+}
+
+/// The cannon's slot let go.
+fn disarm_cannon() -> IntentKind {
+    IntentKind::Condition(Arming::Disarm {
+        weapon: Some(SmolStr::new("cannon")),
+    })
+}
+
+/// **`unit` presenting a silhouette** ([`every_band_profile`]): a target with
+/// the default profile presents nothing, so `Arena::resolve_seen` answers
+/// exactly nought (doc 16 §3.5: *zero presented area is zero*) and every
+/// slot on it holds — and every mind citation of it is `unwarranted` — under
+/// any lawful odds term (the divergence `floor_held`). The fixtures whose
+/// minds fire since 17b cut M1b.2 shoot at a target that can be hit.
+fn presenting(unit: CustodyUnit) -> CustodyUnit {
+    CustodyUnit {
+        profile: every_band_profile(),
+        ..unit
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The scripted mind
 // ---------------------------------------------------------------------------
 
@@ -613,7 +664,9 @@ fn refusals(arena: &Arena, unit: ObjId) -> Vec<(String, Refusal)> {
 /// locks, fires and switches a pod it does not have; the unarmed one starts,
 /// locks and fires a gun it does not have and switches the same missing pod —
 /// a seated blue they can both see, and a blue nobody sees, so a kill ends
-/// nothing.
+/// nothing. **17b cut M1b.2**: each `FIRE` is armed and cited in one think,
+/// and the seen blue presents a silhouette ([`presenting`]), so the cited
+/// shot has odds to be warranted by.
 fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
     let mut arena = arena_of(
         vec![
@@ -625,13 +678,13 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
                 Controller::Mind,
             ),
             tank(RED2, Team::Red, centre(6, 10), Vec::new(), Controller::Mind),
-            tank(
+            presenting(tank(
                 BLUE,
                 Team::Blue,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
-            ),
+            )),
             tank(
                 BLUE2,
                 Team::Blue,
@@ -642,7 +695,9 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
         ],
         &[BLUE],
     );
-    let gun = SmolStr::new("cannon");
+    // 17b cut M1b.2: each mind's `FIRE` cites S1, armed in the same think
+    // just before it ([`arm_cannon`]'s note); the armed red lets its slot go
+    // at think 6, before the cannon's next `WeaponReady`.
     let mind = ScriptedMind::new(&[
         (
             RED,
@@ -657,14 +712,8 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
                         },
                     ],
                 ),
-                says(
-                    5,
-                    vec![IntentKind::Fire {
-                        weapon: gun.clone(),
-                        slot: None,
-                    }],
-                ),
-                says(6, vec![IntentKind::Emcon { on: true }]),
+                says(5, vec![arm_cannon(), cited_fire()]),
+                says(6, vec![IntentKind::Emcon { on: true }, disarm_cannon()]),
             ],
         ),
         (
@@ -677,13 +726,7 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
                         contact: draw_contact_id(SEED, RED2, BLUE),
                     }],
                 ),
-                says(
-                    4,
-                    vec![IntentKind::Fire {
-                        weapon: gun,
-                        slot: None,
-                    }],
-                ),
+                says(4, vec![arm_cannon(), cited_fire()]),
                 says(6, vec![IntentKind::Emcon { on: true }]),
             ],
         ),
@@ -703,6 +746,11 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
 /// hulls do not carry is refused `no_jammer` into each mind's buffer, and the
 /// unarmed hull's `FIRE` `channel`, both read off the next think's view, as is
 /// a pilot's `Power online.` notice staged on the hull.
+///
+/// **17b cut M1b.2** re-scripted both `FIRE`s to arm S1 and cite it in one
+/// think ([`arm_cannon`]'s note): the armed red's one shot is `by: "mind"`,
+/// `slot: 1`, at the millisecond the uncited script fired it; the unarmed
+/// red's arming and its `FIRE` are both refused `channel`.
 #[test]
 fn m1a5_two_scripted_minds_at_three_cadences_are_one_event_list_and_one_hash_sequence() {
     let (first, seen) = two_minds(Drive::Every(5_000));
@@ -755,6 +803,29 @@ fn m1a5_two_scripted_minds_at_three_cadences_are_one_event_list_and_one_hash_seq
         stamped += 1;
     }
     assert!(stamped >= 4, "the minds stamped {stamped} actions");
+    // 17b cut M1b.2: the one shot is the armed red's think-5 `FIRE`, cited —
+    // at think 5's landing, as the uncited script fired it — and nothing else
+    // fires (the slot went at think 6).
+    let fired: Vec<(i64, Option<String>, Option<u64>)> = first
+        .events
+        .iter()
+        .filter(|(_, json, _)| kind_and_unit(json).0 == "fired")
+        .map(|(t_ms, json, _)| {
+            let value: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+            (
+                *t_ms,
+                value
+                    .get("by")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                value.get("slot").and_then(serde_json::Value::as_u64),
+            )
+        })
+        .collect();
+    assert_eq!(
+        fired,
+        vec![(think_at(RED, 5) + SUBSTEP, Some("mind".to_owned()), Some(1))]
+    );
     let told = |unit: ObjId, order: &str, refusal: Refusal| {
         seen.iter().any(|seen| {
             seen.unit == unit
@@ -931,13 +1002,13 @@ fn epoch_rig() -> Rig {
                 vec![cannon()],
                 Controller::Mind,
             ),
-            tank(
+            presenting(tank(
                 BLUE,
                 Team::Blue,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
-            ),
+            )),
             tank(
                 BLUE2,
                 Team::Blue,
@@ -948,6 +1019,8 @@ fn epoch_rig() -> Rig {
         ],
         &[BLUE],
     ));
+    // 17b cut M1b.2: the `FIRE` cites S1, armed just before it in think 4
+    // ([`arm_cannon`]'s note).
     rig.arena.mind_runner = ScriptedMind::new(&[(
         RED,
         vec![
@@ -963,10 +1036,8 @@ fn epoch_rig() -> Rig {
                 vec![
                     IntentKind::Heading { mdeg: 90_000 },
                     IntentKind::Speed { cms: 500 },
-                    IntentKind::Fire {
-                        weapon: SmolStr::new("cannon"),
-                        slot: None,
-                    },
+                    arm_cannon(),
+                    cited_fire(),
                 ],
             ),
         ],
@@ -1001,6 +1072,12 @@ fn control(channel: Channel, epoch: u64, state: ControlState, pilot: Option<ObjI
 ///   that is authority and not seat state): the two helm thoughts are refused
 ///   `epoch` as before, and the `FIRE` lands — one `fired` line at the
 ///   landing's millisecond, and no refusal of it.
+///
+/// **17b cut M1b.2**: think 4 arms S1 and its `FIRE` cites it
+/// ([`arm_cannon`]'s note) — the stale thoughts are still refused `epoch` at
+/// apply, before any resolver gate; under the linkdead control the arming is
+/// refused `linkdead` with the `FIRE`; with the helm raised alone the cited
+/// shot fires `by: "mind"` at the same millisecond.
 #[test]
 fn m1a5_an_epoch_raised_between_think_and_landing_refuses_the_stale_thoughts() {
     let land = think_at(RED, 4) + SUBSTEP;
@@ -1016,11 +1093,14 @@ fn m1a5_an_epoch_raised_between_think_and_landing_refuses_the_stale_thoughts() {
         Some(Controller::Mind),
         "a linkdead control leaves the mind flying"
     );
+    // (17b cut M1b.2: the arming is a discrete order on the unraised fire
+    // channel too, and meets the same linkdead gate before the `FIRE` does.)
     assert_eq!(
         refusals(&rig.arena, RED),
         vec![
             ("heading".to_owned(), Refusal::Epoch),
             ("speed".to_owned(), Refusal::Epoch),
+            ("fire".to_owned(), Refusal::Linkdead),
             ("fire".to_owned(), Refusal::Linkdead),
         ]
     );
@@ -1043,6 +1123,13 @@ fn m1a5_an_epoch_raised_between_think_and_landing_refuses_the_stale_thoughts() {
         vec![land],
         "the fire channel was not raised: the shot lands at the landing"
     );
+    let cited = rig.journal().iter().any(|event| {
+        let value = serde_json::to_value(&event.kind).unwrap_or_default();
+        value.get("kind") == Some(&serde_json::json!("fired"))
+            && value.get("by") == Some(&serde_json::json!("mind"))
+            && value.get("slot") == Some(&serde_json::json!(1))
+    });
+    assert!(cited, "the shot cites S1 (17b cut M1b.2)");
 }
 
 /// **A reclaimed seat lands nothing** (D-UM-13; `apply_control`'s `Live` arm).
@@ -1143,6 +1230,11 @@ const RED_ONE: SquadId = SquadId {
 /// take — red-1's own lance-leader persona, written in the commander's scope —
 /// and the arena still refuses it `channel`: who is named as the author never
 /// opens the door to a mind, because a mind never orders.
+///
+/// **17b cut M1b.2**: the armed mind's two `FIRE`s cite S1, armed just before
+/// them in the same think ([`arm_cannon`]'s note), so the first fires and the
+/// second still reads `cycling` — never `unwarranted`; the unarmed mind's
+/// uncited `FIRE` reads `channel` at apply, before the law is asked.
 #[test]
 fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_station_the_same() {
     let mut rig = Rig::new(arena_of(
@@ -1155,13 +1247,13 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
                 Controller::Mind,
             ),
             tank(RED2, Team::Red, centre(6, 10), Vec::new(), Controller::Mind),
-            tank(
+            presenting(tank(
                 BLUE,
                 Team::Blue,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
-            ),
+            )),
             tank(
                 BLUE2,
                 Team::Blue,
@@ -1199,14 +1291,10 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
                             issuer: None,
                         },
                         IntentKind::Place { x: 3, y: 3 },
-                        IntentKind::Fire {
-                            weapon: gun.clone(),
-                            slot: None,
-                        },
-                        IntentKind::Fire {
-                            weapon: gun.clone(),
-                            slot: None,
-                        },
+                        // 17b cut M1b.2: both `FIRE`s cite S1, armed first.
+                        arm_cannon(),
+                        cited_fire(),
+                        cited_fire(),
                     ],
                 ),
             ],
@@ -1757,18 +1845,29 @@ fn m1a5_mind_kinds_run_last_at_their_millisecond_in_unit_id_order() {
 // (7b) 17b cut M1b.0: the order of a millisecond, and the view's tables
 // ---------------------------------------------------------------------------
 
-/// **The shot a mind's beam fixture fires** (17b cut M1b.0): one uncited
-/// `FIRE cannon`. Every beam test of this section fires through here and
-/// nowhere else, so when 17b cut M1b.2 puts the law on a mind's fire it swaps
-/// this body for an arming plus a cited fire and every proof keeps its
-/// millisecond.
+/// **The shot a mind's beam fixture fires** (17b cut M1b.0): every beam test
+/// of this section fires through here and nowhere else. **17b cut M1b.2** put
+/// the law on a mind's fire and swapped the body for an arming on the lock
+/// and a `FIRE` citing it — the cited shot lands at the same landing, so every
+/// proof keeps its millisecond ([`arm_cannon`]'s note; [`beam_field`] lets
+/// the slot go at the next think, before the gun's `WeaponReady`).
 fn beam_shot(unit: ObjId) -> Vec<IntentKind> {
-    // M1b.2 cites a slot here (an arming on the lock, then `Fire` citing it).
     let _ = unit;
-    vec![IntentKind::Fire {
-        weapon: SmolStr::new("cannon"),
-        slot: None,
-    }]
+    vec![
+        IntentKind::Condition(Arming::Arm(FireCondition {
+            weapon: SmolStr::new("cannon"),
+            target: SlotTarget::Lock,
+            min_permille: 100,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: u32::MAX,
+        })),
+        IntentKind::Fire {
+            weapon: SmolStr::new("cannon"),
+            slot: Some(1),
+        },
+    ]
 }
 
 /// **A beam**: [`cannon`] with no flight time — `muzzle_speed_cms` nought, so
@@ -1846,7 +1945,8 @@ fn armor_of(view: &MindView) -> i64 {
 /// the other as a hand-inserted `Classified` row with a lock on it. The
 /// thinks are the lattice's own: nothing is retained off the heap and nothing
 /// scheduled by hand. Each armed mind says [`beam_shot`] at think `shoot_at`
-/// and nothing else.
+/// and, since 17b cut M1b.2, lets the slot that shot cited go at the next
+/// think ([`disarm_cannon`]), and says nothing else.
 fn beam_field(
     red: ObjId,
     blue: ObjId,
@@ -1909,7 +2009,15 @@ fn beam_field(
             "#{} holds a lock",
             viewer.0
         );
-        script.push((viewer, vec![says(shoot_at, beam_shot(viewer))]));
+        // 17b cut M1b.2: the slot the shot cited goes at the next think, so
+        // the beam's `WeaponReady` a cycle on fires nothing.
+        script.push((
+            viewer,
+            vec![
+                says(shoot_at, beam_shot(viewer)),
+                says(shoot_at + 1, vec![disarm_cannon()]),
+            ],
+        ));
     }
     let mind = ScriptedMind::new(&script);
     arena.mind_runner = mind.clone();
@@ -1968,6 +2076,18 @@ fn assert_the_beam_preceded_the_think(
         "red's shot"
     );
     assert_eq!(fired.t_ms, land, "the shot at the landing");
+    // 17b cut M1b.2: the CITED shot ([`beam_shot`]), not the slot's own at the
+    // same landing — which would keep the millisecond and hide a refused
+    // citation.
+    let attribution = serde_json::to_value(&fired.kind).unwrap_or_default();
+    assert_eq!(
+        (
+            attribution.get("by").and_then(serde_json::Value::as_str),
+            attribution.get("slot").and_then(serde_json::Value::as_u64)
+        ),
+        (Some("mind"), Some(1)),
+        "the beam is the mind's cited shot: {attribution}"
+    );
     assert_eq!(
         impact.t_ms, land,
         "the beam's impact at its own millisecond"
@@ -2171,6 +2291,28 @@ fn m1b0_mutual_beams_at_one_millisecond_both_land() {
         fired,
         vec![(Some(red.0), land), (Some(blue.0), land)],
         "both fired at the one landing millisecond, in unit-id order: {lines:?}"
+    );
+    // 17b cut M1b.2: both are the minds' CITED shots ([`beam_shot`]).
+    let cited: Vec<(Option<String>, Option<u64>)> = rig
+        .journal()
+        .iter()
+        .filter_map(|event| {
+            let value = serde_json::to_value(&event.kind).ok()?;
+            (value.get("kind")? == "fired").then(|| {
+                (
+                    value
+                        .get("by")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    value.get("slot").and_then(serde_json::Value::as_u64),
+                )
+            })
+        })
+        .collect();
+    assert_eq!(
+        cited,
+        vec![(Some("mind".to_owned()), Some(1)); 2],
+        "both beams cited S1"
     );
     let impacts: Vec<(Option<u32>, i64)> = lines
         .iter()
@@ -3083,6 +3225,11 @@ fn m1a5_a_minds_own_heading_lets_go_of_its_goal() {
 /// seconds on: refused `cycling` one millisecond short of ready, which is
 /// `1` second as the cockpit rounds it — not the `0` the substep's end, already
 /// past ready, would read.
+///
+/// **17b cut M1b.2**: both `FIRE`s cite S1 — the first, armed beside it,
+/// fires `by: "mind"`; the slot is let go at think 5, and the second still
+/// reads `cycling`, never `unwarranted`: the weapon's own two refusals come
+/// before the law.
 #[test]
 fn m1a5_a_landings_cycling_refusal_is_told_at_the_landing() {
     let gun = WeaponSummary {
@@ -3092,13 +3239,13 @@ fn m1a5_a_landings_cycling_refusal_is_told_at_the_landing() {
     let mut rig = Rig::new(arena_of(
         vec![
             tank(RED, Team::Red, centre(6, 8), vec![gun], Controller::Mind),
-            tank(
+            presenting(tank(
                 BLUE,
                 Team::Blue,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
-            ),
+            )),
             tank(
                 BLUE2,
                 Team::Blue,
@@ -3109,10 +3256,10 @@ fn m1a5_a_landings_cycling_refusal_is_told_at_the_landing() {
         ],
         &[BLUE],
     ));
-    let fire = || IntentKind::Fire {
-        weapon: SmolStr::new("cannon"),
-        slot: None,
-    };
+    // 17b cut M1b.2: both `FIRE`s cite S1, armed beside the first; the slot
+    // goes at think 5, so the gun's `WeaponReady` one millisecond after
+    // landing 7 fires nothing ([`arm_cannon`]'s note).
+    let fire = cited_fire;
     rig.arena.mind_runner = ScriptedMind::new(&[(
         RED,
         vec![
@@ -3123,7 +3270,8 @@ fn m1a5_a_landings_cycling_refusal_is_told_at_the_landing() {
                     contact: draw_contact_id(SEED, RED, BLUE),
                 }],
             ),
-            says(4, vec![fire()]),
+            says(4, vec![arm_cannon(), fire()]),
+            says(5, vec![disarm_cannon()]),
             says(7, vec![fire()]),
         ],
     )]);
@@ -3135,6 +3283,18 @@ fn m1a5_a_landings_cycling_refusal_is_told_at_the_landing() {
     );
     let _ = rig.until(again + SUBSTEP, |arena| arena.now_ms >= again);
     assert_eq!(rig.lines("fired", RED), vec![think_at(RED, 4) + SUBSTEP]);
+    // The one shot is the CITED one, not the slot's own at the same
+    // millisecond (the landing's one evaluation then finds the gun cycling).
+    assert_eq!(
+        red_shots(&mut rig),
+        vec![(
+            think_at(RED, 4) + SUBSTEP,
+            u64::from(BLUE.0),
+            Some("mind".to_owned()),
+            Some(1)
+        )],
+        "the first citation fired by the mind, citing S1"
+    );
     let told: Vec<FrameNotice> = rig
         .arena
         .minds
@@ -3368,21 +3528,32 @@ impl MindRunner for Stock {
 }
 
 /// **The stock mind's emission rules** (`stock_mind.rs`' module head): kinds in
-/// `Startup, Goal, Heading, Speed, Lock, Fire` order, each at most once, no
-/// `Heading` or `Speed` beside a `Goal(Cell)`, never more than four.
+/// `Startup, Condition, Goal, Heading, Speed, Lock, Fire` order, each at most
+/// once EXCEPT `Condition` (one per armed weapon, at most
+/// [`STOCK_CONDITION_SLOTS`] — 17b cut M1b.2), no `Heading` or `Speed` beside
+/// a `Goal(Cell)`, never more than `4 + STOCK_CONDITION_SLOTS`.
 fn stock_emission_holds(intents: &[IntentKind]) {
     let rank = |kind: &IntentKind| match kind {
         IntentKind::Startup => 0_u8,
-        IntentKind::Goal(_) => 1,
-        IntentKind::Heading { .. } => 2,
-        IntentKind::Speed { .. } => 3,
-        IntentKind::Lock { .. } => 4,
-        IntentKind::Fire { .. } => 5,
+        IntentKind::Condition(_) => 1,
+        IntentKind::Goal(_) => 2,
+        IntentKind::Heading { .. } => 3,
+        IntentKind::Speed { .. } => 4,
+        IntentKind::Lock { .. } => 5,
+        IntentKind::Fire { .. } => 6,
         other => panic!("the stock mind emitted {other:?}"),
     };
     let ranks: Vec<u8> = intents.iter().map(rank).collect();
     assert!(
-        ranks.windows(2).all(|pair| pair.first() < pair.get(1)),
+        ranks.windows(2).all(|pair| match pair {
+            [1, 1] => true,
+            [a, b] => a < b,
+            _ => false,
+        }),
+        "{intents:?}"
+    );
+    assert!(
+        ranks.iter().filter(|rank| **rank == 1).count() <= STOCK_CONDITION_SLOTS,
         "{intents:?}"
     );
     if intents
@@ -3396,8 +3567,9 @@ fn stock_emission_holds(intents: &[IntentKind]) {
             "{intents:?}"
         );
     }
-    // The module head's maximum: `Goal(Hold)`, `Heading`, `Lock`, `Fire`.
-    assert!(intents.len() <= 4 && intents.len() <= MIND_INTENTS_MAX);
+    // The module head's maximum: the slots, `Goal(Hold)`, `Heading`, `Lock`,
+    // `Fire`.
+    assert!(intents.len() <= 4 + STOCK_CONDITION_SLOTS && intents.len() <= MIND_INTENTS_MAX);
 }
 
 /// `tests/reflex.rs`' `replay_driven` scene with the two reds flown by
@@ -3408,6 +3580,14 @@ fn stock_emission_holds(intents: &[IntentKind]) {
 /// a five-cell sight's `engage_cm` is 35 m: on the reflex's own rig the stock
 /// mind would approach for ever and never be inside its band. Ten cells make
 /// the band 70 m, past one step, and change nothing else of the scene.
+///
+/// **17b cut M1b.2**: and the blue [`presenting`] a silhouette. On the
+/// default profile it presents nothing, every shot at it is at nought per
+/// cent, and T1 — whose slots and citations are held to Line's 10 per cent —
+/// would never fire where T0 fires at nought (the divergence `floor_held`);
+/// the twin fixture and the first-window oracle compare shots that can land.
+/// The profile is non-lethal ([`front_profile`]'s sections without
+/// `destroy_unit`), so a hit ends nothing.
 fn the_j_field(controller: Controller) -> Arena {
     let seeing = |mut unit: CustodyUnit| {
         unit.sensor = Some(SensorProfile {
@@ -3426,13 +3606,13 @@ fn the_j_field(controller: Controller) -> Arena {
                 controller,
             )),
             seeing(tank(RED2, Team::Red, centre(6, 10), Vec::new(), controller)),
-            seeing(tank(
+            presenting(seeing(tank(
                 BLUE,
                 Team::Blue,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
-            )),
+            ))),
         ],
         &[BLUE],
     )
@@ -3447,6 +3627,227 @@ fn stock_minds(drive: Drive) -> (Run, Vec<Kept>) {
     (run, stock.kept())
 }
 
+/// **The two-T1 fixture's `fired` lines as 17b cut M1b.2 records them** —
+/// `(t_ms, by)`, every one citing S1 — for 17b cut M1b.3, which makes T1 arm
+/// on change and cite `armed.slot` off the view and must leave every one of
+/// them where it is (its hashes may move: the armings no longer land every
+/// think).
+///
+/// The first is the fresh-lock think's cited shot at its landing; every
+/// later one is the slot's own at the cannon's `WeaponReady`, four seconds
+/// (its cycle) apart — the milliseconds the uncited script of 17b cut M1b.1
+/// fired at, since the think that lands at a `WeaponReady` planned its shot
+/// for it.
+const M1B2_TWO_T1_FIRED: &[(i64, &str)] = &[
+    (3_732, "mind"),
+    (7_732, "cond"),
+    (11_732, "cond"),
+    (15_732, "cond"),
+    (19_732, "cond"),
+    (23_732, "cond"),
+    (27_732, "cond"),
+];
+
+/// The `Arm`s and `Disarm`s of one think's answer.
+fn armings(intents: &[IntentKind]) -> Vec<&Arming> {
+    intents
+        .iter()
+        .filter_map(|kind| match kind {
+            IntentKind::Condition(arming) => Some(arming),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **17b cut M1b.2 on the two-T1 fixture** (D-UM-16, D-UM-17, D-UM-18):
+///
+/// * every think of the armed red answers its slots — one `Arm` per weapon
+///   of its first [`STOCK_CONDITION_SLOTS`], in the view's component order
+///   (`BestHostile`, Line's 100 per mille, every aspect, no reserve), or one
+///   `Disarm { None }`; the unarmed red never answers a `Condition`
+///   (D-UM-48); and every one of them LANDS — no think is handed a refusal
+///   of a fire-channel order (the arena's numbering is pinned separately,
+///   after every landing, by
+///   [`m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing`]);
+/// * a `Fire` is planned only beside a `Lock` of the same think, and cites
+///   `Some(i + 1)` for its weapon's index in the view;
+/// * every `fired` line of the armed red is cited — `slot: 1` — and is
+///   `by: "mind"` exactly when it is the landing of a think that planned a
+///   fresh `Lock` and a `Fire`, `by: "cond"` otherwise (the slot's own shot
+///   at a `WeaponReady`, a pass or a landing);
+/// * the `fired` milliseconds are [`M1B2_TWO_T1_FIRED`], recorded.
+fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
+    for (unit, t_ms, view, result) in kept {
+        // Every arming, disarming and citation LANDED: no think was handed a
+        // refusal of its fire channel.
+        assert!(
+            !view.notices.iter().any(|notice| matches!(
+                notice,
+                FrameNotice::Refused { order, .. } if order == "fire"
+            )),
+            "a refused fire-channel order in the view at {t_ms}: {:?}",
+            view.notices
+        );
+        let rows = armings(&result.intents);
+        if *unit == RED2 {
+            assert!(rows.is_empty(), "the unarmed red armed at {t_ms}: {rows:?}");
+            continue;
+        }
+        let arms: Vec<&FireCondition> = rows
+            .iter()
+            .filter_map(|arming| match arming {
+                Arming::Arm(cond) => Some(cond),
+                Arming::Disarm { .. } => None,
+            })
+            .collect();
+        if arms.is_empty() {
+            assert_eq!(
+                rows,
+                vec![&Arming::Disarm { weapon: None }],
+                "one disarm at {t_ms}"
+            );
+        } else {
+            assert_eq!(arms.len(), rows.len(), "no disarm beside an arm at {t_ms}");
+            let weapons: Vec<&SmolStr> = arms.iter().map(|cond| &cond.weapon).collect();
+            let want: Vec<&SmolStr> = view
+                .weapons
+                .iter()
+                .take(STOCK_CONDITION_SLOTS)
+                .map(|weapon| &weapon.id)
+                .collect();
+            assert_eq!(weapons, want, "one arm per weapon, in order, at {t_ms}");
+            for cond in arms {
+                assert_eq!(
+                    (
+                        cond.target,
+                        cond.min_permille,
+                        cond.aspects,
+                        cond.min_rounds_left
+                    ),
+                    (SlotTarget::BestHostile, 100, ASPECTS_ANY, 0),
+                    "Line's discipline at {t_ms}"
+                );
+            }
+        }
+        let locks = result
+            .intents
+            .iter()
+            .any(|kind| matches!(kind, IntentKind::Lock { .. }));
+        for kind in &result.intents {
+            if let IntentKind::Fire { weapon, slot } = kind {
+                assert!(locks, "a Fire with no fresh Lock at {t_ms}");
+                let at = view.weapons.iter().position(|row| &row.id == weapon);
+                assert_eq!(
+                    slot.map(usize::from),
+                    at.map(|at| at + 1),
+                    "n = i + 1 at {t_ms}"
+                );
+            }
+        }
+    }
+    let fired: Vec<(i64, String)> = run
+        .events
+        .iter()
+        .filter_map(|(t_ms, json, _)| {
+            let value: serde_json::Value = serde_json::from_str(json).ok()?;
+            (value.get("kind")? == "fired" && value.get("unit")? == u64::from(RED.0)).then(|| {
+                assert_eq!(
+                    value.get("slot").and_then(serde_json::Value::as_u64),
+                    Some(1),
+                    "an uncited T1 shot at {t_ms}: {json}"
+                );
+                let by = value
+                    .get("by")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                (*t_ms, by)
+            })
+        })
+        .collect();
+    for (t_ms, by) in &fired {
+        let fresh = kept.iter().any(|(unit, think_ms, _, result)| {
+            *unit == RED
+                && think_ms + SUBSTEP == *t_ms
+                && result
+                    .intents
+                    .iter()
+                    .any(|kind| matches!(kind, IntentKind::Fire { .. }))
+        });
+        let want = if fresh { "mind" } else { "cond" };
+        assert_eq!(by, want, "the shot at {t_ms}");
+    }
+    assert!(
+        fired.iter().any(|(_, by)| by == "mind"),
+        "a cited fresh-lock shot: {fired:?}"
+    );
+    assert!(
+        fired.iter().any(|(_, by)| by == "cond"),
+        "the slot's own shots: {fired:?}"
+    );
+    let recorded: Vec<(i64, String)> = M1B2_TWO_T1_FIRED
+        .iter()
+        .map(|(t_ms, by)| (*t_ms, (*by).to_owned()))
+        .collect();
+    assert_eq!(fired, recorded, "the recorded fired milliseconds");
+}
+
+/// **The armed red's slots ARE its last landed think's armings, at every
+/// landing** (17b cut M1b.2: `n = i + 1` equals the arena's stable
+/// numbering by construction): the (j) field one substep a pulse for 30 s,
+/// and after every pulse `arena.conditions.slots(RED)` read against the
+/// armings of the last think of red's whose landing has run — slot `i + 1`
+/// holds the `i`-th `Arm`'s terms, or every slot is empty after a `Disarm` —
+/// and the unarmed red holds no slot.
+#[test]
+fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing() {
+    let mut arena = the_j_field(Controller::Mind);
+    let stock = Stock::on(&arena);
+    arena.mind_runner = stock.clone();
+    let mut rig = Rig::new(arena);
+    let mut checked = (0_usize, 0_usize);
+    while rig.arena.now_ms < 30_000 {
+        let _ = rig.pulse(&[], &[]);
+        let now = rig.arena.now_ms;
+        assert!(rig.arena.conditions.is_empty_for(RED2), "at {now}");
+        let kept = stock.kept();
+        let Some((_, think_ms, _, result)) = kept
+            .iter()
+            .rev()
+            .find(|(unit, think_ms, ..)| *unit == RED && think_ms + SUBSTEP <= now)
+        else {
+            continue;
+        };
+        let slots = rig.arena.conditions.slots(RED).to_vec();
+        let arms: Vec<Option<FireCondition>> = armings(&result.intents)
+            .into_iter()
+            .filter_map(|arming| match arming {
+                Arming::Arm(cond) => Some(Some(cond.clone())),
+                Arming::Disarm { .. } => None,
+            })
+            .collect();
+        if arms.is_empty() {
+            assert!(
+                slots.iter().all(Option::is_none),
+                "disarmed after the think at {think_ms}: {slots:?}"
+            );
+            checked.1 += 1;
+        } else {
+            assert_eq!(
+                slots.get(..arms.len()),
+                Some(arms.as_slice()),
+                "slot i + 1 is the think at {think_ms}'s i-th arming"
+            );
+            assert!(slots.iter().skip(arms.len()).all(Option::is_none));
+            checked.0 += 1;
+        }
+    }
+    assert!(
+        checked.0 > 0 && checked.1 > 0,
+        "both arms ran: {checked:?} (armed, disarmed)"
+    );
+}
+
 /// **The gate's twin fixture: two T1 units at three cadences** (doc 17 §22's
 /// M1a gate; D-UM-21; 16b §11's mandatory cross-tempo property). The (j)
 /// field of `tests/reflex.rs`, its two reds flown by the native stock mind —
@@ -3458,6 +3859,13 @@ fn stock_minds(drive: Drive) -> (Run, Vec<Kept>) {
 /// stamped one substep after a lattice think, never on it; every answer
 /// holds the emission rules; and the recording runner is transparent — the
 /// arena's own default runner journals the same lines and hashes.
+///
+/// **17b cut M1b.2** ([`two_t1_slots_and_citations`]): every think answers
+/// the armed red's slot (an `Arm` per gun, or a `Disarm`) and the unarmed
+/// red's none; a `Fire` only beside a fresh `Lock`, citing `i + 1`; every
+/// `fired` line cited, `by: "mind"` on a fresh-lock landing and `by: "cond"`
+/// otherwise; the `fired` milliseconds recorded ([`M1B2_TWO_T1_FIRED`]).
+/// The emission rank with `Condition` is [`stock_emission_holds`]'.
 #[test]
 fn m1a6_two_stock_minds_at_three_cadences_are_one_event_list_and_one_hash_sequence() {
     let (first, kept) = stock_minds(Drive::Every(5_000));
@@ -3521,6 +3929,8 @@ fn m1a6_two_stock_minds_at_three_cadences_are_one_event_list_and_one_hash_sequen
                 .any(|kind| matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })))),
         "the unarmed mind drives"
     );
+    // **17b cut M1b.2**: the slots and the citations.
+    two_t1_slots_and_citations(&first, &kept);
     for drive in [
         Drive::Every(1_000),
         Drive::Every(500),
@@ -3719,13 +4129,16 @@ fn m1a6_an_unarmed_stock_mind_drives_senses_holds_and_never_calls_fire() {
             .is_some_and(|cell| cell.0 < start.0),
         "and it went west"
     );
+    // 17b cut M1b.2: nor a `Condition` — an unarmed hull has no slot to
+    // answer (D-UM-48) — and the arena holds none for it.
+    assert!(arena.conditions.is_empty_for(RED));
     for (_, _, view, result) in &kept {
         stock_emission_holds(&result.intents);
         assert!(
-            !result
-                .intents
-                .iter()
-                .any(|kind| matches!(kind, IntentKind::Lock { .. } | IntentKind::Fire { .. })),
+            !result.intents.iter().any(|kind| matches!(
+                kind,
+                IntentKind::Lock { .. } | IntentKind::Fire { .. } | IntentKind::Condition(_)
+            )),
             "{:?}",
             result.intents
         );
@@ -3802,8 +4215,9 @@ fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
             }
             wall += SUBSTEP;
         }
-        let actions: Vec<(i64, String, u32)> = events(&mut arena, &mut bytes)
-            .into_iter()
+        let journal = events(&mut arena, &mut bytes);
+        let actions: Vec<(i64, String, u32)> = journal
+            .iter()
             .filter_map(|event| {
                 let json = serde_json::to_string(&event.kind).unwrap_or_default();
                 let (word, unit) = kind_and_unit(&json);
@@ -3812,10 +4226,49 @@ fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
                     .then_some((event.t_ms, word, unit))
             })
             .collect();
-        (actions, helm)
+        // 17b cut M1b.2: each `fired` line's attribution, `(t_ms, by, slot)`.
+        let shots: Vec<(i64, Option<String>, Option<u64>)> = journal
+            .iter()
+            .filter_map(|event| {
+                let value = serde_json::to_value(&event.kind).ok()?;
+                (value.get("kind")? == "fired").then(|| {
+                    (
+                        event.t_ms,
+                        value
+                            .get("by")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                        value.get("slot").and_then(serde_json::Value::as_u64),
+                    )
+                })
+            })
+            .collect();
+        (actions, helm, shots)
     };
-    let (t0, t0_helm) = lines(Controller::Reflex);
-    let (t1, t1_helm) = lines(Controller::Mind);
+    let (t0, t0_helm, t0_shots) = lines(Controller::Reflex);
+    let (t1, t1_helm, t1_shots) = lines(Controller::Mind);
+    // T0's shots are a machine's: never attributed (`FiredBy::Machine`, never
+    // gated). T1's are each cited: a fresh lock's shot `by: "mind"` at the
+    // landing one substep after a lattice think, or the slot's own `by:
+    // "cond"` — at a `WeaponReady`, a pass or a landing — both naming S1.
+    assert!(
+        t0_shots
+            .iter()
+            .all(|(_, by, slot)| by.is_none() && slot.is_none()),
+        "{t0_shots:?}"
+    );
+    for (t_ms, by, slot) in &t1_shots {
+        assert_eq!(*slot, Some(1), "an uncited T1 shot at {t_ms}");
+        match by.as_deref() {
+            Some("mind") => assert_eq!(
+                (t_ms - SUBSTEP - stagger_ms(SEED, RED, STOCK_THINK_MS)).rem_euclid(STOCK_THINK_MS),
+                0,
+                "a cited shot off a landing at {t_ms}"
+            ),
+            Some("cond") => {}
+            other => panic!("a T1 shot by {other:?} at {t_ms}"),
+        }
+    }
     let startups = |actions: &[(i64, String, u32)]| -> Vec<u32> {
         actions
             .iter()
@@ -3854,10 +4307,20 @@ fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
         .iter()
         .map(|(t_ms, word, unit)| (t_ms + SUBSTEP, word.clone(), *unit))
         .collect();
+    // 17b cut M1b.2 declared this comparison widened for the `fired` lines
+    // (a slot's shot at a `WeaponReady` or a pass where T0 fires on its
+    // tick); on this window the one shot is the fresh lock's cited one, at
+    // its landing, and the strict form still holds — so it is kept.
     assert_eq!(t1, shifted, "T1 is T0 one substep later");
     assert!(
         t1.iter().any(|(_, word, _)| word == "fired"),
         "the window holds a shot"
+    );
+    assert!(
+        t1_shots
+            .iter()
+            .any(|(_, by, _)| by.as_deref() == Some("mind")),
+        "the window's shot is the fresh lock's cited one: {t1_shots:?}"
     );
     // The helm after every landing: T1's at `t` against T0's at `t - SUBSTEP`
     // (the `landing` shift), unit by unit, and the first millisecond they part.
@@ -4293,13 +4756,15 @@ fn charge_field() -> Arena {
                 Vec::new(),
                 Controller::Pilot,
             )),
-            seeing(tank(
+            // 17b cut M1b.2: a silhouette, so the mind's slot has odds to
+            // fire on ([`presenting`]).
+            presenting(seeing(tank(
                 BLUE,
                 Team::Blue,
                 centre(14, 8),
                 Vec::new(),
                 Controller::Pilot,
-            )),
+            ))),
         ],
         &[RED2, BLUE],
     )

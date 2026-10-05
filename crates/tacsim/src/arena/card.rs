@@ -12,8 +12,10 @@
 //! nothing carried.
 //!
 //! This cut builds the **shape and the anchor only**: `set`, `CardError`,
-//! `as_reflex`, `preset`, `name_of` and `read_back` are 17b cut M1b.5's, and no
-//! runner reads the card yet (`NativeStockMind` and `NoMind` ignore it). The
+//! `as_reflex`, `preset`, `name_of` and `read_back` are 17b cut M1b.5's. Since
+//! 17b cut M1b.2 `NativeStockMind` reads the card's fire discipline alone —
+//! `min_odds_permille`, `aspect` and `reserve_pct`, the terms its slots are
+//! armed on (`crate::arena::stock_mind::arming_for`); `NoMind` ignores it. The
 //! eleven terms nothing reads before 17b cut M2 are carried and marked `[M2]`
 //! (17b's Q-M3).
 

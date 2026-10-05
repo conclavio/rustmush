@@ -43,16 +43,22 @@
 //!
 //! # The emission order, and its two rules
 //!
-//! `Startup`, `Goal`, `Heading`, `Speed`, `Lock`, `Fire`. A think that emits
-//! `Goal(Cell)` emits **no** `Heading` or `Speed`: the motor steers from the
-//! landing on, and the landing's disengage rule (a mind's own heading lets go
-//! of its goal, 17b cut M1a.5) would throw the goal away. A think that
+//! `Startup`, `Condition`, `Goal`, `Heading`, `Speed`, `Lock`, `Fire`. A think
+//! that emits `Goal(Cell)` emits **no** `Heading` or `Speed`: the motor steers
+//! from the landing on, and the landing's disengage rule (a mind's own heading
+//! lets go of its goal, 17b cut M1a.5) would throw the goal away. A think that
 //! **stands** emits `Goal(Hold)` first and then the facing `Heading` — *stop
 //! here and face there*; the goal is already gone, so the disengage rule has
 //! nothing to let go of. The stock mind never emits a `Speed` at all
-//! (`Goal(Hold)` is its stop), answers `Startup` alone, and so never more than
-//! four intents (`Goal(Hold)`, `Heading`, `Lock`, `Fire`), well inside
-//! [`crate::arena::mind::MIND_INTENTS_MAX`].
+//! (`Goal(Hold)` is its stop) and answers `Startup` with its disarm alone.
+//! **17b cut M1b.2**: every think of an armed hull answers its slots
+//! ([`arming_for`]) — one `Condition(Arm)` per weapon of its first
+//! [`STOCK_CONDITION_SLOTS`], or one `Condition(Disarm)` — so a think emits
+//! at most `4 + STOCK_CONDITION_SLOTS` intents (`Condition` × 2, `Goal(Hold)`,
+//! `Heading`, `Lock`, `Fire`), well inside
+//! [`crate::arena::mind::MIND_INTENTS_MAX`]; a `Fire` is planned only beside a
+//! fresh `Lock` and cites its slot (`engage_orders`), and the armed slot owns
+//! every other shot.
 //!
 //! # What it cannot see, and does instead (doc 17 §17 "The named divergences")
 //!
@@ -93,6 +99,8 @@
 use mush_atlas::Cover;
 use smol_str::SmolStr;
 
+use crate::arena::card::StockCard;
+use crate::arena::conditions::{Arming, FireCondition, STOCK_CONDITION_SLOTS, SlotTarget};
 use crate::arena::damage::{BLOCKED, COVER};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::{
@@ -652,10 +660,19 @@ impl Default for NativeStockMind {
 impl MindRunner for NativeStockMind {
     /// One think: the memory decoded, `decide` ported, the memory encoded.
     /// The match mode is not on the view, so no Hold objective is handed in
-    /// (see the module head's residuals).
+    /// (see the module head's residuals). **17b cut M1b.2**: `job.card` is
+    /// read for the fire discipline alone ([`arming_for`]).
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let mut memory = StockMemory::from(&decode_memory(job.memory));
-        let intents = self.decide(job.view, &mut memory, job.map, None, job.t_ms, job.lands_ms);
+        let intents = self.decide(
+            job.view,
+            &mut memory,
+            job.map,
+            None,
+            job.t_ms,
+            job.lands_ms,
+            job.card,
+        );
         ThinkResult {
             intents,
             memory: encode_memory(&Memory::from(memory)),
@@ -673,8 +690,16 @@ struct Plan {
     heading_mdeg: Option<u32>,
     /// The lock to take.
     lock: Option<ContactId>,
-    /// The weapon to fire.
-    fire: Option<SmolStr>,
+    /// The weapon to fire, and the slot its shot cites (17b cut M1b.2: only on
+    /// a fresh lock, `n = i + 1` — the arena's number while no armed weapon
+    /// has been removed; see `engage_orders`).
+    fire: Option<(SmolStr, u8)>,
+    /// **17b cut M1b.2** (D-UM-18): `engage_orders` was reached with a row and
+    /// its gates passed (power online, not under `hold_fire`, not dry) — the
+    /// ceiling that admitted the row, centimetres (`release_cm`, or a
+    /// withdraw-stand's `stand_cm` en route). `Some` arms the slots
+    /// ([`arming_for`]); `None` disarms them.
+    arm_ceiling_cm: Option<u64>,
 }
 
 /// One think's reading of the motor's two notices.
@@ -699,8 +724,10 @@ impl NativeStockMind {
     /// does not carry the mode); `t_ms` is the think's lattice millisecond,
     /// the clock every memory stamp is written on, as the reflex writes its
     /// tick's; `lands_ms` is the think's landing millisecond
-    /// ([`ThinkJob::lands_ms`]), the one its shot is resolved at.
-    #[allow(clippy::too_many_lines)]
+    /// ([`ThinkJob::lands_ms`]), the one its shot is resolved at; `card` is
+    /// the hull's stock card ([`ThinkJob::card`]), read for the fire
+    /// discipline its slots are armed on and nothing else (17b cut M1b.2).
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn decide(
         &self,
         view: &MindView,
@@ -709,6 +736,7 @@ impl NativeStockMind {
         hold: Option<&HoldState>,
         t_ms: i64,
         lands_ms: i64,
+        card: &StockCard,
     ) -> Vec<IntentKind> {
         let cfg = &self.cfg;
         let here = view.cell;
@@ -889,14 +917,18 @@ impl NativeStockMind {
                     mem.state = ReflexState::Startup;
                 }
                 mem.goal = held;
-                return vec![IntentKind::Startup];
+                // 17b cut M1b.2: a cold hull's slots are disarmed (every think
+                // answers its slots), after the `Startup`.
+                let mut intents = vec![IntentKind::Startup];
+                intents.extend(arming_for(view, card, None));
+                return intents;
             }
             Power::Starting => {
                 if mem.state != ReflexState::Withdraw {
                     mem.state = ReflexState::Startup;
                 }
                 mem.goal = held;
-                return Vec::new();
+                return arming_for(view, card, None);
             }
             Power::Online => {
                 if matches!(mem.state, ReflexState::Startup | ReflexState::Disabled) {
@@ -1048,7 +1080,15 @@ impl NativeStockMind {
                 if let Some(row) = self.stand(view, def, health, &ranges, None, order) {
                     stood_cell = row.cell;
                     plan.heading_mdeg = Some(row.bearing_deg.saturating_mul(1_000));
-                    engage_orders(view, row, order, &ranges, lands_ms, &mut plan);
+                    engage_orders(
+                        view,
+                        row,
+                        order,
+                        &ranges,
+                        ranges.release_cm,
+                        lands_ms,
+                        &mut plan,
+                    );
                 }
             }
             // (b) past the leash: back toward the station off its own plot of
@@ -1113,7 +1153,15 @@ impl NativeStockMind {
                             ) {
                                 stood_cell = row.cell;
                                 plan.heading_mdeg = Some(row.bearing_deg.saturating_mul(1_000));
-                                engage_orders(view, row, order, &ranges, lands_ms, &mut plan);
+                                engage_orders(
+                                    view,
+                                    row,
+                                    order,
+                                    &ranges,
+                                    ranges.release_cm,
+                                    lands_ms,
+                                    &mut plan,
+                                );
                             }
                         }
                         // A supporter idle inside its leash keeps station.
@@ -1175,7 +1223,15 @@ impl NativeStockMind {
                                 mem.state = ReflexState::Engage;
                                 goal = None;
                                 if let Some(row) = row {
-                                    engage_orders(view, row, order, &ranges, lands_ms, &mut plan);
+                                    engage_orders(
+                                        view,
+                                        row,
+                                        order,
+                                        &ranges,
+                                        ranges.release_cm,
+                                        lands_ms,
+                                        &mut plan,
+                                    );
                                 }
                             } else if inside {
                                 goal = here;
@@ -1209,7 +1265,15 @@ impl NativeStockMind {
                             plan.heading_mdeg =
                                 row.map(|row| row.bearing_deg.saturating_mul(1_000));
                             if let Some(row) = row {
-                                engage_orders(view, row, order, &ranges, lands_ms, &mut plan);
+                                engage_orders(
+                                    view,
+                                    row,
+                                    order,
+                                    &ranges,
+                                    ranges.release_cm,
+                                    lands_ms,
+                                    &mut plan,
+                                );
                             }
                         }
                     }
@@ -1236,7 +1300,14 @@ impl NativeStockMind {
                         mem.quiet_since_ms = None;
                         plan.stop = true;
                         plan.heading_mdeg = Some(row.bearing_deg.saturating_mul(1_000));
-                        engage_orders(view, row, order, &ranges, lands_ms, &mut plan);
+                        // 17b cut M1b.2: the ceiling `withdraw_stand` admitted
+                        // the row by — `release_cm` home, `stand_cm` en route.
+                        let ceiling = if arrived {
+                            ranges.release_cm
+                        } else {
+                            ranges.stand_cm
+                        };
+                        engage_orders(view, row, order, &ranges, ceiling, lands_ms, &mut plan);
                     } else if mem.stand_until_ms.is_some_and(|until| t_ms < until) {
                         mem.quiet_since_ms = None;
                         plan.stop = true;
@@ -1277,8 +1348,9 @@ impl NativeStockMind {
         }
 
         // ---- the emission (the module head's order and its two rules) ----
-        // (`Startup` is the power arm's, which answers it alone.)
-        let mut intents: Vec<IntentKind> = Vec::new();
+        // (`Startup` is the power arm's, which answers it with a disarm.)
+        // 17b cut M1b.2: the slots first, after `Startup` and before `Goal`.
+        let mut intents: Vec<IntentKind> = arming_for(view, card, plan.arm_ceiling_cm);
         // The helm half. A hull whose motion is disabled is not handed one:
         // every goal and heading would be refused `MotionDisabled`, as the
         // reflex's are, and the motor drops a goal it cannot drive anyway.
@@ -1303,8 +1375,11 @@ impl NativeStockMind {
         if let Some(contact) = plan.lock {
             intents.push(IntentKind::Lock { contact });
         }
-        if let Some(weapon) = plan.fire {
-            intents.push(IntentKind::Fire { weapon, slot: None });
+        if let Some((weapon, slot)) = plan.fire {
+            intents.push(IntentKind::Fire {
+                weapon,
+                slot: Some(slot),
+            });
         }
         intents
     }
@@ -1531,18 +1606,49 @@ fn walk(
 /// **D-UM-48: on a hull with no weapon rows the fire half is absent** — not
 /// idled. No caller reaches here for one (the utility score answers it no
 /// target), and the guard says so where the reader looks.
+///
+/// **17b cut M1b.2 — the slots and the citation** (D-UM-16, D-UM-17,
+/// D-UM-18). Past the power, `hold_fire` and dry gates the think records the
+/// ceiling that admitted `row` (`ceiling_cm`: `release_cm`, or a withdraw
+/// stand's `stand_cm` en route) on the plan, and the emission arms the hull's
+/// first [`STOCK_CONDITION_SLOTS`] weapons on it ([`arming_for`]): from then
+/// on the **slot** owns the shot — the arena fires it at the weapon's own
+/// `WeaponReady`, at the passes that refresh the lock and at the landing.
+/// A `Fire` is planned here ONLY when the think also plans a `Lock` (a fresh
+/// lock no slot has been evaluated against): the landing applies its kinds in
+/// emission order — `Condition`, `Lock`, `Fire` — so that shot is resolved
+/// right after the new lock lands and before `Arena::mind_land`'s one
+/// `Landing` evaluation, which then finds the gun cycling. It cites slot
+/// `n = i + 1` for `view.weapons[i]` — the arena's own stable numbering
+/// **while no armed weapon has been removed**, since T1 arms every weapon in
+/// component order from its first think and never skips one. A
+/// `RemoveWeapons` consequence breaks it: the arena frees only the lost gun's
+/// slot and the others keep their numbers (`Arena::apply_consequence`), so a
+/// hull that loses its S1 gun still holds its S2 gun in S2 — re-armed in
+/// place by the next think — while `view.weapons` has closed up and this
+/// cites it as S1, which the resolver refuses `unwarranted` (the slot itself
+/// still fires at the landing, `by: "cond"`). The view carries no `armed`
+/// rows to read the true number off until 17b cut M1b.3, which cites
+/// `armed.slot` and removes this residual (pinned by
+/// `m1b2_residual_a_removed_weapon_parts_i_plus_one_from_the_arenas_number`).
+/// The citation is picked by the rule above (ready at the
+/// landing, loaded, in reach, `!would_overheat`: T0's own rule for the shot
+/// it plans), among the armed weapons only (a weapon past the slots has no
+/// slot to cite: the divergence `slot_starved`).
 fn engage_orders(
     view: &MindView,
     row: &ViewContact,
     order: Option<&FrameOrder>,
     ranges: &Ranges,
+    ceiling_cm: u64,
     lands_ms: i64,
     plan: &mut Plan,
 ) {
     if view.weapons.is_empty() {
         return;
     }
-    if view.lock != Some(row.id) {
+    let fresh_lock = view.lock != Some(row.id);
+    if fresh_lock {
         plan.lock = Some(row.id);
     }
     if view.power != Power::Online {
@@ -1551,8 +1657,17 @@ fn engage_orders(
     if order.is_some_and(|order| order.hold_fire) {
         return;
     }
+    if is_dry(view) {
+        return;
+    }
+    // 17b cut M1b.2: reached with a row, the gates passed — the slots arm.
+    plan.arm_ceiling_cm = Some(ceiling_cm);
     let range = row_range_cm(row);
     if range > ranges.release_cm {
+        return;
+    }
+    if !fresh_lock {
+        // The lock is held: the armed slot owns the shot.
         return;
     }
     // The milliseconds from the view's clock to the landing: a weapon whose
@@ -1561,7 +1676,9 @@ fn engage_orders(
     plan.fire = view
         .weapons
         .iter()
-        .find(|weapon| {
+        .take(STOCK_CONDITION_SLOTS)
+        .enumerate()
+        .find(|(_, weapon)| {
             weapon.ready_in_ms <= to_landing
                 && weapon.rounds > 0
                 && weapon
@@ -1570,7 +1687,64 @@ fn engage_orders(
                     .is_some_and(|reach| u64::from(*reach) >= range)
                 && !would_overheat(view, weapon)
         })
-        .map(|weapon| weapon.id.clone());
+        .and_then(|(at, weapon)| {
+            let n = u8::try_from(at.saturating_add(1)).ok()?;
+            Some((weapon.id.clone(), n))
+        });
+}
+
+/// **T1's slots for this think** (17b cut M1b.2; D-UM-16, D-UM-18, D-UM-43):
+/// what the stock mind arms or disarms, emitted after `Startup` and before
+/// `Goal`.
+///
+/// * `reach_ceiling_cm` `Some(ceiling)` — `engage_orders` was reached with a
+///   row and its gates passed: one `Condition(Arm)` per `view.weapons[i]` for
+///   `i < STOCK_CONDITION_SLOTS`, in component order, **whatever the heat**
+///   (the resolver's `Overheated` holds a hot slot's shot silently and the slot
+///   stays armed; a heat skip here would put T1's numbering out of step with
+///   the arena's and build in a think of latency for nothing — 17b's
+///   adversarial F6), each `FireCondition { weapon, target: BestHostile,
+///   min_permille: card.min_odds_permille, aspects: card.aspect.mask(),
+///   min_rounds_left: card.reserve_pct × rounds_max / 100, min_range_m: 0,
+///   max_range_m: min(ceiling, the weapon's reach) / 100 }`;
+/// * `None` — one `Condition(Disarm { weapon: None })`;
+/// * an unarmed hull (no weapon rows) — nothing (D-UM-48).
+///
+/// **Emitted every think** in 17b cut M1b.2 — idempotent: an `Arm` with the
+/// terms a slot already holds folds the same bytes, and a `Disarm` of an empty
+/// row is a no-op. 17b cut M1b.3 emits on change against the view's `armed`
+/// rows. The card is read for the fire discipline alone (on Line: 100 per
+/// mille, every aspect, no reserve).
+#[must_use]
+pub fn arming_for(
+    view: &MindView,
+    card: &StockCard,
+    reach_ceiling_cm: Option<u64>,
+) -> Vec<IntentKind> {
+    if view.weapons.is_empty() {
+        return Vec::new();
+    }
+    let Some(ceiling_cm) = reach_ceiling_cm else {
+        return vec![IntentKind::Condition(Arming::Disarm { weapon: None })];
+    };
+    view.weapons
+        .iter()
+        .take(STOCK_CONDITION_SLOTS)
+        .map(|weapon| {
+            let reach_cm = weapon.bands_cm.last().map_or(0, |reach| u64::from(*reach));
+            let keeps =
+                u64::from(card.reserve_pct).saturating_mul(u64::from(weapon.rounds_max)) / 100;
+            IntentKind::Condition(Arming::Arm(FireCondition {
+                weapon: weapon.id.clone(),
+                target: SlotTarget::BestHostile,
+                min_permille: card.min_odds_permille,
+                aspects: card.aspect.mask(),
+                min_rounds_left: u32::try_from(keeps).unwrap_or(u32::MAX),
+                min_range_m: 0,
+                max_range_m: u32::try_from(ceiling_cm.min(reach_cm) / 100).unwrap_or(u32::MAX),
+            }))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1641,6 +1815,12 @@ mod tests {
         }
     }
 
+    /// **17b cut M1b.2**: what a think that does not reach `engage_orders`
+    /// with its gates passed answers for an armed hull's slots.
+    fn disarm() -> IntentKind {
+        IntentKind::Condition(Arming::Disarm { weapon: None })
+    }
+
     /// The view `unit`'s next think would read, off a clone (the view
     /// settles and drains hashed state).
     fn view_of(arena: &Arena, unit: ObjId) -> MindView {
@@ -1665,28 +1845,39 @@ mod tests {
             None,
             t_ms,
             t_ms.saturating_add(arena.substep_len_ms()),
+            &crate::arena::card::line(&arena.arena_cfg.reflex),
         )
     }
 
     /// **The emission order and its two rules** (the module head): kinds in
-    /// `Startup, Goal, Heading, Speed, Lock, Fire` order, each at most once; a
+    /// `Startup, Condition, Goal, Heading, Speed, Lock, Fire` order, each at
+    /// most once EXCEPT `Condition` (one per armed weapon, 17b cut M1b.2); a
     /// `Goal(Cell)` with no `Heading` or `Speed` beside it; never more than
-    /// four (the module head's maximum: `Goal(Hold)`, `Heading`, `Lock`,
-    /// `Fire`), which is under the brief's six and `MIND_INTENTS_MAX`.
+    /// `4 + STOCK_CONDITION_SLOTS` (the module head's maximum), which is under
+    /// `MIND_INTENTS_MAX`.
     fn emission_holds(intents: &[IntentKind]) {
         let rank = |kind: &IntentKind| match kind {
             IntentKind::Startup => 0_u8,
-            IntentKind::Goal(_) => 1,
-            IntentKind::Heading { .. } => 2,
-            IntentKind::Speed { .. } => 3,
-            IntentKind::Lock { .. } => 4,
-            IntentKind::Fire { .. } => 5,
+            IntentKind::Condition(_) => 1,
+            IntentKind::Goal(_) => 2,
+            IntentKind::Heading { .. } => 3,
+            IntentKind::Speed { .. } => 4,
+            IntentKind::Lock { .. } => 5,
+            IntentKind::Fire { .. } => 6,
             other => panic!("the stock mind emitted {other:?}"),
         };
         let ranks: Vec<u8> = intents.iter().map(rank).collect();
         assert!(
-            ranks.windows(2).all(|pair| pair.first() < pair.get(1)),
+            ranks.windows(2).all(|pair| match pair {
+                [1, 1] => true,
+                [a, b] => a < b,
+                _ => false,
+            }),
             "out of order, or a kind twice: {intents:?}"
+        );
+        assert!(
+            ranks.iter().filter(|rank| **rank == 1).count() <= STOCK_CONDITION_SLOTS,
+            "{intents:?}"
         );
         if intents
             .iter()
@@ -1700,7 +1891,7 @@ mod tests {
                 "a heading or a speed beside a goal: {intents:?}"
             );
         }
-        assert!(intents.len() <= 4, "{intents:?}");
+        assert!(intents.len() <= 4 + STOCK_CONDITION_SLOTS, "{intents:?}");
         assert!(intents.len() <= MIND_INTENTS_MAX);
     }
 
@@ -1876,12 +2067,15 @@ mod tests {
     }
 
     /// **The emission order, the no-`Heading`-with-a-`Goal(Cell)` rule and the
-    /// six-intent cap**: a cold hull answers `Startup` alone; a patrol hands
-    /// the motor a cell and nothing else, and the same think again hands it
-    /// nothing (the goal did not change); a hostile at 200 m with a line is
-    /// engaged — the lock and the shot on the think that finds it — and the
-    /// next think stands: `Goal(Hold)`, the facing `Heading`, then the lock and
-    /// the shot, in that order.
+    /// cap**: a cold hull answers `Startup` and its disarm; a patrol hands the
+    /// motor a cell and nothing else but the disarm, and the same think again
+    /// hands it nothing but the disarm (the goal did not change); a hostile at
+    /// 200 m with a line is engaged — the arming, the lock and the cited shot
+    /// on the think that finds it — and the next think stands: the arming,
+    /// `Goal(Hold)`, the facing `Heading`, then the lock and the shot, in that
+    /// order. (17b cut M1b.2 put the `Condition` rows in, after `Startup` and
+    /// before `Goal`, every think; the view here is never landed, so every
+    /// think's lock is fresh and cites slot 1.)
     #[test]
     fn m1a6_the_emission_order_and_its_two_rules() {
         let mut arena = field(vec![
@@ -1890,17 +2084,24 @@ mod tests {
         ]);
         let mut memory = StockMemory::default();
         let cold = think(&arena, &view_of(&arena, RED), &mut memory, 0);
-        assert_eq!(cold, vec![IntentKind::Startup]);
+        // 17b cut M1b.2: every think answers its slots — a cold one disarms.
+        assert_eq!(cold, vec![IntentKind::Startup, disarm()]);
         online(&mut arena, RED);
         let mut patrol = StockMemory::default();
         let walk = think(&arena, &view_of(&arena, RED), &mut patrol, 1_000);
         emission_holds(&walk);
         assert!(
-            matches!(walk.as_slice(), [IntentKind::Goal(MotorGoal::Cell { .. })]),
+            matches!(
+                walk.as_slice(),
+                [
+                    IntentKind::Condition(Arming::Disarm { weapon: None }),
+                    IntentKind::Goal(MotorGoal::Cell { .. })
+                ]
+            ),
             "{walk:?}"
         );
         let again = think(&arena, &view_of(&arena, RED), &mut patrol, 2_000);
-        assert_eq!(again, Vec::new(), "the goal did not change");
+        assert_eq!(again, vec![disarm()], "the goal did not change");
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let mut fight = StockMemory::default();
         let found = think(&arena, &view_of(&arena, RED), &mut fight, 1_000);
@@ -1909,8 +2110,11 @@ mod tests {
         assert!(
             matches!(
                 found.as_slice(),
-                [IntentKind::Lock { contact }, IntentKind::Fire { .. }]
-                    if *contact == ContactId(0x77)
+                [
+                    IntentKind::Condition(Arming::Arm(_)),
+                    IntentKind::Lock { contact },
+                    IntentKind::Fire { slot: Some(1), .. }
+                ] if *contact == ContactId(0x77)
             ),
             "{found:?}"
         );
@@ -1920,14 +2124,17 @@ mod tests {
             matches!(
                 stands.as_slice(),
                 [
+                    IntentKind::Condition(Arming::Arm(_)),
                     IntentKind::Goal(MotorGoal::Hold),
                     IntentKind::Heading { mdeg: 0 },
                     IntentKind::Lock { .. },
-                    IntentKind::Fire { .. }
+                    IntentKind::Fire { slot: Some(1), .. }
                 ]
             ),
             "{stands:?}"
         );
+        // One cannon, one slot: its arming, then the most a stand emits.
+        assert_eq!(stands.len(), 1 + 4);
         assert_eq!(fight.goal, None, "a stand holds no goal");
     }
 
@@ -1972,7 +2179,7 @@ mod tests {
         emission_holds(&intents);
         assert_eq!(
             intents,
-            vec![IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
+            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
         );
         assert_eq!(memory.last_plot, None);
         assert_eq!(memory.hunt, None);
@@ -2001,7 +2208,7 @@ mod tests {
         };
         assert_eq!(
             think(&arena, &view_of(&arena, RED), &mut quiet, 10_000),
-            Vec::new()
+            vec![disarm()]
         );
     }
 
@@ -2028,7 +2235,7 @@ mod tests {
         let mut on = start.clone();
         assert_eq!(
             think(&arena, &view, &mut on, 5_000),
-            Vec::new(),
+            vec![disarm()],
             "driving on"
         );
         assert_eq!(on.hunt, Some(named));
@@ -2042,7 +2249,7 @@ mod tests {
         assert_eq!(arrived.waypoint, Some(0), "the nearest node, west");
         assert_eq!(
             intents,
-            vec![IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
+            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
         );
     }
 
@@ -2115,11 +2322,13 @@ mod tests {
         );
         for (view, result) in &answers {
             emission_holds(&result.intents);
+            // 17b cut M1b.2: nor a `Condition` — an unarmed hull has no slot to
+            // answer (D-UM-48).
             assert!(
-                !result
-                    .intents
-                    .iter()
-                    .any(|kind| matches!(kind, IntentKind::Lock { .. } | IntentKind::Fire { .. })),
+                !result.intents.iter().any(|kind| matches!(
+                    kind,
+                    IntentKind::Lock { .. } | IntentKind::Fire { .. } | IntentKind::Condition(_)
+                )),
                 "{:?}",
                 result.intents
             );
@@ -2176,6 +2385,7 @@ mod tests {
             Some(hold),
             t_ms,
             t_ms.saturating_add(arena.substep_len_ms()),
+            &crate::arena::card::line(&arena.arena_cfg.reflex),
         )
     }
 
@@ -2206,7 +2416,7 @@ mod tests {
         emission_holds(&intents);
         assert_eq!(
             intents,
-            vec![IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
+            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
         );
         assert_eq!(memory.goal, Some(hold.spot));
         assert_eq!(memory.unheld_since_ms, Some(1_000));
@@ -2224,8 +2434,13 @@ mod tests {
         emission_holds(&fell_back);
         assert_eq!(memory.hold_retry_ms, Some(retry));
         assert!(
-            matches!(fell_back.as_slice(), [IntentKind::Goal(MotorGoal::Cell { x, y })]
-                if (*x, *y) != hold.spot),
+            matches!(
+                fell_back.as_slice(),
+                [
+                    IntentKind::Condition(Arming::Disarm { weapon: None }),
+                    IntentKind::Goal(MotorGoal::Cell { x, y })
+                ] if (*x, *y) != hold.spot
+            ),
             "{fell_back:?}"
         );
         assert_ne!(memory.goal, Some(hold.spot));
@@ -2240,7 +2455,7 @@ mod tests {
         let again = think_holding(&arena, &view, &mut memory, &hold, retry);
         assert_eq!(
             again,
-            vec![IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
+            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
         );
         assert_eq!(memory.hold_retry_ms, None);
         // On the spot: parked.
@@ -2251,7 +2466,7 @@ mod tests {
             ..patrolling(0)
         };
         let stop = think_holding(&there, &view_of(&there, RED), &mut parked, &hold, 3_000);
-        assert_eq!(stop, vec![IntentKind::Goal(MotorGoal::Hold)]);
+        assert_eq!(stop, vec![disarm(), IntentKind::Goal(MotorGoal::Hold)]);
         assert_eq!(parked.goal, None);
         assert_eq!(parked.state, ReflexState::Patrol);
     }
@@ -2276,14 +2491,14 @@ mod tests {
         let mut memory = patrolling(0);
         let ended = think_holding(&arena, &view, &mut memory, &hold, 1_000);
         assert!(memory.ignore_order, "the Advance is over for this hull");
-        assert_eq!(ended, vec![IntentKind::Goal(MotorGoal::Hold)]);
+        assert_eq!(ended, vec![disarm(), IntentKind::Goal(MotorGoal::Hold)]);
         // With no Hold objective the Advance stands, and is driven.
         let mut skirmish = patrolling(0);
         let driven = think(&arena, &view, &mut skirmish, 1_000);
         assert!(!skirmish.ignore_order);
         assert_eq!(
             driven,
-            vec![IntentKind::Goal(MotorGoal::Cell { x: 32, y: 20 })]
+            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 32, y: 20 })]
         );
         // `Approach`, inside the square, on a row past its reach.
         hold_contact(&mut arena, RED, BLUE, ContactId(0x55));
@@ -2313,14 +2528,20 @@ mod tests {
         assert_eq!(closing.state, ReflexState::Approach);
         assert_eq!(
             inside,
-            vec![IntentKind::Goal(MotorGoal::Cell { x: 31, y: 20 })],
+            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 31, y: 20 })],
             "it holds its own cell"
         );
         let mut outside = closing.clone();
         outside.goal = None;
         let out = think(&arena, &view, &mut outside, 1_000);
         assert!(
-            matches!(out.as_slice(), [IntentKind::Goal(MotorGoal::Cell { .. })]) && out != inside,
+            matches!(
+                out.as_slice(),
+                [
+                    IntentKind::Condition(Arming::Disarm { weapon: None }),
+                    IntentKind::Goal(MotorGoal::Cell { .. })
+                ]
+            ) && out != inside,
             "on a skirmish it drives for the stand-off cell: {out:?}"
         );
     }
@@ -2352,6 +2573,7 @@ mod tests {
         assert_eq!(
             outside,
             vec![
+                disarm(),
                 IntentKind::Goal(MotorGoal::Hold),
                 IntentKind::Heading { mdeg: 0 }
             ],
@@ -2369,10 +2591,11 @@ mod tests {
             matches!(
                 inside.as_slice(),
                 [
+                    IntentKind::Condition(Arming::Arm(_)),
                     IntentKind::Goal(MotorGoal::Hold),
                     IntentKind::Heading { mdeg: 0 },
                     IntentKind::Lock { contact },
-                    IntentKind::Fire { .. }
+                    IntentKind::Fire { slot: Some(1), .. }
                 ] if *contact == ContactId(0x11)
             ),
             "{inside:?}"
@@ -2410,10 +2633,11 @@ mod tests {
             matches!(
                 stood.as_slice(),
                 [
+                    IntentKind::Condition(Arming::Arm(_)),
                     IntentKind::Goal(MotorGoal::Hold),
                     IntentKind::Heading { .. },
                     IntentKind::Lock { .. },
-                    IntentKind::Fire { .. }
+                    IntentKind::Fire { slot: Some(1), .. }
                 ]
             ),
             "{stood:?}"
@@ -2434,8 +2658,14 @@ mod tests {
         let back = think(&arena, &leashed_view, &mut leashed, 1_000);
         emission_holds(&back);
         assert!(
-            matches!(back.as_slice(), [IntentKind::Goal(MotorGoal::Cell { y, .. })] if *y > 20),
-            "toward the station, south, firing nothing: {back:?}"
+            matches!(
+                back.as_slice(),
+                [
+                    IntentKind::Condition(Arming::Disarm { weapon: None }),
+                    IntentKind::Goal(MotorGoal::Cell { y, .. })
+                ] if *y > 20
+            ),
+            "toward the station, south, firing nothing — its slots disarmed: {back:?}"
         );
         assert_eq!(leashed.state, ReflexState::Patrol);
         assert_eq!(leashed.target, None);
@@ -2450,7 +2680,7 @@ mod tests {
         station_view.order = leashed_view.order.clone();
         let mut station = patrolling(0);
         let parked = think(&close, &station_view, &mut station, 1_000);
-        assert_eq!(parked, vec![IntentKind::Goal(MotorGoal::Hold)]);
+        assert_eq!(parked, vec![disarm(), IntentKind::Goal(MotorGoal::Hold)]);
     }
 
     /// **An `Engage` hint outranks a better score** (16b cut N.2; the hint
@@ -2564,9 +2794,396 @@ mod tests {
         assert!(
             matches!(
                 closed.as_slice(),
-                [IntentKind::Goal(MotorGoal::Cell { .. })]
+                [
+                    IntentKind::Condition(Arming::Disarm { weapon: None }),
+                    IntentKind::Goal(MotorGoal::Cell { .. })
+                ]
             ),
             "{closed:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M1b.2: T1 arms its slots at think time and cites on a fresh lock
+    // -----------------------------------------------------------------------
+
+    /// A weapon row named `id` off `like`, its reach `reach_cm`, its heat
+    /// `heat_per_shot`.
+    fn row_like(like: &FrameWeapon, id: &str, reach_cm: u32, heat_per_shot: u32) -> FrameWeapon {
+        FrameWeapon {
+            id: SmolStr::new(id),
+            bands_cm: vec![reach_cm / 2, reach_cm],
+            heat_per_shot,
+            ..like.clone()
+        }
+    }
+
+    /// The `FireCondition` an `Arm` carries, or a panic.
+    fn armed_terms(kind: &IntentKind) -> FireCondition {
+        match kind {
+            IntentKind::Condition(Arming::Arm(cond)) => cond.clone(),
+            other => panic!("not an arming: {other:?}"),
+        }
+    }
+
+    /// **`arming_for`'s terms, its no-skip rule and its disarm** (17b cut
+    /// M1b.2; D-UM-16, D-UM-18, D-UM-43; 17b's adversarial F6). A hull of
+    /// three weapons — a laser that makes heat, a cannon, a missile rack —
+    /// on a platform AT its heat ceiling: `Some(ceiling)` arms exactly the
+    /// first [`STOCK_CONDITION_SLOTS`] in component order, the hot laser
+    /// included (no heat skip, so the numbering is the arena's), each on
+    /// `BestHostile` with the card's odds, its aspect mask, its reserve as
+    /// whole rounds of `rounds_max`, `min_range_m` 0 and `max_range_m` the
+    /// lesser of the ceiling and the weapon's reach in metres; `None` is one
+    /// `Disarm { None }`; an unarmed hull answers nothing (D-UM-48).
+    #[test]
+    fn m1b2_arming_for_arms_the_first_two_weapons_whatever_the_heat() {
+        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        online(&mut arena, RED);
+        let mut view = view_of(&arena, RED);
+        let Some(like) = view.weapons.first().cloned() else {
+            panic!("the line tank's cannon row");
+        };
+        view.weapons = vec![
+            row_like(&like, "laser", 60_000, 20),
+            row_like(&like, "cannon", 250_000, 0),
+            row_like(&like, "missiles", 300_000, 0),
+        ];
+        view.heat = Some(crate::arena::step::FrameHeat { heat: 60, max: 60 });
+        let laser = view
+            .weapons
+            .first()
+            .cloned()
+            .unwrap_or_else(|| like.clone());
+        assert!(would_overheat(&view, &laser), "the precondition: hot");
+        let mut card = crate::arena::card::line(&arena.arena_cfg.reflex);
+        card.reserve_pct = 10;
+        let arms = arming_for(&view, &card, Some(80_000));
+        assert_eq!(arms.len(), STOCK_CONDITION_SLOTS, "{arms:?}");
+        let terms: Vec<FireCondition> = arms.iter().map(armed_terms).collect();
+        assert_eq!(
+            terms,
+            vec![
+                FireCondition {
+                    weapon: SmolStr::new("laser"),
+                    target: SlotTarget::BestHostile,
+                    min_permille: card.min_odds_permille,
+                    aspects: card.aspect.mask(),
+                    min_rounds_left: like.rounds_max / 10,
+                    min_range_m: 0,
+                    // The laser's 600 m reach under the 800 m ceiling.
+                    max_range_m: 600,
+                },
+                FireCondition {
+                    weapon: SmolStr::new("cannon"),
+                    target: SlotTarget::BestHostile,
+                    min_permille: card.min_odds_permille,
+                    aspects: card.aspect.mask(),
+                    min_rounds_left: like.rounds_max / 10,
+                    min_range_m: 0,
+                    // The ceiling under the cannon's 2,500 m reach.
+                    max_range_m: 800,
+                },
+            ]
+        );
+        // On Line the discipline is today's machine's: 100 per mille, every
+        // aspect, no reserve.
+        let line = crate::arena::card::line(&arena.arena_cfg.reflex);
+        let on_line = arming_for(&view, &line, Some(80_000));
+        assert!(
+            on_line
+                .iter()
+                .map(armed_terms)
+                .all(|cond| cond.min_permille == 100
+                    && cond.aspects == crate::arena::conditions::ASPECTS_ANY
+                    && cond.min_rounds_left == 0)
+        );
+        assert_eq!(
+            arming_for(&view, &line, None),
+            vec![disarm()],
+            "not reached: one disarm"
+        );
+        view.weapons.clear();
+        assert_eq!(arming_for(&view, &line, Some(80_000)), Vec::new());
+        assert_eq!(arming_for(&view, &line, None), Vec::new(), "D-UM-48");
+    }
+
+    /// **When T1 arms, with which ceiling, and when it cites** (17b cut
+    /// M1b.2). On the engage field:
+    ///
+    /// * the think that finds the hostile arms on `release_cm`, locks it and
+    ///   cites S1 for the cannon — `Condition`, `Lock`, `Fire { slot: Some(1) }`
+    ///   in that order;
+    /// * with the lock already held (the view's `lock` on the row) it arms and
+    ///   stands but plans NO `Lock` and NO `Fire`: the armed slot owns the shot;
+    /// * a fresh lock on a cycling cannon arms and locks and cites nothing
+    ///   (today's first-ready rule for the cited shot);
+    /// * under `hold_fire` the lock is still taken and the slots DISARMED;
+    /// * powering up (`Starting`) disarms; cold, `Startup` then the disarm;
+    /// * a withdraw stand en route arms on `stand_cm`, not `release_cm`.
+    #[test]
+    fn m1b2_t1_arms_on_the_admitting_ceiling_and_cites_only_beside_a_fresh_lock() {
+        let mut arena = field(vec![
+            minded(RED, Team::Red, 20_500, 20_500),
+            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+        ]);
+        online(&mut arena, RED);
+        hold(&mut arena, RED, BLUE, ContactId(0x77));
+        let view = view_of(&arena, RED);
+        let cfg = &arena.arena_cfg.reflex;
+        let ranges = view_ranges(&view, cfg, None);
+        let reach = view
+            .weapons
+            .first()
+            .and_then(|weapon| weapon.bands_cm.last().copied())
+            .map_or(0, u64::from);
+        let release_m = u32::try_from(ranges.release_cm.min(reach) / 100).unwrap_or(u32::MAX);
+        // Found: arm, lock, cite.
+        let mut fight = StockMemory::default();
+        let found = think(&arena, &view, &mut fight, 1_000);
+        emission_holds(&found);
+        assert_eq!(fight.state, ReflexState::Engage);
+        let [arm, lock, fire] = found.as_slice() else {
+            panic!("{found:?}");
+        };
+        assert_eq!(armed_terms(arm).max_range_m, release_m);
+        assert_eq!(armed_terms(arm).target, SlotTarget::BestHostile);
+        assert_eq!(
+            lock,
+            &IntentKind::Lock {
+                contact: ContactId(0x77)
+            }
+        );
+        assert_eq!(
+            fire,
+            &IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+                slot: Some(1)
+            }
+        );
+        // Held: arm and stand, no lock and no fire.
+        let mut held_view = view.clone();
+        held_view.lock = Some(ContactId(0x77));
+        let mut holding = fight.clone();
+        let stands = think(&arena, &held_view, &mut holding, 2_000);
+        emission_holds(&stands);
+        assert!(
+            matches!(
+                stands.as_slice(),
+                [
+                    IntentKind::Condition(Arming::Arm(_)),
+                    IntentKind::Goal(MotorGoal::Hold),
+                    IntentKind::Heading { .. }
+                ]
+            ),
+            "the slot owns the shot: {stands:?}"
+        );
+        // A fresh lock on a cycling gun: armed, locked, nothing cited.
+        let mut cycling = view.clone();
+        for weapon in &mut cycling.weapons {
+            weapon.ready = false;
+            weapon.ready_in_ms = 4_000;
+        }
+        let mut busy = StockMemory::default();
+        let locked = think(&arena, &cycling, &mut busy, 1_000);
+        assert!(
+            matches!(
+                locked.as_slice(),
+                [
+                    IntentKind::Condition(Arming::Arm(_)),
+                    IntentKind::Lock { .. }
+                ]
+            ),
+            "{locked:?}"
+        );
+        // Under `hold_fire`: the lock is taken, the slots disarmed.
+        let mut held_fire = view.clone();
+        held_fire.order = Some(FrameOrder {
+            hold_fire: true,
+            ..order_of(MindObjective::Engage { target: None })
+        });
+        let mut quiet = StockMemory::default();
+        let holding_fire = think(&arena, &held_fire, &mut quiet, 1_000);
+        assert_eq!(
+            holding_fire,
+            vec![
+                disarm(),
+                IntentKind::Lock {
+                    contact: ContactId(0x77)
+                }
+            ]
+        );
+        // Powering up: disarmed.
+        let mut starting = view.clone();
+        starting.power = Power::Starting;
+        assert_eq!(
+            think(&arena, &starting, &mut StockMemory::default(), 1_000),
+            vec![disarm()]
+        );
+        // A withdraw stand en route: the stand's own ceiling.
+        let mut home = view.clone();
+        home.order = Some(order_of(MindObjective::Withdraw));
+        let stand_m = u32::try_from(ranges.stand_cm.min(reach) / 100).unwrap_or(u32::MAX);
+        for row in &mut home.contacts {
+            row.range_m = (ranges.stand_cm / 100).saturating_sub(10);
+        }
+        let mut withdrawing = StockMemory {
+            state: ReflexState::Withdraw,
+            goal: Some((1, 1)),
+            ..StockMemory::default()
+        };
+        let cornered = think(&arena, &home, &mut withdrawing, 1_000);
+        emission_holds(&cornered);
+        assert_eq!(withdrawing.state, ReflexState::Withdraw);
+        let Some(arm) = cornered.first() else {
+            panic!("the cornered hull answers: {cornered:?}");
+        };
+        assert_eq!(armed_terms(arm).max_range_m, stand_m, "{cornered:?}");
+        assert!(
+            stand_m < release_m,
+            "the precondition: the stand's ceiling is the nearer"
+        );
+    }
+
+    /// **The citation's weapon is T0's first-ready pick among the armed
+    /// weapons, numbered `i + 1`** (17b cut M1b.2): a hot laser first and a
+    /// cold cannon second, a fresh lock — the laser is armed (S1) and
+    /// skipped for the cited shot (`would_overheat`), the cannon cited as S2;
+    /// a weapon past the slots is never cited (it has no slot).
+    #[test]
+    fn m1b2_the_cited_shot_is_the_first_ready_armed_weapon_numbered_as_the_arena_does() {
+        let mut arena = field(vec![
+            minded(RED, Team::Red, 20_500, 20_500),
+            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+        ]);
+        online(&mut arena, RED);
+        hold(&mut arena, RED, BLUE, ContactId(0x77));
+        let mut view = view_of(&arena, RED);
+        let Some(like) = view.weapons.first().cloned() else {
+            panic!("the cannon row");
+        };
+        view.weapons = vec![
+            row_like(&like, "laser", 250_000, 20),
+            row_like(&like, "cannon", 250_000, 0),
+        ];
+        view.heat = Some(crate::arena::step::FrameHeat { heat: 60, max: 60 });
+        let mut fight = StockMemory::default();
+        let found = think(&arena, &view, &mut fight, 1_000);
+        emission_holds(&found);
+        let weapons: Vec<SmolStr> = found
+            .iter()
+            .filter_map(|kind| match kind {
+                IntentKind::Condition(Arming::Arm(cond)) => Some(cond.weapon.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(weapons, vec![SmolStr::new("laser"), SmolStr::new("cannon")]);
+        assert_eq!(
+            found.last(),
+            Some(&IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+                slot: Some(2)
+            })
+        );
+        // A third weapon, the only one ready: no slot, so no citation.
+        view.weapons = vec![
+            row_like(&like, "laser", 250_000, 20),
+            FrameWeapon {
+                ready: false,
+                ready_in_ms: 4_000,
+                ..row_like(&like, "cannon", 250_000, 0)
+            },
+            row_like(&like, "missiles", 250_000, 0),
+        ];
+        let mut again = StockMemory::default();
+        let found = think(&arena, &view, &mut again, 1_000);
+        assert!(
+            !found
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Fire { .. })),
+            "the third weapon has no slot to cite: {found:?}"
+        );
+        assert!(found.contains(&IntentKind::Lock {
+            contact: ContactId(0x77)
+        }));
+    }
+
+    /// **A residual 17b cut M1b.3 removes, pinned** (the M1b.2 review's
+    /// correctness F2; `engage_orders`' note): `n = i + 1` is the arena's
+    /// slot number only while no armed weapon has been removed. Red carries
+    /// the cannon on its turret and a machine gun on its hull, both armed (S1,
+    /// S2) by a think's own `arming_for`; the turret's `RemoveWeapons` frees
+    /// S1 and leaves the machine gun in S2. The next think re-arms the machine
+    /// gun alone — in place, still S2 — and, on a fresh lock, cites it as S1
+    /// (`view.weapons` has closed up), which the resolver refuses
+    /// `unwarranted`. M1b.3 cites `armed.slot` off the view and flips the last
+    /// two assertions.
+    #[test]
+    fn m1b2_residual_a_removed_weapon_parts_i_plus_one_from_the_arenas_number() {
+        use crate::arena::resolution::Consequence;
+        use crate::arena::weapons::FiredBy;
+        let mut red = minded(RED, Team::Red, 20_500, 20_500);
+        let mut mg = crate::arena::test_support::cannon();
+        mg.id = SmolStr::new("machine_gun");
+        mg.mount_section = SmolStr::new("hull");
+        red.weapons.push(mg);
+        let mut arena = field(vec![red, line_tank(BLUE, Team::Blue, pose(20_500, 40_500))]);
+        online(&mut arena, RED);
+        hold(&mut arena, RED, BLUE, ContactId(0x77));
+        let card = crate::arena::card::line(&arena.arena_cfg.reflex);
+        let arm = |arena: &mut Arena| {
+            let view = view_of(arena, RED);
+            for kind in arming_for(&view, &card, Some(100_000)) {
+                let IntentKind::Condition(arming) = kind else {
+                    panic!("an arming");
+                };
+                assert!(arena.resolve_arming(RED, &arming, 0).is_ok(), "{arming:?}");
+            }
+        };
+        arm(&mut arena);
+        assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(1));
+        assert_eq!(arena.conditions.slot_of(RED, "machine_gun"), Some(2));
+        // The turret goes, and its gun with it: S1 freed, S2 kept.
+        let mut journal = Vec::new();
+        arena.apply_consequence(
+            RED,
+            &Consequence::RemoveWeapons {
+                section: SmolStr::new("turret"),
+            },
+            0,
+            None,
+            &mut journal,
+        );
+        arm(&mut arena);
+        assert_eq!(arena.conditions.slot_of(RED, "cannon"), None);
+        assert_eq!(
+            arena.conditions.slot_of(RED, "machine_gun"),
+            Some(2),
+            "re-armed in place"
+        );
+        // A fresh lock's citation numbers the closed-up view.
+        let mut fight = StockMemory::default();
+        let found = think(&arena, &view_of(&arena, RED), &mut fight, 1_000);
+        assert!(
+            found.iter().any(|kind| matches!(
+                kind,
+                IntentKind::Condition(Arming::Arm(cond)) if cond.weapon == "machine_gun"
+            )),
+            "{found:?}"
+        );
+        assert_eq!(
+            found.last(),
+            Some(&IntentKind::Fire {
+                weapon: SmolStr::new("machine_gun"),
+                slot: Some(1)
+            }),
+            "the residual: i + 1 where the arena holds S2"
+        );
+        assert_eq!(arena.resolve_lock(RED, ContactId(0x77), 0), Ok(()));
+        assert_eq!(
+            arena.resolve_fire_by(RED, "machine_gun", 0, FiredBy::Mind { slot: Some(1) }),
+            Err(crate::arena::intents::Refusal::Unwarranted),
+            "the residual's cost: the citation has no warrant"
         );
     }
 }

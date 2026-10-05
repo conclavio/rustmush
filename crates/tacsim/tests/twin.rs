@@ -30,6 +30,20 @@
 //! §17, counted on the LIVE arena after each pulse that ran a think: the
 //! observer-pure read T1 made (off the recorded think and its view) against
 //! the reflex's leaky readers (`#[doc(hidden)] pub` for this file alone).
+//!
+//! **17b cut M1b.2** put the law on a mind's shot and T1's slots on its
+//! hulls, and adds the six divergences that introduces (doc 17 §17; 17b
+//! §1(f)): `cond_fire` with its sub-count `cond_stale`, `unwarranted`,
+//! `unlawful` (ASSERTED nought: Line's 100 per mille is lawful against any
+//! floor the bound allows), `floor_held` and `slot_starved`, and Gate B's
+//! `cond_shots` column. **T1's shots a minute do NOT move by the slot's
+//! timing alone**: T0 fires ONE weapon a tick (`reflex.rs`' `engage_orders`
+//! takes the first ready gun) on ticks `decide_ms` apart, while each armed
+//! slot fires its own gun at its own `WeaponReady` — so on a two-gun hull the
+//! coaxial gun is no longer serialised behind the main one, and T1 fires
+//! shots T0's one-a-tick rule never could. That seventh divergence is counted
+//! as `slot_parallel` (and each side's `parallel` on Gate B's line, nought for
+//! T0 by construction), a named move for the lead's ruling, never a retune.
 
 mod support;
 
@@ -37,7 +51,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mush_core::ObjId;
-use tacsim::arena::intents::{IntentKind, MotorGoal};
+use tacsim::arena::conditions::{Arming, FireCondition, Held, HeldWhy, STOCK_CONDITION_SLOTS};
+use tacsim::arena::intents::{IntentKind, MotorGoal, Refusal};
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{MindRunner, MindView, ThinkJob, ThinkResult, decode_memory};
 use tacsim::arena::motor::stand_off_cell;
@@ -48,7 +63,7 @@ use tacsim::arena::reflex::{
 use tacsim::arena::state::{Arena, ContactId, CostRow, EndReason, Team};
 use tacsim::arena::stock_mind::{
     NativeStockMind, StockMemory, best_hostile_ranked, cell_point, health_permille, line_to,
-    row_range_cm, view_ranges,
+    row_range_cm, view_ranges, would_overheat,
 };
 use tacsim::config::ReflexConfig;
 use tacsim::deliberation::order::{Objective, Order};
@@ -152,6 +167,41 @@ struct Divergences {
     plot_cell: u64,
     deg_round: u64,
     fallback: u64,
+    /// **17b cut M1b.2's six** (doc 17 §17, D-UM-16, D-UM-17; 17b §1(f)), each
+    /// in [`Divergences::absorb`]'s and the printed line's order: T1 `fired`
+    /// lines `by: "cond"` (a slot's shot at a `WeaponReady`, a pass, a share,
+    /// a landing, an arming or a startup millisecond where T0 fires on its
+    /// tick);
+    cond_fire: u64,
+    /// of those, the shots whose target is not the target of T1's latest
+    /// PLANNED `Lock` before that millisecond (the plot moved between a
+    /// retarget think and its landing; T0 retargets and fires in one tick);
+    cond_stale: u64,
+    /// T1 landings refused `unwarranted` (read off the next think's buffer);
+    unwarranted: u64,
+    /// T1 armings or citations refused `unlawful` — ASSERTED nought on the
+    /// stock lanes: Line's 100 per mille is lawful against any floor the
+    /// bound allows;
+    unlawful: u64,
+    /// thinks that armed where T0's rule (the first weapon ready at the
+    /// landing, loaded, in reach and not held by heat — no odds term) would
+    /// fire a weapon whose T1 slot `Arena::warrant` holds for `Odds` on the
+    /// arena the think saw: the shipped table's `p_min 10` puts a 2 km shot
+    /// at about 6 per cent, which T0 fires and Line at the 10 per cent floor
+    /// holds — a NAMED divergence D-UM-17 makes unavoidable, counted, never
+    /// retuned;
+    floor_held: u64,
+    /// T0 `fired` lines on a weapon at a component index past
+    /// `STOCK_CONDITION_SLOTS` — a gun T1 has no slot for (nought on the
+    /// stock tanks).
+    slot_starved: u64,
+    /// **The seventh** (the M1b.2 review's F1): T1 `fired` lines a
+    /// one-weapon-a-tick machine could not have fired — [`unserialised`] over
+    /// each T1 hull's shots. T0 picks one gun a tick on ticks `decide_ms`
+    /// apart; each armed slot fires its own gun at its own `WeaponReady`, so
+    /// the coaxial gun is no longer held behind the main gun's shot. The
+    /// rate move Gate B shows beside the timing.
+    slot_parallel: u64,
     first_ms: Option<i64>,
     /// Not a divergence: how many thinks read a live order — the basis of
     /// `support`, `order_hint`, `order_end` and `deg_round`, which can only
@@ -174,6 +224,13 @@ impl Divergences {
         self.plot_cell += other.plot_cell;
         self.deg_round += other.deg_round;
         self.fallback += other.fallback;
+        self.cond_fire += other.cond_fire;
+        self.cond_stale += other.cond_stale;
+        self.unwarranted += other.unwarranted;
+        self.unlawful += other.unlawful;
+        self.floor_held += other.floor_held;
+        self.slot_starved += other.slot_starved;
+        self.slot_parallel += other.slot_parallel;
         self.ordered_thinks += other.ordered_thinks;
         self.first_ms = match (self.first_ms, other.first_ms) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -210,6 +267,12 @@ struct SideReport {
     states: [u32; 6],
     /// How many of the side's hulls ended wrecked.
     wrecked: u32,
+    /// **17b cut M1b.2**: how many of `shots` were a slot's own (`by: "cond"`).
+    cond_shots: u64,
+    /// **17b cut M1b.2**: how many of `shots` a one-weapon-a-tick machine
+    /// could not have fired ([`unserialised`] per hull) — nought for T0 by
+    /// construction, T1's `slot_parallel`.
+    parallel: u64,
 }
 
 /// What one match came to.
@@ -245,6 +308,140 @@ fn kind_and_unit(event: &LedgerEvent) -> (String, Option<u32>) {
     )
 }
 
+/// A `fired` line's `by` word (17b cut M1b.1: `cond` for a slot's shot,
+/// `mind` for a mind's cited one), or `None`.
+fn fired_by(event: &LedgerEvent) -> Option<String> {
+    serde_json::to_value(&event.kind)
+        .ok()?
+        .get("by")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// **The shots a one-weapon-a-tick machine could not have fired** (17b cut
+/// M1b.2; the `slot_parallel` divergence): one hull's `fired` lines as
+/// `(t_ms, weapon)` in journal order, walked keeping the last shot KEPT — a
+/// shot less than `decide_ms` after it is counted (and not kept), any other
+/// is kept. T0's reflex fires at most one weapon a tick on ticks `decide_ms`
+/// apart, so its count is nought; a gun cannot fire twice inside its own
+/// cycle, and no shipped cycle is under `decide_ms`, so what is counted is a
+/// SECOND gun fired inside one tick of the first — on a stock tank the
+/// coaxial gun's shot the main gun's no longer displaces. Counted once per
+/// such shot (a cannon cycle of six ticks: T0 six shots, T1 seven, one
+/// counted).
+fn unserialised(shots: &[(i64, &str)], decide_ms: i64) -> u64 {
+    let mut kept: Option<i64> = None;
+    let mut counted = 0_u64;
+    for (t_ms, _) in shots {
+        match kept {
+            Some(at) if t_ms - at < decide_ms => counted += 1,
+            _ => kept = Some(*t_ms),
+        }
+    }
+    counted
+}
+
+/// One `fired` line as the line rules read it: `(t_ms, unit, weapon, target,
+/// by)`.
+type FiredLine = (i64, u32, String, Option<u32>, Option<String>);
+
+/// The `fired` lines among `events`, in journal order.
+fn fired_lines(events: &[LedgerEvent]) -> Vec<FiredLine> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let value = serde_json::to_value(&event.kind).ok()?;
+            if value.get("kind").and_then(serde_json::Value::as_str) != Some("fired") {
+                return None;
+            }
+            let as_u32 = |key: &str| {
+                value
+                    .get(key)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|id| u32::try_from(id).ok())
+            };
+            Some((
+                event.t_ms,
+                as_u32("unit")?,
+                value
+                    .get("weapon")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                as_u32("target"),
+                fired_by(event),
+            ))
+        })
+        .collect()
+}
+
+/// `unit`'s shots among `lines`, as [`unserialised`] reads them.
+fn shots_of(lines: &[FiredLine], unit: u32) -> Vec<(i64, &str)> {
+    lines
+        .iter()
+        .filter(|(_, by, ..)| *by == unit)
+        .map(|(t_ms, _, weapon, ..)| (*t_ms, weapon.as_str()))
+        .collect()
+}
+
+/// Every `Lock` `thought` planned, `(unit, think ms, the object its row
+/// names)`, by the row the think saw — the arena right after the pulse that
+/// ran it (one substep a pulse) — pushed onto `planned`.
+fn plan_locks(arena: &Arena, thought: &Thought, planned: &mut Vec<(ObjId, i64, ObjId)>) {
+    for intent in &thought.result.intents {
+        if let IntentKind::Lock { contact } = intent
+            && let Some(held) = arena.contacts.resolve(thought.unit, *contact)
+        {
+            planned.push((thought.unit, thought.t_ms, held.target));
+        }
+    }
+}
+
+/// **17b cut M1b.2's line rules** (the [`Divergences`] fields say each):
+/// `cond_fire` and its sub-count `cond_stale` (against the `Lock`s T1's
+/// thinks `planned`, [`plan_locks`]), `slot_starved` and `slot_parallel`,
+/// read off a match's journal; `flier_of` names who flew a unit.
+fn line_divergences(
+    arena: &Arena,
+    events: &[LedgerEvent],
+    flier_of: &dyn Fn(u32) -> Option<Flier>,
+    planned: &[(ObjId, i64, ObjId)],
+) -> Divergences {
+    let mut out = Divergences::default();
+    let lines = fired_lines(events);
+    for (t_ms, unit, weapon, target, by) in &lines {
+        match flier_of(*unit) {
+            Some(Flier::T1) if by.as_deref() == Some("cond") => {
+                out.cond_fire += 1;
+                let latest = planned
+                    .iter()
+                    .filter(|(hull, think_ms, _)| hull.0 == *unit && think_ms < t_ms)
+                    .max_by_key(|(_, think_ms, _)| *think_ms)
+                    .map(|(_, _, object)| object.0);
+                if latest.is_some() && latest != *target {
+                    out.cond_stale += 1;
+                }
+            }
+            Some(Flier::T0) => {
+                let index = arena
+                    .unit(ObjId(*unit))
+                    .and_then(|state| state.weapons.iter().position(|row| row.id == *weapon));
+                if index.is_some_and(|index| index >= STOCK_CONDITION_SLOTS) {
+                    out.slot_starved += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let decide_ms = i64::from(arena.arena_cfg.reflex.decide_ms);
+    for state in &arena.units {
+        if flier_of(state.id.0) == Some(Flier::T1) {
+            out.slot_parallel += unserialised(&shots_of(&lines, state.id.0), decide_ms);
+        }
+    }
+    out
+}
+
 /// **One match**: `red` and `blue` fly two tanks each on the proving ground at
 /// `seed`, one substep a pulse to the end, with T1's thinks shadowed.
 fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> Played {
@@ -268,6 +465,9 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
     let mut corner_refusals = 0_u64;
     let mut wall = arena.now_ms;
     let mut scratch = ReflexCounters::default();
+    // 17b cut M1b.2: every `Lock` a T1 think planned, `(unit, think ms, the
+    // object its row named)` — what `cond_stale` reads a slot's shot against.
+    let mut planned_locks: Vec<(ObjId, i64, ObjId)> = Vec::new();
     let ended = loop {
         let out = arena.step(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
@@ -318,6 +518,9 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
             // The pool orders nothing: no issued order to read T0's side of
             // the order counters against.
             divergences.absorb(&shadow(&arena, &cfg, thought, None, &mut scratch));
+            // 17b cut M1b.2: the lock this think planned, by the object its
+            // row names now (the row the think saw, one substep a pulse).
+            plan_locks(&arena, thought, &mut planned_locks);
         }
         if let Some(ended) = out.ended {
             break ended;
@@ -325,6 +528,8 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
         wall = arena.now_ms + arena.substep_len_ms();
     };
     let events = support::ledger_events(&mut arena, &mut bytes);
+    let lines = fired_lines(&events);
+    let decide_ms = i64::from(arena.arena_cfg.reflex.decide_ms);
     let fliers = [(Team::Red, red), (Team::Blue, blue)];
     let team_of = |unit: u32| {
         arena
@@ -344,10 +549,14 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
             if word == "fired" && unit.and_then(team_of) == Some(team) {
                 report.shots += 1;
                 first = Some(first.map_or(event.t_ms, |at| at.min(event.t_ms)));
+                if fired_by(event).as_deref() == Some("cond") {
+                    report.cond_shots += 1;
+                }
             }
         }
         report.first_shot_ms.extend(first);
         for state in arena.units.iter().filter(|state| state.team == team) {
+            report.parallel += unserialised(&shots_of(&lines, state.id.0), decide_ms);
             if state.limits.wreck {
                 report.wrecked += 1;
             }
@@ -375,6 +584,21 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
         }
         (flier, report)
     });
+    // **17b cut M1b.2**: the counters read off the match's lines.
+    let flier_of = |unit: u32| {
+        team_of(unit).and_then(|team| {
+            fliers
+                .iter()
+                .find(|(side, _)| *side == team)
+                .map(|(_, flier)| *flier)
+        })
+    };
+    divergences.absorb(&line_divergences(
+        &arena,
+        &events,
+        &flier_of,
+        &planned_locks,
+    ));
     // The two stock fliers' sides, in the order above (red, blue).
     let winner = match ended.reason {
         EndReason::Elimination { winner: Some(team) } => fliers
@@ -440,6 +664,13 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
 ///   differs from the reflex's from the plot's pose;
 /// * `fallback` — a think that performed the waypoint fallback off a
 ///   `drive_no_route` notice.
+///
+/// **17b cut M1b.2's six** ([`Divergences`]' fields say each): `unwarranted`,
+/// `unlawful` and `floor_held` are read here per think; `cond_fire`,
+/// `cond_stale`, `slot_starved` and the seventh, `slot_parallel`, off the
+/// match's lines by [`line_divergences`], the first two against the `Lock`s
+/// T1's thinks planned ([`plan_locks`]). None of the seven joins
+/// `first_divergence_ms`, which stays the M1a thirteen's.
 fn shadow(
     arena: &Arena,
     cfg: &ReflexConfig,
@@ -457,6 +688,64 @@ fn shadow(
     let cell_cm = def.terrain.cell_cm();
     let before = StockMemory::from(&decode_memory(&thought.memory));
     let after = StockMemory::from(&decode_memory(&thought.result.memory));
+    // 17b cut M1b.2: `unwarranted` and `unlawful`, the landing refusals the
+    // think was handed in its buffer (each notice is read by one think).
+    for notice in &view.notices {
+        match notice {
+            FrameNotice::Refused {
+                refusal: Refusal::Unwarranted,
+                ..
+            } => out.unwarranted += 1,
+            FrameNotice::Refused {
+                refusal: Refusal::Unlawful,
+                ..
+            } => out.unlawful += 1,
+            _ => {}
+        }
+    }
+    // 17b cut M1b.2: `floor_held` — a think that armed (so `engage_orders`
+    // was reached with its gates passed, as T0's tick reaches its own) where
+    // T0's rule fires a weapon (the first ready at the landing, loaded, in
+    // reach of the target's held range, not held by heat — no odds term)
+    // whose slot, as this think armed it, `Arena::warrant` holds for `Odds`
+    // on the arena the think saw. A think that plans its FIRST lock reads
+    // the arena's lock as it stood (none, or the old one) and so is not
+    // counted: the counter is a floor, never an over-count.
+    let arms: Vec<&FireCondition> = thought
+        .result
+        .intents
+        .iter()
+        .filter_map(|intent| match intent {
+            IntentKind::Condition(Arming::Arm(cond)) => Some(cond),
+            _ => None,
+        })
+        .collect();
+    if let Some(row) = after
+        .target
+        .and_then(|target| view.contacts.iter().find(|row| row.id == target))
+        && !arms.is_empty()
+    {
+        let to_landing = thought.lands_ms.saturating_sub(view.t_ms).max(0);
+        let range = row_range_cm(row);
+        let pick = view.weapons.iter().find(|weapon| {
+            weapon.ready_in_ms <= to_landing
+                && weapon.rounds > 0
+                && weapon
+                    .bands_cm
+                    .last()
+                    .is_some_and(|reach| u64::from(*reach) >= range)
+                && !would_overheat(view, weapon)
+        });
+        if let Some(weapon) = pick
+            && let Some(cond) = arms.iter().find(|cond| cond.weapon == weapon.id)
+            && matches!(
+                arena.warrant(unit, cond, thought.t_ms),
+                Err(Held::Why(HeldWhy::Odds { .. }))
+            )
+        {
+            out.floor_held += 1;
+        }
+    }
     // `no_line` and `fallback`: the notices the think read.
     if view.notices.iter().any(|notice| {
         matches!(notice, FrameNotice::Miss { reason, .. }
@@ -702,6 +991,8 @@ fn gate_b_line(label: &str, reports: &[&SideReport]) -> String {
         .collect();
     let mut states = [0_u32; 6];
     let wrecked: u32 = reports.iter().map(|report| report.wrecked).sum();
+    let cond_shots: u64 = reports.iter().map(|report| report.cond_shots).sum();
+    let parallel: u64 = reports.iter().map(|report| report.parallel).sum();
     for report in reports {
         for (total, one) in states.iter_mut().zip(report.states.iter()) {
             *total += *one;
@@ -709,7 +1000,8 @@ fn gate_b_line(label: &str, reports: &[&SideReport]) -> String {
     }
     format!(
         "twin_gate_b: side={label} shots={shots} shots_per_min={shots_per_min:.3} \
-         time_to_first_shot_ms={} first_shots={} states_at_end=[startup={},patrol={},approach={},engage={},withdraw={},disabled={}] wrecked={wrecked}",
+         time_to_first_shot_ms={} first_shots={} states_at_end=[startup={},patrol={},approach={},engage={},withdraw={},disabled={}] wrecked={wrecked} \
+         cond_shots={cond_shots} parallel={parallel}",
         median(&mut firsts),
         firsts.len(),
         states[0],
@@ -822,7 +1114,8 @@ fn m1a6_t0_versus_t1_over_thirty_pooled_matches_is_inside_a_wilson_interval_cont
     println!(
         "twin_divergences: tiebreak={} line={} support={} reads_dead={} landing={} no_line={} \
          fan={} order_hint={} order_end={} range_round={} plot_cell={} deg_round={} fallback={} \
-         first_divergence_ms={}",
+         cond_fire={} cond_stale={} unwarranted={} unlawful={} floor_held={} slot_starved={} \
+         slot_parallel={} first_divergence_ms={}",
         divergences.tiebreak,
         divergences.line,
         divergences.support,
@@ -836,10 +1129,21 @@ fn m1a6_t0_versus_t1_over_thirty_pooled_matches_is_inside_a_wilson_interval_cont
         divergences.plot_cell,
         divergences.deg_round,
         divergences.fallback,
+        divergences.cond_fire,
+        divergences.cond_stale,
+        divergences.unwarranted,
+        divergences.unlawful,
+        divergences.floor_held,
+        divergences.slot_starved,
+        divergences.slot_parallel,
         divergences
             .first_ms
             .map_or_else(|| "none".to_owned(), |ms| ms.to_string()),
     );
+    let mut control_divergences = Divergences::default();
+    for played in &control {
+        control_divergences.absorb(&played.divergences);
+    }
     // What the four order counters were read over: a nought there is a
     // measured nought only over thinks that had an order to read.
     println!(
@@ -896,6 +1200,14 @@ fn m1a6_t0_versus_t1_over_thirty_pooled_matches_is_inside_a_wilson_interval_cont
     assert!(
         draws <= control_draws + DRAW_SLACK,
         "T1's pool drew {draws}, the control {control_draws}: more than {DRAW_SLACK} over"
+    );
+    // 17b cut M1b.2 (17b §1(f); D-UM-17): Line's 100 per mille is lawful
+    // against any floor the bound allows, so on both stock lanes nothing T1
+    // arms or cites is ever refused `unlawful` — a non-zero count is a STOP.
+    assert_eq!(
+        (divergences.unlawful, control_divergences.unlawful),
+        (0, 0),
+        "a stock mind's arming or citation was refused unlawful"
     );
 }
 
@@ -1070,4 +1382,211 @@ fn m1a6_line_to_the_plot_parts_from_fire_line_once_the_target_drives_behind_cove
         "the stock mind traces the plot it holds"
     );
     assert!(!line_to(&def, own, blocked));
+}
+
+/// **The probe's line rules count what they name** (17b cut M1b.2; the M1b.2
+/// review's tests/T3): [`line_divergences`] itself — the code the pooled lane
+/// reads — over a hand-written journal on the shipped ground, red flown by
+/// T1, blue by T0 with a third gun, so each rule is shown counting:
+///
+/// * red's four `by: "cond"` lines are `cond_fire` 4; the one whose target is
+///   not the object of red's latest `Lock` planned STRICTLY before it (a lock
+///   planned at the shot's own millisecond is not before it) is `cond_stale`
+///   1; red's cited `by: "mind"` line is neither;
+/// * red's machine gun 400 ms after its cannon is `slot_parallel` 1 — a
+///   second gun inside one `decide_ms` tick, which T0's one-a-tick rule never
+///   fires — and blue's like pair is not counted there (T1's divergence),
+///   though [`unserialised`] counts it on blue's shots alike;
+/// * blue's shot on its third gun (component index 2, past
+///   `STOCK_CONDITION_SLOTS`) is `slot_starved` 1.
+#[test]
+fn m1b2_the_probes_line_rules_count_what_they_name() {
+    use tacsim::arena::ledger::EventKind;
+    let world = support::booted_world();
+    let mut arena = support::shipped_arena(
+        &world,
+        &[
+            &[Muster::mind(Team::Red, 1)],
+            &[Muster::reflex(Team::Blue, 1)],
+        ],
+    );
+    let red = support::tank(&world, Team::Red, 1);
+    let blue = support::tank(&world, Team::Blue, 1);
+    let elsewhere = ObjId(77);
+    if let Some(state) = arena.unit_mut(blue) {
+        let Some(mut spare) = state.weapons.last().cloned() else {
+            panic!("blue's guns");
+        };
+        spare.id = "spare".into();
+        state.weapons.push(spare);
+    }
+    assert_eq!(
+        arena
+            .unit(blue)
+            .and_then(|state| state.weapons.iter().position(|row| row.id == "spare")),
+        Some(STOCK_CONDITION_SLOTS),
+        "the precondition: the spare is the first gun past the slots"
+    );
+    let (cannon, coax) = match arena.unit(red).map(|state| state.weapons.as_slice()) {
+        Some([cannon, coax, ..]) => (cannon.id.to_string(), coax.id.to_string()),
+        _ => panic!("red's two guns"),
+    };
+    let line = |seq: u64, t_ms: i64, unit: ObjId, weapon: &str, target: ObjId, by: Option<&str>| {
+        LedgerEvent {
+            seq,
+            t_ms,
+            kind: EventKind::Fired {
+                unit,
+                weapon: weapon.into(),
+                shot_seq: seq,
+                target,
+                range_cm: 0,
+                rounds: 1,
+                by: by.map(Into::into),
+                slot: by.map(|_| 1),
+            },
+            draws: Vec::new(),
+            hash: 0,
+        }
+    };
+    let events = vec![
+        line(1, 1_000, red, &cannon, blue, Some("cond")),
+        line(2, 1_000, blue, &cannon, red, None),
+        line(3, 1_400, red, &coax, blue, Some("cond")),
+        line(4, 2_000, blue, "spare", red, None),
+        line(5, 2_500, red, &coax, blue, Some("cond")),
+        line(6, 2_500, blue, &coax, red, None),
+        line(7, 3_600, red, &coax, blue, Some("cond")),
+        line(8, 4_700, red, &cannon, elsewhere, Some("mind")),
+    ];
+    let planned = [(red, 500, blue), (red, 2_500, elsewhere)];
+    let flier_of = |unit: u32| {
+        if unit == red.0 {
+            Some(Flier::T1)
+        } else if unit == blue.0 {
+            Some(Flier::T0)
+        } else {
+            None
+        }
+    };
+    let counted = line_divergences(&arena, &events, &flier_of, &planned);
+    assert_eq!(
+        (
+            counted.cond_fire,
+            counted.cond_stale,
+            counted.slot_starved,
+            counted.slot_parallel
+        ),
+        (4, 1, 1, 1),
+        "{counted:?}"
+    );
+    let decide_ms = i64::from(arena.arena_cfg.reflex.decide_ms);
+    assert_eq!(decide_ms, 1_000, "the precondition: the shipped tick");
+    let lines = fired_lines(&events);
+    assert_eq!(unserialised(&shots_of(&lines, blue.0), decide_ms), 1);
+    assert_eq!(unserialised(&shots_of(&lines, red.0), decide_ms), 1);
+}
+
+/// **The probe's law counters count on a field that presents nothing** (17b
+/// cut M1b.2; the M1b.2 review's tests/T3): the shipped ground at the first
+/// seed, red one stock tank flown by T1, blue one flown by T0 — every hull's
+/// silhouette taken off, so every shot is at nought per cent (nothing
+/// authored for a round to strike) — and blue's two stock guns emptied beside
+/// a third, loaded `spare`. Stepped one substep a pulse with T1's thinks
+/// recorded and read by [`shadow`] and [`line_divergences`], the code the
+/// pooled lane reads, for five arena minutes:
+///
+/// * `floor_held` — T0's rule would fire at nought on a think where Line's
+///   slot holds for `Odds` (D-UM-17's named divergence) — at least once;
+/// * `unwarranted` — T1's fresh-lock citation of a target it cannot hit — at
+///   least once;
+/// * `slot_starved` — T0 firing its third gun — at least once;
+/// * and, nothing being warranted, no slot ever fires: `cond_fire`,
+///   `cond_stale` and `slot_parallel` nought, and `unlawful` nought (Line's
+///   100 per mille is lawful).
+#[test]
+fn m1b2_the_probes_law_counters_count_on_a_field_that_presents_nothing() {
+    const UNTIL_MS: i64 = 300_000;
+    let world = support::booted_world();
+    let mut arena = support::shipped_arena_seeded(
+        &world,
+        &[
+            &[Muster::mind(Team::Red, 1)],
+            &[Muster::reflex(Team::Blue, 1)],
+        ],
+        SEED_0,
+    );
+    let red = support::tank(&world, Team::Red, 1);
+    let blue = support::tank(&world, Team::Blue, 1);
+    for state in &mut arena.units {
+        state.profile = tacsim::arena::resolution::UnitProfile::default();
+    }
+    if let Some(state) = arena.unit_mut(blue) {
+        let Some(mut spare) = state.weapons.last().cloned() else {
+            panic!("blue's guns");
+        };
+        spare.id = "spare".into();
+        let stock: Vec<_> = state.weapons.iter().map(|row| row.id.clone()).collect();
+        for weapon in stock {
+            state.ammo.insert(weapon, 0);
+        }
+        state.ammo.insert(spare.id.clone(), spare.count_per_load);
+        state.weapons.push(spare);
+    }
+    let recording = Recording::new(&arena.arena_cfg.reflex);
+    arena.mind_runner = recording.clone();
+    let cfg = arena.arena_cfg.reflex.clone();
+    let mut scratch = ReflexCounters::default();
+    let mut counted = Divergences::default();
+    let mut planned: Vec<(ObjId, i64, ObjId)> = Vec::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = arena.now_ms;
+    while arena.now_ms < UNTIL_MS {
+        let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        for thought in &recording.drain() {
+            counted.absorb(&shadow(&arena, &cfg, thought, None, &mut scratch));
+            plan_locks(&arena, thought, &mut planned);
+        }
+        if out.ended.is_some() {
+            break;
+        }
+        wall = arena.now_ms + arena.substep_len_ms();
+    }
+    let events = support::ledger_events(&mut arena, &mut bytes);
+    let flier_of = |unit: u32| {
+        if unit == red.0 {
+            Some(Flier::T1)
+        } else if unit == blue.0 {
+            Some(Flier::T0)
+        } else {
+            None
+        }
+    };
+    counted.absorb(&line_divergences(&arena, &events, &flier_of, &planned));
+    println!(
+        "m1b2_probe_field: t_ms={} floor_held={} unwarranted={} slot_starved={} cond_fire={} \
+         unlawful={}",
+        arena.now_ms,
+        counted.floor_held,
+        counted.unwarranted,
+        counted.slot_starved,
+        counted.cond_fire,
+        counted.unlawful
+    );
+    assert!(counted.floor_held > 0, "floor_held counts: {counted:?}");
+    assert!(counted.unwarranted > 0, "unwarranted counts: {counted:?}");
+    assert!(counted.slot_starved > 0, "slot_starved counts: {counted:?}");
+    assert_eq!(
+        (
+            counted.cond_fire,
+            counted.cond_stale,
+            counted.slot_parallel,
+            counted.unlawful
+        ),
+        (0, 0, 0, 0),
+        "nothing warranted, nothing unlawful: {counted:?}"
+    );
 }

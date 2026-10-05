@@ -1021,8 +1021,8 @@ mod tests {
 
     /// **`resolve_fire_by`'s gates for a slot's own shot**: `Cycling` and
     /// `Empty` answer before the hold-fire term, the hold-fire term answers
-    /// `Unwarranted` before the power, and a seat's, a machine's and (in this
-    /// cut) a mind's shot are never gated.
+    /// `Unwarranted` before the power, and a seat's and a machine's shot are
+    /// never gated (a mind's is, from 17b cut M1b.2).
     #[test]
     fn m1b1_a_slot_shot_reads_cycling_and_empty_before_the_law() {
         use crate::deliberation::order::{
@@ -1067,14 +1067,22 @@ mod tests {
             Err(Refusal::Unwarranted),
             "hold-fire stops a slot"
         );
+        for by in [FiredBy::Seat, FiredBy::Machine] {
+            assert!(
+                arena.clone().resolve_fire_by(RED, "cannon", 0, by).is_ok(),
+                "{by:?}"
+            );
+        }
+        // 17b cut M1b.2 put the law on a mind's shot (`weapons.rs`' in-source
+        // tests pin its order): uncited, or citing a slot this hull has not
+        // armed, it has no warrant.
         for by in [
-            FiredBy::Seat,
-            FiredBy::Machine,
             FiredBy::Mind { slot: None },
             FiredBy::Mind { slot: Some(1) },
         ] {
-            assert!(
-                arena.clone().resolve_fire_by(RED, "cannon", 0, by).is_ok(),
+            assert_eq!(
+                arena.clone().resolve_fire_by(RED, "cannon", 0, by),
+                Err(Refusal::Unwarranted),
                 "{by:?}"
             );
         }

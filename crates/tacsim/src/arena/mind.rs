@@ -145,8 +145,9 @@ pub struct MindState {
     /// D-UM-43): Standard Doctrine's stock card, laid down as the Line preset
     /// over the arena's own doctrine ([`MindState::fresh`]). Handed to every
     /// think ([`ThinkJob::card`]), folded inside item 3c after `strikes`, and
-    /// carried by the snapshot from format 7. No runner reads it in this cut;
-    /// the setters and the presets are 17b cut M1b.5's.
+    /// carried by the snapshot from format 7. The stock mind reads its fire
+    /// discipline from 17b cut M1b.2; the setters and the presets are 17b cut
+    /// M1b.5's.
     pub card: StockCard,
 }
 
@@ -244,8 +245,10 @@ pub struct ThinkJob<'a> {
     /// The map: the window, its zones, its spots and its waypoint graph.
     pub map: &'a ArenaDefinition,
     /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11): the
-    /// row's own [`MindState::card`]. Carried and, in this cut, read by no
-    /// runner (`NativeStockMind` and `NoMind` ignore it).
+    /// row's own [`MindState::card`]. Since 17b cut M1b.2 `NativeStockMind`
+    /// reads its fire discipline (the odds, the aspect and the reserve its
+    /// slots are armed on, `crate::arena::stock_mind::arming_for`) and nothing
+    /// else of it; `NoMind` ignores it.
     pub card: &'a StockCard,
 }
 

@@ -31,11 +31,23 @@
 //! 10. slots die with the controller and with the turret, and survive a
 //!     linkdead grace;
 //! 11. (in-source, `conditions.rs`) the evaluator's cost;
-//! 12. a snapshot carries the slots, a card, the floor and `held_said`.
+//! 12. a snapshot carries the slots, a card, the floor and `held_said`;
+//! 13. **17b cut M1b.2 — the law for minds and T1's slots** (doc 17 §5,
+//!     D-UM-16 to D-UM-19): a mind's `FIRE` gated in the pinned order
+//!     (`Cycling`, `Empty`, `Unlawful`, hold-fire, the warrant, `Overheated`,
+//!     the power) with its cross-tempo arm; hold-fire stopping a mind and its
+//!     slot and never a pilot, with `hold_after_end` (Q-M7); a laser hull's
+//!     T1 arming both its weapons whatever the heat and numbering them as the
+//!     arena does; a retarget think's citation on the new lock and the stale
+//!     `WeaponReady` window the twin counts as `cond_stale` — every T1
+//!     fixture at 5,000, 1,000 and 500 ms.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
-use mush_core::{DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind, ObjId, OwnerId};
+use mush_core::{
+    CanonicalId, DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind, ObjId, OwnerId,
+};
 use mush_sim::data::Pose;
 use mush_tactics::{
     CellSpec, DefinitionRef, FacetId, FacetSpec, RulesValue, SectionId, SectionSpec, TacticalUnit,
@@ -48,8 +60,9 @@ use tacsim::arena::conditions::{
 };
 use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind, Refusal};
 use tacsim::arena::ledger::LedgerEvent;
+use tacsim::arena::mind::{MindRunner, MindView, STOCK_THINK_MS, ThinkJob, ThinkResult};
 use tacsim::arena::perception::{
-    Aspect, FrameNotice, RefusalDetail, SensorProfile, SignatureFactor,
+    Aspect, FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
 };
 use tacsim::arena::reflex::ReflexCounters;
 use tacsim::arena::resolution::{BandProfile, SectionProfile, UnitProfile};
@@ -2115,4 +2128,1805 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
             expected: 7
         })
     ));
+}
+
+// ---------------------------------------------------------------------------
+// 13. 17b cut M1b.2: the law for a mind's fire, and T1's slots
+// ---------------------------------------------------------------------------
+
+/// **A scripted mind** (the `tests/minds.rs` shape, cut down): think `n` of a
+/// hull answers its script's intents for `n`, and the memory is echoed. An
+/// input to `Arena::step`, as a scripted intent log is (16b §0.4).
+#[derive(Debug, Default)]
+struct Scripted {
+    says: BTreeMap<(ObjId, u64), Vec<IntentKind>>,
+}
+
+impl MindRunner for Scripted {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        ThinkResult {
+            intents: self
+                .says
+                .get(&(job.unit, job.think_seq))
+                .cloned()
+                .unwrap_or_default(),
+            memory: job.memory.to_vec(),
+        }
+    }
+}
+
+/// One stock think, kept: the hull, the think's millisecond, its view and its
+/// answer.
+type Thought = (ObjId, i64, MindView, ThinkResult);
+
+/// **The arena's own runner, its thinks kept** — on a stock field the
+/// production stock mind (`NativeStockMind` on the arena's own doctrine, what
+/// `Arena::new` installs), on a scripted one the [`Scripted`] mind, answering
+/// untouched (an input recorder, not a stand-in: 16b §0.4).
+#[derive(Debug)]
+struct Kept {
+    inner: Arc<dyn MindRunner>,
+    thoughts: Mutex<Vec<Thought>>,
+}
+
+impl Kept {
+    fn on(arena: &Arena) -> Arc<Kept> {
+        Arc::new(Kept {
+            inner: arena.mind_runner.clone(),
+            thoughts: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn thoughts(&self) -> Vec<Thought> {
+        self.thoughts
+            .lock()
+            .map(|thoughts| thoughts.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl MindRunner for Kept {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        let result = self.inner.think(job);
+        if let Ok(mut thoughts) = self.thoughts.lock() {
+            thoughts.push((job.unit, job.t_ms, job.view.clone(), result.clone()));
+        }
+        result
+    }
+}
+
+/// The lattice millisecond of `unit`'s think `n`.
+fn think_at(unit: ObjId, n: i64) -> i64 {
+    stagger_ms(SEED, unit, STOCK_THINK_MS) + n * STOCK_THINK_MS
+}
+
+/// A ten-cell sight that shares nothing: a stock mind's bands on this window
+/// (a view holds a range in 50 m steps; five cells would leave its engage
+/// band under one step — `tests/minds.rs`' `the_j_field` note).
+fn wide_sight() -> SensorProfile {
+    SensorProfile {
+        max_range_cells: 10,
+        ..sight(0)
+    }
+}
+
+/// `unit` flown by a mind.
+fn minded(unit: CustodyUnit) -> CustodyUnit {
+    CustodyUnit {
+        controller: Controller::Mind,
+        ..unit
+    }
+}
+
+/// **An arena of `units` with only `seated` seated** (pilots `#1001` up), the
+/// odds pinned at [`ODDS`], the tempo `Quiet`.
+fn seated_arena(units: Vec<CustodyUnit>, seated: &[ObjId]) -> Arena {
+    seated_arena_on(definition(), units, seated)
+}
+
+/// [`seated_arena`] on the window `def`.
+fn seated_arena_on(def: ArenaDefinition, units: Vec<CustodyUnit>, seated: &[ObjId]) -> Arena {
+    let pilots = seated
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: *unit,
+            pilot: ObjId(1_001 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition: def,
+            units,
+            pilots,
+            resolution: tacsim::match_::stock_resolution(),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig::default(),
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the mind arena");
+    arena.resolution.p_min = ODDS;
+    arena.resolution.p_max = ODDS;
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    arena
+}
+
+/// `viewer` holds `target` as `class`, plotted where it stands.
+fn hold_row(arena: &mut Arena, viewer: ObjId, target: ObjId, class: Classification) {
+    let plot = arena.unit(target).map(SeenPose::of).unwrap_or_default();
+    arena.contacts.insert(
+        viewer,
+        contact_of(viewer, target),
+        ShadowContact::sighted(target, class, 0, plot),
+    );
+}
+
+/// **The mind duel**: red a scripted MIND at (5, 8) facing east with the
+/// cannon and the machine gun, online, seeing five cells, holding blue at
+/// (9, 8) as `class` (handed it, so its own passes refresh the row and keep
+/// the lock) and locked on it; blue seated, unarmed, facing west, presenting
+/// a silhouette. Red's mind says `says` (`(think, intents)`).
+fn mind_duel(class: Classification, says: &[(u64, Vec<IntentKind>)]) -> Arena {
+    let mut arena = seated_arena(
+        vec![
+            minded(unit(
+                RED,
+                Team::Red,
+                facing(5, 8, 90_000),
+                vec![cannon(), machine_gun()],
+                Some(sight(0)),
+            )),
+            unit(BLUE, Team::Blue, facing(9, 8, 270_000), Vec::new(), None),
+        ],
+        &[BLUE],
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+    }
+    hold_row(&mut arena, RED, BLUE, class);
+    assert_eq!(arena.resolve_lock(RED, contact_of(RED, BLUE), 0), Ok(()));
+    arena.mind_runner = Arc::new(Scripted {
+        says: says
+            .iter()
+            .map(|(n, intents)| ((RED, *n), intents.clone()))
+            .collect(),
+    });
+    arena
+}
+
+/// A standing hold-fire order on `unit`'s mind row, as the arena holds a
+/// persona's (`FrameOrder`, re-keyed at its landing).
+fn hold_fire_on(arena: &mut Arena, unit: ObjId) {
+    if let Some(state) = arena.minds.get_mut(&unit) {
+        state.order = Some(FrameOrder {
+            squad: SmolStr::new("red-1"),
+            objective: MindObjective::Hold,
+            hold_fire: true,
+            max_range_band: None,
+            expires_ms: 600_000,
+        });
+    }
+    assert!(arena.holds_fire(unit));
+}
+
+/// One `fired` line: `(t_ms, weapon, target, by, slot)`.
+type Shot = (i64, String, u64, Option<String>, Option<u64>);
+
+/// The `fired` lines among `events`.
+fn shots_of(events: &[LedgerEvent]) -> Vec<Shot> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let value = serde_json::to_value(&event.kind).ok()?;
+            (value.get("kind")? == "fired").then(|| {
+                (
+                    event.t_ms,
+                    value
+                        .get("weapon")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    value
+                        .get("target")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                    value
+                        .get("by")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    value.get("slot").and_then(serde_json::Value::as_u64),
+                )
+            })
+        })
+        .collect()
+}
+
+/// **A rig stepped one substep a pulse**, every ledger byte kept.
+struct Stepper {
+    arena: Arena,
+    wall: Option<i64>,
+    bytes: Vec<u8>,
+}
+
+impl Stepper {
+    fn new(arena: Arena) -> Stepper {
+        Stepper {
+            arena,
+            wall: None,
+            bytes: Vec::new(),
+        }
+    }
+
+    /// One pulse of one substep, delivering `intents`.
+    fn pulse(&mut self, intents: &[Intent]) {
+        let step = self.arena.substep_len_ms();
+        let wall = self.wall.map_or(0, |wall| wall + step);
+        self.wall = Some(wall);
+        self.arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let out = self.arena.step(wall, &[], intents);
+        absorb(&out, &mut self.bytes, &mut Vec::new());
+    }
+
+    /// Pulse until arena time reaches `t_ms`.
+    fn to(&mut self, t_ms: i64) {
+        while self.arena.now_ms < t_ms {
+            self.pulse(&[]);
+        }
+    }
+
+    /// Every `fired` line so far.
+    fn shots(&mut self) -> Vec<Shot> {
+        shots_of(&lines(&mut self.arena, &mut self.bytes))
+    }
+
+    /// Every line so far, as `(t_ms, kind word, unit)`.
+    fn words(&mut self) -> Vec<(i64, String, Option<u64>)> {
+        lines(&mut self.arena, &mut self.bytes)
+            .iter()
+            .filter_map(|event| {
+                let value = serde_json::to_value(&event.kind).ok()?;
+                Some((
+                    event.t_ms,
+                    value.get("kind")?.as_str()?.to_owned(),
+                    value.get("unit").and_then(serde_json::Value::as_u64),
+                ))
+            })
+            .collect()
+    }
+
+    /// The `refused` notices in `unit`'s mind buffer, `(word, weapon, detail)`
+    /// (drained by its next think: read between a landing and that think).
+    fn refused(&self, unit: ObjId) -> Vec<(Refusal, Option<SmolStr>, RefusalDetail)> {
+        self.arena
+            .minds
+            .get(&unit)
+            .map(|state| {
+                state
+                    .notices
+                    .iter()
+                    .filter_map(|notice| match notice {
+                        FrameNotice::Refused {
+                            refusal,
+                            weapon,
+                            detail,
+                            ..
+                        } => Some((*refusal, weapon.clone(), *detail)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// An intent on the channel that carries it at the hull's current epoch.
+fn current(arena: &Arena, unit: ObjId, kind: IntentKind, seq: u64) -> Intent {
+    let channel = kind.channel_required();
+    Intent {
+        unit,
+        channel,
+        epoch: arena.epochs.current(unit, channel),
+        kind,
+        seq,
+    }
+}
+
+/// The cannon's `Fire`, citing `slot` or not.
+fn cannon_fire(slot: Option<u8>) -> IntentKind {
+    IntentKind::Fire {
+        weapon: SmolStr::new("cannon"),
+        slot,
+    }
+}
+
+/// **The law for a mind's fire** (17b cut M1b.2; doc 17 §5, D-UM-17 as
+/// amended 2026-10-04, D-UM-19): red, a scripted mind locked on a classified
+/// blue at 50 per cent, lands one think's intents at a time, and the arena's
+/// `resolve_fire_by` gates the `FIRE` in the pinned order — `Cycling`,
+/// `Empty`, `Unlawful` (the cited slot must exist and name the gun, else
+/// `Unwarranted`), hold-fire, the warrant, then `Overheated` (pinned on the
+/// laser hull below) and the power:
+///
+/// * an uncited `FIRE` — `unwarranted` in the mind's buffer, nothing fired;
+/// * a citation of a slot that names another gun (the machine gun's S1, on
+///   terms the plot meets, so its own warrant holds and it fires its own gun
+///   at the landing) — `unwarranted`, the cannon silent: only the weapon match
+///   refuses it;
+/// * an arming at 50 per mille on the floor-100 arena — refused `unlawful` at
+///   its landing with the floor named in the buffered detail
+///   (`RefusalDetail::Floor { permille: 100 }`), and the citation after it
+///   `unwarranted` (no slot);
+/// * a citation of a slot whose odds term is above the plot's 50 per cent —
+///   `unwarranted`, the slot armed;
+/// * a citation of a slot that holds — `fired`, `by: "mind"`, `slot: 1`, and
+///   nothing else fires (the landing's evaluation finds the gun cycling);
+/// * a citation landing on the millisecond of the gun's `WeaponReady` after
+///   the slot's own shot — the slot fires at the `WeaponReady` first (`by:
+///   "cond"`), and the citation reads `cycling`, never `unwarranted`; with the
+///   floor raised over the slot, still `cycling` (the weapon before the law);
+/// * a citation of a slot on an `X` lock (unclassified) — `unwarranted`, the
+///   slot idle (the warrant's target term);
+/// * under a standing hold-fire, a lawful citation reads `unwarranted` and an
+///   unlawful one `unlawful` (the floor before hold-fire);
+/// * a seat's typed `FIRE` at nought per cent fires and misses: a pilot's
+///   trigger is never gated (T0's `FiredBy::Machine` neither — the (j)
+///   field's line pins in `tests/reflex.rs` re-run unchanged).
+#[test]
+fn m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_one_reads_cycling() {
+    let classified = Classification::Classified { team: Team::Blue };
+    let cannon_word = Some(SmolStr::new("cannon"));
+    let unwarranted = vec![(
+        Refusal::Unwarranted,
+        cannon_word.clone(),
+        RefusalDetail::None,
+    )];
+    let landing = |arena: &Arena, n: i64| think_at(RED, n) + arena.substep_len_ms();
+    let case = |class: Classification, says: Vec<IntentKind>| {
+        let mut rig = Stepper::new(mind_duel(class, &[(0, says)]));
+        let land = landing(&rig.arena, 0);
+        rig.to(land);
+        let refused = rig.refused(RED);
+        (rig.shots(), refused, rig.arena, land)
+    };
+    // Uncited.
+    let (shots, refused, _, _) = case(classified, vec![cannon_fire(None)]);
+    assert_eq!(shots, Vec::new());
+    assert_eq!(refused, unwarranted);
+    // A slot that names another gun — armed on terms the plot MEETS, so only
+    // the weapon match can refuse the cannon's citation of it: the machine
+    // gun's warrant holds and its own slot fires at the landing's one
+    // evaluation (`by: "cond"`), and the cannon's borrowed citation reads
+    // `unwarranted` and fires nothing.
+    let mg_slot = cond("machine_gun", 100, ASPECTS_ANY);
+    let (shots, refused, arena, land) =
+        case(classified, vec![arm(mg_slot.clone()), cannon_fire(Some(1))]);
+    assert!(
+        arena.warrant(RED, &mg_slot, land).is_ok(),
+        "the precondition: the machine gun's slot holds on the plot"
+    );
+    assert_eq!(
+        shots,
+        vec![(
+            land,
+            "machine_gun".to_owned(),
+            u64::from(BLUE.0),
+            Some("cond".to_owned()),
+            Some(1)
+        )],
+        "the slot's own gun fired, never the cannon on its warrant"
+    );
+    assert_eq!(refused, unwarranted);
+    // An arming under the floor, then its citation.
+    let (shots, refused, arena, _) = case(
+        classified,
+        vec![arm(cond("cannon", 50, ASPECTS_ANY)), cannon_fire(Some(1))],
+    );
+    assert_eq!(shots, Vec::new());
+    assert!(arena.conditions.is_empty_for(RED), "nothing armed");
+    assert_eq!(
+        refused,
+        vec![
+            (
+                Refusal::Unlawful,
+                cannon_word.clone(),
+                RefusalDetail::Floor { permille: 100 }
+            ),
+            (
+                Refusal::Unwarranted,
+                cannon_word.clone(),
+                RefusalDetail::None
+            ),
+        ]
+    );
+    // A slot whose odds term the plot does not meet.
+    let (shots, refused, arena, _) = case(
+        classified,
+        vec![arm(cond("cannon", 600, ASPECTS_ANY)), cannon_fire(Some(1))],
+    );
+    assert_eq!(shots, Vec::new());
+    assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(1));
+    assert_eq!(refused, unwarranted);
+    // A slot that holds: the cited shot, by the mind, and nothing else.
+    let (shots, refused, _, land) = case(
+        classified,
+        vec![arm(cond("cannon", 100, ASPECTS_ANY)), cannon_fire(Some(1))],
+    );
+    assert_eq!(refused, Vec::new());
+    assert_eq!(
+        shots,
+        vec![(
+            land,
+            "cannon".to_owned(),
+            u64::from(BLUE.0),
+            Some("mind".to_owned()),
+            Some(1)
+        )]
+    );
+    // An `X` lock: the slot idle, the citation unwarranted.
+    let (shots, refused, arena, _) = case(
+        Classification::Unknown,
+        vec![arm(cond("cannon", 100, ASPECTS_ANY)), cannon_fire(Some(1))],
+    );
+    assert_eq!(shots, Vec::new());
+    assert_eq!(
+        arena.conditions.slot_of(RED, "cannon"),
+        Some(1),
+        "armed, idle"
+    );
+    assert_eq!(refused, unwarranted);
+
+    // The citation at the gun's `WeaponReady`: the slot armed at think 0
+    // fires at its landing; the cannon's cycle ends exactly at think 4's
+    // landing, where the `WeaponReady` pops before the landing and the slot
+    // fires again — and the citation reads `cycling`. Once more with the
+    // floor raised over the slot after its arming: still `cycling`.
+    for raise_floor in [false, true] {
+        let mut rig = Stepper::new(mind_duel(
+            classified,
+            &[
+                (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+                (4, vec![cannon_fire(Some(1))]),
+            ],
+        ));
+        let land0 = landing(&rig.arena, 0);
+        let land4 = landing(&rig.arena, 4);
+        assert_eq!(
+            land4 - land0,
+            i64::from(cannon().cycle_ms),
+            "the precondition"
+        );
+        rig.to(land0);
+        if raise_floor {
+            rig.arena.odds_floor_permille = 200;
+        }
+        rig.to(land4);
+        let refused = rig.refused(RED);
+        assert_eq!(
+            refused.iter().map(|(word, ..)| *word).collect::<Vec<_>>(),
+            vec![Refusal::Cycling],
+            "floor raised: {raise_floor}"
+        );
+        let shots: Vec<(i64, Option<String>)> = rig
+            .shots()
+            .into_iter()
+            .map(|(t_ms, _, _, by, _)| (t_ms, by))
+            .collect();
+        assert_eq!(
+            shots,
+            vec![
+                (land0, Some("cond".to_owned())),
+                (land4, Some("cond".to_owned()))
+            ]
+        );
+    }
+
+    // Under a standing hold-fire: the lawful citation `unwarranted`, and the
+    // slot's own landing shot dropped silently.
+    let mut rig = Stepper::new(mind_duel(
+        classified,
+        &[(
+            0,
+            vec![arm(cond("cannon", 100, ASPECTS_ANY)), cannon_fire(Some(1))],
+        )],
+    ));
+    hold_fire_on(&mut rig.arena, RED);
+    let land0 = landing(&rig.arena, 0);
+    rig.to(land0);
+    assert_eq!(rig.refused(RED), unwarranted);
+    assert_eq!(rig.shots(), Vec::new());
+    // ... and an UNLAWFUL citation under it `unlawful`: the slot armed at the
+    // floor, the floor then raised over it.
+    let mut rig = Stepper::new(mind_duel(
+        classified,
+        &[
+            (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+            (1, vec![cannon_fire(Some(1))]),
+        ],
+    ));
+    hold_fire_on(&mut rig.arena, RED);
+    let land0 = landing(&rig.arena, 0);
+    let land1 = landing(&rig.arena, 1);
+    rig.to(land0);
+    rig.arena.odds_floor_permille = 200;
+    rig.to(land1);
+    assert_eq!(
+        rig.refused(RED),
+        vec![(
+            Refusal::Unlawful,
+            cannon_word.clone(),
+            RefusalDetail::Floor { permille: 200 }
+        )]
+    );
+    assert_eq!(rig.shots(), Vec::new());
+
+    // A seat's typed `FIRE` at nought per cent fires, and misses.
+    let (arena, _) = locked_duel(100);
+    let mut rig = Stepper {
+        wall: Some(arena.now_ms),
+        arena,
+        bytes: Vec::new(),
+    };
+    rig.arena.resolution.p_min = 0;
+    rig.arena.resolution.p_max = 0;
+    let fire = intent(RED, IntentKind::fire("cannon"), 50);
+    rig.pulse(&[fire]);
+    let until = rig.arena.now_ms + 1_000;
+    rig.to(until);
+    let words: Vec<String> = rig
+        .words()
+        .into_iter()
+        .filter(|(_, word, _)| matches!(word.as_str(), "fired" | "hit" | "miss"))
+        .map(|(_, word, _)| word)
+        .collect();
+    assert_eq!(
+        words,
+        vec!["fired".to_owned(), "miss".to_owned()],
+        "a pilot's trigger at nought per cent"
+    );
+    assert!(
+        rig.shots()
+            .iter()
+            .all(|(_, _, _, by, slot)| by.is_none() && slot.is_none()),
+        "a seat's shot is never attributed"
+    );
+}
+
+/// What one mind run produced: every line `(t_ms, kind as JSON, hash)`, every
+/// substep's hash, and every stock think kept.
+#[derive(Debug)]
+struct MindRun {
+    events: Vec<(i64, String, u64)>,
+    hashes: Vec<u64>,
+    thoughts: Vec<Thought>,
+    pulses: u32,
+}
+
+impl MindRun {
+    /// The `fired` lines, as [`Shot`]s.
+    fn shots(&self) -> Vec<Shot> {
+        self.events
+            .iter()
+            .filter_map(|(t_ms, json, _)| {
+                let value: serde_json::Value = serde_json::from_str(json).ok()?;
+                (value.get("kind")? == "fired").then(|| {
+                    (
+                        *t_ms,
+                        value
+                            .get("weapon")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        value
+                            .get("target")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0),
+                        value
+                            .get("by")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                        value.get("slot").and_then(serde_json::Value::as_u64),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// The `(t_ms, unit)` of every `kind` line.
+    fn words(&self, kind: &str) -> Vec<(i64, Option<u64>)> {
+        self.events
+            .iter()
+            .filter_map(|(t_ms, json, _)| {
+                let value: serde_json::Value = serde_json::from_str(json).ok()?;
+                (value.get("kind")? == kind)
+                    .then(|| (*t_ms, value.get("unit").and_then(serde_json::Value::as_u64)))
+            })
+            .collect()
+    }
+
+    /// The `refused` notices `unit`'s kept think at `t_ms` was handed, `(word,
+    /// weapon, detail)` — what the landings before it buffered (a think must
+    /// have run there).
+    fn refused_at(&self, unit: ObjId, t_ms: i64) -> Vec<(Refusal, Option<SmolStr>, RefusalDetail)> {
+        let Some((_, _, view, _)) = self
+            .thoughts
+            .iter()
+            .find(|(by, at, ..)| *by == unit && *at == t_ms)
+        else {
+            panic!("#{} kept no think at {t_ms}", unit.0);
+        };
+        view.notices
+            .iter()
+            .filter_map(|notice| match notice {
+                FrameNotice::Refused {
+                    refusal,
+                    weapon,
+                    detail,
+                    ..
+                } => Some((*refusal, weapon.clone(), *detail)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every `refused` notice a kept think of `unit` was handed.
+    fn told(&self, unit: ObjId) -> Vec<Refusal> {
+        self.thoughts
+            .iter()
+            .filter(|(by, ..)| *by == unit)
+            .flat_map(|(_, _, view, _)| {
+                view.notices.iter().filter_map(|notice| match notice {
+                    FrameNotice::Refused { refusal, .. } => Some(*refusal),
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+}
+
+/// A change a run makes to the arena at a millisecond every cadence's pulses
+/// stop on (a multiple of 5,000), before the pulse that starts there.
+type Edit<'a> = (i64, &'a dyn Fn(&mut Arena));
+
+/// **Step `arena` at a fixed wall `cadence_ms` to `until_ms`**: every beat
+/// `(t_ms, kind)` delivered to red at its current epoch in the pulse that
+/// STARTS at `t_ms` (a multiple of 5,000, so the same millisecond at every
+/// cadence; an `Order` and a `ReleaseOrder` land in phase 2, at the pulse's
+/// start), every edit made before that pulse, and `each` called after every
+/// pulse. The tempo is pinned `Quiet`.
+fn mind_run(
+    mut arena: Arena,
+    kept: Option<&Kept>,
+    cadence_ms: i64,
+    until_ms: i64,
+    beats: &[(i64, IntentKind)],
+    edits: &[Edit<'_>],
+    each: &mut dyn FnMut(&Arena),
+) -> MindRun {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut pulses = 0_u32;
+    let (mut next_beat, mut next_edit) = (0_usize, 0_usize);
+    let mut seq = 0_u64;
+    loop {
+        while let Some((at, edit)) = edits.get(next_edit) {
+            if *at > arena.now_ms {
+                break;
+            }
+            edit(&mut arena);
+            next_edit += 1;
+        }
+        let mut intents: Vec<Intent> = Vec::new();
+        while let Some((at, kind)) = beats.get(next_beat) {
+            if *at > arena.now_ms {
+                break;
+            }
+            seq += 1;
+            intents.push(current(&arena, RED, kind.clone(), seq));
+            next_beat += 1;
+        }
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let out = arena.step(wall, &[], &intents);
+        absorb(&out, &mut bytes, &mut Vec::new());
+        hashes.extend(arena.substep_hashes.iter().copied());
+        pulses += 1;
+        each(&arena);
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = lines(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    MindRun {
+        events,
+        hashes,
+        thoughts: kept.map(Kept::thoughts).unwrap_or_default(),
+        pulses,
+    }
+}
+
+/// **[`mind_run`] at 5,000, 1,000 and 500 ms**, a fresh arena and recorder
+/// each: one event list, one hash sequence and, with `keep`, one sequence of
+/// the arena's runner's thinks ([`Kept`]: each view — its buffered refusals
+/// included — and each answer) — the mandatory cross-tempo property (16b
+/// §11). Answers the 5,000 ms run.
+fn at_three_cadences(
+    make: &dyn Fn() -> Arena,
+    keep: bool,
+    until_ms: i64,
+    beats: &[(i64, IntentKind)],
+    edits: &[Edit<'_>],
+    each: &mut dyn FnMut(&Arena),
+) -> MindRun {
+    // Every cadence's last pulse must stop on the same millisecond.
+    assert_eq!(
+        until_ms.rem_euclid(5_000),
+        0,
+        "a run ends on a 5,000 ms boundary"
+    );
+    let mut runs: Vec<(i64, MindRun)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = make();
+        let kept = keep.then(|| Kept::on(&arena));
+        if let Some(kept) = &kept {
+            arena.mind_runner = kept.clone();
+        }
+        let run = mind_run(
+            arena,
+            kept.as_deref(),
+            cadence,
+            until_ms,
+            beats,
+            edits,
+            each,
+        );
+        runs.push((cadence, run));
+    }
+    let (_, first) = runs.remove(0);
+    for (cadence, run) in &runs {
+        if let Some(at) = (0..run.events.len().max(first.events.len()))
+            .find(|at| run.events.get(*at) != first.events.get(*at))
+        {
+            panic!(
+                "the event list differs at {cadence} ms, line {at}: {:?} against {:?}",
+                run.events.get(at),
+                first.events.get(at)
+            );
+        }
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hashes differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.thoughts, first.thoughts,
+            "a think differs at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+    first
+}
+
+/// The `Condition` rows of one think's answer.
+fn armings(intents: &[IntentKind]) -> Vec<&Arming> {
+    intents
+        .iter()
+        .filter_map(|kind| match kind {
+            IntentKind::Condition(arming) => Some(arming),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a think's answer arms anything.
+fn arms(intents: &[IntentKind]) -> bool {
+    armings(intents)
+        .iter()
+        .any(|arming| matches!(arming, Arming::Arm(_)))
+}
+
+/// **The law's cross-tempo arm** (16b §11): the citation at the gun's
+/// `WeaponReady` of [`m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_one_reads_cycling`]
+/// — the slot armed at think 0 fires at its landing, fires again at the
+/// `WeaponReady` that falls on think 4's landing, and the citation there reads
+/// `cycling` (in think 5's buffer, the scripted mind's views kept) — at 5,000,
+/// 1,000 and 500 ms: one event list, one hash sequence, one sequence of views.
+#[test]
+fn m1b2_the_cited_fire_at_a_weapon_ready_reads_cycling_at_three_cadences() {
+    let classified = Classification::Classified { team: Team::Blue };
+    let make = || {
+        mind_duel(
+            classified,
+            &[
+                (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+                (4, vec![cannon_fire(Some(1))]),
+            ],
+        )
+    };
+    let run = at_three_cadences(&make, true, 10_000, &[], &[], &mut |_| {});
+    let land0 = think_at(RED, 0) + make().substep_len_ms();
+    let shots: Vec<(i64, Option<String>, Option<u64>)> = run
+        .shots()
+        .into_iter()
+        .map(|(t_ms, _, _, by, slot)| (t_ms, by, slot))
+        .collect();
+    let cycle = i64::from(cannon().cycle_ms);
+    assert_eq!(
+        shots,
+        vec![
+            (land0, Some("cond".to_owned()), Some(1)),
+            (land0 + cycle, Some("cond".to_owned()), Some(1)),
+            (land0 + 2 * cycle, Some("cond".to_owned()), Some(1)),
+        ],
+        "the slot's own shots, at its landing and at each WeaponReady"
+    );
+    assert_eq!(
+        run.refused_at(RED, think_at(RED, 5)),
+        vec![(
+            Refusal::Cycling,
+            Some(SmolStr::new("cannon")),
+            RefusalDetail::Cycling { secs: 4 }
+        )],
+        "the citation read cycling at its landing, never unwarranted"
+    );
+}
+
+/// **Every case of the law at 5,000, 1,000 and 500 ms** (16b §11; 17b cut
+/// M1b.2's law, doc 17 §5, D-UM-17 as amended, D-UM-19): the cases of
+/// [`m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_one_reads_cycling`]
+/// each run 10 s on the mind duel at the three cadences through
+/// [`at_three_cadences`] with the scripted mind's views kept — so the
+/// buffered refusal, which writes no ledger line, is compared across the
+/// cadences beside the event list and the hashes — and the refusals the think
+/// after the citation's landing was handed asserted exactly, with their weapon
+/// and detail:
+///
+/// * uncited — `unwarranted`, nothing ever fires;
+/// * the cannon citing the machine gun's slot (on terms the plot meets) —
+///   `unwarranted`; the machine gun's own slot fires at the landing and the
+///   cannon never fires;
+/// * an arming at 50 per mille — `unlawful` with `Floor { 100 }`, then the
+///   citation `unwarranted`; nothing armed, nothing fires;
+/// * a slot at 600 per mille on the 500 plot — `unwarranted`, nothing fires;
+/// * a slot that holds — nothing refused, the cited shot `by: "mind"` at the
+///   landing;
+/// * an `X` lock — `unwarranted`, nothing fires at the landing;
+/// * a citation at the gun's `WeaponReady` (think 8's landing, two cycles
+///   after the slot's first shot) with the floor raised over the slot at
+///   5,000 — `cycling`: the weapon before the law;
+/// * under a standing hold-fire, a lawful citation `unwarranted` and nothing
+///   fires; with the floor raised at 5,000 over a slot armed before it, the
+///   citation at think 6 `unlawful` with `Floor { 200 }`: the floor before
+///   hold-fire.
+#[test]
+fn m1b2_the_law_reads_every_case_the_same_at_three_cadences() {
+    let classified = Classification::Classified { team: Team::Blue };
+    let cannon_word = Some(SmolStr::new("cannon"));
+    let unwarranted = vec![(
+        Refusal::Unwarranted,
+        cannon_word.clone(),
+        RefusalDetail::None,
+    )];
+    let substep = mind_duel(classified, &[]).substep_len_ms();
+    let land = |n: i64| think_at(RED, n) + substep;
+    let raise = |arena: &mut Arena| arena.odds_floor_permille = 200;
+    let law =
+        |class: Classification, says: Vec<(u64, Vec<IntentKind>)>, holding: bool, raised: bool| {
+            let make = || {
+                let mut arena = mind_duel(class, &says);
+                if holding {
+                    hold_fire_on(&mut arena, RED);
+                }
+                arena
+            };
+            let edits: Vec<Edit<'_>> = if raised {
+                vec![(5_000, &raise)]
+            } else {
+                Vec::new()
+            };
+            at_three_cadences(&make, true, 10_000, &[], &edits, &mut |_| {})
+        };
+    let at = |run: &MindRun, n: i64| -> Vec<(i64, String, Option<String>)> {
+        run.shots()
+            .into_iter()
+            .filter(|(t_ms, ..)| *t_ms == land(n))
+            .map(|(t_ms, weapon, _, by, _)| (t_ms, weapon, by))
+            .collect()
+    };
+    let cited = |min_permille: u16| {
+        vec![
+            arm(cond("cannon", min_permille, ASPECTS_ANY)),
+            cannon_fire(Some(1)),
+        ]
+    };
+    // Uncited.
+    let run = law(classified, vec![(0, vec![cannon_fire(None)])], false, false);
+    assert_eq!(run.refused_at(RED, think_at(RED, 1)), unwarranted);
+    assert_eq!(run.shots(), Vec::new());
+    // Another gun's slot, on terms the plot meets.
+    let run = law(
+        classified,
+        vec![(
+            0,
+            vec![
+                arm(cond("machine_gun", 100, ASPECTS_ANY)),
+                cannon_fire(Some(1)),
+            ],
+        )],
+        false,
+        false,
+    );
+    assert_eq!(run.refused_at(RED, think_at(RED, 1)), unwarranted);
+    assert_eq!(
+        at(&run, 0),
+        vec![(land(0), "machine_gun".to_owned(), Some("cond".to_owned()))]
+    );
+    assert!(
+        run.shots().iter().all(|(_, weapon, ..)| weapon != "cannon"),
+        "the cannon never fired on the machine gun's warrant"
+    );
+    // An arming under the floor, then its citation.
+    let run = law(classified, vec![(0, cited(50))], false, false);
+    assert_eq!(
+        run.refused_at(RED, think_at(RED, 1)),
+        vec![
+            (
+                Refusal::Unlawful,
+                cannon_word.clone(),
+                RefusalDetail::Floor { permille: 100 }
+            ),
+            (
+                Refusal::Unwarranted,
+                cannon_word.clone(),
+                RefusalDetail::None
+            ),
+        ]
+    );
+    assert_eq!(run.shots(), Vec::new());
+    // A slot whose odds term the plot does not meet.
+    let run = law(classified, vec![(0, cited(600))], false, false);
+    assert_eq!(run.refused_at(RED, think_at(RED, 1)), unwarranted);
+    assert_eq!(run.shots(), Vec::new());
+    // A slot that holds.
+    let run = law(classified, vec![(0, cited(100))], false, false);
+    assert_eq!(run.refused_at(RED, think_at(RED, 1)), Vec::new());
+    assert_eq!(
+        at(&run, 0),
+        vec![(land(0), "cannon".to_owned(), Some("mind".to_owned()))]
+    );
+    // An `X` lock.
+    let run = law(Classification::Unknown, vec![(0, cited(100))], false, false);
+    assert_eq!(run.refused_at(RED, think_at(RED, 1)), unwarranted);
+    assert_eq!(at(&run, 0), Vec::new());
+    // A citation at the gun's `WeaponReady`, the floor raised over the slot.
+    let cycle = i64::from(cannon().cycle_ms);
+    assert_eq!(
+        land(8) - land(0),
+        2 * cycle,
+        "the precondition: think 8 lands on the slot's third WeaponReady"
+    );
+    assert!(land(0) < 5_000 && land(8) > 5_000, "the edit between");
+    let run = law(
+        classified,
+        vec![
+            (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+            (8, vec![cannon_fire(Some(1))]),
+        ],
+        false,
+        true,
+    );
+    assert_eq!(
+        run.refused_at(RED, think_at(RED, 9)),
+        vec![(
+            Refusal::Cycling,
+            cannon_word.clone(),
+            RefusalDetail::Cycling { secs: 4 }
+        )]
+    );
+    assert_eq!(
+        at(&run, 8),
+        vec![(land(8), "cannon".to_owned(), Some("cond".to_owned()))],
+        "the slot's own shot at the WeaponReady"
+    );
+    // Under a standing hold-fire: lawful, then unlawful.
+    let run = law(classified, vec![(0, cited(100))], true, false);
+    assert_eq!(run.refused_at(RED, think_at(RED, 1)), unwarranted);
+    assert_eq!(run.shots(), Vec::new());
+    assert!(
+        land(0) < 5_000 && land(6) > 5_000,
+        "the precondition: the edit between the arming and the citation"
+    );
+    let run = law(
+        classified,
+        vec![
+            (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+            (6, vec![cannon_fire(Some(1))]),
+        ],
+        true,
+        true,
+    );
+    assert_eq!(
+        run.refused_at(RED, think_at(RED, 7)),
+        vec![(
+            Refusal::Unlawful,
+            cannon_word.clone(),
+            RefusalDetail::Floor { permille: 200 }
+        )]
+    );
+    assert_eq!(run.shots(), Vec::new());
+}
+
+/// **The stock field**: red at (5, 8) facing east with the cannon, flown by
+/// `controller` (a stock mind, T1, or the reflex controller, T0), online,
+/// seeing ten cells, handed `targets` as classified rows (`(id, cell,
+/// heading, presents)`), each blue seated and unarmed. A blue that does not
+/// present carries the default profile: every shot at it is at nought per
+/// cent.
+fn stock_field(
+    def: ArenaDefinition,
+    controller: Controller,
+    targets: &[(ObjId, (u16, u16), u32, bool)],
+) -> Arena {
+    let mut units = vec![CustodyUnit {
+        controller,
+        ..unit(
+            RED,
+            Team::Red,
+            facing(5, 8, 90_000),
+            vec![cannon()],
+            Some(wide_sight()),
+        )
+    }];
+    for (id, (x, y), heading, presents) in targets {
+        let mut blue = unit(*id, Team::Blue, facing(*x, *y, *heading), Vec::new(), None);
+        if !presents {
+            blue.profile = UnitProfile::default();
+        }
+        units.push(blue);
+    }
+    let seated: Vec<ObjId> = targets.iter().map(|(id, ..)| *id).collect();
+    let mut arena = seated_arena_on(def, units, &seated);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+    }
+    for (id, ..) in targets {
+        hold_row(
+            &mut arena,
+            RED,
+            *id,
+            Classification::Classified { team: Team::Blue },
+        );
+    }
+    arena
+}
+
+/// The test window with cell (13, 2) walled off (`move_cost` nought): a cell
+/// no route reaches.
+fn walled() -> ArenaDefinition {
+    let mut def = definition();
+    let mut cells = vec![ground(); usize::from(SIDE) * usize::from(SIDE)];
+    if let Some(cell) = cells.get_mut(2 * usize::from(SIDE) + 13) {
+        *cell = TerrainCell {
+            class: mush_atlas::TerrainClass::Ground,
+            elev_cm: 0,
+            move_cost: 0,
+        };
+    }
+    def.terrain = ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the walled window");
+    def
+}
+
+/// Red's squad (`red-1`).
+const RED_ONE: tacsim::deliberation::squad::SquadId = tacsim::deliberation::squad::SquadId {
+    team: Team::Red,
+    index: 1,
+};
+
+/// A persona's hold-fire `objective` order to red's squad, standing `ttl_ms`.
+fn hold_fire_order(objective: tacsim::deliberation::order::Objective, ttl_ms: u32) -> IntentKind {
+    use tacsim::deliberation::order::{CharacterRef, Constraints, Order};
+    IntentKind::Order(Box::new(Order {
+        squad: RED_ONE,
+        objective,
+        target: None,
+        horizon_ms: ttl_ms,
+        constraints: Constraints {
+            hold_fire: true,
+            ..Constraints::default()
+        },
+        ttl_ms,
+        issued_ms: 0,
+        issuer: None,
+        by: CharacterRef::Persona { squad: RED_ONE },
+        spot: None,
+    }))
+}
+
+/// **Hold-fire stops a mind and its slot, and never a pilot** (17b cut
+/// M1b.2; doc 17 §5's precedence, D-UM-19; 17b's Q-M7), at 5,000, 1,000 and
+/// 500 ms:
+///
+/// 1. a stock mind (T1) under a persona's `ENGAGE` with `hold_fire`: every
+///    think that reaches its target DISARMS (one `Condition(Disarm)`) and
+///    takes the lock — the lock lands, nothing fires; the order released at
+///    10,000, the next think ARMS and the slot fires at that think's landing
+///    (`by: "cond"`, S1). (A mind's lawful citation under the order reads
+///    `unwarranted`: the law test's.)
+/// 2. a pilot's typed `FIRE` under no order fires;
+/// 3. **`hold_after_end`** (Q-M7's default, declared): a hold-fire `ADVANCE`
+///    to a walled cell no route reaches, standing 12 s. T0 ends the order at
+///    its failed search (`order_expired` journalled at once) and fires; T1
+///    only stops obeying it (`ignore_order`), arms while the arena's row
+///    still holds it — and every shot of its slot, and its cited one, is
+///    refused at the resolver (the ARENA's row holds the hold-fire) until
+///    `expires_ms`, when the landing that reaches the deadline clears the row
+///    (`order_expired`) and the slot fires.
+#[test]
+fn m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot() {
+    use tacsim::deliberation::order::Objective;
+    // 1. T1 under a hold-fire ENGAGE, released at 10,000.
+    let make = || {
+        stock_field(
+            definition(),
+            Controller::Mind,
+            &[(BLUE, (9, 8), 270_000, true)],
+        )
+    };
+    let beats = [
+        (
+            0,
+            hold_fire_order(Objective::Engage { target_hint: None }, 600_000),
+        ),
+        (
+            10_000,
+            IntentKind::ReleaseOrder {
+                squad: RED_ONE,
+                issuer: None,
+            },
+        ),
+    ];
+    let run = at_three_cadences(&make, true, 15_000, &beats, &[], &mut |_| {});
+    let held: Vec<&Thought> = run
+        .thoughts
+        .iter()
+        .filter(|(_, t_ms, view, _)| {
+            *t_ms < 10_000 && view.order.as_ref().is_some_and(|order| order.hold_fire)
+        })
+        .collect();
+    assert!(!held.is_empty(), "red thought under the order");
+    for (_, t_ms, _, result) in &held {
+        assert_eq!(
+            armings(&result.intents),
+            vec![&Arming::Disarm { weapon: None }],
+            "a disarm under the order at {t_ms}: {:?}",
+            result.intents
+        );
+        assert!(
+            !result
+                .intents
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Fire { .. })),
+            "no citation under the order at {t_ms}"
+        );
+    }
+    assert!(
+        held.iter().any(|(_, _, _, result)| result
+            .intents
+            .iter()
+            .any(|kind| matches!(kind, IntentKind::Lock { .. }))),
+        "the lock is taken under the order"
+    );
+    assert!(
+        run.words("locked")
+            .iter()
+            .any(|(t_ms, unit)| *t_ms < 10_000 && *unit == Some(u64::from(RED.0))),
+        "and lands"
+    );
+    let shots = run.shots();
+    assert!(
+        shots.iter().all(|(t_ms, ..)| *t_ms > 10_000),
+        "nothing fires under the order: {shots:?}"
+    );
+    let Some((_, rearmed, ..)) = run
+        .thoughts
+        .iter()
+        .find(|(_, t_ms, _, result)| *t_ms >= 10_000 && arms(&result.intents))
+    else {
+        panic!("red re-armed after the release");
+    };
+    let land = rearmed + make().substep_len_ms();
+    assert_eq!(
+        shots
+            .first()
+            .map(|(t_ms, _, _, by, slot)| (*t_ms, by.clone(), *slot)),
+        Some((land, Some("cond".to_owned()), Some(1))),
+        "the slot fires at the re-arming think's landing: {shots:?}"
+    );
+
+    // 2. A pilot's typed FIRE under no order fires.
+    let (mut arena, wall) = locked_duel(100);
+    let _ = refused_now(&mut arena, wall, vec![IntentKind::fire("cannon")]);
+    assert_eq!(fired_lines(&mut arena).len(), 1);
+
+    // 3. `hold_after_end`: T0, then T1, under a hold-fire ADVANCE to a wall.
+    let to_the_wall = || hold_fire_order(Objective::Advance { to: (13, 2) }, 12_000);
+    let t0 = || {
+        stock_field(
+            walled(),
+            Controller::Reflex,
+            &[(BLUE, (9, 8), 270_000, true)],
+        )
+    };
+    let reflex = at_three_cadences(&t0, false, 20_000, &[(0, to_the_wall())], &[], &mut |_| {});
+    let expired: Vec<i64> = reflex
+        .words("order_expired")
+        .into_iter()
+        .filter(|(_, unit)| *unit == Some(u64::from(RED.0)))
+        .map(|(t_ms, _)| t_ms)
+        .collect();
+    let first_shot = reflex.shots().first().map(|(t_ms, ..)| *t_ms);
+    assert!(
+        expired
+            .first()
+            .is_some_and(|ended| *ended < 12_000 && first_shot.is_some_and(|shot| shot > *ended)),
+        "T0 ends the order at its failed search and then fires: {expired:?} {first_shot:?}"
+    );
+    let t1 = || stock_field(walled(), Controller::Mind, &[(BLUE, (9, 8), 270_000, true)]);
+    let mind = at_three_cadences(&t1, true, 20_000, &[(0, to_the_wall())], &[], &mut |_| {});
+    assert!(
+        mind.thoughts.iter().any(|(_, _, view, result)| view
+            .order
+            .as_ref()
+            .is_some_and(|order| order.hold_fire)
+            && arms(&result.intents)),
+        "T1 stops obeying and arms while the arena's row still holds the order"
+    );
+    let ended: Vec<i64> = mind
+        .words("order_expired")
+        .into_iter()
+        .filter(|(_, unit)| *unit == Some(u64::from(RED.0)))
+        .map(|(t_ms, _)| t_ms)
+        .collect();
+    let Some(&ended) = ended.first() else {
+        panic!("the arena expires the mind's order");
+    };
+    assert!(ended >= 12_000, "at its deadline, not before: {ended}");
+    let shots = mind.shots();
+    assert!(
+        shots.iter().all(|(t_ms, ..)| *t_ms >= ended),
+        "no shot before the arena's row lets go: {shots:?}"
+    );
+    assert!(
+        shots
+            .first()
+            .is_some_and(|(_, _, _, by, _)| by.as_deref() == Some("cond")),
+        "the slot fires once the row is gone: {shots:?}"
+    );
+    assert!(
+        mind.told(RED).contains(&Refusal::Unwarranted),
+        "the mind's citation under the arena's order was refused unwarranted"
+    );
+}
+
+/// **One unit of `entry`, checked out as `match_::start` checks one out**
+/// (`tests/extensions.rs`' `unit_of`, copied): the catalog's own binding and
+/// every row the arena reads decoded by the production check-out's functions.
+fn shipped_unit(
+    catalog: &tacsim::definitions::Catalog,
+    entry: &str,
+    id: ObjId,
+    team: Team,
+    pose: Pose,
+) -> CustodyUnit {
+    let key = CanonicalId::new(entry).expect("a canonical entry id");
+    let spec = catalog.specs.get(&key).expect("the unit entry");
+    let binding = catalog.bindings.get(&key).expect("the unit binding");
+    let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("the unit");
+    CustodyUnit {
+        id,
+        team,
+        pose,
+        mobility: tacsim::match_::tracked_rules(&cells),
+        sensor_height_cm: tacsim::match_::sensor_height_cm(catalog, &cells),
+        sensor: tacsim::match_::sensor_profile(catalog, &cells),
+        weapons: tacsim::match_::weapon_summaries(catalog, &cells),
+        profile: tacsim::match_::unit_profile(catalog, &cells),
+        gunnery: 0,
+        controller: Controller::Pilot,
+        slot: 0,
+        unit: cells,
+    }
+}
+
+/// The shipped content with the extension packs (the laser and its tank),
+/// through the operator's route.
+fn laser_catalog() -> tacsim::definitions::Catalog {
+    let operator: Vec<tacsim::config::LoadedPack> =
+        tacsim::definitions::content::extension_sources()
+            .iter()
+            .map(|source| tacsim::config::LoadedPack {
+                pack: tacsim::pack::load_pack(&source.bytes)
+                    .unwrap_or_else(|error| panic!("{}: {error}", source.name)),
+                source: source.name.clone(),
+            })
+            .collect();
+    tacsim::definitions::Catalog::build_game(&operator, tacsim::NS)
+        .expect("the extension content binds")
+}
+
+/// **The laser field**: red the shipped `line_tank_laser` (`laser` — 20 heat
+/// a pulse against a 60 ceiling — then the coaxial `machine_gun`, in
+/// component order) at (5, 8) facing east, flown by the stock mind, online,
+/// its heat sink stopped (`per_s` nought: a hull that cannot cool, as
+/// `tests/extensions.rs`' cooked-platform fixture holds it); blue the shipped
+/// `line_tank` at (9, 8) facing west, seated, every consequence taken off its
+/// profile so no hit ends the match; red handed blue as a classified row.
+/// Answers the arena and red's authored sink.
+fn laser_field() -> (Arena, u32) {
+    let catalog = laser_catalog();
+    let red = minded(shipped_unit(
+        &catalog,
+        tacsim::definitions::content::LINE_TANK_LASER,
+        RED,
+        Team::Red,
+        facing(5, 8, 90_000),
+    ));
+    let mut blue = shipped_unit(
+        &catalog,
+        tacsim::definitions::content::LINE_TANK,
+        BLUE,
+        Team::Blue,
+        facing(9, 8, 270_000),
+    );
+    for section in &mut blue.profile.sections {
+        section.consequences.clear();
+    }
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition: definition(),
+            units: vec![red, blue],
+            pilots: vec![Pilot {
+                unit: BLUE,
+                pilot: ObjId(1_001),
+                station: SmolStr::new("cockpit"),
+                epoch: 1,
+            }],
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig::default(),
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the laser field");
+    let mut sink = 0;
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+        if let Some(heat) = state.heat.as_mut() {
+            sink = heat.per_s;
+            heat.per_s = 0;
+        }
+    }
+    hold_row(
+        &mut arena,
+        RED,
+        BLUE,
+        Classification::Classified { team: Team::Blue },
+    );
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    (arena, sink)
+}
+
+/// When the laser field's sink comes back on.
+const COOLS_AT: i64 = 10_000;
+
+/// When the laser field lets red's lock go (an edit: the lock lost), so the
+/// next think takes a FRESH lock after the cooling and cites beside it — at
+/// the millisecond the laser's slot would otherwise fire it again, so the
+/// laser is idle (no lock) at its `WeaponReady`, ready at the landing, and the
+/// citation takes it.
+const UNLOCKS_AT: i64 = 20_000;
+
+/// **T1 arms its first two weapons whatever the heat, and numbers them as the
+/// arena does** (17b cut M1b.2; D-UM-16, D-UM-18; 17b's adversarial F6): the
+/// laser field ([`laser_field`]) flown by the stock mind for 25 s at 5,000,
+/// 1,000 and 500 ms — one event list, one hash sequence, one sequence of
+/// thinks:
+///
+/// * every think that arms arms the `laser` then the `machine_gun`, S1 and
+///   S2 — the hot laser included (no heat skip) — and after every pulse the
+///   arena's slots are exactly those two in that order, or none;
+/// * the fresh lock's citation fires `by: "mind"`; the laser's slot then
+///   fires at its own `WeaponReady`s until the platform reaches its ceiling,
+///   after which the resolver's `Overheated` holds the laser's slot SILENTLY
+///   while the slot stays armed and the machine gun's S2 fires at its own
+///   `WeaponReady`s; the sink back on at [`COOLS_AT`], the laser's slot fires
+///   again (`by: "cond"`);
+/// * red's lock let go at [`UNLOCKS_AT`], the think that takes it again
+///   cites the cooled LASER (S1) beside the fresh `Lock` — T1's citation
+///   after the cooling — and every citation after the edit fires `by: "mind"`
+///   with its slot at its landing, never `unwarranted` (a held lock is never
+///   cited: the armed slot owns the shot, so a citation needs a fresh lock);
+/// * no think is ever told `unwarranted` or `unlawful`;
+/// * at the ceiling a mind's cited laser shot reads `Overheated` — the law
+///   (lawful, warranted) passed before the heat — and an uncited one
+///   `Unwarranted`: the law before the platform (the gate order's
+///   `Overheated` step, which needs the content's heat cells).
+#[test]
+fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_arena_does() {
+    let probed = std::cell::Cell::new(false);
+    let (_, sink) = laser_field();
+    assert!(sink > 0, "the authored sink");
+    let cool = |arena: &mut Arena| {
+        // The gate order at the ceiling, on a clone, before the sink returns.
+        let mut probe = arena.clone();
+        assert!(
+            probe.unit(RED).is_some_and(|state| state.overheated()),
+            "the precondition: at the ceiling by {COOLS_AT}"
+        );
+        let now = probe.now_ms;
+        assert_eq!(
+            probe.clone().resolve_fire_by(
+                RED,
+                "laser",
+                now,
+                tacsim::arena::weapons::FiredBy::Mind { slot: Some(1) }
+            ),
+            Err(Refusal::Overheated)
+        );
+        assert_eq!(
+            probe.resolve_fire_by(
+                RED,
+                "laser",
+                now,
+                tacsim::arena::weapons::FiredBy::Mind { slot: None }
+            ),
+            Err(Refusal::Unwarranted)
+        );
+        probed.set(true);
+        if let Some(heat) = arena.unit_mut(RED).and_then(|state| state.heat.as_mut()) {
+            heat.per_s = sink;
+        }
+    };
+    let make = || laser_field().0;
+    let mut numbered = 0_usize;
+    let mut each = |arena: &Arena| {
+        if arena.conditions.is_empty_for(RED) {
+            return;
+        }
+        let weapons: Vec<Option<&str>> = arena
+            .conditions
+            .slots(RED)
+            .iter()
+            .map(|slot| slot.as_ref().map(|cond| cond.weapon.as_str()))
+            .collect();
+        assert_eq!(
+            weapons,
+            vec![Some("laser"), Some("machine_gun")],
+            "the arena's slots at {}",
+            arena.now_ms
+        );
+        numbered += 1;
+    };
+    let unlock = |arena: &mut Arena| {
+        if let Some(state) = arena.unit_mut(RED) {
+            state.lock = None;
+        }
+    };
+    let run = at_three_cadences(
+        &make,
+        true,
+        25_000,
+        &[],
+        &[(COOLS_AT, &cool), (UNLOCKS_AT, &unlock)],
+        &mut each,
+    );
+    assert!(probed.get(), "the ceiling was probed");
+    assert!(numbered > 0, "the slots were read");
+    // Every arming: the laser, then the machine gun — hot or not.
+    let mut armed_hot = false;
+    for (_, t_ms, view, result) in &run.thoughts {
+        let weapons: Vec<SmolStr> = armings(&result.intents)
+            .into_iter()
+            .filter_map(|arming| match arming {
+                Arming::Arm(cond) => Some(cond.weapon.clone()),
+                Arming::Disarm { .. } => None,
+            })
+            .collect();
+        if weapons.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            weapons,
+            vec![SmolStr::new("laser"), SmolStr::new("machine_gun")],
+            "at {t_ms}"
+        );
+        if view.heat.is_some_and(|heat| heat.overheated()) {
+            armed_hot = true;
+        }
+    }
+    assert!(
+        armed_hot,
+        "a think at the ceiling armed the laser all the same"
+    );
+    // The shots.
+    let shots = run.shots();
+    let laser: Vec<(i64, Option<String>, Option<u64>)> = shots
+        .iter()
+        .filter(|(_, weapon, ..)| weapon == "laser")
+        .map(|(t_ms, _, _, by, slot)| (*t_ms, by.clone(), *slot))
+        .collect();
+    assert_eq!(
+        laser.first().map(|(_, by, slot)| (by.clone(), *slot)),
+        Some((Some("mind".to_owned()), Some(1))),
+        "the fresh lock's citation: {laser:?}"
+    );
+    assert!(laser.len() >= 3, "three pulses to the ceiling: {laser:?}");
+    let ceiling = laser.get(2).map_or(0, |(t_ms, ..)| *t_ms);
+    assert!(
+        laser
+            .iter()
+            .all(|(t_ms, ..)| *t_ms <= ceiling || *t_ms > COOLS_AT),
+        "the laser's slot held at the ceiling until the sink came back: {laser:?}"
+    );
+    assert!(
+        laser.iter().any(|(t_ms, by, slot)| *t_ms > COOLS_AT
+            && by.as_deref() == Some("cond")
+            && *slot == Some(1)),
+        "and fired again once cooler: {laser:?}"
+    );
+    assert!(
+        shots
+            .iter()
+            .any(|(t_ms, weapon, _, by, slot)| *t_ms > ceiling
+                && *t_ms <= COOLS_AT
+                && weapon == "machine_gun"
+                && by.as_deref() == Some("cond")
+                && *slot == Some(2)),
+        "the machine gun's S2 fired at its own WeaponReady while the laser held: {shots:?}"
+    );
+    for (_, _, _, by, slot) in &shots {
+        assert!(
+            matches!(by.as_deref(), Some("mind" | "cond")) && slot.is_some(),
+            "every T1 shot is cited: {shots:?}"
+        );
+    }
+    // The citation after the cooling: the fresh lock's think cites, and the
+    // shot is the mind's at the landing.
+    let substep = make().substep_len_ms();
+    let recited: Vec<(i64, SmolStr, u8)> = run
+        .thoughts
+        .iter()
+        .filter(|(_, t_ms, ..)| *t_ms > UNLOCKS_AT)
+        .filter_map(|(_, t_ms, _, result)| {
+            result.intents.iter().find_map(|kind| match kind {
+                IntentKind::Fire {
+                    weapon,
+                    slot: Some(n),
+                } => Some((*t_ms, weapon.clone(), *n)),
+                _ => None,
+            })
+        })
+        .collect();
+    assert!(
+        recited
+            .iter()
+            .any(|(_, weapon, n)| weapon == "laser" && *n == 1),
+        "the laser cited after the cooling: {recited:?} {laser:?}"
+    );
+    assert!(
+        !recited.is_empty(),
+        "a citation after the cooling: {:?}",
+        run.thoughts
+            .iter()
+            .filter(|(_, t_ms, ..)| *t_ms > UNLOCKS_AT)
+            .map(|(_, t_ms, _, result)| (*t_ms, result.intents.clone()))
+            .collect::<Vec<_>>()
+    );
+    for (think, weapon, n) in &recited {
+        assert!(
+            shots
+                .iter()
+                .any(|(t_ms, fired, _, by, slot)| *t_ms == think + substep
+                    && fired == weapon.as_str()
+                    && by.as_deref() == Some("mind")
+                    && *slot == Some(u64::from(*n))),
+            "the citation at {think} fired by the mind: {shots:?}"
+        );
+    }
+    let told = run.told(RED);
+    assert!(
+        !told.contains(&Refusal::Unwarranted) && !told.contains(&Refusal::Unlawful),
+        "{told:?}"
+    );
+}
+
+/// **The `cond_stale` rule** (`tests/twin.rs`; 17b §1(f), adversarial F5): a
+/// slot's shot whose target is not the object of the latest `Lock` its stock
+/// mind PLANNED at a think before that millisecond. Answers the stale shots
+/// as `(t_ms, target)`.
+fn stale(run: &MindRun) -> Vec<(i64, u64)> {
+    let object_of = |contact: ContactId| {
+        [BLUE, BLUE2]
+            .into_iter()
+            .find(|target| contact_of(RED, *target) == contact)
+            .map(|target| u64::from(target.0))
+    };
+    run.shots()
+        .into_iter()
+        .filter(|(_, _, _, by, _)| by.as_deref() == Some("cond"))
+        .filter_map(|(t_ms, _, target, _, _)| {
+            let latest = run
+                .thoughts
+                .iter()
+                .filter(|(_, think_ms, ..)| *think_ms < t_ms)
+                .filter_map(|(_, think_ms, _, result)| {
+                    result.intents.iter().find_map(|kind| match kind {
+                        IntentKind::Lock { contact } => Some((*think_ms, *contact)),
+                        _ => None,
+                    })
+                })
+                .max_by_key(|(think_ms, _)| *think_ms)
+                .and_then(|(_, contact)| object_of(contact));
+            (latest.is_some() && latest != Some(target)).then_some((t_ms, target))
+        })
+        .collect()
+}
+
+/// **A retarget think: the slot armed before the lock, the citation on the
+/// NEW lock — and a `WeaponReady` inside the window fires at the OLD one**
+/// (17b cut M1b.2; 17b's adversarial F5; doc 17 §5, D-UM-16). Two blues at
+/// one rounded range, both facing red, so the stock mind's score ties and it
+/// settles on the lower contact id (`first`); at a 5,000 ms boundary the
+/// other (`second`) turns its rear to red, and the think after red's next
+/// pass retargets: `Condition(Arm)`, then `Lock { second }`, then
+/// `Fire { S1 }`, in that order in the answer, landing in that order with no
+/// evaluation between them. At 5,000, 1,000 and 500 ms each:
+///
+/// * **(a) the citation on the new lock**: `first` presents nothing, so the
+///   slot holds at nought per cent on it and the cannon stands ready; the
+///   retarget think's cited `Fire` lands at the landing ON `second`, `by:
+///   "mind"`, S1 — no `cond_stale`;
+/// * **(b) the stale window**: both present, the slot fires at `first` at
+///   every `WeaponReady`; the turn falls so that the cannon's `WeaponReady`
+///   is at the retarget think's landing millisecond, where it pops before the
+///   landing (doc 17 §6's order): the slot fires at the OLD lock — counted
+///   ONE `cond_stale` by the twin's rule — and the citation reads `cycling`;
+///   the next `WeaponReady`'s shot is at `second`.
+#[test]
+fn m1b2_a_retarget_think_fires_its_slot_at_the_new_lock_at_the_landing() {
+    // The tie goes to the lower contact id: that one is `first`.
+    let (first, second) = if contact_of(RED, BLUE) < contact_of(RED, BLUE2) {
+        (BLUE, BLUE2)
+    } else {
+        (BLUE2, BLUE)
+    };
+    let make = |first_presents: bool| {
+        move || {
+            stock_field(
+                definition(),
+                Controller::Mind,
+                &[
+                    (first, (9, 8), 270_000, first_presents),
+                    (second, (9, 9), 270_000, true),
+                ],
+            )
+        }
+    };
+    let turn = |arena: &mut Arena| {
+        if let Some(state) = arena.unit_mut(second) {
+            state.pose.heading_mdeg = 90_000;
+            state.desired_heading_mdeg = 90_000;
+        }
+    };
+    let retarget = |run: &MindRun| -> (i64, Vec<IntentKind>) {
+        run.thoughts
+            .iter()
+            .find(|(_, _, _, result)| {
+                result.intents.contains(&IntentKind::Lock {
+                    contact: contact_of(RED, second),
+                })
+            })
+            .map(|(_, t_ms, _, result)| (*t_ms, result.intents.clone()))
+            .unwrap_or_else(|| panic!("red never retargeted"))
+    };
+    let landing = |think_ms: i64| think_ms + make(true)().substep_len_ms();
+    let in_order = |intents: &[IntentKind]| {
+        let at = |want: fn(&IntentKind) -> bool| intents.iter().position(want);
+        let arm = at(|kind| matches!(kind, IntentKind::Condition(Arming::Arm(_))));
+        let lock = at(|kind| matches!(kind, IntentKind::Lock { .. }));
+        let fire = at(|kind| matches!(kind, IntentKind::Fire { slot: Some(1), .. }));
+        assert!(
+            arm.is_some() && arm < lock && lock < fire,
+            "Condition, Lock, Fire: {intents:?}"
+        );
+    };
+
+    // (a) The citation lands on the new lock.
+    let run = at_three_cadences(
+        &make(false),
+        true,
+        15_000,
+        &[],
+        &[(10_000, &turn)],
+        &mut |_| {},
+    );
+    let (think, intents) = retarget(&run);
+    assert!(think > 10_000, "after the turn: {think}");
+    in_order(&intents);
+    let after: Vec<Shot> = run
+        .shots()
+        .into_iter()
+        .filter(|(t_ms, ..)| *t_ms >= think)
+        .collect();
+    assert_eq!(
+        after.first(),
+        Some(&(
+            landing(think),
+            "cannon".to_owned(),
+            u64::from(second.0),
+            Some("mind".to_owned()),
+            Some(1)
+        )),
+        "{after:?}"
+    );
+    assert!(
+        run.shots()
+            .iter()
+            .all(|(_, _, target, ..)| *target != u64::from(first.0)),
+        "nothing ever fired at the blue that presents nothing"
+    );
+    assert_eq!(stale(&run), Vec::new());
+
+    // (b) The window: the turn timed so the cannon's `WeaponReady` falls on
+    // the retarget think's landing.
+    let run = at_three_cadences(
+        &make(true),
+        true,
+        25_000,
+        &[],
+        &[(20_000, &turn)],
+        &mut |_| {},
+    );
+    let (think, intents) = retarget(&run);
+    in_order(&intents);
+    let land = landing(think);
+    let shots: Vec<(i64, u64, Option<String>)> = run
+        .shots()
+        .into_iter()
+        .map(|(t_ms, _, target, by, _)| (t_ms, target, by))
+        .collect();
+    assert!(
+        shots.contains(&(land, u64::from(first.0), Some("cond".to_owned()))),
+        "the WeaponReady at the landing fired at the OLD lock: {shots:?}"
+    );
+    assert_eq!(
+        stale(&run),
+        vec![(land, u64::from(first.0))],
+        "counted once by the twin's rule"
+    );
+    assert!(
+        run.told(RED).contains(&Refusal::Cycling),
+        "the citation read cycling"
+    );
+    assert!(
+        shots.iter().any(|(t_ms, target, by)| *t_ms > land
+            && *target == u64::from(second.0)
+            && by.as_deref() == Some("cond")),
+        "the next WeaponReady's shot is at the new lock: {shots:?}"
+    );
 }
