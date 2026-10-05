@@ -1065,7 +1065,10 @@ impl Picture {
         if !neutral && !matches!(line, Line::ContactRow(_)) {
             self.close_contacts(now_ms);
         }
-        if !neutral && !matches!(line, Line::WeaponRow(_)) {
+        // The game's 17b cut M1b.4: an armed weapon's arming line sits under its
+        // row inside the reply, so it is one of the reply's lines and ends
+        // nothing.
+        if !neutral && !matches!(line, Line::WeaponRow(_) | Line::WeaponArming { .. }) {
             self.close_weapons(now_ms);
         }
         if !is_status_form(line) {
@@ -1222,6 +1225,10 @@ impl Picture {
                 });
                 open.rows.push((row.clone(), now_ms));
                 open.last_ms = now_ms;
+            }
+            // The game's 17b cut M1b.4: read, never acted on.
+            Line::WeaponArming { .. } => {
+                journal = false;
             }
             Line::NoWeapon => {
                 journal = false;

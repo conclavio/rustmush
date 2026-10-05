@@ -397,6 +397,124 @@
   },
   {
     "notice": {
+      "aspect": "left",
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "detail": null,
+      "friendly": false,
+      "kind": "slot_fired",
+      "order": null,
+      "percent": 62,
+      "refusal": null,
+      "section": null,
+      "slot": 1,
+      "spent": false,
+      "text": "Cannon fires at BA by S1 (62%, side).",
+      "was": null,
+      "weapon": "cannon"
+    },
+    "line": "Cannon fires at BA by S1 (62%, side)"
+  },
+  {
+    "notice": {
+      "aspect": "rear",
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
+      "kind": "slot_fired",
+      "order": null,
+      "percent": 21,
+      "refusal": null,
+      "section": null,
+      "slot": 2,
+      "spent": false,
+      "text": "Machine_gun fires by S2 (21%, rear).",
+      "was": null,
+      "weapon": "machine_gun"
+    },
+    "line": "Machine_gun fires by S2 (21%, rear)"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": {
+        "aspect": null,
+        "floor": 60,
+        "keeps": null,
+        "max_m": null,
+        "min_m": null,
+        "percent": 54,
+        "range_m": null,
+        "rounds": null,
+        "why": "odds"
+      },
+      "friendly": false,
+      "kind": "slot_held",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "slot": 1,
+      "spent": false,
+      "text": "S1 held the cannon: 54% under your 60%.",
+      "was": null,
+      "weapon": "cannon"
+    },
+    "line": "S1 held the cannon: 54% under your 60%"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "detail": {
+        "aspect": "front",
+        "floor": null,
+        "keeps": null,
+        "max_m": null,
+        "min_m": null,
+        "percent": null,
+        "range_m": null,
+        "rounds": null,
+        "why": "aspect"
+      },
+      "friendly": false,
+      "kind": "slot_held",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "slot": 1,
+      "spent": false,
+      "text": "S1 held the cannon: BA shows its front.",
+      "was": null,
+      "weapon": "cannon"
+    },
+    "line": "S1 held the cannon: BA shows its front"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": { "floor_permille": 100 },
+      "friendly": false,
+      "kind": "refused",
+      "order": "fire",
+      "refusal": "unlawful",
+      "section": null,
+      "spent": false,
+      "text": "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.",
+      "was": null,
+      "weapon": "cannon"
+    },
+    "line": "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less"
+  },
+  {
+    "notice": {
       "cause": null,
       "contact": null,
       "designator": null,

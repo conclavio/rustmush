@@ -14620,3 +14620,1150 @@ fn m1b3_the_frame_carries_the_match_floor() {
         Some(&serde_json::json!(100))
     );
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.4 — the pilot's surface: `FIRE <weapon> WHEN …`, `FIRE … OFF`,
+// `WEAPONSTATUS`' arming line and the two slot sentences (doc 17 §5, D-UM-14,
+// D-UM-17 as amended, D-UM-18's slot-fitting subset)
+// ---------------------------------------------------------------------------
+
+/// The fixture scene's row of `id`, as `FIRE` would choose it.
+fn m1b4_row(frame: &tacsim::arena::step::Frame, id: &str) -> cockpit::WeaponRow {
+    cockpit::frame_weapons(frame)
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap_or_else(|| panic!("the scene carries {id}"))
+}
+
+/// The floor sentence, as the cockpit and the arena both print it.
+const M1B4_FLOOR: &str =
+    "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.";
+
+/// The outside sentence's said-half.
+const M1B4_OUTSIDE: &str =
+    "That condition is not one this core takes; help cockpit lists the eight it does.";
+
+/// The gate's rule's reply.
+const M1B4_GATE_REPLY: &str = "Arming cannon: fires your lock when your chance to hit is 60% or \
+                               better and it shows its side or rear.";
+
+/// **The pure grammar** (17b cut M1b.4; D-UM-18's slot-fitting subset):
+/// `parse_arming` over every one of the eight terms and every value shape —
+/// the compiled `FireCondition` per case — the floor refused `Unlawful` at 5
+/// and 9 on a floor-100 frame and accepted at 10 and 100, a floor-50 frame
+/// accepting 5, the ONE outside sentence for everything else (101, `OR`, a
+/// fifth condition, each word this core does not take, a malformed or missing
+/// number, a conflicting repeat, another gun's odds), `band = …` compiled to
+/// exactly the metres `contact_band` cuts on the fixture frame, and the
+/// English written back for the gate's rule verbatim, a bounded range, a
+/// reserve and a rule with no odds term (which asks for the floor).
+#[test]
+fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence() {
+    use tacsim::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget, aspect_mask};
+    use tacsim::arena::perception::Aspect;
+    let frame = fixture::frame();
+    assert_eq!(frame.odds_floor_permille, 100);
+    let cannon = m1b4_row(&frame, "cannon");
+    let mg = m1b4_row(&frame, "machine_gun");
+    let base = FireCondition {
+        weapon: "cannon".into(),
+        target: SlotTarget::Lock,
+        min_permille: 100,
+        aspects: ASPECTS_ANY,
+        min_rounds_left: 0,
+        min_range_m: 0,
+        max_range_m: u32::MAX,
+    };
+    let flank_rear = aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]);
+    let parse = |row: &cockpit::WeaponRow, rule: &str| cockpit::parse_arming(row, rule, &frame);
+    // Every term, every spelling, compiled.
+    for (rule, want) in [
+        (
+            "odds >= 60",
+            FireCondition {
+                min_permille: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "ODDS>=60",
+            FireCondition {
+                min_permille: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "odds cannon >= 60",
+            FireCondition {
+                min_permille: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "odds can >= 60",
+            FireCondition {
+                min_permille: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "odds >= 100",
+            FireCondition {
+                min_permille: 1_000,
+                ..base.clone()
+            },
+        ),
+        (
+            "odds >= 10",
+            FireCondition {
+                min_permille: 100,
+                ..base.clone()
+            },
+        ),
+        (
+            "aspect = side,rear",
+            FireCondition {
+                aspects: flank_rear,
+                ..base.clone()
+            },
+        ),
+        (
+            "aspect=side , rear",
+            FireCondition {
+                aspects: flank_rear,
+                ..base.clone()
+            },
+        ),
+        (
+            "aspect = front",
+            FireCondition {
+                aspects: aspect_mask(&[Aspect::Front]),
+                ..base.clone()
+            },
+        ),
+        (
+            "aspect = side,side",
+            FireCondition {
+                aspects: aspect_mask(&[Aspect::Left, Aspect::Right]),
+                ..base.clone()
+            },
+        ),
+        (
+            "range < 600 m",
+            FireCondition {
+                max_range_m: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "range<600m",
+            FireCondition {
+                max_range_m: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "range > 200",
+            FireCondition {
+                min_range_m: 200,
+                ..base.clone()
+            },
+        ),
+        (
+            "range > 200 m AND range < 600 m",
+            FireCondition {
+                min_range_m: 200,
+                max_range_m: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "band = close",
+            FireCondition {
+                max_range_m: 200,
+                ..base.clone()
+            },
+        ),
+        (
+            "band = effective",
+            FireCondition {
+                min_range_m: 201,
+                max_range_m: 400,
+                ..base.clone()
+            },
+        ),
+        (
+            "BAND = FAR",
+            FireCondition {
+                min_range_m: 401,
+                max_range_m: 3_000,
+                ..base.clone()
+            },
+        ),
+        (
+            "rounds > 8",
+            FireCondition {
+                min_rounds_left: 8,
+                ..base.clone()
+            },
+        ),
+        (
+            "rounds > 25%",
+            FireCondition {
+                min_rounds_left: 5,
+                ..base.clone()
+            },
+        ),
+        (
+            "rounds > 25 %",
+            FireCondition {
+                min_rounds_left: 5,
+                ..base.clone()
+            },
+        ),
+        (
+            "rounds > 20",
+            FireCondition {
+                min_rounds_left: 20,
+                ..base.clone()
+            },
+        ),
+        ("rounds > 0", base.clone()),
+        ("reserve", base.clone()),
+        ("target = identified", base.clone()),
+        ("lock", base.clone()),
+        (
+            "odds >= 60 AND odds >= 60",
+            FireCondition {
+                min_permille: 600,
+                ..base.clone()
+            },
+        ),
+        (
+            "odds >= 60 and aspect = side,rear AND range < 600 m AND rounds > 8",
+            FireCondition {
+                min_permille: 600,
+                aspects: flank_rear,
+                max_range_m: 600,
+                min_rounds_left: 8,
+                ..base.clone()
+            },
+        ),
+    ] {
+        assert_eq!(parse(&cannon, rule), Ok(want), "{rule}");
+    }
+    // The machine gun's own bands and load: `band` is this weapon's.
+    assert_eq!(
+        parse(&mg, "band = effective").map(|c| (c.weapon, c.min_range_m, c.max_range_m)),
+        Ok(("machine_gun".into(), 134, 266))
+    );
+    assert_eq!(
+        parse(&mg, "rounds > 10%").map(|c| c.min_rounds_left),
+        Ok(50)
+    );
+    assert_eq!(parse(&mg, "odds mg >= 50").map(|c| c.min_permille), Ok(500));
+    // The band's cuts are `contact_band`'s, metre for metre, on this frame.
+    let bands = &frame.weapons[0].bands_cm;
+    let cuts = cockpit::band_bounds_m(frame.sight_cm, bands).expect("the cannon has bands");
+    assert_eq!(cuts, [(0, 200), (201, 400), (401, 3_000)]);
+    for (word, (nearest, furthest)) in ["close", "effective", "far"].into_iter().zip(cuts) {
+        for metres in [nearest.max(1), furthest] {
+            assert_eq!(
+                cockpit::contact_band(u64::from(metres) * 100, bands, frame.sight_cm),
+                word,
+                "{metres} m"
+            );
+        }
+    }
+    assert_eq!(
+        cockpit::contact_band(3_001 * 100, bands, frame.sight_cm),
+        "beyond"
+    );
+    assert_eq!(cockpit::band_bounds_m(frame.sight_cm, &[]), None);
+    // The floor: refused AS TYPED, refuse-not-clamp.
+    for rule in ["odds >= 5", "odds >= 9", "odds cannon >= 1"] {
+        let refused = parse(&cannon, rule);
+        assert_eq!(
+            refused,
+            Err(cockpit::CockpitError::Unlawful { floor_pct: 10 }),
+            "{rule}"
+        );
+        assert_eq!(
+            cockpit::order_refused("fire", Some("cannon"), &refused.unwrap_err().to_string()),
+            M1B4_FLOOR
+        );
+    }
+    // The cockpit's floor sentence IS the arena's landing refusal's.
+    assert_eq!(
+        cockpit::notice_line(
+            &frame,
+            &tacsim::arena::perception::FrameNotice::Refused {
+                order: "fire".into(),
+                refusal: tacsim::arena::intents::Refusal::Unlawful,
+                weapon: Some("cannon".into()),
+                detail: tacsim::arena::perception::RefusalDetail::Floor { permille: 100 },
+            },
+            &cockpit::frame_contacts(&frame),
+        ),
+        M1B4_FLOOR
+    );
+    // A frame at a floor of 50 per mille takes 5.
+    let mut low = fixture::frame();
+    low.odds_floor_permille = 50;
+    assert_eq!(
+        cockpit::parse_arming(&cannon, "odds >= 5", &low).map(|c| c.min_permille),
+        Ok(50)
+    );
+    assert_eq!(
+        cockpit::parse_arming(&cannon, "odds >= 4", &low),
+        Err(cockpit::CockpitError::Unlawful { floor_pct: 5 })
+    );
+    assert_eq!(
+        cockpit::parse_arming(&cannon, "aspect = rear", &low).map(|c| c.min_permille),
+        Ok(50),
+        "no odds term asks for the frame's floor"
+    );
+    // Everything else: ONE sentence.
+    for rule in [
+        "",
+        "   ",
+        "odds >= 101",
+        "odds >= 0",
+        "odds >= sixty",
+        "odds >= 6.5",
+        "odds >= -5",
+        "odds >=",
+        "odds > 60",
+        "odds = 60",
+        "odds mg >= 50",
+        "odds ghost >= 50",
+        "odds >= 60 OR aspect = rear",
+        "odds >= 60 AND",
+        "AND odds >= 60",
+        "odds >= 60 AND aspect = rear AND range < 600 AND rounds > 2 AND lock",
+        "odds >= 60 AND odds >= 70",
+        "aspect = side AND aspect = rear",
+        "aspect =",
+        "aspect = top",
+        "aspect = side,",
+        "aspect = ,side",
+        "aspect = side rear",
+        "range < 0",
+        "range < 10001",
+        "range <= 600",
+        "range < 600 km",
+        "band = beyond",
+        "band = effective AND range < 300",
+        "rounds > 21",
+        "rounds > 101%",
+        "rounds > -1",
+        "rounds >= 8",
+        "target = hostile",
+        "target = BA",
+        "hit within 5 s",
+        "hit",
+        "hostiles",
+        "order",
+        "own",
+        "heat < 50",
+        "no lock",
+        "lock BA",
+        "LOCK X2",
+        "reserve 5",
+    ] {
+        assert_eq!(
+            parse(&cannon, rule),
+            Err(cockpit::CockpitError::NotThisCore),
+            "{rule:?}"
+        );
+    }
+    assert_eq!(cockpit::CockpitError::NotThisCore.to_string(), M1B4_OUTSIDE);
+    // The grammar is read whole before the floor: malformed AND under the
+    // floor is the outside sentence.
+    assert_eq!(
+        parse(&cannon, "odds >= 5 AND hit"),
+        Err(cockpit::CockpitError::NotThisCore)
+    );
+    // The English written back.
+    let reply = |rule: &str| {
+        cockpit::arming_reply(&parse(&cannon, rule).unwrap_or_else(|e| panic!("{rule}: {e}")))
+    };
+    assert_eq!(reply("odds >= 60 AND aspect = side,rear"), M1B4_GATE_REPLY);
+    assert_eq!(
+        reply("odds >= 45 AND range > 200 m AND range < 600 m"),
+        "Arming cannon: fires your lock when your chance to hit is 45% or better and it is \
+         between 200 and 600 m."
+    );
+    assert_eq!(
+        reply("range < 600"),
+        "Arming cannon: fires your lock when your chance to hit is 10% or better and it is \
+         under 600 m."
+    );
+    assert_eq!(
+        reply("range > 200"),
+        "Arming cannon: fires your lock when your chance to hit is 10% or better and it is past \
+         200 m."
+    );
+    assert_eq!(
+        reply("band = effective"),
+        "Arming cannon: fires your lock when your chance to hit is 10% or better and it is \
+         between 201 and 400 m."
+    );
+    assert_eq!(
+        reply("reserve"),
+        "Arming cannon: fires your lock when your chance to hit is 10% or better."
+    );
+    assert_eq!(
+        reply("aspect = front, rear AND rounds > 8"),
+        "Arming cannon: fires your lock when your chance to hit is 10% or better and it shows \
+         its front or rear and cannon keeps 8 round(s)."
+    );
+    assert_eq!(
+        reply("target = identified AND lock"),
+        "Arming cannon: fires your lock when your chance to hit is 10% or better."
+    );
+    for rule in [
+        "odds >= 60",
+        "aspect = side,rear",
+        "band = far",
+        "rounds > 8",
+    ] {
+        let said = reply(rule);
+        assert!(
+            !said.contains("S1") && !said.contains("S2"),
+            "no slot number: {said}"
+        );
+    }
+}
+
+/// **`WEAPONSTATUS`' arming line** (17b cut M1b.4; doc 17 §5 as built for the
+/// 120-column floor): `arming_words` over every shape, the line indented two
+/// spaces under an armed row and absent under an unarmed one — on the real
+/// verb over a pushed frame — the fixture's `  S1: >=60% side/rear keeps 8`,
+/// T1's `  S1: best >=10% under 420m`; and the widest arming line and the
+/// widest weapon row any shipped weapon can print, each under 120 columns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1b4_weaponstatus_prints_the_arming_line_under_the_row() {
+    use tacsim::arena::conditions::{ASPECTS_ANY, SlotTarget, aspect_mask};
+    use tacsim::arena::perception::Aspect;
+    use tacsim::arena::weapons::FrameArming;
+    let scene = fixture::frame();
+    let armed = scene
+        .weapons
+        .first()
+        .and_then(|gun| gun.armed.clone())
+        .expect("the scene's cannon is armed");
+    assert_eq!(
+        format!("  {}", cockpit::arming_words(&armed)),
+        "  S1: >=60% side/rear keeps 8"
+    );
+    let t1 = FrameArming {
+        slot: 1,
+        target: SlotTarget::BestHostile,
+        min_permille: 100,
+        aspects: ASPECTS_ANY,
+        keeps: 0,
+        min_range_m: 0,
+        max_range_m: 420,
+    };
+    assert_eq!(
+        format!("  {}", cockpit::arming_words(&t1)),
+        "  S1: best >=10% under 420m"
+    );
+
+    // The widest of each, over every weapon a shipped unit mounts.
+    let units = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("content/units");
+    let mut ids: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&units).expect("the shipped units") {
+        let path = entry.expect("an entry").path();
+        let text = std::fs::read_to_string(&path).expect("a unit pack");
+        let pack: serde_json::Value = serde_json::from_str(&text).expect("a JSON pack");
+        let mut stack = vec![pack];
+        while let Some(value) = stack.pop() {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if map.get("role").and_then(|r| r.get("kind"))
+                        == Some(&serde_json::json!("weapon"))
+                        && let Some(id) = map.get("id").and_then(serde_json::Value::as_str)
+                    {
+                        ids.push(id.to_owned());
+                    }
+                    stack.extend(map.into_iter().map(|(_, v)| v));
+                }
+                serde_json::Value::Array(list) => stack.extend(list),
+                _ => {}
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    assert!(ids.contains(&"machine_gun".to_owned()), "{ids:?}");
+    let widest_row = |id: &str| cockpit::WeaponRow {
+        id: id.into(),
+        ready: false,
+        ready_in_ms: 999_000,
+        rounds: 99_999,
+        rounds_max: 99_999,
+        range_band: Some(tacsim::arena::weapons::FrameBand {
+            index: 9,
+            of: 9,
+            max_range_cm: 1_000_000,
+            dispersion_mrad: 99,
+        }),
+        p_permille: Some(1_000),
+        heat_per_shot: 0,
+        armed: None,
+    };
+    for id in &ids {
+        let rows = vec![widest_row(id)];
+        let row = rows[0].render(&rows);
+        assert!(
+            row.chars().count() < 120,
+            "{} columns: {row}",
+            row.chars().count()
+        );
+    }
+    let widest_arming = FrameArming {
+        slot: 2,
+        target: SlotTarget::BestHostile,
+        min_permille: 1_000,
+        aspects: aspect_mask(&[Aspect::Front, Aspect::Left, Aspect::Rear]),
+        keeps: 99_999,
+        min_range_m: 10_000,
+        max_range_m: 10_000,
+    };
+    let line = format!("  {}", cockpit::arming_words(&widest_arming));
+    assert_eq!(
+        line,
+        "  S2: best >=100% front/side/rear 10000-10000m keeps 99999"
+    );
+    assert!(line.chars().count() < 120, "{line}");
+    let brief = FrameArming {
+        slot: 2,
+        target: SlotTarget::BestHostile,
+        min_permille: 950,
+        aspects: aspect_mask(&[Aspect::Front, Aspect::Left]),
+        keeps: 1_999,
+        min_range_m: 1_000,
+        max_range_m: 3_000,
+    };
+    assert_eq!(
+        format!("  {}", cockpit::arming_words(&brief)),
+        "  S2: best >=95% front/side 1000-3000m keeps 1999",
+        "the plan's longest shipped arming line"
+    );
+
+    // The real verb, over a frame through the real egress seam.
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let mut frame = rig.held_frame(0);
+    frame.notices.clear();
+    let cannon = frame
+        .weapons
+        .iter()
+        .position(|gun| gun.id == "cannon")
+        .expect("a stock tank carries the cannon");
+    assert!(frame.weapons.iter().all(|gun| gun.armed.is_none()));
+    let unarmed = rig.say(0, "weaponstatus");
+    assert!(
+        !unarmed.lines().any(|line| line.starts_with("  S")),
+        "an unarmed row prints no line: {unarmed}"
+    );
+    frame.weapons[cannon].armed = Some(armed.clone());
+    rig.push_frame(0, frame.clone());
+    let said = rig.say(0, "weaponstatus");
+    let lines: Vec<&str> = said.lines().collect();
+    let row = lines
+        .iter()
+        .position(|line| line.starts_with("cannon  "))
+        .unwrap_or_else(|| panic!("the cannon's row: {said}"));
+    assert_eq!(
+        lines.get(row + 1).copied(),
+        Some("  S1: >=60% side/rear keeps 8"),
+        "{said}"
+    );
+    // Every other row is printed as it was: the rows with the arming lines
+    // taken out are the unarmed answer's rows.
+    let rows: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("  S"))
+        .collect();
+    assert_eq!(rows, unarmed.lines().collect::<Vec<&str>>());
+    for line in &lines {
+        assert!(line.chars().count() < 120, "{line}");
+    }
+}
+
+/// Pump until `done` holds of the rig, or fail saying `what`.
+async fn m1b4_until(rig: &mut Rig, what: &str, done: impl Fn(&Rig) -> bool) {
+    for _ in 0..1_500 {
+        rig.pump();
+        if done(rig) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let heard = rig.tw.seen_by(&rig.log, rig.pilot(0));
+    let tail = heard
+        .get(heard.len().saturating_sub(12)..)
+        .unwrap_or_default();
+    panic!("never: {what}; pilot 0 last heard {tail:#?}");
+}
+
+/// Let a whole arena second pass, so the next orders meet a fresh seat window
+/// (`max_pending_per_unit` a second; 16b cut M.1).
+async fn m1b4_next_second(rig: &mut Rig) {
+    let from = rig.staged_now_ms;
+    m1b4_until(rig, "an arena second", |rig| {
+        rig.staged_now_ms >= from + 1_000
+    })
+    .await;
+}
+
+/// The slot `weapon` is armed in on that pilot's mirror, and its odds term.
+fn m1b4_armed(rig: &Rig, n: usize, weapon: &str) -> Option<(u8, u16)> {
+    rig.frame(n)?
+        .weapons
+        .iter()
+        .find(|gun| gun.id == weapon)?
+        .armed
+        .as_ref()
+        .map(|armed| (armed.slot, armed.min_permille))
+}
+
+/// **`FIRE <weapon|ALL> OFF` clears and says so** (17b cut M1b.4): the two
+/// replies are unconditional — the same bytes with an arming on the mirror
+/// and with none — bare `FIRE OFF` is `ALL`'s, a word after `OFF` is the
+/// outside refusal and an unknown gun `FIRE`'s own; the forwarded disarm
+/// clears the frame's `armed` to `null`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1b4_fire_off_clears_and_says_so() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let one = "Cleared: cannon fires only when you say.";
+    let all = "Cleared: your guns fire only when you say.";
+    assert_eq!(cockpit::CLEARED_ALL, all);
+    // Nothing armed.
+    assert_eq!(rig.say(0, "fire cannon off"), one);
+    assert_eq!(rig.say(0, "FIRE CAN OFF"), one, "the gun as FIRE names it");
+    assert_eq!(rig.say(0, "fire all off"), all);
+    assert_eq!(rig.say(0, "FIRE OFF"), all);
+    assert_eq!(
+        rig.say(0, "fire cannon off now"),
+        format!("FIRE cannon refused. {M1B4_OUTSIDE}")
+    );
+    assert_eq!(
+        rig.say(0, "fire all off now"),
+        format!("FIRE refused. {M1B4_OUTSIDE}")
+    );
+    assert_eq!(
+        rig.say(0, "fire ghost off"),
+        "That unit carries no weapon called `ghost`."
+    );
+    // Armed, then cleared: the same bytes.
+    m1b4_next_second(&mut rig).await;
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 60"),
+        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+    );
+    m1b4_until(&mut rig, "the cannon armed", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 600)));
+    assert_eq!(rig.say(0, "fire cannon off"), one);
+    m1b4_until(&mut rig, "the cannon cleared", |rig| {
+        rig.frame(0)
+            .is_some_and(|frame| frame.weapons.iter().all(|gun| gun.armed.is_none()))
+    })
+    .await;
+    m1b4_next_second(&mut rig).await;
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 60"),
+        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+    );
+    assert_eq!(
+        rig.say(0, "fire mg when odds >= 30"),
+        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+    );
+    m1b4_until(&mut rig, "both armed", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_some() && m1b4_armed(rig, 0, "machine_gun").is_some()
+    })
+    .await;
+    m1b4_next_second(&mut rig).await;
+    assert_eq!(rig.say(0, "fire all off"), all);
+    m1b4_until(&mut rig, "every slot cleared", |rig| {
+        rig.frame(0)
+            .is_some_and(|frame| frame.weapons.iter().all(|gun| gun.armed.is_none()))
+    })
+    .await;
+    // The keyframe's `armed` is `null` again.
+    let frame = rig.held_frame(0);
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    for gun in payload["weapons"].as_array().cloned().unwrap_or_default() {
+        assert_eq!(gun["armed"], serde_json::Value::Null, "{gun}");
+    }
+}
+
+/// **The two sentences render from their fields** (17b cut M1b.4; D-UM-14):
+/// `notice_line` over a slot shot with and without a contact (the first
+/// letter upper-cased on `cannon` and `machine_gun`), every `HeldWhy` with
+/// the range's three shapes, and the `unlawful` refusal with its floor; the
+/// keyframe's notice object per kind; and `notice_lines.json`'s five slot
+/// cases ARE what `status_frame` publishes for them, each `line` the
+/// line-mode sentence less its full stop.
+#[test]
+fn m1b4_the_sentences_render_from_their_fields() {
+    use tacsim::arena::conditions::HeldWhy;
+    use tacsim::arena::intents::Refusal;
+    use tacsim::arena::perception::{Aspect, FrameNotice, Named, RefusalDetail};
+    let mut frame = fixture::frame();
+    let rows = cockpit::frame_contacts(&frame);
+    let ba = rows
+        .iter()
+        .find(|row| row.designator.to_string() == "BA")
+        .map(|row| Named {
+            id: row.id,
+            designator: row.designator,
+        })
+        .expect("the scene's BA");
+    let held = |why: HeldWhy| FrameNotice::SlotHeld {
+        slot: 1,
+        weapon: "cannon".into(),
+        why,
+    };
+    let fired = FrameNotice::SlotFired {
+        slot: 1,
+        weapon: "cannon".into(),
+        contact: Some(ba),
+        p_permille: 624,
+        aspect: Aspect::Left,
+    };
+    let fired_blind = FrameNotice::SlotFired {
+        slot: 2,
+        weapon: "machine_gun".into(),
+        contact: None,
+        p_permille: 210,
+        aspect: Aspect::Rear,
+    };
+    let odds = held(HeldWhy::Odds {
+        permille: 540,
+        floor: 600,
+    });
+    let aspect = held(HeldWhy::Aspect {
+        contact: ba,
+        aspect: Aspect::Front,
+    });
+    let unlawful = FrameNotice::Refused {
+        order: "fire".into(),
+        refusal: Refusal::Unlawful,
+        weapon: Some("cannon".into()),
+        detail: RefusalDetail::Floor { permille: 100 },
+    };
+    for (notice, said) in [
+        (&fired, "Cannon fires at BA by S1 (62%, side)."),
+        (&fired_blind, "Machine_gun fires by S2 (21%, rear)."),
+        (&odds, "S1 held the cannon: 54% under your 60%."),
+        (&aspect, "S1 held the cannon: BA shows its front."),
+        (
+            &held(HeldWhy::Range {
+                contact: ba,
+                range_m: 650,
+                min_m: 200,
+                max_m: 600,
+            }),
+            "S1 held the cannon: BA at 650 m, outside 200 to 600.",
+        ),
+        (
+            &held(HeldWhy::Range {
+                contact: ba,
+                range_m: 650,
+                min_m: 0,
+                max_m: 600,
+            }),
+            "S1 held the cannon: BA at 650 m, outside under 600.",
+        ),
+        (
+            &held(HeldWhy::Range {
+                contact: ba,
+                range_m: 150,
+                min_m: 200,
+                max_m: u32::MAX,
+            }),
+            "S1 held the cannon: BA at 150 m, outside past 200.",
+        ),
+        (
+            &held(HeldWhy::Rounds {
+                rounds: 7,
+                keeps: 8,
+            }),
+            "S1 held the cannon: 7 rounds, keeps 8.",
+        ),
+        (&unlawful, M1B4_FLOOR),
+    ] {
+        assert_eq!(cockpit::notice_line(&frame, notice, &rows), said);
+    }
+    // The keyframe's objects, and the committed ring cases.
+    let cases = [fired, fired_blind, odds, aspect, unlawful];
+    frame.notices = cases.to_vec();
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    let published = payload["notices"].as_array().cloned().unwrap_or_default();
+    assert_eq!(published.len(), cases.len());
+    let keys = |object: &serde_json::Value| -> Vec<String> {
+        object
+            .as_object()
+            .map(|map| map.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    let common = [
+        "cause",
+        "contact",
+        "designator",
+        "detail",
+        "friendly",
+        "kind",
+        "order",
+        "refusal",
+        "section",
+        "spent",
+        "text",
+        "was",
+        "weapon",
+    ];
+    let mut fired_keys: Vec<&str> = common.to_vec();
+    fired_keys.extend(["aspect", "percent", "slot"]);
+    fired_keys.sort_unstable();
+    let mut held_keys: Vec<&str> = common.to_vec();
+    held_keys.push("slot");
+    held_keys.sort_unstable();
+    assert_eq!(keys(&published[0]), fired_keys);
+    assert_eq!(keys(&published[2]), held_keys);
+    assert_eq!(keys(&published[4]), common.to_vec());
+    for object in &published {
+        let text = object.to_string();
+        assert!(!text.contains("\"101\""), "no object number: {text}");
+    }
+    let committed: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/notice_lines.json"
+    ))
+    .expect("notice_lines.json is an array");
+    for object in &published {
+        let row = committed
+            .iter()
+            .find(|row| row.get("notice") == Some(object))
+            .unwrap_or_else(|| panic!("notice_lines.json has no row for {object}"));
+        let text = object["text"].as_str().expect("a sentence");
+        assert_eq!(
+            row.get("line"),
+            Some(&serde_json::json!(text.strip_suffix('.').unwrap_or(text))),
+            "{object}"
+        );
+    }
+}
+
+/// **The floor, refused as typed and at the landing** (17b cut M1b.4; doc 17
+/// §5, D-UM-17 as amended; the gate's item), through the real `FIRE` handler
+/// on a running rig: `FIRE cannon WHEN odds >= 5` answers the floor sentence
+/// from the cockpit and forwards nothing — the arena never says it again; the
+/// same arming offered straight into the match's inbox is refused by the
+/// arena's own landing in the SAME bytes, its keyframe notice carrying
+/// `detail.floor_permille` 100; `odds >= 10` arms. A rig checked out at a
+/// floor of 50 per mille takes `odds >= 5` at the cockpit AND at the arena;
+/// and the cockpit reads the frame's captured floor and never the config — a
+/// held frame saying 50 on a config of 100 takes it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1b4_fire_when_under_the_floor_is_refused_unlawful_as_typed_and_at_the_landing() {
+    use tacsim::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
+    use tacsim::arena::intents::{Intent, IntentKind};
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let pilot = rig.pilot(0);
+    let floor_lines = |rig: &Rig, mark: usize| {
+        m1a4_said_since(rig, pilot, mark)
+            .into_iter()
+            .filter(|line| line.contains("Compact floor"))
+            .collect::<Vec<String>>()
+    };
+
+    // As typed: the cockpit's sentence, and nothing forwarded — had it been,
+    // the arena's landing would say it a second time.
+    let mark = rig.log.len();
+    assert_eq!(rig.say(0, "FIRE cannon WHEN odds >= 5"), M1B4_FLOOR);
+    let settle = rig.staged_now_ms;
+    m1b4_until(&mut rig, "two arena seconds", |rig| {
+        rig.staged_now_ms >= settle + 2_000
+    })
+    .await;
+    assert_eq!(floor_lines(&rig, mark), vec![M1B4_FLOOR.to_owned()]);
+    assert!(m1b4_armed(&rig, 0, "cannon").is_none());
+
+    // The backstop: the same arming straight into the inbox.
+    let tasks = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .expect("the registry");
+    let match_id = rig.centre().match_id.expect("a running match");
+    let tank = rig.tank(0);
+    let mark = rig.log.len();
+    let panels_before = rig.panels(tacsim::arena_bridge::FRAME_FEED).len();
+    assert!(
+        tasks
+            .offer(
+                match_id,
+                tacsim::arena_task::ArenaMsg::Intent(Intent {
+                    unit: tank,
+                    channel: Channel::Fire,
+                    epoch: rig.epoch(tank, Channel::Fire),
+                    kind: IntentKind::Condition(Arming::Arm(FireCondition {
+                        weapon: "cannon".into(),
+                        target: SlotTarget::Lock,
+                        min_permille: 50,
+                        aspects: ASPECTS_ANY,
+                        min_rounds_left: 0,
+                        min_range_m: 0,
+                        max_range_m: u32::MAX,
+                    })),
+                    seq: 9_100_001,
+                }),
+            )
+            .is_ok(),
+        "the inbox took the arming"
+    );
+    m1b4_until(&mut rig, "the arena's refusal", |rig| {
+        !floor_lines(rig, mark).is_empty()
+    })
+    .await;
+    assert_eq!(
+        floor_lines(&rig, mark),
+        vec![M1B4_FLOOR.to_owned()],
+        "the arena's landing says the cockpit's bytes"
+    );
+    let notice = rig
+        .panels(tacsim::arena_bridge::FRAME_FEED)
+        .into_iter()
+        .skip(panels_before)
+        .flat_map(|(_, data)| data["notices"].as_array().cloned().unwrap_or_default())
+        .find(|notice| notice["refusal"] == "unlawful")
+        .expect("the keyframe carries the refusal");
+    assert_eq!(
+        notice["detail"],
+        serde_json::json!({ "floor_permille": 100 })
+    );
+    assert_eq!(notice["order"], "fire");
+    assert_eq!(notice["weapon"], "cannon");
+    assert!(m1b4_armed(&rig, 0, "cannon").is_none());
+
+    // At the floor: armed.
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 10"),
+        "Arming cannon: fires your lock when your chance to hit is 10% or better."
+    );
+    m1b4_until(&mut rig, "the cannon armed", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 100)));
+
+    // The frame's captured floor, never the config: a held frame at 50 on a
+    // rig whose `[tacsim.minds]` says 100 takes 5 at the cockpit.
+    let mut low = rig.held_frame(0);
+    low.notices.clear();
+    low.odds_floor_permille = 50;
+    rig.push_frame(0, low);
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 5"),
+        "Arming cannon: fires your lock when your chance to hit is 5% or better."
+    );
+
+    // A match checked out at 50: the cockpit and the arena both take 5.
+    let mut cfg = config();
+    cfg.minds.odds_floor_permille = 50;
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    assert_eq!(rig.held_frame(0).odds_floor_permille, 50);
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 5"),
+        "Arming cannon: fires your lock when your chance to hit is 5% or better."
+    );
+    assert_eq!(
+        rig.say(0, "fire mg when odds >= 4"),
+        "FIRE machine_gun refused. The Compact floor is 5%; a condition may not ask for less."
+    );
+    m1b4_until(&mut rig, "the cannon armed at 50", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 50)));
+}
+
+/// **The arming through the composition** (17b cut M1b.4): on a pod fitted
+/// with the authored heavy (three guns, two slots) the gate's rule forwards
+/// one `Condition` and replies verbatim; the next frame's `armed.slot` is 1, a
+/// second arming on the machine gun lands as 2, the third gun is refused the
+/// count by the pre-check, and a re-arm of an armed gun replaces it in place.
+/// Two armings typed inside one pulse past a mirror showing one free slot:
+/// both pass the pre-check, and the arena's own `NoSlot` reaches the pilot in
+/// the pre-check's bytes. The existing `FIRE` lines are untouched; the
+/// outside rule is the one sentence; `FIRE cannon OFF` replies and the
+/// frame's `armed` goes `null`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_sentence() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim unit heavy_mk1");
+    assert!(said.contains("will field heavy_mk1"), "{said}");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+
+    // Before the first frame (nothing pumped, so the world holds none): an
+    // arming has no floor to be read against and no lock to fire, so it is
+    // answered as the typed `FIRE` is on a mirror holding no rows — the same
+    // bytes, the weapon still resolved first — and nothing is armed.
+    assert!(rig.frame(0).is_none(), "nothing has been pumped yet");
+    let dark = format!("FIRE cannon refused. {}", cockpit::NO_LOCK);
+    assert_eq!(rig.say(0, "fire cannon"), dark);
+    assert_eq!(rig.say(0, "FIRE cannon WHEN odds >= 60"), dark);
+    assert_eq!(rig.say(0, "fire cannon when odds >= 5"), dark);
+    assert_eq!(
+        rig.say(0, "fire ghost when odds >= 60"),
+        "That unit carries no weapon called `ghost`."
+    );
+    assert_eq!(
+        rig.say(0, "fire all when odds >= 60"),
+        "That unit carries no weapon called `all`.",
+        "`all` names no gun to arm"
+    );
+
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let pilot = rig.pilot(0);
+    let guns: Vec<String> = rig
+        .held_frame(0)
+        .weapons
+        .iter()
+        .map(|gun| gun.id.to_string())
+        .collect();
+    assert_eq!(guns, ["cannon", "machine_gun", "missiles"]);
+    let count = "Every slot is armed; FIRE <weapon> OFF frees one.";
+
+    // Every existing `FIRE` line, byte for byte (no lock here).
+    let no_lock = format!("FIRE cannon refused. {}", cockpit::NO_LOCK);
+    assert_eq!(rig.say(0, "fire cannon"), no_lock);
+    assert_eq!(rig.say(0, "fire"), no_lock, "the bare FIRE is the cannon");
+    assert_eq!(
+        rig.say(0, "fire mg"),
+        format!("FIRE machine_gun refused. {}", cockpit::NO_LOCK)
+    );
+    assert_eq!(
+        rig.say(0, "fire all"),
+        "That unit carries no weapon called `all`."
+    );
+    assert_eq!(
+        rig.say(0, "fire m"),
+        "`m` could be machine_gun or missiles; say more."
+    );
+
+    // The gate's rule.
+    assert_eq!(
+        rig.say(0, "FIRE cannon WHEN odds >= 60 AND aspect = side,rear"),
+        M1B4_GATE_REPLY
+    );
+    m1b4_until(&mut rig, "the cannon in S1", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 600)));
+    let said = rig.say(0, "weaponstatus");
+    assert!(said.contains("\n  S1: >=60% side/rear"), "{said}");
+    // The second gun takes S2.
+    assert_eq!(
+        rig.say(0, "fire mg when odds >= 30"),
+        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+    );
+    m1b4_until(&mut rig, "the machine gun in S2", |rig| {
+        m1b4_armed(rig, 0, "machine_gun").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    // The third is the count, from the pre-check; a re-arm is not.
+    assert_eq!(
+        rig.say(0, "fire missiles when odds >= 40"),
+        format!("FIRE missiles refused. {count}")
+    );
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 70"),
+        "Arming cannon: fires your lock when your chance to hit is 70% or better."
+    );
+    m1b4_until(&mut rig, "the cannon re-armed in place", |rig| {
+        m1b4_armed(rig, 0, "cannon") == Some((1, 700))
+    })
+    .await;
+    // The outside rule: one sentence, nothing forwarded.
+    assert_eq!(
+        rig.say(0, "FIRE cannon WHEN hit within 5 s"),
+        format!("FIRE cannon refused. {M1B4_OUTSIDE}")
+    );
+
+    m1b4_next_second(&mut rig).await;
+    // The race: S2 freed, and two armings typed inside one pulse past a
+    // mirror that has not moved. Both pass the pre-check; the arena gives the
+    // first S2 and refuses the second in the pre-check's own bytes.
+    assert_eq!(
+        rig.say(0, "fire mg off"),
+        "Cleared: machine_gun fires only when you say."
+    );
+    m1b4_until(&mut rig, "S2 free", |rig| {
+        m1b4_armed(rig, 0, "machine_gun").is_none()
+    })
+    .await;
+    m1b4_next_second(&mut rig).await;
+    let mark = rig.log.len();
+    assert_eq!(
+        rig.say(0, "fire mg when odds >= 30"),
+        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+    );
+    assert_eq!(
+        rig.say(0, "fire missiles when odds >= 40"),
+        "Arming missiles: fires your lock when your chance to hit is 40% or better."
+    );
+    let raced = format!("FIRE missiles refused. {count}");
+    m1b4_until(&mut rig, "the arena's count", |rig| {
+        m1a4_said_since(rig, pilot, mark).contains(&raced)
+    })
+    .await;
+    m1b4_until(&mut rig, "the machine gun in S2 again", |rig| {
+        m1b4_armed(rig, 0, "machine_gun").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), None);
+
+    // Off: the reply, and the frame's `null`.
+    m1b4_next_second(&mut rig).await;
+    assert_eq!(
+        rig.say(0, "FIRE cannon OFF"),
+        "Cleared: cannon fires only when you say."
+    );
+    m1b4_until(&mut rig, "the cannon cleared", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_none()
+    })
+    .await;
+    let payload = cockpit::status_frame(fixture::MATCH, &rig.held_frame(0));
+    assert_eq!(payload["weapons"][0]["id"], "cannon");
+    assert_eq!(payload["weapons"][0]["armed"], serde_json::Value::Null);
+    assert_eq!(
+        payload["weapons"][1]["armed"]["slot"], 2,
+        "S2 kept its number"
+    );
+}

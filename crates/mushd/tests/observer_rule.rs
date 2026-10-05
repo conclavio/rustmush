@@ -7820,3 +7820,259 @@ async fn m1b3_the_arming_names_nothing_but_the_pilots_own_slot() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.4 — the pilot's arming, said (doc 17 §5, D-UM-14, D-UM-17)
+// ---------------------------------------------------------------------------
+
+/// Every line of `seen` that opens with `head`, trimmed.
+fn m1b4_lines(seen: &str, head: &str) -> Vec<String> {
+    seen.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(head))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The cannon's rounds left, off a `WEAPONSTATUS` answer's `cannon` row.
+fn m1b4_cannon_rounds(listing: &str) -> Option<u32> {
+    let row = listing
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("cannon  "))?;
+    let words: Vec<&str> = row.split_whitespace().collect();
+    let at = words.iter().position(|word| *word == "of")?;
+    words.get(at.checked_sub(1)?)?.parse().ok()
+}
+
+/// **Every slot notice a cockpit socket is pushed, read as it comes** (17b
+/// cut M1b.4): the per-pulse keyframes read one by one — the keepalive
+/// answered along the way by [`pushed_cockpit`] — until a `slot_held` and a
+/// `slot_fired` have both been seen. Run on its own task from the moment the
+/// socket opens, so the socket is never left unread while the SSH steps take
+/// their arena seconds: an unread socket's buffer fills, the server's send
+/// blocks past its `send_timeout_ms` and the socket is reset.
+async fn m1b4_slot_notices(mut ws: Ws) -> Vec<Value> {
+    let mut slot_notices: Vec<Value> = Vec::new();
+    for _ in 0..2_000 {
+        let frame = pushed_cockpit(&mut ws).await;
+        slot_notices.extend(
+            frame
+                .get("notices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|notice| {
+                    matches!(
+                        notice.get("kind").and_then(Value::as_str),
+                        Some("slot_held" | "slot_fired")
+                    )
+                })
+                .cloned(),
+        );
+        let kinds: Vec<&str> = slot_notices
+            .iter()
+            .filter_map(|notice| notice.get("kind").and_then(Value::as_str))
+            .collect();
+        if kinds.contains(&"slot_held") && kinds.contains(&"slot_fired") {
+            break;
+        }
+    }
+    slot_notices
+}
+
+/// **17b cut M1b.4: an arming and its sentences name only what the pilot
+/// holds** (doc 17 §5, D-UM-14, D-UM-17; doc 16 §1, §5's observer rule; 17b's
+/// (e)), on the real rig over SSH, with Ada's web socket open beside it.
+///
+/// * Cy, who flies nothing, types the rule and reads the gate's one line;
+/// * Ada, powered and seven hundred metres from Bo — past her sight — types
+///   `FIRE cannon WHEN odds >= 60` before her platform holds anything: it
+///   arms, `Arming cannon: …`, and once told apart and locked the same rule
+///   answers the SAME bytes, so the verb is no oracle on what is out there;
+///   her `WEAPONSTATUS` arming line is her own slot alone (`  S1: >=60%`);
+/// * her `odds >= 5` is refused naming the floor and nothing else;
+/// * locked on `BA` showing its front, an `aspect = side,rear` slot says `S1
+///   held the cannon: BA shows its front.` — her slot, her gun and the
+///   designator she holds — and a slot with no aspect term fires: `Cannon
+///   fires at BA by S1 (NN%, front).`; both keyframe notice objects carry her
+///   slot, her gun and `BA`, and no tank name or object number;
+/// * Bo, the target, reads none of it — no slot word, no `fires by`, no
+///   `held the`, no `Arming` — on his terminal from the first arming to the
+///   last.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
+    use tacsim::match_::cockpit::OUTSIDE_COCKPIT;
+    const FLOOR: &str =
+        "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.";
+    const ARMED: &str = "Arming cannon: fires your lock when your chance to hit is 60% or better.";
+
+    let server = boot("observer-arming-said").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    // 120 columns, the floor: the floor's sentence is 81 and must not wrap.
+    let (_a, mut ada) = login_sized(server.addr, "ada", PILOT_PASSWORD, "Ada", 120, 40).await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    close_the_gap(&mut god, red, blue, domain).await;
+    take_off(&mut ada, &mut bo).await;
+    let bo_mark = bo.mark();
+
+    // The bystander: the gate's one line, byte for byte.
+    let seen = ask(&mut cy, "FIRE cannon WHEN odds >= 60", OUTSIDE_COCKPIT).await;
+    let answer = seen
+        .rsplit_once("FIRE cannon WHEN odds >= 60")
+        .map_or(seen.as_str(), |(_, after)| after);
+    assert_eq!(answer.trim(), OUTSIDE_COCKPIT);
+
+    // Before detection: nothing held, and the rule arms all the same.
+    power_up(&mut ada).await;
+    let held = ask_whole(&mut ada, "CONTACTS").await;
+    assert!(
+        held.contains(NO_CONTACTS),
+        "the premise: nothing held\n{held}"
+    );
+    let before = ask(&mut ada, "FIRE cannon WHEN odds >= 60", "Arming cannon").await;
+    names_nothing(&before, red, blue, "the arming before detection");
+    assert_eq!(m1b4_lines(&before, "Arming"), vec![ARMED.to_owned()]);
+    // Her own slot, on her own `WEAPONSTATUS`, once the arena has given it.
+    wait_until(STEP_TIMEOUT, "the slot on WEAPONSTATUS", async || {
+        ask_whole(&mut ada, "WEAPONSTATUS")
+            .await
+            .contains("\n  S1: >=60%")
+    })
+    .await;
+    let listing = ask_whole(&mut ada, "WEAPONSTATUS").await;
+    names_nothing(&listing, red, blue, "WEAPONSTATUS");
+    assert_eq!(
+        m1b4_lines(&listing, "S1:"),
+        vec!["S1: >=60%".to_owned()],
+        "her own slot, its own terms: {listing}"
+    );
+    // The floor, refused naming the floor alone.
+    let refused = ask(&mut ada, "FIRE cannon WHEN odds >= 5", "Compact floor").await;
+    names_nothing(&refused, red, blue, "the floor refusal");
+    assert_eq!(
+        m1b4_lines(&refused, "FIRE cannon refused."),
+        vec![FLOOR.to_owned()]
+    );
+
+    // Close under her own helm until her platform holds Bo's tank told apart;
+    // Bo stands facing her, so he shows her his front.
+    say(&mut ada, "HEADING 90", "Steering to 90").await;
+    say(&mut ada, "SPEED 30", "Making 30 kph").await;
+    let _ = first_contact(&mut ada).await;
+    wait_until(
+        STEP_TIMEOUT,
+        "the contact to be told apart as BA",
+        async || {
+            let listing = ask_whole(&mut ada, "CONTACTS").await;
+            designator_of(&listing).as_deref() == Some("BA")
+        },
+    )
+    .await;
+    say(&mut ada, "SPEED 0", "Making 0 kph").await;
+    // Her browser, opened now and read from here on by its own task — every
+    // keyframe as it is pushed, the keepalive answered — so the socket is
+    // never left unread across the SSH steps below; its slot notices are
+    // asserted once the two sentences have been said.
+    let ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let ada_web = tokio::spawn(m1b4_slot_notices(ada_web));
+
+    // After detection: the same bytes. (No lock yet, so the slot has nothing
+    // to fire at: a slot fires only the lock.)
+    let after = ask(&mut ada, "FIRE cannon WHEN odds >= 60", "Arming cannon").await;
+    assert_eq!(
+        m1b4_lines(&after, "Arming"),
+        m1b4_lines(&before, "Arming"),
+        "the arming answered other bytes once BA was held"
+    );
+
+    // A held shot: her slot, her gun, the name she holds — said when the lock
+    // lands on a front the slot does not fire at.
+    let _ = ask(
+        &mut ada,
+        "FIRE cannon WHEN aspect = side,rear",
+        "Arming cannon",
+    )
+    .await;
+    let mark = ada.mark();
+    say(&mut ada, "LOCK BA", "Locking BA").await;
+    ada.expect_after(mark, "S1 held the cannon:").await;
+    let seen = strip_ansi(&ada.seen[mark..]);
+    names_nothing(&seen, red, blue, "the held sentence");
+    assert_eq!(
+        m1b4_lines(&seen, "S1 held the cannon:"),
+        vec!["S1 held the cannon: BA shows its front.".to_owned()],
+        "{seen}"
+    );
+
+    // A slot shot: two rounds at most, then cleared.
+    let rounds = m1b4_cannon_rounds(&ask_whole(&mut ada, "WEAPONSTATUS").await)
+        .expect("the cannon's rounds");
+    let keep = rounds.saturating_sub(2);
+    let mark = ada.mark();
+    say(
+        &mut ada,
+        &format!("FIRE cannon WHEN rounds > {keep}"),
+        "Arming cannon",
+    )
+    .await;
+    ada.expect_after(mark, "Cannon fires at BA by S1 (").await;
+    say(
+        &mut ada,
+        "FIRE cannon OFF",
+        "Cleared: cannon fires only when you say.",
+    )
+    .await;
+    let seen = strip_ansi(&ada.seen[mark..]);
+    names_nothing(&seen, red, blue, "the slot shot's sentence");
+    let fired = m1b4_lines(&seen, "Cannon fires");
+    assert!(!fired.is_empty(), "{seen}");
+    for line in &fired {
+        let rest = line
+            .strip_prefix("Cannon fires at BA by S1 (")
+            .and_then(|rest| rest.strip_suffix("%, front)."))
+            .unwrap_or_else(|| panic!("not her slot's sentence: {line}"));
+        assert!(rest.bytes().all(|b| b.is_ascii_digit()), "{line}");
+    }
+
+    // The keyframe's notice objects: her slot, her gun, BA, and no tank.
+    let slot_notices = ada_web.await.expect("her browser's reader");
+    let kinds: Vec<&str> = slot_notices
+        .iter()
+        .filter_map(|notice| notice.get("kind").and_then(Value::as_str))
+        .collect();
+    assert!(
+        kinds.contains(&"slot_held") && kinds.contains(&"slot_fired"),
+        "the socket was pushed both slot notices: {slot_notices:?}"
+    );
+    for notice in &slot_notices {
+        let text = notice.to_string();
+        names_nothing(&text, red, blue, "a slot notice object");
+        assert_eq!(notice.get("slot"), Some(&json!(1)), "{text}");
+        assert_eq!(notice.get("weapon"), Some(&json!("cannon")), "{text}");
+        assert_eq!(notice.get("designator"), Some(&json!("BA")), "{text}");
+        for key in ["unit", "target", "pilot", "shooter"] {
+            assert!(notice.get(key).is_none(), "{key} on {text}");
+        }
+    }
+
+    // The target read none of it — his terminal read to its end first (a
+    // whole answer of his own), so nothing he was sent is still in flight.
+    let _ = ask_whole(&mut bo, "STATUS").await;
+    let theirs = strip_ansi(&bo.seen[bo_mark..]);
+    for leak in [
+        "S1",
+        "fires by",
+        "held the",
+        "Arming",
+        "Cleared:",
+        "Compact floor",
+    ] {
+        assert!(
+            !theirs.contains(leak),
+            "Bo read {leak:?} of Ada's slot:\n{theirs}"
+        );
+    }
+}

@@ -3053,6 +3053,11 @@ const NOTICE_WORDS: &[(&str, &str)] = &[
     // each is already short, and there is nothing in it to compose.
     ("drive_arrived", "DRIVE: arrived."),
     ("drive_no_route", "DRIVE: no route from here; holding."),
+    // 17b cut M1b.4: a slot's shot and a slot's held shot. Both lines are
+    // composed whole from the notice's fields (`slot_words`); these are the
+    // fallbacks a line missing its parts would fall to.
+    ("slot_fired", "fires by"),
+    ("slot_held", "held"),
 ];
 
 /// Why an order was refused, in the pilot's words (`Refusal::as_str`; the web's
@@ -3142,6 +3147,20 @@ pub fn notice_words(notice: &Value) -> String {
         let weapon = notice_str(notice, "weapon", 24)
             .map(|w| format!(" {w}"))
             .unwrap_or_default();
+        // **17b cut M1b.4**: an arming under the Compact floor carrying its
+        // floor reads the line-mode sentence itself (less its full stop), so
+        // the ring and the scrollback say the floor in one sentence.
+        if notice_str(notice, "refusal", 24).as_deref() == Some("unlawful")
+            && let Some(permille) = notice
+                .get("detail")
+                .and_then(|d| notice_int(d, "floor_permille"))
+        {
+            return format!(
+                "{order}{weapon} refused. The Compact floor is {}%; a condition may not ask for \
+                 less",
+                permille / 10
+            );
+        }
         let why = notice_str(notice, "refusal", 24)
             .map_or_else(|| "refused".to_string(), |r| words_for(REFUSAL_WORDS, &r));
         let detail = notice
@@ -3171,6 +3190,11 @@ pub fn notice_words(notice: &Value) -> String {
     let friendly = notice.get("friendly").and_then(Value::as_bool) == Some(true);
     let named = notice_str(notice, "designator", 8)
         .map(|d| format!("{d}{}", if friendly { " (FRIENDLY)" } else { "" }));
+    if (kind == "slot_fired" || kind == "slot_held")
+        && let Some(line) = slot_words(notice, &kind, named.as_deref())
+    {
+        return line;
+    }
     if (kind == "classified" || kind == "unidentified")
         && let Some(was) = notice_str(notice, "was", 8)
     {
@@ -3194,6 +3218,82 @@ pub fn notice_words(notice: &Value) -> String {
     } else {
         line
     }
+}
+
+/// A notice's facet word as the pilot reads it (the server's
+/// `Aspect::side_word`; the web's `sideWord`, and `contact_tail`'s rule):
+/// `left` and `right` are both `side`, `rear` is `rear`, anything else
+/// `front`.
+fn side_word(facet: &str) -> &'static str {
+    match facet {
+        "left" | "right" => "side",
+        "rear" => "rear",
+        _ => "front",
+    }
+}
+
+/// **A slot notice's line** (17b cut M1b.4; doc 17 §5, D-UM-14) — exactly the
+/// line-mode sentence (`notice_line`) less its full stop, from the notice's
+/// own fields: `{Weapon} fires at {designator}{ (FRIENDLY)} by S{slot}
+/// ({percent}%, {side})` (`{Weapon} fires by S{slot} (…)` with no designator)
+/// and `S{slot} held the {weapon}: {why}`, the why off `detail` — `{percent}%
+/// under your {floor}%`, `{designator} shows its {side}`, `{designator} at
+/// {range_m} m, outside {min} to {max}` (`under {max}` with no nearest, `past
+/// {min}` with no furthest), `{rounds} rounds, keeps {keeps}`. `None` for a
+/// notice missing a part, which then reads as its kind's words.
+fn slot_words(notice: &Value, kind: &str, named: Option<&str>) -> Option<String> {
+    let slot = notice_int(notice, "slot")?;
+    let weapon = notice_str(notice, "weapon", 24)?;
+    if kind == "slot_fired" {
+        let percent = notice_int(notice, "percent")?;
+        let aspect = notice_str(notice, "aspect", 24)?;
+        let mut letters = weapon.chars();
+        let gun: String = letters
+            .next()
+            .map(|first| first.to_uppercase().chain(letters).collect())
+            .unwrap_or_default();
+        let side = side_word(&aspect);
+        return Some(match named {
+            Some(named) => format!("{gun} fires at {named} by S{slot} ({percent}%, {side})"),
+            None => format!("{gun} fires by S{slot} ({percent}%, {side})"),
+        });
+    }
+    let detail = notice.get("detail").filter(|d| d.is_object())?;
+    let designator = notice_str(notice, "designator", 8);
+    let why = match notice_str(detail, "why", 24)?.as_str() {
+        "odds" => format!(
+            "{}% under your {}%",
+            notice_int(detail, "percent")?,
+            notice_int(detail, "floor")?
+        ),
+        "aspect" => format!(
+            "{} shows its {}",
+            designator?,
+            side_word(&notice_str(detail, "aspect", 24)?)
+        ),
+        "range" => {
+            let (min, max) = (notice_int(detail, "min_m")?, notice_int(detail, "max_m")?);
+            let bounds = if min == 0 {
+                format!("under {max}")
+            } else if max == i64::from(u32::MAX) {
+                format!("past {min}")
+            } else {
+                format!("{min} to {max}")
+            };
+            format!(
+                "{} at {} m, outside {bounds}",
+                designator?,
+                notice_int(detail, "range_m")?
+            )
+        }
+        "rounds" => format!(
+            "{} rounds, keeps {}",
+            notice_int(detail, "rounds")?,
+            notice_int(detail, "keeps")?
+        ),
+        _ => return None,
+    };
+    Some(format!("S{slot} held the {weapon}: {why}"))
 }
 
 /// **The most new or lost contacts a catch-up names, each list** (16b cut
@@ -6070,11 +6170,87 @@ mod tests {
         ))
         .expect("notice_lines.json is a JSON array");
         assert!(pairs.len() >= 18, "the fixture has every shape B.1 pinned");
+        // 17b cut M1b.4: and its five slot cases — a shot with a designator and
+        // one without, an odds and an aspect held shot, and an unlawful refusal
+        // with its floor.
+        for kind in ["slot_fired", "slot_held"] {
+            assert!(
+                pairs.iter().any(|pair| pair["notice"]["kind"] == kind),
+                "the fixture carries a {kind}"
+            );
+        }
+        assert!(
+            pairs
+                .iter()
+                .any(|pair| pair["notice"]["refusal"] == "unlawful"),
+            "the fixture carries an unlawful refusal"
+        );
         for pair in &pairs {
             let notice = pair.get("notice").expect("a notice");
             let line = pair.get("line").and_then(Value::as_str).expect("a line");
             assert_eq!(notice_words(notice), line, "{notice}");
         }
+    }
+
+    /// **17b cut M1b.4**: a slot notice's ring line is the line-mode sentence
+    /// less its full stop, for every why the committed fixture does not carry
+    /// — the range's three shapes and the rounds — and the friendly mark on a
+    /// shot; a slot notice missing a part falls to its kind's words, and an
+    /// `unlawful` refusal with no floor reads the generic refusal.
+    #[test]
+    fn m1b4_slot_words_say_every_why() {
+        let held = |detail: Value| {
+            serde_json::json!({
+                "kind": "slot_held", "slot": 1, "weapon": "cannon", "designator": "BA",
+                "friendly": false, "detail": detail
+            })
+        };
+        let range = |min: i64, max: i64| {
+            held(serde_json::json!({
+                "why": "range", "percent": null, "floor": null, "aspect": null,
+                "range_m": 650, "min_m": min, "max_m": max, "rounds": null, "keeps": null
+            }))
+        };
+        assert_eq!(
+            notice_words(&range(200, 600)),
+            "S1 held the cannon: BA at 650 m, outside 200 to 600"
+        );
+        assert_eq!(
+            notice_words(&range(0, 600)),
+            "S1 held the cannon: BA at 650 m, outside under 600"
+        );
+        assert_eq!(
+            notice_words(&range(200, i64::from(u32::MAX))),
+            "S1 held the cannon: BA at 650 m, outside past 200"
+        );
+        assert_eq!(
+            notice_words(&held(serde_json::json!({
+                "why": "rounds", "percent": null, "floor": null, "aspect": null,
+                "range_m": null, "min_m": null, "max_m": null, "rounds": 7, "keeps": 8
+            }))),
+            "S1 held the cannon: 7 rounds, keeps 8"
+        );
+        let friendly = serde_json::json!({
+            "kind": "slot_fired", "slot": 2, "weapon": "machine_gun", "designator": "RB",
+            "friendly": true, "percent": 95, "aspect": "right", "detail": null
+        });
+        assert_eq!(
+            notice_words(&friendly),
+            "Machine_gun fires at RB (FRIENDLY) by S2 (95%, side)"
+        );
+        // A part missing: the kind's own words.
+        let bare = serde_json::json!({ "kind": "slot_fired", "weapon": "cannon" });
+        assert_eq!(notice_words(&bare), "fires by");
+        let why_less = serde_json::json!({ "kind": "slot_held", "slot": 1, "weapon": "cannon" });
+        assert_eq!(notice_words(&why_less), "held");
+        let floorless = serde_json::json!({
+            "kind": "refused", "order": "fire", "weapon": "cannon", "refusal": "unlawful",
+            "detail": null
+        });
+        assert_eq!(
+            notice_words(&floorless),
+            "FIRE cannon refused: under the floor"
+        );
     }
 
     /// **16b cut Y.4**: `catchup_words` IS the server's `catchup_lines` and the

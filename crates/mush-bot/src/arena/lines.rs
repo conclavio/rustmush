@@ -351,6 +351,12 @@ pub enum Line {
     },
     /// A `WEAPONSTATUS` row.
     WeaponRow(WeaponRow),
+    /// **The arming line under an armed weapon's row** (the game's 17b cut
+    /// M1b.4): `  S1: >=60% side/rear` — the slot number and the terms
+    /// verbatim after `S<n>: `. Read on its shape alone (this reader keeps no
+    /// context between lines); the bot never acts on it, and it does not end
+    /// an open `WEAPONSTATUS` reply.
+    WeaponArming { slot: u8, terms: String },
     /// `This unit carries no weapon.`
     NoWeapon,
     /// ``That unit carries no weapon called `cannon`.`` — the answer to a `FIRE`
@@ -832,7 +838,8 @@ pub fn classify(line: &str) -> Line {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 0 {
         let indented = match indent {
-            2 => status_row(body)
+            2 => weapon_arming(body)
+                .or_else(|| status_row(body))
                 .or_else(|| board_row(body))
                 .or_else(|| catchup_row(body)),
             4 => facet_run(body),
@@ -875,6 +882,22 @@ fn transient(body: &str) -> Option<Line> {
         || body.ends_with("control state unknown.")
         || body == "The arena is busy; try that again in a moment.";
     is.then(|| Line::Transient(body.to_owned()))
+}
+
+/// **`WEAPONSTATUS`'s arming line** (the game's 17b cut M1b.4), after its two
+/// spaces: `S1: >=60% side/rear` — `S`, the slot number, `: `, then the terms
+/// (never empty), kept verbatim.
+fn weapon_arming(body: &str) -> Option<Line> {
+    let (slot, terms) = body.strip_prefix('S')?.split_once(": ")?;
+    if slot.is_empty() || slot.len() > 3 || !slot.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let terms = terms.trim();
+    let slot: u8 = slot.parse().ok()?;
+    (!terms.is_empty()).then(|| Line::WeaponArming {
+        slot,
+        terms: terms.to_owned(),
+    })
 }
 
 /// `STATUS`'s two-space rows.
@@ -2106,6 +2129,7 @@ pub fn answer_to(line: &Line) -> Option<AnswerTo> {
         Line::ContactRow(_)
         | Line::NoContacts
         | Line::WeaponRow(_)
+        | Line::WeaponArming { .. }
         | Line::NoWeapon
         | Line::StatusCallsign { .. }
         | Line::StatusHead(_)
@@ -3638,6 +3662,51 @@ mod tests {
                 "FIRE cannon refused. Too many orders at once; try that again.",
                 |l| matches!(l, Line::Refused { weapon: Some(w), .. } if w == "cannon"),
             ),
+            // The game's 17b cut M1b.4: "Arming a weapon" and its refusals.
+            (
+                "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.",
+                |l| matches!(l, Line::Refused { order, weapon: Some(w), .. } if order == "FIRE" && w == "cannon"),
+            ),
+            (
+                "FIRE cannon refused. Every slot is armed; FIRE <weapon> OFF frees one.",
+                |l| matches!(l, Line::Refused { weapon: Some(w), .. } if w == "cannon"),
+            ),
+            (
+                "FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.",
+                |l| matches!(l, Line::Refused { weapon: Some(w), .. } if w == "cannon"),
+            ),
+            ("Cleared: cannon fires only when you say.", |l| {
+                matches!(l, Line::Other(_))
+            }),
+            ("Cleared: your guns fire only when you say.", |l| {
+                matches!(l, Line::Other(_))
+            }),
+            ("Cannon fires at BA by S1 (62%, side).", |l| {
+                matches!(l, Line::Other(_))
+            }),
+            ("S1 held the cannon: 54% under your 60%.", |l| {
+                matches!(l, Line::Other(_))
+            }),
+            ("S1 held the cannon: BA shows its front.", |l| {
+                matches!(l, Line::Other(_))
+            }),
+            (
+                "S1 held the cannon: BA at 650 m, outside 200 to 600.",
+                |l| matches!(l, Line::Other(_)),
+            ),
+            ("S1 held the cannon: 7 rounds, keeps 8.", |l| {
+                matches!(l, Line::Other(_))
+            }),
+            (
+                "cannon  ready  40 of 40 round(s)  band 1 of 2  62% to hit",
+                |l| matches!(l, Line::WeaponRow(row) if row.percent == Some(62)),
+            ),
+            ("  S1: >=60% side/rear", |l| {
+                *l == Line::WeaponArming {
+                    slot: 1,
+                    terms: ">=60% side/rear".into(),
+                }
+            }),
             (
                 "Your tank is destroyed and takes no orders. EXIT leaves the pod.",
                 |l| *l == Line::DestroyedNoOrders,

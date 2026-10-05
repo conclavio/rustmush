@@ -784,3 +784,305 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         "and the shot carries its sequence: {ledger}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.4: the pilot's arming, over the wire
+// ---------------------------------------------------------------------------
+
+/// Put the blue tank four cells south of the red one facing NORTH — nose-on to
+/// it, so the red tank's sensor reads its front.
+async fn muster_them_nose_on(god: &mut Term) {
+    let listing = ask(god, "@find Proving Ground", "END OF LIST").await;
+    let ground = dbref_of(&listing, "Proving Ground");
+    let listing = ask(god, "@find Blue Tank 1", "END OF LIST").await;
+    let blue = dbref_of(&listing, "Blue Tank 1");
+    say(
+        god,
+        &format!(
+            "@spatial/place/domain #{blue}=#{ground},{{\"x_cm\":{BLUE_X_CM},\"y_cm\":{BLUE_Y_CM},\"heading_mdeg\":0}}"
+        ),
+        "Placed",
+    )
+    .await;
+}
+
+/// [`login`] on a PTY of 120 columns — the floor a client is built to — so a
+/// sentence past eighty (the floor's is 81) reads back on one line.
+async fn login_wide(
+    addr: SocketAddr,
+    account: &str,
+    password: &str,
+    character: &str,
+) -> (russh::client::Handle<support::AcceptAll>, Term) {
+    let (handle, mut term) = support::play_client_sized(addr, 120, 40).await;
+    term.expect("Welcome to the simulator.").await;
+    term.send_line(&format!("connect {account} {password}"))
+        .await;
+    term.expect(&format!("Connected as {character}")).await;
+    (handle, term)
+}
+
+/// Every line of `seen` opening with `head`, trimmed.
+fn lines_opening(seen: &str, head: &str) -> Vec<String> {
+    seen.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(head))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Each `fired` object of a ledger text, unescaped, in order: the text from its
+/// `"kind":"fired"` to the object's close.
+fn fired_objects(ledger: &str) -> Vec<String> {
+    let plain = ledger.replace("\\\"", "\"");
+    plain
+        .split("\"kind\":\"fired\"")
+        .skip(1)
+        .map(|rest| rest.split('}').next().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// **17b cut M1b.4's transcript: a conditioned cannon fires only on flanks,
+/// and a typed `FIRE` still fires** (doc 17 §5, D-UM-14, D-UM-17 as amended;
+/// the owner's pin P1, 16c Q45), on the production composition over real SSH,
+/// every `STATUS`, `CONTACTS` and `WEAPONSTATUS` read whole.
+///
+/// Staff musters the blue tank four cells south, NOSE-ON to red. Both board
+/// and power up; Ada waits for the classified contact and locks it.
+/// `FIRE cannon WHEN odds >= 5` is refused in the floor's one sentence and
+/// arms nothing; `FIRE cannon WHEN odds >= 60 AND aspect = side,rear` is
+/// written back in English with no slot number, and `WEAPONSTATUS` then
+/// reads the cannon's row and `  S1: >=60% side/rear` under it. For a cannon
+/// cycle nothing fires by the slot and Ada is told once that it held, naming
+/// her lock: `S1 held the cannon: BA shows its front.` A typed `FIRE cannon`
+/// fires (`Firing cannon.`), the slot notwithstanding. Bo turns side-on and,
+/// with Ada typing nothing, `Cannon fires at BA by S1 (NN%, side).` arrives on
+/// her terminal; `FIRE cannon OFF` clears it and nothing more fires by it.
+/// The ledger: the typed shot's `fired` carries no `by`, the slot's carries
+/// `"by":"cond"` and `"slot":1`. Bo reads nothing of Ada's slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still_fires() {
+    const FLOOR: &str =
+        "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.";
+    const GATE: &str = "Arming cannon: fires your lock when your chance to hit is 60% or better \
+                        and it shows its side or rear.";
+    let began = std::time::Instant::now();
+    let server = boot("sim-weapons-m1b4").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    muster_them_nose_on(&mut god).await;
+    let (_a, mut ada) = login_wide(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    take_off(&mut ada, &mut bo).await;
+    power_up(&mut ada).await;
+    power_up(&mut bo).await;
+    let bo_mark = bo.mark();
+    let ada_mark = ada.mark();
+
+    let contact = wait_for_contact(&mut ada).await;
+    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    // The lock on the mirror, read WHOLE (3ef6e34a): a half-read answer's tail
+    // would land inside the next ask's mark.
+    wait_until(STEP_TIMEOUT, "the lock on WEAPONSTATUS", async || {
+        ask_whole(&mut ada, "WEAPONSTATUS")
+            .await
+            .contains("Locked on")
+    })
+    .await;
+
+    // Under the floor: refused as typed, and nothing armed.
+    let seen = ask(&mut ada, "FIRE cannon WHEN odds >= 5", "Compact floor").await;
+    assert_eq!(
+        lines_opening(&seen, "FIRE cannon refused."),
+        vec![FLOOR.to_owned()],
+        "{seen}"
+    );
+    let listing = ask_whole(&mut ada, "WEAPONSTATUS").await;
+    assert!(
+        lines_opening(&listing, "S1:").is_empty(),
+        "an arming line after a refused arming: {listing}"
+    );
+
+    // The gate's rule.
+    let armed_at = ada.mark();
+    let seen = ask(
+        &mut ada,
+        "FIRE cannon WHEN odds >= 60 AND aspect = side,rear",
+        "Arming cannon",
+    )
+    .await;
+    assert_eq!(
+        lines_opening(&seen, "Arming cannon"),
+        vec![GATE.to_owned()],
+        "{seen}"
+    );
+    let mut listing = String::new();
+    wait_until(STEP_TIMEOUT, "the slot on WEAPONSTATUS", async || {
+        listing = ask_whole(&mut ada, "WEAPONSTATUS").await;
+        listing.contains("\n  S1: >=60% side/rear")
+    })
+    .await;
+    let rows: Vec<&str> = listing.lines().collect();
+    let cannon = rows
+        .iter()
+        .position(|line| line.starts_with("cannon  "))
+        .unwrap_or_else(|| panic!("the cannon's row: {listing}"));
+    assert_eq!(
+        rows.get(cannon + 1).map(|line| line.trim_end()),
+        Some("  S1: >=60% side/rear"),
+        "{listing}"
+    );
+
+    // A cannon cycle and more with the front shown: held, said once, and no
+    // slot shot.
+    support::wait_arena_seconds(&mut god, 6).await;
+    let _ = ask_whole(&mut ada, "STATUS").await;
+    let seen = strip_ansi(&ada.seen[armed_at..]);
+    assert!(
+        lines_opening(&seen, "Cannon fires").is_empty(),
+        "the slot fired at a front: {seen}"
+    );
+    assert_eq!(
+        lines_opening(&seen, "S1 held the cannon:"),
+        vec![format!("S1 held the cannon: {contact} shows its front.")],
+        "{seen}"
+    );
+
+    // A typed FIRE is never gated.
+    say(&mut ada, "FIRE cannon", "Firing cannon.").await;
+
+    // Bo turns side-on; with Ada typing nothing, her slot fires.
+    let unprompted = ada.mark();
+    say(&mut bo, "HEADING 90", "Steering to 90").await;
+    ada.expect_after(unprompted, &format!("Cannon fires at {contact} by S1 ("))
+        .await;
+    let off = ada.mark();
+    say(
+        &mut ada,
+        "FIRE cannon OFF",
+        "Cleared: cannon fires only when you say.",
+    )
+    .await;
+    let seen = strip_ansi(&ada.seen[unprompted..off]);
+    let fired = lines_opening(&seen, "Cannon fires");
+    assert!(!fired.is_empty(), "{seen}");
+    for line in &fired {
+        let percent = line
+            .strip_prefix(&format!("Cannon fires at {contact} by S1 ("))
+            .and_then(|rest| rest.strip_suffix("%, side)."))
+            .unwrap_or_else(|| panic!("not the slot's sentence: {line}"));
+        assert!(percent.bytes().all(|b| b.is_ascii_digit()), "{line}");
+    }
+    // Cleared: nothing more fires by the slot through a cycle and more. The
+    // attribution is staged when the slot fires, never at the impact, and the
+    // slot's last shot was said before the `OFF` went; the disarm lands at the
+    // next pulse's end (the `Engaged` tempo, a hostile in reach), well inside
+    // the cannon's 6 s cycle. So the honest count from the `OFF` on is nought.
+    // The window runs until the cleared cannon is seen standing `ready` with
+    // no arming line — a slot still standing would have fired at that
+    // `WeaponReady`, Bo still side-on, and the row would read `cycling` — and
+    // then two arena seconds more, a sensor pass and its evaluation past it.
+    wait_until(
+        STEP_TIMEOUT,
+        "the cleared cannon standing ready",
+        async || {
+            let listing = ask_whole(&mut ada, "WEAPONSTATUS").await;
+            lines_opening(&listing, "S1:").is_empty()
+                && listing
+                    .lines()
+                    .any(|line| line.starts_with("cannon  ready"))
+        },
+    )
+    .await;
+    support::wait_arena_seconds(&mut god, 2).await;
+    let _ = ask_whole(&mut ada, "STATUS").await;
+    let after = strip_ansi(&ada.seen[off..]);
+    assert!(
+        lines_opening(&after, "Cannon fires").is_empty(),
+        "the cleared slot fired: {after}"
+    );
+    assert!(
+        lines_opening(&after, "S1 held").is_empty(),
+        "the cleared slot still speaks: {after}"
+    );
+    let listing = ask_whole(&mut ada, "WEAPONSTATUS").await;
+    assert!(
+        lines_opening(&listing, "S1:").is_empty(),
+        "the slot still stands: {listing}"
+    );
+    assert!(
+        listing
+            .lines()
+            .any(|line| line.starts_with("cannon  ready")),
+        "the cleared cannon fired after all: {listing}"
+    );
+
+    // Bo read nothing of Ada's slot — his terminal read to its end first (a
+    // whole answer of his own), so nothing he was sent is still in flight.
+    let _ = ask_whole(&mut bo, "STATUS").await;
+    let theirs = strip_ansi(&bo.seen[bo_mark..]);
+    for leak in [
+        "S1",
+        "fires by",
+        "held the",
+        "Arming",
+        "Cleared:",
+        "Compact floor",
+    ] {
+        assert!(
+            !theirs.contains(leak),
+            "Bo read {leak:?} of Ada's slot:\n{theirs}"
+        );
+    }
+
+    // The tape.
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    let mut ledger = String::new();
+    wait_until(STEP_TIMEOUT, "the match's ledger tail", async || {
+        ledger = ledger_text(&server.store, 1).await;
+        ledger.contains("\"kind\":\"aborted\"") || ledger.contains("\\\"kind\\\":\\\"aborted\\\"")
+    })
+    .await;
+    let shots = fired_objects(&ledger);
+    let typed: Vec<&String> = shots
+        .iter()
+        .filter(|shot| !shot.contains("\"by\""))
+        .collect();
+    let by_slot: Vec<&String> = shots
+        .iter()
+        .filter(|shot| shot.contains("\"by\":\"cond\""))
+        .collect();
+    assert_eq!(typed.len(), 1, "one typed shot: {shots:?}");
+    assert!(
+        !by_slot.is_empty(),
+        "the slot's shot is on the tape: {shots:?}"
+    );
+    for shot in &by_slot {
+        assert!(shot.contains("\"slot\":1"), "{shot}");
+    }
+    let first_slot = shots
+        .iter()
+        .position(|shot| shot.contains("\"by\":\"cond\""))
+        .unwrap_or(usize::MAX);
+    let the_typed = shots
+        .iter()
+        .position(|shot| !shot.contains("\"by\""))
+        .unwrap_or(usize::MAX);
+    assert!(
+        the_typed < first_slot,
+        "the typed shot came first: {shots:?}"
+    );
+
+    // The whole transcript, for the record.
+    println!(
+        "==== Ada ====\n{}\n==== Bo ====\n{}\n==== end ({} s) ====",
+        strip_ansi(&ada.seen[ada_mark..]),
+        strip_ansi(&bo.seen[bo_mark..]),
+        began.elapsed().as_secs()
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(150),
+        "the transcript took {:?}",
+        began.elapsed()
+    );
+}

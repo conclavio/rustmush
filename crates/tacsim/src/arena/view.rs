@@ -398,6 +398,37 @@ pub fn contact_band(range_cm: u64, bands_cm: &[u32], sight_cm: u32) -> &'static 
     }
 }
 
+/// **The metres [`contact_band`]'s three words cut at, for one weapon on one
+/// frame** (17b cut M1b.4; D-UM-18's `band = close|effective|far` term), as
+/// inclusive `(nearest, furthest)` pairs in whole metres — `close`,
+/// `effective`, `far` — or `None` for a weapon with no bands, which no band
+/// word describes.
+///
+/// The same limit `contact_band` reads — the lesser of the weapon's last band
+/// and the sight (`sight_cm`; the last band alone at `0`) — cut in thirds on
+/// the metre figure a slot's range term is tested against (the ROUNDED range,
+/// [`range_m_rounded`]): `r` is `close` while `3r ≤ limit`, `effective` while
+/// `3r ≤ 2 × limit`, and `far` from there to the weapon's last band, past which
+/// `contact_band` says `beyond`. So the stock tank's 600 m sight and the
+/// cannon's 3,000 m reach give `(0, 200)`, `(201, 400)`, `(401, 3000)`. A
+/// pilot's `FIRE … WHEN band = effective` is compiled through this to FIXED
+/// metres off the frame it was typed on.
+#[must_use]
+pub fn band_bounds_m(sight_cm: u32, bands_cm: &[u32]) -> Option<[(u32, u32); 3]> {
+    let last = u64::from(*bands_cm.last()?);
+    let sight = u64::from(sight_cm);
+    let limit = if sight == 0 { last } else { last.min(sight) };
+    let metres = |cm: u64| u32::try_from(cm).unwrap_or(u32::MAX);
+    let close = metres(limit / 300);
+    let effective = metres(limit.saturating_mul(2) / 300);
+    let reach = metres(last / 100);
+    Some([
+        (0, close),
+        (close.saturating_add(1), effective),
+        (effective.saturating_add(1), reach),
+    ])
+}
+
 /// Moved from `match_::cockpit` by 17b cut M1a.2.
 ///
 /// One contact, as a pilot is told about it (doc 16 §3.6 "What a pilot sees").

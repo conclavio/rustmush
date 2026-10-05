@@ -1248,9 +1248,9 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
                 "{}",
                 fail()
             ),
-            // 17b cut M1b.1: a slot's two notices are defined and staged by
-            // nobody until 17b cut M1b.4; the bot reads neither and opens no
-            // reply on them.
+            // 17b cut M1b.1 defined a slot's two notices and 17b cut M1b.4
+            // stages them; the bot reads neither and opens no reply on them
+            // (every shape: `m1b4_the_arming_its_line_and_its_sentences_…`).
             FrameNotice::SlotFired { .. } | FrameNotice::SlotHeld { .. } => {
                 assert_eq!(read, Line::Other(sentence.clone()), "{}", fail());
             }
@@ -2150,4 +2150,251 @@ fn the_order_lapse_sentences_read_as_neutral_lines_and_open_no_reply() {
     assert!(open.status.is_none(), "a STATUS reply opened");
     assert!(!open.lock_line, "a lock line was read");
     assert!(!open.brief, "a VIEW BRIEF opened");
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.4: the arming, its line and its two sentences
+// ---------------------------------------------------------------------------
+
+/// **The pilot's arming surface reads as the bot reads it** (the game's 17b
+/// cut M1b.4; doc 17 §5, a declared reader change under doc 16 §11):
+///
+/// * the slot's two sentences — `Cannon fires at BA by S1 (62%, side).` with
+///   and without a designator, and `S1 held the cannon: …` under every why and
+///   the three range shapes — through the cockpit's own `notice_line`, read
+///   `Line::Other` byte for byte and open no reply;
+/// * the arming's reply and the two `OFF` replies read `Line::Other`;
+/// * a `WEAPONSTATUS` answer whose cannon is armed reads the lock line, the
+///   cannon's row, `Line::WeaponArming { slot: 1, terms }` and the machine
+///   gun's row — and the arming line ends no reply, so both guns land on the
+///   picture;
+/// * `FIRE cannon refused. The Compact floor is 10%; a condition may not ask
+///   for less.` — the arena's `unlawful` refusal with its floor, through
+///   `notice_line` — reads `Line::Refused { order: "FIRE", weapon: "cannon" }`
+///   and opens no reply; so do the count's and the outside refusal's
+///   sentences, through `order_refused` with the cockpit's own errors.
+#[test]
+fn m1b4_the_arming_its_line_and_its_sentences_read_as_the_bot_reads_them() {
+    use tacsim::arena::{ASPECTS_ANY, FrameArming, SlotTarget, aspect_mask};
+    let frame = frame();
+    let rows = cockpit::frame_contacts(&frame);
+    let ba = rows
+        .iter()
+        .find(|row| row.designator.to_string() == "BA")
+        .map(|row| Named {
+            id: row.id,
+            designator: row.designator,
+        })
+        .expect("the scene's BA");
+    let held = |why: HeldWhy| FrameNotice::SlotHeld {
+        slot: 1,
+        weapon: "cannon".into(),
+        why,
+    };
+    let sentences: Vec<(FrameNotice, &str)> = vec![
+        (
+            FrameNotice::SlotFired {
+                slot: 1,
+                weapon: "cannon".into(),
+                contact: Some(ba),
+                p_permille: 624,
+                aspect: Aspect::Left,
+            },
+            "Cannon fires at BA by S1 (62%, side).",
+        ),
+        (
+            FrameNotice::SlotFired {
+                slot: 2,
+                weapon: "machine_gun".into(),
+                contact: None,
+                p_permille: 950,
+                aspect: Aspect::Rear,
+            },
+            "Machine_gun fires by S2 (95%, rear).",
+        ),
+        (
+            held(HeldWhy::Odds {
+                permille: 540,
+                floor: 600,
+            }),
+            "S1 held the cannon: 54% under your 60%.",
+        ),
+        (
+            held(HeldWhy::Aspect {
+                contact: ba,
+                aspect: Aspect::Front,
+            }),
+            "S1 held the cannon: BA shows its front.",
+        ),
+        (
+            held(HeldWhy::Range {
+                contact: ba,
+                range_m: 650,
+                min_m: 200,
+                max_m: 600,
+            }),
+            "S1 held the cannon: BA at 650 m, outside 200 to 600.",
+        ),
+        (
+            held(HeldWhy::Range {
+                contact: ba,
+                range_m: 650,
+                min_m: 0,
+                max_m: 600,
+            }),
+            "S1 held the cannon: BA at 650 m, outside under 600.",
+        ),
+        (
+            held(HeldWhy::Range {
+                contact: ba,
+                range_m: 150,
+                min_m: 200,
+                max_m: u32::MAX,
+            }),
+            "S1 held the cannon: BA at 150 m, outside past 200.",
+        ),
+        (
+            held(HeldWhy::Rounds {
+                rounds: 7,
+                keeps: 8,
+            }),
+            "S1 held the cannon: 7 rounds, keeps 8.",
+        ),
+    ];
+    let mut reader = Reader::new();
+    for (notice, said) in &sentences {
+        let line = cockpit::notice_line(&frame, notice, &rows);
+        assert_eq!(line, *said);
+        assert_eq!(reader.one(&line), Line::Other(line.clone()), "{line}");
+    }
+    for line in [
+        "Arming cannon: fires your lock when your chance to hit is 60% or better and it shows \
+         its side or rear.",
+        "Cleared: cannon fires only when you say.",
+        cockpit::CLEARED_ALL,
+    ] {
+        assert_eq!(reader.one(line), Line::Other(line.to_owned()), "{line}");
+    }
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+    assert_eq!(
+        reader.picture.tally.shots, 0,
+        "a slot's shot is not the bot's"
+    );
+
+    // -- WEAPONSTATUS with the cannon armed -----------------------------------
+    let mut armed = frame.clone();
+    let slot = FrameArming {
+        slot: 1,
+        target: SlotTarget::Lock,
+        min_permille: 600,
+        aspects: aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]),
+        keeps: 0,
+        min_range_m: 0,
+        max_range_m: u32::MAX,
+    };
+    assert_ne!(slot.aspects, ASPECTS_ANY);
+    armed.weapons[0].armed = Some(slot);
+    let weapons = cockpit::frame_weapons(&armed);
+    let mut answer = vec![cockpit::lock_line(&armed).expect("a lock line")];
+    for weapon in &weapons {
+        answer.push(weapon.render(&weapons));
+        if let Some(armed) = &weapon.armed {
+            answer.push(format!("  {}", cockpit::arming_words(armed)));
+        }
+    }
+    assert_eq!(answer[2], "  S1: >=60% side/rear");
+    let mut reader = Reader::new();
+    let read: Vec<Line> = answer.iter().map(|line| reader.one(line)).collect();
+    assert!(matches!(read[0], Line::Lock { .. }), "{read:?}");
+    assert!(
+        matches!(&read[1], Line::WeaponRow(row) if row.id == "cannon"),
+        "{read:?}"
+    );
+    assert_eq!(
+        read[2],
+        Line::WeaponArming {
+            slot: 1,
+            terms: ">=60% side/rear".into()
+        }
+    );
+    assert!(
+        matches!(&read[3], Line::WeaponRow(row) if row.id == "machine_gun"),
+        "{read:?}"
+    );
+    assert!(
+        reader
+            .picture
+            .open
+            .weapons
+            .as_ref()
+            .is_some_and(|open| open.rows.len() == 2),
+        "the arming line ended the WEAPONSTATUS reply"
+    );
+    reader.settle();
+    let ids: Vec<&str> = reader
+        .picture
+        .weapons
+        .iter()
+        .map(|w| w.id.as_str())
+        .collect();
+    assert_eq!(ids, ["cannon", "machine_gun"]);
+    // And the same answer with nothing armed parses as it always did.
+    let mut plain = Reader::new();
+    let bare = cockpit::frame_weapons(&frame);
+    for weapon in &bare {
+        assert!(matches!(
+            plain.one(&weapon.render(&bare)),
+            Line::WeaponRow(_)
+        ));
+    }
+
+    // -- the three refusals of an arming --------------------------------------
+    let unlawful = cockpit::notice_line(
+        &frame,
+        &FrameNotice::Refused {
+            order: "fire".into(),
+            refusal: Refusal::Unlawful,
+            weapon: Some("cannon".into()),
+            detail: RefusalDetail::Floor { permille: 100 },
+        },
+        &rows,
+    );
+    assert_eq!(
+        unlawful,
+        "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less."
+    );
+    let count = cockpit::order_refused(
+        "fire",
+        Some("cannon"),
+        &cockpit::CockpitError::NoSlot.to_string(),
+    );
+    let outside = cockpit::order_refused(
+        "fire",
+        Some("cannon"),
+        &cockpit::CockpitError::NotThisCore.to_string(),
+    );
+    assert_eq!(
+        outside,
+        "FIRE cannon refused. That condition is not one this core takes; help cockpit lists the \
+         eight it does."
+    );
+    for line in [&unlawful, &count, &outside] {
+        let mut picture = Picture::default();
+        let read = classify(line);
+        assert!(
+            matches!(&read, Line::Refused { order, weapon: Some(w), .. }
+                if order == "FIRE" && w == "cannon"),
+            "{line} read as {read:?}"
+        );
+        let applied = picture.apply(10, &read);
+        assert_eq!(applied.opened, None, "{line} opened a reply");
+        assert!(picture.open.weapons.is_none() && picture.open.contacts.is_none());
+        let mut reader = Reader::new();
+        assert_eq!(reader.one(line), read, "{line} through the renderer");
+    }
 }

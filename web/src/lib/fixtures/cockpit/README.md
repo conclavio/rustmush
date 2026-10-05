@@ -29,8 +29,18 @@ and `classified` with `was` (and a friendly `classified`, whose mark follows the
 new name), a spent hit, a friendly lock, the victim's `struck`, `struck_spent`
 and `section_lost` with their section, the pod's two switch notices `emcon_on`
 and `emcon_off` with the pod's radius on `detail.radius_m` and an `EMCON`
-refused `no_jammer` (16b cut O.2), and a kind named `constructor` (the word
-tables are `Map`s, so an inherited key is not a word). Change a line here only
+refused `no_jammer` (16b cut O.2), the motor's two `DRIVE` answers (17b cut
+M1a.4), and a kind named `constructor` (the word tables are `Map`s, so an
+inherited key is not a word). **17b cut M1b.4** added five, each `line` the
+server's line-mode sentence less its full stop: a `slot_fired` naming its
+designator (`Cannon fires at BA by S1 (62%, side)`), a `slot_fired` with
+`designator: null` (`Machine_gun fires by S2 (21%, rear)`), a `slot_held` held
+for `odds` and one held for `aspect` (the reason on `detail`, every why's key
+present), and a `refused` `unlawful` arming carrying `detail.floor_permille`
+100 (`FIRE cannon refused. The Compact floor is 10%; a condition may not ask
+for less`); `tests/cockpit.rs` pins that `status_frame` publishes those five
+objects exactly, and the `range` and `rounds` whys are pinned in vitest and in
+the TUI's own unit test from the same composition. Change a line here only
 together with both renderers.
 
 `catchup_lines.json` is the parity fixture for the catch-up report a reclaim's

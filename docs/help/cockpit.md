@@ -24,8 +24,13 @@ else — `help simulator` is how you get there.
   FIRE [<weapon>]     shoot your lock with your machine's main gun — the cannon
                       on a tank that carries one — unless you name another. A
                       weapon of two words takes its initials: FIRE mg.
+  FIRE <weapon> WHEN <cond> [AND <cond>]…
+                      arm the weapon: it fires your lock whenever every
+                      condition holds, and tells you each time. FIRE
+                      <weapon|ALL> OFF clears it. See "Arming a weapon".
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
-                      against your lock, and that lock's range band.
+                      against your lock, and that lock's range band — and,
+                      under an armed weapon, what it is armed to do.
   EMCON [on|off]      switch your jamming pod, if you carry one: on jams every
                       sight inside its bubble, yours among them; off clears
                       your own sight and hides you from nothing. On at
@@ -344,6 +349,90 @@ is nothing new to say about it.
 Lose one track and the tank is slowed and will not turn that way; lose both and
 it neither drives nor turns, and the second line ends `the tank cannot move`.
 
+## Arming a weapon
+
+You decide when a weapon fires; the tank's fire control does the waiting. Arm a
+weapon with conditions and it fires your lock, by itself, every time all of them
+hold — and a typed `FIRE` still fires whenever you type it, armed or not. An
+armed weapon fires only at your lock, and only at a lock your sensors have
+identified: an unknown return is never shot by a slot.
+
+  FIRE cannon WHEN odds >= 60 AND aspect = side,rear
+                   Arming cannon: fires your lock when your chance to hit is
+                   60% or better and it shows its side or rear.
+
+A rule is up to four conditions joined by AND — there is no OR — and
+these eight are the conditions there are, one example each:
+
+  odds >= 60            your chance to hit with this weapon is 60% or better,
+                        in whole per cent from 1 to 100; `odds cannon >= 60`
+                        says the same, naming the weapon being armed
+  aspect = side,rear    the face it shows you: front, side or rear, a comma
+                        between two or three
+  range < 600 m         it is 600 m away or nearer; `range > 200 m` 200 m or
+                        further, and the two together are a window. The range
+                        is the one `RANGE` prints for your lock, and a printed
+                        600 m still counts as inside `range < 600 m`
+  band = effective      close, effective or far across your sight, compiled to
+                        fixed metres from the frame you typed it on: the reply
+                        says which metres, and they do not move afterwards
+  rounds > 10           keep ten rounds back; `rounds > 25%` keeps a quarter
+                        of a full load
+  reserve               on a tank you fly, the same as `rounds > 0`
+  target = identified   what every slot asks already, said out loud
+  lock                  your lock, which is what every slot fires at
+
+**The Compact floor.** Every condition carries at least the match's Compact
+floor, 10% unless the match says otherwise, so `FIRE cannon WHEN odds >= 5` is
+refused as you type it:
+`FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.`
+A rule with no odds term at all asks for the floor: `FIRE cannon WHEN aspect =
+rear` fires on a rear shot at 10% or better, and its reply says so.
+
+**Two slots.** A tank has two, `S1` and `S2`; the first weapon you arm takes
+the first free one, and arming a weapon again replaces its rule and keeps its
+slot. The reply names no slot, because the slot is given when the order lands:
+the number shows under the weapon's row on `WEAPONSTATUS` —
+
+  cannon  ready  40 of 40 round(s)  band 1 of 2  62% to hit
+    S1: >=60% side/rear
+
+— on the cockpit screen's weapons pane, and in every line the slot says. A third
+weapon while both stand is refused:
+`FIRE cannon refused. Every slot is armed; FIRE <weapon> OFF frees one.`
+`FIRE cannon OFF` answers `Cleared: cannon fires only when you say.` and `FIRE
+ALL OFF` answers `Cleared: your guns fire only when you say.` — both said
+whether or not anything was armed.
+
+**What a slot tells you.** Every shot a slot fires is announced once, naming
+the slot, the chance and the face it read:
+
+  Cannon fires at BA by S1 (62%, side).
+
+and a shot a slot held is said at most once every ten seconds for a contact,
+with the condition that held it:
+
+  S1 held the cannon: 54% under your 60%.
+  S1 held the cannon: BA shows its front.
+  S1 held the cannon: BA at 650 m, outside 200 to 600.
+  S1 held the cannon: 7 rounds, keeps 8.
+
+The range it quotes is the one `RANGE` prints. A slot with nothing to shoot
+at, or whose gun is still cycling, says nothing. Nobody else is told any of
+it: not your side, not the target.
+
+**Which wins.** In four lines:
+
+  An ORDER's HOLD FIRE beats everything.
+  FIRE <weapon> OFF clears a slot; a cleared weapon fires only when you say.
+  One slot a weapon: a second FIRE <weapon> WHEN replaces the first.
+  Rules beat sliders.
+
+Anything else is refused in one sentence:
+`FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.`
+— another word, an OR, a fifth condition or a number out of its range. The
+rest of the rule language arrives with the mind's own card.
+
 ## Commanding the machines
 
 When the simulator fills the empty pods with machines (`SIM AI`), they fight on
@@ -456,6 +545,14 @@ cycling: 4 s to go.`, `Empty: that weapon has nothing left to fire.`
 Every `FIRE` refusal names the weapon, whichever half answered: `FIRE cannon
 refused. Still cycling: 4 s to go.` So a pilot with two guns is never left
 guessing which breech is busy.
+
+Arming a weapon has three refusals of its own, each naming the weapon:
+`FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.`
+for a rule outside the eight, `FIRE cannon refused. Every slot is armed; FIRE
+<weapon> OFF frees one.` with both slots taken, and `FIRE cannon refused. The
+Compact floor is 10%; a condition may not ask for less.` for a chance under the
+floor. The last two can also come from the arena a moment later, in the same
+words.
 
 **Any** order can also be refused by the arena itself a moment after the cockpit
 passed it on — you and the arena are a pulse apart, and the tank may have been

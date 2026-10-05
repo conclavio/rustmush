@@ -167,6 +167,35 @@ export interface CockpitNoticeDetail {
   heat: number | null;
   /** Its ceiling. */
   max: number | null;
+  /** **17b cut M1b.4**: the Compact floor an `unlawful` refusal was held to,
+   * per mille — present only when the wire carries it as an integer, so every
+   * other detail decodes to exactly the three keys above. */
+  floor_permille?: number;
+}
+
+/** **Why a slot held a shot** (17b cut M1b.4; doc 17 §5), off a `slot_held`
+ * notice's `detail`: `why` is `odds`, `aspect`, `range` or `rounds`, and each
+ * other key is that why's own number (or facet word), `null` elsewhere. */
+export interface CockpitHeldWhy {
+  why: string;
+  percent: number | null;
+  floor: number | null;
+  aspect: string | null;
+  range_m: number | null;
+  min_m: number | null;
+  max_m: number | null;
+  rounds: number | null;
+  keeps: number | null;
+}
+
+/** **A slot notice's own parts** (17b cut M1b.4; D-UM-14): the slot number,
+ * and on a `slot_fired` the chance and the facet the shot read, on a
+ * `slot_held` the reason. */
+export interface CockpitSlotNotice {
+  slot: number;
+  percent: number | null;
+  aspect: string | null;
+  held: CockpitHeldWhy | null;
 }
 
 export interface CockpitNotice {
@@ -194,6 +223,10 @@ export interface CockpitNotice {
   friendly: boolean;
   /** The round found a section that was already destroyed. */
   spent: boolean;
+  /** **17b cut M1b.4**: a `slot_fired` or `slot_held` notice's own parts —
+   * present on those two kinds alone, so every other notice decodes to
+   * exactly the keys above. */
+  slot?: CockpitSlotNotice;
 }
 
 export interface CockpitWeapon {
@@ -584,7 +617,43 @@ function decodeDetail(raw: unknown): CockpitNoticeDetail | null {
   if (!isObj(raw)) {
     return null;
   }
-  return { secs: optInt(raw.secs), heat: optInt(raw.heat), max: optInt(raw.max) };
+  const detail: CockpitNoticeDetail = {
+    secs: optInt(raw.secs),
+    heat: optInt(raw.heat),
+    max: optInt(raw.max),
+  };
+  // 17b cut M1b.4: the floor an `unlawful` refusal names, only when it is there.
+  const floor = optInt(raw.floor_permille);
+  return floor === null ? detail : { ...detail, floor_permille: floor };
+}
+
+/** A slot notice's parts (17b cut M1b.4), or `undefined` for any other kind
+ * and for a slot notice with no integer `slot` (which then reads as its kind's
+ * words). */
+function decodeSlot(raw: Record<string, unknown>, kind: string): CockpitSlotNotice | undefined {
+  if (kind !== "slot_fired" && kind !== "slot_held") {
+    return undefined;
+  }
+  const slot = optInt(raw.slot);
+  if (slot === null) {
+    return undefined;
+  }
+  const detail = raw.detail;
+  const held: CockpitHeldWhy | null =
+    kind === "slot_held" && isObj(detail) && typeof detail.why === "string"
+      ? {
+          why: clean(detail.why, "?", 24),
+          percent: optInt(detail.percent),
+          floor: optInt(detail.floor),
+          aspect: optStr(detail.aspect, 24),
+          range_m: optInt(detail.range_m),
+          min_m: optInt(detail.min_m),
+          max_m: optInt(detail.max_m),
+          rounds: optInt(detail.rounds),
+          keeps: optInt(detail.keeps),
+        }
+      : null;
+  return { slot, percent: optInt(raw.percent), aspect: optStr(raw.aspect, 24), held };
 }
 
 function decodeNotice(raw: unknown): CockpitNotice | null {
@@ -596,8 +665,9 @@ function decodeNotice(raw: unknown): CockpitNotice | null {
   // made that possible to honour — until it the sentence's parts were not on the
   // wire at all, so the ring printed a bare `refused` with no order and no
   // reason, which is `B-07`.
-  return {
-    kind: clean(raw.kind, "?"),
+  const kind = clean(raw.kind, "?");
+  const notice: CockpitNotice = {
+    kind,
     designator: optStr(raw.designator, 8),
     // 16b cut B.1 (`T-86`): cut to what a designator can be, like `designator`.
     was: optStr(raw.was, 8),
@@ -610,6 +680,9 @@ function decodeNotice(raw: unknown): CockpitNotice | null {
     friendly: raw.friendly === true,
     spent: raw.spent === true,
   };
+  // 17b cut M1b.4: a slot notice's own parts, on those two kinds alone.
+  const slot = decodeSlot(raw, kind);
+  return slot === undefined ? notice : { ...notice, slot };
 }
 
 function decodeWeapon(raw: unknown): CockpitWeapon | null {
@@ -1064,6 +1137,11 @@ const NOTICE_WORDS: ReadonlyMap<string, string> = new Map([
   // each is already short, and there is nothing in it to compose.
   ["drive_arrived", "DRIVE: arrived."],
   ["drive_no_route", "DRIVE: no route from here; holding."],
+  // 17b cut M1b.4: a slot's shot and a slot's held shot. Both lines are
+  // composed whole from the notice's fields (`slotLine`); these are the
+  // fallbacks a line missing its parts would fall to.
+  ["slot_fired", "fires by"],
+  ["slot_held", "held"],
 ]);
 
 /** Why an order was refused, in the pilot's words (`Refusal::as_str`). A word
@@ -1145,6 +1223,12 @@ export function noticeLine(notice: CockpitNotice): string {
   if (notice.kind === "refused") {
     const order = (notice.order ?? "order").toUpperCase();
     const weapon = notice.weapon === null ? "" : ` ${notice.weapon}`;
+    // 17b cut M1b.4: an arming under the Compact floor carrying its floor reads
+    // the line-mode sentence itself (less its full stop), as the TUI's ring does.
+    const floor = notice.detail?.floor_permille;
+    if (notice.refusal === "unlawful" && floor !== undefined) {
+      return `${order}${weapon} refused. The Compact floor is ${Math.trunc(floor / 10)}%; a condition may not ask for less`;
+    }
     const why =
       notice.refusal === null
         ? "refused"
@@ -1160,6 +1244,12 @@ export function noticeLine(notice: CockpitNotice): string {
   // 16b cut D.2 (`B-18`): friendly fire is said and never gated, on the panel
   // exactly as in the scrollback.
   const named = notice.designator === null ? null : `${notice.designator}${notice.friendly ? " (FRIENDLY)" : ""}`;
+  if (notice.slot !== undefined) {
+    const line = slotLine(notice, notice.slot, named);
+    if (line !== null) {
+      return line;
+    }
+  }
   if (
     (notice.kind === "classified" || notice.kind === "unidentified") &&
     notice.was !== null
@@ -1172,6 +1262,62 @@ export function noticeLine(notice: CockpitNotice): string {
   const line = notice.section === null ? head : `${head}: ${notice.section}`;
   // 16b cut D.2 (`B-15`): the round found a section that was already gone.
   return notice.kind === "hit" && notice.spent ? `${line} (already destroyed)` : line;
+}
+
+/**
+ * **A slot notice's line** (17b cut M1b.4; doc 17 §5, D-UM-14) — exactly the
+ * line-mode sentence (`notice_line`) less its full stop, from the notice's own
+ * fields, as the TUI's `slot_words` composes it: `{Weapon} fires at
+ * {designator}{ (FRIENDLY)} by S{slot} ({percent}%, {side})` (`{Weapon} fires
+ * by S{slot} (…)` with no designator) and `S{slot} held the {weapon}: {why}` —
+ * `{percent}% under your {floor}%`, `{designator} shows its {side}`,
+ * `{designator} at {range_m} m, outside {min} to {max}` (`under {max}` with no
+ * nearest, `past {min}` with no furthest), `{rounds} rounds, keeps {keeps}`.
+ * `null` for a notice missing a part, which then reads as its kind's words.
+ */
+function slotLine(
+  notice: CockpitNotice,
+  parts: CockpitSlotNotice,
+  named: string | null,
+): string | null {
+  if (notice.weapon === null) {
+    return null;
+  }
+  if (notice.kind === "slot_fired") {
+    if (parts.percent === null || parts.aspect === null) {
+      return null;
+    }
+    const gun = `${notice.weapon.charAt(0).toUpperCase()}${notice.weapon.slice(1)}`;
+    const tail = `by S${parts.slot} (${parts.percent}%, ${sideWord(parts.aspect)})`;
+    return named === null ? `${gun} fires ${tail}` : `${gun} fires at ${named} ${tail}`;
+  }
+  const held = parts.held;
+  if (held === null) {
+    return null;
+  }
+  let why: string | null = null;
+  if (held.why === "odds" && held.percent !== null && held.floor !== null) {
+    why = `${held.percent}% under your ${held.floor}%`;
+  } else if (held.why === "aspect" && notice.designator !== null && held.aspect !== null) {
+    why = `${notice.designator} shows its ${sideWord(held.aspect)}`;
+  } else if (
+    held.why === "range" &&
+    notice.designator !== null &&
+    held.range_m !== null &&
+    held.min_m !== null &&
+    held.max_m !== null
+  ) {
+    const bounds =
+      held.min_m === 0
+        ? `under ${held.max_m}`
+        : held.max_m === 4294967295
+          ? `past ${held.min_m}`
+          : `${held.min_m} to ${held.max_m}`;
+    why = `${notice.designator} at ${held.range_m} m, outside ${bounds}`;
+  } else if (held.why === "rounds" && held.rounds !== null && held.keeps !== null) {
+    why = `${held.rounds} rounds, keeps ${held.keeps}`;
+  }
+  return why === null ? null : `S${parts.slot} held the ${notice.weapon}: ${why}`;
 }
 
 /** Every notice of one frame, as ring lines. */

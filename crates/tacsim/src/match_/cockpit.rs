@@ -37,7 +37,8 @@
 //! BEARING [<contact>|<spot>] which way one of them plotted, or a named spot is
 //! SCAN [<contact>]           what is left of one of them, by section
 //! FIRE [<weapon>]            shoot it
-//! WEAPONSTATUS               ammunition and readiness
+//! FIRE <weapon> WHEN <cond>  arm it to shoot your lock whenever every condition holds; FIRE <weapon|ALL> OFF clears it
+//! WEAPONSTATUS               ammunition and readiness, and under an armed weapon its slot
 //! EMCON [on|off]             the jamming pod's switch, if the tank carries one
 //! STATUS                     callsign, power, speed, heading, scope, nearest spot, damage
 //! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW, SCREEN, SUPPORT; RELEASE)
@@ -136,7 +137,10 @@ use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
-use crate::arena::conditions::{ASPECTS_ANY, HeldWhy, SlotTarget, aspect_in};
+use crate::arena::conditions::{
+    ASPECTS_ANY, Arming, FireCondition, HeldWhy, STOCK_CONDITION_SLOTS, SlotTarget, aspect_in,
+    aspect_mask,
+};
 use crate::arena::damage;
 use crate::arena::intents::MotorGoal;
 use crate::arena::intents::{ControlState, IntentKind};
@@ -620,6 +624,15 @@ pub enum CockpitError {
     /// of the count's sentence, `<weapon>` literal.
     #[error("Every slot is armed; FIRE <weapon> OFF frees one.")]
     NoSlot,
+    /// **A condition this core does not take** (17b cut M1b.4; doc 17 §5,
+    /// D-UM-18's slot-fitting subset): the ONE said-half for every rule
+    /// outside the eight terms [`parse_arming`] compiles — another word, an
+    /// `OR`, a fifth condition, a malformed or missing number, an empty `WHEN`,
+    /// a term repeated with another value. Printed through `fire_refused`, so
+    /// it reads `FIRE cannon refused. That condition is …`. The rest of the
+    /// rule language arrives with the mind's own card (17b cut M5).
+    #[error("That condition is not one this core takes; help cockpit lists the eight it does.")]
+    NotThisCore,
 }
 
 // ---------------------------------------------------------------------------
@@ -814,8 +827,8 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
 /// sentences built on them ([`contact_sentence`], [`lock_line`],
 /// [`notice_line`], [`brief_lines`], [`watch_lines`]) stay in this module.
 pub use crate::arena::view::{
-    ContactRow, FRIEND_GLYPH, HOSTILE_GLYPH, OddsCell, UNKNOWN_GLYPH, YOU_GLYPH, contact_band,
-    fired_by_default, frame_contacts, frame_contacts_held, frame_lock, held_range_m,
+    ContactRow, FRIEND_GLYPH, HOSTILE_GLYPH, OddsCell, UNKNOWN_GLYPH, YOU_GLYPH, band_bounds_m,
+    contact_band, fired_by_default, frame_contacts, frame_contacts_held, frame_lock, held_range_m,
     lock_designator, own_scope, range_m_rounded, settle_ranges,
 };
 // 17b cut M1a.2: the two crate-private readers the notice line and `BEARING`
@@ -4535,6 +4548,519 @@ fn spot_marker_walk(window: &serde_json::Value) -> Vec<(usize, &serde_json::Valu
         .unwrap_or_default()
 }
 
+/// **What a `FIRE` line asks for** (17b cut M1b.4), read by [`fire_form`] off
+/// its first two words alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FireForm<'a> {
+    /// `FIRE [<weapon>]`: the shot, every byte as it was before this cut.
+    Shot,
+    /// `FIRE <weapon|ALL> OFF`, and bare `FIRE OFF`: `None` clears every slot.
+    Off {
+        /// The weapon word as typed, or `None` for `ALL` and bare `OFF`.
+        weapon: Option<&'a str>,
+        /// The words after `OFF`, trimmed (refused unless empty).
+        tail: &'a str,
+    },
+    /// `FIRE <weapon> WHEN <conditions>`.
+    When {
+        /// The weapon word as typed.
+        weapon: &'a str,
+        /// Everything after `WHEN`, trimmed.
+        conditions: &'a str,
+    },
+}
+
+/// One whitespace-delimited word off the front of `text`, and the rest with
+/// its leading whitespace gone.
+fn first_word(text: &str) -> (&str, &str) {
+    let text = text.trim_start();
+    match text.find(char::is_whitespace) {
+        Some(at) => (
+            text.get(..at).unwrap_or_default(),
+            text.get(at..).unwrap_or_default().trim_start(),
+        ),
+        None => (text, ""),
+    }
+}
+
+/// **Which of `FIRE`'s three forms a line is** (17b cut M1b.4): the second
+/// word, case-folded, `when` or `off` — or the whole line `off`. Every other
+/// line — `FIRE`, `FIRE mg`, `FIRE all`, `FIRE when odds` — is
+/// [`FireForm::Shot`] and goes to `choose_weapon` whole, exactly as before.
+fn fire_form(rest: &str) -> FireForm<'_> {
+    let (first, after) = first_word(rest);
+    let (second, tail) = first_word(after);
+    if first.eq_ignore_ascii_case("off") && after.is_empty() {
+        return FireForm::Off {
+            weapon: None,
+            tail: "",
+        };
+    }
+    if first.is_empty() || second.is_empty() {
+        return FireForm::Shot;
+    }
+    if second.eq_ignore_ascii_case("off") {
+        let weapon = (!first.eq_ignore_ascii_case("all")).then_some(first);
+        return FireForm::Off {
+            weapon,
+            tail: tail.trim(),
+        };
+    }
+    if second.eq_ignore_ascii_case("when") {
+        return FireForm::When {
+            weapon: first,
+            conditions: tail.trim(),
+        };
+    }
+    FireForm::Shot
+}
+
+/// **`FIRE ALL OFF`'s reply** (17b cut M1b.4), and bare `FIRE OFF`'s: said
+/// whether or not a slot stood.
+pub const CLEARED_ALL: &str = "Cleared: your guns fire only when you say.";
+
+/// **`FIRE <weapon|ALL> OFF`** (17b cut M1b.4; doc 17 §5's precedence: *a
+/// cleared weapon fires only when you say*): one discrete
+/// `IntentKind::Condition(Arming::Disarm { weapon })` on the fire channel.
+///
+/// The wreck first, as every order; the weapon through `choose_weapon` with
+/// its own refusals; anything typed after `OFF` is the one outside refusal.
+/// **The reply is unconditional and reads no mirror**: a reply computed off a
+/// mirror up to one `Quiet` pulse old lied when an arming and an `OFF` fell
+/// inside one pulse, and a disarm of nothing is a no-op in the arena — so
+/// `Cleared: cannon fires only when you say.` / [`CLEARED_ALL`] whether or not
+/// a slot stood. Power is not asked: clearing a slot is not a shot.
+fn fire_off(
+    ctx: &mut Ctx<'_>,
+    seat: &Seat,
+    weapon: Option<&str>,
+    tail: &str,
+) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    require_alive(ctx.w, seat.driver)?;
+    let (named, line) = match weapon {
+        Some(word) => {
+            let held = last_frame(ctx.w, seat.driver);
+            let rows = carried(ctx.w, seat.unit, held.as_ref(), std::time::Instant::now());
+            let row = choose_weapon(&rows, word)?;
+            if !tail.is_empty() {
+                return Err(fire_refused(&row.id, &CockpitError::NotThisCore));
+            }
+            let line = format!("Cleared: {} fires only when you say.", row.id);
+            (Some(row.id), line)
+        }
+        None => {
+            if !tail.is_empty() {
+                return Err(CockpitError::Refused(order_refused(
+                    IntentKind::fire("").as_str(),
+                    None,
+                    &CockpitError::NotThisCore.to_string(),
+                )));
+            }
+            (None, CLEARED_ALL.to_owned())
+        }
+    };
+    forward_intent(
+        ctx,
+        seat.driver,
+        seat.unit,
+        IntentKind::Condition(Arming::Disarm { weapon: named }),
+    )?;
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    Ok(())
+}
+
+/// **`FIRE <weapon> WHEN <condition> [AND <condition>]…`** (17b cut M1b.4;
+/// doc 17 §5, D-UM-17 as amended, D-UM-18's slot-fitting subset): the
+/// pilot's shot decision written down as one slot.
+///
+/// In order: the wreck; the weapon through `choose_weapon` (its own
+/// refusals); the held frame ([`last_frame`] — with none there is no floor to
+/// read, so the answer is the one a typed `FIRE` gives on a mirror holding no
+/// rows, `FIRE cannon refused. No lock: LOCK a contact first.`,
+/// [`CockpitError::NoLock`] through `fire_refused`: a slot fires only your
+/// lock, and before the first frame there is none); **the count** — the mirror's rows
+/// showing [`STOCK_CONDITION_SLOTS`] weapons armed and this one not among them
+/// is [`CockpitError::NoSlot`], the same bytes the arena stages at phase 4
+/// when two armings race one pulse past the mirror; then [`parse_arming`] over
+/// the text after `WHEN` (the one outside refusal, and the floor checked off
+/// the frame's captured `odds_floor_permille` — refused
+/// [`CockpitError::Unlawful`] **as typed**, the arena's `Unlawful` at the
+/// landing the byte-identical backstop). Every refusal composes through
+/// `fire_refused`, so it reads `FIRE cannon refused. …` — exactly the sentence
+/// `refusal_line` prints for the arena's word.
+///
+/// Then ONE discrete `IntentKind::Condition(Arming::Arm(cond))` — the seat
+/// window and the queue bound as `LOCK`, resolved at the pulse's end in
+/// arrival order — with no power pre-check (a slot may be armed cold), and the
+/// English written back once by [`arming_reply`], with **no slot number**: the
+/// number is the arena's to give at phase 4, and shows on the next frame's
+/// `armed`, in `WEAPONSTATUS`'s arming line and in every attribution.
+fn fire_when(
+    ctx: &mut Ctx<'_>,
+    seat: &Seat,
+    word: &str,
+    conditions: &str,
+) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    require_alive(ctx.w, seat.driver)?;
+    let held = last_frame(ctx.w, seat.driver);
+    let rows = carried(ctx.w, seat.unit, held.as_ref(), std::time::Instant::now());
+    let weapon = choose_weapon(&rows, word)?;
+    let refused = |said: &CockpitError| fire_refused(&weapon.id, said);
+    // The same answer the typed `FIRE` gives before the first frame: with no
+    // frame held there is no lock, so `NoLock`, in `FIRE`'s own bytes.
+    let Some(held) = held else {
+        return Err(refused(&CockpitError::NoLock));
+    };
+    let armed = rows.iter().filter(|row| row.armed.is_some()).count();
+    if weapon.armed.is_none() && armed >= STOCK_CONDITION_SLOTS {
+        return Err(refused(&CockpitError::NoSlot));
+    }
+    let cond = parse_arming(&weapon, conditions, &held.frame).map_err(|said| refused(&said))?;
+    let line = arming_reply(&cond);
+    forward_intent(
+        ctx,
+        seat.driver,
+        seat.unit,
+        IntentKind::Condition(Arming::Arm(cond)),
+    )?;
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    Ok(())
+}
+
+/// The most conditions one `FIRE … WHEN` rule joins with `AND` (doc 17 §5).
+pub const MAX_ARMING_TERMS: usize = 4;
+
+/// The furthest a range term may name, metres.
+pub const MAX_ARMING_RANGE_M: u32 = 10_000;
+
+/// **A rule's text as words** (17b cut M1b.4): case-folded, split on
+/// whitespace, and `>=`, `<`, `>`, `=` and `,` made words of their own
+/// whatever stands round them, so `odds>=60` and `odds >= 60` and
+/// `aspect = side,rear` read alike.
+fn arming_tokens(text: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let operator = match c {
+            '>' if chars.peek() == Some(&'=') => {
+                chars.next();
+                Some(">=")
+            }
+            '>' => Some(">"),
+            '<' => Some("<"),
+            '=' => Some("="),
+            ',' => Some(","),
+            _ => None,
+        };
+        if c.is_whitespace() || operator.is_some() {
+            if !word.is_empty() {
+                tokens.push(std::mem::take(&mut word));
+            }
+            if let Some(operator) = operator {
+                tokens.push(operator.to_owned());
+            }
+            continue;
+        }
+        word.extend(c.to_lowercase());
+    }
+    if !word.is_empty() {
+        tokens.push(word);
+    }
+    tokens
+}
+
+/// A whole number of digits only, inside `range`, or the outside refusal.
+fn arming_number(text: &str, range: std::ops::RangeInclusive<u32>) -> Result<u32, CockpitError> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(CockpitError::NotThisCore);
+    }
+    text.parse::<u32>()
+        .ok()
+        .filter(|n| range.contains(n))
+        .ok_or(CockpitError::NotThisCore)
+}
+
+/// A range term's figure: `600` or `600m`, 1 to [`MAX_ARMING_RANGE_M`].
+fn arming_metres(text: &str) -> Result<u32, CockpitError> {
+    arming_number(
+        text.strip_suffix('m').unwrap_or(text),
+        1..=MAX_ARMING_RANGE_M,
+    )
+}
+
+/// Set one term of a rule, refusing a second value that differs from the
+/// first (the same value twice is the same rule).
+fn arming_set<T: PartialEq>(slot: &mut Option<T>, value: T) -> Result<(), CockpitError> {
+    match slot {
+        Some(held) if *held != value => Err(CockpitError::NotThisCore),
+        _ => {
+            *slot = Some(value);
+            Ok(())
+        }
+    }
+}
+
+/// The terms of one rule as typed, before they are compiled.
+#[derive(Default)]
+struct ArmingTerms {
+    /// `odds >= n`, whole per cent.
+    odds_pct: Option<u32>,
+    /// `aspect = …`, as a mask.
+    aspects: Option<u8>,
+    /// `rounds > n` / `rounds > n%` / `reserve`, in rounds.
+    keeps: Option<u32>,
+    /// The nearest a `range >` or a `band` bounds it to.
+    min_m: Option<u32>,
+    /// The furthest a `range <` or a `band` bounds it to.
+    max_m: Option<u32>,
+}
+
+/// **Compile a `FIRE <weapon> WHEN …` rule** (17b cut M1b.4; D-UM-18's
+/// slot-fitting subset — the rest of the rule language is 17b cut M5's) into
+/// the [`FireCondition`] the arena arms, off the weapon's row and the held
+/// frame. Pure: it reads nothing else and forwards nothing.
+///
+/// `rest` is the text after `WHEN`, split on `AND` (case-folded) into at most
+/// [`MAX_ARMING_TERMS`] conditions, no `OR`; each condition is one of the
+/// eight terms, case-folded and whitespace-tolerant around `>=`, `<`, `>`,
+/// `=` and `,`:
+///
+/// * `odds >= n`, or `odds <weapon> >= n` naming THIS weapon (by id,
+///   initials or prefix, as `FIRE` resolves one), `n` a whole number 1 to 100
+///   → `min_permille = 10 n`. **The floor**: `10 n` under the frame's
+///   captured `odds_floor_permille` is [`CockpitError::Unlawful`]
+///   (refuse-not-clamp: `The Compact floor is 10%; a condition may not ask for
+///   less.`). There is no upper refusal: 100 is lawful and simply never holds
+///   under the table's `p_max`;
+/// * `aspect = a[,b[,c]]` with `front`, `side` (left and right) and `rear` →
+///   the mask (a word twice is fine);
+/// * `range < n [m]` → `max_range_m = n`; `range > n [m]` → `min_range_m = n`;
+///   `n` 1 to [`MAX_ARMING_RANGE_M`], tested by the arena against the lock's
+///   ROUNDED range — the figure `RANGE` prints;
+/// * `band = close|effective|far` → the metres [`band_bounds_m`] cuts for this
+///   weapon's bands on this frame's sight: compiled to FIXED metres here, which
+///   the reply prints (a weapon with no bands has no band, and is outside);
+/// * `rounds > n` (0 to the weapon's full load) → `min_rounds_left = n`;
+///   `rounds > n%` (0 to 100) → `rounds_max × n / 100`, rounded down;
+/// * `reserve` → `min_rounds_left = 0` on a piloted hull (the cockpit reads no
+///   card before 17b cut M5): it compiles to `rounds > 0`;
+/// * `target = identified` → accepted, and adds nothing: every slot fires only
+///   a lock its platform has classified;
+/// * `lock` → the lock, the default and the only target word here.
+///
+/// Anything else — another word, `OR`, a fifth condition, a malformed or
+/// missing number, an empty rule, a term repeated with another value — is the
+/// ONE outside said-half [`CockpitError::NotThisCore`]. The grammar is read
+/// whole before the floor is checked, so a rule both malformed and under the
+/// floor is told it is malformed.
+///
+/// The compiled slot: `target: Lock`; `min_permille` the odds term's, else
+/// **the frame's floor** (a rule with no odds term asks for the floor);
+/// `aspects` [`ASPECTS_ANY`] unless named; `min_rounds_left` 0, `min_range_m`
+/// 0 and `max_range_m` `u32::MAX` (unbound) unless named.
+///
+/// # Errors
+///
+/// [`CockpitError::NotThisCore`] or [`CockpitError::Unlawful`] — the
+/// said-half; the caller adds `FIRE <weapon> refused.`.
+pub fn parse_arming(
+    weapon: &WeaponRow,
+    rest: &str,
+    frame: &Frame,
+) -> Result<FireCondition, CockpitError> {
+    let tokens = arming_tokens(rest);
+    if tokens.is_empty() || tokens.iter().any(|token| token == "or") {
+        return Err(CockpitError::NotThisCore);
+    }
+    let conditions: Vec<Vec<&str>> = tokens
+        .split(|token| token == "and")
+        .map(|term| term.iter().map(String::as_str).collect())
+        .collect();
+    if conditions.len() > MAX_ARMING_TERMS || conditions.iter().any(Vec::is_empty) {
+        return Err(CockpitError::NotThisCore);
+    }
+    let mut terms = ArmingTerms::default();
+    for condition in &conditions {
+        arming_term(condition, weapon, frame, &mut terms)?;
+    }
+    let floor = frame.odds_floor_permille;
+    let min_permille = match terms.odds_pct {
+        Some(pct) if pct.saturating_mul(10) < floor => {
+            return Err(CockpitError::Unlawful {
+                floor_pct: floor / 10,
+            });
+        }
+        Some(pct) => pct.saturating_mul(10),
+        None => floor,
+    };
+    Ok(FireCondition {
+        weapon: weapon.id.clone(),
+        target: SlotTarget::Lock,
+        min_permille: u16::try_from(min_permille).unwrap_or(u16::MAX),
+        aspects: terms.aspects.unwrap_or(ASPECTS_ANY),
+        min_rounds_left: terms.keeps.unwrap_or(0),
+        min_range_m: terms.min_m.unwrap_or(0),
+        max_range_m: terms.max_m.unwrap_or(u32::MAX),
+    })
+}
+
+/// One condition of a rule into `terms` ([`parse_arming`]'s eight).
+fn arming_term(
+    condition: &[&str],
+    weapon: &WeaponRow,
+    frame: &Frame,
+    terms: &mut ArmingTerms,
+) -> Result<(), CockpitError> {
+    match condition {
+        ["odds", ">=", n] => arming_set(&mut terms.odds_pct, arming_number(n, 1..=100)?),
+        ["odds", gun, ">=", n] => {
+            // The gun named must be this slot's own, by any spelling `FIRE`
+            // takes for it.
+            let named =
+                choose_weapon(&frame_weapons(frame), gun).is_ok_and(|row| row.id == weapon.id);
+            if !named {
+                return Err(CockpitError::NotThisCore);
+            }
+            arming_set(&mut terms.odds_pct, arming_number(n, 1..=100)?)
+        }
+        ["aspect", "=", list @ ..] => {
+            if list.is_empty() || list.len() % 2 == 0 {
+                return Err(CockpitError::NotThisCore);
+            }
+            let mut faces: Vec<Aspect> = Vec::new();
+            for (at, word) in list.iter().enumerate() {
+                if at % 2 == 1 {
+                    if *word != "," {
+                        return Err(CockpitError::NotThisCore);
+                    }
+                    continue;
+                }
+                match *word {
+                    "front" => faces.push(Aspect::Front),
+                    "side" => faces.extend([Aspect::Left, Aspect::Right]),
+                    "rear" => faces.push(Aspect::Rear),
+                    _ => return Err(CockpitError::NotThisCore),
+                }
+            }
+            arming_set(&mut terms.aspects, aspect_mask(&faces))
+        }
+        // The brief's mapping (`< n` to `max_range_m = n`, `> n` to `min_range_m
+        // = n`); the warrant holds the bounds inclusively, so a printed `600 m`
+        // is inside `range < 600 m` — which the help says in those words.
+        ["range", "<", n] | ["range", "<", n, "m"] => {
+            arming_set(&mut terms.max_m, arming_metres(n)?)
+        }
+        ["range", ">", n] | ["range", ">", n, "m"] => {
+            arming_set(&mut terms.min_m, arming_metres(n)?)
+        }
+        ["band", "=", word] => {
+            let bands: &[u32] = frame
+                .weapons
+                .iter()
+                .find(|row| row.id == weapon.id)
+                .map_or(&[], |row| row.bands_cm.as_slice());
+            let Some([close, effective, far]) = band_bounds_m(frame.sight_cm, bands) else {
+                return Err(CockpitError::NotThisCore);
+            };
+            let (nearest, furthest) = match *word {
+                "close" => close,
+                "effective" => effective,
+                "far" => far,
+                _ => return Err(CockpitError::NotThisCore),
+            };
+            // The nearest of `close` is nought, which is no bound at all.
+            if nearest > 0 {
+                arming_set(&mut terms.min_m, nearest)?;
+            }
+            arming_set(&mut terms.max_m, furthest)
+        }
+        ["rounds", ">", n, "%"] => {
+            let pct = arming_number(n, 0..=100)?;
+            arming_set(&mut terms.keeps, rounds_kept(weapon, pct))
+        }
+        ["rounds", ">", n] => match n.strip_suffix('%') {
+            Some(pct) => {
+                let pct = arming_number(pct, 0..=100)?;
+                arming_set(&mut terms.keeps, rounds_kept(weapon, pct))
+            }
+            None => {
+                let full = u32::try_from(weapon.rounds_max.max(0)).unwrap_or(u32::MAX);
+                arming_set(&mut terms.keeps, arming_number(n, 0..=full)?)
+            }
+        },
+        ["reserve"] => arming_set(&mut terms.keeps, 0),
+        ["target", "=", "identified"] | ["lock"] => Ok(()),
+        _ => Err(CockpitError::NotThisCore),
+    }
+}
+
+/// `pct` per cent of the weapon's full load, rounded down.
+fn rounds_kept(weapon: &WeaponRow, pct: u32) -> u32 {
+    let full = u64::try_from(weapon.rounds_max.max(0)).unwrap_or(0);
+    u32::try_from(full.saturating_mul(u64::from(pct)) / 100).unwrap_or(u32::MAX)
+}
+
+/// **The side words a mask names** (17b cut M1b.3's rule, lifted by 17b cut
+/// M1b.4 so the arming line and the arming's reply say one thing): `front`,
+/// `side` (left or right), `rear`, in that order, each at most once.
+fn aspect_side_words(aspects: u8) -> Vec<&'static str> {
+    let side = aspect_in(aspects, Aspect::Left) || aspect_in(aspects, Aspect::Right);
+    [
+        (aspect_in(aspects, Aspect::Front), "front"),
+        (side, "side"),
+        (aspect_in(aspects, Aspect::Rear), "rear"),
+    ]
+    .into_iter()
+    .filter_map(|(on, word)| on.then_some(word))
+    .collect()
+}
+
+/// **The English `FIRE … WHEN` writes back** (17b cut M1b.4; doc 17 §5), with
+/// **no slot number** — the number is the arena's to give:
+/// `Arming {weapon}: fires your lock when {clauses}.`, the clauses joined
+/// ` and ` in this order: `your chance to hit is {n}% or better` (always);
+/// `it shows its {words}` (the mask's side words joined ` or `, only when not
+/// every aspect); `it is under {b} m`, `it is past {a} m` or `it is between
+/// {a} and {b} m` (only when bound); `{weapon} keeps {k} round(s)` (only above
+/// nought). The gate's rule reads `Arming cannon: fires your lock when your
+/// chance to hit is 60% or better and it shows its side or rear.`
+#[must_use]
+pub fn arming_reply(cond: &FireCondition) -> String {
+    let mut clauses = vec![format!(
+        "your chance to hit is {}% or better",
+        cond.min_permille / 10
+    )];
+    if cond.aspects & ASPECTS_ANY != ASPECTS_ANY {
+        let words = aspect_side_words(cond.aspects);
+        if !words.is_empty() {
+            clauses.push(format!("it shows its {}", words.join(" or ")));
+        }
+    }
+    match (cond.min_range_m > 0, cond.max_range_m < u32::MAX) {
+        (true, true) => clauses.push(format!(
+            "it is between {} and {} m",
+            cond.min_range_m, cond.max_range_m
+        )),
+        (false, true) => clauses.push(format!("it is under {} m", cond.max_range_m)),
+        (true, false) => clauses.push(format!("it is past {} m", cond.min_range_m)),
+        (false, false) => {}
+    }
+    if cond.min_rounds_left > 0 {
+        clauses.push(format!(
+            "{} keeps {} round(s)",
+            cond.weapon, cond.min_rounds_left
+        ));
+    }
+    format!(
+        "Arming {}: fires your lock when {}.",
+        cond.weapon,
+        clauses.join(" and ")
+    )
+}
+
 /// `FIRE [<weapon>]` — shoot the lock (doc 16 §3.7).
 ///
 /// **The pre-checks are doc 16 §3.7's refusal column, in its order**: the weapon has
@@ -4556,7 +5082,20 @@ fn spot_marker_walk(window: &serde_json::Value) -> Vec<(usize, &serde_json::Valu
 /// in the same sentence. A `FIRE` forwarded inside the OS timer's overshoot of a
 /// wake scheduled before the ready instant can still meet the arena's own refusal
 /// a pulse later, which `help cockpit`'s "a pulse apart" paragraph already allows.
+///
+/// **17b cut M1b.4** (doc 17 §5, D-UM-18): the grammar grows two arms and no
+/// verb — `FIRE <weapon> WHEN <condition> [AND <condition>]…` arms a slot
+/// ([`fire_when`]) and `FIRE <weapon|ALL> OFF` clears one or every slot
+/// ([`fire_off`]) — taken ONLY when [`fire_form`] reads `WHEN` or `OFF` as the
+/// second word, or `OFF` alone, so every existing `FIRE` line goes on to the
+/// pre-checks below byte for byte as it always did. A typed `FIRE` is never
+/// gated by a slot (the owner's pin P1, 16c Q45).
 fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    match fire_form(rest) {
+        FireForm::Shot => {}
+        FireForm::Off { weapon, tail } => return fire_off(ctx, seat, weapon, tail),
+        FireForm::When { weapon, conditions } => return fire_when(ctx, seat, weapon, conditions),
+    }
     let actor = ctx.actor;
     // 16b cut AP.1: the one wall-clock read this verb ages the mirror by.
     let now = std::time::Instant::now();
@@ -4677,6 +5216,14 @@ fn weapon_status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     }
     for weapon in &weapons {
         lines.push(weapon.render(&weapons));
+        // **17b cut M1b.4** (doc 17 §5, as built for the 120-column floor):
+        // an armed weapon's slot on its own line, two spaces in, under its
+        // row — `  S1: >=60% side/rear` — the line the TUI pane and the web
+        // print under the same row ([`arming_words`]: three renderers, one
+        // shape). The row itself is unchanged.
+        if let Some(armed) = &weapon.armed {
+            lines.push(format!("  {}", arming_words(armed)));
+        }
     }
     say_and_frame(ctx, held.as_ref(), lines);
     Ok(())
@@ -6141,16 +6688,7 @@ pub fn arming_words(armed: &FrameArming) -> String {
     }
     terms.push(format!(">={}%", armed.min_permille / 10));
     if armed.aspects & ASPECTS_ANY != ASPECTS_ANY {
-        let side =
-            aspect_in(armed.aspects, Aspect::Left) || aspect_in(armed.aspects, Aspect::Right);
-        let words: Vec<&str> = [
-            (aspect_in(armed.aspects, Aspect::Front), "front"),
-            (side, "side"),
-            (aspect_in(armed.aspects, Aspect::Rear), "rear"),
-        ]
-        .into_iter()
-        .filter_map(|(on, word)| on.then_some(word))
-        .collect();
+        let words = aspect_side_words(armed.aspects);
         if !words.is_empty() {
             terms.push(words.join("/"));
         }
@@ -7589,8 +8127,13 @@ fn cockpit_help(verb: &str) -> String {
         // 16b cut AE.2: the scout car's main gun is its autocannon, so "the
         // cannon" is no longer every machine's bare `FIRE` — and the laser tank
         // carries none, so its bare `FIRE` is the beam.
+        // 17b cut M1b.4 (doc 17 §5): and the arming, which is FIRE's grammar
+        // grown rather than a verb of its own.
         "fire" => "FIRE [<weapon>]     shoot your lock with your machine's main gun — the cannon \
-                   on a tank that carries one — unless you name another weapon."
+                   on a tank that carries one — unless you name another weapon. FIRE <weapon> \
+                   WHEN <cond> [AND <cond>]... arms the weapon: it fires your lock whenever every \
+                   condition holds, and tells you each time. FIRE <weapon|ALL> OFF clears it. \
+                   See help cockpit, \"Arming a weapon\"."
             .to_owned(),
         // 16b cut Y.1: who may order what, in the help, because the refusal for
         // a squad a pilot may not order is deliberately one bare sentence.
@@ -7604,7 +8147,8 @@ fn cockpit_help(verb: &str) -> String {
         // 16b cut F.2 gave both of these more to say, and a help line that
         // undersells a surface is a pilot who never looks at it.
         "weaponstatus" => "WEAPONSTATUS        every weapon you carry: ready or cycling, its \
-                           rounds, its own chance against your lock, and that lock's range band."
+                           rounds, its own chance against your lock, and that lock's range band \
+                           — and, under an armed weapon, what it is armed to do."
             .to_owned(),
         // 16b cut O.2 (16c N12): what the switch does to whom, because the
         // cost of each position is the whole reason to type it.

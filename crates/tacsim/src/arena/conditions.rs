@@ -79,7 +79,7 @@ use smol_str::SmolStr;
 use crate::arena::intents::{
     Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_intent,
 };
-use crate::arena::perception::{Aspect, Named, lock_range_step_m};
+use crate::arena::perception::{Aspect, FrameNotice, Named, lock_range_step_m};
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{ActionHash, Arena, Channel, Classification, ContactId};
@@ -503,6 +503,13 @@ impl Arena {
     /// dropped silently and answers [`Held::Idle`]: the slot stays armed and
     /// waits for the next trigger. `counters.cond_held` counts a
     /// [`Held::Why`].
+    ///
+    /// **17b cut M1b.4 says both** (doc 17 §5, D-UM-14): an accepted shot
+    /// stages [`FrameNotice::SlotFired`] — the slot, the weapon, the lock by its
+    /// designator, the chance and the face the warrant answered — and a
+    /// [`Held::Why`] stages [`FrameNotice::SlotHeld`] through `say_held`'s
+    /// ten-second rate; [`Held::Idle`] and a refusal dropped at apply or at the
+    /// resolver say nothing. Both on `unit`'s own hull alone.
     pub(crate) fn evaluate_conditions(
         &mut self,
         unit: ObjId,
@@ -542,14 +549,19 @@ impl Arena {
                 answers.push((n, Err(Held::Idle)));
                 continue;
             }
-            if let Err(held) = self.warrant(unit, &cond, t_ms) {
-                if matches!(held, Held::Why(_)) {
-                    counters.cond_held = counters.cond_held.saturating_add(1);
+            let warranted = match self.warrant(unit, &cond, t_ms) {
+                Ok(warranted) => warranted,
+                Err(held) => {
+                    if let Held::Why(why) = &held {
+                        counters.cond_held = counters.cond_held.saturating_add(1);
+                        // 17b cut M1b.4 (doc 17 §5): the held sentence, at
+                        // most once per slot and contact per `HELD_SAID_MS`.
+                        self.say_held(unit, n, &cond.weapon, why, t_ms);
+                    }
+                    answers.push((n, Err(held)));
+                    continue;
                 }
-                // 17b cut M1b.4 stages SlotFired/SlotHeld here.
-                answers.push((n, Err(held)));
-                continue;
-            }
+            };
             // The one place a slot touches the action hash: opened, not taken —
             // the shot's line takes it (`Arena::event_hash`).
             if self.action_hash == ActionHash::Outside {
@@ -584,7 +596,25 @@ impl Arena {
                 Some(seq) => {
                     counters.shots = counters.shots.saturating_add(1);
                     counters.cond_fires = counters.cond_fires.saturating_add(1);
-                    // 17b cut M1b.4 stages SlotFired/SlotHeld here.
+                    // 17b cut M1b.4 (D-UM-14's attribution): every slot shot
+                    // announced once, on the shooter's own hull alone — the
+                    // lock its platform holds by its designator, and the chance
+                    // and the face the warrant read off the plot.
+                    let (lock, p_permille, aspect) = warranted;
+                    let contact = self
+                        .contacts
+                        .get(unit, lock)
+                        .map(|_| self.name_of(unit, lock));
+                    self.stage_notice(
+                        unit,
+                        FrameNotice::SlotFired {
+                            slot: n,
+                            weapon: cond.weapon.clone(),
+                            contact,
+                            p_permille,
+                            aspect,
+                        },
+                    );
                     answers.push((n, Ok(seq)));
                 }
                 None => answers.push((n, Err(Held::Idle))),
@@ -713,6 +743,53 @@ impl Arena {
         }
         self.conditions.clear(unit);
         self.held_said.retain(|(on, _, _), _| *on != unit);
+    }
+
+    /// **Say why a slot held, at most once per slot and contact per
+    /// [`HELD_SAID_MS`]** (17b cut M1b.4; doc 17 §5: *a held shot is said at
+    /// most once per contact per 10 s*).
+    ///
+    /// The contact is the one the why names — an [`HeldWhy::Aspect`] or
+    /// [`HeldWhy::Range`]'s own — and the hull's lock for an
+    /// [`HeldWhy::Odds`] or [`HeldWhy::Rounds`] (the warrant only reaches those
+    /// terms with the lock held). [`Arena::held_said`] keeps the millisecond
+    /// each `(unit, slot, contact)` was last SAID: the sentence is staged, and
+    /// the row written, only when the row is absent or at least
+    /// [`HELD_SAID_MS`] old — so a slot held every pass is said once, then
+    /// once more ten seconds on, never once a pass. A disarm or a re-arm drops
+    /// the slot's rows ([`Arena::resolve_arming`]), so new terms say their
+    /// first reason at once. Staged through `Arena::stage_notice` on the
+    /// shooter's hull alone — a mind hull's buffer receives it as every
+    /// notice (the parity rule); nothing is told to any other hull. Written at
+    /// an arena millisecond, so the rate is the tempo's to keep by
+    /// construction (D-16-2).
+    fn say_held(&mut self, unit: ObjId, slot: u8, weapon: &SmolStr, why: &HeldWhy, t_ms: i64) {
+        let contact = match why {
+            HeldWhy::Aspect { contact, .. } | HeldWhy::Range { contact, .. } => Some(contact.id),
+            HeldWhy::Odds { .. } | HeldWhy::Rounds { .. } => {
+                self.unit(unit).and_then(|state| state.lock)
+            }
+        };
+        let Some(contact) = contact else {
+            return;
+        };
+        let key = (unit, slot, contact);
+        if self
+            .held_said
+            .get(&key)
+            .is_some_and(|last| t_ms.saturating_sub(*last) < HELD_SAID_MS)
+        {
+            return;
+        }
+        self.held_said.insert(key, t_ms);
+        self.stage_notice(
+            unit,
+            FrameNotice::SlotHeld {
+                slot,
+                weapon: weapon.clone(),
+                why: why.clone(),
+            },
+        );
     }
 
     /// **The held-shot rows of `unit`'s `slots` gone** (17b cut M1b.1).

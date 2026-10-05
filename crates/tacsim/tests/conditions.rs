@@ -451,6 +451,9 @@ struct Run {
     counters: ReflexCounters,
     /// Every notice the red pilot was sent.
     notices: Vec<FrameNotice>,
+    /// **17b cut M1b.4**: every notice EVERY pilot was sent, with the arena
+    /// millisecond its frame went out at and the pilot it went to.
+    told: Vec<(i64, ObjId, FrameNotice)>,
     /// How many pulses it took.
     pulses: u32,
 }
@@ -479,6 +482,19 @@ fn absorb(out: &StepOutput, bytes: &mut Vec<u8>, notices: &mut Vec<FrameNotice>)
     }
 }
 
+/// Every pilot's notices of one pulse, at the arena millisecond it ended (17b
+/// cut M1b.4).
+fn told_of(out: &StepOutput, now_ms: i64, told: &mut Vec<(i64, ObjId, FrameNotice)>) {
+    for (pilot, frame) in &out.frames {
+        told.extend(
+            frame
+                .notices
+                .iter()
+                .map(|notice| (now_ms, *pilot, notice.clone())),
+        );
+    }
+}
+
 fn lines(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<LedgerEvent> {
     arena.ledger.flush();
     for chunk in arena.ledger.take_chunks() {
@@ -499,6 +515,7 @@ fn lines(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<LedgerEvent> {
 fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Run {
     let mut bytes: Vec<u8> = Vec::new();
     let mut notices: Vec<FrameNotice> = Vec::new();
+    let mut told: Vec<(i64, ObjId, FrameNotice)> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut counters = ReflexCounters::default();
     let mut wall = 0_i64;
@@ -512,6 +529,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes, &mut notices);
+        told_of(&out, arena.now_ms, &mut told);
         counters.absorb(&out.reflex);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
@@ -526,6 +544,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
             next += 1;
             let out = arena.step(wall, &beat.controls, &beat.intents);
             absorb(&out, &mut bytes, &mut notices);
+            told_of(&out, arena.now_ms, &mut told);
             counters.absorb(&out.reflex);
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses += 1;
@@ -541,6 +560,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
         };
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes, &mut notices);
+        told_of(&out, arena.now_ms, &mut told);
         counters.absorb(&out.reflex);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
@@ -564,6 +584,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
         hashes,
         counters,
         notices,
+        told,
         pulses,
     }
 }
@@ -4410,4 +4431,221 @@ fn m1b3_an_order_hint_re_keys_only_to_a_classified_row_at_three_cadences() {
     for (cadence, seen) in held.chunks(want.len()).enumerate() {
         assert_eq!(seen, want.as_slice(), "the held objective, run {cadence}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.4: a piloted arming, said
+// ---------------------------------------------------------------------------
+
+/// Blue's seat: `arena_of` seats a pilot per unit in the order given, so the
+/// duel's second unit is `#1001`.
+const BLUE_PILOT: ObjId = ObjId(1_001);
+
+/// The two slot notices one pilot was sent, in order, each with the arena
+/// millisecond its frame was sent at.
+fn slot_told(run: &Run, pilot: ObjId) -> Vec<(i64, FrameNotice)> {
+    run.told
+        .iter()
+        .filter(|(_, to, notice)| {
+            *to == pilot
+                && matches!(
+                    notice,
+                    FrameNotice::SlotFired { .. } | FrameNotice::SlotHeld { .. }
+                )
+        })
+        .map(|(t_ms, _, notice)| (*t_ms, notice.clone()))
+        .collect()
+}
+
+/// **The mandatory cross-tempo proof of a piloted arming** (17b cut M1b.4;
+/// 16b §11; doc 17 §5, D-UM-14): the duel with blue facing red (its front)
+/// and the odds at 70 per cent, both powered at 0; at 5,000 red's pilot types
+/// `LOCK` and arms the cannon `>=60% side/rear`; at 10,000 a typed `FIRE` on
+/// the front; at 20,000 a re-arm with new terms (`>=60% side`); at 25,000 blue
+/// turns north, showing red its left flank. Every beat sits on every drive's
+/// lattice.
+///
+/// * Through the first two cycles nothing fires by the slot, and exactly ONE
+///   `slot_held` (`BA shows its front`) reaches red's frames inside ten
+///   seconds — at 5,000, the arming's own evaluation — and a second only at
+///   or after 15,000, though red's passes and the cannon's `WeaponReady` (at
+///   14,000, after the typed shot) evaluate it every second in between;
+/// * the typed `FIRE` on the front fires at its pulse's end, ungated, with no
+///   `by`;
+/// * the re-arm says its first held reason AT ONCE, at 20,000, inside the old
+///   terms' ten seconds (the re-arm dropped the slot's `held_said` row);
+/// * after the turn the slot fires first at one of red's OWN pass
+///   milliseconds — the pass that refreshed the plot — and then on the
+///   cannon's `WeaponReady`, each shot `by: cond` `slot: 1` and announced by
+///   ONE `slot_fired` to red's frames (the lock by its designator, the chance
+///   and the side), never to blue's: blue's frames carry no slot notice at all;
+/// * one event list, one hash sequence (`held_said` is folded: when the
+///   sentence is said is in the hash) and one sequence of slot notices at
+///   5,000 / 1,000 / 500 ms and on the task's wakes.
+#[test]
+fn m1b4_a_piloted_arming_fires_only_on_flanks_at_three_cadences() {
+    let flank_rear = aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]);
+    let flank = aspect_mask(&[Aspect::Left, Aspect::Right]);
+    let contact = contact_of(RED, BLUE);
+    let make = || {
+        let mut arena = duel(270_000);
+        arena.resolution.p_min = 700;
+        arena.resolution.p_max = 700;
+        arena
+    };
+    let script = || {
+        vec![
+            beat(
+                0,
+                vec![
+                    intent(RED, IntentKind::Startup, 1),
+                    intent(BLUE, IntentKind::Startup, 2),
+                ],
+            ),
+            beat(
+                5_000,
+                vec![
+                    intent(RED, IntentKind::Lock { contact }, 3),
+                    intent(RED, arm(cond("cannon", 600, flank_rear)), 4),
+                ],
+            ),
+            beat(
+                10_000,
+                vec![intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                        slot: None,
+                    },
+                    5,
+                )],
+            ),
+            beat(
+                20_000,
+                vec![intent(RED, arm(cond("cannon", 600, flank)), 6)],
+            ),
+            beat(
+                25_000,
+                vec![intent(BLUE, IntentKind::Heading { mdeg: 0 }, 7)],
+            ),
+        ]
+    };
+    let until = 40_000;
+    let run = at_every_drive(make, until, script);
+
+    // The slot's sentences are one sequence at every drive.
+    let sequence = |run: &Run| -> Vec<FrameNotice> {
+        slot_told(run, RED_PILOT)
+            .into_iter()
+            .map(|(_, notice)| notice)
+            .collect()
+    };
+    let mut fine: Option<Run> = None;
+    for drive in DRIVES {
+        let mut arena = make();
+        let other = replay(&mut arena, drive, until, &script());
+        assert_eq!(sequence(&other), sequence(&run), "{drive:?}");
+        assert!(
+            slot_told(&other, BLUE_PILOT).is_empty(),
+            "{drive:?}: the target was told of a slot"
+        );
+        if matches!(drive, Drive::Every(500)) {
+            fine = Some(other);
+        }
+    }
+    let fine = fine.expect("the 500 ms drive ran");
+
+    // The typed FIRE on the front: fired at its pulse's end, ungated.
+    let fired = run.fired();
+    let typed: Vec<&(i64, serde_json::Value)> = fired
+        .iter()
+        .filter(|(_, line)| line.get("by").is_none())
+        .collect();
+    assert_eq!(typed.len(), 1, "{fired:?}");
+    assert_eq!(typed[0].0, 10_000);
+    assert!(typed[0].1.get("slot").is_none());
+
+    // The slot's shots: none before the turn, the first at red's own pass,
+    // then on the cannon's cycle.
+    let shots = cond_shots(&run);
+    let Some(&(first, _, _)) = shots.first() else {
+        panic!("the slot never fired: {:?}", run.counters);
+    };
+    assert!(first > 25_000, "the slot fired before the turn: {shots:?}");
+    assert!(
+        is_pass_of(RED, first),
+        "the first slot shot at {first} is not one of red's passes"
+    );
+    let cycle = i64::from(cannon().cycle_ms);
+    for (n, (t_ms, slot, target)) in shots.iter().enumerate() {
+        assert_eq!(*slot, 1);
+        assert_eq!(*target, u64::from(BLUE.0));
+        assert_eq!(
+            *t_ms,
+            first + cycle * i64::try_from(n).unwrap_or(0),
+            "on the WeaponReady millisecond"
+        );
+    }
+    assert!(shots.len() >= 2, "{shots:?}");
+
+    // What red was told, and when (the 500 ms drive's frames).
+    let told = slot_told(&fine, RED_PILOT);
+    let held: Vec<(i64, &FrameNotice)> = told
+        .iter()
+        .filter(|(_, notice)| matches!(notice, FrameNotice::SlotHeld { .. }))
+        .map(|(t_ms, notice)| (*t_ms, notice))
+        .collect();
+    assert_eq!(held.len(), 3, "{told:?}");
+    for (_, notice) in &held {
+        let FrameNotice::SlotHeld { slot, weapon, why } = notice else {
+            unreachable!("filtered to held");
+        };
+        assert_eq!(*slot, 1);
+        assert_eq!(weapon.as_str(), "cannon");
+        assert!(
+            matches!(why, HeldWhy::Aspect { contact: named, aspect: Aspect::Front } if named.id == contact),
+            "{why:?}"
+        );
+    }
+    assert_eq!(held[0].0, 5_000, "the arming's own evaluation said it");
+    assert!(
+        (15_000..=16_000).contains(&held[1].0),
+        "the second held sentence came at {}, not ten seconds on",
+        held[1].0
+    );
+    assert_eq!(
+        held[2].0, 20_000,
+        "the re-arm said its first reason at once"
+    );
+    let fired_told: Vec<&FrameNotice> = told
+        .iter()
+        .map(|(_, notice)| notice)
+        .filter(|notice| matches!(notice, FrameNotice::SlotFired { .. }))
+        .collect();
+    assert_eq!(fired_told.len(), shots.len(), "one sentence a slot shot");
+    for notice in fired_told {
+        let FrameNotice::SlotFired {
+            slot,
+            weapon,
+            contact: named,
+            p_permille,
+            aspect,
+        } = notice
+        else {
+            unreachable!("filtered to fired");
+        };
+        assert_eq!(*slot, 1);
+        assert_eq!(weapon.as_str(), "cannon");
+        assert_eq!(named.map(|named| named.id), Some(contact));
+        assert_eq!(*p_permille, 700);
+        assert!(matches!(aspect, Aspect::Left | Aspect::Right), "{aspect:?}");
+    }
+    // Nothing the pilot typed was refused.
+    assert!(
+        fine.notices
+            .iter()
+            .all(|notice| !matches!(notice, FrameNotice::Refused { .. })),
+        "{:?}",
+        fine.notices
+    );
 }

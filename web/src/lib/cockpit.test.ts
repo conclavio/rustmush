@@ -881,6 +881,93 @@ describe("16b cut B.1", () => {
     // An own-side tank told apart keeps its mark on the name it reads now, so
     // it never reads as a hostile's identification.
     expect(pairs.map((p) => p.line)).toContain("X3 identified: RB (FRIENDLY)");
+    // 17b cut M1b.4: the five slot cases.
+    for (const kind of ["slot_fired", "slot_held"]) {
+      expect(kinds).toContain(kind);
+    }
+    expect(pairs.map((p) => p.line)).toContain(
+      "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less",
+    );
+  });
+
+  it("17b cut M1b.4: words a slot's shot and every held why as the line-mode sentence", () => {
+    const decode = (raw: Record<string, unknown>) => {
+      const frame = decodeCockpitFrame({
+        ...(json("cockpit_frame.json") as Record<string, unknown>),
+        notices: [raw],
+      });
+      const decoded = frame?.notices[0];
+      expect(decoded, JSON.stringify(raw)).toBeDefined();
+      return noticeLine(decoded!);
+    };
+    const held = (detail: Record<string, unknown>) =>
+      decode({
+        kind: "slot_held",
+        slot: 1,
+        weapon: "cannon",
+        designator: "BA",
+        friendly: false,
+        detail,
+      });
+    const range = (min: number, max: number) =>
+      held({
+        why: "range",
+        percent: null,
+        floor: null,
+        aspect: null,
+        range_m: 650,
+        min_m: min,
+        max_m: max,
+        rounds: null,
+        keeps: null,
+      });
+    expect(range(200, 600)).toBe("S1 held the cannon: BA at 650 m, outside 200 to 600");
+    expect(range(0, 600)).toBe("S1 held the cannon: BA at 650 m, outside under 600");
+    expect(range(200, 4294967295)).toBe("S1 held the cannon: BA at 650 m, outside past 200");
+    expect(
+      held({
+        why: "rounds",
+        percent: null,
+        floor: null,
+        aspect: null,
+        range_m: null,
+        min_m: null,
+        max_m: null,
+        rounds: 7,
+        keeps: 8,
+      }),
+    ).toBe("S1 held the cannon: 7 rounds, keeps 8");
+    expect(
+      decode({
+        kind: "slot_fired",
+        slot: 2,
+        weapon: "machine_gun",
+        designator: "RB",
+        friendly: true,
+        percent: 95,
+        aspect: "right",
+        detail: null,
+      }),
+    ).toBe("Machine_gun fires at RB (FRIENDLY) by S2 (95%, side)");
+    // A part missing: the kind's own words, as the TUI's ring.
+    expect(decode({ kind: "slot_fired", weapon: "cannon" })).toBe("fires by");
+    expect(decode({ kind: "slot_held", slot: 1, weapon: "cannon" })).toBe("held");
+    expect(
+      decode({
+        kind: "refused",
+        order: "fire",
+        weapon: "cannon",
+        refusal: "unlawful",
+        detail: null,
+      }),
+    ).toBe("FIRE cannon refused: under the floor");
+    // Every other notice decodes to exactly the keys it always had.
+    const plain = decodeCockpitFrame({
+      ...(json("cockpit_frame.json") as Record<string, unknown>),
+      notices: [{ kind: "refused", order: "fire", refusal: "cycling", detail: { secs: 3 } }],
+    })?.notices[0];
+    expect(plain && "slot" in plain).toBe(false);
+    expect(plain?.detail).toEqual({ secs: 3, heat: null, max: null });
   });
 });
 
