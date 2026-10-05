@@ -16,13 +16,23 @@
 //! reaches the window, a 250 ms substep, decide every 500 ms. The two pins of
 //! 17b cut M1a.1 are re-asserted here too, because this cut adds a fold section,
 //! three carried variants and a due-loop rule that production must never feel.
+//!
+//! **17b cut M1b.0** adds section (7b): the order of a millisecond as amended
+//! (every landing, then the heap's events at that millisecond, then the
+//! thinks — a landing's beam impact is in the view of a think of its own
+//! millisecond, on the lattice's own thinks and at three cadences, and two
+//! minds' beams at one millisecond both land) and `MindView.scan_tables` on a
+//! mixed-chassis field. Its production line-hash pin lives beside the helpers
+//! it replays: `tests/weapons.rs`, `tests/motor.rs` and `tests/reflex.rs`.
 
 mod support;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use mush_core::{DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind, ObjId, OwnerId};
+use mush_core::{
+    CanonicalId, DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind, ObjId, OwnerId,
+};
 use mush_sim::data::Pose;
 use mush_tactics::{
     CellSpec, DefinitionRef, FacetId, FacetSpec, RulesValue, SectionId, SectionSpec, TacticalUnit,
@@ -31,6 +41,7 @@ use mush_tactics::{
 use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::command::SquadSignal;
+use tacsim::arena::condition::{Condition, Reading};
 use tacsim::arena::intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal,
     apply_control, apply_intent,
@@ -44,16 +55,18 @@ use tacsim::arena::perception::{
     FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
 };
 use tacsim::arena::reflex::{ReflexCounters, ReflexState};
+use tacsim::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
 use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, ContactId, Controller,
-    CustodyOut, CustodyUnit, DueKind, EntryZone, Pilot, Team, TerrainCell, TrackedRules, Waypoint,
-    Waypoints, WeaponSummary,
+    CustodyOut, CustodyUnit, DueKind, EntryZone, Pilot, Power, SeenPose, ShadowContact, Team,
+    TerrainCell, TrackedRules, Waypoint, Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
 use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
+use tacsim::definitions::{Catalog, content};
 use tacsim::deliberation::order::{CharacterRef, Constraints, Objective, Order};
 use tacsim::deliberation::squad::SquadId;
 
@@ -1715,6 +1728,575 @@ fn m1a5_mind_kinds_run_last_at_their_millisecond_in_unit_id_order() {
         .find(|seen| seen.unit == RED && seen.think_seq == 1)
         .map(|seen| seen.memory);
     assert_eq!(second, Some(vec![7]), "landed, then thought");
+}
+
+// ---------------------------------------------------------------------------
+// (7b) 17b cut M1b.0: the order of a millisecond, and the view's tables
+// ---------------------------------------------------------------------------
+
+/// **The shot a mind's beam fixture fires** (17b cut M1b.0): one uncited
+/// `FIRE cannon`. Every beam test of this section fires through here and
+/// nowhere else, so when 17b cut M1b.2 puts the law on a mind's fire it swaps
+/// this body for an arming plus a cited fire and every proof keeps its
+/// millisecond.
+fn beam_shot(unit: ObjId) -> Vec<IntentKind> {
+    // M1b.2 cites a slot here (an arming on the lock, then `Fire` citing it).
+    let _ = unit;
+    vec![IntentKind::Fire {
+        weapon: SmolStr::new("cannon"),
+    }]
+}
+
+/// **A beam**: [`cannon`] with no flight time — `muzzle_speed_cms` nought, so
+/// `resolve_fire` puts its impact at its own millisecond, the shape of the
+/// shipped `laser_mk1` (`delivery: beam`) — doing `damage`.
+fn beam(damage: u32) -> WeaponSummary {
+    WeaponSummary {
+        muzzle_speed_cms: 0,
+        damage,
+        ..cannon()
+    }
+}
+
+/// **The reviewer's target profile** (the external review of 2026-10-04,
+/// finding 3): one `front` band of one metre square that is all `hull`, and a
+/// `hull` with one `front` facet — so a round that lands on a hull facing its
+/// shooter strikes the rig's one armoured facet. `lethal` gives the hull
+/// `destroy_unit`.
+fn front_profile(lethal: bool) -> UnitProfile {
+    UnitProfile {
+        bands: vec![BandProfile {
+            band: SmolStr::new("front"),
+            width_cm: 100,
+            height_cm: 100,
+            sections: vec![(SmolStr::new("hull"), 1)],
+        }],
+        sections: vec![SectionProfile {
+            id: SmolStr::new("hull"),
+            facets: vec![SmolStr::new("front")],
+            consequences: if lethal {
+                vec![Consequence::DestroyUnit]
+            } else {
+                Vec::new()
+            },
+            struck_through: None,
+        }],
+    }
+}
+
+/// **Two unit ids whose think lattices stand `gap_ms` apart** (17b cut M1b.0):
+/// the first `(a, b)` over `1..=2_000`, `a` then `b` ascending and `a != b`,
+/// with `(stagger(b) − stagger(a)).rem_euclid(STOCK_THINK_MS) == gap_ms`. At
+/// the substep, `a`'s landing (one substep after its think) IS one of `b`'s
+/// thinks — the collision the external review found; at nought the two think,
+/// and land, at one millisecond.
+fn lattice_pair(gap_ms: i64) -> (ObjId, ObjId) {
+    let offsets: Vec<(ObjId, i64)> = (1_u32..=2_000)
+        .map(|id| (ObjId(id), stagger_ms(SEED, ObjId(id), STOCK_THINK_MS)))
+        .collect();
+    offsets
+        .iter()
+        .find_map(|(a, at_a)| {
+            offsets
+                .iter()
+                .find(|(b, at_b)| b != a && (at_b - at_a).rem_euclid(STOCK_THINK_MS) == gap_ms)
+                .map(|(b, _)| (*a, *b))
+        })
+        .unwrap_or_else(|| panic!("no pair of ids {gap_ms} ms apart on the lattice"))
+}
+
+/// The armour left on `view`'s own facets, summed.
+fn armor_of(view: &MindView) -> i64 {
+    view.sections
+        .iter()
+        .flat_map(|section| &section.facets)
+        .map(|facet| facet.armor)
+        .sum()
+}
+
+/// **The beam field** (17b cut M1b.0; the reviewer's setup, adopted): `red`, a
+/// mind with a [`beam`] of `damage`, at (6, 8) facing east, and `blue`, a mind
+/// at (9, 8) facing west with [`front_profile`] — armed with a beam of its own
+/// when `mutual`, and then `red` gets the profile too. Both are online, the odds
+/// are pinned at certainty (`p_min = p_max = 1,000`), and each armed hull holds
+/// the other as a hand-inserted `Classified` row with a lock on it. The
+/// thinks are the lattice's own: nothing is retained off the heap and nothing
+/// scheduled by hand. Each armed mind says [`beam_shot`] at think `shoot_at`
+/// and nothing else.
+fn beam_field(
+    red: ObjId,
+    blue: ObjId,
+    damage: u32,
+    mutual: bool,
+    shoot_at: u64,
+) -> (Arena, Arc<ScriptedMind>) {
+    let mut red_unit = tank(
+        red,
+        Team::Red,
+        centre(6, 8),
+        vec![beam(damage)],
+        Controller::Mind,
+    );
+    let mut blue_unit = tank(
+        blue,
+        Team::Blue,
+        centre(9, 8),
+        if mutual {
+            vec![beam(damage)]
+        } else {
+            Vec::new()
+        },
+        Controller::Mind,
+    );
+    blue_unit.profile = front_profile(mutual);
+    if mutual {
+        red_unit.profile = front_profile(true);
+    }
+    let mut arena = arena_of(vec![red_unit, blue_unit], &[]);
+    arena.resolution.p_min = 1_000;
+    arena.resolution.p_max = 1_000;
+    for (id, heading) in [(red, 90_000_u32), (blue, 270_000)] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+            state.pose.heading_mdeg = heading;
+            state.desired_heading_mdeg = heading;
+        }
+    }
+    let shooters: &[(ObjId, ObjId)] = if mutual {
+        &[(red, blue), (blue, red)]
+    } else {
+        &[(red, blue)]
+    };
+    let mut script: Vec<(ObjId, Vec<Says>)> = Vec::new();
+    for &(viewer, target) in shooters {
+        let contact = draw_contact_id(SEED, viewer, target);
+        let Some(plot) = arena.unit(target).map(SeenPose::of) else {
+            panic!("a fielded target");
+        };
+        let team = if target == red { Team::Red } else { Team::Blue };
+        arena.contacts.insert(
+            viewer,
+            contact,
+            ShadowContact::sighted(target, Classification::Classified { team }, 0, plot),
+        );
+        assert_eq!(
+            arena.resolve_lock(viewer, contact, 0).map(|_| ()),
+            Ok(()),
+            "#{} holds a lock",
+            viewer.0
+        );
+        script.push((viewer, vec![says(shoot_at, beam_shot(viewer))]));
+    }
+    let mind = ScriptedMind::new(&script);
+    arena.mind_runner = mind.clone();
+    (arena, mind)
+}
+
+/// The first think of `red`'s whose landing falls on one of `blue`'s thinks,
+/// and that think of `blue`'s: `(red's think_seq, blue's think_seq, the
+/// millisecond)`.
+fn landing_on_a_think(red: ObjId, blue: ObjId) -> (u64, u64, i64) {
+    for n in 0_i64..8 {
+        let land = think_at(red, n) + SUBSTEP;
+        let since = land - think_at(blue, 0);
+        if since >= 0 && since.rem_euclid(STOCK_THINK_MS) == 0 {
+            return (
+                u64::try_from(n).unwrap_or(0),
+                u64::try_from(since / STOCK_THINK_MS).unwrap_or(0),
+                land,
+            );
+        }
+    }
+    panic!("#{}'s landings never meet #{}'s thinks", red.0, blue.0);
+}
+
+/// **What the beam-before-think fixture must show at `land`**: one `impact`
+/// line, at `land`, after red's `fired` line in `(t_ms, seq)`; blue's think
+/// at `land` handed a view whose armour is the damaged figure the arena holds
+/// after; and red's landing refused nothing.
+fn assert_the_beam_preceded_the_think(
+    rig: &mut Rig,
+    mind: &ScriptedMind,
+    red: ObjId,
+    blue: ObjId,
+    blue_think: u64,
+    land: i64,
+) {
+    let journal = rig.journal();
+    let lines = |word: &str| -> Vec<&LedgerEvent> {
+        journal
+            .iter()
+            .filter(|event| {
+                kind_and_unit(&serde_json::to_string(&event.kind).unwrap_or_default()).0 == word
+            })
+            .collect()
+    };
+    let fired = lines("fired");
+    let impacts = lines("impact");
+    assert_eq!(fired.len(), 1, "red fired once: {journal:?}");
+    assert_eq!(impacts.len(), 1, "the beam landed once: {journal:?}");
+    let (Some(fired), Some(impact)) = (fired.first(), impacts.first()) else {
+        panic!("one of each");
+    };
+    assert_eq!(
+        kind_and_unit(&serde_json::to_string(&fired.kind).unwrap_or_default()).1,
+        Some(red.0),
+        "red's shot"
+    );
+    assert_eq!(fired.t_ms, land, "the shot at the landing");
+    assert_eq!(
+        impact.t_ms, land,
+        "the beam's impact at its own millisecond"
+    );
+    assert!(
+        (fired.t_ms, fired.seq) < (impact.t_ms, impact.seq),
+        "the fired line before the impact"
+    );
+    let Some(seen) = mind
+        .seen()
+        .into_iter()
+        .find(|seen| seen.unit == blue && seen.think_seq == blue_think)
+    else {
+        panic!("blue's think {blue_think} ran");
+    };
+    assert_eq!(
+        seen.t_ms, land,
+        "blue's think shares the impact's millisecond"
+    );
+    let Some(after) = rig.arena.mind_view(blue) else {
+        panic!("blue's view");
+    };
+    assert!(
+        armor_of(&after) < 10,
+        "the beam damaged blue: {}",
+        armor_of(&after)
+    );
+    assert_eq!(
+        armor_of(&seen.view),
+        armor_of(&after),
+        "D-UM-20 as amended: the impact a landing scheduled at the think's millisecond is in \
+         the think's view"
+    );
+    assert_eq!(refusals(&rig.arena, red), Vec::new(), "red's landing");
+}
+
+/// **17b cut M1b.0 — a landing's beam impact precedes the thinks of its
+/// millisecond** (doc 17 §6 and D-UM-20 as amended 2026-10-04; the external
+/// review's finding 3, its regression adopted).
+///
+/// On the lattice's own thinks: two ids whose stagger offsets stand one
+/// substep apart ([`lattice_pair`]), so red's landing one substep after its
+/// think IS a think millisecond of blue's — nothing retained off the heap and
+/// nothing scheduled by hand. Red's mind says [`beam_shot`] at the first think
+/// whose landing meets one of blue's ([`landing_on_a_think`]); the beam's
+/// impact is scheduled at the landing's own millisecond, and is applied before
+/// blue's think of that millisecond takes its view: one `impact` line at the
+/// think's millisecond, after the `fired` line in `(t_ms, seq)`, and blue's
+/// view carries the damaged armour the arena holds after. Under cut M1a.5's
+/// one pass the think ran first and saw the armour whole.
+///
+/// The second arm is the reviewer's own form, kept: `RED` and `BLUE` with the
+/// thinks, passes and shares retained off the heap and the two thinks put at
+/// 750 and 1,000 ms by hand.
+#[test]
+fn m1b0_a_landings_beam_impact_precedes_the_thinks_of_its_millisecond() {
+    // (a) The lattice's own thinks.
+    let (red, blue) = lattice_pair(SUBSTEP);
+    assert_eq!(
+        (stagger_ms(SEED, blue, STOCK_THINK_MS) - stagger_ms(SEED, red, STOCK_THINK_MS))
+            .rem_euclid(STOCK_THINK_MS),
+        SUBSTEP,
+        "the precondition: the two lattices one substep apart"
+    );
+    let (shoot_at, blue_think, land) = landing_on_a_think(red, blue);
+    let (arena, mind) = beam_field(red, blue, 1, false, shoot_at);
+    assert_eq!(arena.substep_len_ms(), SUBSTEP, "the rig's substep");
+    let mut rig = Rig::new(arena);
+    let _ = rig.until(land + STOCK_THINK_MS, |arena| arena.now_ms >= land);
+    assert_the_beam_preceded_the_think(&mut rig, &mind, red, blue, blue_think, land);
+
+    // (b) The reviewer's hand-scheduled form.
+    let (arena, mind) = beam_field(RED, BLUE, 1, false, 0);
+    let mut rig = Rig::new(arena);
+    let _ = rig.arena.due.retain(|kind| {
+        !matches!(
+            kind,
+            DueKind::MindThink { .. } | DueKind::SensorPass { .. } | DueKind::Share { .. }
+        )
+    });
+    rig.arena.due.schedule(
+        750,
+        DueKind::MindThink {
+            unit: RED,
+            think_seq: 0,
+        },
+    );
+    rig.arena.due.schedule(
+        1_000,
+        DueKind::MindThink {
+            unit: BLUE,
+            think_seq: 0,
+        },
+    );
+    let _ = rig.until(1_250, |arena| arena.now_ms >= 1_000);
+    assert_the_beam_preceded_the_think(&mut rig, &mind, RED, BLUE, 0, 1_000);
+}
+
+/// The lattice beam field of
+/// [`m1b0_a_landings_beam_impact_precedes_the_thinks_of_its_millisecond`],
+/// run to 5,000 ms under `drive`.
+fn beam_before_think(drive: Drive) -> (Run, Vec<Seen>) {
+    let (red, blue) = lattice_pair(SUBSTEP);
+    let (shoot_at, _, _) = landing_on_a_think(red, blue);
+    let (mut arena, mind) = beam_field(red, blue, 1, false, shoot_at);
+    let run = run(&mut arena, drive, 5_000);
+    (run, mind.seen())
+}
+
+/// **17b cut M1b.0's mandatory cross-tempo property** (16b §11; doc 16 §3.1
+/// D-16-2; doc 17 §6 D-UM-20 as amended, §22's gate item). The beam field at
+/// 5,000, 1,000 and 500 ms and on the task's own wakes at those three periods:
+/// one event list, one per-substep hash sequence and one sequence of jobs
+/// handed to the runner — so the impact's millisecond, and the view blue's
+/// think took at it with the beam's damage in it, are the same at every
+/// cadence.
+#[test]
+fn m1b0_the_beam_before_the_think_holds_at_three_cadences() {
+    let (red, blue) = lattice_pair(SUBSTEP);
+    let (_, blue_think, land) = landing_on_a_think(red, blue);
+    let (first, seen) = beam_before_think(Drive::Every(5_000));
+    let impacts: Vec<i64> = first
+        .events
+        .iter()
+        .filter(|(_, json, _)| kind_and_unit(json).0 == "impact")
+        .map(|(t_ms, _, _)| *t_ms)
+        .collect();
+    assert_eq!(impacts, vec![land], "one impact, at the landing");
+    let at_impact = seen
+        .iter()
+        .find(|seen| seen.unit == blue && seen.think_seq == blue_think)
+        .map(|seen| (seen.t_ms, armor_of(&seen.view)));
+    assert_eq!(
+        at_impact,
+        Some((land, 9)),
+        "blue's think at the impact's millisecond saw the beam's one point"
+    );
+    for drive in [
+        Drive::Every(1_000),
+        Drive::Every(500),
+        Drive::Task(5_000),
+        Drive::Task(1_000),
+        Drive::Task(500),
+    ] {
+        let (other, other_seen) = beam_before_think(drive);
+        assert_eq!(
+            other.events, first.events,
+            "the event list diverged at {drive:?}"
+        );
+        assert_eq!(
+            other.hashes, first.hashes,
+            "the hash sequence diverged at {drive:?}"
+        );
+        assert_eq!(other_seen, seen, "a think's job diverged at {drive:?}");
+        assert_ne!(other.pulses, first.pulses, "{drive:?} ran the same pulses");
+    }
+}
+
+/// **17b cut M1b.0 — two minds' beams at one millisecond both land** (doc 17
+/// §6 and D-UM-20 as amended: *every* landing runs before the heap's events of
+/// its millisecond). Two mind hulls whose stagger offsets are equal
+/// ([`lattice_pair`] at nought), each with a lethal beam and locked on the
+/// other, say [`beam_shot`] at the same think: they land at one millisecond,
+/// and both land before either impact pops — two `fired` lines, both before
+/// either `impact` line in `(t_ms, seq)`, two `impact` lines, both hulls
+/// wrecks. The simultaneity two `ReflexTick`s at one millisecond have.
+///
+/// **The two `fired` lines are the proof.** A drain that ran each landing's
+/// impact before the next landing would not refuse the second shot: the second
+/// hull would be a wreck by then, and `Arena::mind_land` returns before it
+/// applies a wreck's landing — no `fired` line and no refusal notice, silently.
+/// The buffer reads (no refusal in either mind's buffer) only confirm nothing
+/// else in the two shots was refused; they cannot see that drain.
+#[test]
+fn m1b0_mutual_beams_at_one_millisecond_both_land() {
+    let (red, blue) = lattice_pair(0);
+    assert_eq!(
+        stagger_ms(SEED, red, STOCK_THINK_MS),
+        stagger_ms(SEED, blue, STOCK_THINK_MS),
+        "the precondition: one think millisecond"
+    );
+    let (arena, _) = beam_field(red, blue, 120, true, 0);
+    let land = think_at(red, 0) + SUBSTEP;
+    let mut rig = Rig::new(arena);
+    let _ = rig.until(land + STOCK_THINK_MS, |arena| arena.now_ms >= land);
+    let lines: Vec<(String, Option<u32>, i64)> = rig
+        .journal()
+        .iter()
+        .map(|event| {
+            let (word, unit) =
+                kind_and_unit(&serde_json::to_string(&event.kind).unwrap_or_default());
+            (word, unit, event.t_ms)
+        })
+        .collect();
+    let fired: Vec<(Option<u32>, i64)> = lines
+        .iter()
+        .filter(|(word, _, _)| word == "fired")
+        .map(|(_, unit, t_ms)| (*unit, *t_ms))
+        .collect();
+    assert_eq!(
+        fired,
+        vec![(Some(red.0), land), (Some(blue.0), land)],
+        "both fired at the one landing millisecond, in unit-id order: {lines:?}"
+    );
+    let impacts: Vec<(Option<u32>, i64)> = lines
+        .iter()
+        .filter(|(word, _, _)| word == "impact")
+        .map(|(_, unit, t_ms)| (*unit, *t_ms))
+        .collect();
+    assert_eq!(
+        impacts,
+        vec![(Some(red.0), land), (Some(blue.0), land)],
+        "both beams impacted at that millisecond: {lines:?}"
+    );
+    // Both landings before either impact, in `(t_ms, seq)`: the order the
+    // proof rests on, read off the lines themselves.
+    let mut at = |word: &str| -> Vec<(i64, u64)> {
+        rig.journal()
+            .iter()
+            .filter(|event| {
+                kind_and_unit(&serde_json::to_string(&event.kind).unwrap_or_default()).0 == word
+            })
+            .map(|event| (event.t_ms, event.seq))
+            .collect()
+    };
+    let (fired_at, impact_at) = (at("fired"), at("impact"));
+    assert!(
+        fired_at
+            .iter()
+            .all(|shot| impact_at.iter().all(|hit| shot < hit)),
+        "every fired line precedes every impact line: {fired_at:?} {impact_at:?}"
+    );
+    for hull in [red, blue] {
+        assert_eq!(
+            refusals(&rig.arena, hull),
+            Vec::new(),
+            "#{}'s landing refused nothing",
+            hull.0
+        );
+        assert!(
+            rig.arena.unit(hull).is_some_and(|state| state.limits.wreck),
+            "#{} was destroyed",
+            hull.0
+        );
+    }
+}
+
+/// **17b cut M1b.0 — a mixed-chassis view carries its own scan tables** (doc
+/// 17 §3 and D-UM-4 as amended 2026-10-04; the external review's finding 4).
+/// Two minds of red, a shipped line tank and a shipped scout (whose section
+/// words differ: the scout's wheels where the tank has tracks), each holding a
+/// read, classified row of a blue line tank and of a blue scout — the other
+/// chassis and its own. Each view's `scan_tables` has two tables, each row's
+/// `condition.table` resolves to its own target chassis's section words, and
+/// the tables are the hull's keyframe's (`Arena::frame_scan_tables`, which
+/// `Frame::scan_tables` and the keyframe's `scan_tables` key are built from).
+#[test]
+fn m1b0_a_mixed_chassis_view_carries_its_own_scan_tables() {
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let chassis = |entry: &str, id: ObjId| -> TacticalUnit {
+        let key = CanonicalId::new(entry).expect("a canonical id");
+        let (Some(spec), Some(binding)) = (fielded.specs.get(&key), fielded.bindings.get(&key))
+        else {
+            panic!("{entry} is fielded");
+        };
+        tacsim::definitions::to_tactical_unit(spec, binding, id)
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"))
+    };
+    let words = |unit: &TacticalUnit| -> Vec<SmolStr> {
+        unit.sections()
+            .map(|(section, _)| SmolStr::new(section.as_str()))
+            .collect()
+    };
+    let (tank_mind, scout_mind) = (ObjId(4), ObjId(6));
+    let (blue_tank, blue_scout) = (ObjId(9), ObjId(12));
+    let field = [
+        (tank_mind, Team::Red, (6, 8), content::LINE_TANK),
+        (scout_mind, Team::Red, (6, 10), content::SCOUT_MK1),
+        (blue_tank, Team::Blue, (9, 8), content::LINE_TANK),
+        (blue_scout, Team::Blue, (9, 10), content::SCOUT_MK1),
+    ];
+    let units: Vec<CustodyUnit> = field
+        .iter()
+        .map(|(id, team, (x, y), entry)| {
+            let controller = if *team == Team::Red {
+                Controller::Mind
+            } else {
+                Controller::Pilot
+            };
+            CustodyUnit {
+                unit: chassis(entry, *id),
+                ..tank(*id, *team, centre(*x, *y), vec![cannon()], controller)
+            }
+        })
+        .collect();
+    let tank_words = words(&chassis(content::LINE_TANK, ObjId(1)));
+    let scout_words = words(&chassis(content::SCOUT_MK1, ObjId(1)));
+    assert_ne!(
+        tank_words, scout_words,
+        "the precondition: two vocabularies"
+    );
+    let mut arena = arena_of(units, &[blue_tank, blue_scout]);
+    for viewer in [tank_mind, scout_mind] {
+        for target in [blue_tank, blue_scout] {
+            let Some(target_state) = arena.unit(target) else {
+                panic!("a fielded target");
+            };
+            let plot = SeenPose::of(target_state);
+            let condition = Condition::of(&target_state.unit, 750, 350);
+            let mut row = ShadowContact::sighted(
+                target,
+                Classification::Classified { team: Team::Blue },
+                0,
+                plot,
+            );
+            row.seen_condition = Some(Reading {
+                at_ms: 0,
+                condition,
+            });
+            arena
+                .contacts
+                .insert(viewer, draw_contact_id(SEED, viewer, target), row);
+        }
+    }
+    for viewer in [tank_mind, scout_mind] {
+        let keyframe = arena.frame_scan_tables(viewer);
+        let Some(view) = arena.mind_view(viewer) else {
+            panic!("#{}'s view", viewer.0);
+        };
+        assert_eq!(view.scan_tables.len(), 2, "#{}: two chassis", viewer.0);
+        assert_eq!(
+            view.scan_tables, keyframe,
+            "#{}: the view's tables are the keyframe's",
+            viewer.0
+        );
+        assert_eq!(view.contacts.len(), 2, "#{}: both rows", viewer.0);
+        for (target, want) in [(blue_tank, &tank_words), (blue_scout, &scout_words)] {
+            let id = draw_contact_id(SEED, viewer, target);
+            let table = view
+                .contacts
+                .iter()
+                .find(|contact| contact.id == id)
+                .and_then(|contact| contact.condition)
+                .and_then(|reading| view.scan_tables.get(usize::from(reading.table)));
+            assert_eq!(
+                table,
+                Some(want),
+                "#{}'s row of #{} indexes its own chassis's words",
+                viewer.0,
+                target.0
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

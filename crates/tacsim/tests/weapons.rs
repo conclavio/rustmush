@@ -30,7 +30,11 @@
 //!   with a round in flight to or from the unit is one `place_refused` line with
 //!   `in_flight` that moves nothing and leaves the round where it falls; and a
 //!   beam fired in a floored pulse of no time lands in that pulse, as it does
-//!   in one that ran a substep (the phase-4 drain under a staff floor).
+//!   in one that ran a substep (the phase-4 drain under a staff floor);
+//! - **(l)** **17b cut M1b.0's production line-hash pin, the seat half**: the
+//!   (h) script journals, at three cadences, the very lines it journalled at
+//!   `e23694b0`, each with its hash (`tests/motor.rs` holds the shipped
+//!   duel's half, `tests/reflex.rs` the reflex shots').
 //!
 //! # Two places a test reaches into the arena's own state, and why
 //!
@@ -1339,6 +1343,230 @@ fn one_scripted_lock_and_fire_at_three_cadences_is_one_shot_sequence() {
         assert_eq!(run.shots, first.shots);
         // And the cadence really did differ.
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+/// One line of [`M1B0_SEAT_LINES`]: the arena millisecond, the kind and its
+/// fields as JSON, the draws, and the line's hash — the shape [`Line`] holds.
+type PinnedLine = (i64, &'static str, &'static [(&'static str, u64)], u64);
+
+/// **The (h) seat script's ledger, every line with its hash, recorded at
+/// `e23694b0`** (17b cut M1b.0; the M1b plan's §1(a) and (c)) — before the cut
+/// touched the due loop, off this very replay at 5,000 ms. The line hash is the
+/// substep's state hash for a line journalled outside an action run and the
+/// run's one lazy hash inside one (`ActionHash`, 16b cut M.3) — the state at
+/// the run's first `Arena::event_hash`. The action hash is folded into no
+/// state hash, so a change that merely set `ActionHash::Pending` and journalled
+/// nothing moves no byte here; one that TOOK the lazy hash earlier than before
+/// moves the hash of the next action line of its run wherever the state
+/// changed between the two. What this pins is the seat script's bytes (its
+/// four shots are the pilot's, journalled in a pulse's action run); the
+/// reflex shots are `tests/reflex.rs`' half, and that no trigger opens the
+/// action hash for a hull with no slot is asserted where a trigger is built
+/// (17b cut M1b.1).
+const M1B0_SEAT_LINES: &[PinnedLine] = &[
+    (
+        0,
+        r#"{"kind":"match_started"}"#,
+        &[],
+        13_187_143_247_813_120_811,
+    ),
+    (
+        0,
+        r#"{"kind":"startup","unit":4}"#,
+        &[],
+        9_421_132_749_189_711_985,
+    ),
+    (
+        189,
+        r#"{"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4}"#,
+        &[],
+        1_120_236_634_336_847_779,
+    ),
+    (
+        482,
+        r#"{"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9}"#,
+        &[],
+        13_951_167_005_940_871_208,
+    ),
+    (
+        3_189,
+        r#"{"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red"}"#,
+        &[("classify:9:4:4", 3_682_179_631_169_270_960)],
+        9_578_419_035_786_442_381,
+    ),
+    (
+        3_482,
+        r#"{"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue"}"#,
+        &[("classify:4:9:4", 2_838_647_583_109_313_249)],
+        4_000_117_842_695_015_267,
+    ),
+    (
+        5_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        4_530_019_823_590_085_706,
+    ),
+    (
+        10_000,
+        r#"{"kind":"power_online","unit":4}"#,
+        &[],
+        2_389_771_367_893_553_161,
+    ),
+    (
+        10_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        2_389_771_367_893_553_161,
+    ),
+    (
+        10_000,
+        r#"{"kind":"locked","unit":4,"contact":5852833454602713067,"target":9}"#,
+        &[],
+        5_053_043_039_620_432_000,
+    ),
+    (
+        10_000,
+        r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4000,"rounds":1}"#,
+        &[],
+        5_053_043_039_620_432_000,
+    ),
+    (
+        10_027,
+        r#"{"kind":"impact","shot_seq":1,"unit":4,"target":9}"#,
+        &[],
+        2_814_364_460_158_647_790,
+    ),
+    (
+        10_027,
+        r#"{"kind":"miss","shot_seq":1,"reason":"dispersion"}"#,
+        &[("hit:1", 12_072_725_193_963_834_385)],
+        2_814_364_460_158_647_790,
+    ),
+    (
+        15_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        4_695_984_158_796_170_123,
+    ),
+    (
+        15_000,
+        r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4000,"rounds":1}"#,
+        &[],
+        5_567_432_317_986_208_439,
+    ),
+    (
+        15_027,
+        r#"{"kind":"impact","shot_seq":2,"unit":4,"target":9}"#,
+        &[],
+        3_258_042_911_444_715_627,
+    ),
+    (
+        15_027,
+        r#"{"kind":"miss","shot_seq":2,"reason":"dispersion"}"#,
+        &[("hit:2", 11_307_540_289_106_727_687)],
+        3_258_042_911_444_715_627,
+    ),
+    (
+        20_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        10_109_085_921_640_641_787,
+    ),
+    (
+        20_000,
+        r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4000,"rounds":1}"#,
+        &[],
+        2_259_678_685_730_992_349,
+    ),
+    (
+        20_027,
+        r#"{"kind":"impact","shot_seq":3,"unit":4,"target":9}"#,
+        &[],
+        905_611_160_077_707_618,
+    ),
+    (
+        20_027,
+        r#"{"kind":"miss","shot_seq":3,"reason":"dispersion"}"#,
+        &[("hit:3", 17_241_375_169_118_599_602)],
+        905_611_160_077_707_618,
+    ),
+    (
+        25_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        1_395_924_699_094_264_059,
+    ),
+    (
+        25_000,
+        r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4000,"rounds":1}"#,
+        &[],
+        1_957_714_771_597_279_659,
+    ),
+    (
+        25_027,
+        r#"{"kind":"impact","shot_seq":4,"unit":4,"target":9}"#,
+        &[],
+        1_274_254_185_663_404_761,
+    ),
+    (
+        25_027,
+        r#"{"kind":"miss","shot_seq":4,"reason":"dispersion"}"#,
+        &[("hit:4", 9_783_297_951_381_390_390)],
+        1_274_254_185_663_404_761,
+    ),
+    (
+        30_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        674_905_491_140_883_993,
+    ),
+    (
+        35_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        1_594_837_166_001_894_441,
+    ),
+    (
+        40_000,
+        r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
+        &[],
+        10_322_775_387_432_936_772,
+    ),
+];
+
+/// **17b cut M1b.0: the production line-hash pin, the seat half.** The (h)
+/// script — a seat's `STARTUP`, then `LOCK` and `FIRE` four times, the shipped
+/// duel's shape with no arming and no mind — journals at 5,000, 1,000 and 500 ms
+/// exactly the twenty-eight lines it journalled at `e23694b0`, each with the
+/// hash it carried there. Production holds no mind event and no slot, so the
+/// two-phase drain of this cut moves nothing here; every later sub-cut of M1b
+/// re-asserts this pin, and a move is a defect in that sub-cut, never a
+/// re-bless (`tests/motor.rs` holds the shipped duel's half,
+/// `tests/reflex.rs` the reflex shots').
+#[test]
+fn m1b0_the_production_line_hashes_do_not_move() {
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = scripted_arena();
+        let run = replay(&mut arena, cadence, 40_000, &script());
+        let pinned: Vec<Line> = M1B0_SEAT_LINES
+            .iter()
+            .map(|(t_ms, kind, draws, hash)| {
+                (
+                    *t_ms,
+                    (*kind).to_owned(),
+                    draws
+                        .iter()
+                        .map(|(label, value)| ((*label).to_owned(), *value))
+                        .collect(),
+                    *hash,
+                )
+            })
+            .collect();
+        assert_eq!(
+            run.events, pinned,
+            "the seat script's ledger lines moved at {cadence} ms"
+        );
     }
 }
 

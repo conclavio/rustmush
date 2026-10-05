@@ -350,9 +350,10 @@ pub fn decode_memory(bytes: &[u8]) -> Memory {
 /// resolutions), `speed_cms`, `power`, `held` (the keyframe's `blocked`),
 /// `wreck`, `immobile`, `sight_m`, `ecm`, `receiver`, `heat`, `sections`,
 /// `weapons` (each row's keyframe keys, `bands_cm` included since 17b cut
-/// M1a.3), `lock`, `order`, `t_ms`, `notices` and `contacts`. `team` is the
-/// keyframe's callsign letter read as a side. The only object number in it is
-/// the hull's own.
+/// M1a.3), `lock`, `order`, `t_ms`, `notices`, `contacts` and (since 17b cut
+/// M1b.0) `scan_tables`, the tables the contacts' `condition.table` indexes.
+/// `team` is the keyframe's callsign letter read as a side. The only object
+/// number in it is the hull's own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MindView {
     /// The hull's own object number (the keyframe's `unit`).
@@ -404,6 +405,15 @@ pub struct MindView {
     pub notices: Vec<FrameNotice>,
     /// The nearest [`STOCK_CONTACT_ROWS`] contacts (`contacts`).
     pub contacts: Vec<ViewContact>,
+    /// **The section-word tables `ViewContact.condition.table` indexes**
+    /// (`scan_tables`), the keyframe's own: a per-view index, rebuilt per frame
+    /// by first appearance across the scope, never stable across thinks (doc
+    /// 17 §3 as amended 2026-10-04; 17b cut M1b.0). Moved verbatim from the
+    /// frame, every table of it — a table no row of `contacts` indexes
+    /// included, so a row's index is the keyframe's index and a reader needs no
+    /// remap (D-UM-4 as amended: a truncation is a row cap, never the silent
+    /// omission of a field another field indexes).
+    pub scan_tables: Vec<Vec<SmolStr>>,
 }
 
 /// **One contact as a mind sees it** (17b cut M1a.5; doc 17 §3): a keyframe
@@ -569,6 +579,7 @@ impl Arena {
             t_ms: frame.t_ms,
             notices,
             contacts,
+            scan_tables: frame.scan_tables,
         })
     }
 
@@ -1557,6 +1568,25 @@ mod tests {
             assert_eq!(odds, mine, "the odds of {}", contact.id);
         }
         assert_eq!(read, 1, "the read row is in the view, with its words");
+        // **17b cut M1b.0** (doc 17 §3 and D-UM-4 as amended 2026-10-04): the
+        // section-word tables the rows' `condition.table` indexes travel with
+        // them, the keyframe's own, and the read row's index resolves in them
+        // to its chassis's words.
+        assert_eq!(
+            key("scan_tables"),
+            serde_json::json!(view.scan_tables),
+            "the view's scan tables are the keyframe's"
+        );
+        assert_eq!(view.scan_tables.len(), 1, "the one read row's chassis");
+        let table = view
+            .contacts
+            .iter()
+            .find_map(|contact| contact.condition)
+            .and_then(|reading| view.scan_tables.get(usize::from(reading.table)));
+        assert!(
+            table.is_some_and(|words| words.len() > 1),
+            "the read row's table resolves to its chassis's words: {table:?}"
+        );
         assert!(
             view.contacts
                 .iter()

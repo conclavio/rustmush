@@ -32,6 +32,10 @@
 //! - **(k)** doc 16 §3.8's released seat: the tank goes to the controller in
 //!   `Withdraw` and drives itself home.
 //!
+//! Since 17b cut M1b.0 the (j) field's every ledger line is pinned with its
+//! hash as well, as it was at `e23694b0` (`m1b0_the_production_line_hashes_do_not_move`):
+//! the reflex shots' half of the cut's production line-hash pin.
+//!
 //! # Where a test reaches into the arena's own state
 //!
 //! The arena's fields are public (see `arena/state.rs`), and three of these use
@@ -1460,9 +1464,12 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
     replay_driven(Drive::Every(cadence_ms), until_ms).0
 }
 
-/// The (j) field replayed under `drive`; answers the replay, every arena
-/// millisecond a pulse after the opening one ended at, and the substep length.
-fn replay_driven(drive: Drive, until_ms: i64) -> (Replay, Vec<i64>, i64) {
+/// **The (j) field**: two reflex machines, `RED` armed with the cannon and
+/// `RED2` with nothing, and the seated `BLUE` they detect, classify, lock and
+/// shoot — the tempo pinned at `Quiet` (D-16-2: the tempo decides only how
+/// often the arena steps, so the replays of it differ in **cadence** and in
+/// nothing else).
+fn j_field() -> Arena {
     let mut arena = arena_of(
         vec![
             tank(
@@ -1494,6 +1501,13 @@ fn replay_driven(drive: Drive, until_ms: i64) -> (Replay, Vec<i64>, i64) {
     // D-16-2: the tempo decides only how often the arena steps. It is pinned so
     // that the three replays differ in **cadence** and in nothing else.
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    arena
+}
+
+/// The (j) field replayed under `drive`; answers the replay, every arena
+/// millisecond a pulse after the opening one ended at, and the substep length.
+fn replay_driven(drive: Drive, until_ms: i64) -> (Replay, Vec<i64>, i64) {
+    let mut arena = j_field();
     // The task driver's period is set on the arena's own frozen tempo block,
     // which `next_due_ms` reads, before the opening pulse (the pattern
     // `arena.rs`'s `replay_as_the_task` uses; the hash does not fold it).
@@ -1664,6 +1678,138 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
         Some(0xdb4f_9096_c79f_b530),
         "the last substep's hash moved"
     );
+}
+
+/// **The (j) field's ledger, every line whole with its hash, recorded at
+/// `e23694b0`** (17b cut M1b.0, the fixer's addition to its production
+/// line-hash pin; the M1b plan's §1(a) and (c)) — off the unchanged source,
+/// before the cut's due-loop edit was applied, from [`j_field`] stepped at
+/// 1,000 ms for 30 s, each line as `serde_json` writes a [`LedgerEvent`]. The
+/// reflex shots are here: `RED`'s `locked` and seven `fired` lines, each with
+/// its `impact` and `miss`, the reflex tick's lines carrying the tick's one
+/// lazy hash (`ActionHash`, 16b cut M.3), several in a substep that also ran
+/// a sensor pass (the `detected` at 25,482 beside the `fired` there).
+const M1B0_J_LINES: &[&str] = &[
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":10208702509912831189}"#,
+    r#"{"seq":2,"t_ms":4,"kind":"startup","unit":6,"hash":12564308233516203794}"#,
+    r#"{"seq":3,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":11359829244895669961}"#,
+    r#"{"seq":4,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":11359829244895669961}"#,
+    r#"{"seq":5,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":11359829244895669961}"#,
+    r#"{"seq":6,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":11359829244895669961}"#,
+    r#"{"seq":7,"t_ms":482,"kind":"startup","unit":4,"hash":5619106114966703568}"#,
+    r#"{"seq":8,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":16381739011110715320}"#,
+    r#"{"seq":9,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":16381739011110715320}"#,
+    r#"{"seq":10,"t_ms":504,"kind":"power_online","unit":6,"hash":13484661340569263793}"#,
+    r#"{"seq":11,"t_ms":982,"kind":"power_online","unit":4,"hash":11260176602453529273}"#,
+    r#"{"seq":12,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":990680077523455555}"#,
+    r#"{"seq":13,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":990680077523455555}"#,
+    r#"{"seq":14,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":990680077523455555}"#,
+    r#"{"seq":15,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":990680077523455555}"#,
+    r#"{"seq":16,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":5402186103064314112}"#,
+    r#"{"seq":17,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":5402186103064314112}"#,
+    r#"{"seq":18,"t_ms":5000,"kind":"position_summary","units":[[4,5595,8102,0,66225],[6,4096,8644,0,256398],[9,9500,8500,0,0]],"hash":4664011144621591528}"#,
+    r#"{"seq":19,"t_ms":5482,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":2305959930597169890}"#,
+    r#"{"seq":20,"t_ms":5482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":3452,"rounds":1,"hash":2305959930597169890}"#,
+    r#"{"seq":21,"t_ms":5505,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":9623390394674614788}"#,
+    r#"{"seq":22,"t_ms":5505,"kind":"miss","shot_seq":1,"reason":"dispersion","draws":[["hit:1",12072725193963834385]],"hash":9623390394674614788}"#,
+    r#"{"seq":23,"t_ms":7004,"kind":"lost","viewer":6,"contact":10007312734772483259,"target":9,"hash":17880070044112999270}"#,
+    r#"{"seq":24,"t_ms":7189,"kind":"lost","viewer":9,"contact":14127509583146488135,"target":6,"hash":17880070044112999270}"#,
+    r#"{"seq":25,"t_ms":9004,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":14426483193624642794}"#,
+    r#"{"seq":26,"t_ms":9189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":14426483193624642794}"#,
+    r#"{"seq":27,"t_ms":9482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":2606,"rounds":1,"hash":377503851211431299}"#,
+    r#"{"seq":28,"t_ms":9499,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":5051416589339797351}"#,
+    r#"{"seq":29,"t_ms":9499,"kind":"miss","shot_seq":2,"reason":"dispersion","draws":[["hit:2",11307540289106727687]],"hash":5051416589339797351}"#,
+    r#"{"seq":30,"t_ms":10000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,5295,8469,0,88504],[9,9500,8500,0,0]],"hash":8066971027612931288}"#,
+    r#"{"seq":31,"t_ms":12004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:13",15933459801938948417]],"hash":17657869554628166321}"#,
+    r#"{"seq":32,"t_ms":12189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:13",1274589620402242772]],"hash":17657869554628166321}"#,
+    r#"{"seq":33,"t_ms":12750,"kind":"blocked","unit":6,"x":6,"y":8,"cause":"occupied","hash":7689232781349544836}"#,
+    r#"{"seq":34,"t_ms":13482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":2606,"rounds":1,"hash":10190753850405588626}"#,
+    r#"{"seq":35,"t_ms":13499,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":2366617884153481893}"#,
+    r#"{"seq":36,"t_ms":13499,"kind":"miss","shot_seq":3,"reason":"dispersion","draws":[["hit:3",17241375169118599602]],"hash":2366617884153481893}"#,
+    r#"{"seq":37,"t_ms":15000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,6259,7574,0,93416],[9,9500,8500,0,0]],"hash":15210387873824511892}"#,
+    r#"{"seq":38,"t_ms":17482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":2606,"rounds":1,"hash":5690796625354572692}"#,
+    r#"{"seq":39,"t_ms":17499,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":7168857308645269092}"#,
+    r#"{"seq":40,"t_ms":17499,"kind":"miss","shot_seq":4,"reason":"dispersion","draws":[["hit:4",9783297951381390390]],"hash":7168857308645269092}"#,
+    r#"{"seq":41,"t_ms":20000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,11257,7500,0,90038],[9,9500,8500,0,0]],"hash":11928506205958531468}"#,
+    r#"{"seq":42,"t_ms":21482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":2606,"rounds":1,"hash":2539060072103819412}"#,
+    r#"{"seq":43,"t_ms":21499,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":2168965657011504659}"#,
+    r#"{"seq":44,"t_ms":21499,"kind":"miss","shot_seq":5,"reason":"dispersion","draws":[["hit:5",3759784274594068254]],"hash":2168965657011504659}"#,
+    r#"{"seq":45,"t_ms":23004,"kind":"lost","viewer":6,"contact":7330038967278110817,"target":4,"hash":13997646389985001292}"#,
+    r#"{"seq":46,"t_ms":23482,"kind":"lost","viewer":4,"contact":527481421542167805,"target":6,"hash":4200097515296485875}"#,
+    r#"{"seq":47,"t_ms":25000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,11335,7476,0,271637],[9,9500,8500,0,0]],"hash":13499631401622813119}"#,
+    r#"{"seq":48,"t_ms":25004,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":11603179246475554372}"#,
+    r#"{"seq":49,"t_ms":25482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":2606,"rounds":1,"hash":9770739058940159176}"#,
+    r#"{"seq":50,"t_ms":25482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":15045279313396396523}"#,
+    r#"{"seq":51,"t_ms":25499,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":15045279313396396523}"#,
+    r#"{"seq":52,"t_ms":25499,"kind":"miss","shot_seq":6,"reason":"dispersion","draws":[["hit:6",12808839036685962400]],"hash":15045279313396396523}"#,
+    r#"{"seq":53,"t_ms":28004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:29",8154326526551528345]],"hash":6876743343589609674}"#,
+    r#"{"seq":54,"t_ms":28482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:29",685397595897884630]],"hash":1158154781578994554}"#,
+    r#"{"seq":55,"t_ms":29482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":2606,"rounds":1,"hash":6910659057781027441}"#,
+    r#"{"seq":56,"t_ms":29499,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":8752561780490708651}"#,
+    r#"{"seq":57,"t_ms":29499,"kind":"miss","shot_seq":7,"reason":"dispersion","draws":[["hit:7",9819418404979189944]],"hash":8752561780490708651}"#,
+    r#"{"seq":58,"t_ms":30000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,6335,7500,0,270000],[9,9500,8500,0,0]],"hash":15803008594734986544}"#,
+];
+
+/// **17b cut M1b.0: the production line-hash pin, the reflex shots.** The (j)
+/// field — two reflex machines, one armed, and the seated tank they find and
+/// shoot — journals exactly the lines it journalled at `e23694b0`, each with
+/// its hash; [`m1a1_the_moved_motor_folds_the_same_bytes`] pins its substep
+/// hashes, this pins every line's. `tests/motor.rs` holds the shipped duel's
+/// half (whose minute holds no shot) and `tests/weapons.rs` the seat's.
+///
+/// What a line pin can and cannot see: the action hash is not folded into
+/// the state hash, and a line journalled outside an action run carries the
+/// substep's hash, so a trigger that merely set `ActionHash::Pending` and
+/// journalled nothing moves no byte here. A trigger that TOOK the lazy hash
+/// (an `event_hash` call) for a hull with no slot moves the hash of the next
+/// reflex line of its substep wherever the state changed between the two —
+/// these `fired` lines are where it shows. That no trigger opens the action
+/// hash at all is a claim about the trigger, asserted where a trigger is
+/// built (17b cut M1b.1), not by this pin; this pin proves the production
+/// bytes.
+#[test]
+fn m1b0_the_production_line_hashes_do_not_move() {
+    let lines = j_field_lines(1_000, 30_000);
+    // The pin is worth holding: the reflex machine locked, fired and hit.
+    for want in [
+        r#""kind":"locked""#,
+        r#""kind":"fired""#,
+        r#""kind":"impact""#,
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(want)),
+            "the (j) field never journalled {want}"
+        );
+    }
+    assert_eq!(
+        lines,
+        M1B0_J_LINES
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect::<Vec<_>>(),
+        "the (j) field's ledger lines moved"
+    );
+}
+
+/// The (j) field stepped at `cadence_ms` until `until_ms`, as [`replay`] steps
+/// it, answering every ledger line whole — `seq` and `hash` included — as
+/// `serde_json` writes it.
+fn j_field_lines(cadence_ms: i64, until_ms: i64) -> Vec<String> {
+    let mut arena = j_field();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    loop {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    events(&mut arena, &mut bytes)
+        .iter()
+        .map(|event| serde_json::to_string(event).unwrap_or_default())
+        .collect()
 }
 
 /// **The doctrine the motor reads is the arena's, on this file's rig** (17b

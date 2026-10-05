@@ -1348,28 +1348,82 @@ impl Arena {
         // millisecond — ended after the loop, before the two settles.
         let mut hold_won: Option<(Team, i64)> = None;
         // **17b cut M1a.5** (doc 17 §6, D-UM-20, D-UM-21): the mind kinds of
-        // the millisecond being popped, held back until every other kind due at
-        // that millisecond has run. See the loop's head below.
+        // the millisecond being popped, held back — the landings until every
+        // other kind due at that millisecond has popped, the thinks until the
+        // landings and everything due at that millisecond after them, what the
+        // landings scheduled at it included, have run (17b cut M1b.0). See the
+        // loop's head below.
         let mut held: Vec<DueEvent> = Vec::new();
         // The horizon is the substep's end until the deadline pops, and the
         // deadline's own millisecond after: `pop_due` then answers only what
         // shares that millisecond (everything earlier has already been popped),
         // and the loop stops with every later event left in the heap.
         //
-        // **17b cut M1a.5 — a millisecond's mind kinds run LAST** (D-UM-20: a
-        // think is resolved *after that millisecond's other due items; the
-        // view is the state then*; D-UM-21: landings *in unit-id order*).
+        // **The order of a millisecond: every landing, then the heap's ordinary
+        // events at that millisecond, then the thinks** — so an impact a
+        // landing's beam schedules at its own millisecond is applied before any
+        // think of that millisecond takes its view (doc 17 §6, D-UM-20 as
+        // amended 2026-10-04; 17b cut M1b.0, which replaced cut M1a.5's one
+        // pass that ran the thinks before such an impact). D-UM-20: a think is
+        // resolved *after that millisecond's other due items, including any a
+        // landing of that millisecond schedules at it; the view is the state
+        // then*; D-UM-21: landings *in unit-id order*.
+        //
         // `DueEvent`'s order is `(t_ms, seq, kind)` with `seq` unique, so where a
         // kind sits in its enum orders nothing, and a `SensorPass` scheduled
         // after a `MindThink` at the same millisecond pops after it. So a
         // popped `MindThink` or `MindLand` is held, and popping goes on while
-        // the heap's head is due at the same millisecond; when it is not — the
+        // the heap's head is due at the same millisecond. When it is not — the
         // head is later, past the horizon, or the heap is empty — the held
-        // events run, landings before thinks, by unit, by `think_seq`:
-        // unit-id order by construction, whatever their `seq` and whenever a
-        // mind was adopted. Anything an arm schedules at the same millisecond
-        // pops after them. No production unit is a mind, so production never
-        // holds an event here and the loop is the loop it was.
+        // events run in two phases:
+        //
+        // 1. while any `MindLand` is held, **the landings alone** run
+        //    (`Arena::run_mind_landings`), by unit then `think_seq`, the thinks
+        //    left held, and the loop goes round: whatever those landings
+        //    scheduled at this millisecond is now the heap's head, none of it a
+        //    mind kind, and pops before the thinks: a zero-flight `Impact`
+        //    (`resolve_fire` puts a beam's `impact_at` at its own millisecond —
+        //    the case this order exists for — and a shell's at a range its
+        //    round crosses in under a millisecond); a goal's `MotorTick`, when the
+        //    landing falls on the substep's end (`land_goal` →
+        //    `Arena::engage_motor`, whose `grid_at` answers the first grid slot
+        //    at or after `now_ms`, which in this loop is the substep's end);
+        //    and a `StartupComplete` under a `startup_ms` of nought (legal;
+        //    shipped at 10,000). A landing schedules no `Share`: only the
+        //    `SensorPass` arm does. Every landing runs before any of their
+        //    impacts, so two minds' beams at one millisecond are simultaneous:
+        //    both fire and both impact — the second hull is no wreck yet when
+        //    it lands — exactly as two `ReflexTick`s at one millisecond are (a
+        //    tick's `Impact` takes a later `seq` than the other tick's event);
+        // 2. when the head has left the millisecond again with only thinks
+        //    held, **the thinks** run (`Arena::run_mind_thinks`), by unit then
+        //    `think_seq`: unit-id order by construction, whatever their `seq`
+        //    and whenever a mind was adopted. A think schedules nothing at its
+        //    own millisecond (its landing one substep on, its next think
+        //    `STOCK_THINK_MS` on).
+        //
+        // **Declared asymmetry** (doc 17 §24; 17b cut M1b.0): reflex ticks and
+        // mind landings at one millisecond are NOT mutual. A `ReflexTick` is an
+        // ordinary event, so it runs while the landings are still held and its
+        // beam's `Impact` pops before them — a reflex beam kills a mind hull
+        // before it lands — and a mind's beam cannot pre-empt a reflex tick at
+        // that millisecond either: the tick already ran. Reachable only with
+        // laser hulls on both controllers at one millisecond; 17b cut M4's flip
+        // (every unseated hull a mind's) retires it.
+        //
+        // What moved against cut M1a.5's one pass, and what did not. Moved, and
+        // for mind hulls only: whatever a landing schedules at its own
+        // millisecond now runs before that millisecond's thinks where it ran
+        // after them — the beam's `Impact` (the point), a goal's `MotorTick`
+        // when the landing falls on the substep's end (a think of that
+        // millisecond now sees the hull's motor step taken), a `StartupComplete`
+        // under a `startup_ms` of nought. Not moved: `resolve_fire`'s
+        // `WeaponReady` is at `+cycle_ms` (W14's floor of 1,000 for shipped
+        // content), and `engage_motor`'s `MotorTick` off the substep's end is at
+        // a later grid millisecond than the landing's; and no production unit
+        // is a mind, so production never holds an event here and the loop is
+        // the loop it was (the three production pins and 17b cut M1b.0's
+        // line-hash pin).
         loop {
             let horizon = deadline_hit.unwrap_or(self.now_ms);
             // Every held event shares one millisecond: one is held only while
@@ -1380,7 +1434,14 @@ impl Arena {
                     .peek_due(horizon)
                     .is_some_and(|next| next.t_ms == at)
             {
-                self.run_mind_events(&mut held, reflex);
+                if held
+                    .iter()
+                    .any(|event| matches!(event.kind, DueKind::MindLand { .. }))
+                {
+                    self.run_mind_landings(&mut held, reflex);
+                } else {
+                    self.run_mind_thinks(&mut held, reflex);
+                }
                 continue;
             }
             let Some(event) = self.due.pop_due(horizon) else {
@@ -1664,8 +1725,9 @@ impl Arena {
                         }
                     }
                 }
-                // **17b cut M1a.5**: held above and run by `run_mind_events`;
-                // never reached.
+                // **17b cut M1a.5**: held above and run by
+                // `Arena::run_mind_landings` and `Arena::run_mind_thinks`
+                // (17b cut M1b.0's two phases); never reached.
                 DueKind::MindThink { .. } | DueKind::MindLand { .. } => {}
             }
         }
@@ -3030,31 +3092,68 @@ impl Arena {
         None
     }
 
-    /// **Run one millisecond's held mind events** (17b cut M1a.5; doc 17 §6,
-    /// D-UM-20, D-UM-21), drained from `held`: every `MindLand` before every
-    /// `MindThink` — a hull's last thought lands before its next one is taken
-    /// — and each kind by unit then `think_seq`. The lazy action hash is opened
-    /// as `ReflexTick`'s arm opens it, so a landing's lines share the
-    /// substep's one hash; a think journals nothing and takes none.
-    fn run_mind_events(&mut self, held: &mut Vec<DueEvent>, reflex: &mut ReflexCounters) {
-        held.sort_by_key(|event| match event.kind {
-            DueKind::MindLand { unit, think_seq } => (0_u8, unit, think_seq),
-            DueKind::MindThink { unit, think_seq } => (1_u8, unit, think_seq),
-            _ => (2_u8, ObjId(0), event.seq),
+    /// **Run one millisecond's held landings, the first of its two mind
+    /// phases** (17b cut M1b.0; doc 17 §6, D-UM-20 as amended 2026-10-04,
+    /// D-UM-21): every held `MindLand`, by unit then `think_seq`, drained from
+    /// `held`; the held thinks stay in it.
+    ///
+    /// The order of a millisecond is **every landing, then the heap's ordinary
+    /// events at that millisecond, then the thinks** — so an impact a landing's
+    /// beam schedules at its own millisecond is applied before any think of
+    /// that millisecond takes its view. The due loop's head runs this, goes
+    /// round to pop whatever the landings scheduled at their millisecond (a
+    /// beam's zero-flight `Impact`; a goal's `MotorTick` when the landing falls
+    /// on the substep's end, `Arena::engage_motor`'s `grid_at` reading
+    /// `now_ms`; a `StartupComplete` under a `startup_ms` of nought), and runs
+    /// [`Arena::run_mind_thinks`] once the heap's head has left it. Every
+    /// landing runs before any impact of theirs, so two minds' beams at one
+    /// millisecond both fire and both land: the simultaneity two `ReflexTick`s
+    /// at one millisecond have. (A landing on a hull already a wreck is not
+    /// refused but dropped — `Arena::mind_land` returns before applying it —
+    /// so a per-landing order would lose the second shot silently.) A reflex tick
+    /// at that millisecond is NOT mutual with them — it is an ordinary event
+    /// and ran, its beam's impact with it, before the landings: the asymmetry
+    /// the loop head declares, which 17b cut M4's flip retires.
+    ///
+    /// The lazy action hash is opened as `ReflexTick`'s arm opens it, so a
+    /// landing's lines share the substep's one hash.
+    fn run_mind_landings(&mut self, held: &mut Vec<DueEvent>, reflex: &mut ReflexCounters) {
+        let mut landings: Vec<(ObjId, u64, i64)> = Vec::new();
+        held.retain(|event| match event.kind {
+            DueKind::MindLand { unit, think_seq } => {
+                landings.push((unit, think_seq, event.t_ms));
+                false
+            }
+            _ => true,
         });
-        for event in held.drain(..) {
+        landings.sort_unstable();
+        for (unit, think_seq, t_ms) in landings {
             if self.action_hash == ActionHash::Outside {
                 self.action_hash = ActionHash::Pending;
             }
-            match event.kind {
-                DueKind::MindLand { unit, think_seq } => {
-                    self.mind_land(unit, think_seq, event.t_ms, reflex);
-                }
-                DueKind::MindThink { unit, think_seq } => {
-                    self.mind_think(unit, think_seq, event.t_ms, reflex);
-                }
-                _ => {}
-            }
+            self.mind_land(unit, think_seq, t_ms, reflex);
+        }
+    }
+
+    /// **Run one millisecond's held thinks, the second of its two mind
+    /// phases** (17b cut M1b.0; doc 17 §6, D-UM-20 as amended 2026-10-04):
+    /// every held `MindThink`, by unit then `think_seq`, drained from `held` —
+    /// reached only when no landing is held and the heap's head has left the
+    /// millisecond, so every landing of the millisecond and everything those
+    /// landings scheduled at it has been applied, and each think's view is the
+    /// state then ([`Arena::run_mind_landings`] has the order). A think
+    /// journals nothing, so no action hash is opened for it.
+    fn run_mind_thinks(&mut self, held: &mut Vec<DueEvent>, reflex: &mut ReflexCounters) {
+        let mut thinks: Vec<(ObjId, u64, i64)> = held
+            .drain(..)
+            .filter_map(|event| match event.kind {
+                DueKind::MindThink { unit, think_seq } => Some((unit, think_seq, event.t_ms)),
+                _ => None,
+            })
+            .collect();
+        thinks.sort_unstable();
+        for (unit, think_seq, t_ms) in thinks {
+            self.mind_think(unit, think_seq, t_ms, reflex);
         }
     }
 

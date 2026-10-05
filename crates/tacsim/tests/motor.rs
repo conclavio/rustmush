@@ -10,7 +10,9 @@
 //! ([`support::shipped_arena`]), to what it may read — the ground, the hull's
 //! own pose and row, the plot it is handed and the cells it was refused — and
 //! the two pins of the cut are asserted: the shipped duel hashes as it did at
-//! `32a1cc23`, and the doctrine the motor reads is the arena's.
+//! `32a1cc23`, and the doctrine the motor reads is the arena's. Since 17b cut
+//! M1b.0 the duel's every ledger line is pinned with its hash as well
+//! ([`m1b0_the_production_line_hashes_do_not_move`]).
 //!
 //! The kernels are `pub` on [`Arena`] since this cut for exactly this file (and
 //! for 17b cut M1a.6, which lifts them into free functions).
@@ -85,6 +87,77 @@ fn m1a1_the_shipped_duel_hashes_as_before() {
         tacsim::arena::hash::state_hash(&arena),
         DUEL_HASH_AT_HEAD,
         "the shipped duel's hash moved"
+    );
+}
+
+/// **The shipped duel's ledger, every line whole with its hash, recorded at
+/// `e23694b0`** (17b cut M1b.0; the M1b plan's §1(a) and (c)) — before the cut
+/// touched the due loop, off [`duel`] stepped at 1,000 ms for 60 s, each line
+/// as `serde_json` writes a [`LedgerEvent`](tacsim::arena::ledger::LedgerEvent).
+/// The minute holds no shot (the four machines start, see, classify and
+/// drive), so its only action-run lines are the four reflex `startup`s; every
+/// other line carries its substep's state hash, which no action hash reaches
+/// (16b cut M.3: `Arena::event_hash` alone reads it). What it pins is the
+/// shipped duel's bytes; the reflex shots' lines are `tests/reflex.rs`' half
+/// of the pin, and that no trigger opens `ActionHash::Pending` for a hull with
+/// no slot is asserted where a trigger is built (17b cut M1b.1), not here.
+const M1B0_DUEL_LINES: &[&str] = &[
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":17218947927064157514}"#,
+    r#"{"seq":2,"t_ms":258,"kind":"startup","unit":8,"hash":6531919843051298410}"#,
+    r#"{"seq":3,"t_ms":421,"kind":"startup","unit":3,"hash":6531919843051298410}"#,
+    r#"{"seq":4,"t_ms":482,"kind":"startup","unit":4,"hash":6531919843051298410}"#,
+    r#"{"seq":5,"t_ms":258,"kind":"detected","viewer":8,"contact":8314046734819043908,"target":7,"hash":3550940230815811454}"#,
+    r#"{"seq":6,"t_ms":421,"kind":"detected","viewer":3,"contact":5844251635052541762,"target":4,"hash":3550940230815811454}"#,
+    r#"{"seq":7,"t_ms":482,"kind":"detected","viewer":4,"contact":5992554990774319474,"target":3,"hash":3550940230815811454}"#,
+    r#"{"seq":8,"t_ms":594,"kind":"startup","unit":7,"hash":14780345450209965067}"#,
+    r#"{"seq":9,"t_ms":594,"kind":"detected","viewer":7,"contact":3822974778006219272,"target":8,"hash":12083510933067632373}"#,
+    r#"{"seq":10,"t_ms":1000,"kind":"tempo","from":"quiet","to":"alert","hash":8975984572782758866}"#,
+    r#"{"seq":11,"t_ms":3258,"kind":"classified","viewer":8,"contact":8314046734819043908,"target":7,"team":"blue","draws":[["classify:8:7:4",3884165266672269218]],"hash":7341467584742566535}"#,
+    r#"{"seq":12,"t_ms":3421,"kind":"classified","viewer":3,"contact":5844251635052541762,"target":4,"team":"red","draws":[["classify:3:4:4",16846213216163885984]],"hash":7341467584742566535}"#,
+    r#"{"seq":13,"t_ms":3482,"kind":"classified","viewer":4,"contact":5992554990774319474,"target":3,"team":"red","draws":[["classify:4:3:4",2094150884743799771]],"hash":7341467584742566535}"#,
+    r#"{"seq":14,"t_ms":3594,"kind":"classified","viewer":7,"contact":3822974778006219272,"target":8,"team":"blue","draws":[["classify:7:8:4",989486057018502202]],"hash":14243656697491612673}"#,
+    r#"{"seq":15,"t_ms":5000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":10563322734833990605}"#,
+    r#"{"seq":16,"t_ms":10000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":6143504604192454938}"#,
+    r#"{"seq":17,"t_ms":10258,"kind":"power_online","unit":8,"hash":10227290508120997443}"#,
+    r#"{"seq":18,"t_ms":10421,"kind":"power_online","unit":3,"hash":10227290508120997443}"#,
+    r#"{"seq":19,"t_ms":10482,"kind":"power_online","unit":4,"hash":10227290508120997443}"#,
+    r#"{"seq":20,"t_ms":10594,"kind":"power_online","unit":7,"hash":1478522656763317366}"#,
+    r#"{"seq":21,"t_ms":15000,"kind":"position_summary","units":[[3,7439,97532,100,75000],[4,7284,96213,100,58740],[7,249411,98355,-100,11593],[8,248715,96213,-100,301304]],"hash":8866010401143912890}"#,
+    r#"{"seq":22,"t_ms":20000,"kind":"position_summary","units":[[3,7007,99968,100,316411],[4,10817,96500,100,90000],[7,249500,101783,-100,0],[8,245182,96500,-200,270000]],"hash":9094660931383026748}"#,
+    r#"{"seq":23,"t_ms":25000,"kind":"position_summary","units":[[3,6510,103848,100,359237],[4,16842,96500,200,90000],[7,249685,104621,-200,37500],[8,239120,96500,-200,270000]],"hash":1605124276104618781}"#,
+    r#"{"seq":24,"t_ms":30000,"kind":"position_summary","units":[[3,4350,104385,100,224237],[4,24231,96500,200,90000],[7,251770,103083,-100,187500],[8,231639,96500,-200,270000]],"hash":13396401788286150218}"#,
+    r#"{"seq":25,"t_ms":35000,"kind":"position_summary","units":[[3,6412,100440,100,138097],[4,30111,96500,200,90000],[7,249058,99460,-100,210129],[8,226376,96500,-200,270000]],"hash":12151586208571199750}"#,
+    r#"{"seq":26,"t_ms":40000,"kind":"position_summary","units":[[3,8764,98371,100,80898],[4,32604,96500,200,90000],[7,247671,97719,-100,229535],[8,223701,96500,-300,270000]],"hash":1092346026098237883}"#,
+    r#"{"seq":27,"t_ms":45000,"kind":"position_summary","units":[[3,13915,98500,100,89953],[4,36922,96500,200,90000],[7,243327,97500,-200,270000],[8,218739,96500,-300,270000]],"hash":7272711587993577274}"#,
+    r#"{"seq":28,"t_ms":50000,"kind":"position_summary","units":[[3,20872,97517,200,95437],[4,43676,96500,200,90000],[7,236514,97500,-200,270000],[8,211570,96500,-300,270000]],"hash":3042155669244909283}"#,
+    r#"{"seq":29,"t_ms":55000,"kind":"position_summary","units":[[3,28022,97500,200,90000],[4,50991,96626,300,75000],[7,229273,97500,-200,270000],[8,204573,96500,-300,270000]],"hash":16781236920069850708}"#,
+    r#"{"seq":30,"t_ms":60000,"kind":"position_summary","units":[[3,31325,97500,200,90000],[4,54990,97523,200,92559],[7,225761,97500,-300,270000],[8,201099,96500,-300,270000]],"hash":2150276939325885971}"#,
+];
+
+/// **17b cut M1b.0: the production line-hash pin, the reflex half.** The
+/// shipped duel — four stock machines on the reflex controller on the proving
+/// ground — journals exactly the lines it journalled at `e23694b0`, each with
+/// its hash; [`m1a1_the_shipped_duel_hashes_as_before`] pins its final state
+/// hash, this pins every line's. Every later sub-cut of M1b re-asserts it
+/// (`tests/weapons.rs` holds the seat half); a move is a defect, never a
+/// re-bless. `tests/reflex.rs` holds the reflex shots' half.
+#[test]
+fn m1b0_the_production_line_hashes_do_not_move() {
+    let world = booted_world();
+    let mut arena = duel(&world);
+    let mut bytes = run_until(&mut arena, 60_000, 1_000, |_, _| {});
+    assert_eq!(arena.now_ms, 60_000);
+    let lines: Vec<String> = support::ledger_events(&mut arena, &mut bytes)
+        .iter()
+        .map(|event| serde_json::to_string(event).unwrap_or_default())
+        .collect();
+    assert_eq!(
+        lines,
+        M1B0_DUEL_LINES
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect::<Vec<_>>(),
+        "the shipped duel's ledger lines moved"
     );
 }
 
