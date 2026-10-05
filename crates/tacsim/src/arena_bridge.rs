@@ -1729,7 +1729,8 @@ pub fn resume_match(
         .filter(|unit| !unit.weapons.is_empty())
         .map(|unit| unit.id)
         .collect();
-    let ground = Arc::new(arena.definition.clone());
+    // 17b cut M2.2: the resumed arena's own `Arc` (`Arena.definition`), shared.
+    let ground = Arc::clone(&arena.definition);
     // 16c N16: the snapshot carries no chunk bytes, and every chunk closed
     // before it is durable (the backlog's order, and phase A's tape check), so
     // the resumed ledger owes the world nothing below its last closed chunk.

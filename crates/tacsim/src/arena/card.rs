@@ -365,6 +365,24 @@ pub enum CardError {
     /// No slider has that name.
     #[error("no slider named {0}")]
     NoSuchSlider(String),
+    /// **The doctrine pair broken** (17b cut M2.2, the lead's ruling (b)): a
+    /// `break_off_pct` or `fight_home_pct` that would leave the card's
+    /// `stand_min_permille` above its `withdraw_permille` — a hull that
+    /// withdraws before it would stand and fight at home. Refused, never
+    /// clamped; the two values as the card prints them (`17.5`, `10`).
+    #[error(
+        "{slider} would put fight_home_pct {fight_home} above break_off_pct {break_off}; \
+         fight_home_pct is at most break_off_pct"
+    )]
+    Pair {
+        /// The slider being set — `break_off_pct` or `fight_home_pct` — or
+        /// the preset that made the card (`Rearguard`, [`StockCard::pair`]).
+        slider: &'static str,
+        /// `fight_home_pct` as it would read.
+        fight_home: String,
+        /// `break_off_pct` as it would read.
+        break_off: String,
+    },
 }
 
 /// **A change to a mind's card, as `@mind/set` offers it** (17b cut M1b.5;
@@ -689,10 +707,16 @@ impl StockCard {
     /// `rally_s` and `search_s` 0 to 120; `hunt_after_s` 0 to 300;
     /// `stop_unseen` on or off; `stance` hold, close, orbit, hunt or screen.
     ///
+    /// **17b cut M2.2, the lead's ruling (b)**: `break_off_pct` and
+    /// `fight_home_pct` are a PAIR — the new value is taken on a copy of the
+    /// card and refused [`CardError::Pair`] when the copy would hold
+    /// `stand_min_permille > withdraw_permille` (`fight_home_pct` above
+    /// `break_off_pct`; equal is lawful).
+    ///
     /// # Errors
     ///
-    /// The [`CardError`] naming the range, the step or the choices; the card
-    /// is untouched. **Never clamped.**
+    /// The [`CardError`] naming the range, the step, the choices or the
+    /// pair; the card is untouched. **Never clamped.**
     pub fn set(&mut self, slider: &str, value: &str) -> Result<(), CardError> {
         let Some(which) = Slider::named(slider) else {
             return Err(CardError::NoSuchSlider(slider.to_owned()));
@@ -767,9 +791,15 @@ impl StockCard {
             }
             Slider::SwitchM => self.switch_m = stepped(which, value, 50, 300, 1)?,
             Slider::BreakOffPct => {
-                self.withdraw_permille = stepped(which, value, 10, 80, 1)?.saturating_mul(10);
+                let mut next = self.clone();
+                next.withdraw_permille = stepped(which, value, 10, 80, 1)?.saturating_mul(10);
+                *self = next.paired(which)?;
             }
-            Slider::FightHomePct => self.stand_min_permille = halves(which, value)?,
+            Slider::FightHomePct => {
+                let mut next = self.clone();
+                next.stand_min_permille = halves(which, value)?;
+                *self = next.paired(which)?;
+            }
             Slider::RallyS => {
                 self.rally_ms = stepped(which, value, 0, 120, 1)?.saturating_mul(1_000);
             }
@@ -780,6 +810,39 @@ impl StockCard {
                 self.hunt_after_ms = stepped(which, value, 0, 300, 1)?.saturating_mul(1_000);
             }
             Slider::StopUnseen => self.stop_unseen = toggle(which, value)?,
+        }
+        Ok(())
+    }
+
+    /// **The card, if its doctrine pair holds** (17b cut M2.2, ruling (b)):
+    /// [`StockCard::pair`] naming `slider`.
+    fn paired(self, slider: Slider) -> Result<StockCard, CardError> {
+        self.pair(slider.name())?;
+        Ok(self)
+    }
+
+    /// **Whether the doctrine pair holds** (17b cut M2.2, the lead's ruling
+    /// (b)): `stand_min_permille <= withdraw_permille` — `fight_home_pct` at
+    /// most `break_off_pct`, equal lawful — else [`CardError::Pair`] naming
+    /// `named` (the slider being set, or the preset that made the card) and
+    /// both values in their own units. [`StockCard::set`] reads it for the
+    /// two sliders; the preset paths (`@mind/set`'s and the arena's
+    /// `Arena::apply_mind_cards`) read it for a [`preset`], because
+    /// *Rearguard* writes `break_off_pct` 70 over a doctrine whose
+    /// `fight_home_pct` the config may set as high as its own `break_off_pct`
+    /// (`[tacsim.arena.reflex]` admits 750 under 800): refused by name, never
+    /// clamped.
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::Pair`] when `fight_home_pct` reads above `break_off_pct`.
+    pub fn pair(&self, named: &'static str) -> Result<(), CardError> {
+        if self.stand_min_permille > self.withdraw_permille {
+            return Err(CardError::Pair {
+                slider: named,
+                fight_home: self.reading(Slider::FightHomePct),
+                break_off: self.reading(Slider::BreakOffPct),
+            });
         }
         Ok(())
     }
@@ -1132,7 +1195,14 @@ mod tests {
                 assert_eq!(card, line, "{slider} {value}: never clamped");
             }
             for value in [low, high] {
+                // 17b cut M2.2, ruling (b): `break_off_pct`'s low end is
+                // under Line's `fight_home_pct` 17.5 — the pair's refusal,
+                // pinned in `m2_the_doctrine_pair_refuses_by_name` — so the
+                // range's ends are taken with fight_home at nought.
                 let mut card = line.clone();
+                if slider == "break_off_pct" {
+                    assert_eq!(card.set("fight_home_pct", "0"), Ok(()));
+                }
                 assert_eq!(
                     card.set(slider, &value.to_string()),
                     Ok(()),
@@ -1151,17 +1221,31 @@ mod tests {
             );
             assert_eq!(card, line);
         }
+        // 17b cut M2.2, ruling (b): taken under `break_off_pct` 80, the
+        // pair's widest; `fight_home_pct` 100 is in the slider's range and
+        // above every `break_off_pct`, so the pair refuses it on any card.
+        let wide = {
+            let mut card = line.clone();
+            assert_eq!(card.set("break_off_pct", "80"), Ok(()));
+            card
+        };
         for (value, permille) in [
             ("17.5", 175),
             ("0", 0),
-            ("100", 1_000),
+            ("80", 800),
             ("42.0", 420),
             ("3.50", 35),
         ] {
-            let mut card = line.clone();
+            let mut card = wide.clone();
             assert_eq!(card.set("fight_home_pct", value), Ok(()), "{value}");
             assert_eq!(card.stand_min_permille, permille, "{value}");
         }
+        let mut card = wide.clone();
+        assert!(matches!(
+            card.set("fight_home_pct", "100"),
+            Err(CardError::Pair { .. })
+        ));
+        assert_eq!(card, wide);
         // The choices and the toggles.
         for (slider, choices) in [
             ("stance", "hold, close, orbit, hunt or screen"),
@@ -1231,6 +1315,128 @@ mod tests {
                 false
             )
         );
+    }
+
+    /// **The doctrine pair refuses by name** (17b cut M2.2, the lead's ruling
+    /// (b)): on Line (`break_off_pct` 35, `fight_home_pct` 17.5) a
+    /// `break_off_pct 10` is refused naming `break_off_pct` with both values
+    /// as the card prints them, and a `fight_home_pct 40` naming
+    /// `fight_home_pct`; the card untouched either way; `fight_home_pct 35`
+    /// (equal) is lawful, and so is `break_off_pct 20` then `fight_home_pct
+    /// 20`; every preset and `line(cfg)` holds the pair on the default
+    /// doctrine, on `other_doctrine` and on `tests/minds.rs`' non-default
+    /// doctrine (`withdraw_permille` 700, `stand_min_permille` 300); and on a
+    /// doctrine the config admits with `fight_home` 75 under `break_off` 80,
+    /// Rearguard (`break_off_pct` 70) is refused `Pair` by its own name.
+    #[test]
+    fn m2_the_doctrine_pair_refuses_by_name() {
+        let cfg = ReflexConfig::default();
+        let line = line(&cfg);
+        assert_eq!(
+            (line.withdraw_permille, line.stand_min_permille),
+            (350, 175),
+            "Line's pair on the default doctrine"
+        );
+        let mut card = line.clone();
+        let refused = card.set("break_off_pct", "10").expect_err("under the pair");
+        assert_eq!(
+            refused,
+            CardError::Pair {
+                slider: "break_off_pct",
+                fight_home: "17.5".to_owned(),
+                break_off: "10".to_owned(),
+            }
+        );
+        assert_eq!(
+            refused.to_string(),
+            "break_off_pct would put fight_home_pct 17.5 above break_off_pct 10; \
+             fight_home_pct is at most break_off_pct"
+        );
+        assert_eq!(card, line, "untouched");
+        let refused = card.set("fight_home_pct", "40").expect_err("over the pair");
+        assert_eq!(
+            refused,
+            CardError::Pair {
+                slider: "fight_home_pct",
+                fight_home: "40".to_owned(),
+                break_off: "35".to_owned(),
+            }
+        );
+        assert_eq!(
+            refused.to_string(),
+            "fight_home_pct would put fight_home_pct 40 above break_off_pct 35; \
+             fight_home_pct is at most break_off_pct"
+        );
+        assert_eq!(card, line, "untouched");
+        assert_eq!(card.set("fight_home_pct", "35"), Ok(()), "equal is lawful");
+        assert_eq!(card.stand_min_permille, 350);
+        let mut card = line.clone();
+        assert_eq!(card.set("break_off_pct", "20"), Ok(()));
+        assert_eq!(card.set("fight_home_pct", "20"), Ok(()));
+        assert_eq!(
+            (card.withdraw_permille, card.stand_min_permille),
+            (200, 200)
+        );
+        let non_default = ReflexConfig {
+            withdraw_permille: 700,
+            stand_min_permille: 300,
+            ..other_doctrine()
+        };
+        for cfg in [ReflexConfig::default(), other_doctrine(), non_default] {
+            let line = super::line(&cfg);
+            assert!(
+                line.stand_min_permille <= line.withdraw_permille,
+                "line on {cfg:?}"
+            );
+            for name in PRESETS {
+                let card = preset(name, &cfg).expect(name);
+                assert!(
+                    card.stand_min_permille <= card.withdraw_permille,
+                    "{name} on {cfg:?}"
+                );
+                assert_eq!(card.pair(name), Ok(()), "{name} on {cfg:?}");
+            }
+        }
+        // A doctrine the config admits (`fight_home` 75 under `break_off`
+        // 80) whose `fight_home_pct` reads above Rearguard's `break_off_pct`
+        // 70: Line and the five presets that leave the pair alone hold it,
+        // and Rearguard's card is refused by its own name — never clamped.
+        let high = ReflexConfig {
+            withdraw_permille: 800,
+            stand_min_permille: 750,
+            ..ReflexConfig::default()
+        };
+        assert_eq!(
+            crate::config::ArenaConfig {
+                reflex: high.clone(),
+                ..crate::config::ArenaConfig::default()
+            }
+            .validate(),
+            Ok(()),
+            "the config admits the pair"
+        );
+        assert_eq!(super::line(&high).pair("Line"), Ok(()));
+        for name in PRESETS {
+            let card = preset(name, &high).expect(name);
+            if name == "Rearguard" {
+                let refused = card.pair(name).expect_err("Rearguard breaks the pair");
+                assert_eq!(
+                    refused,
+                    CardError::Pair {
+                        slider: "Rearguard",
+                        fight_home: "75".to_owned(),
+                        break_off: "70".to_owned(),
+                    }
+                );
+                assert_eq!(
+                    refused.to_string(),
+                    "Rearguard would put fight_home_pct 75 above break_off_pct 70; \
+                     fight_home_pct is at most break_off_pct"
+                );
+            } else {
+                assert_eq!(card.pair(name), Ok(()), "{name} on the high doctrine");
+            }
+        }
     }
 
     /// **`rally_s 0` never rallies** — the overlay writes `u32::MAX` where the

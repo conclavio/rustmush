@@ -1905,7 +1905,7 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
                 Ok(SNAPSHOT_FORMAT)
             );
             assert_eq!(SNAPSHOT_FORMAT, 7);
-            let mut resumed = Snapshot::decode(&snapshot.document, arena.definition.clone())
+            let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
             let carried = units

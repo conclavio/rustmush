@@ -282,7 +282,8 @@ fn j2_a_shipped_fight_is_one_replay_with_and_without_the_index() {
     let world = booted_world();
     let terrain = shipped_arena(&world, &[&[Muster::reflex(Team::Blue, 1)]])
         .definition
-        .terrain;
+        .terrain
+        .clone();
     let red_at = (30..=40_i32)
         .flat_map(|d| {
             let (bx, by) = (i32::from(BLUE_AT.0), i32::from(BLUE_AT.1));
@@ -306,7 +307,8 @@ fn j2_a_shipped_fight_is_one_replay_with_and_without_the_index() {
     };
     let built = fight(arena(), 60_000);
     let mut walk_only = arena();
-    walk_only.definition.terrain = walk_only.definition.terrain.clone().without_horizon();
+    let terrain = walk_only.definition.terrain.clone().without_horizon();
+    std::sync::Arc::make_mut(&mut walk_only.definition).terrain = terrain;
     let walked = fight(walk_only, 60_000);
     println!(
         "j2_shipped_fight: red at {red_at:?}, {} fired, {} ledger bytes, {} hashes; built {} \

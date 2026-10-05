@@ -44,7 +44,8 @@ fn the_game_crate_depends_on_no_host_crate() {
 /// game crate and are not read.
 #[test]
 fn the_game_crates_workspace_edges_are_the_recorded_set() {
-    const RECORDED: [&str; 31] = [
+    // 17b cut M2.2: 31 -> 32, `mush-mind` (the unit-mind sandbox; doc 17 §7).
+    const RECORDED: [&str; 32] = [
         "mush-atlas",
         "mush-campaign",
         "mush-canon",
@@ -62,6 +63,7 @@ fn the_game_crates_workspace_edges_are_the_recorded_set() {
         "mush-llm",
         "mush-mail",
         "mush-market",
+        "mush-mind",
         "mush-npc",
         "mush-org",
         "mush-party",

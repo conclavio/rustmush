@@ -13,6 +13,7 @@
 //! reading.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use mush_atlas::TerrainClass;
 use mush_atlas::trace::Eye;
@@ -3758,7 +3759,15 @@ pub(crate) enum ActionHash {
 #[derive(Clone, Debug)]
 pub struct Arena {
     /// The window and its entry zones.
-    pub definition: ArenaDefinition,
+    ///
+    /// **17b cut M2.2** (17b's settled question (ii)): behind an `Arc`, wrapped
+    /// once by [`Arena::new`] and once by the snapshot's decode, so a think
+    /// hands a scripted runner the map (`ThinkJob::map`) without copying the
+    /// terrain and `Arena: Clone` clones the `Arc`, not the map. Every reader
+    /// works through the deref; a test that rewrites the map writes through
+    /// `Arc::make_mut`. The snapshot records the definition's digest, never the
+    /// definition, so no format moves.
+    pub definition: Arc<ArenaDefinition>,
     /// The units, **sorted by id** — the order every deterministic walk uses.
     pub units: Vec<UnitState>,
     /// The authority epochs intents are authorised against.
@@ -4627,7 +4636,8 @@ impl Arena {
             .max()
             .unwrap_or(0);
         let mut arena = Arena {
-            definition,
+            // 17b cut M2.2: the map behind its one `Arc`.
+            definition: Arc::new(definition),
             units: states,
             epochs,
             contacts: ShadowContacts::new(),

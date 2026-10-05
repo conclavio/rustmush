@@ -2172,6 +2172,8 @@ impl MindRunner for Scripted {
                 .cloned()
                 .unwrap_or_default(),
             memory: job.memory.to_vec(),
+            fault: None,
+            trace: Vec::new(),
         }
     }
 }
@@ -2210,7 +2212,7 @@ impl MindRunner for Kept {
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let result = self.inner.think(job);
         if let Ok(mut thoughts) = self.thoughts.lock() {
-            thoughts.push((job.unit, job.t_ms, job.view.clone(), result.clone()));
+            thoughts.push((job.unit, job.t_ms, (**job.view).clone(), result.clone()));
         }
         result
     }
@@ -4666,5 +4668,502 @@ fn m1b4_a_piloted_arming_fires_only_on_flanks_at_three_cadences() {
             .all(|notice| !matches!(notice, FrameNotice::Refused { .. })),
         "{:?}",
         fine.notices
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.2: the lead's rulings (a) and (c), landed at three cadences
+// ---------------------------------------------------------------------------
+
+/// **A hull one round kills** (17b cut M2.2): [`tactical_unit`]'s one hull
+/// section with no armour left and one point inside, so the first round that
+/// lands destroys the section.
+fn fragile_unit(id: ObjId) -> TacticalUnit {
+    let spec = UnitSpec {
+        definition: dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets: vec![FacetSpec {
+                id: FacetId::new("front").expect("a canonical facet"),
+                cells: vec![CellSpec {
+                    id: mush_tactics::CellId::new("armor").expect("a cell"),
+                    min: 0,
+                    max: 10,
+                    init: 0,
+                }],
+            }],
+            slots: Vec::new(),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("internals").expect("a cell"),
+                min: 0,
+                max: 10,
+                init: 1,
+            }],
+        }],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: None,
+        rules: rules(),
+    };
+    TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
+}
+
+/// **The kill duel** (17b cut M2.2, ruling (a)): red with a machine gun (a
+/// one-second cycle, so its `WeaponReady` comes round while the dead hull's
+/// track still stands) at (5, 8); blue at (9, 8) one round from a wreck — no
+/// armour, one point inside, its hull `destroy_unit`; the odds pinned at
+/// certainty. A second blue hull stands at (14, 1), out of red's five-cell
+/// sight, so blue's side still stands after the kill and the match runs on:
+/// with blue alone the kill ends a skirmish inside its substep (doc 16 §6.4's
+/// elimination) and no later `WeaponReady` or pass is ever evaluated.
+fn kill_duel() -> Arena {
+    let lethal = UnitProfile {
+        sections: vec![SectionProfile {
+            consequences: vec![tacsim::arena::resolution::Consequence::DestroyUnit],
+            ..profile().sections.remove(0)
+        }],
+        ..profile()
+    };
+    let mut arena = arena_of(vec![
+        unit(
+            RED,
+            Team::Red,
+            facing(5, 8, 90_000),
+            vec![machine_gun()],
+            Some(sight(0)),
+        ),
+        CustodyUnit {
+            profile: lethal,
+            unit: fragile_unit(BLUE),
+            ..unit(
+                BLUE,
+                Team::Blue,
+                facing(9, 8, 0),
+                Vec::new(),
+                Some(sight(0)),
+            )
+        },
+        unit(BLUE2, Team::Blue, facing(14, 1, 0), Vec::new(), None),
+    ]);
+    arena.resolution.p_min = 1_000;
+    arena.resolution.p_max = 1_000;
+    arena
+}
+
+/// **A `Lock`-target slot idles on a lock that reads dead** (17b cut M2.2, the
+/// lead's ruling (a): one read-dead rule for the three targets; doc 17 §5,
+/// D-UM-17; 16b §11's mandatory cross-tempo property): on [`kill_duel`] red's
+/// pilot locks blue and arms the machine gun on its LOCK at 5,000 (a
+/// `Contact` slot is unlawful at the arena in 17b cut M1b —
+/// `condition_is_lawful` — so its arm of the rule is the in-source warrant
+/// test's). The arming's own evaluation fires, and the round destroys blue —
+/// the kill's lines (`fired` `by: cond` `slot: 1`, then `unit_destroyed` by
+/// red) — and the shooter's hold of the wreck reads dead (the kill it
+/// watched). The match runs on (blue's second hull stands),
+/// and every later `WeaponReady` and pass is `Idle` until the track expires:
+/// no second `fired` line, the rounds conserved (one fired, the rest in the
+/// gun), no `slot_held` notice — and the warrant itself, asked at the gun's
+/// next ready with the wreck's track still held, answers `Idle`. Under 17b
+/// cut M1b.1's rule (read-dead for `BestHostile` alone) the same tape shows
+/// the slot firing at the wreck on the gun's cycle — `fired` at 6,000 and
+/// 7,000, the track still held — so with the rule reverted this test fails on
+/// its tape, not only on the warrant. One event list and one hash sequence at
+/// 5,000, 1,000 and 500 ms and on the task's wakes.
+#[test]
+fn m2_a_lock_target_slot_idles_on_a_lock_that_reads_dead_at_three_cadences() {
+    let contact = contact_of(RED, BLUE);
+    let slot = cond("machine_gun", 100, ASPECTS_ANY);
+    let script = || {
+        vec![
+            beat(0, vec![intent(RED, IntentKind::Startup, 1)]),
+            beat(
+                5_000,
+                vec![
+                    intent(RED, IntentKind::Lock { contact }, 2),
+                    intent(RED, arm(slot.clone()), 3),
+                ],
+            ),
+        ]
+    };
+    let until = 15_000;
+    let run = at_every_drive(kill_duel, until, script);
+    // The kill's lines: the arming's shot, then blue destroyed by red.
+    let fired = run.fired();
+    assert_eq!(fired.len(), 1, "one shot and no more: {fired:?}");
+    assert_eq!(cond_shots(&run), vec![(5_000, 1, u64::from(BLUE.0))]);
+    let destroyed: Vec<serde_json::Value> = run
+        .events
+        .iter()
+        .filter_map(|(_, json, _)| serde_json::from_str::<serde_json::Value>(json).ok())
+        .filter(|line| {
+            line.get("kind").and_then(serde_json::Value::as_str) == Some("unit_destroyed")
+        })
+        .collect();
+    assert_eq!(destroyed.len(), 1, "{destroyed:?}");
+    assert_eq!(destroyed[0]["unit"], u64::from(BLUE.0));
+    assert_eq!(run.counters.cond_fires, 1);
+    // No slot was ever held for a reason: an idle slot says nothing.
+    assert!(
+        slot_told(&run, RED_PILOT)
+            .iter()
+            .all(|(_, notice)| !matches!(notice, FrameNotice::SlotHeld { .. })),
+        "{:?}",
+        slot_told(&run, RED_PILOT)
+    );
+    // The match ran to the end of the script, the rounds conserved, and
+    // the slot stood armed throughout.
+    let mut arena = kill_duel();
+    let _ = replay(&mut arena, Drive::Every(500), until, &script());
+    assert_eq!(arena.now_ms, until, "the match outlives the kill");
+    let left = u64::from(
+        arena
+            .unit(RED)
+            .map_or(0, |state| state.weapon_ammo("machine_gun")),
+    );
+    assert_eq!(left + 1, u64::from(machine_gun().count_per_load));
+    assert_eq!(arena.conditions.slot_of(RED, "machine_gun"), Some(1));
+    assert!(
+        arena.unit(BLUE).is_some_and(|state| state.limits.wreck),
+        "blue is a wreck"
+    );
+    // At the kill's next `WeaponReady` the hold still stood and read dead:
+    // replayed to 6,000 the warrant answers `Idle` on the held, dead lock.
+    let mut early = kill_duel();
+    let _ = replay(&mut early, Drive::Every(500), 6_000, &script());
+    assert_eq!(early.now_ms, 6_000, "the match outlives the kill");
+    let held = early
+        .contacts
+        .resolve(RED, contact)
+        .expect("the shooter still holds the wreck at its gun's next ready");
+    assert!(early.contact_reads_dead(held), "the kill it watched");
+    assert_eq!(
+        early.warrant(RED, &slot, 6_000),
+        Err(tacsim::arena::conditions::Held::Idle),
+        "a Lock-target slot idles on a lock that reads dead"
+    );
+}
+
+/// The wide window of the range proof: 70 by 16 cells of 1,000 cm, the
+/// entry zones the first two and last two columns.
+fn strip_definition() -> ArenaDefinition {
+    const WIDE: u16 = 70;
+    ArenaDefinition {
+        terrain: ArenaTerrain::new(
+            WIDE,
+            SIDE,
+            CELL_CM,
+            vec![ground(); usize::from(WIDE) * usize::from(SIDE)],
+        )
+        .expect("the strip"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: SIDE - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: WIDE - 2,
+                y0: 0,
+                x1: WIDE - 1,
+                y1: SIDE - 1,
+            },
+        ],
+        ..definition()
+    }
+}
+
+/// **The range duel** (17b cut M2.2, ruling (c)): red with a cannon and a
+/// seventy-cell sight at (2, 8) facing east, blue at (62, 8) — sixty cells,
+/// 600 m, centre to centre — on [`strip_definition`]; the odds at
+/// [`ODDS`].
+fn range_duel() -> Arena {
+    let units = vec![
+        unit(
+            RED,
+            Team::Red,
+            facing(2, 8, 90_000),
+            vec![cannon()],
+            Some(SensorProfile {
+                max_range_cells: 70,
+                ..sight(0)
+            }),
+        ),
+        unit(BLUE, Team::Blue, facing(62, 8, 270_000), Vec::new(), None),
+    ];
+    let pilots = units
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: unit.id,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition: strip_definition(),
+            units,
+            pilots,
+            resolution: tacsim::match_::stock_resolution(),
+            seed: SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig::default(),
+        &match_cfg(),
+        &SensorsConfig::default(),
+    )
+    .expect("the strip arena");
+    arena.resolution.p_min = ODDS;
+    arena.resolution.p_max = ODDS;
+    arena
+}
+
+/// **[`replay`] at a fixed cadence with ONE hand on the field**: after the
+/// pulse that first reaches `poke_ms` — an arena millisecond on every
+/// cadence's lattice, where the state is one state at every cadence — `poke`
+/// runs once. Answers the run.
+fn poked_replay(
+    arena: &mut Arena,
+    cadence_ms: i64,
+    until_ms: i64,
+    script: &[Beat],
+    poke_ms: i64,
+    poke: &dyn Fn(&mut Arena),
+) -> Run {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut notices: Vec<FrameNotice> = Vec::new();
+    let mut told: Vec<(i64, ObjId, FrameNotice)> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let mut wall = 0_i64;
+    let mut next = 0_usize;
+    let mut pulses = 0_u32;
+    let mut poked = false;
+    let mut pulse = |arena: &mut Arena, wall: i64, beat: Option<&Beat>| {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let (controls, intents) = beat.map_or((&[][..], &[][..]), |beat| {
+            (&beat.controls[..], &beat.intents[..])
+        });
+        let out = arena.step(wall, controls, intents);
+        absorb(&out, &mut bytes, &mut notices);
+        told_of(&out, arena.now_ms, &mut told);
+        counters.absorb(&out.reflex);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        pulses += 1;
+        out.ended.is_some()
+    };
+    if script.first().is_none_or(|beat| beat.t_ms > 0) {
+        let _ = pulse(arena, wall, None);
+    }
+    loop {
+        while let Some(beat) = script.get(next) {
+            if beat.t_ms > arena.now_ms {
+                break;
+            }
+            next += 1;
+            let _ = pulse(arena, wall, Some(beat));
+        }
+        if !poked && arena.now_ms >= poke_ms {
+            assert_eq!(arena.now_ms, poke_ms, "the poke is on the lattice");
+            poke(arena);
+            poked = true;
+        }
+        if arena.now_ms >= until_ms {
+            break;
+        }
+        wall += cadence_ms;
+        if pulse(arena, wall, None) {
+            break;
+        }
+    }
+    let events = lines(arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    Run {
+        events,
+        hashes,
+        counters,
+        notices,
+        told,
+        pulses,
+    }
+}
+
+/// **A typed range term is strict at the ROUNDED range** (17b cut M2.2, the
+/// lead's ruling (c); doc 17 §5; 16b §11's mandatory cross-tempo property):
+/// on [`range_duel`] red's pilot locks blue and arms the cannon on the rule
+/// `odds >= 10 AND range < 600` as the cockpit compiles it —
+/// [`cockpit::parse_arming`] over red's own first frame and cannon row, so the
+/// arena runs the compile and not a hand-written bound: `max_range_m 599`
+/// (the reply's figures are pinned by `tests/cockpit.rs`'
+/// `m2_a_range_term_is_strict_and_the_reply_reads_the_typed_figure`) — at
+/// 5,000, with blue's plot at exactly 600 m, whose rounded range is
+/// 600: the slot HOLDS, and says `HeldWhy::Range { range_m: 600, max_m: 599 }`
+/// (17b cut M1b.4 stored 600 and fired: a printed 600 m was inside `range <
+/// 600`). At 10,000 blue stands five cells nearer — 550 m, the field's one
+/// hand, after the pulse that reaches 10,000 at every cadence — and the slot
+/// fires at red's first pass after it, whose plot reads 550, `by: cond`
+/// `slot: 1`, and on the cannon's cycle after. One event list and one hash
+/// sequence at 5,000, 1,000 and 500 ms.
+#[test]
+fn m2_a_typed_range_term_is_strict_at_the_rounded_range_at_three_cadences() {
+    let contact = contact_of(RED, BLUE);
+    // The rule as the pilot types it, compiled by the cockpit off red's own
+    // frame: the strict bound is the compile's, never this test's.
+    let under_600 = {
+        let mut arena = range_duel();
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let out = arena.step(0, &[], &[]);
+        let frame = out
+            .frames
+            .iter()
+            .find(|(pilot, _)| *pilot == RED_PILOT)
+            .map(|(_, frame)| frame.clone())
+            .expect("red's pilot has a frame");
+        let row = cockpit::frame_weapons(&frame)
+            .into_iter()
+            .find(|row| row.id == "cannon")
+            .expect("red's cannon row");
+        let (compiled, _) = cockpit::parse_arming(&row, "odds >= 10 AND range < 600", &frame)
+            .expect("the rule compiles");
+        compiled
+    };
+    assert_eq!(
+        under_600,
+        FireCondition {
+            max_range_m: 599,
+            ..cond("cannon", 100, ASPECTS_ANY)
+        },
+        "`range < 600` compiles strict"
+    );
+    let script = || {
+        vec![
+            beat(0, vec![intent(RED, IntentKind::Startup, 1)]),
+            beat(
+                5_000,
+                vec![
+                    intent(RED, IntentKind::Lock { contact }, 2),
+                    intent(RED, arm(under_600.clone()), 3),
+                ],
+            ),
+        ]
+    };
+    let nearer = |arena: &mut Arena| {
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.pose = facing(57, 8, 270_000);
+        }
+        let units = arena.units.clone();
+        let terrain = arena.definition.terrain.clone();
+        arena.index.rebuild(&terrain, &units);
+    };
+    let until = 20_000;
+    let runs: Vec<(i64, Run)> = [5_000, 1_000, 500]
+        .into_iter()
+        .map(|cadence| {
+            let mut arena = range_duel();
+            let run = poked_replay(&mut arena, cadence, until, &script(), 10_000, &nearer);
+            (cadence, run)
+        })
+        .collect();
+    let (_, first) = runs.first().expect("three runs");
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(run.events, first.events, "the event list at {cadence} ms");
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses);
+    }
+    // Held at the rounded 600, said once, naming the stored 599.
+    let told = slot_told(first, RED_PILOT);
+    let held: Vec<&(i64, FrameNotice)> = told
+        .iter()
+        .filter(|(_, notice)| matches!(notice, FrameNotice::SlotHeld { .. }))
+        .collect();
+    let Some((held_at, FrameNotice::SlotHeld { slot, why, .. })) = held.first().copied() else {
+        panic!("the slot never held: {told:?}");
+    };
+    assert_eq!(*held_at, 5_000, "the arming's own evaluation");
+    assert_eq!(*slot, 1);
+    assert!(
+        matches!(
+            why,
+            HeldWhy::Range { contact: named, range_m: 600, min_m: 0, max_m: 599 } if named.id == contact
+        ),
+        "{why:?}"
+    );
+    // Nothing fired before the hand; the first shot at red's first pass after
+    // it, then on the cannon's cycle.
+    let shots = cond_shots(first);
+    let Some(&(shot, _, _)) = shots.first() else {
+        panic!("the slot never fired at 550 m: {:?}", first.counters);
+    };
+    assert!(
+        shot > 10_000 && shot <= 10_000 + PASS_MS,
+        "the first shot at {shot}, not at red's first pass after the hand"
+    );
+    assert!(is_pass_of(RED, shot), "{shot} is one of red's passes");
+    for (n, (t_ms, slot, target)) in shots.iter().enumerate() {
+        assert_eq!((*slot, *target), (1, u64::from(BLUE.0)));
+        assert_eq!(
+            *t_ms,
+            shot + i64::from(cannon().cycle_ms) * i64::try_from(n).unwrap_or(0)
+        );
+    }
+    // The rounded range it fired at reads 550, at a fresh plot's millisecond
+    // (the plot's own: older, the lock's step widens): a bound at 550 takes
+    // it, one at 549 holds it as 550.
+    let mut arena = range_duel();
+    let _ = poked_replay(&mut arena, 500, until, &script(), 10_000, &nearer);
+    let seen_ms = arena
+        .contacts
+        .resolve(RED, contact)
+        .map(|held| held.last_seen_ms)
+        .expect("red still holds blue");
+    let held = arena.warrant(
+        RED,
+        &FireCondition {
+            max_range_m: 549,
+            ..under_600.clone()
+        },
+        seen_ms,
+    );
+    assert!(
+        matches!(
+            &held,
+            Err(tacsim::arena::conditions::Held::Why(HeldWhy::Range {
+                contact: named,
+                range_m: 550,
+                min_m: 0,
+                max_m: 549,
+            })) if named.id == contact
+        ),
+        "{held:?}"
+    );
+    assert!(
+        arena
+            .warrant(
+                RED,
+                &FireCondition {
+                    max_range_m: 550,
+                    ..under_600
+                },
+                seen_ms
+            )
+            .is_ok(),
+        "550 is inside a 550 bound"
     );
 }

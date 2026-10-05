@@ -8,13 +8,14 @@
 //! what the script left (`crate::Sandbox::think`).
 //!
 //! This file is **the ONE canonical codec** (17b's settled question (i)):
-//! [`encode`] and [`decode`] are to be the only writer and reader of memory
-//! bytes in the workspace once 17b cut M2.2 makes them the arena's own (until
-//! then `crates/tacsim/src/arena/mind.rs` keeps its `encode_memory` and
-//! `decode_memory`, whose bytes these match), so the bytes a Rhai mind's
-//! memory hashes as are exactly the bytes the native stock mind's do. The first half is rhai-free ([`Value`], [`Memory`], [`Limits`],
-//! [`MemError`], [`check`], [`encode`], [`decode`]); the second converts to
-//! and from Rhai's map ([`MemFault`], [`from_map`], [`to_map`]).
+//! [`encode`] and [`decode`] are the only writer and reader of memory bytes in
+//! the workspace — since 17b cut M2.2 `crates/tacsim/src/arena/mind.rs`
+//! re-exports this codec and its `encode_memory` and `decode_memory` are thin
+//! calls of these two — so the bytes a Rhai mind's memory hashes as are
+//! exactly the bytes the native stock mind's do. The first half is rhai-free
+//! ([`Value`], [`Memory`], [`Limits`], [`MemError`], [`check`], [`encode`],
+//! [`decode`]); the second converts to and from Rhai's map ([`MemFault`],
+//! [`from_map`], [`to_map`]).
 //!
 //! # The grammar
 //!
@@ -34,7 +35,8 @@
 //! whole of `serde_json`'s compact escaping, so **these bytes are what
 //! `serde_json::to_vec` writes for a `BTreeMap<_, serde_json::Value>` of the
 //! same shapes** (`Unit` as `null`, `Ints` as an array of numbers); 17b cut
-//! M2.2 pins that in tacsim against the arena's present `encode_memory`.
+//! M2.2 pins that in tacsim (`tests/minds.rs`'
+//! `m2_the_memory_codec_writes_the_native_bytes`).
 
 use std::collections::BTreeMap;
 use std::fmt;

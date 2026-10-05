@@ -62,8 +62,8 @@ use tacsim::arena::reflex::{
 };
 use tacsim::arena::state::{Arena, ContactId, CostRow, EndReason, Team};
 use tacsim::arena::stock_mind::{
-    NativeStockMind, StockMemory, best_hostile_ranked, cell_point, health_permille, line_to,
-    row_range_cm, view_ranges, would_overheat,
+    NativeStockMind, StockMemory, Weights, best_hostile_ranked, cell_point, health_permille,
+    line_to, row_range_cm, view_ranges, would_overheat,
 };
 use tacsim::config::ReflexConfig;
 use tacsim::deliberation::order::{Objective, Order};
@@ -83,14 +83,15 @@ const DRAW_SLACK: u32 = 6;
 // The recording runner
 // ---------------------------------------------------------------------------
 
-/// One think, as the shadow reads it.
+/// One think, as the shadow reads it. 17b cut M2.2: the view is the job's
+/// own `Arc` (`ThinkJob::view`), shared rather than copied.
 #[derive(Clone, Debug)]
 struct Thought {
     unit: ObjId,
     think_seq: u64,
     t_ms: i64,
     lands_ms: i64,
-    view: MindView,
+    view: Arc<MindView>,
     memory: Vec<u8>,
     result: ThinkResult,
 }
@@ -130,7 +131,7 @@ impl MindRunner for Recording {
                 think_seq: job.think_seq,
                 t_ms: job.t_ms,
                 lands_ms: job.lands_ms,
-                view: job.view.clone(),
+                view: Arc::clone(job.view),
                 memory: job.memory.to_vec(),
                 result: result.clone(),
             });
@@ -490,6 +491,8 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
             let Some(view) = view else {
                 continue;
             };
+            // 17b cut M2.2: wrapped once, as the arena's think arm wraps it.
+            let view = Arc::new(view);
             let (memory, card) = clone
                 .minds
                 .get(&thought.unit)
@@ -505,6 +508,8 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
                 think_seq: thought.think_seq,
                 t_ms: thought.t_ms,
                 lands_ms: thought.lands_ms,
+                seed: clone.seed,
+                dropped: false,
                 view: &view,
                 memory: &memory,
                 map: &clone.definition,
@@ -684,7 +689,7 @@ fn shadow(
         ..Divergences::default()
     };
     let unit = thought.unit;
-    let view = &thought.view;
+    let view: &MindView = &thought.view;
     let def = &arena.definition;
     let cell_cm = def.terrain.cell_cm();
     let before = StockMemory::from(&decode_memory(&thought.memory));
@@ -906,7 +911,10 @@ fn shadow(
     }
     // `tiebreak` and `range_round`: the utility score's pick, both ways.
     if let Some(state) = arena.unit(unit) {
-        let ranked = best_hostile_ranked(view, cfg, health_permille(view), None, |_| true);
+        let ranked =
+            best_hostile_ranked(view, &Weights::of(cfg), health_permille(view), None, |_| {
+                true
+            });
         let leaky = arena.best_hostile_where(
             unit,
             &arena.reflex,
@@ -937,7 +945,7 @@ fn shadow(
             None => picks_differ = leaky.is_some(),
         }
         let leaky_ranges = ranges(state, cell_cm, cfg, None);
-        let pure_ranges = view_ranges(view, cfg, None);
+        let pure_ranges = view_ranges(view, cfg.engage_band_permille, None);
         if picks_differ || leaky_ranges != pure_ranges {
             out.range_round += 1;
         }

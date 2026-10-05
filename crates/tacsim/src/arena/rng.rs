@@ -66,12 +66,28 @@ pub enum DrawLabel {
         /// The held unit.
         target: ObjId,
     },
+    /// **A unit mind's `n`-th draw of one think** (17b cut M2.2; doc 17 §7,
+    /// D-UM-29): what a scripted mind's `rand(k)` is keyed on — the hull, the
+    /// think and the draw's place in it, so a mind's draws are a function of
+    /// the match seed and its own thinks and never shift another draw. Pinned
+    /// here in 17b cut M2.2; nothing draws it until 17b cut M2.3 registers
+    /// `rand(k)`.
+    Mind {
+        /// The hull thinking — its own object number (the view's `unit`).
+        unit: u32,
+        /// The think's sequence number.
+        think_seq: u64,
+        /// The draw's place in the think, from 0.
+        n: u32,
+    },
 }
 
 impl DrawLabel {
     /// **The pinned label kinds**, in code order. A contract test asserts this
-    /// exact array, so a sixth reason to draw is a reviewed diff.
-    pub const LABEL_KINDS: [&'static str; 5] = ["hit", "facet", "burst", "classify", "contact"];
+    /// exact array, so a seventh reason to draw is a reviewed diff (the sixth,
+    /// `mind`, was 17b cut M2.2's; D-UM-29).
+    pub const LABEL_KINDS: [&'static str; 6] =
+        ["hit", "facet", "burst", "classify", "contact", "mind"];
 
     /// This label's kind word — the first colon-separated field of
     /// [`DrawLabel::encode`].
@@ -83,6 +99,7 @@ impl DrawLabel {
             DrawLabel::Burst { .. } => "burst",
             DrawLabel::Classify { .. } => "classify",
             DrawLabel::Contact { .. } => "contact",
+            DrawLabel::Mind { .. } => "mind",
         }
     }
 
@@ -95,6 +112,7 @@ impl DrawLabel {
     /// burst:<shot_seq>
     /// classify:<observer>:<target>:<pass_seq>
     /// contact:<viewer>:<target>
+    /// mind:<unit>:<think_seq>:<n>
     /// ```
     ///
     /// Object ids are their **decimal numbers**, not their `#42` display form:
@@ -115,6 +133,7 @@ impl DrawLabel {
             DrawLabel::Contact { viewer, target } => {
                 format!("contact:{}:{}", viewer.0, target.0)
             }
+            DrawLabel::Mind { unit, think_seq, n } => format!("mind:{unit}:{think_seq}:{n}"),
         }
     }
 
@@ -154,6 +173,11 @@ impl DrawLabel {
                 viewer: id(0)?,
                 target: id(1)?,
             },
+            ("mind", 3) => DrawLabel::Mind {
+                unit: u32::try_from(seq(0)?).ok()?,
+                think_seq: seq(1)?,
+                n: u32::try_from(seq(2)?).ok()?,
+            },
             _ => return None,
         };
         (label.encode() == text).then_some(label)
@@ -171,7 +195,7 @@ fn decimal(field: &str) -> Option<u64> {
 
 /// **The pinned label kinds**, as a module-level constant for callers that do not
 /// want the type. The same array as [`DrawLabel::LABEL_KINDS`].
-pub const LABEL_KINDS: [&str; 5] = DrawLabel::LABEL_KINDS;
+pub const LABEL_KINDS: [&str; 6] = DrawLabel::LABEL_KINDS;
 
 /// **`draw(seed, label)`** — the keyed 64-bit value doc 16 §3.5 asks for.
 ///
@@ -260,7 +284,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// One label of every kind, in [`DrawLabel::LABEL_KINDS`] order.
-    fn one_of_each() -> [DrawLabel; 5] {
+    fn one_of_each() -> [DrawLabel; 6] {
         [
             DrawLabel::Hit { shot_seq: 1 },
             DrawLabel::Facet { shot_seq: 1 },
@@ -274,14 +298,20 @@ mod tests {
                 viewer: ObjId(4),
                 target: ObjId(9),
             },
+            DrawLabel::Mind {
+                unit: 4,
+                think_seq: 2,
+                n: 0,
+            },
         ]
     }
 
     #[test]
     fn the_label_kinds_are_pinned_and_every_variant_declares_one() {
+        // 17b cut M2.2 (D-UM-29): five -> six, `mind` last.
         assert_eq!(
             LABEL_KINDS,
-            ["hit", "facet", "burst", "classify", "contact"]
+            ["hit", "facet", "burst", "classify", "contact", "mind"]
         );
         assert_eq!(LABEL_KINDS, DrawLabel::LABEL_KINDS);
         for (label, kind) in one_of_each().iter().zip(LABEL_KINDS) {
@@ -312,6 +342,15 @@ mod tests {
             .encode(),
             "contact:4:9"
         );
+        assert_eq!(
+            DrawLabel::Mind {
+                unit: 4,
+                think_seq: 2,
+                n: 7
+            }
+            .encode(),
+            "mind:4:2:7"
+        );
     }
 
     /// **16b cut M.3** (16c `T-07`): `decode` is the exact inverse of `encode` —
@@ -332,6 +371,11 @@ mod tests {
             DrawLabel::Contact {
                 viewer: ObjId(0),
                 target: ObjId(u32::MAX),
+            },
+            DrawLabel::Mind {
+                unit: u32::MAX,
+                think_seq: u64::MAX,
+                n: u32::MAX,
             },
         ];
         for label in one_of_each().into_iter().chain(ceiling) {
@@ -360,6 +404,11 @@ mod tests {
             "contact:4",
             "contact:4:9:1",
             "contact:#4:9",
+            "mind:4:2",
+            "mind:4:2:7:1",
+            "mind:4294967296:2:7",
+            "mind:4:2:4294967296",
+            "mind:4:02:7",
         ] {
             assert_eq!(DrawLabel::decode(foreign), None, "{foreign:?} decoded");
         }

@@ -1384,12 +1384,18 @@ pub fn mind_set(ctx: &mut Ctx<'_>, arena_cfg: &crate::config::ArenaConfig) -> Re
                 }
                 return Err(unknown_card_word(name));
             };
-            scratch = card;
             let shown = crate::arena::PRESETS
                 .iter()
                 .find(|preset| preset.eq_ignore_ascii_case(name))
                 .copied()
                 .unwrap_or("Line");
+            // 17b cut M2.2, the lead's ruling (b): a preset that breaks the
+            // doctrine pair on this doctrine (Rearguard over a fight_home_pct
+            // above 70) is refused by name, as the arena refuses it.
+            if let Err(error) = card.pair(shown) {
+                return Err(CmdError::msg(format!("@mind/set: {error}.")));
+            }
+            scratch = card;
             (CardChange::Preset(SmolStr::new(shown)), shown.to_owned())
         }
         [slider, value] => {

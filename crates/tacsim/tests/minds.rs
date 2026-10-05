@@ -70,8 +70,8 @@ use tacsim::arena::intents::{
 };
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{
-    MIND_INTENTS_MAX, MIND_NOTICES, MindRunner, MindState, MindView, STOCK_THINK_MS, ThinkJob,
-    ThinkResult,
+    MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MindRunner, MindState, MindView,
+    STOCK_THINK_MS, ThinkFault, ThinkJob, ThinkResult,
 };
 use tacsim::arena::perception::{
     FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
@@ -445,12 +445,14 @@ fn presenting(unit: CustodyUnit) -> CustodyUnit {
 // ---------------------------------------------------------------------------
 
 /// One scripted think: what it answers, and the memory it hands back (the
-/// memory it was handed, echoed, when `None`).
+/// memory it was handed, echoed, when `None`) — and, since 17b cut M2.2, the
+/// fault it answers (D-UM-31: a cause word, or `None` for a clean think).
 #[derive(Clone, Debug)]
 struct Says {
     think_seq: u64,
     intents: Vec<IntentKind>,
     memory: Option<Vec<u8>>,
+    fault: Option<&'static str>,
 }
 
 fn says(think_seq: u64, intents: Vec<IntentKind>) -> Says {
@@ -458,10 +460,13 @@ fn says(think_seq: u64, intents: Vec<IntentKind>) -> Says {
         think_seq,
         intents,
         memory: None,
+        fault: None,
     }
 }
 
-/// What a think was handed.
+/// What a think was handed — and, since 17b cut M2.2, the match seed the job
+/// carried (`ThinkJob::seed`, D-UM-29) and whether it said the hull is
+/// dropped (`ThinkJob::dropped`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Seen {
     unit: ObjId,
@@ -469,6 +474,8 @@ struct Seen {
     t_ms: i64,
     view: MindView,
     memory: Vec<u8>,
+    seed: u64,
+    dropped: bool,
 }
 
 /// **A [`MindRunner`] that reads its answers off a script** — per hull, the
@@ -503,8 +510,10 @@ impl MindRunner for ScriptedMind {
                 unit: job.unit,
                 think_seq: job.think_seq,
                 t_ms: job.t_ms,
-                view: job.view.clone(),
+                view: (**job.view).clone(),
                 memory: job.memory.to_vec(),
+                seed: job.seed,
+                dropped: job.dropped,
             });
         }
         let line = self
@@ -516,6 +525,10 @@ impl MindRunner for ScriptedMind {
             memory: line
                 .and_then(|line| line.memory.clone())
                 .unwrap_or_else(|| job.memory.to_vec()),
+            fault: line.and_then(|line| line.fault).map(|cause| ThinkFault {
+                cause: SmolStr::new_static(cause),
+            }),
+            trace: Vec::new(),
         }
     }
 }
@@ -1418,11 +1431,13 @@ fn m1a5_a_think_of_seventeen_intents_lands_nothing_and_keeps_its_memory() {
                 think_seq: 0,
                 intents: vec![IntentKind::Startup, IntentKind::Emcon { on: true }],
                 memory: Some(vec![1]),
+                fault: None,
             },
             Says {
                 think_seq: 1,
                 intents: vec![IntentKind::Speed { cms: 300 }; MIND_INTENTS_MAX + 1],
                 memory: Some(vec![9, 9]),
+                fault: None,
             },
         ],
     )]);
@@ -1522,6 +1537,7 @@ fn m1a5_a_think_of_sixteen_intents_lands_whole() {
                 think_seq: 1,
                 intents: speeds,
                 memory: Some(vec![5, 5]),
+                fault: None,
             },
         ],
     )]);
@@ -1696,7 +1712,7 @@ fn m1a5_the_notice_buffer_is_bounded_hashed_snapshotted_and_drained_per_think() 
     );
 
     let snapshot = Snapshot::encode(&rig.arena).expect("the arena encodes");
-    let decoded = Snapshot::decode(&snapshot.document, rig.arena.definition.clone())
+    let decoded = Snapshot::decode(&snapshot.document, (*rig.arena.definition).clone())
         .expect("the document decodes");
     assert_eq!(
         decoded.minds.get(&RED),
@@ -1772,6 +1788,7 @@ fn m1a5_mind_kinds_run_last_at_their_millisecond_in_unit_id_order() {
                     think_seq: 0,
                     intents: vec![IntentKind::Startup],
                     memory: Some(vec![7]),
+                    fault: None,
                 },
                 says(1, Vec::new()),
             ],
@@ -3282,7 +3299,7 @@ fn m1a5_a_resumed_landing_finds_no_scratch_and_clears_its_pending_row() {
         state.ranges.insert(ContactId(77), 450);
     }
     let snapshot = Snapshot::encode(&rig.arena).expect("the arena encodes");
-    let decoded = Snapshot::decode(&snapshot.document, rig.arena.definition.clone())
+    let decoded = Snapshot::decode(&snapshot.document, (*rig.arena.definition).clone())
         .expect("the document decodes");
     assert_eq!(decoded.minds, rig.arena.minds, "the rows came back");
     assert!(decoded.mind_landings.is_empty(), "the scratch did not");
@@ -3725,7 +3742,7 @@ impl MindRunner for Stock {
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let result = self.inner.think(job);
         if let Ok(mut kept) = self.kept.lock() {
-            kept.push((job.unit, job.t_ms, job.view.clone(), result.clone()));
+            kept.push((job.unit, job.t_ms, (**job.view).clone(), result.clone()));
         }
         result
     }
@@ -5981,7 +5998,9 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
                 think_seq: 1,
                 t_ms,
                 lands_ms: t_ms + SUBSTEP,
-                view,
+                seed: arena.seed,
+                dropped: false,
+                view: &Arc::new(view.clone()),
                 memory: &bytes,
                 map: &arena.definition,
                 card: &card,
@@ -6394,3 +6413,666 @@ const M1B5_TWO_T1_INTENTS: &[(u32, i64, &str)] = &[
         "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
     ),
 ];
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.2: the seam prepared — the one memory codec, the faults and the
+// strikes, the doctrine pair at the arena (doc 17 §6, §8, §11; D-UM-29,
+// D-UM-30 as amended, D-UM-31, D-UM-32)
+// ---------------------------------------------------------------------------
+
+/// FNV-1a 64 over `bytes` — the per-think memory digest the codec pin
+/// records.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+// **The memory bytes of every think of the two-T1 fixture at 1,000 ms and of
+// `unarmed_run(1_000)`, RECORDED BEFORE 17b cut M2.2's edit** — on HEAD
+// `dec5328b`'s code, whose `encode_memory` was `serde_json::to_vec` over the
+// arena's own map — as `(unit, the think's lattice millisecond, FNV-1a 64 of
+// the answered memory)`, with the first and the last memory whole. After the
+// edit the bytes are `mush_mind::memory::encode`'s, and
+// `m2_the_memory_codec_writes_the_native_bytes` holds them equal.
+const M2_TWO_T1_MEMORY_DIGESTS: &[(u32, i64, u64)] = &[
+    (6, 4, 0x0460_2376_35ff_267b),
+    (4, 482, 0x0460_2376_35ff_267b),
+    (6, 1_004, 0xaf26_3241_c01f_62e9),
+    (4, 1_482, 0x9ef0_1268_31d8_f2ef),
+    (6, 2_004, 0xaf26_3241_c01f_62e9),
+    (4, 2_482, 0x9ef0_1268_31d8_f2ef),
+    (6, 3_004, 0x0b69_c385_48be_b28d),
+    (4, 3_482, 0xd39b_f9d4_27c3_9b44),
+    (6, 4_004, 0x0b69_c385_48be_b28d),
+    (4, 4_482, 0x9742_7018_57be_fb26),
+    (6, 5_004, 0x0b69_c385_48be_b28d),
+    (4, 5_482, 0x3687_6e51_598d_d3d8),
+    (6, 6_004, 0x0b69_c385_48be_b28d),
+    (4, 6_482, 0xca0e_1edb_2df5_c8ee),
+    (6, 7_004, 0x0b69_c385_48be_b28d),
+    (4, 7_482, 0xd9bc_35ad_e7f2_ded4),
+    (6, 8_004, 0x0b69_c385_48be_b28d),
+    (4, 8_482, 0x6eec_5f4c_4d98_587e),
+    (6, 9_004, 0x0b69_c385_48be_b28d),
+    (4, 9_482, 0x771a_2b2d_afdb_1730),
+    (6, 10_004, 0xf73b_a523_e930_0ad9),
+    (4, 10_482, 0x40f1_3df3_024b_2a2e),
+    (6, 11_004, 0xf73b_a523_e930_0ad9),
+    (4, 11_482, 0x57a3_da44_7d3f_0fb6),
+    (6, 12_004, 0xf73b_a523_e930_0ad9),
+    (4, 12_482, 0x257b_249c_8632_7ea6),
+    (6, 13_004, 0xf73b_a523_e930_0ad9),
+    (4, 13_482, 0x2679_b529_0282_9426),
+    (6, 14_004, 0xf73b_a523_e930_0ad9),
+    (4, 14_482, 0x9b3c_1328_d139_344e),
+    (6, 15_004, 0xf73b_a523_e930_0ad9),
+    (4, 15_482, 0xc3a7_f046_2688_31a6),
+    (6, 16_004, 0xf73b_a523_e930_0ad9),
+    (4, 16_482, 0xc9d9_3643_f649_de46),
+    (6, 17_004, 0xf73b_a523_e930_0ad9),
+    (4, 17_482, 0x7eee_d174_3b41_7cf6),
+    (6, 18_004, 0xf73b_a523_e930_0ad9),
+    (4, 18_482, 0xbfa5_e130_736c_866e),
+    (6, 19_004, 0xf73b_a523_e930_0ad9),
+    (4, 19_482, 0x72c1_6789_6964_3aa6),
+    (6, 20_004, 0xf73b_a523_e930_0ad9),
+    (4, 20_482, 0x6d4c_7873_6dfe_653a),
+    (6, 21_004, 0xf73b_a523_e930_0ad9),
+    (4, 21_482, 0xc25d_702e_4cce_76ca),
+    (6, 22_004, 0xf73b_a523_e930_0ad9),
+    (4, 22_482, 0x7385_02d3_ccff_cd96),
+    (6, 23_004, 0xf248_9844_b8e9_16f7),
+    (4, 23_482, 0xb564_13c0_19cf_98e6),
+    (6, 24_004, 0xf248_9844_b8e9_16f7),
+    (4, 24_482, 0x4aa8_713b_9c40_cfd2),
+    (6, 25_004, 0xf248_9844_b8e9_16f7),
+    (4, 25_482, 0x2b7e_80e7_5d95_3a32),
+    (6, 26_004, 0xf248_9844_b8e9_16f7),
+    (4, 26_482, 0x0011_1673_9237_2806),
+    (6, 27_004, 0xf248_9844_b8e9_16f7),
+    (4, 27_482, 0x69a3_1ae1_d8b1_0d26),
+    (6, 28_004, 0xf248_9844_b8e9_16f7),
+    (4, 28_482, 0x76a0_42e7_889c_0d8a),
+    (6, 29_004, 0xf248_9844_b8e9_16f7),
+    (4, 29_482, 0x5930_3819_3dd5_5bfa),
+];
+const M2_TWO_T1_FIRST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":0,\"target\":null,\"unheld_since_ms\":null,\"waypoint\":null}";
+const M2_TWO_T1_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":[9,8,29482],\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":3,\"target\":5852833454602713067,\"unheld_since_ms\":29482,\"waypoint\":0}";
+const M2_UNARMED_MEMORY_DIGESTS: &[(u32, i64, u64)] = &[
+    (4, 482, 0x0460_2376_35ff_267b),
+    (4, 1_482, 0x9ef0_1268_31d8_f2ef),
+    (4, 2_482, 0x9ef0_1268_31d8_f2ef),
+    (4, 3_482, 0x0b69_c385_48be_b28d),
+    (4, 4_482, 0x0b69_c385_48be_b28d),
+    (4, 5_482, 0x0b69_c385_48be_b28d),
+    (4, 6_482, 0xf73b_a523_e930_0ad9),
+    (4, 7_482, 0x89fb_60e5_aa94_69b9),
+    (4, 8_482, 0x89fb_60e5_aa94_69b9),
+    (4, 9_482, 0x89fb_60e5_aa94_69b9),
+    (4, 10_482, 0xd30f_f24d_1871_836d),
+    (4, 11_482, 0x8c60_3cbb_ce75_9e94),
+    (4, 12_482, 0x72e1_8c26_d680_169b),
+    (4, 13_482, 0x67b2_9890_5528_6ba2),
+    (4, 14_482, 0xbad4_b209_bb9b_46b9),
+    (4, 15_482, 0x9804_10b8_e736_ee80),
+    (4, 16_482, 0x01d3_f636_b2d7_1467),
+    (4, 17_482, 0x9f69_d73a_09dd_cb8e),
+    (4, 18_482, 0x5487_7b0f_a8d3_f2a5),
+    (4, 19_482, 0x9a13_d799_f4a5_c9cc),
+    (4, 20_482, 0x4176_4b6d_a199_e777),
+    (4, 21_482, 0xe87f_a0f7_474f_ea5e),
+    (4, 22_482, 0x6d3e_9251_61cb_4849),
+    (4, 23_482, 0xf6d8_9b99_f8a4_14d0),
+    (4, 24_482, 0x99de_101f_12da_14ab),
+    (4, 25_482, 0x5ebb_984a_89f5_cf72),
+    (4, 26_482, 0xec8f_92b5_094c_04bd),
+    (4, 27_482, 0x36c4_c03f_d7a4_f324),
+    (4, 28_482, 0xd30d_566e_b90f_cc0f),
+    (4, 29_482, 0x3b6f_5ce9_8c22_f4b6),
+    (4, 30_482, 0x718d_8776_4367_8e9c),
+    (4, 31_482, 0x5b8e_1190_d5e3_4775),
+    (4, 32_482, 0xba07_f361_af5a_4d0a),
+    (4, 33_482, 0x202f_89c2_3f88_4203),
+    (4, 34_482, 0x470f_a84d_71b6_2fe8),
+    (4, 35_482, 0x981b_5a4d_a521_2f81),
+    (4, 36_482, 0x21a3_0bd8_416c_47f6),
+    (4, 37_482, 0x819b_e775_9e37_074f),
+    (4, 38_482, 0x975f_f6f9_d789_db64),
+    (4, 39_482, 0x21cf_dc30_4de1_4ffd),
+];
+const M2_UNARMED_FIRST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":0,\"target\":null,\"unheld_since_ms\":null,\"waypoint\":null}";
+const M2_UNARMED_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":0,\"goal\":[1,8],\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":4,\"target\":null,\"unheld_since_ms\":39482,\"waypoint\":1}";
+
+/// A memory as `serde_json` would have written it before 17b cut M2.2: the
+/// same pairs as a sorted map of `serde_json::Value`s (`Unit` as `null`,
+/// `Ints` as an array of numbers).
+fn json_of(memory: &tacsim::arena::mind::Memory) -> BTreeMap<String, serde_json::Value> {
+    use tacsim::arena::mind::MemValue;
+    memory
+        .iter()
+        .map(|(key, value)| {
+            let value = match value {
+                MemValue::Int(n) => serde_json::Value::from(*n),
+                MemValue::Bool(flag) => serde_json::Value::Bool(*flag),
+                MemValue::Unit => serde_json::Value::Null,
+                MemValue::Str(text) => serde_json::Value::String(text.clone()),
+                MemValue::Ints(items) => serde_json::Value::Array(
+                    items.iter().copied().map(serde_json::Value::from).collect(),
+                ),
+            };
+            (key.clone(), value)
+        })
+        .collect()
+}
+
+/// **A seeded generator of valid stock memories** (17b cut M2.2): splitmix64
+/// over a counter, every value kind, keys and strings of printable ASCII
+/// with the quote and the backslash drawn often, each bound of
+/// `STOCK_MEMORY_LIMITS` reached.
+struct MemoryGen {
+    state: u64,
+}
+
+impl MemoryGen {
+    fn next(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(1);
+        tacsim::arena::rng::splitmix64(self.state)
+    }
+
+    /// A number in `0..=high`.
+    fn upto(&mut self, high: u64) -> u64 {
+        self.next() % (high + 1)
+    }
+
+    /// Printable ASCII of `low..=high` bytes, a quote or a backslash one byte
+    /// in four.
+    fn text(&mut self, low: u64, high: u64) -> String {
+        let len = low + self.upto(high - low);
+        (0..len)
+            .map(|_| match self.upto(7) {
+                0 => '"',
+                1 => '\\',
+                _ => char::from(u8::try_from(0x20 + self.upto(0x7E - 0x20)).unwrap_or(b' ')),
+            })
+            .collect()
+    }
+
+    fn int(&mut self) -> i64 {
+        match self.upto(5) {
+            0 => i64::MIN,
+            1 => i64::MAX,
+            2 => 0,
+            3 => i64::try_from(self.upto(2_000)).unwrap_or(0) - 1_000,
+            _ => i64::from_ne_bytes(self.next().to_ne_bytes()),
+        }
+    }
+
+    fn value(&mut self) -> tacsim::arena::mind::MemValue {
+        use tacsim::arena::mind::MemValue;
+        match self.upto(4) {
+            0 => MemValue::Int(self.int()),
+            1 => MemValue::Bool(self.upto(1) == 1),
+            2 => MemValue::Unit,
+            3 => MemValue::Str(self.text(0, 32)),
+            _ => {
+                let len = self.upto(32);
+                MemValue::Ints((0..len).map(|_| self.int()).collect())
+            }
+        }
+    }
+
+    fn memory(&mut self) -> tacsim::arena::mind::Memory {
+        let keys = self.upto(32);
+        let mut memory = tacsim::arena::mind::Memory::new();
+        for _ in 0..keys {
+            let key = self.text(1, 24);
+            let value = self.value();
+            memory.insert(key, value);
+        }
+        memory
+    }
+}
+
+/// **The one codec writes the native bytes** (17b cut M2.2; doc 17 §8,
+/// D-UM-30 as amended; 17b's settled question (i)):
+///
+/// 1. the memory every think of the two-T1 fixture at 1,000 ms and of
+///    `unarmed_run(1_000)` answered is, byte for byte, the memory recorded
+///    BEFORE the edit on `serde_json::to_vec` ([`M2_TWO_T1_MEMORY_DIGESTS`],
+///    [`M2_UNARMED_MEMORY_DIGESTS`], the first and last memory whole) — the
+///    native stock mind writes the same bytes through `mush_mind`'s encoder —
+///    and every one decodes, passes `memory_check` and encodes back to
+///    itself. **The printable-ASCII rule changes nothing T1 writes**: its
+///    fourteen keys are ASCII words and it writes no string value;
+/// 2. ten thousand random valid memories from a seeded generator over every
+///    value kind encode to exactly `serde_json::to_vec`'s bytes for the same
+///    shape and decode back to themselves;
+/// 3. `M1B5_TWO_T1_EVENTS`, `M1B5_TWO_T1_INTENTS` and `M1B2_TWO_T1_FIRED`
+///    stand, re-asserted by their own tests
+///    (`m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged`
+///    and `m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing`'s
+///    sibling `m1a6_two_stock_minds_at_three_cadences_are_one_event_list_and_one_hash_sequence`),
+///    untouched by this cut.
+#[test]
+fn m2_the_memory_codec_writes_the_native_bytes() {
+    use tacsim::arena::mind::{decode_memory, encode_memory, memory_check};
+    for (name, kept, digests, first, last) in [
+        (
+            "two-T1",
+            stock_minds(Drive::Every(1_000)).1,
+            M2_TWO_T1_MEMORY_DIGESTS,
+            M2_TWO_T1_FIRST_MEMORY,
+            M2_TWO_T1_LAST_MEMORY,
+        ),
+        (
+            "unarmed",
+            unarmed_run(1_000).1,
+            M2_UNARMED_MEMORY_DIGESTS,
+            M2_UNARMED_FIRST_MEMORY,
+            M2_UNARMED_LAST_MEMORY,
+        ),
+    ] {
+        let got: Vec<(u32, i64, u64)> = kept
+            .iter()
+            .map(|(unit, t_ms, _, result)| (unit.0, *t_ms, fnv1a(&result.memory)))
+            .collect();
+        assert_eq!(got, digests, "{name}: every think's memory bytes");
+        assert_eq!(
+            kept.first().map(|(.., result)| result.memory.as_slice()),
+            Some(first),
+            "{name}: the first memory whole"
+        );
+        assert_eq!(
+            kept.last().map(|(.., result)| result.memory.as_slice()),
+            Some(last),
+            "{name}: the last memory whole"
+        );
+        for (_, t_ms, _, result) in &kept {
+            let decoded = mush_mind::memory::decode(&result.memory)
+                .unwrap_or_else(|| panic!("{name} at {t_ms}: the memory decodes"));
+            assert_eq!(memory_check(&decoded), Ok(()), "{name} at {t_ms}");
+            assert_eq!(encode_memory(&decoded), result.memory, "{name} at {t_ms}");
+            assert_eq!(decode_memory(&result.memory), decoded, "{name} at {t_ms}");
+        }
+    }
+    let mut generator = MemoryGen { state: 2_350 };
+    let mut kinds = [0_usize; 5];
+    for at in 0..10_000 {
+        let memory = generator.memory();
+        for value in memory.values() {
+            let kind = match value {
+                tacsim::arena::mind::MemValue::Int(_) => 0,
+                tacsim::arena::mind::MemValue::Bool(_) => 1,
+                tacsim::arena::mind::MemValue::Unit => 2,
+                tacsim::arena::mind::MemValue::Str(_) => 3,
+                tacsim::arena::mind::MemValue::Ints(_) => 4,
+            };
+            if let Some(count) = kinds.get_mut(kind) {
+                *count += 1;
+            }
+        }
+        assert_eq!(memory_check(&memory), Ok(()), "map {at}: {memory:?}");
+        let bytes = mush_mind::memory::encode(&memory);
+        let native = serde_json::to_vec(&json_of(&memory)).expect("a map serializes");
+        assert_eq!(
+            bytes,
+            native,
+            "map {at}: {}",
+            String::from_utf8_lossy(&native)
+        );
+        assert_eq!(
+            mush_mind::memory::decode(&bytes),
+            Some(memory.clone()),
+            "map {at}"
+        );
+        assert_eq!(encode_memory(&memory), bytes, "map {at}: the arena's name");
+    }
+    assert!(
+        kinds.iter().all(|count| *count > 1_000),
+        "every kind drawn: {kinds:?}"
+    );
+}
+
+/// The (j) field's red, scripted for the strikes fixture (17b cut M2.2):
+/// think 0 starts the hull and lands the memory `[0]`; think 1 switches a pod
+/// the hull does not carry (its refusal is the notice the faulted thinks are
+/// handed and must put back) and lands `[1]`; each think in `faulted`
+/// answers a speed and the memory `[9, 9]` — with the fault word `ops` when
+/// `overflow` is false, and as SEVENTEEN speeds with no fault word (D-UM-9's
+/// overflow) when it is true — and every other think nothing and the memory
+/// `[n]`.
+fn strikes_script(faulted: &[u64], overflow: bool) -> Vec<Says> {
+    (0..10_u64)
+        .map(|n| {
+            if faulted.contains(&n) {
+                let speed = IntentKind::Speed { cms: 300 };
+                Says {
+                    think_seq: n,
+                    intents: if overflow {
+                        vec![speed; MIND_INTENTS_MAX + 1]
+                    } else {
+                        vec![speed]
+                    },
+                    memory: Some(vec![9, 9]),
+                    fault: (!overflow).then_some("ops"),
+                }
+            } else {
+                Says {
+                    think_seq: n,
+                    intents: match n {
+                        0 => vec![IntentKind::Startup],
+                        1 => vec![IntentKind::Emcon { on: true }],
+                        _ => Vec::new(),
+                    },
+                    memory: Some(vec![u8::try_from(n).unwrap_or(u8::MAX)]),
+                    fault: None,
+                }
+            }
+        })
+        .collect()
+}
+
+/// One pulse-by-pulse run of the strikes fixture to just past red's think
+/// `last`: the scripted mind, every substep hash, red's `strikes` after
+/// every pulse, red's row just before and just after each of its thinks, and
+/// the counters. `reset` is the baseline's hand: after every pulse red's
+/// `strikes` are written to the figure it names for that pulse.
+struct StrikesRun {
+    mind: Arc<ScriptedMind>,
+    hashes: Vec<Vec<u64>>,
+    strikes: Vec<u8>,
+    rows: Vec<(MindState, MindState)>,
+    counters: ReflexCounters,
+    landings_after: Vec<bool>,
+    speed: Option<i32>,
+}
+
+fn strikes_run(script: Vec<Says>, last: u64, reset: Option<&[u8]>) -> StrikesRun {
+    let mind = ScriptedMind::new(&[(RED, script)]);
+    let mut rig = Rig::new(the_j_field(Controller::Mind));
+    rig.arena.mind_runner = mind.clone();
+    let mut out = StrikesRun {
+        mind,
+        hashes: Vec::new(),
+        strikes: Vec::new(),
+        rows: Vec::new(),
+        counters: ReflexCounters::default(),
+        landings_after: Vec::new(),
+        speed: None,
+    };
+    let pulse = |rig: &mut Rig, out: &mut StrikesRun| {
+        let step = rig.pulse(&[], &[]);
+        out.counters.absorb(&step.reflex);
+        if let Some(state) = rig.arena.minds.get_mut(&RED) {
+            if let Some(figure) = reset.and_then(|figures| figures.get(out.strikes.len())) {
+                // The baseline's hand — and the overflow already counts the
+                // strike, so the hand writes the figure the row holds.
+                assert_eq!(
+                    state.strikes, *figure,
+                    "the overflow counts a strike, as the fault does"
+                );
+                state.strikes = *figure;
+            }
+            out.strikes.push(state.strikes);
+        }
+        out.hashes.push(rig.arena.substep_hashes.clone());
+    };
+    for n in 0..=last {
+        let think = think_at(RED, i64::try_from(n).unwrap_or(0));
+        while rig.arena.now_ms + SUBSTEP < think {
+            pulse(&mut rig, &mut out);
+        }
+        let before = rig.arena.minds.get(&RED).cloned().expect("red's row");
+        while rig.arena.now_ms < think {
+            pulse(&mut rig, &mut out);
+        }
+        let after = rig.arena.minds.get(&RED).cloned().expect("red's row");
+        out.landings_after.push(
+            rig.arena.mind_landings.contains_key(&RED)
+                || rig.arena.due.iter().any(
+                    |event| matches!(event.kind, DueKind::MindLand { unit, .. } if unit == RED),
+                ),
+        );
+        out.rows.push((before, after));
+    }
+    for _ in 0..4 {
+        pulse(&mut rig, &mut out);
+    }
+    out.speed = rig.arena.unit(RED).map(|unit| unit.desired_speed_cms);
+    out
+}
+
+/// **A faulting runner lands nothing, counts a strike, and three drop the
+/// hull** (17b cut M2.2; doc 17 §8, D-UM-31, D-UM-32; D-UM-9's atomic think):
+/// a [`ScriptedMind`] answering `fault: Some(ThinkFault { cause: "ops" })` —
+/// with a speed and the memory `[9, 9]` beside it — at red's thinks 2, 3
+/// and 4 on the (j) field:
+///
+/// * at each, NOTHING lands: no landing on the scratch or the heap, the
+///   memory the last landed think left (`[1]`) kept, the notices the think
+///   was handed back at the front of the buffer (think 1's refused pod switch
+///   among them, so think 3 is handed think 2's notices again), the range
+///   memory as it stood, `pending` clear — and the speed never ordered;
+/// * `strikes` reads 1, 2, 3 and `mind_faults` 3 (no `mind_overflows`);
+///   `ThinkJob::dropped` is false through think 4 and TRUE from think 5;
+///   every job carries the match seed (`ThinkJob::seed`, D-UM-29: the key
+///   of a mind's draws) — and a second arena on another seed hands that one;
+///   the clean think 5 lands its memory and leaves `strikes` at 3 — the drop
+///   is for the rest of the sortie;
+/// * **the baseline** — the same script answering SEVENTEEN speeds and no
+///   fault word at thinks 2, 3 and 4 (M1a's overflow path), with red's
+///   `strikes` written by hand after every pulse to the faulting run's figure
+///   (and found already there: the overflow counts a strike) — hashes EQUAL
+///   at every substep to the faulting run: the new fault path is M1a's
+///   overflow path plus `strikes` and nothing else. The overflow run counts
+///   `mind_overflows` 3 AND `mind_faults` 3;
+/// * one event list and one hash sequence at 5,000, 1,000 and 500 ms;
+/// * a runner faulting at think 2 and clean at 3 reads `strikes` 0 at think
+///   4 (D-UM-31's reset), its think 4 not dropped.
+#[test]
+fn m2_a_faulting_runner_lands_nothing_counts_a_strike_and_three_drop_the_hull() {
+    let faulting = strikes_run(strikes_script(&[2, 3, 4], false), 5, None);
+    let seen = |run: &StrikesRun, n: u64| {
+        run.mind
+            .seen()
+            .into_iter()
+            .find(|seen| seen.unit == RED && seen.think_seq == n)
+            .unwrap_or_else(|| panic!("red's think {n} was run"))
+    };
+    for n in 0..=5_u64 {
+        let at = usize::try_from(n).unwrap_or(0);
+        let (before, after) = faulting.rows.get(at).cloned().expect("a row a think");
+        let handed = seen(&faulting, n);
+        assert_eq!(handed.dropped, n >= 5, "ThinkJob::dropped at think {n}");
+        assert_eq!(handed.seed, SEED, "ThinkJob::seed at think {n}");
+        assert_eq!(after.think_seq, n + 1, "think {n} ran");
+        if (2..=4).contains(&n) {
+            assert_eq!(after.memory, vec![1], "think {n}: the memory kept");
+            assert_eq!(after.memory, before.memory, "think {n}");
+            assert_eq!(
+                after.ranges, before.ranges,
+                "think {n}: the ranges restored"
+            );
+            assert_eq!(after.pending, None, "think {n}");
+            assert!(
+                after.notices.starts_with(&handed.view.notices),
+                "think {n}: the notices back in front of the buffer: {:?} / {:?}",
+                handed.view.notices,
+                after.notices
+            );
+            assert!(
+                !faulting.landings_after.get(at).copied().unwrap_or(true),
+                "think {n}: nothing to land"
+            );
+            assert_eq!(after.strikes, u8::try_from(n - 1).unwrap_or(0), "think {n}");
+        } else {
+            assert!(
+                faulting.landings_after.get(at).copied().unwrap_or(false),
+                "think {n}: a clean think lands"
+            );
+        }
+    }
+    // Think 1's refused pod switch reached think 2, which faulted and put it
+    // back, so think 3 was handed it again.
+    let two = seen(&faulting, 2).view.notices;
+    assert!(
+        two.iter().any(|notice| matches!(
+            notice,
+            FrameNotice::Refused { order, .. } if order == "emcon"
+        )),
+        "think 2 is handed think 1's refusal: {two:?}"
+    );
+    assert!(seen(&faulting, 3).view.notices.starts_with(&two));
+    assert!(seen(&faulting, 4).view.notices.starts_with(&two));
+    // The drop holds through the clean think 5, which lands.
+    let (_, five) = faulting.rows.get(5).cloned().expect("think 5");
+    assert_eq!(five.strikes, MIND_STRIKES_TO_DROP);
+    assert!(five.dropped());
+    assert_eq!(faulting.strikes.last().copied(), Some(MIND_STRIKES_TO_DROP));
+    assert_eq!(
+        (
+            faulting.counters.mind_faults,
+            faulting.counters.mind_overflows
+        ),
+        (3, 0)
+    );
+    // The speed the faulted thinks answered was never ordered.
+    assert_eq!(faulting.speed, Some(0));
+    // The seed is the arena's own, not a constant: another match seed is
+    // the one every job carries.
+    let other_seed = SEED ^ 0x5eed_0000_0000_0001;
+    let mut reseeded = the_j_field(Controller::Mind);
+    assert_eq!(reseeded.seed, SEED);
+    reseeded.seed = other_seed;
+    let mind = ScriptedMind::new(&[(RED, strikes_script(&[], false))]);
+    reseeded.mind_runner = mind.clone();
+    let _ = run(&mut reseeded, Drive::Every(1_000), 5_000);
+    let jobs = mind.seen();
+    assert!(!jobs.is_empty(), "the reseeded arena thought");
+    assert!(
+        jobs.iter().all(|seen| seen.seed == other_seed),
+        "every job carries the arena's seed: {:?}",
+        jobs.iter().map(|seen| seen.seed).collect::<Vec<_>>()
+    );
+
+    // The baseline: M1a's overflow path, the strikes as the faulting run's.
+    let overflow = strikes_run(strikes_script(&[2, 3, 4], true), 5, Some(&faulting.strikes));
+    assert_eq!(overflow.hashes.len(), faulting.hashes.len());
+    for (at, (fault, flow)) in faulting.hashes.iter().zip(&overflow.hashes).enumerate() {
+        assert_eq!(fault, flow, "the substep hashes of pulse {at}");
+    }
+    assert_eq!(
+        (
+            overflow.counters.mind_faults,
+            overflow.counters.mind_overflows
+        ),
+        (3, 3),
+        "the overflow counts a fault and an overflow"
+    );
+    assert_eq!(overflow.strikes, faulting.strikes);
+
+    // One event list and one hash sequence at 5,000, 1,000 and 500 ms.
+    let tempo = |cadence_ms: i64| {
+        let mut arena = the_j_field(Controller::Mind);
+        arena.mind_runner = ScriptedMind::new(&[(RED, strikes_script(&[2, 3, 4], false))]);
+        let run = run(&mut arena, Drive::Every(cadence_ms), 10_000);
+        let strikes = arena.minds.get(&RED).map(|state| state.strikes);
+        (run, strikes)
+    };
+    let (slow, strikes) = tempo(5_000);
+    assert_eq!(strikes, Some(MIND_STRIKES_TO_DROP));
+    assert_eq!(slow.counters.mind_faults, 3);
+    for cadence in [1_000, 500] {
+        let (other, other_strikes) = tempo(cadence);
+        assert_eq!(other.events, slow.events, "the event list at {cadence} ms");
+        assert_eq!(
+            other.hashes, slow.hashes,
+            "the hash sequence at {cadence} ms"
+        );
+        assert_eq!(other_strikes, strikes);
+        assert_ne!(other.pulses, slow.pulses);
+    }
+
+    // A fault at think 2, clean at 3: the strikes reset, think 4 not dropped.
+    let reset = strikes_run(strikes_script(&[2], false), 4, None);
+    let strikes_after = |n: usize| reset.rows.get(n).map(|(_, after)| after.strikes);
+    assert_eq!(strikes_after(2), Some(1));
+    assert_eq!(strikes_after(3), Some(0), "a clean think clears a strike");
+    assert_eq!(strikes_after(4), Some(0));
+    assert!(!seen(&reset, 4).dropped);
+}
+
+/// **The arena refuses a broken doctrine pair in the card's own sentence**
+/// (17b cut M2.2, the lead's ruling (b); doc 17 §11, D-UM-43): a
+/// `break_off_pct 10` staged for the armed red on Line (`break_off_pct` 35,
+/// `fight_home_pct` 17.5) is journalled `mind_card_refused` with
+/// `CardError::Pair`'s sentence — the same text `@mind/set` wraps — and the
+/// row keeps Line.
+#[test]
+fn m2_the_arena_refuses_a_broken_pair_in_the_cards_own_sentence() {
+    let (run, _, arena) = card_run(
+        the_j_field(Controller::Mind),
+        5_000,
+        10_000,
+        &[(
+            5_000,
+            CardBeat::Stage(
+                RED,
+                CardChange::Set {
+                    slider: SmolStr::new("break_off_pct"),
+                    value: SmolStr::new("10"),
+                },
+            ),
+        )],
+    );
+    let lines = card_lines(&run);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1["kind"], "mind_card_refused");
+    assert_eq!(
+        lines[0].1["reason"],
+        "break_off_pct would put fight_home_pct 17.5 above break_off_pct 10; fight_home_pct \
+         is at most break_off_pct"
+    );
+    assert_eq!(
+        arena.minds.get(&RED).map(|state| state.card.clone()),
+        Some(preset_on_field("line"))
+    );
+}
+
+/// **The arena refuses a preset that breaks the pair, by the preset's name**
+/// (17b cut M2.2, the lead's ruling (b): the presets pair-valid; doc 17 §11,
+/// D-UM-44): on a doctrine the config admits with `fight_home` 75 under
+/// `break_off` 80, a staged `Rearguard` — `break_off_pct` 70 over Line's
+/// `fight_home_pct` 75 — is journalled `mind_card_refused` with `Pair`'s
+/// sentence naming `Rearguard`, and the row keeps Line on that doctrine.
+/// Never clamped.
+#[test]
+fn m2_the_arena_refuses_a_preset_that_breaks_the_pair_by_name() {
+    let high = ReflexConfig {
+        withdraw_permille: 800,
+        stand_min_permille: 750,
+        ..reflex_cfg()
+    };
+    let (run, _, arena) = card_run(
+        the_j_field_on(Controller::Mind, high.clone()),
+        5_000,
+        10_000,
+        &[(
+            5_000,
+            CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("Rearguard"))),
+        )],
+    );
+    let lines = card_lines(&run);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1["kind"], "mind_card_refused");
+    assert_eq!(
+        lines[0].1["reason"],
+        "Rearguard would put fight_home_pct 75 above break_off_pct 70; fight_home_pct is at \
+         most break_off_pct"
+    );
+    assert_eq!(
+        arena.minds.get(&RED).map(|state| state.card.clone()),
+        Some(tacsim::arena::line(&high))
+    );
+}

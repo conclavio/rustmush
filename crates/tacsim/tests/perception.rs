@@ -2365,7 +2365,7 @@ fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
     }
     let refused = Arena::new(
         CustodyOut {
-            definition: arena.definition.clone(),
+            definition: (*arena.definition).clone(),
             units: clash,
             pilots: Vec::new(),
             resolution: tacsim::match_::stock_resolution(),
@@ -2620,7 +2620,8 @@ fn j2_the_designator_script_is_one_replay_with_and_without_the_index() {
     let script = designator_beats();
     let built = replayed(designator_arena(), &script, 5_000, 35_000);
     let mut walk_only = designator_arena();
-    walk_only.definition.terrain = walk_only.definition.terrain.clone().without_horizon();
+    let terrain = walk_only.definition.terrain.clone().without_horizon();
+    std::sync::Arc::make_mut(&mut walk_only.definition).terrain = terrain;
     let walked = replayed(walk_only, &script, 5_000, 35_000);
     assert_eq!(built.events, walked.events, "the events differ");
     assert_eq!(built.hashes, walked.hashes, "the hashes differ");

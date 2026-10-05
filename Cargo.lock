@@ -4605,6 +4605,7 @@ dependencies = [
  "mush-llm",
  "mush-mail",
  "mush-market",
+ "mush-mind",
  "mush-npc",
  "mush-org",
  "mush-party",

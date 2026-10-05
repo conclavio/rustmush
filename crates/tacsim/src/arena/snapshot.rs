@@ -915,7 +915,8 @@ impl ArenaState {
         // 17b cut M1a.5: the runner `Arena::new` opens with, by the same call.
         let mind_runner = default_mind_runner(&arena_cfg);
         Ok(Arena {
-            definition,
+            // 17b cut M2.2: wrapped once, as `Arena::new` wraps it.
+            definition: std::sync::Arc::new(definition),
             units,
             epochs,
             contacts,
@@ -1492,7 +1493,7 @@ mod tests {
         assert_eq!(head.format, super::SNAPSHOT_FORMAT);
         assert_eq!(head.arena, arena.definition.id);
         assert!(matches!(
-            Snapshot::decode(&document, arena.definition.clone()),
+            Snapshot::decode(&document, (*arena.definition).clone()),
             Err(SnapshotError::DigestMismatch { .. })
         ));
         // And its debug form is the head, never the document.

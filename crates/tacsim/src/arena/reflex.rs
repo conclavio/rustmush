@@ -495,6 +495,12 @@ pub struct ReflexCounters {
     /// M1a.5; D-UM-9) and so landed nothing. Not reported; 17b cut M3 journals
     /// the fault. Never hashed.
     pub mind_overflows: u32,
+    /// **Thinks that faulted** (17b cut M2.2; D-UM-31): a runner's
+    /// `ThinkResult::fault` or an overflow (each overflow is also one of
+    /// [`ReflexCounters::mind_overflows`]), every one landing nothing and
+    /// counting a strike. Not reported — the harness names its fields one by
+    /// one, so the deterministic block does not gain it — and never hashed.
+    pub mind_faults: u32,
     /// **Condition slots' own shots accepted** (17b cut M1b.1; doc 17 §5,
     /// D-UM-16): every `fired` line `by: cond`. A counter, never hashed, and
     /// not in the harness report — which names its fields one by one, so the
@@ -526,6 +532,7 @@ impl ReflexCounters {
         self.corner_refusals = self.corner_refusals.saturating_add(other.corner_refusals);
         self.thinks = self.thinks.saturating_add(other.thinks);
         self.mind_overflows = self.mind_overflows.saturating_add(other.mind_overflows);
+        self.mind_faults = self.mind_faults.saturating_add(other.mind_faults);
         self.cond_fires = self.cond_fires.saturating_add(other.cond_fires);
         self.cond_held = self.cond_held.saturating_add(other.cond_held);
         for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {

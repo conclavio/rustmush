@@ -3325,7 +3325,7 @@ mod tests {
                 if let Some(slot) = cells.get_mut(4 * 8 + 3) {
                     slot.elev_cm = 800;
                 }
-                arena.definition.terrain =
+                std::sync::Arc::make_mut(&mut arena.definition).terrain =
                     ArenaTerrain::new(8, 8, 1_000, cells).expect("the bluff window");
             }
             if let Some(state) = arena.unit_mut(ObjId(4)) {
@@ -3502,7 +3502,8 @@ mod tests {
             }
         }
         paint.push(((4, 3), TerrainClass::WoodsHeavy));
-        arena.definition.terrain = priced_terrain(8, 8, TerrainClass::Grass, &paint);
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            priced_terrain(8, 8, TerrainClass::Grass, &paint);
         for (id, row) in [
             (car, CostRow::Wheeled),
             (walker, CostRow::Legged),
@@ -3777,7 +3778,7 @@ mod tests {
     fn ai1_a_limited_unit_at_a_corner_closed_on_both_shoulders_re_plans_once() {
         for limit in [Some(45_u32), None] {
             let mut arena = ai1_machine();
-            arena.definition.terrain = ai1_walled(&[(4, 3), (3, 4)]);
+            std::sync::Arc::make_mut(&mut arena.definition).terrain = ai1_walled(&[(4, 3), (3, 4)]);
             if let Some(state) = arena.unit_mut(ObjId(4)) {
                 state.slope_limit_pct = limit;
             }
@@ -4166,7 +4167,7 @@ mod tests {
         };
         let sealed_arena = || {
             let mut arena = ai1_machine();
-            arena.definition.terrain = ai1_walled(&[
+            std::sync::Arc::make_mut(&mut arena.definition).terrain = ai1_walled(&[
                 (5, 5),
                 (6, 5),
                 (7, 5),
@@ -4320,7 +4321,7 @@ mod tests {
         if let Some(slot) = cells.get_mut(8) {
             slot.elev_cm = 800;
         }
-        arena.definition.terrain =
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
             crate::arena::state::ArenaTerrain::new(8, 8, 1_000, cells).expect("the bluff");
         if let Some(state) = arena.unit_mut(ObjId(4)) {
             state.slope_limit_pct = Some(45);
@@ -4335,7 +4336,7 @@ mod tests {
 
         // Both shoulders of (1, 1) walls, the route ending there: nothing.
         let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(500, 500))]);
-        arena.definition.terrain = ai1_walled(&[(1, 0), (0, 1)]);
+        std::sync::Arc::make_mut(&mut arena.definition).terrain = ai1_walled(&[(1, 0), (0, 1)]);
         let short = MotorRow {
             route: vec![(1, 0), (2, 0), (2, 1), (1, 1)],
             ..row

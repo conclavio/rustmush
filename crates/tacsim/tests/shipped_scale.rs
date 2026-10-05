@@ -1149,7 +1149,7 @@ fn af1_the_shipped_centre_encodes_under_the_expectation() {
     let carried: Vec<u64> = arena.shots.keys().copied().collect();
     let numbers = no_float(&state, "state");
     assert!(numbers > 1_000, "{numbers} numbers is not a shipped state");
-    let decoded = tacsim::arena::Snapshot::decode(&snapshot.document, arena.definition.clone())
+    let decoded = tacsim::arena::Snapshot::decode(&snapshot.document, (*arena.definition).clone())
         .expect("it decodes on the shipped ground");
     assert_eq!(
         tacsim::arena::hash::state_hash(&decoded),
@@ -1158,7 +1158,7 @@ fn af1_the_shipped_centre_encodes_under_the_expectation() {
     for cadence in [CADENCE_MS, 500] {
         let mut uninterrupted = arena.clone();
         let mut resumed =
-            tacsim::arena::Snapshot::decode(&snapshot.document, arena.definition.clone())
+            tacsim::arena::Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("it decodes again");
         let _ = resumed.resume_at(wall);
         let until = arena.now_ms + 30_000;

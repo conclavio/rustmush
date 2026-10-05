@@ -1633,7 +1633,8 @@ mod tests {
             }
         }
         let mut arena = running(vec![tank(A, Team::Red, pose(4_500, 3_500))]);
-        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the woods window");
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(8, 8, 1_000, cells).expect("the woods window");
         if let Some(unit) = arena.unit_mut(A) {
             unit.desired_speed_cms = 1_000;
         }
@@ -1682,7 +1683,8 @@ mod tests {
             }
         }
         let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
-        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the woods window");
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(8, 8, 1_000, cells).expect("the woods window");
         if let Some(unit) = arena.unit_mut(A) {
             unit.pose.heading_mdeg = 90_000;
             unit.desired_heading_mdeg = 90_000;
@@ -1801,7 +1803,8 @@ mod tests {
             }
         }
         let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
-        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
         if let Some(unit) = arena.unit_mut(A) {
             unit.pose.heading_mdeg = 90_000;
             unit.desired_heading_mdeg = 90_000;
@@ -1930,7 +1933,8 @@ mod tests {
             };
         }
         let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_900))]);
-        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the hill window");
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(8, 8, 1_000, cells).expect("the hill window");
         if let Some(unit) = arena.unit_mut(A) {
             unit.speed_cms = 1_000;
             unit.desired_speed_cms = 1_000;
@@ -1985,7 +1989,7 @@ mod tests {
             // Parked: it is never stepped, so it is a hole in the map with a hull.
             tank(C, Team::Blue, pose(3_500, 2_500)),
         ]);
-        arena.definition.terrain = terrain.clone();
+        std::sync::Arc::make_mut(&mut arena.definition).terrain = terrain.clone();
         for unit in &mut arena.units {
             unit.desired_speed_cms = 1_000;
             unit.speed_cms = 1_000;
@@ -2184,7 +2188,7 @@ mod tests {
                 }
             }
             let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
-            arena.definition.terrain =
+            std::sync::Arc::make_mut(&mut arena.definition).terrain =
                 ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
             if let Some(unit) = arena.unit_mut(A) {
                 unit.pose.heading_mdeg = 90_000;
@@ -2223,7 +2227,8 @@ mod tests {
             }
         }
         let mut arena = running(units);
-        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
         arena
     }
 
@@ -2389,7 +2394,8 @@ mod tests {
             }
         }
         let mut arena = running(vec![tank(A, Team::Red, pose(at.0, at.1))]);
-        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the window");
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(8, 8, 1_000, cells).expect("the window");
         m3_order(&mut arena, heading_mdeg, 1_000);
         arena
     }
@@ -2533,7 +2539,7 @@ mod tests {
         let corridor = |speed: i32| -> Arena {
             let cells = vec![ground(); 320 * 4];
             let mut arena = running(vec![tank(A, Team::Red, pose(999, 1_500))]);
-            arena.definition.terrain =
+            std::sync::Arc::make_mut(&mut arena.definition).terrain =
                 ArenaTerrain::new(320, 4, 1_000, cells).expect("the corridor window");
             if let Some(unit) = arena.unit_mut(A) {
                 unit.pose.heading_mdeg = 90_000;
@@ -2651,7 +2657,7 @@ mod tests {
             ),
         ] {
             let mut arena = running(units);
-            arena.definition.terrain = terrain;
+            std::sync::Arc::make_mut(&mut arena.definition).terrain = terrain;
             if let Some(unit) = arena.unit_mut(A) {
                 unit.pose.heading_mdeg = 30_000;
                 unit.desired_heading_mdeg = 30_000;
@@ -3119,7 +3125,7 @@ mod tests {
             ),
         ] {
             let mut arena = running(vec![tank(A, Team::Red, at)]);
-            arena.definition.terrain = terrain;
+            std::sync::Arc::make_mut(&mut arena.definition).terrain = terrain;
             if let Some(unit) = arena.unit_mut(A) {
                 unit.pose.heading_mdeg = 90_000;
                 unit.desired_heading_mdeg = 90_000;

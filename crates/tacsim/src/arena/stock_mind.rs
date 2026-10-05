@@ -106,7 +106,8 @@ use crate::arena::conditions::{Arming, FireCondition, STOCK_CONDITION_SLOTS, Slo
 use crate::arena::damage::{BLOCKED, COVER};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::{
-    Memory, MindRunner, MindView, ThinkJob, ThinkResult, ViewContact, decode_memory, encode_memory,
+    MemValue, Memory, MindRunner, MindView, ThinkJob, ThinkResult, ViewContact, decode_memory,
+    encode_memory,
 };
 use crate::arena::motor::{
     ARRIVE_CELLS, Walk, entry_cell, fallback_waypoint, far_entry_cell, hold_arrived, patrol_step,
@@ -205,22 +206,20 @@ pub struct StockMemory {
     pub ignore_until_ms: Option<i64>,
 }
 
-/// An integer key, or `None` when absent, null or not an `i64`.
+/// An integer key, or `None` when absent, unit or not an INT.
 fn int_at(memory: &Memory, key: &str) -> Option<i64> {
-    memory.get(key).and_then(serde_json::Value::as_i64)
+    match memory.get(key) {
+        Some(MemValue::Int(value)) => Some(*value),
+        _ => None,
+    }
 }
 
 /// An array key of integers, or `None`.
-fn ints_at(memory: &Memory, key: &str) -> Option<Vec<i64>> {
-    memory
-        .get(key)
-        .and_then(serde_json::Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(serde_json::Value::as_i64)
-                .collect::<Vec<i64>>()
-        })
+fn ints_at<'m>(memory: &'m Memory, key: &str) -> Option<&'m [i64]> {
+    match memory.get(key) {
+        Some(MemValue::Ints(items)) => Some(items.as_slice()),
+        _ => None,
+    }
 }
 
 /// A cell key, `[x, y]`.
@@ -233,13 +232,15 @@ fn cell_at(memory: &Memory, key: &str) -> Option<(u16, u16)> {
 }
 
 /// A cell, as its memory value.
-fn cell_value(cell: Option<(u16, u16)>) -> serde_json::Value {
-    cell.map_or(serde_json::Value::Null, |(x, y)| serde_json::json!([x, y]))
+fn cell_value(cell: Option<(u16, u16)>) -> MemValue {
+    cell.map_or(MemValue::Unit, |(x, y)| {
+        MemValue::Ints(vec![i64::from(x), i64::from(y)])
+    })
 }
 
 /// An integer, as its memory value.
-fn int_value(value: Option<i64>) -> serde_json::Value {
-    value.map_or(serde_json::Value::Null, serde_json::Value::from)
+fn int_value(value: Option<i64>) -> MemValue {
+    value.map_or(MemValue::Unit, MemValue::Int)
 }
 
 /// The state a code names, `Startup` for none.
@@ -252,15 +253,14 @@ fn state_of(code: Option<i64>) -> ReflexState {
 }
 
 impl From<&Memory> for StockMemory {
-    /// Read the fourteen keys; an absent, null or ill-shaped key is the
-    /// field's default (an empty memory is a fresh sortie).
+    /// Read the fourteen keys; an absent, unit or ill-shaped key is the
+    /// field's default (an empty memory is a fresh sortie). 17b cut M2.2:
+    /// over `mush_mind`'s [`MemValue`] — an `Int` for every integer (the
+    /// state's code, the two waypoints, the clocks, `ignore_until_ms` and
+    /// `target`'s bit-cast), `Ints` for `goal`, `hunt` and `last_plot`, `Bool`
+    /// for `rallied` and `no_line`.
     fn from(memory: &Memory) -> StockMemory {
-        let flag = |key: &str| {
-            memory
-                .get(key)
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        };
+        let flag = |key: &str| matches!(memory.get(key), Some(MemValue::Bool(true)));
         let u16_at = |key: &str| int_at(memory, key).and_then(|value| u16::try_from(value).ok());
         StockMemory {
             state: state_of(int_at(memory, "state")),
@@ -289,17 +289,17 @@ impl From<&Memory> for StockMemory {
 }
 
 impl From<StockMemory> for Memory {
-    /// Write all fourteen keys, a null for every field that holds nothing —
-    /// so one memory has one encoding, whichever think wrote it.
+    /// Write all fourteen keys, a `Unit` for every field that holds nothing —
+    /// so one memory has one encoding, whichever think wrote it. 17b cut
+    /// M2.2: as `mush_mind`'s [`MemValue`]s — `Int` for every integer,
+    /// `Ints(vec![x, y])` for `goal` and `hunt`, `Ints(vec![x, y, t])` for
+    /// `last_plot`, `Bool` for `rallied` and `no_line`.
     fn from(stock: StockMemory) -> Memory {
         let mut memory = Memory::new();
-        let mut put = |key: &str, value: serde_json::Value| {
-            memory.insert(SmolStr::new(key), value);
+        let mut put = |key: &str, value: MemValue| {
+            memory.insert(key.to_owned(), value);
         };
-        put(
-            "state",
-            serde_json::Value::from(i64::from(stock.state.code())),
-        );
+        put("state", MemValue::Int(i64::from(stock.state.code())));
         put(
             "target",
             int_value(
@@ -316,19 +316,17 @@ impl From<StockMemory> for Memory {
         );
         put(
             "last_plot",
-            stock
-                .last_plot
-                .map_or(serde_json::Value::Null, |((x, y), at)| {
-                    serde_json::json!([x, y, at])
-                }),
+            stock.last_plot.map_or(MemValue::Unit, |((x, y), at)| {
+                MemValue::Ints(vec![i64::from(x), i64::from(y), at])
+            }),
         );
         put("unheld_since_ms", int_value(stock.unheld_since_ms));
         put("quiet_since_ms", int_value(stock.quiet_since_ms));
         put("stand_until_ms", int_value(stock.stand_until_ms));
         put("hold_retry_ms", int_value(stock.hold_retry_ms));
-        put("rallied", serde_json::Value::Bool(stock.rallied));
+        put("rallied", MemValue::Bool(stock.rallied));
         put("hunt", cell_value(stock.hunt));
-        put("no_line", serde_json::Value::Bool(stock.no_line));
+        put("no_line", MemValue::Bool(stock.no_line));
         put("ignore_until_ms", int_value(stock.ignore_until_ms));
         memory
     }
@@ -435,8 +433,18 @@ pub fn holds_a_hostile(view: &MindView) -> bool {
 /// **The three distances a think fights at** (the reflex's `ranges`, over the
 /// view: the loaded weapon's band edges, its rounds and the view's sight in
 /// whole metres — the divergence `range_round`).
+///
+/// **17b cut M2.2** (17b §1 (iv)): over the band per mille
+/// (`engage_band_permille`, the doctrine's or the card's) instead of the
+/// whole `ReflexConfig`, so 17b cut M2.3's `ranges` kernel wraps this one
+/// body with the card's figure. Byte-neutral: T1 passes
+/// `cfg.engage_band_permille`, the one field the body read.
 #[must_use]
-pub fn view_ranges(view: &MindView, cfg: &ReflexConfig, order: Option<&FrameOrder>) -> Ranges {
+pub fn view_ranges(
+    view: &MindView,
+    engage_band_permille: u32,
+    order: Option<&FrameOrder>,
+) -> Ranges {
     let loaded = loaded_weapon(view);
     let bands: &[u32] = loaded.map_or(&[], |weapon| weapon.bands_cm.as_slice());
     let sight = sight_cm(view);
@@ -445,13 +453,40 @@ pub fn view_ranges(view: &MindView, cfg: &ReflexConfig, order: Option<&FrameOrde
         .map_or(u64::MAX, |band| band.ceiling_cm(bands, sight));
     let cap_inner = fight_inner_cm_of(bands.first().copied(), sight).min(order_cap);
     Ranges {
-        engage_cm: cap_inner.saturating_mul(u64::from(cfg.engage_band_permille)) / 1_000,
+        engage_cm: cap_inner.saturating_mul(u64::from(engage_band_permille)) / 1_000,
         release_cm: cap_inner,
         stand_cm: RangeBand::Close
             .ceiling_cm(bands, sight)
             .min(order_cap)
             .min(cap_inner),
         limit_cm: fight_limit_cm(view),
+    }
+}
+
+/// **The utility score's three weights** (doc 16 §6; 17b cut M2.2, 17b §1
+/// (iv)): the reflex doctrine's `weight_range`, `weight_facet` and
+/// `weight_health` — what [`best_hostile_ranked`] reads of a
+/// `ReflexConfig`, and all it reads, so 17b cut M2.3's `best_hostile`
+/// kernel wraps the one body with a script's own weights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Weights {
+    /// Per mille of the fight limit, per point.
+    pub range: u32,
+    /// Per exposure point.
+    pub facet: u32,
+    /// Per mille of the hull's own health.
+    pub health: u32,
+}
+
+impl Weights {
+    /// **The three weights of a doctrine** (T1's call sites pass this).
+    #[must_use]
+    pub const fn of(cfg: &ReflexConfig) -> Weights {
+        Weights {
+            range: cfg.weight_range,
+            facet: cfg.weight_facet,
+            health: cfg.weight_health,
+        }
     }
 }
 
@@ -465,11 +500,12 @@ pub fn view_ranges(view: &MindView, cfg: &ReflexConfig, order: Option<&FrameOrde
 /// row's `aspect` (rear, front, else a flank); the hull's own health, the same
 /// addend for all; the order's hint scoring `0` outright. Empty on a hull with
 /// nothing loaded (it has no target, which is how the fire half of an unarmed
-/// hull is absent: D-UM-48).
+/// hull is absent: D-UM-48). **17b cut M2.2**: over [`Weights`] instead of
+/// the whole `ReflexConfig` (byte-neutral; [`Weights::of`]).
 #[must_use]
 pub fn best_hostile_ranked(
     view: &MindView,
-    cfg: &ReflexConfig,
+    weights: &Weights,
     health_permille: u32,
     prefer: Option<ContactId>,
     admit: impl Fn(&ViewContact) -> bool,
@@ -478,7 +514,7 @@ pub fn best_hostile_ranked(
     if reach == 0 {
         return Vec::new();
     }
-    let health_term = cfg.weight_health.saturating_mul(health_permille.min(1_000));
+    let health_term = weights.health.saturating_mul(health_permille.min(1_000));
     let mut ranked: Vec<(u64, ContactId)> = view
         .contacts
         .iter()
@@ -499,8 +535,8 @@ pub fn best_hostile_ranked(
             let score = if prefer == Some(row.id) {
                 0
             } else {
-                u64::from(cfg.weight_range.saturating_mul(range_permille))
-                    .saturating_add(u64::from(cfg.weight_facet.saturating_mul(exposure)))
+                u64::from(weights.range.saturating_mul(range_permille))
+                    .saturating_add(u64::from(weights.facet.saturating_mul(exposure)))
                     .saturating_add(u64::from(health_term))
             };
             (score, row.id)
@@ -517,12 +553,12 @@ pub fn best_hostile_ranked(
 #[must_use]
 pub fn best_hostile(
     view: &MindView,
-    cfg: &ReflexConfig,
+    weights: &Weights,
     health_permille: u32,
     prefer: Option<ContactId>,
     admit: impl Fn(&ViewContact) -> bool,
 ) -> Option<ContactId> {
-    best_hostile_ranked(view, cfg, health_permille, prefer, admit)
+    best_hostile_ranked(view, weights, health_permille, prefer, admit)
         .first()
         .map(|(_, id)| *id)
 }
@@ -684,6 +720,11 @@ impl MindRunner for NativeStockMind {
     /// (see the module head's residuals). **17b cut M1b.2**: `job.card` is
     /// read for the fire discipline ([`arming_for`]); **17b cut M1b.5**: and
     /// for every mapped term, through the overlay (`decide`'s head).
+    ///
+    /// **17b cut M2.2**: the view and the map are read through the job's
+    /// `Arc`s; `job.seed` and `job.dropped` are not read (T1 draws nothing,
+    /// and it IS the stand-in a dropped hull falls back to); it answers no
+    /// fault and no trace.
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let mut memory = StockMemory::from(&decode_memory(job.memory));
         let intents = self.decide(
@@ -698,6 +739,8 @@ impl MindRunner for NativeStockMind {
         ThinkResult {
             intents,
             memory: encode_memory(&Memory::from(memory)),
+            fault: None,
+            trace: Vec::new(),
         }
     }
 }
@@ -1072,7 +1115,7 @@ impl NativeStockMind {
                 ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
             )
         {
-            match best_hostile(view, cfg, health, hint(order), |_| true) {
+            match best_hostile(view, &Weights::of(cfg), health, hint(order), |_| true) {
                 Some(found) => {
                     if mem.target != Some(found) {
                         mem.target = Some(found);
@@ -1102,7 +1145,7 @@ impl NativeStockMind {
         }
 
         // ---- the state's own goal and orders ----
-        let ranges = view_ranges(view, cfg, order);
+        let ranges = view_ranges(view, cfg.engage_band_permille, order);
         let mut stood_cell: Option<(u16, u16)> = None;
 
         // ---- the leash (16b cut Z.2) ----
@@ -1531,7 +1574,10 @@ impl NativeStockMind {
         if is_dry(view) || order.is_some_and(|order| order.hold_fire) {
             return None;
         }
-        let row = contact(view, best_hostile(view, &self.cfg, health, None, |_| true)?)?;
+        let row = contact(
+            view,
+            best_hostile(view, &Weights::of(&self.cfg), health, None, |_| true)?,
+        )?;
         let ceiling = if arrived {
             ranges.release_cm
         } else {
@@ -1565,7 +1611,7 @@ impl NativeStockMind {
             return None;
         }
         let ceiling = ranges.release_cm.max(1);
-        let id = best_hostile(view, &self.cfg, health, hint(order), |row| {
+        let id = best_hostile(view, &Weights::of(&self.cfg), health, hint(order), |row| {
             row_range_cm(row) <= ceiling
                 && sector.is_none_or(|(facing, half)| {
                     arc_between(row.bearing_deg.saturating_mul(1_000), facing) <= half
@@ -1996,7 +2042,7 @@ mod tests {
         for stock in [full.clone(), StockMemory::default()] {
             let memory = Memory::from(stock.clone());
             assert_eq!(
-                memory.keys().map(SmolStr::as_str).collect::<Vec<&str>>(),
+                memory.keys().map(String::as_str).collect::<Vec<&str>>(),
                 keys
             );
             assert_eq!(memory_check(&memory), Ok(()));
@@ -2040,19 +2086,20 @@ mod tests {
     fn m1a6_best_hostile_breaks_a_tie_by_contact_id() {
         let (arena, view) = tied();
         let cfg = &arena.arena_cfg.reflex;
-        let ranked = best_hostile_ranked(&view, cfg, 1_000, None, |_| true);
+        let ranked = best_hostile_ranked(&view, &Weights::of(cfg), 1_000, None, |_| true);
         assert_eq!(ranked.len(), 2);
         assert_eq!(
             ranked.first().map(|(score, _)| *score),
             ranked.get(1).map(|(score, _)| *score)
         );
         let best = |view: &MindView, prefer: Option<ContactId>| {
-            best_hostile(view, cfg, 1_000, prefer, |_| true)
+            best_hostile(view, &Weights::of(cfg), 1_000, prefer, |_| true)
         };
         assert_eq!(best(&view, None), Some(ContactId(0x10)));
         assert_eq!(best(&view, Some(ContactId(0x30))), Some(ContactId(0x30)));
         assert_eq!(
-            best_hostile(&view, cfg, 1_000, None, |row| row.id != ContactId(0x10)),
+            best_hostile(&view, &Weights::of(cfg), 1_000, None, |row| row.id
+                != ContactId(0x10)),
             Some(ContactId(0x30))
         );
         let with = |change: &dyn Fn(&mut ViewContact)| {
@@ -2109,13 +2156,15 @@ mod tests {
         let def = &arena.definition;
         for view in [&before, &after] {
             assert_eq!(
-                best_hostile(view, cfg, health_permille(view), None, |_| true),
+                best_hostile(view, &Weights::of(cfg), health_permille(view), None, |_| {
+                    true
+                }),
                 Some(ContactId(0x77))
             );
         }
         assert_eq!(
-            view_ranges(&before, cfg, None),
-            view_ranges(&after, cfg, None)
+            view_ranges(&before, cfg.engage_band_permille, None),
+            view_ranges(&after, cfg.engage_band_permille, None)
         );
         let (Some(a), Some(b)) = (before.contacts.first(), after.contacts.first()) else {
             panic!("the row");
@@ -2336,7 +2385,7 @@ mod tests {
         fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
             let result = self.inner.think(job);
             if let Ok(mut answers) = self.answers.lock() {
-                answers.push((job.view.clone(), result.clone()));
+                answers.push(((**job.view).clone(), result.clone()));
             }
             result
         }
@@ -2579,7 +2628,7 @@ mod tests {
         hold_contact(&mut arena, RED, BLUE, ContactId(0x55));
         let mut view = view_of(&arena, RED);
         let cfg = &arena.arena_cfg.reflex;
-        let ranges = view_ranges(&view, cfg, None);
+        let ranges = view_ranges(&view, cfg.engage_band_permille, None);
         // The row read past the hull's reach (the field is narrower than a
         // stock tank's 600 m sight).
         for row in &mut view.contacts {
@@ -2831,7 +2880,7 @@ mod tests {
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let mut view = view_of(&arena, RED);
-        let ranges = view_ranges(&view, &arena.arena_cfg.reflex, None);
+        let ranges = view_ranges(&view, arena.arena_cfg.reflex.engage_band_permille, None);
         // Between the two edges: `Engage` keeps it, `Approach` would close.
         let between_m = (ranges.engage_cm + ranges.release_cm) / 200;
         for row in &mut view.contacts {
@@ -3010,7 +3059,7 @@ mod tests {
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let view = view_of(&arena, RED);
         let cfg = &arena.arena_cfg.reflex;
-        let ranges = view_ranges(&view, cfg, None);
+        let ranges = view_ranges(&view, cfg.engage_band_permille, None);
         let reach = view
             .weapons
             .first()

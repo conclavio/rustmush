@@ -62,7 +62,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::card::{CardChange, StockCard, preset};
+use crate::arena::card::{CardChange, PRESETS, StockCard, preset};
 use crate::arena::conditions::{
     ASPECTS_ANY, ConditionTrigger, FireCondition, SlotTarget, condition_is_lawful,
 };
@@ -93,6 +93,11 @@ pub const MIND_NOTICES: usize = 16;
 /// more is a fault: it lands **nothing** and keeps its old memory — never a
 /// truncation, which would land a prefix of a plan its author never wrote.
 pub const MIND_INTENTS_MAX: usize = 16;
+
+/// **How many faulted thinks running drop a hull to doctrine** (17b cut M2.2;
+/// D-UM-31, D-UM-32): the third consecutive fault drops it for the rest of
+/// the sortie. `MindState.strikes` stops here ([`MindState::dropped`]).
+pub const MIND_STRIKES_TO_DROP: u8 = 3;
 
 /// **How many contacts a view carries** (doc 17 §3; D-UM-35's class I
 /// `contact_rows`): the nearest twelve by the held range, then by
@@ -140,8 +145,16 @@ pub struct MindState {
     /// **The standing order** (D-UM-15 as decided): a squad's order re-keyed
     /// at write time to this hull's own HELD contacts, or `None`.
     pub order: Option<FrameOrder>,
-    /// **The faults counted against the mind** (D-UM-31): always `0` in this
-    /// cut; 17b cut M3 counts them.
+    /// **The faults counted against the mind** (D-UM-31; 17b cut M2.2): the
+    /// faulted thinks running, at most [`MIND_STRIKES_TO_DROP`]. The think arm
+    /// writes it — a faulted think `min(strikes + 1, 3)`, a clean think `0`
+    /// only while it is under three — so **`strikes == 3` IS the drop**
+    /// ([`MindState::dropped`]; D-UM-32's "for the rest of the sortie"): a
+    /// rule on this hashed, carried field, so no shape or format moves. 17b
+    /// cut M3 replaces the rule with its own `dropped` field and a
+    /// `MindDropped` line; until then a possess-then-release lays down a
+    /// fresh row (`Arena::release_mind` removes it) and un-drops the hull —
+    /// M3's to close.
     pub strikes: u8,
     /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11,
     /// D-UM-43): Standard Doctrine's stock card, laid down as the Line preset
@@ -182,6 +195,15 @@ impl MindState {
         }
     }
 
+    /// **Whether the hull is dropped to doctrine** (17b cut M2.2; D-UM-31,
+    /// D-UM-32): three faulted thinks running — `strikes` at
+    /// [`MIND_STRIKES_TO_DROP`], where the think arm holds it. Handed to every
+    /// think as [`ThinkJob::dropped`].
+    #[must_use]
+    pub const fn dropped(&self) -> bool {
+        self.strikes >= MIND_STRIKES_TO_DROP
+    }
+
     /// **Append one notice to the buffer** (D-UM-8), dropping the oldest past
     /// [`MIND_NOTICES`].
     pub fn push_notice(&mut self, notice: FrameNotice) {
@@ -218,6 +240,15 @@ pub trait MindRunner: std::fmt::Debug + Send + Sync {
 }
 
 /// **One think's input** (doc 17 §6).
+///
+/// **17b cut M2.2** (17b's settled question (ii); D-UM-29, D-UM-31): the job
+/// carries the match `seed` (the key of a mind's `rand(k)` draws through
+/// `DrawLabel::Mind`) and `dropped` (the hull's three-fault drop to doctrine),
+/// and hands the view and the map behind the arena's own `Arc`s — the view
+/// wrapped once per think after [`Arena::mind_view`], the map the arena's
+/// [`Arena::definition`] itself — so a scripted runner can hold either for
+/// the length of a think from inside its engine without copying a
+/// sixty-five-thousand-cell terrain or reaching it through a raw pointer.
 #[derive(Clone, Copy, Debug)]
 pub struct ThinkJob<'a> {
     /// The hull thinking — its own object number, which is also the view's
@@ -242,12 +273,23 @@ pub struct ThinkJob<'a> {
     /// substep is a shot declined until the next think, a whole `think_ms`
     /// lost per round where doc 17 §17 budgets at most one substep.
     pub lands_ms: i64,
-    /// The hull's view.
-    pub view: &'a MindView,
+    /// **The match seed** (17b cut M2.2; D-UM-29): the key of a mind's
+    /// `rand(k)` draws, each drawn under `DrawLabel::Mind { unit, think_seq,
+    /// n }` — the arena's own [`Arena::seed`].
+    pub seed: u64,
+    /// **Whether the hull is dropped to doctrine** (17b cut M2.2; D-UM-31,
+    /// D-UM-32): [`MindState::dropped`] — three faults running. A scripted
+    /// runner answers a dropped job with its native stand-in; the native
+    /// stock mind ignores it (it is the stand-in).
+    pub dropped: bool,
+    /// The hull's view, behind the `Arc` the arena wrapped it in once for
+    /// this think (17b cut M2.2).
+    pub view: &'a Arc<MindView>,
     /// The memory the last landed think left.
     pub memory: &'a [u8],
-    /// The map: the window, its zones, its spots and its waypoint graph.
-    pub map: &'a ArenaDefinition,
+    /// The map: the window, its zones, its spots and its waypoint graph —
+    /// the arena's own [`Arena::definition`], behind its `Arc` (17b cut M2.2).
+    pub map: &'a Arc<ArenaDefinition>,
     /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11): the
     /// row's own [`MindState::card`]. Since 17b cut M1b.2 `NativeStockMind`
     /// reads its fire discipline (the odds, the aspect and the reserve its
@@ -257,14 +299,37 @@ pub struct ThinkJob<'a> {
     pub card: &'a StockCard,
 }
 
+/// **Why a think faulted** (17b cut M2.2; doc 17 §8, D-UM-31): the cause
+/// word a runner answers in [`ThinkResult::fault`] — one of `ops` (the
+/// operation-and-fee budget ran out), `limit` (an engine limit: depth, size,
+/// a kernel's per-think cap), `type` (a value of the wrong type, a refused
+/// symbol), `memory` (a memory past its class's shape), `intents` (more than
+/// [`MIND_INTENTS_MAX`] intents), `unknown` (an id the view does not hold)
+/// or `panic` (the runner caught a panic). The arena reads only that there
+/// IS a fault: it lands nothing and counts a strike ([`Arena`]'s think arm).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThinkFault {
+    /// The cause word.
+    pub cause: SmolStr,
+}
+
 /// **One think's answer** (doc 17 §6): the intents in emission order and the
-/// new memory.
+/// new memory — and, since 17b cut M2.2 (D-UM-31), the fault that ended it
+/// and the runner's trace.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ThinkResult {
     /// What to do, at most [`MIND_INTENTS_MAX`].
     pub intents: Vec<IntentKind>,
     /// What to remember.
     pub memory: Vec<u8>,
+    /// **The fault that ended the think** (17b cut M2.2; D-UM-31), or `None`
+    /// for a clean think. A faulted think lands nothing whatever `intents`
+    /// and `memory` hold.
+    pub fault: Option<ThinkFault>,
+    /// **The runner's trace** (17b cut M2.2; D-UM-31): the lines a script
+    /// printed, at most eight. The arena drops it — never hashed, never
+    /// journalled; a recording runner reads it in the tests.
+    pub trace: Vec<String>,
 }
 
 /// **The runner that thinks nothing** (17b cut M1a.5): no intent, the memory
@@ -275,10 +340,13 @@ pub struct ThinkResult {
 pub struct NoMind;
 
 impl MindRunner for NoMind {
+    /// Nothing, the memory as it came, no fault and no trace.
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         ThinkResult {
             intents: Vec::new(),
             memory: job.memory.to_vec(),
+            fault: None,
+            trace: Vec::new(),
         }
     }
 }
@@ -297,94 +365,65 @@ pub fn default_mind_runner(cfg: &ArenaConfig) -> Arc<dyn MindRunner> {
 }
 
 // ---------------------------------------------------------------------------
-// Memory (17b cut M1a.6; doc 17 §8, D-UM-30)
+// Memory (17b cut M1a.6; doc 17 §8, D-UM-30 as amended; 17b cut M2.2)
 // ---------------------------------------------------------------------------
 
-/// **How many keys a mind's memory may hold** (doc 17 §8; D-UM-35's class I
-/// `memory_keys`). A constant until 17b cut M3's `CoreProfile` replaces it.
-pub const STOCK_MEMORY_KEYS: usize = 32;
+/// **A mind's memory, decoded, and the codec's names** (17b cut M2.2; doc 17
+/// §8, D-UM-30 as amended — 17b's settled question (i)): `mush_mind`'s ONE
+/// codec, re-exported. [`Memory`] is a `BTreeMap<String, MemValue>`, so the
+/// keys are sorted and one map has one encoding; [`MemValue`] is an INT, a
+/// bool, unit, a printable-ASCII string or an INT array; [`MemError`] is the
+/// shape check's refusal. Until 17b cut M2.2 this file kept its own map over
+/// `serde_json` values and wrote it with `serde_json::to_vec`; the bytes
+/// `mush_mind::memory::encode` writes are those bytes for every memory the
+/// check accepts (pinned by `tests/minds.rs`'
+/// `m2_the_memory_codec_writes_the_native_bytes`), so the native stock mind
+/// and its scripted port hand back the same bytes (Gate A) through the one
+/// writer.
+pub use mush_mind::memory::{MemError, Memory, Value as MemValue};
 
-/// The longest key a memory may hold, characters (doc 17 §8).
-pub const MEMORY_KEY_CHARS: usize = 24;
+/// **The stock class's memory limits** (doc 17 §8; D-UM-35's class I
+/// `memory_keys`): at most 32 keys of 1 to 24 characters, strings of at most
+/// 32 bytes, INT arrays of at most 32 — and, since 17b cut M2.2, keys and
+/// strings in printable ASCII (`0x20..=0x7E`; D-UM-30 as amended). A constant
+/// until 17b cut M3's `CoreProfile` replaces it. The ASCII rule changes nothing
+/// the native stock mind writes: its fourteen keys are ASCII words and it
+/// writes no string value.
+pub const STOCK_MEMORY_LIMITS: mush_mind::memory::Limits = mush_mind::memory::Limits {
+    keys: 32,
+    key_chars: 24,
+    string_bytes: 32,
+    array_len: 32,
+};
 
-/// The longest string value, characters, and the longest integer array
-/// (doc 17 §8).
-pub const MEMORY_VALUE_LEN: usize = 32;
-
-/// **A mind's memory, decoded** (17b cut M1a.6; doc 17 §8, D-UM-30): a
-/// canonical map of short keys to small values. The arena stores only the
-/// bytes [`encode_memory`] writes; a runner decodes, reads, writes and encodes
-/// it again. A `BTreeMap`, so the keys are sorted and the encoding is one
-/// string for one map — the shape 17b cut M2's Rhai `mem` map encodes to as
-/// well, so the native stock mind and its Rhai port hand back the same bytes
-/// (Gate A).
-pub type Memory = BTreeMap<SmolStr, serde_json::Value>;
-
-/// **Why a memory was refused** (17b cut M1a.6; doc 17 §8).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MemError {
-    /// A key longer than [`MEMORY_KEY_CHARS`], or empty.
-    Key(SmolStr),
-    /// More than [`STOCK_MEMORY_KEYS`] keys: how many there were.
-    Count(usize),
-    /// A value that is not an integer (`i64`), a bool, null, a string of at
-    /// most [`MEMORY_VALUE_LEN`] characters or an array of at most
-    /// [`MEMORY_VALUE_LEN`] integers — under this key.
-    Value(SmolStr),
-}
-
-/// **Whether a memory is one a mind may hold** (doc 17 §8): at most
-/// [`STOCK_MEMORY_KEYS`] keys, each of 1 to [`MEMORY_KEY_CHARS`] characters,
-/// each value an integer that fits an `i64`, a bool, null, a string of at
-/// most [`MEMORY_VALUE_LEN`] characters or an array of at most
-/// [`MEMORY_VALUE_LEN`] such integers. Nothing nested, no float.
+/// **Whether a memory is one a stock mind may hold** (doc 17 §8): the one
+/// shape check, `mush_mind::memory::check`, over [`STOCK_MEMORY_LIMITS`].
 ///
 /// # Errors
 ///
 /// The first refusal, in key order: the count before any key.
 pub fn memory_check(memory: &Memory) -> Result<(), MemError> {
-    if memory.len() > STOCK_MEMORY_KEYS {
-        return Err(MemError::Count(memory.len()));
-    }
-    for (key, value) in memory {
-        let chars = key.chars().count();
-        if chars == 0 || chars > MEMORY_KEY_CHARS {
-            return Err(MemError::Key(key.clone()));
-        }
-        let fits = match value {
-            serde_json::Value::Null | serde_json::Value::Bool(_) => true,
-            serde_json::Value::Number(number) => number.as_i64().is_some(),
-            serde_json::Value::String(text) => text.chars().count() <= MEMORY_VALUE_LEN,
-            serde_json::Value::Array(items) => {
-                items.len() <= MEMORY_VALUE_LEN && items.iter().all(|item| item.as_i64().is_some())
-            }
-            serde_json::Value::Object(_) => false,
-        };
-        if !fits {
-            return Err(MemError::Value(key.clone()));
-        }
-    }
-    Ok(())
+    mush_mind::memory::check(memory, &STOCK_MEMORY_LIMITS)
 }
 
-/// **A memory's canonical bytes** (D-UM-30): the map as JSON, keys sorted
-/// (the `BTreeMap`'s own order), no whitespace — what the arena stores and
-/// hashes. An empty map is `{}`.
+/// **A memory's canonical bytes** (D-UM-30): `mush_mind::memory::encode` —
+/// sorted compact JSON with only `"` and `\` escaped, what the arena stores
+/// and hashes. An empty map is `{}`.
 #[must_use]
 pub fn encode_memory(memory: &Memory) -> Vec<u8> {
-    serde_json::to_vec(memory).unwrap_or_default()
+    mush_mind::memory::encode(memory)
 }
 
-/// **A memory read back off its bytes**: empty bytes are the empty map (a
-/// fresh sortie), and so are bytes that do not decode — nothing in this cut
-/// writes such bytes, and a runner handed them starts over rather than
-/// faulting.
+/// **A memory read back off its bytes**: `mush_mind::memory::decode`, with
+/// the arena's rule kept — empty bytes are the empty map (a fresh sortie),
+/// and so are bytes that do not decode: nothing writes such bytes, and a
+/// runner handed them starts over rather than faulting.
 #[must_use]
 pub fn decode_memory(bytes: &[u8]) -> Memory {
     if bytes.is_empty() {
         return Memory::new();
     }
-    serde_json::from_slice(bytes).unwrap_or_default()
+    mush_mind::memory::decode(bytes).unwrap_or_default()
 }
 
 /// **What a mind sees** (17b cut M1a.5; doc 17 §3, D-UM-4 read strictly — the
@@ -650,15 +689,21 @@ impl Arena {
     /// gone, a wreck or not a mind's, or for a stale `think_seq` — and none of
     /// those reschedules (an adoption schedules its own); the view
     /// ([`Arena::mind_view`]); the three epochs recorded; the runner called
-    /// synchronously; `think_seq` advanced. Then **D-UM-9, atomic**: more than
-    /// [`MIND_INTENTS_MAX`] intents lands nothing, keeps the old memory, puts
-    /// back what the view drained and settled (the notices in front of the
-    /// buffer, oldest dropped past [`MIND_NOTICES`]; the range memory as it
-    /// was), clears `pending` (counted `mind_overflows`; 17b cut M3 journals
-    /// the fault) and schedules **no** landing, because there is nothing to land;
-    /// otherwise the [`Landing`] is put on the scratch, `pending` set, and a
+    /// synchronously; `think_seq` advanced. Then **D-UM-9, atomic**: a FAULT —
+    /// since 17b cut M2.2 a runner's [`ThinkResult::fault`] or, as before,
+    /// more than [`MIND_INTENTS_MAX`] intents — lands nothing, keeps the old
+    /// memory, puts back what the view drained and settled (the notices in
+    /// front of the buffer, oldest dropped past [`MIND_NOTICES`]; the range
+    /// memory as it was), clears `pending` (counted `mind_faults`, and
+    /// `mind_overflows` when the length tripped; 17b cut M3 journals the
+    /// fault), writes a strike (`strikes = min(strikes + 1,`
+    /// [`MIND_STRIKES_TO_DROP`]`)`, D-UM-31 — three running are the drop,
+    /// [`MindState::dropped`]) and schedules **no** landing, because there is
+    /// nothing to land; otherwise the strikes are cleared unless the hull is
+    /// dropped, the [`Landing`] is put on the scratch, `pending` set, and a
     /// [`DueKind::MindLand`] scheduled one substep later. Either way the next
     /// think is scheduled [`STOCK_THINK_MS`] after this one's own millisecond.
+    /// The runner's trace is dropped: never hashed, never journalled.
     pub(crate) fn mind_think(
         &mut self,
         unit: ObjId,
@@ -688,6 +733,9 @@ impl Arena {
         let Some(view) = self.mind_view(unit) else {
             return;
         };
+        // 17b cut M2.2: the view behind an `Arc`, wrapped once, so a scripted
+        // runner shares it for the think instead of copying it.
+        let view = Arc::new(view);
         let epochs = Channel::ALL.map(|channel| (channel, self.epochs.current(unit, channel)));
         counters.thinks = counters.thinks.saturating_add(1);
         // D-UM-21: the landing millisecond, read at collection — scheduled
@@ -703,6 +751,8 @@ impl Arena {
             think_seq,
             t_ms,
             lands_ms: land_at,
+            seed: self.seed,
+            dropped: state.dropped(),
             view: &view,
             memory: &state.memory,
             map: &self.definition,
@@ -712,7 +762,12 @@ impl Arena {
             return;
         };
         state.think_seq = think_seq.saturating_add(1);
-        if result.intents.len() > MIND_INTENTS_MAX {
+        // 17b cut M2.2 (D-UM-31): a runner's fault and D-UM-9's overflow are
+        // one path. `result.trace` is dropped here: never hashed, never
+        // journalled.
+        let overflowed = result.intents.len() > MIND_INTENTS_MAX;
+        let faulted = result.fault.is_some() || overflowed;
+        if faulted {
             // D-UM-9: a fault lands nothing — not a prefix — and the memory the
             // last landed think left is the memory the next think is handed.
             // The think is atomic for the mind's own row too: what the view
@@ -720,16 +775,27 @@ impl Arena {
             // the one it was, so the notices the faulted think was handed —
             // its own refusals among them (D-UM-8, *a refusal is never
             // silent*) — reach the next think, whose memory never saw them.
-            counters.mind_overflows = counters.mind_overflows.saturating_add(1);
+            counters.mind_faults = counters.mind_faults.saturating_add(1);
+            if overflowed {
+                counters.mind_overflows = counters.mind_overflows.saturating_add(1);
+            }
+            // 17b cut M2.2 (D-UM-31, D-UM-32): a strike, held at three — the
+            // drop (`MindState::dropped`).
+            state.strikes = state.strikes.saturating_add(1).min(MIND_STRIKES_TO_DROP);
             state.pending = None;
             state.ranges = ranges;
-            let mut notices = view.notices;
+            let mut notices = view.notices.clone();
             notices.append(&mut state.notices);
             let excess = notices.len().saturating_sub(MIND_NOTICES);
             notices.drain(..excess);
             state.notices = notices;
             self.mind_landings.remove(&unit);
         } else {
+            // D-UM-31's reset: a clean think clears the strikes — but never a
+            // drop, which is for the rest of the sortie (D-UM-32).
+            if state.strikes < MIND_STRIKES_TO_DROP {
+                state.strikes = 0;
+            }
             state.pending = Some(PendingThink { think_seq, t_ms });
             self.mind_landings.insert(
                 unit,
@@ -979,7 +1045,20 @@ impl Arena {
         };
         let after = match change {
             CardChange::Preset(name) => match preset(name, &self.arena_cfg.reflex) {
-                Some(card) => card,
+                Some(card) => {
+                    // 17b cut M2.2, ruling (b): a preset is pair-checked as a
+                    // slider is — Rearguard's break_off_pct over a doctrine
+                    // whose fight_home_pct reads above it is refused by name.
+                    let shown = PRESETS
+                        .iter()
+                        .find(|preset| preset.eq_ignore_ascii_case(name))
+                        .copied()
+                        .unwrap_or("preset");
+                    if let Err(error) = card.pair(shown) {
+                        return refused(error.to_string());
+                    }
+                    card
+                }
                 None => return refused(format!("no preset named {name}")),
             },
             CardChange::Set { slider, value } => {
@@ -1047,7 +1126,9 @@ mod tests {
             think_seq: 0,
             t_ms: 0,
             lands_ms: arena.substep_len_ms(),
-            view: &view,
+            seed: arena.seed,
+            dropped: false,
+            view: &Arc::new(view),
             memory: &[1, 2, 3],
             map: &arena.definition,
             card: &crate::arena::card::line(&crate::config::ReflexConfig::default()),
@@ -1056,7 +1137,9 @@ mod tests {
             result,
             ThinkResult {
                 intents: Vec::new(),
-                memory: vec![1, 2, 3]
+                memory: vec![1, 2, 3],
+                fault: None,
+                trace: Vec::new(),
             }
         );
         // 17b cut M1a.6: the default runner is the native stock mind now.
@@ -1990,69 +2073,80 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 17b cut M1a.6: the memory (doc 17 §8, D-UM-30)
+    // 17b cut M1a.6: the memory (doc 17 §8, D-UM-30); 17b cut M2.2: over
+    // `mush_mind`'s one codec
     // -----------------------------------------------------------------------
 
     /// A memory of `pairs`.
-    fn memory_of(pairs: &[(&str, serde_json::Value)]) -> Memory {
+    fn memory_of(pairs: &[(&str, MemValue)]) -> Memory {
         pairs
             .iter()
-            .map(|(key, value)| (SmolStr::new(key), value.clone()))
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
             .collect()
     }
 
     /// **`memory_check` refuses by key, by count and by value**, and takes
-    /// every shape doc 17 §8 allows at its bounds: a 24-character key, 32
-    /// keys, `i64::MIN` and `i64::MAX`, a bool, null, a 32-character string and
-    /// an array of 32 integers. Refused: an empty key and a 25-character one;
-    /// 33 keys; a float, a number past `i64::MAX`, an object, a 33-character
-    /// string, an array of 33 integers and an array holding a float, a string
-    /// or an array.
+    /// every shape doc 17 §8 allows at its bounds ([`STOCK_MEMORY_LIMITS`]): a
+    /// 24-character key, 32 keys, `i64::MIN` and `i64::MAX`, a bool, unit, a
+    /// 32-byte string and an array of 32 integers. Refused: an empty key and
+    /// a 25-character one; 33 keys; a 33-byte string and an array of 33
+    /// integers. **17b cut M2.2** (D-UM-30 as amended): the shapes a float,
+    /// an object or a nested array once needed refusing are no `MemValue` at
+    /// all, and the printable-ASCII rule refuses a key or a string holding a
+    /// byte outside `0x20..=0x7E` — the variants are `mush_mind`'s.
     #[test]
     fn m1a6_memory_check_refuses_by_key_count_and_value() {
+        let limits = STOCK_MEMORY_LIMITS;
+        assert_eq!(
+            (
+                limits.keys,
+                limits.key_chars,
+                limits.string_bytes,
+                limits.array_len
+            ),
+            (32, 24, 32, 32),
+            "the stock class's limits"
+        );
         let edge = memory_of(&[
-            ("k".repeat(MEMORY_KEY_CHARS).as_str(), serde_json::json!(1)),
-            ("low", serde_json::json!(i64::MIN)),
-            ("high", serde_json::json!(i64::MAX)),
-            ("flag", serde_json::json!(true)),
-            ("none", serde_json::Value::Null),
-            ("word", serde_json::json!("w".repeat(MEMORY_VALUE_LEN))),
-            ("cells", serde_json::json!(vec![7_i64; MEMORY_VALUE_LEN])),
+            ("k".repeat(limits.key_chars).as_str(), MemValue::Int(1)),
+            ("low", MemValue::Int(i64::MIN)),
+            ("high", MemValue::Int(i64::MAX)),
+            ("flag", MemValue::Bool(true)),
+            ("none", MemValue::Unit),
+            ("word", MemValue::Str("w".repeat(limits.string_bytes))),
+            ("cells", MemValue::Ints(vec![7_i64; limits.array_len])),
         ]);
         assert_eq!(memory_check(&edge), Ok(()));
-        let full: Memory = (0..STOCK_MEMORY_KEYS)
-            .map(|k| (SmolStr::new(format!("k{k}")), serde_json::json!(k)))
+        let full: Memory = (0..limits.keys)
+            .map(|k| {
+                (
+                    format!("k{k}"),
+                    MemValue::Int(i64::try_from(k).unwrap_or(0)),
+                )
+            })
             .collect();
         assert_eq!(memory_check(&full), Ok(()));
         let mut over = full.clone();
-        over.insert(SmolStr::new("one_more"), serde_json::Value::Null);
-        assert_eq!(
-            memory_check(&over),
-            Err(MemError::Count(STOCK_MEMORY_KEYS + 1))
-        );
-        let long = "k".repeat(MEMORY_KEY_CHARS + 1);
-        assert_eq!(
-            memory_check(&memory_of(&[(long.as_str(), serde_json::json!(1))])),
-            Err(MemError::Key(SmolStr::new(&long)))
-        );
-        assert_eq!(
-            memory_check(&memory_of(&[("", serde_json::json!(1))])),
-            Err(MemError::Key(SmolStr::new("")))
-        );
+        over.insert("one_more".to_owned(), MemValue::Unit);
+        assert_eq!(memory_check(&over), Err(MemError::Count(limits.keys + 1)));
+        let long = "k".repeat(limits.key_chars + 1);
+        for key in [long.as_str(), "", "caf\u{e9}", "tab\there"] {
+            assert_eq!(
+                memory_check(&memory_of(&[(key, MemValue::Int(1))])),
+                Err(MemError::Key(key.to_owned())),
+                "{key:?}"
+            );
+        }
         for bad in [
-            serde_json::json!(1.5),
-            serde_json::json!(u64::MAX),
-            serde_json::json!({ "x": 1 }),
-            serde_json::json!("w".repeat(MEMORY_VALUE_LEN + 1)),
-            serde_json::json!(vec![7_i64; MEMORY_VALUE_LEN + 1]),
-            serde_json::json!([1, 2.5]),
-            serde_json::json!([1, "two"]),
-            serde_json::json!([[1]]),
+            MemValue::Str("w".repeat(limits.string_bytes + 1)),
+            MemValue::Str("caf\u{e9}".to_owned()),
+            MemValue::Str("line\nbreak".to_owned()),
+            MemValue::Ints(vec![7_i64; limits.array_len + 1]),
         ] {
             assert_eq!(
                 memory_check(&memory_of(&[("bad", bad.clone())])),
-                Err(MemError::Value(SmolStr::new("bad"))),
-                "{bad}"
+                Err(MemError::Value("bad".to_owned())),
+                "{bad:?}"
             );
         }
     }
@@ -2060,17 +2154,19 @@ mod tests {
     /// **The encoding is canonical and round-trips** (D-UM-30): the keys sorted
     /// whatever order they were written in, no whitespace; `decode(encode(m))
     /// == m`; empty bytes and bytes that do not decode are the empty map, which
-    /// encodes as `{}`.
+    /// encodes as `{}`. 17b cut M2.2: the bytes are `mush_mind`'s encoder's,
+    /// which also refuses (as the empty map, the arena's rule) the whitespace
+    /// `serde_json` read.
     #[test]
     fn m1a6_a_memory_encodes_sorted_and_round_trips() {
         let mut one = Memory::new();
-        one.insert(SmolStr::new("zeta"), serde_json::json!([3, 4]));
-        one.insert(SmolStr::new("alpha"), serde_json::json!(-1));
-        one.insert(SmolStr::new("mid"), serde_json::Value::Null);
+        one.insert("zeta".to_owned(), MemValue::Ints(vec![3, 4]));
+        one.insert("alpha".to_owned(), MemValue::Int(-1));
+        one.insert("mid".to_owned(), MemValue::Unit);
         let mut two = Memory::new();
-        two.insert(SmolStr::new("mid"), serde_json::Value::Null);
-        two.insert(SmolStr::new("alpha"), serde_json::json!(-1));
-        two.insert(SmolStr::new("zeta"), serde_json::json!([3, 4]));
+        two.insert("mid".to_owned(), MemValue::Unit);
+        two.insert("alpha".to_owned(), MemValue::Int(-1));
+        two.insert("zeta".to_owned(), MemValue::Ints(vec![3, 4]));
         let bytes = encode_memory(&one);
         assert_eq!(bytes, encode_memory(&two));
         assert_eq!(
@@ -2082,6 +2178,7 @@ mod tests {
         assert_eq!(decode_memory(&[]), Memory::new());
         assert_eq!(decode_memory(b"not json"), Memory::new());
         assert_eq!(decode_memory(b"[1, 2]"), Memory::new());
+        assert_eq!(decode_memory(br#"{"alpha": -1}"#), Memory::new());
         assert_eq!(encode_memory(&Memory::new()), b"{}".to_vec());
     }
 }

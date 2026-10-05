@@ -330,9 +330,10 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use mind::{
-    Landing, MIND_INTENTS_MAX, MIND_NOTICES, MemError, Memory, MindRunner, MindState, MindView,
-    NoMind, PendingThink, STOCK_CONTACT_ROWS, STOCK_MEMORY_KEYS, STOCK_THINK_MS, ThinkJob,
-    ThinkResult, ViewContact, decode_memory, default_mind_runner, encode_memory, memory_check,
+    Landing, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue, Memory,
+    MindRunner, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS, STOCK_MEMORY_LIMITS,
+    STOCK_THINK_MS, ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory,
+    default_mind_runner, encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
 pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};

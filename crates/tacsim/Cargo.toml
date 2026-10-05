@@ -53,6 +53,11 @@ mush-llm.workspace = true
 mush-worldgen.workspace = true
 mush-npc.workspace = true
 mush-ruleset.workspace = true
+# 17b cut M2.2 (doc 17 §7, §8; D-UM-30 as amended): the unit-mind sandbox. Its
+# memory codec is the arena's ONE codec from this cut (`arena/mind.rs`
+# re-exports it); its interpreter enters this crate in 17b cut M2.3, outside
+# `src/arena/`, whose contract test refuses the interpreter's name there.
+mush-mind.workspace = true
 
 # 16b cut R-b (R4): the one game sheet (`sheet/`). `mush-dice` is the expression
 # evaluator behind `+roll` and the `check` ability (R5 deleted `sr5`; `owod20` stays

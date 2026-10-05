@@ -5761,7 +5761,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         }
     }
 
-    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+    let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
         .expect("the document decodes");
     // The table, as the document carries it (its scratch, which is not state
     // and is sized by the first search after a resume, aside).
@@ -5791,7 +5791,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
-        Snapshot::decode(&two, arena.definition.clone()).map(|_| ()),
+        Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
         Err(refused)
     );
 }
@@ -5852,7 +5852,7 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
         state.to_string().contains("\"motor_tick\""),
         "the state carries the motor tick"
     );
-    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+    let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
         .expect("the document decodes");
     assert_eq!(decoded.motors.row(MOVER), arena.motors.row(MOVER));
     assert_eq!(ticks(&decoded), ticks(&arena));
@@ -5872,7 +5872,7 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
-        Snapshot::decode(&three, arena.definition.clone()).map(|_| ()),
+        Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
         Err(refused)
     );
 }
@@ -5957,7 +5957,7 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
         state.to_string().contains("\"mind_think\""),
         "the think is on the heap"
     );
-    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+    let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
         .expect("the document decodes");
     assert_eq!(decoded.minds.get(&MOVER), Some(&row), "the row came back");
     assert!(decoded.mind_landings.is_empty(), "the scratch did not");
@@ -5982,7 +5982,7 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
     assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&four), Err(refused.clone()));
     assert_eq!(
-        Snapshot::decode(&four, arena.definition.clone()).map(|_| ()),
+        Snapshot::decode(&four, (*arena.definition).clone()).map(|_| ()),
         Err(refused)
     );
 }
@@ -6043,7 +6043,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
         Some(serde_json::json!({"kind": "persona", "squad": {"team": "red", "index": 1}})),
         "the reflex row carries the order's author"
     );
-    let decoded = Snapshot::decode(&snapshot.document, arena.definition.clone())
+    let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
         .expect("the document decodes");
     for unit in [MOVER, SQUAD_RED_B] {
         assert_eq!(
@@ -6066,7 +6066,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
     assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
-        Snapshot::decode(&five, arena.definition.clone()).map(|_| ()),
+        Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),
         Err(refused)
     );
 }

@@ -138,8 +138,7 @@ use smol_str::SmolStr;
 
 use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
 use crate::arena::conditions::{
-    ASPECTS_ANY, Arming, FireCondition, HeldWhy, STOCK_CONDITION_SLOTS, SlotTarget, aspect_in,
-    aspect_mask,
+    ASPECTS_ANY, Arming, FireCondition, HeldWhy, SlotTarget, aspect_in, aspect_mask,
 };
 use crate::arena::damage;
 use crate::arena::intents::MotorGoal;
@@ -4679,10 +4678,7 @@ fn fire_off(
 /// read, so the answer is the one a typed `FIRE` gives on a mirror holding no
 /// rows, `FIRE cannon refused. No lock: LOCK a contact first.`,
 /// [`CockpitError::NoLock`] through `fire_refused`: a slot fires only your
-/// lock, and before the first frame there is none); **the count** — the mirror's rows
-/// showing [`STOCK_CONDITION_SLOTS`] weapons armed and this one not among them
-/// is [`CockpitError::NoSlot`], the same bytes the arena stages at phase 4
-/// when two armings race one pulse past the mirror; then [`parse_arming`] over
+/// lock, and before the first frame there is none); then [`parse_arming`] over
 /// the text after `WHEN` (the one outside refusal, and the floor checked off
 /// the frame's captured `odds_floor_permille` — refused
 /// [`CockpitError::Unlawful`] **as typed**, the arena's `Unlawful` at the
@@ -4690,12 +4686,23 @@ fn fire_off(
 /// `fire_refused`, so it reads `FIRE cannon refused. …` — exactly the sentence
 /// `refusal_line` prints for the arena's word.
 ///
+/// **No count pre-check** (17b cut M2.2, the lead's ruling (c)): the arena's
+/// phase-4 `NoSlot` is the one wall for a full table. An arming past
+/// [`crate::arena::conditions::STOCK_CONDITION_SLOTS`] armed weapons is
+/// accepted here — its sentence printed at once — and refused by the arena a
+/// pulse later as the notice
+/// `FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.`
+/// (the declared effect; `help cockpit` says so). M1b.4 refused it here off
+/// the mirror, which a `FIRE <weapon> OFF` and a new arming typed inside one
+/// pulse read wrongly.
+///
 /// Then ONE discrete `IntentKind::Condition(Arming::Arm(cond))` — the seat
 /// window and the queue bound as `LOCK`, resolved at the pulse's end in
 /// arrival order — with no power pre-check (a slot may be armed cold), and the
-/// English written back once by [`arming_reply`], with **no slot number**: the
-/// number is the arena's to give at phase 4, and shows on the next frame's
-/// `armed`, in `WEAPONSTATUS`'s arming line and in every attribution.
+/// English written back once by [`arming_reply`] off the TYPED figures
+/// ([`ArmingEcho`]), with **no slot number**: the number is the arena's to
+/// give at phase 4, and shows on the next frame's `armed`, in
+/// `WEAPONSTATUS`'s arming line and in every attribution.
 fn fire_when(
     ctx: &mut Ctx<'_>,
     seat: &Seat,
@@ -4713,12 +4720,9 @@ fn fire_when(
     let Some(held) = held else {
         return Err(refused(&CockpitError::NoLock));
     };
-    let armed = rows.iter().filter(|row| row.armed.is_some()).count();
-    if weapon.armed.is_none() && armed >= STOCK_CONDITION_SLOTS {
-        return Err(refused(&CockpitError::NoSlot));
-    }
-    let cond = parse_arming(&weapon, conditions, &held.frame).map_err(|said| refused(&said))?;
-    let line = arming_reply(&cond);
+    let (cond, echo) =
+        parse_arming(&weapon, conditions, &held.frame).map_err(|said| refused(&said))?;
+    let line = arming_reply(&weapon.id, &echo);
     forward_intent(
         ctx,
         seat.driver,
@@ -4812,10 +4816,41 @@ struct ArmingTerms {
     aspects: Option<u8>,
     /// `rounds > n` / `rounds > n%` / `reserve`, in rounds.
     keeps: Option<u32>,
-    /// The nearest a `range >` or a `band` bounds it to.
+    /// The nearest a `range >` or a `band` bounds it to, compiled: a `range >
+    /// n` stores `n + 1` (17b cut M2.2, ruling (c)).
     min_m: Option<u32>,
-    /// The furthest a `range <` or a `band` bounds it to.
+    /// The furthest a `range <` or a `band` bounds it to, compiled: a `range <
+    /// n` stores `n - 1` (17b cut M2.2, ruling (c)).
     max_m: Option<u32>,
+    /// `range < n`'s `n` as typed (the reply's figure).
+    under_m: Option<u32>,
+    /// `range > n`'s `n` as typed (the reply's figure).
+    past_m: Option<u32>,
+    /// `band = …`'s metres, `(nearest, furthest)`.
+    band: Option<(u32, u32)>,
+}
+
+/// **What a `FIRE … WHEN` rule said, as typed** (17b cut M2.2, the lead's
+/// ruling (c)): the figures [`arming_reply`] writes back, read off the
+/// pilot's own words rather than off the compiled [`FireCondition`] — whose
+/// range terms are strict (`range < 600` stores `max_range_m 599`), so a
+/// reply read off it would print a figure the pilot never typed. Every M1b.4
+/// reply is byte-identical through it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArmingEcho {
+    /// The chance asked for, per mille: the odds term's, else the frame's
+    /// floor (always `Some` from [`parse_arming`]).
+    pub min_permille: Option<u16>,
+    /// The `aspect = …` mask, when typed.
+    pub aspects: Option<u8>,
+    /// `range < n`'s `n`, metres.
+    pub under_m: Option<u32>,
+    /// `range > n`'s `n`, metres.
+    pub past_m: Option<u32>,
+    /// `band = …`'s `(nearest, furthest)` metres.
+    pub band: Option<(u32, u32)>,
+    /// The rounds a `rounds > …` or `reserve` term keeps.
+    pub keeps: Option<u32>,
 }
 
 /// **Compile a `FIRE <weapon> WHEN …` rule** (17b cut M1b.4; D-UM-18's
@@ -4837,9 +4872,15 @@ struct ArmingTerms {
 ///   under the table's `p_max`;
 /// * `aspect = a[,b[,c]]` with `front`, `side` (left and right) and `rear` →
 ///   the mask (a word twice is fine);
-/// * `range < n [m]` → `max_range_m = n`; `range > n [m]` → `min_range_m = n`;
-///   `n` 1 to [`MAX_ARMING_RANGE_M`], tested by the arena against the lock's
-///   ROUNDED range — the figure `RANGE` prints;
+/// * `range < n [m]` → `max_range_m = n - 1`; `range > n [m]` →
+///   `min_range_m = n + 1` (17b cut M2.2, the lead's ruling (c): STRICTLY under
+///   and over, where M1b.4 stored `n` and the warrant's inclusive bounds let
+///   a printed `600 m` fire under `range < 600`); `n` 1 to
+///   [`MAX_ARMING_RANGE_M`] (`range < 1` stores 0), tested by the arena
+///   against the lock's ROUNDED range — the figure `RANGE` prints. **A
+///   declared effect**: a term holds one figure, so `range < 200 AND band =
+///   close` (199 against the band's 200) is refused as a differing duplicate,
+///   where M1b.4 read both as 200;
 /// * `band = close|effective|far` → the metres [`band_bounds_m`] cuts for this
 ///   weapon's bands on this frame's sight: compiled to FIXED metres here, which
 ///   the reply prints (a weapon with no bands has no band, and is outside);
@@ -4862,6 +4903,9 @@ struct ArmingTerms {
 /// `aspects` [`ASPECTS_ANY`] unless named; `min_rounds_left` 0, `min_range_m`
 /// 0 and `max_range_m` `u32::MAX` (unbound) unless named.
 ///
+/// **17b cut M2.2**: with the slot, the [`ArmingEcho`] of the rule as typed —
+/// what [`arming_reply`] writes back.
+///
 /// # Errors
 ///
 /// [`CockpitError::NotThisCore`] or [`CockpitError::Unlawful`] — the
@@ -4870,7 +4914,7 @@ pub fn parse_arming(
     weapon: &WeaponRow,
     rest: &str,
     frame: &Frame,
-) -> Result<FireCondition, CockpitError> {
+) -> Result<(FireCondition, ArmingEcho), CockpitError> {
     let tokens = arming_tokens(rest);
     if tokens.is_empty() || tokens.iter().any(|token| token == "or") {
         return Err(CockpitError::NotThisCore);
@@ -4896,15 +4940,25 @@ pub fn parse_arming(
         Some(pct) => pct.saturating_mul(10),
         None => floor,
     };
-    Ok(FireCondition {
+    let min_permille = u16::try_from(min_permille).unwrap_or(u16::MAX);
+    let cond = FireCondition {
         weapon: weapon.id.clone(),
         target: SlotTarget::Lock,
-        min_permille: u16::try_from(min_permille).unwrap_or(u16::MAX),
+        min_permille,
         aspects: terms.aspects.unwrap_or(ASPECTS_ANY),
         min_rounds_left: terms.keeps.unwrap_or(0),
         min_range_m: terms.min_m.unwrap_or(0),
         max_range_m: terms.max_m.unwrap_or(u32::MAX),
-    })
+    };
+    let echo = ArmingEcho {
+        min_permille: Some(min_permille),
+        aspects: terms.aspects,
+        under_m: terms.under_m,
+        past_m: terms.past_m,
+        band: terms.band,
+        keeps: terms.keeps,
+    };
+    Ok((cond, echo))
 }
 
 /// One condition of a rule into `terms` ([`parse_arming`]'s eight).
@@ -4947,14 +5001,20 @@ fn arming_term(
             }
             arming_set(&mut terms.aspects, aspect_mask(&faces))
         }
-        // The brief's mapping (`< n` to `max_range_m = n`, `> n` to `min_range_m
-        // = n`); the warrant holds the bounds inclusively, so a printed `600 m`
-        // is inside `range < 600 m` — which the help says in those words.
+        // 17b cut M2.2, the lead's ruling (c): STRICT — `< n` stores
+        // `max_range_m = n - 1` and `> n` stores `min_range_m = n + 1`, so the
+        // warrant's inclusive bounds fire strictly under and over `n` at the
+        // rounded range (a printed `600 m` is OUTSIDE `range < 600`). The
+        // typed `n` is kept for the reply.
         ["range", "<", n] | ["range", "<", n, "m"] => {
-            arming_set(&mut terms.max_m, arming_metres(n)?)
+            let typed = arming_metres(n)?;
+            arming_set(&mut terms.under_m, typed)?;
+            arming_set(&mut terms.max_m, typed.saturating_sub(1))
         }
         ["range", ">", n] | ["range", ">", n, "m"] => {
-            arming_set(&mut terms.min_m, arming_metres(n)?)
+            let typed = arming_metres(n)?;
+            arming_set(&mut terms.past_m, typed)?;
+            arming_set(&mut terms.min_m, typed.saturating_add(1))
         }
         ["band", "=", word] => {
             let bands: &[u32] = frame
@@ -4971,6 +5031,7 @@ fn arming_term(
                 "far" => far,
                 _ => return Err(CockpitError::NotThisCore),
             };
+            arming_set(&mut terms.band, (nearest, furthest))?;
             // The nearest of `close` is nought, which is no bound at all.
             if nearest > 0 {
                 arming_set(&mut terms.min_m, nearest)?;
@@ -5027,36 +5088,53 @@ fn aspect_side_words(aspects: u8) -> Vec<&'static str> {
 /// {a} and {b} m` (only when bound); `{weapon} keeps {k} round(s)` (only above
 /// nought). The gate's rule reads `Arming cannon: fires your lock when your
 /// chance to hit is 60% or better and it shows its side or rear.`
+///
+/// **17b cut M2.2, the lead's ruling (c)**: read off the rule AS TYPED
+/// ([`ArmingEcho`]) — `{a}` is the `range >` figure typed, else the band's
+/// nearest above nought; `{b}` the `range <` figure typed, else the band's
+/// furthest — so `range < 600` still reads `it is under 600 m` while the slot
+/// stores 599 (and `WEAPONSTATUS`'s arming line, `arming_words`, shows the
+/// stored `under 599m`, the last metre that fires). Every M1b.4 reply is
+/// byte-identical. The chance clause is written whenever the echo carries
+/// one, which [`parse_arming`]'s always does.
 #[must_use]
-pub fn arming_reply(cond: &FireCondition) -> String {
-    let mut clauses = vec![format!(
-        "your chance to hit is {}% or better",
-        cond.min_permille / 10
-    )];
-    if cond.aspects & ASPECTS_ANY != ASPECTS_ANY {
-        let words = aspect_side_words(cond.aspects);
+pub fn arming_reply(weapon: &str, echo: &ArmingEcho) -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    if let Some(permille) = echo.min_permille {
+        clauses.push(format!(
+            "your chance to hit is {}% or better",
+            permille / 10
+        ));
+    }
+    if let Some(aspects) = echo.aspects
+        && aspects & ASPECTS_ANY != ASPECTS_ANY
+    {
+        let words = aspect_side_words(aspects);
         if !words.is_empty() {
             clauses.push(format!("it shows its {}", words.join(" or ")));
         }
     }
-    match (cond.min_range_m > 0, cond.max_range_m < u32::MAX) {
-        (true, true) => clauses.push(format!(
-            "it is between {} and {} m",
-            cond.min_range_m, cond.max_range_m
-        )),
-        (false, true) => clauses.push(format!("it is under {} m", cond.max_range_m)),
-        (true, false) => clauses.push(format!("it is past {} m", cond.min_range_m)),
-        (false, false) => {}
+    let past = echo
+        .past_m
+        .or_else(|| echo.band.map(|(nearest, _)| nearest))
+        .filter(|metres| *metres > 0);
+    let under = echo
+        .under_m
+        .or_else(|| echo.band.map(|(_, furthest)| furthest))
+        .filter(|metres| *metres < u32::MAX);
+    match (past, under) {
+        (Some(past), Some(under)) => {
+            clauses.push(format!("it is between {past} and {under} m"));
+        }
+        (None, Some(under)) => clauses.push(format!("it is under {under} m")),
+        (Some(past), None) => clauses.push(format!("it is past {past} m")),
+        (None, None) => {}
     }
-    if cond.min_rounds_left > 0 {
-        clauses.push(format!(
-            "{} keeps {} round(s)",
-            cond.weapon, cond.min_rounds_left
-        ));
+    if let Some(keeps) = echo.keeps.filter(|keeps| *keeps > 0) {
+        clauses.push(format!("{weapon} keeps {keeps} round(s)"));
     }
     format!(
-        "Arming {}: fires your lock when {}.",
-        cond.weapon,
+        "Arming {weapon}: fires your lock when {}.",
         clauses.join(" and ")
     )
 }

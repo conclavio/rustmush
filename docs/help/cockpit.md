@@ -369,10 +369,13 @@ these eight are the conditions there are, one example each:
                         says the same, naming the weapon being armed
   aspect = side,rear    the face it shows you: front, side or rear, a comma
                         between two or three
-  range < 600 m         it is 600 m away or nearer; `range > 200 m` 200 m or
-                        further, and the two together are a window. The range
-                        is the one `RANGE` prints for your lock, and a printed
-                        600 m still counts as inside `range < 600 m`
+  range < 600 m         it is nearer than 600 m; `range > 200 m` farther than
+                        200 m, and the two together are a window. The range
+                        is the one `RANGE` prints for your lock, so a printed
+                        600 m is outside `range < 600 m`. `WEAPONSTATUS`
+                        shows the last metre that fires (`under 599m`), or
+                        the first (`past 201m`). A band and a range term
+                        that disagree are refused: type one or the other
   band = effective      close, effective or far across your sight, compiled to
                         fixed metres from the frame you typed it on: the reply
                         says which metres, and they do not move afterwards
@@ -398,8 +401,11 @@ the number shows under the weapon's row on `WEAPONSTATUS` —
     S1: >=60% side/rear
 
 — on the cockpit screen's weapons pane, and in every line the slot says. A third
-weapon while both stand is refused:
+weapon while both stand is taken as you type it, and the tank refuses it a
+moment later, as a notice under the reply:
 `FIRE cannon refused. Every slot is armed; FIRE <weapon> OFF frees one.`
+Free a slot first and the new rule takes it, even typed straight after
+`FIRE cannon OFF`.
 `FIRE cannon OFF` answers `Cleared: cannon fires only when you say.` and `FIRE
 ALL OFF` answers `Cleared: your guns fire only when you say.` — both said
 whether or not anything was armed.
@@ -414,11 +420,13 @@ with the condition that held it:
 
   S1 held the cannon: 54% under your 60%.
   S1 held the cannon: BA shows its front.
-  S1 held the cannon: BA at 650 m, outside 200 to 600.
+  S1 held the cannon: BA at 650 m, outside 201 to 599.
   S1 held the cannon: 7 rounds, keeps 8.
 
-The range it quotes is the one `RANGE` prints. A slot with nothing to shoot
-at, or whose gun is still cycling, says nothing. Nobody else is told any of
+The range it quotes is the one `RANGE` prints, and its window is the metres
+the slot keeps, the ones `WEAPONSTATUS` shows: `range > 200 AND range < 600`
+is held as outside 201 to 599. A slot with nothing to shoot at, or whose gun
+is still cycling, says nothing. Nobody else is told any of
 it: not your side, not the target.
 
 **Which wins.** In four lines:
@@ -551,8 +559,8 @@ Arming a weapon has three refusals of its own, each naming the weapon:
 for a rule outside the eight, `FIRE cannon refused. Every slot is armed; FIRE
 <weapon> OFF frees one.` with both slots taken, and `FIRE cannon refused. The
 Compact floor is 10%; a condition may not ask for less.` for a chance under the
-floor. The last two can also come from the arena a moment later, in the same
-words.
+floor. The full table is always the arena's, a moment after the reply; the
+floor can come from it too, in the same words.
 
 **Any** order can also be refused by the arena itself a moment after the cockpit
 passed it on — you and the arena are a pulse apart, and the tank may have been

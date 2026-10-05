@@ -14658,6 +14658,12 @@ const M1B4_GATE_REPLY: &str = "Arming cannon: fires your lock when your chance t
 /// exactly the metres `contact_band` cuts on the fixture frame, and the
 /// English written back for the gate's rule verbatim, a bounded range, a
 /// reserve and a rule with no odds term (which asks for the floor).
+///
+/// **17b cut M2.2, the lead's ruling (c)**: the two range terms compile
+/// STRICT — `range < 600` stores `max_range_m 599`, `range > 200` stores
+/// `min_range_m 201` (M1b.4 stored 600 and 200) — and the English is written
+/// back off the rule as typed (`parse_arming`'s `ArmingEcho`), so every
+/// reply below is M1b.4's byte for byte.
 #[test]
 fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence() {
     use tacsim::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget, aspect_mask};
@@ -14676,7 +14682,9 @@ fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence(
         max_range_m: u32::MAX,
     };
     let flank_rear = aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]);
-    let parse = |row: &cockpit::WeaponRow, rule: &str| cockpit::parse_arming(row, rule, &frame);
+    let parse = |row: &cockpit::WeaponRow, rule: &str| {
+        cockpit::parse_arming(row, rule, &frame).map(|(cond, _)| cond)
+    };
     // Every term, every spelling, compiled.
     for (rule, want) in [
         (
@@ -14749,32 +14757,33 @@ fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence(
                 ..base.clone()
             },
         ),
+        // 17b cut M2.2, ruling (c): strict — 600 -> 599 and 200 -> 201.
         (
             "range < 600 m",
             FireCondition {
-                max_range_m: 600,
+                max_range_m: 599,
                 ..base.clone()
             },
         ),
         (
             "range<600m",
             FireCondition {
-                max_range_m: 600,
+                max_range_m: 599,
                 ..base.clone()
             },
         ),
         (
             "range > 200",
             FireCondition {
-                min_range_m: 200,
+                min_range_m: 201,
                 ..base.clone()
             },
         ),
         (
             "range > 200 m AND range < 600 m",
             FireCondition {
-                min_range_m: 200,
-                max_range_m: 600,
+                min_range_m: 201,
+                max_range_m: 599,
                 ..base.clone()
             },
         ),
@@ -14845,7 +14854,7 @@ fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence(
             FireCondition {
                 min_permille: 600,
                 aspects: flank_rear,
-                max_range_m: 600,
+                max_range_m: 599,
                 min_rounds_left: 8,
                 ..base.clone()
             },
@@ -14912,7 +14921,7 @@ fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence(
     let mut low = fixture::frame();
     low.odds_floor_permille = 50;
     assert_eq!(
-        cockpit::parse_arming(&cannon, "odds >= 5", &low).map(|c| c.min_permille),
+        cockpit::parse_arming(&cannon, "odds >= 5", &low).map(|(c, _)| c.min_permille),
         Ok(50)
     );
     assert_eq!(
@@ -14920,7 +14929,7 @@ fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence(
         Err(cockpit::CockpitError::Unlawful { floor_pct: 5 })
     );
     assert_eq!(
-        cockpit::parse_arming(&cannon, "aspect = rear", &low).map(|c| c.min_permille),
+        cockpit::parse_arming(&cannon, "aspect = rear", &low).map(|(c, _)| c.min_permille),
         Ok(50),
         "no odds term asks for the frame's floor"
     );
@@ -14985,9 +14994,11 @@ fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence(
         parse(&cannon, "odds >= 5 AND hit"),
         Err(cockpit::CockpitError::NotThisCore)
     );
-    // The English written back.
+    // The English written back — 17b cut M2.2: off the rule as typed.
     let reply = |rule: &str| {
-        cockpit::arming_reply(&parse(&cannon, rule).unwrap_or_else(|e| panic!("{rule}: {e}")))
+        let (cond, echo) =
+            cockpit::parse_arming(&cannon, rule, &frame).unwrap_or_else(|e| panic!("{rule}: {e}"));
+        cockpit::arming_reply(&cond.weapon, &echo)
     };
     assert_eq!(reply("odds >= 60 AND aspect = side,rear"), M1B4_GATE_REPLY);
     assert_eq!(
@@ -15034,6 +15045,146 @@ fn m1b4_fire_when_compiles_the_eight_terms_and_refuses_the_rest_in_one_sentence(
             !said.contains("S1") && !said.contains("S2"),
             "no slot number: {said}"
         );
+    }
+}
+
+/// **The range terms are strict, the reply reads the figure typed** (17b cut
+/// M2.2, the lead's ruling (c); doc 17 §5): on the fixture frame,
+/// `range < 600` stores `max_range_m 599` and replies `it is under 600 m`;
+/// `range > 200` stores `min_range_m 201` and replies `it is past 200 m`;
+/// both store `(201, 599)` and reply `it is between 200 and 600 m`; `band =
+/// close` stores `(0, 200)` and replies `it is under 200 m` (a band is fixed
+/// metres, untouched); `range < 1` stores 0. `WEAPONSTATUS`'s arming line
+/// (`arming_words`, untouched) prints the STORED figure — `S1: >=10% under
+/// 599m`, the last metre that fires. **Declared effect 1**: `range < 200 AND
+/// band = close` — both 200 under M1b.4 — now reads 199 against the band's
+/// 200 and is refused as a differing duplicate (one figure per term), in the
+/// one outside sentence; and its mirror at the band's lower edge, `range >
+/// 200 AND band = effective` — 200 against 201 under M1b.4, refused — now
+/// reads 201 against 201 and is TAKEN (`range > 201` with it is refused).
+/// And `help cockpit` says all of it.
+#[test]
+fn m2_a_range_term_is_strict_and_the_reply_reads_the_typed_figure() {
+    use tacsim::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget};
+    use tacsim::arena::weapons::FrameArming;
+    let frame = fixture::frame();
+    let cannon = m1b4_row(&frame, "cannon");
+    let armed = |rule: &str| {
+        let (cond, echo) =
+            cockpit::parse_arming(&cannon, rule, &frame).unwrap_or_else(|e| panic!("{rule}: {e}"));
+        let said = cockpit::arming_reply(&cond.weapon, &echo);
+        ((cond.min_range_m, cond.max_range_m), said, cond)
+    };
+    let tail = |clause: &str| {
+        format!("Arming cannon: fires your lock when your chance to hit is 10% or better{clause}.")
+    };
+    for (rule, stored, clause) in [
+        ("range < 600", (0, 599), " and it is under 600 m"),
+        ("range > 200", (201, u32::MAX), " and it is past 200 m"),
+        (
+            "range > 200 AND range < 600",
+            (201, 599),
+            " and it is between 200 and 600 m",
+        ),
+        ("band = close", (0, 200), " and it is under 200 m"),
+        ("range < 1", (0, 0), " and it is under 1 m"),
+        (
+            "range > 10000",
+            (10_001, u32::MAX),
+            " and it is past 10000 m",
+        ),
+    ] {
+        let (bounds, said, _) = armed(rule);
+        assert_eq!(bounds, stored, "{rule}: the stored bounds");
+        assert_eq!(said, tail(clause), "{rule}: the reply");
+    }
+    // The echo itself, field by field, for the window.
+    let (_, echo) = cockpit::parse_arming(&cannon, "range > 200 AND range < 600", &frame)
+        .expect("the window compiles");
+    assert_eq!(
+        echo,
+        cockpit::ArmingEcho {
+            min_permille: Some(100),
+            aspects: None,
+            under_m: Some(600),
+            past_m: Some(200),
+            band: None,
+            keeps: None,
+        }
+    );
+    // `WEAPONSTATUS` prints what the slot stores: the last metre that fires.
+    let (_, _, cond) = armed("range < 600");
+    assert_eq!(
+        cond,
+        FireCondition {
+            weapon: "cannon".into(),
+            target: SlotTarget::Lock,
+            min_permille: 100,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: 599,
+        }
+    );
+    assert_eq!(
+        cockpit::arming_words(&FrameArming::of(1, &cond)),
+        "S1: >=10% under 599m"
+    );
+    let (_, _, cond) = armed("range > 200");
+    assert_eq!(
+        cockpit::arming_words(&FrameArming::of(1, &cond)),
+        "S1: >=10% past 201m"
+    );
+    // Declared effect 1: a band and a range term that disagree by the strict
+    // metre are refused — M1b.4 read both as 200 and took the rule.
+    for rule in [
+        "range < 200 AND band = close",
+        "band = close AND range < 200",
+    ] {
+        assert_eq!(
+            cockpit::parse_arming(&cannon, rule, &frame),
+            Err(cockpit::CockpitError::NotThisCore),
+            "{rule}"
+        );
+    }
+    // One figure for the term: the band's 200 typed as `range < 201` agrees.
+    let (bounds, said, _) = armed("range < 201 AND band = close");
+    assert_eq!(bounds, (0, 200));
+    assert_eq!(said, tail(" and it is under 201 m"));
+    // The lower edge flips the other way: `band = effective` is (201, 400) on
+    // this frame, so `range > 200` — M1b.4's 200 against the band's 201,
+    // refused — now stores the band's own 201 and is TAKEN, the reply reading
+    // the typed 200; one metre further, `range > 201`, differs and is refused.
+    let (bounds, said, _) = armed("band = effective");
+    assert_eq!(bounds, (201, 400));
+    assert_eq!(said, tail(" and it is between 201 and 400 m"));
+    let (bounds, said, _) = armed("range > 200 AND band = effective");
+    assert_eq!(bounds, (201, 400));
+    assert_eq!(said, tail(" and it is between 200 and 400 m"));
+    for rule in [
+        "range > 201 AND band = effective",
+        "band = effective AND range > 201",
+    ] {
+        assert_eq!(
+            cockpit::parse_arming(&cannon, rule, &frame),
+            Err(cockpit::CockpitError::NotThisCore),
+            "{rule}"
+        );
+    }
+    // The help says so.
+    let help: String = include_str!("../../../docs/help/cockpit.md")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    for words in [
+        "range < 600 m it is nearer than 600 m; `range > 200 m` farther than 200 m",
+        "so a printed 600 m is outside `range < 600 m`",
+        "`WEAPONSTATUS` shows the last metre that fires (`under 599m`)",
+        "A band and a range term that disagree are refused",
+        "A third weapon while both stand is taken as you type it, and the tank refuses it a \
+         moment later",
+    ] {
+        assert!(help.contains(words), "help cockpit: {words:?}");
     }
 }
 
@@ -15607,13 +15758,23 @@ async fn m1b4_fire_when_under_the_floor_is_refused_unlawful_as_typed_and_at_the_
 /// **The arming through the composition** (17b cut M1b.4): on a pod fitted
 /// with the authored heavy (three guns, two slots) the gate's rule forwards
 /// one `Condition` and replies verbatim; the next frame's `armed.slot` is 1, a
-/// second arming on the machine gun lands as 2, the third gun is refused the
-/// count by the pre-check, and a re-arm of an armed gun replaces it in place.
-/// Two armings typed inside one pulse past a mirror showing one free slot:
-/// both pass the pre-check, and the arena's own `NoSlot` reaches the pilot in
-/// the pre-check's bytes. The existing `FIRE` lines are untouched; the
-/// outside rule is the one sentence; `FIRE cannon OFF` replies and the
-/// frame's `armed` goes `null`.
+/// second arming on the machine gun lands as 2, and a re-arm of an armed gun
+/// replaces it in place. Two armings typed inside one pulse past a mirror
+/// showing one free slot: both are accepted, and the arena's own `NoSlot`
+/// reaches the pilot. The existing `FIRE` lines are untouched; the outside
+/// rule is the one sentence; `FIRE cannon OFF` replies and the frame's
+/// `armed` goes `null`.
+///
+/// **17b cut M2.2, the lead's ruling (c)**: the cockpit's count pre-check is
+/// gone and the arena's phase-4 `NoSlot` is the one wall. M1b.4 refused the
+/// third gun at the cockpit; now — **the declared effect** — the plain
+/// full-table arming prints its acceptance sentence at once and the arena's
+/// `FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.`
+/// follows as a notice a pulse later: the two-line transcript, pinned in that
+/// order. And a `FIRE mg OFF` with a `FIRE missiles WHEN odds >= 20` typed
+/// straight after it, inside one pulse, is accepted by the cockpit and armed
+/// by the arena in the freed slot (the case the pre-check read wrongly off a
+/// mirror that still showed the machine gun armed).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_sentence() {
     let mut rig = Rig::boot(2);
@@ -15697,11 +15858,36 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     })
     .await;
     assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
-    // The third is the count, from the pre-check; a re-arm is not.
-    assert_eq!(
-        rig.say(0, "fire missiles when odds >= 40"),
-        format!("FIRE missiles refused. {count}")
+    // 17b cut M2.2, ruling (c): the third is accepted by the cockpit and
+    // refused by the arena a pulse later — the two-line transcript.
+    m1b4_next_second(&mut rig).await;
+    let mark = rig.log.len();
+    let accepted = "Arming missiles: fires your lock when your chance to hit is 40% or better.";
+    assert_eq!(rig.say(0, "fire missiles when odds >= 40"), accepted);
+    let full = format!("FIRE missiles refused. {count}");
+    m1b4_until(&mut rig, "the arena's count on a full table", |rig| {
+        m1a4_said_since(rig, pilot, mark).contains(&full)
+    })
+    .await;
+    let heard = m1a4_said_since(&rig, pilot, mark);
+    let at = |line: &str| heard.iter().position(|said| said == line);
+    assert!(
+        matches!((at(accepted), at(&full)), (Some(a), Some(b)) if a < b),
+        "the acceptance, then the arena's refusal: {heard:#?}"
     );
+    assert_eq!(
+        heard
+            .iter()
+            .filter(|said| said.contains("missiles"))
+            .cloned()
+            .collect::<Vec<String>>(),
+        vec![accepted.to_owned(), full.clone()],
+        "two lines and no more"
+    );
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), None);
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    // A re-arm is not a new slot.
+    m1b4_next_second(&mut rig).await;
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 70"),
         "Arming cannon: fires your lock when your chance to hit is 70% or better."
@@ -15766,6 +15952,45 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     assert_eq!(
         payload["weapons"][1]["armed"]["slot"], 2,
         "S2 kept its number"
+    );
+
+    // 17b cut M2.2, ruling (c): the cannon back in S1 so the table is full,
+    // then `FIRE mg OFF` and the missiles typed straight after it, inside one
+    // pulse, against a mirror that still shows the machine gun armed — both
+    // accepted, and the arena frees S2 and arms the missiles there.
+    m1b4_next_second(&mut rig).await;
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 60"),
+        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+    );
+    m1b4_until(&mut rig, "the cannon back in S1", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 600)));
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    m1b4_next_second(&mut rig).await;
+    let mark = rig.log.len();
+    assert_eq!(
+        rig.say(0, "fire mg off"),
+        "Cleared: machine_gun fires only when you say."
+    );
+    // Nothing pumped since: the mirror still shows the machine gun in S2,
+    // which is what M1b.4's pre-check counted.
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    assert_eq!(
+        rig.say(0, "fire missiles when odds >= 20"),
+        "Arming missiles: fires your lock when your chance to hit is 20% or better."
+    );
+    m1b4_until(&mut rig, "the missiles in the freed S2", |rig| {
+        m1b4_armed(rig, 0, "missiles").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), Some((2, 200)));
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), None);
+    assert!(
+        !m1a4_said_since(&rig, pilot, mark).contains(&full),
+        "no count refusal"
     );
 }
 
@@ -15941,6 +16166,19 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     assert_eq!(
         rig.staff(&format!("@mind/set #{id}=band_pct 72")),
         "@mind/set: band_pct is 30 to 100 in steps of 5 (it is 72)."
+    );
+    // 17b cut M2.2, the lead's ruling (b): the doctrine pair, in the same wrap
+    // (the card is Sniper here, whose pair is Line's: break_off 35, fight_home
+    // 17.5).
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=break_off_pct 10")),
+        "@mind/set: break_off_pct would put fight_home_pct 17.5 above break_off_pct 10; \
+         fight_home_pct is at most break_off_pct (it is 10)."
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=fight_home_pct 40")),
+        "@mind/set: fight_home_pct would put fight_home_pct 40 above break_off_pct 35; \
+         fight_home_pct is at most break_off_pct (it is 40)."
     );
     assert_eq!(
         rig.staff(&format!("@mind/set #{id}=min_odds 5")),
@@ -16118,6 +16356,46 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         rig.staff(&format!("@mind/set #{id}=min_odds 5")),
         "@mind/set: min_odds is 10 to 95 in steps of 5 (it is 5).",
         "the resumed match is held to its captured 5%, not the live 10%"
+    );
+}
+
+/// **`@mind/set` refuses a preset that breaks the doctrine pair, by the
+/// preset's name** (17b cut M2.2, the lead's ruling (b): the presets
+/// pair-valid; doc 17 §11, D-UM-43, D-UM-44): on a doctrine the config admits
+/// with `fight_home` 75 under `break_off` 80, `=rearguard` — `break_off_pct`
+/// 70 under Line's `fight_home_pct` 75 — answers `Pair`'s sentence naming
+/// `Rearguard` in the verb's wrap and sends nothing, while `=sniper`, which
+/// leaves the pair alone, is sent. The arena's own refusal of the same card
+/// is `tests/minds.rs`' `m2_the_arena_refuses_a_preset_that_breaks_the_pair_by_name`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m2_mind_set_refuses_a_preset_that_breaks_the_pair_by_name() {
+    let mut cfg = m1b5_mind_config();
+    cfg.arena.reflex.withdraw_permille = 800;
+    cfg.arena.reflex.stand_min_permille = 750;
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.fly_with_ai(1, 1, 2).await;
+    let fill = m1b5_fill_units(&rig);
+    let mind = *fill.first().expect("a fill hull");
+    let id = mind.0;
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=rearguard")),
+        "@mind/set: Rearguard would put fight_home_pct 75 above break_off_pct 70; \
+         fight_home_pct is at most break_off_pct."
+    );
+    let name = mush_core::output::display_name(rig.tw.world(), mind);
+    assert_eq!(
+        m1b5_head(&rig.staff(&format!("@mind/set #{id}"))),
+        format!("Mind card on #{id} ({name}): Line (as checked out)"),
+        "nothing was sent"
+    );
+    let said = rig.staff(&format!("@mind/set #{id}=sniper"));
+    assert_eq!(
+        said.lines().next(),
+        Some(
+            format!("Mind card on #{id}: Sniper sent; the arena takes it at its next pulse.")
+                .as_str()
+        ),
+        "{said}"
     );
 }
 

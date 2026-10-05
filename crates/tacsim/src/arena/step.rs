@@ -6405,7 +6405,8 @@ mod tests {
         paint(1, 6, wall);
         paint(6, 0, wall);
         paint(7, 1, wall);
-        arena.definition.terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the window");
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(8, 8, 1_000, cells).expect("the window");
         arena
     }
 

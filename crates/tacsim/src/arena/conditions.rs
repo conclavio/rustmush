@@ -120,10 +120,12 @@ pub const fn aspect_in(mask: u8, aspect: Aspect) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "target")]
 pub enum SlotTarget {
-    /// The hull's lock, when it is held and classified (the rule language's
-    /// default target).
+    /// The hull's lock, when it is held, classified and does not read dead
+    /// (the rule language's default target; the read-dead term since 17b cut
+    /// M2.2's ruling (a)).
     Lock,
-    /// The lock when it is this contact and classified — **unlawful in 17b cut
+    /// The lock when it is this contact, classified and not reading dead
+    /// (the read-dead term since 17b cut M2.2) — **unlawful in 17b cut
     /// M1b whatever the id** ([`condition_is_lawful`]); kept for the type's
     /// meaning, which M5's `LOCK` rules make reachable.
     Contact {
@@ -389,10 +391,14 @@ impl Arena {
     ///    [`Held::Idle`];
     /// 2. **the target is the lock**: [`SlotTarget::Lock`] — the lock when held
     ///    and classified; [`SlotTarget::Contact`] — the lock when it is that id
-    ///    and classified; [`SlotTarget::BestHostile`] — the lock when held,
-    ///    classified on another side and not reading dead
-    ///    ([`Arena::contact_reads_dead`]); and the lock's target still in the
-    ///    match. Else [`Held::Idle`] — an unclassified lock is idle (D-UM-17's
+    ///    and classified; [`SlotTarget::BestHostile`] — the lock when held and
+    ///    classified on another side; **all three only while the lock does not
+    ///    read dead** ([`Arena::contact_reads_dead`]; 17b cut M2.2, the lead's
+    ///    ruling (a): one read-dead rule for the three targets, where 17b cut
+    ///    M1b.1 read it for `BestHostile` alone and a `Lock` or `Contact` slot
+    ///    kept firing at a hull its own round had destroyed until the track
+    ///    expired); and the lock's target still in the match. Else
+    ///    [`Held::Idle`] — an unclassified lock is idle (D-UM-17's
     ///    classified-only rule, extended to the default target);
     /// 3. `rounds > slot.min_rounds_left`, else [`HeldWhy::Rounds`];
     /// 4. one [`Arena::aim_at`] trace; the plot's range **rounded** at the
@@ -432,10 +438,13 @@ impl Arena {
         if self.unit(held.target).is_none() {
             return Err(Held::Idle);
         }
+        // 17b cut M2.2, ruling (a): one read-dead rule for the three targets.
         let targeted = match (slot.target, held.class) {
             (_, Classification::Unknown) => false,
-            (SlotTarget::Lock, Classification::Classified { .. }) => true,
-            (SlotTarget::Contact { id }, Classification::Classified { .. }) => id == lock,
+            (SlotTarget::Lock, Classification::Classified { .. }) => !self.contact_reads_dead(held),
+            (SlotTarget::Contact { id }, Classification::Classified { .. }) => {
+                id == lock && !self.contact_reads_dead(held)
+            }
             (SlotTarget::BestHostile, Classification::Classified { team }) => {
                 team != state.team && !self.contact_reads_dead(held)
             }
@@ -966,8 +975,10 @@ mod tests {
     }
 
     /// **The three target rules**: an unclassified lock is idle for every
-    /// target; `BestHostile` is idle on a friendly and on a row that reads
-    /// dead; a `Contact` slot fires only when the lock is that id.
+    /// target; `BestHostile` is idle on a friendly; a `Contact` slot fires
+    /// only when the lock is that id; and — 17b cut M2.2, the lead's ruling
+    /// (a) — a lock that reads dead is idle for ALL THREE targets (17b cut
+    /// M1b.1 idled `BestHostile` alone there and kept `Lock` warranted).
     #[test]
     fn m1b1_the_target_rules_read_the_lock_and_its_class() {
         let mut arena = locked();
@@ -984,12 +995,20 @@ mod tests {
         };
         assert!(arena.warrant(RED, &on(lock), 0).is_ok());
         assert_eq!(arena.warrant(RED, &on(ContactId(1)), 0), Err(Held::Idle));
-        // A row that reads dead is no best hostile; the plain lock still is.
+        // 17b cut M2.2, ruling (a): a row that reads dead is no target for
+        // any of the three — the best hostile, the plain lock, nor the
+        // contact named by its own id.
         if let Some(held) = arena.contacts.get_mut(RED, lock) {
             held.known_dead = true;
         }
         assert_eq!(arena.warrant(RED, &best, 0), Err(Held::Idle));
+        assert_eq!(arena.warrant(RED, &slot("cannon", 100), 0), Err(Held::Idle));
+        assert_eq!(arena.warrant(RED, &on(lock), 0), Err(Held::Idle));
+        if let Some(held) = arena.contacts.get_mut(RED, lock) {
+            held.known_dead = false;
+        }
         assert!(arena.warrant(RED, &slot("cannon", 100), 0).is_ok());
+        assert!(arena.warrant(RED, &on(lock), 0).is_ok());
         // A friendly lock.
         let _ = arena.resolve_lock(RED, id_of(RED, FRIEND), 0);
         assert_eq!(arena.warrant(RED, &best, 0), Err(Held::Idle));
