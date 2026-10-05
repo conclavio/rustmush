@@ -30,7 +30,8 @@
 // fields at `FRAME_VERSION` 1, and 17b cut M1a.3's fields at 2 — `aspect`,
 // `reads_dead`, `odds` and `fatal` per contact, `bands_cm` per weapon, `t_ms` and
 // `order` at the top, and no `weapons` key at all on a hull with no weapons
-// station), and neither an older server nor a newer one may make this client
+// station; 17b cut M1b.3's at 3 — `armed` per weapon and `odds_floor_permille`
+// at the top), and neither an older server nor a newer one may make this client
 // throw. The version is not read.
 
 /** The per-pulse cockpit keyframe's feed (`tacsim::arena_bridge::FRAME_FEED`). */
@@ -127,8 +128,9 @@ export interface CockpitContact {
    * that does not send the key. */
   reads_dead: boolean | null;
   /** The chances against this contact, the default weapon first (17b cut
-   * M1a.3); `[]` for a contact the fire control is not resolving, on an unarmed
-   * hull, and from an older server. */
+   * M1a.3); `[]` for a contact the fire control is not resolving (since 17b
+   * cut M1b.3 every friend, an unclassified return and a hostile past the lock
+   * and the nearest), on an unarmed hull, and from an older server. */
   odds: CockpitOdds[];
   /** The target chassis's fatal section words beside a held reading (17b cut
    * M1a.3), or `null`. */
@@ -208,6 +210,28 @@ export interface CockpitWeapon {
   /** The weapon's band edges, centimetres (17b cut M1a.3); `[]` from an older
    * server. */
   bands_cm: number[];
+  /** The condition slot this weapon is armed in (17b cut M1b.3), or `null` —
+   * a weapon no slot holds, and every weapon from an older server. */
+  armed: CockpitArming | null;
+}
+
+/**
+ * **One weapon's armed slot** (17b cut M1b.3; doc 17 §3, §5, D-UM-4): the
+ * pilot's own slot number and its terms. `target` is the KIND — `lock`,
+ * `best` or `contact` — and never a designator (the server sends none).
+ * `aspects` are the facet words in the mask (`front`, `left`, `right`,
+ * `rear`); `keeps` the rounds the slot keeps back; a `null` range bound is
+ * none.
+ */
+export interface CockpitArming {
+  slot: number;
+  target: string;
+  min_permille: number;
+  percent: number;
+  aspects: string[];
+  keeps: number;
+  min_range_m: number | null;
+  max_range_m: number | null;
 }
 
 export interface CockpitFacet {
@@ -338,6 +362,9 @@ export interface CockpitFrame {
   /** The hull's standing order (17b cut M1a.3), or `null` — every piloted
    * hull, and an older server. */
   order: CockpitOrder | null;
+  /** The match's Compact floor, per mille (17b cut M1b.3), captured at
+   * check-out — or `null` from a server that does not send the key. */
+  odds_floor_permille: number | null;
   /** Whether the frame carries the `weapons` key (17b cut M1a.3): a hull with
    * no weapons station carries none, and its contact rows end at the aspect. */
   armed: boolean;
@@ -501,6 +528,40 @@ function decodeOdds(raw: unknown): CockpitOdds | null {
   };
 }
 
+/** The facet words a slot's mask may carry, in mask order (17b cut M1b.3). */
+const FACET_WORDS: readonly string[] = ["front", "left", "right", "rear"];
+
+/** One weapon's `armed` object (17b cut M1b.3), bounded and cleaned as
+ * `decodeOdds` is: `null` for anything not an object and for one without a
+ * slot; a target word this build predates is kept (cleaned, cut short) and
+ * prints nothing; facet words it does not know are dropped. */
+function decodeArming(raw: unknown): CockpitArming | null {
+  if (!isObj(raw)) {
+    return null;
+  }
+  const slot = optInt(raw.slot);
+  if (slot === null || slot < 0) {
+    return null;
+  }
+  const min_permille = Math.max(0, int(raw.min_permille, 0));
+  const bound = (v: unknown): number | null => {
+    const n = optInt(v);
+    return n === null || n < 0 ? null : n;
+  };
+  return {
+    slot,
+    target: clean(raw.target, "lock", 8),
+    min_permille,
+    percent: Math.max(0, int(raw.percent, Math.trunc(min_permille / 10))),
+    aspects: (Array.isArray(raw.aspects) ? raw.aspects : []).flatMap((word) =>
+      typeof word === "string" && FACET_WORDS.includes(word) ? [word] : [],
+    ),
+    keeps: Math.max(0, int(raw.keeps, 0)),
+    min_range_m: bound(raw.min_range_m),
+    max_range_m: bound(raw.max_range_m),
+  };
+}
+
 /** A standing order (17b cut M1a.3), or `null` for anything not an object. */
 function decodeOrder(raw: unknown): CockpitOrder | null {
   if (!isObj(raw)) {
@@ -568,6 +629,8 @@ function decodeWeapon(raw: unknown): CockpitWeapon | null {
       const cm = optInt(edge);
       return cm === null ? [] : [cm];
     }),
+    // 17b cut M1b.3.
+    armed: decodeArming(raw.armed),
   };
 }
 
@@ -748,6 +811,8 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     t_ms: optInt(data.t_ms),
     order: decodeOrder(data.order),
     armed: Array.isArray(data.weapons),
+    // 17b cut M1b.3.
+    odds_floor_permille: optInt(data.odds_floor_permille),
   };
 }
 
@@ -1018,6 +1083,11 @@ const REFUSAL_WORDS: ReadonlyMap<string, string> = new Map([
   ["epoch", "the seat changed hands"],
   // 16b cut O.2: `EMCON` on a tank with no pod.
   ["no_jammer", "no jamming pod"],
+  // 17b cut M1b.1's three words (said here since 17b cut M1b.3): a shot with
+  // no warrant, a slot count full, an arming under the Compact floor.
+  ["unwarranted", "no warrant"],
+  ["no_slot", "every slot armed"],
+  ["unlawful", "under the floor"],
 ]);
 
 /** Why motion stopped, in the pilot's words (`BlockedCause::as_str`). */
@@ -1395,16 +1465,63 @@ export function damageText(row: CockpitDamageRow): string {
     .join("")}`;
 }
 
-/** The weapons rows: readiness, rounds, and each weapon's OWN chance. */
+/** The weapons rows: readiness, rounds, and each weapon's OWN chance — and,
+ * under an armed weapon (17b cut M1b.3), one more line: two spaces and
+ * `armingWords`' line, the one line mode's `WEAPONSTATUS` and the TUI pane
+ * print under the row. */
 export function weaponLines(frame: CockpitFrame): string[] {
   if (frame.weapons.length === 0) {
     return ["(no weapon)"];
   }
-  return frame.weapons.map((w) => {
+  return frame.weapons.flatMap((w) => {
     const ready = w.ready ? "ready" : `${Math.ceil(Math.max(0, w.ready_in_ms) / 1000)} s`;
     const chance = w.percent === null ? "" : `  ${w.percent}%`;
-    return `${w.id}  ${ready}  ${w.rounds}/${w.rounds_max}${chance}`;
+    const row = `${w.id}  ${ready}  ${w.rounds}/${w.rounds_max}${chance}`;
+    return w.armed === null ? [row] : [row, `  ${armingWords(w.armed)}`];
   });
+}
+
+/**
+ * **The arming line** (17b cut M1b.3) — the web's copy of the arena's ONE
+ * formatter (`tacsim::match_::cockpit::arming_words`), byte for byte, pinned
+ * equal by `web_view_model.txt` against the TUI golden's rows for the same
+ * scene: `S{slot}:` then, one space apart, `best` for a `best` target
+ * (`contact` for a `contact` one; `lock`, the default, prints nothing),
+ * `>={percent}%`, the facets as `front`/`side`/`rear` joined `/` only when the
+ * mask is not all four, the range as `{a}-{b}m`, `under {b}m` or `past {a}m`
+ * only when bound, and `keeps {k}` only above nought —
+ * `S1: >=60% side/rear keeps 8`, `S1: best >=10% under 420m`.
+ */
+export function armingWords(a: CockpitArming): string {
+  const terms = [`S${a.slot}:`];
+  if (a.target === "best" || a.target === "contact") {
+    terms.push(a.target);
+  }
+  terms.push(`>=${a.percent}%`);
+  const has = (word: string): boolean => a.aspects.includes(word);
+  if (!FACET_WORDS.every(has)) {
+    const words = [
+      has("front") ? "front" : null,
+      has("left") || has("right") ? "side" : null,
+      has("rear") ? "rear" : null,
+    ].filter((word): word is string => word !== null);
+    if (words.length > 0) {
+      terms.push(words.join("/"));
+    }
+  }
+  const near = a.min_range_m !== null && a.min_range_m > 0 ? a.min_range_m : null;
+  const far = a.max_range_m;
+  if (near !== null && far !== null) {
+    terms.push(`${near}-${far}m`);
+  } else if (far !== null) {
+    terms.push(`under ${far}m`);
+  } else if (near !== null) {
+    terms.push(`past ${near}m`);
+  }
+  if (a.keeps > 0) {
+    terms.push(`keeps ${a.keeps}`);
+  }
+  return terms.join(" ");
 }
 
 /** **The side word a facet word prints as** (17b cut M1a.3; the arena's

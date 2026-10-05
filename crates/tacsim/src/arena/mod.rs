@@ -369,7 +369,7 @@ pub use view::{
     ContactRow, OddsCell, contact_band, fired_by_default, frame_contacts, frame_contacts_held,
     frame_lock, held_range_m, lock_designator, own_scope, range_m_rounded, settle_ranges,
 };
-pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
+pub use weapons::{FrameArming, FrameBand, FrameWeapon, Shot, WeaponBand};
 
 /// The fixtures every module's unit tests share: a window, a pose, a stock tank
 /// and a one-call [`Arena`].

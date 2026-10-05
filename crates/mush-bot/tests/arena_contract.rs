@@ -176,20 +176,14 @@ fn friendly_frame() -> Frame {
         age_ms: 0,
         cell: Some((100, 85)),
         condition: None,
-        // 17b cut M1a.3: a classified friend, nearer than BA, so it carries
-        // odds too, ahead of BA's.
+        // 17b cut M1a.3: a classified friend, nearer than BA. **17b cut
+        // M1b.3** (Q2): the odds rows never carry one of the hull's own side,
+        // so RB carries none — its cell prints the dash — and the lock on it
+        // takes no row either (the frame the arena now builds).
         aspect: Aspect::Front,
         reads_dead: Some(false),
         fatal: None,
     });
-    frame.odds.insert(
-        0,
-        FrameOdds {
-            contact: RB_ID,
-            weapon: "cannon".into(),
-            p_permille: 871,
-        },
-    );
     frame.lock = Some(RB_ID);
     frame
 }
@@ -298,6 +292,8 @@ fn frame() -> Frame {
                 p_permille: Some(624),
                 bands_cm: vec![150_000, 300_000],
                 heat_per_shot: 0,
+                // 17b cut M1b.3: no slot armed.
+                armed: None,
             },
             FrameWeapon {
                 id: "machine_gun".into(),
@@ -309,6 +305,7 @@ fn frame() -> Frame {
                 p_permille: Some(210),
                 bands_cm: vec![40_000],
                 heat_per_shot: 0,
+                armed: None,
             },
         ],
         sections: vec![
@@ -361,6 +358,8 @@ fn frame() -> Frame {
         ],
         order: None,
         t_ms: 61_250,
+        // 17b cut M1b.3: the shipped Compact floor.
+        odds_floor_permille: 100,
     }
 }
 
@@ -819,6 +818,17 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
     }
     reader.settle();
     assert_eq!(reader.picture.contacts["RB"].side, Some(Side::Red));
+    // 17b cut M1b.3 (Q2): a friend's row prints the dash, which reads as no
+    // odds — the reader's code unchanged (its tail is optional).
+    assert_eq!(
+        friend_rows
+            .iter()
+            .find(|row| row.designator.to_string() == "RB")
+            .and_then(odds_read),
+        None,
+        "a friend's row carries no odds"
+    );
+    assert_eq!(reader.picture.contacts["RB"].odds_percent, None, "the dash");
     let lock = cockpit::lock_line(&friend).expect("a lock line");
     assert_eq!(
         reader.one(&lock),

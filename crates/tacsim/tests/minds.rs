@@ -73,7 +73,7 @@ use tacsim::arena::state::{
     TerrainCell, TrackedRules, Waypoint, Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
-use tacsim::arena::weapons::WeaponBand;
+use tacsim::arena::weapons::{FrameArming, WeaponBand};
 use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
 use tacsim::definitions::{Catalog, content};
 use tacsim::deliberation::order::{CharacterRef, Constraints, Objective, Order};
@@ -342,6 +342,17 @@ fn events(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<LedgerEvent> {
         .lines()
         .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
         .collect()
+}
+
+/// **Whether `viewer` holds `target` and has told it apart** (17b cut M1b.3):
+/// the row an order's contact re-keys to (`Arena::rekey_order` keeps only a
+/// classified row).
+fn told_apart(arena: &Arena, viewer: ObjId, target: ObjId) -> bool {
+    arena
+        .contacts
+        .id_of(viewer, target)
+        .and_then(|id| arena.contacts.get(viewer, id))
+        .is_some_and(|row| matches!(row.class, Classification::Classified { .. }))
 }
 
 /// One intent on the channel that carries it, at the unit's current epoch.
@@ -2735,9 +2746,13 @@ fn m1a5_an_order_to_a_mind_is_re_keyed_to_its_own_held_contact_or_none() {
         rig.arena.contacts.of(RED).next().is_none(),
         "the precondition"
     );
-    // After the passes: both hold blue.
+    // After the passes: both hold blue — and, since 17b cut M1b.3 (D-UM-17's
+    // rule applied to the hint), the mind has told its rows apart: an unknown
+    // row re-keys to nothing (`m1b3_an_order_hint_re_keys_only_to_a_classified_row`).
     let _ = rig.until(5_000, |arena| {
-        arena.contacts.id_of(RED, BLUE).is_some() && arena.contacts.id_of(RED2, BLUE).is_some()
+        told_apart(arena, RED, BLUE)
+            && arena.contacts.id_of(RED2, BLUE).is_some()
+            && told_apart(arena, RED, RED2)
     });
     let again = engage(&rig.arena, 60_000);
     let _ = rig.pulse(&[], &[again]);
@@ -2812,6 +2827,176 @@ fn m1a5_an_order_to_a_mind_is_re_keyed_to_its_own_held_contact_or_none() {
             .map(|t_ms| (t_ms - SUBSTEP - think_at(RED, 0)).rem_euclid(STOCK_THINK_MS)),
         Some(0),
         "at a landing"
+    );
+}
+
+/// **An order's hint re-keys only to a CLASSIFIED row** (17b cut M1b.3; the
+/// lead's ruling on M1a's residual (2), D-UM-17's rule applied to the hint;
+/// `Arena::rekey_order`'s one resolution closure and its `Support` arm).
+///
+/// No tank carries a sensor, so nothing but the test writes a row. The
+/// pilot's tank holds blue classified under the hint `ENGAGE` carries; the
+/// mind holds blue only as an UNKNOWN row of its own, and its wingman
+/// unknown too:
+///
+/// * `ENGAGE` lands as `Engage { target: None }` — the mind is told nothing
+///   of which unknown row is blue;
+/// * the row classifies, and the SAME order stays `None` across a landing —
+///   **`order_hint_late`, declared**: `rekey_order` runs once, at the order's
+///   landing, where T0's `ordered_target` re-resolves its hint every tick (a
+///   late re-key needs the hint's object kept on the mind row, a 16c
+///   candidate);
+/// * a FRESH `ENGAGE` re-keys to the mind's own row;
+/// * `SUPPORT` of a held-but-unclassified wingman is `Support { of: None }`,
+///   and of the classified wingman its own row;
+/// * a self-charge (`SUPPORT` of the mind itself, hinted) resolves through the
+///   same closure: `Engage { target: None }` while the hinted row is unknown
+///   and the mind's own row once it is classified (17b cut L.2's rule).
+#[test]
+fn m1b3_an_order_hint_re_keys_only_to_a_classified_row() {
+    let blind = |unit: CustodyUnit| CustodyUnit {
+        sensor: None,
+        ..unit
+    };
+    let mut rig = Rig::new(arena_of(
+        vec![
+            blind(tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Mind,
+            )),
+            blind(tank(
+                RED2,
+                Team::Red,
+                centre(6, 10),
+                vec![cannon()],
+                Controller::Pilot,
+            )),
+            blind(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+        ],
+        &[RED2, BLUE],
+    ));
+    rig.arena.mind_runner = ScriptedMind::new(&[]);
+    // The pilot's row for blue, the hint; the mind's own rows, unknown. Each
+    // is (re)sighted NOW before an order, so no row ages out of the store.
+    let hint = ContactId(0x77);
+    let own_blue = ContactId(0x31);
+    let own_wing = ContactId(0x32);
+    let hold = |arena: &mut Arena, viewer: ObjId, id: ContactId, target: ObjId, classified| {
+        let now = arena.now_ms;
+        let state = arena.unit(target).expect("a fielded tank");
+        let class = if classified {
+            Classification::Classified { team: state.team }
+        } else {
+            Classification::Unknown
+        };
+        let plot = SeenPose::of(state);
+        arena
+            .contacts
+            .insert(viewer, id, ShadowContact::sighted(target, class, now, plot));
+    };
+    // The field as the mind holds it: blue and the wingman, each classified
+    // or not.
+    let field = |arena: &mut Arena, blue_told: bool, wing_told: bool| {
+        hold(arena, RED2, hint, BLUE, true);
+        hold(arena, RED, own_blue, BLUE, blue_told);
+        hold(arena, RED, own_wing, RED2, wing_told);
+    };
+    let ordered = |arena: &Arena, objective: Objective, target: Option<ContactId>| {
+        let mut told = order(RED_ONE, objective, Some(RED2), 60_000);
+        told.target = target;
+        intent(arena, RED, IntentKind::Order(Box::new(told)), 1)
+    };
+    let held = |arena: &Arena| {
+        arena
+            .minds
+            .get(&RED)
+            .and_then(|state| state.order.as_ref())
+            .map(|order| order.objective)
+    };
+    let engage = Objective::Engage {
+        target_hint: Some(hint),
+    };
+
+    // `ENGAGE` before the mind has told its row apart: nothing.
+    field(&mut rig.arena, false, false);
+    let first = ordered(&rig.arena, engage, None);
+    let _ = rig.pulse(&[], &[first]);
+    assert_eq!(
+        held(&rig.arena),
+        Some(MindObjective::Engage { target: None }),
+        "an unknown row is not the ordered target"
+    );
+    // The row classifies; the SAME order is not re-keyed (`order_hint_late`).
+    field(&mut rig.arena, true, false);
+    while rig.arena.now_ms < think_at(RED, 2) + SUBSTEP {
+        let _ = rig.pulse(&[], &[]);
+    }
+    assert_eq!(
+        held(&rig.arena),
+        Some(MindObjective::Engage { target: None }),
+        "order_hint_late: the standing order keeps its landing's answer"
+    );
+    assert!(
+        rig.arena
+            .contacts
+            .get(RED, own_blue)
+            .is_some_and(|row| matches!(row.class, Classification::Classified { .. })),
+        "the precondition: the row was classified across the landings"
+    );
+    // A fresh order re-keys to the mind's own, now classified, row.
+    field(&mut rig.arena, true, false);
+    let fresh = ordered(&rig.arena, engage, None);
+    let _ = rig.pulse(&[], &[fresh]);
+    assert_eq!(
+        held(&rig.arena),
+        Some(MindObjective::Engage {
+            target: Some(own_blue)
+        })
+    );
+    // `SUPPORT` of a held-but-unclassified wingman: no row; classified: its own.
+    field(&mut rig.arena, true, false);
+    let support = ordered(&rig.arena, Objective::Support { of: RED2 }, None);
+    let _ = rig.pulse(&[], &[support]);
+    assert_eq!(
+        held(&rig.arena),
+        Some(MindObjective::Support { of: None }),
+        "an unknown charge is no charge"
+    );
+    field(&mut rig.arena, true, true);
+    let support = ordered(&rig.arena, Objective::Support { of: RED2 }, None);
+    let _ = rig.pulse(&[], &[support]);
+    assert_eq!(
+        held(&rig.arena),
+        Some(MindObjective::Support { of: Some(own_wing) })
+    );
+    // A hinted self-charge resolves through the same closure: `None` while the
+    // hinted target's own row is unknown, the row once it is classified.
+    field(&mut rig.arena, false, true);
+    let charge = ordered(&rig.arena, Objective::Support { of: RED }, Some(hint));
+    let _ = rig.pulse(&[], &[charge]);
+    assert_eq!(
+        held(&rig.arena),
+        Some(MindObjective::Engage { target: None }),
+        "a self-charge fights on doctrine, and an unknown row is no hint"
+    );
+    field(&mut rig.arena, true, true);
+    let charge = ordered(&rig.arena, Objective::Support { of: RED }, Some(hint));
+    let _ = rig.pulse(&[], &[charge]);
+    assert_eq!(
+        held(&rig.arena),
+        Some(MindObjective::Engage {
+            target: Some(own_blue)
+        }),
+        "17b cut L.2's self-charge, through the same closure"
     );
 }
 
@@ -3659,24 +3844,38 @@ fn armings(intents: &[IntentKind]) -> Vec<&Arming> {
         .collect()
 }
 
-/// **17b cut M1b.2 on the two-T1 fixture** (D-UM-16, D-UM-17, D-UM-18):
+/// **17b cut M1b.2 on the two-T1 fixture** (D-UM-16, D-UM-17, D-UM-18), as
+/// **17b cut M1b.3** made T1 read its own slots off its view (D-UM-4):
 ///
-/// * every think of the armed red answers its slots — one `Arm` per weapon
-///   of its first [`STOCK_CONDITION_SLOTS`], in the view's component order
-///   (`BestHostile`, Line's 100 per mille, every aspect, no reserve), or one
-///   `Disarm { None }`; the unarmed red never answers a `Condition`
-///   (D-UM-48); and every one of them LANDS — no think is handed a refusal
-///   of a fire-channel order (the arena's numbering is pinned separately,
-///   after every landing, by
-///   [`m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing`]);
+/// * a think of the armed red answers a `Condition` **only on a difference**
+///   between what it wants and what its view's `armed` rows show — an `Arm`
+///   only for a weapon of its first [`STOCK_CONDITION_SLOTS`] whose view row
+///   is unarmed or armed on other terms (`BestHostile`, Line's 100 per mille,
+///   every aspect, no reserve), a `Disarm { None }` only beside an armed view
+///   row — and so far fewer thinks answer one than think (M1b.2 answered one
+///   every think); the unarmed red never answers a `Condition` (D-UM-48); and
+///   every one of them LANDS — no think is handed a refusal of a fire-channel
+///   order (the arena's numbering is pinned separately, after every landing,
+///   by [`m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing`]);
 /// * a `Fire` is planned only beside a `Lock` of the same think, and cites
-///   `Some(i + 1)` for its weapon's index in the view;
+///   the slot NUMBER its weapon's view row shows (`armed.slot`), or `i + 1`
+///   for a weapon armed by that very think;
 /// * every `fired` line of the armed red is cited — `slot: 1` — and is
 ///   `by: "mind"` exactly when it is the landing of a think that planned a
 ///   fresh `Lock` and a `Fire`, `by: "cond"` otherwise (the slot's own shot
 ///   at a `WeaponReady`, a pass or a landing);
-/// * the `fired` milliseconds are [`M1B2_TWO_T1_FIRED`], recorded.
+/// * the `fired` milliseconds are [`M1B2_TWO_T1_FIRED`], recorded by 17b cut
+///   M1b.2 and unmoved by the on-change arming.
 fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
+    let mut thinks = 0_usize;
+    let mut answered = 0_usize;
+    let mut cited_off_view = 0_usize;
+    let mut shown = 0_usize;
+    // The landing millisecond of the armed red's first arming.
+    let armed_from = kept
+        .iter()
+        .find(|(unit, _, _, result)| *unit == RED && !armings(&result.intents).is_empty())
+        .map(|(_, t_ms, ..)| t_ms + SUBSTEP);
     for (unit, t_ms, view, result) in kept {
         // Every arming, disarming and citation LANDED: no think was handed a
         // refusal of its fire channel.
@@ -3693,6 +3892,22 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
             assert!(rows.is_empty(), "the unarmed red armed at {t_ms}: {rows:?}");
             continue;
         }
+        thinks += 1;
+        if !rows.is_empty() {
+            answered += 1;
+        }
+        // 17b cut M1b.3 (D-UM-4): from the first arming's landing on, the
+        // view shows the slot — S1, the best hostile — as a pilot's frame
+        // does, and that is what the think reads.
+        if armed_from.is_some_and(|from| *t_ms >= from) {
+            let armed = view.weapons.first().and_then(|row| row.armed.as_ref());
+            assert_eq!(
+                armed.map(|armed| (armed.slot, armed.target)),
+                Some((1, SlotTarget::BestHostile)),
+                "the view's armed row at {t_ms}"
+            );
+            shown += 1;
+        }
         let arms: Vec<&FireCondition> = rows
             .iter()
             .filter_map(|arming| match arming {
@@ -3700,23 +3915,26 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
                 Arming::Disarm { .. } => None,
             })
             .collect();
-        if arms.is_empty() {
+        if arms.is_empty() && !rows.is_empty() {
             assert_eq!(
                 rows,
                 vec![&Arming::Disarm { weapon: None }],
                 "one disarm at {t_ms}"
             );
-        } else {
+            assert!(
+                view.weapons.iter().any(|row| row.armed.is_some()),
+                "a disarm only beside an armed view row at {t_ms}"
+            );
+        } else if !arms.is_empty() {
             assert_eq!(arms.len(), rows.len(), "no disarm beside an arm at {t_ms}");
-            let weapons: Vec<&SmolStr> = arms.iter().map(|cond| &cond.weapon).collect();
-            let want: Vec<&SmolStr> = view
+            let slotted: Vec<&SmolStr> = view
                 .weapons
                 .iter()
                 .take(STOCK_CONDITION_SLOTS)
                 .map(|weapon| &weapon.id)
                 .collect();
-            assert_eq!(weapons, want, "one arm per weapon, in order, at {t_ms}");
             for cond in arms {
+                assert!(slotted.contains(&&cond.weapon), "{} at {t_ms}", cond.weapon);
                 assert_eq!(
                     (
                         cond.target,
@@ -3726,6 +3944,18 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
                     ),
                     (SlotTarget::BestHostile, 100, ASPECTS_ANY, 0),
                     "Line's discipline at {t_ms}"
+                );
+                // 17b cut M1b.3: only a row the view shows otherwise.
+                let shown = view
+                    .weapons
+                    .iter()
+                    .find(|row| row.id == cond.weapon)
+                    .and_then(|row| row.armed.clone());
+                assert!(
+                    shown
+                        .as_ref()
+                        .is_none_or(|armed| *armed != FrameArming::of(armed.slot, cond)),
+                    "an Arm of the terms the view already shows at {t_ms}: {shown:?}"
                 );
             }
         }
@@ -3737,14 +3967,36 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
             if let IntentKind::Fire { weapon, slot } = kind {
                 assert!(locks, "a Fire with no fresh Lock at {t_ms}");
                 let at = view.weapons.iter().position(|row| &row.id == weapon);
+                let shown = view
+                    .weapons
+                    .iter()
+                    .find(|row| &row.id == weapon)
+                    .and_then(|row| row.armed.as_ref())
+                    .map(|armed| armed.slot);
+                if shown.is_some() {
+                    cited_off_view += 1;
+                }
                 assert_eq!(
-                    slot.map(usize::from),
-                    at.map(|at| at + 1),
-                    "n = i + 1 at {t_ms}"
+                    *slot,
+                    shown.or_else(|| at.and_then(|at| u8::try_from(at + 1).ok())),
+                    "the view's slot number, else i + 1, at {t_ms}"
                 );
             }
         }
     }
+    // 17b cut M1b.3: an arming answered only on a difference — far fewer
+    // thinks answer one than think.
+    assert!(answered >= 1, "the armed red armed: {answered} of {thinks}");
+    assert!(shown > 0, "a think read its own armed slot off its view");
+    assert!(
+        answered * 4 <= thinks,
+        "a Condition on {answered} of {thinks} thinks: not only on a difference"
+    );
+    eprintln!(
+        "m1b3 two-T1: {answered} of {thinks} armed-red thinks answered a Condition; \
+         {shown} read the armed slot off the view; \
+         {cited_off_view} Fire(s) cited off the view's armed row"
+    );
     let fired: Vec<(i64, String)> = run
         .events
         .iter()
@@ -3796,9 +4048,11 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
 /// landing** (17b cut M1b.2: `n = i + 1` equals the arena's stable
 /// numbering by construction): the (j) field one substep a pulse for 30 s,
 /// and after every pulse `arena.conditions.slots(RED)` read against the
-/// armings of the last think of red's whose landing has run — slot `i + 1`
-/// holds the `i`-th `Arm`'s terms, or every slot is empty after a `Disarm` —
-/// and the unarmed red holds no slot.
+/// armings of the last think of red's whose landing has run **and that
+/// answered a `Condition`** (17b cut M1b.3: a think whose view already
+/// showed what it wanted answers none, and its slots are the earlier
+/// think's) — slot `i + 1` holds the `i`-th `Arm`'s terms, or every slot is
+/// empty after a `Disarm` — and the unarmed red holds no slot.
 #[test]
 fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing() {
     let mut arena = the_j_field(Controller::Mind);
@@ -3811,10 +4065,10 @@ fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing() {
         let now = rig.arena.now_ms;
         assert!(rig.arena.conditions.is_empty_for(RED2), "at {now}");
         let kept = stock.kept();
-        let Some((_, think_ms, _, result)) = kept
-            .iter()
-            .rev()
-            .find(|(unit, think_ms, ..)| *unit == RED && think_ms + SUBSTEP <= now)
+        let Some((_, think_ms, _, result)) =
+            kept.iter().rev().find(|(unit, think_ms, _, result)| {
+                *unit == RED && think_ms + SUBSTEP <= now && !armings(&result.intents).is_empty()
+            })
         else {
             continue;
         };
@@ -3842,9 +4096,16 @@ fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing() {
             checked.0 += 1;
         }
     }
+    // 17b cut M1b.3: on change, a `Disarm` is answered only beside an armed
+    // view row, and this fixture's red, once armed, never stops wanting its
+    // slot — so only the armed half runs here (the disarm on change is pinned
+    // in-source, `stock_mind.rs`' `hold_fire` and `Starting` arms over an
+    // armed view, and LANDED at three cadences by `tests/conditions.rs`'
+    // `m1b3_t1_disarms_once_on_change_when_a_hold_fire_lands_on_its_armed_slot`).
+    // M1b.2 disarmed on every think before the first arming.
     assert!(
-        checked.0 > 0 && checked.1 > 0,
-        "both arms ran: {checked:?} (armed, disarmed)"
+        checked.0 > 0,
+        "the armed half ran: {checked:?} (armed, disarmed)"
     );
 }
 
@@ -3860,11 +4121,17 @@ fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing() {
 /// holds the emission rules; and the recording runner is transparent — the
 /// arena's own default runner journals the same lines and hashes.
 ///
-/// **17b cut M1b.2** ([`two_t1_slots_and_citations`]): every think answers
-/// the armed red's slot (an `Arm` per gun, or a `Disarm`) and the unarmed
-/// red's none; a `Fire` only beside a fresh `Lock`, citing `i + 1`; every
-/// `fired` line cited, `by: "mind"` on a fresh-lock landing and `by: "cond"`
-/// otherwise; the `fired` milliseconds recorded ([`M1B2_TWO_T1_FIRED`]).
+/// **17b cut M1b.2, as 17b cut M1b.3 left it** ([`two_t1_slots_and_citations`]):
+/// the armed red answers a `Condition` only where its view's `armed` rows
+/// differ from what it wants (an `Arm` per such gun, or a `Disarm` beside an
+/// armed row) and the unarmed red never; a `Fire` only beside a fresh `Lock`,
+/// citing the slot its view shows, else `i + 1` for a gun armed by that very
+/// think; every `fired` line cited, `by: "mind"` on a fresh-lock landing and
+/// `by: "cond"` otherwise; the `fired` milliseconds recorded
+/// ([`M1B2_TWO_T1_FIRED`]). (This fixture's one cited shot is its arming
+/// think's, so it cites `i + 1`; the citation off a view whose number differs
+/// from `i + 1` is `tests/conditions.rs`'
+/// `m1b3_t1_cites_the_slot_its_view_shows_after_its_s1_gun_is_lost`.)
 /// The emission rank with `Condition` is [`stock_emission_holds`]'.
 #[test]
 fn m1a6_two_stock_minds_at_three_cadences_are_one_event_list_and_one_hash_sequence() {
@@ -4932,10 +5199,11 @@ fn l2_a_self_charged_support_fights_on_doctrine() {
     // (3) Hinted, and a charge that is another unit.
     let mut rig = Rig::new(charge_field());
     rig.arena.mind_runner = ScriptedMind::new(&[]);
+    // 17b cut M1b.3: the mind's rows told apart, which the re-key now asks.
     let _ = rig.until(10_000, |arena| {
-        arena.contacts.id_of(RED, BLUE).is_some()
+        told_apart(arena, RED, BLUE)
             && arena.contacts.id_of(RED2, BLUE).is_some()
-            && arena.contacts.id_of(RED, RED2).is_some()
+            && told_apart(arena, RED, RED2)
     });
     let pilot_says_blue = draw_contact_id(SEED, RED2, BLUE);
     let mind_holds_blue = rig.arena.contacts.id_of(RED, BLUE);

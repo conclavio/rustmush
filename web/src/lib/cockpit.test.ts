@@ -20,6 +20,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  armingWords,
   catchupLines,
   cockpitView,
   cockpitViewLines,
@@ -41,6 +42,7 @@ import {
   statusLines,
   weaponLines,
   type ArenaMap,
+  type CockpitArming,
   type CockpitFrame,
   type CockpitNotice,
   type Marker,
@@ -530,6 +532,8 @@ describe("the view model", () => {
     ]);
     expect(weaponLines(frame)).toEqual([
       "cannon  ready  14/20  62%",
+      // 17b cut M1b.3: the scene's cannon is armed in S1.
+      "  S1: >=60% side/rear keeps 8",
       "machine_gun  1 s  380/500  21%",
     ]);
     const view = cockpitView(frame, null, []);
@@ -1068,7 +1072,9 @@ describe("17b cut M1a.3", () => {
   it("pins the armed rows: the main gun's odds, or a dash", () => {
     expect(contactRows(theFrame()).map((row) => row.detail)).toEqual([
       "blue  045°  far  450 m  1 s  side  cannon 62%",
-      "red  270°  close  100 m  0 s  front  cannon 87%",
+      // 17b cut M1b.3 (Q2): RB is red's own, and the rows never carry a
+      // friend's odds — the dash.
+      "red  270°  close  100 m  0 s  front  -",
       "unknown  315°  effective  200 m  3 s  front  -",
       "unknown  030°  far  600 m  6 s  rear  -",
     ]);
@@ -1109,5 +1115,140 @@ describe("17b cut M1a.3", () => {
       expires_in_ms: 54250,
     });
     expect(decodeCockpitFrame({ ...raw, order: "hold" })?.order).toBeNull();
+  });
+});
+
+// **17b cut M1b.3** (doc 17 §3, §5, D-UM-4, D-UM-17): `FRAME_VERSION` 3 — each
+// weapon's `armed` slot and the match's `odds_floor_permille` — and the arming
+// line under an armed weapon, the arena's one formatter written out here.
+describe("17b cut M1b.3", () => {
+  const arming = (partial: Partial<CockpitArming>): CockpitArming => ({
+    slot: 1,
+    target: "lock",
+    min_permille: 600,
+    percent: 60,
+    aspects: ["front", "left", "right", "rear"],
+    keeps: 0,
+    min_range_m: null,
+    max_range_m: null,
+    ...partial,
+  });
+
+  it("decodes the armed row, the null row and the floor from the committed frame", () => {
+    const frame = theFrame();
+    expect(frame.odds_floor_permille).toBe(100);
+    expect(frame.weapons[0]?.armed).toEqual({
+      slot: 1,
+      target: "lock",
+      min_permille: 600,
+      percent: 60,
+      aspects: ["left", "right", "rear"],
+      keeps: 8,
+      min_range_m: null,
+      max_range_m: null,
+    });
+    expect(frame.weapons[1]?.armed).toBeNull();
+    // The VIEW composite carries the same keys.
+    const view = decodeCockpitFrame(json("view_frame.json"));
+    expect(view?.odds_floor_permille).toBe(100);
+    expect(view?.weapons[0]?.armed?.slot).toBe(1);
+  });
+
+  it("decodes an older frame, without the keys, as it always did", () => {
+    const old = decodeCockpitFrame({
+      match: 3,
+      callsign: "BB",
+      weapons: [{ id: "gun", ready: true, rounds: 4, rounds_max: 10 }],
+    });
+    expect(old?.odds_floor_permille).toBeNull();
+    expect(old?.weapons[0]?.armed).toBeNull();
+    expect(old ? weaponLines(old) : []).toEqual(["gun  ready  4/10"]);
+  });
+
+  it("bounds and cleans an armed object as it does an odds entry", () => {
+    const raw = json("cockpit_frame.json") as Record<string, unknown>;
+    const weapons = raw.weapons as Record<string, unknown>[];
+    const hostile = decodeCockpitFrame({
+      ...raw,
+      weapons: [
+        {
+          ...weapons[0],
+          armed: {
+            slot: 2,
+            target: "be\u001bst_and_far_too_long",
+            min_permille: 450,
+            aspects: ["rear", "top", 7, "front"],
+            keeps: -3,
+            min_range_m: -1,
+            max_range_m: "far",
+            designator: "BA",
+            contact: "00000000000000ab",
+          },
+        },
+        { ...weapons[1], armed: "S1" },
+        { ...weapons[1], armed: { target: "lock" } },
+      ],
+    });
+    const armed = hostile?.weapons[0]?.armed;
+    expect(armed).toEqual({
+      slot: 2,
+      target: "best_and",
+      min_permille: 450,
+      percent: 45,
+      aspects: ["rear", "front"],
+      keeps: 0,
+      min_range_m: null,
+      max_range_m: null,
+    });
+    // Nothing the decoder did not keep can reach a line.
+    expect(Object.keys(armed ?? {})).not.toContain("designator");
+    expect(Object.keys(armed ?? {})).not.toContain("contact");
+    expect(JSON.stringify(hostile?.weapons)).not.toMatch(/[0-9a-f]{16}/);
+    // Not an object, and an object with no slot: no arming.
+    expect(hostile?.weapons[1]?.armed).toBeNull();
+    expect(hostile?.weapons[2]?.armed).toBeNull();
+    // An unknown target word prints nothing.
+    expect(armed ? armingWords(armed) : "").toBe("S2: >=45% front/rear");
+  });
+
+  it("prints every term's words", () => {
+    // The scene's: the lock, a flank or the rear, eight rounds kept.
+    expect(armingWords(arming({ aspects: ["left", "right", "rear"], keeps: 8 }))).toBe(
+      "S1: >=60% side/rear keeps 8",
+    );
+    expect(
+      armingWords(
+        arming({ aspects: ["left", "right", "rear"], keeps: 8, min_range_m: 200, max_range_m: 600 }),
+      ),
+    ).toBe("S1: >=60% side/rear 200-600m keeps 8");
+    // T1's: the best hostile at Line's floor, under its admitting ceiling.
+    expect(
+      armingWords(arming({ target: "best", min_permille: 100, percent: 10, max_range_m: 420 })),
+    ).toBe("S1: best >=10% under 420m");
+    expect(armingWords(arming({ target: "contact", slot: 2 }))).toBe("S2: contact >=60%");
+    expect(armingWords(arming({ min_range_m: 300 }))).toBe("S1: >=60% past 300m");
+    // A zero lower bound is no bound.
+    expect(armingWords(arming({ min_range_m: 0, max_range_m: 500 }))).toBe(
+      "S1: >=60% under 500m",
+    );
+    expect(armingWords(arming({ aspects: ["front"] }))).toBe("S1: >=60% front");
+    expect(armingWords(arming({ aspects: ["left"] }))).toBe("S1: >=60% side");
+    expect(armingWords(arming({ aspects: ["front", "right", "rear"] }))).toBe(
+      "S1: >=60% front/side/rear",
+    );
+    expect(armingWords(arming({ aspects: [] }))).toBe("S1: >=60%");
+    expect(armingWords(arming({ keeps: 0 }))).toBe("S1: >=60%");
+  });
+
+  it("says the three new refusal words", () => {
+    expect(notice({ kind: "refused", order: "fire", weapon: "cannon", refusal: "unwarranted" })).toBe(
+      "FIRE cannon refused: no warrant",
+    );
+    expect(notice({ kind: "refused", order: "fire", weapon: "cannon", refusal: "no_slot" })).toBe(
+      "FIRE cannon refused: every slot armed",
+    );
+    expect(notice({ kind: "refused", order: "fire", weapon: "cannon", refusal: "unlawful" })).toBe(
+      "FIRE cannon refused: under the floor",
+    );
   });
 });

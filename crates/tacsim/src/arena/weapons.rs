@@ -706,6 +706,63 @@ pub struct FrameWeapon {
     /// sent: it is read off the content at check-out and never moves inside a
     /// match.
     pub heat_per_shot: u32,
+    /// **The condition slot this weapon is armed in, and its terms** (17b cut
+    /// M1b.3; doc 17 §3's parity rule, D-UM-4, D-UM-16), or `None` for a weapon
+    /// no slot holds.
+    ///
+    /// Read off [`Arena::conditions`] at the build, so a pilot's `WEAPONSTATUS`,
+    /// both panels and a mind's view read the one arming the arena will
+    /// evaluate. It names the pilot's own slot and their own weapon and never a
+    /// contact: [`FrameArming::target`] is the target's KIND, and a
+    /// `SlotTarget::Contact` prints `contact` with no id (doc 17 §5, the observer
+    /// rule; nobody arms one in 17b cut M1b — it is unlawful).
+    pub armed: Option<FrameArming>,
+}
+
+/// **One weapon's armed slot, as its pilots' frame carries it** (17b cut M1b.3;
+/// D-UM-4, D-UM-16): the slot's stable 1-based number and the terms
+/// [`crate::arena::conditions::FireCondition`] holds, the weapon left out
+/// because the row it rides IS the weapon.
+///
+/// `keeps` is the slot's `min_rounds_left` — the rounds it keeps back (it fires
+/// while the weapon holds more). `max_range_m` is `u32::MAX` for no upper bound
+/// and `min_range_m` `0` for no lower one, exactly as the slot holds them; the
+/// keyframe writes either as `null` (`crate::match_::cockpit::status_frame`)
+/// and `crate::match_::cockpit::arming_words` prints neither.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameArming {
+    /// The slot's 1-based number — the number a cited `FIRE` names.
+    pub slot: u8,
+    /// What it fires at: the KIND, never a designator on any surface.
+    pub target: crate::arena::conditions::SlotTarget,
+    /// The least chance it fires at, per mille.
+    pub min_permille: u16,
+    /// The aspects it fires at, one bit per facet
+    /// ([`crate::arena::conditions::ASPECTS_ANY`] for all four).
+    pub aspects: u8,
+    /// The rounds it keeps back (the slot's `min_rounds_left`).
+    pub keeps: u32,
+    /// The nearest rounded range it fires at, metres (`0` for none).
+    pub min_range_m: u32,
+    /// The furthest rounded range it fires at, metres (`u32::MAX` for none).
+    pub max_range_m: u32,
+}
+
+impl FrameArming {
+    /// **The frame's copy of a slot** (17b cut M1b.3): `cond`'s terms under the
+    /// slot number `slot`.
+    #[must_use]
+    pub fn of(slot: u8, cond: &crate::arena::conditions::FireCondition) -> FrameArming {
+        FrameArming {
+            slot,
+            target: cond.target,
+            min_permille: cond.min_permille,
+            aspects: cond.aspects,
+            keeps: cond.min_rounds_left,
+            min_range_m: cond.min_range_m,
+            max_range_m: cond.max_range_m,
+        }
+    }
 }
 
 impl FrameWeapon {
@@ -717,6 +774,13 @@ impl FrameWeapon {
     /// for the whole six seconds after a shot to a pilot whose scope is otherwise
     /// empty. What a pilot needs a *frame* for is the transition — ready, a round
     /// spent, a band changed — and the countdown rides whichever frame that produces.
+    ///
+    /// **17b cut M1b.3**: the arming is compared — an arming changed, armed or
+    /// cleared re-sends the frame, because the arming line is a surface a pilot
+    /// reads and a mind acts on. It moves only on an arming's landing, a
+    /// controller transition, a wreck or a turret lost, so it costs no frame on
+    /// a hull nobody arms — a production pilot's hull until the pilot types
+    /// `FIRE … WHEN` (17b cut M1b.4).
     #[must_use]
     pub fn same_as(&self, other: &FrameWeapon) -> bool {
         self.id == other.id
@@ -732,6 +796,8 @@ impl FrameWeapon {
             // **16b cut D.2**: it decides whether the cockpit refuses this weapon
             // for heat, and it never moves inside a match — see the field.
             && self.heat_per_shot == other.heat_per_shot
+            // **17b cut M1b.3**: see above.
+            && self.armed == other.armed
     }
 }
 
@@ -1181,6 +1247,7 @@ impl Arena {
                 .unwrap_or(0),
         )
         .unwrap_or(0);
+        let slots = self.conditions.slots(platform);
         state
             .weapons
             .iter()
@@ -1218,6 +1285,15 @@ impl Arena {
                         .heat
                         .as_ref()
                         .map_or(0, |heat| heat.per_shot(&weapon.id)),
+                    // **17b cut M1b.3** (D-UM-4): the slot this weapon is
+                    // armed in, under its stable 1-based number — the
+                    // number the arena gave at the arming and a cited `FIRE`
+                    // names. A hull with no slot pays one map miss.
+                    armed: slots.iter().enumerate().find_map(|(at, slot)| {
+                        let cond = slot.as_ref().filter(|cond| cond.weapon == weapon.id)?;
+                        let n = u8::try_from(at.saturating_add(1)).ok()?;
+                        Some(FrameArming::of(n, cond))
+                    }),
                 }
             })
             .collect()

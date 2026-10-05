@@ -987,11 +987,13 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
         // fold there: the pane is not focused, so nothing scrolls it into
         // view. The rows above it are whole. **17b cut M1a.3**: whole means
         // with the compact aspect-and-odds tail, so the tail's fit is asserted
-        // at both sizes — X3's row fills the 46 columns exactly.
+        // at both sizes — X3's row fills the 46 columns exactly. **17b cut
+        // M1b.3** (Q2): RB is red's own, and the odds rows never carry a
+        // friend's, so its row ends at the side word.
         let x4 = "X4  unknown  030\u{b0}  far  600 m  6 s rear";
         for row in [
             "BA  blue  045\u{b0}  far  450 m  1 s side 62%",
-            "RB  red  270\u{b0}  close  100 m  0 s front 87%",
+            "RB  red  270\u{b0}  close  100 m  0 s front",
             "X3  unknown  315\u{b0}  effective  200 m  3 s front",
             x4,
         ] {
@@ -1009,6 +1011,13 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
                 "{w}x{h}: {row:?} is not whole in the Right column:\n{text}"
             );
         }
+        // **17b cut M1b.3**: the scene's cannon is armed in S1, and its arming
+        // line — `arming_words`' line, two spaces in — sits whole under its
+        // row in the weapons pane at every size.
+        assert!(
+            right_holds(&text, "\u{2502}  S1: >=60% side/rear keeps 8 ", w),
+            "{w}x{h}: the arming line under the cannon:\n{text}"
+        );
         // The ring, under `┌notices` in the Right column.
         let notices_at = text
             .lines()

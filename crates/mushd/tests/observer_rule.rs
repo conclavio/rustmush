@@ -135,6 +135,11 @@ struct Server {
     /// **16b cut V.3**: the store `boot` made, so the report column can read the
     /// black box the world wrote and compare what each pilot is told with it.
     store: Arc<dyn ObjectStore>,
+    /// **17b cut M1b.3**: the live arena tasks the world drives, taken before
+    /// the engine moved into its task — the one handle a test can offer an
+    /// arena an intent through when no verb types it yet (`FIRE … WHEN` is
+    /// 17b cut M1b.4's).
+    tasks: Option<tacsim::arena_bridge::ArenaTasks>,
 }
 
 impl Drop for Server {
@@ -340,6 +345,11 @@ async fn boot_over(
     }
     // The hello manifest, from the one producer `main.rs` builds it with.
     let (features, panels) = mush_server::boot::build_hello_manifest(&engine);
+    // 17b cut M1b.3: the arena tasks' shared table, before the engine moves.
+    let tasks = engine
+        .world
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone());
 
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
         linkdead_grace: grace,
@@ -416,6 +426,7 @@ async fn boot_over(
         _handles: handles,
         _web: web_task,
         store,
+        tasks,
     }
 }
 
@@ -713,9 +724,10 @@ fn unseated(feed: &str) -> Value {
             },
             "seated": false,
         }),
-        // 17b cut M1a.3 bumped the cockpit frame to version 2.
+        // 17b cut M1a.3 bumped the cockpit frame to version 2, 17b cut M1b.3
+        // to 3.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 2, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 3, "retain": "latest" },
             "seated": false,
         }),
     }
@@ -2418,13 +2430,13 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "an empty scope, before detection: {cockpit}"
     );
     // **17b cut M1a.3** (doc 17 §3): the frame's own clock and a piloted
-    // hull's order, which is none; version 2.
+    // hull's order, which is none; version 2 — 3 since 17b cut M1b.3.
     assert!(
         cockpit.get("t_ms").is_some_and(Value::is_i64),
         "the frame carries its arena millisecond: {cockpit}"
     );
     assert_eq!(cockpit.get("order"), Some(&Value::Null), "{cockpit}");
-    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(2)));
+    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(3)));
     assert_eq!(
         cockpit.get("callsign").and_then(Value::as_str),
         Some("RA"),
@@ -4352,6 +4364,8 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         odds: Vec::new(),
         order: None,
         t_ms: 0,
+        // 17b cut M1b.3: the shipped floor.
+        odds_floor_permille: 100,
     }
 }
 
@@ -7092,7 +7106,9 @@ const AE3_BLUE_POSE: &str = "@arena/pose BA=160 97 270";
 ///    ordinary row whose plot is further than its own sight: the shared plot,
 ///    and nothing more than any teammate's share would give it. From the moment
 ///    they climbed in, neither Bo nor Cy was sent the word `drone`, and no
-///    transcript carries a bare contact id.
+///    transcript carries a bare contact id. **17b cut M1b.3** (Q2): Cy's
+///    row for the drone, his nearest classified contact, is the dash — a
+///    friend never takes an odds row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     let server = boot("observer-ae3").await;
@@ -7247,6 +7263,28 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     assert!(
         !row.split_whitespace().any(|word| word == "RA"),
         "the shared row names the teammate that shared it: {row}"
+    );
+    // **17b cut M1b.3** (Q2): Cy's tank holds the drone on its own sight, 250
+    // m ahead — its nearest classified contact — and the row is the DASH:
+    // the fire control resolves hostiles only, so a friend never takes an
+    // odds row, however near (before Q2 this row carried the cannon's odds).
+    let mut friend_row = String::new();
+    wait_until(STEP_TIMEOUT, "Cy's tank to tell RA apart", async || {
+        friend_row = ask_whole(&mut cy, "CONTACTS").await;
+        contact_range_m(&friend_row, "RA").is_some()
+    })
+    .await;
+    let row = strip_ansi(&friend_row)
+        .lines()
+        .find(|line| line.trim_start().starts_with("RA "))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(row.contains(" red "), "the friendly row is red's: {row}");
+    assert!(
+        ["  front  -", "  side  -", "  rear  -"]
+            .iter()
+            .any(|tail| row.trim_end().ends_with(tail)),
+        "a friendly row carried odds, or no aspect: {row}"
     );
 
     // Bo's tank holds the drone on its own sight (450 m of road, inside its
@@ -7549,6 +7587,236 @@ async fn m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detect
             m1a4_drive_refusal(&seen),
             before,
             "{line} after detection answered other bytes than before it"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.3 — the arming and the floor on the frame
+// ---------------------------------------------------------------------------
+
+/// The cockpit keyframe the arena holds for this socket's pilot, asked for
+/// (a panel's resync query) rather than waited on.
+async fn m1b3_cockpit(ws: &mut Ws, id: u64) -> Value {
+    panel_query(ws, id, COCKPIT_FEED).await
+}
+
+/// Every weapon row's `armed` value of a keyframe, in row order.
+fn m1b3_armed(frame: &Value) -> Vec<Value> {
+    frame
+        .get("weapons")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .map(|row| row.get("armed").cloned().unwrap_or(Value::Null))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **17b cut M1b.3: the arming names nothing but the pilot's own slot** (doc
+/// 17 §3, §5; doc 16 §1, §5's observer rule; 17b's (e)).
+///
+/// On the real rig, Ada's cannon is armed — `S1` on her lock, at 60 per cent
+/// or better, on a flank or the rear, keeping two rounds — through a direct
+/// `ArenaMsg::Intent` offer (no verb types an arming before 17b cut M1b.4;
+/// the world stamps the epoch, so the offer is made at each of the first few
+/// and the arena keeps the one that is current and silently refuses the
+/// rest). Then:
+///
+/// * before detection, Ada's keyframe carries the `armed` object, exactly the
+///   pilot's own terms — the slot, the target's KIND (`lock`), the odds, the
+///   facet words, the reserve, `null` bounds — and no designator, no object
+///   number, no sixteen-figure id and no figure of another unit; her
+///   machine gun's row is `null`;
+/// * Bo's keyframe carries nothing of Ada's arming — every row `null`, no
+///   slot word anywhere in it;
+/// * after detection and after classification the same: Ada's object is the
+///   same object, her unclassified row's odds cell empty (asserted on at
+///   least one `X<n>` row inside the classify window) and, once told apart,
+///   `BA`'s odds led by the cannon — and Bo's frame, which now holds Ada's
+///   tank, still carries nothing of her slot;
+/// * both frames carry the one match floor, the shipped 100 per mille.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m1b3_the_arming_names_nothing_but_the_pilots_own_slot() {
+    use tacsim::arena::conditions::{Arming, FireCondition, SlotTarget, aspect_mask};
+    use tacsim::arena::intents::{Intent, IntentKind};
+    use tacsim::arena::perception::Aspect;
+    use tacsim::arena::state::Channel;
+    let server = boot("observer-arming").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    close_the_gap(&mut god, red, blue, domain).await;
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let mut bo_web = web_session(&server, "bo", PILOT_PASSWORD, "Bo").await;
+    take_off(&mut ada, &mut bo).await;
+
+    // Ada's arming, offered straight to her arena.
+    let tasks = server.tasks.clone().expect("the arena tasks");
+    let match_id = tasks.live_ids().first().copied().expect("a running match");
+    let arm = Arming::Arm(FireCondition {
+        weapon: "cannon".into(),
+        target: SlotTarget::Lock,
+        min_permille: 600,
+        aspects: aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]),
+        min_rounds_left: 2,
+        min_range_m: 0,
+        max_range_m: u32::MAX,
+    });
+    for epoch in 1..=8_u64 {
+        let offered = tasks.offer(
+            match_id,
+            tacsim::arena_task::ArenaMsg::Intent(Intent {
+                unit: ObjId(red),
+                channel: Channel::Fire,
+                epoch,
+                kind: IntentKind::Condition(arm.clone()),
+                seq: 9_000_000 + epoch,
+            }),
+        );
+        assert!(
+            offered.is_ok(),
+            "the arena took the arming at epoch {epoch}"
+        );
+    }
+    let expected = json!({
+        "slot": 1,
+        "target": "lock",
+        "min_permille": 600,
+        "percent": 60,
+        "aspects": ["left", "right", "rear"],
+        "keeps": 2,
+        "min_range_m": null,
+        "max_range_m": null,
+    });
+    let mut query = 9_300_u64;
+    let mut ada_frame = Value::Null;
+    wait_until(
+        STEP_TIMEOUT,
+        "the arming to reach Ada's frame",
+        async || {
+            query += 1;
+            ada_frame = m1b3_cockpit(&mut ada_web, query).await;
+            m1b3_armed(&ada_frame)
+                .first()
+                .is_some_and(|armed| !armed.is_null())
+        },
+    )
+    .await;
+    // What every frame of either pilot must hold, at every stage.
+    let holds = |ada_frame: &Value, bo_frame: &Value, stage: &str| {
+        assert_eq!(
+            m1b3_armed(ada_frame),
+            vec![expected.clone(), Value::Null],
+            "{stage}: Ada's slot, and her machine gun's null: {ada_frame}"
+        );
+        let object = expected.to_string();
+        names_nothing(&object, red, blue, "the armed object");
+        no_sixteen_digit_word(&object, "the armed object");
+        for leak in ["\"BA\"", "\"RA\"", "designator", "contact", "Bo", "Ada"] {
+            assert!(
+                !object.contains(leak),
+                "{stage}: the armed object said {leak}"
+            );
+        }
+        // (The keyframe's own contact rows carry their `id` row key, which a
+        // panel matches on and never prints — 16b cut Q.1 — so the
+        // sixteen-figure check is the object's, above, not the frame's.)
+        assert!(
+            m1b3_armed(bo_frame).iter().all(Value::is_null),
+            "{stage}: Bo's frame carries an arming: {bo_frame}"
+        );
+        let theirs = bo_frame.to_string();
+        for leak in ["\"slot\"", "\"keeps\"", "\"min_permille\"", "S1:"] {
+            assert!(
+                !theirs.contains(leak),
+                "{stage}: Bo's frame carries {leak} of Ada's slot: {theirs}"
+            );
+        }
+        names_nothing(&theirs, red, blue, "Bo's frame");
+        for frame in [ada_frame, bo_frame] {
+            assert_eq!(
+                frame.get("odds_floor_permille"),
+                Some(&json!(100)),
+                "{stage}: the match's one floor: {frame}"
+            );
+        }
+    };
+    query += 1;
+    let bo_frame = m1b3_cockpit(&mut bo_web, query).await;
+    assert_eq!(ada_frame.get("contacts"), Some(&json!([])), "{ada_frame}");
+    holds(&ada_frame, &bo_frame, "before detection");
+
+    // Into each other's sight — the arena holds the tanks now, so they drive
+    // (the walk's own approach): detected, and then told apart.
+    drive(&mut ada, 90).await;
+    drive(&mut bo, 270).await;
+    let contact = first_contact(&mut ada).await;
+    let _ = first_contact(&mut bo).await;
+    query += 1;
+    let ada_frame = m1b3_cockpit(&mut ada_web, query).await;
+    query += 1;
+    let bo_frame = m1b3_cockpit(&mut bo_web, query).await;
+    holds(&ada_frame, &bo_frame, "after detection");
+    // The unclassified row: its odds cell is empty, whatever she armed (Q2:
+    // the rows never carry a contact not told apart). Asserted, never
+    // skipped: this fixture's sensor holds a return unresolved for
+    // `OBSERVER_CLASSIFY_MS` (15 s) — the M1a.3 dash walk's own window — so
+    // the contact just found, and the frame queried in the same breath, are
+    // `X<n>`. A row already told apart is this assertion failing.
+    assert!(
+        contact.starts_with('X'),
+        "the contact was told apart inside the classify window: {contact}"
+    );
+    let unknown: Vec<Value> = ada_frame
+        .get("contacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("class") == Some(&json!("unknown")))
+        .cloned()
+        .collect();
+    assert!(
+        !unknown.is_empty(),
+        "no unclassified row was read to check its empty odds: {ada_frame}"
+    );
+    for row in &unknown {
+        assert_eq!(row.get("odds"), Some(&json!([])), "{row}");
+    }
+    wait_until(
+        STEP_TIMEOUT,
+        "Ada's sensor to tell Bo's tank apart",
+        async || ask_whole(&mut ada, "CONTACTS").await.contains("BA  blue"),
+    )
+    .await;
+    query += 1;
+    let ada_frame = m1b3_cockpit(&mut ada_web, query).await;
+    query += 1;
+    let bo_frame = m1b3_cockpit(&mut bo_web, query).await;
+    holds(&ada_frame, &bo_frame, "after classification");
+    // Told apart, the hostile carries its odds, the main gun first — her
+    // arming changes nothing of the rows. (The FRIENDLY row's dash, on a rig
+    // with a wingman, is the AE.3 mesh walk's; the rule on a built arena is
+    // `tests/cockpit.rs`' `m1b3_the_odds_rows_seat_the_lock_first_and_never_a_friend`.)
+    let told: Vec<&Value> = ada_frame
+        .get("contacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("class") == Some(&json!("blue")))
+        .collect();
+    assert_eq!(told.len(), 1, "Ada holds BA alone: {ada_frame}");
+    for row in told {
+        assert_eq!(
+            row.get("odds")
+                .and_then(Value::as_array)
+                .and_then(|odds| odds.first())
+                .and_then(|first| first.get("weapon")),
+            Some(&json!("cannon")),
+            "a classified hostile's odds, the main gun first: {row}"
         );
     }
 }

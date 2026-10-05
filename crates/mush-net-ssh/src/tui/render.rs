@@ -2768,6 +2768,15 @@ fn pack_facet_cells(cells: &[String], width: usize) -> Vec<String> {
 /// **The weapons pane** (16b cut Q.4): what each weapon is, whether its cycle
 /// has finished, what it has left, and its OWN chance against the lock (16b cut
 /// F.2's item 4) where a lock gives one.
+///
+/// **17b cut M1b.3** (doc 17 §5; D-UM-4): under a weapon whose row carries an
+/// `armed` object, ONE more plain row — two spaces and `arming_line`'s words,
+/// the same line line mode's `WEAPONSTATUS` prints under the row and the web's
+/// `weaponLines` draws (`  S1: >=60% side/rear keeps 8`). A row past the
+/// pane's 46 columns wraps onto a second pane row by the pane's own rule
+/// (`draw_pane`'s `wrap_spans`, 16b cut B.3), as a long contact row does. A
+/// frame from an older server carries no `armed` key and prints as it always
+/// did.
 #[must_use]
 pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
@@ -2812,8 +2821,81 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
                 .and_then(Value::as_i64)
                 .unwrap_or(0),
         )))));
+        // 17b cut M1b.3: the arming, on its own row under the weapon's.
+        if let Some(words) = weapon.get("armed").and_then(arming_line) {
+            rows.push(PaneRow::plain(Line::from(Span::raw(format!("  {words}")))));
+        }
     }
     PaneRows { rows }
+}
+
+/// **The arming line of one weapon's `armed` object** (17b cut M1b.3) — the
+/// TUI's copy of `tacsim::match_::cockpit::arming_words`, written out over the
+/// keyframe's keys and pinned equal to it by the fixture scene's golden:
+/// `S{slot}:` then, one space apart, `best` for a `best` target (`contact`
+/// for a `contact` one; `lock`, the default, prints nothing), `>={percent}%`,
+/// the facets as `front`/`side`/`rear` words joined `/` only when the mask is
+/// not all four, the range as `{a}-{b}m`, `under {b}m` or `past {a}m` only
+/// when bound (a `null` bound is none), and `keeps {k}` only above nought.
+/// `None` for `null`, for a missing slot, and for anything not an object, so
+/// a malformed object costs a row and never a word.
+fn arming_line(armed: &Value) -> Option<String> {
+    let slot = armed.get("slot").and_then(Value::as_u64)?;
+    let mut terms: Vec<String> = vec![format!("S{slot}:")];
+    match armed.get("target").and_then(Value::as_str) {
+        Some("best") => terms.push("best".to_string()),
+        Some("contact") => terms.push("contact".to_string()),
+        _ => {}
+    }
+    let percent = armed
+        .get("percent")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            armed
+                .get("min_permille")
+                .and_then(Value::as_u64)
+                .map(|permille| permille / 10)
+        })
+        .unwrap_or(0);
+    terms.push(format!(">={percent}%"));
+    let facets: Vec<&str> = armed
+        .get("aspects")
+        .and_then(Value::as_array)
+        .map(|words| words.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let has = |word: &str| facets.contains(&word);
+    let every = has("front") && has("left") && has("right") && has("rear");
+    if !every {
+        let words: Vec<&str> = [
+            (has("front"), "front"),
+            (has("left") || has("right"), "side"),
+            (has("rear"), "rear"),
+        ]
+        .into_iter()
+        .filter_map(|(on, word)| on.then_some(word))
+        .collect();
+        if !words.is_empty() {
+            terms.push(words.join("/"));
+        }
+    }
+    let bound = |key: &str| armed.get(key).and_then(Value::as_u64);
+    match (
+        bound("min_range_m").filter(|m| *m > 0),
+        bound("max_range_m"),
+    ) {
+        (Some(near), Some(far)) => terms.push(format!("{near}-{far}m")),
+        (None, Some(far)) => terms.push(format!("under {far}m")),
+        (Some(near), None) => terms.push(format!("past {near}m")),
+        (None, None) => {}
+    }
+    if let Some(keeps) = armed
+        .get("keeps")
+        .and_then(Value::as_u64)
+        .filter(|k| *k > 0)
+    {
+        terms.push(format!("keeps {keeps}"));
+    }
+    Some(terms.join(" "))
 }
 
 /// **The contacts pane** (16b cut Q.4): one selectable row per contact —
@@ -2989,6 +3071,11 @@ const REFUSAL_WORDS: &[(&str, &str)] = &[
     ("epoch", "the seat changed hands"),
     // 16b cut O.2: `EMCON` on a tank with no pod.
     ("no_jammer", "no jamming pod"),
+    // 17b cut M1b.1's three words (said here since 17b cut M1b.3): a shot with
+    // no warrant, a slot count full, an arming under the Compact floor.
+    ("unwarranted", "no warrant"),
+    ("no_slot", "every slot armed"),
+    ("unlawful", "under the floor"),
 ];
 
 /// Why motion stopped, in the pilot's words (`BlockedCause::as_str`; the web's
@@ -6280,5 +6367,210 @@ mod tests {
             text,
             vec!["X3  unknown  315°  beyond  200 m  3 s front".to_string()]
         );
+    }
+
+    /// **17b cut M1b.3** (doc 17 §5; D-UM-4): under an armed weapon the pane
+    /// prints ONE more row, two spaces and the arming line — the TUI's copy of
+    /// `arming_words`, over every target, facet, range and reserve shape; a
+    /// weapon with `armed: null`, and a frame from an older server with no
+    /// `armed` key, print as they always did; a malformed object costs a row
+    /// and never a word, and a key the server never sends (a designator, a
+    /// contact id) never reaches the pane; a row past the pane's 46 columns
+    /// wraps by the pane's own rule (`wrap_spans`, as `draw_pane` runs it).
+    #[test]
+    fn m1b3_an_armed_weapon_prints_its_arming_line_under_its_row() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let every = serde_json::json!(["front", "left", "right", "rear"]);
+        let armed =
+            |target: &str, percent: u64, aspects: Value, keeps: u64, near: Value, far: Value| {
+                serde_json::json!({
+                    "slot": 1, "target": target, "min_permille": percent * 10,
+                    "percent": percent, "aspects": aspects, "keeps": keeps,
+                    "min_range_m": near, "max_range_m": far,
+                })
+            };
+        let line = |armed: &Value| arming_line(armed).unwrap_or_default();
+        // The fixture scene's, the bounded one, and T1's.
+        assert_eq!(
+            line(&armed(
+                "lock",
+                60,
+                serde_json::json!(["left", "right", "rear"]),
+                8,
+                Value::Null,
+                Value::Null
+            )),
+            "S1: >=60% side/rear keeps 8"
+        );
+        assert_eq!(
+            line(&armed(
+                "lock",
+                60,
+                serde_json::json!(["left", "right", "rear"]),
+                8,
+                serde_json::json!(200),
+                serde_json::json!(600)
+            )),
+            "S1: >=60% side/rear 200-600m keeps 8"
+        );
+        assert_eq!(
+            line(&armed(
+                "best",
+                10,
+                every.clone(),
+                0,
+                Value::Null,
+                serde_json::json!(420)
+            )),
+            "S1: best >=10% under 420m"
+        );
+        // Every other shape of each term.
+        assert_eq!(
+            line(&armed(
+                "contact",
+                60,
+                every.clone(),
+                0,
+                Value::Null,
+                Value::Null
+            )),
+            "S1: contact >=60%"
+        );
+        assert_eq!(
+            line(&armed(
+                "lock",
+                60,
+                every.clone(),
+                0,
+                serde_json::json!(300),
+                Value::Null
+            )),
+            "S1: >=60% past 300m"
+        );
+        assert_eq!(
+            line(&armed(
+                "lock",
+                60,
+                every.clone(),
+                0,
+                serde_json::json!(0),
+                serde_json::json!(500)
+            )),
+            "S1: >=60% under 500m",
+            "a zero lower bound is no bound"
+        );
+        for (aspects, words) in [
+            (serde_json::json!(["front"]), "S1: >=60% front"),
+            (serde_json::json!(["right"]), "S1: >=60% side"),
+            (serde_json::json!(["rear"]), "S1: >=60% rear"),
+            (
+                serde_json::json!(["front", "left", "rear"]),
+                "S1: >=60% front/side/rear",
+            ),
+            (serde_json::json!([]), "S1: >=60%"),
+            (every.clone(), "S1: >=60%"),
+        ] {
+            assert_eq!(
+                line(&armed("lock", 60, aspects, 0, Value::Null, Value::Null)),
+                words
+            );
+        }
+        // Not an object, no slot: no row.
+        assert_eq!(arming_line(&Value::Null), None);
+        assert_eq!(arming_line(&serde_json::json!("S1")), None);
+        assert_eq!(arming_line(&serde_json::json!({ "target": "best" })), None);
+        // A key the server never sends does not reach the line.
+        let stray = serde_json::json!({
+            "slot": 2, "target": "lock", "percent": 45, "aspects": ["front"],
+            "keeps": 0, "min_range_m": null, "max_range_m": null,
+            "designator": "BA", "contact": "00000000000000ab",
+        });
+        assert_eq!(line(&stray), "S2: >=45% front");
+
+        // The pane: the row, then the arming row; a null arming and a frame
+        // from an older server print the one row.
+        let gun = |id: &str, armed: Option<Value>| {
+            let mut row = serde_json::json!({
+                "id": id, "ready": true, "ready_in_ms": 0, "rounds": 14,
+                "rounds_max": 20, "percent": 62,
+            });
+            if let (Some(object), Some(armed)) = (row.as_object_mut(), armed) {
+                object.insert("armed".to_string(), armed);
+            }
+            row
+        };
+        let frame = serde_json::json!({
+            "weapons": [
+                gun("cannon", Some(armed("lock", 60, serde_json::json!(["left", "right", "rear"]), 8, Value::Null, Value::Null))),
+                gun("machine_gun", Some(Value::Null)),
+                gun("older", None),
+            ],
+        });
+        let rows = render_cockpit_weapons_rows(&frame, &ctx);
+        let text: Vec<String> = rows.rows.iter().map(PaneRow::text).collect();
+        assert_eq!(
+            text,
+            vec![
+                "cannon  ready  14/20  62%".to_string(),
+                "  S1: >=60% side/rear keeps 8".to_string(),
+                "machine_gun  ready  14/20  62%".to_string(),
+                "older  ready  14/20  62%".to_string(),
+            ]
+        );
+        // The longest arming a slot can carry is past 46 columns: the pane's
+        // own rule wraps it onto a second line and loses no word.
+        let long = armed(
+            "contact",
+            100,
+            serde_json::json!(["front", "left", "rear"]),
+            4_294_967_295,
+            serde_json::json!(4_294_967_294_u64),
+            serde_json::json!(4_294_967_294_u64),
+        );
+        let frame = serde_json::json!({ "weapons": [gun("cannon", Some(long))] });
+        let rows = render_cockpit_weapons_rows(&frame, &ctx);
+        let arming = rows.rows.get(1).expect("the arming row");
+        let printed = PaneRow::text(arming);
+        assert!(printed.chars().count() > 46, "{printed}");
+        let wrapped: Vec<String> = wrap_spans(&arming.line.spans, 46)
+            .into_iter()
+            .map(|spans| spans.iter().map(|span| span.content.to_string()).collect())
+            .collect();
+        assert_eq!(wrapped.len(), 2, "{wrapped:?}");
+        assert!(
+            wrapped.iter().all(|row| row.chars().count() <= 46),
+            "{wrapped:?}"
+        );
+        assert_eq!(
+            wrapped.join(" ").split_whitespace().collect::<Vec<_>>(),
+            printed.split_whitespace().collect::<Vec<_>>(),
+            "no word lost to the wrap"
+        );
+    }
+
+    /// **17b cut M1b.3**: the three words M1b.1's refusals are said in, in the
+    /// pane's ring.
+    #[test]
+    fn m1b3_the_three_new_refusals_are_said() {
+        for (word, said) in [
+            ("unwarranted", "FIRE cannon refused: no warrant"),
+            ("no_slot", "FIRE cannon refused: every slot armed"),
+            ("unlawful", "FIRE cannon refused: under the floor"),
+        ] {
+            let refused = serde_json::json!({
+                "kind": "refused", "order": "fire", "weapon": "cannon", "refusal": word,
+            });
+            assert_eq!(notice_words(&refused), said);
+        }
     }
 }

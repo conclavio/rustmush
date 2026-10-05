@@ -278,12 +278,14 @@ pub struct Frame {
     /// for the contacts it held or holds — the observer rule, as
     /// [`crate::arena::catchup`] states it.
     pub catchup: Option<crate::arena::catchup::Catchup>,
-    /// **The platform's advertised chance per weapon against its nearest
-    /// classified contacts** (17b cut M1a.3; doc 17 §3, D-UM-5) — what
-    /// `Arena::frame_odds` builds: at most [`STOCK_ODDS_ROWS`] contacts,
-    /// nearest first, each contact's entries led by the weapon a bare `FIRE`
-    /// would fire. Empty on a hull with no weapons station and when no
-    /// classified contact is held; never an entry for an unclassified one.
+    /// **The platform's advertised chance per weapon against its lock and its
+    /// nearest classified hostiles** (17b cut M1a.3; doc 17 §3, D-UM-5; the
+    /// lock-first, hostiles-only rule is 17b cut M1b.3's, Q2) — what
+    /// `Arena::frame_odds` builds: at most [`STOCK_ODDS_ROWS`] contacts, a
+    /// hostile lock first and then nearest first, each contact's entries led
+    /// by the weapon a bare `FIRE` would fire. Empty on a hull with no weapons
+    /// station and when no classified hostile is held; never an entry for an
+    /// unclassified contact or one of the hull's own side.
     ///
     /// Advice off the plot, as the lock's percentage is
     /// ([`crate::arena::Arena::aim_at`], [`crate::arena::Arena::resolve_seen`]).
@@ -297,6 +299,15 @@ pub struct Frame {
     /// substep's end: the state's own clock, the one every age on the frame is
     /// measured from. [`Frame::same_as`] never compares it.
     pub t_ms: i64,
+    /// **The match's Compact floor, per mille** (17b cut M1b.3; doc 17 §5 as
+    /// amended, D-UM-4, D-UM-17), captured at check-out
+    /// ([`Arena::odds_floor_permille`], 17b cut M1b.1): the figure the
+    /// cockpit's `FIRE … WHEN odds >= n` pre-check reads (the O.2 `NoJammer`
+    /// shape: a local refusal off the held frame, never the live config) and a
+    /// mind's `arm` is held to. A per-match constant and a public one, so
+    /// [`Frame::same_as`] does not compare it and the observer rule has nothing
+    /// to say about it.
+    pub odds_floor_permille: u32,
 }
 
 /// **How many contacts a frame carries odds for** (17b cut M1a.3; doc 17 §9,
@@ -403,6 +414,11 @@ impl Frame {
     /// never compared: it moves every pulse and prints nowhere, so comparing it
     /// would send every pilot a keyframe every wake, which is what 16b cut U.2
     /// took out.
+    ///
+    /// **17b cut M1b.3**: each weapon's arming rides
+    /// [`FrameWeapon::same_as`]; [`Frame::odds_floor_permille`] is never
+    /// compared — a per-match constant, captured at check-out, which cannot
+    /// differ between two frames of one match.
     #[must_use]
     pub fn same_as(&self, other: &Frame, pass_ms: i64) -> bool {
         self.catchup.is_none()
@@ -2265,27 +2281,35 @@ impl Arena {
             // write the arena.
             catchup: None,
             // **17b cut M1a.3** (doc 17 §3, D-UM-5): the odds against the
-            // nearest classified contacts, the standing order re-keyed to
+            // lock and the nearest classified hostiles (17b cut M1b.3's
+            // Q2), the standing order re-keyed to
             // this hull's own rows, and the clock the ages above are read on.
             odds: self.frame_odds(unit.id),
             order: self.frame_order(unit.id),
             t_ms: self.now_ms,
+            // **17b cut M1b.3** (D-UM-4, D-UM-17): the floor the match was
+            // checked out with — never the live config.
+            odds_floor_permille: self.odds_floor_permille,
         })
     }
 
     /// **The odds a frame carries** (17b cut M1a.3; doc 17 §3, D-UM-5): per
-    /// weapon, against the platform's [`STOCK_ODDS_ROWS`] nearest **classified**
-    /// contacts.
+    /// weapon, against the platform's lock and its nearest **classified
+    /// hostile** contacts, at most [`STOCK_ODDS_ROWS`].
     ///
-    /// * **Which contacts.** Every held row whose class is `Classified { .. }` —
-    ///   the side resolved, friend or foe: doc 17 §3's word is *any classified
-    ///   contact*, and narrowing to hostiles is the lead's to decide (the plan's
-    ///   Q2) — and whose target is still in the match; nearest first by the
-    ///   range to the **plot**, `ContactId` ascending on a tie; the first
-    ///   [`STOCK_ODDS_ROWS`]. Never an unclassified contact:
+    /// * **Which contacts** (the lead's ruling on 17b's Q2, built in 17b cut
+    ///   M1b.3). Only a held row whose class is `Classified { team }` with
+    ///   `team` **another side than the hull's own**, and whose target is still
+    ///   in the match: the fire control resolves hostiles, so a wingman between
+    ///   the hull and the enemy never takes a row. **The hull's lock first** when
+    ///   it is such a row — the contact a pilot is about to shoot is the one the
+    ///   rows must quote, however far it is; then every other such row, nearest
+    ///   first by the range to the **plot**, `ContactId` ascending on a tie; the
+    ///   first [`STOCK_ODDS_ROWS`]. A friendly lock takes no row (its `LOCK`
+    ///   line still quotes the lock's own aim). Never an unclassified contact:
     ///   [`Arena::resolve_seen`] reads the target's silhouette off the unit, and
     ///   for a return the platform has not told apart that table is the chassis
-    ///   it has not earned.
+    ///   it has not earned. Every row outside the odds rows prints `-`.
     /// * **What each costs.** One [`Arena::aim_at`] per contact — one trace —
     ///   then one [`Arena::resolve_seen`] per weapon, so at most two traces and
     ///   six resolutions per frame on a stock hull.
@@ -2304,19 +2328,29 @@ impl Arena {
         if from.weapons.is_empty() {
             return Vec::new();
         }
+        // **17b cut M1b.3** (Q2): classified, of another side, still in the
+        // match — the one predicate the lock and the rest are both held to.
+        let hostile = |held: &crate::arena::state::ShadowContact| {
+            matches!(held.class, Classification::Classified { team } if team != from.team)
+                && self.unit(held.target).is_some()
+        };
+        let locked = from
+            .lock
+            .filter(|id| self.contacts.get(platform, *id).is_some_and(hostile));
         let mut nearest: Vec<(u64, ContactId)> = self
             .contacts
             .of(platform)
-            .filter(|(_, held)| {
-                matches!(held.class, Classification::Classified { .. })
-                    && self.unit(held.target).is_some()
-            })
+            .filter(|(id, held)| Some(**id) != locked && hostile(held))
             .map(|(id, held)| (held.seen_at.range_from(&from.pose), *id))
             .collect();
         // Range, then the id: a total order over integers, so two equally
         // distant contacts are taken the same way on every replay.
         nearest.sort_unstable();
-        nearest.truncate(STOCK_ODDS_ROWS);
+        let rows: Vec<ContactId> = locked
+            .into_iter()
+            .chain(nearest.into_iter().map(|(_, id)| id))
+            .take(STOCK_ODDS_ROWS)
+            .collect();
         // The weapon a bare `FIRE` would fire, through the one rule
         // (`UnitState::default_weapon`, 16b cut F.3) the view's
         // `fired_by_default` mirrors — never a fourth spelling of it.
@@ -2331,7 +2365,7 @@ impl Arena {
             )
             .collect();
         let mut odds: Vec<FrameOdds> = Vec::new();
-        for (_, contact) in nearest {
+        for contact in rows {
             let Some(aim) = self.aim_at(platform, contact) else {
                 continue;
             };
@@ -7336,8 +7370,9 @@ mod tests {
     /// next pass does. The odds half runs twice: on the near field, where it
     /// pins which rows carry odds, and on the far field, where the figure is
     /// mid-curve and a live read would print another number. Which contacts
-    /// carry odds (classified only, the two nearest, the range tie by id), and
-    /// the `reads_dead` rule in all its arms, are pinned here too.
+    /// carry odds (the lock first, then the nearest classified hostiles, never
+    /// a friend or an unclassified row — 17b cut M1b.3's Q2), and the
+    /// `reads_dead` rule in all its arms, are pinned here too.
     #[test]
     fn m1a3_aspect_odds_and_reads_dead_are_read_off_the_plot_and_the_hold() {
         use crate::arena::perception::Aspect;
@@ -7357,18 +7392,22 @@ mod tests {
         assert_eq!(before.t_ms, arena.now_ms);
         assert_eq!(before.order, None, "a piloted hull carries no order");
 
-        // Which rows carry odds: BLUE (39 m) and MATE (40 m, the tie with TIE
-        // broken by id), not TIE (also 40 m, the higher id), not FAR (the
-        // lowest id, the farthest) and never NEAR (the nearest of all, but
-        // unclassified). A FRIEND qualifies: doc 17 §3's word is *any
-        // classified contact*.
+        // Which rows carry odds — **17b cut M1b.3** (Q2, the lead's ruling):
+        // BLUE (39 m, the lock, row one) and TIE (40 m, the nearest other
+        // hostile); never MATE (also 40 m and the lower id, but red's own:
+        // the rows never carry a friend's — under 17b cut M1a.3 it carried
+        // odds, doc 17 §3's *any classified contact*), not FAR (the farthest)
+        // and never NEAR (the nearest of all, but unclassified).
         let carrying: Vec<ContactId> = before.odds.iter().map(|odds| odds.contact).collect();
         assert_eq!(
             carrying,
-            vec![blue_id, MATE_ID],
-            "nearest first, the tie by id"
+            vec![blue_id, TIE_ID],
+            "the lock first, then the nearest hostile"
         );
-        assert!(odds_of(&before, TIE_ID).is_empty());
+        assert!(
+            odds_of(&before, MATE_ID).is_empty(),
+            "never a friend's, however near"
+        );
         assert!(odds_of(&before, FAR_ID).is_empty());
         assert!(
             odds_of(&before, NEAR_ID).is_empty(),
@@ -7678,7 +7717,9 @@ mod tests {
             .map(|weapon| weapon.id.clone())
             .unwrap_or_else(|| panic!("a default weapon"));
         assert_eq!(default.as_str(), "cannon");
-        for id in [blue_id(&arena), MATE_ID] {
+        // 17b cut M1b.3 (Q2): the lock and the nearest hostile — MATE, a
+        // friend, never carries odds.
+        for id in [blue_id(&arena), TIE_ID] {
             let order: Vec<SmolStr> = odds_of(&frame, id).into_iter().map(|(w, _)| w).collect();
             assert_eq!(
                 order,

@@ -140,12 +140,14 @@ seen**, not where it is now, and the age is how stale that is. A teammate's
 sighting reaches you only while their own sensors still hold it.
 
 The last two columns are what the engine knows about the shot: which way the
-contact was facing when it was last seen — front, side or rear — and, for the
-two nearest contacts you have identified, your main gun's chance against where
-it was plotted; a dash is a contact the fire control is not resolving, and a
-tank with no gun shows the facing alone. Odds are advice off the plot, as RANGE
-is: a contact that moved since it was last seen is not where the number was
-computed.
+contact was facing when it was last seen — front, side or rear — and, for a
+hostile you are locked on and then the nearest other hostiles you have
+identified (two rows in all), your main gun's chance against where it was
+plotted. A dash is a contact the fire control is not resolving: one of your own
+side (even when you are locked on it), one not yet identified, or a hostile
+beyond those two rows. A tank with no gun shows the facing alone. Odds are
+advice off the plot, as RANGE is: a contact that moved since it was last seen
+is not where the number was computed.
 
 The band word is **how far across your own sight the contact is**: `close` is
 the nearest third of your sensor's reach, `effective` the middle third, `far` the

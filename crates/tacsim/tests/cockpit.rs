@@ -1244,12 +1244,12 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
 
     // And the schema is the one cut K.2 wrote, plus the marker the session ring
     // reads — the whole of what this cut changed about what `VIEW` sends. 17b
-    // cut M1a.3 bumped the version to 2 (doc 17 §3).
+    // cut M1a.3 bumped the version to 2 (doc 17 §3), 17b cut M1b.3 to 3.
     assert_eq!(
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 2,
+            "version": 3,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -2457,12 +2457,13 @@ mod fixture {
     use smol_str::SmolStr;
     use tacsim::arena::clock::Tempo;
     use tacsim::arena::condition::{Condition, ConditionBand};
+    use tacsim::arena::conditions::{SlotTarget, aspect_mask};
     use tacsim::arena::perception::{
         Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind,
     };
     use tacsim::arena::state::{Classification, ContactId, Designator, Power, Team};
     use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameSection};
-    use tacsim::arena::weapons::{FrameBand, FrameWeapon};
+    use tacsim::arena::weapons::{FrameArming, FrameBand, FrameWeapon};
     use tacsim::arena_task::MatchId;
     use tacsim::match_::cockpit;
 
@@ -2693,6 +2694,18 @@ mod fixture {
                     bands_cm: vec![100_000, 300_000],
                     // 16b cut D.2: the stock tank's guns make no heat.
                     heat_per_shot: 0,
+                    // **17b cut M1b.3**: armed in S1 on the lock — at 60 per
+                    // cent or better, on a flank or the rear, keeping eight
+                    // rounds back (`S1: >=60% side/rear keeps 8`).
+                    armed: Some(FrameArming {
+                        slot: 1,
+                        target: SlotTarget::Lock,
+                        min_permille: 600,
+                        aspects: aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]),
+                        keeps: 8,
+                        min_range_m: 0,
+                        max_range_m: u32::MAX,
+                    }),
                 },
                 FrameWeapon {
                     id: SmolStr::new_static("machine_gun"),
@@ -2704,6 +2717,8 @@ mod fixture {
                     p_permille: Some(210),
                     bands_cm: vec![40_000],
                     heat_per_shot: 0,
+                    // 17b cut M1b.3: no slot holds it — `"armed": null`.
+                    armed: None,
                 },
             ],
             sections: vec![
@@ -2768,23 +2783,16 @@ mod fixture {
             // frame after a reclaim, so the payload's `catchup` key is `null`.
             // `catchup_lines.json` carries the report's own shapes.
             catchup: None,
-            // **17b cut M1a.3**: the two classified contacts, nearest first
-            // (`RB` at 120 m, then `BA` at 430 m), each led by the cannon —
-            // the weapon a bare `FIRE` fires. `BA`'s figures are the lock's
-            // own (`p_permille` on the weapon rows above), because the lock is
-            // on `BA` and both are one reading of one plot. No odds for `X3`
-            // or `X4`: they are not told apart.
+            // **17b cut M1a.3**, re-cut by **17b cut M1b.3** (Q2): the odds
+            // rows are the lock first and then the nearest classified
+            // contacts of ANOTHER side — so `BA` alone, led by the cannon, the
+            // weapon a bare `FIRE` fires. `BA`'s figures are the lock's own
+            // (`p_permille` on the weapon rows above), because the lock is on
+            // `BA` and both are one reading of one plot. No odds for `RB`
+            // (red's own: the rows never carry a friend's, though it is nearer)
+            // and none for `X3` or `X4` (not told apart). The frame the arena
+            // now builds for this scene (`Arena::frame_odds`).
             odds: vec![
-                FrameOdds {
-                    contact: FRIEND,
-                    weapon: SmolStr::new_static("cannon"),
-                    p_permille: 871,
-                },
-                FrameOdds {
-                    contact: FRIEND,
-                    weapon: SmolStr::new_static("machine_gun"),
-                    p_permille: 655,
-                },
                 FrameOdds {
                     contact: HOSTILE,
                     weapon: SmolStr::new_static("cannon"),
@@ -2799,6 +2807,8 @@ mod fixture {
             // A piloted hull is under no standing order on this surface.
             order: None,
             t_ms: 61_250,
+            // **17b cut M1b.3**: the shipped Compact floor, 10 per cent.
+            odds_floor_permille: 100,
         }
     }
 
@@ -2997,7 +3007,7 @@ fn the_brief_golden_is_what_brief_lines_produces() {
 fn m1a2_the_rows_render_as_before() {
     const CONTACTS_SINCE_M1A3: [&str; 4] = [
         "BA  blue  bearing 045° (rel 000°)  far  450 m  1 s  side  cannon 62%",
-        "RB  red  bearing 270° (rel 225°)  close  100 m  0 s  front  cannon 87%",
+        "RB  red  bearing 270° (rel 225°)  close  100 m  0 s  front  -",
         "X3  unknown  bearing 315° (rel 270°)  effective  200 m  3 s  front  -",
         "X4  unknown  bearing 030° (rel 345°)  far  600 m  6 s  rear  -",
     ];
@@ -3808,7 +3818,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 2, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 3, "retain": "latest" },
             "seated": false,
         })
     );
@@ -13701,10 +13711,11 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     ))
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
-    assert_eq!(cockpit::FRAME_VERSION, 2);
+    // 17b cut M1b.3 bumped it to 3.
+    assert_eq!(cockpit::FRAME_VERSION, 3);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(2))
+        Some(&serde_json::json!(3))
     );
     assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
     assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
@@ -13751,7 +13762,7 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
         rows,
         [
             "BA  blue  bearing 045° (rel 000°)  far  450 m  1 s  side  cannon 62%",
-            "RB  red  bearing 270° (rel 225°)  close  100 m  0 s  front  cannon 87%",
+            "RB  red  bearing 270° (rel 225°)  close  100 m  0 s  front  -",
             "X3  unknown  bearing 315° (rel 270°)  effective  200 m  3 s  front  -",
             "X4  unknown  bearing 030° (rel 345°)  far  600 m  6 s  rear  -",
         ]
@@ -14152,4 +14163,460 @@ fn m1a4_the_drive_notice_rows_are_what_status_frame_publishes() {
         );
         assert_eq!(cockpit::notice_lines(&frame), vec![text.to_owned()]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.3 — the arming and the floor on the frame, Q2's odds rows
+// (doc 17 §3, §5, D-UM-4, D-UM-5, D-UM-17)
+// ---------------------------------------------------------------------------
+
+/// **17b cut M1b.3**: the fixture scene's keyframe at `FRAME_VERSION` 3 — the
+/// cannon's `armed` object key by key (the slot, the target's KIND, the odds
+/// per mille and per cent, the facet words of the mask, the rounds kept, and
+/// `null` for each unbound range), the machine gun's `null`, the top-level
+/// `odds_floor_permille`. A `FrameArming` built from each `SlotTarget` writes
+/// `lock`, `best` or `contact` and never an id; a bounded range writes its
+/// metres. `Frame::same_as` differs on an arming change alone and not on the
+/// floor. And the ONE formatter's line for the scene's cannon is the line the
+/// web's view model and the TUI's golden print under the cannon's row: three
+/// renderers, one shape.
+#[test]
+fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
+    use tacsim::arena::conditions::{ASPECTS_ANY, SlotTarget};
+    use tacsim::arena::state::ContactId;
+    use tacsim::arena::weapons::FrameArming;
+    let frame = fixture::frame();
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(cockpit::FRAME_VERSION, 3);
+    assert_eq!(
+        payload.pointer("/schema/version"),
+        Some(&serde_json::json!(3))
+    );
+    assert_eq!(
+        payload.pointer("/weapons/0/armed"),
+        Some(&serde_json::json!({
+            "slot": 1,
+            "target": "lock",
+            "min_permille": 600,
+            "percent": 60,
+            "aspects": ["left", "right", "rear"],
+            "keeps": 8,
+            "min_range_m": null,
+            "max_range_m": null,
+        }))
+    );
+    assert_eq!(
+        payload.pointer("/weapons/1/armed"),
+        Some(&serde_json::Value::Null),
+        "an unarmed row is null, not absent"
+    );
+    assert_eq!(
+        payload.get("odds_floor_permille"),
+        Some(&serde_json::json!(100))
+    );
+    // Each target's word, and never a designator or an id.
+    let of = |target: SlotTarget| FrameArming {
+        slot: 2,
+        target,
+        min_permille: 450,
+        aspects: ASPECTS_ANY,
+        keeps: 0,
+        min_range_m: 200,
+        max_range_m: 600,
+    };
+    for (target, word) in [
+        (SlotTarget::Lock, "lock"),
+        (SlotTarget::BestHostile, "best"),
+        (
+            SlotTarget::Contact {
+                id: ContactId(0x1111_1111_1111_1111),
+            },
+            "contact",
+        ),
+    ] {
+        let object = cockpit::arming_json(&of(target));
+        assert_eq!(object.get("target"), Some(&serde_json::json!(word)));
+        assert_eq!(
+            object,
+            serde_json::json!({
+                "slot": 2,
+                "target": word,
+                "min_permille": 450,
+                "percent": 45,
+                "aspects": ["front", "left", "right", "rear"],
+                "keeps": 0,
+                "min_range_m": 200,
+                "max_range_m": 600,
+            }),
+            "every key, and nothing else"
+        );
+        let text = object.to_string();
+        assert!(!text.contains("1111111111111111"), "an id leaked: {text}");
+        assert!(!text.contains("BA"), "a designator leaked: {text}");
+    }
+    // `same_as`: the arming alone re-sends the frame; the floor never does.
+    let mut rearmed = fixture::frame();
+    if let Some(gun) = rearmed.weapons.first_mut()
+        && let Some(armed) = gun.armed.as_mut()
+    {
+        armed.min_permille = 700;
+    }
+    assert!(
+        !frame.same_as(&rearmed, 1_000),
+        "an arming change is a frame"
+    );
+    let mut cleared = fixture::frame();
+    if let Some(gun) = cleared.weapons.first_mut() {
+        gun.armed = None;
+    }
+    assert!(!frame.same_as(&cleared, 1_000), "a disarm is a frame");
+    let mut floored = fixture::frame();
+    floored.odds_floor_permille = 50;
+    assert!(frame.same_as(&floored, 1_000), "the floor is not compared");
+    // The one formatter, and the two renderers that print its line.
+    let armed = frame
+        .weapons
+        .first()
+        .and_then(|gun| gun.armed.as_ref())
+        .expect("the scene's cannon is armed");
+    let words = cockpit::arming_words(armed);
+    assert_eq!(words, "S1: >=60% side/rear keeps 8");
+    let web = include_str!("../../../web/src/lib/fixtures/cockpit/web_view_model.txt");
+    let lines: Vec<&str> = web.lines().collect();
+    let cannon = lines
+        .iter()
+        .position(|line| line.starts_with("cannon  "))
+        .expect("the web prints the cannon's row");
+    assert_eq!(
+        lines.get(cannon + 1).copied(),
+        Some(format!("  {words}").as_str()),
+        "the web's arming line is the formatter's, under the cannon"
+    );
+    let tui = include_str!("../../mush-net-ssh/tests/golden/tui_cockpit_120x34.txt");
+    assert!(
+        tui.lines()
+            .any(|line| line.contains(&format!("\u{2502}  {words} "))),
+        "the TUI's weapons pane prints the formatter's line"
+    );
+}
+
+/// **The words of every term** (17b cut M1b.3): `arming_words` over the
+/// target, the odds, the facets, the range and the reserve — the lines doc 17
+/// §5 and 17b's plan quote, verbatim.
+#[test]
+fn m1b3_arming_words_says_every_term() {
+    use tacsim::arena::conditions::{ASPECTS_ANY, SlotTarget, aspect_mask};
+    use tacsim::arena::perception::Aspect;
+    use tacsim::arena::state::ContactId;
+    use tacsim::arena::weapons::FrameArming;
+    let flank_rear = aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]);
+    let base = FrameArming {
+        slot: 1,
+        target: SlotTarget::Lock,
+        min_permille: 600,
+        aspects: ASPECTS_ANY,
+        keeps: 0,
+        min_range_m: 0,
+        max_range_m: u32::MAX,
+    };
+    for (armed, words) in [
+        (
+            FrameArming {
+                aspects: flank_rear,
+                keeps: 8,
+                ..base.clone()
+            },
+            "S1: >=60% side/rear keeps 8",
+        ),
+        (
+            FrameArming {
+                aspects: flank_rear,
+                keeps: 8,
+                min_range_m: 200,
+                max_range_m: 600,
+                ..base.clone()
+            },
+            "S1: >=60% side/rear 200-600m keeps 8",
+        ),
+        // T1's slot: the best hostile at Line's floor, under its ceiling.
+        (
+            FrameArming {
+                target: SlotTarget::BestHostile,
+                min_permille: 100,
+                max_range_m: 420,
+                ..base.clone()
+            },
+            "S1: best >=10% under 420m",
+        ),
+        (
+            FrameArming {
+                slot: 2,
+                target: SlotTarget::Contact { id: ContactId(7) },
+                ..base.clone()
+            },
+            "S2: contact >=60%",
+        ),
+        (
+            FrameArming {
+                min_range_m: 300,
+                ..base.clone()
+            },
+            "S1: >=60% past 300m",
+        ),
+        (
+            FrameArming {
+                aspects: aspect_mask(&[Aspect::Front]),
+                ..base.clone()
+            },
+            "S1: >=60% front",
+        ),
+        (
+            FrameArming {
+                aspects: aspect_mask(&[Aspect::Right]),
+                ..base.clone()
+            },
+            "S1: >=60% side",
+        ),
+        (
+            FrameArming {
+                aspects: aspect_mask(&[Aspect::Front, Aspect::Left, Aspect::Rear]),
+                ..base.clone()
+            },
+            "S1: >=60% front/side/rear",
+        ),
+        (
+            FrameArming {
+                aspects: 0,
+                ..base.clone()
+            },
+            "S1: >=60%",
+        ),
+        (base.clone(), "S1: >=60%"),
+    ] {
+        assert_eq!(cockpit::arming_words(&armed), words, "{armed:?}");
+    }
+}
+
+/// One frame of `unit` off a BUILT arena (17b cut M1b.3): a fresh pilot seated
+/// on it for one pulse at the arena's own wall reference, so no arena time
+/// passes and nothing hand-held is re-sighted.
+fn m1b3_frame_of(
+    arena: &mut tacsim::arena::state::Arena,
+    unit: ObjId,
+    pilot: u32,
+) -> tacsim::arena::step::Frame {
+    let pilot = ObjId(pilot);
+    arena.seat_pilot(pilot, unit, 1);
+    let out = arena.step(0, &[], &[]);
+    arena.drop_pilot(pilot, unit);
+    out.frames
+        .into_iter()
+        .find(|(seat, _)| *seat == pilot)
+        .map(|(_, frame)| frame)
+        .expect("a seated pilot is sent a frame")
+}
+
+/// **Q2, on a built arena** (17b cut M1b.3; the lead's ruling on M1a's
+/// residual (1)): `Arena::frame_odds` seats the hull's LOCK first when it is a
+/// classified contact of another side, then the nearest other classified
+/// hostiles, the first `STOCK_ODDS_ROWS`; never a row of the hull's own side
+/// and never an unclassified one.
+///
+/// The proving ground with red's four tanks and blue's four, posed by hand on
+/// one line north and east of red 1: two wingmen at 100 m and 150 m, an
+/// unclassified blue at 200 m, and three classified blues at 300 m, 400 m and
+/// 500 m. Red 1 holds every one of them. Locked on the FARTHEST hostile, that
+/// one takes row one and the nearest hostile row two, and every other row
+/// prints the dash — both friends, the unidentified return, and the hostile
+/// past the two; row one's cannon figure is the keyframe's `lock_p_permille`.
+/// With no lock, the two nearest hostiles. With a FRIENDLY lock the `LOCK`
+/// line still quotes the lock's own aim (marked friendly) and the rows are the
+/// two nearest hostiles.
+#[test]
+fn m1b3_the_odds_rows_seat_the_lock_first_and_never_a_friend() {
+    use tacsim::arena::state::{Classification, ContactId, SeenPose, ShadowContact};
+    use tacsim::arena::view::OddsCell;
+    let world = support::booted_world();
+    let mut arena = support::shipped_arena(
+        &world,
+        &[
+            &[
+                support::Muster::piloted(Team::Red, 1),
+                support::Muster::piloted(Team::Red, 2),
+                support::Muster::piloted(Team::Red, 3),
+            ],
+            &[
+                support::Muster::piloted(Team::Blue, 1),
+                support::Muster::piloted(Team::Blue, 2),
+                support::Muster::piloted(Team::Blue, 3),
+                support::Muster::piloted(Team::Blue, 4),
+            ],
+        ],
+    );
+    let red = support::tank(&world, Team::Red, 1);
+    let (x0, y0) = (128_500_i64, 128_500_i64);
+    // (unit, row, dx, dy, classified) — every row red 1 holds.
+    let rb = ContactId(0x0B);
+    let rc = ContactId(0x0C);
+    let x5 = ContactId(0x05);
+    let ba = ContactId(0x1A);
+    let bb = ContactId(0x1B);
+    let bc = ContactId(0x1C);
+    let field = [
+        (support::tank(&world, Team::Red, 2), rb, 0, 10_000, true),
+        (support::tank(&world, Team::Red, 3), rc, 15_000, 0, true),
+        (support::tank(&world, Team::Blue, 4), x5, 0, 20_000, false),
+        (support::tank(&world, Team::Blue, 1), ba, 0, 30_000, true),
+        (support::tank(&world, Team::Blue, 2), bb, 40_000, 0, true),
+        (support::tank(&world, Team::Blue, 3), bc, 0, 50_000, true),
+    ];
+    if let Some(state) = arena.unit_mut(red) {
+        state.pose.x_cm = x0;
+        state.pose.y_cm = y0;
+        state.power = tacsim::arena::state::Power::Online;
+    }
+    for (unit, row, dx, dy, classified) in field {
+        let team = {
+            let state = arena.unit_mut(unit).expect("a fielded tank");
+            state.pose.x_cm = x0 + dx;
+            state.pose.y_cm = y0 + dy;
+            state.team
+        };
+        let plot = SeenPose::of(arena.unit(unit).expect("a fielded tank"));
+        let class = if classified {
+            Classification::Classified { team }
+        } else {
+            Classification::Unknown
+        };
+        arena
+            .contacts
+            .insert(red, row, ShadowContact::sighted(unit, class, 0, plot));
+    }
+    let rows_of = |frame: &tacsim::arena::step::Frame| {
+        let mut rows: Vec<ContactId> = Vec::new();
+        for odds in &frame.odds {
+            if !rows.contains(&odds.contact) {
+                rows.push(odds.contact);
+            }
+        }
+        rows
+    };
+    let cell_of = |frame: &tacsim::arena::step::Frame, id: ContactId| {
+        cockpit::frame_contacts(frame)
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("row {id} on the frame"))
+    };
+
+    // Locked on the farthest hostile: it takes row one, the nearest row two.
+    if let Some(state) = arena.unit_mut(red) {
+        state.lock = Some(bc);
+    }
+    let frame = m1b3_frame_of(&mut arena, red, 9_101);
+    assert_eq!(
+        arena.frame_odds(red),
+        frame.odds,
+        "the frame's odds are frame_odds'"
+    );
+    assert_eq!(
+        rows_of(&frame),
+        vec![bc, ba],
+        "the lock first, then the nearest"
+    );
+    for quiet in [rb, rc, x5, bb] {
+        let row = cell_of(&frame, quiet);
+        assert_eq!(row.odds, OddsCell::Dash, "{quiet}");
+        assert!(row.render().ends_with("  -"), "{}", row.render());
+    }
+    for loud in [bc, ba] {
+        assert!(matches!(cell_of(&frame, loud).odds, OddsCell::Odds(..)));
+    }
+    // Row one's cannon figure is the lock's own: the keyframe's
+    // `lock_p_permille`, one reading of one plot.
+    let main = tacsim::arena::view::fired_by_default(&frame.weapons).expect("a main gun");
+    let first = frame.odds.first().expect("row one");
+    assert_eq!(first.contact, bc);
+    assert_eq!(first.weapon, main.id, "led by the weapon a bare FIRE fires");
+    assert_eq!(Some(first.p_permille), main.p_permille);
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(
+        payload.get("lock_p_permille"),
+        Some(&serde_json::json!(first.p_permille))
+    );
+
+    // No lock: the two nearest hostiles, and the wingmen nearer than both
+    // carry nothing.
+    if let Some(state) = arena.unit_mut(red) {
+        state.lock = None;
+    }
+    let frame = m1b3_frame_of(&mut arena, red, 9_102);
+    assert_eq!(rows_of(&frame), vec![ba, bb], "the two nearest hostiles");
+    for quiet in [rb, rc, x5, bc] {
+        assert_eq!(cell_of(&frame, quiet).odds, OddsCell::Dash, "{quiet}");
+    }
+
+    // A friendly lock: no row of its own, the two nearest hostiles — and the
+    // `LOCK` line still quotes the lock's own aim.
+    if let Some(state) = arena.unit_mut(red) {
+        state.lock = Some(rb);
+    }
+    let frame = m1b3_frame_of(&mut arena, red, 9_103);
+    assert_eq!(
+        rows_of(&frame),
+        vec![ba, bb],
+        "a friend's lock takes no row"
+    );
+    assert_eq!(cell_of(&frame, rb).odds, OddsCell::Dash);
+    let aim = arena.aim_at(red, rb).expect("the friend is held");
+    let main = tacsim::arena::view::fired_by_default(&frame.weapons).expect("a main gun");
+    let own = arena.resolve_seen(red, &aim, &main.id).p_permille;
+    assert_eq!(main.p_permille, Some(own), "the lock's own aim");
+    let lock = cockpit::lock_line(&frame).expect("a lock line");
+    assert!(lock.contains("(FRIENDLY)"), "{lock}");
+    assert!(lock.contains(&format!("{}%", own / 10)), "{lock}");
+}
+
+/// **The match's floor rides the frame** (17b cut M1b.3; doc 17 §5 as
+/// amended, D-UM-4, D-UM-17): an arena checked out at a floor of 50 per mille
+/// and one at the default 100 — the keyframe's top-level `odds_floor_permille`
+/// and a mind's `MindView.odds_floor_permille` read the arena's captured
+/// figure; the fixture scene's is 100.
+#[test]
+fn m1b3_the_frame_carries_the_match_floor() {
+    let world = support::booted_world();
+    for floor in [50_u32, 100] {
+        let mut arena = support::shipped_arena(
+            &world,
+            &[
+                &[
+                    support::Muster::piloted(Team::Red, 1),
+                    support::Muster::mind(Team::Red, 2),
+                ],
+                &[support::Muster::piloted(Team::Blue, 1)],
+            ],
+        );
+        assert_eq!(arena.odds_floor_permille, 100, "Arena::new's default");
+        // What `spawn_arena` writes from `[tacsim.minds]` at check-out.
+        arena.odds_floor_permille = floor;
+        let red = support::tank(&world, Team::Red, 1);
+        let mind = support::tank(&world, Team::Red, 2);
+        let frame = m1b3_frame_of(&mut arena, red, 9_201);
+        assert_eq!(frame.odds_floor_permille, floor);
+        let payload = cockpit::status_frame(fixture::MATCH, &frame);
+        assert_eq!(
+            payload.get("odds_floor_permille"),
+            Some(&serde_json::json!(floor))
+        );
+        let view = arena.mind_view(mind).expect("a mind's view");
+        assert_eq!(view.odds_floor_permille, floor);
+    }
+    assert_eq!(fixture::frame().odds_floor_permille, 100);
+    let committed: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+    ))
+    .expect("the fixture is JSON");
+    assert_eq!(
+        committed.get("odds_floor_permille"),
+        Some(&serde_json::json!(100))
+    );
 }

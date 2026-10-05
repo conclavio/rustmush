@@ -3259,12 +3259,14 @@ fn hold_fire_order(objective: tacsim::deliberation::order::Objective, ttl_ms: u3
 /// M1b.2; doc 17 §5's precedence, D-UM-19; 17b's Q-M7), at 5,000, 1,000 and
 /// 500 ms:
 ///
-/// 1. a stock mind (T1) under a persona's `ENGAGE` with `hold_fire`: every
-///    think that reaches its target DISARMS (one `Condition(Disarm)`) and
-///    takes the lock — the lock lands, nothing fires; the order released at
-///    10,000, the next think ARMS and the slot fires at that think's landing
-///    (`by: "cond"`, S1). (A mind's lawful citation under the order reads
-///    `unwarranted`: the law test's.)
+/// 1. a stock mind (T1) under a persona's `ENGAGE` with `hold_fire`: no
+///    think that reaches its target ARMS — 17b cut M1b.3: it answers a
+///    `Condition(Disarm)` only beside a slot its view shows armed, and the
+///    order landed before any arming, so its view never shows one and it
+///    answers none — and it takes the lock: the lock lands, nothing fires;
+///    the order released at 10,000, the next think ARMS and the slot fires at
+///    that think's landing (`by: "cond"`, S1). (A mind's lawful citation
+///    under the order reads `unwarranted`: the law test's.)
 /// 2. a pilot's typed `FIRE` under no order fires;
 /// 3. **`hold_after_end`** (Q-M7's default, declared): a hold-fire `ADVANCE`
 ///    to a walled cell no route reaches, standing 12 s. T0 ends the order at
@@ -3307,11 +3309,17 @@ fn m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot() {
         })
         .collect();
     assert!(!held.is_empty(), "red thought under the order");
-    for (_, t_ms, _, result) in &held {
+    for (_, t_ms, view, result) in &held {
+        // 17b cut M1b.3: nothing armed under the order, so nothing to clear.
+        assert!(
+            view.weapons.iter().all(|row| row.armed.is_none()),
+            "a slot armed under the order at {t_ms}: {:?}",
+            view.weapons
+        );
         assert_eq!(
             armings(&result.intents),
-            vec![&Arming::Disarm { weapon: None }],
-            "a disarm under the order at {t_ms}: {:?}",
+            Vec::<&Arming>::new(),
+            "no arming, and no disarm of nothing, under the order at {t_ms}: {:?}",
             result.intents
         );
         assert!(
@@ -3548,8 +3556,14 @@ const UNLOCKS_AT: i64 = 20_000;
 /// thinks:
 ///
 /// * every think that arms arms the `laser` then the `machine_gun`, S1 and
-///   S2 — the hot laser included (no heat skip) — and after every pulse the
-///   arena's slots are exactly those two in that order, or none;
+///   S2, or (17b cut M1b.3: on change) the one of them its view shows
+///   otherwise — the hot laser included (no heat skip) — and after every
+///   pulse the arena's slots are exactly those two in that order, or none;
+///   since a think arms only on a difference, the hot ARM is proven on a
+///   second run whose laser slot is cleared at the ceiling (an edit at
+///   [`COOLS_AT`], the sink never back on): the next think's view shows the
+///   laser unarmed on an overheated platform, it arms the laser all the same,
+///   and S1 holds it again;
 /// * the fresh lock's citation fires `by: "mind"`; the laser's slot then
 ///   fires at its own `WeaponReady`s until the platform reaches its ceiling,
 ///   after which the resolver's `Overheated` holds the laser's slot SILENTLY
@@ -3637,7 +3651,11 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
     );
     assert!(probed.get(), "the ceiling was probed");
     assert!(numbered > 0, "the slots were read");
-    // Every arming: the laser, then the machine gun — hot or not.
+    // Every arming: the laser, then the machine gun — hot or not. **17b cut
+    // M1b.3**: a think answers only the rows its view shows otherwise, so an
+    // answer is the two in that order or one of them; and a think at the
+    // ceiling leaves the laser's slot STANDING — armed by it, or shown armed
+    // and not cleared (no heat skip, 17b's adversarial F6).
     let mut armed_hot = false;
     for (_, t_ms, view, result) in &run.thoughts {
         let weapons: Vec<SmolStr> = armings(&result.intents)
@@ -3647,21 +3665,28 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
                 Arming::Disarm { .. } => None,
             })
             .collect();
-        if weapons.is_empty() {
-            continue;
-        }
-        assert_eq!(
-            weapons,
-            vec![SmolStr::new("laser"), SmolStr::new("machine_gun")],
-            "at {t_ms}"
+        let order = [SmolStr::new("laser"), SmolStr::new("machine_gun")];
+        assert!(
+            weapons.is_empty()
+                || weapons == order
+                || weapons == [SmolStr::new("laser")]
+                || weapons == [SmolStr::new("machine_gun")],
+            "at {t_ms}: {weapons:?}"
         );
-        if view.heat.is_some_and(|heat| heat.overheated()) {
+        let disarmed = armings(&result.intents)
+            .iter()
+            .any(|arming| matches!(arming, Arming::Disarm { .. }));
+        let laser_shown = view.weapons.iter().any(|row| {
+            row.id == "laser" && row.armed.as_ref().is_some_and(|armed| armed.slot == 1)
+        });
+        let laser_stands = weapons.contains(&SmolStr::new("laser")) || (laser_shown && !disarmed);
+        if view.heat.is_some_and(|heat| heat.overheated()) && laser_stands {
             armed_hot = true;
         }
     }
     assert!(
         armed_hot,
-        "a think at the ceiling armed the laser all the same"
+        "a think at the ceiling left the laser armed all the same"
     );
     // The shots.
     let shots = run.shots();
@@ -3753,6 +3778,71 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
         !told.contains(&Refusal::Unwarranted) && !told.contains(&Refusal::Unlawful),
         "{told:?}"
     );
+
+    // **17b cut M1b.3** (F6 on change): the laser's slot cleared at the
+    // ceiling, the sink never back on — the next think's view shows the laser
+    // unarmed on an overheated platform, and it ARMS it all the same (no heat
+    // skip), back in S1.
+    let strip = |arena: &mut Arena| {
+        assert!(
+            arena.unit(RED).is_some_and(|state| state.overheated()),
+            "the precondition: at the ceiling by {COOLS_AT}"
+        );
+        assert_eq!(
+            arena.conditions.disarm(RED, Some("laser")),
+            vec![1],
+            "the laser's S1 freed"
+        );
+    };
+    let hot = at_three_cadences(&make, true, 15_000, &[], &[(COOLS_AT, &strip)], &mut |_| {});
+    let laser_arm = |result: &ThinkResult| {
+        armings(&result.intents)
+            .iter()
+            .any(|arming| matches!(arming, Arming::Arm(cond) if cond.weapon == "laser"))
+    };
+    let Some((_, rearmed, view, result)) = hot
+        .thoughts
+        .iter()
+        .find(|(_, t_ms, _, result)| *t_ms >= COOLS_AT && laser_arm(result))
+    else {
+        panic!("no think re-armed the laser after its slot was cleared");
+    };
+    assert!(
+        view.heat.is_some_and(|heat| heat.overheated()),
+        "the laser re-armed at {rearmed} on an overheated platform: {:?}",
+        view.heat
+    );
+    assert!(
+        view.weapons
+            .iter()
+            .any(|row| row.id == "laser" && row.armed.is_none()),
+        "on a view that showed it unarmed at {rearmed}: {:?}",
+        view.weapons
+    );
+    assert!(
+        !armings(&result.intents)
+            .iter()
+            .any(|arming| matches!(arming, Arming::Arm(cond) if cond.weapon == "machine_gun")),
+        "and the machine gun, shown armed as wanted, not re-armed: {:?}",
+        result.intents
+    );
+    let landed = rearmed + substep;
+    let after: Vec<Option<u8>> = hot
+        .thoughts
+        .iter()
+        .filter(|(_, t_ms, ..)| *t_ms > landed)
+        .map(|(_, _, view, _)| {
+            view.weapons
+                .iter()
+                .find(|row| row.id == "laser")
+                .and_then(|row| row.armed.as_ref())
+                .map(|armed| armed.slot)
+        })
+        .collect();
+    assert!(
+        !after.is_empty() && after.iter().all(|slot| *slot == Some(1)),
+        "S1 holds the laser again after the landing: {after:?}"
+    );
 }
 
 /// **The `cond_stale` rule** (`tests/twin.rs`; 17b §1(f), adversarial F5): a
@@ -3793,9 +3883,12 @@ fn stale(run: &MindRun) -> Vec<(i64, u64)> {
 /// one rounded range, both facing red, so the stock mind's score ties and it
 /// settles on the lower contact id (`first`); at a 5,000 ms boundary the
 /// other (`second`) turns its rear to red, and the think after red's next
-/// pass retargets: `Condition(Arm)`, then `Lock { second }`, then
-/// `Fire { S1 }`, in that order in the answer, landing in that order with no
-/// evaluation between them. At 5,000, 1,000 and 500 ms each:
+/// pass retargets: `Lock { second }`, then `Fire { S1 }` — with a
+/// `Condition(Arm)` before them only where the view shows the slot otherwise
+/// (17b cut M1b.3: on change; here the view already shows S1 armed on the
+/// best hostile as wanted, so the retarget think answers none and the slot it
+/// cites is the view's) — landing in that order with no evaluation between
+/// them. At 5,000, 1,000 and 500 ms each:
 ///
 /// * **(a) the citation on the new lock**: `first` presents nothing, so the
 ///   slot holds at nought per cent on it and the cannon stands ready; the
@@ -3850,10 +3943,21 @@ fn m1b2_a_retarget_think_fires_its_slot_at_the_new_lock_at_the_landing() {
         let arm = at(|kind| matches!(kind, IntentKind::Condition(Arming::Arm(_))));
         let lock = at(|kind| matches!(kind, IntentKind::Lock { .. }));
         let fire = at(|kind| matches!(kind, IntentKind::Fire { slot: Some(1), .. }));
+        // 17b cut M1b.3: on change — the view already shows S1 armed on the
+        // best hostile as wanted, so the retarget think answers no `Arm`.
         assert!(
-            arm.is_some() && arm < lock && lock < fire,
-            "Condition, Lock, Fire: {intents:?}"
+            arm.is_none() && lock.is_some() && lock < fire,
+            "no Condition, then Lock, Fire: {intents:?}"
         );
+    };
+    // 17b cut M1b.3: the retarget think reads S1 off its view's armed row.
+    let shown = |run: &MindRun, think: i64| {
+        run.thoughts
+            .iter()
+            .find(|(_, t_ms, ..)| *t_ms == think)
+            .and_then(|(_, _, view, _)| view.weapons.first())
+            .and_then(|row| row.armed.as_ref())
+            .map(|armed| armed.slot)
     };
 
     // (a) The citation lands on the new lock.
@@ -3868,6 +3972,7 @@ fn m1b2_a_retarget_think_fires_its_slot_at_the_new_lock_at_the_landing() {
     let (think, intents) = retarget(&run);
     assert!(think > 10_000, "after the turn: {think}");
     in_order(&intents);
+    assert_eq!(shown(&run, think), Some(1), "the view's S1");
     let after: Vec<Shot> = run
         .shots()
         .into_iter()
@@ -3904,6 +4009,7 @@ fn m1b2_a_retarget_think_fires_its_slot_at_the_new_lock_at_the_landing() {
     );
     let (think, intents) = retarget(&run);
     in_order(&intents);
+    assert_eq!(shown(&run, think), Some(1), "the view's S1");
     let land = landing(think);
     let shots: Vec<(i64, u64, Option<String>)> = run
         .shots()
@@ -3929,4 +4035,379 @@ fn m1b2_a_retarget_think_fires_its_slot_at_the_new_lock_at_the_landing() {
             && by.as_deref() == Some("cond")),
         "the next WeaponReady's shot is at the new lock: {shots:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.3: T1 reads its slots off its view, landed at three cadences
+// ---------------------------------------------------------------------------
+
+/// When the disarm fixture's hold-fire order lands: after red's first arming
+/// has landed, so its view shows the slot armed.
+const ORDERED_AT: i64 = 5_000;
+
+/// **T1 disarms once, on change, when a hold-fire lands on its armed slot**
+/// (17b cut M1b.3; D-UM-4's parity rule; doc 17 §5's precedence, D-UM-19).
+/// The stock field's T1, unordered, arms its cannon (S1) at the think that
+/// finds blue; a persona's hold-fire `ENGAGE` lands at [`ORDERED_AT`]. At
+/// 5,000, 1,000 and 500 ms — one event list, one hash sequence, one sequence
+/// of thinks:
+///
+/// * a think before the order arms, and the slot stands (S1, the best
+///   hostile) on every view from its landing to the order;
+/// * the FIRST think under the order answers exactly one `Condition`, a
+///   `Disarm { weapon: None }`, beside a view that shows S1 armed;
+/// * from that think's landing on the arena holds no slot for red (after
+///   every pulse), and every later think under the order sees nothing armed
+///   and answers no `Condition` — nothing to clear is nothing said;
+/// * nothing fires after the order lands (the slot is gated by the order
+///   until the disarm lands, and is gone after it).
+#[test]
+fn m1b3_t1_disarms_once_on_change_when_a_hold_fire_lands_on_its_armed_slot() {
+    use tacsim::deliberation::order::Objective;
+    let make = || {
+        stock_field(
+            definition(),
+            Controller::Mind,
+            &[(BLUE, (9, 8), 270_000, true)],
+        )
+    };
+    let beats = [(
+        ORDERED_AT,
+        hold_fire_order(Objective::Engage { target_hint: None }, 600_000),
+    )];
+    let mut tables: Vec<(i64, bool)> = Vec::new();
+    let run = at_three_cadences(&make, true, 15_000, &beats, &[], &mut |arena| {
+        tables.push((arena.now_ms, arena.conditions.is_empty_for(RED)));
+    });
+    let substep = make().substep_len_ms();
+    // Armed before the order, and shown armed on every view after that.
+    let Some((_, armed_at, ..)) = run
+        .thoughts
+        .iter()
+        .find(|(_, t_ms, _, result)| *t_ms < ORDERED_AT && arms(&result.intents))
+    else {
+        panic!("red never armed before the order");
+    };
+    let shows_s1 = |view: &MindView| {
+        view.weapons
+            .first()
+            .and_then(|row| row.armed.as_ref())
+            .is_some_and(|armed| armed.slot == 1 && armed.target == SlotTarget::BestHostile)
+    };
+    for (_, t_ms, view, _) in &run.thoughts {
+        if *t_ms >= armed_at + substep && *t_ms < ORDERED_AT {
+            assert!(
+                shows_s1(view),
+                "the view's S1 at {t_ms}: {:?}",
+                view.weapons
+            );
+        }
+    }
+    // The first think under the order: the one disarm, beside an armed row.
+    let under: Vec<&Thought> = run
+        .thoughts
+        .iter()
+        .filter(|(_, _, view, _)| view.order.as_ref().is_some_and(|order| order.hold_fire))
+        .collect();
+    let Some((_, cleared_at, view, result)) = under.first() else {
+        panic!("red never thought under the order");
+    };
+    assert!(*cleared_at >= ORDERED_AT, "under the order at {cleared_at}");
+    assert!(
+        shows_s1(view),
+        "the disarming think's view shows S1: {:?}",
+        view.weapons
+    );
+    assert_eq!(
+        armings(&result.intents),
+        vec![&Arming::Disarm { weapon: None }],
+        "one disarm, on change, at {cleared_at}: {:?}",
+        result.intents
+    );
+    let landed = cleared_at + substep;
+    // After its landing: no slot, nothing said.
+    let mut later = 0_usize;
+    for (_, t_ms, view, result) in under.iter().skip(1) {
+        assert!(
+            view.weapons.iter().all(|row| row.armed.is_none()),
+            "a slot shown armed after the disarm landed, at {t_ms}: {:?}",
+            view.weapons
+        );
+        assert_eq!(
+            armings(&result.intents),
+            Vec::<&Arming>::new(),
+            "a Condition said under the order at {t_ms}: {:?}",
+            result.intents
+        );
+        later += 1;
+    }
+    assert!(later > 0, "red thought again under the order");
+    let after: Vec<&(i64, bool)> = tables.iter().filter(|(t_ms, _)| *t_ms >= landed).collect();
+    assert!(
+        !after.is_empty() && after.iter().all(|(_, empty)| *empty),
+        "the arena's slots after the disarm's landing at {landed}: {after:?}"
+    );
+    assert!(
+        tables
+            .iter()
+            .any(|(t_ms, empty)| *t_ms < ORDERED_AT && !*empty),
+        "the slot stood before the order: {tables:?}"
+    );
+    let shots = run.shots();
+    assert!(
+        shots.iter().any(|(t_ms, ..)| *t_ms < ORDERED_AT),
+        "the slot fired before the order: {shots:?}"
+    );
+    assert!(
+        shots.iter().all(|(t_ms, ..)| *t_ms <= ORDERED_AT),
+        "nothing fires once the order lands: {shots:?}"
+    );
+}
+
+/// When the citation fixture's edit takes red's turret and its lock.
+const TURRET_LOST_AT: i64 = 10_000;
+
+/// **The two-gun stock field**: [`stock_field`]'s red flown by the stock mind
+/// (T1) with the cannon on its turret AND the machine gun on its hull, in
+/// that component order — T1 arms them S1 and S2 — and blue presenting at
+/// (9, 8), handed red as a classified row.
+fn two_gun_field() -> Arena {
+    let units = vec![
+        minded(unit(
+            RED,
+            Team::Red,
+            facing(5, 8, 90_000),
+            vec![cannon(), machine_gun()],
+            Some(wide_sight()),
+        )),
+        unit(BLUE, Team::Blue, facing(9, 8, 270_000), Vec::new(), None),
+    ];
+    let mut arena = seated_arena(units, &[BLUE]);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+    }
+    hold_row(
+        &mut arena,
+        RED,
+        BLUE,
+        Classification::Classified { team: Team::Blue },
+    );
+    arena
+}
+
+/// **T1 cites the slot its view shows after its S1 gun is lost** (17b cut
+/// M1b.3; D-UM-4: a mind reads its own armed slots exactly as the pilot does;
+/// M1b.2's residual (a), removed, landed). [`two_gun_field`] flown by T1 for
+/// 15 s at 5,000, 1,000 and 500 ms — one event list, one hash sequence, one
+/// sequence of thinks. T1 arms the cannon S1 and the machine gun S2; at
+/// [`TURRET_LOST_AT`] an edit takes the turret (`RemoveWeapons`: the cannon
+/// and its S1 go, the machine gun keeps S2 — the arena's numbers are stable)
+/// and red's lock. The think that takes the lock again sees ONE weapon row,
+/// the machine gun at index 0, shown armed in S2 — and cites `Fire {
+/// machine_gun, Some(2) }`, the view's number, never `i + 1` (1); the shot
+/// lands at its landing `by: "mind"`, slot 2, and no think is ever told
+/// `unwarranted`.
+#[test]
+fn m1b3_t1_cites_the_slot_its_view_shows_after_its_s1_gun_is_lost() {
+    use tacsim::arena::resolution::Consequence;
+    let lose_the_turret = |arena: &mut Arena| {
+        assert_eq!(
+            (
+                arena.conditions.slot_of(RED, "cannon"),
+                arena.conditions.slot_of(RED, "machine_gun")
+            ),
+            (Some(1), Some(2)),
+            "the precondition: both guns armed by {TURRET_LOST_AT}"
+        );
+        let now = arena.now_ms;
+        let mut journal = Vec::new();
+        arena.apply_consequence(
+            RED,
+            &Consequence::RemoveWeapons {
+                section: SmolStr::new("turret"),
+            },
+            now,
+            None,
+            &mut journal,
+        );
+        assert_eq!(
+            (
+                arena.conditions.slot_of(RED, "cannon"),
+                arena.conditions.slot_of(RED, "machine_gun")
+            ),
+            (None, Some(2)),
+            "S1 freed with its gun, S2 kept"
+        );
+        if let Some(state) = arena.unit_mut(RED) {
+            state.lock = None;
+        }
+    };
+    let run = at_three_cadences(
+        &two_gun_field,
+        true,
+        15_000,
+        &[],
+        &[(TURRET_LOST_AT, &lose_the_turret)],
+        &mut |_| {},
+    );
+    let substep = two_gun_field().substep_len_ms();
+    // The think that takes the lock again, and what it cites.
+    let Some((_, think, view, result)) = run.thoughts.iter().find(|(_, t_ms, _, result)| {
+        *t_ms >= TURRET_LOST_AT
+            && result
+                .intents
+                .iter()
+                .any(|kind| matches!(kind, IntentKind::Lock { .. }))
+    }) else {
+        panic!("red never took its lock again after {TURRET_LOST_AT}");
+    };
+    let rows: Vec<(&str, Option<u8>)> = view
+        .weapons
+        .iter()
+        .map(|row| (row.id.as_str(), row.armed.as_ref().map(|armed| armed.slot)))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![("machine_gun", Some(2))],
+        "the view at {think}: the one gun, shown in the arena's S2"
+    );
+    let cited: Vec<(&str, Option<u8>)> = result
+        .intents
+        .iter()
+        .filter_map(|kind| match kind {
+            IntentKind::Fire { weapon, slot } => Some((weapon.as_str(), *slot)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cited,
+        vec![("machine_gun", Some(2))],
+        "the view's S2, where i + 1 is 1, at {think}: {:?}",
+        result.intents
+    );
+    let shots = run.shots();
+    assert!(
+        shots.contains(&(
+            think + substep,
+            "machine_gun".to_owned(),
+            u64::from(BLUE.0),
+            Some("mind".to_owned()),
+            Some(2)
+        )),
+        "the citation fired by the mind at its landing, S2: {shots:?}"
+    );
+    assert!(
+        !run.told(RED).contains(&Refusal::Unwarranted),
+        "no citation was unwarranted: {:?}",
+        run.told(RED)
+    );
+}
+
+/// **An order's hint re-keys only to a CLASSIFIED row, at three cadences**
+/// (17b cut M1b.3; the lead's ruling on M1a's residual (2), D-UM-17's rule
+/// applied to the hint; 16b §11's mandatory cross-tempo property for
+/// `Arena::rekey_order`'s change). A scripted mind (red, saying nothing) holds
+/// blue as an UNKNOWN row of its own, which its own sensor tells apart about
+/// `classify_after_ms` (3 s) into the run; the seated red pilot's tank holds
+/// blue classified. A pilot's `ENGAGE` — the hint the pilot's row, `issuer`
+/// the pilot's tank — lands at 0 and again, FRESH, at 10,000. At 5,000,
+/// 1,000 and 500 ms — one event list, one hash sequence, one sequence of
+/// thinks — the objective the mind holds at every 5,000 ms boundary is one
+/// sequence:
+///
+/// * at 0, `Engage { target: None }` — the row unknown;
+/// * at 5,000 and 10,000, still `None` though the row is classified by then
+///   (asserted) — **`order_hint_late`, declared**: `rekey_order` runs once,
+///   at the order's landing;
+/// * at 15,000, the fresh order's `Engage { target: Some(row) }`, the mind's
+///   own row.
+#[test]
+fn m1b3_an_order_hint_re_keys_only_to_a_classified_row_at_three_cadences() {
+    use tacsim::deliberation::order::{CharacterRef, Constraints, Objective, Order};
+    let make = || {
+        let mut arena = seated_arena(
+            vec![
+                minded(unit(
+                    RED,
+                    Team::Red,
+                    facing(5, 8, 90_000),
+                    vec![cannon()],
+                    Some(sight(0)),
+                )),
+                unit(
+                    RED2,
+                    Team::Red,
+                    facing(5, 10, 90_000),
+                    vec![cannon()],
+                    Some(sight(0)),
+                ),
+                unit(BLUE, Team::Blue, facing(9, 8, 270_000), Vec::new(), None),
+            ],
+            &[RED2, BLUE],
+        );
+        for id in [RED, RED2] {
+            if let Some(state) = arena.unit_mut(id) {
+                state.power = Power::Online;
+            }
+        }
+        hold_row(&mut arena, RED, BLUE, Classification::Unknown);
+        hold_row(
+            &mut arena,
+            RED2,
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+        );
+        arena.mind_runner = Arc::new(Scripted::default());
+        arena
+    };
+    let engage = || {
+        IntentKind::Order(Box::new(Order {
+            squad: RED_ONE,
+            objective: Objective::Engage {
+                target_hint: Some(contact_of(RED2, BLUE)),
+            },
+            target: None,
+            horizon_ms: 60_000,
+            constraints: Constraints::default(),
+            ttl_ms: 60_000,
+            issued_ms: 0,
+            issuer: Some(RED2),
+            by: CharacterRef::Character { id: ObjId(9_001) },
+            spot: None,
+        }))
+    };
+    let beats = [(0, engage()), (10_000, engage())];
+    let mut held: Vec<(i64, Option<MindObjective>, bool)> = Vec::new();
+    let _ = at_three_cadences(&make, true, 15_000, &beats, &[], &mut |arena| {
+        if arena.now_ms.rem_euclid(5_000) == 0 {
+            let told = arena
+                .contacts
+                .get(RED, contact_of(RED, BLUE))
+                .is_some_and(|row| matches!(row.class, Classification::Classified { .. }));
+            held.push((
+                arena.now_ms,
+                arena
+                    .minds
+                    .get(&RED)
+                    .and_then(|state| state.order.as_ref())
+                    .map(|order| order.objective),
+                told,
+            ));
+        }
+    });
+    let own = Some(contact_of(RED, BLUE));
+    let want = vec![
+        (0, Some(MindObjective::Engage { target: None }), false),
+        (5_000, Some(MindObjective::Engage { target: None }), true),
+        (10_000, Some(MindObjective::Engage { target: None }), true),
+        (15_000, Some(MindObjective::Engage { target: own }), true),
+    ];
+    assert_eq!(
+        held.len(),
+        3 * want.len(),
+        "every cadence stops on each 5,000 ms: {held:?}"
+    );
+    for (cadence, seen) in held.chunks(want.len()).enumerate() {
+        assert_eq!(seen, want.as_slice(), "the held objective, run {cadence}");
+    }
 }

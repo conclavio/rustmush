@@ -711,7 +711,15 @@ fn shadow(
     // on the arena the think saw. A think that plans its FIRST lock reads
     // the arena's lock as it stood (none, or the old one) and so is not
     // counted: the counter is a floor, never an over-count.
-    let arms: Vec<&FireCondition> = thought
+    //
+    // **17b cut M1b.3**: T1 answers a `Condition` only on a difference with
+    // its view's `armed` rows, so "as this think armed it" is the slots it
+    // leaves standing — every `Arm` it emitted, else the view's own arming
+    // of that weapon (the terms it wanted and found already armed), and none
+    // at all beside a `Disarm` (the think that does not reach `engage_orders`
+    // with its gates passed clears what is armed, and finds nothing to clear
+    // when nothing is).
+    let emitted: Vec<&FireCondition> = thought
         .result
         .intents
         .iter()
@@ -720,6 +728,36 @@ fn shadow(
             _ => None,
         })
         .collect();
+    let disarmed = thought
+        .result
+        .intents
+        .iter()
+        .any(|intent| matches!(intent, IntentKind::Condition(Arming::Disarm { .. })));
+    let arms: Vec<FireCondition> = if disarmed {
+        Vec::new()
+    } else {
+        view.weapons
+            .iter()
+            .take(STOCK_CONDITION_SLOTS)
+            .filter_map(|row| {
+                emitted
+                    .iter()
+                    .find(|cond| cond.weapon == row.id)
+                    .map(|cond| (*cond).clone())
+                    .or_else(|| {
+                        row.armed.as_ref().map(|armed| FireCondition {
+                            weapon: row.id.clone(),
+                            target: armed.target,
+                            min_permille: armed.min_permille,
+                            aspects: armed.aspects,
+                            min_rounds_left: armed.keeps,
+                            min_range_m: armed.min_range_m,
+                            max_range_m: armed.max_range_m,
+                        })
+                    })
+            })
+            .collect()
+    };
     if let Some(row) = after
         .target
         .and_then(|target| view.contacts.iter().find(|row| row.id == target))

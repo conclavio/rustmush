@@ -65,18 +65,7 @@
       "fatal": null,
       "friendly": true,
       "id": "2222222222222222",
-      "odds": [
-        {
-          "p_permille": 871,
-          "percent": 87,
-          "weapon": "cannon"
-        },
-        {
-          "p_permille": 655,
-          "percent": 65,
-          "weapon": "machine_gun"
-        }
-      ],
+      "odds": [],
       "range_m": 100,
       "reads_dead": false,
       "relative_deg": 225
@@ -216,6 +205,7 @@
       "weapon": null
     }
   ],
+  "odds_floor_permille": 100,
   "order": null,
   "origin": [
     0,
@@ -418,7 +408,7 @@
     "id": "arena.cockpit",
     "retain": "latest",
     "shape": "grid",
-    "version": 2
+    "version": 3
   },
   "scope": "hostile",
   "sections": [
@@ -560,6 +550,20 @@
   ],
   "weapons": [
     {
+      "armed": {
+        "aspects": [
+          "left",
+          "right",
+          "rear"
+        ],
+        "keeps": 8,
+        "max_range_m": null,
+        "min_permille": 600,
+        "min_range_m": null,
+        "percent": 60,
+        "slot": 1,
+        "target": "lock"
+      },
       "bands_cm": [
         100000,
         300000
@@ -580,6 +584,7 @@
       "rounds_max": 20
     },
     {
+      "armed": null,
       "bands_cm": [
         40000
       ],

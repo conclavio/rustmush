@@ -393,7 +393,9 @@ pub fn decode_memory(bytes: &[u8]) -> Memory {
 /// `wreck`, `immobile`, `sight_m`, `ecm`, `receiver`, `heat`, `sections`,
 /// `weapons` (each row's keyframe keys, `bands_cm` included since 17b cut
 /// M1a.3), `lock`, `order`, `t_ms`, `notices`, `contacts` and (since 17b cut
-/// M1b.0) `scan_tables`, the tables the contacts' `condition.table` indexes.
+/// M1b.0) `scan_tables`, the tables the contacts' `condition.table` indexes,
+/// and (since 17b cut M1b.3) `odds_floor_permille`; each weapon row carries its
+/// `armed` slot since the same cut.
 /// `team` is the keyframe's callsign letter read as a side. The only object
 /// number in it is the hull's own.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -456,6 +458,11 @@ pub struct MindView {
     /// remap (D-UM-4 as amended: a truncation is a row cap, never the silent
     /// omission of a field another field indexes).
     pub scan_tables: Vec<Vec<SmolStr>>,
+    /// **The match's Compact floor, per mille** (`odds_floor_permille`; 17b
+    /// cut M1b.3, D-UM-4, D-UM-17): the floor every arming and cited shot is
+    /// held to, learned lawfully off the keyframe's own key and never off the
+    /// config.
+    pub odds_floor_permille: u32,
 }
 
 /// **One contact as a mind sees it** (17b cut M1a.5; doc 17 §3): a keyframe
@@ -626,6 +633,7 @@ impl Arena {
             notices,
             contacts,
             scan_tables: frame.scan_tables,
+            odds_floor_permille: frame.odds_floor_permille,
         })
     }
 
@@ -1505,7 +1513,22 @@ mod tests {
             );
             assert_eq!(row.get("ready"), Some(&serde_json::json!(weapon.ready)));
             assert_eq!(row.get("rounds"), Some(&serde_json::json!(weapon.rounds)));
+            // 17b cut M1b.3: the slot, `null` here — nothing is armed.
+            assert_eq!(
+                row.get("armed"),
+                Some(
+                    &weapon
+                        .armed
+                        .as_ref()
+                        .map_or(serde_json::Value::Null, crate::match_::cockpit::arming_json)
+                )
+            );
         }
+        // 17b cut M1b.3: the match's floor, the keyframe's own key.
+        assert_eq!(
+            key("odds_floor_permille"),
+            serde_json::json!(view.odds_floor_permille)
+        );
 
         // The contacts: the keyframe's fourteen, nearest first, the first twelve.
         let mut rows = key("contacts").as_array().cloned().unwrap_or_default();
@@ -1681,6 +1704,102 @@ mod tests {
         assert_eq!(
             again.contacts, view.contacts,
             "a live pose leaked into the view"
+        );
+    }
+
+    /// **17b cut M1b.3** (doc 17 §3's parity rule, D-UM-4): a mind reads its
+    /// own armed slots and the match's floor exactly as its pilot would — the
+    /// view's `weapons[i].armed` is the keyframe's `armed` object for an armed
+    /// row (the arena's slot number, the target's kind and every term) and its
+    /// `null` for an unarmed one, and `odds_floor_permille` is the keyframe's
+    /// top-level key, the arena's captured floor and not the default.
+    #[test]
+    fn m1b3_the_view_carries_the_arming_and_the_floor_as_the_keyframe_does() {
+        use crate::arena::conditions::{Arming, FireCondition, SlotTarget};
+        use crate::arena::test_support::{cannon, line_tank};
+        use crate::match_::cockpit::{arming_json, status_frame_held};
+        let mut red = line_tank(RED, Team::Red, pose(1_500, 1_500));
+        red.controller = Controller::Mind;
+        let mut mg = cannon();
+        mg.id = SmolStr::new("machine_gun");
+        mg.mount_section = SmolStr::new("hull");
+        red.weapons.push(mg);
+        let mut arena = wide(vec![red, line_tank(BLUE, Team::Blue, pose(1_500, 21_500))]);
+        arena.odds_floor_permille = 50;
+        let arm = Arming::Arm(FireCondition {
+            weapon: SmolStr::new("machine_gun"),
+            target: SlotTarget::BestHostile,
+            min_permille: 100,
+            aspects: 0b0110,
+            min_rounds_left: 4,
+            min_range_m: 0,
+            max_range_m: 420,
+        });
+        assert_eq!(arena.resolve_arming(RED, &arm, 0), Ok(Some(1)));
+        let ranges = arena
+            .minds
+            .get(&RED)
+            .map(|state| state.ranges.clone())
+            .unwrap_or_default();
+        let Some(frame) = arena.frame_for(RED, arena.clock.tempo()) else {
+            panic!("a frame");
+        };
+        let keyframe = status_frame_held(crate::arena_task::MatchId(1), &frame, &ranges);
+        let Some(view) = arena.mind_view(RED) else {
+            panic!("a view");
+        };
+        let rows = keyframe
+            .get("weapons")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(view.weapons.len(), 2);
+        for (row, weapon) in rows.iter().zip(&view.weapons) {
+            assert_eq!(
+                row.get("armed"),
+                Some(
+                    &weapon
+                        .armed
+                        .as_ref()
+                        .map_or(serde_json::Value::Null, arming_json)
+                ),
+                "{}",
+                weapon.id
+            );
+        }
+        assert_eq!(
+            view.weapons.first().map(|gun| gun.armed.clone()),
+            Some(None)
+        );
+        assert_eq!(
+            view.weapons
+                .get(1)
+                .and_then(|gun| gun.armed.as_ref())
+                .map(|armed| (
+                    armed.slot,
+                    armed.target,
+                    armed.min_permille,
+                    armed.aspects,
+                    armed.keeps,
+                    armed.min_range_m,
+                    armed.max_range_m
+                )),
+            Some((1, SlotTarget::BestHostile, 100, 0b0110, 4, 0, 420)),
+            "the arena's own slot number and terms"
+        );
+        assert_eq!(
+            rows.get(1).and_then(|row| row.pointer("/armed/target")),
+            Some(&serde_json::json!("best"))
+        );
+        assert_eq!(
+            rows.first().and_then(|row| row.get("armed")),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(view.odds_floor_permille, 50);
+        assert_eq!(
+            keyframe.get("odds_floor_permille"),
+            Some(&serde_json::json!(view.odds_floor_permille))
         );
     }
 

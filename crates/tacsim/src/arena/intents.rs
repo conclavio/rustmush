@@ -64,7 +64,7 @@ use smol_str::SmolStr;
 
 use crate::arena::ledger::EventKind;
 use crate::arena::reflex::ReflexState;
-use crate::arena::state::{Arena, Channel, ContactId, Controller, DueKind, Power};
+use crate::arena::state::{Arena, Channel, Classification, ContactId, Controller, DueKind, Power};
 
 /// What a seat is (doc 16 §3.1's `Control`; doc 07 §1.2 for linkdead).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1301,14 +1301,26 @@ impl Arena {
     ///   ([`crate::deliberation::order::Order::preferred_contact`]) is resolved in
     ///   the issuer's scope (`order.issuer`, else the squad commander's) exactly as
     ///   `reflex.rs`'s `ordered_target` resolves it, to a target; the answer is
-    ///   **this hull's own row for that target if it holds one**, else `None`.
+    ///   **this hull's own CLASSIFIED row for that target**, else `None` —
+    ///   D-UM-17's rule applied to the hint (17b cut M1b.3, the lead's ruling on
+    ///   M1a's residual (2), [`Arena::held_classified`]): an `ORDER ENGAGE BA`
+    ///   tells a mind nothing of which unknown row is BA until its own sensors
+    ///   classify it. **`rekey_order` runs once, at the order's landing, and
+    ///   the SAME order is not re-keyed when the row classifies later** — T0's
+    ///   `ordered_target` re-resolves its hint every tick, so this is the
+    ///   declared divergence `order_hint_late` (doc 17 §24); a late re-key
+    ///   needs the hint's object kept on the mind row, a 16c candidate and not
+    ///   this cut's. (A reflex hull's FRAME re-keys at every build —
+    ///   [`Arena::frame_order`] — so its frame reads the row once classified;
+    ///   the declaration is the mind's.)
     ///   Never the pure id `draw_contact_id` would mint: that is the row the hull
     ///   *will* hold the target under, and writing it for a target the hull does
     ///   not yet hold would link a later `X<n>` detection to the ordered target —
     ///   identity before classification, which no pilot hearing `ENGAGE BA` has
     ///   (the review's finding; the plan's departure (c) withdrawn).
-    /// * `Support { of }` — this hull's own row for `of`, `None` when it holds
-    ///   none. **A self-charge** (`of` is the hull itself) is re-keyed to
+    /// * `Support { of }` — this hull's own CLASSIFIED row for `of`, `None`
+    ///   when it holds none or holds it unclassified (17b cut M1b.3, the same
+    ///   filter). **A self-charge** (`of` is the hull itself) is re-keyed to
     ///   `Engage { target }` through the `Engage` arm's own resolution (17b cut
     ///   L.2; D-UM-15, the plan's Q-L6): a unit whose `of` is itself fights on
     ///   doctrine — the `Objective::Support` doc's own rule — which is `Engage`'s
@@ -1322,6 +1334,10 @@ impl Arena {
     ///   (`crate::arena::mind`'s expiry reads the held objective's word) where
     ///   its `ordered` line and a reflex hull's expiry say `support`.
     /// * `Hold`, `Advance`, `Withdraw`, `Screen` — copied; they name no contact.
+    ///
+    /// `MindObjective`'s shape is unchanged by 17b cut M1b.3: a target on
+    /// `Engage` and a charge on `Support`, as built, and nothing else names a
+    /// contact.
     ///
     /// The constraints are copied flat, the squad is rendered (`red-1`), and
     /// `expires_ms` is the caller's — the standing order's arena deadline.
@@ -1337,14 +1353,17 @@ impl Arena {
         // The `Engage` arm's resolution, lifted so a self-charged `Support`
         // (17b cut L.2) resolves its hint by the same steps: the preferred
         // contact, in the issuer's scope or the squad commander's, to a target,
-        // then this hull's own row for it or none.
+        // then this hull's own row for it or none — and, since 17b cut M1b.3
+        // (D-UM-17 applied to the hint), only a row it has CLASSIFIED.
         let resolve = || {
             order.preferred_contact().and_then(|hint| {
                 let viewer = order
                     .issuer
                     .or_else(|| self.squad_of(unit).map(|squad| squad.commander))?;
                 let target = self.contacts.resolve(viewer, hint)?.target;
-                self.contacts.id_of(unit, target)
+                self.contacts
+                    .id_of(unit, target)
+                    .filter(|id| self.held_classified(unit, *id))
             })
         };
         let objective = match order.objective {
@@ -1355,8 +1374,12 @@ impl Arena {
             Objective::Screen { facing_mdeg } => MindObjective::Screen { facing_mdeg },
             // 17b cut L.2: a self-charge fights on doctrine, which is `Engage`.
             Objective::Support { of } if of == unit => MindObjective::Engage { target: resolve() },
+            // 17b cut M1b.3: the charge's own row, classified, or none.
             Objective::Support { of } => MindObjective::Support {
-                of: self.contacts.id_of(unit, of),
+                of: self
+                    .contacts
+                    .id_of(unit, of)
+                    .filter(|id| self.held_classified(unit, *id)),
             },
         };
         FrameOrder {
@@ -1366,6 +1389,16 @@ impl Arena {
             max_range_band: order.constraints.max_range_band,
             expires_ms,
         }
+    }
+
+    /// **Whether `unit` holds row `id` and has told it apart** (17b cut
+    /// M1b.3; D-UM-17's classified-only rule): the one predicate
+    /// [`Arena::rekey_order`] keeps a row by.
+    #[must_use]
+    pub(crate) fn held_classified(&self, unit: ObjId, id: ContactId) -> bool {
+        self.contacts
+            .get(unit, id)
+            .is_some_and(|held| matches!(held.class, Classification::Classified { .. }))
     }
 
     /// **The standing order a hull's frame carries** (17b cut M1a.3; doc 17 §3),
@@ -3040,7 +3073,7 @@ mod tests {
     fn m1a3_rekey_order_resolves_the_hint_in_the_issuers_scope_and_re_keys_it_to_a_held_row_or_none()
      {
         use crate::arena::perception::{FrameOrder, MindObjective};
-        use crate::arena::state::{Classification, SeenPose, ShadowContact};
+        use crate::arena::state::{SeenPose, ShadowContact};
         use crate::deliberation::order::{Constraints, Objective, Order, RangeBand};
         /// The piloted tank a pilot typed `ORDER` in.
         const PILOT: ObjId = ObjId(6);

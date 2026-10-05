@@ -136,14 +136,15 @@ use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
-use crate::arena::conditions::HeldWhy;
+use crate::arena::conditions::{ASPECTS_ANY, HeldWhy, SlotTarget, aspect_in};
 use crate::arena::damage;
 use crate::arena::intents::MotorGoal;
 use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
-use crate::arena::perception::{DriveOutcome, FrameNotice, NoticeKind, RefusalDetail};
+use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, NoticeKind, RefusalDetail};
 use crate::arena::state::{ArenaTerrain, Channel, ContactId, Designator, KeySpot, Power};
 use crate::arena::step::Frame;
+use crate::arena::weapons::FrameArming;
 use crate::arena_bridge::{
     ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, NOTICE_SENTENCE_TAG,
     forward_intent, send_control,
@@ -1799,6 +1800,8 @@ pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
             p_permille: weapon.p_permille,
             // 16b cut D.2 (`B-16`): straight off the frame's own row.
             heat_per_shot: weapon.heat_per_shot,
+            // 17b cut M1b.3: the arming, off the frame's own row too.
+            armed: weapon.armed.clone(),
         })
         .collect()
 }
@@ -5024,7 +5027,15 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// first fields added FOR a reader that is not a person are, so a client can
 /// say which frame it was built against; every consumer ignores unknown keys
 /// and the version, so an older client prints the old row.
-pub const FRAME_VERSION: u32 = 2;
+///
+/// **17b cut M1b.3 bumped it to 3** (doc 17 §3's parity rule, §5, D-UM-4,
+/// D-UM-17): two more fields added for a reader that is not a person — each
+/// weapon row's `armed` (the condition slot the weapon is armed in, or `null`)
+/// and the top-level `odds_floor_permille` (the match's Compact floor) — so a
+/// mind reads its own slots and the floor exactly as a pilot does. Every
+/// consumer ignores unknown keys and the version, so an older client prints
+/// the old rows.
+pub const FRAME_VERSION: u32 = 3;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].
@@ -5174,6 +5185,18 @@ pub const RETAIN_LATEST: &str = "latest";
 /// carries no `weapons` key** and no contact carries `odds` or `reads_dead`
 /// (doc 17 §22's italic line); `lock`, `lock_*`, `heat`, `scan_tables` and
 /// `fatal` stay.
+///
+/// **17b cut M1b.3** (doc 17 §3, §5, D-UM-4, D-UM-17) bumped [`FRAME_VERSION`]
+/// to `3`. Each weapon gained `armed`: `null`, or the slot it is armed in as
+/// `{ slot, target, min_permille, percent, aspects, keeps, min_range_m,
+/// max_range_m }` — `target` the KIND (`lock`, `best` or `contact`) and never a
+/// designator, `aspects` the facet words in the mask in `front`, `left`,
+/// `right`, `rear` order, `keeps` the rounds the slot keeps back, `min_range_m`
+/// `null` for no lower bound and `max_range_m` `null` for no upper one
+/// ([`arming_json`]). The top level gained `odds_floor_permille`, the match's
+/// Compact floor captured at check-out, beside `t_ms`. Each contact's `odds`
+/// now ride the lock first and only classified contacts of another side
+/// (`Arena::frame_odds`, Q2): a friend's row carries `[]`.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     status_frame_held(match_id, frame, &BTreeMap::new())
@@ -5394,6 +5417,9 @@ pub fn status_frame_held(
                 // which the keyframe did not carry until a reader that is not a
                 // person needed it.
                 "bands_cm": carried.bands_cm,
+                // **17b cut M1b.3** (D-UM-4): the slot this weapon is armed in,
+                // or `null` — the pilot's own slot, and never a designator.
+                "armed": weapon.armed.as_ref().map(arming_json),
             })
         })
         .collect();
@@ -5488,6 +5514,9 @@ pub fn status_frame_held(
         // the frame was built at, and the hull's standing order re-keyed to its
         // own contacts — `null` on every piloted hull (`Arena::frame_order`).
         "t_ms": frame.t_ms,
+        // **17b cut M1b.3** (doc 17 §5 as amended, D-UM-17): the match's
+        // Compact floor, captured at check-out — a public constant.
+        "odds_floor_permille": frame.odds_floor_permille,
         "order": frame.order.as_ref().map(|order| order_json(frame, order)),
         "heat": frame.heat.map(|heat| serde_json::json!({
             "heat": heat.heat,
@@ -6047,6 +6076,97 @@ pub fn contact_markers(
 // The unit's own numbers
 // ---------------------------------------------------------------------------
 
+/// **The keyframe's `armed` object** (17b cut M1b.3; doc 17 §3, D-UM-4): the
+/// slot, the target's KIND, the odds per mille and as the whole per cent,
+/// the facet words in the mask, the rounds kept, and the two range bounds —
+/// `null` for an unbound one. **Never a designator**: a
+/// [`SlotTarget::Contact`] writes `"contact"` with no id (doc 17 §5, the
+/// observer rule; it is unlawful to arm in 17b cut M1b).
+#[must_use]
+pub fn arming_json(armed: &FrameArming) -> serde_json::Value {
+    serde_json::json!({
+        "slot": armed.slot,
+        "target": arming_target_word(armed.target),
+        "min_permille": armed.min_permille,
+        "percent": armed.min_permille / 10,
+        "aspects": ASPECT_ORDER
+            .iter()
+            .filter(|aspect| aspect_in(armed.aspects, **aspect))
+            .map(Aspect::as_str)
+            .collect::<Vec<&str>>(),
+        "keeps": armed.keeps,
+        "min_range_m": (armed.min_range_m > 0).then_some(armed.min_range_m),
+        "max_range_m": (armed.max_range_m < u32::MAX).then_some(armed.max_range_m),
+    })
+}
+
+/// The four facets in mask order — `front`, `left`, `right`, `rear`
+/// ([`crate::arena::perception::Aspect::code`]).
+const ASPECT_ORDER: [Aspect; 4] = [Aspect::Front, Aspect::Left, Aspect::Right, Aspect::Rear];
+
+/// **A slot's target, as a word** (17b cut M1b.3): `lock`, `best` or
+/// `contact` — the KIND, never which contact.
+#[must_use]
+pub const fn arming_target_word(target: SlotTarget) -> &'static str {
+    match target {
+        SlotTarget::Lock => "lock",
+        SlotTarget::BestHostile => "best",
+        SlotTarget::Contact { .. } => "contact",
+    }
+}
+
+/// **The arming line** (17b cut M1b.3; doc 17 §5's `WEAPONSTATUS` sentence as
+/// built: the arming on its own line under the weapon's row, for the
+/// 120-column floor) — ONE formatter for the three renderers: line mode's
+/// `WEAPONSTATUS` prints it indented two spaces under the weapon's row (17b
+/// cut M1b.4), and the TUI weapons pane and the web's `weaponLines` print the
+/// same words (their copies of this rule, pinned equal by the fixture scene).
+///
+/// `S{n}:` then the terms, one space apart, compact for the TUI's 46-column
+/// floor: `best` when the target is the best hostile (`lock` is the default
+/// and prints nothing; a `contact` target prints `contact` and no id); then
+/// `>={percent}%` always; then the facets as de-duplicated side words —
+/// `front`, `side` (left or right), `rear`, in that order, joined `/` — only
+/// when the mask is not all four (an empty mask prints none); then the range
+/// with the unit attached, `{a}-{b}m`, `under {b}m` or `past {a}m`, only when
+/// bound; then `keeps {k}` only above nought. `S1: >=60% side/rear keeps 8`;
+/// `S1: >=60% side/rear 200-600m keeps 8`; T1's `S1: best >=10% under 420m`.
+#[must_use]
+pub fn arming_words(armed: &FrameArming) -> String {
+    let mut terms: Vec<String> = vec![format!("S{}:", armed.slot)];
+    match armed.target {
+        SlotTarget::Lock => {}
+        SlotTarget::BestHostile => terms.push("best".to_owned()),
+        SlotTarget::Contact { .. } => terms.push("contact".to_owned()),
+    }
+    terms.push(format!(">={}%", armed.min_permille / 10));
+    if armed.aspects & ASPECTS_ANY != ASPECTS_ANY {
+        let side =
+            aspect_in(armed.aspects, Aspect::Left) || aspect_in(armed.aspects, Aspect::Right);
+        let words: Vec<&str> = [
+            (aspect_in(armed.aspects, Aspect::Front), "front"),
+            (side, "side"),
+            (aspect_in(armed.aspects, Aspect::Rear), "rear"),
+        ]
+        .into_iter()
+        .filter_map(|(on, word)| on.then_some(word))
+        .collect();
+        if !words.is_empty() {
+            terms.push(words.join("/"));
+        }
+    }
+    match (armed.min_range_m > 0, armed.max_range_m < u32::MAX) {
+        (true, true) => terms.push(format!("{}-{}m", armed.min_range_m, armed.max_range_m)),
+        (false, true) => terms.push(format!("under {}m", armed.max_range_m)),
+        (true, false) => terms.push(format!("past {}m", armed.min_range_m)),
+        (false, false) => {}
+    }
+    if armed.keeps > 0 {
+        terms.push(format!("keeps {}", armed.keeps));
+    }
+    terms.join(" ")
+}
+
 /// One weapon, as [`frame_weapons`] and [`weapons_of`] read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeaponRow {
@@ -6079,6 +6199,11 @@ pub struct WeaponRow {
     /// the clause [`crate::arena::state::Arena::resolve_fire`] applies a pulse
     /// later.
     pub heat_per_shot: u32,
+    /// **The slot the weapon is armed in** (17b cut M1b.3; D-UM-4), off the
+    /// frame's own row, or `None` — and always `None` from [`weapons_of`],
+    /// which reads no arena. 17b cut M1b.4's `WEAPONSTATUS` prints it through
+    /// [`arming_words`] on its own line under the row; nothing prints it here.
+    pub armed: Option<FrameArming>,
 }
 
 impl WeaponRow {
@@ -6174,6 +6299,8 @@ pub fn weapons_of(w: &World, unit: ObjId) -> Vec<WeaponRow> {
             // 16b cut D.2: a unit no arena holds has no heat state to read, and
             // no frame either — so nothing is ever refused for heat off this row.
             heat_per_shot: 0,
+            // 17b cut M1b.3: a unit no arena holds holds no slot.
+            armed: None,
         });
     }
     rows
@@ -7902,6 +8029,7 @@ mod tests {
             // 16b cut F.2: this weapon's own chance, not the platform's best.
             p_permille: Some(464),
             heat_per_shot: 0,
+            armed: None,
         };
         // 16b cut D.2: `cannon` is one word, so it has no short name to open.
         assert_eq!(
@@ -8102,6 +8230,7 @@ mod tests {
             range_band: None,
             p_permille: None,
             heat_per_shot: 0,
+            armed: None,
         }
     }
 
@@ -9979,6 +10108,7 @@ mod tests {
             p_permille: None,
             bands_cm: vec![100_000],
             heat_per_shot: 0,
+            armed: None,
         };
         frame.weapons = vec![row("cannon", false, 2_000), row("machine_gun", true, 0)];
         let now = Instant::now();
@@ -10134,6 +10264,7 @@ mod tests {
             p_permille: Some(p),
             bands_cm: vec![100_000, 300_000],
             heat_per_shot: 0,
+            armed: None,
         };
         frame.weapons = vec![
             gun("cannon", true, 0, 460),
@@ -10310,6 +10441,7 @@ mod tests {
                 p_permille: Some(460),
                 bands_cm: vec![100_000, 300_000],
                 heat_per_shot: 0,
+                armed: None,
             })
             .collect();
         let lines = ap3_lines(&armed);

@@ -50,12 +50,14 @@
 //! **stands** emits `Goal(Hold)` first and then the facing `Heading` — *stop
 //! here and face there*; the goal is already gone, so the disengage rule has
 //! nothing to let go of. The stock mind never emits a `Speed` at all
-//! (`Goal(Hold)` is its stop) and answers `Startup` with its disarm alone.
-//! **17b cut M1b.2**: every think of an armed hull answers its slots
+//! (`Goal(Hold)` is its stop) and answers `Startup` with its disarm alone —
+//! and, since 17b cut M1b.3, with `Startup` alone when no slot is armed.
+//! **17b cut M1b.2**: a think of an armed hull answers its slots
 //! ([`arming_for`]) — one `Condition(Arm)` per weapon of its first
-//! [`STOCK_CONDITION_SLOTS`], or one `Condition(Disarm)` — so a think emits
-//! at most `4 + STOCK_CONDITION_SLOTS` intents (`Condition` × 2, `Goal(Hold)`,
-//! `Heading`, `Lock`, `Fire`), well inside
+//! [`STOCK_CONDITION_SLOTS`], or one `Condition(Disarm)`; **17b cut M1b.3**
+//! answers only where its view's `armed` rows differ from what it wants — so
+//! a think emits at most `4 + STOCK_CONDITION_SLOTS` intents (`Condition` ×
+//! 2, `Goal(Hold)`, `Heading`, `Lock`, `Fire`), well inside
 //! [`crate::arena::mind::MIND_INTENTS_MAX`]; a `Fire` is planned only beside a
 //! fresh `Lock` and cites its slot (`engage_orders`), and the armed slot owns
 //! every other shot.
@@ -118,7 +120,9 @@ use crate::arena::reflex::{
 use crate::arena::state::{
     ArenaDefinition, Classification, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldState, Power,
 };
-use crate::arena::weapons::{FrameWeapon, fight_inner_cm_of, fight_limit_cm_of, loaded_weapon_of};
+use crate::arena::weapons::{
+    FrameArming, FrameWeapon, fight_inner_cm_of, fight_limit_cm_of, loaded_weapon_of,
+};
 use crate::config::ReflexConfig;
 use crate::deliberation::order::RangeBand;
 
@@ -691,8 +695,8 @@ struct Plan {
     /// The lock to take.
     lock: Option<ContactId>,
     /// The weapon to fire, and the slot its shot cites (17b cut M1b.2: only on
-    /// a fresh lock, `n = i + 1` — the arena's number while no armed weapon
-    /// has been removed; see `engage_orders`).
+    /// a fresh lock; 17b cut M1b.3: the number its view row's `armed` shows,
+    /// else `i + 1` for a weapon this think arms; see `engage_orders`).
     fire: Option<(SmolStr, u8)>,
     /// **17b cut M1b.2** (D-UM-18): `engage_orders` was reached with a row and
     /// its gates passed (power online, not under `hold_fire`, not dry) — the
@@ -917,8 +921,8 @@ impl NativeStockMind {
                     mem.state = ReflexState::Startup;
                 }
                 mem.goal = held;
-                // 17b cut M1b.2: a cold hull's slots are disarmed (every think
-                // answers its slots), after the `Startup`.
+                // 17b cut M1b.2: a cold hull's slots are disarmed, after the
+                // `Startup` — 17b cut M1b.3: where its view shows one armed.
                 let mut intents = vec![IntentKind::Startup];
                 intents.extend(arming_for(view, card, None));
                 return intents;
@@ -1348,7 +1352,8 @@ impl NativeStockMind {
         }
 
         // ---- the emission (the module head's order and its two rules) ----
-        // (`Startup` is the power arm's, which answers it with a disarm.)
+        // (`Startup` is the power arm's, which answers it with a disarm
+        // where a slot is armed.)
         // 17b cut M1b.2: the slots first, after `Startup` and before `Goal`.
         let mut intents: Vec<IntentKind> = arming_for(view, card, plan.arm_ceiling_cm);
         // The helm half. A hull whose motion is disabled is not handed one:
@@ -1618,19 +1623,19 @@ fn walk(
 /// lock no slot has been evaluated against): the landing applies its kinds in
 /// emission order — `Condition`, `Lock`, `Fire` — so that shot is resolved
 /// right after the new lock lands and before `Arena::mind_land`'s one
-/// `Landing` evaluation, which then finds the gun cycling. It cites slot
-/// `n = i + 1` for `view.weapons[i]` — the arena's own stable numbering
-/// **while no armed weapon has been removed**, since T1 arms every weapon in
-/// component order from its first think and never skips one. A
-/// `RemoveWeapons` consequence breaks it: the arena frees only the lost gun's
-/// slot and the others keep their numbers (`Arena::apply_consequence`), so a
-/// hull that loses its S1 gun still holds its S2 gun in S2 — re-armed in
-/// place by the next think — while `view.weapons` has closed up and this
-/// cites it as S1, which the resolver refuses `unwarranted` (the slot itself
-/// still fires at the landing, `by: "cond"`). The view carries no `armed`
-/// rows to read the true number off until 17b cut M1b.3, which cites
-/// `armed.slot` and removes this residual (pinned by
+/// `Landing` evaluation, which then finds the gun cycling.
+///
+/// **17b cut M1b.3 — the citation off the view** (D-UM-4: a mind reads its
+/// own armed slots exactly as the pilot does). It cites the slot NUMBER the
+/// view's row shows, `weapon.armed.slot` — the arena's own stable number,
+/// which a `RemoveWeapons` consequence leaves on the surviving guns (the
+/// arena frees only the lost gun's slot, `Arena::apply_consequence`), so a
+/// hull that lost its S1 gun cites its S2 gun as S2 (M1b.2's residual (a),
+/// removed; pinned by
 /// `m1b2_residual_a_removed_weapon_parts_i_plus_one_from_the_arenas_number`).
+/// A weapon with no `armed` row yet — armed by this very think, whose arming
+/// lands ahead of the `Fire` — is cited `i + 1`, the number the arena's `arm`
+/// gives it on a hull T1 has armed in component order from its first think.
 /// The citation is picked by the rule above (ready at the
 /// landing, loaded, in reach, `!would_overheat`: T0's own rule for the shot
 /// it plans), among the armed weapons only (a weapon past the slots has no
@@ -1688,7 +1693,12 @@ fn engage_orders(
                 && !would_overheat(view, weapon)
         })
         .and_then(|(at, weapon)| {
-            let n = u8::try_from(at.saturating_add(1)).ok()?;
+            // 17b cut M1b.3: the number the view shows, else `i + 1` for a
+            // weapon this think arms.
+            let n = match &weapon.armed {
+                Some(armed) => armed.slot,
+                None => u8::try_from(at.saturating_add(1)).ok()?,
+            };
             Some((weapon.id.clone(), n))
         });
 }
@@ -1707,14 +1717,20 @@ fn engage_orders(
 ///   min_permille: card.min_odds_permille, aspects: card.aspect.mask(),
 ///   min_rounds_left: card.reserve_pct × rounds_max / 100, min_range_m: 0,
 ///   max_range_m: min(ceiling, the weapon's reach) / 100 }`;
-/// * `None` — one `Condition(Disarm { weapon: None })`;
+/// * `None` — one `Condition(Disarm { weapon: None })` when some row is
+///   armed, else nothing;
 /// * an unarmed hull (no weapon rows) — nothing (D-UM-48).
 ///
-/// **Emitted every think** in 17b cut M1b.2 — idempotent: an `Arm` with the
-/// terms a slot already holds folds the same bytes, and a `Disarm` of an empty
-/// row is a no-op. 17b cut M1b.3 emits on change against the view's `armed`
-/// rows. The card is read for the fire discipline alone (on Line: 100 per
-/// mille, every aspect, no reserve).
+/// **Emitted on change** (17b cut M1b.3; D-UM-4's parity rule — a mind reads
+/// its own armed slots off its view exactly as a pilot reads them off
+/// `WEAPONSTATUS`): an `Arm` only for a row among the first
+/// [`STOCK_CONDITION_SLOTS`] whose `armed` is `None` or holds other terms than
+/// the ones wanted (the slot NUMBER is the arena's and is not compared), and
+/// the `Disarm` only when some row is armed and the think wants none. A think
+/// whose view already shows what it wants emits no `Condition` at all. (17b
+/// cut M1b.2 emitted every think, idempotently, because the view could not
+/// show the arming.) The card is read for the fire discipline alone (on Line:
+/// 100 per mille, every aspect, no reserve).
 #[must_use]
 pub fn arming_for(
     view: &MindView,
@@ -1725,16 +1741,20 @@ pub fn arming_for(
         return Vec::new();
     }
     let Some(ceiling_cm) = reach_ceiling_cm else {
-        return vec![IntentKind::Condition(Arming::Disarm { weapon: None })];
+        // 17b cut M1b.3: nothing to clear is nothing said.
+        if view.weapons.iter().any(|weapon| weapon.armed.is_some()) {
+            return vec![IntentKind::Condition(Arming::Disarm { weapon: None })];
+        }
+        return Vec::new();
     };
     view.weapons
         .iter()
         .take(STOCK_CONDITION_SLOTS)
-        .map(|weapon| {
+        .filter_map(|weapon| {
             let reach_cm = weapon.bands_cm.last().map_or(0, |reach| u64::from(*reach));
             let keeps =
                 u64::from(card.reserve_pct).saturating_mul(u64::from(weapon.rounds_max)) / 100;
-            IntentKind::Condition(Arming::Arm(FireCondition {
+            let wanted = FireCondition {
                 weapon: weapon.id.clone(),
                 target: SlotTarget::BestHostile,
                 min_permille: card.min_odds_permille,
@@ -1742,7 +1762,13 @@ pub fn arming_for(
                 min_rounds_left: u32::try_from(keeps).unwrap_or(u32::MAX),
                 min_range_m: 0,
                 max_range_m: u32::try_from(ceiling_cm.min(reach_cm) / 100).unwrap_or(u32::MAX),
-            }))
+            };
+            // 17b cut M1b.3: the view's row already holds these terms.
+            let held = weapon
+                .armed
+                .as_ref()
+                .is_some_and(|armed| *armed == FrameArming::of(armed.slot, &wanted));
+            (!held).then_some(IntentKind::Condition(Arming::Arm(wanted)))
         })
         .collect()
 }
@@ -2067,15 +2093,17 @@ mod tests {
     }
 
     /// **The emission order, the no-`Heading`-with-a-`Goal(Cell)` rule and the
-    /// cap**: a cold hull answers `Startup` and its disarm; a patrol hands the
-    /// motor a cell and nothing else but the disarm, and the same think again
-    /// hands it nothing but the disarm (the goal did not change); a hostile at
+    /// cap**: a cold hull answers `Startup`; a patrol hands the motor a cell
+    /// and nothing else, and the same think again hands it nothing (the goal
+    /// did not change) — 17b cut M1b.3: a view with no slot armed answers no
+    /// disarm, where 17b cut M1b.2 disarmed every think; a hostile at
     /// 200 m with a line is engaged — the arming, the lock and the cited shot
     /// on the think that finds it — and the next think stands: the arming,
     /// `Goal(Hold)`, the facing `Heading`, then the lock and the shot, in that
     /// order. (17b cut M1b.2 put the `Condition` rows in, after `Startup` and
-    /// before `Goal`, every think; the view here is never landed, so every
-    /// think's lock is fresh and cites slot 1.)
+    /// before `Goal`; the view here is never landed — it shows no slot armed,
+    /// so every think that reaches `engage_orders` arms, and every lock is
+    /// fresh and cites slot 1.)
     #[test]
     fn m1a6_the_emission_order_and_its_two_rules() {
         let mut arena = field(vec![
@@ -2084,24 +2112,18 @@ mod tests {
         ]);
         let mut memory = StockMemory::default();
         let cold = think(&arena, &view_of(&arena, RED), &mut memory, 0);
-        // 17b cut M1b.2: every think answers its slots — a cold one disarms.
-        assert_eq!(cold, vec![IntentKind::Startup, disarm()]);
+        // 17b cut M1b.3: a cold hull with no slot armed has nothing to disarm.
+        assert_eq!(cold, vec![IntentKind::Startup]);
         online(&mut arena, RED);
         let mut patrol = StockMemory::default();
         let walk = think(&arena, &view_of(&arena, RED), &mut patrol, 1_000);
         emission_holds(&walk);
         assert!(
-            matches!(
-                walk.as_slice(),
-                [
-                    IntentKind::Condition(Arming::Disarm { weapon: None }),
-                    IntentKind::Goal(MotorGoal::Cell { .. })
-                ]
-            ),
+            matches!(walk.as_slice(), [IntentKind::Goal(MotorGoal::Cell { .. })]),
             "{walk:?}"
         );
         let again = think(&arena, &view_of(&arena, RED), &mut patrol, 2_000);
-        assert_eq!(again, vec![disarm()], "the goal did not change");
+        assert_eq!(again, Vec::<IntentKind>::new(), "the goal did not change");
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let mut fight = StockMemory::default();
         let found = think(&arena, &view_of(&arena, RED), &mut fight, 1_000);
@@ -2179,7 +2201,7 @@ mod tests {
         emission_holds(&intents);
         assert_eq!(
             intents,
-            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
         );
         assert_eq!(memory.last_plot, None);
         assert_eq!(memory.hunt, None);
@@ -2208,7 +2230,7 @@ mod tests {
         };
         assert_eq!(
             think(&arena, &view_of(&arena, RED), &mut quiet, 10_000),
-            vec![disarm()]
+            Vec::<IntentKind>::new()
         );
     }
 
@@ -2235,7 +2257,7 @@ mod tests {
         let mut on = start.clone();
         assert_eq!(
             think(&arena, &view, &mut on, 5_000),
-            vec![disarm()],
+            Vec::<IntentKind>::new(),
             "driving on"
         );
         assert_eq!(on.hunt, Some(named));
@@ -2249,7 +2271,7 @@ mod tests {
         assert_eq!(arrived.waypoint, Some(0), "the nearest node, west");
         assert_eq!(
             intents,
-            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
         );
     }
 
@@ -2416,7 +2438,7 @@ mod tests {
         emission_holds(&intents);
         assert_eq!(
             intents,
-            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
         );
         assert_eq!(memory.goal, Some(hold.spot));
         assert_eq!(memory.unheld_since_ms, Some(1_000));
@@ -2437,7 +2459,6 @@ mod tests {
             matches!(
                 fell_back.as_slice(),
                 [
-                    IntentKind::Condition(Arming::Disarm { weapon: None }),
                     IntentKind::Goal(MotorGoal::Cell { x, y })
                 ] if (*x, *y) != hold.spot
             ),
@@ -2455,7 +2476,7 @@ mod tests {
         let again = think_holding(&arena, &view, &mut memory, &hold, retry);
         assert_eq!(
             again,
-            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
         );
         assert_eq!(memory.hold_retry_ms, None);
         // On the spot: parked.
@@ -2466,7 +2487,7 @@ mod tests {
             ..patrolling(0)
         };
         let stop = think_holding(&there, &view_of(&there, RED), &mut parked, &hold, 3_000);
-        assert_eq!(stop, vec![disarm(), IntentKind::Goal(MotorGoal::Hold)]);
+        assert_eq!(stop, vec![IntentKind::Goal(MotorGoal::Hold)]);
         assert_eq!(parked.goal, None);
         assert_eq!(parked.state, ReflexState::Patrol);
     }
@@ -2491,14 +2512,14 @@ mod tests {
         let mut memory = patrolling(0);
         let ended = think_holding(&arena, &view, &mut memory, &hold, 1_000);
         assert!(memory.ignore_order, "the Advance is over for this hull");
-        assert_eq!(ended, vec![disarm(), IntentKind::Goal(MotorGoal::Hold)]);
+        assert_eq!(ended, vec![IntentKind::Goal(MotorGoal::Hold)]);
         // With no Hold objective the Advance stands, and is driven.
         let mut skirmish = patrolling(0);
         let driven = think(&arena, &view, &mut skirmish, 1_000);
         assert!(!skirmish.ignore_order);
         assert_eq!(
             driven,
-            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 32, y: 20 })]
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 32, y: 20 })]
         );
         // `Approach`, inside the square, on a row past its reach.
         hold_contact(&mut arena, RED, BLUE, ContactId(0x55));
@@ -2528,20 +2549,14 @@ mod tests {
         assert_eq!(closing.state, ReflexState::Approach);
         assert_eq!(
             inside,
-            vec![disarm(), IntentKind::Goal(MotorGoal::Cell { x: 31, y: 20 })],
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 31, y: 20 })],
             "it holds its own cell"
         );
         let mut outside = closing.clone();
         outside.goal = None;
         let out = think(&arena, &view, &mut outside, 1_000);
         assert!(
-            matches!(
-                out.as_slice(),
-                [
-                    IntentKind::Condition(Arming::Disarm { weapon: None }),
-                    IntentKind::Goal(MotorGoal::Cell { .. })
-                ]
-            ) && out != inside,
+            matches!(out.as_slice(), [IntentKind::Goal(MotorGoal::Cell { .. })]) && out != inside,
             "on a skirmish it drives for the stand-off cell: {out:?}"
         );
     }
@@ -2573,7 +2588,6 @@ mod tests {
         assert_eq!(
             outside,
             vec![
-                disarm(),
                 IntentKind::Goal(MotorGoal::Hold),
                 IntentKind::Heading { mdeg: 0 }
             ],
@@ -2661,11 +2675,10 @@ mod tests {
             matches!(
                 back.as_slice(),
                 [
-                    IntentKind::Condition(Arming::Disarm { weapon: None }),
                     IntentKind::Goal(MotorGoal::Cell { y, .. })
                 ] if *y > 20
             ),
-            "toward the station, south, firing nothing — its slots disarmed: {back:?}"
+            "toward the station, south, firing nothing — no slot armed to clear: {back:?}"
         );
         assert_eq!(leashed.state, ReflexState::Patrol);
         assert_eq!(leashed.target, None);
@@ -2680,7 +2693,7 @@ mod tests {
         station_view.order = leashed_view.order.clone();
         let mut station = patrolling(0);
         let parked = think(&close, &station_view, &mut station, 1_000);
-        assert_eq!(parked, vec![disarm(), IntentKind::Goal(MotorGoal::Hold)]);
+        assert_eq!(parked, vec![IntentKind::Goal(MotorGoal::Hold)]);
     }
 
     /// **An `Engage` hint outranks a better score** (16b cut N.2; the hint
@@ -2794,10 +2807,7 @@ mod tests {
         assert!(
             matches!(
                 closed.as_slice(),
-                [
-                    IntentKind::Condition(Arming::Disarm { weapon: None }),
-                    IntentKind::Goal(MotorGoal::Cell { .. })
-                ]
+                [IntentKind::Goal(MotorGoal::Cell { .. })]
             ),
             "{closed:?}"
         );
@@ -2835,7 +2845,8 @@ mod tests {
     /// `BestHostile` with the card's odds, its aspect mask, its reserve as
     /// whole rounds of `rounds_max`, `min_range_m` 0 and `max_range_m` the
     /// lesser of the ceiling and the weapon's reach in metres; `None` is one
-    /// `Disarm { None }`; an unarmed hull answers nothing (D-UM-48).
+    /// `Disarm { None }` beside an armed view row (17b cut M1b.3: and nothing
+    /// beside none); an unarmed hull answers nothing (D-UM-48).
     #[test]
     fn m1b2_arming_for_arms_the_first_two_weapons_whatever_the_heat() {
         let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
@@ -2898,6 +2909,16 @@ mod tests {
                     && cond.aspects == crate::arena::conditions::ASPECTS_ANY
                     && cond.min_rounds_left == 0)
         );
+        // 17b cut M1b.3: nothing armed is nothing to disarm.
+        assert_eq!(
+            arming_for(&view, &line, None),
+            Vec::new(),
+            "not reached, nothing armed: nothing said"
+        );
+        if let (Some(row), Some(cond)) = (view.weapons.get_mut(1), on_line.get(1).map(armed_terms))
+        {
+            row.armed = Some(FrameArming::of(2, &cond));
+        }
         assert_eq!(
             arming_for(&view, &line, None),
             vec![disarm()],
@@ -2918,8 +2939,12 @@ mod tests {
     ///   stands but plans NO `Lock` and NO `Fire`: the armed slot owns the shot;
     /// * a fresh lock on a cycling cannon arms and locks and cites nothing
     ///   (today's first-ready rule for the cited shot);
-    /// * under `hold_fire` the lock is still taken and the slots DISARMED;
-    /// * powering up (`Starting`) disarms; cold, `Startup` then the disarm;
+    /// * 17b cut M1b.3: a view whose `armed` row already holds the wanted
+    ///   terms answers no `Condition`; one on other terms is re-armed;
+    /// * under `hold_fire` the lock is still taken and the slots DISARMED
+    ///   (where the view shows one armed — M1b.3);
+    /// * powering up (`Starting`) disarms (likewise); cold, `Startup` then the
+    ///   disarm;
     /// * a withdraw stand en route arms on `stand_cm`, not `release_cm`.
     #[test]
     fn m1b2_t1_arms_on_the_admitting_ceiling_and_cites_only_beside_a_fresh_lock() {
@@ -2996,13 +3021,58 @@ mod tests {
             ),
             "{locked:?}"
         );
-        // Under `hold_fire`: the lock is taken, the slots disarmed.
+        // 17b cut M1b.3: the view showing the slot as wanted answers no
+        // `Condition` — on change only.
+        let mut shown = held_view.clone();
+        if let Some(row) = shown.weapons.first_mut() {
+            row.armed = Some(FrameArming::of(1, &armed_terms(arm)));
+        }
+        let quietly = think(&arena, &shown, &mut fight.clone(), 2_000);
+        emission_holds(&quietly);
+        assert!(
+            matches!(
+                quietly.as_slice(),
+                [
+                    IntentKind::Goal(MotorGoal::Hold),
+                    IntentKind::Heading { .. }
+                ]
+            ),
+            "armed as wanted: nothing to say: {quietly:?}"
+        );
+        // Shown on other terms (a narrower ceiling): one `Arm`, in place.
+        let mut narrower = shown.clone();
+        if let Some(armed) = narrower
+            .weapons
+            .first_mut()
+            .and_then(|row| row.armed.as_mut())
+        {
+            armed.max_range_m = armed.max_range_m.saturating_sub(100);
+        }
+        let rearmed = think(&arena, &narrower, &mut fight.clone(), 2_000);
+        assert_eq!(
+            rearmed.first().map(armed_terms),
+            Some(armed_terms(arm)),
+            "{rearmed:?}"
+        );
+        // Under `hold_fire`: the lock is taken, the slots disarmed — and,
+        // 17b cut M1b.3, only where the view shows a slot armed.
         let mut held_fire = view.clone();
         held_fire.order = Some(FrameOrder {
             hold_fire: true,
             ..order_of(MindObjective::Engage { target: None })
         });
         let mut quiet = StockMemory::default();
+        let holding_fire = think(&arena, &held_fire, &mut quiet.clone(), 1_000);
+        assert_eq!(
+            holding_fire,
+            vec![IntentKind::Lock {
+                contact: ContactId(0x77)
+            }],
+            "nothing armed: nothing to disarm"
+        );
+        if let Some(row) = held_fire.weapons.first_mut() {
+            row.armed = Some(FrameArming::of(1, &armed_terms(arm)));
+        }
         let holding_fire = think(&arena, &held_fire, &mut quiet, 1_000);
         assert_eq!(
             holding_fire,
@@ -3013,9 +3083,16 @@ mod tests {
                 }
             ]
         );
-        // Powering up: disarmed.
+        // Powering up: disarmed where armed, silent where not.
         let mut starting = view.clone();
         starting.power = Power::Starting;
+        assert_eq!(
+            think(&arena, &starting, &mut StockMemory::default(), 1_000),
+            Vec::new()
+        );
+        if let Some(row) = starting.weapons.first_mut() {
+            row.armed = Some(FrameArming::of(1, &armed_terms(arm)));
+        }
         assert_eq!(
             think(&arena, &starting, &mut StockMemory::default(), 1_000),
             vec![disarm()]
@@ -3108,16 +3185,16 @@ mod tests {
         }));
     }
 
-    /// **A residual 17b cut M1b.3 removes, pinned** (the M1b.2 review's
+    /// **The residual 17b cut M1b.3 removed, pinned** (the M1b.2 review's
     /// correctness F2; `engage_orders`' note): `n = i + 1` is the arena's
     /// slot number only while no armed weapon has been removed. Red carries
     /// the cannon on its turret and a machine gun on its hull, both armed (S1,
     /// S2) by a think's own `arming_for`; the turret's `RemoveWeapons` frees
-    /// S1 and leaves the machine gun in S2. The next think re-arms the machine
-    /// gun alone — in place, still S2 — and, on a fresh lock, cites it as S1
-    /// (`view.weapons` has closed up), which the resolver refuses
-    /// `unwarranted`. M1b.3 cites `armed.slot` off the view and flips the last
-    /// two assertions.
+    /// S1 and leaves the machine gun in S2 — the view's machine-gun row shows
+    /// it there, as wanted, so nothing is re-armed. On a fresh lock the think
+    /// cites the number its view shows — S2, where M1b.2 cited S1 (`view.weapons`
+    /// has closed up) and the resolver refused it `unwarranted` — and the
+    /// resolver now admits the citation.
     #[test]
     fn m1b2_residual_a_removed_weapon_parts_i_plus_one_from_the_arenas_number() {
         use crate::arena::resolution::Consequence;
@@ -3154,36 +3231,70 @@ mod tests {
             None,
             &mut journal,
         );
-        arm(&mut arena);
+        // 17b cut M1b.3: the view shows the machine gun in S2 on the terms
+        // wanted, so the arming answers nothing — no re-arm, and S2 stands.
+        assert_eq!(
+            arming_for(&view_of(&arena, RED), &card, Some(100_000)),
+            Vec::new(),
+            "nothing to re-arm: the view shows S2 as wanted"
+        );
         assert_eq!(arena.conditions.slot_of(RED, "cannon"), None);
         assert_eq!(
             arena.conditions.slot_of(RED, "machine_gun"),
             Some(2),
-            "re-armed in place"
+            "kept in place by the removal"
         );
-        // A fresh lock's citation numbers the closed-up view.
+        // A fresh lock's citation reads the number off the view's row.
+        let view = view_of(&arena, RED);
+        assert_eq!(
+            view.weapons
+                .iter()
+                .map(|row| (row.id.as_str(), row.armed.as_ref().map(|armed| armed.slot)))
+                .collect::<Vec<_>>(),
+            vec![("machine_gun", Some(2))],
+            "the view shows the arena's number"
+        );
         let mut fight = StockMemory::default();
-        let found = think(&arena, &view_of(&arena, RED), &mut fight, 1_000);
+        let found = think(&arena, &view, &mut fight, 1_000);
+        // The think's own ceiling (its release range, 600 m here) is not the
+        // 1,000 m the arming above used, so its view shows S2 on OTHER terms
+        // and it re-arms the machine gun — that gun alone, on change — and the
+        // arena keeps it in place, S2.
+        let rearmed: Vec<&FireCondition> = found
+            .iter()
+            .filter_map(|kind| match kind {
+                IntentKind::Condition(Arming::Arm(cond)) => Some(cond),
+                _ => None,
+            })
+            .collect();
         assert!(
-            found.iter().any(|kind| matches!(
-                kind,
-                IntentKind::Condition(Arming::Arm(cond)) if cond.weapon == "machine_gun"
-            )),
-            "{found:?}"
+            rearmed.iter().all(|cond| cond.weapon == "machine_gun")
+                && !found
+                    .iter()
+                    .any(|kind| matches!(kind, IntentKind::Condition(Arming::Disarm { .. }))),
+            "only the machine gun is re-armed, nothing disarmed: {found:?}"
         );
+        for cond in &rearmed {
+            assert_eq!(
+                arena.resolve_arming(RED, &Arming::Arm((*cond).clone()), 0),
+                Ok(Some(2)),
+                "re-armed in place"
+            );
+        }
         assert_eq!(
             found.last(),
             Some(&IntentKind::Fire {
                 weapon: SmolStr::new("machine_gun"),
-                slot: Some(1)
+                slot: Some(2)
             }),
-            "the residual: i + 1 where the arena holds S2"
+            "17b cut M1b.3: the view's S2, where M1b.2 cited i + 1"
         );
         assert_eq!(arena.resolve_lock(RED, ContactId(0x77), 0), Ok(()));
-        assert_eq!(
-            arena.resolve_fire_by(RED, "machine_gun", 0, FiredBy::Mind { slot: Some(1) }),
-            Err(crate::arena::intents::Refusal::Unwarranted),
-            "the residual's cost: the citation has no warrant"
+        assert!(
+            arena
+                .resolve_fire_by(RED, "machine_gun", 0, FiredBy::Mind { slot: Some(2) })
+                .is_ok(),
+            "the citation holds its warrant"
         );
     }
 }
