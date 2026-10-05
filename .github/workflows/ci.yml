@@ -400,8 +400,13 @@ jobs:
       # Q-AK4); naming it here is what the gated-test inventory asks of every
       # ignored test. The lead runs it by hand with the key exported:
       # MUSH_BOT_LIVE_COMMANDER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
+      # 17b cut M1b.5: the same target's mind lane,
+      # `the_bot_against_a_conditioned_t1_over_thirty_pooled_matches` (thirty
+      # matches against the native stock mind, two to four hours), is the M1b
+      # gate's measure and run by hand, so this job names its own lane:
+      # cargo test -p mush-bot --test arena_win_rate the_bot_against_a_conditioned_t1_over_thirty_pooled_matches -- --ignored --nocapture
       - name: Bot win rate
-        run: cargo test -p mush-bot --test arena_win_rate -- --ignored --nocapture
+        run: cargo test -p mush-bot --test arena_win_rate arena_win_rate_over_ten_matches -- --ignored --nocapture
 
   # 16b cut AN.1 (16c Q-AN2): the bot's win rate from the shipped muster: ten
   # 1 v 1 matches flown by the real mush-bot binary, no model, no pose, on a

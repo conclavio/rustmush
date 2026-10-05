@@ -205,6 +205,16 @@ impl TacsimStore {
         &self.cfg
     }
 
+    /// **Test hook** (17b cut M1b.5): replace the `[tacsim.minds]` block this
+    /// world reads, as a config reload between a check-out and a later verb
+    /// would — so a test can prove a running match is held to the floor it was
+    /// checked out with (`MatchMirror::odds_floor_permille`) and never to this
+    /// block. Nothing in the shipped lane calls it.
+    #[doc(hidden)]
+    pub fn replace_minds_config_for_tests(&mut self, minds: crate::config::MindsConfig) {
+        self.cfg.minds = minds;
+    }
+
     /// Whether the layer is enabled at all.
     #[must_use]
     pub fn enabled(&self) -> bool {

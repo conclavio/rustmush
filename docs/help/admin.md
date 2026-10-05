@@ -116,6 +116,35 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     what you watch. While you watch, SIM REPLAY answers
                     "You are watching match 12; @arena/watch off first."
                     No pilot is ever sent any of it.
+  @mind/set <unit>[=<preset> | =<slider> <value>]
+                    The stock card of a unit flown by a mind (a match's
+                    unseated tanks are, when [tacsim.minds] fill_controller
+                    is "mind" - a lab setting). Bare, it reads the card
+                    back: "Mind card on #305 (Tank): Sniper (on the tape at
+                    65000 ms)" - or "Line (as checked out)" before any
+                    change, "(sent at 64000 ms, not yet on the
+                    tape)" just after a change, or "not read since the
+                    resume" after a restart, when the tape's last
+                    mind_card line names it and a preset resets it - then
+                    five lines: posture, fire discipline, targeting,
+                    survival and search. A slider the stock mind does not
+                    read yet is marked [M2]; on a tank with no weapons the
+                    fire discipline reads "no weapons station on this
+                    hull". "=Sniper" gives it one of the six presets: Line
+                    (today's machine), Sentry, Sniper, Skirmisher, Hunter
+                    and Rearguard. "=min_odds 60" sets one slider in its
+                    own units (band_pct 85, fight_home_pct 17.5, prefer
+                    exposed); a value out of range or off its step is
+                    refused with the range named and never clamped
+                    ("@mind/set: band_pct is 30 to 100 in steps of 5 (it
+                    is 72)."), and min_odds is never under the match's own
+                    Compact floor - the floor the match started with, not
+                    a reloaded config. The arena takes a change at its next
+                    pulse and records the whole card on the tape
+                    (mind_card, or mind_card_refused); the read-back
+                    follows the tape, a chunk behind. Refused for a tank a
+                    pilot or the reflex machine flies ("@mind/set: #305 is
+                    not flown by a mind."). No pilot is told any of it.
 
 Powers: BOOT, EXAMINE_ALL, TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY,
 COMSYS_ADMIN, BUILDER_LLM, SEE_HIDDEN, FACTION_ADMIN, SIM_ADMIN. Wizards

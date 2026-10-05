@@ -295,7 +295,8 @@ pub mod view;
 pub mod weapons;
 
 pub use card::{
-    AspectWord, Opening, OrbitSense, Prefer, Stance, StockCard, fire_section_inert, line,
+    AspectWord, CardChange, CardError, Opening, OrbitSense, PRESETS, Prefer, Stance, StockCard,
+    fire_section_inert, is_slider, line, preset,
 };
 pub use catchup::{
     Catchup, MAX_CATCHUP_CONTACTS, MAX_CATCHUP_SECTIONS, MAX_CATCHUP_WEAPONS, MachineWords,

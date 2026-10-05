@@ -69,7 +69,7 @@
 //!
 //! # The three lists
 //!
-//! [`Arena`] has 50 fields, and every one is placed by name, twice: in the
+//! [`Arena`] has 51 fields, and every one is placed by name, twice: in the
 //! exhaustive destructuring that builds the encode's borrowed `ArenaStateRef`,
 //! and in the exhaustive literal the decode builds the arena with. A field a
 //! later cut adds is a compile error in both until it is put in one of these:
@@ -101,10 +101,13 @@
 //!   (17b cut M1a.5: `crate::arena::mind::default_mind_runner`, the call
 //!   [`Arena::new`] makes, so a resumed match thinks with the runner a fresh
 //!   one would).
-//! - **Reset** (9), views and per-pulse scratch: `mind_landings` (17b cut
+//! - **Reset** (10), views and per-pulse scratch: `mind_landings` (17b cut
 //!   M1a.5: the thinks waiting to land; a resumed match's landing finds none,
 //!   clears its `pending` row and lands nothing — the residual 17b cut M3's
-//!   recompute closes), `lost_designators`,
+//!   recompute closes), `pending_cards` (17b cut M1b.5: the card changes
+//!   `@mind/set` offered, applied and emptied at the next pulse's start, so
+//!   empty between two pulses; not carried, so `SNAPSHOT_FORMAT` does not
+//!   move), `lost_designators`,
 //!   `spent_hits` and `pending_notices` (empty between two pulses — [`Snapshot::encode`]
 //!   refuses an arena that holds any, never a panic), `last_frames` (empty: a
 //!   resumed pilot's first frame is a keyframe), `action_hash` (outside),
@@ -732,6 +735,9 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             odds_floor_permille,
             // Reset (17b cut M1a.5): the thinks waiting to land are scratch.
             mind_landings: _mind_landings,
+            // Reset (17b cut M1b.5): the card changes waiting for the next
+            // pulse are scratch, emptied at its start.
+            pending_cards: _pending_cards,
             // Re-derived (17b cut M1a.5): compiled code, `default_mind_runner`.
             mind_runner: _mind_runner,
             // Re-derived: `Arena::new`'s line over the definition.
@@ -931,6 +937,7 @@ impl ArenaState {
             held_said,
             odds_floor_permille,
             mind_landings: BTreeMap::new(),
+            pending_cards: BTreeMap::new(),
             mind_runner,
             min_cost,
             pending,

@@ -642,7 +642,8 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
 ///   their targets part);
 /// * `order_hint` — under an issued `Engage`, T0's `ordered_target` resolves
 ///   the hint while the view's re-keyed order carries none;
-/// * `order_end` — the think set `ignore_order`: an order T0 would have ended
+/// * `order_end` — the think set `ignore_until_ms` (17b cut M1b.5; M1a.6's
+///   `ignore_order`): an order T0 would have ended
 ///   that T1 only stops obeying;
 /// * `deg_round` — under a `Screen`, a held row's arc verdict off the view's
 ///   whole degrees differs from the reflex's off the plot's millidegrees.
@@ -802,7 +803,7 @@ fn shadow(
     if view.order.is_some() {
         out.ordered_thinks += 1;
     }
-    if after.ignore_order && !before.ignore_order {
+    if after.ignore_until_ms.is_some() && after.ignore_until_ms != before.ignore_until_ms {
         out.order_end += 1;
     }
     if let Some(order) = issued {

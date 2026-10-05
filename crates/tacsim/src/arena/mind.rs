@@ -62,8 +62,10 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::card::StockCard;
-use crate::arena::conditions::ConditionTrigger;
+use crate::arena::card::{CardChange, StockCard, preset};
+use crate::arena::conditions::{
+    ASPECTS_ANY, ConditionTrigger, FireCondition, SlotTarget, condition_is_lawful,
+};
 use crate::arena::intents::{IntentKind, IntentSource};
 use crate::arena::ledger::EventKind;
 use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, FrameOrder, Receiver};
@@ -146,8 +148,10 @@ pub struct MindState {
     /// over the arena's own doctrine ([`MindState::fresh`]). Handed to every
     /// think ([`ThinkJob::card`]), folded inside item 3c after `strikes`, and
     /// carried by the snapshot from format 7. The stock mind reads its fire
-    /// discipline from 17b cut M1b.2; the setters and the presets are 17b cut
-    /// M1b.5's.
+    /// discipline from 17b cut M1b.2 and every mapped term through the
+    /// overlay from 17b cut M1b.5, which also gives staff the lever
+    /// (`@mind/set`): a change lands on this row at a pulse's start
+    /// (`Arena::apply_mind_cards`), never anywhere else.
     pub card: StockCard,
 }
 
@@ -247,8 +251,9 @@ pub struct ThinkJob<'a> {
     /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11): the
     /// row's own [`MindState::card`]. Since 17b cut M1b.2 `NativeStockMind`
     /// reads its fire discipline (the odds, the aspect and the reserve its
-    /// slots are armed on, `crate::arena::stock_mind::arming_for`) and nothing
-    /// else of it; `NoMind` ignores it.
+    /// slots are armed on, `crate::arena::stock_mind::arming_for`), and since
+    /// 17b cut M1b.5 every mapped term through `StockCard::as_reflex` (the
+    /// eleven `[M2]` sliders are carried and not read); `NoMind` ignores it.
     pub card: &'a StockCard,
 }
 
@@ -896,6 +901,121 @@ impl Arena {
         );
         if let Some(squad) = crate::deliberation::squad::SquadId::parse(&order.squad) {
             self.note_order_expired(squad);
+        }
+    }
+
+    /// **Stage a card change for the next pulse** (17b cut M1b.5; doc 17 §11,
+    /// §22's M1b): the task hands every `ArenaMsg::MindCard` it buffered to
+    /// the arena BEFORE the step, in arrival order, and phase 2's head applies
+    /// them (`Arena::apply_mind_cards`). Staging decides nothing: any hull
+    /// may be named, and the arena answers it at the pulse.
+    pub fn stage_card(&mut self, unit: ObjId, change: CardChange) {
+        self.pending_cards.entry(unit).or_default().push(change);
+    }
+
+    /// **The staged card changes, applied to the arena's OWN rows** (17b cut
+    /// M1b.5; doc 17 §11, D-UM-17 as amended, D-UM-43) at phase 2's head, at
+    /// the pulse's start millisecond, under phase 2's one lazy hash — so the
+    /// line is on the tape at the same millisecond at every cadence (the task
+    /// stages a change before the pulse that reaches it), and every think from
+    /// then on reads the new card.
+    ///
+    /// Per hull in unit-id order, per change in arrival order:
+    ///
+    /// 1. a hull that is not a [`Controller::Mind`] hull with a row is refused
+    ///    `not_mind`;
+    /// 2. the change is applied to a copy of the row's card — `Preset(name)`
+    ///    is [`preset`] over `arena_cfg.reflex` (a name that is none is
+    ///    refused `no preset named {name}`), `Set` is [`StockCard::set`],
+    ///    validated again here (the world validated it on a scratch card; a
+    ///    refusal is the `CardError`'s own sentence);
+    /// 3. **the arena's own floor**: `condition_is_lawful` over a probe
+    ///    `FireCondition` carrying the card's `min_odds_permille` (target
+    ///    `BestHostile`, every aspect, unbounded) against
+    ///    [`Arena::odds_floor_permille`] — a breach is refused `unlawful` and
+    ///    the row keeps its old card. Vacuous under 17b cut M1b's bound (the
+    ///    floor at most 100 per mille, a slider's `min_odds` at least 100) and
+    ///    written anyway: a resumed arena's floor is its own, and 17b cut M3
+    ///    widens the bound;
+    /// 4. the card is written to the row and ONE `mind_card` line journalled
+    ///    with its name, the sliders it moved and the whole card.
+    ///
+    /// A refusal is a `mind_card_refused` line and nothing else. The map is
+    /// emptied whatever happens. Nothing a pilot reads changes here: the
+    /// mind's next think reads the card (its slots re-arm on the new fire
+    /// discipline then, `crate::arena::stock_mind::arming_for`).
+    pub(crate) fn apply_mind_cards(&mut self) {
+        if self.pending_cards.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_cards);
+        let at = self.now_ms;
+        for (unit, changes) in pending {
+            for change in changes {
+                let kind = self.apply_mind_card(unit, &change);
+                let hash = self.event_hash();
+                let _ = self.ledger.append(at, kind, Vec::new(), hash);
+            }
+        }
+    }
+
+    /// One change of `Arena::apply_mind_cards`: the line it journals, with
+    /// the row written on success.
+    fn apply_mind_card(&mut self, unit: ObjId, change: &CardChange) -> EventKind {
+        let refused = |reason: String| EventKind::MindCardRefused {
+            unit,
+            reason: SmolStr::new(reason),
+        };
+        let minded = self
+            .unit(unit)
+            .is_some_and(|state| state.controller == Controller::Mind);
+        let Some(before) = self
+            .minds
+            .get(&unit)
+            .filter(|_| minded)
+            .map(|state| state.card.clone())
+        else {
+            return refused("not_mind".to_owned());
+        };
+        let after = match change {
+            CardChange::Preset(name) => match preset(name, &self.arena_cfg.reflex) {
+                Some(card) => card,
+                None => return refused(format!("no preset named {name}")),
+            },
+            CardChange::Set { slider, value } => {
+                let mut card = before.clone();
+                if let Err(error) = card.set(slider, value) {
+                    return refused(error.to_string());
+                }
+                card
+            }
+        };
+        let probe = FireCondition {
+            weapon: SmolStr::default(),
+            target: SlotTarget::BestHostile,
+            min_permille: after.min_odds_permille,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: u32::MAX,
+        };
+        if condition_is_lawful(&probe, self.odds_floor_permille).is_err() {
+            return refused("unlawful".to_owned());
+        }
+        let name = SmolStr::new(after.name_of(&self.arena_cfg.reflex));
+        let changed = after
+            .changed_from(&before)
+            .into_iter()
+            .map(SmolStr::new_static)
+            .collect();
+        if let Some(state) = self.minds.get_mut(&unit) {
+            state.card = after.clone();
+        }
+        EventKind::MindCard {
+            unit,
+            name,
+            changed,
+            card: after,
         }
     }
 }

@@ -30,6 +30,18 @@
 //! the landing (17b's adversarial F5), and a mind's arming under the floor is
 //! refused `unlawful` at its landing with the floor named. The rest of the
 //! slots' proofs live in `tests/conditions.rs`.
+//!
+//! **17b cut M1b.5** adds the last section: the card T1 reads. The anchor
+//! (17b's Q-M6) — the two-T1 fixture's event list and every think's answer
+//! recorded at 17b cut M1b.4's HEAD before `NativeStockMind` read its card
+//! through `StockCard::as_reflex`, and equal after it and after the memory's
+//! `ignore_until_ms` rename — and a non-default doctrine withdrawing where it
+//! did; a card staged at a beat landing at the pulse's start with one
+//! `mind_card` line at three cadences, the next think re-arming on it and the
+//! overlay read (Rearguard withdraws at 70 where Line stood), and the arena's
+//! refusals (`not_mind`, a slider's own sentence, its OWN floor's
+//! `unlawful`); a preset on an unarmed hull with its fire section inert and
+//! no slot; and a newer order obeyed at once after an early end.
 
 mod support;
 
@@ -41,10 +53,11 @@ use mush_core::{
 };
 use mush_sim::data::Pose;
 use mush_tactics::{
-    CellSpec, DefinitionRef, FacetId, FacetSpec, RulesValue, SectionId, SectionSpec, TacticalUnit,
-    UnitSpec,
+    CellAddr, CellSpec, DefinitionRef, FacetId, FacetSpec, RulesValue, SectionId, SectionSpec,
+    TacticalUnit, UnitMutationOp, UnitMutationPlan, UnitSpec,
 };
 use smol_str::SmolStr;
+use tacsim::arena::CardChange;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::command::SquadSignal;
 use tacsim::arena::condition::{Condition, Reading};
@@ -298,6 +311,12 @@ fn reflex_cfg() -> ReflexConfig {
 /// An arena of `units` on the window, `seated` pilots by unit (`#1000` up),
 /// power up in half a second, the tempo pinned `Quiet`.
 fn arena_of(units: Vec<CustodyUnit>, seated: &[ObjId]) -> Arena {
+    arena_on(units, seated, reflex_cfg())
+}
+
+/// [`arena_of`] on the doctrine `reflex` (17b cut M1b.5: a fixture whose
+/// minds' Line card is read off a non-default `ReflexConfig`).
+fn arena_on(units: Vec<CustodyUnit>, seated: &[ObjId], reflex: ReflexConfig) -> Arena {
     let pilots = seated
         .iter()
         .enumerate()
@@ -318,7 +337,7 @@ fn arena_of(units: Vec<CustodyUnit>, seated: &[ObjId]) -> Arena {
             mode: tacsim::arena::MatchMode::Skirmish,
         },
         &ArenaConfig {
-            reflex: reflex_cfg(),
+            reflex,
             ..ArenaConfig::default()
         },
         &MatchConfig {
@@ -3774,6 +3793,11 @@ fn stock_emission_holds(intents: &[IntentKind]) {
 /// The profile is non-lethal ([`front_profile`]'s sections without
 /// `destroy_unit`), so a hit ends nothing.
 fn the_j_field(controller: Controller) -> Arena {
+    the_j_field_on(controller, reflex_cfg())
+}
+
+/// [`the_j_field`] on the doctrine `reflex` (17b cut M1b.5).
+fn the_j_field_on(controller: Controller, reflex: ReflexConfig) -> Arena {
     let seeing = |mut unit: CustodyUnit| {
         unit.sensor = Some(SensorProfile {
             max_range_cells: 10,
@@ -3781,7 +3805,7 @@ fn the_j_field(controller: Controller) -> Arena {
         });
         unit
     };
-    arena_of(
+    arena_on(
         vec![
             seeing(tank(
                 RED,
@@ -3800,6 +3824,7 @@ fn the_j_field(controller: Controller) -> Arena {
             ))),
         ],
         &[BLUE],
+        reflex,
     )
 }
 
@@ -5263,3 +5288,1109 @@ fn l2_a_self_charged_support_fights_on_doctrine() {
         "a charge the mind holds nothing of: none"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.5: the card T1 reads (doc 17 §11, §22; D-UM-43, D-UM-44; 17b's
+// Q-M6)
+// ---------------------------------------------------------------------------
+
+/// One plan, one armour cell and one internals cell (`tests/reflex.rs`'
+/// `set_health`, copied: the eighteen-point tank).
+fn set_health(arena: &mut Arena, unit: ObjId, armor: i64, internals: i64) {
+    let ops = vec![
+        UnitMutationOp::SetCell {
+            addr: CellAddr::Facet {
+                section: SectionId::new("hull").expect("a section"),
+                facet: FacetId::new("front").expect("a facet"),
+                cell: mush_tactics::CellId::new("armor").expect("a cell"),
+            },
+            value: armor,
+        },
+        UnitMutationOp::SetCell {
+            addr: CellAddr::Section {
+                section: SectionId::new("hull").expect("a section"),
+                cell: mush_tactics::CellId::new("internals").expect("a cell"),
+            },
+            value: internals,
+        },
+    ];
+    let plan =
+        UnitMutationPlan::new(ops, None, Some(SmolStr::new("test:hurt"))).expect("a two-op plan");
+    let hurt = {
+        let state = arena.unit(unit).expect("the tank");
+        mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("the plan applies")
+            .0
+    };
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = hurt;
+    }
+}
+
+/// **A non-default doctrine** (17b cut M1b.5): `reflex_cfg`'s cadence with
+/// every term the card maps moved off the default.
+fn m1b5_doctrine() -> ReflexConfig {
+    ReflexConfig {
+        decide_ms: 500,
+        repath_ms: 0,
+        withdraw_permille: 700,
+        stand_min_permille: 300,
+        engage_band_permille: 850,
+        rally_ms: 7_000,
+        search_ms: 30_000,
+        hunt_after_ms: 45_000,
+        weight_range: 70,
+        weight_facet: 55,
+        weight_health: 25,
+        ..ReflexConfig::default()
+    }
+}
+
+/// **The non-default doctrine's withdrawal, as 17b cut M1b.4 flew it**: the
+/// lattice millisecond of the first think of [`RED`] whose memory reads
+/// `Withdraw` on [`the_j_field_on`] over [`m1b5_doctrine`] with red hurt to
+/// 666 per mille at 10,000 ([`card_run`]'s [`CardBeat::Hurt`]), recorded at
+/// `69880812` before the overlay edit.
+const M1B5_WITHDRAWS_AT: i64 = 10_482;
+
+/// What 17b cut M1b.5's driver does at a beat's millisecond, before the pulse
+/// that starts there.
+#[derive(Clone, Debug)]
+enum CardBeat {
+    /// Take `unit` down to `armor` and `internals` of its eighteen points.
+    Hurt(ObjId, i64, i64),
+    /// Stage a card change for `unit` (`Arena::stage_card`): the arena takes
+    /// it at that pulse's start.
+    Stage(ObjId, CardChange),
+}
+
+/// **17b cut M1b.5's driver**: `arena`'s stock minds recorded ([`Stock`]),
+/// stepped at `cadence_ms` to `until_ms`, each beat applied once when the
+/// arena's clock first reaches its millisecond (every beat is a multiple of
+/// 5,000, so it lands between the same two pulses' arena milliseconds at
+/// 5,000, 1,000 and 500 ms). Answers the run, the thinks and the arena.
+fn card_run(
+    mut arena: Arena,
+    cadence_ms: i64,
+    until_ms: i64,
+    beats: &[(i64, CardBeat)],
+) -> (Run, Vec<Kept>, Arena) {
+    let stock = Stock::on(&arena);
+    arena.mind_runner = stock.clone();
+    let mut next = 0_usize;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let mut pulses = 0_u32;
+    let mut wall = 0_i64;
+    loop {
+        while let Some((at, beat)) = beats.get(next) {
+            if *at > arena.now_ms {
+                break;
+            }
+            match beat {
+                CardBeat::Hurt(unit, armor, internals) => {
+                    set_health(&mut arena, *unit, *armor, *internals);
+                }
+                CardBeat::Stage(unit, change) => arena.stage_card(*unit, change.clone()),
+            }
+            next += 1;
+        }
+        let out = arena.step(wall, &[], &[]);
+        pulses += 1;
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        counters.absorb(&out.reflex);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    (
+        Run {
+            events,
+            hashes,
+            pulses,
+            counters,
+        },
+        stock.kept(),
+        arena,
+    )
+}
+
+/// The stock state a think left `unit`'s memory in.
+fn state_after(result: &ThinkResult) -> ReflexState {
+    tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
+        &result.memory,
+    ))
+    .state
+}
+
+/// The lattice milliseconds of `unit`'s thinks that left it withdrawing.
+fn withdrawn_thinks(kept: &[Kept], unit: ObjId) -> Vec<i64> {
+    kept.iter()
+        .filter(|(on, _, _, result)| *on == unit && state_after(result) == ReflexState::Withdraw)
+        .map(|(_, t_ms, ..)| *t_ms)
+        .collect()
+}
+
+/// **T1 reads its card through the overlay, and Line on its doctrine is
+/// today's machine** (17b cut M1b.5; doc 17 §11, D-UM-43; 17b's Q-M6 — the
+/// anchor's three proofs):
+///
+/// 1. `line(cfg).as_reflex(cfg) == cfg` — `card.rs`' in-source
+///    `m1b5_line_overlays_to_its_own_doctrine_and_each_preset_to_its_terms`,
+///    and here for the two doctrines this file flies;
+/// 2. **the recorded run**: the two-T1 fixture's event list and every
+///    think's answer, recorded at 17b cut M1b.4's HEAD before
+///    `NativeStockMind::think` built `job.card.as_reflex(&self.cfg)`
+///    ([`M1B5_TWO_T1_EVENTS`], [`M1B5_TWO_T1_INTENTS`]), equal after it. The
+///    run's line hashes and substep hashes were recorded too and asserted
+///    equal after the overlay edit; they are **RETIRED** since the memory
+///    rename of the same sub-cut (`StockMemory.ignore_order: bool` became
+///    `ignore_until_ms: Option<i64>`, the lead's ruling on M1a.6's residual
+///    (10)): every think's memory now encodes `"ignore_until_ms":null` where
+///    it encoded `"ignore_order":false`, and the memory's bytes are folded
+///    into the state hash (item 3c), so every hash from the first think on
+///    moved while nothing a decision reads did — the events and the answers,
+///    which ARE what the machine decided, stay pinned;
+/// 3. the twin lane's figures equal 17b cut M1b.4's (`tests/twin.rs`, in
+///    release; the report has both).
+///
+/// And on a **non-default** doctrine ([`m1b5_doctrine`]: every mapped term
+/// moved), every mind's row holds `line` of THAT doctrine, and T1 hurt to 666
+/// per mille at 10,000 first thinks itself withdrawn at
+/// [`M1B5_WITHDRAWS_AT`] — where 17b cut M1b.4's T1 did, under
+/// `withdraw_permille` 700 (the default's 350 would have stood).
+#[test]
+fn m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged() {
+    for cfg in [reflex_cfg(), m1b5_doctrine()] {
+        assert_eq!(tacsim::arena::line(&cfg).as_reflex(&cfg), cfg);
+    }
+    let (run, kept) = stock_minds(Drive::Every(5_000));
+    let events: Vec<(i64, &str)> = run
+        .events
+        .iter()
+        .map(|(t_ms, json, _)| (*t_ms, json.as_str()))
+        .collect();
+    assert_eq!(events, M1B5_TWO_T1_EVENTS, "the recorded event list");
+    let answers: Vec<(u32, i64, String)> = kept
+        .iter()
+        .map(|(unit, t_ms, _, result)| {
+            (
+                unit.0,
+                *t_ms,
+                serde_json::to_string(&result.intents).unwrap_or_default(),
+            )
+        })
+        .collect();
+    let recorded: Vec<(u32, i64, String)> = M1B5_TWO_T1_INTENTS
+        .iter()
+        .map(|(unit, t_ms, json)| (*unit, *t_ms, (*json).to_owned()))
+        .collect();
+    assert_eq!(answers, recorded, "the recorded answers");
+    // The recorded line hashes and hash sequence: retired by the memory
+    // rename (this test's doc).
+
+    // The non-default doctrine: the Line card at its values, and the
+    // withdrawal where M1b.4's T1 withdrew.
+    let doctrine = m1b5_doctrine();
+    let arena = the_j_field_on(Controller::Mind, doctrine.clone());
+    for (unit, state) in &arena.minds {
+        assert_eq!(state.card, tacsim::arena::line(&doctrine), "#{}", unit.0);
+    }
+    let (_, kept, _) = card_run(arena, 5_000, 30_000, &[(10_000, CardBeat::Hurt(RED, 6, 6))]);
+    assert_eq!(
+        withdrawn_thinks(&kept, RED).first(),
+        Some(&M1B5_WITHDRAWS_AT),
+        "the withdrawal on the non-default doctrine"
+    );
+    // On the field's own doctrine (withdraw 350) the same hurt stands.
+    let (_, kept, _) = card_run(
+        the_j_field(Controller::Mind),
+        5_000,
+        30_000,
+        &[(10_000, CardBeat::Hurt(RED, 6, 6))],
+    );
+    assert_eq!(withdrawn_thinks(&kept, RED), Vec::<i64>::new());
+}
+
+/// Every `mind_card` and `mind_card_refused` line of a run, as `(t_ms, the
+/// line's object)`.
+fn card_lines(run: &Run) -> Vec<(i64, serde_json::Value)> {
+    run.events
+        .iter()
+        .filter_map(|(t_ms, json, _)| {
+            let value: serde_json::Value = serde_json::from_str(json).ok()?;
+            matches!(
+                value.get("kind").and_then(serde_json::Value::as_str),
+                Some("mind_card" | "mind_card_refused")
+            )
+            .then_some((*t_ms, value))
+        })
+        .collect()
+}
+
+/// The `min_permille` of every `Arm` `unit` answered after `after_ms`, by
+/// think.
+fn arms_after(kept: &[Kept], unit: ObjId, after_ms: i64) -> Vec<(i64, Vec<u16>)> {
+    kept.iter()
+        .filter(|(on, t_ms, ..)| *on == unit && *t_ms > after_ms)
+        .map(|(_, t_ms, _, result)| {
+            (
+                *t_ms,
+                armings(&result.intents)
+                    .into_iter()
+                    .filter_map(|arming| match arming {
+                        Arming::Arm(cond) => Some(cond.min_permille),
+                        Arming::Disarm { .. } => None,
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// A preset by name over the (j) field's own doctrine.
+fn preset_on_field(name: &str) -> tacsim::arena::StockCard {
+    tacsim::arena::preset(name, &reflex_cfg()).expect("a preset")
+}
+
+/// **A card lands at the pulse's start, and the next think reads it** (17b
+/// cut M1b.5; doc 17 §11, §22's M1b, D-UM-17 as amended, D-UM-43; 16b §11's
+/// mandatory cross-tempo property):
+///
+/// * `Rearguard` staged for the armed red at the 5,000 ms beat lands at
+///   5,000 — the start of the pulse after the beat — with ONE `mind_card`
+///   line carrying the whole card (its name, the three sliders it moved, the
+///   card), at 5,000, 1,000 and 500 ms: one event list, one hash sequence,
+///   one sequence of thinks;
+/// * red's next think re-arms its slot at Rearguard's `min_odds` 50 (500 per
+///   mille: the view's armed row held Line's 100, so the on-change arming of
+///   17b cut M1b.3 answers it at once);
+/// * red, hurt to 666 per mille at 10,000, WITHDRAWS at `break_off` 70 where
+///   Line (35) stood (`m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged`'s
+///   last run) — the overlay is read;
+///
+/// and at one cadence: a change staged for a reflex hull journals
+/// `mind_card_refused` `not_mind` and changes nothing; a `band_pct 72` the
+/// arena refuses journals the `CardError`'s own sentence and keeps the card;
+/// **an arena whose `odds_floor_permille` stands ABOVE the card's
+/// `min_odds`** — set by hand past 17b cut M1b's bound, as a resumed arena of
+/// a later milestone could carry it — refuses `Rearguard` (50 per cent)
+/// `unlawful` and keeps the old card, and takes `Sniper` (65); two changes
+/// staged in one pulse land in arrival order (`Sniper` then `min_odds 70` →
+/// `Sniper, edited (min_odds 70)`).
+#[test]
+fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
+    let rearguard = || {
+        vec![
+            (
+                5_000_i64,
+                CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("rearguard"))),
+            ),
+            (10_000, CardBeat::Hurt(RED, 6, 6)),
+        ]
+    };
+    let (first, kept, arena) = card_run(the_j_field(Controller::Mind), 5_000, 30_000, &rearguard());
+    let lines = card_lines(&first);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let (at, line) = &lines[0];
+    assert_eq!(*at, 5_000, "at the start of the pulse after the beat");
+    assert_eq!(line["kind"], "mind_card");
+    assert_eq!(line["unit"], RED.0);
+    assert_eq!(line["name"], "Rearguard");
+    assert_eq!(
+        line["changed"],
+        serde_json::json!(["min_odds", "break_off_pct", "rally_s"])
+    );
+    let card: tacsim::arena::StockCard =
+        serde_json::from_value(line["card"].clone()).expect("the whole card");
+    assert_eq!(card, preset_on_field("rearguard"));
+    assert_eq!(arena.minds.get(&RED).map(|state| &state.card), Some(&card));
+    // The next think re-arms at Rearguard's 50 per cent.
+    let next = arms_after(&kept, RED, 5_000);
+    assert_eq!(
+        next.first().map(|(_, arms)| arms.clone()),
+        Some(vec![500]),
+        "red's next think re-arms at min_odds 50: {next:?}"
+    );
+    // Withdraws at break_off 70 where Line stood.
+    let withdrawn = withdrawn_thinks(&kept, RED);
+    assert!(
+        withdrawn.first().is_some_and(|t_ms| *t_ms > 10_000),
+        "red withdraws once hurt: {withdrawn:?}"
+    );
+    for cadence in [1_000, 500] {
+        let (other, other_kept, _) =
+            card_run(the_j_field(Controller::Mind), cadence, 30_000, &rearguard());
+        assert_eq!(other.events, first.events, "the event list at {cadence}");
+        assert_eq!(other.hashes, first.hashes, "the hash sequence at {cadence}");
+        assert_eq!(other_kept, kept, "a think diverged at {cadence}");
+    }
+
+    // A reflex hull: refused `not_mind`, nothing changed.
+    let (run, _, arena) = card_run(
+        the_j_field(Controller::Reflex),
+        5_000,
+        10_000,
+        &[(
+            5_000,
+            CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("Sniper"))),
+        )],
+    );
+    let lines = card_lines(&run);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        (lines[0].1["kind"].clone(), lines[0].1["reason"].clone()),
+        (
+            serde_json::json!("mind_card_refused"),
+            serde_json::json!("not_mind")
+        )
+    );
+    assert!(arena.minds.is_empty());
+
+    // A value the arena refuses: the `CardError`'s own sentence.
+    let (run, _, arena) = card_run(
+        the_j_field(Controller::Mind),
+        5_000,
+        10_000,
+        &[(
+            5_000,
+            CardBeat::Stage(
+                RED,
+                CardChange::Set {
+                    slider: SmolStr::new("band_pct"),
+                    value: SmolStr::new("72"),
+                },
+            ),
+        )],
+    );
+    let lines = card_lines(&run);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1["kind"], "mind_card_refused");
+    assert_eq!(lines[0].1["reason"], "band_pct is 30 to 100 in steps of 5");
+    assert_eq!(
+        arena.minds.get(&RED).map(|state| state.card.clone()),
+        Some(preset_on_field("line"))
+    );
+
+    // The arena's own floor, past the bound by hand.
+    let mut floored = the_j_field(Controller::Mind);
+    floored.odds_floor_permille = 600;
+    // The refused Rearguard leaves the row's OLD card in place: read the row
+    // after the refusal and before anything else lands.
+    let (run, _, arena) = card_run(
+        floored.clone(),
+        5_000,
+        10_000,
+        &[(
+            5_000,
+            CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("Rearguard"))),
+        )],
+    );
+    let lines = card_lines(&run);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1["reason"], "unlawful");
+    assert_eq!(
+        arena.minds.get(&RED).map(|state| state.card.clone()),
+        Some(preset_on_field("line")),
+        "a card refused unlawful is never written to the row"
+    );
+    let (run, _, arena) = card_run(
+        floored,
+        5_000,
+        15_000,
+        &[
+            (
+                5_000,
+                CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("Rearguard"))),
+            ),
+            (
+                10_000,
+                CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("Sniper"))),
+            ),
+        ],
+    );
+    let lines = card_lines(&run);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(
+        (
+            lines[0].0,
+            lines[0].1["kind"].clone(),
+            lines[0].1["reason"].clone()
+        ),
+        (
+            5_000,
+            serde_json::json!("mind_card_refused"),
+            serde_json::json!("unlawful")
+        )
+    );
+    assert_eq!(
+        (
+            lines[1].0,
+            lines[1].1["kind"].clone(),
+            lines[1].1["name"].clone()
+        ),
+        (
+            10_000,
+            serde_json::json!("mind_card"),
+            serde_json::json!("Sniper")
+        )
+    );
+    assert_eq!(
+        lines[1].1["changed"],
+        serde_json::json!(["band_pct", "min_odds", "reserve_pct"]),
+        "Sniper is read against Line, the card the refusal kept — not Rearguard"
+    );
+    assert_eq!(
+        arena.minds.get(&RED).map(|state| state.card.clone()),
+        Some(preset_on_field("sniper"))
+    );
+
+    // Two changes in one pulse, in arrival order.
+    let (run, _, arena) = card_run(
+        the_j_field(Controller::Mind),
+        5_000,
+        10_000,
+        &[
+            (
+                5_000,
+                CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("sniper"))),
+            ),
+            (
+                5_000,
+                CardBeat::Stage(
+                    RED,
+                    CardChange::Set {
+                        slider: SmolStr::new("min_odds"),
+                        value: SmolStr::new("70"),
+                    },
+                ),
+            ),
+        ],
+    );
+    let lines = card_lines(&run);
+    let names: Vec<(i64, serde_json::Value, serde_json::Value)> = lines
+        .iter()
+        .map(|(t_ms, line)| (*t_ms, line["name"].clone(), line["changed"].clone()))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            (
+                5_000,
+                serde_json::json!("Sniper"),
+                serde_json::json!(["band_pct", "min_odds", "reserve_pct"])
+            ),
+            (
+                5_000,
+                serde_json::json!("Sniper, edited (min_odds 70)"),
+                serde_json::json!(["min_odds"])
+            ),
+        ]
+    );
+    assert_eq!(
+        arena
+            .minds
+            .get(&RED)
+            .map(|state| state.card.min_odds_permille),
+        Some(700)
+    );
+}
+
+/// **A preset on an unarmed hull: the fire section inert, no slot, nothing
+/// refused** (17b cut M1b.5; doc 17 §22's M1b italic line read as "applying
+/// the card", §11: *a card section that drives a station the hull lacks is
+/// shown inert with the reason … and never refuses*; D-UM-48). The (j) field's
+/// unarmed red ([`RED2`]) gets `Sniper` at the 5,000 ms beat, and so does the
+/// armed red beside it:
+///
+/// * the unarmed hull's card lands — one `mind_card` line, named `Sniper` —
+///   and nothing refuses (no `mind_card_refused`, no refused notice in any of
+///   its views);
+/// * its read-back's fire-discipline line is the inert sentence;
+/// * it never answers a `Condition`, and the condition table never holds a
+///   row for it;
+/// * it drives and holds as before: every answer it gives equals the answer of
+///   the same field with no card change (Sniper's mapped terms that differ
+///   from Line's — the band and the fire discipline — drive nothing on a hull
+///   with no gun);
+/// * the armed red re-arms its slot at Sniper's `min_odds` 65 at its next
+///   think.
+#[test]
+fn m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert() {
+    let beats = [
+        (
+            5_000_i64,
+            CardBeat::Stage(RED2, CardChange::Preset(SmolStr::new("Sniper"))),
+        ),
+        (
+            5_000,
+            CardBeat::Stage(RED, CardChange::Preset(SmolStr::new("Sniper"))),
+        ),
+    ];
+    let (run, kept, arena) = card_run(the_j_field(Controller::Mind), 5_000, 30_000, &beats);
+    let lines = card_lines(&run);
+    let landed: Vec<(i64, serde_json::Value, serde_json::Value, serde_json::Value)> = lines
+        .iter()
+        .map(|(t_ms, line)| {
+            (
+                *t_ms,
+                line["kind"].clone(),
+                line["unit"].clone(),
+                line["name"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        landed,
+        vec![
+            (
+                5_000,
+                serde_json::json!("mind_card"),
+                serde_json::json!(RED.0),
+                serde_json::json!("Sniper")
+            ),
+            (
+                5_000,
+                serde_json::json!("mind_card"),
+                serde_json::json!(RED2.0),
+                serde_json::json!("Sniper")
+            ),
+        ],
+        "both land, unit-id order, nothing refused"
+    );
+    let card = arena
+        .minds
+        .get(&RED2)
+        .map(|state| state.card.clone())
+        .expect("the unarmed mind's row");
+    assert_eq!(card, preset_on_field("sniper"));
+    // The read-back: the fire section inert, with its reason.
+    let unarmed = arena.unit(RED2).is_some_and(|unit| unit.weapons.is_empty());
+    assert!(unarmed);
+    let read = card.read_back(&reflex_cfg(), !unarmed);
+    assert_eq!(
+        read.get(1).map(String::as_str),
+        Some("  fire discipline  no weapons station on this hull")
+    );
+    // No slot, ever.
+    assert!(
+        !arena.conditions.rows().any(|(unit, _)| *unit == RED2),
+        "the unarmed hull holds no slot"
+    );
+    for (unit, t_ms, view, result) in &kept {
+        if *unit != RED2 {
+            continue;
+        }
+        assert!(
+            armings(&result.intents).is_empty(),
+            "the unarmed hull answered a Condition at {t_ms}"
+        );
+        assert!(
+            !view
+                .notices
+                .iter()
+                .any(|notice| matches!(notice, FrameNotice::Refused { .. })),
+            "a refusal in the unarmed hull's view at {t_ms}"
+        );
+        stock_emission_holds(&result.intents);
+    }
+    // It drives and holds as before.
+    let (_, plain, _) = card_run(the_j_field(Controller::Mind), 5_000, 30_000, &[]);
+    let answers = |kept: &[Kept]| -> Vec<(i64, Vec<IntentKind>)> {
+        kept.iter()
+            .filter(|(unit, ..)| *unit == RED2)
+            .map(|(_, t_ms, _, result)| (*t_ms, result.intents.clone()))
+            .collect()
+    };
+    assert_eq!(
+        answers(&kept),
+        answers(&plain),
+        "the unarmed hull's answers"
+    );
+    assert!(
+        answers(&kept).iter().any(|(_, intents)| intents
+            .iter()
+            .any(|kind| matches!(kind, IntentKind::Goal(_)))),
+        "it drives"
+    );
+    // The armed hull re-arms at 65 per cent at its next think.
+    let next = arms_after(&kept, RED, 5_000);
+    assert_eq!(
+        next.first().map(|(_, arms)| arms.clone()),
+        Some(vec![650]),
+        "the armed red's next think: {next:?}"
+    );
+}
+
+/// **A newer order is obeyed at once after an early end** (17b cut M1b.5; the
+/// lead's ruling on M1a.6's residual (10): `StockMemory.ignore_order: bool`
+/// became `ignore_until_ms: Option<i64>`, the ENDED order's `expires_ms`). On
+/// the (j) field's armed red, online, thought through the production runner
+/// with the arena's own view:
+///
+/// 1. an `Advance` to a cell the motor said no route reaches (the view's
+///    `drive_no_route` for the memory's goal) is ended for this hull —
+///    `ignore_until_ms` is the order's `expires_ms` (20,000) — and not
+///    obeyed: the think falls back to a waypoint;
+/// 2. the SAME order on the next view stays ended (not obeyed, the key kept);
+/// 3. a second order with another `expires_ms` (30,000) is obeyed at the next
+///    think — the goal its `Advance` names — and the key is cleared (the
+///    Bool ignored every order until the view carried none);
+/// 4. a view with no order clears the key.
+#[test]
+fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
+    use tacsim::arena::perception::DriveOutcome;
+    use tacsim::arena::stock_mind::{NativeStockMind, StockMemory};
+    let mut arena = the_j_field(Controller::Mind);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+    }
+    let base = arena.mind_view(RED).expect("red's view");
+    let card = preset_on_field("line");
+    let mind = NativeStockMind::with(&reflex_cfg());
+    let failed = (12_u16, 3_u16);
+    let advance = |to: (u16, u16), expires_ms: i64| FrameOrder {
+        squad: SmolStr::new("red-1"),
+        objective: MindObjective::Advance { to },
+        hold_fire: false,
+        max_range_band: None,
+        expires_ms,
+    };
+    let think =
+        |view: &MindView, memory: &StockMemory, t_ms: i64| -> (Vec<IntentKind>, StockMemory) {
+            let bytes = tacsim::arena::mind::encode_memory(&tacsim::arena::mind::Memory::from(
+                memory.clone(),
+            ));
+            let result = mind.think(&ThinkJob {
+                unit: RED,
+                think_seq: 1,
+                t_ms,
+                lands_ms: t_ms + SUBSTEP,
+                view,
+                memory: &bytes,
+                map: &arena.definition,
+                card: &card,
+            });
+            (
+                result.intents,
+                StockMemory::from(&tacsim::arena::mind::decode_memory(&result.memory)),
+            )
+        };
+    let start = StockMemory {
+        state: ReflexState::Patrol,
+        goal: Some(failed),
+        waypoint: Some(1),
+        unheld_since_ms: Some(0),
+        ..StockMemory::default()
+    };
+    // 1. The order ended by the failed search.
+    let mut view = base.clone();
+    view.contacts.clear();
+    view.order = Some(advance(failed, 20_000));
+    view.notices = vec![FrameNotice::Drive {
+        outcome: DriveOutcome::NoRoute,
+    }];
+    let (ended, memory) = think(&view, &start, 5_000);
+    assert_eq!(memory.ignore_until_ms, Some(20_000), "{ended:?}");
+    assert!(
+        !ended.contains(&IntentKind::Goal(MotorGoal::Cell {
+            x: failed.0,
+            y: failed.1
+        })),
+        "the ended Advance is not driven: {ended:?}"
+    );
+    // 2. The same order again: still ended.
+    view.notices.clear();
+    let (again, memory) = think(&view, &memory, 6_000);
+    assert_eq!(memory.ignore_until_ms, Some(20_000));
+    assert!(
+        !again.contains(&IntentKind::Goal(MotorGoal::Cell {
+            x: failed.0,
+            y: failed.1
+        })),
+        "{again:?}"
+    );
+    // 3. A newer order: obeyed at once, the key cleared.
+    view.order = Some(advance((3, 3), 30_000));
+    let (obeyed, newer) = think(&view, &memory, 7_000);
+    assert_eq!(newer.ignore_until_ms, None);
+    assert!(
+        obeyed.contains(&IntentKind::Goal(MotorGoal::Cell { x: 3, y: 3 })),
+        "the newer Advance is driven: {obeyed:?}"
+    );
+    // 4. No order: the key cleared.
+    view.order = None;
+    let (_, cleared) = think(&view, &memory, 7_000);
+    assert_eq!(cleared.ignore_until_ms, None);
+}
+
+/// **The anchor's record** (17b cut M1b.5; 17b's Q-M6, proof (ii)): the
+/// two-T1 fixture ([`stock_minds`] at 5,000 ms, the (j) field on
+/// [`reflex_cfg`] — itself a non-default doctrine) as it ran at 17b cut
+/// M1b.4's HEAD `69880812`, BEFORE `NativeStockMind::think` read its card
+/// through `StockCard::as_reflex`: every ledger line `(t_ms, kind as JSON)`.
+/// (Its line hashes and substep hashes were recorded beside it and are
+/// retired: [`m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged`].)
+const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
+    (0, "{\"kind\":\"match_started\"}"),
+    (
+        4,
+        "{\"kind\":\"detected\",\"viewer\":6,\"contact\":7330038967278110817,\"target\":4}",
+    ),
+    (
+        4,
+        "{\"kind\":\"detected\",\"viewer\":6,\"contact\":10007312734772483259,\"target\":9}",
+    ),
+    (
+        189,
+        "{\"kind\":\"detected\",\"viewer\":9,\"contact\":15474813515948476951,\"target\":4}",
+    ),
+    (
+        189,
+        "{\"kind\":\"detected\",\"viewer\":9,\"contact\":14127509583146488135,\"target\":6}",
+    ),
+    (254, "{\"kind\":\"startup\",\"unit\":6}"),
+    (
+        482,
+        "{\"kind\":\"detected\",\"viewer\":4,\"contact\":527481421542167805,\"target\":6}",
+    ),
+    (
+        482,
+        "{\"kind\":\"detected\",\"viewer\":4,\"contact\":5852833454602713067,\"target\":9}",
+    ),
+    (732, "{\"kind\":\"startup\",\"unit\":4}"),
+    (754, "{\"kind\":\"power_online\",\"unit\":6}"),
+    (1232, "{\"kind\":\"power_online\",\"unit\":4}"),
+    (
+        3004,
+        "{\"kind\":\"classified\",\"viewer\":6,\"contact\":7330038967278110817,\"target\":4,\"team\":\"red\"}",
+    ),
+    (
+        3004,
+        "{\"kind\":\"classified\",\"viewer\":6,\"contact\":10007312734772483259,\"target\":9,\"team\":\"blue\"}",
+    ),
+    (
+        3189,
+        "{\"kind\":\"classified\",\"viewer\":9,\"contact\":15474813515948476951,\"target\":4,\"team\":\"red\"}",
+    ),
+    (
+        3189,
+        "{\"kind\":\"classified\",\"viewer\":9,\"contact\":14127509583146488135,\"target\":6,\"team\":\"red\"}",
+    ),
+    (
+        3482,
+        "{\"kind\":\"classified\",\"viewer\":4,\"contact\":527481421542167805,\"target\":6,\"team\":\"red\"}",
+    ),
+    (
+        3482,
+        "{\"kind\":\"classified\",\"viewer\":4,\"contact\":5852833454602713067,\"target\":9,\"team\":\"blue\"}",
+    ),
+    (
+        3732,
+        "{\"kind\":\"locked\",\"unit\":4,\"contact\":5852833454602713067,\"target\":9}",
+    ),
+    (
+        3732,
+        "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":1,\"target\":9,\"range_cm\":4116,\"rounds\":1,\"by\":\"mind\",\"slot\":1}",
+    ),
+    (
+        3760,
+        "{\"kind\":\"impact\",\"shot_seq\":1,\"unit\":4,\"target\":9}",
+    ),
+    (
+        3760,
+        "{\"kind\":\"hit\",\"shot_seq\":1,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:1\"}",
+    ),
+    (
+        3760,
+        "{\"kind\":\"section_destroyed\",\"unit\":9,\"section\":\"hull\",\"by\":4}",
+    ),
+    (
+        5000,
+        "{\"kind\":\"position_summary\",\"units\":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]]}",
+    ),
+    (
+        6750,
+        "{\"kind\":\"blocked\",\"unit\":6,\"x\":4,\"y\":8,\"cause\":\"occupied\"}",
+    ),
+    (
+        7732,
+        "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":2,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
+    ),
+    (
+        7765,
+        "{\"kind\":\"impact\",\"shot_seq\":2,\"unit\":4,\"target\":9}",
+    ),
+    (
+        7765,
+        "{\"kind\":\"hit\",\"shot_seq\":2,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:2\"}",
+    ),
+    (
+        10000,
+        "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]]}",
+    ),
+    (
+        11732,
+        "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":3,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
+    ),
+    (
+        11765,
+        "{\"kind\":\"impact\",\"shot_seq\":3,\"unit\":4,\"target\":9}",
+    ),
+    (
+        11765,
+        "{\"kind\":\"hit\",\"shot_seq\":3,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:3\"}",
+    ),
+    (
+        15000,
+        "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]]}",
+    ),
+    (
+        15732,
+        "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":4,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
+    ),
+    (
+        15765,
+        "{\"kind\":\"impact\",\"shot_seq\":4,\"unit\":4,\"target\":9}",
+    ),
+    (
+        15765,
+        "{\"kind\":\"hit\",\"shot_seq\":4,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:4\"}",
+    ),
+    (
+        19732,
+        "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":5,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
+    ),
+    (
+        19765,
+        "{\"kind\":\"impact\",\"shot_seq\":5,\"unit\":4,\"target\":9}",
+    ),
+    (
+        19765,
+        "{\"kind\":\"hit\",\"shot_seq\":5,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:5\"}",
+    ),
+    (
+        20000,
+        "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]]}",
+    ),
+    (
+        23732,
+        "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":6,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
+    ),
+    (
+        23765,
+        "{\"kind\":\"impact\",\"shot_seq\":6,\"unit\":4,\"target\":9}",
+    ),
+    (
+        23765,
+        "{\"kind\":\"hit\",\"shot_seq\":6,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:6\"}",
+    ),
+    (
+        25000,
+        "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]]}",
+    ),
+    (
+        27732,
+        "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":7,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
+    ),
+    (
+        27765,
+        "{\"kind\":\"impact\",\"shot_seq\":7,\"unit\":4,\"target\":9}",
+    ),
+    (
+        27765,
+        "{\"kind\":\"hit\",\"shot_seq\":7,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:7\"}",
+    ),
+    (
+        30000,
+        "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]]}",
+    ),
+];
+
+/// Every think's answer, `(unit, lattice ms, intents as JSON)`, recorded with
+/// the event list.
+const M1B5_TWO_T1_INTENTS: &[(u32, i64, &str)] = &[
+    (6, 4, "[\"startup\"]"),
+    (4, 482, "[\"startup\"]"),
+    (6, 1004, "[{\"goal\":{\"cell\":{\"x\":1,\"y\":8}}}]"),
+    (4, 1482, "[{\"goal\":{\"cell\":{\"x\":1,\"y\":8}}}]"),
+    (6, 2004, "[]"),
+    (4, 2482, "[]"),
+    (6, 3004, "[]"),
+    (
+        4,
+        3482,
+        "[{\"condition\":{\"arm\":{\"weapon\":\"cannon\",\"target\":{\"target\":\"best_hostile\"},\"min_permille\":100,\"aspects\":15,\"min_rounds_left\":0,\"min_range_m\":0,\"max_range_m\":100}}},{\"goal\":\"hold\"},{\"lock\":{\"contact\":5852833454602713067}},{\"fire\":{\"weapon\":\"cannon\",\"slot\":1}}]",
+    ),
+    (6, 4004, "[]"),
+    (
+        4,
+        4482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":90000}}]",
+    ),
+    (6, 5004, "[]"),
+    (
+        4,
+        5482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 6004, "[]"),
+    (
+        4,
+        6482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 7004, "[]"),
+    (
+        4,
+        7482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 8004, "[]"),
+    (
+        4,
+        8482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 9004, "[]"),
+    (
+        4,
+        9482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 10004, "[{\"goal\":{\"cell\":{\"x\":14,\"y\":8}}}]"),
+    (
+        4,
+        10482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 11004, "[]"),
+    (
+        4,
+        11482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 12004, "[]"),
+    (
+        4,
+        12482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 13004, "[]"),
+    (
+        4,
+        13482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 14004, "[]"),
+    (
+        4,
+        14482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 15004, "[]"),
+    (
+        4,
+        15482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 16004, "[]"),
+    (
+        4,
+        16482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 17004, "[]"),
+    (
+        4,
+        17482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 18004, "[]"),
+    (
+        4,
+        18482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 19004, "[]"),
+    (
+        4,
+        19482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 20004, "[]"),
+    (
+        4,
+        20482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 21004, "[]"),
+    (
+        4,
+        21482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 22004, "[]"),
+    (
+        4,
+        22482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 23004, "[{\"goal\":{\"cell\":{\"x\":1,\"y\":8}}}]"),
+    (
+        4,
+        23482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 24004, "[]"),
+    (
+        4,
+        24482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 25004, "[]"),
+    (
+        4,
+        25482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 26004, "[]"),
+    (
+        4,
+        26482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 27004, "[]"),
+    (
+        4,
+        27482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 28004, "[]"),
+    (
+        4,
+        28482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+    (6, 29004, "[]"),
+    (
+        4,
+        29482,
+        "[{\"goal\":\"hold\"},{\"heading\":{\"mdeg\":88000}}]",
+    ),
+];

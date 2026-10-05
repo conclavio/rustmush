@@ -41,9 +41,10 @@
 use mush_core::{CmdError, Ctx, ObjId};
 use smol_str::SmolStr;
 
+use crate::arena::CardChange;
 use crate::arena::intents::IntentKind;
-use crate::arena::state::{Designator, StopReason, Team};
-use crate::arena_bridge::ArenaRegistry;
+use crate::arena::state::{Controller, Designator, StopReason, Team};
+use crate::arena_bridge::{ArenaRegistry, CardSource};
 use crate::arena_task::{ArenaMsg, MatchId};
 
 use super::{MatchBook, Side, allocate_id};
@@ -163,6 +164,10 @@ pub fn start(
     // **16b cut O.1**: a staff start is always a skirmish. `@arena/start` takes
     // no mode argument — the lobby's `SIM MODE` is where a mode is chosen — and
     // that is a residual recorded for the owner, not an oversight.
+    // **17b cut M1b.5**: the unseated hulls are the fill's, as `SIM START`'s.
+    let fill = super::lobby::minds_config(ctx.w)
+        .unwrap_or_default()
+        .fill_controller();
     super::start(
         ctx,
         match_id,
@@ -172,6 +177,7 @@ pub fn start(
         match_cfg,
         sensors_cfg,
         crate::arena::state::MatchMode::Skirmish,
+        fill,
     )
     .map_err(|error| CmdError::msg(error.to_string()))?;
     // It ran: the centre now says so, so `SIM STATUS` in the lobby and
@@ -1264,6 +1270,237 @@ pub fn arena_command(
     } else {
         crate::arena_bridge::status(ctx)
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.5: `@mind/set`, the owner's lever on a mind's card
+// ---------------------------------------------------------------------------
+
+/// `@mind/set`'s usage, after the `Usage: ` prefix.
+pub const MIND_SET_USAGE: &str = "@mind/set <unit>[=<preset> | =<slider> <value>]";
+
+/// **`@mind/set`** — **17b cut M1b.5** (doc 17 §11, §22's M1b: *an
+/// owner-facing `@mind/set` on T1*; D-UM-17 as amended, D-UM-43, D-UM-44): set
+/// a preset or one slider on a [`Controller::Mind`] hull of a running match,
+/// and read its card back. Staff only (the verb's gate, as `@arena`'s); the
+/// pilot's `MIND` verb is 17b cut M5's. Three forms:
+///
+/// * `@mind/set <unit>` — the read-back: a head naming the card AND where the
+///   world's knowledge of it comes from (the check-out, the tape, an offer not
+///   yet on the tape, or nothing since a resume), then the card's five section
+///   lines
+///   ([`crate::arena::StockCard::read_back`]);
+/// * `@mind/set <unit>=<preset>` — one of [`crate::arena::PRESETS`],
+///   case-folded;
+/// * `@mind/set <unit>=<slider> <value>` — one slider, validated here by
+///   [`crate::arena::StockCard::set`] on a scratch card (the mirror's known
+///   card, else Line on this server's doctrine) — refused by name with the
+///   range, the step or the choices, never clamped — and, for `min_odds`,
+///   against **the match's captured Compact floor**
+///   ([`crate::arena_bridge::MatchMirror::odds_floor_permille`], the floor the
+///   arena itself holds, never the live config).
+///
+/// A change is OFFERED, never written: [`ArenaMsg::MindCard`] carries a
+/// [`CardChange`] into the match's inbox, the task stages it, and the arena
+/// applies it to its own row at its next pulse's start — validating it again,
+/// checking its own floor, and journalling `mind_card` (the whole card) or
+/// `mind_card_refused`. The mirror records the scratch card as `Sent` at the
+/// offer and the tape's card as `OnTape` when the chunk holding the line
+/// closes (`crate::arena_bridge`'s `on_chunk`), so the read-back lags the
+/// arena by up to one chunk.
+///
+/// A staff surface, so it names object ids (doc 16 §5's observer rule is about
+/// pilots).
+///
+/// # Errors
+///
+/// One sentence per refusal, in the order they are asked: the usage; the
+/// layer; `That unit is not in a running match.`; `Match N is <state>.`; `#N
+/// is not flown by a mind.`; an unknown name; the floor; a slider's own
+/// sentence; a busy or ended match.
+pub fn mind_set(ctx: &mut Ctx<'_>, arena_cfg: &crate::config::ArenaConfig) -> Result<(), CmdError> {
+    let unit = parse_unit(ctx.args.lhs().trim()).ok_or(ArenaVerbError::Usage(MIND_SET_USAGE))?;
+    let asked: Option<String> = ctx
+        .args
+        .rhs()
+        .map(str::trim)
+        .filter(|rhs| !rhs.is_empty())
+        .map(str::to_owned);
+    let (match_id, mirror) = {
+        let registry = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .ok_or(ArenaVerbError::Unavailable)?;
+        let match_id = registry
+            .match_of_unit(unit)
+            .ok_or_else(|| CmdError::msg("That unit is not in a running match."))?;
+        (
+            match_id,
+            registry.mirror(match_id).cloned().unwrap_or_default(),
+        )
+    };
+    if let Some(state) = ctx
+        .w
+        .module_state::<MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .map(|record| record.state)
+        && state != super::MatchState::Running
+    {
+        return Err(ArenaVerbError::WrongState {
+            match_id: match_id.0,
+            state: state.as_str(),
+        }
+        .into());
+    }
+    if mirror.controllers.get(&unit) != Some(&Controller::Mind) {
+        return Err(CmdError::msg(format!(
+            "@mind/set: #{} is not flown by a mind.",
+            unit.0
+        )));
+    }
+    let doctrine = &arena_cfg.reflex;
+    let actor = ctx.actor;
+    let Some(asked) = asked else {
+        for line in mind_card_lines(ctx.w, unit, &mirror, doctrine) {
+            ctx.out
+                .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+        }
+        return Ok(());
+    };
+    // The scratch card the change is validated on and the mirror records as
+    // sent: the card the world last knew, else Line on this doctrine.
+    let mut scratch = mirror
+        .cards
+        .get(&unit)
+        .map_or_else(|| crate::arena::line(doctrine), |(card, ..)| card.clone());
+    let words: Vec<&str> = asked.split_whitespace().collect();
+    let (change, said) = match words.as_slice() {
+        [name] => {
+            let Some(card) = crate::arena::preset(name, doctrine) else {
+                // A slider with its value forgotten is the usage, never "no
+                // slider named": it is one.
+                if crate::arena::is_slider(name) {
+                    return Err(ArenaVerbError::Usage(MIND_SET_USAGE).into());
+                }
+                return Err(unknown_card_word(name));
+            };
+            scratch = card;
+            let shown = crate::arena::PRESETS
+                .iter()
+                .find(|preset| preset.eq_ignore_ascii_case(name))
+                .copied()
+                .unwrap_or("Line");
+            (CardChange::Preset(SmolStr::new(shown)), shown.to_owned())
+        }
+        [slider, value] => {
+            if !crate::arena::is_slider(slider) {
+                // A preset takes no value: the usage, never "no preset named".
+                if crate::arena::preset(slider, doctrine).is_some() {
+                    return Err(ArenaVerbError::Usage(MIND_SET_USAGE).into());
+                }
+                return Err(unknown_card_word(slider));
+            }
+            let slider = slider.to_ascii_lowercase();
+            if slider == "min_odds"
+                && let Ok(percent) = value.parse::<u32>()
+                && percent.saturating_mul(10) < mirror.odds_floor_permille
+            {
+                let floor = mirror.odds_floor_permille / 10;
+                return Err(CmdError::msg(format!(
+                    "@mind/set: min_odds is {floor}% to 95% in steps of 5; {floor}% is the \
+                     Compact floor (it is {value})."
+                )));
+            }
+            if let Err(error) = scratch.set(&slider, value) {
+                return Err(CmdError::msg(format!(
+                    "@mind/set: {error} (it is {value})."
+                )));
+            }
+            (
+                CardChange::Set {
+                    slider: SmolStr::new(&slider),
+                    value: SmolStr::new(value),
+                },
+                format!("{slider} {value}"),
+            )
+        }
+        _ => return Err(ArenaVerbError::Usage(MIND_SET_USAGE).into()),
+    };
+    let tasks = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .ok_or(ArenaVerbError::Unavailable)?;
+    if tasks
+        .offer(match_id, ArenaMsg::MindCard { unit, change })
+        .is_err()
+    {
+        return Err(CmdError::msg(if tasks.is_live(match_id) {
+            BUSY
+        } else {
+            "That match has ended."
+        }));
+    }
+    // Only now, with the change in the task's inbox, does the mirror say so.
+    let sent_at = mirror.now_ms;
+    let mirror = {
+        let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
+            return Err(ArenaVerbError::Unavailable.into());
+        };
+        registry.note_card(match_id, unit, scratch, sent_at, CardSource::Sent);
+        registry.mirror(match_id).cloned().unwrap_or_default()
+    };
+    ctx.out.sys_to_actor(
+        actor,
+        crate::arena_bridge::NOTICE_CATEGORY,
+        format!(
+            "Mind card on #{}: {said} sent; the arena takes it at its next pulse.",
+            unit.0
+        ),
+    );
+    for line in mind_card_lines(ctx.w, unit, &mirror, doctrine) {
+        ctx.out
+            .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    }
+    Ok(())
+}
+
+/// `@mind/set`'s refusal for a word that is neither a preset nor a slider.
+fn unknown_card_word(word: &str) -> CmdError {
+    CmdError::msg(format!("@mind/set: no slider or preset named \"{word}\"."))
+}
+
+/// **The read-back of `unit`'s card** (17b cut M1b.5): the head — `(as checked
+/// out)`, `(on the tape at N ms)`, `(sent at N ms, not yet on the tape)`, or the resume's
+/// sentence when the mirror holds no card — then, when a card is known, its
+/// five section lines with the fire section inert on a hull checked out with
+/// no weapon.
+fn mind_card_lines(
+    w: &mush_core::World,
+    unit: ObjId,
+    mirror: &crate::arena_bridge::MatchMirror,
+    doctrine: &crate::config::ReflexConfig,
+) -> Vec<String> {
+    let name = mush_core::output::display_name(w, unit);
+    let Some((card, t_ms, source)) = mirror.cards.get(&unit) else {
+        return vec![format!(
+            "Mind card on #{} ({name}): not read since the resume \u{2014} the tape's last \
+             mind_card line names it; a preset resets it.",
+            unit.0
+        )];
+    };
+    let whence = match source {
+        CardSource::CheckOut => "as checked out".to_owned(),
+        CardSource::OnTape => format!("on the tape at {t_ms} ms"),
+        CardSource::Sent => format!("sent at {t_ms} ms, not yet on the tape"),
+    };
+    let mut lines = vec![format!(
+        "Mind card on #{} ({name}): {} ({whence})",
+        unit.0,
+        card.name_of(doctrine)
+    )];
+    lines.extend(card.read_back(doctrine, mirror.armed.contains(&unit)));
+    lines
 }
 
 #[cfg(test)]

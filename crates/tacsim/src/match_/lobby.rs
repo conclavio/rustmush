@@ -2347,6 +2347,9 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             return Err(error);
         }
     };
+    // **17b cut M1b.5**: who flies the unseated hulls — the lab's
+    // `[tacsim.minds].fill_controller`, `reflex` unless a lab set it.
+    let fill = minds_config(ctx.w).unwrap_or_default().fill_controller();
     match crate::match_::start(
         ctx,
         match_id,
@@ -2356,6 +2359,7 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
         &match_cfg,
         &sensors_cfg,
         mode,
+        fill,
     ) {
         Ok(_) => {
             if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {

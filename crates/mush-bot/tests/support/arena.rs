@@ -140,6 +140,18 @@ pub fn arena_config() -> tacsim::TacsimConfig {
     cfg
 }
 
+/// **[`arena_config`] with the AI fill flown by `controller`** (17b cut
+/// M1b.5; the server's lab knob `[tacsim.minds].fill_controller`): `"reflex"`
+/// is [`arena_config`] exactly (today's machine), `"mind"` fields the native
+/// stock mind on Line in every unclaimed pod — the conditioned T1 the
+/// `arena_win_rate` mind lane flies against. The bot is told nothing of it: it
+/// reads the opponent off its own SSH session as it reads any machine.
+pub fn arena_config_with_fill(controller: &str) -> tacsim::TacsimConfig {
+    let mut cfg = arena_config();
+    cfg.minds.fill_controller = controller.to_owned();
+    cfg
+}
+
 fn scratch_dir() -> PathBuf {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(

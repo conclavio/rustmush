@@ -1155,6 +1155,22 @@ impl Fold {
                 y,
                 reason,
             } => format!("{word} unit={} ({x}, {y}): {reason}", unit(id)),
+            // **17b cut M1b.5** (doc 17 §11): the staff card lever, as staff
+            // read it — the card's name and the sliders it moved; the pilot's
+            // fold prints neither.
+            EventKind::MindCard {
+                unit: id,
+                name,
+                changed,
+                card: _,
+            } => format!(
+                "{word} unit={} name=\"{name}\" changed={}",
+                unit(id),
+                list_word(changed)
+            ),
+            EventKind::MindCardRefused { unit: id, reason } => {
+                format!("{word} unit={}: {reason}", unit(id))
+            }
             EventKind::Lagged { dt_ms } => format!("{word} dt_ms={dt_ms}"),
             EventKind::MatchEnded { reason } => {
                 let winner = match reason {
@@ -2790,6 +2806,46 @@ mod tests {
                 assert!(!line.contains(word), "{word} reached the pilot: {line}");
             }
         }
+        assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
+    }
+
+    /// **17b cut M1b.5** (doc 17 §11): the staff fold spells the card lever's
+    /// two lines — the card's name and the sliders it moved, or the refusal's
+    /// reason — and the pilot's fold prints neither, even of the pilot's own
+    /// tank.
+    #[test]
+    fn m1b5_the_staff_read_the_card_lines_and_the_pilot_reads_nothing_of_them() {
+        let mut card =
+            crate::arena::card::preset("sniper", &crate::config::ReflexConfig::default())
+                .expect("sniper");
+        card.min_odds_permille = 700;
+        let mut tape = Tape::new();
+        tape.at(
+            1_000,
+            EventKind::MindCard {
+                unit: ObjId(301),
+                name: SmolStr::new("Sniper, edited (min_odds 70)"),
+                changed: vec![SmolStr::new_static("min_odds")],
+                card,
+            },
+        )
+        .at(
+            2_000,
+            EventKind::MindCardRefused {
+                unit: ME,
+                reason: SmolStr::new_static("not_mind"),
+            },
+        );
+        let staff = fold(&tape.0, &roster(), Reader::Staff, RULES);
+        assert_eq!(
+            staff.lines,
+            vec![
+                "  0:01.000  mind_card unit=#301 name=\"Sniper, edited (min_odds 70)\" \
+                 changed=min_odds",
+                "  0:02.000  mind_card_refused unit=RA(#101): not_mind",
+            ]
+        );
+        let pilot = fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES);
         assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
     }
 

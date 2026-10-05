@@ -73,11 +73,12 @@ use smol_str::SmolStr;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::arena::card::StockCard;
 use crate::arena::clock::Tempo;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
-use crate::arena::ledger::LedgerEvent;
+use crate::arena::ledger::{EventKind, LedgerEvent};
 use crate::arena::observer::Observer;
-use crate::arena::state::{Channel, ContactId, MatchEnd, Power, StopReason};
+use crate::arena::state::{Channel, ContactId, Controller, MatchEnd, Power, StopReason};
 use crate::arena::step::Frame;
 use crate::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId};
 use crate::deliberation::CharacterRef;
@@ -578,6 +579,55 @@ pub struct MatchMirror {
     /// **The snapshot moment this match was last resumed from** (16b cut AF.2
     /// carries it on the live record; 16b cut AF.3 sets it), or `None`.
     pub resumed_from_ms: Option<i64>,
+    /// **The match's captured Compact floor**, per mille (17b cut M1b.5; doc 17
+    /// §5, D-UM-17 as amended): the floor the arena itself holds
+    /// (`Arena::odds_floor_permille`), written at [`open_match`] from the SAME
+    /// `lobby::minds_config` read `spawn_arena` captured, and at boot resume
+    /// ([`resume_match`]) from the decoded arena's own field — **never** the
+    /// live config, which a reload may have moved under a running match.
+    /// `@mind/set`'s `min_odds` pre-check reads it; `0` on a mirror nothing
+    /// opened (no match, no pre-check).
+    pub odds_floor_permille: u32,
+    /// **Who flies each unit, as far as the world knows** (17b cut M1b.5):
+    /// written at check-out from the custody units' controllers (and at resume
+    /// from the decoded arena's) and on every [`Control`] the world delivers —
+    /// `Live` is the pilot's, `Released` the reflex controller's, exactly as
+    /// `apply_control` moves the arena's own row. `@mind/set` refuses a hull
+    /// that is not [`Controller::Mind`] here first; the arena refuses it again
+    /// at apply (`not_mind`). Kept here because no cheaper world-side read
+    /// exists: the staff picture knows the controllers only while somebody
+    /// watches.
+    pub controllers: BTreeMap<ObjId, Controller>,
+    /// **The hulls checked out with a weapon** (17b cut M1b.5): the read-back's
+    /// fire-discipline section is shown live for these and inert (`no weapons
+    /// station on this hull`, doc 17 §11) for every other. Written at check-out
+    /// and at resume; a hull that loses its last gun mid-match is still listed
+    /// (the world hears no `RemoveWeapons`; the arena's own row is the truth).
+    pub armed: BTreeSet<ObjId>,
+    /// **The mind cards as the world last learned them** (17b cut M1b.5; doc
+    /// 17 §11, §22's M1b): per hull, the card, the arena millisecond and where
+    /// the knowledge came from — [`CardSource::OnTape`] when `on_chunk` read a
+    /// `mind_card` line (the arena's own row, as applied), [`CardSource::Sent`]
+    /// when `@mind/set` offered a change and no line for it has arrived since
+    /// (the verb's scratch card at the mirror's arena clock), and
+    /// [`CardSource::CheckOut`] for every mind hull at [`open_match`] (Line on
+    /// the match's doctrine, at arena millisecond nought). Absent after a
+    /// resume until a line arrives — the tape's last `mind_card` line names the
+    /// card, and the read-back says so. The tape is read per closed chunk, so
+    /// a line reaches the mirror when its chunk closes (the read-back's lag).
+    pub cards: BTreeMap<ObjId, (StockCard, i64, CardSource)>,
+}
+
+/// **Where the world's copy of a mind's card came from** (17b cut M1b.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardSource {
+    /// The check-out's: every mind row opens on `line` of the match's own
+    /// doctrine (`MindState::fresh`), which the world knows without the tape.
+    CheckOut,
+    /// A `mind_card` line on the tape: the card the arena applied.
+    OnTape,
+    /// An offer `@mind/set` made, not yet on the tape.
+    Sent,
 }
 
 /// **The last frame one pilot was sent** (16b cut K.2, K3).
@@ -1166,6 +1216,23 @@ impl ArenaRegistry {
         }
     }
 
+    /// **Record what the world knows of one mind's card** (17b cut M1b.5):
+    /// [`MatchMirror::cards`], written by `@mind/set` at an offer (`Sent`) and
+    /// by `on_chunk` from the tape (`OnTape`). A match this registry does not
+    /// track is left alone.
+    pub fn note_card(
+        &mut self,
+        match_id: MatchId,
+        unit: ObjId,
+        card: StockCard,
+        t_ms: i64,
+        source: CardSource,
+    ) {
+        if let Some(mirror) = self.matches.get_mut(&match_id) {
+            mirror.cards.insert(unit, (card, t_ms, source));
+        }
+    }
+
     /// Every tracked match, in id order.
     pub fn tracked(&self) -> impl Iterator<Item = (MatchId, &MatchMirror)> {
         self.matches.iter().map(|(id, mirror)| (*id, mirror))
@@ -1496,6 +1563,18 @@ pub fn open_match(
     // Read what the registry has to remember before the message is moved into the
     // task.
     let units: Vec<ObjId> = custody.units.iter().map(|unit| unit.id).collect();
+    // 17b cut M1b.5: who flies each unit at check-out, for `@mind/set`.
+    let controllers: BTreeMap<ObjId, Controller> = custody
+        .units
+        .iter()
+        .map(|unit| (unit.id, unit.controller))
+        .collect();
+    let armed: BTreeSet<ObjId> = custody
+        .units
+        .iter()
+        .filter(|unit| !unit.weapons.is_empty())
+        .map(|unit| unit.id)
+        .collect();
     let pilots: Vec<(ObjId, ObjId, SmolStr, u64)> = custody
         .pilots
         .iter()
@@ -1532,6 +1611,26 @@ pub fn open_match(
     };
     registry.track(match_id);
     registry.arenas.insert(match_id, ground);
+    // **17b cut M1b.5**: the floor the arena captured, from the very read
+    // `spawn_arena` was handed, and the check-out's controllers.
+    if let Some(mirror) = registry.matches.get_mut(&match_id) {
+        mirror.odds_floor_permille = minds_cfg.odds_floor_permille;
+        // Every mind row opens on Line of this doctrine (`MindState::fresh`).
+        for (unit, controller) in &controllers {
+            if *controller == Controller::Mind {
+                mirror.cards.insert(
+                    *unit,
+                    (
+                        crate::arena::line(&arena_cfg.reflex),
+                        0,
+                        CardSource::CheckOut,
+                    ),
+                );
+            }
+        }
+        mirror.controllers = controllers;
+        mirror.armed = armed;
+    }
     for unit in units {
         registry.bind_unit(unit, match_id);
     }
@@ -1615,6 +1714,21 @@ pub fn resume_match(
         .collect();
     let at_ms = arena.now_ms;
     let state_hash = crate::arena::hash::state_hash(&arena);
+    // **17b cut M1b.5**: the resumed arena's OWN floor (captured at its
+    // check-out and carried by the snapshot) and its controllers, for
+    // `@mind/set` — never the live config's floor.
+    let odds_floor_permille = arena.odds_floor_permille;
+    let controllers: BTreeMap<ObjId, Controller> = arena
+        .units
+        .iter()
+        .map(|unit| (unit.id, unit.controller))
+        .collect();
+    let armed: BTreeSet<ObjId> = arena
+        .units
+        .iter()
+        .filter(|unit| !unit.weapons.is_empty())
+        .map(|unit| unit.id)
+        .collect();
     let ground = Arc::new(arena.definition.clone());
     // 16c N16: the snapshot carries no chunk bytes, and every chunk closed
     // before it is durable (the backlog's order, and phase A's tape check), so
@@ -1650,6 +1764,9 @@ pub fn resume_match(
         mirror.snapshot_at_ms = Some(at_ms);
         mirror.snapshot_hash = Some(state_hash);
         mirror.resumed_from_ms = Some(at_ms);
+        mirror.odds_floor_permille = odds_floor_permille;
+        mirror.controllers = controllers;
+        mirror.armed = armed;
     }
     Ok(roster)
 }
@@ -2180,7 +2297,25 @@ pub fn send_control(
     }
     tasks
         .offer(match_id, ArenaMsg::Control(control))
-        .map_err(|_| ControlRefusal::Gone)
+        .map_err(|_| ControlRefusal::Gone)?;
+    // **17b cut M1b.5**: the mirror's controller moves as `apply_control`
+    // moves the arena's row — a released seat is the reflex controller's, a
+    // live one the pilot's.
+    let now = match state {
+        ControlState::Released => Some(Controller::Reflex),
+        ControlState::Live => Some(Controller::Pilot),
+        ControlState::Linkdead => None,
+    };
+    if let Some(now) = now
+        && let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>()
+        && let Some(held) = registry
+            .matches
+            .get_mut(&match_id)
+            .and_then(|mirror| mirror.controllers.get_mut(&unit))
+    {
+        *held = now;
+    }
+    Ok(())
 }
 
 /// **Ask one match to stop** (doc 16 §3.1's `Stop`).
@@ -2884,6 +3019,56 @@ pub fn match_log_id(match_id: MatchId) -> String {
     format!("match.{}", match_id.0)
 }
 
+/// **The `mind_card` and `mind_card_refused` lines of one chunk, onto the
+/// mirror** (17b cut M1b.5; [`MatchMirror::cards`]): in line order, a
+/// `mind_card` writes `(card, t_ms, OnTape)` unless the entry is a `Sent` one
+/// newer than the line; a `mind_card_refused` removes a `Sent` entry it is not
+/// older than. Per chunk, never per pulse.
+fn note_cards_from_tape(ctx: &mut Ctx<'_>, match_id: MatchId, events: &[LedgerEvent]) {
+    if !events.iter().any(|event| {
+        matches!(
+            event.kind,
+            EventKind::MindCard { .. } | EventKind::MindCardRefused { .. }
+        )
+    }) {
+        return;
+    }
+    let Some(mirror) = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .and_then(|registry| registry.matches.get_mut(&match_id))
+    else {
+        return;
+    };
+    for event in events {
+        let sent_after = |mirror: &MatchMirror, unit: ObjId| {
+            mirror
+                .cards
+                .get(&unit)
+                .is_some_and(|(_, at, source)| *source == CardSource::Sent && *at > event.t_ms)
+        };
+        let sent = |mirror: &MatchMirror, unit: &ObjId| {
+            mirror
+                .cards
+                .get(unit)
+                .is_some_and(|(_, _, source)| *source == CardSource::Sent)
+        };
+        match &event.kind {
+            EventKind::MindCard { unit, card, .. } if !sent_after(mirror, *unit) => {
+                mirror
+                    .cards
+                    .insert(*unit, (card.clone(), event.t_ms, CardSource::OnTape));
+            }
+            EventKind::MindCardRefused { unit, .. }
+                if !sent_after(mirror, *unit) && sent(mirror, unit) =>
+            {
+                mirror.cards.remove(unit);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// One closed chunk, appended to `log:match.<id>` on the world's own writer
 /// lane (16b T4).
 ///
@@ -2937,6 +3122,13 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
         })
         .collect();
     let arena_ms = last_event_ms(&events);
+    // **17b cut M1b.5**: `@mind/set`'s read-back is written from the tape — a
+    // `mind_card` line is the card the arena applied, whole, at its
+    // millisecond. A `Sent` entry newer than the line (a later offer still on
+    // its way) is kept; a `mind_card_refused` line drops a `Sent` entry it is
+    // not older than (the offer it answers changed nothing, so the world no
+    // longer knows the card: the read-back then says to read the tape).
+    note_cards_from_tape(ctx, match_id, &events);
     // 16b cut T.3: the black box is also where a check-in's final pose comes
     // from when nobody is in the cockpit. `position_summary` names every unit
     // every `ledger.summary_ms`, so a match with no pilot at all still hands the
@@ -3903,6 +4095,8 @@ pub fn register(
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     let (arena_cfg, match_cfg, sensors_cfg) =
         (arena_cfg.clone(), match_cfg.clone(), sensors_cfg.clone());
+    // 17b cut M1b.5: `@mind`'s own copy of the doctrine its presets read.
+    let arena_cfg_for_mind = arena_cfg.clone();
     reg.command(
         CommandSpec {
             name: "@arena".into(),
@@ -3972,6 +4166,45 @@ pub fn register(
                 return Err(CmdError::msg("Permission denied."));
             }
             crate::match_::arena_command(ctx, &arena_cfg, &match_cfg, &sensors_cfg)
+        }),
+    )?;
+    // **17b cut M1b.5** (doc 17 §11, §22's M1b): the owner's lever on a mind's
+    // card, beside `@arena` and in its class — an offer into a running match's
+    // inbox, which the arena turns into a `mind_card` line on the tape.
+    reg.command(
+        CommandSpec {
+            name: "@mind".into(),
+            shape: ArgShape::EqPair,
+            switches: vec!["set".into()],
+            help: "@mind/set <unit>                    (staff) read the stock card of a unit \
+                   flown by a mind in a running match: its name and where the world learned \
+                   it (as checked out, on the tape, sent and not yet on the tape, or not read \
+                   since a resume), then its five sections; a slider the stock mind does not \
+                   read yet is marked [M2], and on a hull with no weapons the fire discipline \
+                   is shown inert.\n\
+                   @mind/set <unit>=<preset>           (staff) give it one of Standard \
+                   Doctrine's six presets: Line, Sentry, Sniper, Skirmisher, Hunter or \
+                   Rearguard.\n\
+                   @mind/set <unit>=<slider> <value>   (staff) set one slider in its own \
+                   units (band_pct 85, min_odds 60, fight_home_pct 17.5, prefer exposed). A \
+                   value out of range or off its step is refused with the range named, never \
+                   clamped, and min_odds never under the match's own Compact floor. The arena \
+                   takes a change at its next pulse and records the whole card on the tape \
+                   (mind_card), and the read-back follows the tape a chunk behind."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+            if !is_staff(ctx) {
+                return Err(CmdError::msg("Permission denied."));
+            }
+            if !ctx.switches.has("set") {
+                return Err(CmdError::msg(format!(
+                    "Usage: {}",
+                    crate::match_::MIND_SET_USAGE
+                )));
+            }
+            crate::match_::mind_set(ctx, &arena_cfg_for_mind)
         }),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
@@ -4616,6 +4849,124 @@ mod tests {
             "a watcher who is not seated is left alone"
         );
         let tasks = registry.tasks().clone();
+        if let Some((handle, join)) = tasks.remove(MATCH) {
+            handle.signal_stop();
+            join.abort();
+        }
+    }
+
+    /// **17b cut M1b.5** (doc 17 §11: a section that drives a station the hull
+    /// lacks is shown inert with its reason): `open_match` writes the mirror's
+    /// armed set from the check-out — a mind hull with a gun is in it, one with
+    /// none is not — and `@mind/set`'s read-back reads it, so the unarmed
+    /// hull's fire discipline is inert and the armed one's live, both on Line
+    /// `(as checked out)`. The verb's help is three entries, one line each.
+    #[tokio::test]
+    async fn m1b5_open_match_writes_the_armed_set_the_read_back_reads() {
+        use crate::arena::state::Controller;
+        use crate::arena::test_support::line_tank;
+        const ARMED: ObjId = ObjId(9_201);
+        const UNARMED: ObjId = ObjId(9_202);
+        const MATCH: MatchId = MatchId(78);
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let cfg = crate::config::ArenaConfig::default();
+        {
+            let mut out = mush_core::Outbox::new();
+            let engine = tw.engine_mut();
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(SmolStr::new(crate::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let opened = open_match(
+                &mut ctx,
+                MATCH,
+                custody(
+                    vec![
+                        crate::arena::state::CustodyUnit {
+                            controller: Controller::Mind,
+                            ..line_tank(ARMED, Team::Red, pose(1_500, 1_500))
+                        },
+                        crate::arena::state::CustodyUnit {
+                            controller: Controller::Mind,
+                            ..tank(UNARMED, Team::Blue, pose(6_500, 6_500))
+                        },
+                    ],
+                    Vec::new(),
+                ),
+                &cfg,
+                &crate::config::MatchConfig::default(),
+                &crate::config::SensorsConfig::default(),
+            );
+            assert!(opened.is_ok(), "the match opens: {opened:?}");
+        }
+        let mirror = tw
+            .world()
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.mirror(MATCH))
+            .cloned()
+            .expect("the mirror row");
+        assert_eq!(
+            mirror.armed.iter().copied().collect::<Vec<ObjId>>(),
+            vec![ARMED]
+        );
+        let mut said = |line: &str| -> Vec<String> {
+            tw.run(GOD, line)
+                .into_iter()
+                .filter_map(|(audience, event)| match (audience, event) {
+                    (mush_core::Audience::Actor(GOD), mush_proto::OutputEvent::Sys(text)) => {
+                        Some(text.to_plain_text())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let armed = said(&format!("@mind/set #{}", ARMED.0));
+        assert_eq!(armed.len(), 6, "{armed:?}");
+        assert!(
+            armed
+                .first()
+                .is_some_and(|head| head.ends_with(": Line (as checked out)")),
+            "{armed:?}"
+        );
+        assert!(
+            armed
+                .get(2)
+                .is_some_and(|line| line.starts_with("  fire discipline  min_odds 10%")),
+            "{armed:?}"
+        );
+        let unarmed = said(&format!("@mind/set #{}", UNARMED.0));
+        assert_eq!(unarmed.len(), 6, "{unarmed:?}");
+        assert_eq!(
+            unarmed.get(2).map(String::as_str),
+            Some("  fire discipline  no weapons station on this hull"),
+            "{unarmed:?}"
+        );
+        let help = tw
+            .engine_mut()
+            .registry
+            .spec_of("@mind")
+            .map(|spec| spec.help.clone())
+            .expect("@mind is registered");
+        let entries: Vec<&str> = help.lines().collect();
+        assert_eq!(entries.len(), 3, "{help}");
+        for entry in entries {
+            assert!(entry.starts_with("@mind/set <unit>"), "{entry}");
+            let (_, text) = entry.split_once("(staff) ").expect("a staff entry");
+            assert!(!text.contains("  "), "a hole in the help: {entry}");
+        }
+        assert!(help.contains("as checked out"), "{help}");
+        let tasks = tw
+            .world()
+            .module_state::<ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .expect("the registry is composed");
         if let Some((handle, join)) = tasks.remove(MATCH) {
             handle.signal_stop();
             join.abort();

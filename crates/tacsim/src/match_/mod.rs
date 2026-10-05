@@ -127,7 +127,9 @@ pub use resume::{
     PendingResume, RESUME_LINE, ResumeRefusal, doctrine_line, resume_pending, void_at_boot,
 };
 pub use sim::{SIM_VERB, Selector, sim_command};
-pub use verbs::{ArenaVerbError, arena_command, register_switches, state_word};
+pub use verbs::{
+    ArenaVerbError, MIND_SET_USAGE, arena_command, mind_set, register_switches, state_word,
+};
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -851,6 +853,17 @@ pub enum StartError {
 /// `SIM MODE`; `@arena/start` passes [`MatchMode::Skirmish`]), refused with
 /// [`StartError::ModeUnsupported`] when the ground does not declare it, and
 /// carried on the [`CustodyOut`] and the [`MatchRecord`].
+///
+/// **17b cut M1b.5**: `fill` is the controller every hull with no seated pilot
+/// is checked out under — `[tacsim.minds].fill_controller`
+/// ([`crate::config::MindsConfig::fill_controller`], read by the callers
+/// through `lobby::minds_config`): [`Controller::Reflex`] in production,
+/// [`Controller::Mind`] on the lab's knob, when `Arena::new` schedules each
+/// mind's first think and `Controller::is_machine` deals it into a squad as a
+/// reflex hull is (17b cut L.2). A seated hull is `Pilot` whatever `fill` says.
+///
+/// [`Controller::Reflex`]: crate::arena::state::Controller::Reflex
+/// [`Controller::Mind`]: crate::arena::state::Controller::Mind
 #[allow(clippy::too_many_arguments)]
 pub fn start(
     ctx: &mut Ctx<'_>,
@@ -861,6 +874,7 @@ pub fn start(
     match_cfg: &MatchConfig,
     sensors_cfg: &SensorsConfig,
     mode: MatchMode,
+    fill: crate::arena::state::Controller,
 ) -> Result<MatchId, StartError> {
     // 16b cut C.2: the authored arena when a loaded pack declares one, and the
     // stand-in window of T.3 otherwise.
@@ -969,8 +983,9 @@ pub fn start(
             // **16b cut E.1** lifted the assembly into `arena_def::custody_unit`
             // (16b §0.4), so a shipped-scale test rig builds the same unit this
             // loop does instead of a second copy of it.
+            // 17b cut M1b.5: an unseated hull is the fill's.
             let controller = if seated_pilots(ctx, unit).is_empty() {
-                crate::arena::state::Controller::Reflex
+                fill
             } else {
                 crate::arena::state::Controller::Pilot
             };

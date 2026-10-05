@@ -3921,6 +3921,17 @@ pub struct Arena {
     /// no scratch for lands nothing and clears its `pending` row, the residual
     /// 17b cut M3's recompute closes.
     pub mind_landings: BTreeMap<ObjId, crate::arena::mind::Landing>,
+    /// **The card changes waiting for the next pulse** (17b cut M1b.5; doc 17
+    /// §11, §22's M1b): per hull, in arrival order, what staff's `@mind/set`
+    /// offered — handed in by the task BEFORE the step
+    /// ([`Arena::stage_card`]) and applied to the arena's own rows at phase
+    /// 2's head (`Arena::apply_mind_cards`), which empties it.
+    ///
+    /// Scratch, like [`Arena::mind_landings`]: not hashed (what it changes is,
+    /// the row's card, item 3c) and **reset** by the snapshot — empty between
+    /// two pulses, and a change the task held when a match resumed was never
+    /// applied, which the read-back says (`not read since the resume`).
+    pub pending_cards: BTreeMap<ObjId, Vec<crate::arena::card::CardChange>>,
     /// **What runs a think** (17b cut M1a.5; doc 17 §7, D-UM-1): a trait the
     /// sim task implements outside this library — the arena only calls it,
     /// synchronously, inside the think's due event. Set by
@@ -4645,6 +4656,8 @@ impl Arena {
             held_said: BTreeMap::new(),
             odds_floor_permille: crate::config::MindsConfig::default().odds_floor_permille,
             mind_landings: BTreeMap::new(),
+            // 17b cut M1b.5: no card change offered yet.
+            pending_cards: BTreeMap::new(),
             mind_runner: crate::arena::mind::default_mind_runner(arena_cfg),
             min_cost,
             pending: BTreeMap::new(),

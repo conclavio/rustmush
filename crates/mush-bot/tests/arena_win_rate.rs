@@ -99,6 +99,20 @@
 //! clock's benches), and only then `UNPOSED`, `NO REPORT` and `EARLY END`. The offline
 //! `the_reading_lines_are_the_leads_count` (not ignored) proves the reading on
 //! a hand-written transcript and report.
+//!
+//! **The mind lane** (17b cut M1b.5; doc 17 §22's M1b gate):
+//! `the_bot_against_a_conditioned_t1_over_thirty_pooled_matches`, also
+//! `#[ignore]` and report-only, flies fifteen matches as red and fifteen as
+//! blue, posed and capped as above, each against one fill hull flown by the
+//! native stock mind on Line (the server's lab knob `[tacsim.minds]
+//! fill_controller = "mind"`, the rig's `arena_config_with_fill`), and prints
+//! one line a match, then `MIND RATE: {w} of {n} for the bot against a
+//! conditioned T1 (red …, blue …, draws …, timeouts …)` and `MIND RATE
+//! INTERVAL: {w} of {n}, 95 per cent Wilson {lo} to {hi} per cent`.
+//! `MUSH_BOT_MIND_RATE_MATCHES` flies another count a side and
+//! `MUSH_BOT_MIND_RATE_PARALLEL=1` flies the two flights side by side; the
+//! offline `the_mind_rate_lines_print_from_hand_written_figures` proves the
+//! two lines.
 use std::time::Duration;
 
 #[path = "support/arena.rs"]
@@ -854,4 +868,337 @@ fn the_knobs_line_is_the_flown_value() {
             "{named:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.5: the bot against a conditioned T1, pooled over thirty matches
+// ---------------------------------------------------------------------------
+
+/// The matches each flight of the mind lane flies (17b cut M1b.5): fifteen
+/// as red and fifteen as blue, thirty pooled.
+const MIND_RATE_MATCHES: usize = 15;
+/// `MUSH_BOT_MIND_RATE_MATCHES`: a count to fly a side in place of fifteen.
+const MIND_RATE_MATCHES_ENV: &str = "MUSH_BOT_MIND_RATE_MATCHES";
+/// `MUSH_BOT_MIND_RATE_PARALLEL=1`: fly the two flights side by side, each on
+/// its own rig, instead of one after the other.
+const MIND_RATE_PARALLEL_ENV: &str = "MUSH_BOT_MIND_RATE_PARALLEL";
+
+/// **One flight of the mind lane** (17b cut M1b.5): [`arena_rig::fly_lane`]'s
+/// steps — the rig booted with the AI fill and the plan's cap, God's poses
+/// (`RA` and `BA` 500 m apart, [`arena_rig::POSES`]) before the first match
+/// and after each `Match {n} is over (`, one deadline from the launch, the bot
+/// landed and its transcript and report kept under `MUSH_BOT_WIN_RATE_KEEP` —
+/// on [`arena_rig::arena_config_with_fill`]`("mind")` and for `side`. The rig's
+/// `fly_lane` flies red on the shipped fill and is not moved; this is its
+/// shape for either side on the lab's fill.
+async fn fly_mind_side(side: &'static str, matches: usize, extra: &str) -> arena_rig::Posed {
+    let mut cfg = arena_rig::arena_config_with_fill("mind");
+    cfg.match_.startup_ms = 2_000;
+    cfg.match_.board_timeout_ms = 60_000;
+    cfg.match_.max_duration_ms = arena_rig::MAX_DURATION_MS;
+    let rig = arena_rig::boot(cfg, &[("pilot", "Pilot")]).await;
+    let wait = arena_rig::match_wait(arena_rig::MAX_DURATION_MS);
+    // Fifteen matches of 420 s with boarding and startup, and room.
+    let deadline = Duration::from_secs(
+        u64::try_from(matches)
+            .unwrap_or(15)
+            .saturating_mul(10 * 60)
+            .max(10 * 60),
+    );
+    let name = format!("mind-rate-{side}");
+
+    let mut god =
+        arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
+            .await;
+    let mut refused = Vec::new();
+    for spec in arena_rig::POSES {
+        if let Err(answer) = arena_rig::try_pose(&mut god, spec).await {
+            println!(
+                "{side}: the pose {spec} before the first match was refused: {}",
+                answer.trim()
+            );
+            refused.push(None);
+        }
+    }
+    arena_rig::walk_to_lobby(&mut god).await;
+
+    let config = arena_rig::bot_config_with(&rig, "pilot+Pilot", arena_rig::MAX_SECONDS, extra);
+    let launched = god.seen.len();
+    let mut from = launched;
+    let count = matches.to_string();
+    let start = tokio::time::Instant::now();
+    let mut flight = arena_rig::launch_env(
+        &rig,
+        &config,
+        &name,
+        &["--arena", side, "--matches", &count],
+        &[],
+    );
+    let mut heard = 0;
+    let mut early = None;
+    while heard < matches {
+        let left = deadline.saturating_sub(start.elapsed());
+        let limit = left.min(wait);
+        match arena_rig::try_await_line(&mut god, from, " is over (", &mut flight, limit).await {
+            Ok(past) => {
+                heard += 1;
+                let ended = god
+                    .seen
+                    .get(..past - " is over (".len())
+                    .and_then(|before| before.rfind("Match ").map(|at| (before, at)))
+                    .and_then(|(before, at)| before.get(at + "Match ".len()..))
+                    .and_then(|id| id.trim().parse::<u64>().ok());
+                from = past;
+                if heard == matches {
+                    break;
+                }
+                for spec in arena_rig::POSES {
+                    if let Err(answer) = arena_rig::try_pose(&mut god, spec).await {
+                        println!(
+                            "{side}: the pose {spec} after match {ended:?} was refused: {}",
+                            answer.trim()
+                        );
+                        if let Some(n) = ended {
+                            refused.push(Some(n));
+                        }
+                    }
+                }
+            }
+            Err(why) => {
+                early = Some(arena_rig::early_why(why, limit, deadline, wait));
+                break;
+            }
+        }
+    }
+    let partial = arena_rig::try_land(flight, Duration::from_secs(120)).await;
+    if let Some(keep) = std::env::var_os(arena_rig::KEEP_ENV) {
+        let keep = std::path::PathBuf::from(keep);
+        let _ = std::fs::create_dir_all(&keep);
+        let _ = std::fs::write(keep.join(format!("{name}.jsonl")), &partial.transcript_text);
+        if let Some(text) = &partial.report_text {
+            let _ = std::fs::write(keep.join(format!("{name}.json")), text);
+        }
+    }
+    let ends = arena_rig::match_ends(god.seen.get(launched..).unwrap_or(""));
+    god.close().await;
+    drop(rig);
+    arena_rig::Posed {
+        partial,
+        ends,
+        heard,
+        early,
+        refused,
+    }
+}
+
+/// **A flight's results from the bot's own side** (17b cut M1b.5): the
+/// report's own `wins`/`losses` (the bot's, whichever side it flew), or with
+/// no report the lobby's match-end words read for `side` — `blue` a win for a
+/// blue flight.
+fn mind_outcome(posed: &arena_rig::Posed, side: &str) -> arena_rig::Outcome {
+    let outcome = posed.outcome();
+    if posed.partial.report.is_none() && side == "blue" {
+        arena_rig::Outcome {
+            won: outcome.lost,
+            lost: outcome.won,
+            ..outcome
+        }
+    } else {
+        outcome
+    }
+}
+
+/// **The mind lane's two report lines** (17b cut M1b.5): `MIND RATE: {w} of
+/// {n} for the bot against a conditioned T1 (red {wr} of {nr}, blue {wb} of
+/// {nb}, draws {d}, timeouts {t})` over both flights pooled, then `MIND RATE
+/// INTERVAL: {w} of {n}, 95 per cent Wilson {lo} to {hi} per cent` through
+/// the rig's [`arena_rig::wilson_95`] (`MIND RATE INTERVAL: no matches` with
+/// none). `n` counts every match each flight finished, its draws, timeouts
+/// and others included.
+fn mind_rate_lines(red: &arena_rig::Outcome, blue: &arena_rig::Outcome) -> [String; 2] {
+    let pooled = red.plus(*blue);
+    let (w, n) = (pooled.won, pooled.total());
+    let interval = match arena_rig::wilson_95(w, n) {
+        Some((lo, hi)) => {
+            format!("MIND RATE INTERVAL: {w} of {n}, 95 per cent Wilson {lo} to {hi} per cent")
+        }
+        None => "MIND RATE INTERVAL: no matches".to_owned(),
+    };
+    [
+        format!(
+            "MIND RATE: {w} of {n} for the bot against a conditioned T1 (red {} of {}, blue {} of \
+             {}, draws {}, timeouts {})",
+            red.won,
+            red.total(),
+            blue.won,
+            blue.total(),
+            pooled.drew,
+            pooled.timed_out
+        ),
+        interval,
+    ]
+}
+
+/// **The bot against a conditioned T1, pooled over thirty matches** (17b cut
+/// M1b.5; doc 17 §22's M1b gate: *a 30-match pooled measure of `mush-bot`
+/// against a conditioned T1 reported with Wilson intervals*).
+///
+/// Two flights of fifteen in this file's own shape — the rig, the poses 500 m
+/// apart before every match, 420 s a match, the knobs line, the keep
+/// directory — `--arena red --matches 15` and `--arena blue --matches 15`,
+/// each against ONE fill hull on the server's lab knob
+/// `[tacsim.minds].fill_controller = "mind"` ([`arena_rig::arena_config_with_fill`]):
+/// the native stock mind on Line, arming its two slots at its think. Never a
+/// second lane in the engine and never the bot's doctrine ported: the bot
+/// reads its opponent off its SSH session as it reads any machine. The second
+/// flight runs on a second rig, after the first (`MUSH_BOT_MIND_RATE_PARALLEL=1`
+/// side by side); `MUSH_BOT_MIND_RATE_MATCHES` flies another count a side.
+///
+/// **Report only**: one line a match, then the two `MIND RATE` lines
+/// ([`mind_rate_lines`]); the test asserts only that every match finished.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "report-only, about two to four hours: the M1b gate's pooled measure (17b cut M1b.5)"]
+async fn the_bot_against_a_conditioned_t1_over_thirty_pooled_matches() {
+    let matches = std::env::var(MIND_RATE_MATCHES_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MIND_RATE_MATCHES);
+    let parallel = std::env::var(MIND_RATE_PARALLEL_ENV).is_ok_and(|value| value.trim() == "1");
+    let none = std::collections::BTreeSet::new();
+    let extra = arena_rig::extra(arena_rig::engagement(None), &none);
+    let knobs = arena_rig::knobs_line(&none);
+    arena_rig::keep_knobs("mind-rate", &knobs);
+    println!("{knobs}");
+    let (red, blue) = if parallel {
+        tokio::join!(
+            fly_mind_side("red", matches, &extra),
+            fly_mind_side("blue", matches, &extra)
+        )
+    } else {
+        let red = fly_mind_side("red", matches, &extra).await;
+        let blue = fly_mind_side("blue", matches, &extra).await;
+        (red, blue)
+    };
+    for (side, posed) in [("red", &red), ("blue", &blue)] {
+        let unposed = posed.unposed();
+        for flown in posed.flown() {
+            let flagged = flown["match"]
+                .as_u64()
+                .is_some_and(|id| unposed.contains(&id));
+            println!(
+                "{side} match {}: {}; {} shots, {} hits, {} kills, took {}; {} s{}",
+                flown["match"],
+                flown["result"].as_str().unwrap_or("?"),
+                flown["shots"],
+                flown["hits_scored"],
+                flown["kills"],
+                flown["hits_taken"],
+                flown["duration_ms"].as_u64().unwrap_or(0) / 1_000,
+                if flagged { " (unposed)" } else { "" }
+            );
+        }
+    }
+    for line in mind_rate_lines(&mind_outcome(&red, "red"), &mind_outcome(&blue, "blue")) {
+        println!("{line}");
+    }
+    for (side, posed) in [("red", &red), ("blue", &blue)] {
+        if let Some(line) = posed.unposed_line() {
+            println!("{side}: {line}");
+        }
+        if posed.partial.report.is_none() {
+            println!("{side}: {}", arena_rig::NO_REPORT);
+        }
+        if let Some(line) = posed.early_line() {
+            println!("{side}: {line}");
+        }
+    }
+    for (side, posed) in [("red", &red), ("blue", &blue)] {
+        assert_eq!(
+            posed.flown().len(),
+            matches,
+            "{side}: every match finished: {}\nstderr:\n{}",
+            posed
+                .partial
+                .report_text
+                .as_deref()
+                .unwrap_or("there was no report"),
+            posed.partial.stderr
+        );
+    }
+}
+
+/// **The mind lane's two lines, offline** (17b cut M1b.5): from hand-written
+/// figures, the pooled `MIND RATE` line with each side's count, the draws and
+/// the timeouts, and the `MIND RATE INTERVAL` through the rig's Wilson helper;
+/// nothing flown reads `no matches`; and a blue flight with no report reads
+/// the lobby's `blue` as its win.
+#[test]
+fn the_mind_rate_lines_print_from_hand_written_figures() {
+    use arena_rig::Outcome;
+
+    let red = Outcome {
+        won: 6,
+        lost: 6,
+        drew: 1,
+        timed_out: 2,
+        other: 0,
+    };
+    let blue = Outcome {
+        won: 9,
+        lost: 4,
+        drew: 0,
+        timed_out: 1,
+        other: 1,
+    };
+    assert_eq!(
+        mind_rate_lines(&red, &blue),
+        [
+            "MIND RATE: 15 of 30 for the bot against a conditioned T1 (red 6 of 15, blue 9 of 15, \
+             draws 1, timeouts 3)",
+            "MIND RATE INTERVAL: 15 of 30, 95 per cent Wilson 33 to 67 per cent",
+        ]
+    );
+    assert_eq!(
+        mind_rate_lines(&Outcome::default(), &Outcome::default()),
+        [
+            "MIND RATE: 0 of 0 for the bot against a conditioned T1 (red 0 of 0, blue 0 of 0, \
+             draws 0, timeouts 0)",
+            "MIND RATE INTERVAL: no matches",
+        ]
+    );
+    let ends: std::collections::BTreeMap<u64, String> = [(1, "blue"), (2, "red"), (3, "blue")]
+        .into_iter()
+        .map(|(id, word)| (id, word.to_owned()))
+        .collect();
+    let posed = arena_rig::Posed {
+        partial: arena_rig::Partial {
+            code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            transcript_text: String::new(),
+            report_text: None,
+            report: None,
+        },
+        ends,
+        heard: 3,
+        early: None,
+        refused: Vec::new(),
+    };
+    assert_eq!(
+        mind_outcome(&posed, "blue"),
+        Outcome {
+            won: 2,
+            lost: 1,
+            ..Outcome::default()
+        }
+    );
+    assert_eq!(
+        mind_outcome(&posed, "red"),
+        Outcome {
+            won: 1,
+            lost: 2,
+            ..Outcome::default()
+        }
+    );
 }

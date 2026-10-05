@@ -88,8 +88,9 @@ use tokio::task::JoinHandle;
 ///
 /// **16b cut M.2** adds `2_398` and `2_399` for the same reason, **16b cut
 /// U.1** `2_400` and `2_401`, **16b cut AF.2** `2_402` to `2_407`, and **16b
-/// cut AF.3** `2_408`, and **17b cut M1b.1** `2_409`.
-const SEEDS: [(u64, &str); 29] = [
+/// cut AF.3** `2_408`, and **17b cut M1b.1** `2_409`, and **17b cut M1b.5**
+/// `2_410` and `2_411`.
+const SEEDS: [(u64, &str); 31] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -143,6 +144,11 @@ const SEEDS: [(u64, &str); 29] = [
         2_409,
         "M1b.1: the floor captured at check-out survives a resume",
     ),
+    (
+        2_410,
+        "M1b.5: a card change held to the reserve and refused when stopped",
+    ),
+    (2_411, "M1b.5: two card changes land in arrival order"),
 ];
 
 /// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
@@ -2794,6 +2800,7 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
             &no_passes(),
             &tacsim::config::MindsConfig {
                 odds_floor_permille: floor,
+                ..tacsim::config::MindsConfig::default()
             },
             egress_tx,
         )
@@ -2868,5 +2875,123 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
     assert_eq!(
         resumed_hash, uninterrupted_hash,
         "the resumed match is the uninterrupted one at 15,000"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.5 — a card change through the task (doc 17 §11, §22's M1b)
+// ---------------------------------------------------------------------------
+
+/// The change `@mind/set <unit>=<preset>` offers.
+fn m1b5_preset(unit: ObjId, name: &str) -> ArenaMsg {
+    ArenaMsg::MindCard {
+        unit,
+        change: tacsim::arena::CardChange::Preset(SmolStr::new(name)),
+    }
+}
+
+/// **A card change is held to the intent reserve and refused by a stopped
+/// task** (17b cut M1b.5), as a `TempoFloor` is: with the inbox down to its
+/// reserve a `MindCard` is handed back while a control, a stop and an ack
+/// still fit; and once the task has stopped (its inbox closed) the offer is
+/// handed back too — the verb's `That match has ended.`.
+#[tokio::test(flavor = "current_thread")]
+async fn m1b5_a_card_change_is_held_to_the_reserve_and_refused_by_a_stopped_task() {
+    let seed = SEEDS[29].0;
+    let (handle, join, _rx) = start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 256);
+    let mut taken = 0_u64;
+    while handle
+        .offer(order(RED, IntentKind::Startup, taken + 1))
+        .is_ok()
+    {
+        taken += 1;
+        assert!(taken < 1_000, "the inbox never refused an order");
+    }
+    assert!(
+        matches!(
+            handle.offer(m1b5_preset(RED, "Sniper")),
+            Err(ArenaMsg::MindCard { unit, .. }) if unit == RED
+        ),
+        "a card change took the reserve"
+    );
+    assert!(handle.offer(ArenaMsg::Stop(StopReason::Abort)).is_ok());
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .expect("the task ends")
+        .expect("the task did not panic");
+    assert!(!handle.is_live());
+    assert!(
+        handle.offer(m1b5_preset(RED, "Sniper")).is_err(),
+        "a stopped match takes no card change"
+    );
+}
+
+/// **Two card changes offered back to back land in arrival order** (17b cut
+/// M1b.5): the task buffers them per unit in the order they came and stages
+/// them before one step, whose phase 2 applies both at one arena millisecond —
+/// `Sniper`, then `min_odds 70` on top of it (`Sniper, edited (min_odds 70)`)
+/// — and a change for a seated hull is refused `not_mind` on the tape. On ONE
+/// thread, so all three offers are in the inbox before the task's first poll
+/// (its first pulse is due at once): the biased select drains them before its
+/// due sleep fires, and "one pulse" cannot be split by a worker racing the
+/// offers.
+#[tokio::test(flavor = "current_thread")]
+async fn m1b5_two_card_changes_land_in_arrival_order() {
+    let seed = SEEDS[30].0;
+    let mut custody = custody(seed);
+    if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == RED) {
+        unit.controller = tacsim::arena::state::Controller::Mind;
+    }
+    custody.pilots.retain(|pilot| pilot.unit != RED);
+    let (egress_tx, mut rx) = mpsc::channel(256);
+    let (handle, _join, _callsigns) = spawn_arena(
+        &tokio::runtime::Handle::current(),
+        MatchId(seed),
+        custody,
+        &fast_arena(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+        &tacsim::config::MindsConfig::default(),
+        egress_tx,
+    )
+    .expect("the test check-out is accepted");
+    for message in [
+        m1b5_preset(RED, "Sniper"),
+        ArenaMsg::MindCard {
+            unit: RED,
+            change: tacsim::arena::CardChange::Set {
+                slider: SmolStr::new("min_odds"),
+                value: SmolStr::new("70"),
+            },
+        },
+        m1b5_preset(BLUE, "Sniper"),
+    ] {
+        assert!(handle.offer(message).is_ok(), "the inbox takes a change");
+    }
+    let messages = collect(&mut rx, Duration::from_millis(1_500)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let cards: Vec<(i64, String)> = events(&messages)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            EventKind::MindCard { unit, name, .. } if unit == RED => {
+                Some((event.t_ms, name.to_string()))
+            }
+            EventKind::MindCardRefused { unit, reason } => {
+                Some((event.t_ms, format!("#{} refused {reason}", unit.0)))
+            }
+            _ => None,
+        })
+        .collect();
+    let at = cards.first().map(|(t_ms, _)| *t_ms).expect("a card line");
+    assert_eq!(
+        cards,
+        vec![
+            (at, "Sniper".to_owned()),
+            (at, "Sniper, edited (min_odds 70)".to_owned()),
+            (at, format!("#{} refused not_mind", BLUE.0)),
+        ],
+        "arrival order, one pulse"
     );
 }

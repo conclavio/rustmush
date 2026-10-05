@@ -696,6 +696,8 @@ impl Arena {
             apply_control(self, control);
         }
         if let Some(stop) = self.stop {
+            // 17b cut M1b.5: a stopped match takes no card change.
+            self.pending_cards.clear();
             return self.stopped(wall_now_ms, stop, intents);
         }
 
@@ -719,6 +721,11 @@ impl Arena {
         // does the `place_refused` line of a staff place this phase refuses;
         // nothing else here journals (`stage_refusal` writes no ledger line).
         self.action_hash = ActionHash::Pending;
+        // **17b cut M1b.5** (doc 17 §11, §22's M1b): the card changes staff
+        // offered since the last pulse land first, at this pulse's start and
+        // under this phase's one hash, so the intents of the same pulse — and
+        // every think from here on — read the new card.
+        self.apply_mind_cards();
         for intent in intents {
             // **16b cut Z.2** (16c Q44): a release is counted where it lands — a
             // unit whose standing order the release took away. A release to a

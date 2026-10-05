@@ -1,5 +1,5 @@
-//! **The stock card's shape** (17b cut M1b.1; doc 17 §11 "The card", D-UM-43,
-//! D-UM-44).
+//! **The stock card** (17b cut M1b.1 the shape, 17b cut M1b.5 the setters,
+//! the presets and the overlay; doc 17 §11 "The card", D-UM-43, D-UM-44).
 //!
 //! The card is the parameter block a stock mind reads: Standard Doctrine's
 //! combat schema, in [`crate::config::ReflexConfig`]'s own units where a term
@@ -7,19 +7,53 @@
 //! ([`line()`]) IS today's doctrine — the regression anchor. It lives on every
 //! mind's row ([`crate::arena::mind::MindState::card`]), is handed to every
 //! think ([`crate::arena::mind::ThinkJob::card`]), is folded into the state hash
-//! inside item 3c and is carried by the snapshot from format 7 — the shape lands
-//! here, in the one cut that moves the format, so the sub-cuts that read it move
-//! nothing carried.
+//! inside item 3c and is carried by the snapshot from format 7 — the shape
+//! landed in 17b cut M1b.1, the one cut that moved the format, so the sub-cuts
+//! that read it move nothing carried.
 //!
-//! This cut builds the **shape and the anchor only**: `set`, `CardError`,
-//! `as_reflex`, `preset`, `name_of` and `read_back` are 17b cut M1b.5's. Since
-//! 17b cut M1b.2 `NativeStockMind` reads the card's fire discipline alone —
-//! `min_odds_permille`, `aspect` and `reserve_pct`, the terms its slots are
-//! armed on (`crate::arena::stock_mind::arming_for`); `NoMind` ignores it. The
-//! eleven terms nothing reads before 17b cut M2 are carried and marked `[M2]`
-//! (17b's Q-M3).
+//! **17b cut M1b.5** gives it the rest of doc 17 §11:
+//!
+//! * [`StockCard::set`] — one slider by its name, in the slider's own units,
+//!   **refused, never clamped** (D-UM-43): a value outside its range or off its
+//!   step is a [`CardError::Range`] (or, for `fight_home_pct`'s halves, a
+//!   [`CardError::Halves`]) naming the range and the step, a word outside its
+//!   choices a [`CardError::Choice`] naming them, and an unknown name
+//!   [`CardError::NoSuchSlider`]. The Compact floor is NOT a slider's range:
+//!   `min_odds` is 10 to 95 here, and the floor (`[tacsim.minds]`, captured
+//!   into each arena) is its caller's check — `@mind/set`'s off the match's
+//!   mirror, and the arena's own at the card's landing
+//!   (`Arena::apply_mind_cards`);
+//! * [`preset`] and [`PRESETS`] — Standard Doctrine's six named cards over
+//!   [`line()`], exactly doc 17 §11's lists and nothing more (D-UM-44);
+//! * [`StockCard::name_of`] — the preset a card is, or `Sniper, edited
+//!   (min_odds 70)` naming the first slider it differs from the nearest preset
+//!   by;
+//! * [`StockCard::as_reflex`] — **the overlay**: the doctrine with the card's
+//!   mapped terms written over it, which is what `NativeStockMind` thinks on
+//!   (`line(cfg).as_reflex(cfg) == cfg`: the anchor, by construction);
+//! * [`StockCard::read_back`] — the five section lines `@mind/set` prints, one
+//!   place, with the fire-discipline section inert and its reason on a hull
+//!   with no weapons station (doc 17 §11: shown inert, never refused);
+//! * [`CardChange`] — what `@mind/set` offers the arena: a change, never a
+//!   card.
+//!
+//! **What T1 reads, and the eleven it does not** (17b's Q-M3). Through
+//! [`StockCard::as_reflex`] `NativeStockMind` reads the six mapped terms
+//! (`band_pct`, `break_off_pct`, `fight_home_pct`, `rally_s`, `search_s`,
+//! `hunt_after_s`) and `prefer`'s weights; through
+//! `crate::arena::stock_mind::arming_for` the fire discipline (`min_odds`,
+//! `aspect`, `reserve_pct`). The other eleven — `stance`, `close_m`,
+//! `orbit_sense`, `turn_into_hits`, `turn_s`, `screen_bearing`, `screen_arc`,
+//! `opening`, `reserve_odds`, `switch_m`, `stop_unseen` — have no arm in
+//! today's machine to drive: each needs a behaviour (an orbit, a screen of the
+//! card's own bearing, a reserve spent at its own odds, a lock switch, an
+//! opening) that 17b cut M2's Rhai Standard Doctrine writes. They are carried,
+//! validated by `set` and hashed, so a card set today means the same thing
+//! when M2 reads it, and [`StockCard::read_back`] marks each `[M2]` so nobody
+//! mistakes a carried slider for a live one. `NoMind` ignores the card.
 
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 use crate::arena::conditions::ASPECTS_ANY;
 use crate::arena::weapons::FrameWeapon;
@@ -286,6 +320,673 @@ pub fn fire_section_inert(weapons: &[FrameWeapon]) -> bool {
     weapons.is_empty()
 }
 
+// ---------------------------------------------------------------------------
+// 17b cut M1b.5: the setters, the presets, the overlay and the read-back
+// ---------------------------------------------------------------------------
+
+/// **Why a slider refused a value** (17b cut M1b.5; D-UM-43: refused, never
+/// clamped). Each sentence names the slider and what it takes, in the
+/// slider's own units; the caller adds what it was given.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CardError {
+    /// A number outside the slider's range or off its step.
+    #[error("{slider} is {low} to {high} in steps of {step}")]
+    Range {
+        /// The slider's name.
+        slider: &'static str,
+        /// The least value it takes.
+        low: u32,
+        /// The greatest.
+        high: u32,
+        /// The step between two values it takes.
+        step: u32,
+    },
+    /// **A number outside a slider that steps in halves** — `fight_home_pct`
+    /// alone (doc 17 §11: *the slider steps in halves*), whose step no whole
+    /// number can name.
+    #[error("{slider} is {low} to {high} in halves")]
+    Halves {
+        /// The slider's name.
+        slider: &'static str,
+        /// The least value it takes.
+        low: u32,
+        /// The greatest.
+        high: u32,
+    },
+    /// A word outside the slider's choices.
+    #[error("{slider} is {choices}")]
+    Choice {
+        /// The slider's name.
+        slider: &'static str,
+        /// Its choices, as a sentence lists them (`hold, close, orbit, hunt or
+        /// screen`).
+        choices: &'static str,
+    },
+    /// No slider has that name.
+    #[error("no slider named {0}")]
+    NoSuchSlider(String),
+}
+
+/// **A change to a mind's card, as `@mind/set` offers it** (17b cut M1b.5;
+/// doc 17 §22's M1b, D-UM-43): a change, not a card — the arena applies it
+/// to ITS OWN row at the next pulse's start (`Arena::stage_card`, then
+/// `Arena::apply_mind_cards`), so a world-side copy can never be written over
+/// a card the arena has since changed, refused or resumed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardChange {
+    /// One of [`PRESETS`], case-folded.
+    Preset(SmolStr),
+    /// One slider set by [`StockCard::set`].
+    Set {
+        /// The slider's name.
+        slider: SmolStr,
+        /// The value, in the slider's own units.
+        value: SmolStr,
+    },
+}
+
+/// **Standard Doctrine's six combat presets** (doc 17 §11, D-UM-44), in the
+/// order doc 17 lists them — the order [`StockCard::name_of`] breaks a tie
+/// in. [`preset`] reads each name case-folded.
+pub const PRESETS: [&str; 6] = [
+    "Line",
+    "Sentry",
+    "Sniper",
+    "Skirmisher",
+    "Hunter",
+    "Rearguard",
+];
+
+/// **A preset by name** (doc 17 §11, D-UM-44), case-folded, over the arena's
+/// own [`line()`] — so a preset changes exactly the sliders doc 17 lists for it
+/// and every other term is Line's on this doctrine. A preset is a named card
+/// and nothing more: it never carries a value a slider cannot show. `None`
+/// for a name that is not one of [`PRESETS`].
+#[must_use]
+pub fn preset(name: &str, cfg: &ReflexConfig) -> Option<StockCard> {
+    let mut card = line(cfg);
+    match name.trim().to_ascii_lowercase().as_str() {
+        "line" => {}
+        // Screen, min_odds 55, opening wait, hunt_after 0, rally 0.
+        "sentry" => {
+            card.stance = Stance::Screen;
+            card.min_odds_permille = 550;
+            card.opening = Opening::Wait;
+            card.hunt_after_ms = 0;
+            card.rally_ms = 0;
+        }
+        // Hold, band 100, min_odds 65, reserve 30, stop_unseen on.
+        "sniper" => {
+            card.stance = Stance::Hold;
+            card.engage_band_permille = 1_000;
+            card.min_odds_permille = 650;
+            card.reserve_pct = 30;
+            card.stop_unseen = true;
+        }
+        // Orbit, band 85, aspect flank, min_odds 35.
+        "skirmisher" => {
+            card.stance = Stance::Orbit;
+            card.engage_band_permille = 850;
+            card.aspect = AspectWord::Flank;
+            card.min_odds_permille = 350;
+        }
+        // Hunt, band 60, search 60, hunt_after 45, min_odds 30.
+        "hunter" => {
+            card.stance = Stance::Hunt;
+            card.engage_band_permille = 600;
+            card.search_ms = 60_000;
+            card.hunt_after_ms = 45_000;
+            card.min_odds_permille = 300;
+        }
+        // Hold, break_off 70, rally 0, min_odds 50.
+        "rearguard" => {
+            card.stance = Stance::Hold;
+            card.withdraw_permille = 700;
+            card.rally_ms = 0;
+            card.min_odds_permille = 500;
+        }
+        _ => return None,
+    }
+    Some(card)
+}
+
+/// **The card's twenty-one sliders**, in doc 17 §11's order — the order
+/// [`StockCard::name_of`] names the first difference in and
+/// [`StockCard::read_back`] prints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slider {
+    Stance,
+    BandPct,
+    CloseM,
+    OrbitSense,
+    TurnIntoHits,
+    TurnS,
+    ScreenBearing,
+    ScreenArc,
+    Opening,
+    MinOdds,
+    Aspect,
+    ReservePct,
+    ReserveOdds,
+    Prefer,
+    SwitchM,
+    BreakOffPct,
+    FightHomePct,
+    RallyS,
+    SearchS,
+    HuntAfterS,
+    StopUnseen,
+}
+
+/// Every slider, in order.
+const SLIDERS: [Slider; 21] = [
+    Slider::Stance,
+    Slider::BandPct,
+    Slider::CloseM,
+    Slider::OrbitSense,
+    Slider::TurnIntoHits,
+    Slider::TurnS,
+    Slider::ScreenBearing,
+    Slider::ScreenArc,
+    Slider::Opening,
+    Slider::MinOdds,
+    Slider::Aspect,
+    Slider::ReservePct,
+    Slider::ReserveOdds,
+    Slider::Prefer,
+    Slider::SwitchM,
+    Slider::BreakOffPct,
+    Slider::FightHomePct,
+    Slider::RallyS,
+    Slider::SearchS,
+    Slider::HuntAfterS,
+    Slider::StopUnseen,
+];
+
+impl Slider {
+    /// The name `@mind/set` takes.
+    const fn name(self) -> &'static str {
+        match self {
+            Slider::Stance => "stance",
+            Slider::BandPct => "band_pct",
+            Slider::CloseM => "close_m",
+            Slider::OrbitSense => "orbit_sense",
+            Slider::TurnIntoHits => "turn_into_hits",
+            Slider::TurnS => "turn_s",
+            Slider::ScreenBearing => "screen_bearing",
+            Slider::ScreenArc => "screen_arc",
+            Slider::Opening => "opening",
+            Slider::MinOdds => "min_odds",
+            Slider::Aspect => "aspect",
+            Slider::ReservePct => "reserve_pct",
+            Slider::ReserveOdds => "reserve_odds",
+            Slider::Prefer => "prefer",
+            Slider::SwitchM => "switch_m",
+            Slider::BreakOffPct => "break_off_pct",
+            Slider::FightHomePct => "fight_home_pct",
+            Slider::RallyS => "rally_s",
+            Slider::SearchS => "search_s",
+            Slider::HuntAfterS => "hunt_after_s",
+            Slider::StopUnseen => "stop_unseen",
+        }
+    }
+
+    /// The slider a name names, case-folded.
+    fn named(name: &str) -> Option<Slider> {
+        let folded = name.trim().to_ascii_lowercase();
+        SLIDERS
+            .iter()
+            .copied()
+            .find(|slider| slider.name() == folded)
+    }
+}
+
+/// **Whether `name` is a slider's name** (case-folded) — what `@mind/set`
+/// asks to tell `foo 1` (no such slider or preset) from a slider's own
+/// refusal.
+#[must_use]
+pub fn is_slider(name: &str) -> bool {
+    Slider::named(name).is_some()
+}
+
+/// `value` as a whole number in `low..=high` on `step` from `low`, else the
+/// slider's [`CardError::Range`].
+fn stepped(slider: Slider, value: &str, low: u32, high: u32, step: u32) -> Result<u32, CardError> {
+    let refused = CardError::Range {
+        slider: slider.name(),
+        low,
+        high,
+        step,
+    };
+    let text = value.trim();
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(refused);
+    }
+    let number: u32 = text.parse().map_err(|_| refused.clone())?;
+    if number < low || number > high || !(number - low).is_multiple_of(step.max(1)) {
+        return Err(refused);
+    }
+    Ok(number)
+}
+
+/// `value` as one of `words` (case-folded), else the slider's
+/// [`CardError::Choice`] listing `choices`.
+fn chosen<T: Copy>(
+    slider: Slider,
+    value: &str,
+    words: &[(&str, T)],
+    choices: &'static str,
+) -> Result<T, CardError> {
+    let folded = value.trim().to_ascii_lowercase();
+    words
+        .iter()
+        .find(|(word, _)| *word == folded)
+        .map(|(_, choice)| *choice)
+        .ok_or(CardError::Choice {
+            slider: slider.name(),
+            choices,
+        })
+}
+
+/// `on` or `off`.
+fn toggle(slider: Slider, value: &str) -> Result<bool, CardError> {
+    chosen(slider, value, &[("on", true), ("off", false)], "on or off")
+}
+
+/// **`value` in halves of a per cent, as per mille** — `fight_home_pct`'s
+/// `17.5` is `175` (the slider steps in halves, doc 17 §11): a whole number,
+/// or one with a fraction of `.0` or `.5` (`.00`, `.50` too), from `0` to
+/// `100`.
+fn halves(slider: Slider, value: &str) -> Result<u32, CardError> {
+    let refused = CardError::Halves {
+        slider: slider.name(),
+        low: 0,
+        high: 100,
+    };
+    let text = value.trim();
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    if whole.is_empty() || !whole.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(refused);
+    }
+    let half = match fraction {
+        "" if !text.ends_with('.') => 0,
+        "0" | "00" => 0,
+        "5" | "50" => 5,
+        _ => return Err(refused),
+    };
+    let permille = whole
+        .parse::<u32>()
+        .ok()
+        .and_then(|whole| whole.checked_mul(10))
+        .and_then(|tenths| tenths.checked_add(half))
+        .ok_or_else(|| refused.clone())?;
+    if permille > 1_000 {
+        return Err(refused);
+    }
+    Ok(permille)
+}
+
+/// **`value ÷ scale`, printed** — whole when it divides, else with its
+/// fraction's digits and no trailing zero (`175 ÷ 10` is `17.5`; `scale` is
+/// a power of ten).
+fn decimal(value: u64, scale: u64) -> String {
+    let scale = scale.max(1);
+    let whole = value / scale;
+    let rest = value % scale;
+    if rest == 0 {
+        return whole.to_string();
+    }
+    let digits = scale.to_string().len().saturating_sub(1);
+    let fraction = format!("{rest:0digits$}");
+    format!("{whole}.{}", fraction.trim_end_matches('0'))
+}
+
+/// An enum's snake-case word, as serde writes it.
+fn word<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// `on` or `off`.
+const fn on_off(flag: bool) -> &'static str {
+    if flag { "on" } else { "off" }
+}
+
+/// The stance words, in [`Stance`]'s order.
+const STANCES: [(&str, Stance); 5] = [
+    ("hold", Stance::Hold),
+    ("close", Stance::Close),
+    ("orbit", Stance::Orbit),
+    ("hunt", Stance::Hunt),
+    ("screen", Stance::Screen),
+];
+
+/// The weights `prefer nearest` writes over the doctrine, `(range, facet,
+/// health)` (doc 17 §11 *Targeting*: each choice a labelled setting of the
+/// three): the range weighed twice over, the facet a half.
+const NEAREST_WEIGHTS: (u32, u32, u32) = (200, 20, 30);
+/// `exposed`: the facet weighed three times over.
+const EXPOSED_WEIGHTS: (u32, u32, u32) = (100, 120, 30);
+/// `hurt`: the health term weighed four times over.
+const HURT_WEIGHTS: (u32, u32, u32) = (100, 40, 120);
+
+impl StockCard {
+    /// **Set one slider** (17b cut M1b.5; doc 17 §11, D-UM-43), by its name and
+    /// in its own units — `band_pct 85`, `fight_home_pct 17.5`, `prefer
+    /// exposed`, `stop_unseen off` — both case-folded.
+    ///
+    /// Every range and step is doc 17 §11's: `band_pct` 30 to 100 in steps of
+    /// 5; `close_m` 100 to 400 in steps of 50; `orbit_sense` cw, ccw or auto;
+    /// `turn_into_hits` on or off; `turn_s` 2 to 10; `screen_bearing` 0 to 359;
+    /// `screen_arc` 60 to 180; `opening` wait, search or advance; `min_odds` 10
+    /// to 95 in steps of 5 (the Compact floor is the caller's check, and the
+    /// arena's at the card's landing); `aspect` any, flank or rear;
+    /// `reserve_pct` 0 to 50 in steps of 5; `reserve_odds` 50 to 95;
+    /// `prefer` nearest, exposed, hurt, balanced or best_odds; `switch_m` 50 to
+    /// 300; `break_off_pct` 10 to 80; `fight_home_pct` 0 to 100 in halves;
+    /// `rally_s` and `search_s` 0 to 120; `hunt_after_s` 0 to 300;
+    /// `stop_unseen` on or off; `stance` hold, close, orbit, hunt or screen.
+    ///
+    /// # Errors
+    ///
+    /// The [`CardError`] naming the range, the step or the choices; the card
+    /// is untouched. **Never clamped.**
+    pub fn set(&mut self, slider: &str, value: &str) -> Result<(), CardError> {
+        let Some(which) = Slider::named(slider) else {
+            return Err(CardError::NoSuchSlider(slider.to_owned()));
+        };
+        match which {
+            Slider::Stance => {
+                self.stance = chosen(which, value, &STANCES, "hold, close, orbit, hunt or screen")?;
+            }
+            Slider::BandPct => {
+                self.engage_band_permille = stepped(which, value, 30, 100, 5)?.saturating_mul(10);
+            }
+            Slider::CloseM => self.close_m = stepped(which, value, 100, 400, 50)?,
+            Slider::OrbitSense => {
+                self.orbit_sense = chosen(
+                    which,
+                    value,
+                    &[
+                        ("cw", OrbitSense::Cw),
+                        ("ccw", OrbitSense::Ccw),
+                        ("auto", OrbitSense::Auto),
+                    ],
+                    "cw, ccw or auto",
+                )?;
+            }
+            Slider::TurnIntoHits => self.turn_into_hits = toggle(which, value)?,
+            Slider::TurnS => self.turn_s = stepped(which, value, 2, 10, 1)?,
+            Slider::ScreenBearing => self.screen_bearing = stepped(which, value, 0, 359, 1)?,
+            Slider::ScreenArc => self.screen_arc = stepped(which, value, 60, 180, 1)?,
+            Slider::Opening => {
+                self.opening = chosen(
+                    which,
+                    value,
+                    &[
+                        ("wait", Opening::Wait),
+                        ("search", Opening::Search),
+                        ("advance", Opening::Advance),
+                    ],
+                    "wait, search or advance",
+                )?;
+            }
+            Slider::MinOdds => {
+                let percent = stepped(which, value, 10, 95, 5)?;
+                self.min_odds_permille = u16::try_from(percent.saturating_mul(10)).unwrap_or(950);
+            }
+            Slider::Aspect => {
+                self.aspect = chosen(
+                    which,
+                    value,
+                    &[
+                        ("any", AspectWord::Any),
+                        ("flank", AspectWord::Flank),
+                        ("rear", AspectWord::Rear),
+                    ],
+                    "any, flank or rear",
+                )?;
+            }
+            Slider::ReservePct => self.reserve_pct = stepped(which, value, 0, 50, 5)?,
+            Slider::ReserveOdds => self.reserve_odds_pct = stepped(which, value, 50, 95, 1)?,
+            Slider::Prefer => {
+                self.prefer = chosen(
+                    which,
+                    value,
+                    &[
+                        ("nearest", Prefer::Nearest),
+                        ("exposed", Prefer::Exposed),
+                        ("hurt", Prefer::Hurt),
+                        ("balanced", Prefer::Balanced),
+                        ("best_odds", Prefer::BestOdds),
+                    ],
+                    "nearest, exposed, hurt, balanced or best_odds",
+                )?;
+            }
+            Slider::SwitchM => self.switch_m = stepped(which, value, 50, 300, 1)?,
+            Slider::BreakOffPct => {
+                self.withdraw_permille = stepped(which, value, 10, 80, 1)?.saturating_mul(10);
+            }
+            Slider::FightHomePct => self.stand_min_permille = halves(which, value)?,
+            Slider::RallyS => {
+                self.rally_ms = stepped(which, value, 0, 120, 1)?.saturating_mul(1_000);
+            }
+            Slider::SearchS => {
+                self.search_ms = stepped(which, value, 0, 120, 1)?.saturating_mul(1_000);
+            }
+            Slider::HuntAfterS => {
+                self.hunt_after_ms = stepped(which, value, 0, 300, 1)?.saturating_mul(1_000);
+            }
+            Slider::StopUnseen => self.stop_unseen = toggle(which, value)?,
+        }
+        Ok(())
+    }
+
+    /// **One slider's reading, in its own units** — what `set` takes back
+    /// (`17.5`, `best_odds`, `on`).
+    fn reading(&self, slider: Slider) -> String {
+        match slider {
+            Slider::Stance => word(&self.stance),
+            Slider::BandPct => decimal(u64::from(self.engage_band_permille), 10),
+            Slider::CloseM => self.close_m.to_string(),
+            Slider::OrbitSense => word(&self.orbit_sense),
+            Slider::TurnIntoHits => on_off(self.turn_into_hits).to_owned(),
+            Slider::TurnS => self.turn_s.to_string(),
+            Slider::ScreenBearing => self.screen_bearing.to_string(),
+            Slider::ScreenArc => self.screen_arc.to_string(),
+            Slider::Opening => word(&self.opening),
+            Slider::MinOdds => decimal(u64::from(self.min_odds_permille), 10),
+            Slider::Aspect => word(&self.aspect),
+            Slider::ReservePct => self.reserve_pct.to_string(),
+            Slider::ReserveOdds => self.reserve_odds_pct.to_string(),
+            Slider::Prefer => word(&self.prefer),
+            Slider::SwitchM => self.switch_m.to_string(),
+            Slider::BreakOffPct => decimal(u64::from(self.withdraw_permille), 10),
+            Slider::FightHomePct => decimal(u64::from(self.stand_min_permille), 10),
+            Slider::RallyS => decimal(u64::from(self.rally_ms), 1_000),
+            Slider::SearchS => decimal(u64::from(self.search_ms), 1_000),
+            Slider::HuntAfterS => decimal(u64::from(self.hunt_after_ms), 1_000),
+            Slider::StopUnseen => on_off(self.stop_unseen).to_owned(),
+        }
+    }
+
+    /// **The sliders this card reads otherwise than `before`**, by name, in
+    /// doc 17 §11's order — what a `mind_card` line lists as `changed`.
+    #[must_use]
+    pub fn changed_from(&self, before: &StockCard) -> Vec<&'static str> {
+        SLIDERS
+            .iter()
+            .filter(|slider| self.reading(**slider) != before.reading(**slider))
+            .map(|slider| slider.name())
+            .collect()
+    }
+
+    /// **The overlay** (17b cut M1b.5; doc 17 §11, D-UM-43): `base` with the
+    /// card's mapped terms written over it — the doctrine `NativeStockMind`
+    /// thinks on.
+    ///
+    /// `engage_band_permille`, `withdraw_permille`, `stand_min_permille`,
+    /// `search_ms` and `hunt_after_ms` verbatim (`0` already turns the search
+    /// and the hunt off in the doctrine's own reading); `rally_ms` verbatim
+    /// except **`0`, which is written as `u32::MAX`**: the card's `rally_s 0`
+    /// never rallies, where the doctrine would read `0` as "at once" (the stock
+    /// mind's `t − since >= rally_ms` is an `i64` compare against
+    /// `i64::from(u32::MAX)`, about 49 days of arena time, which no match
+    /// reaches); the weights by `prefer` — `balanced` the card's own carried
+    /// weights (Line's are the doctrine's, so it round-trips), `nearest`
+    /// 200/20/30, `exposed` 100/120/30, `hurt` 100/40/120, and `best_odds` the
+    /// balanced triple (the odds term the utility score does not weigh until
+    /// 17b cut M2, declared). Every other term of `base` — the cadence, the path
+    /// budget — is the match's and no card's.
+    ///
+    /// **`line(cfg).as_reflex(cfg) == cfg` for every `cfg` whose `rally_ms`
+    /// is not `0`** (which `ReflexConfig`'s own validation guarantees: it is
+    /// at or above `decide_ms`) — the regression anchor, pinned for the
+    /// default and a non-default doctrine.
+    #[must_use]
+    pub fn as_reflex(&self, base: &ReflexConfig) -> ReflexConfig {
+        let carried = (self.weight_range, self.weight_facet, self.weight_health);
+        let (weight_range, weight_facet, weight_health) = match self.prefer {
+            Prefer::Balanced | Prefer::BestOdds => carried,
+            Prefer::Nearest => NEAREST_WEIGHTS,
+            Prefer::Exposed => EXPOSED_WEIGHTS,
+            Prefer::Hurt => HURT_WEIGHTS,
+        };
+        ReflexConfig {
+            engage_band_permille: self.engage_band_permille,
+            withdraw_permille: self.withdraw_permille,
+            stand_min_permille: self.stand_min_permille,
+            rally_ms: if self.rally_ms == 0 {
+                u32::MAX
+            } else {
+                self.rally_ms
+            },
+            search_ms: self.search_ms,
+            hunt_after_ms: self.hunt_after_ms,
+            weight_range,
+            weight_facet,
+            weight_health,
+            ..base.clone()
+        }
+    }
+
+    /// **The card's name** (doc 17 §11: *the card then says `Line, edited
+    /// (min_odds 60)` until it matches one again*): the preset's capitalised
+    /// name when every slider reads as one of [`PRESETS`] on this doctrine;
+    /// else `{Preset}, edited ({slider} {value})` against the NEAREST preset —
+    /// the fewest sliders apart, a tie to the earlier in [`PRESETS`] — naming
+    /// the first slider (doc 17 §11's order) it differs by, at the card's own
+    /// value.
+    #[must_use]
+    pub fn name_of(&self, cfg: &ReflexConfig) -> String {
+        let mine: Vec<String> = SLIDERS.iter().map(|slider| self.reading(*slider)).collect();
+        let mut nearest: Option<(usize, &str, Option<Slider>)> = None;
+        for name in PRESETS {
+            let Some(card) = preset(name, cfg) else {
+                continue;
+            };
+            let apart: Vec<Slider> = SLIDERS
+                .iter()
+                .zip(&mine)
+                .filter(|(slider, reading)| card.reading(**slider) != **reading)
+                .map(|(slider, _)| *slider)
+                .collect();
+            if nearest.is_none_or(|(count, ..)| apart.len() < count) {
+                nearest = Some((apart.len(), name, apart.first().copied()));
+            }
+        }
+        match nearest {
+            Some((_, name, Some(slider))) => {
+                format!(
+                    "{name}, edited ({} {})",
+                    slider.name(),
+                    self.reading(slider)
+                )
+            }
+            Some((_, name, None)) => name.to_owned(),
+            None => "Line".to_owned(),
+        }
+    }
+
+    /// **The card, read back** (17b cut M1b.5; doc 17 §11) — the five section
+    /// lines `@mind/set` prints under its head, one place: posture, fire
+    /// discipline, targeting, survival and search, each slider in its own
+    /// units, the eleven T1 does not read until 17b cut M2 marked `[M2]` (this
+    /// module's head). The band is printed in per cent alone: the metres it
+    /// makes depend on the hull's sight and its loaded weapon, which the
+    /// registry's mirror does not hold. `prefer`'s weights are the ones
+    /// [`StockCard::as_reflex`] writes over `cfg`. On a hull with no weapons
+    /// station (`armed` false) the fire-discipline line is the inert sentence
+    /// and nothing else — shown, never refused (doc 17 §11).
+    #[must_use]
+    pub fn read_back(&self, cfg: &ReflexConfig, armed: bool) -> Vec<String> {
+        let reflex = self.as_reflex(cfg);
+        let line = |label: &str, body: String| format!("  {label:<17}{body}");
+        let fire = if armed {
+            format!(
+                "min_odds {}%  aspect {}  reserve {}%  reserve_odds {}% [M2]  ident identified",
+                self.reading(Slider::MinOdds),
+                self.reading(Slider::Aspect),
+                self.reserve_pct,
+                self.reserve_odds_pct,
+            )
+        } else {
+            "no weapons station on this hull".to_owned()
+        };
+        vec![
+            line(
+                "posture",
+                format!(
+                    "stance {} [M2]  band {}%  close {} m [M2]  orbit {} [M2]  turn into hits \
+                     {} [M2] turn {} s [M2]  screen {:03}\u{b0} arc {}\u{b0} [M2]  opening {} \
+                     [M2]",
+                    self.reading(Slider::Stance),
+                    self.reading(Slider::BandPct),
+                    self.close_m,
+                    self.reading(Slider::OrbitSense),
+                    on_off(self.turn_into_hits),
+                    self.turn_s,
+                    self.screen_bearing,
+                    self.screen_arc,
+                    self.reading(Slider::Opening),
+                ),
+            ),
+            line("fire discipline", fire),
+            line(
+                "targeting",
+                format!(
+                    "prefer {} ({}/{}/{})  switch {} m [M2]",
+                    self.reading(Slider::Prefer),
+                    reflex.weight_range,
+                    reflex.weight_facet,
+                    reflex.weight_health,
+                    self.switch_m,
+                ),
+            ),
+            line(
+                "survival",
+                format!(
+                    "break_off {}%  fight_home {}%  rally {} s",
+                    self.reading(Slider::BreakOffPct),
+                    self.reading(Slider::FightHomePct),
+                    self.reading(Slider::RallyS),
+                ),
+            ),
+            line(
+                "search",
+                format!(
+                    "search {} s  hunt_after {} s  stop_unseen {} [M2]",
+                    self.reading(Slider::SearchS),
+                    self.reading(Slider::HuntAfterS),
+                    on_off(self.stop_unseen),
+                ),
+            ),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +1068,462 @@ mod tests {
         assert_eq!(back, card);
         assert!(text.contains("\"stance\":\"hold\""), "{text}");
         assert!(text.contains("\"prefer\":\"balanced\""), "{text}");
+    }
+
+    // ---- 17b cut M1b.5 ----
+
+    /// A non-default doctrine every mapped term of which differs from the
+    /// default's.
+    fn other_doctrine() -> ReflexConfig {
+        ReflexConfig {
+            decide_ms: 500,
+            repath_ms: 0,
+            withdraw_permille: 410,
+            weight_range: 70,
+            weight_facet: 55,
+            weight_health: 25,
+            engage_band_permille: 850,
+            rally_ms: 7_000,
+            stand_min_permille: 205,
+            search_ms: 30_000,
+            hunt_after_ms: 45_000,
+            ..ReflexConfig::default()
+        }
+    }
+
+    /// **Every slider refuses outside its range and off its step by name, and
+    /// never clamps** (doc 17 §11, D-UM-43): for each numeric slider the value
+    /// under its low end, over its high end and (where it steps) between two
+    /// steps is refused with the slider's one sentence, and the card is
+    /// untouched; both ends are taken.
+    #[test]
+    fn m1b5_every_slider_refuses_out_of_range_and_off_step_by_name() {
+        let cfg = ReflexConfig::default();
+        let line = line(&cfg);
+        // (slider, low, high, step, a value off the step or None)
+        let numbers: [(&str, u32, u32, u32, Option<&str>); 13] = [
+            ("band_pct", 30, 100, 5, Some("72")),
+            ("close_m", 100, 400, 50, Some("125")),
+            ("turn_s", 2, 10, 1, None),
+            ("screen_bearing", 0, 359, 1, None),
+            ("screen_arc", 60, 180, 1, None),
+            ("min_odds", 10, 95, 5, Some("12")),
+            ("reserve_pct", 0, 50, 5, Some("7")),
+            ("reserve_odds", 50, 95, 1, None),
+            ("switch_m", 50, 300, 1, None),
+            ("break_off_pct", 10, 80, 1, None),
+            ("rally_s", 0, 120, 1, None),
+            ("search_s", 0, 120, 1, None),
+            ("hunt_after_s", 0, 300, 1, None),
+        ];
+        for (slider, low, high, step, off) in numbers {
+            let sentence = format!("{slider} is {low} to {high} in steps of {step}");
+            let mut wrong: Vec<String> =
+                vec![(high + 1).to_string(), "x".to_owned(), "-1".to_owned()];
+            if low > 0 {
+                wrong.push((low - 1).to_string());
+            }
+            wrong.extend(off.map(str::to_owned));
+            for value in wrong {
+                let mut card = line.clone();
+                let refused = card.set(slider, &value).expect_err(&value);
+                assert_eq!(refused.to_string(), sentence, "{slider} {value}");
+                assert!(matches!(refused, CardError::Range { .. }));
+                assert_eq!(card, line, "{slider} {value}: never clamped");
+            }
+            for value in [low, high] {
+                let mut card = line.clone();
+                assert_eq!(
+                    card.set(slider, &value.to_string()),
+                    Ok(()),
+                    "{slider} {value}"
+                );
+            }
+        }
+        // The halves.
+        for value in ["100.5", "17.25", "17.", "-1", "x", "101"] {
+            let mut card = line.clone();
+            assert_eq!(
+                card.set("fight_home_pct", value)
+                    .map_err(|error| error.to_string()),
+                Err("fight_home_pct is 0 to 100 in halves".to_owned()),
+                "{value}"
+            );
+            assert_eq!(card, line);
+        }
+        for (value, permille) in [
+            ("17.5", 175),
+            ("0", 0),
+            ("100", 1_000),
+            ("42.0", 420),
+            ("3.50", 35),
+        ] {
+            let mut card = line.clone();
+            assert_eq!(card.set("fight_home_pct", value), Ok(()), "{value}");
+            assert_eq!(card.stand_min_permille, permille, "{value}");
+        }
+        // The choices and the toggles.
+        for (slider, choices) in [
+            ("stance", "hold, close, orbit, hunt or screen"),
+            ("orbit_sense", "cw, ccw or auto"),
+            ("opening", "wait, search or advance"),
+            ("aspect", "any, flank or rear"),
+            ("prefer", "nearest, exposed, hurt, balanced or best_odds"),
+            ("turn_into_hits", "on or off"),
+            ("stop_unseen", "on or off"),
+        ] {
+            let mut card = line.clone();
+            let refused = card.set(slider, "fast").expect_err(slider);
+            assert_eq!(refused.to_string(), format!("{slider} is {choices}"));
+            assert_eq!(card, line);
+        }
+        let mut card = line.clone();
+        assert_eq!(
+            card.set("foo", "1"),
+            Err(CardError::NoSuchSlider("foo".to_owned()))
+        );
+        assert_eq!(
+            CardError::NoSuchSlider("foo".to_owned()).to_string(),
+            "no slider named foo"
+        );
+        // `ident` is a reading, not a slider (doc 17 §11: there is no `any`).
+        assert!(matches!(
+            card.set("ident", "any"),
+            Err(CardError::NoSuchSlider(_))
+        ));
+        assert!(is_slider("MIN_ODDS") && !is_slider("sniper"));
+        // Case-folded, units read: the stored terms.
+        let mut card = line.clone();
+        for (slider, value) in [
+            ("BAND_PCT", "85"),
+            ("min_odds", "70"),
+            ("break_off_pct", "60"),
+            ("rally_s", "45"),
+            ("search_s", "0"),
+            ("hunt_after_s", "300"),
+            ("Stance", "ORBIT"),
+            ("stop_unseen", "off"),
+            ("turn_into_hits", "off"),
+        ] {
+            assert_eq!(card.set(slider, value), Ok(()), "{slider} {value}");
+        }
+        assert_eq!(
+            (
+                card.engage_band_permille,
+                card.min_odds_permille,
+                card.withdraw_permille,
+                card.rally_ms,
+                card.search_ms,
+                card.hunt_after_ms,
+                card.stance,
+                card.stop_unseen,
+                card.turn_into_hits,
+            ),
+            (
+                850,
+                700,
+                600,
+                45_000,
+                0,
+                300_000,
+                Stance::Orbit,
+                false,
+                false
+            )
+        );
+    }
+
+    /// **`rally_s 0` never rallies** — the overlay writes `u32::MAX` where the
+    /// doctrine would read `0` as at once — and a rally the card names is the
+    /// doctrine's milliseconds.
+    #[test]
+    fn m1b5_rally_nought_is_never_and_the_overlay_saturates() {
+        let cfg = ReflexConfig::default();
+        let mut card = line(&cfg);
+        assert_eq!(card.set("rally_s", "0"), Ok(()));
+        assert_eq!(card.rally_ms, 0);
+        assert_eq!(card.as_reflex(&cfg).rally_ms, u32::MAX);
+        // The stock mind's compare: `t − since >= rally_ms`, in `i64`.
+        let since = 0_i64;
+        let t_ms = i64::from(u32::MAX) - 1;
+        assert!(t_ms.saturating_sub(since) < i64::from(card.as_reflex(&cfg).rally_ms));
+        assert_eq!(card.set("rally_s", "120"), Ok(()));
+        assert_eq!(card.as_reflex(&cfg).rally_ms, 120_000);
+    }
+
+    /// **`prefer` round-trips and writes its labelled weights** (doc 17 §11
+    /// *Targeting*): every word sets and reads back as itself; `balanced` and
+    /// `best_odds` write the card's carried weights (the doctrine's, on Line),
+    /// `nearest`, `exposed` and `hurt` their triples.
+    #[test]
+    fn m1b5_prefer_round_trips_and_writes_its_weights() {
+        let cfg = other_doctrine();
+        for (word, weights) in [
+            ("nearest", (200, 20, 30)),
+            ("exposed", (100, 120, 30)),
+            ("hurt", (100, 40, 120)),
+            ("balanced", (70, 55, 25)),
+            ("best_odds", (70, 55, 25)),
+        ] {
+            let mut card = line(&cfg);
+            assert_eq!(card.set("prefer", word), Ok(()));
+            assert_eq!(card.reading(Slider::Prefer), word);
+            let reflex = card.as_reflex(&cfg);
+            assert_eq!(
+                (
+                    reflex.weight_range,
+                    reflex.weight_facet,
+                    reflex.weight_health
+                ),
+                weights,
+                "{word}"
+            );
+            // The carried weights are untouched: `balanced` comes back.
+            assert_eq!(card.set("prefer", "balanced"), Ok(()));
+            assert_eq!(card, line(&cfg), "{word} round-trips");
+        }
+    }
+
+    /// **Each preset is doc 17 §11's list over Line, and nothing more**
+    /// (D-UM-44): the sliders each names, and every other slider Line's.
+    #[test]
+    fn m1b5_each_preset_is_doc_seventeens_list_and_nothing_more() {
+        let cfg = ReflexConfig::default();
+        let line = line(&cfg);
+        let differs = |card: &StockCard| -> Vec<(&'static str, String)> {
+            SLIDERS
+                .iter()
+                .filter(|slider| card.reading(**slider) != line.reading(**slider))
+                .map(|slider| (slider.name(), card.reading(*slider)))
+                .collect()
+        };
+        let named = |pairs: &[(&'static str, &str)]| -> Vec<(&'static str, String)> {
+            pairs
+                .iter()
+                .map(|(slider, value)| (*slider, (*value).to_owned()))
+                .collect()
+        };
+        assert_eq!(preset("LINE", &cfg), Some(line.clone()));
+        // Sentry: screen, min_odds 55, opening wait (Line's), hunt_after 0, rally 0.
+        let sentry = preset("sentry", &cfg).expect("sentry");
+        assert_eq!(sentry.opening, Opening::Wait);
+        assert_eq!(
+            differs(&sentry),
+            named(&[
+                ("stance", "screen"),
+                ("min_odds", "55"),
+                ("rally_s", "0"),
+                ("hunt_after_s", "0"),
+            ])
+        );
+        // Sniper: hold (Line's), band 100, min_odds 65, reserve 30, stop_unseen on (Line's).
+        let sniper = preset("Sniper", &cfg).expect("sniper");
+        assert_eq!((sniper.stance, sniper.stop_unseen), (Stance::Hold, true));
+        assert_eq!(
+            differs(&sniper),
+            named(&[
+                ("band_pct", "100"),
+                ("min_odds", "65"),
+                ("reserve_pct", "30")
+            ])
+        );
+        assert_eq!(
+            differs(&preset("skirmisher", &cfg).expect("skirmisher")),
+            named(&[
+                ("stance", "orbit"),
+                ("band_pct", "85"),
+                ("min_odds", "35"),
+                ("aspect", "flank"),
+            ])
+        );
+        // Hunter: hunt, band 60, search 60 (Line's), hunt_after 45, min_odds 30.
+        let hunter = preset("hunter", &cfg).expect("hunter");
+        assert_eq!(hunter.search_ms, 60_000);
+        assert_eq!(
+            differs(&hunter),
+            named(&[
+                ("stance", "hunt"),
+                ("band_pct", "60"),
+                ("min_odds", "30"),
+                ("hunt_after_s", "45"),
+            ])
+        );
+        // Rearguard: hold (Line's), break_off 70, rally 0, min_odds 50.
+        assert_eq!(
+            differs(&preset("rearguard", &cfg).expect("rearguard")),
+            named(&[
+                ("min_odds", "50"),
+                ("break_off_pct", "70"),
+                ("rally_s", "0")
+            ])
+        );
+        assert_eq!(preset("berserker", &cfg), None);
+        assert_eq!(PRESETS.len(), 6);
+        // Every preset is lawful under every floor the bound allows (10 to
+        // 100 per mille) and every slider of it reads back through `set`.
+        for name in PRESETS {
+            let card = preset(name, &cfg).expect(name);
+            assert!(card.min_odds_permille >= 100, "{name}");
+            let mut rebuilt = line.clone();
+            for slider in SLIDERS {
+                assert_eq!(
+                    rebuilt.set(slider.name(), &card.reading(slider)),
+                    Ok(()),
+                    "{name} {}",
+                    slider.name()
+                );
+            }
+            assert_eq!(rebuilt, card, "{name} is sliders and nothing more");
+        }
+    }
+
+    /// **`name_of`** (doc 17 §11): each preset by its capitalised name, on the
+    /// default and a non-default doctrine; an edited Line and an edited
+    /// Sniper by the nearest preset and the first slider apart; a card that
+    /// matches a preset again by that preset's name.
+    #[test]
+    fn m1b5_name_of_names_the_preset_or_the_first_edit_off_the_nearest() {
+        for cfg in [ReflexConfig::default(), other_doctrine()] {
+            for name in PRESETS {
+                assert_eq!(preset(name, &cfg).expect(name).name_of(&cfg), name);
+            }
+            let mut card = line(&cfg);
+            assert_eq!(card.set("min_odds", "60"), Ok(()));
+            assert_eq!(card.name_of(&cfg), "Line, edited (min_odds 60)");
+            let mut sniper = preset("sniper", &cfg).expect("sniper");
+            assert_eq!(sniper.set("min_odds", "70"), Ok(()));
+            assert_eq!(sniper.name_of(&cfg), "Sniper, edited (min_odds 70)");
+            assert_eq!(sniper.set("min_odds", "65"), Ok(()));
+            assert_eq!(sniper.name_of(&cfg), "Sniper");
+        }
+        // Nearest by count: a Rearguard with Line's rally is one slider from
+        // Rearguard and two from Line.
+        let cfg = ReflexConfig::default();
+        let mut card = preset("rearguard", &cfg).expect("rearguard");
+        assert_eq!(card.set("rally_s", "20"), Ok(()));
+        assert_eq!(card.name_of(&cfg), "Rearguard, edited (rally_s 20)");
+        // A tie goes to the earlier preset: band 100 and min_odds 40 is two
+        // from Line (band, min_odds) and two from Sniper (min_odds, reserve).
+        let mut card = line(&cfg);
+        assert_eq!(card.set("band_pct", "100"), Ok(()));
+        assert_eq!(card.set("min_odds", "40"), Ok(()));
+        assert_eq!(card.name_of(&cfg), "Line, edited (band_pct 100)");
+    }
+
+    /// **The overlay** (D-UM-43): `line(cfg).as_reflex(cfg) == cfg` for the
+    /// default and a non-default doctrine — the anchor — and each preset
+    /// writes its mapped terms and nothing else of the doctrine.
+    #[test]
+    fn m1b5_line_overlays_to_its_own_doctrine_and_each_preset_to_its_terms() {
+        for cfg in [ReflexConfig::default(), other_doctrine()] {
+            assert_eq!(line(&cfg).as_reflex(&cfg), cfg);
+            for name in PRESETS {
+                let card = preset(name, &cfg).expect(name);
+                let reflex = card.as_reflex(&cfg);
+                // The match's own terms never move.
+                assert_eq!(
+                    (
+                        reflex.decide_ms,
+                        reflex.path_max_cells,
+                        reflex.max_path_queries,
+                        reflex.repath_ms
+                    ),
+                    (
+                        cfg.decide_ms,
+                        cfg.path_max_cells,
+                        cfg.max_path_queries,
+                        cfg.repath_ms
+                    ),
+                    "{name}"
+                );
+                assert_eq!(reflex.engage_band_permille, card.engage_band_permille);
+                assert_eq!(reflex.withdraw_permille, card.withdraw_permille);
+                assert_eq!(reflex.stand_min_permille, card.stand_min_permille);
+                assert_eq!(reflex.search_ms, card.search_ms);
+                assert_eq!(reflex.hunt_after_ms, card.hunt_after_ms);
+                assert_eq!(
+                    reflex.rally_ms,
+                    if card.rally_ms == 0 {
+                        u32::MAX
+                    } else {
+                        card.rally_ms
+                    }
+                );
+            }
+        }
+        let cfg = ReflexConfig::default();
+        let at = |name: &str| preset(name, &cfg).expect(name).as_reflex(&cfg);
+        assert_eq!(
+            (
+                at("sentry").rally_ms,
+                at("sentry").hunt_after_ms,
+                at("sniper").engage_band_permille,
+                at("skirmisher").engage_band_permille,
+                at("hunter").hunt_after_ms,
+                at("hunter").engage_band_permille,
+                at("rearguard").withdraw_permille,
+                at("rearguard").rally_ms,
+            ),
+            (u32::MAX, 0, 1_000, 850, 45_000, 600, 700, u32::MAX)
+        );
+    }
+
+    /// **The read-back** (doc 17 §11): five section lines, the eleven unread
+    /// sliders marked `[M2]`, and on an unarmed hull the fire-discipline line
+    /// is the inert sentence alone.
+    #[test]
+    fn m1b5_the_read_back_marks_the_unread_sliders_and_an_unarmed_hull_inert() {
+        let cfg = ReflexConfig::default();
+        let card = line(&cfg);
+        assert_eq!(
+            card.read_back(&cfg, true),
+            vec![
+                "  posture          stance hold [M2]  band 70%  close 200 m [M2]  orbit auto \
+                 [M2]  turn into hits on [M2] turn 4 s [M2]  screen 000\u{b0} arc 120\u{b0} [M2]  \
+                 opening wait [M2]"
+                    .to_owned(),
+                "  fire discipline  min_odds 10%  aspect any  reserve 0%  reserve_odds 75% [M2]  \
+                 ident identified"
+                    .to_owned(),
+                "  targeting        prefer balanced (100/40/30)  switch 100 m [M2]".to_owned(),
+                "  survival         break_off 35%  fight_home 17.5%  rally 20 s".to_owned(),
+                "  search           search 60 s  hunt_after 90 s  stop_unseen on [M2]".to_owned(),
+            ]
+        );
+        let unarmed = card.read_back(&cfg, false);
+        assert_eq!(
+            unarmed.get(1).map(String::as_str),
+            Some("  fire discipline  no weapons station on this hull")
+        );
+        // Ten `[M2]` marks for the eleven unread sliders on an armed hull
+        // (`screen_bearing` and `screen_arc` share the screen's one), nine on
+        // an unarmed one (its `reserve_odds` is inside the inert section).
+        let marks = |lines: &[String]| {
+            lines
+                .iter()
+                .map(|line| line.matches("[M2]").count())
+                .sum::<usize>()
+        };
+        assert_eq!(marks(&card.read_back(&cfg, true)), 10);
+        assert_eq!(marks(&unarmed), 9);
+        let sniper = preset("sniper", &cfg).expect("sniper");
+        let lines = sniper.read_back(&cfg, true);
+        assert!(
+            lines.iter().any(|line| line.contains("band 100%")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("min_odds 65%  aspect any  reserve 30%")),
+            "{lines:?}"
+        );
+        let mut hurt = line(&cfg);
+        assert_eq!(hurt.set("prefer", "hurt"), Ok(()));
+        assert!(
+            hurt.read_back(&cfg, true)
+                .iter()
+                .any(|line| line.contains("prefer hurt (100/40/120)"))
+        );
     }
 }

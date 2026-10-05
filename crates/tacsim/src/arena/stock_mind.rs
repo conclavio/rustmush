@@ -147,7 +147,7 @@ pub const STOCK_MEMORY_KEY_NAMES: [&str; 14] = [
     "rallied",
     "hunt",
     "no_line",
-    "ignore_order",
+    "ignore_until_ms",
 ];
 
 /// **What the stock mind remembers between thinks** (17b cut M1a.6; doc 17
@@ -160,8 +160,8 @@ pub const STOCK_MEMORY_KEY_NAMES: [&str; 14] = [
 /// its `MotorRow` that the decision reads, field for field: the motor's own
 /// route, search stamp and stops are the motor's and are not remembered here.
 /// Two fields are new: `goal` is the goal the mind believes the motor holds
-/// (null once it let the hull hold), and `ignore_order` is how a mind ends an
-/// order it cannot journal the end of (the reflex's 16b cuts AA.1, O.1 and
+/// (null once it let the hull hold), and `ignore_until_ms` is how a mind ends
+/// an order it cannot journal the end of (the reflex's 16b cuts AA.1, O.1 and
 /// Z.2 ends; the arena's own expiry still comes).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StockMemory {
@@ -192,9 +192,17 @@ pub struct StockMemory {
     pub hunt: Option<(u16, u16)>,
     /// `no_line`: a round of its own was stopped by the ground.
     pub no_line: bool,
-    /// `ignore_order`: the standing order is over for this hull, which no
-    /// longer obeys it; cleared when the view carries no order.
-    pub ignore_order: bool,
+    /// `ignore_until_ms`: **the standing order this hull has ended**, by the
+    /// `expires_ms` it carried (17b cut M1b.5, the lead's ruling on M1a.6's
+    /// residual (10); M1a.6 kept a Bool, `ignore_order`). A think obeys the
+    /// view's order only when its `expires_ms` is not this one — so a NEWER
+    /// order (any other deadline) is obeyed at once, where the Bool ignored
+    /// every order until the view carried none. Written by the three early
+    /// ends (and the `unreachable` edge's two) as the ended order's
+    /// `expires_ms`; cleared when the view carries no order or an order with
+    /// another `expires_ms`. An integer, so 17b cut M2's frozen memory shape
+    /// carries which order ended, not merely that one did.
+    pub ignore_until_ms: Option<i64>,
 }
 
 /// An integer key, or `None` when absent, null or not an `i64`.
@@ -275,7 +283,7 @@ impl From<&Memory> for StockMemory {
             rallied: flag("rallied"),
             hunt: cell_at(memory, "hunt"),
             no_line: flag("no_line"),
-            ignore_order: flag("ignore_order"),
+            ignore_until_ms: int_at(memory, "ignore_until_ms"),
         }
     }
 }
@@ -321,7 +329,7 @@ impl From<StockMemory> for Memory {
         put("rallied", serde_json::Value::Bool(stock.rallied));
         put("hunt", cell_value(stock.hunt));
         put("no_line", serde_json::Value::Bool(stock.no_line));
-        put("ignore_order", serde_json::Value::Bool(stock.ignore_order));
+        put("ignore_until_ms", int_value(stock.ignore_until_ms));
         memory
     }
 }
@@ -621,6 +629,15 @@ fn hint(order: Option<&FrameOrder>) -> Option<ContactId> {
     }
 }
 
+/// **The view's standing order, unless this hull has ended it** (17b cut
+/// M1b.5; the lead's ruling on M1a.6's residual (10)): the order whose
+/// `expires_ms` is not the memory's `ignore_until_ms`.
+fn obeyed<'v>(view: &'v MindView, mem: &StockMemory) -> Option<&'v FrameOrder> {
+    view.order
+        .as_ref()
+        .filter(|order| Some(order.expires_ms) != mem.ignore_until_ms)
+}
+
 /// **Whether an `Advance { to }` has reached the Hold square** (the reflex's
 /// `advance_reached_the_hold`): `to` inside the square, and the hull inside
 /// it too or within [`ARRIVE_CELLS`] of `to`.
@@ -665,7 +682,8 @@ impl MindRunner for NativeStockMind {
     /// One think: the memory decoded, `decide` ported, the memory encoded.
     /// The match mode is not on the view, so no Hold objective is handed in
     /// (see the module head's residuals). **17b cut M1b.2**: `job.card` is
-    /// read for the fire discipline alone ([`arming_for`]).
+    /// read for the fire discipline ([`arming_for`]); **17b cut M1b.5**: and
+    /// for every mapped term, through the overlay (`decide`'s head).
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let mut memory = StockMemory::from(&decode_memory(job.memory));
         let intents = self.decide(
@@ -730,9 +748,41 @@ impl NativeStockMind {
     /// tick's; `lands_ms` is the think's landing millisecond
     /// ([`ThinkJob::lands_ms`]), the one its shot is resolved at; `card` is
     /// the hull's stock card ([`ThinkJob::card`]), read for the fire
-    /// discipline its slots are armed on and nothing else (17b cut M1b.2).
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    /// discipline its slots are armed on (17b cut M1b.2).
+    ///
+    /// **17b cut M1b.5 — the card through the overlay** (doc 17 §11, D-UM-43):
+    /// the think runs on `card.as_reflex(&self.cfg)` — the match's doctrine
+    /// with the card's mapped terms written over it (the engage band, the
+    /// withdraw and stand edges, the rally, the search, the hunt and
+    /// `prefer`'s weights) — so EVERY doctrine read of the think and of its
+    /// helpers (`search_goal`, `hunt_goal`, `withdraw_stand`, `stand`, the
+    /// utility score, `view_ranges`) reads the card. On Line that is the
+    /// match's own doctrine byte for byte (`line(cfg).as_reflex(cfg) == cfg`:
+    /// the anchor). `rally_ms` arrives as `u32::MAX` for a card's `rally_s 0`
+    /// and the rally's `t − since >= rally_ms` (an `i64` compare) never holds.
+    /// The eleven sliders marked `[M2]` are not read (`crate::arena::card`'s
+    /// head).
+    #[allow(clippy::too_many_arguments)]
     fn decide(
+        &self,
+        view: &MindView,
+        mem: &mut StockMemory,
+        def: &ArenaDefinition,
+        hold: Option<&HoldState>,
+        t_ms: i64,
+        lands_ms: i64,
+        card: &StockCard,
+    ) -> Vec<IntentKind> {
+        let doctrine = NativeStockMind {
+            cfg: card.as_reflex(&self.cfg),
+        };
+        doctrine.decide_on_card(view, mem, def, hold, t_ms, lands_ms, card)
+    }
+
+    /// `decide`'s body, on a doctrine the card is already written over
+    /// (`self.cfg` IS the overlay here).
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    fn decide_on_card(
         &self,
         view: &MindView,
         mem: &mut StockMemory,
@@ -800,20 +850,17 @@ impl NativeStockMind {
         // search's and the hunt's give-ups, the Hold retry, and the fallback
         // waypoint as the next goal.
         if no_route && let Some(failed) = mem.goal {
-            let live = if mem.ignore_order {
-                None
-            } else {
-                view.order.as_ref()
-            };
+            // 17b cut M1b.5: the view's order unless this hull ended it.
+            let live = obeyed(view, mem);
             // 16b cut E.2 (`B-41`): the order's own `Advance` cell.
             if live.is_some_and(|order| order.objective == MindObjective::Advance { to: failed }) {
-                mem.ignore_order = true;
+                mem.ignore_until_ms = live.map(|order| order.expires_ms);
             }
             // 16b cut Z.2's review: a supporter's station, in `Patrol`.
             if live.is_some_and(|order| matches!(order.objective, MindObjective::Support { .. }))
                 && mem.state == ReflexState::Patrol
             {
-                mem.ignore_order = true;
+                mem.ignore_until_ms = live.map(|order| order.expires_ms);
             }
             // 16b cut E.4: the search's plot and the hunt's cell.
             if mem.last_plot.is_some_and(|(cell, _)| cell == failed) {
@@ -853,10 +900,12 @@ impl NativeStockMind {
         // mind sees `order: None` from the next think, with no squad filter —
         // the order was re-keyed to this hull when it was written (D-UM-15).
         // A mind cannot end an order itself, so the three early ends below
-        // set `ignore_order` and it stops obeying (the divergence
-        // `order_end`); that is spent when the view carries no order.
-        if view.order.is_none() {
-            mem.ignore_order = false;
+        // write the ended order's `expires_ms` to `ignore_until_ms` and it
+        // stops obeying THAT order (the divergence `order_end`); the key is
+        // spent when the view carries no order or an order with another
+        // deadline — a newer order, obeyed at once (17b cut M1b.5).
+        if view.order.as_ref().map(|order| order.expires_ms) != mem.ignore_until_ms {
+            mem.ignore_until_ms = None;
         }
         let health = health_permille(view);
         let dry = is_dry(view);
@@ -875,11 +924,7 @@ impl NativeStockMind {
             mem.target = None;
             goal = None;
         }
-        let mut order: Option<&FrameOrder> = if mem.ignore_order {
-            None
-        } else {
-            view.order.as_ref()
-        };
+        let mut order: Option<&FrameOrder> = obeyed(view, mem);
         let ends = match order.map(|order| order.objective) {
             // 16b cut AA.1 (`B-76`): an `Advance` a hull that cannot close can
             // never carry out. `immobile` is the view's `cannot_close`; the
@@ -899,7 +944,7 @@ impl NativeStockMind {
             _ => false,
         };
         if ends {
-            mem.ignore_order = true;
+            mem.ignore_until_ms = order.map(|order| order.expires_ms);
             order = None;
         }
         let objective = order.map(|order| order.objective);
@@ -1729,8 +1774,9 @@ fn engage_orders(
 /// the `Disarm` only when some row is armed and the think wants none. A think
 /// whose view already shows what it wants emits no `Condition` at all. (17b
 /// cut M1b.2 emitted every think, idempotently, because the view could not
-/// show the arming.) The card is read for the fire discipline alone (on Line:
-/// 100 per mille, every aspect, no reserve).
+/// show the arming.) The card is read here for its fire discipline (on Line:
+/// 100 per mille, every aspect, no reserve); its other mapped terms reach
+/// `decide` through the overlay (17b cut M1b.5).
 #[must_use]
 pub fn arming_for(
     view: &MindView,
@@ -1943,7 +1989,7 @@ mod tests {
             rallied: true,
             hunt: Some((250, 128)),
             no_line: true,
-            ignore_order: true,
+            ignore_until_ms: Some(60_000),
         };
         let mut keys: Vec<&str> = STOCK_MEMORY_KEY_NAMES.to_vec();
         keys.sort_unstable();
@@ -2164,7 +2210,7 @@ mod tests {
     /// notice for the memory's goal performs the reflex's `unreachable` edge a
     /// think late — the search's plot and the hunt's cell on that goal given
     /// up (the hunt's clock restarted), an `Advance` to it ended by
-    /// `ignore_order` — and hands the motor the fallback waypoint
+    /// `ignore_until_ms` (its `expires_ms`) — and hands the motor the fallback waypoint
     /// ([`fallback_waypoint`]: from (3, 4) the nearest node, west at (1, 4))
     /// as the next `Goal(Cell)`.
     #[test]
@@ -2208,7 +2254,7 @@ mod tests {
         assert_eq!(memory.unheld_since_ms, Some(10_000));
         assert_eq!((memory.waypoint, memory.from_waypoint), (Some(0), Some(1)));
         assert_eq!(memory.goal, Some((1, 4)));
-        assert!(!memory.ignore_order);
+        assert_eq!(memory.ignore_until_ms, None);
         // The same notice under an `Advance` to the failed cell ends the order.
         view.order = Some(FrameOrder {
             squad: SmolStr::new("red-1"),
@@ -2219,7 +2265,11 @@ mod tests {
         });
         let mut ordered = start;
         let _ = think(&arena, &view, &mut ordered, 10_000);
-        assert!(ordered.ignore_order, "the order is over for this hull");
+        assert_eq!(
+            ordered.ignore_until_ms,
+            Some(60_000),
+            "the order is over for this hull, by its deadline"
+        );
         // No notice, no give-up: the hull drives on to the goal it holds.
         let mut quiet = StockMemory {
             state: ReflexState::Patrol,
@@ -2493,7 +2543,7 @@ mod tests {
     }
 
     /// **An `Advance` into the Hold square ends on arrival** (16b cut O.1's
-    /// order end, as a mind performs it: `ignore_order`), and the hull is
+    /// order end, as a mind performs it: `ignore_until_ms`), and the hull is
     /// parked by the Hold arm on the same think; with no Hold objective the
     /// same `Advance` stands and is driven. **And `Approach` inside the square
     /// does not leave it** (16b cut O.1): a target past the hull's reach is
@@ -2511,12 +2561,16 @@ mod tests {
         view.order = Some(order_of(MindObjective::Advance { to: (32, 20) }));
         let mut memory = patrolling(0);
         let ended = think_holding(&arena, &view, &mut memory, &hold, 1_000);
-        assert!(memory.ignore_order, "the Advance is over for this hull");
+        assert_eq!(
+            memory.ignore_until_ms,
+            Some(60_000),
+            "the Advance is over for this hull, by its deadline"
+        );
         assert_eq!(ended, vec![IntentKind::Goal(MotorGoal::Hold)]);
         // With no Hold objective the Advance stands, and is driven.
         let mut skirmish = patrolling(0);
         let driven = think(&arena, &view, &mut skirmish, 1_000);
-        assert!(!skirmish.ignore_order);
+        assert_eq!(skirmish.ignore_until_ms, None);
         assert_eq!(
             driven,
             vec![IntentKind::Goal(MotorGoal::Cell { x: 32, y: 20 })]

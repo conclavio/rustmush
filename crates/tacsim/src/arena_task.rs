@@ -19,6 +19,7 @@
 //! world -> task   ArenaMsg::LedgerAck   every chunk up to this sequence is durable
 //! world -> task   ArenaMsg::TempoFloor  staff floor the wake interval, or lift it (I.3)
 //! world -> task   ArenaMsg::Watch       somebody is watching, or nobody is any more (I.4)
+//! world -> task   ArenaMsg::MindCard    staff change a mind's card (17b cut M1b.5)
 //! task  -> world  ArenaOut::Ledger      one closed chunk of the match's black box
 //! task  -> world  ArenaOut::Frames      the pilots whose view changed, the arena's clock,
 //!                                       and the staff picture while watched (I.4)
@@ -80,6 +81,10 @@
 //!   raises the table (`buffer_control`);
 //! - **continuous orders**, one per `(unit, kind)`, the highest `seq` standing —
 //!   phase 2 applies them latest-wins anyway (`buffer_continuous`);
+//! - **card changes** (17b cut M1b.5), per unit in arrival order, bounded per
+//!   unit as discrete orders are and handed to the arena with
+//!   `Arena::stage_card` before the step, which applies them at phase 2's head
+//!   (`PrePulse::take_cards`);
 //! - **discrete orders**, per unit, bounded **per unit** at
 //!   `intents.max_pending_per_unit + 1`, the newest arrival refused when that
 //!   unit's buffer is full (`buffer_discrete`) — so one pilot's pasted burst
@@ -88,7 +93,8 @@
 //!   the exception — kept past the bound and counted in nobody's.
 //!
 //! The inbox itself keeps `reserve` slots an intent (and, 16b cut I.3, a
-//! `TempoFloor`; 16b cut I.4, a `Watch`) may never take, so a `Control`, a
+//! `TempoFloor`; 16b cut I.4, a `Watch`; 17b cut M1b.5, a `MindCard`) may
+//! never take, so a `Control`, a
 //! `Stop` or a `LedgerAck` always fits
 //! ([`crate::arena_task::ArenaHandle::offer`]).
 //!
@@ -144,6 +150,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::arena::card::CardChange;
 use crate::arena::damage::UnitReturn;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind, MotorGoal};
 use crate::arena::ledger::LedgerChunk;
@@ -216,6 +223,20 @@ pub enum ArenaMsg {
     Watch {
         /// Whether anybody is watching.
         on: bool,
+    },
+    /// **Staff change a mind's card** (17b cut M1b.5; doc 17 §11, §22's M1b:
+    /// `@mind/set`). A change and never a card: buffered per unit in arrival
+    /// order (`PrePulse::cards`) and handed to the arena BEFORE the next step
+    /// through `Arena::stage_card`, which applies it to the arena's own row at
+    /// phase 2's head — validating it again, checking the arena's own Compact
+    /// floor, and journalling `mind_card` or `mind_card_refused`. Held to the
+    /// intent reserve at [`ArenaHandle::offer`], as a `TempoFloor` is: a
+    /// staffer repeating the verb must not take the slot an `EXIT` needs.
+    MindCard {
+        /// The hull.
+        unit: ObjId,
+        /// The change.
+        change: CardChange,
     },
 }
 
@@ -466,10 +487,15 @@ impl ArenaHandle {
     /// stop and an ack, and a staffer repeating `@arena/tempo` must not be able
     /// to take the slot an `EXIT` needs; a refused floor is the verb's `busy`.
     /// **16b cut I.4**: and so is an [`ArenaMsg::Watch`], for the same reason.
+    /// **17b cut M1b.5**: and an [`ArenaMsg::MindCard`]; a refused change is
+    /// the verb's `busy`.
     pub fn offer(&self, msg: ArenaMsg) -> Result<(), ArenaMsg> {
         if matches!(
             msg,
-            ArenaMsg::Intent(_) | ArenaMsg::TempoFloor { .. } | ArenaMsg::Watch { .. }
+            ArenaMsg::Intent(_)
+                | ArenaMsg::TempoFloor { .. }
+                | ArenaMsg::Watch { .. }
+                | ArenaMsg::MindCard { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
@@ -1041,6 +1067,8 @@ struct PrePulse {
     releases: Releases,
     continuous: Continuous,
     discrete: Discrete,
+    /// **17b cut M1b.5**: the card changes, per unit in arrival order.
+    cards: BTreeMap<ObjId, Vec<CardChange>>,
 }
 
 impl PrePulse {
@@ -1072,6 +1100,39 @@ impl PrePulse {
             intents.extend(orders);
         }
         (controls, intents)
+    }
+
+    /// **Buffer one card change** (17b cut M1b.5) in arrival order, bounded
+    /// per unit at `per_unit_bound` as a pilot's discrete orders are — the
+    /// newest refused, with a warning, when the unit's buffer is full. A card
+    /// change is staff's and one verb is one message, so the bound only
+    /// matters to a staffer pasting the verb.
+    fn buffer_card(
+        &mut self,
+        unit: ObjId,
+        change: CardChange,
+        per_unit_bound: usize,
+        match_id: MatchId,
+    ) -> bool {
+        let queue = self.cards.entry(unit).or_default();
+        if queue.len() >= per_unit_bound.max(1) {
+            tracing::warn!(
+                %match_id,
+                %unit,
+                per_unit_bound,
+                "an arena's pre-pulse card buffer for that unit is full; the newest change was refused"
+            );
+            return false;
+        }
+        queue.push(change);
+        true
+    }
+
+    /// **Take the pulse's card changes** (17b cut M1b.5) and leave the buffer
+    /// empty: per unit in unit order, each unit's in arrival order — what
+    /// `Arena::stage_card` is handed before the step.
+    fn take_cards(&mut self) -> BTreeMap<ObjId, Vec<CardChange>> {
+        std::mem::take(&mut self.cards)
     }
 }
 
@@ -1290,6 +1351,16 @@ async fn arena_loop(mut task: Task) {
                     // deadline is left alone, because a picture is a view and
                     // the arena's cadence is not the watcher's to move.
                     Some(ArenaMsg::Watch { on }) => apply_watch(&mut task.arena, on),
+                    // **17b cut M1b.5**: a card change waits for the pulse, in
+                    // arrival order, like an order; the deadline is left alone.
+                    Some(ArenaMsg::MindCard { unit, change }) => {
+                        let _ = waiting.buffer_card(
+                            unit,
+                            change,
+                            task.per_unit_bound,
+                            task.match_id,
+                        );
+                    }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -1305,6 +1376,13 @@ async fn arena_loop(mut task: Task) {
             () = tokio::time::sleep_until(due) => {
                 let wall = elapsed_ms(base);
                 let (controls, intents) = waiting.take();
+                // 17b cut M1b.5: the card changes are staged on the arena
+                // before the step, whose phase 2 applies them first.
+                for (unit, changes) in waiting.take_cards() {
+                    for change in changes {
+                        task.arena.stage_card(unit, change);
+                    }
+                }
                 match task.pulse(wall, &controls, &intents).await {
                     // 16b cut U.1: from the base, never from now.
                     Pulse::Again(next_due_ms) => due = deadline(base, next_due_ms),

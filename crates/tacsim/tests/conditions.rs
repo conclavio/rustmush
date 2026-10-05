@@ -3292,7 +3292,8 @@ fn hold_fire_order(objective: tacsim::deliberation::order::Objective, ttl_ms: u3
 /// 3. **`hold_after_end`** (Q-M7's default, declared): a hold-fire `ADVANCE`
 ///    to a walled cell no route reaches, standing 12 s. T0 ends the order at
 ///    its failed search (`order_expired` journalled at once) and fires; T1
-///    only stops obeying it (`ignore_order`), arms while the arena's row
+///    only stops obeying it (`ignore_until_ms`, the order's own `expires_ms`
+///    since 17b cut M1b.5), arms while the arena's row
 ///    still holds it — and every shot of its slot, and its cited one, is
 ///    refused at the resolver (the ARENA's row holds the hold-fire) until
 ///    `expires_ms`, when the landing that reaches the deadline clears the row
@@ -3423,6 +3424,24 @@ fn m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot() {
             && arms(&result.intents)),
         "T1 stops obeying and arms while the arena's row still holds the order"
     );
+    // 17b cut M1b.5: it stops obeying THAT order — its memory's
+    // `ignore_until_ms` is the order's own `expires_ms` at every such think.
+    for (_, t_ms, view, result) in &mind.thoughts {
+        let Some(order) = view.order.as_ref().filter(|order| order.hold_fire) else {
+            continue;
+        };
+        if !arms(&result.intents) {
+            continue;
+        }
+        let memory = tacsim::arena::stock_mind::StockMemory::from(
+            &tacsim::arena::mind::decode_memory(&result.memory),
+        );
+        assert_eq!(
+            memory.ignore_until_ms,
+            Some(order.expires_ms),
+            "the ended order's deadline at {t_ms}"
+        );
+    }
     let ended: Vec<i64> = mind
         .words("order_expired")
         .into_iter()

@@ -367,6 +367,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         // by `validate` below. The arena captures it at check-out.
         minds: tacsim::config::MindsConfig {
             odds_floor_permille: cfg.minds.odds_floor_permille,
+            // 17b cut M1b.5: the lab's fill controller, by name (banded by
+            // `validate` below).
+            fill_controller: cfg.minds.fill_controller.clone(),
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
@@ -1676,6 +1679,13 @@ mod tests {
                 "odds_floor_permille = 110\n",
                 "[tacsim.minds].odds_floor_permille",
                 "110",
+            ),
+            // 17b cut M1b.5: the fill controller is reflex or mind, by name.
+            (
+                "[tacsim.minds]",
+                "fill_controller = \"fast\"\n",
+                "[tacsim.minds].fill_controller",
+                "fast",
             ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));

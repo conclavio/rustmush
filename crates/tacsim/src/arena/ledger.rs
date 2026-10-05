@@ -41,6 +41,7 @@ use sha2::digest::common::hazmat::{SerializableState, SerializedState};
 use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 
+use crate::arena::card::StockCard;
 use crate::arena::clock::Tempo;
 use crate::arena::snapshot::SnapshotError;
 use crate::arena::state::{ContactId, EndReason, Team};
@@ -62,7 +63,9 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// [`EventKind::Miss`]; **16b cut I.3** adds the staff levers' three kinds,
 /// [`EventKind::TempoFloor`], [`EventKind::Placed`] and
 /// [`EventKind::PlaceRefused`]; **16b cut O.2** adds [`EventKind::Emcon`]
-/// (twenty-nine kinds). The rest are the
+/// (twenty-nine kinds); **17b cut M1b.5** adds the card lever's two,
+/// [`EventKind::MindCard`] and [`EventKind::MindCardRefused`] (thirty-one).
+/// The rest are the
 /// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
 /// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
 /// fields rather than a new event stream. **They still serialise**: an internally
@@ -512,6 +515,40 @@ pub enum EventKind {
         /// ([`crate::arena::intents::Refusal::as_str`]).
         reason: SmolStr,
     },
+    /// **A mind's card changed** (17b cut M1b.5; doc 17 §11, §22's M1b,
+    /// D-UM-43): a staff `@mind/set` landed on the arena's OWN row of a
+    /// [`crate::arena::state::Controller::Mind`] hull at the start of the
+    /// pulse after it was offered (`Arena::apply_mind_cards`, phase 2's head),
+    /// under phase 2's one hash.
+    ///
+    /// It carries **the whole card as applied**, so the tape alone says what
+    /// the mind was flying from that millisecond on — the registry's read-back
+    /// is written from this line (`crate::arena_bridge`'s `on_chunk`), never
+    /// from a world-side copy. Never said to a pilot.
+    MindCard {
+        /// The hull.
+        unit: ObjId,
+        /// The card's name after the change (`StockCard::name_of`: `Sniper`,
+        /// `Sniper, edited (min_odds 70)`).
+        name: SmolStr,
+        /// The sliders the change moved, in doc 17 §11's order (empty for a
+        /// change that moved none).
+        changed: Vec<SmolStr>,
+        /// The card, whole, as the row now holds it.
+        card: StockCard,
+    },
+    /// **A card change the arena refused** (17b cut M1b.5): every
+    /// [`crate::arena::card::CardChange`] the arena takes leaves a line, this
+    /// or [`EventKind::MindCard`], and a refused one changes nothing.
+    MindCardRefused {
+        /// The hull named.
+        unit: ObjId,
+        /// Why: `not_mind` (no `Controller::Mind` hull with a row),
+        /// `unlawful` (the card's `min_odds` under the arena's own Compact
+        /// floor), `no preset named …`, or a slider's own refusal
+        /// ([`crate::arena::card::CardError`]'s sentence).
+        reason: SmolStr,
+    },
     /// A pulse absorbed more wall time than `max_catch_up_steps × period`, or the
     /// egress backed up past `ledger.max_unflushed_chunks`.
     Lagged {
@@ -559,6 +596,8 @@ impl EventKind {
             EventKind::TempoFloor { .. } => "tempo_floor",
             EventKind::Placed { .. } => "placed",
             EventKind::PlaceRefused { .. } => "place_refused",
+            EventKind::MindCard { .. } => "mind_card",
+            EventKind::MindCardRefused { .. } => "mind_card_refused",
             EventKind::Lagged { .. } => "lagged",
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",
@@ -1269,6 +1308,26 @@ mod tests {
                 x: 12,
                 y: 7,
                 reason: SmolStr::new_static("in_flight"),
+            },
+            // 17b cut M1b.5: the card lever's two kinds, the whole card riding
+            // the first.
+            EventKind::MindCard {
+                unit: ObjId(4),
+                name: SmolStr::new("Sniper, edited (min_odds 70)"),
+                changed: vec![SmolStr::new_static("min_odds")],
+                card: {
+                    let mut card = crate::arena::card::preset(
+                        "sniper",
+                        &crate::config::ReflexConfig::default(),
+                    )
+                    .expect("sniper");
+                    card.min_odds_permille = 700;
+                    card
+                },
+            },
+            EventKind::MindCardRefused {
+                unit: ObjId(9),
+                reason: SmolStr::new_static("not_mind"),
             },
             EventKind::Lagged { dt_ms: 20_000 },
             EventKind::MatchEnded {

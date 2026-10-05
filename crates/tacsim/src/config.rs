@@ -672,9 +672,13 @@ impl Default for CommandConfig {
 /// lawful condition slot may name, per mille, seed 100. It is **captured into
 /// each arena at check-out** (`crate::arena_task::spawn_arena` writes it to
 /// `Arena::odds_floor_permille`, which the snapshot carries), so a reload of this
-/// block never reaches a running or a resumed match. The home grows: 17b cut
-/// M1b.5's `fill_controller`, and from 17b cut M3 the classes, the pool,
+/// block never reaches a running or a resumed match. **17b cut M1b.5** adds
+/// `fill_controller`, a lab knob; from 17b cut M3 the classes, the pool,
 /// `cpu_lens_ms` and `workers`.
+///
+/// **This block is never carried** (the snapshot carries `match_cfg`, not
+/// this): `fill_controller` is read once, at `crate::match_::start`, and moves
+/// no snapshot format.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindsConfig {
@@ -682,6 +686,24 @@ pub struct MindsConfig {
     /// `unlawful` at the landing of its arming. `10` to `100` in steps of `10`
     /// ([`MindsConfig::validate`]).
     pub odds_floor_permille: u32,
+    /// **Who flies a match's unseated hulls** (17b cut M1b.5; doc 16 §6's AI
+    /// fill; 17b's (b)): `reflex` (the default, today's machine, T0) or `mind`
+    /// (the native stock mind, T1, on Line, arming its slots at its think).
+    ///
+    /// **A LAB KNOB** for `mush-bot`'s pooled measure of the bot against a
+    /// conditioned T1 (`crates/mush-bot/tests/arena_win_rate.rs`): production
+    /// configs do not set it, and 17b cut M4's flip of the fill to minds
+    /// retires it. Read by `crate::match_::start` alone, through
+    /// `crate::match_::lobby::minds_config` ([`MindsConfig::fill_controller`]);
+    /// a seated hull is the pilot's whatever it says. The board's `flown by
+    /// doctrine` stays true under `mind`: T1 IS Standard Doctrine.
+    #[serde(default = "default_fill_controller")]
+    pub fill_controller: String,
+}
+
+/// `fill_controller`'s default: today's machine.
+fn default_fill_controller() -> String {
+    "reflex".to_owned()
 }
 
 impl Default for MindsConfig {
@@ -690,6 +712,7 @@ impl Default for MindsConfig {
             // Doc 17 §5's seed value: one chance in ten, the Line preset's own
             // `min_odds`.
             odds_floor_permille: 100,
+            fill_controller: default_fill_controller(),
         }
     }
 }
@@ -707,6 +730,8 @@ impl MindsConfig {
     /// # Errors
     ///
     /// One sentence naming the key and the value it was given.
+    ///
+    /// **17b cut M1b.5**: `fill_controller` is `reflex` or `mind`, by name.
     pub fn validate(&self) -> Result<(), String> {
         let floor = self.odds_floor_permille;
         if !(10..=100).contains(&floor) || !floor.is_multiple_of(10) {
@@ -714,7 +739,26 @@ impl MindsConfig {
                 "[tacsim.minds].odds_floor_permille must be 10 to 100 in steps of 10 (it is {floor})"
             ));
         }
+        if !matches!(self.fill_controller.as_str(), "reflex" | "mind") {
+            return Err(format!(
+                "[tacsim.minds].fill_controller must be reflex or mind (it is \"{}\")",
+                self.fill_controller
+            ));
+        }
         Ok(())
+    }
+
+    /// **The controller a match's unseated hulls are checked out under** (17b
+    /// cut M1b.5): [`Controller::Mind`](crate::arena::state::Controller::Mind)
+    /// for `mind`, [`Controller::Reflex`](crate::arena::state::Controller::Reflex)
+    /// for anything else (`validate` refuses anything else at boot).
+    #[must_use]
+    pub fn fill_controller(&self) -> crate::arena::state::Controller {
+        if self.fill_controller == "mind" {
+            crate::arena::state::Controller::Mind
+        } else {
+            crate::arena::state::Controller::Reflex
+        }
     }
 }
 
@@ -1447,7 +1491,8 @@ pub struct TacsimConfig {
     /// inert** until cut H.
     pub harness: HarnessConfig,
     /// **17b cut M1b.1** — `[tacsim.minds]`: the Compact floor, captured into
-    /// each arena at check-out. **Live** since M1b.1 (default when absent).
+    /// each arena at check-out. **Live** since M1b.1 (default when absent);
+    /// since 17b cut M1b.5 also the lab's `fill_controller`.
     pub minds: MindsConfig,
 }
 
@@ -1621,7 +1666,8 @@ mod tests {
         for floor in [10, 50, 100] {
             assert_eq!(
                 MindsConfig {
-                    odds_floor_permille: floor
+                    odds_floor_permille: floor,
+                    ..MindsConfig::default()
                 }
                 .validate(),
                 Ok(()),
@@ -1631,12 +1677,41 @@ mod tests {
         for floor in [0, 15, 110] {
             assert_eq!(
                 MindsConfig {
-                    odds_floor_permille: floor
+                    odds_floor_permille: floor,
+                    ..MindsConfig::default()
                 }
                 .validate(),
                 Err(format!(
                     "[tacsim.minds].odds_floor_permille must be 10 to 100 in steps of 10 (it is \
                      {floor})"
+                ))
+            );
+        }
+    }
+
+    /// **17b cut M1b.5**: the fill controller is `reflex` (the default) or
+    /// `mind`, by name, and anything else is refused with Q.7's sentence.
+    #[test]
+    fn m1b5_the_fill_controller_is_reflex_or_mind_by_name() {
+        use super::MindsConfig;
+        use crate::arena::state::Controller;
+        assert_eq!(MindsConfig::default().fill_controller, "reflex");
+        assert_eq!(MindsConfig::default().fill_controller(), Controller::Reflex);
+        let mind = MindsConfig {
+            fill_controller: "mind".to_owned(),
+            ..MindsConfig::default()
+        };
+        assert_eq!(mind.validate(), Ok(()));
+        assert_eq!(mind.fill_controller(), Controller::Mind);
+        for word in ["fast", "Mind", ""] {
+            assert_eq!(
+                MindsConfig {
+                    fill_controller: word.to_owned(),
+                    ..MindsConfig::default()
+                }
+                .validate(),
+                Err(format!(
+                    "[tacsim.minds].fill_controller must be reflex or mind (it is \"{word}\")"
                 ))
             );
         }

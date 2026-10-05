@@ -100,6 +100,7 @@
 //! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from the reflex controller; `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
+//! | `[tacsim.minds].fill_controller` | `"reflex"` | **17b cut M1b.5** (doc 16 §6's AI fill; a LAB knob): who flies a match's unseated hulls — `reflex` (today's machine) or `mind` (the native stock mind on Line); production configs do not set it, `mush-bot`'s pooled measure does, and 17b cut M4's flip retires it; by name |
 //! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `100` in steps of `10` |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
@@ -1393,12 +1394,17 @@ impl Default for TacsimCommandCfg {
 pub struct TacsimMindsCfg {
     /// The Compact floor, per mille. `10` to `100` in steps of `10`.
     pub odds_floor_permille: u32,
+    /// **17b cut M1b.5**: who flies a match's unseated hulls, `reflex` or
+    /// `mind` — a lab knob for `mush-bot`'s pooled measure; production configs
+    /// leave it at `reflex`.
+    pub fill_controller: String,
 }
 
 impl Default for TacsimMindsCfg {
     fn default() -> Self {
         TacsimMindsCfg {
             odds_floor_permille: 100,
+            fill_controller: "reflex".to_owned(),
         }
     }
 }
@@ -3125,8 +3131,14 @@ scene_turn_dedline_secs = 30
             written.tacsim.minds,
             TacsimMindsCfg {
                 odds_floor_permille: 50,
+                ..TacsimMindsCfg::default()
             }
         );
+        // 17b cut M1b.5: the lab's fill controller, written.
+        let lab: Config = toml::from_str("[tacsim.minds]\nfill_controller = \"mind\"\n")
+            .expect("the lab block parses");
+        assert_eq!(lab.tacsim.minds.fill_controller, "mind");
+        assert_eq!(absent.tacsim.minds.fill_controller, "reflex");
 
         let text = "[tacsim.minds]\nodds_floor = 50\n";
         let refused = toml::from_str::<Config>(text).expect_err(text).to_string();

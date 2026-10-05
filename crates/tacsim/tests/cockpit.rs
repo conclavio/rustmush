@@ -11032,6 +11032,7 @@ async fn o1_start_refuses_a_mode_the_ground_does_not_declare() {
             &tacsim::config::MatchConfig::default(),
             &tacsim::config::SensorsConfig::default(),
             tacsim::arena::MatchMode::Hold,
+            tacsim::arena::state::Controller::Reflex,
         )
     });
     let Err(error) = refused else {
@@ -15765,5 +15766,456 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     assert_eq!(
         payload["weapons"][1]["armed"]["slot"], 2,
         "S2 kept its number"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M1b.5 — `@mind/set` and the fill controller (doc 17 §11, §22's M1b;
+// D-UM-17 as amended, D-UM-43, D-UM-44)
+// ---------------------------------------------------------------------------
+
+/// [`af3_config`] with the AI fill on and the lab's fill controller on `mind`
+/// (17b cut M1b.5): every unseated hull a stock mind on Line, and a snapshot
+/// an arena second.
+fn m1b5_mind_config() -> TacsimConfig {
+    let mut cfg = af3_config();
+    cfg.match_.ai_fill = true;
+    cfg.minds.fill_controller = "mind".to_owned();
+    cfg
+}
+
+/// The units the AI fill fielded in the running match — every unit no pilot
+/// was checked out on — in id order.
+fn m1b5_fill_units(rig: &Rig) -> Vec<ObjId> {
+    let record = rig.record();
+    let mut fill: Vec<ObjId> = record
+        .teams
+        .iter()
+        .flat_map(|team| {
+            team.units
+                .iter()
+                .copied()
+                .filter(|unit| !team.pilots.iter().any(|(_, seated)| seated == unit))
+                .collect::<Vec<ObjId>>()
+        })
+        .collect();
+    fill.sort_unstable();
+    fill
+}
+
+/// The registry's controller of `unit`, as `@mind/set` reads it.
+fn m1b5_controller(rig: &Rig, unit: ObjId) -> Option<tacsim::arena::state::Controller> {
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(match_id))
+        .and_then(|mirror| mirror.controllers.get(&unit).copied())
+}
+
+/// The head line of a read-back.
+fn m1b5_head(said: &str) -> String {
+    said.lines().next().unwrap_or_default().to_owned()
+}
+
+/// **`@mind/set` reads, sets and refuses by name** (17b cut M1b.5; doc 17 §11,
+/// §22's M1b; D-UM-17 as amended, D-UM-43, D-UM-44), through the composition
+/// on a running match whose AI fill is the lab's `mind`, as staff:
+///
+/// * the bare read-back of a fill hull opens `(as checked out)` on Line with
+///   the five sections (the band in per cent, the `[M2]` marks, the fire
+///   discipline live on an armed hull);
+/// * `=Sniper` replies the offer and reads back `(sent at N ms, not yet on
+///   the tape)`; once the chunk holding the arena's `mind_card` line closes —
+///   a line naming `Sniper` and carrying the whole card — the head reads `(on
+///   the tape at N ms)`;
+/// * `band_pct 72` is the step's sentence, `min_odds 5` the floor's sentence
+///   naming the MATCH's floor (10 per cent), `stance fast` the choices,
+///   `foo 1` and `=berserker` the unknown sentence; a bare `@mind` or another
+///   switch, a slider with no value (`=min_odds`) and a preset with one
+///   (`=sniper 5`) the usage;
+/// * a pilot's hull is `not flown by a mind`, and so is it after its pilot
+///   drops (the reflex machine's, as the arena's own row goes) — while the
+///   board still reads `flown by doctrine` for that slot;
+/// * a pilot is refused by the gate;
+/// * after a restart of the server half resumes the match, the head is
+///   `not read since the resume`, `min_odds 5` still meets the floor's
+///   sentence (the resumed mirror's floor is the decoded arena's), and a
+///   preset is offered — its read-back's fire discipline live, the resumed
+///   mirror's armed set being the decoded arena's — and lands again;
+///
+/// and on a second rig booted at the default floor of 100 per mille, checked
+/// out with its store's `[tacsim.minds]` set to 50 and then set back to 100, `min_odds 5` passes the verb's
+/// floor pre-check (the slider's own range answers it) and `min_odds 10` is
+/// sent, before and after a restart of the server half: the captured floor,
+/// never the live config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
+    let mut rig = Rig::boot_with(2, m1b5_mind_config());
+    rig.fly_with_ai(1, 1, 2).await;
+    let fill = m1b5_fill_units(&rig);
+    assert_eq!(fill.len(), 2, "one fill hull a side: {fill:?}");
+    let mind = *fill.first().expect("a fill hull");
+    let name = mush_core::output::display_name(rig.tw.world(), mind);
+    let id = mind.0;
+
+    // The read-back, as checked out.
+    let said = rig.staff(&format!("@mind/set #{id}"));
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some(format!("Mind card on #{id} ({name}): Line (as checked out)").as_str()),
+        "{said}"
+    );
+    assert_eq!(lines.len(), 6, "{said}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("  posture          stance hold [M2]  band 70%")),
+        "{said}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("  fire discipline  min_odds 10%  aspect any")),
+        "{said}"
+    );
+
+    // A preset: sent, then on the tape.
+    let said = rig.staff(&format!("@mind/set #{id}=sniper"));
+    let mut lines = said.lines();
+    assert_eq!(
+        lines.next(),
+        Some(
+            format!("Mind card on #{id}: Sniper sent; the arena takes it at its next pulse.")
+                .as_str()
+        ),
+        "{said}"
+    );
+    let head = lines.next().unwrap_or_default();
+    assert!(
+        head.starts_with(&format!("Mind card on #{id} ({name}): Sniper (sent at "))
+            && head.ends_with(" ms, not yet on the tape)"),
+        "{said}"
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, name, .. }
+                    if *unit == mind && name == "Sniper"
+            )
+        })
+        .await;
+    assert!(landed, "the arena's mind_card line names Sniper");
+    let line = rig
+        .tape
+        .iter()
+        .find(|event| matches!(&event.kind, tacsim::arena::ledger::EventKind::MindCard { unit, .. } if *unit == mind))
+        .cloned()
+        .expect("the line");
+    let tacsim::arena::ledger::EventKind::MindCard { card, changed, .. } = &line.kind else {
+        panic!("a mind_card line");
+    };
+    assert_eq!(
+        card,
+        &tacsim::arena::preset("sniper", &config().arena.reflex).expect("sniper"),
+        "the whole card"
+    );
+    assert_eq!(
+        changed
+            .iter()
+            .map(smol_str::SmolStr::as_str)
+            .collect::<Vec<&str>>(),
+        vec!["band_pct", "min_odds", "reserve_pct"]
+    );
+    assert_eq!(
+        m1b5_head(&rig.staff(&format!("@mind/set #{id}"))),
+        format!(
+            "Mind card on #{id} ({name}): Sniper (on the tape at {} ms)",
+            line.t_ms
+        )
+    );
+
+    // Refused by name.
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=band_pct 72")),
+        "@mind/set: band_pct is 30 to 100 in steps of 5 (it is 72)."
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
+        "@mind/set: min_odds is 10% to 95% in steps of 5; 10% is the Compact floor (it is 5)."
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=stance fast")),
+        "@mind/set: stance is hold, close, orbit, hunt or screen (it is fast)."
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=foo 1")),
+        "@mind/set: no slider or preset named \"foo\"."
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=berserker")),
+        "@mind/set: no slider or preset named \"berserker\"."
+    );
+    let usage = "Usage: @mind/set <unit>[=<preset> | =<slider> <value>]";
+    assert_eq!(rig.staff(&format!("@mind #{id}")), usage);
+    assert_eq!(rig.staff("@mind/set"), usage);
+    assert_eq!(rig.staff(&format!("@mind/set #{id}=min_odds 60 70")), usage);
+    // A slider with no value, and a preset with one: the usage, never the
+    // unknown sentence (each IS a slider or a preset).
+    assert_eq!(rig.staff(&format!("@mind/set #{id}=min_odds")), usage);
+    assert_eq!(rig.staff(&format!("@mind/set #{id}=sniper 5")), usage);
+    // A slider set: sent, and the scratch card is the tape's Sniper edited.
+    let said = rig.staff(&format!("@mind/set #{id}=MIN_ODDS 70"));
+    assert!(
+        said.starts_with(&format!(
+            "Mind card on #{id}: min_odds 70 sent; the arena takes it at its next pulse.\nMind \
+             card on #{id} ({name}): Sniper, edited (min_odds 70) (sent at "
+        )),
+        "{said}"
+    );
+
+    // A pilot's hull, and the same hull once its pilot drops.
+    let tank = rig.tank(0);
+    assert_eq!(
+        m1b5_controller(&rig, tank),
+        Some(tacsim::arena::state::Controller::Pilot)
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{}", tank.0)),
+        format!("@mind/set: #{} is not flown by a mind.", tank.0)
+    );
+    rig.fire_conn(rig.pilot(0), mush_core::ConnTransition::Disconnected);
+    assert_eq!(
+        m1b5_controller(&rig, tank),
+        Some(tacsim::arena::state::Controller::Reflex),
+        "a released seat is the reflex machine's"
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{}=sniper", tank.0)),
+        format!("@mind/set: #{} is not flown by a mind.", tank.0)
+    );
+    assert!(
+        y3_red_row(&rig).contains(", flown by doctrine"),
+        "{}",
+        y3_red_row(&rig)
+    );
+    // Not staff.
+    assert_eq!(
+        rig.say(1, &format!("@mind/set #{id}=sniper")),
+        "Permission denied."
+    );
+
+    // A restart of the server half: not read since the resume.
+    let _ = rig.af3_snapshot_at_or_after(0).await;
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.reboot_mid_match().await;
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| registry.tasks().is_live(match_id)),
+        "it resumed"
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}")),
+        format!(
+            "Mind card on #{id} ({name}): not read since the resume \u{2014} the tape's last \
+             mind_card line names it; a preset resets it."
+        )
+    );
+    // The resumed mirror's floor is the decoded arena's own (100 here): the
+    // verb's floor pre-check still answers, naming 10 per cent.
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
+        "@mind/set: min_odds is 10% to 95% in steps of 5; 10% is the Compact floor (it is 5)."
+    );
+    let said = rig.staff(&format!("@mind/set #{id}=rearguard"));
+    assert!(
+        said.starts_with(&format!("Mind card on #{id}: Rearguard sent;")),
+        "{said}"
+    );
+    // The resumed mirror's armed set is the decoded arena's: the fill hull's
+    // fire discipline is live, not inert.
+    assert!(
+        said.lines()
+            .any(|line| line.starts_with("  fire discipline  min_odds 50%  aspect any")),
+        "{said}"
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, name, .. }
+                    if *unit == mind && name == "Rearguard"
+            )
+        })
+        .await;
+    assert!(landed, "the resumed arena takes a preset");
+
+    // The captured floor, never the live config. The rig boots on the
+    // default floor of 100 (what a restart reloads), the store is set to 50
+    // for the check-out, which the arena captures, and set back to 100 after.
+    let mut rig = Rig::boot_with(2, m1b5_mind_config());
+    if let Some(store) = rig.tw.world_mut().module_state_mut::<tacsim::TacsimStore>() {
+        store.replace_minds_config_for_tests(tacsim::config::MindsConfig {
+            odds_floor_permille: 50,
+            fill_controller: "mind".to_owned(),
+        });
+    }
+    rig.fly_with_ai(1, 1, 2).await;
+    let mind = *m1b5_fill_units(&rig).first().expect("a fill hull");
+    let id = mind.0;
+    if let Some(store) = rig.tw.world_mut().module_state_mut::<tacsim::TacsimStore>() {
+        store.replace_minds_config_for_tests(tacsim::config::MindsConfig {
+            odds_floor_permille: 100,
+            fill_controller: "mind".to_owned(),
+        });
+    }
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
+        "@mind/set: min_odds is 10 to 95 in steps of 5 (it is 5).",
+        "the floor pre-check passed at the match's 5%: the slider's range answers"
+    );
+    assert!(
+        rig.staff(&format!("@mind/set #{id}=min_odds 10"))
+            .starts_with(&format!("Mind card on #{id}: min_odds 10 sent;")),
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, card, .. }
+                    if *unit == mind && card.min_odds_permille == 100
+            )
+        })
+        .await;
+    assert!(landed, "min_odds 10 lands on the arena's row");
+    // And across a restart: the resumed mirror takes the decoded arena's
+    // captured 5 per cent, never the live block's 10 (the restart reloads the
+    // boot's 100), so `min_odds 5` is again the slider's range and not the
+    // floor.
+    let _ = rig.af3_snapshot_at_or_after(0).await;
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.reboot_mid_match().await;
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| registry.tasks().is_live(match_id)),
+        "it resumed"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .map(|store| store.config().minds.odds_floor_permille),
+        Some(100),
+        "the live block says 100 after the restart"
+    );
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
+        "@mind/set: min_odds is 10 to 95 in steps of 5 (it is 5).",
+        "the resumed match is held to its captured 5%, not the live 10%"
+    );
+}
+
+/// **The fill controller validates by name and fields minds** (17b cut
+/// M1b.5; 17b's (b); doc 16 §6's AI fill): `[tacsim.minds].fill_controller =
+/// "fast"` is refused with Q.7's sentence; on `mind` the fill hulls are
+/// [`Controller::Mind`] at check-out and dealt into squads like the reflex
+/// fill (17b cut L.2's `is_machine`), the seated hulls the pilots', and the
+/// board says what it said (`AI fill: each side fields 2; machines take the
+/// unclaimed pods.`, and `flown by doctrine` for a dropped pilot's slot: T1 IS
+/// Standard Doctrine); on `reflex` (the default) the fill is the reflex
+/// machine's, as before.
+///
+/// [`Controller::Mind`]: tacsim::arena::state::Controller::Mind
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1b5_the_fill_controller_validates_by_name_and_fields_minds() {
+    use tacsim::arena::state::Controller;
+    assert_eq!(
+        tacsim::config::MindsConfig {
+            fill_controller: "fast".to_owned(),
+            ..tacsim::config::MindsConfig::default()
+        }
+        .validate(),
+        Err("[tacsim.minds].fill_controller must be reflex or mind (it is \"fast\")".to_owned())
+    );
+    let mut boards: Vec<String> = Vec::new();
+    for (word, fill_is) in [("mind", Controller::Mind), ("reflex", Controller::Reflex)] {
+        let mut cfg = y1_config();
+        cfg.minds.fill_controller = word.to_owned();
+        let mut rig = Rig::boot_with(2, cfg);
+        rig.fly_with_ai(1, 1, 2).await;
+        let fill = m1b5_fill_units(&rig);
+        assert_eq!(fill.len(), 2, "{word}: {fill:?}");
+        for unit in &fill {
+            assert_eq!(
+                m1b5_controller(&rig, *unit),
+                Some(fill_is),
+                "{word} #{}",
+                unit.0
+            );
+        }
+        for n in 0..2 {
+            assert_eq!(
+                m1b5_controller(&rig, rig.tank(n)),
+                Some(Controller::Pilot),
+                "{word}: pilot {n}'s hull"
+            );
+        }
+        // Dealt into squads, like the reflex fill.
+        let squads = rig.record().squads;
+        for unit in &fill {
+            assert!(
+                squads.iter().any(|squad| squad.units.contains(unit)),
+                "{word}: #{} in a squad: {squads:?}",
+                unit.0
+            );
+        }
+        // The board says what it said.
+        let board = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
+        assert!(
+            board.contains("AI fill: each side fields 2; machines take the unclaimed pods."),
+            "{word}: {board}"
+        );
+        rig.fire_conn(rig.pilot(0), mush_core::ConnTransition::Disconnected);
+        let row = y3_red_row(&rig);
+        assert!(row.contains(", flown by doctrine"), "{word}: {row}");
+        boards.push(
+            tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff)
+                .into_iter()
+                .filter(|line| !line.contains("arena time") && !line.starts_with("Match "))
+                .collect::<Vec<String>>()
+                .join("\n"),
+        );
+        if fill_is == Controller::Mind {
+            // A fill hull takes a card; under `reflex` it is refused.
+            let id = fill.first().map_or(0, |unit| unit.0);
+            assert!(
+                rig.staff(&format!("@mind/set #{id}"))
+                    .contains("Line (as checked out)"),
+            );
+        } else {
+            let id = fill.first().map_or(0, |unit| unit.0);
+            assert_eq!(
+                rig.staff(&format!("@mind/set #{id}")),
+                format!("@mind/set: #{id} is not flown by a mind.")
+            );
+        }
+    }
+    let rows = |board: &str| -> Vec<String> {
+        board
+            .lines()
+            .filter(|line| line.trim_start().starts_with("red:") || line.contains("AI fill"))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(
+        rows(boards.first().map_or("", String::as_str)),
+        rows(boards.get(1).map_or("", String::as_str)),
+        "the board reads the same under either fill"
     );
 }
