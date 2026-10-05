@@ -290,11 +290,16 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
             let Some(view) = view else {
                 continue;
             };
-            let memory = clone
+            let (memory, card) = clone
                 .minds
                 .get(&thought.unit)
-                .map(|state| state.memory.clone())
-                .unwrap_or_default();
+                .map(|state| (state.memory.clone(), state.card.clone()))
+                .unwrap_or_else(|| {
+                    (
+                        Vec::new(),
+                        tacsim::arena::card::line(&clone.arena_cfg.reflex),
+                    )
+                });
             let job = ThinkJob {
                 unit: thought.unit,
                 think_seq: thought.think_seq,
@@ -303,6 +308,7 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
                 view: &view,
                 memory: &memory,
                 map: &clone.definition,
+                card: &card,
             };
             let started = Instant::now();
             let _ = timer.think(&job);

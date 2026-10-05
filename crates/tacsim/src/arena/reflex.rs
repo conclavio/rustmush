@@ -137,6 +137,7 @@ use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
     Arena, Channel, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
 };
+use crate::arena::weapons::FiredBy;
 use crate::config::ReflexConfig;
 use crate::deliberation::order::{Objective, Order, RangeBand, StandingOrder};
 
@@ -494,6 +495,14 @@ pub struct ReflexCounters {
     /// M1a.5; D-UM-9) and so landed nothing. Not reported; 17b cut M3 journals
     /// the fault. Never hashed.
     pub mind_overflows: u32,
+    /// **Condition slots' own shots accepted** (17b cut M1b.1; doc 17 §5,
+    /// D-UM-16): every `fired` line `by: cond`. A counter, never hashed, and
+    /// not in the harness report — which names its fields one by one, so the
+    /// deterministic block does not gain it (no production hull arms a slot).
+    pub cond_fires: u32,
+    /// **Slot evaluations that held for a named reason** (17b cut M1b.1): a
+    /// warrant term failed with the target there. Never hashed; not reported.
+    pub cond_held: u32,
 }
 
 impl ReflexCounters {
@@ -517,6 +526,8 @@ impl ReflexCounters {
         self.corner_refusals = self.corner_refusals.saturating_add(other.corner_refusals);
         self.thinks = self.thinks.saturating_add(other.thinks);
         self.mind_overflows = self.mind_overflows.saturating_add(other.mind_overflows);
+        self.cond_fires = self.cond_fires.saturating_add(other.cond_fires);
+        self.cond_held = self.cond_held.saturating_add(other.cond_held);
         for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
             *mine = mine.saturating_add(*theirs);
         }
@@ -1029,6 +1040,13 @@ impl Arena {
             Controller::Mind => self.release_mind(unit),
             Controller::Pilot => {}
         }
+        // **17b cut M1b.1** (doc 17 §5): the condition slots are the outgoing
+        // principal's decisions, so they go with the principal on EVERY
+        // transition — a pilot's slots do not fire for the machine that takes
+        // the tank over, nor a mind's for the pilot who reclaims it — and with
+        // them the held-shot rows. Beside the motor row's release, for the
+        // motor row's reason.
+        self.clear_conditions(unit);
         self.motors.release(unit);
         self.due
             .retain(|kind| !matches!(kind, DueKind::MotorTick { unit: on } if *on == unit));
@@ -3054,7 +3072,7 @@ impl Arena {
             orders.push(IntentKind::Lock { contact });
         }
         if let Some(weapon) = plan.fire.clone() {
-            orders.push(IntentKind::Fire { weapon });
+            orders.push(IntentKind::Fire { weapon, slot: None });
         }
         // The three epochs read once, before the loop: nothing the loop applies
         // raises an epoch (only `apply_control` does), so these are the epochs
@@ -3098,6 +3116,13 @@ impl Arena {
     ///   cut `Arena::order` dropped them with `let _`, and since it still does
     ///   not read the vector no byte of the reflex controller's moved (the M1a.1
     ///   pins). `Order`, `ReleaseOrder`, `Place` and `Goal` queue nothing.
+    ///
+    /// **17b cut M1b.1**: a `Fire` resolves through `Arena::resolve_fire_by` as
+    /// [`crate::arena::weapons::FiredBy::Mind`] with the slot it cites for an
+    /// [`IntentSource::Mind`] and as `Machine` otherwise (T0 is never gated); a
+    /// mind's arming (`IntentKind::Condition`) lands through
+    /// `Arena::resolve_arming`, in emission order, with NO evaluation here —
+    /// `Arena::mind_land` evaluates the hull's slots once after every intent.
     pub(crate) fn apply_machine_intents(
         &mut self,
         unit: ObjId,
@@ -3152,9 +3177,32 @@ impl Arena {
             let resolved = match &intent.kind {
                 IntentKind::Startup => resolve_startup(self, unit, t_ms),
                 IntentKind::Lock { contact } => self.resolve_lock(unit, *contact, t_ms),
-                IntentKind::Fire { weapon } => self.resolve_fire(unit, weapon, t_ms).map(|_| {
-                    counters.shots = counters.shots.saturating_add(1);
-                }),
+                // **17b cut M1b.1** (D-UM-14, D-UM-17): who fired — a mind's
+                // shot with the slot it cites (gated from 17b cut M1b.2), a
+                // machine's never gated.
+                IntentKind::Fire { weapon, slot } => self
+                    .resolve_fire_by(
+                        unit,
+                        weapon,
+                        t_ms,
+                        match source {
+                            IntentSource::Mind => FiredBy::Mind { slot: *slot },
+                            IntentSource::Seat | IntentSource::Machine | IntentSource::Cond => {
+                                FiredBy::Machine
+                            }
+                        },
+                    )
+                    .map(|_| {
+                        counters.shots = counters.shots.saturating_add(1);
+                    }),
+                // **17b cut M1b.1** (D-UM-10): a mind's arming lands here, in
+                // emission order, through the one resolver a seat's goes
+                // through in phase 4. NO evaluation here: the landing's one
+                // evaluation is `mind_land`'s, after every intent (17b's
+                // adversarial F5).
+                IntentKind::Condition(arming) => {
+                    self.resolve_arming(unit, arming, t_ms).map(|_| ())
+                }
                 // **17b cut M1a.5** (D-UM-12): the arm `Arena::order` never
                 // had. The reflex controller still never switches its pod (16b
                 // cut O.2's residual: a machine keeps the switch where it found

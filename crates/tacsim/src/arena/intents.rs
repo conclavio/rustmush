@@ -48,6 +48,11 @@
 //!   the seat's rate. It writes the hull's motor row
 //!   ([`crate::arena::motor::MotorRow`]) and the motor drives it between
 //!   ticks; a seat's `HEADING` or `SPEED` afterward takes the helm back.
+//! - **[`IntentKind::Condition`]** (17b cut M1b.1; doc 17 §5 D-UM-16) is an
+//!   arming of a condition slot: **discrete**, on [`Channel::Fire`], word
+//!   `fire`, queued at phase 2 and resolved in phase 4 in arrival order with
+//!   `LOCK` and `FIRE` by `Arena::resolve_arming`; a mind's lands at its
+//!   landing. A slot's own shot is a `Fire` under [`IntentSource::Cond`].
 //!
 //! A refusal is always one of the named [`Refusal`] words, never a silent drop:
 //! cut K's cockpit turns each into a line a pilot can act on (a place's is a
@@ -136,7 +141,34 @@ pub enum IntentKind {
     Fire {
         /// The weapon's component id.
         weapon: SmolStr,
+        /// **The slot this shot cites** (17b cut M1b.1; doc 17 §5, D-UM-17):
+        /// `None` for a seat's typed `FIRE` and a machine's (T0's) shot, `Some(n)`
+        /// for a mind's citation of its slot `n` (gated from 17b cut M1b.2) and
+        /// for the evaluator's own slot shot. Absent on the wire when `None`, so
+        /// every carried `Fire` of format 6's shape reads the same bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<u8>,
     },
+    /// **Arm or disarm a condition slot** (17b cut M1b.1; doc 17 §4 D-UM-10,
+    /// §5 D-UM-16): the same intent a pilot's `FIRE <weapon> WHEN …` stages
+    /// (17b cut M1b.4) and a mind's `arm`/`disarm` — one intent, two
+    /// principals. **Discrete**, [`Channel::Fire`], word `fire` (the pilot
+    /// typed `FIRE`, so a staged refusal reads `FIRE cannon refused. …`).
+    ///
+    /// A seat's arming is queued at phase 2 and **resolved at the pulse's end
+    /// in phase 4, in arrival order with `LOCK` and `FIRE`** — `LOCK BA` then
+    /// `FIRE cannon WHEN …` typed in one 5,000 ms pulse lands the lock, then the
+    /// arming, and the arming's first evaluation reads the new lock, where a
+    /// continuous kind applied at the pulse's start would have fired at the old
+    /// one for a pulse of shots; a mind's lands through
+    /// `Arena::apply_machine_intents`' queued branch at its landing millisecond
+    /// in emission order. Both resolve through
+    /// [`crate::arena::state::Arena::resolve_arming`] (17b cut M1b.1). It
+    /// meets [`apply_intent`]'s discrete gates exactly as a `LOCK` does — the
+    /// `Linkdead` gate, the seat's window, the queue — and no others there; a
+    /// mind's on a hull with no weapons station is refused `Channel` by the
+    /// mind gate every fire-channel intent meets.
+    Condition(crate::arena::conditions::Arming),
     /// **A squad's standing order** (16b cut N.2; doc 16 §6 "Deliberation"),
     /// carried in one per unit of the squad.
     ///
@@ -280,6 +312,10 @@ impl IntentKind {
     /// **16b cut I.3**: a staff [`IntentKind::Place`] is discrete too — it
     /// queues for phase 4 — but it is neither counted by the rate nor bounded
     /// by the task's buffer (see the kind).
+    ///
+    /// **17b cut M1b.1**: an arming ([`IntentKind::Condition`]) is discrete —
+    /// counted on the seat's window, bounded by the task's buffer and resolved
+    /// in phase 4 in arrival order with `LOCK` and `FIRE` (see the kind).
     #[must_use]
     pub const fn is_discrete(&self) -> bool {
         matches!(
@@ -289,6 +325,7 @@ impl IntentKind {
                 | IntentKind::Fire { .. }
                 | IntentKind::Place { .. }
                 | IntentKind::Emcon { .. }
+                | IntentKind::Condition(_)
         )
     }
 
@@ -307,7 +344,8 @@ impl IntentKind {
             // 17b cut M1a.4: the motor is the helm's drive-by-wire.
             | IntentKind::Goal(_) => Channel::Helm,
             IntentKind::Lock { .. } | IntentKind::Emcon { .. } => Channel::Sensors,
-            IntentKind::Fire { .. } => Channel::Fire,
+            // 17b cut M1b.1: an arming is the weapons station's.
+            IntentKind::Fire { .. } | IntentKind::Condition(_) => Channel::Fire,
         }
     }
 
@@ -319,7 +357,9 @@ impl IntentKind {
             IntentKind::Speed { .. } => "speed",
             IntentKind::Startup => "startup",
             IntentKind::Lock { .. } => "lock",
-            IntentKind::Fire { .. } => "fire",
+            // 17b cut M1b.1: the pilot typed `FIRE <weapon> WHEN …`, so a staged
+            // refusal of an arming reads `FIRE cannon refused. …`.
+            IntentKind::Fire { .. } | IntentKind::Condition(_) => "fire",
             IntentKind::Order(_) => "order",
             IntentKind::ReleaseOrder { .. } => "release",
             IntentKind::Place { .. } => "place",
@@ -327,6 +367,17 @@ impl IntentKind {
             // 17b cut M1a.4: the cockpit's word, not doc 17's `goto` (departure
             // (f)), so the staged refusal names the verb the pilot typed.
             IntentKind::Goal(_) => "drive",
+        }
+    }
+
+    /// **An uncited `FIRE` of `weapon`** (17b cut M1b.1): `Fire { weapon, slot:
+    /// None }`, a seat's or a machine's shot — the short form for the many
+    /// places that build one; the struct literal stays public.
+    #[must_use]
+    pub fn fire(weapon: &str) -> IntentKind {
+        IntentKind::Fire {
+            weapon: SmolStr::new(weapon),
+            slot: None,
         }
     }
 }
@@ -376,6 +427,14 @@ pub enum IntentSource {
     /// hull with no weapons station grants no `fire` channel). Landed by
     /// `crate::arena::mind`'s landing arm at the epochs its think recorded.
     Mind,
+    /// **A condition slot's own shot** (17b cut M1b.1; doc 17 §5, D-UM-14: *a
+    /// condition fire is journalled `by: cond` and counted on neither*): the
+    /// `FIRE` `Arena::evaluate_conditions` builds when a slot's warrant holds.
+    /// **Never counted on the seat window**, and **exempt from the discrete
+    /// branch's `Linkdead` gate** — an arming already given stands through a
+    /// pilot's linkdead grace as a continuous order already given stands; it
+    /// meets every other gate a [`IntentSource::Machine`] order meets.
+    Cond,
 }
 
 /// What [`apply_intent`] did.
@@ -461,6 +520,26 @@ pub enum Refusal {
     /// word the arena's own refusal path uses when the order gets that far.
     #[error("that unit carries no jamming pod")]
     NoJammer,
+    /// **A shot with no warrant** (17b cut M1b.1; doc 17 §5, D-UM-17, D-UM-19):
+    /// a mind's `FIRE` that cites no slot, or whose cited slot's warrant terms
+    /// do not hold at the landing, and a mind's or a slot's shot under a
+    /// standing `hold_fire`. Gated for a slot's own shot from 17b cut M1b.1
+    /// (the hold-fire term) and for a MIND's fire from 17b cut M1b.2; a
+    /// pilot's typed `FIRE` and a machine's are never gated.
+    #[error("that shot has no warrant")]
+    Unwarranted,
+    /// **An arming past the hull's slot count** (17b cut M1b.1;
+    /// `crate::arena::conditions::STOCK_CONDITION_SLOTS`) — the count's own
+    /// word, not the law's.
+    #[error("every slot is armed")]
+    NoSlot,
+    /// **A condition under the match's Compact floor, or naming a target kind
+    /// the floor forbids** (17b cut M1b.1; doc 17 §5, D-UM-17 as amended
+    /// 2026-10-04), at the landing of an arming or a cited fire:
+    /// refuse-not-clamp. Its sentence names the floor
+    /// ([`crate::arena::perception::RefusalDetail::Floor`]).
+    #[error("that condition is under the Compact floor")]
+    Unlawful,
 }
 
 impl Refusal {
@@ -484,6 +563,10 @@ impl Refusal {
             Refusal::NoWeapon => "no_weapon",
             Refusal::NotReflex => "not_reflex",
             Refusal::NoJammer => "no_jammer",
+            // 17b cut M1b.1: the law's two words and the count's.
+            Refusal::Unwarranted => "unwarranted",
+            Refusal::NoSlot => "no_slot",
+            Refusal::Unlawful => "unlawful",
         }
     }
 }
@@ -752,7 +835,11 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         let standing = crate::deliberation::order::StandingOrder::accepted((**order).clone(), at);
         if controller == Controller::Mind {
             let rekeyed = arena.rekey_order(i.unit, &standing.order, standing.expires_ms);
-            arena.minds.entry(i.unit).or_default().order = Some(rekeyed);
+            arena
+                .minds
+                .entry(i.unit)
+                .or_insert_with(|| crate::arena::mind::MindState::fresh(&arena.arena_cfg.reflex))
+                .order = Some(rekeyed);
         } else {
             arena.reflex.set_order(i.unit, standing);
         }
@@ -838,7 +925,8 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             | IntentKind::Order(_)
             | IntentKind::ReleaseOrder { .. }
             | IntentKind::Place { .. }
-            | IntentKind::Emcon { .. } => {}
+            | IntentKind::Emcon { .. }
+            | IntentKind::Condition(_) => {}
         }
         match &i.kind {
             IntentKind::Goal(goal) => land_goal(arena, i.unit, *goal, source),
@@ -868,7 +956,12 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     // **16b cut I.3**: nor does a linkdead seat refuse a staff place — a
     // linkdead pilot's wedged tank is the other stuck unit staff reach for, and
     // nobody is at the seat to have given the order anyway.
-    if unit.linkdead && !place {
+    //
+    // **17b cut M1b.1**: nor a condition slot's own shot
+    // (`IntentSource::Cond`): an arming already given stands through a pilot's
+    // linkdead grace, as a continuous order already given stands — the slot is
+    // the principal's decision, written down before the link dropped.
+    if unit.linkdead && !place && source != IntentSource::Cond {
         return IntentOutcome::Refused(Refusal::Linkdead);
     }
     // **16b cut M.1** (`T-82`): the rate, in arena seconds, on a seat's orders
@@ -1351,7 +1444,8 @@ mod tests {
         );
         assert!(
             !IntentKind::Fire {
-                weapon: SmolStr::new("cannon")
+                weapon: SmolStr::new("cannon"),
+                slot: None,
             }
             .is_continuous()
         );
@@ -1373,7 +1467,8 @@ mod tests {
         );
         assert_eq!(
             IntentKind::Fire {
-                weapon: SmolStr::new("cannon")
+                weapon: SmolStr::new("cannon"),
+                slot: None,
             }
             .channel_required(),
             Channel::Fire
@@ -1686,7 +1781,8 @@ mod tests {
                         1,
                         seq,
                         IntentKind::Fire {
-                            weapon: SmolStr::new("cannon")
+                            weapon: SmolStr::new("cannon"),
+                            slot: None,
                         }
                     ),
                     IntentSource::Seat
@@ -1765,7 +1861,8 @@ mod tests {
                     1,
                     2,
                     IntentKind::Fire {
-                        weapon: SmolStr::new("cannon")
+                        weapon: SmolStr::new("cannon"),
+                        slot: None,
                     }
                 ),
                 IntentSource::Seat
@@ -1893,6 +1990,7 @@ mod tests {
                 1,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
             ),
             IntentSource::Seat,
@@ -3413,5 +3511,119 @@ mod tests {
             );
         }
         assert_eq!(free.unit(RED).map(|unit| unit.orders_in_window), Some(0));
+    }
+
+    /// **17b cut M1b.1**: an arming is a discrete `fire` order on the fire
+    /// channel, serde-able as `pending` carries it; a `Fire`'s `slot` is absent
+    /// on the wire when `None` and defaults when read; and a condition slot's
+    /// own shot (`IntentSource::Cond`) is never counted on the seat window and
+    /// never refused `Linkdead`.
+    #[test]
+    fn m1b1_an_arming_is_discrete_and_a_slot_shot_is_counted_on_nothing() {
+        use crate::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
+        let arming = IntentKind::Condition(Arming::Arm(FireCondition {
+            weapon: SmolStr::new("cannon"),
+            target: SlotTarget::BestHostile,
+            min_permille: 100,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 2,
+            min_range_m: 0,
+            max_range_m: 600,
+        }));
+        assert!(arming.is_discrete());
+        assert!(!arming.is_continuous());
+        assert_eq!(arming.channel_required(), Channel::Fire);
+        assert_eq!(arming.as_str(), "fire");
+        let text = serde_json::to_string(&arming).expect("an arming serialises");
+        assert_eq!(
+            text,
+            "{\"condition\":{\"arm\":{\"weapon\":\"cannon\",\"target\":{\"target\":\"best_hostile\"},\
+             \"min_permille\":100,\"aspects\":15,\"min_rounds_left\":2,\"min_range_m\":0,\
+             \"max_range_m\":600}}}"
+        );
+        let back: IntentKind = serde_json::from_str(&text).expect("and reads back");
+        assert_eq!(back, arming);
+        let disarm = IntentKind::Condition(Arming::Disarm { weapon: None });
+        let back: IntentKind =
+            serde_json::from_str(&serde_json::to_string(&disarm).expect("serialises"))
+                .expect("reads back");
+        assert_eq!(back, disarm);
+        // `Fire.slot`: absent when `None`, read back when present, defaulted
+        // when a format-6 `Fire` is read.
+        assert_eq!(
+            serde_json::to_string(&IntentKind::fire("cannon")).expect("serialises"),
+            "{\"fire\":{\"weapon\":\"cannon\"}}"
+        );
+        let cited = IntentKind::Fire {
+            weapon: SmolStr::new("cannon"),
+            slot: Some(2),
+        };
+        let text = serde_json::to_string(&cited).expect("serialises");
+        assert_eq!(text, "{\"fire\":{\"weapon\":\"cannon\",\"slot\":2}}");
+        let back: IntentKind =
+            serde_json::from_str("{\"fire\":{\"weapon\":\"cannon\"}}").expect("a bare fire reads");
+        assert_eq!(back, IntentKind::fire("cannon"));
+
+        // A seat's arming counts on the window as a `LOCK` does.
+        let mut arena = two_tanks(1);
+        online(&mut arena, RED);
+        let max = arena.arena_cfg.intents.max_pending_per_unit;
+        for seq in 0..u64::from(max) {
+            assert_eq!(
+                apply_intent(
+                    &mut arena,
+                    &intent(RED, 1, seq, arming.clone()),
+                    IntentSource::Seat
+                ),
+                IntentOutcome::Queued
+            );
+        }
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 99, arming.clone()),
+                IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::QueueFull)
+        );
+        // A slot's own shot past the window, and through a linkdead seat.
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 100, IntentKind::fire("cannon")),
+                IntentSource::Cond
+            ),
+            IntentOutcome::Queued
+        );
+        if let Some(state) = arena.unit_mut(RED) {
+            state.linkdead = true;
+        }
+        assert_eq!(
+            apply_intent(&mut arena, &intent(RED, 1, 101, arming), IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Linkdead),
+            "a seat's arming meets the linkdead gate"
+        );
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 102, IntentKind::fire("cannon")),
+                IntentSource::Cond
+            ),
+            IntentOutcome::Queued,
+            "a slot's own shot does not"
+        );
+        assert_eq!(
+            arena.unit(RED).map(|state| state.orders_in_window),
+            Some(max),
+            "the slot's shots counted nothing"
+        );
+        // The three new words.
+        assert_eq!(Refusal::Unwarranted.as_str(), "unwarranted");
+        assert_eq!(Refusal::NoSlot.as_str(), "no_slot");
+        assert_eq!(Refusal::Unlawful.as_str(), "unlawful");
+        assert_eq!(
+            serde_json::to_string(&Refusal::Unlawful).expect("serialises"),
+            "\"unlawful\""
+        );
     }
 }

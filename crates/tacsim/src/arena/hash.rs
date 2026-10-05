@@ -188,6 +188,34 @@ thread_local! {
 ///    a mind reads, a range it holds, an order it obeys — and none of them has
 ///    a ledger line of its own, so a replay that differed in one would
 ///    otherwise compare equal until the difference reached a pose.
+///
+///    **Since 17b cut M1b.1** each row ends, after `strikes`, with **the
+///    card's bytes** ([`crate::arena::card::StockCard`], doc 17 §11): its
+///    fields in declaration order — an enum as its code byte, a bool as one
+///    byte, an integer little-endian, no separator — because the card is what
+///    a mind thinks under and a later sub-cut's runner reads it.
+///
+///    **Item 3d, the condition slots** (17b cut M1b.1; doc 17 §5, D-UM-16),
+///    right after item 3c: every row of [`Arena::conditions`], in unit-id
+///    order and with **no count prefix** (an arena with no slot — every
+///    production match — adds no byte): the unit's `u32`, then per ARMED slot
+///    its 1-based number `u8`, the weapon id's bytes, the target as `[0]`
+///    (lock), `[1]` then the contact's `u64` (contact) or `[2]` (best hostile),
+///    `min_permille` `u16`, the aspect mask `u8`, `min_rounds_left` `u32`,
+///    `min_range_m` `u32` and `max_range_m` `u32`. A slot decides a shot at a
+///    later millisecond with no ledger line of its own until it fires.
+///
+///    **Item 3e, the held-shot rows** (17b cut M1b.1), right after 3d: every
+///    entry of [`Arena::held_said`] in key order, per row with no count prefix
+///    — the unit's `u32`, the slot `u8`, the contact's `u64` and the stamp
+///    `i64` — because a stamp decides whether a later held sentence is said.
+///
+///    **[`Arena::odds_floor_permille`] is NOT folded** (17b cut M1b.1): it is a
+///    per-match constant captured at check-out, carried by the snapshot, and
+///    read by nothing a production match runs before 17b cut M4 — folding it
+///    would move the production hash of every match for a value no production
+///    match reads. Two arenas differing only in the floor hash equal (the
+///    in-source probe pins it).
 /// 4. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -774,6 +802,39 @@ pub fn state_hash(arena: &Arena) -> u64 {
     for (unit, mind) in &arena.minds {
         hash = fold_mind(hash, *unit, mind);
     }
+    // **17b cut M1b.1** (item 3d): every hull's condition slots, per row with
+    // no count prefix — an arena with none (every production match) folds no
+    // byte here.
+    for (unit, slots) in arena.conditions.rows() {
+        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
+        for (at, slot) in slots.iter().enumerate() {
+            let Some(cond) = slot else {
+                continue;
+            };
+            let number = u8::try_from(at.saturating_add(1)).unwrap_or(u8::MAX);
+            hash = fnv1a64_update(hash, &[number]);
+            hash = fnv1a64_update(hash, cond.weapon.as_bytes());
+            hash = fnv1a64_update(hash, &[cond.target.code()]);
+            if let crate::arena::conditions::SlotTarget::Contact { id } = cond.target {
+                hash = fnv1a64_update(hash, &id.0.to_le_bytes());
+            }
+            hash = fnv1a64_update(hash, &cond.min_permille.to_le_bytes());
+            hash = fnv1a64_update(hash, &[cond.aspects]);
+            hash = fnv1a64_update(hash, &cond.min_rounds_left.to_le_bytes());
+            hash = fnv1a64_update(hash, &cond.min_range_m.to_le_bytes());
+            hash = fnv1a64_update(hash, &cond.max_range_m.to_le_bytes());
+        }
+    }
+    // **17b cut M1b.1** (item 3e): when each slot last said why it held, per row
+    // with no count prefix — empty in every production match.
+    for ((unit, slot, contact), at_ms) in &arena.held_said {
+        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &[*slot]);
+        hash = fnv1a64_update(hash, &contact.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
+    }
+    // **17b cut M1b.1**: `arena.odds_floor_permille` is deliberately NOT folded
+    // (this function's head says why).
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
         hash = fnv1a64_update(hash, &id.0.to_le_bytes());
@@ -928,7 +989,41 @@ fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::M
         }
         None => hash = fnv1a64_update(hash, &[0_u8]),
     }
-    fnv1a64_update(hash, &[mind.strikes])
+    hash = fnv1a64_update(hash, &[mind.strikes]);
+    // **17b cut M1b.1**: the card, its fields in declaration order — an enum as
+    // its code byte, a bool as one byte, an integer little-endian.
+    fold_card(hash, &mind.card)
+}
+
+/// **One mind's card** (17b cut M1b.1; inside item 3c of [`state_hash`], after
+/// `strikes`).
+fn fold_card(mut hash: u64, card: &crate::arena::card::StockCard) -> u64 {
+    hash = fnv1a64_update(hash, &[card.stance.code()]);
+    hash = fnv1a64_update(hash, &card.engage_band_permille.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.close_m.to_le_bytes());
+    hash = fnv1a64_update(
+        hash,
+        &[card.orbit_sense.code(), u8::from(card.turn_into_hits)],
+    );
+    hash = fnv1a64_update(hash, &card.turn_s.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.screen_bearing.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.screen_arc.to_le_bytes());
+    hash = fnv1a64_update(hash, &[card.opening.code()]);
+    hash = fnv1a64_update(hash, &card.min_odds_permille.to_le_bytes());
+    hash = fnv1a64_update(hash, &[card.aspect.code()]);
+    hash = fnv1a64_update(hash, &card.reserve_pct.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.reserve_odds_pct.to_le_bytes());
+    hash = fnv1a64_update(hash, &[card.prefer.code()]);
+    hash = fnv1a64_update(hash, &card.weight_range.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.weight_facet.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.weight_health.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.switch_m.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.withdraw_permille.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.stand_min_permille.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.rally_ms.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.search_ms.to_le_bytes());
+    hash = fnv1a64_update(hash, &card.hunt_after_ms.to_le_bytes());
+    fnv1a64_update(hash, &[u8::from(card.stop_unseen)])
 }
 
 /// **A motor row's avoided cells** (16b cut Q.7's encoding; one function since
@@ -1836,5 +1931,164 @@ mod tests {
             unit.ecm_on = true;
         }
         assert_eq!(state_hash(&silent), base);
+    }
+
+    /// **17b cut M1b.1** (items 3d, 3e, the card inside 3c): every new field
+    /// moves the hash, and an arena with none folds no byte for them — the
+    /// floor folds nothing at all.
+    #[test]
+    fn m1b1_slots_held_rows_and_the_card_move_the_hash_and_the_floor_does_not() {
+        use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget};
+        use crate::arena::state::ContactId;
+        use smol_str::SmolStr;
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        // The floor is a per-match constant: not folded.
+        let mut floor = base_arena.clone();
+        floor.odds_floor_permille = 50;
+        assert_eq!(state_hash(&floor), base, "the floor folds nothing");
+        // Item 3d: a slot, and each of its terms.
+        let cond = FireCondition {
+            weapon: SmolStr::new("cannon"),
+            target: SlotTarget::Lock,
+            min_permille: 100,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: u32::MAX,
+        };
+        let armed_with = |cond: FireCondition| {
+            let mut arena = base_arena.clone();
+            let _ = arena.conditions.arm(ObjId(4), cond);
+            state_hash(&arena)
+        };
+        let armed = armed_with(cond.clone());
+        assert_ne!(armed, base, "a slot moves the hash");
+        let variants = [
+            FireCondition {
+                weapon: SmolStr::new("laser"),
+                ..cond.clone()
+            },
+            FireCondition {
+                target: SlotTarget::BestHostile,
+                ..cond.clone()
+            },
+            FireCondition {
+                target: SlotTarget::Contact { id: ContactId(1) },
+                ..cond.clone()
+            },
+            FireCondition {
+                target: SlotTarget::Contact { id: ContactId(2) },
+                ..cond.clone()
+            },
+            FireCondition {
+                min_permille: 110,
+                ..cond.clone()
+            },
+            FireCondition {
+                aspects: 0b0110,
+                ..cond.clone()
+            },
+            FireCondition {
+                min_rounds_left: 1,
+                ..cond.clone()
+            },
+            FireCondition {
+                min_range_m: 1,
+                ..cond.clone()
+            },
+            FireCondition {
+                max_range_m: 1,
+                ..cond.clone()
+            },
+        ];
+        let mut seen = vec![base, armed];
+        for variant in variants {
+            let hash = armed_with(variant.clone());
+            assert!(!seen.contains(&hash), "{variant:?} folds as another slot");
+            seen.push(hash);
+        }
+        // The slot's number is folded: the same terms in slot 2.
+        let mut second = base_arena.clone();
+        let _ = second.conditions.arm(
+            ObjId(4),
+            FireCondition {
+                weapon: SmolStr::new("other"),
+                ..cond.clone()
+            },
+        );
+        let _ = second.conditions.arm(ObjId(4), cond.clone());
+        let _ = second.conditions.disarm(ObjId(4), Some("other"));
+        assert_ne!(state_hash(&second), armed, "slot 2 is not slot 1");
+        // Item 3e: each field of a held-shot row.
+        let held_with = |key: (ObjId, u8, ContactId), at: i64| {
+            let mut arena = base_arena.clone();
+            arena.held_said.insert(key, at);
+            state_hash(&arena)
+        };
+        let row = held_with((ObjId(4), 1, ContactId(7)), 1_000);
+        assert_ne!(row, base);
+        for other in [
+            held_with((ObjId(9), 1, ContactId(7)), 1_000),
+            held_with((ObjId(4), 2, ContactId(7)), 1_000),
+            held_with((ObjId(4), 1, ContactId(8)), 1_000),
+            held_with((ObjId(4), 1, ContactId(7)), 1_001),
+        ] {
+            assert_ne!(other, row);
+        }
+        // The card, inside a mind's row: each section's terms move it.
+        let mut minded = base_arena.clone();
+        minded
+            .minds
+            .insert(ObjId(4), crate::arena::mind::MindState::default());
+        let card_base = state_hash(&minded);
+        // Every one of the card's 24 fields, each edit hashing apart from the
+        // base and from every other edit (a dropped or a doubled field folds
+        // two cards as one).
+        use crate::arena::card::{AspectWord, Opening, OrbitSense, Prefer, Stance};
+        let edits: [fn(&mut crate::arena::card::StockCard); 24] = [
+            |card| card.stance = Stance::Orbit,
+            |card| card.engage_band_permille += 1,
+            |card| card.close_m += 1,
+            |card| card.orbit_sense = OrbitSense::Cw,
+            |card| card.turn_into_hits = !card.turn_into_hits,
+            |card| card.turn_s += 1,
+            |card| card.screen_bearing += 1,
+            |card| card.screen_arc += 1,
+            |card| card.opening = Opening::Search,
+            |card| card.min_odds_permille += 1,
+            |card| card.aspect = AspectWord::Rear,
+            |card| card.reserve_pct += 1,
+            |card| card.reserve_odds_pct += 1,
+            |card| card.prefer = Prefer::BestOdds,
+            |card| card.weight_range += 1,
+            |card| card.weight_facet += 1,
+            |card| card.weight_health += 1,
+            |card| card.switch_m += 1,
+            |card| card.withdraw_permille += 1,
+            |card| card.stand_min_permille += 1,
+            |card| card.rally_ms += 1,
+            |card| card.search_ms += 1,
+            |card| card.hunt_after_ms += 1,
+            |card| card.stop_unseen = !card.stop_unseen,
+        ];
+        let mut seen = vec![card_base];
+        for (at, edit) in edits.into_iter().enumerate() {
+            let mut edited = minded.clone();
+            if let Some(state) = edited.minds.get_mut(&ObjId(4)) {
+                edit(&mut state.card);
+                assert_ne!(
+                    state.card,
+                    minded.minds[&ObjId(4)].card,
+                    "edit {at} changed nothing"
+                );
+            }
+            let hash = state_hash(&edited);
+            assert!(
+                !seen.contains(&hash),
+                "card edit {at} folds as another card"
+            );
+            seen.push(hash);
+        }
     }
 }

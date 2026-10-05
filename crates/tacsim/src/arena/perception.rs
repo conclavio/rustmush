@@ -1452,27 +1452,35 @@ impl Arena {
     /// target drove, however completely it broke line of sight, and even after it
     /// was a wreck. Entry zones put teammates in adjacent cells, so that held from
     /// the first pulse of every match with two or more tanks a side.
+    ///
+    /// **17b cut M1b.1 — the answer** (doc 17 §5's *every sensor pass that
+    /// refreshes the conditioned contact's plot*): the `(receiver, contact)`
+    /// pairs this share inserted or refreshed — the plot written, or the class
+    /// told apart — in the order it wrote them, **collected only for a receiver
+    /// that holds a condition slot** (`Arena::conditions`). A share into a side
+    /// with no slot answers an empty vector and allocates nothing for it; the
+    /// due loop's `Share` arm evaluates each receiver whose lock is among them.
     pub fn share_pass(
         &mut self,
         sharer: ObjId,
         t_ms: i64,
         counters: &mut PerceptionCounters,
         journal: &mut Vec<Notice>,
-    ) {
+    ) -> Vec<(ObjId, ContactId)> {
         let Some(sharing) = self.unit(sharer) else {
-            return;
+            return Vec::new();
         };
         if sharing.limits.wreck {
-            return;
+            return Vec::new();
         }
         let Some(sensor) = sharing.sensor.as_ref() else {
-            return;
+            return Vec::new();
         };
         if sensor.share_range_cells == 0 {
-            return;
+            return Vec::new();
         }
         let Some(from) = self.eye_of(sharing) else {
-            return;
+            return Vec::new();
         };
         let attenuation = sensor.max_attenuation;
         let cell_cm = u64::from(self.definition.terrain.cell_cm());
@@ -1503,7 +1511,7 @@ impl Arena {
             })
             .collect();
         if mine.is_empty() {
-            return;
+            return Vec::new();
         }
         // **16b cut Q.6**: the pods the *sharer* is standing among, folded once for
         // the whole pass and not once per mate — the observer's own fold in
@@ -1582,7 +1590,14 @@ impl Arena {
             mates.push(id);
         }
         let seed = self.seed;
+        // **17b cut M1b.1** (doc 17 §5; 17b §1(c), (d)): the (receiver, contact)
+        // pairs this share inserted or refreshed — collected ONLY for a receiver
+        // holding a condition slot, so a production share (no slot anywhere)
+        // pays one map miss per receiver and allocates nothing for it. The due
+        // loop's `Share` arm evaluates each receiver whose LOCK is among them.
+        let mut refreshed: Vec<(ObjId, ContactId)> = Vec::new();
         for mate in mates {
+            let watched = !self.conditions.is_empty_for(mate);
             for shared in &mine {
                 let target = shared.target;
                 let team = shared.team;
@@ -1600,7 +1615,11 @@ impl Arena {
                         // of transmission, so a receiver's copy cannot outlive the
                         // sighting behind it. The plot travels with the stamp, so
                         // the two can never be a fresh time against an old place.
+                        // 17b cut M1b.1: whether this share wrote the row a
+                        // slot's warrant reads — its plot or its class.
+                        let mut wrote = false;
                         if shared.own.at_ms > held.last_seen_ms {
+                            wrote = true;
                             held.last_seen_ms = shared.own.at_ms;
                             held.seen_at = shared.own.plot;
                         }
@@ -1653,6 +1672,10 @@ impl Arena {
                                 Vec::new(),
                             ));
                             counters.classified = counters.classified.saturating_add(1);
+                            wrote = true;
+                        }
+                        if watched && wrote {
+                            refreshed.push((mate, id));
                         }
                     }
                     None => {
@@ -1715,10 +1738,14 @@ impl Arena {
                         ));
                         counters.detected = counters.detected.saturating_add(1);
                         counters.classified = counters.classified.saturating_add(1);
+                        if watched {
+                            refreshed.push((mate, id));
+                        }
                     }
                 }
             }
         }
+        refreshed
     }
 
     /// **Doc 16 §3.1's `Alert` trigger**: some unit holds a contact whose Euclidean
@@ -2024,7 +2051,11 @@ pub struct FrameContact {
 /// `aspect = side,rear` mask tests against; the `CONTACTS` row prints the
 /// **side** word ([`Aspect::side_word`]: `front`, `side`, `side`, `rear`)
 /// because which flank is a fact a gunner does not need on a 120-column row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// **17b cut M1b.1**: serde-able as its facet word ([`Aspect::as_str`]), for
+/// the slot notices a mind's buffer carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Aspect {
     /// The contact's front was toward the platform.
     Front,
@@ -2569,6 +2600,12 @@ pub enum NoticeKind {
     /// **No route reaches the pilot's `DRIVE` goal from where the hull stands**
     /// (17b cut M1a.4): the motor dropped the goal and stopped the hull.
     DriveNoRoute,
+    /// **A condition slot fired** (17b cut M1b.1 defines it; 17b cut M1b.4
+    /// stages it): `Cannon fires at BA by S1 (62%, side).`
+    SlotFired,
+    /// **A condition slot held a shot** (17b cut M1b.1 defines it; 17b cut M1b.4
+    /// stages it): `S1 held the cannon: 54% under your 60%.`
+    SlotHeld,
 }
 
 impl NoticeKind {
@@ -2606,6 +2643,9 @@ impl NoticeKind {
             // **17b cut M1a.4**: the motor's two answers to a `DRIVE`.
             NoticeKind::DriveArrived => "drive_arrived",
             NoticeKind::DriveNoRoute => "drive_no_route",
+            // **17b cut M1b.1**: a slot's two answers.
+            NoticeKind::SlotFired => "slot_fired",
+            NoticeKind::SlotHeld => "slot_held",
         }
     }
 }
@@ -2634,6 +2674,14 @@ pub enum RefusalDetail {
         heat: u32,
         /// The ceiling.
         max: u32,
+    },
+    /// [`crate::arena::intents::Refusal::Unlawful`] (17b cut M1b.1; doc 17 §5,
+    /// D-UM-17 as amended): the match's Compact floor, as the arena captured it
+    /// at check-out (`Arena::odds_floor_permille`), so the sentence names the
+    /// floor the condition was held to.
+    Floor {
+        /// The floor, per mille.
+        permille: u32,
     },
 }
 
@@ -2887,6 +2935,34 @@ pub enum FrameNotice {
         /// Arrived, or no route.
         outcome: DriveOutcome,
     },
+    /// **A condition slot fired** (17b cut M1b.1 defines it; 17b cut M1b.4
+    /// stages it; doc 17 §5: *every slot shot is announced once*), said on the
+    /// shooter's own hull: its own slot, its own weapon, the contact its own
+    /// platform holds the lock under, and the chance and the aspect that row
+    /// already earned — nothing the platform has not detected.
+    SlotFired {
+        /// The slot, 1-based.
+        slot: u8,
+        /// The weapon's component id.
+        weapon: SmolStr,
+        /// The lock, named, while the platform still holds it.
+        contact: Option<Named>,
+        /// The chance the plot answered, per mille.
+        p_permille: u32,
+        /// The aspect the plot showed.
+        aspect: Aspect,
+    },
+    /// **A condition slot held a shot** (17b cut M1b.1 defines it; 17b cut
+    /// M1b.4 stages it, at most once per `(slot, contact)` per
+    /// `crate::arena::conditions::HELD_SAID_MS`), with the term that failed.
+    SlotHeld {
+        /// The slot, 1-based.
+        slot: u8,
+        /// The weapon's component id.
+        weapon: SmolStr,
+        /// Why.
+        why: crate::arena::conditions::HeldWhy,
+    },
 }
 
 /// **The two answers the motor gives a `DRIVE`** (17b cut M1a.4).
@@ -2932,6 +3008,9 @@ impl FrameNotice {
             FrameNotice::Drive {
                 outcome: DriveOutcome::NoRoute,
             } => NoticeKind::DriveNoRoute,
+            // 17b cut M1b.1: a slot's two answers.
+            FrameNotice::SlotFired { .. } => NoticeKind::SlotFired,
+            FrameNotice::SlotHeld { .. } => NoticeKind::SlotHeld,
         }
     }
 
@@ -2973,11 +3052,14 @@ impl FrameNotice {
     }
 
     /// **The weapon the refused order named**, where it named one (16b cut D.2,
-    /// `B-07`).
+    /// `B-07`) — and, since **17b cut M1b.1**, the weapon a slot notice is about.
     #[must_use]
     pub fn weapon(&self) -> Option<&SmolStr> {
         match self {
             FrameNotice::Refused { weapon, .. } => weapon.as_ref(),
+            FrameNotice::SlotFired { weapon, .. } | FrameNotice::SlotHeld { weapon, .. } => {
+                Some(weapon)
+            }
             _ => None,
         }
     }
@@ -3083,7 +3165,10 @@ impl FrameNotice {
             // 16b cut O.2: nor is the pilot's own pod's switch.
             | FrameNotice::Emcon { .. }
             // 17b cut M1a.4: nor is the pilot's own drive.
-            | FrameNotice::Drive { .. } => None,
+            | FrameNotice::Drive { .. }
+            // 17b cut M1b.1: nor is a slot's shot or its held one.
+            | FrameNotice::SlotFired { .. }
+            | FrameNotice::SlotHeld { .. } => None,
         }
     }
 
@@ -3112,6 +3197,16 @@ impl FrameNotice {
             | FrameNotice::Emcon { .. }
             // **17b cut M1a.4**: nor does the motor's answer to a `DRIVE`.
             | FrameNotice::Drive { .. } => None,
+            // **17b cut M1b.1**: a slot shot names its lock while the platform
+            // holds it, and a held one the lock its aspect or range was read
+            // off; a held shot for odds or rounds names nobody.
+            FrameNotice::SlotFired { contact, .. } => *contact,
+            FrameNotice::SlotHeld { why, .. } => match why {
+                crate::arena::conditions::HeldWhy::Aspect { contact, .. }
+                | crate::arena::conditions::HeldWhy::Range { contact, .. } => Some(*contact),
+                crate::arena::conditions::HeldWhy::Odds { .. }
+                | crate::arena::conditions::HeldWhy::Rounds { .. } => None,
+            },
         }
     }
 }
@@ -3976,5 +4071,70 @@ mod tests {
             ],
             "one transition for the whole flood, at the observer's own next pass"
         );
+    }
+
+    /// **17b cut M1b.1**: `share_pass` answers the `(receiver, contact)` pairs it
+    /// inserted or refreshed, and only for a receiver holding a condition slot —
+    /// a share into a side with no slot answers an empty vector (no allocation:
+    /// `Vec::new()` reserves nothing) and still writes the mate's row.
+    #[test]
+    fn m1b1_a_share_answers_its_refreshed_pairs_only_for_a_slot_holder() {
+        use crate::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
+        use crate::arena::test_support::line_tank;
+        const SHARER: ObjId = ObjId(4);
+        const MATE: ObjId = ObjId(5);
+        const TARGET: ObjId = ObjId(9);
+        let mut arena = arena_of(vec![
+            line_tank(SHARER, Team::Red, pose(1_500, 1_500)),
+            line_tank(MATE, Team::Red, pose(1_500, 2_500)),
+            line_tank(TARGET, Team::Blue, pose(5_500, 1_500)),
+        ]);
+        let plot = arena
+            .unit(TARGET)
+            .map(crate::arena::state::SeenPose::of)
+            .unwrap_or_default();
+        let sighted = |at: i64| {
+            crate::arena::state::ShadowContact::sighted(
+                TARGET,
+                Classification::Classified { team: Team::Blue },
+                at,
+                plot,
+            )
+        };
+        let theirs = crate::arena::rng::draw_contact_id(arena.seed, SHARER, TARGET);
+        let mine = crate::arena::rng::draw_contact_id(arena.seed, MATE, TARGET);
+        arena.contacts.insert(SHARER, theirs, sighted(100));
+        let mut counters = PerceptionCounters::default();
+        let mut journal: Vec<Notice> = Vec::new();
+        let pairs = arena.share_pass(SHARER, 100, &mut counters, &mut journal);
+        assert!(pairs.is_empty(), "no slot on the side: {pairs:?}");
+        assert_eq!(pairs.capacity(), 0, "and nothing allocated for it");
+        assert!(
+            arena.contacts.get(MATE, mine).is_some(),
+            "the share still landed"
+        );
+        // The mate arms a slot; a newer sighting refreshes its row.
+        assert_eq!(
+            arena.resolve_arming(
+                MATE,
+                &Arming::Arm(FireCondition {
+                    weapon: smol_str::SmolStr::new("cannon"),
+                    target: SlotTarget::Lock,
+                    min_permille: 100,
+                    aspects: ASPECTS_ANY,
+                    min_rounds_left: 0,
+                    min_range_m: 0,
+                    max_range_m: u32::MAX,
+                }),
+                0
+            ),
+            Ok(Some(1))
+        );
+        arena.contacts.insert(SHARER, theirs, sighted(200));
+        let pairs = arena.share_pass(SHARER, 200, &mut counters, &mut journal);
+        assert_eq!(pairs, vec![(MATE, mine)]);
+        // A share no newer than the mate's row refreshes nothing.
+        let pairs = arena.share_pass(SHARER, 200, &mut counters, &mut journal);
+        assert!(pairs.is_empty(), "{pairs:?}");
     }
 }

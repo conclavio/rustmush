@@ -3887,6 +3887,31 @@ pub struct Arena {
     /// (`crate::arena::hash`, item 3c), so an arena with no mind — every match
     /// that exists — folds no byte for it; carried whole by a snapshot.
     pub minds: BTreeMap<ObjId, crate::arena::mind::MindState>,
+    /// **Every hull's condition slots** (17b cut M1b.1; doc 17 §5, D-UM-16):
+    /// the principal's shot decisions, armed on a hull of any controller
+    /// (`crate::arena::conditions`' head says why here and not on a mind's row).
+    /// A hull holds a key only while a slot is armed. Folded per row with no
+    /// count prefix (`crate::arena::hash`, item 3d), so an arena with none —
+    /// every production match — folds no byte; carried by a snapshot.
+    pub conditions: crate::arena::conditions::ConditionTable,
+    /// **When each slot last said why it held, per contact** (17b cut M1b.1;
+    /// doc 17 §5: *a held shot said at most once per contact per 10 s*):
+    /// `(unit, slot, contact)` to the arena millisecond it was said. 17b cut
+    /// M1b.4 writes it; this cut carries it (through `pairs`), folds it (item
+    /// 3e, per row with no count prefix) and drops a slot's rows when the slot
+    /// is disarmed, re-armed or cleared.
+    pub held_said: BTreeMap<(ObjId, u8, ContactId), i64>,
+    /// **The match's Compact floor**, per mille (17b cut M1b.1; doc 17 §5,
+    /// D-UM-17 as amended 2026-10-04): the least `min_permille` a lawful
+    /// condition may carry, **captured at check-out** —
+    /// `crate::arena_task::spawn_arena` writes `[tacsim.minds].odds_floor_permille`
+    /// here before the arena moves into its task, and [`Arena::new`] defaults it
+    /// to `MindsConfig::default()`'s 100 for every other caller. A per-match
+    /// constant: **NEVER folded into `state_hash`** (a folded constant would move
+    /// the production hash for a value no production match reads before 17b cut
+    /// M4); **carried by the snapshot**, so a config reload between a check-out
+    /// and a resume moves nothing — a resumed arena keeps its own.
+    pub odds_floor_permille: u32,
     /// **The thinks waiting to land** (17b cut M1a.5; D-UM-21): the intents,
     /// the new memory and the epochs of each hull's last think, from its
     /// [`DueKind::MindThink`] to its [`DueKind::MindLand`] one substep later.
@@ -4614,6 +4639,11 @@ impl Arena {
             // 17b cut M1a.5: no mind until the adoptions below; the runner is
             // the one `snapshot.rs`' decode sets too.
             minds: BTreeMap::new(),
+            // 17b cut M1b.1: no slot, nothing said, and the default floor —
+            // `spawn_arena` writes the configured one before the move.
+            conditions: crate::arena::conditions::ConditionTable::default(),
+            held_said: BTreeMap::new(),
+            odds_floor_permille: crate::config::MindsConfig::default().odds_floor_permille,
             mind_landings: BTreeMap::new(),
             mind_runner: crate::arena::mind::default_mind_runner(arena_cfg),
             min_cost,

@@ -251,6 +251,16 @@ pub enum EventKind {
         range_cm: u64,
         /// How many rounds left the weapon (the burst, or what was left of it).
         rounds: u32,
+        /// **Who fired, where the law asks** (17b cut M1b.1; doc 17 §5,
+        /// D-UM-14): `"cond"` for a condition slot's own shot, `"mind"` for a
+        /// mind's cited shot, absent for a seat's and a machine's — so every
+        /// line before this cut keeps its bytes, and a bare legacy line reads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<SmolStr>,
+        /// **The slot the shot was fired by or cites** (17b cut M1b.1), absent
+        /// when `by` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<u8>,
     },
     /// **A shot's flight time elapsed** (16b cut W.1; doc 16 §3.5 "Scheduled
     /// impact"). The outcome is the `hit` or `miss` line that follows it.
@@ -1193,6 +1203,19 @@ mod tests {
                 target: ObjId(9),
                 range_cm: 4_000,
                 rounds: 1,
+                by: None,
+                slot: None,
+            },
+            // 17b cut M1b.1 (D-UM-14): a condition slot's own shot, attributed.
+            EventKind::Fired {
+                unit: ObjId(4),
+                weapon: SmolStr::new_static("cannon"),
+                shot_seq: 2,
+                target: ObjId(9),
+                range_cm: 4_000,
+                rounds: 1,
+                by: Some(SmolStr::new_static("cond")),
+                slot: Some(1),
             },
             EventKind::Impact {
                 shot_seq: 1,
@@ -1668,5 +1691,49 @@ mod tests {
         let log = ledger(4_096, 8);
         assert_eq!(log.summary_ms(), 5_000);
         assert_eq!(log.max_bytes(), 4_096);
+    }
+
+    /// **17b cut M1b.1** (D-UM-14): a `fired` line carries `by` and `slot` only
+    /// when the shot was a slot's or a cited mind's; a bare line — every line
+    /// before this cut — is byte for byte what it was and still decodes.
+    #[test]
+    fn m1b1_a_fired_line_carries_its_attribution_only_when_there_is_one() {
+        let bare = EventKind::Fired {
+            unit: ObjId(4),
+            weapon: SmolStr::new_static("cannon"),
+            shot_seq: 1,
+            target: ObjId(9),
+            range_cm: 4_000,
+            rounds: 1,
+            by: None,
+            slot: None,
+        };
+        let text = serde_json::to_string(&bare).expect("serialises");
+        assert_eq!(
+            text,
+            "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":1,\"target\":9,\
+             \"range_cm\":4000,\"rounds\":1}"
+        );
+        let cond = EventKind::Fired {
+            unit: ObjId(4),
+            weapon: SmolStr::new_static("cannon"),
+            shot_seq: 1,
+            target: ObjId(9),
+            range_cm: 4_000,
+            rounds: 1,
+            by: Some(SmolStr::new_static("cond")),
+            slot: Some(2),
+        };
+        let text = serde_json::to_string(&cond).expect("serialises");
+        assert!(text.ends_with(",\"by\":\"cond\",\"slot\":2}"), "{text}");
+        let back: EventKind = serde_json::from_str(&text).expect("reads back");
+        assert_eq!(back, cond);
+        // A legacy line, written before the keys existed, decodes with neither.
+        let legacy: EventKind = serde_json::from_str(
+            "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":1,\"target\":9,\
+             \"range_cm\":4000,\"rounds\":1}",
+        )
+        .expect("a legacy line");
+        assert_eq!(legacy, bare);
     }
 }

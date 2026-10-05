@@ -51,6 +51,7 @@ use mush_sim::data::Pose;
 use smol_str::SmolStr;
 
 use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
+use crate::arena::conditions::ConditionTrigger;
 use crate::arena::hash::state_hash;
 use crate::arena::intents::{
     Control, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal, apply_control,
@@ -766,7 +767,12 @@ impl Arena {
                 && Arena::phase_two_tells(&intent.kind, refusal)
             {
                 let weapon = match &intent.kind {
-                    IntentKind::Fire { weapon } => Some(weapon.clone()),
+                    IntentKind::Fire { weapon, .. } => Some(weapon.clone()),
+                    // 17b cut M1b.1: an arming told `queue_full` or `wreck`
+                    // here names its weapon as phase 4's landing refusals do,
+                    // so it reads `FIRE cannon refused. …` — the shape every
+                    // `FIRE` refusal has.
+                    IntentKind::Condition(arming) => arming.weapon().cloned(),
                     _ => None,
                 };
                 // The word is `IntentKind::as_str`'s and phase 4 uses the same
@@ -912,12 +918,53 @@ impl Arena {
                         Ok(()) => {
                             let named = self.name_of(id, contact);
                             self.stage_notice(id, FrameNotice::Locked { contact: named });
+                            // **17b cut M1b.1** (doc 17 §5, D-UM-16): a new lock
+                            // is a new target for the hull's slots, read at the
+                            // lock's own millisecond and in the typed order — a
+                            // `LOCK` then an arming of one pulse lands the lock,
+                            // then the arming. A hull with no slot returns at once.
+                            let _ = self.evaluate_conditions(
+                                id,
+                                at_ms,
+                                ConditionTrigger::Lock,
+                                None,
+                                &mut reflex,
+                            );
                         }
                         Err(refusal) => self.stage_refusal(id, word, refusal, None),
                     },
-                    IntentKind::Fire { ref weapon } => {
+                    // A seat's typed `FIRE` — the human trigger, never gated
+                    // (`Arena::resolve_fire` is `FiredBy::Seat`).
+                    IntentKind::Fire { ref weapon, .. } => {
                         if let Err(refusal) = self.resolve_fire(id, weapon, at_ms) {
                             self.stage_refusal(id, word, refusal, Some(weapon.clone()));
+                        }
+                    }
+                    // **17b cut M1b.1** (doc 17 §4 D-UM-10, §5 D-UM-16, D-UM-17):
+                    // a seat's arming lands at the pulse's end in arrival order,
+                    // through the one resolver a mind's goes through; an armed
+                    // slot is evaluated at once (`ConditionTrigger::Arming`), so
+                    // a slot armed on a ready gun and a warranted lock fires at
+                    // this millisecond. Every refusal — `NoWeapon`, `Unlawful`,
+                    // `NoSlot` — is staged here with the arming's weapon, so it
+                    // reads `FIRE cannon refused. …` as every `FIRE` refusal does.
+                    IntentKind::Condition(ref arming) => {
+                        match self.resolve_arming(id, arming, at_ms) {
+                            Ok(Some(_)) => {
+                                let _ = self.evaluate_conditions(
+                                    id,
+                                    at_ms,
+                                    ConditionTrigger::Arming,
+                                    None,
+                                    &mut reflex,
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(refusal) => {
+                                let notice =
+                                    self.arming_refusal_notice(id, arming, refusal, self.now_ms);
+                                self.stage_notice(id, notice);
+                            }
                         }
                     }
                     // Continuous orders never queue (phase 2 applies them), and
@@ -1552,6 +1599,17 @@ impl Arena {
                     {
                         state.power = Power::Online;
                         notices.push((event.t_ms, EventKind::PowerOnline { unit }, Vec::new()));
+                        // **17b cut M1b.1** (doc 17 §5, D-UM-16): a slot armed
+                        // while the hull was cold fires at the millisecond its
+                        // power comes up, not at the next pass. A hull with no
+                        // slot returns at once and touches nothing.
+                        let _ = self.evaluate_conditions(
+                            unit,
+                            event.t_ms,
+                            ConditionTrigger::Startup,
+                            None,
+                            reflex,
+                        );
                     }
                     // **16b cut U.2** (16c `T-29`): a pod that has just come online
                     // radiates from this millisecond, so every fold taken earlier in
@@ -1604,6 +1662,22 @@ impl Arena {
                     if shared {
                         self.due.schedule(event.t_ms, DueKind::Share { unit });
                     }
+                    // **17b cut M1b.1** (doc 17 §5: *at every sensor pass that
+                    // refreshes the conditioned contact's plot*; 17b §1(d)): when
+                    // this hull's OWN sighting wrote its lock's row at this
+                    // millisecond, its slots read the new plot now. A hull with
+                    // no slot asks one map miss and nothing else.
+                    if !self.conditions.is_empty_for(unit)
+                        && self.own_pass_wrote_lock(unit, event.t_ms)
+                    {
+                        let _ = self.evaluate_conditions(
+                            unit,
+                            event.t_ms,
+                            ConditionTrigger::Pass,
+                            None,
+                            reflex,
+                        );
+                    }
                     // **16b cut F.3**: rescheduled for every unit still in the
                     // match, not only for one that carries a sensor. The pass is
                     // where contacts expire, and a platform with no sight of its
@@ -1622,7 +1696,33 @@ impl Arena {
                 }
                 // **16b cut S.1** (doc 16 §3.6 step 5, W6).
                 DueKind::Share { unit } => {
-                    self.share_pass(unit, event.t_ms, perception, &mut notices);
+                    let refreshed = self.share_pass(unit, event.t_ms, perception, &mut notices);
+                    // **17b cut M1b.1** (17b §1(c), (d)): each receiver holding a
+                    // slot whose LOCK this share inserted or refreshed reads the
+                    // new plot at this millisecond — in unit-id order, once each.
+                    // `share_pass` answered pairs only for receivers holding a
+                    // slot, so a production share hands back an empty vector.
+                    if !refreshed.is_empty() {
+                        let mut receivers: Vec<ObjId> = refreshed
+                            .iter()
+                            .filter(|(mate, contact)| {
+                                self.unit(*mate)
+                                    .is_some_and(|state| state.lock == Some(*contact))
+                            })
+                            .map(|(mate, _)| *mate)
+                            .collect();
+                        receivers.sort_unstable();
+                        receivers.dedup();
+                        for mate in receivers {
+                            let _ = self.evaluate_conditions(
+                                mate,
+                                event.t_ms,
+                                ConditionTrigger::Pass,
+                                None,
+                                reflex,
+                            );
+                        }
+                    }
                 }
                 // **16b cut W.1** (doc 16 §3.5 "Scheduled impact"): the shot arrives
                 // at its own timestamp, against the positions this substep
@@ -1647,7 +1747,25 @@ impl Arena {
                 // comes ready (16b cut U.1: within one substep of it, 250 ms on the
                 // shipped content), so the pilot's frame says "ready" then rather
                 // than at the next period boundary.
-                DueKind::WeaponReady { .. } => {}
+                //
+                // **17b cut M1b.1** (doc 17 §5, D-UM-16): and it is where a
+                // condition slot on that weapon is evaluated — the shot decision
+                // written down fires at the millisecond the gun comes ready, not
+                // at the pulse boundary after it, at every cadence. Only that
+                // weapon's slot; a hull with no slot returns at once and touches
+                // nothing, so the arm still changes no state for a match with no
+                // slot (every production match).
+                DueKind::WeaponReady { unit, ref weapon } => {
+                    if self.ended.is_none() {
+                        let _ = self.evaluate_conditions(
+                            unit,
+                            event.t_ms,
+                            ConditionTrigger::WeaponReady,
+                            Some(weapon),
+                            reflex,
+                        );
+                    }
+                }
                 // **16b cut N.1** (doc 16 §6): one AI unit's decision, applied at
                 // its own arena timestamp against the positions this substep
                 // committed — which is what makes the controller rate-independent
@@ -2928,6 +3046,19 @@ impl Arena {
                 Some((heat, max)) => RefusalDetail::Overheated { heat, max },
                 None => RefusalDetail::None,
             },
+            // **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the floor the
+            // arena captured at check-out, so the sentence names the floor the
+            // condition was held to. Filled here for EVERY `Unlawful`; an
+            // arming's refusal goes through `Arena::arming_refusal_notice`,
+            // which clears it back to `None` when the odds term met the floor
+            // (the refusal was for the target kind, a `Contact`), so that
+            // `refusal_line` says the fallback sentence that names no floor.
+            // An arming's landing refusal is staged through that function,
+            // never through `stage_refusal` directly (phase 2 tells an arming
+            // only `wreck` and `queue_full`, which carry no floor).
+            Refusal::Unlawful => RefusalDetail::Floor {
+                permille: self.odds_floor_permille,
+            },
             _ => RefusalDetail::None,
         };
         FrameNotice::Refused {
@@ -3184,7 +3315,7 @@ impl Arena {
     /// — a `detected` or a `classified` is staged in the same substep the store
     /// was written in — and answers `X0`, a name nothing resolves, rather than
     /// taking the arena down.
-    fn name_of(&self, viewer: ObjId, contact: ContactId) -> Named {
+    pub(crate) fn name_of(&self, viewer: ObjId, contact: ContactId) -> Named {
         Named {
             id: contact,
             designator: self
@@ -3929,6 +4060,7 @@ mod tests {
             epoch: 1,
             kind: IntentKind::Fire {
                 weapon: smol_str::SmolStr::new("cannon"),
+                slot: None,
             },
             seq: 2,
         };
@@ -4184,6 +4316,7 @@ mod tests {
                     A,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     5,
                 ),
@@ -6116,6 +6249,7 @@ mod tests {
             epoch: 1,
             kind: IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             seq: 2,
         };

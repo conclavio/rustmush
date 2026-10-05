@@ -1318,6 +1318,7 @@ fn a_shot_at_a_target_behind_full_cover_costs_a_round_and_a_cycle_and_misses_cov
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -1372,6 +1373,7 @@ fn a_target_that_leaves_the_predicted_cell_misses_moved_and_one_cell_is_still_a_
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -1409,6 +1411,7 @@ fn a_target_that_leaves_the_predicted_cell_misses_moved_and_one_cell_is_still_a_
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -1477,6 +1480,7 @@ fn a_target_that_turns_in_flight_re_resolves_against_the_same_draw() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -1619,6 +1623,7 @@ fn the_armour_floors_the_overflow_reaches_the_internals_and_the_wreck_is_one_pla
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     u64::from(fired) * 2 + 1,
                 ),
@@ -1803,6 +1808,7 @@ fn a_turret_shot_off_takes_the_weapons_and_an_immobile_disarmed_tank_is_disabled
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     n * 2 + 11,
                 ),
@@ -2046,6 +2052,7 @@ fn script() -> Vec<Beat> {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     seq + 3,
                 ),
@@ -2239,6 +2246,7 @@ fn held_and_refused_script() -> Vec<Beat> {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             )],
@@ -2448,6 +2456,7 @@ fn spent_section_script() -> Vec<Beat> {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     seq + 3,
                 ),
@@ -2497,6 +2506,7 @@ fn one_shot(arena: &mut Arena, bytes: &mut Vec<u8>) -> BTreeMap<ObjId, Vec<Strin
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -2674,6 +2684,7 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     u64::from(fired) * 2 + 1,
                 ),
@@ -2913,6 +2924,7 @@ fn the_frame_carries_the_tanks_own_status_block_and_status_prints_it_in_eighty_c
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -3243,6 +3255,7 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             2,
         )],
@@ -3286,6 +3299,7 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("railgun"),
+                slot: None,
             },
             4,
         )],
@@ -3312,6 +3326,7 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 6,
             ),
@@ -3319,6 +3334,7 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 7,
             ),
@@ -3355,6 +3371,7 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             8,
         )],
@@ -3384,6 +3401,7 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             9,
         )],
@@ -3421,6 +3439,7 @@ fn an_order_the_arena_never_queued_and_a_shot_the_controller_took_are_both_silen
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             2,
         )],
@@ -4091,6 +4110,7 @@ fn scan_script() -> Vec<Beat> {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     seq + 1,
                 ),
@@ -4398,6 +4418,7 @@ fn shoot_the_turret_off(
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     u64::from(fired) * 2 + 1,
                 ),
@@ -4899,6 +4920,7 @@ fn d2_script() -> Vec<Beat> {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     3,
                 ),
@@ -4915,6 +4937,7 @@ fn d2_script() -> Vec<Beat> {
                     GREY,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     6,
                 ),
@@ -4934,6 +4957,7 @@ fn d2_script() -> Vec<Beat> {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 seq + 1,
             ),
@@ -4945,6 +4969,7 @@ fn d2_script() -> Vec<Beat> {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("machine_gun"),
+                    slot: None,
                 },
                 seq + 2,
             ));
@@ -5335,6 +5360,7 @@ fn m4_a_shot_past_the_last_band_is_paid_for_and_stays_blind_when_the_target_turn
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),

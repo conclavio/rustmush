@@ -100,6 +100,7 @@
 //! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from the reflex controller; `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
+//! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `100` in steps of `10` |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
@@ -652,6 +653,9 @@ pub struct TacsimCfg {
     /// `[tacsim.command]` — **16b cut Y.2**: the span of control and the order
     /// rate a pilot's `ORDER` is held to (doc 16 §2 W8).
     pub command: TacsimCommandCfg,
+    /// `[tacsim.minds]` — **17b cut M1b.1**: the unit minds' block, today the
+    /// Compact floor (doc 17 §5, D-UM-17 as amended).
+    pub minds: TacsimMindsCfg,
     /// `[tacsim.sensors]` — **16b cut G**: the sensor pass's cadence and its
     /// signature ceiling (doc 16 §3.6).
     pub sensors: TacsimSensorsCfg,
@@ -783,6 +787,7 @@ impl Default for TacsimCfg {
             arena: TacsimArenaCfg::default(),
             match_: TacsimMatchCfg::default(),
             command: TacsimCommandCfg::default(),
+            minds: TacsimMindsCfg::default(),
             sensors: TacsimSensorsCfg::default(),
             resolution: TacsimResolutionCfg::default(),
             harness: TacsimHarnessCfg::default(),
@@ -1371,6 +1376,29 @@ impl Default for TacsimCommandCfg {
         TacsimCommandCfg {
             max_span: 4,
             orders_per_minute: 12,
+        }
+    }
+}
+
+/// `[tacsim.minds]` — the unit minds' block (**17b cut M1b.1**; doc 17 §5 "The
+/// law", D-UM-17 as amended 2026-10-04).
+///
+/// One key today: the **Compact floor**, the least chance to hit (per mille) a
+/// lawful condition slot may name. The arena captures it at check-out, so a
+/// reload never reaches a running or a resumed match. Checked by
+/// `tacsim::config::MindsConfig::validate`, reached through
+/// `mush_server::config_ext::tacsim_config` whether or not the layer is on.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimMindsCfg {
+    /// The Compact floor, per mille. `10` to `100` in steps of `10`.
+    pub odds_floor_permille: u32,
+}
+
+impl Default for TacsimMindsCfg {
+    fn default() -> Self {
+        TacsimMindsCfg {
+            odds_floor_permille: 100,
         }
     }
 }
@@ -2593,6 +2621,9 @@ scene_turn_dedline_secs = 30
         assert_eq!(cfg.tacsim.match_, TacsimMatchCfg::default());
         // 16b cut Y.2: and the command block, written out the same way.
         assert_eq!(cfg.tacsim.command, TacsimCommandCfg::default());
+        // 17b cut M1b.1: the minds block is written out commented, so it
+        // parses to the default.
+        assert_eq!(cfg.tacsim.minds, TacsimMindsCfg::default());
         assert_eq!(cfg.tacsim.sensors, TacsimSensorsCfg::default());
         assert_eq!(cfg.tacsim.resolution, TacsimResolutionCfg::default());
         assert_eq!(cfg.tacsim.harness, TacsimHarnessCfg::default());
@@ -3077,6 +3108,29 @@ scene_turn_dedline_secs = 30
         let text = "[tacsim.command]\nmax_span = 4\nmax_squads = 4\n";
         let refused = toml::from_str::<Config>(text).expect_err(text).to_string();
         assert!(refused.contains("max_squads"), "{refused}");
+        assert!(refused.contains("unknown field"), "{refused}");
+    }
+
+    /// **17b cut M1b.1**: `[tacsim.minds]` is optional, carries the floor when
+    /// written, and refuses an unknown key under it by name.
+    #[test]
+    fn m1b1_the_minds_block_parses_absent_written_and_refuses_a_typo() {
+        let absent: Config = toml::from_str("").expect("an empty config parses");
+        assert_eq!(absent.tacsim.minds, TacsimMindsCfg::default());
+        assert_eq!(absent.tacsim.minds.odds_floor_permille, 100);
+
+        let written: Config = toml::from_str("[tacsim.minds]\nodds_floor_permille = 50\n")
+            .expect("the written block parses");
+        assert_eq!(
+            written.tacsim.minds,
+            TacsimMindsCfg {
+                odds_floor_permille: 50,
+            }
+        );
+
+        let text = "[tacsim.minds]\nodds_floor = 50\n";
+        let refused = toml::from_str::<Config>(text).expect_err(text).to_string();
+        assert!(refused.contains("odds_floor"), "{refused}");
         assert!(refused.contains("unknown field"), "{refused}");
     }
 

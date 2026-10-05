@@ -1961,6 +1961,8 @@ mod tests {
                 target,
                 range_cm: 1_000,
                 rounds: 1,
+                by: None,
+                slot: None,
             },
         )
     }

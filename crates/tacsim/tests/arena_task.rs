@@ -88,8 +88,8 @@ use tokio::task::JoinHandle;
 ///
 /// **16b cut M.2** adds `2_398` and `2_399` for the same reason, **16b cut
 /// U.1** `2_400` and `2_401`, **16b cut AF.2** `2_402` to `2_407`, and **16b
-/// cut AF.3** `2_408`.
-const SEEDS: [(u64, &str); 28] = [
+/// cut AF.3** `2_408`, and **17b cut M1b.1** `2_409`.
+const SEEDS: [(u64, &str); 29] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -138,6 +138,10 @@ const SEEDS: [(u64, &str); 28] = [
     (
         2_408,
         "AF.3: a resumed task's first pulse and first snapshot",
+    ),
+    (
+        2_409,
+        "M1b.1: the floor captured at check-out survives a resume",
     ),
 ];
 
@@ -382,6 +386,7 @@ fn start_with_egress(
         arena_cfg,
         match_cfg,
         &SensorsConfig::default(),
+        &tacsim::config::MindsConfig::default(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -962,6 +967,7 @@ fn start_unseated(
         arena_cfg,
         &MatchConfig::default(),
         sensors_cfg,
+        &tacsim::config::MindsConfig::default(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -1262,6 +1268,7 @@ fn fire(unit: ObjId, seq: u64) -> ArenaMsg {
         unit,
         IntentKind::Fire {
             weapon: SmolStr::new("cannon"),
+            slot: None,
         },
         seq,
     )
@@ -2000,6 +2007,7 @@ async fn m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone() 
             &fast_arena(),
             &MatchConfig::default(),
             &SensorsConfig::default(),
+            &tacsim::config::MindsConfig::default(),
             tasks.egress_sender().expect("the egress sender"),
         )
         .expect("the test check-out is accepted")
@@ -2732,5 +2740,133 @@ async fn af3_a_resumed_task_pulses_on_the_lattice_and_skips_the_snapshot_s_own_p
         taken,
         vec![10_000, 15_000],
         "the snapshot's own period is not snapshotted again; the next ones are"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (m) 17b cut M1b.1 — the floor captured at check-out
+// ---------------------------------------------------------------------------
+
+/// **The Compact floor is captured at check-out and survives a resume** (17b
+/// cut M1b.1; doc 17 §5, D-UM-17 as amended: *a policy change never touches a
+/// sortie*). A match spawned through [`spawn_arena`] with `[tacsim.minds]`
+/// saying 50 per mille carries 50 in every snapshot it sends; the decoded
+/// arena takes an arming at 50 and refuses one at 40 `unlawful`. Resumed
+/// through [`resume_arena`] — which takes no minds block at all, so a server
+/// whose `[tacsim.minds]` now says 100 has no way to reach it — the next
+/// snapshot still carries 50, and the resumed match's snapshot at 15,000 has
+/// the uninterrupted match's state hash.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
+    use tacsim::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
+    use tacsim::arena::state::WeaponSummary;
+    use tacsim::arena::weapons::WeaponBand;
+    let seed = SEEDS[28].0;
+    let mut arena_cfg = arena_at(1_000);
+    arena_cfg.snapshot_ms = 5_000;
+    let gun = WeaponSummary {
+        id: SmolStr::new("cannon"),
+        max_range_cm: 250_000,
+        cycle_ms: 4_000,
+        ammunition: SmolStr::new("tacsim.ammunition.he_105"),
+        burst_rounds: 1,
+        muzzle_speed_cms: 145_000,
+        bands: vec![WeaponBand {
+            max_range_cm: 250_000,
+            dispersion_mrad: 3,
+        }],
+        count_per_load: 40,
+        damage: 1,
+        mount_section: SmolStr::new("turret"),
+    };
+    let start = |floor: u32| {
+        let mut custody = unseated_custody(seed);
+        if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == RED) {
+            unit.weapons = vec![gun.clone()];
+        }
+        let (egress_tx, egress_rx) = mpsc::channel(256);
+        let (handle, _join, _callsigns) = spawn_arena(
+            &tokio::runtime::Handle::current(),
+            MatchId(seed),
+            custody,
+            &arena_cfg,
+            &MatchConfig::default(),
+            &no_passes(),
+            &tacsim::config::MindsConfig {
+                odds_floor_permille: floor,
+            },
+            egress_tx,
+        )
+        .expect("the test check-out is accepted");
+        (handle, egress_rx)
+    };
+    let snapshot_at = |messages: &[ArenaOut], at_ms: i64| {
+        snapshots(messages)
+            .into_iter()
+            .map(|(_, snapshot)| snapshot)
+            .find(|snapshot| snapshot.at_ms == at_ms)
+            .map(|snapshot| (snapshot.document.clone(), snapshot.state_hash))
+            .unwrap_or_else(|| panic!("the {at_ms} ms snapshot"))
+    };
+    let arming = |min_permille: u16| {
+        Arming::Arm(FireCondition {
+            weapon: SmolStr::new("cannon"),
+            target: SlotTarget::Lock,
+            min_permille,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: u32::MAX,
+        })
+    };
+
+    // The match checked out at 50.
+    let (handle, mut rx) = start(50);
+    let messages = collect(&mut rx, Duration::from_millis(5_050)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let (document, _) = snapshot_at(&messages, 5_000);
+    let mut arena = tacsim::arena::Snapshot::decode(&document, definition())
+        .expect("the snapshot decodes against its ground");
+    assert_eq!(arena.odds_floor_permille, 50, "captured at check-out");
+    let mut probe = arena.clone();
+    assert_eq!(probe.resolve_arming(RED, &arming(50), 5_000), Ok(Some(1)));
+    assert_eq!(
+        probe.resolve_arming(RED, &arming(40), 5_000),
+        Err(Refusal::Unlawful)
+    );
+
+    // Resumed on a server whose config would now say 100: nothing reaches it.
+    arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+    let (egress_tx, mut rx) = mpsc::channel(256);
+    let (_resumed, _join) = resume_arena(
+        &tokio::runtime::Handle::current(),
+        MatchId(seed),
+        arena,
+        &arena_cfg,
+        egress_tx,
+    );
+    let messages = collect(&mut rx, Duration::from_millis(10_050)).await;
+    let (document, resumed_hash) = snapshot_at(&messages, 15_000);
+    let resumed = tacsim::arena::Snapshot::decode(&document, definition())
+        .expect("the resumed snapshot decodes");
+    assert_eq!(resumed.odds_floor_permille, 50, "the resume kept its own");
+    let mut probe = resumed.clone();
+    assert_eq!(
+        probe.resolve_arming(RED, &arming(40), 15_000),
+        Err(Refusal::Unlawful)
+    );
+
+    // The uninterrupted match, to the same moment.
+    let (handle, mut rx) = start(50);
+    let messages = collect(&mut rx, Duration::from_millis(15_050)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let (_, uninterrupted_hash) = snapshot_at(&messages, 15_000);
+    assert_eq!(
+        resumed_hash, uninterrupted_hash,
+        "the resumed match is the uninterrupted one at 15,000"
     );
 }

@@ -78,7 +78,51 @@ use crate::arena::index::range_cm;
 use crate::arena::intents::Refusal;
 use crate::arena::ledger::EventKind;
 use crate::arena::resolution::Resolution;
-use crate::arena::state::{Arena, ContactId, DueKind, Power, UnitState, WeaponSummary};
+use crate::arena::state::{Arena, ContactId, Controller, DueKind, Power, UnitState, WeaponSummary};
+
+/// **Who fired a shot** (17b cut M1b.1; doc 17 §5, D-UM-14, D-UM-17): what
+/// [`Arena::resolve_fire_by`] gates by and what the `fired` line says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FiredBy {
+    /// A pilot's typed `FIRE` — the human trigger W8 asks for, never gated.
+    Seat,
+    /// The reflex controller's own shot (T0), never gated.
+    Machine,
+    /// A mind's landed `FIRE`, citing a slot or not (gated from 17b cut M1b.2).
+    Mind {
+        /// The slot it cites.
+        slot: Option<u8>,
+    },
+    /// A condition slot's own shot, fired by the evaluator.
+    Cond {
+        /// The slot.
+        slot: u8,
+    },
+}
+
+impl FiredBy {
+    /// The `fired` line's `by` word: `cond` for a slot's shot, `mind` for a
+    /// mind's cited shot, and none for a seat's, a machine's or a mind's
+    /// uncited one — so every line of a match before this cut keeps its bytes.
+    #[must_use]
+    pub const fn word(&self) -> Option<&'static str> {
+        match self {
+            FiredBy::Cond { .. } => Some("cond"),
+            FiredBy::Mind { slot: Some(_) } => Some("mind"),
+            FiredBy::Seat | FiredBy::Machine | FiredBy::Mind { slot: None } => None,
+        }
+    }
+
+    /// The `fired` line's `slot`, where the shot names one.
+    #[must_use]
+    pub const fn slot(&self) -> Option<u8> {
+        match self {
+            FiredBy::Cond { slot } => Some(*slot),
+            FiredBy::Mind { slot } => *slot,
+            FiredBy::Seat | FiredBy::Machine => None,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The definition's two derived readings
@@ -803,12 +847,51 @@ impl Arena {
     /// (rounds fired plus rounds left equals the load) with no stranded tail, and it
     /// is what a crew with four rounds of belt left would do.
     ///
+    /// **Who fired** (17b cut M1b.1; doc 17 §5, D-UM-14, D-UM-17, D-UM-19).
+    /// [`FiredBy::Seat`] and [`FiredBy::Machine`] are never gated by the law.
+    /// The law's gates sit **after the `Empty` gate and before the
+    /// `Overheated` one** — so a cited or a slot's shot on a cycling or an
+    /// empty weapon reads `Cycling`/`Empty` (doc 17 §5's arbitration: whichever
+    /// lands first fires, the other reads `Cycling`) and never the law's word —
+    /// in this order, for [`FiredBy::Mind`] and [`FiredBy::Cond`] only:
+    ///
+    /// * **(3a) the floor** — a cited slot that exists and names this weapon
+    ///   (else [`Refusal::Unwarranted`]) and is lawful against the arena's
+    ///   captured floor (else [`Refusal::Unlawful`]), ahead of every
+    ///   `Unwarranted` test (D-UM-17);
+    /// * **(3b) hold-fire** (D-UM-19) — a [`Controller::Mind`] hull's standing
+    ///   order, a [`Controller::Reflex`] hull's (a slot on a reflex hull is
+    ///   unreachable in production; the arm exists and is pinned), a pilot's
+    ///   hull none: [`Refusal::Unwarranted`];
+    /// * **(3c) the warrant** — an uncited mind shot, or a cited one whose slot's
+    ///   [`Arena::warrant`] fails: [`Refusal::Unwarranted`]; a slot's own shot
+    ///   passes (the evaluator has just held it).
+    ///
+    /// **In 17b cut M1b.1 a [`FiredBy::Mind`] passes every gate as `Machine`
+    /// does**: (3a) and (3c) are a slot's own (3b) and pass for it, and the law
+    /// for minds lands in 17b cut M1b.2 with T1's arming and citation, so the
+    /// M1a.5 mind fixtures and M1b.0's beam tests fire as they did.
+    ///
+    /// The accepted shot's `fired` line carries the attribution: `by: "cond"`
+    /// and the slot for [`FiredBy::Cond`], `by: "mind"` and the slot for a
+    /// cited [`FiredBy::Mind`], and neither key for a seat's or a machine's —
+    /// so every line of every match before this cut is byte for byte what it
+    /// was.
+    ///
     /// # Errors
     ///
     /// One [`Refusal`] word: [`Refusal::Unknown`], [`Refusal::Wreck`],
     /// [`Refusal::NoWeapon`], [`Refusal::NoLock`], [`Refusal::Cycling`],
-    /// [`Refusal::Empty`], [`Refusal::Overheated`], [`Refusal::PowerNotOnline`].
-    pub fn resolve_fire(&mut self, unit: ObjId, weapon: &str, at_ms: i64) -> Result<u64, Refusal> {
+    /// [`Refusal::Empty`], the law's [`Refusal::Unwarranted`] (and, from 17b
+    /// cut M1b.2, [`Refusal::Unlawful`]), [`Refusal::Overheated`],
+    /// [`Refusal::PowerNotOnline`].
+    pub fn resolve_fire_by(
+        &mut self,
+        unit: ObjId,
+        weapon: &str,
+        at_ms: i64,
+        by: FiredBy,
+    ) -> Result<u64, Refusal> {
         let Some(state) = self.unit(unit) else {
             return Err(Refusal::Unknown);
         };
@@ -841,6 +924,27 @@ impl Arena {
         if held == 0 {
             return Err(Refusal::Empty);
         }
+        // (3a)–(3c) **17b cut M1b.1** (doc 17 §5, D-UM-17, D-UM-19): the law,
+        // after the weapon's own two refusals and before the platform's — so a
+        // law-gated shot on a cycling or empty gun reads `Cycling`/`Empty`.
+        // A seat's and a machine's shot are never gated.
+        match by {
+            FiredBy::Seat | FiredBy::Machine => {}
+            // 17b cut M1b.2 gates FiredBy::Mind here (Unlawful, hold-fire, the
+            // warrant).
+            FiredBy::Mind { .. } => {}
+            FiredBy::Cond { .. } => {
+                // (3a) a slot's own shot was armed lawful at its landing and the
+                // floor is a per-match constant: nothing to read again. (3b):
+                if self.holds_fire(unit) {
+                    return Err(Refusal::Unwarranted);
+                }
+                // (3c) the evaluator has just held the warrant.
+            }
+        }
+        let Some(state) = self.unit(unit) else {
+            return Err(Refusal::Unknown);
+        };
         // (4) **16b cut X.1** (doc 16 §9 item 1: *a shot refused above a heat
         // ceiling*): the platform, not the weapon. It goes after the weapon's own
         // two refusals and before the power for the reason the module head gives —
@@ -958,11 +1062,46 @@ impl Arena {
                 target,
                 range_cm: range,
                 rounds,
+                // 17b cut M1b.1 (D-UM-14): who fired, where the law asks.
+                by: by.word().map(SmolStr::new_static),
+                slot: by.slot(),
             },
             Vec::new(),
             hash,
         );
         Ok(seq)
+    }
+
+    /// **Resolve a seat's `FIRE`** — [`Arena::resolve_fire_by`] with
+    /// [`FiredBy::Seat`], which no law gates (17b cut M1b.1). Phase 4's `Fire`
+    /// arm and every caller that fires as a pilot fires call this.
+    ///
+    /// # Errors
+    ///
+    /// [`Arena::resolve_fire_by`]'s, less the law's words.
+    pub fn resolve_fire(&mut self, unit: ObjId, weapon: &str, at_ms: i64) -> Result<u64, Refusal> {
+        self.resolve_fire_by(unit, weapon, at_ms, FiredBy::Seat)
+    }
+
+    /// **Whether a standing `hold_fire` binds `unit`'s machine-made shots**
+    /// (17b cut M1b.1; doc 17 §5's precedence, D-UM-19): a
+    /// [`Controller::Mind`] hull's order on its mind row, a
+    /// [`Controller::Reflex`] hull's on its reflex row, and never a pilot's —
+    /// a seated hull holds no standing order. Read by the resolver's (3b).
+    #[must_use]
+    pub fn holds_fire(&self, unit: ObjId) -> bool {
+        match self.unit(unit).map(|state| state.controller) {
+            Some(Controller::Mind) => self
+                .minds
+                .get(&unit)
+                .and_then(|state| state.order.as_ref())
+                .is_some_and(|order| order.hold_fire),
+            Some(Controller::Reflex) => self
+                .reflex
+                .order(unit)
+                .is_some_and(|standing| standing.order.constraints.hold_fire),
+            Some(Controller::Pilot) | None => false,
+        }
     }
 
     /// One shot in flight, by its sequence.

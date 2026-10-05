@@ -62,6 +62,8 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::arena::card::StockCard;
+use crate::arena::conditions::ConditionTrigger;
 use crate::arena::intents::{IntentKind, IntentSource};
 use crate::arena::ledger::EventKind;
 use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, FrameOrder, Receiver};
@@ -73,7 +75,7 @@ use crate::arena::state::{
 use crate::arena::step::{FrameHeat, FrameSection};
 use crate::arena::view::ContactRow;
 use crate::arena::weapons::FrameWeapon;
-use crate::config::ArenaConfig;
+use crate::config::{ArenaConfig, ReflexConfig};
 
 /// **How often a stock mind thinks**, arena milliseconds (17b cut M1a.5; doc
 /// 17 §9, D-UM-35's class 0/I cadence). A constant until 17b cut M3's
@@ -112,7 +114,7 @@ pub struct PendingThink {
 /// Every field decides a later intent, so every field is hashed
 /// (`crate::arena::hash`, item 3c) and carried by a snapshot — the argument
 /// the reflex machine's own row was folded on (16b cut N.1).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindState {
     /// **The next think's sequence number**: a [`DueKind::MindThink`] whose
@@ -139,9 +141,42 @@ pub struct MindState {
     /// **The faults counted against the mind** (D-UM-31): always `0` in this
     /// cut; 17b cut M3 counts them.
     pub strikes: u8,
+    /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11,
+    /// D-UM-43): Standard Doctrine's stock card, laid down as the Line preset
+    /// over the arena's own doctrine ([`MindState::fresh`]). Handed to every
+    /// think ([`ThinkJob::card`]), folded inside item 3c after `strikes`, and
+    /// carried by the snapshot from format 7. No runner reads it in this cut;
+    /// the setters and the presets are 17b cut M1b.5's.
+    pub card: StockCard,
+}
+
+impl Default for MindState {
+    /// **[`MindState::fresh`] over the default doctrine** — kept for the
+    /// fixtures that build a row by hand; the arena itself always lays a row
+    /// down over its own `ReflexConfig`.
+    fn default() -> Self {
+        MindState::fresh(&ReflexConfig::default())
+    }
 }
 
 impl MindState {
+    /// **A fresh mind's row** (17b cut M1b.1): nothing thought, nothing
+    /// remembered, nothing said, no order — and the Line card read off `cfg`,
+    /// the arena's own doctrine (`crate::arena::card::line`).
+    #[must_use]
+    pub fn fresh(cfg: &ReflexConfig) -> MindState {
+        MindState {
+            think_seq: 0,
+            pending: None,
+            memory: Vec::new(),
+            notices: Vec::new(),
+            ranges: BTreeMap::new(),
+            order: None,
+            strikes: 0,
+            card: crate::arena::card::line(cfg),
+        }
+    }
+
     /// **Append one notice to the buffer** (D-UM-8), dropping the oldest past
     /// [`MIND_NOTICES`].
     pub fn push_notice(&mut self, notice: FrameNotice) {
@@ -208,6 +243,10 @@ pub struct ThinkJob<'a> {
     pub memory: &'a [u8],
     /// The map: the window, its zones, its spots and its waypoint graph.
     pub map: &'a ArenaDefinition,
+    /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11): the
+    /// row's own [`MindState::card`]. Carried and, in this cut, read by no
+    /// runner (`NativeStockMind` and `NoMind` ignore it).
+    pub card: &'a StockCard,
 }
 
 /// **One think's answer** (doc 17 §6): the intents in emission order and the
@@ -479,7 +518,11 @@ impl Arena {
     /// has none, and its first think at its next slot of the stagger grid
     /// ([`STOCK_THINK_MS`] apart) if the heap holds none for it.
     pub(crate) fn adopt_mind(&mut self, unit: ObjId) {
-        let think_seq = self.minds.entry(unit).or_default().think_seq;
+        let think_seq = self
+            .minds
+            .entry(unit)
+            .or_insert_with(|| MindState::fresh(&self.arena_cfg.reflex))
+            .think_seq;
         if self
             .due
             .iter()
@@ -647,6 +690,7 @@ impl Arena {
             view: &view,
             memory: &state.memory,
             map: &self.definition,
+            card: &state.card,
         });
         let Some(state) = self.minds.get_mut(&unit) else {
             return;
@@ -713,7 +757,11 @@ impl Arena {
     ///    raised since refuses its stale thoughts `Epoch` with no code here —
     ///    and every refusal is appended to the notice buffer as a
     ///    [`FrameNotice::Refused`] in `stage_refusal`'s shape, with no
-    ///    `phase_two_tells` filter: *a refusal is never silent* (D-UM-8).
+    ///    `phase_two_tells` filter: *a refusal is never silent* (D-UM-8);
+    /// 6. **17b cut M1b.1**: the hull's condition slots are evaluated ONCE, at
+    ///    `t_ms`, after every intent has landed (`ConditionTrigger::Landing`),
+    ///    so an arming and a lock of one think are both in force when the
+    ///    slots are read.
     pub(crate) fn mind_land(
         &mut self,
         unit: ObjId,
@@ -780,15 +828,28 @@ impl Arena {
             let Some(kind) = intents.get(at) else {
                 continue;
             };
-            let weapon = match kind {
-                IntentKind::Fire { weapon } => Some(weapon.clone()),
-                _ => None,
+            let notice = match kind {
+                IntentKind::Fire { weapon, .. } => {
+                    self.refusal_notice(unit, kind.as_str(), refusal, Some(weapon.clone()), t_ms)
+                }
+                // 17b cut M1b.1: a refused arming names its weapon, as a refused
+                // `FIRE` does, in the one shape phase 4 stages a seat's in.
+                IntentKind::Condition(arming) => {
+                    self.arming_refusal_notice(unit, arming, refusal, t_ms)
+                }
+                _ => self.refusal_notice(unit, kind.as_str(), refusal, None, t_ms),
             };
-            let notice = self.refusal_notice(unit, kind.as_str(), refusal, weapon, t_ms);
             if let Some(state) = self.minds.get_mut(&unit) {
                 state.push_notice(notice);
             }
         }
+        // 6. **17b cut M1b.1** (doc 17 §5, D-UM-16): the hull's condition slots,
+        // ONCE, after every intent of the landing has landed — never after each
+        // landed `Arm` inside it: a mind lands its `Condition` BEFORE its `Lock`
+        // in emission order, so a per-arming evaluation would read the old lock
+        // and fire at a target the think had just dropped (17b's adversarial
+        // F5). A hull with no slot returns at once.
+        let _ = self.evaluate_conditions(unit, t_ms, ConditionTrigger::Landing, None, counters);
     }
 
     /// **A mind's standing order that has run out** (17b cut M1a.5; D-UM-15):
@@ -858,6 +919,7 @@ mod tests {
             view: &view,
             memory: &[1, 2, 3],
             map: &arena.definition,
+            card: &crate::arena::card::line(&crate::config::ReflexConfig::default()),
         });
         assert_eq!(
             result,

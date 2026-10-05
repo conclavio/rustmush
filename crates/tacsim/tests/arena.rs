@@ -5586,9 +5586,24 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// own fields, `Controller::Mind` and the two mind due kinds are under the pin
 /// on no fixture here (the variants' round trip is
 /// `m1a5_a_snapshot_carries_the_minds_and_not_their_landings`).
-const AF1_SHAPE_DIGEST: &str = "9b22bf550fa13d07c3b89fed493609645915794d01ecf33a81f06f2fbe7836d7";
+///
+/// **Re-blessed by 17b cut M1b.1 with `SNAPSHOT_FORMAT` 7**: three new
+/// carried leaves each unstepped fixture fills — `state.conditions: object`
+/// (the transparent slot table, empty), `state.held_said: array` (the
+/// held-shot rows through `pairs`, empty) and `state.odds_floor_permille:
+/// number` (the floor captured at check-out) — 393 lines to 396. The card
+/// inside a mind row, `IntentKind::Fire.slot`, `IntentKind::Condition`, the two
+/// slot notices and `RefusalDetail::Floor` are under the pin on no fixture
+/// here. Their round trips: the card, the two slot notices (every `HeldWhy`)
+/// and a refusal carrying `RefusalDetail::Floor` in a mind's notice buffer in
+/// `tests/conditions.rs`'
+/// `m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_hash_sequence`;
+/// a cited `Fire`, a disarm and an arming in `Arena.pending` (empty between
+/// pulses, so no stepped snapshot carries one) in `snapshot.rs`'
+/// `af1_every_keyed_map_in_the_tree_is_one_json_writes`.
+const AF1_SHAPE_DIGEST: &str = "314c016efdc142e9867ebf8de6fe5f92354c6a8d4b89cf1c5488d13ee20d0747";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 393;
+const AF1_SHAPE_LINES: usize = 396;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5600,7 +5615,7 @@ const AF1_SHAPE_LINES: usize = 393;
 /// sighted machines in two squads — its weapons, sensors, reflex rows and squad
 /// rosters are under the pin.*
 ///
-/// *Its limit, read off the 393 lines (a collection empty or an option `None`
+/// *Its limit, read off the 396 lines (a collection empty or an option `None`
 /// at pulse zero leaves one line and none for its element): **not under it**
 /// are the contacts (`ShadowContact`, `SeenPose`, `OwnSighting`, `Reading`),
 /// the designator book's rows, the shots (`Shot`, `Resolution`), the pending
@@ -5648,7 +5663,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        6,
+        7,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -5773,7 +5788,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     };
     // 17b cut M1a.4 moved the format to 4, 17b cut M1a.5 to 5 and 17b cut L.1
     // to 6; a format-2 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 6);
+    assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, arena.definition.clone()).map(|_| ()),
@@ -5854,7 +5869,7 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     };
     // 17b cut M1a.5 moved the format to 5 and 17b cut L.1 to 6; a format-3
     // document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 6);
+    assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, arena.definition.clone()).map(|_| ()),
@@ -5913,6 +5928,7 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
             expires_ms: 40_000,
         }),
         strikes: 0,
+        card: tacsim::arena::card::line(&arena.arena_cfg.reflex),
     };
     arena.minds.insert(MOVER, row.clone());
     arena.mind_landings.insert(
@@ -5963,7 +5979,7 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
     };
     // 17b cut L.1 moved the format to 6; a format-4 document is still refused
     // by name.
-    assert_eq!(SNAPSHOT_FORMAT, 6);
+    assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&four), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&four, arena.definition.clone()).map(|_| ()),
@@ -6047,7 +6063,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
         found: 5,
         expected: SNAPSHOT_FORMAT,
     };
-    assert_eq!(SNAPSHOT_FORMAT, 6);
+    assert_eq!(SNAPSHOT_FORMAT, 7);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, arena.definition.clone()).map(|_| ()),

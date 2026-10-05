@@ -4066,6 +4066,7 @@ async fn m1_a_busy_arena_is_told_to_try_again_and_nothing_changes() {
         &cfg.arena,
         &cfg.match_,
         &cfg.sensors,
+        &tacsim::config::MindsConfig::default(),
         tasks.egress_sender().expect("the egress sender"),
     )
     .expect("the replacement check-out is accepted");
@@ -7007,6 +7008,37 @@ fn af3_restamp(document: &mut serde_json::Value, edit: impl FnOnce(&str) -> Stri
 /// The keys a list of writes touched, for a failure message.
 fn keys_of(writes: &[Write]) -> Vec<&str> {
     writes.iter().map(|(_, key, _)| key.as_str()).collect()
+}
+
+/// **17b cut M1b.1 — the configured floor reaches the arena through the
+/// production path** (doc 17 §5, D-UM-17 as amended: *captured into the arena
+/// at check-out*). `[tacsim.minds].odds_floor_permille = 50` on the world's
+/// config, a lobby match started and boarded through the real verbs: the
+/// `open_match` → `lobby::minds_config` → `spawn_arena` chain captures 50 (not
+/// the default 100) into the running arena, which its first snapshot carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1b1_open_match_captures_the_configured_floor_into_the_arena() {
+    let mut cfg = af3_config();
+    cfg.minds.odds_floor_permille = 50;
+    assert_ne!(
+        cfg.minds.odds_floor_permille,
+        tacsim::config::MindsConfig::default().odds_floor_permille,
+        "the configured floor is not the default"
+    );
+    let mut rig = Rig::boot_on(2, roster_with(cfg));
+    let match_id = af3_running(&mut rig);
+    let head = af3_snapshot_after(&mut rig, match_id, 0).await;
+    let document = rig
+        .image_doc(&match_::snapshot_key(match_id))
+        .expect("the snapshot is in the store");
+    let ground = match_::definition_for(rig.tw.world(), &head.arena)
+        .expect("the ground builds")
+        .expect("and is loaded");
+    let arena = tacsim::arena::Snapshot::decode(&document, ground).expect("the snapshot decodes");
+    assert_eq!(
+        arena.odds_floor_permille, 50,
+        "the floor the match was opened under"
+    );
 }
 
 /// **The boot resumes a match from its two documents** (16b cut AF.3; the

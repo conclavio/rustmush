@@ -321,6 +321,11 @@ reclaim_min_ms = 5000              # (16b cut Y.3) ms after a dropped line befor
 max_span = 4                       # (16b cut Y.2, doc 16 W8) the most squads one commander may hold a live ORDER on at once; 1..32
 orders_per_minute = 12             # ORDERs one commander may give in sixty seconds; 1..600
 
+# (17b cut M1b.1, doc 17 section 5) the Compact floor: the least chance to hit, per mille,
+# a condition slot may name; captured into each arena at check-out. 10..100 in steps of 10.
+# [tacsim.minds]
+# odds_floor_permille = 100
+
 [tacsim.sensors]                   # (16b cut G) the sensor pass
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id
 # THE ONLY FLOAT IN THIS TREE, and it never reaches the engine: arena state is

@@ -141,6 +141,8 @@ pub fn config() -> TacsimConfig {
         match_: crate::config::MatchConfig::default(),
         // 16b cut Y.2: the span and the rate, at their defaults.
         command: crate::config::CommandConfig::default(),
+        // 17b cut M1b.1: the Compact floor, at its default.
+        minds: crate::config::MindsConfig::default(),
         sensors: crate::config::SensorsConfig::default(),
         resolution: crate::config::ResolutionConfig::default(),
         harness: crate::config::HarnessConfig::default(),

@@ -24,6 +24,12 @@
 //! minds' beams at one millisecond both land) and `MindView.scan_tables` on a
 //! mixed-chassis field. Its production line-hash pin lives beside the helpers
 //! it replays: `tests/weapons.rs`, `tests/motor.rs` and `tests/reflex.rs`.
+//!
+//! **17b cut M1b.1** adds section (8b): a mind's arming lands in emission
+//! order with its lock and the slot is evaluated ONCE, after every intent of
+//! the landing (17b's adversarial F5), and a mind's arming under the floor is
+//! refused `unlawful` at its landing with the floor named. The rest of the
+//! slots' proofs live in `tests/conditions.rs`.
 
 mod support;
 
@@ -42,6 +48,7 @@ use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::command::SquadSignal;
 use tacsim::arena::condition::{Condition, Reading};
+use tacsim::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
 use tacsim::arena::intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal,
     apply_control, apply_intent,
@@ -654,6 +661,7 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
                     5,
                     vec![IntentKind::Fire {
                         weapon: gun.clone(),
+                        slot: None,
                     }],
                 ),
                 says(6, vec![IntentKind::Emcon { on: true }]),
@@ -669,7 +677,13 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
                         contact: draw_contact_id(SEED, RED2, BLUE),
                     }],
                 ),
-                says(4, vec![IntentKind::Fire { weapon: gun }]),
+                says(
+                    4,
+                    vec![IntentKind::Fire {
+                        weapon: gun,
+                        slot: None,
+                    }],
+                ),
                 says(6, vec![IntentKind::Emcon { on: true }]),
             ],
         ),
@@ -951,6 +965,7 @@ fn epoch_rig() -> Rig {
                     IntentKind::Speed { cms: 500 },
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                 ],
             ),
@@ -1186,9 +1201,11 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
                         IntentKind::Place { x: 3, y: 3 },
                         IntentKind::Fire {
                             weapon: gun.clone(),
+                            slot: None,
                         },
                         IntentKind::Fire {
                             weapon: gun.clone(),
+                            slot: None,
                         },
                     ],
                 ),
@@ -1204,7 +1221,13 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
                         contact: draw_contact_id(SEED, RED2, BLUE),
                     }],
                 ),
-                says(4, vec![IntentKind::Fire { weapon: gun }]),
+                says(
+                    4,
+                    vec![IntentKind::Fire {
+                        weapon: gun,
+                        slot: None,
+                    }],
+                ),
             ],
         ),
     ]);
@@ -1744,6 +1767,7 @@ fn beam_shot(unit: ObjId) -> Vec<IntentKind> {
     let _ = unit;
     vec![IntentKind::Fire {
         weapon: SmolStr::new("cannon"),
+        slot: None,
     }]
 }
 
@@ -2297,6 +2321,185 @@ fn m1b0_a_mixed_chassis_view_carries_its_own_scan_tables() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// (8b) 17b cut M1b.1: a mind's arming lands in emission order, evaluated once
+// ---------------------------------------------------------------------------
+
+/// A slot on the lock at `min_permille`, any aspect, no reserve, any range.
+fn slot_on_lock(min_permille: u16) -> FireCondition {
+    FireCondition {
+        weapon: SmolStr::new("cannon"),
+        target: SlotTarget::Lock,
+        min_permille,
+        aspects: ASPECTS_ANY,
+        min_rounds_left: 0,
+        min_range_m: 0,
+        max_range_m: u32::MAX,
+    }
+}
+
+/// A target every band of which presents a silhouette of hull, so a shot at
+/// any aspect resolves on the curve and the clamp `[p_min, p_max]` decides it.
+fn every_band_profile() -> UnitProfile {
+    UnitProfile {
+        bands: ["front", "left", "right", "rear"]
+            .into_iter()
+            .map(|band| BandProfile {
+                band: SmolStr::new(band),
+                width_cm: 300,
+                height_cm: 200,
+                sections: vec![(SmolStr::new("hull"), 1)],
+            })
+            .collect(),
+        ..front_profile(false)
+    }
+}
+
+/// **The arming field** (17b cut M1b.1): [`RED`], a mind with a ready
+/// [`cannon`], online at (6, 8) facing east, holding [`BLUE`] at (9, 8) and
+/// [`BLUE2`] at (9, 10) — each [`every_band_profile`] — as hand-inserted
+/// `Classified` rows and LOCKED ON BLUE; the odds pinned at certainty. Red's
+/// mind says `says_at_0` at think 0 and nothing else; the two blues are minds
+/// that say nothing. Answers the arena, the runner, and red's landing
+/// millisecond.
+fn arming_field(says_at_0: Vec<IntentKind>) -> (Arena, Arc<ScriptedMind>, i64) {
+    let target = |id: ObjId, y: u16| CustodyUnit {
+        profile: every_band_profile(),
+        ..tank(id, Team::Blue, centre(9, y), Vec::new(), Controller::Mind)
+    };
+    let units = vec![
+        tank(
+            RED,
+            Team::Red,
+            centre(6, 8),
+            vec![cannon()],
+            Controller::Mind,
+        ),
+        target(BLUE, 8),
+        target(BLUE2, 10),
+    ];
+    let mut arena = arena_of(units, &[]);
+    arena.resolution.p_min = 1_000;
+    arena.resolution.p_max = 1_000;
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+        state.pose.heading_mdeg = 90_000;
+        state.desired_heading_mdeg = 90_000;
+    }
+    for target in [BLUE, BLUE2] {
+        let Some(plot) = arena.unit(target).map(SeenPose::of) else {
+            panic!("a fielded target");
+        };
+        arena.contacts.insert(
+            RED,
+            draw_contact_id(SEED, RED, target),
+            ShadowContact::sighted(
+                target,
+                Classification::Classified { team: Team::Blue },
+                0,
+                plot,
+            ),
+        );
+    }
+    assert_eq!(
+        arena.resolve_lock(RED, draw_contact_id(SEED, RED, BLUE), 0),
+        Ok(()),
+        "red holds a lock on blue"
+    );
+    let mind = ScriptedMind::new(&[(RED, vec![says(0, says_at_0)])]);
+    arena.mind_runner = mind.clone();
+    (arena, mind, think_at(RED, 0) + SUBSTEP)
+}
+
+/// Red's `fired` lines so far, as `(t_ms, target, by, slot)`.
+fn red_shots(rig: &mut Rig) -> Vec<(i64, u64, Option<String>, Option<u64>)> {
+    rig.journal()
+        .iter()
+        .filter_map(|event| {
+            let value = serde_json::to_value(&event.kind).ok()?;
+            (value.get("kind")? == "fired" && value.get("unit")? == u64::from(RED.0)).then(|| {
+                (
+                    event.t_ms,
+                    value
+                        .get("target")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                    value
+                        .get("by")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    value.get("slot").and_then(serde_json::Value::as_u64),
+                )
+            })
+        })
+        .collect()
+}
+
+/// **A mind's arming lands in emission order and its slot is evaluated ONCE,
+/// after every intent of the landing** (17b cut M1b.1; doc 17 §5, D-UM-16;
+/// 17b's adversarial F5). Red, locked on BLUE with a ready gun, thinks
+/// `[Condition(Arm(slot on the lock)), Lock { BLUE2 }]` — the arming BEFORE
+/// the lock, as a mind emits them. The arming lands first (S1), the lock
+/// second; the slot's one `Landing` evaluation after both reads the NEW lock:
+/// the first `fired` line is `by: cond`, `slot: 1`, at BLUE2, at the landing's
+/// own millisecond, and no shot ever names BLUE. An evaluation after the
+/// landed `Arm` (the F5 defect) would have fired at BLUE.
+///
+/// And a mind's arming under the floor is refused `unlawful` at its landing,
+/// buffered on the mind with its weapon and the floor named
+/// (`RefusalDetail::Floor { permille: 100 }`), and arms nothing.
+#[test]
+fn m1b1_a_minds_arming_lands_in_emission_order_and_is_evaluated_once_after_the_landing() {
+    let blue2 = draw_contact_id(SEED, RED, BLUE2);
+    let (arena, _mind, land) = arming_field(vec![
+        IntentKind::Condition(Arming::Arm(slot_on_lock(100))),
+        IntentKind::Lock { contact: blue2 },
+    ]);
+    let mut rig = Rig::new(arena);
+    let _ = rig.until(land + STOCK_THINK_MS, |arena| arena.now_ms >= land);
+    assert_eq!(
+        rig.arena.unit(RED).and_then(|state| state.lock),
+        Some(blue2)
+    );
+    assert_eq!(rig.arena.conditions.slot_of(RED, "cannon"), Some(1));
+    let shots = red_shots(&mut rig);
+    assert_eq!(
+        shots.first(),
+        Some(&(land, u64::from(BLUE2.0), Some("cond".to_owned()), Some(1))),
+        "the slot's one evaluation read the landed lock: {shots:?}"
+    );
+    assert!(
+        shots
+            .iter()
+            .all(|(_, target, _, _)| *target != u64::from(BLUE.0)),
+        "no shot at the lock the think dropped: {shots:?}"
+    );
+    assert_eq!(refusals(&rig.arena, RED), Vec::new(), "red's landing");
+
+    // Under the floor: refused `unlawful` at the landing, the floor named.
+    let (arena, _mind, land) =
+        arming_field(vec![IntentKind::Condition(Arming::Arm(slot_on_lock(50)))]);
+    let mut rig = Rig::new(arena);
+    let _ = rig.until(land + STOCK_THINK_MS, |arena| arena.now_ms >= land);
+    assert!(rig.arena.conditions.is_empty_for(RED), "nothing armed");
+    assert_eq!(red_shots(&mut rig), Vec::new());
+    let buffered: Vec<FrameNotice> = rig
+        .arena
+        .minds
+        .get(&RED)
+        .map(|state| state.notices.clone())
+        .unwrap_or_default();
+    assert!(
+        buffered.contains(&FrameNotice::Refused {
+            order: SmolStr::new("fire"),
+            refusal: Refusal::Unlawful,
+            weapon: Some(SmolStr::new("cannon")),
+            detail: RefusalDetail::Floor { permille: 100 },
+        }),
+        "the mind's refusal names its weapon and the floor: {buffered:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2908,6 +3111,7 @@ fn m1a5_a_landings_cycling_refusal_is_told_at_the_landing() {
     ));
     let fire = || IntentKind::Fire {
         weapon: SmolStr::new("cannon"),
+        slot: None,
     };
     rig.arena.mind_runner = ScriptedMind::new(&[(
         RED,

@@ -331,6 +331,11 @@ max_span = 4
 # ORDERs one commander may give in sixty seconds; 1..600
 orders_per_minute = 12
 
+# (17b cut M1b.1, doc 17 section 5) the Compact floor: the least chance to hit, per mille,
+# a condition slot may name; captured into each arena at check-out. 10..100 in steps of 10.
+# [tacsim.minds]
+# odds_floor_permille = 100
+
 [tacsim.sensors]
 pass_ms = 1000
 # The only float; the host reads it as per mille (1.0 -> 1000). At least 1.0

@@ -1506,6 +1506,11 @@ pub fn open_match(
     // world keeps its own immutable copy rather than reaching across the seam or
     // rebuilding it from the atlas per look.
     let ground = Arc::new(custody.definition.clone());
+    // **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, read
+    // once here off the server's `[tacsim.minds]` (its default when the block
+    // is absent) and captured into the arena by `spawn_arena`; nothing after
+    // check-out reads the config's floor again.
+    let minds_cfg = crate::match_::lobby::minds_config(ctx.w).unwrap_or_default();
     let (handle, join, callsigns) = crate::arena_task::spawn_arena(
         &runtime,
         match_id,
@@ -1513,6 +1518,7 @@ pub fn open_match(
         arena_cfg,
         match_cfg,
         sensors_cfg,
+        &minds_cfg,
         egress,
     )?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {

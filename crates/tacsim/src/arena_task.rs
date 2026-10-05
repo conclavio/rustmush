@@ -153,7 +153,7 @@ use crate::arena::state::{
     Arena, ArenaError, Channel, CustodyOut, Designator, EndReason, MatchEnd, StopReason,
 };
 use crate::arena::step::{Frame, StepOutput};
-use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+use crate::config::{ArenaConfig, MatchConfig, MindsConfig, SensorsConfig};
 
 /// **One match's identity**, allocated by the world half.
 ///
@@ -528,10 +528,18 @@ pub type Callsigns = Vec<(ObjId, Designator)>;
 /// the result record names each unit by what that one application said. Nothing
 /// is computed for it: it is a read of state the constructor already fixed.
 ///
+/// **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): `minds_cfg` is the
+/// server's `[tacsim.minds]`, read once, here — its Compact floor is written
+/// onto the arena (`Arena::odds_floor_permille`) after `Arena::new` and before
+/// the arena moves into the task: **captured once**. The task and the snapshot
+/// carry it from there, and [`resume_arena`] takes the decoded arena's own, so
+/// a config reload between a check-out and a resume moves nothing.
+///
 /// # Errors
 ///
 /// Whatever [`Arena::new`] refuses: a unit off the window, two units in one
 /// cell, a duplicate id, a pilot seated on a unit that was not handed over.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_arena(
     runtime: &tokio::runtime::Handle,
     match_id: MatchId,
@@ -539,9 +547,12 @@ pub fn spawn_arena(
     arena_cfg: &ArenaConfig,
     match_cfg: &MatchConfig,
     sensors_cfg: &SensorsConfig,
+    minds_cfg: &MindsConfig,
     egress: mpsc::Sender<ArenaOut>,
 ) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), ArenaError> {
-    let arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
+    let mut arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
+    // 17b cut M1b.1: the floor, captured at check-out.
+    arena.odds_floor_permille = minds_cfg.odds_floor_permille;
     // 16b cut V.2: read before `arena` is moved into the task below.
     let callsigns = arena.callsigns();
     let (handle, join) = spawn(runtime, match_id, arena, arena_cfg, egress, false);
@@ -880,7 +891,11 @@ const fn continuous_code(kind: &IntentKind) -> u8 {
         | IntentKind::Lock { .. }
         | IntentKind::Fire { .. }
         | IntentKind::Place { .. }
-        | IntentKind::Emcon { .. } => 4,
+        | IntentKind::Emcon { .. }
+        // 17b cut M1b.1: an arming is discrete too — the inbox route is
+        // `is_discrete()`, so this arm is never asked; it answers the
+        // discrete code so the match stays exhaustive.
+        | IntentKind::Condition(_) => 4,
     }
 }
 
@@ -983,6 +998,12 @@ fn settle_the_helm(map: &mut Continuous, unit: ObjId) {
 /// dropped because staff placed the tank would be a tell. Places are bounded by
 /// the world instead — one staff verb is one message — and by the inbox, which
 /// holds a place to the reserve rule of an intent.
+///
+/// **17b cut M1b.1**: an arming (`IntentKind::Condition`) rides here by
+/// construction — the inbox route is `is_discrete()` and an arming is discrete —
+/// so a `LOCK` and a `FIRE <weapon> WHEN …` of one burst keep their arrival
+/// order into phase 4, and the arming meets this per-unit bound as a `LOCK`
+/// does.
 fn buffer_discrete(
     map: &mut Discrete,
     intent: Intent,
@@ -2232,6 +2253,7 @@ mod tests {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 seq,
             )

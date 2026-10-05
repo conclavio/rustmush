@@ -245,14 +245,31 @@
 //! answers, so a `Controller::Mind` hull a test does not hand a runner is
 //! flown by the stock mind.
 //!
+//! # 17b cut M1b.1: the slots and the card
+//!
+//! [`crate::arena::conditions`] is doc 17 §5's mechanism and law (D-UM-16,
+//! D-UM-17 as amended): condition slots on any armed hull
+//! ([`crate::arena::conditions::ConditionTable`] on
+//! [`crate::arena::state::Arena::conditions`]), the warrant, the evaluator the
+//! due loop runs at a weapon's `WeaponReady` and at the passes, a landing, a
+//! lock, an arming and a startup, the landing of an arming
+//! ([`crate::arena::state::Arena::resolve_arming`]) and the Compact floor's
+//! static terms ([`crate::arena::conditions::condition_is_lawful`]) against
+//! the floor the arena captured at check-out
+//! ([`crate::arena::state::Arena::odds_floor_permille`]).
+//! [`crate::arena::card`] is doc 17 §11's stock card, the shape and the Line
+//! anchor only. No production hull arms a slot.
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
 
+pub mod card;
 pub mod catchup;
 pub mod clock;
 pub mod command;
 pub mod condition;
+pub mod conditions;
 pub mod damage;
 pub mod hash;
 pub mod heat;
@@ -277,6 +294,9 @@ pub mod stock_mind;
 pub mod view;
 pub mod weapons;
 
+pub use card::{
+    AspectWord, Opening, OrbitSense, Prefer, Stance, StockCard, fire_section_inert, line,
+};
 pub use catchup::{
     Catchup, MAX_CATCHUP_CONTACTS, MAX_CATCHUP_SECTIONS, MAX_CATCHUP_WEAPONS, MachineWords,
     ReleaseSnapshot, SectionWords,
@@ -289,6 +309,12 @@ pub use command::{
     SquadWatch,
 };
 pub use condition::{Condition, ConditionBand, MAX_SCANNED_SECTIONS, Reading};
+// 17b cut M1b.1: the slots. `conditions::Held` stays at its module path: the
+// root name `Held` is `motion::Held`'s (re-exported below since 16b cut A.2).
+pub use conditions::{
+    ASPECTS_ANY, Arming, ConditionTable, ConditionTrigger, FireCondition, HELD_SAID_MS, HeldWhy,
+    STOCK_CONDITION_SLOTS, SlotTarget, aspect_in, aspect_mask, condition_is_lawful,
+};
 pub use damage::{
     BLOCKED, COVER, DISPERSION, HULL_SECTION, MISS_REASONS, MOVED, REFUSED, TARGET_GONE, WRECK,
     WRECK_CONDITION, is_wreck,

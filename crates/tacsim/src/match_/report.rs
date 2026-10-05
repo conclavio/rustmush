@@ -1027,12 +1027,23 @@ impl Fold {
                 target,
                 range_cm,
                 rounds,
-            } => format!(
-                "{word} unit={} weapon={weapon} shot={shot_seq} target={} range_cm={range_cm} \
-                 rounds={rounds}",
-                unit(id),
-                unit(target)
-            ),
+                by,
+                slot,
+            } => {
+                // **17b cut M1b.1** (D-UM-14): the attribution, appended only
+                // when the line carries it — a seat's or a machine's shot reads
+                // byte for byte as it always did.
+                format!(
+                    "{word} unit={} weapon={weapon} shot={shot_seq} target={} range_cm={range_cm} \
+                     rounds={rounds}{}{}",
+                    unit(id),
+                    unit(target),
+                    by.as_ref()
+                        .map(|by| format!(" by={by}"))
+                        .unwrap_or_default(),
+                    slot.map(|slot| format!(" slot={slot}")).unwrap_or_default()
+                )
+            }
             EventKind::Impact {
                 shot_seq,
                 unit: id,
@@ -2373,6 +2384,8 @@ mod tests {
             target,
             range_cm: 43_000,
             rounds,
+            by: None,
+            slot: None,
         }
     }
 
@@ -2681,6 +2694,40 @@ mod tests {
         assert_eq!(
             bare.lines.first().map(String::as_str),
             Some("  0:04.000  power_online unit=#101")
+        );
+    }
+
+    /// **17b cut M1b.1** (D-UM-14): a slot's shot is journalled `by: cond` with
+    /// its slot, and the staff line spells the two after `rounds=` — while a
+    /// seat's or a machine's bare `fired` line reads byte for byte as it
+    /// always did.
+    #[test]
+    fn m1b1_the_staff_line_spells_a_slot_shots_attribution_and_a_bare_one_as_before() {
+        let mut tape = Tape::new();
+        tape.at(20_000, fired(ME, "cannon", 1, THEM, 1)).at(
+            24_000,
+            EventKind::Fired {
+                unit: ME,
+                weapon: SmolStr::new("cannon"),
+                shot_seq: 2,
+                target: THEM,
+                range_cm: 43_000,
+                rounds: 1,
+                by: Some(SmolStr::new("cond")),
+                slot: Some(1),
+            },
+        );
+        let report = fold(&tape.0, &roster(), Reader::Staff, RULES);
+        assert_eq!(
+            report.lines,
+            vec![
+                "  0:20.000  fired unit=RA(#101) weapon=cannon shot=1 target=BA(#201) \
+                 range_cm=43000 rounds=1"
+                    .to_owned(),
+                "  0:24.000  fired unit=RA(#101) weapon=cannon shot=2 target=BA(#201) \
+                 range_cm=43000 rounds=1 by=cond slot=1"
+                    .to_owned(),
+            ]
         );
     }
 

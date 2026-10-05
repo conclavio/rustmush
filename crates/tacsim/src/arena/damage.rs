@@ -1061,8 +1061,8 @@ impl Arena {
                     state
                         .weapons
                         .retain(|weapon| weapon.mount_section != *section);
-                    for id in going {
-                        state.ready_at_ms.remove(&id);
+                    for id in &going {
+                        state.ready_at_ms.remove(id);
                     }
                     // **16b cut F.1**: the rounds STAY. `ammo` is not the weapon
                     // table — it is the arena's record of how many rounds that
@@ -1072,6 +1072,13 @@ impl Arena {
                     // full magazine, which is a lie about the match in the one
                     // document that outlives it. The weapon cannot fire either
                     // way: `weapons` is what `FIRE` resolves against.
+                    //
+                    // **17b cut M1b.1** (doc 17 §5): and the slots armed on
+                    // those guns go with them, with their held-shot rows — a
+                    // slot on a gun the hull no longer carries is a decision
+                    // about nothing. The other guns' slots keep their numbers.
+                    let freed = self.conditions.clear_weapons(target, &going);
+                    self.forget_held_said(target, &freed);
                 }
             }
         }
@@ -1163,6 +1170,10 @@ impl Arena {
             state.receiver = None;
         }
         self.contacts.clear_viewer(target);
+        // **17b cut M1b.1** (doc 17 §5): a wreck fires nothing, so its condition
+        // slots and their held-shot rows go beside its weapons and its scheduled
+        // work — before the retain below takes its `WeaponReady`s off the heap.
+        self.clear_conditions(target);
         self.due.retain(|kind| match kind {
             DueKind::SensorPass { unit, .. }
             | DueKind::Share { unit }

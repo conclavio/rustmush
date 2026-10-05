@@ -665,6 +665,59 @@ impl Default for CommandConfig {
     }
 }
 
+/// **`[tacsim.minds]`** (17b cut M1b.1; doc 17 §5 "The law", D-UM-17 as
+/// amended 2026-10-04): the unit minds' block.
+///
+/// Today it holds one key, **the Compact floor** — the least chance to hit a
+/// lawful condition slot may name, per mille, seed 100. It is **captured into
+/// each arena at check-out** (`crate::arena_task::spawn_arena` writes it to
+/// `Arena::odds_floor_permille`, which the snapshot carries), so a reload of this
+/// block never reaches a running or a resumed match. The home grows: 17b cut
+/// M1b.5's `fill_controller`, and from 17b cut M3 the classes, the pool,
+/// `cpu_lens_ms` and `workers`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MindsConfig {
+    /// **The Compact floor**, per mille: a condition under it is refused
+    /// `unlawful` at the landing of its arming. `10` to `100` in steps of `10`
+    /// ([`MindsConfig::validate`]).
+    pub odds_floor_permille: u32,
+}
+
+impl Default for MindsConfig {
+    fn default() -> Self {
+        MindsConfig {
+            // Doc 17 §5's seed value: one chance in ten, the Line preset's own
+            // `min_odds`.
+            odds_floor_permille: 100,
+        }
+    }
+}
+
+impl MindsConfig {
+    /// **Check `[tacsim.minds]`** (17b cut M1b.1, in Q.7's pattern).
+    ///
+    /// The floor is **10 to 100 in steps of 10**: the step because every
+    /// sentence that names the floor prints it in whole per cents
+    /// (`floor / 10`), and the ceiling because until 17b cut M3's seal can
+    /// refuse a card by name the floor must not exceed Standard Doctrine's Line
+    /// default of 10 per cent, so the stock mind's own arming is lawful by
+    /// construction. M3 widens it.
+    ///
+    /// # Errors
+    ///
+    /// One sentence naming the key and the value it was given.
+    pub fn validate(&self) -> Result<(), String> {
+        let floor = self.odds_floor_permille;
+        if !(10..=100).contains(&floor) || !floor.is_multiple_of(10) {
+            return Err(format!(
+                "[tacsim.minds].odds_floor_permille must be 10 to 100 in steps of 10 (it is {floor})"
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The sensor pass's cadence and its signature ceiling (**16b cut G**; doc 16
 /// §3.6 "Perception").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1393,6 +1446,9 @@ pub struct TacsimConfig {
     /// **16b cut G** — the scale harness's shape and thresholds. **Parsed,
     /// inert** until cut H.
     pub harness: HarnessConfig,
+    /// **17b cut M1b.1** — `[tacsim.minds]`: the Compact floor, captured into
+    /// each arena at check-out. **Live** since M1b.1 (default when absent).
+    pub minds: MindsConfig,
 }
 
 impl TacsimConfig {
@@ -1553,6 +1609,36 @@ mod tests {
             ),
         ] {
             assert_eq!(config.validate(), Err(sentence.to_string()));
+        }
+    }
+
+    /// **17b cut M1b.1**: the Compact floor is 10 to 100 in steps of 10, and
+    /// every refusal names the key and the value.
+    #[test]
+    fn m1b1_the_floor_is_ten_to_a_hundred_in_steps_of_ten() {
+        use super::MindsConfig;
+        assert_eq!(MindsConfig::default().odds_floor_permille, 100);
+        for floor in [10, 50, 100] {
+            assert_eq!(
+                MindsConfig {
+                    odds_floor_permille: floor
+                }
+                .validate(),
+                Ok(()),
+                "{floor}"
+            );
+        }
+        for floor in [0, 15, 110] {
+            assert_eq!(
+                MindsConfig {
+                    odds_floor_permille: floor
+                }
+                .validate(),
+                Err(format!(
+                    "[tacsim.minds].odds_floor_permille must be 10 to 100 in steps of 10 (it is \
+                     {floor})"
+                ))
+            );
         }
     }
 }

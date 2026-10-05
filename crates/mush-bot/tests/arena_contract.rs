@@ -44,6 +44,7 @@ use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent, RichText};
 use tacsim::arena::{
     catchup::{Catchup, MachineWords, SectionWords},
     clock::Tempo,
+    conditions::HeldWhy,
     damage::MISS_REASONS,
     intents::Refusal,
     motion::BlockedCause,
@@ -411,6 +412,9 @@ fn every_notice_kind() -> Vec<NoticeKind> {
         NoticeKind::EmconOff,
         NoticeKind::DriveArrived,
         NoticeKind::DriveNoRoute,
+        // 17b cut M1b.1: a slot's two answers.
+        NoticeKind::SlotFired,
+        NoticeKind::SlotHeld,
     ];
     for kind in &kinds {
         match kind {
@@ -437,7 +441,9 @@ fn every_notice_kind() -> Vec<NoticeKind> {
             | NoticeKind::EmconOn
             | NoticeKind::EmconOff
             | NoticeKind::DriveArrived
-            | NoticeKind::DriveNoRoute => {}
+            | NoticeKind::DriveNoRoute
+            | NoticeKind::SlotFired
+            | NoticeKind::SlotHeld => {}
         }
     }
     kinds
@@ -462,6 +468,10 @@ fn every_refusal() -> Vec<Refusal> {
         Refusal::NoWeapon,
         Refusal::NotReflex,
         Refusal::NoJammer,
+        // 17b cut M1b.1: the law's two words and the count's.
+        Refusal::Unwarranted,
+        Refusal::NoSlot,
+        Refusal::Unlawful,
     ];
     for refusal in &refusals {
         match refusal {
@@ -480,7 +490,10 @@ fn every_refusal() -> Vec<Refusal> {
             | Refusal::Overheated
             | Refusal::NoWeapon
             | Refusal::NotReflex
-            | Refusal::NoJammer => {}
+            | Refusal::NoJammer
+            | Refusal::Unwarranted
+            | Refusal::NoSlot
+            | Refusal::Unlawful => {}
         }
     }
     refusals
@@ -593,6 +606,8 @@ fn every_notice() -> Vec<FrameNotice> {
                 heat: 100,
                 max: 100,
             },
+            // 17b cut M1b.1: the floor an `unlawful` refusal names.
+            Refusal::Unlawful => RefusalDetail::Floor { permille: 100 },
             _ => RefusalDetail::None,
         };
         notices.push(FrameNotice::Refused {
@@ -636,6 +651,48 @@ fn every_notice() -> Vec<FrameNotice> {
     notices.push(FrameNotice::Drive {
         outcome: DriveOutcome::NoRoute,
     });
+    // 17b cut M1b.1: a slot's two notices, with and without a contact, and one
+    // held notice per reason.
+    notices.push(FrameNotice::SlotFired {
+        slot: 1,
+        weapon: "cannon".into(),
+        contact: Some(named(BA_ID, ba())),
+        p_permille: 620,
+        aspect: Aspect::Left,
+    });
+    notices.push(FrameNotice::SlotFired {
+        slot: 2,
+        weapon: "machine_gun".into(),
+        contact: None,
+        p_permille: 950,
+        aspect: Aspect::Rear,
+    });
+    for why in [
+        HeldWhy::Odds {
+            permille: 540,
+            floor: 600,
+        },
+        HeldWhy::Aspect {
+            contact: named(BA_ID, ba()),
+            aspect: Aspect::Front,
+        },
+        HeldWhy::Range {
+            contact: named(BA_ID, ba()),
+            range_m: 1_200,
+            min_m: 200,
+            max_m: 600,
+        },
+        HeldWhy::Rounds {
+            rounds: 8,
+            keeps: 8,
+        },
+    ] {
+        notices.push(FrameNotice::SlotHeld {
+            slot: 1,
+            weapon: "cannon".into(),
+            why,
+        });
+    }
     notices
 }
 
@@ -1022,7 +1079,9 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
                     | NoticeKind::EmconOn
                     | NoticeKind::EmconOff
                     | NoticeKind::DriveArrived
-                    | NoticeKind::DriveNoRoute => assert!(
+                    | NoticeKind::DriveNoRoute
+                    | NoticeKind::SlotFired
+                    | NoticeKind::SlotHeld => assert!(
                         matches!(&read, Line::ContactLost { designator } if *designator == d),
                         "{}",
                         fail()
@@ -1179,6 +1238,12 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
                 "{}",
                 fail()
             ),
+            // 17b cut M1b.1: a slot's two notices are defined and staged by
+            // nobody until 17b cut M1b.4; the bot reads neither and opens no
+            // reply on them.
+            FrameNotice::SlotFired { .. } | FrameNotice::SlotHeld { .. } => {
+                assert_eq!(read, Line::Other(sentence.clone()), "{}", fail());
+            }
             // 17b cut M1a.4: the bot reads neither of the motor's answers.
             FrameNotice::Drive { .. } => {
                 assert_eq!(read, Line::Other(sentence.clone()), "{}", fail());

@@ -52,7 +52,7 @@ use smol_str::SmolStr;
 use crate::arena::state::{Designator, EndReason, MatchMode, StopReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
-use crate::config::{ArenaConfig, CommandConfig, MatchConfig, SensorsConfig};
+use crate::config::{ArenaConfig, CommandConfig, MatchConfig, MindsConfig, SensorsConfig};
 use crate::match_::centre::{self, CENTRE_ARENA, CentreRoom, PODS_PER_SIDE};
 use crate::match_::net;
 use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
@@ -703,6 +703,17 @@ pub(crate) fn configs(w: &World) -> Option<(ArenaConfig, MatchConfig, SensorsCon
 pub(crate) fn command_config(w: &World) -> Option<CommandConfig> {
     let cfg = w.module_state::<crate::TacsimStore>()?.config();
     Some(cfg.command.clone())
+}
+
+/// The configured `[tacsim.minds]` block (**17b cut M1b.1**; doc 17 §5,
+/// D-UM-17 as amended): the Compact floor `crate::arena_bridge::open_match`
+/// hands to `crate::arena_task::spawn_arena`, which captures it into the arena
+/// at check-out. Read from the one place [`configs`] reads; a running or a
+/// resumed match never reads it again.
+#[must_use]
+pub(crate) fn minds_config(w: &World) -> Option<MindsConfig> {
+    let cfg = w.module_state::<crate::TacsimStore>()?.config();
+    Some(cfg.minds.clone())
 }
 
 /// How many slots one side of **this** centre takes: the configured cap, held

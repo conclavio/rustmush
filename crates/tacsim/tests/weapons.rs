@@ -542,6 +542,7 @@ fn fire_is_refused_for_a_lock_a_cycle_a_round_and_power_in_that_order() {
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             4,
         )],
@@ -585,6 +586,7 @@ fn an_accepted_shot_sets_the_cycle_spends_the_burst_and_schedules_one_impact() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -655,6 +657,8 @@ fn an_accepted_shot_sets_the_cycle_spends_the_burst_and_schedules_one_impact() {
             target: BLUE,
             range_cm: 4_000,
             rounds: 1,
+            by: None,
+            slot: None,
         }
     );
     assert!(entry.draws.is_empty(), "cut W.1 draws nothing");
@@ -725,6 +729,7 @@ fn a_beam_is_scheduled_at_now() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("laser"),
+                    slot: None,
                 },
                 4,
             ),
@@ -818,6 +823,7 @@ fn a_blocked_shot_is_accepted_and_costs_its_round() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -861,6 +867,7 @@ fn the_engaged_tempo_is_entered_on_a_shot_and_held() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 4,
             ),
@@ -992,6 +999,7 @@ fn weaponstatus_reads_the_frames_readiness_rounds_and_band() {
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             4,
         )],
@@ -1265,6 +1273,7 @@ fn script() -> Vec<Beat> {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     seq + 3,
                 ),
@@ -1749,6 +1758,7 @@ fn i3_a_place_at_a_beat_is_one_line_and_one_pose_at_three_cadences() {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     4,
                 ),
@@ -1830,6 +1840,7 @@ fn i3_a_place_under_a_round_in_flight_is_refused_at_three_cadences() {
                 RED,
                 IntentKind::Fire {
                     weapon: SmolStr::new("cannon"),
+                    slot: None,
                 },
                 3,
             ),
@@ -1961,6 +1972,7 @@ fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("laser"),
+                slot: None,
             },
             4,
         ),
@@ -2208,6 +2220,7 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
             RED,
             IntentKind::Fire {
                 weapon: SmolStr::new("cannon"),
+                slot: None,
             },
             5,
         )],
@@ -2360,6 +2373,7 @@ fn range_field(blue: &str) -> Arena {
 fn range_script() -> Vec<Beat> {
     let cannon = || IntentKind::Fire {
         weapon: SmolStr::new("cannon"),
+        slot: None,
     };
     let mut beats = vec![Beat {
         t_ms: 0,
@@ -2651,6 +2665,7 @@ fn ap2_script() -> Vec<Beat> {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     seq + 1,
                 ),
@@ -2917,6 +2932,7 @@ fn ae2_script(weapon: &str, at: &[i64]) -> Vec<Beat> {
                         RED,
                         IntentKind::Fire {
                             weapon: SmolStr::new(weapon),
+                            slot: None,
                         },
                         seq + 1,
                     ),

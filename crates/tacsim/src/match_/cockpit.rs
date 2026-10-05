@@ -136,6 +136,7 @@ use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
+use crate::arena::conditions::HeldWhy;
 use crate::arena::damage;
 use crate::arena::intents::MotorGoal;
 use crate::arena::intents::{ControlState, IntentKind};
@@ -603,6 +604,21 @@ pub enum CockpitError {
     /// weapon is in the sentence.
     #[error("{0}")]
     Refused(String),
+    /// **A condition under the match's Compact floor** (17b cut M1b.1; doc 17
+    /// §5, D-UM-17 as amended): the ONE home of the sentence, which the arena's
+    /// landing refusal (`refusal_line` over `RefusalDetail::Floor`) and 17b cut
+    /// M1b.4's typed pre-check (through `fire_refused`) both print, so the two
+    /// halves are one string.
+    #[error("The Compact floor is {floor_pct}%; a condition may not ask for less.")]
+    Unlawful {
+        /// The floor, whole per cent (the floor is validated in steps of ten
+        /// per mille).
+        floor_pct: u32,
+    },
+    /// **An arming past the hull's slot count** (17b cut M1b.1): the ONE home
+    /// of the count's sentence, `<weapon>` literal.
+    #[error("Every slot is armed; FIRE <weapon> OFF frees one.")]
+    NoSlot,
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,7 +1072,149 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
         FrameNotice::Drive {
             outcome: DriveOutcome::NoRoute,
         } => DRIVE_NO_ROUTE.to_owned(),
+        // **17b cut M1b.1** (doc 17 §5: *every slot shot is announced once*;
+        // 17b cut M1b.4 stages it): the pilot's own slot and weapon, the lock
+        // its platform holds by its designator (with the friendly mark by the
+        // existing rule), and the chance and the side word that row earned.
+        FrameNotice::SlotFired {
+            slot,
+            weapon,
+            contact,
+            p_permille,
+            aspect,
+        } => {
+            let gun = capitalised(weapon);
+            let percent = p_permille / 10;
+            let side = aspect.side_word();
+            match contact {
+                Some(contact) => format!(
+                    "{gun} fires at {}{} by S{slot} ({percent}%, {side}).",
+                    contact.designator,
+                    friendly_mark(frame, contact.id)
+                ),
+                None => format!("{gun} fires by S{slot} ({percent}%, {side})."),
+            }
+        }
+        // **17b cut M1b.1** (doc 17 §5: *a held shot said at most once per
+        // contact per 10 s*; 17b cut M1b.4 stages it): the slot, the weapon and
+        // the term that failed.
+        FrameNotice::SlotHeld { slot, weapon, why } => {
+            format!("S{slot} held the {weapon}: {}.", held_words(why))
+        }
     }
+}
+
+/// **A weapon id with its first letter upper-cased** (17b cut M1b.1; 17b's
+/// Q-M2): `Cannon`, `Machine_gun` — the slot shot's opening word.
+fn capitalised(weapon: &str) -> String {
+    let mut letters = weapon.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => String::new(),
+    }
+}
+
+/// **Why a slot held, in plain words** (17b cut M1b.1; doc 17 §5's held
+/// sentence): `54% under your 60%`, `BA shows its front`, `BA at 1200 m,
+/// outside 200 to 600` (`under {max}` when the slot has no nearest, `past
+/// {min}` when it has no furthest), `8 rounds, keeps 8`.
+fn held_words(why: &HeldWhy) -> String {
+    match why {
+        HeldWhy::Odds { permille, floor } => {
+            format!("{}% under your {}%", permille / 10, floor / 10)
+        }
+        HeldWhy::Aspect { contact, aspect } => {
+            format!("{} shows its {}", contact.designator, aspect.side_word())
+        }
+        HeldWhy::Range {
+            contact,
+            range_m,
+            min_m,
+            max_m,
+        } => {
+            let bounds = if *min_m == 0 {
+                format!("under {max_m}")
+            } else if *max_m == u32::MAX {
+                format!("past {min_m}")
+            } else {
+                format!("{min_m} to {max_m}")
+            };
+            format!("{} at {range_m} m, outside {bounds}", contact.designator)
+        }
+        HeldWhy::Rounds { rounds, keeps } => format!("{rounds} rounds, keeps {keeps}"),
+    }
+}
+
+/// **A held slot's reason as the keyframe carries it** (17b cut M1b.1): the
+/// notice object's `detail`, `{ "why", "percent", "floor", "aspect",
+/// "range_m", "min_m", "max_m", "rounds", "keeps" }` — every key on every
+/// held notice, the other whys' `null` — in whole per cents and metres, the
+/// facet word for the aspect. The contact's designator rides the notice's own
+/// `designator` key.
+fn held_detail(why: &HeldWhy) -> serde_json::Value {
+    let null = serde_json::Value::Null;
+    let (word, percent, floor, aspect, range_m, min_m, max_m, rounds, keeps) = match why {
+        HeldWhy::Odds { permille, floor } => (
+            "odds",
+            serde_json::json!(permille / 10),
+            serde_json::json!(floor / 10),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null,
+        ),
+        HeldWhy::Aspect { aspect, .. } => (
+            "aspect",
+            null.clone(),
+            null.clone(),
+            serde_json::json!(aspect.as_str()),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null,
+        ),
+        HeldWhy::Range {
+            range_m,
+            min_m,
+            max_m,
+            ..
+        } => (
+            "range",
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            serde_json::json!(range_m),
+            serde_json::json!(min_m),
+            serde_json::json!(max_m),
+            null.clone(),
+            null,
+        ),
+        HeldWhy::Rounds { rounds, keeps } => (
+            "rounds",
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null,
+            serde_json::json!(rounds),
+            serde_json::json!(keeps),
+        ),
+    };
+    serde_json::json!({
+        "why": word,
+        "percent": percent,
+        "floor": floor,
+        "aspect": aspect,
+        "range_m": range_m,
+        "min_m": min_m,
+        "max_m": max_m,
+        "rounds": rounds,
+        "keeps": keeps,
+    })
 }
 
 /// **`(FRIENDLY)` where this frame's own row for `contact` says so** (16b cut
@@ -1225,6 +1383,19 @@ pub(crate) fn refusal_line(
         // 16b cut O.2: the cockpit refuses it locally off the frame; the arena's
         // word reaches here only when the frame was not yet there to say so.
         (Refusal::NoJammer, _) => CockpitError::NoJammer.to_string(),
+        // **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the floor's
+        // sentence, naming the floor the arena captured; and the fallback for
+        // an `Unlawful` that carries none — a `Contact` target, which the floor
+        // forbids by kind in 17b cut M1b whatever the id.
+        (Refusal::Unlawful, RefusalDetail::Floor { permille }) => CockpitError::Unlawful {
+            floor_pct: permille / 10,
+        }
+        .to_string(),
+        (Refusal::Unlawful, _) => "The Compact floor forbids that condition.".to_owned(),
+        // The count's own word.
+        (Refusal::NoSlot, _) => CockpitError::NoSlot.to_string(),
+        // The law's other word (gated for a mind from 17b cut M1b.2).
+        (Refusal::Unwarranted, _) => "That has no warrant.".to_owned(),
     };
     order_refused(order, weapon, &said)
 }
@@ -1260,10 +1431,7 @@ pub fn order_refused(order: &str, weapon: Option<&str>, said: &str) -> String {
 /// nothing.
 fn fire_refused(weapon: &str, said: &CockpitError) -> CockpitError {
     CockpitError::Refused(order_refused(
-        IntentKind::Fire {
-            weapon: SmolStr::new(weapon),
-        }
-        .as_str(),
+        IntentKind::fire(weapon).as_str(),
         Some(weapon),
         &said.to_string(),
     ))
@@ -4440,6 +4608,7 @@ fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
         seat.unit,
         IntentKind::Fire {
             weapon: weapon.id.clone(),
+            slot: None,
         },
     )?;
     let line = format!("Firing {}.", weapon.id);
@@ -5109,7 +5278,7 @@ pub fn status_frame_held(
             if text.is_empty() {
                 return None;
             }
-            Some(serde_json::json!({
+            let mut object = serde_json::json!({
                 "kind": notice.kind().as_str(),
                 "contact": notice.contact().map(|id| id.to_string()),
                 "designator": notice.designator().map(|named| named.to_string()),
@@ -5145,10 +5314,18 @@ pub fn status_frame_held(
                     (FrameNotice::Emcon { radius_m, .. }, _) => {
                         serde_json::json!({ "radius_m": radius_m })
                     }
+                    // **17b cut M1b.1**: a held slot's reason, every why's keys
+                    // present and the other whys' `null`, so a panel composes the
+                    // sentence without reading `text`.
+                    (FrameNotice::SlotHeld { why, .. }, _) => held_detail(why),
                     (_, RefusalDetail::None) => serde_json::Value::Null,
                     (_, RefusalDetail::Cycling { secs }) => serde_json::json!({ "secs": secs }),
                     (_, RefusalDetail::Overheated { heat, max }) => {
                         serde_json::json!({ "heat": heat, "max": max })
+                    }
+                    // **17b cut M1b.1**: the floor an `unlawful` refusal was held to.
+                    (_, RefusalDetail::Floor { permille }) => {
+                        serde_json::json!({ "floor_permille": permille })
                     }
                 },
                 // 16b cut D.2 (`B-18`): whether the contact this notice names is
@@ -5163,7 +5340,31 @@ pub fn status_frame_held(
                 // already destroyed.
                 "spent": notice.spent(),
                 "text": text,
-            }))
+            });
+            // **17b cut M1b.1** (doc 17 §5; 17b cut M1b.4 stages them): a slot
+            // notice's own parts, on its own object only — every other notice's
+            // object is byte for byte what it was. The pilot's own slot, the
+            // chance and the facet word the row earned; the weapon and the
+            // designator ride the keys above.
+            if let Some(map) = object.as_object_mut() {
+                match notice {
+                    FrameNotice::SlotFired {
+                        slot,
+                        p_permille,
+                        aspect,
+                        ..
+                    } => {
+                        map.insert("slot".to_owned(), serde_json::json!(slot));
+                        map.insert("percent".to_owned(), serde_json::json!(p_permille / 10));
+                        map.insert("aspect".to_owned(), serde_json::json!(aspect.as_str()));
+                    }
+                    FrameNotice::SlotHeld { slot, .. } => {
+                        map.insert("slot".to_owned(), serde_json::json!(slot));
+                    }
+                    _ => {}
+                }
+            }
+            Some(object)
         })
         .collect();
     let weapons: Vec<serde_json::Value> = frame_weapons(frame)
@@ -10207,5 +10408,230 @@ mod tests {
             .collect();
         assert_eq!(granted, table);
         assert_eq!(granted.len(), Channel::ALL.len());
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M1b.1
+    // -----------------------------------------------------------------------
+
+    /// **17b cut M1b.1**: the three new refusal words' sentences — the floor's,
+    /// naming the floor in whole per cents, its fallback for an `Unlawful` with
+    /// no floor (a `Contact` target), the count's and the warrant's — each
+    /// through the one prefix every `FIRE` refusal has; and the two
+    /// `CockpitError`s as their one home.
+    #[test]
+    fn m1b1_the_new_refusals_say_their_sentences() {
+        assert_eq!(
+            refusal_line(
+                "fire",
+                Refusal::Unlawful,
+                Some("cannon"),
+                RefusalDetail::Floor { permille: 100 }
+            ),
+            "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less."
+        );
+        assert_eq!(
+            refusal_line(
+                "fire",
+                Refusal::Unlawful,
+                Some("cannon"),
+                RefusalDetail::Floor { permille: 50 }
+            ),
+            "FIRE cannon refused. The Compact floor is 5%; a condition may not ask for less."
+        );
+        assert_eq!(
+            refusal_line(
+                "fire",
+                Refusal::Unlawful,
+                Some("cannon"),
+                RefusalDetail::None
+            ),
+            "FIRE cannon refused. The Compact floor forbids that condition."
+        );
+        assert_eq!(
+            refusal_line(
+                "fire",
+                Refusal::NoSlot,
+                Some("missiles"),
+                RefusalDetail::None
+            ),
+            "FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one."
+        );
+        assert_eq!(
+            refusal_line(
+                "fire",
+                Refusal::Unwarranted,
+                Some("cannon"),
+                RefusalDetail::None
+            ),
+            "FIRE cannon refused. That has no warrant."
+        );
+        assert_eq!(
+            CockpitError::Unlawful { floor_pct: 10 }.to_string(),
+            "The Compact floor is 10%; a condition may not ask for less."
+        );
+        assert_eq!(
+            CockpitError::NoSlot.to_string(),
+            "Every slot is armed; FIRE <weapon> OFF frees one."
+        );
+        // The pre-check's half composes the same string (M1b.4's path).
+        assert_eq!(
+            fire_refused("cannon", &CockpitError::Unlawful { floor_pct: 10 }).to_string(),
+            "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less."
+        );
+    }
+
+    /// **17b cut M1b.1**: the two slot notices' sentences (defined here,
+    /// staged by 17b cut M1b.4) over both halves of `SlotFired`'s contact and
+    /// every `HeldWhy`, and their keyframe objects' keys — every other notice's
+    /// object unmoved, and a refused `unlawful` carrying `floor_permille`.
+    #[test]
+    fn m1b1_the_slot_notices_say_their_sentences_and_carry_their_keys() {
+        use crate::arena::conditions::HeldWhy;
+        use crate::arena::perception::{Aspect, Named};
+        let mut frame = ap3_scene();
+        let ba = frame_contacts(&frame)
+            .into_iter()
+            .find(|row| row.designator.to_string() == "BA")
+            .map(|row| Named {
+                id: row.id,
+                designator: row.designator,
+            })
+            .expect("the scene's BA");
+        let held = |why: HeldWhy| FrameNotice::SlotHeld {
+            slot: 1,
+            weapon: SmolStr::new("cannon"),
+            why,
+        };
+        let cases = [
+            (
+                FrameNotice::SlotFired {
+                    slot: 1,
+                    weapon: SmolStr::new("cannon"),
+                    contact: Some(ba),
+                    p_permille: 620,
+                    aspect: Aspect::Left,
+                },
+                "Cannon fires at BA by S1 (62%, side).",
+            ),
+            (
+                FrameNotice::SlotFired {
+                    slot: 2,
+                    weapon: SmolStr::new("machine_gun"),
+                    contact: None,
+                    p_permille: 950,
+                    aspect: Aspect::Rear,
+                },
+                "Machine_gun fires by S2 (95%, rear).",
+            ),
+            (
+                held(HeldWhy::Odds {
+                    permille: 540,
+                    floor: 600,
+                }),
+                "S1 held the cannon: 54% under your 60%.",
+            ),
+            (
+                held(HeldWhy::Aspect {
+                    contact: ba,
+                    aspect: Aspect::Front,
+                }),
+                "S1 held the cannon: BA shows its front.",
+            ),
+            (
+                held(HeldWhy::Range {
+                    contact: ba,
+                    range_m: 1_200,
+                    min_m: 200,
+                    max_m: 600,
+                }),
+                "S1 held the cannon: BA at 1200 m, outside 200 to 600.",
+            ),
+            (
+                held(HeldWhy::Range {
+                    contact: ba,
+                    range_m: 1_200,
+                    min_m: 0,
+                    max_m: 600,
+                }),
+                "S1 held the cannon: BA at 1200 m, outside under 600.",
+            ),
+            (
+                held(HeldWhy::Range {
+                    contact: ba,
+                    range_m: 100,
+                    min_m: 200,
+                    max_m: u32::MAX,
+                }),
+                "S1 held the cannon: BA at 100 m, outside past 200.",
+            ),
+            (
+                held(HeldWhy::Rounds {
+                    rounds: 8,
+                    keeps: 8,
+                }),
+                "S1 held the cannon: 8 rounds, keeps 8.",
+            ),
+        ];
+        let rows = frame_contacts(&frame);
+        for (notice, said) in &cases {
+            assert_eq!(notice_line(&frame, notice, &rows), *said);
+            assert_eq!(notice.section(), None);
+            assert!(!notice.spent());
+            assert_eq!(notice.detail(), RefusalDetail::None);
+        }
+        // The keyframe's objects.
+        frame.notices = cases.iter().map(|(notice, _)| notice.clone()).collect();
+        frame.notices.push(FrameNotice::Refused {
+            order: SmolStr::new("fire"),
+            refusal: Refusal::Unlawful,
+            weapon: Some(SmolStr::new("cannon")),
+            detail: RefusalDetail::Floor { permille: 100 },
+        });
+        let keyframe = status_frame(crate::arena_task::MatchId(1), &frame);
+        let notices = keyframe["notices"].as_array().cloned().unwrap_or_default();
+        assert_eq!(notices.len(), cases.len() + 1);
+        let fired = &notices[0];
+        assert_eq!(fired["kind"], "slot_fired");
+        assert_eq!(fired["slot"], 1);
+        assert_eq!(fired["weapon"], "cannon");
+        assert_eq!(fired["designator"], "BA");
+        assert_eq!(fired["percent"], 62);
+        assert_eq!(fired["aspect"], "left");
+        assert_eq!(fired["detail"], serde_json::Value::Null);
+        assert_eq!(notices[1]["designator"], serde_json::Value::Null);
+        let odds = &notices[2];
+        assert_eq!(odds["kind"], "slot_held");
+        assert_eq!(odds["slot"], 1);
+        assert_eq!(odds["weapon"], "cannon");
+        assert_eq!(
+            odds["detail"],
+            serde_json::json!({
+                "why": "odds", "percent": 54, "floor": 60, "aspect": null, "range_m": null,
+                "min_m": null, "max_m": null, "rounds": null, "keeps": null
+            })
+        );
+        assert_eq!(notices[3]["detail"]["why"], "aspect");
+        assert_eq!(notices[3]["detail"]["aspect"], "front");
+        assert_eq!(notices[3]["designator"], "BA");
+        assert_eq!(
+            notices[4]["detail"],
+            serde_json::json!({
+                "why": "range", "percent": null, "floor": null, "aspect": null,
+                "range_m": 1200, "min_m": 200, "max_m": 600, "rounds": null, "keeps": null
+            })
+        );
+        assert_eq!(notices[7]["detail"]["why"], "rounds");
+        assert_eq!(notices[7]["detail"]["keeps"], 8);
+        let refused = &notices[cases.len()];
+        assert_eq!(refused["refusal"], "unlawful");
+        assert_eq!(
+            refused["detail"],
+            serde_json::json!({ "floor_permille": 100 })
+        );
+        assert!(
+            refused.get("slot").is_none(),
+            "a notice that is not a slot's carries no slot key"
+        );
     }
 }

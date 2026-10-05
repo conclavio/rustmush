@@ -362,6 +362,12 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             max_span: cfg.command.max_span,
             orders_per_minute: cfg.command.orders_per_minute,
         },
+        // 17b cut M1b.1 (doc 17 §5, D-UM-17 as amended): the Compact floor,
+        // mapped straight across (default when the table is absent) and banded
+        // by `validate` below. The arena captures it at check-out.
+        minds: tacsim::config::MindsConfig {
+            odds_floor_permille: cfg.minds.odds_floor_permille,
+        },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
             max_signature_factor_permille: signature_factor_permille(
@@ -424,6 +430,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     // ruling): a nonsense value in a file that turns the layer on later must not
     // have booted clean the day before.
     typed.command.validate()?;
+    // 17b cut M1b.1: `[tacsim.minds]`, in the same pattern.
+    typed.minds.validate()?;
     typed.sensors.validate()?;
     typed.harness.validate()?;
     // Verify here, at the host, so the boot fails with the file's name in the message.
@@ -1647,6 +1655,27 @@ mod tests {
                 "orders_per_minute = 601\n",
                 "[tacsim.command].orders_per_minute",
                 "601",
+            ),
+            // 17b cut M1b.1 (doc 17 §5, D-UM-17 as amended): the Compact floor
+            // is 10 to 100 in steps of 10 — nought, a half step and past the
+            // Line default are each refused by name.
+            (
+                "[tacsim.minds]",
+                "odds_floor_permille = 0\n",
+                "[tacsim.minds].odds_floor_permille",
+                "0",
+            ),
+            (
+                "[tacsim.minds]",
+                "odds_floor_permille = 15\n",
+                "[tacsim.minds].odds_floor_permille",
+                "15",
+            ),
+            (
+                "[tacsim.minds]",
+                "odds_floor_permille = 110\n",
+                "[tacsim.minds].odds_floor_permille",
+                "110",
             ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));

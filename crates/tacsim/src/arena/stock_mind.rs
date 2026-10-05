@@ -1304,7 +1304,7 @@ impl NativeStockMind {
             intents.push(IntentKind::Lock { contact });
         }
         if let Some(weapon) = plan.fire {
-            intents.push(IntentKind::Fire { weapon });
+            intents.push(IntentKind::Fire { weapon, slot: None });
         }
         intents
     }

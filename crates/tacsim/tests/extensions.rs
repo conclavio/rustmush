@@ -6174,6 +6174,7 @@ fn q6_leg_script() -> Vec<ReliefBeat> {
                     RED,
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon"),
+                        slot: None,
                     },
                     seq + 1,
                 ),
@@ -7206,6 +7207,7 @@ fn d2_a_zero_heat_weapon_fires_from_a_cooked_platform_at_three_cadences() {
                     RED,
                     tacsim::arena::intents::IntentKind::Fire {
                         weapon: SmolStr::new("machine_gun"),
+                        slot: None,
                     },
                     2,
                 ));
@@ -7213,6 +7215,7 @@ fn d2_a_zero_heat_weapon_fires_from_a_cooked_platform_at_three_cadences() {
                     RED,
                     tacsim::arena::intents::IntentKind::Fire {
                         weapon: SmolStr::new("laser"),
+                        slot: None,
                     },
                     3,
                 ));
@@ -8140,6 +8143,7 @@ fn m2_beam_replay(cadence_ms: i64) -> M2BeamRun {
                 RED,
                 tacsim::arena::intents::IntentKind::Fire {
                     weapon: SmolStr::new("laser"),
+                    slot: None,
                 },
                 2,
             )]

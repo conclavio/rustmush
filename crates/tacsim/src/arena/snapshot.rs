@@ -53,13 +53,14 @@
 //! encoded twice is one string, encoded, decoded and encoded again it is still
 //! that string, and a walk of the parsed state finds no float — with a direct
 //! assertion that `serde_json::Map` sorts, the canary for a `preserve_order`
-//! that would make the rules blob's bytes follow insertion order. The five maps
+//! that would make the rules blob's bytes follow insertion order. The six maps
 //! whose key JSON cannot write as an object key —
 //! [`crate::arena::state::EpochTable`]'s `(unit, channel)`,
 //! [`crate::arena::state::DesignatorBook`]'s `(viewer, target)`,
 //! [`Arena::spent_said`]'s `(told, target, section)`, [`Arena::held_losses`]'
-//! `(viewer, contact)` and [`Arena::squad_watch`]'s
-//! [`crate::deliberation::SquadId`], a struct — are written as arrays of pairs
+//! `(viewer, contact)`, [`Arena::squad_watch`]'s
+//! [`crate::deliberation::SquadId`], a struct, and (17b cut M1b.1)
+//! [`Arena::held_said`]'s `(unit, slot, contact)` — are written as arrays of pairs
 //! through `pairs`. `serde_json` refuses a struct key only at run time, and
 //! nothing refuses one at compile time: the unit tests below pin the key form of
 //! every keyed map the tree holds today, and whoever adds a keyed map adds it
@@ -68,12 +69,12 @@
 //!
 //! # The three lists
 //!
-//! [`Arena`] has 47 fields, and every one is placed by name, twice: in the
+//! [`Arena`] has 50 fields, and every one is placed by name, twice: in the
 //! exhaustive destructuring that builds the encode's borrowed `ArenaStateRef`,
 //! and in the exhaustive literal the decode builds the arena with. A field a
 //! later cut adds is a compile error in both until it is put in one of these:
 //!
-//! - **Carried** (33): `units`, `epochs`, `contacts`, `designators`,
+//! - **Carried** (36): `units`, `epochs`, `contacts`, `designators`,
 //!   `spent_said`, `due`, `ledger` (its [`LedgerState`]: counters, open chunk,
 //!   closed queue, both SHA-256 running states), `clock` (its [`ClockState`]),
 //!   `seed`, `resolution`, `pilots`, `reflex`, `motors` (17b cut M1a.1: the
@@ -81,7 +82,11 @@
 //!   never its path scratch, which moved there from `reflex`), `minds` (17b
 //!   cut M1a.5: every unit mind's row — its think counter, the think in
 //!   flight, its memory, its notice buffer, its range memory, its order and
-//!   its strikes), `pending`,
+//!   its strikes, and since 17b cut M1b.1 its card), `conditions`,
+//!   `held_said` and `odds_floor_permille` (17b cut M1b.1: every hull's
+//!   condition slots, the held-shot rows and the Compact floor the arena
+//!   captured at check-out — carried, so a config reload between a check-out
+//!   and a resume moves nothing), `pending`,
 //!   `shots`, `next_shot_seq`, `stop`, `now_ms`, `at_release`, `pending_catchup`,
 //!   `held_losses`, `ended`, `arena_cfg`, `match_cfg`, `sensors_cfg`,
 //!   `alert_range_cm`, `jam_radius_cm`, `squads`, `mode`, `hold`, and the two
@@ -158,6 +163,7 @@ use smol_str::SmolStr;
 use crate::arena::catchup::{Catchup, ReleaseSnapshot};
 use crate::arena::clock::{Clock, ClockState};
 use crate::arena::command::{ExpiredSquads, SquadWatchTable};
+use crate::arena::conditions::ConditionTable;
 use crate::arena::hash::state_hash;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
@@ -215,7 +221,16 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// standing order (the reflex rows' `order`) — a shape change a format-5 reader
 /// cannot decode; the two unstepped `af1` fixtures hold no order at pulse zero,
 /// so the pin's digest and line count did not move and only the format did.
-pub const SNAPSHOT_FORMAT: u32 = 6;
+///
+/// **7 since 17b cut M1b.1** (doc 17 §5, D-UM-16, D-UM-17, D-UM-43):
+/// `odds_floor_permille`, the `conditions` and `held_said` sections,
+/// `MindState.card`, `IntentKind::Fire.slot`, `IntentKind::Condition`, the two
+/// slot notice variants (`FrameNotice::SlotFired`, `SlotHeld`) and
+/// `RefusalDetail::Floor` — a carried scalar, two carried sections, a carried
+/// field and four carried variants a format-6 reader cannot decode; the `af1`
+/// pin gains the three lines each unstepped fixture fills
+/// (`state.odds_floor_permille`, `state.conditions`, `state.held_said`).
+pub const SNAPSHOT_FORMAT: u32 = 7;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -626,7 +641,7 @@ fn read(document: &serde_json::Value) -> Result<(SnapshotHead, Cow<'_, str>), Sn
 // The state tree: two structs, one field list
 // ---------------------------------------------------------------------------
 
-/// **What the encode serialises**: the 33 carried fields of [`Arena`], in its
+/// **What the encode serialises**: the 36 carried fields of [`Arena`], in its
 /// own order, every one a borrow but the two small mirrors ([`LedgerState`] and
 /// [`ClockState`]) — so an encode clones no contact and no shot, and of a unit
 /// only the opaque `mush_tactics::TacticalUnit`, which its own
@@ -652,6 +667,10 @@ struct ArenaStateRef<'a> {
     reflex: &'a ReflexMemory,
     motors: &'a MotorTable,
     minds: &'a BTreeMap<ObjId, MindState>,
+    conditions: &'a ConditionTable,
+    #[serde(serialize_with = "pairs::serialize_ref")]
+    held_said: &'a BTreeMap<(ObjId, u8, ContactId), i64>,
+    odds_floor_permille: &'a u32,
     pending: &'a BTreeMap<ObjId, VecDeque<Intent>>,
     shots: &'a BTreeMap<u64, Shot>,
     next_shot_seq: &'a u64,
@@ -705,6 +724,12 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             motors,
             // Carried (17b cut M1a.5): every unit mind's row.
             minds,
+            // Carried (17b cut M1b.1): every hull's condition slots, the
+            // held-shot rows (through `pairs`) and the floor captured at
+            // check-out.
+            conditions,
+            held_said,
+            odds_floor_permille,
             // Reset (17b cut M1a.5): the thinks waiting to land are scratch.
             mind_landings: _mind_landings,
             // Re-derived (17b cut M1a.5): compiled code, `default_mind_runner`.
@@ -760,6 +785,9 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             reflex,
             motors,
             minds,
+            conditions,
+            held_said,
+            odds_floor_permille,
             pending,
             shots,
             next_shot_seq,
@@ -803,6 +831,10 @@ struct ArenaState {
     reflex: ReflexMemory,
     motors: MotorTable,
     minds: BTreeMap<ObjId, MindState>,
+    conditions: ConditionTable,
+    #[serde(with = "pairs")]
+    held_said: BTreeMap<(ObjId, u8, ContactId), i64>,
+    odds_floor_permille: u32,
     pending: BTreeMap<ObjId, VecDeque<Intent>>,
     shots: BTreeMap<u64, Shot>,
     next_shot_seq: u64,
@@ -828,7 +860,7 @@ struct ArenaState {
 
 impl ArenaState {
     /// **The arena, by an exhaustive literal** over every field of [`Arena`]:
-    /// the 33 carried placed, the 5 re-derived derived and the 9 reset reset.
+    /// the 36 carried placed, the 5 re-derived derived and the 9 reset reset.
     fn into_arena(self, definition: ArenaDefinition) -> Result<Arena, SnapshotError> {
         let ArenaState {
             units,
@@ -845,6 +877,9 @@ impl ArenaState {
             reflex,
             motors,
             minds,
+            conditions,
+            held_said,
+            odds_floor_permille,
             pending,
             shots,
             next_shot_seq,
@@ -892,6 +927,9 @@ impl ArenaState {
             reflex,
             motors,
             minds,
+            conditions,
+            held_said,
+            odds_floor_permille,
             mind_landings: BTreeMap::new(),
             mind_runner,
             min_cost,
@@ -935,7 +973,7 @@ impl ArenaState {
 /// `serde_json` writes a map key only when it is a string, an integer or a unit
 /// variant, and refuses a tuple or a struct **at run time** with "key must be a
 /// string" — the derive compiles, because `BTreeMap<K, V>: Serialize` asks only
-/// `K: Serialize`. So the five such maps in the carried tree are written through
+/// `K: Serialize`. So the six such maps in the carried tree are written through
 /// here, as `#[serde(with = "crate::arena::snapshot::pairs")]` on a field (or
 /// [`pairs::serialize_ref`] on a borrowed one). Nothing catches the next such
 /// key at compile time: the unit tests below pin the key form of every keyed
@@ -1173,7 +1211,7 @@ mod tests {
         map: BTreeMap<K, V>,
     }
 
-    /// **The five tables written as pairs round-trip, and a duplicate key is
+    /// **The six tables written as pairs round-trip, and a duplicate key is
     /// refused** — the `SquadId`-keyed squad watch first, which `serde_json`
     /// would refuse as an object key at run time and every match with a reflex
     /// squad fills at its first pulse.
@@ -1221,6 +1259,14 @@ mod tests {
             )]),
         });
 
+        // 17b cut M1b.1: `Arena.held_said`, keyed `(unit, slot, contact)` with
+        // the contact id at the top of `u64`.
+        assert_eq!(
+            round_trip(&Paired {
+                map: BTreeMap::from([((ObjId(4), 1_u8, ContactId(u64::MAX)), 9_000_i64)]),
+            }),
+            r#"{"map":[[[4,1,18446744073709551615],9000]]}"#
+        );
         let twice = r#"{"map":[[[4,"helm"],3],[[4,"helm"],5]]}"#;
         let refused = serde_json::from_str::<Paired<(ObjId, Channel), u64>>(twice)
             .expect_err("a key twice is not a map");
@@ -1230,11 +1276,11 @@ mod tests {
     /// **One of every keyed map the carried tree holds, through `serde_json`**
     /// (item 2's list; the report of 16b cut AF.1 has it with the file each
     /// lives in). The maps keyed by an integer, a string or a unit variant are
-    /// written as JSON objects and must stay writable as ones; the five keyed by
+    /// written as JSON objects and must stay writable as ones; the six keyed by
     /// a tuple or a struct are [`pairs`]' and are round-tripped above.
     ///
     /// **This pins today's key types; it does not find tomorrow's.** Each map
-    /// below is built by hand from item 2's grep, so a sixth struct- or
+    /// below is built by hand from item 2's grep, so a seventh struct- or
     /// tuple-keyed map added to the tree compiles (`BTreeMap<K, V>: Serialize`
     /// asks only `K: Serialize`) and passes here: whoever adds a keyed map adds
     /// it to this list by hand, as a pair table or an object. The mechanical
@@ -1260,18 +1306,51 @@ mod tests {
                 ),
             )]),
         )]));
-        // `Arena.pending`.
+        // `Arena.pending` — since 17b cut M1b.1 with a cited `Fire`, a disarm
+        // and an arming (a `Contact` target, every term set) in it, the carried
+        // shapes that cut added to the queue.
         round_trip(&BTreeMap::from([(
             unit,
-            VecDeque::from([Intent {
-                unit,
-                channel: Channel::Fire,
-                epoch: 2,
-                kind: IntentKind::Fire {
-                    weapon: SmolStr::new("cannon"),
+            VecDeque::from([
+                Intent {
+                    unit,
+                    channel: Channel::Fire,
+                    epoch: 2,
+                    kind: IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                        slot: Some(1),
+                    },
+                    seq: 7,
                 },
-                seq: 7,
-            }]),
+                Intent {
+                    unit,
+                    channel: Channel::Fire,
+                    epoch: 2,
+                    kind: IntentKind::Condition(crate::arena::conditions::Arming::Disarm {
+                        weapon: None,
+                    }),
+                    seq: 8,
+                },
+                Intent {
+                    unit,
+                    channel: Channel::Fire,
+                    epoch: 2,
+                    kind: IntentKind::Condition(crate::arena::conditions::Arming::Arm(
+                        crate::arena::conditions::FireCondition {
+                            weapon: SmolStr::new("cannon"),
+                            target: crate::arena::conditions::SlotTarget::Contact {
+                                id: ContactId(u64::MAX),
+                            },
+                            min_permille: 600,
+                            aspects: 0b0110,
+                            min_rounds_left: 4,
+                            min_range_m: 200,
+                            max_range_m: u32::MAX,
+                        },
+                    )),
+                    seq: 9,
+                },
+            ]),
         )]));
         // `Arena.shots`, by shot sequence.
         round_trip(&BTreeMap::from([(
@@ -1346,6 +1425,25 @@ mod tests {
                 ..crate::arena::mind::MindState::default()
             },
         )]));
+        // 17b cut M1b.1: `ConditionTable.rows`, transparent and keyed by the
+        // unit — an integer key, written as an object.
+        let mut slots = crate::arena::conditions::ConditionTable::default();
+        let _ = slots.arm(
+            unit,
+            crate::arena::conditions::FireCondition {
+                weapon: SmolStr::new("cannon"),
+                target: crate::arena::conditions::SlotTarget::Contact {
+                    id: ContactId(u64::MAX),
+                },
+                min_permille: 100,
+                aspects: crate::arena::conditions::ASPECTS_ANY,
+                min_rounds_left: 0,
+                min_range_m: 0,
+                max_range_m: u32::MAX,
+            },
+        );
+        let text = round_trip(&slots);
+        assert!(text.starts_with(r#"{"4":[{"weapon":"cannon""#), "{text}");
         // `UnitState.ready_at_ms`, `UnitState.ammo`, `HeatState.per_shot`.
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), -1_i64)]));
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), 40_u32)]));
