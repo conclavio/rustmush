@@ -104,7 +104,7 @@ const LINTS: [&str; 6] = [
 /// 2026-09-10, at S8's gate.
 const OUT_OF_ENGINE: [&str; 1] = ["mush-bot"];
 
-const MEASURED: [(&str, [u32; 6]); 43] = [
+const MEASURED: [(&str, [u32; 6]); 44] = [
     ("mush-ansi", [0, 0, 13, 0, 0, 0]),
     // S1: born with all six denied (14-spatial-implementation-plan §3.1).
     ("mush-atlas", [0, 0, 0, 0, 0, 0]),
@@ -128,6 +128,9 @@ const MEASURED: [(&str, [u32; 6]); 43] = [
     ("mush-llm", [0, 38, 1, 0, 0, 0]),
     ("mush-mail", [0, 10, 2, 0, 0, 0]),
     ("mush-market", [0, 2, 0, 0, 0, 0]),
+    // 17b cut M2.1 (doc 17 §7 "Lints"): the unit-mind sandbox, born with all six
+    // denied — `mush-script`'s list read as a floor, plus `expect_used`.
+    ("mush-mind", [0, 0, 0, 0, 0, 0]),
     ("mush-net-discord", [0, 19, 1, 0, 0, 0]),
     ("mush-net-ssh", [0, 13, 28, 0, 1, 0]),
     ("mush-net-web", [0, 2, 1, 0, 0, 0]),
@@ -443,10 +446,11 @@ fn the_measurement_covers_every_crate_in_the_workspace() {
     );
     assert_eq!(
         MEASURED.len(),
-        43,
+        44,
         "the measurement in this file's header covered 43 crates; S1 added mush-atlas and \
          mush-content, both born at zero on every lint; 16b cut R-b deleted ruleset-wod and \
-         ruleset-shadowrun; the crates in OUT_OF_ENGINE are not measured"
+         ruleset-shadowrun; 17b cut M2.1 added mush-mind, born at zero on every lint; the \
+         crates in OUT_OF_ENGINE are not measured"
     );
 }
 
@@ -472,14 +476,16 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
             // mush-session too, so that one is plus three.
             // 16b cut R-b: ruleset-wod (unwrap, panic_in_result_fn) and ruleset-shadowrun
             // (unwrap, panic, panic_in_result_fn) left with their denials.
-            ("clippy::unwrap_used", 40),
+            // 17b cut M2.1: mush-mind arrives at zero on every lint, so every count
+            // below is one more than it was (40, 9, 16, 38, 34, 41).
+            ("clippy::unwrap_used", 41),
             // 16b cut R-a: tacsim now carries the composition root's three expects, so
-            // it no longer denies `expect_used`; nine crates do.
-            ("clippy::expect_used", 9),
-            ("clippy::indexing_slicing", 16),
-            ("clippy::panic", 38),
-            ("clippy::unreachable", 34),
-            ("clippy::panic_in_result_fn", 41),
+            // it no longer denies `expect_used`; nine crates did, ten with mush-mind.
+            ("clippy::expect_used", 10),
+            ("clippy::indexing_slicing", 17),
+            ("clippy::panic", 39),
+            ("clippy::unreachable", 35),
+            ("clippy::panic_in_result_fn", 42),
         ]),
         "the per-lint crate counts moved; re-measure before changing them"
     );

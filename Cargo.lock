@@ -2492,6 +2492,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-mind"
+version = "0.1.0"
+dependencies = [
+ "rhai",
+]
+
+[[package]]
 name = "mush-net-discord"
 version = "0.1.0"
 dependencies = [

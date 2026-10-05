@@ -1,0 +1,16 @@
+[package]
+name = "mush-mind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Rhai sandbox for unit minds: the engine builder, the op-and-fee budget, canonical memory, the AST cache (doc 17 §7)"
+
+# Doc 17 §7, D-UM-1: `rhai` and nothing else. No `serde`, `smol_str`,
+# `thiserror` or `sha2`: the memory codec is hand-written (D-UM-30), the digest
+# arrives as bytes from the caller, and the crate names no game type.
+[dependencies]
+rhai.workspace = true
+
+[lints]
+workspace = true

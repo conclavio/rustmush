@@ -77,8 +77,13 @@ rcgen = "0.14"
 tokio-tungstenite = "0.30"
 argon2 = "0.5"
 dashmap = "6"
-# scripting (M5)
-rhai = { version = "1", features = ["sync", "serde"] }
+# scripting (M5). 17b cut M2.1 (doc 17 §7, D-UM-24): pinned EXACTLY, because a unit
+# mind's operation count — and with it where its budget trips — is a function of the
+# AST and the engine version, and `mush_mind::RHAI_ABI` records the version every seal
+# was compiled against; a rhai upgrade is a reviewed ABI bump. This pins `mush-script`
+# too, harmlessly. `crates/mush-mind`'s `the_abi_pin_matches_the_lockfile` reads this
+# line and `Cargo.lock`.
+rhai = { version = "=1.26.0", features = ["sync", "serde"] }
 # llm (M7) — versions re-verified on crates.io 2026-08-28. governor bumped
 # 0.8→0.10 (only mush-llm uses the bare `governor` crate; mush-net-web uses the
 # separate `tower_governor`). reqwest stays 0.12 (mush-net-web/mushd dev-deps
@@ -131,6 +136,10 @@ mush-session = { path = "crates/mush-session" }
 mush-net-ssh = { path = "crates/mush-net-ssh" }
 mush-net-web = { path = "crates/mush-net-web" }
 mush-script = { path = "crates/mush-script" }
+# 17b cut M2.1 (doc 17 §7, D-UM-1): the game-neutral Rhai sandbox unit minds think in —
+# the engine builder, the op-and-fee budget, canonical memory, the AST cache.
+# `mush-mind -> {rhai}` only: no `mush-script` edge (its engine reads a wall clock).
+mush-mind = { path = "crates/mush-mind" }
 mush-llm = { path = "crates/mush-llm" }
 mush-worldgen = { path = "crates/mush-worldgen" }
 mush-npc = { path = "crates/mush-npc" }
