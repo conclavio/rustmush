@@ -1856,3 +1856,288 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
     let v3 = tacsim::pack::load_pack(&support::arena_pack_v3()).expect("version 3 verifies");
     assert_eq!(v3.manifest().digest().to_hex(), support::ARENA_V3_DIGEST);
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.5 — Standard Doctrine's source, pinned
+// ---------------------------------------------------------------------------
+
+/// **The digest `content/minds/standard.rhai` ships with**, written down by
+/// hand (doc 17 §13): a script change is a reviewed re-bless of this string
+/// and of `tacsim::minds::STANDARD_SHA256` (17b cut M2.6 re-blesses both
+/// once, with the fire half).
+const STANDARD_DOCTRINE_SHA256: &str =
+    "95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd";
+
+/// One script function as the text reads it: its name, its parameters and
+/// its body's lines.
+type ScriptFn = (String, Vec<String>, Vec<String>);
+
+/// The script's `fn`s in order — read off the text (every `fn` opens at the
+/// start of a line).
+fn script_fns(source: &str) -> Vec<ScriptFn> {
+    let mut fns: Vec<ScriptFn> = Vec::new();
+    for line in source.lines() {
+        if let Some(head) = line.strip_prefix("fn ") {
+            let (name, rest) = head.split_once('(').expect("a fn head");
+            let (params, _) = rest.split_once(')').expect("a fn head");
+            let params = params
+                .split(',')
+                .map(str::trim)
+                .filter(|param| !param.is_empty())
+                .map(str::to_owned)
+                .collect();
+            fns.push((name.to_owned(), params, Vec::new()));
+        } else if let Some((_, _, body)) = fns.last_mut() {
+            body.push(line.to_owned());
+        }
+    }
+    fns
+}
+
+/// The names a body binds (`let x`, `for x in`), each once.
+fn bound_names(body: &[String]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for line in body {
+        let code = line.split("//").next().unwrap_or_default();
+        for binder in ["let ", "for "] {
+            for after in code.split(binder).skip(1) {
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
+/// §22's italics; 17b §5's feas F9):
+///
+/// 1. the SHA-256 of `content/minds/standard.rhai` — the file on disk and
+///    the bytes `include_str!` compiled in alike — is the digest written
+///    down here, `STANDARD_SHA256` and `standard_digest()`;
+/// 2. the manifest is the six fields, the role `combat` among them, at the
+///    API, stock and ceiling constants the crate holds, and the script's
+///    header line says the same;
+/// 3. it compiles on the process's sandbox under `MIND_ABI`, and twice on a
+///    fresh one caches ONE compilation;
+/// 4. **the state codes are integer literals pinned against
+///    `ReflexState::ALL`**: the header's table names every state at its
+///    `code()` and `as_str()`, and every literal the script compares or
+///    writes `this.state` with is one of them;
+/// 5. **the binding limits** — at most 32 functions, every body at
+///    expression depth 24 (the smallest depth it compiles at is measured and
+///    printed), the widest scope (parameters plus bound names) at most 64 —
+///    and no FLOAT literal in the code.
+#[test]
+fn m2_the_standard_doctrine_source_is_pinned() {
+    use mush_mind::{EngineLimits, Sandbox};
+    use sha2::{Digest as _, Sha256};
+    use tacsim::arena::reflex::ReflexState;
+    use tacsim::minds::{
+        API_VERSION, MIND_ABI, MindManifest, STANDARD_RHAI, STANDARD_SHA256, STOCK_OPS_PER_THINK,
+        STOCK_VERSION, register_api, standard_digest, standard_manifest, standard_sandbox,
+    };
+
+    // 1. The digest.
+    let on_disk = std::fs::read(content_dir().join("minds/standard.rhai"))
+        .expect("the script is in the tree");
+    assert_eq!(
+        on_disk,
+        STANDARD_RHAI.as_bytes(),
+        "the compiled-in bytes are the file's"
+    );
+    let digest: [u8; 32] = Sha256::digest(STANDARD_RHAI.as_bytes()).into();
+    let lowercase: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        lowercase, STANDARD_DOCTRINE_SHA256,
+        "standard.rhai moved; re-review the port and re-pin its digest"
+    );
+    assert_eq!(STANDARD_SHA256, STANDARD_DOCTRINE_SHA256);
+    assert_eq!(standard_digest().0, digest);
+
+    // 2. The manifest, and the header that says it.
+    let manifest = standard_manifest().expect("the manifest decodes");
+    assert_eq!(
+        manifest,
+        MindManifest {
+            name: "Standard Doctrine".to_owned(),
+            role: "combat".to_owned(),
+            api: 1,
+            stock: 1,
+            rated_class: "I".to_owned(),
+            ops_ceiling: 1_500,
+        }
+    );
+    assert_eq!(
+        (manifest.api, manifest.stock, manifest.ops_ceiling),
+        (API_VERSION, STOCK_VERSION, STOCK_OPS_PER_THINK)
+    );
+    let header = STANDARD_RHAI.lines().next().unwrap_or_default();
+    assert!(
+        header.starts_with("// Standard Doctrine \u{2014} the combat role's stock mind")
+            && header.contains(
+                "name: Standard Doctrine; role: combat; api: 1; stock: 1; rated: class I \
+                 (1,500 ops a think)"
+            )
+            && header.contains("T1 is the oracle (Gate A)"),
+        "{header}"
+    );
+
+    // 3. It compiles; a second compile is the cached one.
+    assert!(
+        standard_sandbox()
+            .compile(STANDARD_RHAI, standard_digest(), MIND_ABI)
+            .is_ok()
+    );
+    let fresh = Sandbox::new(
+        &EngineLimits {
+            max_ops_backstop: STOCK_OPS_PER_THINK,
+        },
+        register_api,
+    );
+    for _ in 0..2 {
+        assert!(
+            fresh
+                .compile(STANDARD_RHAI, standard_digest(), MIND_ABI)
+                .is_ok()
+        );
+    }
+    assert_eq!(fresh.cached(), 1);
+
+    // 4. The state codes.
+    let table = STANDARD_RHAI
+        .lines()
+        .find_map(|line| {
+            line.trim_start_matches("//")
+                .trim()
+                .strip_prefix("state codes: ")
+        })
+        .expect("the header's state-code table");
+    let named: Vec<(u8, &str)> = table
+        .split(", ")
+        .map(|pair| {
+            let (code, word) = pair.split_once(' ').expect("`code word`");
+            (code.parse().expect("an integer code"), word)
+        })
+        .collect();
+    let all: Vec<(u8, &str)> = ReflexState::ALL
+        .iter()
+        .map(|state| (state.code(), state.as_str()))
+        .collect();
+    assert_eq!(named, all, "the script's state codes are ReflexState's");
+    let mut literals = 0;
+    for line in STANDARD_RHAI.lines() {
+        let code = line.split("//").next().unwrap_or_default();
+        for operator in ["this.state = ", "this.state == ", "this.state != "] {
+            for after in code.split(operator).skip(1) {
+                let literal: String = after.chars().take_while(char::is_ascii_digit).collect();
+                let literal: u8 = literal.parse().expect("a state literal");
+                assert!(
+                    all.iter().any(|(code, _)| *code == literal),
+                    "state {literal} is no ReflexState: {line}"
+                );
+                literals += 1;
+            }
+        }
+    }
+    assert!(literals > 20, "{literals} state literals read");
+
+    // 5. The binding limits, measured.
+    let fns = script_fns(STANDARD_RHAI);
+    assert!(
+        fns.len() <= 32,
+        "{} functions: max_functions is 32",
+        fns.len()
+    );
+    assert!(
+        fns.iter()
+            .any(|(name, params, _)| name == "think" && params.len() == 2)
+    );
+    let (widest, width) = fns
+        .iter()
+        .map(|(name, params, body)| {
+            let mut names: BTreeSet<String> = params.iter().cloned().collect();
+            names.extend(bound_names(body));
+            (name.clone(), names.len())
+        })
+        .max_by_key(|(_, width)| *width)
+        .expect("functions");
+    assert!(
+        width <= 64,
+        "{widest} binds {width} names: max_variables is 64"
+    );
+    let compiles_at = |depth: usize| {
+        Sandbox::new(
+            &EngineLimits {
+                max_ops_backstop: STOCK_OPS_PER_THINK,
+            },
+            |engine| {
+                register_api(engine);
+                engine.set_max_expr_depths(48, depth);
+            },
+        )
+        .compile(STANDARD_RHAI, standard_digest(), MIND_ABI)
+        .is_ok()
+    };
+    let depth = (1..=24)
+        .find(|depth| compiles_at(*depth))
+        .expect("the script compiles at the binding depth of 24");
+    assert!(!compiles_at(depth - 1));
+    // Each function's own depth: its text alone (beside an empty `think`
+    // where it is not `think`) at the smallest depth it compiles at.
+    let sandboxes: Vec<Sandbox> = (1..=24)
+        .map(|depth| {
+            Sandbox::new(
+                &EngineLimits {
+                    max_ops_backstop: STOCK_OPS_PER_THINK,
+                },
+                |engine| {
+                    register_api(engine);
+                    engine.set_max_expr_depths(48, depth);
+                },
+            )
+        })
+        .collect();
+    let mut table: Vec<String> = Vec::new();
+    for (name, params, body) in &fns {
+        let own = format!("fn {name}({}) {{\n{}\n", params.join(", "), body.join("\n"));
+        let source = if name == "think" {
+            own
+        } else {
+            format!("fn think(a, b) {{ }}\n{own}")
+        };
+        let digest = mush_mind::Digest(Sha256::digest(source.as_bytes()).into());
+        let own_depth = sandboxes
+            .iter()
+            .position(|sandbox| sandbox.compile(&source, digest, MIND_ABI).is_ok())
+            .map(|at| at + 1)
+            .unwrap_or_else(|| panic!("{name} compiles alone at depth 24"));
+        table.push(format!("{name}={own_depth}"));
+    }
+    println!("m2_standard_doctrine_fn_depths: {}", table.join(" "));
+    for line in STANDARD_RHAI.lines() {
+        let code: Vec<char> = line
+            .split("//")
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .collect();
+        assert!(
+            !code
+                .windows(3)
+                .any(|w| w[0].is_ascii_digit() && w[1] == '.' && w[2].is_ascii_digit()),
+            "a FLOAT literal: {line}"
+        );
+    }
+    println!(
+        "m2_standard_doctrine: functions={} max_fn_expr_depth={depth} widest_scope={width} \
+         ({widest}) lines={} sha256={STANDARD_DOCTRINE_SHA256}",
+        fns.len(),
+        STANDARD_RHAI.lines().count()
+    );
+}

@@ -2959,3 +2959,89 @@ fn m2_the_default_runner_is_still_the_native_stock_mind() {
     assert!(shown.starts_with("NativeStockMind"), "{shown}");
     assert!(!shown.contains("Rhai"), "{shown}");
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.5: the port's first think
+// ---------------------------------------------------------------------------
+
+/// **A fresh memory writes the fourteen keys as T1 does** (17b cut M2.5;
+/// D-UM-30): on the (j) field, cold and then online, each red's FIRST think
+/// — from an empty memory — through the native stock mind and through the
+/// Rhai Standard Doctrine (`tacsim::minds::STANDARD_RHAI`) on the SAME job:
+/// T2 does not fault, its memory bytes are T1's (the prologue writes all
+/// fourteen keys of `StockMemory`, so an empty memory's first answer is the
+/// default's encoding), the keys are exactly `STOCK_MEMORY_KEY_NAMES`, and
+/// its intents are T1's (the fire half's `Condition`/`Fire` filtered out on
+/// the armed red until 17b cut M2.6).
+#[test]
+fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
+    use tacsim::arena::stock_mind::STOCK_MEMORY_KEY_NAMES;
+    let mut keys: Vec<&str> = STOCK_MEMORY_KEY_NAMES.to_vec();
+    keys.sort_unstable();
+    for online in [false, true] {
+        let mut arena = the_j_field(Controller::Mind);
+        if online {
+            for unit in [RED, RED2] {
+                if let Some(state) = arena.unit_mut(unit) {
+                    state.power = tacsim::arena::state::Power::Online;
+                }
+            }
+        }
+        let t2 = RhaiRunner::new(
+            &arena.arena_cfg,
+            tacsim::minds::STANDARD_RHAI,
+            tacsim::minds::standard_digest(),
+        )
+        .expect("Standard Doctrine compiles");
+        let t1 = NativeStockMind::with(&arena.arena_cfg.reflex);
+        for unit in [RED, RED2] {
+            let view = Arc::new(arena.clone().mind_view(unit).expect("a view"));
+            let card = arena
+                .minds
+                .get(&unit)
+                .map(|mind| mind.card.clone())
+                .expect("a mind row");
+            let job = ThinkJob {
+                unit,
+                think_seq: 0,
+                t_ms: arena.now_ms,
+                lands_ms: arena.now_ms + arena.substep_len_ms(),
+                seed: arena.seed,
+                dropped: false,
+                view: &view,
+                memory: &[],
+                map: &arena.definition,
+                card: &card,
+            };
+            let native = t1.think(&job);
+            let rhai = t2.think(&job);
+            assert_eq!(
+                rhai.fault, None,
+                "#{} online {online}: {:?}",
+                unit.0, rhai.trace
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&rhai.memory),
+                String::from_utf8_lossy(&native.memory),
+                "#{} online {online}",
+                unit.0
+            );
+            assert_eq!(
+                decode_memory(&rhai.memory)
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<&str>>(),
+                keys
+            );
+            let helm: Vec<&IntentKind> = native
+                .intents
+                .iter()
+                .filter(|kind| !matches!(kind, IntentKind::Condition(_) | IntentKind::Fire { .. }))
+                .collect();
+            assert_eq!(rhai.intents.iter().collect::<Vec<&IntentKind>>(), helm);
+            if !online {
+                assert_eq!(native.intents, vec![IntentKind::Startup]);
+            }
+        }
+    }
+}

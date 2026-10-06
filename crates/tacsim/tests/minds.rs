@@ -3715,17 +3715,26 @@ type Kept = (ObjId, i64, MindView, ThinkResult);
 
 /// **The production stock mind, its answers kept** — `NativeStockMind` on the
 /// arena's own doctrine, answering every think untouched and recording each
-/// view and answer (an input recorder, not a stand-in: 16b §0.4).
+/// view and answer (an input recorder, not a stand-in: 16b §0.4). **17b cut
+/// M2.5**: over any runner ([`Stock::over`]) — the twin of Gate A
+/// (`support::TwinRunner`), whose answer IS the native one.
 #[derive(Debug)]
 struct Stock {
-    inner: tacsim::arena::stock_mind::NativeStockMind,
+    inner: Arc<dyn MindRunner>,
     kept: Mutex<Vec<Kept>>,
 }
 
 impl Stock {
     fn on(arena: &Arena) -> Arc<Stock> {
+        Stock::over(Arc::new(tacsim::arena::stock_mind::NativeStockMind::with(
+            &arena.arena_cfg.reflex,
+        )))
+    }
+
+    /// The same recorder over `inner` (17b cut M2.5).
+    fn over(inner: Arc<dyn MindRunner>) -> Arc<Stock> {
         Arc::new(Stock {
-            inner: tacsim::arena::stock_mind::NativeStockMind::with(&arena.arena_cfg.reflex),
+            inner,
             kept: Mutex::new(Vec::new()),
         })
     }
@@ -4273,6 +4282,12 @@ fn m1a6_two_stock_minds_at_three_cadences_are_one_event_list_and_one_hash_sequen
 /// millisecond (multiples of 5,000, so one script at every cadence). Run to
 /// 40,000 at `cadence_ms`.
 fn unarmed_run(cadence_ms: i64) -> (Run, Vec<Kept>, Arena) {
+    unarmed_run_on(cadence_ms, None)
+}
+
+/// [`unarmed_run`] with the stock recorder over `runner` (17b cut M2.5: the
+/// twin), the native stock mind for `None`.
+fn unarmed_run_on(cadence_ms: i64, runner: Option<Arc<dyn MindRunner>>) -> (Run, Vec<Kept>, Arena) {
     let mut arena = arena_of(
         vec![
             tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Mind),
@@ -4286,7 +4301,10 @@ fn unarmed_run(cadence_ms: i64) -> (Run, Vec<Kept>, Arena) {
         ],
         &[BLUE],
     );
-    let stock = Stock::on(&arena);
+    let stock = match runner {
+        Some(runner) => Stock::over(runner),
+        None => Stock::on(&arena),
+    };
     arena.mind_runner = stock.clone();
     let beats = [
         (10_000_i64, Objective::Hold, 10_000_u32),
@@ -4464,6 +4482,48 @@ fn m1a6_an_unarmed_stock_mind_drives_senses_holds_and_never_calls_fire() {
         assert_eq!(other.hashes, first.hashes, "diverged at {cadence} ms");
         assert_eq!(other_kept, kept, "a think diverged at {cadence} ms");
     }
+}
+
+/// **Gate A on the unarmed fixture** (17b cut M2.5; doc 17 §17 "Gate A",
+/// §22's italics; D-UM-48): [`unarmed_run`] — the weaponless stock mind that
+/// starts up, walks, holds under `HOLD` and withdraws under `WITHDRAW` with a
+/// hostile in its sight — flown by `support::TwinRunner` in its asserting
+/// mode, so EVERY think is T1 and T2 (`content/minds/standard.rhai`) on the
+/// same job, the Rhai fault checked first, then the intents, then the memory
+/// bytes. The twin answers T1's answer, so at 5,000, 1,000 and 500 ms the
+/// run is the native run's: one event list, one hash sequence, one sequence
+/// of thinks — and the twin compared every one of them. The ops and fees of
+/// the Rhai thinks are printed against class I's 1,500 and Class 0's 400.
+#[test]
+fn m2_the_unarmed_stock_mind_in_rhai_is_the_native_one_at_three_cadences() {
+    let (native, native_kept, _) = unarmed_run(5_000);
+    let cfg = ArenaConfig {
+        reflex: reflex_cfg(),
+        ..ArenaConfig::default()
+    };
+    let mut budget: Vec<u64> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let twin = Arc::new(support::TwinRunner::new(&cfg));
+        let (run, kept, _) = unarmed_run_on(cadence, Some(twin.clone()));
+        assert_eq!(run.events, native.events, "the event list at {cadence} ms");
+        assert_eq!(
+            run.hashes, native.hashes,
+            "the hash sequence at {cadence} ms"
+        );
+        assert_eq!(kept, native_kept, "a think at {cadence} ms");
+        let thoughts = twin.thoughts();
+        assert_eq!(thoughts.len(), kept.len(), "the twin saw every think");
+        assert_eq!(twin.divergences(), (0, 0));
+        assert!(thoughts.iter().all(|thought| !thought.armed));
+        budget.extend(thoughts.iter().map(|thought| thought.ops + thought.fee));
+    }
+    let (p50, p99, max) = support::spread(&budget);
+    println!(
+        "m2_unarmed_twin: thinks={} ops_plus_fee_p50={p50} p99={p99} max={max} (class I 1500, \
+         Class 0 400)",
+        budget.len()
+    );
+    assert!(max <= 1_200, "a think of {max} ops: past 1,200 is a STOP");
 }
 
 /// One red's helm after one pulse of the first-window check.

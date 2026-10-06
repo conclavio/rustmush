@@ -49,16 +49,24 @@ pub mod yard;
 /// built ([`ground::atlas_pack_at`]).
 pub mod ground;
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use mush_core::ObjId;
 use mush_sim::data::Pose;
 use mush_tactics::{CellAddr, TacticalUnit, UnitMutationOp, UnitMutationPlan};
 use mush_testkit::TestWorld;
 use smol_str::SmolStr;
+use tacsim::arena::intents::IntentKind;
 use tacsim::arena::ledger::LedgerEvent;
-use tacsim::arena::state::{Arena, Controller, CustodyOut, CustodyUnit, Team};
+use tacsim::arena::mind::{MindRunner, ThinkJob, ThinkResult, decode_memory};
+use tacsim::arena::state::{Arena, Controller, CustodyOut, CustodyUnit, MatchEnd, Team};
 use tacsim::arena::step::StepOutput;
+use tacsim::arena::stock_mind::{NativeStockMind, StockMemory};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use tacsim::match_::PROVING_GROUND;
+use tacsim::minds::{RhaiRunner, ThinkStat};
 
 /// The match seed every shipped-scale fixture runs on — `arena.rs`'s and
 /// `reflex.rs`'s, so a draw here is the draw they would have made.
@@ -92,6 +100,10 @@ pub struct Muster {
     /// state the case wanted, exactly as it would for a tank that checked in
     /// that way after a previous match.
     pub wear: Option<Wear>,
+    /// **Fielded with no weapons station** (17b cut M2.5; D-UM-48): the stock
+    /// tank with its weapon rows taken off the custody unit
+    /// [`tacsim::match_::custody_unit`] assembled ([`Muster::mind_unarmed`]).
+    pub unarmed: bool,
 }
 
 /// **The condition a [`Muster`] opens in** (16b cut E.4).
@@ -122,6 +134,7 @@ impl Muster {
             controller: Controller::Reflex,
             at: None,
             wear: None,
+            unarmed: false,
         }
     }
 
@@ -145,6 +158,23 @@ impl Muster {
         Muster {
             controller: Controller::Mind,
             ..Muster::reflex(team, slot)
+        }
+    }
+
+    /// **A [`Muster::mind`] with no weapons station** (17b cut M2.5; D-UM-48,
+    /// doc 17 §22's italics: the twin corpus carries unarmed hulls). The stock
+    /// tank's M32 record is fielded whole — its plate, its internals, its
+    /// sensor, its drive — and its weapon rows are taken off the custody unit
+    /// that [`tacsim::match_::custody_unit`] assembled, before
+    /// [`Arena::new`] reads it, the way `stock_mind.rs`' unarmed fixture clears
+    /// a scout's `weapons`: the check-out lays down no `ammo` row, so the hull
+    /// is unarmed (`armed_at_checkout` false), never dry, and its view carries
+    /// no weapon row.
+    #[must_use]
+    pub fn mind_unarmed(team: Team, slot: u8) -> Muster {
+        Muster {
+            unarmed: true,
+            ..Muster::mind(team, slot)
         }
     }
 
@@ -934,7 +964,7 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
                 tacsim::arena::CostRow::Tracked,
             )
             .unwrap_or_else(|| panic!("{:?} has an entry cell", muster.team));
-            units.push(tacsim::match_::custody_unit(
+            let mut unit = tacsim::match_::custody_unit(
                 &catalog,
                 cells,
                 id,
@@ -943,7 +973,12 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
                 0,
                 muster.controller,
                 muster.slot,
-            ));
+            );
+            // **17b cut M2.5**: an unarmed muster fields no weapon rows.
+            if muster.unarmed {
+                unit.weapons.clear();
+            }
+            units.push(unit);
         }
     }
     Arena::new(
@@ -1170,4 +1205,378 @@ pub fn wilson_95(successes: u32, n: u32) -> (f64, f64) {
     let centre = (p + z2 / (2.0 * n)) / denominator;
     let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
     ((centre - half).max(0.0), (centre + half).min(1.0))
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.5 — the twin runner (Gate A), and one match played to its end
+// ---------------------------------------------------------------------------
+
+/// **How a [`TwinRunner`] answers a fault or a divergence** (17b cut M2.5;
+/// 17b §1 (iii)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TwinMode {
+    /// Gate A asserted: the first Rhai fault, then the first intent list,
+    /// then the first memory that is not T1's panics with the printout.
+    Assert,
+    /// Gate A counted: every think recorded ([`TwinThought`]) with the first
+    /// printout of each hull kept ([`TwinRunner::printout`]) and the first of
+    /// each hull's thinks that faulted or parted outside the fire half
+    /// ([`TwinRunner::failure`]); never panics.
+    Count,
+}
+
+/// **One think, as the twin compared it** (17b cut M2.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TwinThought {
+    /// The hull.
+    pub unit: ObjId,
+    /// The think's sequence number.
+    pub think_seq: u64,
+    /// The think's lattice millisecond.
+    pub t_ms: i64,
+    /// The Rhai think's operations (`mush_mind::budget`, the runner's
+    /// recorded `ThinkStat`).
+    pub ops: u64,
+    /// Its fees, the per-think fee among them: `ops + fee` is what the class
+    /// ceiling bounds (D-UM-26).
+    pub fee: u64,
+    /// The Rhai think's wall time, microseconds.
+    pub rhai_us: u128,
+    /// The native think's wall time, microseconds.
+    pub native_us: u128,
+    /// The Rhai think faulted (its cause word in the printout).
+    pub faulted: bool,
+    /// The Rhai think did not fault and answered other intents or other
+    /// memory bytes than T1.
+    pub diverged: bool,
+    /// The view carried weapon rows (an armed hull: the fire half's stubs
+    /// diverge there until 17b cut M2.6).
+    pub armed: bool,
+    /// The divergence is the fire half's alone: the memory bytes equal, and
+    /// the intents equal once every `Condition` and `Fire` is filtered out.
+    pub fire_only: bool,
+    /// T1's state code after the think (`ReflexState::code`).
+    pub state: u8,
+    /// T1's `rallied` after the think.
+    pub rallied: bool,
+    /// T1's `stand_until_ms` is set after the think: a withdrawing hull's
+    /// dwell (16b cut Q.7), its clock compared byte for byte.
+    pub dwelling: bool,
+}
+
+/// **Gate A's runner** (17b cut M2.5; doc 17 §17 "Gate A: T1 ≡ T2 exactly";
+/// 17b §1 (iii)): T1 (`NativeStockMind`) and T2 (the Rhai Standard Doctrine,
+/// `tacsim::minds::STANDARD_RHAI` on a recording `RhaiRunner`) thinking on
+/// the SAME job — both pure functions of it — compared, and **the native
+/// answer returned**: a match flown by the twin flies on T1 and hashes as T1.
+///
+/// In [`TwinMode::Assert`] it panics on the first difference, **the Rhai
+/// fault FIRST** (17b's adversarial F4: a Rhai fault answers no intents and
+/// the memory it was handed, which on a quiet think of T1's is the same
+/// answer, so a fault compared as intents and bytes would pass), then the
+/// intents, then the memory bytes — each with the printout: the hull, the
+/// think, the clocks, the ops and fees, the memory in (decoded and raw),
+/// both intent lists, both memories (decoded and raw), the Rhai fault's word
+/// and trace, and the view.
+#[derive(Debug)]
+pub struct TwinRunner {
+    native: NativeStockMind,
+    rhai: RhaiRunner,
+    mode: TwinMode,
+    /// Every think compared, in think order.
+    pub seen: Mutex<Vec<TwinThought>>,
+    /// The first printout of each hull that faulted or diverged (`Count`).
+    first: Mutex<BTreeMap<u32, String>>,
+    /// The first printout of each hull that faulted or diverged OUTSIDE the
+    /// fire half (`Count`): the think a lane's assertion fails on, never an
+    /// earlier fire-only one.
+    failing: Mutex<BTreeMap<u32, String>>,
+}
+
+impl TwinRunner {
+    /// **The asserting twin** on the match's doctrine (`cfg.reflex`, which
+    /// both runners read).
+    #[must_use]
+    pub fn new(cfg: &ArenaConfig) -> TwinRunner {
+        TwinRunner::with_mode(cfg, TwinMode::Assert)
+    }
+
+    /// **The counting twin** — every think recorded, nothing asserted.
+    #[must_use]
+    pub fn counting(cfg: &ArenaConfig) -> TwinRunner {
+        TwinRunner::with_mode(cfg, TwinMode::Count)
+    }
+
+    fn with_mode(cfg: &ArenaConfig, mode: TwinMode) -> TwinRunner {
+        let rhai = RhaiRunner::new(
+            cfg,
+            tacsim::minds::STANDARD_RHAI,
+            tacsim::minds::standard_digest(),
+        )
+        .unwrap_or_else(|error| panic!("Standard Doctrine compiles: {error}"))
+        .recording();
+        TwinRunner {
+            native: NativeStockMind::with(&cfg.reflex),
+            rhai,
+            mode,
+            seen: Mutex::new(Vec::new()),
+            first: Mutex::new(BTreeMap::new()),
+            failing: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// **`(faults, divergences)`** over every think compared.
+    #[must_use]
+    pub fn divergences(&self) -> (usize, usize) {
+        let seen = self.thoughts();
+        (
+            seen.iter().filter(|thought| thought.faulted).count(),
+            seen.iter().filter(|thought| thought.diverged).count(),
+        )
+    }
+
+    /// Every think compared so far, in think order.
+    #[must_use]
+    pub fn thoughts(&self) -> Vec<TwinThought> {
+        self.seen
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// The first printout `unit` faulted or diverged with (`Count`), if any.
+    #[must_use]
+    pub fn printout(&self, unit: ObjId) -> Option<String> {
+        self.first
+            .lock()
+            .ok()
+            .and_then(|first| first.get(&unit.0).cloned())
+    }
+
+    /// **The printout of `unit`'s first think that faulted or parted from T1
+    /// outside the fire half** (`Count`), if any — what a lane prints when it
+    /// fails on such a think: a lane walking the thoughts in think order
+    /// fails on the hull's first, which is this one (an earlier fire-only
+    /// divergence of the same hull is [`TwinRunner::printout`]'s, not this).
+    #[must_use]
+    pub fn failure(&self, unit: ObjId) -> Option<String> {
+        self.failing
+            .lock()
+            .ok()
+            .and_then(|failing| failing.get(&unit.0).cloned())
+    }
+}
+
+/// The intents with the fire half's kinds (`Condition`, `Fire`) taken out.
+#[must_use]
+pub fn helm_half(intents: &[IntentKind]) -> Vec<&IntentKind> {
+    intents
+        .iter()
+        .filter(|kind| !matches!(kind, IntentKind::Condition(_) | IntentKind::Fire { .. }))
+        .collect()
+}
+
+/// A memory's bytes, decoded and raw, for a printout.
+fn memory_shown(bytes: &[u8]) -> String {
+    format!(
+        "{:?}\n     {}",
+        StockMemory::from(&decode_memory(bytes)),
+        String::from_utf8_lossy(bytes)
+    )
+}
+
+/// **The twin's printout** of one think (the [`TwinRunner`] head).
+fn twin_printout(
+    job: &ThinkJob<'_>,
+    native: &ThinkResult,
+    rhai: &ThinkResult,
+    stat: Option<ThinkStat>,
+) -> String {
+    format!(
+        "Gate A: unit #{} think {} t_ms {} lands_ms {} (ops {} fee {})\n\
+         -- the memory in: {}\n\
+         -- T1 intents: {:?}\n\
+         -- T2 intents: {:?}\n\
+         -- T1 memory: {}\n\
+         -- T2 memory: {}\n\
+         -- T2 fault: {:?}\n\
+         -- T2 trace: {:#?}\n\
+         -- the view: {:#?}",
+        job.unit.0,
+        job.think_seq,
+        job.t_ms,
+        job.lands_ms,
+        stat.map_or(0, |stat| stat.ops),
+        stat.map_or(0, |stat| stat.fee),
+        memory_shown(job.memory),
+        native.intents,
+        rhai.intents,
+        memory_shown(&native.memory),
+        memory_shown(&rhai.memory),
+        rhai.fault,
+        rhai.trace,
+        job.view,
+    )
+}
+
+impl MindRunner for TwinRunner {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        let started = Instant::now();
+        let native = self.native.think(job);
+        let native_us = started.elapsed().as_micros();
+        let rhai = self.rhai.think(job);
+        let stat = self.rhai.take_stats().pop();
+        let faulted = rhai.fault.is_some();
+        let diverged = !faulted && (rhai.intents != native.intents || rhai.memory != native.memory);
+        let fire_only = diverged
+            && rhai.memory == native.memory
+            && helm_half(&rhai.intents) == helm_half(&native.intents);
+        if self.mode == TwinMode::Assert {
+            // The fault FIRST (the head): a faulted Rhai think answers no
+            // intents and the memory it was handed.
+            assert!(
+                rhai.fault.is_none(),
+                "T2 faulted `{}`\n{}",
+                rhai.fault.as_ref().map_or("", |fault| fault.cause.as_str()),
+                twin_printout(job, &native, &rhai, stat)
+            );
+            assert_eq!(
+                rhai.intents,
+                native.intents,
+                "the intents differ\n{}",
+                twin_printout(job, &native, &rhai, stat)
+            );
+            assert_eq!(
+                rhai.memory,
+                native.memory,
+                "the memory bytes differ\n{}",
+                twin_printout(job, &native, &rhai, stat)
+            );
+        } else if faulted || diverged {
+            // Formatted once, and only for a hull whose printout is not kept
+            // yet (the view's `{:#?}` is long).
+            let unkept = |kept: &Mutex<BTreeMap<u32, String>>| {
+                kept.lock()
+                    .is_ok_and(|kept| !kept.contains_key(&job.unit.0))
+            };
+            let want_first = unkept(&self.first);
+            let want_failing = (faulted || !fire_only) && unkept(&self.failing);
+            if want_first || want_failing {
+                let printout = twin_printout(job, &native, &rhai, stat);
+                if want_failing && let Ok(mut failing) = self.failing.lock() {
+                    failing
+                        .entry(job.unit.0)
+                        .or_insert_with(|| printout.clone());
+                }
+                if want_first && let Ok(mut first) = self.first.lock() {
+                    first.entry(job.unit.0).or_insert(printout);
+                }
+            }
+        }
+        let after = StockMemory::from(&decode_memory(&native.memory));
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(TwinThought {
+                unit: job.unit,
+                think_seq: job.think_seq,
+                t_ms: job.t_ms,
+                ops: stat.map_or(0, |stat| stat.ops),
+                fee: stat.map_or(0, |stat| stat.fee),
+                rhai_us: stat.map_or(0, |stat| stat.rhai_us),
+                native_us,
+                faulted,
+                diverged,
+                armed: !job.view.weapons.is_empty(),
+                fire_only,
+                state: after.state.code(),
+                rallied: after.rallied,
+                dwelling: after.stand_until_ms.is_some(),
+            });
+        }
+        native
+    }
+}
+
+/// **`(p50, p99, max)`** of `values` (`0`s for none).
+#[must_use]
+pub fn spread(values: &[u64]) -> (u64, u64, u64) {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let at = |p: usize| {
+        sorted
+            .get((sorted.len() * p / 100).min(sorted.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0)
+    };
+    (at(50), at(99), sorted.last().copied().unwrap_or(0))
+}
+
+/// **What one [`play`] came to** (17b cut M2.5).
+#[derive(Clone, Debug)]
+pub struct Played {
+    /// Every ledger line, flushed.
+    pub events: Vec<LedgerEvent>,
+    /// **Every substep's hash, ACCUMULATED after every `Arena::step`**
+    /// (`substep_hashes` is cleared at the head of each step, so a read at
+    /// the end holds the last pulse only — 17b §5's feas F4); its length is
+    /// asserted equal to the substeps played.
+    pub hashes: Vec<u64>,
+    /// How the match ended, or `None` at the cap.
+    pub ended: Option<MatchEnd>,
+    /// The arena millisecond it stopped at.
+    pub t_ms: i64,
+    /// The final `state_hash`.
+    pub state_hash: u64,
+    /// The ledger's SHA-256 over every byte appended.
+    pub ledger_digest: [u8; 32],
+}
+
+/// **One match on the proving ground** (17b cut M2.5, lifted from
+/// `tests/twin.rs`' lane with a runner argument): `red` and `blue` fielded by
+/// [`shipped_arena_seeded`] at `seed`, every mind hull thinking on `runner`,
+/// stepped **one substep a pulse** (the cross-tempo invariant makes these
+/// bytes those of any cadence) to the end — or to `cap_s` arena seconds.
+pub fn play(
+    world: &TestWorld,
+    seed: u64,
+    red: &[Muster],
+    blue: &[Muster],
+    runner: Arc<dyn MindRunner>,
+    cap_s: Option<u32>,
+) -> Played {
+    let mut arena = shipped_arena_seeded(world, &[red, blue], seed);
+    arena.mind_runner = runner;
+    let cap_ms = cap_s.map(|cap| i64::from(cap) * 1_000);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut substeps = 0_usize;
+    let mut wall = arena.now_ms;
+    let ended = loop {
+        let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        substeps += usize::try_from(out.substeps).unwrap_or(0);
+        assert_eq!(
+            hashes.len(),
+            substeps,
+            "one hash a substep played, accumulated over every step"
+        );
+        if out.ended.is_some() {
+            break out.ended;
+        }
+        if cap_ms.is_some_and(|cap| arena.now_ms >= cap) {
+            break None;
+        }
+        wall = arena.now_ms + arena.substep_len_ms();
+    };
+    let events = ledger_events(&mut arena, &mut bytes);
+    Played {
+        events,
+        hashes,
+        ended,
+        t_ms: arena.now_ms,
+        state_hash: tacsim::arena::hash::state_hash(&arena),
+        ledger_digest: arena.ledger.digest(),
+    }
 }

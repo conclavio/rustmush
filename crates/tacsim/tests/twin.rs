@@ -99,17 +99,18 @@ struct Thought {
 /// **The production runner, recorded** — `NativeStockMind` answering every
 /// think, each job and answer kept until the lane drains them after the pulse.
 /// It is the stock mind and not a stand-in for one (16b §0.4): the answer is
-/// the inner runner's, untouched.
+/// the inner runner's, untouched. **17b cut M2.5**: over any runner — T1, T2
+/// (the Rhai Standard Doctrine) or Gate A's twin ([`runner_for`]).
 #[derive(Debug)]
 struct Recording {
-    inner: NativeStockMind,
+    inner: Arc<dyn MindRunner>,
     thoughts: Mutex<Vec<Thought>>,
 }
 
 impl Recording {
-    fn new(cfg: &ReflexConfig) -> Arc<Recording> {
+    fn new(inner: Arc<dyn MindRunner>) -> Arc<Recording> {
         Arc::new(Recording {
-            inner: NativeStockMind::with(cfg),
+            inner,
             thoughts: Mutex::new(Vec::new()),
         })
     }
@@ -144,11 +145,42 @@ impl MindRunner for Recording {
 // One match
 // ---------------------------------------------------------------------------
 
-/// Who flies a side.
+/// Who flies a side. **17b cut M2.5** adds T2 (the Rhai Standard Doctrine,
+/// `tacsim::minds::standard_runner`) and `Twin` (Gate A's
+/// `support::TwinRunner`: T1 and T2 on every think, T1's answer flown). One
+/// runner thinks for every mind of an arena, so a match flies at most one of
+/// T1, T2 and `Twin` ([`runner_for`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flier {
     T0,
     T1,
+    T2,
+    Twin,
+}
+
+impl Flier {
+    /// Whether the side is flown by a stock mind (T1, T2 or the twin).
+    fn is_mind(self) -> bool {
+        self != Flier::T0
+    }
+}
+
+/// **The runner a match's minds think on** (17b cut M2.5): T1's
+/// `NativeStockMind` for T0 or T1 (T0 flies no mind), T2's Rhai runner, or
+/// an asserting twin; one per arena, so two different mind fliers are
+/// refused.
+fn runner_for(red: Flier, blue: Flier, cfg: &tacsim::config::ArenaConfig) -> Arc<dyn MindRunner> {
+    let mind = match (red, blue) {
+        (Flier::T0, other) | (other, Flier::T0) => other,
+        (a, b) if a == b => a,
+        (a, b) => panic!("one runner an arena: {a:?} and {b:?} cannot share one"),
+    };
+    match mind {
+        Flier::T0 | Flier::T1 => Arc::new(NativeStockMind::with(&cfg.reflex)),
+        Flier::T2 => tacsim::minds::standard_runner(cfg)
+            .unwrap_or_else(|error| panic!("Standard Doctrine compiles: {error}")),
+        Flier::Twin => Arc::new(support::TwinRunner::new(cfg)),
+    }
 }
 
 /// The thirteen divergences of doc 17 §17, pooled, and the first arena
@@ -412,7 +444,7 @@ fn line_divergences(
     let lines = fired_lines(events);
     for (t_ms, unit, weapon, target, by) in &lines {
         match flier_of(*unit) {
-            Some(Flier::T1) if by.as_deref() == Some("cond") => {
+            Some(flier) if flier.is_mind() && by.as_deref() == Some("cond") => {
                 out.cond_fire += 1;
                 let latest = planned
                     .iter()
@@ -436,7 +468,7 @@ fn line_divergences(
     }
     let decide_ms = i64::from(arena.arena_cfg.reflex.decide_ms);
     for state in &arena.units {
-        if flier_of(state.id.0) == Some(Flier::T1) {
+        if flier_of(state.id.0).is_some_and(Flier::is_mind) {
             out.slot_parallel += unserialised(&shots_of(&lines, state.id.0), decide_ms);
         }
     }
@@ -445,15 +477,32 @@ fn line_divergences(
 
 /// **One match**: `red` and `blue` fly two tanks each on the proving ground at
 /// `seed`, one substep a pulse to the end, with T1's thinks shadowed.
+///
+/// **17b cut M2.5**: this lane keeps its own `play` — the shadow reads the
+/// arena after every pulse, which `support::play` (the lifted one, with a
+/// runner argument, for the Gate A lanes) does not offer — over
+/// [`play_on`] with the fliers' own runner ([`runner_for`]).
 fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> Played {
+    play_on(world, seed, red, blue, None)
+}
+
+/// [`play`] with the minds thinking on `runner` (`None`: [`runner_for`]'s).
+fn play_on(
+    world: &mush_testkit::TestWorld,
+    seed: u64,
+    red: Flier,
+    blue: Flier,
+    runner: Option<Arc<dyn MindRunner>>,
+) -> Played {
     let muster = |team: Team, slot: u8, flier: Flier| match flier {
         Flier::T0 => Muster::reflex(team, slot),
-        Flier::T1 => Muster::mind(team, slot),
+        Flier::T1 | Flier::T2 | Flier::Twin => Muster::mind(team, slot),
     };
     let reds = [muster(Team::Red, 1, red), muster(Team::Red, 2, red)];
     let blues = [muster(Team::Blue, 1, blue), muster(Team::Blue, 2, blue)];
     let mut arena = support::shipped_arena_seeded(world, &[&reds, &blues], seed);
-    let recording = Recording::new(&arena.arena_cfg.reflex);
+    let recording =
+        Recording::new(runner.unwrap_or_else(|| runner_for(red, blue, &arena.arena_cfg)));
     arena.mind_runner = recording.clone();
     let cfg = arena.arena_cfg.reflex.clone();
     let timer = NativeStockMind::with(&cfg);
@@ -469,11 +518,22 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
     // 17b cut M1b.2: every `Lock` a T1 think planned, `(unit, think ms, the
     // object its row named)` — what `cond_stale` reads a slot's shot against.
     let mut planned_locks: Vec<(ObjId, i64, ObjId)> = Vec::new();
+    // 17b cut M2.5 (17b §5's feas F4): every substep's hash, accumulated
+    // after every step — `substep_hashes` is cleared at each step's head —
+    // and its length held to the substeps played.
+    let (mut hashes, mut substeps): (Vec<u64>, usize) = (Vec::new(), 0);
     let ended = loop {
         let out = arena.step(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        substeps += usize::try_from(out.substeps).unwrap_or(0);
+        assert_eq!(
+            hashes.len(),
+            substeps,
+            "one hash a substep played, accumulated over every step"
+        );
         path_queries += u64::from(out.reflex.path_queries);
         corner_refusals += u64::from(out.reflex.corner_refusals);
         let thoughts = recording.drain();
@@ -576,7 +636,7 @@ fn play(world: &mush_testkit::TestWorld, seed: u64, red: Flier, blue: Flier) -> 
                     .unit(state.id)
                     .map_or(ReflexState::Startup, |row| row.state)
                     .code(),
-                Flier::T1 => arena
+                Flier::T1 | Flier::T2 | Flier::Twin => arena
                     .minds
                     .get(&state.id)
                     .map(|mind| StockMemory::from(&decode_memory(&mind.memory)).state)
@@ -1580,7 +1640,7 @@ fn m1b2_the_probes_law_counters_count_on_a_field_that_presents_nothing() {
         state.ammo.insert(spare.id.clone(), spare.count_per_load);
         state.weapons.push(spare);
     }
-    let recording = Recording::new(&arena.arena_cfg.reflex);
+    let recording = Recording::new(Arc::new(NativeStockMind::with(&arena.arena_cfg.reflex)));
     arena.mind_runner = recording.clone();
     let cfg = arena.arena_cfg.reflex.clone();
     let mut scratch = ReflexCounters::default();
@@ -1636,4 +1696,308 @@ fn m1b2_the_probes_law_counters_count_on_a_field_that_presents_nothing() {
         (0, 0, 0, 0),
         "nothing warranted, nothing unlawful: {counted:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.5: Gate A on unarmed hulls, and the armed pool under the twin
+// ---------------------------------------------------------------------------
+
+/// The mixed lane's cap, arena seconds (17b §1 (iii)).
+const MIXED_CAP_S: u32 = 300;
+
+/// The object a journalled line's `key` names (`target` of a `hit`, `unit`
+/// of a `unit_disabled`), or `None`.
+fn object_at(event: &LedgerEvent, key: &str) -> Option<u32> {
+    serde_json::to_value(&event.kind)
+        .ok()?
+        .get(key)?
+        .as_u64()
+        .and_then(|id| u32::try_from(id).ok())
+}
+
+/// **Gate A on unarmed hulls, under fire** (17b cut M2.5; doc 17 §17 "Gate
+/// A", §22's italics — *the twin corpus carries unarmed hulls and Gate A
+/// covers them*; D-UM-48; 17b §1 (iii)'s mixed lane and §5's adv F9): the
+/// proving ground at the fifteen seeds, ONE armed `Muster::mind` and ONE
+/// `Muster::mind_unarmed` a side, every mind flown by `support::TwinRunner`
+/// in its counting mode, to the end or 300 arena seconds (`support::play`,
+/// one substep a pulse, the hashes accumulated).
+///
+/// * **every think of an unarmed hull is Gate A**: no Rhai fault and T2's
+///   intents and memory bytes T1's — a divergence fails by the hull's id with
+///   the twin's printout;
+/// * an armed hull's thinks are counted: no Rhai fault, and every divergence
+///   the fire half's alone (`fire_only`: the memory and the helm half equal,
+///   the `Condition`/`Fire` intents the stubs do not emit yet — 17b cut M2.6
+///   asserts them whole);
+/// * **the unarmed hulls are under fire**: across the seeds some unarmed hull
+///   takes a hit, some withdraws, and some rallies or is disabled (a
+///   `unit_disabled`/`unit_destroyed` line — a wreck thinks no more, so the
+///   line is not a compared think) — the counts are asserted nonzero, so the
+///   lane is not a quiet one;
+/// * the hulls are what they were mustered as: an unarmed hull's every view
+///   carries no weapon row, and each armed hull's first think's does;
+/// * the thinks at the `Disabled` edge (state 5), rallied, and in the
+///   withdraw dwell (`stand_until_ms` set) are counted for each kind of hull
+///   and printed — compared, as every think is; the arms the lanes reach
+///   seldom are held by `tacsim::minds::content`'s mirrors
+///   (`m2_mirror_the_withdraw_dwell_and_the_rally`,
+///   `m2_mirror_the_disabled_edge_rewrites_the_fourteen_keys`);
+/// * the Rhai thinks' operations plus fees, p50/p99/max, printed against
+///   class I's 1,500 (a max over 1,200 is a STOP) and Class 0's 400 (D-UM-35:
+///   where §18's `minds_stock_ci` runs Standard Doctrine; a max over it is a
+///   forward STOP for 17b cuts M3/M4, reported, not asserted).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m2_gate_a_on_a_mixed_pool() {
+    let started = Instant::now();
+    let world = support::booted_world();
+    let unarmed = [
+        support::tank(&world, Team::Red, 2),
+        support::tank(&world, Team::Blue, 2),
+    ];
+    let reds = [
+        Muster::mind(Team::Red, 1),
+        Muster::mind_unarmed(Team::Red, 2),
+    ];
+    let blues = [
+        Muster::mind(Team::Blue, 1),
+        Muster::mind_unarmed(Team::Blue, 2),
+    ];
+    let cfg = tacsim::config::ArenaConfig::default();
+    let mut thinks = 0_usize;
+    let mut unarmed_thinks = 0_usize;
+    let mut armed_thinks = 0_usize;
+    let mut armed_diverged = 0_usize;
+    let mut first_armed: Option<String> = None;
+    let mut budget: Vec<u64> = Vec::new();
+    let mut ops: Vec<u64> = Vec::new();
+    let (mut hits, mut withdrew, mut rallied, mut disabled) = (0_u32, 0_u32, 0_u32, 0_u32);
+    // `[unarmed, armed]` thinks at the `Disabled` edge, rallied, dwelling.
+    let (mut at_disabled, mut at_rallied, mut at_dwell) = ([0_u32; 2], [0_u32; 2], [0_u32; 2]);
+    for k in 0..SEEDS {
+        let seed = SEED_0 + k;
+        let twin = Arc::new(support::TwinRunner::counting(&cfg));
+        let played = support::play(&world, seed, &reds, &blues, twin.clone(), Some(MIXED_CAP_S));
+        let thoughts = twin.thoughts();
+        thinks += thoughts.len();
+        budget.extend(thoughts.iter().map(|thought| thought.ops + thought.fee));
+        ops.extend(thoughts.iter().map(|thought| thought.ops));
+        let (mut seed_hits, mut seed_withdrew, mut seed_rallied, mut seed_disabled) =
+            (0_u32, 0_u32, 0_u32, 0_u32);
+        let mut armed_seen: Vec<ObjId> = Vec::new();
+        for thought in &thoughts {
+            let is_unarmed = unarmed.contains(&thought.unit);
+            let kind = usize::from(!is_unarmed);
+            at_disabled[kind] += u32::from(thought.state == ReflexState::Disabled.code());
+            at_rallied[kind] += u32::from(thought.rallied);
+            at_dwell[kind] += u32::from(thought.dwelling);
+            if is_unarmed {
+                unarmed_thinks += 1;
+                assert!(
+                    !thought.armed,
+                    "the unarmed hull #{} at seed {seed} thinks with a weapon row",
+                    thought.unit.0
+                );
+                assert!(
+                    !thought.faulted && !thought.diverged,
+                    "Gate A on the unarmed hull #{} at seed {seed}:\n{}",
+                    thought.unit.0,
+                    twin.failure(thought.unit)
+                        .or_else(|| twin.printout(thought.unit))
+                        .unwrap_or_default()
+                );
+            } else {
+                armed_thinks += 1;
+                if !armed_seen.contains(&thought.unit) {
+                    armed_seen.push(thought.unit);
+                    assert!(
+                        thought.armed,
+                        "the armed hull #{} at seed {seed} first thinks with no weapon row",
+                        thought.unit.0
+                    );
+                }
+                assert!(
+                    !thought.faulted && (!thought.diverged || thought.fire_only),
+                    "the armed hull #{} at seed {seed} parts from T1 outside the fire half:\n{}",
+                    thought.unit.0,
+                    twin.failure(thought.unit).unwrap_or_default()
+                );
+                if thought.diverged {
+                    armed_diverged += 1;
+                    if first_armed.is_none() {
+                        first_armed = twin.printout(thought.unit);
+                    }
+                }
+            }
+        }
+        for unit in unarmed {
+            let mine: Vec<&support::TwinThought> = thoughts
+                .iter()
+                .filter(|thought| thought.unit == unit)
+                .collect();
+            seed_withdrew += u32::from(mine.iter().any(|thought| thought.state == 4));
+            seed_rallied += u32::from(mine.iter().any(|thought| thought.rallied));
+        }
+        for event in &played.events {
+            let (word, unit) = kind_and_unit(event);
+            if word == "hit"
+                && object_at(event, "target")
+                    .is_some_and(|target| unarmed.iter().any(|hull| hull.0 == target))
+            {
+                seed_hits += 1;
+            }
+            if matches!(word.as_str(), "unit_disabled" | "unit_destroyed")
+                && unit.is_some_and(|unit| unarmed.iter().any(|hull| hull.0 == unit))
+            {
+                seed_disabled += 1;
+            }
+        }
+        println!(
+            "m2_mixed_match: seed={seed} end={} t_ms={} thinks={} hits_on_unarmed={seed_hits} \
+             unarmed_withdrew={seed_withdrew} unarmed_rallied={seed_rallied} \
+             unarmed_disabled={seed_disabled} substeps={}",
+            played
+                .ended
+                .map_or_else(|| "cap".to_owned(), |ended| end_word(ended.reason)),
+            played.t_ms,
+            thoughts.len(),
+            played.hashes.len(),
+        );
+        hits += seed_hits;
+        withdrew += seed_withdrew;
+        rallied += seed_rallied;
+        disabled += seed_disabled;
+    }
+    let (p50, p99, max) = support::spread(&budget);
+    let (ops_p50, ops_p99, ops_max) = support::spread(&ops);
+    println!(
+        "m2_mixed_pool: thinks={thinks} unarmed_thinks={unarmed_thinks} unarmed_divergences=0 \
+         armed_thinks={armed_thinks} armed_divergences={armed_diverged} (all fire-only) \
+         hits_on_unarmed={hits} unarmed_withdrew={withdrew} unarmed_rallied={rallied} \
+         unarmed_disabled={disabled}"
+    );
+    println!(
+        "m2_mixed_ops: ops_plus_fee_p50={p50} p99={p99} max={max} ops_p50={ops_p50} \
+         ops_p99={ops_p99} ops_max={ops_max} (class I 1500, Class 0 400) over_400={} \
+         wall_ms={}",
+        budget.iter().filter(|spent| **spent > 400).count(),
+        started.elapsed().as_millis()
+    );
+    println!(
+        "m2_mixed_arms: unarmed_disabled_thinks={} unarmed_rallied_thinks={} \
+         unarmed_dwell_thinks={} armed_disabled_thinks={} armed_rallied_thinks={} \
+         armed_dwell_thinks={} (every one compared)",
+        at_disabled[0], at_rallied[0], at_dwell[0], at_disabled[1], at_rallied[1], at_dwell[1]
+    );
+    if let Some(first) = &first_armed {
+        println!("m2_mixed_first_armed_divergence:\n{first}");
+    }
+    assert!(
+        unarmed_thinks > 0 && armed_thinks > 0,
+        "both kinds of hull thought"
+    );
+    assert!(hits > 0, "no unarmed hull was hit");
+    assert!(withdrew > 0, "no unarmed hull withdrew");
+    assert!(
+        rallied + disabled > 0,
+        "no unarmed hull rallied or was disabled"
+    );
+    // An immobile unarmed hull thinks on at the `Disabled` edge (a wreck
+    // does not): those thinks are compared, so the edge is Gate A's here.
+    assert!(
+        at_disabled[0] > 0,
+        "no unarmed hull thought at the Disabled edge"
+    );
+    assert!(
+        max <= 1_200,
+        "a think of {max} ops and fees: past 1,200 is a STOP"
+    );
+}
+
+/// **The armed pool under the twin, reported** (17b cut M2.5; 17b §1 (iii)):
+/// the pooled lane's thirty matches — `(T0, Twin)` and `(Twin, T0)` per seed —
+/// with the twin counting where the lane flies T1. The twin answers T1's
+/// answer, so each match IS the pooled lane's T1 match (its `twin_armed_match`
+/// line reads as that lane's `twin_match` line). T2's fire half is a stub
+/// until 17b cut M2.6, so the armed hulls' thinks that arm or cite diverge:
+/// they are counted, the first printed, and every one is held to the fire
+/// half alone (no fault; the memory and the helm half equal).
+#[test]
+fn m2_the_armed_pool_under_the_twin_reports() {
+    let started = Instant::now();
+    let world = support::booted_world();
+    let cfg = tacsim::config::ArenaConfig::default();
+    let (mut thinks, mut diverged) = (0_usize, 0_usize);
+    let mut first: Option<String> = None;
+    let mut budget: Vec<u64> = Vec::new();
+    // Thinks at the `Disabled` edge, rallied, dwelling.
+    let (mut at_disabled, mut at_rallied, mut at_dwell) = (0_u32, 0_u32, 0_u32);
+    for k in 0..SEEDS {
+        let seed = SEED_0 + k;
+        for (red, blue) in [(Flier::T0, Flier::Twin), (Flier::Twin, Flier::T0)] {
+            let twin = Arc::new(support::TwinRunner::counting(&cfg));
+            let played = play_on(&world, seed, red, blue, Some(twin.clone()));
+            let thoughts = twin.thoughts();
+            thinks += thoughts.len();
+            budget.extend(thoughts.iter().map(|thought| thought.ops + thought.fee));
+            for thought in &thoughts {
+                at_disabled += u32::from(thought.state == ReflexState::Disabled.code());
+                at_rallied += u32::from(thought.rallied);
+                at_dwell += u32::from(thought.dwelling);
+                assert!(
+                    !thought.faulted && (!thought.diverged || thought.fire_only),
+                    "#{} at seed {seed} parts from T1 outside the fire half:\n{}",
+                    thought.unit.0,
+                    twin.failure(thought.unit).unwrap_or_default()
+                );
+                if thought.diverged {
+                    diverged += 1;
+                    if first.is_none() {
+                        first = twin.printout(thought.unit);
+                    }
+                }
+            }
+            println!(
+                "twin_armed_match: seed={} t1={} end={} t_ms={}",
+                played.seed,
+                if played.red == Flier::Twin {
+                    "red"
+                } else {
+                    "blue"
+                },
+                end_word(played.end),
+                played.t_ms
+            );
+        }
+    }
+    let (p50, p99, max) = support::spread(&budget);
+    println!(
+        "m2_armed_pool: thinks={thinks} diverged={diverged} (every one the fire half's) \
+         ops_plus_fee_p50={p50} p99={p99} max={max} (class I 1500, Class 0 400) \
+         disabled_thinks={at_disabled} rallied_thinks={at_rallied} dwell_thinks={at_dwell} \
+         wall_ms={}",
+        started.elapsed().as_millis()
+    );
+    if let Some(first) = &first {
+        println!("m2_armed_pool_first_divergence:\n{first}");
+    }
+    assert!(thinks > 0);
+    assert!(
+        max <= 1_200,
+        "a think of {max} ops and fees: past 1,200 is a STOP"
+    );
+}
+
+/// **`Flier::T2` flies the Rhai Standard Doctrine** (17b cut M2.5): the
+/// runner a T2 side is handed is the `RhaiRunner` over the shipped script,
+/// and a twin side's is the twin — one runner an arena.
+#[test]
+fn m2_the_fliers_name_their_runners() {
+    let cfg = tacsim::config::ArenaConfig::default();
+    let name = |red: Flier, blue: Flier| format!("{:?}", runner_for(red, blue, &cfg));
+    assert!(name(Flier::T0, Flier::T2).starts_with("RhaiRunner"));
+    assert!(name(Flier::Twin, Flier::T0).starts_with("TwinRunner"));
+    assert!(name(Flier::T1, Flier::T0).starts_with("NativeStockMind"));
+    assert!(name(Flier::T2, Flier::T2).starts_with("RhaiRunner"));
 }

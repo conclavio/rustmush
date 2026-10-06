@@ -42,6 +42,12 @@
 //!   `MindRunner` that runs a compiled script synchronously at the think
 //!   point, reads the label rule on both ends of the call, and answers a
 //!   dropped hull (three faults running) with the native stand-in.
+//! * **The stock mind** (`content.rs`, 17b cut M2.5): Standard Doctrine in
+//!   Rhai (T2, `content/minds/standard.rhai`) with its manifest
+//!   (`standard.json`, the role `combat`) and its pinned SHA-256, and
+//!   [`standard_runner`](crate::minds::standard_runner) — the native stock
+//!   mind ported arm for arm, the helm half whole and the fire half a stub
+//!   until 17b cut M2.6.
 //! * **The stations** (`stations.rs`): exactly doc 17 §4's list — `helm`,
 //!   `speed`, `startup`, `goto`, `hold`, `goto_off`; `lock`, `emcon`; `fire`,
 //!   `arm`, `disarm`; `trace` — each pushing the
@@ -116,12 +122,17 @@ macro_rules! custom_type {
 
 pub mod api;
 pub mod card;
+pub mod content;
 pub mod context;
 pub mod fees;
 pub mod kernels;
 pub mod runner;
 pub mod stations;
 
+pub use content::{
+    MindManifest, STANDARD_MANIFEST_JSON, STANDARD_RHAI, STANDARD_SHA256, standard_digest,
+    standard_manifest, standard_runner,
+};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
 
 /// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A

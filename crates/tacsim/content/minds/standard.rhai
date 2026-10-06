@@ -1,0 +1,967 @@
+// Standard Doctrine — the combat role's stock mind (doc 17 §11, §17; 17b cut M2.5). name: Standard Doctrine; role: combat; api: 1; stock: 1; rated: class I (1,500 ops a think). Ported arm for arm from crates/tacsim/src/arena/stock_mind.rs: T1 is the oracle (Gate A).
+//
+// `decide_on_card`, re-expressed over the TacSim API (17b cuts M2.3 and
+// M2.4): the SAME order, edges, clocks and fourteen memory keys as the native
+// stock mind, every score, trace, picker and reach reader a registered kernel
+// over the one free function T1 calls (no second kernel). Gate A is T1 == T2
+// exactly: every think's intent list and memory bytes equal
+// (`tests/support`'s `TwinRunner`).
+//
+// # The shape (17b §5's feas F9: the binding limits bind the whole script)
+//
+// Every function body is parsed at expression depth 24 with a level per
+// block, `if`, `else if`, loop and `switch`; at most 32 functions; at most
+// 64 variables in a call's scope. `decide_on_card`'s state arm nests about
+// eight deep, so the port is `switch` dispatch on the state and on the
+// objective with one helper `fn` per state arm and per T1 helper. A helper
+// that writes the memory is called on `this` (`this.walk(..)`); a helper that
+// decides answers its decision. The think's working values ride one map,
+// `p` (T1's locals and its `Plan`), handed to each helper and handed back:
+//
+//   here      the hull's cell (`view.cell`), `()` off the window
+//   reached   the goal the motor said it reached (T1's `Drive`), or `()`
+//   held      the goal the motor holds as far as the mind knows
+//   goal      `motor.goal` as the think writes it
+//   stop      the hull stands this think: `hold()`
+//   heading   the facing a stand turns onto, millidegrees, or `()`
+//   lock      the lock to take, a contact INT, or `()`
+//   stood     the cell of the row a stand stood on, or `()`
+//   arm_ceiling  the ceiling the slots arm on (the fire half's: M2.6), `()`
+//   view_order, order, objective   the view's order, the OBEYED order and
+//             its objective word (`()` once ended or ignored)
+//   health, dry, ranges            the think's own readings
+//   leash_on, charge, off_leash, leash_cm, station_cm, leashed, station_on
+//                                  the supporter's leash (16b cut Z.2)
+//
+// # The state codes (`ReflexState::code`, pinned by `tests/content.rs`
+// against `ReflexState::ALL`)
+//
+//   state codes: 0 startup, 1 patrol, 2 approach, 3 engage, 4 withdraw, 5 disabled
+//
+// # The memory (D-UM-30): the fourteen keys of `StockMemory`, as T1 writes them
+//
+//   state INT code; target the row's ContactId as its INT (`contact_int`);
+//   goal, hunt [x, y]; waypoint, from_waypoint INT node; last_plot
+//   [x, y, t_ms]; unheld_since_ms, quiet_since_ms, stand_until_ms,
+//   hold_retry_ms, ignore_until_ms INT ms; rallied, no_line bool; `()` for
+//   every key that holds nothing.
+//
+// # RANGE_NONE
+//
+// T1 reads a row it does not hold as `u64::MAX` centimetres
+// (`row.map_or(u64::MAX, row_range_cm)`); a Rhai INT is an `i64`, so the
+// port's sentinel is `i64::MAX`, 9223372036854775807 (`range_cm`). Every
+// comparison T1 makes against it is `range > ceiling` or
+// `range <= ceiling.max(1)`, which the sentinel answers as `u64::MAX` does
+// for every ceiling short of 2^63 cm. No Approach or Engage think reaches it
+// in practice: the lost edge drops a target whose row is gone and the
+// hostile edges pick only rows the view holds.
+//
+// # The fire half (17b cut M2.6 fills it)
+//
+// D-UM-48: on a hull with no weapons station Standard Doctrine's fire half
+// is absent. Here it is a STUB on every hull: `arming` (T1's `arming_for`)
+// emits nothing, and `engage_orders` takes the lock (the lock is sensors,
+// ported here) and plans no shot. On an armed hull T1 and this script part
+// exactly on the `arm`/`disarm`/`fire` intents until M2.6.
+//
+// # No float, no clock, no draw
+//
+// Integer arithmetic only (Rust's division); the clocks are the context
+// functions (`t_ms()`, `decide_ms()`, ...), never a constant; nothing draws.
+//
+// # Saturation (where T1 saturates, this clamps)
+//
+// A Rhai INT overflow is a runtime error, so a fault and a strike where T1's
+// `saturating_*` answers. Every site T1 saturates on is clamped here so that
+// no INT the view or the memory can hold overflows:
+//
+//   range_cm      `min(range_m, 92233720368547758) * 100` (T1's
+//                 `range_m.saturating_mul(100)`; the getter already reads a
+//                 range past i64 as i64::MAX, and the clamp keeps the product
+//                 inside an INT, past every ceiling as T1's is);
+//   the dwell     `min(t, 9223372036854775807 - dwell) + dwell` (T1's
+//                 `t_ms.saturating_add(..)`, `dwell` the context's own small
+//                 `stand_ticks() * decide_ms()`);
+//   the clocks    T1's `t_ms.saturating_sub(since) <op> card_ms` compares a
+//                 clamped difference with a card's u32 milliseconds, which is
+//                 the exact difference's compare; written here as
+//                 `since <op'> t_ms() - card_ms`, the arithmetic on the arena
+//                 clock (never below zero) and the card alone, so a memory
+//                 clock of any INT never overflows (the search, the hunt and
+//                 the rally);
+//   the bearings  `bearing_deg * 1000` on a view's whole degrees (0 to 359;
+//                 an INT product of a u32 and 1,000 cannot overflow).
+
+// ---------------------------------------------------------------------------
+// The entry
+// ---------------------------------------------------------------------------
+
+// **One think** (T1's `decide_on_card`): walk the memory (`this`) one step
+// over `view` on `card` and push the intents, in emission order.
+fn think(view, card) {
+    // ---- the prologue: a fresh sortie writes all fourteen keys, so the
+    //      first think's bytes are T1's (an empty memory reads as the
+    //      default `StockMemory`) ----
+    if !("state" in this) {
+        this.fresh();
+    }
+
+    // ---- what the motor and the rounds said since the last think ----
+    //
+    // The reflex learns its `no line` edge from the impact and its arrival
+    // and its `unreachable` edge from the drive it runs itself; a mind reads
+    // all three off its notice buffer (D-UM-8).
+    let words = this.read_notices(view);
+    let goal_was = this.goal;
+    let reached = if words[0] { goal_was } else { () };
+    // What the motor holds now, as far as the mind knows: the goal it was
+    // handed, and nothing once it said no route reached it.
+    let held = if words[1] { () } else { goal_was };
+    let p = #{
+        here: view.cell, reached: reached, held: held, goal: held,
+        stop: false, heading: (), lock: (), stood: (), arm_ceiling: (),
+        view_order: view.order, order: (), objective: (),
+        health: 1000, dry: false, ranges: (),
+        leash_on: false, charge: (), off_leash: false, leash_cm: 0, station_cm: 0,
+        leashed: false, station_on: ()
+    };
+
+    // ---- the `Disabled` edge, before anything else ----
+    if view.wreck || (view.immobile && view.weapons.len() == 0) {
+        this.fresh();
+        this.state = 5;
+        return;
+    }
+
+    // ---- the `unreachable` edge's decision half, a think late
+    //      (departure (i)) ----
+    if words[1] && this.goal != () {
+        p.goal = this.unreachable(view, p);
+    }
+
+    // ---- the standing order (16b cut N.2; 17b cut M1b.5) ----
+    p = this.standing_order(view, card, p);
+
+    // ---- power ----
+    switch view.power {
+        "off" => {
+            // 16b cut D.3 (`B-34`): a cold tank starts up, wherever it is
+            // going; a `Withdraw` stays one.
+            if this.state != 4 {
+                this.state = 0;
+            }
+            this.goal = p.held;
+            startup();
+            // 17b cut M1b.2: a cold hull's slots are disarmed, after the
+            // `Startup` (the fire half: M2.6).
+            arming(view, card, ());
+            return;
+        }
+        "starting" => {
+            if this.state != 4 {
+                this.state = 0;
+            }
+            this.goal = p.held;
+            arming(view, card, ());
+            return;
+        }
+        _ => {
+            if this.state == 0 || this.state == 5 {
+                this.state = 1;
+                p.goal = ();
+            }
+        }
+    }
+
+    // ---- the `lost` edge, the order's steering, the `Withdraw` edges ----
+    p = this.edges(view, card, p);
+
+    // ---- the hostile edges, and the leash's reading (16b cut Z.2) ----
+    p = this.hostile_edges(view, card, p);
+
+    // ---- the `no line` edge (W's `blocked`/`cover` miss) ----
+    if this.no_line {
+        this.no_line = false;
+        p.goal = ();
+        if this.state == 3 {
+            this.state = 2;
+        }
+    }
+
+    // ---- the state's own goal and orders ----
+    //
+    // 17b §5's feas F6: the order cap off the OBEYED order (`p.order`, after
+    // the early ends and `ignore_until_ms`), as T1 passes `obeyed(view, mem)`
+    // to `view_ranges` — never `view.order`.
+    p.ranges = ranges(view, card.band_permille, p.order != ());
+
+    // ---- the leash (16b cut Z.2) ----
+    p = this.leash_arms(view, card, p);
+    if !p.leashed {
+        p.station_on = if p.leash_on { p.charge } else { () };
+        switch this.state {
+            1 => {
+                p = this.patrol_arm(view, card, p);
+            }
+            2 => {
+                p = this.approach_arm(view, p);
+            }
+            3 => {
+                p = this.engage_arm(view, p);
+            }
+            4 => {
+                p = this.withdraw_arm(view, card, p);
+            }
+            // 0 startup, 5 disabled: nothing.
+            _ => {}
+        }
+    }
+
+    // ---- what this think saw, and how long it has seen nothing (16b cut
+    //      E.4) ----
+    this.stamps(view, p);
+
+    // ---- the emission ----
+    this.emit(view, card, p);
+}
+
+// ---------------------------------------------------------------------------
+// The memory (D-UM-30's shape)
+// ---------------------------------------------------------------------------
+
+// **All fourteen keys at their defaults** (T1's `StockMemory::default()`,
+// written as `Memory::from` writes it): the prologue's fresh sortie and the
+// `Disabled` edge's reset.
+fn fresh() {
+    this.state = 0;
+    this.target = ();
+    this.goal = ();
+    this.waypoint = ();
+    this.from_waypoint = ();
+    this.last_plot = ();
+    this.unheld_since_ms = ();
+    this.quiet_since_ms = ();
+    this.stand_until_ms = ();
+    this.hold_retry_ms = ();
+    this.rallied = false;
+    this.hunt = ();
+    this.no_line = false;
+    this.ignore_until_ms = ();
+}
+
+// **The notices' reading**: `[arrived_word, no_route]` off the motor's
+// `drive_arrived` / `drive_no_route`, and `no_line` set by a `miss` whose
+// reason is `blocked()` or `cover()` (a round of its own stopped by the
+// ground).
+fn read_notices(view) {
+    let arrived_word = false;
+    let no_route = false;
+    for notice in view.notices {
+        let kind = notice.kind;
+        if kind == "drive_arrived" {
+            arrived_word = true;
+        } else if kind == "drive_no_route" {
+            no_route = true;
+        } else if kind == "miss" {
+            let reason = notice.reason;
+            if reason == blocked() || reason == cover() {
+                this.no_line = true;
+            }
+        }
+    }
+    [arrived_word, no_route]
+}
+
+// ---------------------------------------------------------------------------
+// The kernels' companions (T1's small helpers)
+// ---------------------------------------------------------------------------
+
+// **The view's standing order, unless this hull has ended it** (T1's
+// `obeyed`, 17b cut M1b.5): the order whose `expires_ms` is not
+// `ignore_until_ms`.
+fn obeyed(order, ignore) {
+    if order == () || order.expires_ms == ignore {
+        ()
+    } else {
+        order
+    }
+}
+
+// **The contact an order points the hull at** (T1's `hint`): an `Engage`'s
+// re-keyed hint. A `Support`'s charge designation is not on the view (the
+// divergence `support`), so a supporter prefers nothing.
+fn hint(order) {
+    if order != () && order.objective == "engage" {
+        order.target
+    } else {
+        ()
+    }
+}
+
+// **The utility score's three weights off the card**, as
+// `StockCard::as_reflex` derives them from `prefer` (17b cut M1b.5):
+// `balanced` and `best_odds` the card's own carried triple, `nearest`
+// 200/20/30, `exposed` 100/120/30, `hurt` 100/40/120.
+fn weights(card) {
+    switch card.prefer {
+        "nearest" => [200, 20, 30],
+        "exposed" => [100, 120, 30],
+        "hurt" => [100, 40, 120],
+        _ => [card.weight_range, card.weight_facet, card.weight_health],
+    }
+}
+
+// **A row's held range, centimetres** (T1's `row_range_cm`: the view's whole
+// metres back to the arena's unit), and RANGE_NONE (the head) for no row.
+fn range_cm(row) {
+    if row == () {
+        9223372036854775807
+    } else {
+        min(row.range_m, 92233720368547758) * 100
+    }
+}
+
+// **Arrival at `cell`** (T1's `Drive::arrived`): the hull's own cell within
+// `arrive_cells()` (Chebyshev), or the motor's word for that goal.
+fn arrived(p, cell) {
+    let here = p.here;
+    if here != () && max(abs(here[0] - cell[0]), abs(here[1] - cell[1])) <= arrive_cells() {
+        return true;
+    }
+    p.reached == cell
+}
+
+// ---------------------------------------------------------------------------
+// The edges
+// ---------------------------------------------------------------------------
+
+// **The `unreachable` edge's decision half** (T1's departure (i)): the
+// motor dropped the goal with `drive_no_route`, and this is the reflex's
+// edge read off it, in the reflex's order — the order's own ends, the
+// search's and the hunt's give-ups, and the fallback waypoint as the next
+// goal (answered).
+fn unreachable(view, p) {
+    let failed = this.goal;
+    // 17b cut M1b.5: the view's order unless this hull ended it.
+    let live = obeyed(p.view_order, this.ignore_until_ms);
+    // 16b cut E.2 (`B-41`): the order's own `Advance` cell.
+    if live != () && live.objective == "advance" && live.to == failed {
+        this.ignore_until_ms = live.expires_ms;
+    }
+    // 16b cut Z.2's review: a supporter's station, in `Patrol`.
+    if live != () && live.objective == "support" && this.state == 1 {
+        this.ignore_until_ms = live.expires_ms;
+    }
+    // 16b cut E.4: the search's plot and the hunt's cell.
+    let plot = this.last_plot;
+    if plot != () && [plot[0], plot[1]] == failed {
+        this.last_plot = ();
+    }
+    if this.hunt == failed {
+        this.hunt = ();
+        this.unheld_since_ms = t_ms();
+    }
+    // 16b cut O.1's Hold retry: no Hold objective reaches a production think
+    // (the view carries no match mode; M4).
+    if p.here == () {
+        return ();
+    }
+    let walk = fall_back_to_waypoint(view, failed, this.waypoint, this.from_waypoint);
+    this.waypoint = walk.waypoint;
+    this.from_waypoint = walk.from_waypoint;
+    walk.goal
+}
+
+// **The standing order** (16b cut N.2): the expiry is the ARENA's; a mind
+// cannot end an order itself, so the three early ends write the ended
+// order's `expires_ms` to `ignore_until_ms` and it stops obeying THAT order
+// (the divergence `order_end`); the key is spent when the view carries no
+// order or an order with another deadline. Then the health, the dryness,
+// the expiry's restoration and the obeyed order with its objective.
+fn standing_order(view, card, p) {
+    let order = p.view_order;
+    let deadline = if order == () { () } else { order.expires_ms };
+    if deadline != this.ignore_until_ms {
+        this.ignore_until_ms = ();
+    }
+    p.health = health_permille(view);
+    p.dry = is_dry(view);
+    // **The expiry's restoration** (`ReflexUnit::drop_to_doctrine`, read off
+    // the view): a `Withdraw` no live order holds and neither of its own
+    // edges would have taken goes back to `Patrol`; a hurt one keeps going
+    // home.
+    if order == () && this.state == 4 && !p.dry && p.health >= card.withdraw_permille {
+        this.state = 1;
+        this.target = ();
+        p.goal = ();
+    }
+    p.order = obeyed(order, this.ignore_until_ms);
+    let ends = false;
+    if p.order != () {
+        switch p.order.objective {
+            // 16b cut AA.1 (`B-76`): an `Advance` a hull that cannot close
+            // can never carry out. (16b cut O.1's `Advance` into the Hold
+            // square: no Hold objective reaches a production think — the
+            // view carries no match mode; M4.)
+            "advance" => {
+                ends = view.immobile;
+            }
+            // 16b cut Z.2: a `Support` whose charge this hull's own row
+            // reads dead.
+            "support" => {
+                let of = p.order.of;
+                if of != () {
+                    let row = contact(view, of);
+                    ends = row != () && row.reads_dead == true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if ends {
+        this.ignore_until_ms = p.order.expires_ms;
+        p.order = ();
+    }
+    p.objective = if p.order == () { () } else { p.order.objective };
+    p
+}
+
+// **The `lost` edge, the order's steering and the `Withdraw` edges.**
+fn edges(view, card, p) {
+    // ---- the `lost` edge (16b cut E.2, `B-45`): a target the view no
+    //      longer holds, or one its row reads dead ----
+    if this.target != () {
+        let row = contact(view, this.target);
+        if row == () || row.reads_dead == true {
+            this.target = ();
+            if this.state == 2 || this.state == 3 {
+                this.state = 1;
+                p.goal = ();
+            }
+        }
+    }
+    // ---- what the order does to the machine (16b cut N.2, Z.2) ----
+    switch p.objective {
+        "withdraw" => {
+            if this.state != 4 {
+                this.state = 4;
+                this.target = ();
+                p.goal = ();
+                this.last_plot = ();
+            }
+        }
+        "hold" | "advance" | "screen" => {
+            if this.state == 2 || this.state == 3 {
+                this.state = 1;
+                p.goal = ();
+            }
+            this.target = ();
+        }
+        // `engage`, `support` and no order: nothing.
+        _ => {}
+    }
+    // ---- the `Withdraw` edges (16b cut Q.7) ----
+    if this.state != 4 && (p.dry || (!this.rallied && p.health < card.withdraw_permille)) {
+        this.state = 4;
+        this.target = ();
+        p.goal = ();
+        this.last_plot = ();
+    }
+    p
+}
+
+// **The hostile edges, and the leash's reading** (16b cut Z.2): a
+// supporter reads its own row of its charge (`charge` `()` is a supporter
+// that does not hold it); the best hostile by the utility score, with the
+// order's hint, wherever pursuit is allowed.
+fn hostile_edges(view, card, p) {
+    let state = this.state;
+    if p.objective == "support" && (state == 1 || state == 2 || state == 3) {
+        p.leash_on = true;
+        let of = p.order.of;
+        if of != () {
+            p.charge = contact(view, of);
+        }
+    }
+    let cell = cell_cm();
+    p.leash_cm = leash_cells() * cell;
+    p.station_cm = station_cells() * cell;
+    p.off_leash = p.leash_on && (p.charge == () || range_cm(p.charge) > p.leash_cm);
+    let objective = p.objective;
+    let may_pursue = !p.off_leash && objective != "hold" && objective != "advance" && objective != "screen";
+    if !may_pursue || !(state == 1 || state == 2 || state == 3) {
+        return p;
+    }
+    let w = weights(card);
+    let found = best_hostile(view, w[0], w[1], w[2], p.health, hint(p.order), (), (), ());
+    if found != () {
+        if this.target != found {
+            this.target = found;
+            p.goal = ();
+        }
+        if this.state == 1 {
+            this.state = 2;
+        }
+    } else {
+        this.target = ();
+        if this.state == 2 || this.state == 3 {
+            this.state = 1;
+            p.goal = ();
+        }
+    }
+    p
+}
+
+// ---------------------------------------------------------------------------
+// The leash, the stands and the lock
+// ---------------------------------------------------------------------------
+
+// **The leash's two arms** (16b cut Z.2): (a) blind to the charge, or past
+// the leash and unable to close — hold where it stands and fight from
+// there; (b) past the leash — back toward the station off its own plot of
+// the charge, firing nothing until it is back inside; (c) inside the leash
+// — the state's own arm (`p.leashed` false).
+fn leash_arms(view, card, p) {
+    if !p.leash_on {
+        return p;
+    }
+    if p.charge == () || (p.off_leash && view.immobile) {
+        p.leashed = true;
+        if this.state == 2 || this.state == 3 {
+            this.state = 1;
+        }
+        this.target = ();
+        p.goal = p.here;
+        p.stop = true;
+        this.last_plot = ();
+        this.hunt = ();
+        this.unheld_since_ms = t_ms();
+        let row = stand(view, card, p, ());
+        if row != () {
+            p = face(view, row, p.ranges.release_cm, p);
+        }
+    } else if p.off_leash {
+        p.leashed = true;
+        this.state = 1;
+        this.target = ();
+        this.last_plot = ();
+        this.hunt = ();
+        this.unheld_since_ms = t_ms();
+        let station = stand_off_cell(view, p.charge.id, p.station_cm);
+        p.goal = if station == () { p.here } else { station };
+    }
+    p
+}
+
+// **A stand on `row`**: the cell it stood on, the facing onto the row's
+// whole-degree bearing, and `Engage`'s orders at `ceiling` (the ceiling
+// that admitted the row: the fire half's, M2.6).
+fn face(view, row, ceiling, p) {
+    p.stood = row.cell;
+    p.heading = row.bearing_deg * 1000;
+    engage_orders(view, row, ceiling, p)
+}
+
+// **`Engage`'s two discrete actions** (T1's `engage_orders`), the LOCK half:
+// the lock on a fresh row (the lock is sensors). D-UM-48: on a hull with no
+// weapon rows the fire half is absent — not idled — and the guard says so
+// where the reader looks.
+//
+// THE FIRE HALF IS A STUB (17b cut M2.6 fills it): past the power,
+// `hold_fire` and dry gates the think records `ceiling` as the slots' arm
+// ceiling (`p.arm_ceiling`), and beside a fresh lock cites the first armed
+// weapon ready at
+// `lands_ms()`, loaded, in reach and not held by heat (`fire(weapon, n)`,
+// `n` the view row's `armed.slot`, else `i + 1`). M2.5 plans no shot.
+fn engage_orders(view, row, ceiling, p) {
+    if view.weapons.len() == 0 {
+        return p;
+    }
+    if view.lock != row.id {
+        p.lock = row.id;
+    }
+    p
+}
+
+// **A stand** (T1's `stand`): the best hostile inside `release_cm` — and,
+// for a screen, inside `sector[1]` of `sector[0]` off the row's whole-degree
+// bearing — with a line; `()` with nothing to fire.
+fn stand(view, card, p, sector) {
+    if is_dry(view) {
+        return ();
+    }
+    let ceiling = max(p.ranges.release_cm, 1);
+    let w = weights(card);
+    let id = if sector == () {
+        best_hostile(view, w[0], w[1], w[2], p.health, hint(p.order), ceiling, (), ())
+    } else {
+        best_hostile(view, w[0], w[1], w[2], p.health, hint(p.order), ceiling, sector[0], sector[1])
+    };
+    if id == () {
+        return ();
+    }
+    let row = contact(view, id);
+    if row == () || !line_to(view, id) {
+        return ();
+    }
+    row
+}
+
+// **Whether a withdrawing hull is cornered, and by which row** (T1's
+// `withdraw_stand`): never with nothing to fire or under `hold_fire`; the
+// best hostile, inside `release_cm` once home and `stand_cm` (and the card's
+// `stand_min_permille` of health) en route, with a line.
+fn withdraw_stand(view, card, p, home) {
+    if is_dry(view) || (p.order != () && p.order.hold_fire) {
+        return ();
+    }
+    let w = weights(card);
+    let id = best_hostile(view, w[0], w[1], w[2], p.health, (), (), (), ());
+    if id == () {
+        return ();
+    }
+    let row = contact(view, id);
+    if row == () {
+        return ();
+    }
+    let ceiling = if home { p.ranges.release_cm } else { p.ranges.stand_cm };
+    if range_cm(row) > max(ceiling, 1) {
+        return ();
+    }
+    if !home && p.health < card.stand_min_permille {
+        return ();
+    }
+    if !line_to(view, id) {
+        return ();
+    }
+    row
+}
+
+// ---------------------------------------------------------------------------
+// The states' own arms
+// ---------------------------------------------------------------------------
+
+// **`Patrol`** (16b cuts E.4, N.2, Z.2): the movement orders, `Hold`, the
+// screen, the supporter's station; else the search, then the hunt, then the
+// waypoint walk.
+fn patrol_arm(view, card, p) {
+    let objective = p.objective;
+    if objective == "advance" || objective == "hold" || objective == "screen" || p.station_on != () {
+        this.last_plot = ();
+        this.hunt = ();
+        this.unheld_since_ms = t_ms();
+    }
+    switch objective {
+        "advance" => {
+            p.goal = p.order.to;
+        }
+        "hold" => {
+            p.goal = p.here;
+            p.stop = true;
+        }
+        // The screen: parked, faced onto the order's bearing, and the stand
+        // over the arc — off the view's whole degrees (the divergence
+        // `deg_round`).
+        "screen" => {
+            let facing = p.order.facing_mdeg;
+            p.goal = p.here;
+            p.stop = true;
+            p.heading = facing % 360000;
+            let row = stand(view, card, p, [facing, screen_half_arc_mdeg()]);
+            if row != () {
+                p = face(view, row, p.ranges.release_cm, p);
+            }
+        }
+        _ => {
+            if objective == "support" && p.station_on != () {
+                // A supporter idle inside its leash keeps station.
+                p = keep_station(view, p);
+            } else {
+                // The search, then the hunt, then the waypoint walk (16b
+                // cuts E.4, O.1; no Hold spot reaches a production think).
+                p = this.look(view, card, p);
+            }
+        }
+    }
+    p
+}
+
+// **A supporter keeping station** (16b cut Z.2): parked inside
+// `station_cells()`, else the stand-off cell, and once there the plot.
+fn keep_station(view, p) {
+    let plot = p.station_on;
+    if range_cm(plot) <= p.station_cm {
+        p.goal = p.here;
+        p.stop = true;
+        return p;
+    }
+    let station = stand_off_cell(view, plot.id, p.station_cm);
+    let next = station;
+    if station != () && arrived(p, station) {
+        let cell = plot.cell;
+        if cell != () {
+            next = cell;
+        }
+    }
+    p.goal = if next == () { p.here } else { next };
+    p
+}
+
+// **`Patrol`'s list, past the orders**: the search, then the hunt, then the
+// walk.
+fn look(view, card, p) {
+    let cell = this.search_goal(card, p);
+    if cell == () {
+        cell = this.hunt_goal(view, card, p);
+    }
+    if cell != () {
+        p.goal = cell;
+        return p;
+    }
+    p.goal = this.walk(view, p);
+    p
+}
+
+// **`Patrol`'s first goal: where it last saw something** (T1's
+// `search_goal`): the last plot while it is no older than the card's
+// `search_ms` (inclusively) and not arrived at — answered, or `()`.
+fn search_goal(card, p) {
+    let plot = this.last_plot;
+    if plot == () {
+        return ();
+    }
+    let cell = [plot[0], plot[1]];
+    // T1's `t_ms.saturating_sub(at) > search_ms` (the head's saturation).
+    if card.search_ms == 0 || plot[2] < t_ms() - card.search_ms {
+        this.last_plot = ();
+        return ();
+    }
+    if arrived(p, cell) {
+        this.last_plot = ();
+        return ();
+    }
+    cell
+}
+
+// **`Patrol`'s second goal: the hunt** (T1's `hunt_goal`): the far zone
+// once the card's `hunt_after_ms` has passed with nothing hostile held — the
+// cell `far_entry_cell` answers, the motor fanning the landing — answered,
+// or `()`.
+fn hunt_goal(view, card, p) {
+    if holds_a_hostile(view) {
+        this.unheld_since_ms = ();
+        this.hunt = ();
+        return ();
+    }
+    let hunt = this.hunt;
+    if hunt != () {
+        if arrived(p, hunt) {
+            // It went and looked: the walk resumes from the nearest node.
+            this.hunt = ();
+            this.unheld_since_ms = t_ms();
+            this.waypoint = ();
+            this.from_waypoint = ();
+            return ();
+        }
+        return hunt;
+    }
+    if this.unheld_since_ms == () {
+        this.unheld_since_ms = t_ms();
+    }
+    // T1's `t_ms.saturating_sub(since) < hunt_after_ms` (the head's
+    // saturation).
+    if card.hunt_after_ms == 0 || this.unheld_since_ms > t_ms() - card.hunt_after_ms {
+        return ();
+    }
+    let cell = if p.here == () { () } else { far_entry_cell(view) };
+    if cell == () {
+        this.unheld_since_ms = t_ms();
+        return ();
+    }
+    this.hunt = cell;
+    cell
+}
+
+// **The waypoint walk** (T1's `walk`): `patrol_step` keyed on the view's own
+// unit, with the motor's arrival word for a fanned node; the next goal
+// answered.
+fn walk(view, p) {
+    let step = patrol_step(view, p.reached != () && p.reached == p.goal, this.waypoint, this.from_waypoint, p.goal);
+    this.waypoint = step.waypoint;
+    this.from_waypoint = step.from_waypoint;
+    step.goal
+}
+
+// **`Approach`**: every range, goal and heading off the hull's own row of
+// its target — the plot, at the view's resolution. (16b cut O.1's inside
+// rule: no Hold square reaches a production think — the view carries no
+// match mode; M4.)
+fn approach_arm(view, p) {
+    let target = this.target;
+    if target == () {
+        return p;
+    }
+    let row = contact(view, target);
+    let range = range_cm(row);
+    let band = p.ranges;
+    let close_edge = if view.immobile { band.release_cm } else { band.engage_cm };
+    if band.limit_cm != 0 && range <= max(close_edge, 1) {
+        let line = if row == () { true } else { line_to(view, target) };
+        if line {
+            this.state = 3;
+            p.goal = ();
+            if row != () {
+                p = engage_orders(view, row, band.release_cm, p);
+            }
+        } else if row != () && row.cell != () {
+            p.goal = row.cell;
+        } else {
+            p.goal = p.here;
+        }
+    } else {
+        let want = stand_off_want(band.engage_cm, max(cell_cm(), 1), range);
+        let cell = if row == () { () } else { stand_off_cell(view, target, want) };
+        p.goal = if cell == () { p.here } else { cell };
+    }
+    p
+}
+
+// **`Engage`**: past the release edge, back to `Approach` and the stand-off
+// cell; inside it, holding the band — stop, turn onto the plot, lock.
+fn engage_arm(view, p) {
+    let target = this.target;
+    if target == () {
+        return p;
+    }
+    let row = contact(view, target);
+    let range = range_cm(row);
+    let band = p.ranges;
+    if band.limit_cm == 0 || range > band.release_cm {
+        this.state = 2;
+        let want = stand_off_want(band.engage_cm, max(cell_cm(), 1), range);
+        let cell = if row == () { () } else { stand_off_cell(view, target, want) };
+        p.goal = if cell == () { p.here } else { cell };
+    } else {
+        p.goal = p.here;
+        p.stop = true;
+        p.heading = if row == () { () } else { row.bearing_deg * 1000 };
+        if row != () {
+            p = engage_orders(view, row, band.release_cm, p);
+        }
+    }
+    p
+}
+
+// **`Withdraw`** (16b cut Q.7): home, the stand, the dwell, the rally.
+fn withdraw_arm(view, card, p) {
+    if p.goal == () {
+        let entry = if p.here == () { () } else { entry_cell(view) };
+        p.goal = if entry == () { p.here } else { entry };
+    }
+    let home = view.immobile || p.goal == () || (p.here != () && arrived(p, p.goal));
+    let row = withdraw_stand(view, card, p, home);
+    if row != () {
+        // Cornered: the dwell is `stand_ticks()` thinks of the doctrine's
+        // cadence. 17b cut M1b.2: the ceiling `withdraw_stand` admitted the
+        // row by — `release_cm` home, `stand_cm` en route.
+        let ceiling = if home { p.ranges.release_cm } else { p.ranges.stand_cm };
+        p = face(view, row, ceiling, p);
+        // T1's `t_ms.saturating_add(..)` (the head's saturation).
+        let dwell = stand_ticks() * decide_ms();
+        this.stand_until_ms = min(t_ms(), 9223372036854775807 - dwell) + dwell;
+        this.quiet_since_ms = ();
+        p.stop = true;
+        return p;
+    }
+    if this.stand_until_ms != () && t_ms() < this.stand_until_ms {
+        this.quiet_since_ms = ();
+        p.stop = true;
+        return p;
+    }
+    this.stand_until_ms = ();
+    if holds_a_hostile(view) || !home || p.dry || p.objective == "withdraw" {
+        this.quiet_since_ms = ();
+        return p;
+    }
+    if this.quiet_since_ms == () {
+        this.quiet_since_ms = t_ms();
+    }
+    // The card's `rally_ms` 0 never rallies (`StockCard::as_reflex` writes it
+    // as `u32::MAX`, which no match reaches). T1's
+    // `t_ms.saturating_sub(since) >= rally_ms` (the head's saturation).
+    if card.rally_ms != 0 && this.quiet_since_ms <= t_ms() - card.rally_ms {
+        this.state = 1;
+        this.rallied = true;
+        p.goal = ();
+        this.quiet_since_ms = ();
+    }
+    p
+}
+
+// ---------------------------------------------------------------------------
+// The plot stamps and the emission
+// ---------------------------------------------------------------------------
+
+// **What this think saw, and how long it has seen nothing** (16b cut E.4).
+fn stamps(view, p) {
+    let t = t_ms();
+    if p.stood != () {
+        this.last_plot = [p.stood[0], p.stood[1], t];
+    } else if (this.state == 2 || this.state == 3) && this.target != () {
+        let row = contact(view, this.target);
+        if row != () && row.cell != () {
+            let cell = row.cell;
+            this.last_plot = [cell[0], cell[1], t];
+        }
+    }
+    if this.state != 1 {
+        this.hunt = ();
+        this.unheld_since_ms = t;
+    }
+}
+
+// **The emission, in T1's order**: the slots (the fire half's stub), then
+// the helm half — `hold()` and the facing `helm(mdeg)` for a stand,
+// `goto([x, y])` only when the goal CHANGED, `hold()` when a held goal is
+// dropped — then the lock, then the citation (the fire half's stub). A hull
+// whose motion is disabled is handed no goal and no heading.
+fn emit(view, card, p) {
+    // 17b cut M1b.2: the slots first, after `Startup` and before `Goal`
+    // (the fire half: M2.6).
+    arming(view, card, p.arm_ceiling);
+    let held = p.held;
+    if view.immobile {
+        held = ();
+    } else if p.stop {
+        hold();
+        held = ();
+        if p.heading != () {
+            helm(p.heading);
+        }
+    } else if p.goal != () {
+        if held != p.goal {
+            goto(p.goal);
+        }
+        held = p.goal;
+    } else if held != () {
+        hold();
+        held = ();
+    }
+    this.goal = held;
+    if p.lock != () {
+        lock(p.lock);
+    }
+    // The citation `engage_orders` plans beside a fresh lock (the fire
+    // half: M2.6).
+}
+
+// **T1's slots for this think** (`arming_for`) — THE FIRE HALF'S STUB (17b
+// cut M2.6 fills it): one `arm(weapon, "best", ..)` per weapon of the first
+// `slots()` whose view row does not already hold the terms wanted, or one
+// `disarm(())` where some row is armed and the think wants none; nothing on
+// a hull with no weapon rows (D-UM-48). `ceiling` is the arm ceiling
+// `engage_orders` recorded (`p.arm_ceiling`), `()` to disarm. M2.5 emits
+// nothing.
+fn arming(view, card, ceiling) {
+}
