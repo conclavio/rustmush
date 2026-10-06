@@ -1164,7 +1164,9 @@ mod tests {
             view,
             card,
             ceiling,
-            crate::arena::conditions::STOCK_CONDITION_SLOTS,
+            crate::arena::core::ClassTable::STOCK
+                .row(crate::arena::core::CoreClass::I)
+                .slots,
         );
         let mut memory = Memory::new();
         memory.insert(
@@ -1236,9 +1238,7 @@ mod tests {
     /// preset, whose reserves and aspects Line's do not reach.
     #[test]
     fn m2_mirror_arming_for_arms_the_first_two_weapons_whatever_the_heat() {
-        use crate::arena::conditions::{
-            ASPECTS_ANY, FireCondition, STOCK_CONDITION_SLOTS, SlotTarget,
-        };
+        use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget};
         use crate::arena::stock_mind::would_overheat;
         use crate::arena::weapons::FrameArming;
         let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
@@ -1262,7 +1262,13 @@ mod tests {
         let mut card = line(&arena.arena_cfg.reflex);
         card.reserve_pct = 10;
         let arms = arming(&arena, &view, &card, Some(80_000));
-        assert_eq!(arms.len(), STOCK_CONDITION_SLOTS, "{arms:?}");
+        assert_eq!(
+            arms.len(),
+            crate::arena::core::ClassTable::STOCK
+                .row(crate::arena::core::CoreClass::I)
+                .slots,
+            "{arms:?}"
+        );
         let terms: Vec<FireCondition> = arms.iter().map(armed_terms).collect();
         assert_eq!(
             terms

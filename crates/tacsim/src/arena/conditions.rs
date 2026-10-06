@@ -23,13 +23,23 @@
 //! it has a slot armed, so the table of every match that exists is empty and
 //! every trigger's first question — [`ConditionTable::is_empty_for`] — is one
 //! map miss that touches nothing else. **Slot numbers are stable**: a slot is
-//! its 1-based index in a fixed array of [`STOCK_CONDITION_SLOTS`], an arming
-//! of a weapon already armed replaces its terms in place and keeps its number,
-//! any other takes the first free slot, and a disarm leaves every other slot
-//! where it was. The slots belong to the hull's principal: they are cleared on
-//! every controller transition (`Arena::set_controller`), on the wreck
-//! (`Arena::destroy_unit`) and, per weapon, when a turret shot off takes its
-//! guns (`Consequence::RemoveWeapons`).
+//! its 1-based index in the hull's row, an arming of a weapon already armed
+//! replaces its terms in place and keeps its number, any other takes the first
+//! free slot, and a disarm leaves every other slot where it was. The slots
+//! belong to the hull's principal: they are cleared on every controller
+//! transition (`Arena::set_controller`), on the wreck (`Arena::destroy_unit`)
+//! and, per weapon, when a turret shot off takes its guns
+//! (`Consequence::RemoveWeapons`).
+//!
+//! **The core's slots** (17b cut M3.2; doc 17 §5, §9, D-UM-16: *up to the
+//! core's slots*): a hull's row is laid down at its first arming as many slots
+//! wide as its core carries (`Arena::slot_capacity` — Class 0's one with no
+//! core, I two, II four, III six), at most
+//! [`crate::arena::core::MAX_CONDITION_SLOTS`]; a seated pilot and a mind on
+//! one hull hold the same row. On shipped content every hull has a slot for
+//! each of its weapons, so the count refusal ([`Refusal::NoSlot`]) is reached
+//! only on a hull with fewer slots than weapons. A core that loses a class
+//! (17b cut M3.4) cuts its row ([`ConditionTable::truncate`]).
 //!
 //! # The law (D-UM-17 as amended)
 //!
@@ -61,9 +71,11 @@
 //!
 //! Evaluation is bounded by slots × events (doc 17 §5; 17b §1(c)): at a
 //! `WeaponReady` one slot, at a pass, a share, a landing, a lock, an arming or a
-//! startup at most [`STOCK_CONDITION_SLOTS`], each one `aim_at` trace and one
-//! `resolve_seen`. Three hundred hulls with two slots each is about six hundred
-//! traces in the worst window — against the harness's 2,994-trace peaks per
+//! startup at most the hull's row (its core's slots, at most
+//! [`crate::arena::core::MAX_CONDITION_SLOTS`]), each one `aim_at` trace and
+//! one `resolve_seen` — a slot is armed per weapon, so a row wider than the
+//! hull's weapons costs nothing more. Three hundred hulls with two slots each
+//! is about six hundred traces in the worst window — against the harness's 2,994-trace peaks per
 //! wake — and the in-source `m1b1_the_evaluator_cost_on_a_three_hundred_hull_field`
 //! reports the per-call figure in release. A hull with no slot costs one
 //! `BTreeMap` miss per event and nothing else: **no trigger touches the action
@@ -86,12 +98,12 @@ use crate::arena::state::{ActionHash, Arena, Channel, Classification, ContactId}
 use crate::arena::view::range_m_rounded;
 use crate::arena::weapons::FiredBy;
 
-/// **How many condition slots a hull holds** (17b cut M1b.1; doc 17 §9's class
-/// I figure). **The Class I row of `ClassTable::STOCK`; production reads the
-/// profile, the tests' arithmetic keeps the constant** (17b cut M3.1): a
-/// hull's capacity is its core's row's `slots` (`Arena::slot_capacity`), which
-/// [`ConditionTable::arm`] holds an arming to — under THIS width, which is
-/// still the row's until 17b cut M3.2 sizes the row by the capacity.
+/// **How many condition slots a Class I hull holds** (17b cut M1b.1; doc 17
+/// §9's class I figure). **The Class I row of `ClassTable::STOCK`; production
+/// reads the profile, the tests' arithmetic keeps the constant** (17b cut
+/// M3.1): a hull's capacity is its core's row's `slots`
+/// (`Arena::slot_capacity`), and since 17b cut M3.2 its row is laid down that
+/// wide ([`ConditionTable::arm`]); no production code reads this constant.
 pub const STOCK_CONDITION_SLOTS: usize = 2;
 
 /// **Every aspect**: the mask bits are `0` front, `1` left, `2` right, `3` rear
@@ -206,24 +218,26 @@ pub fn condition_is_lawful(cond: &FireCondition, floor_permille: u32) -> Result<
 }
 
 /// **Every hull's slots** (17b cut M1b.1): a hull holds a key only while one
-/// of its [`STOCK_CONDITION_SLOTS`] is armed. `#[serde(transparent)]`, so the
-/// snapshot writes one `state.conditions` object (an `ObjId` key writes as a
-/// JSON object key).
+/// of its slots is armed. `#[serde(transparent)]`, so the snapshot writes one
+/// `state.conditions` object (an `ObjId` key writes as a JSON object key).
+///
+/// **17b cut M3.2** (D-UM-16; `SNAPSHOT_FORMAT` 8): a row is as wide as the
+/// hull's core's slots when it was laid down (`Arena::slot_capacity`, at
+/// most [`crate::arena::core::MAX_CONDITION_SLOTS`]) — a JSON array of that
+/// many entries, `null` for a free slot — where it was a fixed pair.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ConditionTable {
-    rows: BTreeMap<ObjId, [Option<FireCondition>; STOCK_CONDITION_SLOTS]>,
+    rows: BTreeMap<ObjId, Vec<Option<FireCondition>>>,
 }
 
-/// The slots of a hull with no row: all empty.
-const NO_SLOTS: [Option<FireCondition>; STOCK_CONDITION_SLOTS] =
-    [const { None }; STOCK_CONDITION_SLOTS];
-
 impl ConditionTable {
-    /// **`unit`'s slots**, in slot order — all `None` for a hull with no row.
+    /// **`unit`'s row**, in slot order — as wide as the core's slots it was
+    /// laid down at (17b cut M3.2), and EMPTY for a hull with no row: every
+    /// reader walks the slice's own length, never a fixed width.
     #[must_use]
     pub fn slots(&self, unit: ObjId) -> &[Option<FireCondition>] {
-        self.rows.get(&unit).map_or(&NO_SLOTS, |slots| slots)
+        self.rows.get(&unit).map_or(&[], Vec::as_slice)
     }
 
     /// **Whether `unit` has no slot armed** — the fast path every trigger takes
@@ -243,10 +257,14 @@ impl ConditionTable {
     }
 
     /// **Arm `cond` on `unit`**, answering its 1-based slot: the slot of the
-    /// same weapon replaced in place (it keeps its number), else the first free
-    /// one among the hull's first `capacity` (17b cut M3.1: its core's
-    /// `slots`, `Arena::slot_capacity` — held under the row's own width,
-    /// [`STOCK_CONDITION_SLOTS`], until 17b cut M3.2 sizes the row by it).
+    /// same weapon replaced in place wherever it sits (it keeps its number),
+    /// else the first free one among the hull's first `capacity` — the core's
+    /// slots (`Arena::slot_capacity`), clamped to
+    /// [`crate::arena::core::MAX_CONDITION_SLOTS`]. A hull with no row has one
+    /// laid down `capacity` slots wide (17b cut M3.2, D-UM-16: *up to the
+    /// core's slots*). A row narrower than `capacity` is widened to it; a wider
+    /// one keeps its width, and no free slot past `capacity` is taken —
+    /// [`ConditionTable::truncate`] is what cuts a row.
     ///
     /// # Errors
     ///
@@ -259,11 +277,14 @@ impl ConditionTable {
         cond: FireCondition,
         capacity: usize,
     ) -> Result<u8, Refusal> {
-        let holds = capacity.min(STOCK_CONDITION_SLOTS);
+        let holds = capacity.min(crate::arena::core::MAX_CONDITION_SLOTS);
         if holds == 0 {
             return Err(Refusal::NoSlot);
         }
-        let row = self.rows.entry(unit).or_insert(NO_SLOTS);
+        let row = self.rows.entry(unit).or_default();
+        if row.len() < holds {
+            row.resize(holds, None);
+        }
         let at = row
             .iter()
             .position(|slot| slot.as_ref().is_some_and(|had| had.weapon == cond.weapon))
@@ -308,6 +329,35 @@ impl ConditionTable {
         self.rows.remove(&unit);
     }
 
+    /// **`unit`'s row cut to `capacity` slots** (17b cut M3.2; D-UM-16,
+    /// D-UM-34): every slot numbered past `capacity` (clamped to
+    /// [`crate::arena::core::MAX_CONDITION_SLOTS`]) cleared and the row
+    /// narrowed to it, answering the numbers of the ARMED slots cleared, in
+    /// order, so their held-shot rows go with them (`Arena::forget_held_said`).
+    /// The key goes when nothing armed is left; a hull with no row, or one
+    /// already that narrow, answers nothing. 17b cut M3.4's
+    /// `Arena::truncate_slots` calls it when a core loses a class and at every
+    /// drop to the ROM.
+    pub fn truncate(&mut self, unit: ObjId, capacity: usize) -> Vec<u8> {
+        let holds = capacity.min(crate::arena::core::MAX_CONDITION_SLOTS);
+        let Some(row) = self.rows.get_mut(&unit) else {
+            return Vec::new();
+        };
+        let mut cleared = Vec::new();
+        for (at, slot) in row.iter().enumerate().skip(holds) {
+            if slot.is_some()
+                && let Ok(n) = u8::try_from(at.saturating_add(1))
+            {
+                cleared.push(n);
+            }
+        }
+        row.truncate(holds);
+        if row.iter().all(Option::is_none) {
+            self.rows.remove(&unit);
+        }
+        cleared
+    }
+
     /// **The slots of the weapons in `going` gone** — a turret shot off
     /// (`Consequence::RemoveWeapons`); the rest keep their numbers. Answers the
     /// numbers freed.
@@ -320,7 +370,8 @@ impl ConditionTable {
         freed
     }
 
-    /// **Every row**, unit-id order — what the state hash folds (item 3d).
+    /// **Every row**, unit-id order — what the state hash folds (item 3d:
+    /// its ARMED slots by number, so a row's width folds no byte).
     pub fn rows(&self) -> impl Iterator<Item = (&ObjId, &[Option<FireCondition>])> {
         self.rows
             .iter()
@@ -913,16 +964,25 @@ mod tests {
     /// **The table**: armings take the first free slot, a weapon already armed
     /// is re-armed in place with its number, the count refuses `NoSlot`, a
     /// disarm leaves the other's number, `None` frees every slot and drops the
-    /// key, `clear_weapons` frees by weapon.
+    /// key, `clear_weapons` frees by weapon. On a Class I hull's two slots
+    /// (17b cut M3.2: the capacity handed in; a hull with no row reads an
+    /// empty row, and the first arming lays the row down two wide).
     #[test]
     fn m1b1_the_table_numbers_slots_stably() {
+        const STOCK_CONDITION_SLOTS: usize = crate::arena::core::ClassTable::STOCK
+            .row(crate::arena::core::CoreClass::I)
+            .slots;
         let mut table = ConditionTable::default();
         assert!(table.is_empty_for(RED));
-        assert_eq!(table.slots(RED).len(), STOCK_CONDITION_SLOTS);
-        assert!(table.slots(RED).iter().all(Option::is_none));
+        assert!(table.slots(RED).is_empty(), "no row, no slot");
         assert_eq!(
             table.arm(RED, slot("cannon", 100), STOCK_CONDITION_SLOTS),
             Ok(1)
+        );
+        assert_eq!(
+            table.slots(RED).len(),
+            STOCK_CONDITION_SLOTS,
+            "laid two wide"
         );
         assert_eq!(
             table.arm(RED, slot("machine_gun", 100), STOCK_CONDITION_SLOTS),
@@ -963,10 +1023,11 @@ mod tests {
         assert!(table.is_empty_for(BLUE));
     }
 
-    /// **17b cut M3.1** (D-UM-35): an arming is held to the hull's capacity,
-    /// under the row's own width — one slot holds one gun (the second refused
-    /// `NoSlot`, the in-place re-arm still taken), six hold the row's two, and
-    /// none refuses with no row laid down. On the arena, a hull with no core
+    /// **17b cut M3.1** (D-UM-35): an arming is held to the hull's capacity —
+    /// one slot holds one gun (the second refused `NoSlot`, the in-place
+    /// re-arm still taken), six hold six (17b cut M3.2: the row is laid down
+    /// at the capacity, so a third gun takes slot 3 where the M3.1 row's
+    /// fixed width refused it), and none refuses with no row laid down. On the arena, a hull with no core
     /// (Class 0) holds one and a Class I hull two (`Arena::slot_capacity`),
     /// through `Arena::resolve_arming` as a pilot's `FIRE … WHEN` and a
     /// mind's landing arm.
@@ -985,9 +1046,10 @@ mod tests {
         assert_eq!(table.arm(BLUE, slot("machine_gun", 100), 6), Ok(2));
         assert_eq!(
             table.arm(BLUE, slot("missiles", 100), 6),
-            Err(Refusal::NoSlot),
-            "the row's width until 17b cut M3.2"
+            Ok(3),
+            "the core's six (17b cut M3.2)"
         );
+        assert_eq!(table.slots(BLUE).len(), 6);
         let mut none = ConditionTable::default();
         assert_eq!(none.arm(RED, slot("cannon", 100), 0), Err(Refusal::NoSlot));
         assert!(none.is_empty_for(RED), "no row laid down");
@@ -1028,6 +1090,55 @@ mod tests {
         );
         assert_eq!(arena.conditions.slot_of(BLUE, "laser"), None);
         assert_eq!(arena.resolve_arming(BLUE, &arm("cannon"), 0), Ok(Some(1)));
+    }
+
+    /// **17b cut M3.2** (D-UM-16; plan F5): the row is laid down at the
+    /// capacity and clamped to `MAX_CONDITION_SLOTS`; a narrow row widens to
+    /// a wider capacity; `truncate` clears the slots past a capacity,
+    /// answering the ARMED ones' numbers in order, narrows the row and drops
+    /// the key when nothing armed is left; a hull with no row truncates to
+    /// nothing; an arming past a wider row's capacity takes no slot past it.
+    #[test]
+    fn m3_the_row_is_the_cores_width_and_truncates() {
+        use crate::arena::core::MAX_CONDITION_SLOTS;
+        let mut table = ConditionTable::default();
+        for (n, weapon) in ["a", "b", "c", "d", "e", "f"].into_iter().enumerate() {
+            assert_eq!(
+                table.arm(RED, slot(weapon, 100), 9),
+                Ok(u8::try_from(n + 1).unwrap())
+            );
+        }
+        assert_eq!(
+            table.slots(RED).len(),
+            MAX_CONDITION_SLOTS,
+            "clamped to six"
+        );
+        assert_eq!(table.arm(RED, slot("g", 100), 9), Err(Refusal::NoSlot));
+        // Free 4; cut to 3: slots 5 and 6 armed, 4 free — answered 5 and 6.
+        assert_eq!(table.disarm(RED, Some("d")), vec![4]);
+        assert_eq!(table.truncate(RED, 3), vec![5, 6]);
+        assert_eq!(table.slots(RED).len(), 3);
+        assert_eq!(table.slot_of(RED, "c"), Some(3));
+        assert_eq!(table.slot_of(RED, "e"), None);
+        assert_eq!(
+            table.truncate(RED, 3),
+            Vec::<u8>::new(),
+            "already that narrow"
+        );
+        // A narrow row widens to a wider capacity.
+        assert_eq!(table.arm(RED, slot("e", 100), 4), Ok(4));
+        assert_eq!(table.slots(RED).len(), 4);
+        // A wider row takes no slot past a narrower capacity.
+        assert_eq!(table.disarm(RED, Some("a")), vec![1]);
+        assert_eq!(table.arm(BLUE, slot("a", 100), 2), Ok(1));
+        let mut wide = ConditionTable::default();
+        assert_eq!(wide.arm(RED, slot("a", 100), 4), Ok(1));
+        assert_eq!(wide.arm(RED, slot("b", 100), 1), Err(Refusal::NoSlot));
+        assert_eq!(wide.arm(RED, slot("a", 200), 1), Ok(1), "in place");
+        // Down to nothing armed: the key goes.
+        assert_eq!(wide.truncate(RED, 0), vec![1]);
+        assert!(wide.is_empty_for(RED));
+        assert_eq!(wide.truncate(BLUE, 1), Vec::<u8>::new(), "no row");
     }
 
     /// **The mask**: one bit per facet, `ASPECTS_ANY` all four.

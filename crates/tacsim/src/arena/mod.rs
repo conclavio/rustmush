@@ -345,11 +345,13 @@ pub use intents::{
     apply_control, apply_intent, drain_pending, resolve_emcon, resolve_startup,
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
+// 17b cut M3.2: `Landing` retired (the answer rides `PendingThink`); the drop
+// cause and the seal reference join.
 pub use mind::{
-    Landing, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue, Memory,
+    DropCause, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue, Memory,
     MindRunner, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS, STOCK_MEMORY_LIMITS,
-    STOCK_RATED_CLASS, STOCK_THINK_MS, ThinkFault, ThinkJob, ThinkResult, ViewContact,
-    decode_memory, default_mind_runner, encode_memory, memory_check,
+    STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SortieId, ThinkFault, ThinkJob,
+    ThinkResult, ViewContact, decode_memory, default_mind_runner, encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
 pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};

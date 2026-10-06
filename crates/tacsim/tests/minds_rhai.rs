@@ -1771,7 +1771,7 @@ fn stations_field(runner: Arc<dyn MindRunner>) -> Rig {
 ///   0, then at think 3 exactly the arming, the cell, the spot's cell, the
 ///   hold, the release of the goal, the heading, the speed, the lock, the pod,
 ///   the cited shot and the disarm, each the `IntentKind` T1 emits;
-/// * that list is the landing put on the scratch, stamped with the hull's
+/// * that list is the answer pending on the row (17b cut M3.2), stamped with the hull's
 ///   channel epochs at the think, and it lands one substep later through
 ///   `Arena::apply_machine_intents` in that order: the `startup`, `locked`
 ///   and `fired` (by the mind, S1) lines at their landings, the pod refused
@@ -1827,19 +1827,19 @@ fn m2_every_station_function_lands_through_the_one_door() {
     assert_eq!(kept.result.fault, None);
     assert_eq!(kept.result.intents, expected, "the call order");
     assert_eq!(kept.result.trace, vec![STATION_TRACE.to_owned()]);
-    // The one door's input: the landing on the scratch, at the think's
-    // epochs, one substep later.
+    // The one door's input: the answer on the row's `pending` (17b cut
+    // M3.2, D-UM-23 as amended), at the think's epochs, one substep later.
     let landing = rig
         .arena
-        .mind_landings
+        .minds
         .get(&RED)
-        .cloned()
+        .and_then(|state| state.pending.clone())
         .expect("think 3 waits to land");
     assert_eq!(landing.think_seq, 3);
     assert_eq!(landing.intents, expected);
     assert_eq!(
         landing.epochs,
-        Channel::ALL.map(|channel| (channel, rig.arena.epochs.current(RED, channel)))
+        Channel::ALL.map(|channel| rig.arena.epochs.current(RED, channel))
     );
     assert!(rig.arena.due.iter().any(|event| event.kind
         == DueKind::MindLand {
@@ -2103,8 +2103,8 @@ fn fault_runner(arena: &Arena, source: &str, boom: bool) -> Arc<RhaiRunner> {
 
 /// One fault run: the (j) field flown by `source` to just past the armed
 /// red's think `last`, pulse by pulse; the recorder, the runner, red's row
-/// after each pulse, whether red had a landing waiting after each pulse (on
-/// the scratch, on the heap), and the rig.
+/// after each pulse, whether red had a landing waiting after each pulse (its
+/// answer on the row, a landing on the heap), and the rig.
 struct FaultRun {
     recorded: Arc<Recorded>,
     runner: Arc<RhaiRunner>,
@@ -2113,11 +2113,14 @@ struct FaultRun {
     rig: Rig,
 }
 
-/// Whether red has a landing waiting: on the scratch, and a `MindLand` on
-/// the heap.
+/// Whether red has a landing waiting: its answer on the row's `pending` (17b
+/// cut M3.2 retired the scratch it sat on), and a `MindLand` on the heap.
 fn red_landing(arena: &Arena) -> (bool, bool) {
     (
-        arena.mind_landings.contains_key(&RED),
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.pending.is_some()),
         arena
             .due
             .iter()
@@ -2169,7 +2172,7 @@ fn pulse_of_think(n: i64) -> usize {
 ///   and (where the body writes no `this`) in a helper called inside `try`
 ///   → the same word;
 /// * each faulted think answers no intents and its own memory, lands
-///   nothing (no landing on the scratch or the heap at the end of the pulse
+///   nothing (no answer pending on the row and no landing on the heap at the end of the pulse
 ///   that ran it — where a clean think's landing still waits, one substep
 ///   off the lattice — and `pending` clear), keeps `{"n":1}` past the
 ///   millisecond a landing would have written the memory, and counts a
@@ -2212,7 +2215,7 @@ fn m2_every_fault_has_its_word_and_three_drop_the_hull() {
         assert_eq!(
             run.landings.get(after_one),
             Some(&(false, false)),
-            "{}: no landing on the scratch or the heap",
+            "{}: no answer pending and no landing on the heap",
             case.body
         );
         // Past the millisecond a landing would have written it.
@@ -2302,7 +2305,7 @@ fn m2_every_fault_has_its_word_and_three_drop_the_hull() {
     assert_eq!(start.result.fault, None);
     assert_eq!(start.result.intents, vec![IntentKind::Startup]);
     // The fault cases' landing check is not vacuous: a clean think 1's
-    // landing is waiting, on the scratch and on the heap, at the end of the
+    // landing is waiting, its answer on the row and on the heap, at the end of the
     // pulse that ran it.
     assert_eq!(run.landings.get(after_one), Some(&(true, true)));
     assert!(start.result.trace.is_empty(), "nothing after the exit ran");
@@ -3675,4 +3678,408 @@ fn m3_the_memory_cap_is_the_rows_and_admits_no_new_key_past_it() {
         Some("memory".into()),
         "129 keys past Class III's 128"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.2 — D-UM-23 as amended: the answer carried, never recomputed
+// ---------------------------------------------------------------------------
+
+/// **The gate fixture's mind**: one hull of the field (`v.unit` 17), whose
+/// thinks read a notice its view DRAINED and let it decide both the memory
+/// and an intent. Its first think starts the hull; the first think online
+/// drives it to the cell (2, 11), three cells from its start, and leaves the
+/// helm to the motor; every later
+/// think reads the buffer — a `drive_arrived` there writes `this.arrived =
+/// t_ms()` and answers `speed(0)`, and from then on a think with no such
+/// notice answers `speed(300)` (before the arrival the mind answers nothing,
+/// since a mind's `speed` lets go of its own motor's goal).
+const GATE_MIND: &str = r#"
+fn think(v, c) {
+    if v.unit != 17 { return; }
+    if !("on" in this) { this.on = t_ms(); startup(); return; }
+    if v.power != "online" { return; }
+    if !("sent" in this) { this.sent = t_ms(); goto([2, 11]); return; }
+    let arrived = false;
+    for n in v.notices { if n.kind == "drive_arrived" { arrived = true; } }
+    if arrived {
+        this.arrived = t_ms();
+        speed(0);
+    } else if "arrived" in this {
+        speed(300);
+    }
+}
+"#;
+
+/// The gate's mind hull: its think falls at `stagger_ms(SEED, 17, 1_000)` =
+/// 945 in every second, so the think at 4,945 lies in `(5_000 − 250, 5_000]`.
+const GATE_UNIT: ObjId = ObjId(17);
+/// The pulse end the snapshot is taken at: a multiple of 5,000, so a pulse
+/// end at 5,000, 1,000 and 500 ms alike.
+const GATE_END: i64 = 5_000;
+/// How far every run of the gate goes.
+const GATE_UNTIL: i64 = 15_000;
+
+/// The seated blue's beam: zero flight, one point of damage (so the hull it
+/// strikes stays a hull), a two-second cycle.
+fn beam() -> WeaponSummary {
+    WeaponSummary {
+        id: SmolStr::new("laser"),
+        max_range_cm: 240_000,
+        cycle_ms: 2_000,
+        ammunition: SmolStr::new("tacsim.ammunition.laser_charge"),
+        burst_rounds: 1,
+        muzzle_speed_cms: 0,
+        bands: vec![WeaponBand {
+            max_range_cm: 240_000,
+            dispersion_mrad: 2,
+        }],
+        count_per_load: 500,
+        damage: 1,
+        mount_section: SmolStr::new("hull"),
+    }
+}
+
+/// **The gate's field, on the (j) rig**: the gate's mind hull (17, red) at
+/// (2, 8) and the seated blue (9) at (9, 8) with the beam, both with the
+/// (j) field's ten-cell sight and presenting a silhouette, the gate's
+/// [`GATE_MIND`] on the arena-wide runner.
+fn gate_field() -> Arena {
+    let seeing = |mut unit: CustodyUnit| {
+        unit.sensor = Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        });
+        presenting(unit)
+    };
+    let mut arena = arena_on(
+        vec![
+            seeing(tank(
+                GATE_UNIT,
+                Team::Red,
+                centre(2, 8),
+                Vec::new(),
+                Controller::Mind,
+            )),
+            seeing(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                vec![beam()],
+                Controller::Pilot,
+            )),
+        ],
+        &[BLUE],
+        reflex_cfg(),
+    );
+    arena.mind_runner = rhai(&arena, GATE_MIND);
+    arena
+}
+
+/// The seated blue's orders at the pulse whose wall is `wall`: its startup at
+/// 0, and at [`GATE_END`] a lock on the mind's hull and the beam — phase 4 of
+/// the pulse ending at [`GATE_END`] resolves both AT [`GATE_END`] whatever
+/// the cadence, after the think at 4,945 and inside its substep.
+fn gate_orders(wall: i64) -> Vec<tacsim::arena::intents::Intent> {
+    let order = |kind: IntentKind, seq: u64| tacsim::arena::intents::Intent {
+        unit: BLUE,
+        channel: kind.channel_required(),
+        epoch: 1,
+        kind,
+        seq,
+    };
+    match wall {
+        0 => vec![order(IntentKind::Startup, 1)],
+        GATE_END => vec![
+            order(
+                IntentKind::Lock {
+                    contact: tacsim::arena::rng::draw_contact_id(SEED, BLUE, GATE_UNIT),
+                },
+                2,
+            ),
+            order(
+                IntentKind::Fire {
+                    weapon: SmolStr::new("laser"),
+                    slot: None,
+                },
+                3,
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Step `arena` on the walls `from`, `from + cadence`, … through `until`,
+/// with [`gate_orders`], the tempo pinned: every ledger byte handed out and
+/// every substep hash, appended.
+fn gate_pulses(
+    arena: &mut Arena,
+    cadence: i64,
+    from: i64,
+    until: i64,
+    bytes: &mut Vec<u8>,
+    hashes: &mut Vec<u64>,
+) {
+    let mut wall = from;
+    while wall <= until {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let out = arena.step(wall, &[], &gate_orders(wall));
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        wall += cadence;
+    }
+}
+
+/// The ledger's open tail flushed into `bytes`, and every line of it.
+fn gate_journal(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<LedgerEvent> {
+    events(arena, bytes)
+}
+
+/// A field run to [`GATE_END`] at `cadence`, encoded there and decoded on a
+/// fresh ground with the gate's runner re-applied (the decode reinstalls
+/// `default_mind_runner`; 17b cut M3.5's seal does it per unit): the bytes
+/// and hashes before the encode, the decoded arena and the answer pending at
+/// the encode.
+fn gate_resumed(
+    cadence: i64,
+) -> (
+    Vec<u8>,
+    Vec<u64>,
+    Arena,
+    Option<tacsim::arena::mind::PendingThink>,
+) {
+    let mut arena = gate_field();
+    let (mut bytes, mut hashes) = (Vec::new(), Vec::new());
+    gate_pulses(&mut arena, cadence, 0, GATE_END, &mut bytes, &mut hashes);
+    assert_eq!(arena.now_ms, GATE_END, "a pulse end at {cadence} ms");
+    let pending = arena
+        .minds
+        .get(&GATE_UNIT)
+        .and_then(|state| state.pending.clone());
+    let snapshot = Snapshot::encode(&arena).expect("the arena encodes between pulses");
+    let mut decoded = Snapshot::decode(&snapshot.document, definition())
+        .expect("the document decodes on a fresh ground");
+    assert!(
+        format!("{:?}", decoded.mind_runner).starts_with("NativeStockMind"),
+        "the decode reinstalls the default runner"
+    );
+    decoded.mind_runner = rhai(&decoded, GATE_MIND);
+    (bytes, hashes, decoded, pending)
+}
+
+/// **THE GATE FIXTURE: a resume between a think at N and its landing at
+/// N + 1 reproduces the hash sequence, at 5,000, 1,000 and 500 ms** (17b cut
+/// M3.2; doc 17 §6 "Snapshot and resume", D-UM-23 as amended 2026-10-04 —
+/// the external review's finding 1; the plan's F9 with its geometry
+/// corrected).
+///
+/// **The geometry.** A think at `t` lands at `t + 250` (`Arena::mind_think`
+/// schedules the landing one substep on), and the due loop runs every event
+/// with `t_ms <=` the substep's end inside that substep
+/// (`DueHeap::peek_due`), so a think is still PENDING at a pulse end `end`
+/// only when `end − 250 < t <= end`. `end` is [`GATE_END`], 5,000 — a pulse
+/// end at all three cadences — and the mind's hull is unit 17, whose think
+/// grid is `stagger_ms(2_350, 17, 1_000)` = 945: its think at 4,945 lies in
+/// `(4_750, 5_000]` (asserted from `stagger_ms`), lands at 5,195, in the NEXT
+/// pulse's first substep, and `pending` is present at the 5,000 ms encode at
+/// every cadence (asserted, and its answer is the arrival's: the memory's
+/// `arrived` 4,945 and `speed(0)`, because the think at 4,945 drained the
+/// motor's `drive_arrived`).
+///
+/// **The event after the think.** The seated blue's lock and beam, delivered
+/// in the pulse that ends at 5,000, are resolved by its phase 4 AT 5,000 —
+/// after the think, inside its substep: the `fired` line's millisecond is
+/// asserted in `(4_945, 5_000]`.
+///
+/// **The proof.** Uninterrupted to 15,000 ms, then again with an encode at
+/// 5,000, a decode on a fresh ground, the gate's runner re-applied,
+/// `resume_at` and on to 15,000: the stitched journal, byte for byte and line
+/// for line, and the per-substep hash sequence EQUAL the uninterrupted run's
+/// — the carried answer landed at 5,195 at its recorded epochs.
+///
+/// **The adversarial control, at each cadence.** After the decode the
+/// carried answer is thrown away and RECOMPUTED — the answer taken off the
+/// row, `Arena::mind_view` and the runner's `think` on a job built from the
+/// resumed state (the same seq, the same clocks), the fresh answer written
+/// back as `pending` — and landed: the view the think read is gone (its
+/// `drive_arrived` drained at 4,945), so the fresh think answers nothing and
+/// writes no arrival, and the hash sequence PARTS from the uninterrupted
+/// run's at the landing's substep or after (the first parting substep is
+/// printed). That is what proves the fixture bites.
+#[test]
+fn m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_cadences() {
+    // The geometry, from the grid.
+    let stagger = stagger_ms(SEED, GATE_UNIT, STOCK_THINK_MS);
+    assert!(
+        (751..=999).contains(&stagger) || stagger == 0,
+        "unit 17's think falls in (end − 250, end]: {stagger}"
+    );
+    let think = GATE_END - STOCK_THINK_MS + stagger;
+    assert!(GATE_END - SUBSTEP < think && think <= GATE_END, "{think}");
+    let think_seq = u64::try_from((think - stagger) / STOCK_THINK_MS).expect("a seq");
+    let lands = think + SUBSTEP;
+    // The landing's substep: the first after the encode, ending at 5,250 —
+    // the opening pulse at 0 hashes once (its due items at 0), then substep
+    // `i` ends at `i × 250`.
+    let landing_substep = usize::try_from(GATE_END / SUBSTEP + 1).expect("an index");
+
+    for cadence in [5_000_i64, 1_000, 500] {
+        // Uninterrupted.
+        let mut whole = gate_field();
+        let (mut whole_bytes, mut whole_hashes) = (Vec::new(), Vec::new());
+        gate_pulses(
+            &mut whole,
+            cadence,
+            0,
+            GATE_UNTIL,
+            &mut whole_bytes,
+            &mut whole_hashes,
+        );
+        let whole_events = gate_journal(&mut whole, &mut whole_bytes);
+        let fired: Vec<i64> = whole_events
+            .iter()
+            .filter(|event| {
+                kind_and_unit(&serde_json::to_string(&event.kind).unwrap_or_default())
+                    == ("fired".to_owned(), Some(BLUE.0))
+            })
+            .map(|event| event.t_ms)
+            .collect();
+        assert!(
+            fired
+                .first()
+                .is_some_and(|t_ms| think < *t_ms && *t_ms <= GATE_END),
+            "an event after the think inside its substep at {cadence} ms: {fired:?}"
+        );
+        assert_eq!(
+            whole_hashes.len(),
+            usize::try_from(GATE_UNTIL / SUBSTEP + 1).expect("a count"),
+            "the opening's hash and one a substep"
+        );
+
+        // Resumed between the think and its landing.
+        let (mut bytes, mut hashes, mut resumed, pending) = gate_resumed(cadence);
+        let Some(answer) = pending else {
+            panic!("the think at {think} is pending at the {GATE_END} ms encode at {cadence} ms");
+        };
+        assert_eq!(
+            (answer.think_seq, answer.t_ms),
+            (think_seq, think),
+            "at {cadence} ms"
+        );
+        let memory = decode_memory(&answer.memory);
+        assert_eq!(
+            memory.get("arrived"),
+            Some(&MemValue::Int(think)),
+            "the drained arrival decided the memory at {cadence} ms: {memory:?}"
+        );
+        assert_eq!(
+            answer.intents,
+            vec![IntentKind::Speed { cms: 0 }],
+            "and the intent"
+        );
+        assert_eq!(
+            resumed
+                .minds
+                .get(&GATE_UNIT)
+                .and_then(|state| state.pending.clone()),
+            Some(answer.clone()),
+            "the decode carries the answer"
+        );
+        let control_base = resumed.clone();
+        let (mut control_bytes, mut control_hashes) = (bytes.clone(), hashes.clone());
+        let _ = resumed.resume_at(GATE_END);
+        gate_pulses(
+            &mut resumed,
+            cadence,
+            GATE_END + cadence,
+            GATE_UNTIL,
+            &mut bytes,
+            &mut hashes,
+        );
+        let resumed_events = gate_journal(&mut resumed, &mut bytes);
+        assert_eq!(
+            hashes, whole_hashes,
+            "the stitched hash sequence at {cadence} ms"
+        );
+        assert_eq!(
+            resumed_events, whole_events,
+            "the stitched journal at {cadence} ms"
+        );
+        assert_eq!(bytes, whole_bytes, "byte for byte at {cadence} ms");
+        assert!(
+            resumed
+                .minds
+                .get(&GATE_UNIT)
+                .is_some_and(|state| decode_memory(&state.memory).get("arrived")
+                    == Some(&MemValue::Int(think))),
+            "the carried answer landed at {lands}"
+        );
+
+        // The adversarial control: the answer recomputed on the resumed view.
+        let mut control = control_base;
+        let row = control.minds.get_mut(&GATE_UNIT).expect("the mind's row");
+        let carried = row.pending.take().expect("the carried answer");
+        let profile = control.mind_profile(GATE_UNIT);
+        let view = Arc::new(control.mind_view(GATE_UNIT).expect("the resumed view"));
+        let (memory, card) = control
+            .minds
+            .get(&GATE_UNIT)
+            .map(|state| (state.memory.clone(), state.card.clone()))
+            .expect("the row");
+        let fresh = control.mind_runner.think(&ThinkJob {
+            unit: GATE_UNIT,
+            think_seq: carried.think_seq,
+            t_ms: carried.t_ms,
+            lands_ms: lands,
+            seed: control.seed,
+            dropped: false,
+            profile: &profile,
+            view: &view,
+            memory: &memory,
+            map: &control.definition,
+            card: &card,
+        });
+        assert_eq!(fresh.fault, None);
+        assert!(
+            fresh.intents.is_empty() && !decode_memory(&fresh.memory).contains_key("arrived"),
+            "the resumed view no longer holds the drained arrival: {:?}",
+            fresh.intents
+        );
+        if let Some(row) = control.minds.get_mut(&GATE_UNIT) {
+            row.pending = Some(tacsim::arena::mind::PendingThink {
+                intents: fresh.intents,
+                memory: fresh.memory,
+                ..carried
+            });
+        }
+        let _ = control.resume_at(GATE_END);
+        gate_pulses(
+            &mut control,
+            cadence,
+            GATE_END + cadence,
+            GATE_UNTIL,
+            &mut control_bytes,
+            &mut control_hashes,
+        );
+        assert_ne!(
+            control_hashes, whole_hashes,
+            "a recomputed answer must not reproduce the run at {cadence} ms"
+        );
+        let parted = control_hashes
+            .iter()
+            .zip(&whole_hashes)
+            .position(|(a, b)| a != b)
+            .expect("the sequences part");
+        println!(
+            "{cadence} ms: the recomputed answer parts from the run at substep {parted} \
+             (ending {} ms); the landing's is {landing_substep} (ending {} ms)",
+            i64::try_from(parted).unwrap_or(0) * SUBSTEP,
+            i64::try_from(landing_substep).unwrap_or(0) * SUBSTEP
+        );
+        assert!(
+            parted >= landing_substep,
+            "parted at {parted}, before the landing's substep {landing_substep}"
+        );
+    }
 }

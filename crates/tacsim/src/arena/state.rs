@@ -2073,6 +2073,22 @@ pub struct UnitState {
     /// exactly one thing afterwards: a [`crate::arena::intents::Control`] that
     /// releases or restores the seat (doc 16 §3.8 "Disconnects").
     pub controller: Controller,
+    /// **The seal this hull was checked out under** (17b cut M3.2; doc 17
+    /// §13, D-UM-45, D-UM-46): its sortie, the seal's digest, the core class
+    /// the seal recorded (what 17b cut M3.4's cause-`core` drop keys on), the
+    /// class its mind thinks at, the engine that flies it, the governor bit
+    /// and whether the sortie is closed. **Laid down empty**
+    /// ([`crate::arena::mind::SealRef::none`]) on every unit by
+    /// [`Arena::new`] in this cut; 17b cut M3.3 fills it from the custody's
+    /// seal.
+    ///
+    /// Carried by this struct's derive (`SNAPSHOT_FORMAT` 8) and **NOT
+    /// folded into [`crate::arena::hash::state_hash`]**: a per-match
+    /// constant, [`Arena::odds_floor_permille`]'s argument — and its one
+    /// moving bit, `closed`, moves only with a ledger line (17b cut M3.6's
+    /// `sortie_closed`), which the hash already folds through the ledger's
+    /// sequence.
+    pub seal: crate::arena::mind::SealRef,
     /// M32 unit truth, carried opaque — and, from 16b cut W.2, written by exactly
     /// one thing: one [`mush_tactics::UnitMutationPlan`] per impact through
     /// `mush_tactics::apply` (doc 16 §3.5 "Damage").
@@ -3888,9 +3904,10 @@ pub struct Arena {
     pub motors: crate::arena::motor::MotorTable,
     /// **What each unit mind holds** (17b cut M1a.5; doc 17 §3, §6, §8,
     /// D-UM-8, D-UM-23): one [`crate::arena::mind::MindState`] per
-    /// [`Controller::Mind`] hull — its think counter, the think in flight, its
-    /// memory's bytes, its notice buffer, its range memory, its standing order
-    /// and its strikes — in unit-id order.
+    /// [`Controller::Mind`] hull — its think counter, the think in flight with
+    /// its answer (17b cut M3.2), its memory's bytes, its notice buffer, its
+    /// range memory, its standing order, its strikes, its drop and its seal's
+    /// digest (17b cut M3.2) — in unit-id order.
     ///
     /// Folded into the state hash per row with no count prefix
     /// (`crate::arena::hash`, item 3c), so an arena with no mind — every match
@@ -3931,19 +3948,11 @@ pub struct Arena {
     /// **captured at check-out** as the floor is.
     ///
     /// **Not folded into `state_hash`** (a per-match constant, the floor's
-    /// argument) and, in 17b cut M3.1, **not carried**: the snapshot's decode
-    /// re-derives [`crate::arena::core::ClassTable::STOCK`] (`snapshot.rs`' head
-    /// lists it re-derived). 17b cut M3.2 carries it with the format move, so
-    /// a resumed match keeps its own. **Until then an operator's table is lost
-    /// across a resume, and a production match CAN see it** under a lawful
-    /// non-stock table: `[tacsim.minds.classes.I] slots = 1` holds a pilot on
-    /// the scout or the drone (Class I cores) to one slot before a server-half
-    /// restart and two after it ([`Arena::slot_capacity`]), and
-    /// `fill_controller = "mind"` fields minds whose period is the configured
-    /// row's before the restart and the stock row's after it — the same input
-    /// then gives another outcome from an equal hash, against 16b cut AF.1's
-    /// resume equivalence. On the stock table (the default) nothing differs.
-    /// Declared for the committer; 17b cut M3.2 closes it.
+    /// argument) and, **since 17b cut M3.2, carried** by the snapshot
+    /// (`SNAPSHOT_FORMAT` 8): a resumed match keeps the table it was checked
+    /// out under, so a config reload between a check-out and a resume moves
+    /// nothing — the gap 17b cut M3.1 declared (an operator's table re-derived
+    /// stock at the decode) is closed.
     pub classes: crate::arena::core::ClassTable,
     /// **The class every mind in this match is rated at** (17b cut M3.1):
     /// [`crate::arena::mind::STOCK_RATED_CLASS`] — Standard Doctrine's — from
@@ -3952,22 +3961,17 @@ pub struct Arena {
     /// 17b cut M3.3's seal replaces it with each hull's own rated class.
     /// Neither hashed nor carried.
     pub(crate) rated_class: crate::arena::core::CoreClass,
-    /// **The thinks waiting to land** (17b cut M1a.5; D-UM-21): the intents,
-    /// the new memory and the epochs of each hull's last think, from its
-    /// [`DueKind::MindThink`] to its [`DueKind::MindLand`] one substep later.
-    ///
-    /// Scratch: not hashed (the [`crate::arena::mind::MindState::pending`] row
-    /// beside it is, D-UM-23) and not carried — a landing a resumed match finds
-    /// no scratch for lands nothing and clears its `pending` row, the residual
-    /// 17b cut M3's recompute closes.
-    pub mind_landings: BTreeMap<ObjId, crate::arena::mind::Landing>,
     /// **The card changes waiting for the next pulse** (17b cut M1b.5; doc 17
     /// §11, §22's M1b): per hull, in arrival order, what staff's `@mind/set`
     /// offered — handed in by the task BEFORE the step
     /// ([`Arena::stage_card`]) and applied to the arena's own rows at phase
     /// 2's head (`Arena::apply_mind_cards`), which empties it.
     ///
-    /// Scratch, like [`Arena::mind_landings`]: not hashed (what it changes is,
+    /// (The thinks waiting to land, `mind_landings`, were scratch beside it
+    /// until 17b cut M3.2 moved each think's answer onto its row's
+    /// [`crate::arena::mind::MindState::pending`], D-UM-23 as amended.)
+    ///
+    /// Scratch: not hashed (what it changes is,
     /// the row's card, item 3c) and **reset** by the snapshot — empty between
     /// two pulses, and a change the task held when a match resumed was never
     /// applied, which the read-back says (`not read since the resume`).
@@ -4497,6 +4501,9 @@ impl Arena {
                 },
                 heat,
                 controller: unit.controller,
+                // **17b cut M3.2**: the seal reference, laid down empty on
+                // every unit; 17b cut M3.3 fills it from the custody's seal.
+                seal: crate::arena::mind::SealRef::none(),
                 unit: unit.unit,
                 condition,
                 lock: None,
@@ -4700,7 +4707,6 @@ impl Arena {
             // `spawn_arena` writes the configured table before the move.
             classes: crate::arena::core::ClassTable::STOCK,
             rated_class: crate::arena::mind::STOCK_RATED_CLASS,
-            mind_landings: BTreeMap::new(),
             // 17b cut M1b.5: no card change offered yet.
             pending_cards: BTreeMap::new(),
             mind_runner: crate::arena::mind::default_mind_runner(arena_cfg),

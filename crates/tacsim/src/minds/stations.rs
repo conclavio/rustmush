@@ -328,7 +328,6 @@ mod tests {
     use super::super::fixture::{FRIEND, card, context_on, think, think_with, unarmed_view};
     use super::*;
     use crate::arena::card::line;
-    use crate::arena::conditions::STOCK_CONDITION_SLOTS;
     use crate::arena::stock_mind::arming_for;
     use crate::config::ReflexConfig;
 
@@ -375,7 +374,9 @@ mod tests {
             &clear,
             &line(&ReflexConfig::default()),
             Some(42_000),
-            STOCK_CONDITION_SLOTS,
+            crate::arena::core::ClassTable::STOCK
+                .row(crate::arena::core::CoreClass::I)
+                .slots,
         );
         let Some(IntentKind::Condition(Arming::Arm(t1))) = built.first().cloned() else {
             panic!("T1 arms the cannon: {built:?}");
@@ -446,7 +447,12 @@ mod tests {
             "arm(\"laser\", \"best\", 100, 15, 0, 0, 420)",
             "disarm(\"laser\")",
         ];
-        assert_eq!(STOCK_CONDITION_SLOTS, 2);
+        assert_eq!(
+            crate::arena::core::ClassTable::STOCK
+                .row(crate::arena::core::CoreClass::I)
+                .slots,
+            2
+        );
         for call in unknown {
             let ran = think(&format!("fn think(v, c) {{ {call}; }}"));
             assert!(matches!(ran.result, Err(Fault::Type(_))), "{call}");

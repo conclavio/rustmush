@@ -69,12 +69,12 @@
 //!
 //! # The three lists
 //!
-//! [`Arena`] has 53 fields, and every one is placed by name, twice: in the
+//! [`Arena`] has 52 fields, and every one is placed by name, twice: in the
 //! exhaustive destructuring that builds the encode's borrowed `ArenaStateRef`,
 //! and in the exhaustive literal the decode builds the arena with. A field a
 //! later cut adds is a compile error in both until it is put in one of these:
 //!
-//! - **Carried** (36): `units`, `epochs`, `contacts`, `designators`,
+//! - **Carried** (37): `units`, `epochs`, `contacts`, `designators`,
 //!   `spent_said`, `due`, `ledger` (its [`LedgerState`]: counters, open chunk,
 //!   closed queue, both SHA-256 running states), `clock` (its [`ClockState`]),
 //!   `seed`, `resolution`, `pilots`, `reflex`, `motors` (17b cut M1a.1: the
@@ -82,48 +82,52 @@
 //!   never its path scratch, which moved there from `reflex`), `minds` (17b
 //!   cut M1a.5: every unit mind's row — its think counter, the think in
 //!   flight, its memory, its notice buffer, its range memory, its order and
-//!   its strikes, and since 17b cut M1b.1 its card), `conditions`,
+//!   its strikes, since 17b cut M1b.1 its card, and since 17b cut M3.2 the
+//!   think in flight's ANSWER (D-UM-23 as amended: its epochs, intents and
+//!   memory, so a resumed landing lands what the think answered and nothing
+//!   is recomputed), its drop and its seal's digest), `conditions` (its rows
+//!   sized by each hull's core since 17b cut M3.2),
 //!   `held_said` and `odds_floor_permille` (17b cut M1b.1: every hull's
 //!   condition slots, the held-shot rows and the Compact floor the arena
 //!   captured at check-out — carried, so a config reload between a check-out
-//!   and a resume moves nothing), `pending`,
+//!   and a resume moves nothing), `classes` (17b cut M3.2: the class table
+//!   captured at check-out, on the floor's argument — a resumed match keeps
+//!   the table it was checked out under), `pending`,
 //!   `shots`, `next_shot_seq`, `stop`, `now_ms`, `at_release`, `pending_catchup`,
 //!   `held_losses`, `ended`, `arena_cfg`, `match_cfg`, `sensors_cfg`,
 //!   `alert_range_cm`, `jam_radius_cm`, `squads`, `mode`, `hold`, and the two
 //!   views `squad_watch` and `squads_expired` — integers, carried so a resumed
 //!   squad's `SignalReason` stays true (`no_order` is chosen exactly when a
 //!   squad was never reported) and a resume does not re-ask every squad at once.
-//! - **Re-derived** (7), from the caller's ground — whose digest must be the
+//! - **Re-derived** (6), from the caller's ground — whose digest must be the
 //!   recorded one — and from compiled code: `definition` (and the horizon index
 //!   inside its terrain), `index` (built and rebuilt over the carried units, as
 //!   [`Arena::new`] builds it), `min_cost` (`Arena::new`'s own line),
 //!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule), `mind_runner`
 //!   (17b cut M1a.5: `crate::arena::mind::default_mind_runner`, the call
 //!   [`Arena::new`] makes, so a resumed match thinks with the runner a fresh
-//!   one would), and (17b cut M3.1) `classes` — the compiled-in
-//!   `crate::arena::core::ClassTable::STOCK`, which 17b cut M3.2 carries with
-//!   its one format move (until then a check-out under a non-stock
-//!   `[tacsim.minds].classes` resumes on the stock table, declared on
-//!   `Arena::classes`) — and `rated_class`
+//!   one would), and (17b cut M3.1) `rated_class`
 //!   (`crate::arena::mind::STOCK_RATED_CLASS`, a test's lever until 17b cut
-//!   M3.3's seal).
-//! - **Reset** (10), views and per-pulse scratch: `mind_landings` (17b cut
-//!   M1a.5: the thinks waiting to land; a resumed match's landing finds none,
-//!   clears its `pending` row and lands nothing — the residual 17b cut M3's
-//!   recompute closes), `pending_cards` (17b cut M1b.5: the card changes
-//!   `@mind/set` offered, applied and emptied at the next pulse's start, so
+//!   M3.3's seal). (`classes` was re-derived stock here in 17b cut M3.1 and
+//!   is carried from 17b cut M3.2.)
+//! - **Reset** (9), views and per-pulse scratch: `pending_cards` (17b cut
+//!   M1b.5: the card changes `@mind/set` offered, applied and emptied at the next pulse's start, so
 //!   empty between two pulses; not carried, so `SNAPSHOT_FORMAT` does not
 //!   move), `lost_designators`,
 //!   `spent_hits` and `pending_notices` (empty between two pulses — [`Snapshot::encode`]
 //!   refuses an arena that holds any, never a panic), `last_frames` (empty: a
 //!   resumed pilot's first frame is a keyframe), `action_hash` (outside),
 //!   `substep_hashes` (empty), `watched` (`false`) and `last_observer_s`
-//!   (`None`).
+//!   (`None`). (`mind_landings`, the thinks waiting to land, was reset here
+//!   until 17b cut M3.2 retired it: each think's answer rides its row's
+//!   `pending` and is carried with the row — D-UM-23 as amended 2026-10-04,
+//!   the external review's finding 1.)
 //!
 //! **[`UnitState`] is carried whole by its derive.** It has no re-derived and no
 //! reset field: AE's fit constants `cost_row` and `class`, the traffic hold, the
 //! motion carries, `held`, heat, the lock, the per-substep `blocked` flag,
-//! `linkdead`, the band cache, the callsign and every counter all go. A
+//! `linkdead`, the band cache, the callsign, every counter and (17b cut M3.2)
+//! the seal reference `seal` (laid down empty until 17b cut M3.3) all go. A
 //! `#[serde(skip)]` on one of its fields is the only way to drop one, which is
 //! grep-able, and the unit tests below destructure it exhaustively so a new
 //! field is a decision somebody makes on purpose.
@@ -173,6 +177,7 @@ use crate::arena::catchup::{Catchup, ReleaseSnapshot};
 use crate::arena::clock::{Clock, ClockState};
 use crate::arena::command::{ExpiredSquads, SquadWatchTable};
 use crate::arena::conditions::ConditionTable;
+use crate::arena::core::ClassTable;
 use crate::arena::hash::state_hash;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
@@ -239,7 +244,18 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// field and four carried variants a format-6 reader cannot decode; the `af1`
 /// pin gains the three lines each unstepped fixture fills
 /// (`state.odds_floor_permille`, `state.conditions`, `state.held_said`).
-pub const SNAPSHOT_FORMAT: u32 = 7;
+///
+/// **8 since 17b cut M3.2** (doc 17 §6, §9, §13; D-UM-16, D-UM-23 as amended
+/// 2026-10-04, D-UM-31, D-UM-45): `PendingThink`'s answer (`epochs`,
+/// `intents`, `memory`), `MindState.dropped` and `seal_digest`,
+/// `UnitState.seal`, `Arena.classes`, the condition rows sized by the core;
+/// a format-7 document is refused by name ([`SnapshotError::Format`]). The
+/// `af1` pin gains `state.classes` with its four rows and `state.units[].seal`
+/// with its seven fields; the mind row's and the condition row's new shapes
+/// are under the pin on no fixture there (their round trips are
+/// `tests/arena.rs`' `m3_a_snapshot_carries_the_minds_with_their_pending_answers`
+/// and `tests/minds.rs`' pending-answer resume).
+pub const SNAPSHOT_FORMAT: u32 = 8;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -650,7 +666,7 @@ fn read(document: &serde_json::Value) -> Result<(SnapshotHead, Cow<'_, str>), Sn
 // The state tree: two structs, one field list
 // ---------------------------------------------------------------------------
 
-/// **What the encode serialises**: the 36 carried fields of [`Arena`], in its
+/// **What the encode serialises**: the 37 carried fields of [`Arena`], in its
 /// own order, every one a borrow but the two small mirrors ([`LedgerState`] and
 /// [`ClockState`]) — so an encode clones no contact and no shot, and of a unit
 /// only the opaque `mush_tactics::TacticalUnit`, which its own
@@ -680,6 +696,7 @@ struct ArenaStateRef<'a> {
     #[serde(serialize_with = "pairs::serialize_ref")]
     held_said: &'a BTreeMap<(ObjId, u8, ContactId), i64>,
     odds_floor_permille: &'a u32,
+    classes: &'a ClassTable,
     pending: &'a BTreeMap<ObjId, VecDeque<Intent>>,
     shots: &'a BTreeMap<u64, Shot>,
     next_shot_seq: &'a u64,
@@ -739,13 +756,11 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             conditions,
             held_said,
             odds_floor_permille,
-            // Re-derived (17b cut M3.1): the stock class table and Standard
-            // Doctrine's rating — 17b cut M3.2 carries the table, M3.3's seal
-            // replaces the rating.
-            classes: _classes,
+            // Carried (17b cut M3.2): the class table captured at check-out.
+            classes,
+            // Re-derived (17b cut M3.1): Standard Doctrine's rating — M3.3's
+            // seal replaces it.
             rated_class: _rated_class,
-            // Reset (17b cut M1a.5): the thinks waiting to land are scratch.
-            mind_landings: _mind_landings,
             // Reset (17b cut M1b.5): the card changes waiting for the next
             // pulse are scratch, emptied at its start.
             pending_cards: _pending_cards,
@@ -805,6 +820,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             conditions,
             held_said,
             odds_floor_permille,
+            classes,
             pending,
             shots,
             next_shot_seq,
@@ -852,6 +868,7 @@ struct ArenaState {
     #[serde(with = "pairs")]
     held_said: BTreeMap<(ObjId, u8, ContactId), i64>,
     odds_floor_permille: u32,
+    classes: ClassTable,
     pending: BTreeMap<ObjId, VecDeque<Intent>>,
     shots: BTreeMap<u64, Shot>,
     next_shot_seq: u64,
@@ -877,7 +894,7 @@ struct ArenaState {
 
 impl ArenaState {
     /// **The arena, by an exhaustive literal** over every field of [`Arena`]:
-    /// the 36 carried placed, the 5 re-derived derived and the 9 reset reset.
+    /// the 37 carried placed, the 6 re-derived derived and the 9 reset reset.
     fn into_arena(self, definition: ArenaDefinition) -> Result<Arena, SnapshotError> {
         let ArenaState {
             units,
@@ -897,6 +914,7 @@ impl ArenaState {
             conditions,
             held_said,
             odds_floor_permille,
+            classes,
             pending,
             shots,
             next_shot_seq,
@@ -948,10 +966,11 @@ impl ArenaState {
             conditions,
             held_said,
             odds_floor_permille,
-            // 17b cut M3.1: re-derived, as `Arena::new` sets them.
-            classes: crate::arena::core::ClassTable::STOCK,
+            // 17b cut M3.2: carried — the table the match was checked out
+            // under.
+            classes,
+            // 17b cut M3.1: re-derived, as `Arena::new` sets it.
             rated_class: crate::arena::mind::STOCK_RATED_CLASS,
-            mind_landings: BTreeMap::new(),
             pending_cards: BTreeMap::new(),
             mind_runner,
             min_cost,
@@ -1094,7 +1113,7 @@ mod tests {
     ///
     /// [`UnitState`] destructured with every field named and no `..`, answering
     /// the names, so the test below can hold the encoded unit's keys to them.
-    fn every_unit_field(unit: &UnitState) -> [&'static str; 42] {
+    fn every_unit_field(unit: &UnitState) -> [&'static str; 43] {
         let UnitState {
             id: _,
             team: _,
@@ -1125,6 +1144,7 @@ mod tests {
             gunnery: _,
             heat: _,
             controller: _,
+            seal: _,
             unit: _,
             condition: _,
             ready_at_ms: _,
@@ -1169,6 +1189,7 @@ mod tests {
             "gunnery",
             "heat",
             "controller",
+            "seal",
             "unit",
             "condition",
             "ready_at_ms",
@@ -1439,11 +1460,33 @@ mod tests {
         // `MotorTable.rows` (17b cut M1a.1): keyed by the unit, an integer key.
         round_trip(&BTreeMap::from([(unit, MotorRow::default())]));
         // `Arena.minds` (17b cut M1a.5), keyed by the unit, and inside each row
-        // `MindState.ranges`, keyed by a contact id at the top of `u64`.
+        // `MindState.ranges`, keyed by a contact id at the top of `u64` — and
+        // (17b cut M3.2) a pending answer with an intent of each carried
+        // shape the stock mind emits, a drop and a seal digest.
         round_trip(&BTreeMap::from([(
             unit,
             crate::arena::mind::MindState {
                 ranges: BTreeMap::from([(ContactId(u64::MAX), 450_u64)]),
+                pending: Some(crate::arena::mind::PendingThink {
+                    think_seq: u64::MAX,
+                    t_ms: 2_482,
+                    epochs: [u64::MAX, 1, 2],
+                    intents: vec![
+                        IntentKind::Lock {
+                            contact: ContactId(u64::MAX),
+                        },
+                        IntentKind::Fire {
+                            weapon: SmolStr::new("cannon"),
+                            slot: None,
+                        },
+                        IntentKind::Condition(crate::arena::conditions::Arming::Disarm {
+                            weapon: Some(SmolStr::new("cannon")),
+                        }),
+                    ],
+                    memory: b"{\"k\":1}".to_vec(),
+                }),
+                dropped: Some(crate::arena::mind::DropCause::Strikes),
+                seal_digest: [0xab; 32],
                 ..crate::arena::mind::MindState::default()
             },
         )]));
@@ -1463,7 +1506,9 @@ mod tests {
                 min_range_m: 0,
                 max_range_m: u32::MAX,
             },
-            crate::arena::conditions::STOCK_CONDITION_SLOTS,
+            crate::arena::core::ClassTable::STOCK
+                .row(crate::arena::core::CoreClass::I)
+                .slots,
         );
         let text = round_trip(&slots);
         assert!(text.starts_with(r#"{"4":[{"weapon":"cannon""#), "{text}");

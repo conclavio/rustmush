@@ -1213,10 +1213,10 @@ impl Arena {
             self.adopt_reflex(target, crate::arena::reflex::ReflexState::Disabled);
         }
         // **17b cut M1a.5**: the think waiting to land goes with the landing
-        // the retain above took off the heap, and so does the row's `pending`
-        // that names it. The row itself stays, as a wreck's reflex row stays:
-        // what the mind remembered is still state the hash folds.
-        self.mind_landings.remove(&target);
+        // the retain above took off the heap — the row's `pending`, which
+        // carries its answer since 17b cut M3.2. The row itself stays, as a
+        // wreck's reflex row stays: what the mind remembered is still state
+        // the hash folds.
         if let Some(state) = self.minds.get_mut(&target) {
             state.pending = None;
         }

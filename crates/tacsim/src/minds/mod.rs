@@ -652,7 +652,9 @@ pub(crate) mod fixture {
             draws: 0,
             line_to_calls: 0,
             line_to_max: super::STOCK_LINE_TO_PER_THINK,
-            slots: crate::arena::conditions::STOCK_CONDITION_SLOTS,
+            slots: crate::arena::core::ClassTable::STOCK
+                .row(crate::arena::core::CoreClass::I)
+                .slots,
             intents: Vec::new(),
             overflowed: false,
             refused: None,

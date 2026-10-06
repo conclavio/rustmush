@@ -561,10 +561,8 @@ pub type Callsigns = Vec<(ObjId, Designator)>;
 /// carry it from there, and [`resume_arena`] takes the decoded arena's own, so
 /// a config reload between a check-out and a resume moves nothing. **17b cut
 /// M3.1**: its class table (`Arena::classes`) is written beside the floor —
-/// captured here too, and (until 17b cut M3.2 carries it) re-derived as the
-/// stock table by a resume: under a non-stock `[tacsim.minds].classes` a
-/// resumed match then reads other slots and think periods than the match it
-/// resumes (declared on `Arena::classes`; the stock table moves nothing).
+/// captured here too, and since 17b cut M3.2 carried by the snapshot, so
+/// [`resume_arena`] takes the decoded arena's own table as it takes its floor.
 ///
 /// # Errors
 ///

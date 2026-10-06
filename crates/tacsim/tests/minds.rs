@@ -700,8 +700,17 @@ fn pending(arena: &Arena, unit: ObjId, n: u64) -> bool {
     arena
         .minds
         .get(&unit)
-        .and_then(|state| state.pending)
+        .and_then(|state| state.pending.as_ref())
         .is_some_and(|pending| pending.think_seq == n)
+}
+
+/// Whether `unit`'s mind has a think in flight — its answer on the row (17b
+/// cut M3.2: `MindState.pending` carries it; the scratch table is retired).
+fn in_flight(arena: &Arena, unit: ObjId) -> bool {
+    arena
+        .minds
+        .get(&unit)
+        .is_some_and(|state| state.pending.is_some())
 }
 
 /// The buffered refusals of `unit`'s mind, as `(order, refusal)`.
@@ -1200,9 +1209,96 @@ fn m1a5_an_epoch_raised_between_think_and_landing_refuses_the_stale_thoughts() {
     assert!(cited, "the shot cites S1 (17b cut M1b.2)");
 }
 
+/// **A carried answer is refused at a raised epoch after a resume** (17b cut
+/// M3.2; D-UM-13, D-UM-23 as amended): [`epoch_rig`]'s think 4 in flight,
+/// encoded and decoded — the answer rides the row's `pending`, its three
+/// epochs with it — and resumed (on the default runner, which the landing
+/// never calls). In the resumed arena's next pulse, before the landing, the
+/// same `Control { Linkdead }` on the HELM channel at a higher epoch that
+/// [`m1a5_an_epoch_raised_between_think_and_landing_refuses_the_stale_thoughts`]
+/// sends: the carried answer lands at its RECORDED epochs, so the heading and
+/// the speed are refused `epoch` into the mind's buffer through the carried
+/// answer, and the arming and the cited `FIRE` meet the linkdead gate — the
+/// uninterrupted fixture's four refusals exactly, and nothing fired; the
+/// answer is gone off the row. With the helm epoch raised alone instead, the
+/// two helm thoughts are refused `epoch` and the cited shot lands at the
+/// landing.
+#[test]
+fn m3_a_carried_answer_is_refused_epoch_at_a_raised_epoch_after_a_resume() {
+    let land = think_at(RED, 4) + SUBSTEP;
+    let resumed = |rig: &Rig| -> Rig {
+        let carried = rig
+            .arena
+            .minds
+            .get(&RED)
+            .and_then(|state| state.pending.clone())
+            .expect("think 4 in flight at the encode");
+        assert_eq!(carried.think_seq, 4);
+        assert_eq!(
+            carried.intents.len(),
+            4,
+            "the heading, the speed, the arming, the fire"
+        );
+        let snapshot = Snapshot::encode(&rig.arena).expect("the arena encodes");
+        let decoded = Snapshot::decode(&snapshot.document, (*rig.arena.definition).clone())
+            .expect("the document decodes");
+        assert_eq!(
+            decoded
+                .minds
+                .get(&RED)
+                .and_then(|state| state.pending.clone()),
+            Some(carried),
+            "the answer came back with its epochs"
+        );
+        let mut resumed = Rig::new(decoded);
+        let now = resumed.arena.now_ms;
+        let _ = resumed.arena.resume_at(now);
+        resumed.wall = Some(now);
+        resumed
+    };
+
+    let mut rig = resumed(&epoch_rig());
+    let raised = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+    let _ = rig.pulse(
+        &[control(Channel::Helm, raised, ControlState::Linkdead, None)],
+        &[],
+    );
+    assert!(rig.arena.now_ms >= land, "the landing's substep ran");
+    assert_eq!(
+        refusals(&rig.arena, RED),
+        vec![
+            ("heading".to_owned(), Refusal::Epoch),
+            ("speed".to_owned(), Refusal::Epoch),
+            ("fire".to_owned(), Refusal::Linkdead),
+            ("fire".to_owned(), Refusal::Linkdead),
+        ],
+        "the carried answer refused at its recorded epochs"
+    );
+    assert!(rig.lines("fired", RED).is_empty(), "nothing fired");
+    assert!(!in_flight(&rig.arena, RED), "the answer is off the row");
+
+    let mut rig = resumed(&epoch_rig());
+    let raised = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+    rig.arena.epochs.raise(RED, Channel::Helm, raised);
+    let _ = rig.pulse(&[], &[]);
+    assert_eq!(
+        refusals(&rig.arena, RED),
+        vec![
+            ("heading".to_owned(), Refusal::Epoch),
+            ("speed".to_owned(), Refusal::Epoch),
+        ]
+    );
+    assert_eq!(
+        rig.lines("fired", RED),
+        vec![land],
+        "the fire channel was not raised: the carried shot lands at the landing"
+    );
+}
+
 /// **A reclaimed seat lands nothing** (D-UM-13; `apply_control`'s `Live` arm).
 /// A `Control { Live }` naming a pilot between think 4 and its landing hands
-/// the hull to the pilot, which takes the mind's row, its scratch and its two
+/// the hull to the pilot, which takes the mind's row (its pending answer with
+/// it, 17b cut M3.2) and its two
 /// due kinds with it: the landing never comes, nothing of the think is applied
 /// or journalled, and no refusal is staged.
 #[test]
@@ -1224,11 +1320,9 @@ fn m1a5_a_reclaimed_seat_lands_nothing() {
         rig.arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Pilot)
     );
+    // The row went — and with it the think in flight, whose answer it
+    // carried (17b cut M3.2 retired the scratch beside it).
     assert!(!rig.arena.minds.contains_key(&RED), "the mind's row went");
-    assert!(
-        !rig.arena.mind_landings.contains_key(&RED),
-        "and its scratch"
-    );
     assert!(
         !rig.arena.due.iter().any(|event| event.kind.is_mind()),
         "and its thinks and landings"
@@ -1429,7 +1523,7 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
 /// **A think of seventeen intents lands nothing and keeps its memory** (D-UM-9).
 /// Think 0 lands the memory `[1]`, a start-up and a pod switch the hull has no
 /// pod for; think 1 answers `MIND_INTENTS_MAX + 1` speeds and the memory
-/// `[9, 9]`: nothing lands (no landing on the heap or the scratch, the ordered
+/// `[9, 9]`: nothing lands (no landing on the heap and no answer pending, the ordered
 /// speed untouched), the memory is still `[1]`, `pending` is cleared,
 /// `mind_overflows` counts one and think 2 is on the heap one think later — and
 /// is handed `[1]`. **The think is atomic for the buffer too**: what think 1's
@@ -1492,7 +1586,6 @@ fn m1a5_a_think_of_seventeen_intents_lands_nothing_and_keeps_its_memory() {
     assert_eq!(state.pending, None);
     assert_eq!(state.think_seq, 2);
     assert_eq!(counters.mind_overflows, 1);
-    assert!(!rig.arena.mind_landings.contains_key(&RED));
     assert!(
         !rig.arena
             .due
@@ -3170,8 +3263,9 @@ fn m1a5_a_mind_mustered_on_the_shipped_ground_thinks_on_its_grid() {
 // (11) every controller transition releases the outgoing rows
 // ---------------------------------------------------------------------------
 
-/// What `unit` has left on the arena: a reflex row, a mind row, a landing in
-/// scratch, a motor row, and its controllers' due kinds.
+/// What `unit` has left on the arena: a reflex row, a mind row, an answer
+/// pending on it (17b cut M3.2: the scratch retired), a motor row, and its
+/// controllers' due kinds.
 type Rows = (bool, bool, bool, bool, Vec<&'static str>);
 
 fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
@@ -3189,7 +3283,7 @@ fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
     (
         arena.reflex.unit(unit).is_some(),
         arena.minds.contains_key(&unit),
-        arena.mind_landings.contains_key(&unit),
+        in_flight(arena, unit),
         arena.motors.row(unit).is_some(),
         kinds,
     )
@@ -3201,7 +3295,7 @@ fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
 /// control; Pilot → Mind by `set_controller` with a pilot's `DRIVE` standing;
 /// Mind → Pilot by a `Live` control with a think in flight. After each,
 /// nothing of the outgoing controller is left — no reflex row or tick, no mind
-/// row, scratch, think or landing, no motor row or motor tick — and the
+/// row, pending answer, think or landing, no motor row or motor tick — and the
 /// incoming controller's first event is on the heap.
 #[test]
 fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
@@ -3231,7 +3325,7 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
     );
 
     // Mind -> Reflex, with a think in flight.
-    let _ = rig.until(6_000, |arena| arena.mind_landings.contains_key(&RED));
+    let _ = rig.until(6_000, |arena| in_flight(arena, RED));
     let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
     let _ = rig.pulse(
         &[control(Channel::Helm, epoch, ControlState::Released, None)],
@@ -3278,7 +3372,7 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
     );
 
     // Mind -> Pilot, with a think in flight.
-    let _ = rig.until(20_000, |arena| arena.mind_landings.contains_key(&RED));
+    let _ = rig.until(20_000, |arena| in_flight(arena, RED));
     let _ = rig.pulse(
         &[control(
             Channel::Helm,
@@ -3298,14 +3392,20 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
     );
 }
 
-/// **A resumed landing finds no scratch and clears its `pending` row** (17b
-/// cut M1a.5; `snapshot.rs`' `SNAPSHOT_FORMAT` 5): the mind's row round-trips
-/// — `pending`, the memory, a range — the landing waiting in scratch does not,
-/// and the decoded arena thinks with the default runner; when its landing
-/// comes it finds nothing, clears `pending` and lands nothing (the residual
-/// 17b cut M3's recompute closes).
+/// **A resumed landing lands the carried answer** (17b cut M3.2; D-UM-23 as
+/// amended 2026-10-04; `snapshot.rs`' `SNAPSHOT_FORMAT` 8 — this test was
+/// 17b cut M1a.5's `m1a5_a_resumed_landing_finds_no_scratch_and_clears_its_pending_row`,
+/// whose premise, a landing that finds nothing after a resume, the cut
+/// retires). Think 0 answers `Startup` and a memory; the snapshot is taken
+/// with it in flight: the encoded row carries `pending` with the answer (the
+/// think, its millisecond, the three epochs, the intents and the memory), the
+/// decoded rows equal the encoded ones, and the decoded arena — on the
+/// default runner, which is never asked to think again here — LANDS the
+/// carried answer at its millisecond: `pending` taken off the row, the
+/// memory the answer's, the `startup` line on the tape at the landing's
+/// millisecond.
 #[test]
-fn m1a5_a_resumed_landing_finds_no_scratch_and_clears_its_pending_row() {
+fn m3_a_resumed_landing_lands_the_carried_answer() {
     let mut rig = Rig::new(arena_of(
         vec![tank(
             RED,
@@ -3316,18 +3416,52 @@ fn m1a5_a_resumed_landing_finds_no_scratch_and_clears_its_pending_row() {
         )],
         &[],
     ));
-    rig.arena.mind_runner = ScriptedMind::new(&[(RED, vec![says(0, vec![IntentKind::Startup])])]);
+    rig.arena.mind_runner = ScriptedMind::new(&[(
+        RED,
+        vec![Says {
+            memory: Some(vec![3, 1, 4]),
+            ..says(0, vec![IntentKind::Startup])
+        }],
+    )]);
     let think = think_at(RED, 0);
     let _ = rig.until(think + SUBSTEP, |arena| pending(arena, RED, 0));
     if let Some(state) = rig.arena.minds.get_mut(&RED) {
-        state.memory = vec![3, 1, 4];
         state.ranges.insert(ContactId(77), 450);
     }
+    let answer = rig
+        .arena
+        .minds
+        .get(&RED)
+        .and_then(|state| state.pending.clone())
+        .expect("think 0 is in flight at the encode");
+    assert_eq!(
+        (answer.think_seq, answer.t_ms),
+        (0, think),
+        "the think and its millisecond"
+    );
+    assert_eq!(answer.intents, vec![IntentKind::Startup], "its intents");
+    assert_eq!(answer.memory, vec![3, 1, 4], "its memory");
+    assert_eq!(
+        answer.epochs,
+        Channel::ALL.map(|channel| rig.arena.epochs.current(RED, channel)),
+        "its three epochs"
+    );
+    assert!(rig.lines("startup", RED).is_empty(), "not landed yet");
     let snapshot = Snapshot::encode(&rig.arena).expect("the arena encodes");
+    let carried = serde_json::from_slice::<serde_json::Value>(snapshot.bytes())
+        .expect("a state")
+        .get("minds")
+        .and_then(|minds| minds.get(RED.0.to_string()))
+        .and_then(|row| row.get("pending"))
+        .cloned();
+    assert_eq!(
+        carried.and_then(|pending| serde_json::from_value(pending).ok()),
+        Some(answer.clone()),
+        "the encoded row carries the answer"
+    );
     let decoded = Snapshot::decode(&snapshot.document, (*rig.arena.definition).clone())
         .expect("the document decodes");
     assert_eq!(decoded.minds, rig.arena.minds, "the rows came back");
-    assert!(decoded.mind_landings.is_empty(), "the scratch did not");
     // 17b cut M1a.6: the default runner is the native stock mind.
     assert!(format!("{:?}", decoded.mind_runner).contains("NativeStockMind"));
     // Resumed on the decoded arena's own millisecond as the wall
@@ -3339,14 +3473,15 @@ fn m1a5_a_resumed_landing_finds_no_scratch_and_clears_its_pending_row() {
     let _ = resumed.until(think + 2 * SUBSTEP, |arena| arena.now_ms >= think + SUBSTEP);
     assert!(
         !pending(&resumed.arena, RED, 0),
-        "the landing cleared its row"
+        "the landing took the answer off its row"
     );
-    assert!(
-        resumed.lines("startup", RED).is_empty(),
-        "and landed nothing"
+    assert_eq!(
+        resumed.lines("startup", RED),
+        vec![think + SUBSTEP],
+        "and landed it at the landing's millisecond"
     );
     let state: MindState = resumed.arena.minds.get(&RED).cloned().unwrap_or_default();
-    assert_eq!(state.memory, vec![3, 1, 4], "the memory is the carried one");
+    assert_eq!(state.memory, vec![3, 1, 4], "the memory is the answer's");
 }
 
 // ---------------------------------------------------------------------------
@@ -3355,9 +3490,9 @@ fn m1a5_a_resumed_landing_finds_no_scratch_and_clears_its_pending_row() {
 
 /// **A wreck cancels its mind's thinks** (17b cut M1a.5; `damage.rs`'
 /// `Arena::destroy_unit`). The mind drives (think 1's `DRIVE`, so a motor tick
-/// is on the heap) and has think 2 in flight — its landing in the scratch and
-/// on the heap — when the hull is destroyed: no think, landing or motor tick of
-/// it is left on the heap, the scratch is gone, the row's `pending` is cleared
+/// is on the heap) and has think 2 in flight — its answer on the row and its
+/// landing on the heap — when the hull is destroyed: no think, landing or motor
+/// tick of it is left on the heap, the row's `pending` (the answer) is cleared
 /// and the row itself stays (what the mind remembered is still folded state);
 /// the arena runs on for three seconds and the runner is never called again.
 #[test]
@@ -3381,10 +3516,7 @@ fn m1a5_a_wreck_cancels_its_minds_thinks_and_landing() {
     )]);
     rig.arena.mind_runner = mind.clone();
     let _ = rig.until(10_000, |arena| pending(arena, RED, 2));
-    assert!(
-        rig.arena.mind_landings.contains_key(&RED),
-        "the precondition"
-    );
+    assert!(in_flight(&rig.arena, RED), "the precondition");
     assert!(
         rows_of(&rig.arena, RED).4.contains(&"mind_land")
             && rows_of(&rig.arena, RED).4.contains(&"motor_tick"),
@@ -3395,10 +3527,13 @@ fn m1a5_a_wreck_cancels_its_minds_thinks_and_landing() {
     rig.arena.destroy_unit(RED, now, None, &mut journal);
     let (_, row, scratch, _, kinds) = rows_of(&rig.arena, RED);
     assert!(kinds.is_empty(), "the wreck's due kinds: {kinds:?}");
-    assert!(!scratch, "the scratch went with the landing");
+    assert!(!scratch, "the pending answer went with the landing");
     assert!(row, "the row stays");
     assert_eq!(
-        rig.arena.minds.get(&RED).and_then(|state| state.pending),
+        rig.arena
+            .minds
+            .get(&RED)
+            .and_then(|state| state.pending.clone()),
         None,
         "and names no think in flight"
     );
@@ -6982,7 +7117,7 @@ fn strikes_run(script: Vec<Says>, last: u64, reset: Option<&[u8]>) -> StrikesRun
         }
         let after = rig.arena.minds.get(&RED).cloned().expect("red's row");
         out.landings_after.push(
-            rig.arena.mind_landings.contains_key(&RED)
+            in_flight(&rig.arena, RED)
                 || rig.arena.due.iter().any(
                     |event| matches!(event.kind, DueKind::MindLand { unit, .. } if unit == RED),
                 ),
@@ -7002,7 +7137,8 @@ fn strikes_run(script: Vec<Says>, last: u64, reset: Option<&[u8]>) -> StrikesRun
 /// with a speed and the memory `[9, 9]` beside it — at red's thinks 2, 3
 /// and 4 on the (j) field:
 ///
-/// * at each, NOTHING lands: no landing on the scratch or the heap, the
+/// * at each, NOTHING lands: no answer pending on the row (17b cut M3.2: the
+///   answer rides `pending`, the scratch retired) and no landing on the heap, the
 ///   memory the last landed think left (`[1]`) kept, the notices the think
 ///   was handed back at the front of the buffer (think 1's refused pod switch
 ///   among them, so think 3 is handed think 2's notices again), the range
@@ -7012,7 +7148,9 @@ fn strikes_run(script: Vec<Says>, last: u64, reset: Option<&[u8]>) -> StrikesRun
 ///   every job carries the match seed (`ThinkJob::seed`, D-UM-29: the key
 ///   of a mind's draws) — and a second arena on another seed hands that one;
 ///   the clean think 5 lands its memory and leaves `strikes` at 3 — the drop
-///   is for the rest of the sortie;
+///   is for the rest of the sortie (17b cut M3.2: the drop is the row's own
+///   `dropped`, `Some(DropCause::Strikes)` from think 4, which the clean
+///   think never clears; `strikes == 3` no longer IS the drop);
 /// * **the baseline** — the same script answering SEVENTEEN speeds and no
 ///   fault word at thinks 2, 3 and 4 (M1a's overflow path), with red's
 ///   `strikes` written by hand after every pulse to the faulting run's figure
@@ -7082,6 +7220,11 @@ fn m2_a_faulting_runner_lands_nothing_counts_a_strike_and_three_drop_the_hull() 
     let (_, five) = faulting.rows.get(5).cloned().expect("think 5");
     assert_eq!(five.strikes, MIND_STRIKES_TO_DROP);
     assert!(five.dropped());
+    assert_eq!(
+        five.dropped,
+        Some(tacsim::arena::mind::DropCause::Strikes),
+        "the drop's own field (17b cut M3.2)"
+    );
     assert_eq!(faulting.strikes.last().copied(), Some(MIND_STRIKES_TO_DROP));
     assert_eq!(
         (
@@ -7539,8 +7682,9 @@ fn stepped(arena: &mut Arena, mut wall: i64, until_ms: i64) -> (Vec<u8>, Vec<u64
 /// stock minds flown by T2 alone (`support::with_rhai`), one substep a pulse
 /// with the tempo pinned ([`stepped`]), encoded at the first pulse boundary
 /// past 15,000 ms with no think in
-/// flight (no `pending` row, the landing scratch empty — the scratch does
-/// not round-trip) and decoded. The decode re-installs `default_mind_runner`
+/// flight (no `pending` row — since 17b cut M3.2 a pending answer would ride
+/// the snapshot too, `tests/minds_rhai.rs`' gate fixture resumes across one)
+/// and decoded. The decode re-installs `default_mind_runner`
 /// — the decoded arena prints `NativeStockMind`, and since T2 ≡ T1 nothing
 /// else would show a resumed fixture flying T1 — so the fixture re-applies
 /// `support::with_rhai` and asserts the runner's `Debug` name holds
@@ -7562,9 +7706,7 @@ fn m2_a_resumed_field_flies_the_rhai_runner_again_after_the_decode() {
     support::with_rhai(&mut flown);
     let start = flown.now_ms;
     let (mut bytes, mut hashes, mut wall) = stepped(&mut flown, start, 15_000);
-    while flown.minds.values().any(|state| state.pending.is_some())
-        || !flown.mind_landings.is_empty()
-    {
+    while flown.minds.values().any(|state| state.pending.is_some()) {
         let next = flown.now_ms + SUBSTEP;
         let (more, more_hashes, after) = stepped(&mut flown, wall, next);
         bytes.extend(more);

@@ -53,12 +53,12 @@
 //! (`Goal(Hold)` is its stop) and answers `Startup` with its disarm alone —
 //! and, since 17b cut M1b.3, with `Startup` alone when no slot is armed.
 //! **17b cut M1b.2**: a think of an armed hull answers its slots
-//! ([`arming_for`]) — one `Condition(Arm)` per weapon of its first
-//! [`crate::arena::conditions::STOCK_CONDITION_SLOTS`] (since 17b cut M3.1 the
-//! think's row's `slots`), or one `Condition(Disarm)`; **17b cut M1b.3**
+//! ([`arming_for`]) — one `Condition(Arm)` per weapon of its first `slots`
+//! (since 17b cut M3.1 the think's row's `slots`: Class I's two on every
+//! shipped chassis), or one `Condition(Disarm)`; **17b cut M1b.3**
 //! answers only where its view's `armed` rows differ from what it wants — so
-//! a think emits at most `4 + STOCK_CONDITION_SLOTS` intents (`Condition` ×
-//! 2, `Goal(Hold)`, `Heading`, `Lock`, `Fire`), well inside
+//! a think emits at most `4 + slots` intents (`Condition` × 2 at Class I,
+//! `Goal(Hold)`, `Heading`, `Lock`, `Fire`), well inside
 //! [`crate::arena::mind::MIND_INTENTS_MAX`]; a `Fire` is planned only beside a
 //! fresh `Lock` and cites its slot (`engage_orders`), and the armed slot owns
 //! every other shot.
@@ -779,9 +779,9 @@ struct Plan {
     /// ([`arming_for`]); `None` disarms them.
     arm_ceiling_cm: Option<u64>,
     /// **17b cut M3.1** (D-UM-35): the condition slots the think is held to,
-    /// its row's `slots` ([`ThinkJob::profile`]) — Class I's two,
-    /// [`crate::arena::conditions::STOCK_CONDITION_SLOTS`], on every shipped
-    /// chassis. Read by `engage_orders`' citation and handed to [`arming_for`].
+    /// its row's `slots` ([`ThinkJob::profile`]) — Class I's two on every
+    /// shipped chassis. Read by `engage_orders`' citation and handed to
+    /// [`arming_for`].
     slots: usize,
 }
 
@@ -1731,8 +1731,8 @@ fn walk(
 /// D-UM-18). Past the power, `hold_fire` and dry gates the think records the
 /// ceiling that admitted `row` (`ceiling_cm`: `release_cm`, or a withdraw
 /// stand's `stand_cm` en route) on the plan, and the emission arms the hull's
-/// first `slots` weapons on it ([`arming_for`]; Class I's two,
-/// [`crate::arena::conditions::STOCK_CONDITION_SLOTS`]): from then on the
+/// first `slots` weapons on it ([`arming_for`]; Class I's two on every
+/// shipped chassis): from then on the
 /// **slot** owns the shot — the arena fires it at the weapon's own
 /// `WeaponReady`, at the passes that refresh the lock and at the landing.
 /// A `Fire` is planned here ONLY when the think also plans a `Lock` (a fresh
@@ -1850,9 +1850,8 @@ fn engage_orders(
 /// `decide` through the overlay (17b cut M1b.5).
 ///
 /// **17b cut M3.1** (D-UM-35): `slots` is the think's row's
-/// ([`crate::arena::mind::ThinkJob::profile`]) — Class I's two,
-/// [`crate::arena::conditions::STOCK_CONDITION_SLOTS`], on every shipped
-/// chassis, and the Rhai port's `slots()` reads the same figure.
+/// ([`crate::arena::mind::ThinkJob::profile`]) — Class I's two on every
+/// shipped chassis, and the Rhai port's `slots()` reads the same figure.
 #[must_use]
 pub fn arming_for(
     view: &MindView,
@@ -1903,7 +1902,11 @@ mod tests {
     use mush_core::ObjId;
 
     use super::*;
-    use crate::arena::conditions::STOCK_CONDITION_SLOTS;
+    /// Class I's slots (17b cut M3.2: the row's figure, read off the class
+    /// table — the constant is left to its definition and its row-I pin).
+    const CLASS_I_SLOTS: usize = crate::arena::core::ClassTable::STOCK
+        .row(crate::arena::core::CoreClass::I)
+        .slots;
     use crate::arena::mind::{MIND_INTENTS_MAX, memory_check};
     use crate::arena::state::{
         Arena, ArenaTerrain, Controller, CustodyOut, CustodyUnit, MatchMode, SeenPose,
@@ -1996,7 +1999,7 @@ mod tests {
             t_ms,
             t_ms.saturating_add(arena.substep_len_ms()),
             &crate::arena::card::line(&arena.arena_cfg.reflex),
-            STOCK_CONDITION_SLOTS,
+            CLASS_I_SLOTS,
         )
     }
 
@@ -2004,7 +2007,7 @@ mod tests {
     /// `Startup, Condition, Goal, Heading, Speed, Lock, Fire` order, each at
     /// most once EXCEPT `Condition` (one per armed weapon, 17b cut M1b.2); a
     /// `Goal(Cell)` with no `Heading` or `Speed` beside it; never more than
-    /// `4 + STOCK_CONDITION_SLOTS` (the module head's maximum), which is under
+    /// `4 + CLASS_I_SLOTS` (the module head's maximum), which is under
     /// `MIND_INTENTS_MAX`.
     fn emission_holds(intents: &[IntentKind]) {
         let rank = |kind: &IntentKind| match kind {
@@ -2027,7 +2030,7 @@ mod tests {
             "out of order, or a kind twice: {intents:?}"
         );
         assert!(
-            ranks.iter().filter(|rank| **rank == 1).count() <= STOCK_CONDITION_SLOTS,
+            ranks.iter().filter(|rank| **rank == 1).count() <= CLASS_I_SLOTS,
             "{intents:?}"
         );
         if intents
@@ -2042,7 +2045,7 @@ mod tests {
                 "a heading or a speed beside a goal: {intents:?}"
             );
         }
-        assert!(intents.len() <= 4 + STOCK_CONDITION_SLOTS, "{intents:?}");
+        assert!(intents.len() <= 4 + CLASS_I_SLOTS, "{intents:?}");
         assert!(intents.len() <= MIND_INTENTS_MAX);
     }
 
@@ -2540,7 +2543,7 @@ mod tests {
             t_ms,
             t_ms.saturating_add(arena.substep_len_ms()),
             &crate::arena::card::line(&arena.arena_cfg.reflex),
-            STOCK_CONDITION_SLOTS,
+            CLASS_I_SLOTS,
         )
     }
 
@@ -2977,7 +2980,7 @@ mod tests {
     /// M1b.2; D-UM-16, D-UM-18, D-UM-43; 17b's adversarial F6). A hull of
     /// three weapons — a laser that makes heat, a cannon, a missile rack —
     /// on a platform AT its heat ceiling: `Some(ceiling)` arms exactly the
-    /// first [`STOCK_CONDITION_SLOTS`] in component order, the hot laser
+    /// first Class I's `slots` in component order, the hot laser
     /// included (no heat skip, so the numbering is the arena's), each on
     /// `BestHostile` with the card's odds, its aspect mask, its reserve as
     /// whole rounds of `rounds_max`, `min_range_m` 0 and `max_range_m` the
@@ -3006,8 +3009,8 @@ mod tests {
         assert!(would_overheat(&view, &laser), "the precondition: hot");
         let mut card = crate::arena::card::line(&arena.arena_cfg.reflex);
         card.reserve_pct = 10;
-        let arms = arming_for(&view, &card, Some(80_000), STOCK_CONDITION_SLOTS);
-        assert_eq!(arms.len(), STOCK_CONDITION_SLOTS, "{arms:?}");
+        let arms = arming_for(&view, &card, Some(80_000), CLASS_I_SLOTS);
+        assert_eq!(arms.len(), CLASS_I_SLOTS, "{arms:?}");
         let terms: Vec<FireCondition> = arms.iter().map(armed_terms).collect();
         assert_eq!(
             terms,
@@ -3037,7 +3040,7 @@ mod tests {
         // On Line the discipline is today's machine's: 100 per mille, every
         // aspect, no reserve.
         let line = crate::arena::card::line(&arena.arena_cfg.reflex);
-        let on_line = arming_for(&view, &line, Some(80_000), STOCK_CONDITION_SLOTS);
+        let on_line = arming_for(&view, &line, Some(80_000), CLASS_I_SLOTS);
         assert!(
             on_line
                 .iter()
@@ -3048,7 +3051,7 @@ mod tests {
         );
         // 17b cut M1b.3: nothing armed is nothing to disarm.
         assert_eq!(
-            arming_for(&view, &line, None, STOCK_CONDITION_SLOTS),
+            arming_for(&view, &line, None, CLASS_I_SLOTS),
             Vec::new(),
             "not reached, nothing armed: nothing said"
         );
@@ -3057,17 +3060,17 @@ mod tests {
             row.armed = Some(FrameArming::of(2, &cond));
         }
         assert_eq!(
-            arming_for(&view, &line, None, STOCK_CONDITION_SLOTS),
+            arming_for(&view, &line, None, CLASS_I_SLOTS),
             vec![disarm()],
             "not reached: one disarm"
         );
         view.weapons.clear();
         assert_eq!(
-            arming_for(&view, &line, Some(80_000), STOCK_CONDITION_SLOTS),
+            arming_for(&view, &line, Some(80_000), CLASS_I_SLOTS),
             Vec::new()
         );
         assert_eq!(
-            arming_for(&view, &line, None, STOCK_CONDITION_SLOTS),
+            arming_for(&view, &line, None, CLASS_I_SLOTS),
             Vec::new(),
             "D-UM-48"
         );
@@ -3354,7 +3357,7 @@ mod tests {
         let card = crate::arena::card::line(&arena.arena_cfg.reflex);
         let arm = |arena: &mut Arena| {
             let view = view_of(arena, RED);
-            for kind in arming_for(&view, &card, Some(100_000), STOCK_CONDITION_SLOTS) {
+            for kind in arming_for(&view, &card, Some(100_000), CLASS_I_SLOTS) {
                 let IntentKind::Condition(arming) = kind else {
                     panic!("an arming");
                 };
@@ -3378,12 +3381,7 @@ mod tests {
         // 17b cut M1b.3: the view shows the machine gun in S2 on the terms
         // wanted, so the arming answers nothing — no re-arm, and S2 stands.
         assert_eq!(
-            arming_for(
-                &view_of(&arena, RED),
-                &card,
-                Some(100_000),
-                STOCK_CONDITION_SLOTS
-            ),
+            arming_for(&view_of(&arena, RED), &card, Some(100_000), CLASS_I_SLOTS),
             Vec::new(),
             "nothing to re-arm: the view shows S2 as wanted"
         );

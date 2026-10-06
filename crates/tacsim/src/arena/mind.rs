@@ -10,8 +10,11 @@
 //! * **The state** a mind carries between thinks ([`MindState`], one row per
 //!   hull on [`Arena::minds`]): its think counter, the think in flight, its
 //!   memory's bytes, its notice buffer, its range memory, the standing order a
-//!   squad gave it and its strikes. Hashed (`crate::arena::hash`, item 3c) and
-//!   carried by a snapshot, because every one of them decides a later intent.
+//!   squad gave it, its strikes, its drop (`dropped`) and its seal's digest.
+//!   Hashed (`crate::arena::hash`, item 3c) and carried by a snapshot, because
+//!   every one of them decides a later intent — except that, from 17b cut
+//!   M3.2 until 17b cut M3.6, the pending think's answer, `dropped` and
+//!   `seal_digest` are carried and **not yet folded** (`hash.rs`' item 3c).
 //! * **The view** ([`Arena::mind_view`], [`MindView`]): the hull's keyframe and
 //!   nothing finer (D-UM-4). It is built by the one builder a pilot's frame is
 //!   built by (`Arena::frame_for`) and projected through the one row formatter
@@ -29,6 +32,16 @@
 //!   [`IntentSource::Mind`], so a seat that changed hands between the two
 //!   refuses the stale thought `Epoch`, and each refusal is appended to the
 //!   mind's own notice buffer (D-UM-8: *a refusal is never silent*).
+//! * **The answer in flight** (D-UM-23 as amended 2026-10-04; 17b cut M3.2):
+//!   between the think and its landing the think's ANSWER — the epochs it
+//!   recorded, its intents and its memory — rides the row itself
+//!   ([`MindState::pending`], a [`PendingThink`]), so a snapshot taken between
+//!   the two carries it and the resumed landing lands exactly what the think
+//!   answered. It is never recomputed: the view the think read is gone (its
+//!   notices drained, its ranges settled), and a second think on the resumed
+//!   view is another answer. The scratch table `Arena::mind_landings` that
+//!   held the answer until 17b cut M3.2 — and lost it across a resume — is
+//!   retired.
 //!
 //! # What runs a think
 //!
@@ -116,15 +129,193 @@ pub const MIND_STRIKES_TO_DROP: u8 = 3;
 /// [`Arena::mind_view`] truncates at the mind's own `rows`).
 pub const STOCK_CONTACT_ROWS: usize = 12;
 
-/// **The think in flight** (D-UM-23's two rows): which think and the lattice
-/// millisecond it was taken at. `Some` from the think to its landing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// **The think in flight and its answer** (D-UM-23 as amended 2026-10-04):
+/// which think, the lattice millisecond it was taken at, and — since 17b cut
+/// M3.2 — what it answered: the epochs of the hull's three channels at the
+/// think, the intents in emission order and the memory the runner handed
+/// back. `Some` from a clean think to its landing, which consumes it.
+///
+/// **Carried, never recomputed**: a snapshot between the think and its
+/// landing writes the answer, and the resumed landing lands it at the
+/// recorded epochs, so a resume between a think at `N` and its landing at
+/// `N + 1` reproduces the hash sequence. **Folded, from 17b cut M3.6**: until
+/// then `crate::arena::hash`'s item 3c folds the presence, `think_seq` and
+/// `t_ms` alone, M2's bytes (the head of `hash.rs` says so).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingThink {
     /// The think's sequence number.
     pub think_seq: u64,
     /// The arena millisecond it was taken at — its lattice millisecond.
     pub t_ms: i64,
+    /// **Each channel's epoch at the think**, in [`Channel::ALL`]'s order
+    /// (helm, sensors, fire) — what the landing's intents are stamped with,
+    /// so a seat that changed hands in between refuses them `Epoch`
+    /// (D-UM-13).
+    pub epochs: [u64; 3],
+    /// **The intents**, in the order the runner emitted them (at most
+    /// [`MIND_INTENTS_MAX`]: a longer answer is a fault and is never
+    /// pending).
+    pub intents: Vec<IntentKind>,
+    /// **The memory the runner handed back** (D-UM-30): canonical bytes,
+    /// written to [`MindState::memory`] at the landing.
+    pub memory: Vec<u8>,
+}
+
+impl PendingThink {
+    /// **The epoch `channel` was at when the think was taken** — the stamp
+    /// the landing authorises the channel's intents against.
+    #[must_use]
+    pub fn epoch(&self, channel: Channel) -> u64 {
+        Channel::ALL
+            .iter()
+            .position(|on| *on == channel)
+            .and_then(|at| self.epochs.get(at))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// **Why a hull was dropped to the ROM** (17b cut M3.2; doc 17 §8, §13;
+/// D-UM-31, D-UM-32): three faulted thinks running, a core the seal recorded
+/// that is gone, or a mind this engine cannot run. Written to
+/// [`MindState::dropped`] — by the think arm on strikes from this cut, and on
+/// the other two causes from 17b cut M3.4, which journals every drop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DropCause {
+    /// Three faulted thinks running (D-UM-31).
+    Strikes,
+    /// The core the seal recorded is destroyed (D-UM-34).
+    Core,
+    /// The mind's ABI is not this engine's (D-UM-46).
+    Abi,
+}
+
+impl DropCause {
+    /// The word: `strikes`, `core`, `abi`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            DropCause::Strikes => "strikes",
+            DropCause::Core => "core",
+            DropCause::Abi => "abi",
+        }
+    }
+}
+
+/// **A sortie's id** (17b cut M3.2; doc 17 §13, D-UM-45): one hull's one
+/// match, minted at the seal as [`SortieId::in_match`] — unique per (unit,
+/// match) by construction, deterministic (no clock, no counter).
+/// `#[serde(transparent)]`: the number.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct SortieId(pub u64);
+
+impl SortieId {
+    /// **The sortie of `unit` in match `match_id`**: `(match_id << 32) |
+    /// unit` — the match in the high word, the object number in the low.
+    #[must_use]
+    pub fn in_match(match_id: u64, unit: ObjId) -> SortieId {
+        SortieId((match_id << 32) | u64::from(unit.0))
+    }
+
+    /// **No sortie** — `0`, what [`SealRef::none`] carries until 17b cut
+    /// M3.3 lays seals down.
+    #[must_use]
+    pub const fn none() -> SortieId {
+        SortieId(0)
+    }
+}
+
+/// **What flies a sealed hull** (17b cut M3.2; doc 17 §13, D-UM-45): the
+/// reflex controller, the native stock mind, or a scripted runner. Its words
+/// are `reflex`, `native` and `scripted` — never the scripted engine's own
+/// name, which the arena library may not contain
+/// (`crates/mush-contract-tests/tests/arena_library.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SealEngine {
+    /// The reflex controller (a fill, or a pilot's hull a release hands to
+    /// it).
+    Reflex,
+    /// The native stock mind (T1 of doc 17 §17).
+    Native,
+    /// A scripted runner over the sealed source.
+    Scripted,
+}
+
+impl SealEngine {
+    /// The word: `reflex`, `native`, `scripted`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SealEngine::Reflex => "reflex",
+            SealEngine::Native => "native",
+            SealEngine::Scripted => "scripted",
+        }
+    }
+}
+
+/// **The seal a hull was checked out under, as the arena keeps it** (17b cut
+/// M3.2; doc 17 §13, D-UM-45, D-UM-46): the sortie, the seal's digest, the
+/// core class the seal recorded, the class the mind thinks at, the engine,
+/// whether the core is governed and whether the sortie is closed.
+///
+/// On [`crate::arena::state::UnitState::seal`]: **laid down empty**
+/// ([`SealRef::none`]) by [`Arena::new`] in this cut; 17b cut M3.3 fills it
+/// from the custody's seal at check-out. Carried by the snapshot (the unit's
+/// derive) and **NOT folded into `state_hash`**: a per-match constant, as
+/// [`Arena::odds_floor_permille`] is, whose `closed` moves only with a ledger
+/// line (17b cut M3.6's `sortie_closed`), which the hash folds through the
+/// ledger's sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealRef {
+    /// The sortie ([`SortieId::in_match`]).
+    pub sortie: SortieId,
+    /// The seal's SHA-256 digest (zero until 17b cut M3.3).
+    pub digest: [u8; 32],
+    /// **The core the seal recorded** — the class fitted at check-out, which
+    /// 17b cut M3.4's cause-`core` drop keys on (a hull sealed with a core
+    /// whose core is now gone).
+    pub core_class: crate::arena::core::CoreClass,
+    /// The class the sealed mind thinks at (`min(rated, core)`).
+    pub class: crate::arena::core::CoreClass,
+    /// What flies the hull.
+    pub engine: SealEngine,
+    /// Whether the core runs under the governor (doc 17 §10).
+    pub governed: bool,
+    /// Whether the sortie is closed (17b cut M3.6's `sortie_closed` sets it,
+    /// once).
+    pub closed: bool,
+}
+
+impl SealRef {
+    /// **No seal**: sortie 0, a zero digest, Class 0 recorded and thought at,
+    /// the reflex, governed, open — what [`Arena::new`] lays down on every
+    /// unit until 17b cut M3.3 seals them.
+    #[must_use]
+    pub const fn none() -> SealRef {
+        SealRef {
+            sortie: SortieId::none(),
+            digest: [0; 32],
+            core_class: crate::arena::core::CoreClass::Zero,
+            class: crate::arena::core::CoreClass::Zero,
+            engine: SealEngine::Reflex,
+            governed: true,
+            closed: false,
+        }
+    }
+}
+
+impl Default for SealRef {
+    /// [`SealRef::none`].
+    fn default() -> Self {
+        SealRef::none()
+    }
 }
 
 /// **What one unit mind holds between thinks** (17b cut M1a.5; doc 17 §3, §6,
@@ -132,7 +323,11 @@ pub struct PendingThink {
 ///
 /// Every field decides a later intent, so every field is hashed
 /// (`crate::arena::hash`, item 3c) and carried by a snapshot — the argument
-/// the reflex machine's own row was folded on (16b cut N.1).
+/// the reflex machine's own row was folded on (16b cut N.1) — except that,
+/// from 17b cut M3.2 until 17b cut M3.6, the pending think's answer
+/// ([`PendingThink`]'s `epochs`, `intents` and `memory`), [`MindState::dropped`]
+/// and [`MindState::seal_digest`] are carried and **not yet folded**
+/// (`hash.rs`' item 3c; 17b cut M3.6 folds them, the cut's one re-bless).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindState {
@@ -160,14 +355,27 @@ pub struct MindState {
     /// **The faults counted against the mind** (D-UM-31; 17b cut M2.2): the
     /// faulted thinks running, at most [`MIND_STRIKES_TO_DROP`]. The think arm
     /// writes it — a faulted think `min(strikes + 1, 3)`, a clean think `0`
-    /// only while it is under three — so **`strikes == 3` IS the drop**
-    /// ([`MindState::dropped`]; D-UM-32's "for the rest of the sortie"): a
-    /// rule on this hashed, carried field, so no shape or format moves. 17b
-    /// cut M3 replaces the rule with its own `dropped` field and a
-    /// `MindDropped` line; until then a possess-then-release lays down a
-    /// fresh row (`Arena::release_mind` removes it) and un-drops the hull —
-    /// M3's to close.
+    /// only while the row is not dropped. **Since 17b cut M3.2 the drop is
+    /// its own field, [`MindState::dropped`]**, which the think arm writes
+    /// `Some(DropCause::Strikes)` the think the strikes reach three; the
+    /// count itself no longer IS the drop. Until 17b cut M3.5 keeps the row
+    /// across a possess, a possess-then-release lays down a fresh row
+    /// (`Arena::release_mind` removes it) and un-drops the hull — M3.5's to
+    /// close.
     pub strikes: u8,
+    /// **The drop to the ROM, and why** (17b cut M3.2; D-UM-31, D-UM-32, doc
+    /// 17 §13): `None` while the mind flies, `Some(cause)` for the rest of the
+    /// sortie once dropped. Written by the think arm on the third strike
+    /// (`Some(DropCause::Strikes)`) so nothing regresses before 17b cut M3.4
+    /// journals every drop (`MindDropped`) and writes the other two causes.
+    /// Carried by the snapshot; **NOT folded into `state_hash` until 17b cut
+    /// M3.6** (on strikes it is a function of `strikes`, which is folded).
+    pub dropped: Option<DropCause>,
+    /// **The digest of the seal the mind was checked out under** (17b cut
+    /// M3.2; doc 17 §13, D-UM-45): zero until 17b cut M3.3 lays seals down.
+    /// Carried by the snapshot; **NOT folded into `state_hash` until 17b cut
+    /// M3.6** (§13's fold list; the one re-bless).
+    pub seal_digest: [u8; 32],
     /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11,
     /// D-UM-43): Standard Doctrine's stock card, laid down as the Line preset
     /// over the arena's own doctrine ([`MindState::fresh`]). Handed to every
@@ -203,17 +411,18 @@ impl MindState {
             ranges: BTreeMap::new(),
             order: None,
             strikes: 0,
+            dropped: None,
+            seal_digest: [0; 32],
             card: crate::arena::card::line(cfg),
         }
     }
 
-    /// **Whether the hull is dropped to doctrine** (17b cut M2.2; D-UM-31,
-    /// D-UM-32): three faulted thinks running — `strikes` at
-    /// [`MIND_STRIKES_TO_DROP`], where the think arm holds it. Handed to every
-    /// think as [`ThinkJob::dropped`].
+    /// **Whether the hull is dropped to the ROM** (17b cut M2.2; D-UM-31,
+    /// D-UM-32): since 17b cut M3.2 a read of [`MindState::dropped`]'s field —
+    /// `Some` of any cause. Handed to every think as [`ThinkJob::dropped`].
     #[must_use]
-    pub const fn dropped(&self) -> bool {
-        self.strikes >= MIND_STRIKES_TO_DROP
+    pub fn dropped(&self) -> bool {
+        self.dropped.is_some()
     }
 
     /// **Append one notice to the buffer** (D-UM-8), dropping the oldest past
@@ -224,23 +433,6 @@ impl MindState {
             self.notices.remove(0);
         }
     }
-}
-
-/// **One think, waiting to land** (D-UM-21, D-UM-13): what the runner answered
-/// and the epochs of the hull's three channels at the think. Scratch on
-/// [`Arena::mind_landings`]: neither hashed nor carried.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Landing {
-    /// The think it is the answer of.
-    pub think_seq: u64,
-    /// Each channel's epoch at the think, in [`Channel::ALL`]'s order — what
-    /// the landing's intents are stamped with, so a seat that changed hands in
-    /// between refuses them `Epoch`.
-    pub epochs: [(Channel, u64); 3],
-    /// The intents, in the order the runner emitted them.
-    pub intents: Vec<IntentKind>,
-    /// The memory the runner handed back.
-    pub memory: Vec<u8>,
 }
 
 /// **What runs a think** (doc 17 §7, D-UM-1): the seam the sim task plugs a
@@ -617,11 +809,11 @@ impl Arena {
             .schedule(at, DueKind::MindThink { unit, think_seq });
     }
 
-    /// **Take a hull back from its mind** (17b cut M1a.5): the row, the think
-    /// waiting to land and every think and landing on the heap.
+    /// **Take a hull back from its mind** (17b cut M1a.5): the row — with it
+    /// the think waiting to land, whose answer the row carries (17b cut M3.2)
+    /// — and every think and landing on the heap.
     pub(crate) fn release_mind(&mut self, unit: ObjId) {
         self.minds.remove(&unit);
-        self.mind_landings.remove(&unit);
         self.due.retain(|kind| match kind {
             DueKind::MindThink { unit: on, .. } | DueKind::MindLand { unit: on, .. } => *on != unit,
             _ => true,
@@ -751,10 +943,13 @@ impl Arena {
     /// memory as it was), clears `pending` (counted `mind_faults`, and
     /// `mind_overflows` when the length tripped; 17b cut M3 journals the
     /// fault), writes a strike (`strikes = min(strikes + 1,`
-    /// [`MIND_STRIKES_TO_DROP`]`)`, D-UM-31 — three running are the drop,
-    /// [`MindState::dropped`]) and schedules **no** landing, because there is
-    /// nothing to land; otherwise the strikes are cleared unless the hull is
-    /// dropped, the [`Landing`] is put on the scratch, `pending` set, and a
+    /// [`MIND_STRIKES_TO_DROP`]`)`, D-UM-31 — the third running writes the
+    /// drop, [`MindState::dropped`] `= Some(DropCause::Strikes)`, 17b cut
+    /// M3.2; 17b cut M3.4 journals it) and schedules **no** landing, because
+    /// there is nothing to land; otherwise the strikes are cleared unless the
+    /// hull is dropped, `pending` is set to the think AND its answer (17b cut
+    /// M3.2, D-UM-23 as amended: the epochs, the intents, the memory — a
+    /// [`PendingThink`], carried by the snapshot), and a
     /// [`DueKind::MindLand`] scheduled one substep later. Either way the next
     /// think is scheduled the mind's `think_ms` after this one's own
     /// millisecond (17b cut M3.1: [`Arena::mind_profile`] read at the
@@ -794,7 +989,9 @@ impl Arena {
         // 17b cut M2.2: the view behind an `Arc`, wrapped once, so a scripted
         // runner shares it for the think instead of copying it.
         let view = Arc::new(view);
-        let epochs = Channel::ALL.map(|channel| (channel, self.epochs.current(unit, channel)));
+        // D-UM-13: the three epochs at the think, in `Channel::ALL`'s order —
+        // carried on the pending answer (17b cut M3.2) to the landing.
+        let epochs = Channel::ALL.map(|channel| self.epochs.current(unit, channel));
         counters.thinks = counters.thinks.saturating_add(1);
         // D-UM-21: the landing millisecond, read at collection — scheduled
         // below and handed to the runner (17b cut M1a.6), which plans its
@@ -853,9 +1050,14 @@ impl Arena {
             if overflowed {
                 counters.mind_overflows = counters.mind_overflows.saturating_add(1);
             }
-            // 17b cut M2.2 (D-UM-31, D-UM-32): a strike, held at three — the
-            // drop (`MindState::dropped`).
+            // 17b cut M2.2 (D-UM-31, D-UM-32): a strike, held at three.
             state.strikes = state.strikes.saturating_add(1).min(MIND_STRIKES_TO_DROP);
+            // 17b cut M3.2: the third running writes the drop on its own
+            // field, so nothing regresses before 17b cut M3.4 journals it
+            // (`MindDropped`) — once, a drop is never re-caused.
+            if state.strikes >= MIND_STRIKES_TO_DROP && state.dropped.is_none() {
+                state.dropped = Some(DropCause::Strikes);
+            }
             state.pending = None;
             state.ranges = ranges;
             let mut notices = view.notices.clone();
@@ -863,23 +1065,21 @@ impl Arena {
             let excess = notices.len().saturating_sub(MIND_NOTICES);
             notices.drain(..excess);
             state.notices = notices;
-            self.mind_landings.remove(&unit);
         } else {
             // D-UM-31's reset: a clean think clears the strikes — but never a
             // drop, which is for the rest of the sortie (D-UM-32).
-            if state.strikes < MIND_STRIKES_TO_DROP {
+            if !state.dropped() {
                 state.strikes = 0;
             }
-            state.pending = Some(PendingThink { think_seq, t_ms });
-            self.mind_landings.insert(
-                unit,
-                Landing {
-                    think_seq,
-                    epochs,
-                    intents: result.intents,
-                    memory: result.memory,
-                },
-            );
+            // D-UM-23 as amended (17b cut M3.2): the answer rides the row to
+            // its landing, so a snapshot between the two carries it.
+            state.pending = Some(PendingThink {
+                think_seq,
+                t_ms,
+                epochs,
+                intents: result.intents,
+                memory: result.memory,
+            });
             self.due
                 .schedule(land_at, DueKind::MindLand { unit, think_seq });
         }
@@ -901,14 +1101,16 @@ impl Arena {
     ///
     /// In order:
     ///
-    /// 1. the scratch for this think is taken. **None** — a match resumed from
-    ///    a snapshot, which never carries the scratch — clears the hull's
-    ///    `pending` row if it names this think and lands nothing: the residual
-    ///    17b cut M3's recompute closes;
+    /// 1. nothing unless the hull's row holds a [`PendingThink`] for THIS
+    ///    think (a stale landing — a think since faulted, a row since laid
+    ///    down afresh — lands nothing);
     /// 2. nothing after the match ended, nor for a unit gone, a wreck or no
     ///    longer a mind's (a reclaimed seat: `Arena::set_controller` took the
-    ///    scratch already);
-    /// 3. the memory is written and `pending` cleared;
+    ///    row already) — the row's `pending` is left as it stands;
+    /// 3. **the answer is taken off the row** (17b cut M3.2; D-UM-23 as
+    ///    amended): `pending` cleared, its memory written — the answer the
+    ///    think gave, carried across a snapshot if one fell between the two,
+    ///    and never recomputed;
     /// 4. a standing order whose deadline has come is cleared, with one
     ///    `order_expired` line journalled by the arena and the squad marked for
     ///    its next signal, as the reflex controller's expiry does;
@@ -929,25 +1131,14 @@ impl Arena {
         t_ms: i64,
         counters: &mut ReflexCounters,
     ) {
-        let landing = if self
-            .mind_landings
-            .get(&unit)
-            .is_some_and(|landing| landing.think_seq == think_seq)
-        {
-            self.mind_landings.remove(&unit)
-        } else {
-            None
-        };
-        let Some(landing) = landing else {
-            if let Some(state) = self.minds.get_mut(&unit)
-                && state
-                    .pending
-                    .is_some_and(|pending| pending.think_seq == think_seq)
-            {
-                state.pending = None;
-            }
+        if !self.minds.get(&unit).is_some_and(|state| {
+            state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.think_seq == think_seq)
+        }) {
             return;
-        };
+        }
         if self.ended.is_some()
             || !self
                 .unit(unit)
@@ -955,24 +1146,16 @@ impl Arena {
         {
             return;
         }
-        let Landing {
-            epochs,
-            intents,
-            memory,
-            ..
-        } = landing;
         let Some(state) = self.minds.get_mut(&unit) else {
             return;
         };
-        state.memory = memory;
-        state.pending = None;
-        self.expire_mind_order(unit, t_ms, counters);
-        let epoch_of = |channel: Channel| {
-            epochs
-                .iter()
-                .find(|(on, _)| *on == channel)
-                .map_or(0, |(_, epoch)| *epoch)
+        let Some(mut answer) = state.pending.take() else {
+            return;
         };
+        state.memory = std::mem::take(&mut answer.memory);
+        let intents = std::mem::take(&mut answer.intents);
+        self.expire_mind_order(unit, t_ms, counters);
+        let epoch_of = |channel: Channel| answer.epoch(channel);
         let landed = self.apply_machine_intents(
             unit,
             &intents,
@@ -1275,9 +1458,25 @@ mod tests {
     /// length), the notices (one more, and two `Miss`es that differ only in
     /// their reason), the range memory (an id and a figure), the order (its
     /// presence, each objective's payload, `hold_fire`, the band, the deadline
-    /// and the squad) and `strikes`.
+    /// and the squad) and `strikes`. (17b cut M3.2: the pending ANSWER,
+    /// `dropped` and `seal_digest` are carried and not yet folded —
+    /// `crate::arena::hash`'s
+    /// `m3_the_carried_answer_drop_seal_and_classes_are_not_yet_folded` pins
+    /// that; 17b cut M3.6 folds them and adds them here.)
     /// One change to a mind row.
     type Probe = Box<dyn Fn(&mut MindState)>;
+
+    /// A pending think with an empty answer — what the hash folds of it
+    /// until 17b cut M3.6 is its presence, `think_seq` and `t_ms`.
+    fn pending_at(think_seq: u64, t_ms: i64) -> PendingThink {
+        PendingThink {
+            think_seq,
+            t_ms,
+            epochs: [0; 3],
+            intents: Vec::new(),
+            memory: Vec::new(),
+        }
+    }
 
     #[test]
     fn m1a5_every_mind_field_moves_the_state_hash() {
@@ -1303,10 +1502,7 @@ mod tests {
             (
                 "pending",
                 Box::new(|s| {
-                    s.pending = Some(PendingThink {
-                        think_seq: 0,
-                        t_ms: 0,
-                    });
+                    s.pending = Some(pending_at(0, 0));
                 }),
             ),
             ("memory", Box::new(|s| s.memory = vec![1])),
@@ -1348,31 +1544,19 @@ mod tests {
             (
                 "pending.t_ms",
                 with(&|s| {
-                    s.pending = Some(PendingThink {
-                        think_seq: 0,
-                        t_ms: 0,
-                    });
+                    s.pending = Some(pending_at(0, 0));
                 }),
                 with(&|s| {
-                    s.pending = Some(PendingThink {
-                        think_seq: 0,
-                        t_ms: 250,
-                    });
+                    s.pending = Some(pending_at(0, 250));
                 }),
             ),
             (
                 "pending.think_seq",
                 with(&|s| {
-                    s.pending = Some(PendingThink {
-                        think_seq: 0,
-                        t_ms: 0,
-                    });
+                    s.pending = Some(pending_at(0, 0));
                 }),
                 with(&|s| {
-                    s.pending = Some(PendingThink {
-                        think_seq: 1,
-                        t_ms: 0,
-                    });
+                    s.pending = Some(pending_at(1, 0));
                 }),
             ),
             (
@@ -2259,5 +2443,120 @@ mod tests {
         assert_eq!(decode_memory(b"[1, 2]"), Memory::new());
         assert_eq!(decode_memory(br#"{"alpha": -1}"#), Memory::new());
         assert_eq!(encode_memory(&Memory::new()), b"{}".to_vec());
+    }
+
+    /// **17b cut M3.2: the seal's and the drop's values and words are pinned**
+    /// (doc 17 §13, D-UM-45, D-UM-31, D-UM-32) — what 17b cut M3.3 builds the
+    /// seal and the record on. [`SortieId::in_match`] puts the match in the
+    /// high word and the object number in the low; [`SealRef::none`] is sortie
+    /// 0, a zero digest, Class 0 recorded and thought at, the reflex, governed
+    /// and open, and is the `Default`; every [`DropCause`] and [`SealEngine`]
+    /// serialises as its `as_str` word and reads back from it; [`Arena::new`]
+    /// lays `none()` on every unit; and a FILLED seal (Class III recorded,
+    /// Class II thought at, scripted, ungoverned, closed) on a unit survives a
+    /// snapshot round trip field for field.
+    #[test]
+    fn m3_the_seal_and_the_drop_carry_their_values_and_words() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::snapshot::Snapshot;
+        assert_eq!(SortieId::in_match(7, ObjId(4)), SortieId((7_u64 << 32) | 4));
+        assert_eq!(SortieId::in_match(7, ObjId(4)).0, 30_064_771_076);
+        assert_eq!(
+            SortieId::in_match(1, ObjId(u32::MAX)).0,
+            (1_u64 << 32) | u64::from(u32::MAX),
+            "the object number fills the low word and never carries"
+        );
+        assert_eq!(SortieId::none(), SortieId(0));
+        assert_eq!(SortieId::default(), SortieId::none());
+        assert_eq!(
+            serde_json::to_value(SortieId(9)).ok(),
+            Some(serde_json::json!(9)),
+            "transparent: the number"
+        );
+        let none = SealRef::none();
+        assert_eq!(none.sortie, SortieId(0));
+        assert_eq!(none.digest, [0_u8; 32]);
+        assert_eq!(none.core_class, CoreClass::Zero);
+        assert_eq!(none.class, CoreClass::Zero);
+        assert_eq!(none.engine, SealEngine::Reflex);
+        assert!(none.governed, "none() is governed");
+        assert!(!none.closed, "none() is open");
+        assert_eq!(SealRef::default(), none);
+        for cause in [DropCause::Strikes, DropCause::Core, DropCause::Abi] {
+            assert_eq!(
+                serde_json::to_value(cause).ok(),
+                Some(serde_json::json!(cause.as_str()))
+            );
+            assert_eq!(
+                serde_json::from_value::<DropCause>(serde_json::json!(cause.as_str())).ok(),
+                Some(cause)
+            );
+        }
+        assert_eq!(
+            [DropCause::Strikes, DropCause::Core, DropCause::Abi].map(DropCause::as_str),
+            ["strikes", "core", "abi"]
+        );
+        for engine in [SealEngine::Reflex, SealEngine::Native, SealEngine::Scripted] {
+            assert_eq!(
+                serde_json::to_value(engine).ok(),
+                Some(serde_json::json!(engine.as_str()))
+            );
+            assert_eq!(
+                serde_json::from_value::<SealEngine>(serde_json::json!(engine.as_str())).ok(),
+                Some(engine)
+            );
+        }
+        assert_eq!(
+            [SealEngine::Reflex, SealEngine::Native, SealEngine::Scripted].map(SealEngine::as_str),
+            ["reflex", "native", "scripted"]
+        );
+
+        // `Arena::new` lays `none()` on every unit.
+        let mut arena = minded();
+        assert!(arena.units.iter().all(|unit| unit.seal == SealRef::none()));
+        // A filled seal round-trips through a snapshot.
+        let filled = SealRef {
+            sortie: SortieId::in_match(3, RED),
+            digest: [0x5a; 32],
+            core_class: CoreClass::III,
+            class: CoreClass::II,
+            engine: SealEngine::Scripted,
+            governed: false,
+            closed: true,
+        };
+        let Some(red) = arena.units.iter_mut().find(|unit| unit.id == RED) else {
+            panic!("red is fielded");
+        };
+        red.seal = filled;
+        let Ok(snapshot) = Snapshot::encode(&arena) else {
+            panic!("an arena between pulses encodes");
+        };
+        // The state is one JSON string (`snapshot.rs`' head): parse it.
+        let state: Option<serde_json::Value> = snapshot
+            .document
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|text| serde_json::from_str(text).ok());
+        let red_seal = state
+            .as_ref()
+            .and_then(|state| state.get("units"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|units| {
+                units
+                    .iter()
+                    .find(|unit| unit.get("id") == serde_json::to_value(RED).ok().as_ref())
+            })
+            .and_then(|unit| unit.get("seal"))
+            .cloned();
+        assert_eq!(
+            red_seal.as_ref().and_then(|seal| seal.get("engine")),
+            Some(&serde_json::json!("scripted")),
+            "{red_seal:?}"
+        );
+        let Ok(back) = Snapshot::decode(&snapshot.document, (*arena.definition).clone()) else {
+            panic!("and decodes");
+        };
+        assert_eq!(back.unit(RED).map(|unit| unit.seal), Some(filled));
+        assert_eq!(back.unit(BLUE).map(|unit| unit.seal), Some(SealRef::none()));
     }
 }

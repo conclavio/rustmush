@@ -267,8 +267,6 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
 mod tests {
     use mush_mind::memory::{Value, decode};
 
-    use crate::arena::conditions::STOCK_CONDITION_SLOTS;
-
     use super::super::fixture::{self, card, context_on, think_with, view};
     use super::*;
 
@@ -307,7 +305,12 @@ mod tests {
             i64::from(EXPOSURE_FLANK),
             i64::from(EXPOSURE_REAR),
             i64::from(ARRIVE_CELLS),
-            i64::try_from(STOCK_CONDITION_SLOTS).unwrap(),
+            i64::try_from(
+                crate::arena::core::ClassTable::STOCK
+                    .row(crate::arena::core::CoreClass::I)
+                    .slots,
+            )
+            .unwrap(),
         ];
         assert_eq!(memory.get("facts"), Some(&Value::Ints(expected)));
         assert_eq!(memory.get("blocked"), Some(&Value::Bool(true)));

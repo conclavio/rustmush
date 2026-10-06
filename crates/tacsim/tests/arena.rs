@@ -5584,8 +5584,9 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// `minds` section, empty on both unstepped fixtures (neither fields a mind),
 /// is the one new line `state.minds: object` — 392 lines to 393. A mind row's
 /// own fields, `Controller::Mind` and the two mind due kinds are under the pin
-/// on no fixture here (the variants' round trip is
-/// `m1a5_a_snapshot_carries_the_minds_and_not_their_landings`).
+/// on no fixture here (the variants' round trip was
+/// `m1a5_a_snapshot_carries_the_minds_and_not_their_landings`, 17b cut M3.2's
+/// [`m3_a_snapshot_carries_the_minds_with_their_pending_answers`] since).
 ///
 /// **Re-blessed by 17b cut M1b.1 with `SNAPSHOT_FORMAT` 7**: three new
 /// carried leaves each unstepped fixture fills — `state.conditions: object`
@@ -5601,9 +5602,28 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// a cited `Fire`, a disarm and an arming in `Arena.pending` (empty between
 /// pulses, so no stepped snapshot carries one) in `snapshot.rs`'
 /// `af1_every_keyed_map_in_the_tree_is_one_json_writes`.
-const AF1_SHAPE_DIGEST: &str = "314c016efdc142e9867ebf8de6fe5f92354c6a8d4b89cf1c5488d13ee20d0747";
+///
+/// **Re-blessed by 17b cut M3.2 with `SNAPSHOT_FORMAT` 8** (D-UM-16, D-UM-23
+/// as amended, D-UM-45): 46 new lines, the two carried shapes each unstepped
+/// fixture fills — `state.classes: object` with its four rows
+/// (`state.classes.0`, `.I`, `.II`, `.III`, each an object and its eight
+/// figures `think_ms`, `ops`, `rows`, `odds_rows`, `slots`, `memory_keys`,
+/// `line_to`, `profiles` as numbers: 37 lines; the class table captured at
+/// check-out, carried) and `state.units.[].seal: object` with its seven
+/// fields (`sortie` a number, `digest` an array and its `[]` numbers,
+/// `core_class` and `class` strings, `engine` a string, `governed` and
+/// `closed` bools: 9 lines; laid down empty on every unit) — 396 lines to
+/// 442. The fixtures stay coreless (17b cut M3's F2) and field no mind and
+/// arm no slot, so the mind row's new shapes (`PendingThink`'s `epochs`,
+/// `intents` and `memory`, `MindState.dropped` and `seal_digest`) and the
+/// condition row's (a vector as wide as the core's slots where it was a
+/// fixed pair) are under the pin on no fixture here: their round trips are
+/// [`m3_a_snapshot_carries_the_minds_with_their_pending_answers`],
+/// `tests/minds.rs`' `m3_a_resumed_landing_lands_the_carried_answer` and
+/// `snapshot.rs`' `af1_every_keyed_map_in_the_tree_is_one_json_writes`.
+const AF1_SHAPE_DIGEST: &str = "5710d7c33ad33929aaa45bb7084ece66fe88a3bf397ea272301dd90abe7cfa2d";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 396;
+const AF1_SHAPE_LINES: usize = 442;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5663,7 +5683,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        7,
+        8,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -5786,9 +5806,10 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         found: 2,
         expected: SNAPSHOT_FORMAT,
     };
-    // 17b cut M1a.4 moved the format to 4, 17b cut M1a.5 to 5 and 17b cut L.1
-    // to 6; a format-2 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 7);
+    // 17b cut M1a.4 moved the format to 4, 17b cut M1a.5 to 5, 17b cut L.1
+    // to 6, 17b cut M1b.1 to 7 and 17b cut M3.2 to 8; a format-2 document is
+    // still refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 8);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -5867,9 +5888,10 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
         found: 3,
         expected: SNAPSHOT_FORMAT,
     };
-    // 17b cut M1a.5 moved the format to 5 and 17b cut L.1 to 6; a format-3
-    // document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 7);
+    // 17b cut M1a.5 moved the format to 5, 17b cut L.1 to 6, 17b cut M1b.1
+    // to 7 and 17b cut M3.2 to 8; a format-3 document is still refused by
+    // name.
+    assert_eq!(SNAPSHOT_FORMAT, 8);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -5877,25 +5899,32 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     );
 }
 
-/// **17b cut M1a.5: a snapshot carries the minds and not their scratch, and a
-/// format-4 document is refused by name** (doc 17 §3, §6, D-UM-23;
-/// `snapshot.rs`' `SNAPSHOT_FORMAT` 5).
+/// **17b cut M3.2: a snapshot carries the minds with their pending answers,
+/// and a format-7 and a format-4 document are refused by name** (doc 17 §3,
+/// §6, D-UM-23 as amended 2026-10-04; `snapshot.rs`' `SNAPSHOT_FORMAT` 8).
+///
+/// Was 17b cut M1a.5's `m1a5_a_snapshot_carries_the_minds_and_not_their_landings`,
+/// which put an answer in the scratch table (`Arena::mind_landings`) and
+/// asserted it was NOT carried: D-UM-23 as amended inverts that premise — the
+/// answer is carried, never recomputed — and 17b cut M3.2 retired the
+/// scratch.
 ///
 /// The mover of [`scripted_arena`] is handed to a mind (`Arena::set_controller`,
 /// which lays its row down and schedules its first think), and its row is
-/// written by hand in every field — a think in flight, memory bytes, two
-/// notices, a range and a standing order — with a landing put in scratch. The
-/// encoded state carries `minds` with the row and the `mind_think` on the heap;
-/// the decode hands back the same row, an empty scratch, the default runner
-/// and the same hash (the scratch is not hashed). The same document stamped
-/// `"format": 4` — what every snapshot written between 17b cuts M1a.4 and
-/// M1a.5 says — is refused as `Format { found: 4, expected: 5 }` by both the
-/// head read and the decode.
+/// written by hand in every field — a think in flight WITH its answer (the
+/// three epochs, two intents, the memory it handed back), memory bytes, two
+/// notices, a range, a standing order, a drop and a seal digest. The encoded
+/// state carries `minds` with the row — `pending` with the answer, field for
+/// field — and the `mind_think` on the heap, and no `mind_landings` key; the
+/// decode hands back the same row, the default runner and the same hash. The
+/// same document stamped `"format": 7` — what every snapshot written between
+/// 17b cuts M1b.1 and M3.2 says — and stamped `"format": 4` are refused as
+/// `Format { found, expected: 8 }` by both the head read and the decode.
 #[test]
-fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
-    use tacsim::arena::mind::{Landing, MindState, PendingThink};
+fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
+    use tacsim::arena::mind::{DropCause, MindState, PendingThink};
     use tacsim::arena::perception::{FrameNotice, FrameOrder, MindObjective};
-    use tacsim::arena::state::{Channel, ContactId, Controller};
+    use tacsim::arena::state::{ContactId, Controller};
     let mut arena = scripted_arena();
     arena.set_controller(
         MOVER,
@@ -5903,12 +5932,21 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
         tacsim::arena::reflex::ReflexState::Withdraw,
     );
     assert!(arena.minds.contains_key(&MOVER), "the adoption laid a row");
+    let answer = PendingThink {
+        think_seq: 2,
+        t_ms: 2_482,
+        epochs: [4, 0, 7],
+        intents: vec![
+            IntentKind::Startup,
+            IntentKind::Lock {
+                contact: ContactId(77),
+            },
+        ],
+        memory: b"{\"leg\":2}".to_vec(),
+    };
     let row = MindState {
         think_seq: 3,
-        pending: Some(PendingThink {
-            think_seq: 2,
-            t_ms: 2_482,
-        }),
+        pending: Some(answer.clone()),
         memory: vec![0xde, 0xad],
         notices: vec![
             FrameNotice::PowerOnline,
@@ -5927,31 +5965,31 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
             max_range_band: None,
             expires_ms: 40_000,
         }),
-        strikes: 0,
+        strikes: 3,
+        dropped: Some(DropCause::Strikes),
+        seal_digest: [0x5e; 32],
         card: tacsim::arena::card::line(&arena.arena_cfg.reflex),
     };
     arena.minds.insert(MOVER, row.clone());
-    arena.mind_landings.insert(
-        MOVER,
-        Landing {
-            think_seq: 2,
-            epochs: Channel::ALL.map(|channel| (channel, 0)),
-            intents: vec![IntentKind::Startup],
-            memory: vec![1],
-        },
-    );
     let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
     let state = state_of(&snapshot);
-    assert!(
-        state
-            .get("minds")
-            .and_then(|minds| minds.get(MOVER.0.to_string()))
-            .is_some(),
-        "the state carries the mind's row"
+    let carried = state
+        .get("minds")
+        .and_then(|minds| minds.get(MOVER.0.to_string()))
+        .cloned()
+        .expect("the state carries the mind's row");
+    assert_eq!(
+        carried
+            .get("pending")
+            .cloned()
+            .and_then(|pending| serde_json::from_value::<PendingThink>(pending).ok()),
+        Some(answer),
+        "the row carries the pending answer, field for field"
     );
+    assert_eq!(carried.get("dropped"), Some(&serde_json::json!("strikes")));
     assert!(
         state.get("mind_landings").is_none() && state.get("mind_runner").is_none(),
-        "and neither the scratch nor the runner"
+        "no scratch table and no runner"
     );
     assert!(
         state.to_string().contains("\"mind_think\""),
@@ -5959,8 +5997,11 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
     );
     let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
         .expect("the document decodes");
-    assert_eq!(decoded.minds.get(&MOVER), Some(&row), "the row came back");
-    assert!(decoded.mind_landings.is_empty(), "the scratch did not");
+    assert_eq!(
+        decoded.minds.get(&MOVER),
+        Some(&row),
+        "the row came back, its answer with it"
+    );
     // 17b cut M1a.6: the default runner is the native stock mind.
     assert!(
         format!("{:?}", decoded.mind_runner).contains("NativeStockMind"),
@@ -5971,20 +6012,22 @@ fn m1a5_a_snapshot_carries_the_minds_and_not_their_landings() {
         tacsim::arena::hash::state_hash(&arena)
     );
 
-    let mut four = snapshot.document.clone();
-    four["format"] = serde_json::json!(4);
-    let refused = SnapshotError::Format {
-        found: 4,
-        expected: SNAPSHOT_FORMAT,
-    };
-    // 17b cut L.1 moved the format to 6; a format-4 document is still refused
-    // by name.
-    assert_eq!(SNAPSHOT_FORMAT, 7);
-    assert_eq!(Snapshot::head(&four), Err(refused.clone()));
-    assert_eq!(
-        Snapshot::decode(&four, (*arena.definition).clone()).map(|_| ()),
-        Err(refused)
-    );
+    // 17b cut M3.2 moved the format to 8: a format-7 document (17b cut
+    // M1b.1's) and a format-4 one are refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 8);
+    for old in [7_u32, 4] {
+        let mut stale = snapshot.document.clone();
+        stale["format"] = serde_json::json!(old);
+        let refused = SnapshotError::Format {
+            found: old,
+            expected: SNAPSHOT_FORMAT,
+        };
+        assert_eq!(Snapshot::head(&stale), Err(refused.clone()));
+        assert_eq!(
+            Snapshot::decode(&stale, (*arena.definition).clone()).map(|_| ()),
+            Err(refused)
+        );
+    }
 }
 
 /// **17b cut L.1: a snapshot carries every standing order's author, and a
@@ -6063,7 +6106,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
         found: 5,
         expected: SNAPSHOT_FORMAT,
     };
-    assert_eq!(SNAPSHOT_FORMAT, 7);
+    assert_eq!(SNAPSHOT_FORMAT, 8);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),

@@ -392,17 +392,21 @@ refused as you type it:
 A rule with no odds term at all asks for the floor: `FIRE cannon WHEN aspect =
 rear` fires on a rear shot at 10% or better, and its reply says so.
 
-**Two slots.** A tank has two, `S1` and `S2`; the first weapon you arm takes
-the first free one, and arming a weapon again replaces its rule and keeps its
-slot. The reply names no slot, because the slot is given when the order lands:
-the number shows under the weapon's row on `WEAPONSTATUS` —
+**Your core's slots.** A tank has as many slots as its core carries: a line
+tank four, the heavy six, a scout two. They are `S1` upward, given in the
+order you arm: the first weapon you arm takes the first free one, and arming a
+weapon again replaces its rule and keeps its slot. The reply names no slot,
+because the slot is given when the order lands: the number shows under the
+weapon's row on `WEAPONSTATUS` —
 
   cannon  ready  40 of 40 round(s)  band 1 of 2  62% to hit
     S1: >=60% side/rear
 
-— on the cockpit screen's weapons pane, and in every line the slot says. A third
-weapon while both stand is taken as you type it, and the tank refuses it a
-moment later, as a notice under the reply:
+— on the cockpit screen's weapons pane, and in every line the slot says. Every
+gun on a shipped tank has a slot of its own. Only a hull with fewer slots than
+weapons runs out: there, one more weapon while every slot stands is taken as
+you type it, and the tank refuses it a moment later, as a notice under the
+reply:
 `FIRE cannon refused. Every slot is armed; FIRE <weapon> OFF frees one.`
 Free a slot first and the new rule takes it, even typed straight after
 `FIRE cannon OFF`.
@@ -557,10 +561,10 @@ guessing which breech is busy.
 Arming a weapon has three refusals of its own, each naming the weapon:
 `FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.`
 for a rule outside the eight, `FIRE cannon refused. Every slot is armed; FIRE
-<weapon> OFF frees one.` with both slots taken, and `FIRE cannon refused. The
-Compact floor is 10%; a condition may not ask for less.` for a chance under the
-floor. The full table is always the arena's, a moment after the reply; the
-floor can come from it too, in the same words.
+<weapon> OFF frees one.` with every slot your core carries taken, and `FIRE
+cannon refused. The Compact floor is 10%; a condition may not ask for less.`
+for a chance under the floor. The full table is always the arena's, a moment
+after the reply; the floor can come from it too, in the same words.
 
 **Any** order can also be refused by the arena itself a moment after the cockpit
 passed it on — you and the arena are a pulse apart, and the tank may have been

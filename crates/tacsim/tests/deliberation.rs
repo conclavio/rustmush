@@ -1915,7 +1915,8 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
                 Snapshot::head(&snapshot.document).map(|head| head.format),
                 Ok(SNAPSHOT_FORMAT)
             );
-            assert_eq!(SNAPSHOT_FORMAT, 7);
+            // 17b cut M3.2 moved the format to 8.
+            assert_eq!(SNAPSHOT_FORMAT, 8);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();

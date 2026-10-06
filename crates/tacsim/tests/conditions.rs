@@ -132,9 +132,15 @@ fn tactical_unit(id: ObjId) -> TacticalUnit {
     // `tacsim::definitions::core::core_component` — the shape `bind` lays
     // down from content — so the hull holds two condition slots and a mind
     // on it thinks at Class I's figures, as it did before cores existed.
+    tactical_unit_classed(id, tacsim::arena::core::CoreClass::I)
+}
+
+/// [`tactical_unit`] with its hull's core at `class` (17b cut M3.2: the
+/// capacity fixtures' Class II line tank and Class III hull).
+fn tactical_unit_classed(id: ObjId, class: tacsim::arena::core::CoreClass) -> TacticalUnit {
     let (core, capability) = tacsim::definitions::core::core_component(
         "hull",
-        tacsim::arena::core::CoreClass::I,
+        class,
         dref("component", "tacsim.unit.line_tank.core"),
         dref("schema", tacsim::definitions::unit::CORE_RULES_SCHEMA),
     )
@@ -1159,6 +1165,21 @@ fn refused_now(
     wall: i64,
     kinds: Vec<IntentKind>,
 ) -> Vec<(FrameNotice, tacsim::arena::step::Frame)> {
+    told_now(arena, wall, kinds)
+        .into_iter()
+        .filter(|(notice, _)| matches!(notice, FrameNotice::Refused { .. }))
+        .collect()
+}
+
+/// **EVERY notice the red pilot is sent on one zero-`dt` pulse delivering
+/// `kinds`** (17b cut M3.2), each with the frame it rode — not the `refused`
+/// ones alone, so a transcript built from it (`heard`) holds any other line
+/// the pulse told the pilot.
+fn told_now(
+    arena: &mut Arena,
+    wall: i64,
+    kinds: Vec<IntentKind>,
+) -> Vec<(FrameNotice, tacsim::arena::step::Frame)> {
     let intents: Vec<Intent> = kinds
         .into_iter()
         .enumerate()
@@ -1173,9 +1194,22 @@ fn refused_now(
             frame
                 .notices
                 .iter()
-                .filter(|notice| matches!(notice, FrameNotice::Refused { .. }))
                 .map(|notice| (notice.clone(), frame.clone()))
         })
+        .collect()
+}
+
+/// Every line of `told`, as the cockpit's own `notice_line` renders it.
+fn heard(told: &[(FrameNotice, tacsim::arena::step::Frame)]) -> Vec<String> {
+    told.iter().map(sentence).collect()
+}
+
+/// The lines of `heard` that name the missiles.
+fn about_missiles(heard: &[String]) -> Vec<String> {
+    heard
+        .iter()
+        .filter(|line| line.contains("missiles"))
+        .cloned()
         .collect()
 }
 
@@ -1692,7 +1726,11 @@ fn m1b1_hold_fire_stops_a_slot_and_never_a_pilot() {
 /// second, the last refused `queue_full` at phase 2 (as a `LOCK`'s) and read
 /// with its weapon, `FIRE cannon refused. …`; the authored heavy
 /// (`tacsim.unit.heavy_mk1`, three weapons — `cannon`, `machine_gun`,
-/// `missiles`) arms two and the third is refused from phase 4 as `FIRE
+/// `missiles`) **with its core degraded to Class I** (17b cut M3.2: its
+/// `core_class` cell set to 1 by a plan before `Arena::new`, so its capacity
+/// is two — the shipped command core holds six and refuses nothing, which
+/// `m3_the_condition_row_is_the_cores_slots` pins) arms two and the third is
+/// refused from phase 4 as `FIRE
 /// missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.`, while
 /// an under-floor third is `Unlawful` (the law before the count); a re-arm
 /// keeps the slot's number, replaces its terms and clears its
@@ -1726,23 +1764,8 @@ fn m1b1_arming_counts_on_the_seat_window_and_a_third_weapon_is_no_slot() {
         "the arming's queue_full reads as a FIRE refusal with its weapon"
     );
 
-    // The heavy.
-    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
-        .expect("the fielded content binds");
-    let key = mush_core::CanonicalId::new("tacsim.unit.heavy_mk1").expect("a canonical id");
-    let spec = catalog.specs.get(&key).expect("the heavy's entry");
-    let binding = catalog.bindings.get(&key).expect("the heavy's binding");
-    let cells = tacsim::definitions::to_tactical_unit(spec, binding, RED).expect("the heavy");
-    let heavy = tacsim::match_::custody_unit(
-        &catalog,
-        cells,
-        RED,
-        Team::Red,
-        facing(5, 8, 90_000),
-        0,
-        Controller::Pilot,
-        1,
-    );
+    // The heavy, its core degraded to Class I (17b cut M3.2): two slots.
+    let heavy = shipped_heavy(Some(1));
     let weapons: Vec<String> = heavy.weapons.iter().map(|w| w.id.to_string()).collect();
     assert_eq!(weapons, ["cannon", "machine_gun", "missiles"]);
     let mut arena = arena_of(vec![
@@ -1819,6 +1842,402 @@ fn m1b1_arming_counts_on_the_seat_window_and_a_third_weapon_is_no_slot() {
     assert!(arena.conditions.is_empty_for(RED));
     assert!(arena.held_said.is_empty());
     assert_eq!(STOCK_CONDITION_SLOTS, 2);
+}
+
+/// **The shipped heavy**, checked out on red at (5, 8) facing east under a
+/// pilot, through the production `custody_unit` — and, for `Some(n)`, its
+/// core's `core_class` cell set to `n` by a plan BEFORE the check-out (17b
+/// cut M3.2: a degraded command core; `None` the shipped Class III).
+fn shipped_heavy(core_cell: Option<i64>) -> CustodyUnit {
+    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let key = mush_core::CanonicalId::new("tacsim.unit.heavy_mk1").expect("a canonical id");
+    let spec = catalog.specs.get(&key).expect("the heavy's entry");
+    let binding = catalog.bindings.get(&key).expect("the heavy's binding");
+    let mut cells = tacsim::definitions::to_tactical_unit(spec, binding, RED).expect("the heavy");
+    if let Some(value) = core_cell {
+        cells = core_cell_at(&cells, value);
+    }
+    tacsim::match_::custody_unit(
+        &catalog,
+        cells,
+        RED,
+        Team::Red,
+        facing(5, 8, 90_000),
+        0,
+        Controller::Pilot,
+        1,
+    )
+}
+
+/// `unit` with its core's `core_class` cell set to `value` by one plan
+/// through `mush_tactics::apply` — the one writer of a unit's cells.
+fn core_cell_at(unit: &TacticalUnit, value: i64) -> TacticalUnit {
+    let addr = mush_tactics::CellAddr::Component {
+        component: mush_tactics::ComponentId::new("core").expect("a component"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::CORE_CLASS_CELL)
+            .expect("a cell"),
+    };
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell { addr, value }],
+        None,
+        None,
+    )
+    .expect("a plan");
+    mush_tactics::apply(unit, &plan, 0)
+        .expect("the plan applies")
+        .0
+}
+
+/// `n` weapon rows of distinct ids, `w1`..`wn`, each a machine gun on the
+/// hull.
+fn guns(n: usize) -> Vec<WeaponSummary> {
+    (1..=n)
+        .map(|k| WeaponSummary {
+            id: SmolStr::new(format!("w{k}")),
+            ..machine_gun()
+        })
+        .collect()
+}
+
+/// **17b cut M3.2: the condition row is the core's slots** (doc 17 §5, §9,
+/// D-UM-16: *up to the core's slots*; the plan's F5). On the shipped heavy
+/// (the command core, Class III) a pilot arms its three guns through phase 4
+/// with no refusal — S1, S2, S3 — the row laid down six wide, and a fourth
+/// arming naming a weapon the hull does not carry is `NoWeapon`, never
+/// `NoSlot`. On a hand-built Class III hull with SEVEN weapon rows the first
+/// six take S1 to S6 and the seventh is `NoSlot`; a `truncate` to Class II's
+/// four clears S5 and S6 and answers their numbers, so their `held_said`
+/// rows go with them (17b cut M3.4's `Arena::truncate_slots` does that drop;
+/// here the answered numbers drive it) while S1 to S4 and their rows stay. A
+/// `Controller::Pilot` line tank (a Class II core) arms four distinct guns
+/// and the fifth is `NoSlot`.
+#[test]
+fn m3_the_condition_row_is_the_cores_slots() {
+    use tacsim::arena::core::{ClassTable, CoreClass, MAX_CONDITION_SLOTS};
+    let front = aspect_mask(&[Aspect::Front]);
+    // The shipped heavy: three accepted, six wide.
+    let mut arena = arena_of(vec![
+        shipped_heavy(None),
+        unit(BLUE, Team::Blue, facing(9, 8, 0), Vec::new(), None),
+    ]);
+    assert_eq!(arena.slot_capacity(RED), 6, "the command core's six");
+    let refused = refused_now(
+        &mut arena,
+        0,
+        vec![
+            arm(cond("cannon", 100, front)),
+            arm(cond("machine_gun", 100, front)),
+            arm(cond("missiles", 100, front)),
+        ],
+    );
+    assert!(refused.is_empty(), "no refusal: {refused:?}");
+    assert_eq!(
+        (
+            arena.conditions.slot_of(RED, "cannon"),
+            arena.conditions.slot_of(RED, "machine_gun"),
+            arena.conditions.slot_of(RED, "missiles")
+        ),
+        (Some(1), Some(2), Some(3))
+    );
+    assert_eq!(arena.conditions.slots(RED).len(), 6, "the row is six wide");
+    assert_eq!(
+        arena.resolve_arming(RED, &Arming::Arm(cond("laser", 100, front)), 0),
+        Err(Refusal::NoWeapon),
+        "a fourth weapon id the hull does not carry is no weapon, not no slot"
+    );
+
+    // A hand-built Class III hull with seven guns: six slots, the seventh
+    // refused.
+    let seven = CustodyUnit {
+        unit: tactical_unit_classed(RED, CoreClass::III),
+        ..unit(RED, Team::Red, facing(5, 8, 90_000), guns(7), None)
+    };
+    let mut arena = arena_of(vec![
+        seven,
+        unit(BLUE, Team::Blue, facing(9, 8, 0), Vec::new(), None),
+    ]);
+    for k in 1..=MAX_CONDITION_SLOTS {
+        assert_eq!(
+            arena.resolve_arming(RED, &Arming::Arm(cond(&format!("w{k}"), 100, front)), 0),
+            Ok(Some(u8::try_from(k).expect("a slot number")))
+        );
+    }
+    assert_eq!(
+        arena.resolve_arming(RED, &Arming::Arm(cond("w7", 100, front)), 0),
+        Err(Refusal::NoSlot),
+        "the seventh past the core's six"
+    );
+    // Held rows on S1, S5 and S6; the core drops to Class II's four.
+    for slot in [1_u8, 5, 6] {
+        arena.held_said.insert((RED, slot, ContactId(7)), 1_000);
+    }
+    let four = ClassTable::STOCK.row(CoreClass::II).slots;
+    assert_eq!(four, 4);
+    let cleared = arena.conditions.truncate(RED, four);
+    assert_eq!(
+        cleared,
+        vec![5, 6],
+        "S5 and S6 cleared, their numbers answered"
+    );
+    arena
+        .held_said
+        .retain(|(on, slot, _), _| !(*on == RED && cleared.contains(slot)));
+    assert_eq!(
+        arena.held_said.keys().copied().collect::<Vec<_>>(),
+        vec![(RED, 1, ContactId(7))],
+        "their held rows went with them; S1's stayed"
+    );
+    assert_eq!(arena.conditions.slots(RED).len(), 4);
+    assert_eq!(arena.conditions.slot_of(RED, "w4"), Some(4));
+    assert_eq!(arena.conditions.slot_of(RED, "w5"), None);
+    assert_eq!(arena.conditions.slot_of(RED, "w6"), None);
+
+    // A pilot's line tank (Class II): four distinct guns, the fifth refused.
+    let line = CustodyUnit {
+        unit: tactical_unit_classed(RED, CoreClass::II),
+        ..unit(RED, Team::Red, facing(5, 8, 90_000), guns(5), None)
+    };
+    assert_eq!(line.controller, Controller::Pilot);
+    let mut arena = arena_of(vec![
+        line,
+        unit(BLUE, Team::Blue, facing(9, 8, 0), Vec::new(), None),
+    ]);
+    assert_eq!(arena.slot_capacity(RED), 4);
+    let refused = refused_now(
+        &mut arena,
+        0,
+        (1..=5)
+            .map(|k| arm(cond(&format!("w{k}"), 100, front)))
+            .collect(),
+    );
+    assert_eq!(
+        refused
+            .iter()
+            .filter_map(|(notice, _)| notice.refusal())
+            .collect::<Vec<_>>(),
+        vec![Refusal::NoSlot],
+        "the fifth, from phase 4"
+    );
+    assert_eq!(
+        (1..=5)
+            .map(|k| arena.conditions.slot_of(RED, &format!("w{k}")))
+            .collect::<Vec<_>>(),
+        vec![Some(1), Some(2), Some(3), Some(4), None]
+    );
+}
+
+/// **17b cut M3.2: the count is told in two lines on a degraded heavy** (the
+/// plan's F5; 17b cut M2.2's ruling (c)) — the transcript
+/// `tests/cockpit.rs`' `m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_sentence`
+/// pinned on the shipped heavy until the command core's six slots made it
+/// unreachable there. The heavy's core degraded to Class I (two slots, a
+/// plan before `Arena::new`): with the cannon and the machine gun armed, the
+/// pilot's `FIRE missiles WHEN odds >= 40` is parsed off the frame by the
+/// cockpit's own parser and answered by its own reply — the acceptance — and
+/// the arming's landing a pulse on is refused `NoSlot`, told as the arena's
+/// notice: the two lines, in that order and no other line about the missiles
+/// among EVERY notice the pulse told the pilot (`told_now`, not the
+/// refusals alone).
+/// Then the race on a full table (S2 freed, then the machine gun and the
+/// missiles armed in ONE pulse: the machine gun takes S2 and the missiles
+/// are refused in the same words) and the freed slot (the table full again,
+/// then `FIRE mg OFF` and the missiles' arming in ONE pulse: the missiles
+/// take the freed S2).
+#[test]
+fn m3_the_count_is_told_in_two_lines_on_a_degraded_heavy() {
+    let mut arena = arena_of(vec![
+        shipped_heavy(Some(1)),
+        unit(BLUE, Team::Blue, facing(9, 8, 0), Vec::new(), None),
+    ]);
+    assert_eq!(arena.slot_capacity(RED), 2, "the degraded core's two");
+    let refused = refused_now(
+        &mut arena,
+        0,
+        vec![
+            arm(cond("cannon", 600, ASPECTS_ANY)),
+            arm(cond("machine_gun", 300, ASPECTS_ANY)),
+        ],
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+    // The pilot's frame, as the cockpit reads it.
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let out = arena.step(1_000, &[], &[]);
+    let frame = out
+        .frames
+        .iter()
+        .find(|(pilot, _)| *pilot == RED_PILOT)
+        .map(|(_, frame)| frame.clone())
+        .expect("the pilot's frame");
+    let rows = cockpit::frame_weapons(&frame);
+    let missiles = rows
+        .iter()
+        .find(|row| row.id == "missiles")
+        .expect("the missiles' row");
+    let (missiles_cond, echo) =
+        cockpit::parse_arming(missiles, "odds >= 40", &frame).expect("a lawful rule");
+    let mut transcript = vec![cockpit::arming_reply("missiles", &echo)];
+    // Every line the pulse told the pilot, not the refusals alone: the
+    // transcript is every one that names the missiles.
+    let told = told_now(&mut arena, 2_000, vec![arm(missiles_cond.clone())]);
+    assert_eq!(
+        told.iter()
+            .filter(|(notice, _)| matches!(notice, FrameNotice::Refused { .. }))
+            .map(sentence)
+            .collect::<Vec<_>>(),
+        vec!["FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.".to_owned()],
+        "the one refusal"
+    );
+    transcript.extend(about_missiles(&heard(&told)));
+    assert_eq!(
+        transcript,
+        vec![
+            "Arming missiles: fires your lock when your chance to hit is 40% or better.".to_owned(),
+            "FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.".to_owned(),
+        ],
+        "the acceptance, then the arena's refusal: two lines and no more"
+    );
+    assert_eq!(arena.conditions.slot_of(RED, "missiles"), None);
+    assert_eq!(arena.conditions.slot_of(RED, "machine_gun"), Some(2));
+
+    // The race: S2 freed, then two armings in one pulse.
+    let refused = refused_now(
+        &mut arena,
+        3_000,
+        vec![IntentKind::Condition(Arming::Disarm {
+            weapon: Some(SmolStr::new("machine_gun")),
+        })],
+    );
+    assert!(refused.is_empty());
+    assert_eq!(arena.conditions.slot_of(RED, "machine_gun"), None);
+    let told = told_now(
+        &mut arena,
+        4_000,
+        vec![
+            arm(cond("machine_gun", 300, ASPECTS_ANY)),
+            arm(missiles_cond.clone()),
+        ],
+    );
+    let raced =
+        vec!["FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.".to_owned()];
+    assert_eq!(
+        told.iter()
+            .filter(|(notice, _)| matches!(notice, FrameNotice::Refused { .. }))
+            .map(sentence)
+            .collect::<Vec<_>>(),
+        raced,
+        "the one refusal"
+    );
+    assert_eq!(
+        about_missiles(&heard(&told)),
+        raced,
+        "the one line about the missiles: {:?}",
+        heard(&told)
+    );
+    assert_eq!(arena.conditions.slot_of(RED, "machine_gun"), Some(2));
+    assert_eq!(arena.conditions.slot_of(RED, "missiles"), None);
+
+    // The freed slot: the disarm and the arming in one pulse.
+    let refused = refused_now(
+        &mut arena,
+        5_000,
+        vec![
+            IntentKind::Condition(Arming::Disarm {
+                weapon: Some(SmolStr::new("machine_gun")),
+            }),
+            arm(cond("missiles", 200, ASPECTS_ANY)),
+        ],
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(arena.conditions.slot_of(RED, "machine_gun"), None);
+    assert_eq!(arena.conditions.slot_of(RED, "missiles"), Some(2));
+    assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(1));
+}
+
+/// **17b cut M3.2: a slot past the second fires on its `WeaponReady`
+/// millisecond at three cadences** (16b §11's mandatory cross-tempo proof for
+/// the core-sized row; doc 17 §5, D-UM-16). The shipped heavy (the command
+/// core's six slots) under a pilot: `STARTUP` at 0, then at 5,000 the lock
+/// and three armings in one pulse — the machine gun (S1), the missiles (S2)
+/// and the cannon, which takes **S3**, a slot the fixed two-wide row never
+/// had. Each arming's evaluation fires at once at 5,000; the cannon's second
+/// shot from S3 lands at exactly `5,000 + cycle_ms` = 11,000 — MID-PULSE at
+/// the 5,000 ms cadence — and its third at 17,000 (mid-pulse again), the
+/// missiles' second from S2 at 15,000. Run to 20,000 (a pulse end at every
+/// cadence). One
+/// event list and one hash sequence at 5,000 / 1,000 / 500 ms and on the
+/// task's own wakes, and the row is six wide on every drive.
+#[test]
+fn m3_a_third_slot_fires_on_its_weapon_ready_millisecond_at_three_cadences() {
+    let contact = contact_of(RED, BLUE);
+    let make = || {
+        arena_of(vec![
+            shipped_heavy(None),
+            unit(
+                BLUE,
+                Team::Blue,
+                facing(9, 8, 0),
+                Vec::new(),
+                Some(sight(0)),
+            ),
+        ])
+    };
+    let script = || {
+        vec![
+            beat(0, vec![intent(RED, IntentKind::Startup, 1)]),
+            beat(
+                5_000,
+                vec![
+                    intent(RED, IntentKind::Lock { contact }, 2),
+                    intent(RED, arm(cond("machine_gun", 100, ASPECTS_ANY)), 3),
+                    intent(RED, arm(cond("missiles", 100, ASPECTS_ANY)), 4),
+                    intent(RED, arm(cond("cannon", 100, ASPECTS_ANY)), 5),
+                ],
+            ),
+        ]
+    };
+    let run = at_every_drive(make, 20_000, script);
+    let shots = cond_shots(&run);
+    let of_slot = |slot: u64| -> Vec<i64> {
+        shots
+            .iter()
+            .filter(|(_, on, _)| *on == slot)
+            .map(|(t_ms, _, _)| *t_ms)
+            .collect()
+    };
+    assert_eq!(
+        of_slot(3),
+        vec![5_000, 11_000, 17_000],
+        "S3's cannon at the arming and at each WeaponReady: {shots:?}"
+    );
+    assert_eq!(
+        of_slot(2),
+        vec![5_000, 15_000],
+        "S2's missiles at the arming and at their WeaponReady: {shots:?}"
+    );
+    assert_eq!(
+        of_slot(1).first(),
+        Some(&5_000),
+        "S1's machine gun from the arming: {shots:?}"
+    );
+    assert!(
+        shots
+            .iter()
+            .all(|(_, _, target)| *target == u64::from(BLUE.0)),
+        "every slot shot at the lock: {shots:?}"
+    );
+    assert!(
+        run.notices
+            .iter()
+            .all(|notice| !matches!(notice, FrameNotice::Refused { .. })),
+        "nothing the pilot typed was refused: {:?}",
+        run.notices
+    );
+    // The row, six wide on every drive (the arena at the end of one).
+    let mut arena = make();
+    let _ = replay(&mut arena, Drive::Every(500), 20_000, &script());
+    assert_eq!(arena.conditions.slots(RED).len(), 6);
+    assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(3));
 }
 
 // ---------------------------------------------------------------------------
@@ -2092,7 +2511,8 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         state.notices.extend(carried.iter().cloned());
     }
     let snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
-    assert_eq!(snapshot.document["format"], 7);
+    // 17b cut M3.2 moved the format to 8.
+    assert_eq!(snapshot.document["format"], 8);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -2157,14 +2577,14 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 7
+            expected: 8
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 7
+            expected: 8
         })
     ));
 }
@@ -3823,9 +4243,12 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
             .iter()
             .map(|slot| slot.as_ref().map(|cond| cond.weapon.as_str()))
             .collect();
+        // 17b cut M3.2: the row is the HULL's (the laser tank's line core,
+        // Class II: four wide) while the mind, thinking at Class I, arms its
+        // two.
         assert_eq!(
             weapons,
-            vec![Some("laser"), Some("machine_gun")],
+            vec![Some("laser"), Some("machine_gun"), None, None],
             "the arena's slots at {}",
             arena.now_ms
         );

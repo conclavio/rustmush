@@ -50,7 +50,9 @@ use crate::arena::state::Arena;
 use crate::definitions::unit::{CORE_CAPABILITY, CORE_CLASS_CELL};
 
 /// **The most condition slots any class holds** (doc 17 §9's Class III
-/// `slots`): the width 17b cut M3.2 sizes a hull's slot row to.
+/// `slots`): the widest a hull's slot row is laid down (17b cut M3.2,
+/// `crate::arena::conditions::ConditionTable::arm`), whatever capacity it is
+/// handed.
 pub const MAX_CONDITION_SLOTS: usize = 6;
 
 /// **A Compact core class** (D-UM-35): `0` — no core, the drive ROM alone —
@@ -437,9 +439,9 @@ impl Arena {
 
     /// **The condition slots the hull holds** (D-UM-35, D-UM-16): its core's
     /// row's `slots` — Class 0's one with no core — for a seated pilot and a
-    /// mind alike. 17b cut M3.1 reads it at `ConditionTable::arm`, under the
-    /// row's own width (`crate::arena::conditions::STOCK_CONDITION_SLOTS`)
-    /// until 17b cut M3.2 sizes the row by it.
+    /// mind alike. Read at every arming (`Arena::resolve_arming` hands it to
+    /// `ConditionTable::arm`), which since 17b cut M3.2 lays the hull's row
+    /// down this wide, at most [`MAX_CONDITION_SLOTS`].
     #[must_use]
     pub fn slot_capacity(&self, unit: ObjId) -> usize {
         let class = self
@@ -620,12 +622,13 @@ mod tests {
         arena.set_rated_class_for_tests(CoreClass::III);
         assert_eq!(arena.mind_class(RED), CoreClass::II, "the core caps it");
         arena.set_rated_class_for_tests(CoreClass::I);
+        // 17b cut M3.2: the drop is the row's own field, not its strikes.
         if let Some(row) = arena.minds.get_mut(&RED) {
-            row.strikes = crate::arena::mind::MIND_STRIKES_TO_DROP;
+            row.dropped = Some(crate::arena::mind::DropCause::Strikes);
         }
         assert_eq!(arena.mind_class(RED), CoreClass::Zero, "a dropped row");
         if let Some(row) = arena.minds.get_mut(&RED) {
-            row.strikes = 0;
+            row.dropped = None;
         }
         let addr = CellAddr::Component {
             component: mush_tactics::ComponentId::new("core").expect("a component"),

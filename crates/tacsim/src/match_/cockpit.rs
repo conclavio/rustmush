@@ -4687,9 +4687,9 @@ fn fire_off(
 /// `refusal_line` prints for the arena's word.
 ///
 /// **No count pre-check** (17b cut M2.2, the lead's ruling (c)): the arena's
-/// phase-4 `NoSlot` is the one wall for a full table. An arming past
-/// [`crate::arena::conditions::STOCK_CONDITION_SLOTS`] armed weapons is
-/// accepted here — its sentence printed at once — and refused by the arena a
+/// phase-4 `NoSlot` is the one wall for a full table. An arming past the
+/// hull's slots (its core's, `Arena::slot_capacity`, 17b cut M3.2 — reached
+/// only on a hull with fewer slots than weapons) is accepted here — its sentence printed at once — and refused by the arena a
 /// pulse later as the notice
 /// `FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.`
 /// (the declared effect; `help cockpit` says so). M1b.4 refused it here off

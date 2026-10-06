@@ -3069,11 +3069,14 @@ async fn mind_match_to_five_seconds(
 /// Class I `think_ms` is 500 has thought more often by its 5,000 ms snapshot
 /// than the same match spawned on the stock table — every think after the
 /// first reads the captured row (`Arena::new` laid the first on the stock
-/// grid). The snapshot does NOT carry the table yet: its decode reads
-/// `ClassTable::STOCK` whatever the check-out captured — the declared gap of
-/// `Arena::classes`, which 17b cut M3.2 closes (and inverts this assertion).
+/// grid). **Since 17b cut M3.2 the snapshot carries the table**
+/// (`SNAPSHOT_FORMAT` 8): its decode hands back the table the check-out
+/// captured — 17b cut M3.1 pinned the opposite (the decode read
+/// `ClassTable::STOCK`, the declared gap of `Arena::classes`) under the name
+/// `m3_the_class_table_is_captured_at_check_out_and_resumes_stock`, and this
+/// cut inverts that last assertion and renames the test.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn m3_the_class_table_is_captured_at_check_out_and_resumes_stock() {
+async fn m3_the_class_table_is_captured_at_check_out_and_carried_by_the_resume() {
     use tacsim::arena::core::{ClassTable, CoreClass};
     let seed = SEEDS[31].0;
     let mut arena_cfg = arena_at(1_000);
@@ -3093,8 +3096,7 @@ async fn m3_the_class_table_is_captured_at_check_out_and_resumes_stock() {
     );
     assert_eq!(stock_table, ClassTable::STOCK);
     assert_eq!(
-        quick_table,
-        ClassTable::STOCK,
-        "until 17b cut M3.2 a resume reads the stock table"
+        quick_table, quick,
+        "a resume reads the table the check-out captured (17b cut M3.2)"
     );
 }

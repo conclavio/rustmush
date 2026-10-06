@@ -528,9 +528,10 @@ pub enum Refusal {
     /// pilot's typed `FIRE` and a machine's are never gated.
     #[error("that shot has no warrant")]
     Unwarranted,
-    /// **An arming past the hull's slot count** (17b cut M1b.1;
-    /// `crate::arena::conditions::STOCK_CONDITION_SLOTS`) — the count's own
-    /// word, not the law's.
+    /// **An arming past the hull's slot count** (17b cut M1b.1) — the core's
+    /// slots since 17b cut M3.2 (`Arena::slot_capacity`, D-UM-16), so reached
+    /// only on a hull with fewer slots than weapons; the count's own word, not
+    /// the law's.
     #[error("every slot is armed")]
     NoSlot,
     /// **A condition under the match's Compact floor, or naming a target kind

@@ -15181,8 +15181,10 @@ fn m2_a_range_term_is_strict_and_the_reply_reads_the_typed_figure() {
         "so a printed 600 m is outside `range < 600 m`",
         "`WEAPONSTATUS` shows the last metre that fires (`under 599m`)",
         "A band and a range term that disagree are refused",
-        "A third weapon while both stand is taken as you type it, and the tank refuses it a \
-         moment later",
+        // 17b cut M3.2: "Your core's slots." — the count reached only on a
+        // hull with fewer slots than weapons.
+        "one more weapon while every slot stands is taken as you type it, and the tank \
+         refuses it a moment later",
     ] {
         assert!(help.contains(words), "help cockpit: {words:?}");
     }
@@ -15756,25 +15758,31 @@ async fn m1b4_fire_when_under_the_floor_is_refused_unlawful_as_typed_and_at_the_
 }
 
 /// **The arming through the composition** (17b cut M1b.4): on a pod fitted
-/// with the authored heavy (three guns, two slots) the gate's rule forwards
-/// one `Condition` and replies verbatim; the next frame's `armed.slot` is 1, a
+/// with the authored heavy (three guns) the gate's rule forwards one
+/// `Condition` and replies verbatim; the next frame's `armed.slot` is 1, a
 /// second arming on the machine gun lands as 2, and a re-arm of an armed gun
-/// replaces it in place. Two armings typed inside one pulse past a mirror
-/// showing one free slot: both are accepted, and the arena's own `NoSlot`
-/// reaches the pilot. The existing `FIRE` lines are untouched; the outside
+/// replaces it in place. The existing `FIRE` lines are untouched; the outside
 /// rule is the one sentence; `FIRE cannon OFF` replies and the frame's
 /// `armed` goes `null`.
 ///
 /// **17b cut M2.2, the lead's ruling (c)**: the cockpit's count pre-check is
-/// gone and the arena's phase-4 `NoSlot` is the one wall. M1b.4 refused the
-/// third gun at the cockpit; now — **the declared effect** — the plain
-/// full-table arming prints its acceptance sentence at once and the arena's
-/// `FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.`
-/// follows as a notice a pulse later: the two-line transcript, pinned in that
-/// order. And a `FIRE mg OFF` with a `FIRE missiles WHEN odds >= 20` typed
-/// straight after it, inside one pulse, is accepted by the cockpit and armed
-/// by the arena in the freed slot (the case the pre-check read wrongly off a
-/// mirror that still showed the machine gun armed).
+/// gone and the arena's phase-4 `NoSlot` is the one wall — two armings typed
+/// inside one pulse are both accepted by the cockpit, and a `FIRE mg OFF`
+/// with an arming typed straight after it, inside one pulse, against a mirror
+/// that still shows the machine gun armed, is accepted too.
+///
+/// **17b cut M3.2** (D-UM-16, the plan's F5): the heavy's command core
+/// (Class III) holds SIX slots, so its third gun is ACCEPTED — `Arming
+/// missiles: …` and the missiles in `S3` on `WEAPONSTATUS`, with no count
+/// refusal — where M1b.4 to M3.1 pinned the two-line count transcript (the
+/// acceptance, then the arena's `FIRE missiles refused. Every slot is armed;
+/// FIRE <weapon> OFF frees one.`). That transcript, the race on a full table
+/// and the freed slot moved to the arena, on a heavy whose core is degraded to
+/// Class I (two slots): `tests/conditions.rs`'
+/// `m3_the_count_is_told_in_two_lines_on_a_degraded_heavy`. Here the race's
+/// two armings both land (the machine gun back in S2, the missiles re-armed in
+/// place in S3), and the arming typed straight after `FIRE mg OFF` re-arms the
+/// missiles in place in S3 while S2 is freed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_sentence() {
     let mut rig = Rig::boot(2);
@@ -15858,34 +15866,41 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     })
     .await;
     assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
-    // 17b cut M2.2, ruling (c): the third is accepted by the cockpit and
-    // refused by the arena a pulse later — the two-line transcript.
+    // 17b cut M3.2 (D-UM-16): the command core holds six, so the third is
+    // ACCEPTED and lands in S3 — one line, and no count refusal (the two-line
+    // transcript lives on the degraded heavy in `tests/conditions.rs`).
     m1b4_next_second(&mut rig).await;
     let mark = rig.log.len();
     let accepted = "Arming missiles: fires your lock when your chance to hit is 40% or better.";
     assert_eq!(rig.say(0, "fire missiles when odds >= 40"), accepted);
     let full = format!("FIRE missiles refused. {count}");
-    m1b4_until(&mut rig, "the arena's count on a full table", |rig| {
-        m1a4_said_since(rig, pilot, mark).contains(&full)
+    m1b4_until(&mut rig, "the missiles in S3", |rig| {
+        m1b4_armed(rig, 0, "missiles").is_some()
     })
     .await;
-    let heard = m1a4_said_since(&rig, pilot, mark);
-    let at = |line: &str| heard.iter().position(|said| said == line);
-    assert!(
-        matches!((at(accepted), at(&full)), (Some(a), Some(b)) if a < b),
-        "the acceptance, then the arena's refusal: {heard:#?}"
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), Some((3, 400)));
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    let said = rig.say(0, "weaponstatus");
+    let missiles_row = said
+        .lines()
+        .position(|line| line.trim_start().starts_with("missiles"))
+        .unwrap_or_else(|| panic!("a missiles row: {said}"));
+    assert_eq!(
+        said.lines().nth(missiles_row + 1).map(str::trim),
+        Some("S3: >=40%"),
+        "S3 under the missiles' row: {said}"
     );
+    let heard = m1a4_said_since(&rig, pilot, mark);
     assert_eq!(
         heard
             .iter()
-            .filter(|said| said.contains("missiles"))
+            .filter(|said| said.contains("missiles refused"))
             .cloned()
             .collect::<Vec<String>>(),
-        vec![accepted.to_owned(), full.clone()],
-        "two lines and no more"
+        Vec::<String>::new(),
+        "no count refusal: {heard:#?}"
     );
-    assert_eq!(m1b4_armed(&rig, 0, "missiles"), None);
-    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    assert!(!heard.contains(&full));
     // A re-arm is not a new slot.
     m1b4_next_second(&mut rig).await;
     assert_eq!(
@@ -15904,8 +15919,12 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
 
     m1b4_next_second(&mut rig).await;
     // The race: S2 freed, and two armings typed inside one pulse past a
-    // mirror that has not moved. Both pass the pre-check; the arena gives the
-    // first S2 and refuses the second in the pre-check's own bytes.
+    // mirror that has not moved. Both pass the cockpit (ruling (c)); on the
+    // command core's six slots (17b cut M3.2) the arena gives the machine gun
+    // S2 again and re-arms the missiles in place in S3 at their NEW figure
+    // (45%, so the second arming of the pulse is proved to land) — no count
+    // refusal. (The race on a FULL table, refused, is
+    // `m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy`'s.)
     assert_eq!(
         rig.say(0, "fire mg off"),
         "Cleared: machine_gun fires only when you say."
@@ -15921,20 +15940,24 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
         "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
     );
     assert_eq!(
-        rig.say(0, "fire missiles when odds >= 40"),
-        "Arming missiles: fires your lock when your chance to hit is 40% or better."
+        rig.say(0, "fire missiles when odds >= 45"),
+        "Arming missiles: fires your lock when your chance to hit is 45% or better."
     );
-    let raced = format!("FIRE missiles refused. {count}");
-    m1b4_until(&mut rig, "the arena's count", |rig| {
-        m1a4_said_since(rig, pilot, mark).contains(&raced)
-    })
-    .await;
-    m1b4_until(&mut rig, "the machine gun in S2 again", |rig| {
-        m1b4_armed(rig, 0, "machine_gun").is_some()
-    })
+    m1b4_until(
+        &mut rig,
+        "the machine gun in S2 again, the missiles re-armed",
+        |rig| {
+            m1b4_armed(rig, 0, "machine_gun").is_some()
+                && m1b4_armed(rig, 0, "missiles") == Some((3, 450))
+        },
+    )
     .await;
     assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
-    assert_eq!(m1b4_armed(&rig, 0, "missiles"), None);
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), Some((3, 450)), "in place");
+    assert!(
+        !m1a4_said_since(&rig, pilot, mark).contains(&full),
+        "no count refusal"
+    );
 
     // Off: the reply, and the frame's `null`.
     m1b4_next_second(&mut rig).await;
@@ -15954,10 +15977,12 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
         "S2 kept its number"
     );
 
-    // 17b cut M2.2, ruling (c): the cannon back in S1 so the table is full,
-    // then `FIRE mg OFF` and the missiles typed straight after it, inside one
-    // pulse, against a mirror that still shows the machine gun armed — both
-    // accepted, and the arena frees S2 and arms the missiles there.
+    // 17b cut M2.2, ruling (c): the cannon back in S1, then `FIRE mg OFF`
+    // and the missiles typed straight after it, inside one pulse, against a
+    // mirror that still shows the machine gun armed — both accepted; the
+    // arena frees S2 and (17b cut M3.2, six slots) re-arms the missiles in
+    // place in S3. (The arming that TAKES the freed slot on a full table is
+    // `tests/conditions.rs`' degraded heavy's.)
     m1b4_next_second(&mut rig).await;
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 60"),
@@ -15982,12 +16007,155 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
         rig.say(0, "fire missiles when odds >= 20"),
         "Arming missiles: fires your lock when your chance to hit is 20% or better."
     );
+    m1b4_until(&mut rig, "the missiles re-armed in S3, S2 freed", |rig| {
+        m1b4_armed(rig, 0, "missiles") == Some((3, 200))
+            && m1b4_armed(rig, 0, "machine_gun").is_none()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), Some((3, 200)));
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), None);
+    assert!(
+        !m1a4_said_since(&rig, pilot, mark).contains(&full),
+        "no count refusal"
+    );
+}
+
+/// **17b cut M3.2: the count is two lines THROUGH THE VERB on a two-slot
+/// heavy** (17b cut M2.2's ruling (c); D-UM-16; the plan's F5). The shipped
+/// heavy's command core holds six since 17b cut M3.2, so
+/// [`m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_sentence`]
+/// can no longer fill its table; this match is checked out under a
+/// `[tacsim.minds].classes` table whose Class II and III rows carry two slots
+/// (the class table is the production lever that sizes the row,
+/// `Arena::slot_capacity`), so the same heavy, flown by the same verbs over
+/// the real composition, holds two. With the cannon and the machine gun
+/// armed, `FIRE missiles WHEN odds >= 40` is ACCEPTED by the cockpit — no
+/// count is read off the mirror (ruling (c)) — and refused by the arena a
+/// pulse later: every line the pilot hears about the missiles is exactly the
+/// acceptance, then the arena's count, in that order. The race on a full
+/// table (S2 freed, then the machine gun and the missiles typed inside one
+/// pulse past an unmoved mirror): both accepted, the machine gun retakes S2
+/// and the missiles are refused in the same words. The freed slot (the table
+/// full again, then `FIRE mg OFF` and the missiles typed straight after it
+/// against a mirror still showing the machine gun): both accepted, and the
+/// missiles take the freed S2 with no count refusal.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let mut cfg = config();
+    cfg.minds.classes = serde_json::from_value(serde_json::json!({
+        "II": { "slots": 2 },
+        "III": { "slots": 2 }
+    }))
+    .expect("a two-slot table");
+    assert_eq!(cfg.minds.classes.row(CoreClass::III).slots, 2);
+    assert_ne!(cfg.minds.classes, ClassTable::STOCK);
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim unit heavy_mk1");
+    assert!(said.contains("will field heavy_mk1"), "{said}");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let pilot = rig.pilot(0);
+    let count = "Every slot is armed; FIRE <weapon> OFF frees one.";
+    let full = format!("FIRE missiles refused. {count}");
+
+    // The table filled: the cannon in S1, the machine gun in S2.
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 60"),
+        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+    );
+    m1b4_until(&mut rig, "the cannon in S1", |rig| {
+        m1b4_armed(rig, 0, "cannon").is_some()
+    })
+    .await;
+    assert_eq!(
+        rig.say(0, "fire mg when odds >= 30"),
+        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+    );
+    m1b4_until(&mut rig, "the machine gun in S2", |rig| {
+        m1b4_armed(rig, 0, "machine_gun").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 600)));
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+
+    // The third: the cockpit's acceptance, then the arena's count.
+    m1b4_next_second(&mut rig).await;
+    let mark = rig.log.len();
+    let accepted = "Arming missiles: fires your lock when your chance to hit is 40% or better.";
+    assert_eq!(rig.say(0, "fire missiles when odds >= 40"), accepted);
+    m1b4_until(&mut rig, "the arena's count on a full table", |rig| {
+        m1a4_said_since(rig, pilot, mark).contains(&full)
+    })
+    .await;
+    let heard = m1a4_said_since(&rig, pilot, mark);
+    assert_eq!(
+        heard
+            .iter()
+            .filter(|said| said.contains("missiles"))
+            .cloned()
+            .collect::<Vec<String>>(),
+        vec![accepted.to_owned(), full.clone()],
+        "the acceptance, then the arena's refusal: two lines and no more"
+    );
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), None);
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+
+    // The race on a full table: S2 freed, then two armings in one pulse.
+    m1b4_next_second(&mut rig).await;
+    assert_eq!(
+        rig.say(0, "fire mg off"),
+        "Cleared: machine_gun fires only when you say."
+    );
+    m1b4_until(&mut rig, "S2 free", |rig| {
+        m1b4_armed(rig, 0, "machine_gun").is_none()
+    })
+    .await;
+    m1b4_next_second(&mut rig).await;
+    let mark = rig.log.len();
+    assert_eq!(
+        rig.say(0, "fire mg when odds >= 30"),
+        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+    );
+    assert_eq!(rig.say(0, "fire missiles when odds >= 40"), accepted);
+    m1b4_until(&mut rig, "the arena's count in the race", |rig| {
+        m1a4_said_since(rig, pilot, mark).contains(&full)
+    })
+    .await;
+    m1b4_until(&mut rig, "the machine gun in S2 again", |rig| {
+        m1b4_armed(rig, 0, "machine_gun").is_some()
+    })
+    .await;
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    assert_eq!(m1b4_armed(&rig, 0, "missiles"), None);
+
+    // The freed slot: `FIRE mg OFF` and the missiles in one pulse, past a
+    // mirror that still shows the machine gun in S2.
+    m1b4_next_second(&mut rig).await;
+    let mark = rig.log.len();
+    assert_eq!(
+        rig.say(0, "fire mg off"),
+        "Cleared: machine_gun fires only when you say."
+    );
+    assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
+    assert_eq!(
+        rig.say(0, "fire missiles when odds >= 20"),
+        "Arming missiles: fires your lock when your chance to hit is 20% or better."
+    );
     m1b4_until(&mut rig, "the missiles in the freed S2", |rig| {
         m1b4_armed(rig, 0, "missiles").is_some()
     })
     .await;
     assert_eq!(m1b4_armed(&rig, 0, "missiles"), Some((2, 200)));
     assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), None);
+    assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 600)));
     assert!(
         !m1a4_said_since(&rig, pilot, mark).contains(&full),
         "no count refusal"

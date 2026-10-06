@@ -195,6 +195,34 @@ thread_local! {
 ///    byte, an integer little-endian, no separator — because the card is what
 ///    a mind thinks under and a later sub-cut's runner reads it.
 ///
+///    **Carried from 17b cut M3.2, folded from 17b cut M3.6** (the cut's one
+///    re-bless, which moves `M2_CROSS_PLATFORM_PINS`): the pending think's
+///    ANSWER (`PendingThink`'s `epochs`, `intents` and `memory`, D-UM-23 as
+///    amended), the row's `dropped` (`DropCause`) and its `seal_digest` are
+///    carried by the snapshot and **not yet folded** — `pending` still folds
+///    `[1]`, `think_seq`, `t_ms` (or `[0]`), M2's bytes exactly, and two
+///    arenas differing only in one of them hash equal (the in-source probe
+///    `m3_the_carried_answer_drop_seal_and_classes_are_not_yet_folded` pins
+///    it; 17b cut M3.6 inverts it with the per-field probes). This is a
+///    **declared gap**, not a covered one: the answer is NOT a function of
+///    the folded state — the think read notices staged and drained inside
+///    one substep, which no substep hash ever folds (doc 17 §6; 17b cut
+///    M3.2's gate fixture
+///    `m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_cadences`
+///    turns on exactly that) — so until 17b cut M3.6 two runs differing only
+///    in a pending answer hash equal at every substep until its landing
+///    writes the memory or lands an intent, and D-UM-23's "hashed whole"
+///    closes the gap there. A drop on strikes IS a function of the folded
+///    `strikes` (the third strike writes both, and a clean think resets
+///    `strikes` only on a row not dropped).
+///
+///    **Never folded**: [`crate::arena::state::UnitState::seal`] (17b cut
+///    M3.2's `SealRef` — a per-match constant, the floor's argument below,
+///    whose `closed` moves only with a ledger line, 17b cut M3.6's
+///    `sortie_closed`, which the ledger's sequence folds) and
+///    [`Arena::classes`] (17b cut M3.1's class table, captured at check-out
+///    and carried from 17b cut M3.2: a per-match constant, likewise).
+///
 ///    **Item 3d, the condition slots** (17b cut M1b.1; doc 17 §5, D-UM-16),
 ///    right after item 3c: every row of [`Arena::conditions`], in unit-id
 ///    order and with **no count prefix** (an arena with no slot — every
@@ -932,7 +960,10 @@ fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::M
     use crate::deliberation::order::RangeBand;
     hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
     hash = fnv1a64_update(hash, &mind.think_seq.to_le_bytes());
-    match mind.pending {
+    // 17b cut M3.2: the answer the pending row carries (`epochs`, `intents`,
+    // `memory`), `dropped` and `seal_digest` are NOT folded here until 17b cut
+    // M3.6 — this head's item 3c says why.
+    match mind.pending.as_ref() {
         Some(pending) => {
             hash = fnv1a64_update(hash, &[1_u8]);
             hash = fnv1a64_update(hash, &pending.think_seq.to_le_bytes());
@@ -2091,5 +2122,127 @@ mod tests {
             );
             seen.push(hash);
         }
+    }
+
+    /// **17b cut M3.2: carried, not yet folded** (this file's head, item 3c).
+    /// Two arenas differing ONLY in a pending think's answer — its `intents`,
+    /// its `memory`, any one of its three `epochs` — or in a mind row's
+    /// `dropped` or `seal_digest`, hash EQUAL: M2's fold stands byte for byte
+    /// until 17b cut M3.6 folds them with the per-field probes (and inverts
+    /// this test). And two differing only in a unit's `seal` (every field of
+    /// the `SealRef`) or in the arena's class table hash equal for good: per-
+    /// match constants, never folded. The presence, `think_seq` and `t_ms` of
+    /// the pending think still move it, as they did.
+    #[test]
+    fn m3_the_carried_answer_drop_seal_and_classes_are_not_yet_folded() {
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::intents::IntentKind;
+        use crate::arena::mind::{
+            DropCause, MindState, PendingThink, SealEngine, SealRef, SortieId,
+        };
+        use crate::arena::state::ContactId;
+        let mut base = two_tanks();
+        base.minds.insert(
+            ObjId(4),
+            MindState {
+                pending: Some(PendingThink {
+                    think_seq: 2,
+                    t_ms: 2_000,
+                    epochs: [0; 3],
+                    intents: Vec::new(),
+                    memory: Vec::new(),
+                }),
+                ..MindState::default()
+            },
+        );
+        let before = state_hash(&base);
+        let with_mind = |change: &dyn Fn(&mut MindState)| {
+            let mut arena = base.clone();
+            if let Some(state) = arena.minds.get_mut(&ObjId(4)) {
+                change(state);
+            }
+            assert_ne!(
+                arena.minds.get(&ObjId(4)),
+                base.minds.get(&ObjId(4)),
+                "the probe changed the row"
+            );
+            state_hash(&arena)
+        };
+        let pending = |change: &dyn Fn(&mut PendingThink)| {
+            with_mind(&|state: &mut MindState| {
+                if let Some(pending) = state.pending.as_mut() {
+                    change(pending);
+                }
+            })
+        };
+        // Carried, not yet folded (17b cut M3.6 folds them).
+        for (field, hash) in [
+            (
+                "pending.intents",
+                pending(&|p| {
+                    p.intents = vec![IntentKind::Lock {
+                        contact: ContactId(7),
+                    }];
+                }),
+            ),
+            ("pending.memory", pending(&|p| p.memory = vec![1, 2, 3])),
+            ("pending.epochs (helm)", pending(&|p| p.epochs = [1, 0, 0])),
+            (
+                "pending.epochs (sensors)",
+                pending(&|p| p.epochs = [0, 1, 0]),
+            ),
+            ("pending.epochs (fire)", pending(&|p| p.epochs = [0, 0, 1])),
+            (
+                "dropped",
+                with_mind(&|s| s.dropped = Some(DropCause::Strikes)),
+            ),
+            (
+                "dropped (core)",
+                with_mind(&|s| s.dropped = Some(DropCause::Core)),
+            ),
+            ("seal_digest", with_mind(&|s| s.seal_digest = [7; 32])),
+        ] {
+            assert_eq!(hash, before, "`{field}` is folded before 17b cut M3.6");
+        }
+        // What M2 folds still moves it.
+        assert_ne!(pending(&|p| p.t_ms = 2_250), before, "pending.t_ms");
+        assert_ne!(pending(&|p| p.think_seq = 3), before, "pending.think_seq");
+        assert_ne!(
+            with_mind(&|s| s.pending = None),
+            before,
+            "pending's presence"
+        );
+
+        // Never folded: the seal reference, every field of it.
+        let sealed = |change: &dyn Fn(&mut SealRef)| {
+            let mut arena = base.clone();
+            if let Some(unit) = arena.unit_mut(ObjId(4)) {
+                change(&mut unit.seal);
+                assert_ne!(unit.seal, SealRef::none(), "the probe changed the seal");
+            }
+            state_hash(&arena)
+        };
+        for (field, hash) in [
+            (
+                "seal.sortie",
+                sealed(&|s| s.sortie = SortieId::in_match(7, ObjId(4))),
+            ),
+            ("seal.digest", sealed(&|s| s.digest = [9; 32])),
+            ("seal.core_class", sealed(&|s| s.core_class = CoreClass::II)),
+            ("seal.class", sealed(&|s| s.class = CoreClass::I)),
+            ("seal.engine", sealed(&|s| s.engine = SealEngine::Scripted)),
+            ("seal.governed", sealed(&|s| s.governed = false)),
+            ("seal.closed", sealed(&|s| s.closed = true)),
+        ] {
+            assert_eq!(hash, before, "`{field}` is folded");
+        }
+        // Never folded: the class table.
+        let mut classes = base.clone();
+        let stock = ClassTable::STOCK;
+        let mut wire = serde_json::to_value(stock).expect("the table encodes");
+        wire["II"]["slots"] = serde_json::json!(5);
+        classes.classes = serde_json::from_value(wire).expect("a lawful table");
+        assert_ne!(classes.classes, stock, "the probe changed the table");
+        assert_eq!(state_hash(&classes), before, "the class table is folded");
     }
 }
