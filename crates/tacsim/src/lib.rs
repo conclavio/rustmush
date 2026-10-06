@@ -127,6 +127,13 @@ pub mod fixture;
 /// is spelled properly.
 #[path = "match_/mod.rs"]
 pub mod match_;
+/// 17b cut M2.3: **the TacSim API for unit minds** (doc 17 §3, §4, §7, §19) —
+/// the view, card and row types a scripted mind reads, the think context, the
+/// station functions, the kernels and their fees, registered on `mush-mind`'s
+/// sandbox ([`minds::standard_sandbox`]). Outside [`arena`], whose contract
+/// test refuses the interpreter's name there; the arena reaches a mind only
+/// through its [`arena::mind::MindRunner`] seam.
+pub mod minds;
 pub mod pack;
 pub mod record;
 pub mod seed;

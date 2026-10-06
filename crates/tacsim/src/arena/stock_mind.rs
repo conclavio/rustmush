@@ -590,7 +590,14 @@ pub fn line_to(def: &ArenaDefinition, own: (u16, u16), cell: (u16, u16)) -> bool
 
 /// [`line_to`] for two cells that may be off the window: off the window is a
 /// line, the answer the reflex's `fire_line` gives a trace it cannot take.
-fn line_between(def: &ArenaDefinition, own: Option<(u16, u16)>, cell: Option<(u16, u16)>) -> bool {
+///
+/// `pub(crate)` since 17b cut M2.3: the unit-mind API's `line_to` kernel
+/// (`crate::minds`) wraps this one body — never a second.
+pub(crate) fn line_between(
+    def: &ArenaDefinition,
+    own: Option<(u16, u16)>,
+    cell: Option<(u16, u16)>,
+) -> bool {
     match (own, cell) {
         (Some(own), Some(cell)) => line_to(def, own, cell),
         _ => true,
@@ -618,8 +625,9 @@ pub fn cell_point(def: &ArenaDefinition, cell: (u16, u16)) -> (i64, i64, i32) {
     )
 }
 
-/// The view's own pose, `(x_cm, y_cm, z_cm)`.
-fn own_point(view: &MindView) -> (i64, i64, i32) {
+/// The view's own pose, `(x_cm, y_cm, z_cm)` (`pub(crate)` since 17b cut
+/// M2.3, for the unit-mind API's `range_to`).
+pub(crate) fn own_point(view: &MindView) -> (i64, i64, i32) {
     (
         view.x_cm,
         view.y_cm,
@@ -628,8 +636,9 @@ fn own_point(view: &MindView) -> (i64, i64, i32) {
 }
 
 /// The stand-off cell `want_cm` back from a row's plot cell, as a tracked hull
-/// (`None` for a row whose plot is off the window).
-fn stand_off_of(
+/// (`None` for a row whose plot is off the window). `pub(crate)` since 17b cut
+/// M2.3: the unit-mind API's `stand_off_cell` kernel wraps this one body.
+pub(crate) fn stand_off_of(
     def: &ArenaDefinition,
     view: &MindView,
     row: &ViewContact,
@@ -645,8 +654,10 @@ fn stand_off_of(
     )
 }
 
-/// The row a contact id names, if the view holds it.
-fn contact(view: &MindView, id: ContactId) -> Option<&ViewContact> {
+/// The row a contact id names, if the view holds it. `pub(crate)` since 17b
+/// cut M2.3: the unit-mind API's `contact` kernel and every station and kernel
+/// that takes a contact id look a row up through this one function.
+pub(crate) fn contact(view: &MindView, id: ContactId) -> Option<&ViewContact> {
     view.contacts.iter().find(|row| row.id == id)
 }
 

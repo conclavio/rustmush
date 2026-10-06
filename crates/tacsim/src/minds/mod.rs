@@ -1,0 +1,1289 @@
+//! **The TacSim API for unit minds** (17b cut M2.3; doc 17 §3 "The
+//! observation", §4 "The outputs", §7 "The sandbox and the budget", §8, §19
+//! "Fit with the crates", §23; D-UM-4, D-UM-6, D-UM-7, D-UM-9, D-UM-10,
+//! D-UM-11, D-UM-24, D-UM-26, D-UM-27, D-UM-28, D-UM-29, D-UM-31, D-UM-35,
+//! D-UM-47).
+//!
+//! Everything a scripted unit mind can name, registered on `mush_mind`'s
+//! sandbox ([`standard_sandbox`](crate::minds::standard_sandbox),
+//! [`register_api`](crate::minds::register_api)): the hull's own view as
+//! registered custom types with getters and never maps (D-UM-7), its card as a
+//! read-only type (D-UM-27), the think's facts as zero-argument native
+//! functions, the station functions that fill the think's intent buffer
+//! (D-UM-9, D-UM-47), the kernels over the arena's own free functions with
+//! their fees (D-UM-26), and `rand(k)` over the sixth draw label (D-UM-29).
+//! The arena never names this module or its interpreter: `crate::arena`'s
+//! [`crate::arena::mind::MindRunner`] seam is the whole contract, and the
+//! runner that drives a think through this API is 17b cut M2.4's.
+//!
+//! * **The context** (`context.rs`): the think's thread-local
+//!   [`ThinkContext`](crate::minds::context::ThinkContext) — the view and the
+//!   map behind the arena's own `Arc`s, the seed, the clocks, the draw and
+//!   `line_to` counters, the intent
+//!   buffer and the refusal flag — set by the runner at a think's start and
+//!   taken at its end, and the fifteen context functions (`lands_ms()` …
+//!   `cover()`) that read it from any call depth (17b's settled question
+//!   (ii): never scope constants, never script `const`s).
+//! * **The view** (`api.rs`): `View`, `Contact`, `Weapon`, `Section`, `Facet`,
+//!   `Heat`, `Receiver`, `Order`, `Notice`, `Condition`, `Armed` — each a
+//!   handle on the one `Arc<MindView>` the arena wrapped (no row copied), each
+//!   getter an INT, a bool, a word, a two-INT cell or `()`, never a FLOAT
+//!   (D-UM-28), and each with its row in
+//!   [`PARITY`](crate::minds::api::PARITY), the pinned table of where the
+//!   keyframe carries the same field (D-UM-4 read at the field level, 17b §1
+//!   (ii)).
+//! * **The card** (`card.rs`): `Card`, the 24 stored fields by slider name in
+//!   stored integer units (D-UM-27, D-UM-43).
+//! * **The kernels** (`kernels.rs`, `fees.rs`): each a thin wrapper over the
+//!   ONE free function the native stock mind (T1) calls, charged its fee
+//!   through `mush_mind::budget` at the call (D-UM-24, D-UM-26).
+//! * **The stations** (`stations.rs`): exactly doc 17 §4's list — `helm`,
+//!   `speed`, `startup`, `goto`, `hold`, `goto_off`; `lock`, `emcon`; `fire`,
+//!   `arm`, `disarm`; `trace` — each pushing the
+//!   [`IntentKind`](crate::arena::intents::IntentKind) T1 emits (D-UM-10: a
+//!   pilot can type every one of them). `goto` is a reserved keyword of rhai
+//!   1.26 and is registered as custom syntax, `goto ( expr )`, with the
+//!   spelling unchanged (`stations.rs`).
+//!
+//! # Refusals
+//!
+//! Every refusal a station or a kernel raises — an argument of the wrong type,
+//! an id the view does not hold, a seventeenth intent, a third `line_to` — sets
+//! the context's flag
+//! ([`ThinkContext::refused`](crate::minds::context::ThinkContext::refused),
+//! the cause word the runner reads on the `Ok` path too) and is raised through
+//! `mush_mind::system_error`, so a script's `try { } catch { }` cannot swallow
+//! it (D-UM-31; 17b §1 (iv), the adversarial F5). A call that no registered
+//! signature matches is Rhai's own error and Rhai's own `type` fault.
+//!
+//! # Lints
+//!
+//! `tacsim`'s crate deny omits `indexing_slicing`, so this module adds it here
+//! (doc 17 §7 "Lints"): every row is reached by `get`, and a handle whose
+//! index names no row answers `()`.
+
+#![deny(clippy::indexing_slicing)]
+
+use std::sync::{Arc, OnceLock};
+
+use mush_mind::rhai::Engine;
+use mush_mind::{EngineLimits, Sandbox};
+
+/// **Register one native function** of the API on the registrar's engine and
+/// record its name — the one path a name enters the engine by, so
+/// [`registered_names`] is the engine's list by construction.
+macro_rules! function {
+    ($api:expr, $name:literal, $f:expr) => {{
+        let api: &mut $crate::minds::Registrar<'_> = $api;
+        api.engine.register_fn($name, $f);
+        api.names.push($name);
+    }};
+}
+
+/// **Register one getter** of a custom type, recorded as `Type.getter`.
+macro_rules! getter {
+    ($api:expr, $ty:literal, $name:literal, $f:expr) => {{
+        let api: &mut $crate::minds::Registrar<'_> = $api;
+        api.engine.register_get($name, $f);
+        api.names.push(concat!($ty, ".", $name));
+    }};
+}
+
+/// **Register one method** of a custom type (a function whose first argument
+/// is the type), recorded as `Type.method`.
+macro_rules! method {
+    ($api:expr, $ty:literal, $name:literal, $f:expr) => {{
+        let api: &mut $crate::minds::Registrar<'_> = $api;
+        api.engine.register_fn($name, $f);
+        api.names.push(concat!($ty, ".", $name));
+    }};
+}
+
+/// **Register one custom type** under its script name, recorded as
+/// `type Name`.
+macro_rules! custom_type {
+    ($api:expr, $t:ty, $name:literal) => {{
+        let api: &mut $crate::minds::Registrar<'_> = $api;
+        api.engine.register_type_with_name::<$t>($name);
+        api.names.push(concat!("type ", $name));
+    }};
+}
+
+pub mod api;
+pub mod card;
+pub mod context;
+pub mod fees;
+pub mod kernels;
+pub mod stations;
+
+/// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A
+/// change to any registered name, signature, getter, fee or refusal is a bump.
+pub const API_VERSION: u32 = 1;
+
+/// **The stock content's version** (doc 17 §13): the `stock=` part of
+/// [`MIND_ABI`]; 17b cut M2.5's `standard.rhai` is version 1.
+pub const STOCK_VERSION: u32 = 1;
+
+/// **The ABI a compiled mind is cached and sealed under** (doc 17 §7, §13;
+/// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
+/// [`STOCK_VERSION`] — `mind_abi_is_composed_and_the_sandbox_is_one` composes
+/// it and asserts the literal.
+pub const MIND_ABI: &str = "rhai=1.26.0;api=1;stock=1";
+
+/// **The stock class's op ceiling per think** (doc 17 §9, D-UM-35's class I
+/// `ops` column): operations plus fees a think may spend. A constant until 17b
+/// cut M3's `CoreProfile` replaces it; [`standard_sandbox`]'s engine backstop
+/// is set here, the largest ceiling this cut runs.
+pub const STOCK_OPS_PER_THINK: u64 = 1_500;
+
+/// **How many `line_to` traces one think may ask for** (D-UM-35's `line_to`
+/// column, class I: 2): a third call is refused `limit`
+/// (`kernels::line_to`). The cap has its source in the class table; 17b cut
+/// M3's `CoreProfile` replaces the constant.
+pub const STOCK_LINE_TO_PER_THINK: u32 = 2;
+
+/// **The largest `k` a `rand(k)` may ask for** (D-UM-29 as read by 17b §1 (iv),
+/// the adversarial F2): `draw_permille`'s resolution. A raw 64-bit draw is
+/// invertible back to the seed-keyed state through a label the script knows
+/// (`crate::arena::rng`'s `draw` is two bijections, and the label
+/// `mind:{unit}:{think_seq}:{n}` is the script's own), and with that state
+/// every other label's draw of the match; ten bits of each of many distinct
+/// draws are not. A `k` past it, or under 1, is refused `type`.
+pub const RAND_MAX_K: i64 = 1_000;
+
+/// **The names the sandbox itself registers** (17b cut M2.1, `mush-mind`'s
+/// `engine.rs`): the two integer helpers the packages lack and the `sleep`
+/// shadow (two overloads, one name). Pinned in [`registered_names`].
+pub const SANDBOX_NAMES: [&str; 3] = ["clamp", "isqrt", "sleep"];
+
+/// **The packages' names the pin carries** (D-UM-24's seven packages; 17b
+/// §1's departure (5)): the integer helpers `abs`, `min`, `max`
+/// (`ArithmeticPackage`, `LogicPackage`); `LanguageCorePackage`'s own —
+/// `exit` (a return, M2.1), `take`, the `tag` property and `set_tag`, `sleep`
+/// (shadowed by the sandbox, so a call refuses), `parse_json` and the
+/// reflection function `get_fn_metadata_list`; and the keyword functions
+/// `print`, `debug` (both to the trace), `type_of`, `is_def_fn`,
+/// `is_def_var`. The array, map, string and iterator packages' methods are
+/// pinned by the package that carries them, not name by name: rhai 1.26
+/// enumerates a native function only under its `metadata` feature, which the
+/// workspace does not turn on.
+pub const PACKAGE_NAMES: [&str; 15] = [
+    "abs",
+    "min",
+    "max",
+    "exit",
+    "take",
+    "tag",
+    "set_tag",
+    "sleep",
+    "parse_json",
+    "get_fn_metadata_list",
+    "print",
+    "debug",
+    "type_of",
+    "is_def_fn",
+    "is_def_var",
+];
+
+/// **The one path the API's names enter an engine by**: the engine and the
+/// names registered so far, in registration order (`function!`, `getter!`,
+/// `method!`, `custom_type!`). Rhai 1.26 lists a native function only under
+/// its `metadata` feature, so the list is kept here, beside the registration
+/// itself, and nothing registers around it.
+pub(crate) struct Registrar<'e> {
+    /// The engine the API is registered on.
+    pub(crate) engine: &'e mut Engine,
+    /// What was registered: `name` for a function, `Type.name` for a getter
+    /// or a method, `type Name` for a custom type.
+    pub(crate) names: Vec<&'static str>,
+}
+
+/// Register the whole API on `engine` and answer what was registered.
+fn register(engine: &mut Engine) -> Vec<&'static str> {
+    let mut api = Registrar {
+        engine,
+        names: Vec::new(),
+    };
+    api::register(&mut api);
+    card::register(&mut api);
+    kernels::register(&mut api);
+    context::register(&mut api);
+    stations::register(&mut api);
+    api.names
+}
+
+/// **Register the TacSim API on an engine** (doc 17 §7, §19): the custom types
+/// and their getters, the card, the kernels and `rand`, the context functions
+/// and the station functions with `trace` — the closure `mush_mind`'s
+/// `Sandbox::new` hands its engine to, last, after every limit, shadow and
+/// hook.
+pub fn register_api(engine: &mut Engine) {
+    let _registered = register(engine);
+}
+
+/// **Every name a mind can call or read, pinned** (17b §2's M2.3 test 9): the
+/// API's registrations in registration order — `name` for a function, `Type.name`
+/// for a getter or a method, `type Name` for a custom type — then
+/// [`SANDBOX_NAMES`], then [`PACKAGE_NAMES`]. Read off a scratch engine through
+/// the same registrar [`register_api`] runs, so a name cannot be registered
+/// without appearing here. D-UM-11 is the pin's other half: no `order`,
+/// `release`, `place`, `board` or exit-the-hull function is in it (`exit` is
+/// `LanguageCorePackage`'s, a script's early return, never the hull's).
+#[must_use]
+pub fn registered_names() -> Vec<String> {
+    let mut engine = Engine::new_raw();
+    register(&mut engine)
+        .into_iter()
+        .chain(SANDBOX_NAMES)
+        .chain(PACKAGE_NAMES)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// **The one sandbox every stock think of the process runs on** (doc 17 §7,
+/// D-UM-24: one shared engine per process): `mush_mind`'s sandbox with its
+/// engine backstop at [`STOCK_OPS_PER_THINK`] and the API registered
+/// ([`register_api`]), built once (a process-wide `OnceLock`) and shared — two
+/// calls answer one `Arc`.
+#[must_use]
+pub fn standard_sandbox() -> Arc<Sandbox> {
+    static SANDBOX: OnceLock<Arc<Sandbox>> = OnceLock::new();
+    Arc::clone(SANDBOX.get_or_init(|| {
+        Arc::new(Sandbox::new(
+            &EngineLimits {
+                max_ops_backstop: STOCK_OPS_PER_THINK,
+            },
+            register_api,
+        ))
+    }))
+}
+
+/// **The in-source fixture** every test of this module drives: a hand-built
+/// view whose every optional field is held (the shapes 17b cut M1b's (j) field
+/// gives a live view, rebuilt by hand — no arena, no runner), the arena
+/// library's own test window as the map, Line as the card, and the two ways a
+/// test drives the API: a think on [`standard_sandbox`], and an expression on
+/// a scratch engine for reading a getter's value straight back.
+#[cfg(test)]
+pub(crate) mod fixture {
+    use std::sync::Arc;
+
+    use mush_core::ObjId;
+    use mush_mind::rhai::packages::{
+        ArithmeticPackage, BasicArrayPackage, BasicIteratorPackage, BasicMapPackage,
+        BasicStringPackage, LanguageCorePackage, LogicPackage, Package,
+    };
+    use mush_mind::rhai::{Dynamic, Engine, EvalAltResult, Scope};
+    use mush_mind::{Digest, Fault, Outcome, Think};
+    use sha2::{Digest as _, Sha256};
+    use smol_str::SmolStr;
+
+    use super::api::View;
+    use super::card::Card;
+    use super::context::{self, ThinkContext};
+    use super::fees::FEE_THINK;
+    use super::{MIND_ABI, STOCK_OPS_PER_THINK, register_api, standard_sandbox};
+    use crate::arena::card::{StockCard, line};
+    use crate::arena::condition::Condition;
+    use crate::arena::conditions::{HeldWhy, SlotTarget};
+    use crate::arena::intents::Refusal;
+    use crate::arena::mind::{MindView, STOCK_MEMORY_LIMITS, ViewContact};
+    use crate::arena::motion::BlockedCause;
+    use crate::arena::perception::{
+        Aspect, DriveOutcome, FrameCondition, FrameNotice, FrameOrder, MindObjective, Named,
+        NoticeKind, Receiver, RefusalDetail,
+    };
+    use crate::arena::state::{
+        ArenaDefinition, Classification, ContactId, Designator, Power, Team,
+    };
+    use crate::arena::step::{FrameFacet, FrameHeat, FrameSection};
+    use crate::arena::weapons::{FrameArming, FrameBand, FrameWeapon};
+    use crate::config::ReflexConfig;
+    use crate::deliberation::order::RangeBand;
+
+    /// The hostile's row key: the high bit set, so the `StockMemory` bit-cast
+    /// reads it negative.
+    pub(crate) const HOSTILE: ContactId = ContactId(0x8000_0000_0000_0011);
+    /// The friend's row key.
+    pub(crate) const FRIEND: ContactId = ContactId(0x22);
+    /// The unidentified return's row key.
+    pub(crate) const BLIP: ContactId = ContactId(0x33);
+    /// The thinking hull.
+    pub(crate) const UNIT: ObjId = ObjId(4);
+
+    /// A notice's `Named`.
+    fn named(id: ContactId, designator: Designator) -> Named {
+        Named { id, designator }
+    }
+
+    /// The hostile's designator, `BB`.
+    pub(crate) const fn hostile_designator() -> Designator {
+        Designator::Slot {
+            team: Team::Blue,
+            slot: 2,
+        }
+    }
+
+    /// **The full view**: a red hull at cell (1, 4) of the test window,
+    /// online, holding a lock on the hostile, a standing `Engage` order, two
+    /// weapons (the cannon armed in slot 1, the coax idle), one section with
+    /// two facets, heat, a receiver and a pod — and three contacts: a
+    /// classified hostile (blue) with a reading, a classified friend, and an
+    /// unidentified return — and one notice of each shape the getters read.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn view() -> MindView {
+        let hostile = named(HOSTILE, hostile_designator());
+        MindView {
+            unit: UNIT.0,
+            callsign: Designator::Slot {
+                team: Team::Red,
+                slot: 1,
+            },
+            team: Team::Red,
+            cell: Some((1, 4)),
+            x_cm: 1_500,
+            y_cm: 4_500,
+            z_cm: 0,
+            heading_mdeg: 90_000,
+            speed_cms: 120,
+            power: Power::Online,
+            held: false,
+            wreck: false,
+            immobile: false,
+            sight_m: 800,
+            ecm: Some(false),
+            receiver: Some(Receiver {
+                budget: 3,
+                budget_max: 4,
+                // Not a multiple of ten: the getter floors it to the
+                // keyframe's whole per cent.
+                reach_permille: 755,
+            }),
+            heat: Some(FrameHeat { heat: 10, max: 100 }),
+            sections: vec![FrameSection {
+                id: SmolStr::new("hull"),
+                condition: SmolStr::new("damaged"),
+                internals: Some((40, 50)),
+                facets: vec![
+                    FrameFacet {
+                        id: SmolStr::new("front"),
+                        armor: 90,
+                        armor_max: 100,
+                    },
+                    FrameFacet {
+                        id: SmolStr::new("rear"),
+                        armor: 30,
+                        armor_max: 60,
+                    },
+                ],
+            }],
+            weapons: vec![
+                FrameWeapon {
+                    id: SmolStr::new("cannon"),
+                    ready: true,
+                    ready_in_ms: 0,
+                    rounds: 18,
+                    rounds_max: 20,
+                    range_band: Some(FrameBand {
+                        index: 1,
+                        of: 2,
+                        max_range_cm: 40_000,
+                        dispersion_mrad: 3,
+                    }),
+                    p_permille: Some(620),
+                    bands_cm: vec![40_000, 80_000],
+                    heat_per_shot: 4,
+                    armed: Some(FrameArming {
+                        slot: 1,
+                        target: SlotTarget::BestHostile,
+                        min_permille: 100,
+                        aspects: 0b1111,
+                        keeps: 2,
+                        min_range_m: 0,
+                        max_range_m: 420,
+                    }),
+                },
+                FrameWeapon {
+                    id: SmolStr::new("coax"),
+                    ready: false,
+                    ready_in_ms: 700,
+                    rounds: 0,
+                    rounds_max: 200,
+                    range_band: None,
+                    p_permille: None,
+                    bands_cm: vec![30_000],
+                    heat_per_shot: 0,
+                    armed: None,
+                },
+            ],
+            lock: Some(HOSTILE),
+            order: Some(FrameOrder {
+                squad: SmolStr::new("red-1"),
+                objective: MindObjective::Engage {
+                    target: Some(HOSTILE),
+                },
+                hold_fire: false,
+                max_range_band: Some(RangeBand::Effective),
+                expires_ms: 9_000,
+            }),
+            t_ms: 5_000,
+            notices: vec![
+                FrameNotice::Miss {
+                    contact: Some(hostile),
+                    reason: SmolStr::new("blocked"),
+                },
+                FrameNotice::Drive {
+                    outcome: DriveOutcome::Arrived,
+                },
+                FrameNotice::Refused {
+                    order: SmolStr::new("fire"),
+                    refusal: Refusal::Cycling,
+                    weapon: Some(SmolStr::new("cannon")),
+                    detail: RefusalDetail::Cycling { secs: 2 },
+                },
+                FrameNotice::Emcon {
+                    on: true,
+                    radius_m: 300,
+                },
+                FrameNotice::SlotFired {
+                    slot: 1,
+                    weapon: SmolStr::new("cannon"),
+                    contact: Some(hostile),
+                    p_permille: 620,
+                    aspect: Aspect::Left,
+                },
+                FrameNotice::SlotHeld {
+                    slot: 2,
+                    weapon: SmolStr::new("coax"),
+                    why: HeldWhy::Odds {
+                        permille: 80,
+                        floor: 100,
+                    },
+                },
+                FrameNotice::Contact {
+                    kind: NoticeKind::Classified,
+                    contact: hostile,
+                    class: Classification::Classified { team: Team::Blue },
+                    was: Some(Designator::Provisional(3)),
+                },
+                FrameNotice::Hit {
+                    contact: Some(hostile),
+                    section: Some(SmolStr::new("turret")),
+                    spent: true,
+                },
+                FrameNotice::Blocked {
+                    cause: BlockedCause::Occupied,
+                },
+                FrameNotice::Refused {
+                    order: SmolStr::new("fire"),
+                    refusal: Refusal::Overheated,
+                    weapon: Some(SmolStr::new("cannon")),
+                    detail: RefusalDetail::Overheated {
+                        heat: 100,
+                        max: 100,
+                    },
+                },
+                FrameNotice::Refused {
+                    order: SmolStr::new("fire"),
+                    refusal: Refusal::Unlawful,
+                    weapon: Some(SmolStr::new("cannon")),
+                    detail: RefusalDetail::Floor { permille: 100 },
+                },
+                FrameNotice::SlotHeld {
+                    slot: 1,
+                    weapon: SmolStr::new("cannon"),
+                    why: HeldWhy::Range {
+                        contact: hostile,
+                        range_m: 500,
+                        min_m: 0,
+                        max_m: 420,
+                    },
+                },
+                FrameNotice::SlotHeld {
+                    slot: 1,
+                    weapon: SmolStr::new("cannon"),
+                    why: HeldWhy::Rounds {
+                        rounds: 2,
+                        keeps: 2,
+                    },
+                },
+                FrameNotice::SlotHeld {
+                    slot: 1,
+                    weapon: SmolStr::new("cannon"),
+                    why: HeldWhy::Aspect {
+                        contact: hostile,
+                        aspect: Aspect::Front,
+                    },
+                },
+            ],
+            contacts: vec![
+                ViewContact {
+                    id: HOSTILE,
+                    designator: hostile_designator(),
+                    alias: Some(3),
+                    class: Classification::Classified { team: Team::Blue },
+                    friendly: false,
+                    bearing_deg: 90,
+                    relative_deg: 0,
+                    range_m: 300,
+                    band: SmolStr::new("near"),
+                    age_ms: 0,
+                    cell: Some((4, 4)),
+                    condition: Some(FrameCondition {
+                        table: 0,
+                        bands: Condition {
+                            bands: 0b0100,
+                            sections: 2,
+                        },
+                        age_ms: 1_000,
+                    }),
+                    fatal: Some(vec![SmolStr::new("hull")]),
+                    aspect: Aspect::Left,
+                    odds: vec![(SmolStr::new("cannon"), 620)],
+                    reads_dead: Some(false),
+                },
+                ViewContact {
+                    id: FRIEND,
+                    designator: Designator::Slot {
+                        team: Team::Red,
+                        slot: 2,
+                    },
+                    alias: None,
+                    class: Classification::Classified { team: Team::Red },
+                    friendly: true,
+                    bearing_deg: 0,
+                    relative_deg: 270,
+                    range_m: 450,
+                    band: SmolStr::new("far"),
+                    age_ms: 500,
+                    cell: Some((1, 0)),
+                    condition: None,
+                    fatal: None,
+                    aspect: Aspect::Rear,
+                    odds: Vec::new(),
+                    reads_dead: Some(false),
+                },
+                ViewContact {
+                    id: BLIP,
+                    designator: Designator::Provisional(5),
+                    alias: None,
+                    class: Classification::Unknown,
+                    friendly: false,
+                    bearing_deg: 135,
+                    relative_deg: 45,
+                    range_m: 600,
+                    band: SmolStr::new("far"),
+                    age_ms: 2_000,
+                    cell: None,
+                    condition: None,
+                    fatal: None,
+                    aspect: Aspect::Front,
+                    odds: Vec::new(),
+                    reads_dead: None,
+                },
+            ],
+            scan_tables: vec![vec![SmolStr::new("hull"), SmolStr::new("turret")]],
+            odds_floor_permille: 100,
+        }
+    }
+
+    /// The same hull with **no weapons station**: no weapon rows, and the
+    /// two weapons-station fields gone from every contact (doc 17 §22's
+    /// italic line).
+    pub(crate) fn unarmed_view() -> MindView {
+        let mut view = view();
+        view.weapons.clear();
+        for row in &mut view.contacts {
+            row.odds.clear();
+            row.reads_dead = None;
+        }
+        view
+    }
+
+    /// The arena library's own test window: eight by eight cells of 1,000 cm,
+    /// red zone west, blue zone east, the spot `The Middle` at (4, 4), two
+    /// waypoints joined on row 4.
+    pub(crate) fn map() -> ArenaDefinition {
+        crate::arena::test_support::definition()
+    }
+
+    /// The Line card on the default doctrine.
+    pub(crate) fn card() -> StockCard {
+        line(&ReflexConfig::default())
+    }
+
+    /// **A context for one think** over `view`: think 7 of the hull at 5,000
+    /// ms, landing at 5,100, seed 42.
+    pub(crate) fn context_on(view: MindView) -> ThinkContext {
+        ThinkContext {
+            view: Arc::new(view),
+            map: Arc::new(map()),
+            seed: 42,
+            unit: UNIT,
+            think_seq: 7,
+            t_ms: 5_000,
+            lands_ms: 5_100,
+            decide_ms: 1_000,
+            draws: 0,
+            line_to_calls: 0,
+            intents: Vec::new(),
+            overflowed: false,
+            refused: None,
+        }
+    }
+
+    /// One think's answer, its trace and the context it left.
+    pub(crate) struct Ran {
+        /// What the sandbox answered.
+        pub(crate) result: Result<Outcome, Fault>,
+        /// The trace.
+        pub(crate) trace: Vec<String>,
+        /// The context, taken back.
+        pub(crate) ctx: ThinkContext,
+    }
+
+    /// The source's digest, as the seal would compute it.
+    pub(crate) fn digest(source: &str) -> Digest {
+        Digest(Sha256::digest(source.as_bytes()).into())
+    }
+
+    /// **One think through [`standard_sandbox`]** on `ctx` with `card`,
+    /// starting from `memory`, at the stock class's ceiling and the think fee
+    /// — the way 17b cut M2.4's runner will drive it.
+    pub(crate) fn think_with(
+        source: &str,
+        ctx: ThinkContext,
+        card: StockCard,
+        memory: &[u8],
+    ) -> Ran {
+        let sandbox = standard_sandbox();
+        let compiled = sandbox
+            .compile(source, digest(source), MIND_ABI)
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+        let view = Arc::clone(&ctx.view);
+        context::set(ctx);
+        let (result, trace) = sandbox.think(Think {
+            compiled: &compiled,
+            args: vec![
+                Dynamic::from(View(view)),
+                Dynamic::from(Card(Arc::new(card))),
+            ],
+            memory,
+            limits: &STOCK_MEMORY_LIMITS,
+            ops_limit: STOCK_OPS_PER_THINK,
+            fee_per_think: FEE_THINK,
+        });
+        let ctx = context::take().expect("the think's context");
+        Ran { result, trace, ctx }
+    }
+
+    /// [`think_with`] on the full view, Line, empty memory.
+    pub(crate) fn think(source: &str) -> Ran {
+        think_with(source, context_on(view()), card(), &[])
+    }
+
+    /// **A scratch engine** with the seven packages and the API — for reading
+    /// a getter's value straight back as a `Dynamic` (a think answers only its
+    /// memory).
+    pub(crate) fn scratch() -> Engine {
+        let mut engine = Engine::new_raw();
+        engine.register_global_module(LanguageCorePackage::new().as_shared_module());
+        engine.register_global_module(ArithmeticPackage::new().as_shared_module());
+        engine.register_global_module(LogicPackage::new().as_shared_module());
+        engine.register_global_module(BasicIteratorPackage::new().as_shared_module());
+        engine.register_global_module(BasicArrayPackage::new().as_shared_module());
+        engine.register_global_module(BasicMapPackage::new().as_shared_module());
+        engine.register_global_module(BasicStringPackage::new().as_shared_module());
+        register_api(&mut engine);
+        engine
+    }
+
+    /// **Evaluate `expr` on [`scratch`]** with `v` the full view and `c` Line
+    /// in scope, under a context on the full view (taken back after).
+    pub(crate) fn eval(expr: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+        eval_in(context_on(view()), expr)
+    }
+
+    /// [`eval`] under `ctx`, with `v` its view — for a view or a map other
+    /// than the full view's.
+    pub(crate) fn eval_in(ctx: ThinkContext, expr: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+        let view = Arc::clone(&ctx.view);
+        context::set(ctx);
+        let mut scope = Scope::new();
+        scope.push("v", View(view));
+        scope.push("c", Card(Arc::new(card())));
+        let answer = scratch().eval_with_scope::<Dynamic>(&mut scope, expr);
+        let _left = context::take();
+        answer
+    }
+
+    /// A value's test rendering: rhai's `Debug` (strings quoted, `()` for
+    /// unit, arrays bracketed).
+    pub(crate) fn shown(value: &Dynamic) -> String {
+        format!("{value:?}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use mush_mind::{Fault, RHAI_ABI};
+
+    use super::fixture::{self, think};
+    use super::*;
+
+    /// 17b §2's M2.3 test 8: the ABI composed from its three parts equals the
+    /// literal, and the sandbox is one per process.
+    #[test]
+    fn mind_abi_is_composed_and_the_sandbox_is_one() {
+        assert_eq!(
+            format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
+            MIND_ABI
+        );
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=1;stock=1");
+        assert_eq!(STOCK_OPS_PER_THINK, 1_500);
+        assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
+        assert_eq!(RAND_MAX_K, 1_000);
+        let one = standard_sandbox();
+        let two = standard_sandbox();
+        assert!(Arc::ptr_eq(&one, &two), "two calls built two sandboxes");
+    }
+
+    /// **The registered names, pinned** (17b §2's M2.3 test 9; D-UM-11): every
+    /// type, getter, method, kernel, context function and station function in
+    /// registration order, then the sandbox's and the packages' — and none of
+    /// the five verbs a mind never has.
+    #[test]
+    fn the_registered_names_are_pinned() {
+        let names = registered_names();
+        let pinned: Vec<&str> = PINNED.to_vec();
+        assert_eq!(
+            names.iter().map(String::as_str).collect::<Vec<_>>(),
+            pinned,
+            "the registered names moved: a change to the API is an API_VERSION bump"
+        );
+        let unique: BTreeSet<&str> = PINNED.iter().copied().collect();
+        // `sleep` is pinned twice: the sandbox's shadow and the package's own.
+        assert_eq!(unique.len(), PINNED.len() - 1, "a name registered twice");
+        for never in ["order", "release", "place", "board", "exit_hull", "eject"] {
+            assert!(
+                !names.iter().any(|name| name == never),
+                "{never} is a verb a mind never has (D-UM-11)"
+            );
+        }
+    }
+
+    /// **Every pinned name resolves from a script** — the list kept beside the
+    /// registration proven against the engine: each name called (or read) once
+    /// on the full view: every API name on the scratch engine, where each
+    /// answers (none is refused on the full view), and every sandbox and
+    /// package name in a think on [`standard_sandbox`], where none answers
+    /// rhai's "not found" (a refusal there — `sleep`'s — is an answer: it
+    /// proves the name resolved to the shadow).
+    #[test]
+    fn every_registered_name_resolves_from_a_script() {
+        let calls = CALLS;
+        let called: BTreeSet<&str> = calls.iter().map(|(name, _)| *name).collect();
+        for name in registered_names() {
+            if name.starts_with("type ")
+                || SANDBOX_NAMES.contains(&name.as_str())
+                || PACKAGE_NAMES.contains(&name.as_str())
+            {
+                continue;
+            }
+            assert!(called.contains(name.as_str()), "{name} is never called");
+        }
+        // Every API call answers on the full view: none is refused there.
+        for (name, expr) in calls {
+            if let Err(error) = fixture::eval(expr) {
+                panic!("{name} ({expr}) did not answer: {error}");
+            }
+        }
+        for name in SANDBOX_NAMES.iter().chain(PACKAGE_NAMES.iter()) {
+            let expr = PACKAGE_CALLS
+                .iter()
+                .find(|(called, _)| called == name)
+                .map(|(_, expr)| *expr)
+                .unwrap_or_else(|| panic!("{name} has no call"));
+            let source = format!("fn think(v, c) {{ let x = 1; {expr}; }}");
+            let ran = think(&source);
+            if let Err(Fault::Type(text)) = &ran.result {
+                assert!(
+                    !text.contains("not found"),
+                    "{name} ({expr}) did not resolve on the sandbox: {text}"
+                );
+            }
+        }
+        // The shadow, not the package's: `sleep` refuses at once.
+        let ran = think("fn think(v, c) { sleep(1); }");
+        assert!(matches!(ran.result, Err(Fault::Type(_))));
+        // A custom type reads its registered name.
+        let kind = fixture::eval("type_of(v)").expect("type_of");
+        assert_eq!(fixture::shown(&kind), "\"View\"");
+    }
+
+    /// The pinned list (see [`the_registered_names_are_pinned`]).
+    const PINNED: [&str; 226] = [
+        "type View",
+        "type Contact",
+        "type Weapon",
+        "type Section",
+        "type Facet",
+        "type Heat",
+        "type Receiver",
+        "type Order",
+        "type Notice",
+        "type Condition",
+        "type Armed",
+        "View.unit",
+        "View.callsign",
+        "View.team",
+        "View.cell",
+        "View.x_cm",
+        "View.y_cm",
+        "View.z_cm",
+        "View.heading_mdeg",
+        "View.speed_cms",
+        "View.power",
+        "View.held",
+        "View.wreck",
+        "View.immobile",
+        "View.sight_m",
+        "View.ecm",
+        "View.receiver",
+        "View.heat",
+        "View.sections",
+        "View.weapons",
+        "View.lock",
+        "View.order",
+        "View.t_ms",
+        "View.notices",
+        "View.contacts",
+        "View.scan_tables",
+        "View.odds_floor_permille",
+        "Contact.id",
+        "Contact.designator",
+        "Contact.alias",
+        "Contact.identified",
+        "Contact.friendly",
+        "Contact.bearing_deg",
+        "Contact.relative_deg",
+        "Contact.range_m",
+        "Contact.band",
+        "Contact.age_ms",
+        "Contact.cell",
+        "Contact.condition",
+        "Contact.fatal",
+        "Contact.aspect",
+        "Contact.odds",
+        "Contact.reads_dead",
+        "Weapon.index",
+        "Weapon.id",
+        "Weapon.ready",
+        "Weapon.ready_in_ms",
+        "Weapon.rounds",
+        "Weapon.rounds_max",
+        "Weapon.range_band",
+        "Weapon.p_permille",
+        "Weapon.bands_cm",
+        "Weapon.heat_per_shot",
+        "Weapon.armed",
+        "Armed.slot",
+        "Armed.target",
+        "Armed.min_permille",
+        "Armed.aspects",
+        "Armed.keeps",
+        "Armed.min_range_m",
+        "Armed.max_range_m",
+        "Section.id",
+        "Section.condition",
+        "Section.internals",
+        "Section.internals_max",
+        "Section.facets",
+        "Facet.id",
+        "Facet.armor",
+        "Facet.armor_max",
+        "Heat.heat",
+        "Heat.max",
+        "Heat.overheated",
+        "Receiver.budget",
+        "Receiver.budget_max",
+        "Receiver.reach_permille",
+        "Condition.table",
+        "Condition.bands",
+        "Condition.age_ms",
+        "Order.squad",
+        "Order.objective",
+        "Order.to",
+        "Order.target",
+        "Order.facing_mdeg",
+        "Order.of",
+        "Order.hold_fire",
+        "Order.max_range_band",
+        "Order.expires_ms",
+        "Notice.kind",
+        "Notice.contact",
+        "Notice.designator",
+        "Notice.was",
+        "Notice.section",
+        "Notice.cause",
+        "Notice.refusal",
+        "Notice.order",
+        "Notice.weapon",
+        "Notice.radius_m",
+        "Notice.secs",
+        "Notice.heat",
+        "Notice.max",
+        "Notice.floor_permille",
+        "Notice.why",
+        "Notice.floor",
+        "Notice.range_m",
+        "Notice.min_m",
+        "Notice.max_m",
+        "Notice.rounds",
+        "Notice.keeps",
+        "Notice.friendly",
+        "Notice.spent",
+        "Notice.reason",
+        "Notice.outcome",
+        "Notice.slot",
+        "Notice.percent",
+        "Notice.aspect",
+        "type Card",
+        "Card.stance",
+        "Card.band_permille",
+        "Card.close_m",
+        "Card.orbit_sense",
+        "Card.turn_into_hits",
+        "Card.turn_s",
+        "Card.screen_bearing",
+        "Card.screen_arc",
+        "Card.opening",
+        "Card.min_odds_permille",
+        "Card.aspect",
+        "Card.reserve_pct",
+        "Card.reserve_odds_pct",
+        "Card.prefer",
+        "Card.weight_range",
+        "Card.weight_facet",
+        "Card.weight_health",
+        "Card.switch_m",
+        "Card.withdraw_permille",
+        "Card.stand_min_permille",
+        "Card.rally_ms",
+        "Card.search_ms",
+        "Card.hunt_after_ms",
+        "Card.stop_unseen",
+        "type Ranges",
+        "Ranges.engage_cm",
+        "Ranges.release_cm",
+        "Ranges.stand_cm",
+        "Ranges.limit_cm",
+        "type Walk",
+        "Walk.waypoint",
+        "Walk.from_waypoint",
+        "Walk.goal",
+        "Walk.clear_route",
+        "best_hostile",
+        "health_permille",
+        "is_dry",
+        "holds_a_hostile",
+        "would_overheat",
+        "fight_limit_cm",
+        "contact",
+        "ranges",
+        "line_to",
+        "entry_cell",
+        "far_entry_cell",
+        "stand_off_cell",
+        "patrol_step",
+        "fall_back_to_waypoint",
+        "sin_m",
+        "cos_m",
+        "bearing_to",
+        "range_to",
+        "arc",
+        "stand_off_want",
+        "rand",
+        "lands_ms",
+        "t_ms",
+        "decide_ms",
+        "cell_cm",
+        "leash_cells",
+        "station_cells",
+        "screen_half_arc_mdeg",
+        "stand_ticks",
+        "exposure_front",
+        "exposure_flank",
+        "exposure_rear",
+        "arrive_cells",
+        "slots",
+        "blocked",
+        "cover",
+        "helm",
+        "speed",
+        "startup",
+        "goto",
+        "hold",
+        "goto_off",
+        "lock",
+        "emcon",
+        "fire",
+        "arm",
+        "disarm",
+        "trace",
+        "clamp",
+        "isqrt",
+        "sleep",
+        "abs",
+        "min",
+        "max",
+        "exit",
+        "take",
+        "tag",
+        "set_tag",
+        "sleep",
+        "parse_json",
+        "get_fn_metadata_list",
+        "print",
+        "debug",
+        "type_of",
+        "is_def_fn",
+        "is_def_var",
+    ];
+
+    /// One call of every API name on the full view (`v`, `c` in scope).
+    const CALLS: [(&str, &str); 194] = [
+        ("View.unit", "v.unit"),
+        ("View.callsign", "v.callsign"),
+        ("View.team", "v.team"),
+        ("View.cell", "v.cell"),
+        ("View.x_cm", "v.x_cm"),
+        ("View.y_cm", "v.y_cm"),
+        ("View.z_cm", "v.z_cm"),
+        ("View.heading_mdeg", "v.heading_mdeg"),
+        ("View.speed_cms", "v.speed_cms"),
+        ("View.power", "v.power"),
+        ("View.held", "v.held"),
+        ("View.wreck", "v.wreck"),
+        ("View.immobile", "v.immobile"),
+        ("View.sight_m", "v.sight_m"),
+        ("View.ecm", "v.ecm"),
+        ("View.receiver", "v.receiver"),
+        ("View.heat", "v.heat"),
+        ("View.sections", "v.sections"),
+        ("View.weapons", "v.weapons"),
+        ("View.lock", "v.lock"),
+        ("View.order", "v.order"),
+        ("View.t_ms", "v.t_ms"),
+        ("View.notices", "v.notices"),
+        ("View.contacts", "v.contacts"),
+        ("View.scan_tables", "v.scan_tables"),
+        ("View.odds_floor_permille", "v.odds_floor_permille"),
+        ("Contact.id", "v.contacts[0].id"),
+        ("Contact.designator", "v.contacts[0].designator"),
+        ("Contact.alias", "v.contacts[0].alias"),
+        ("Contact.identified", "v.contacts[0].identified"),
+        ("Contact.friendly", "v.contacts[0].friendly"),
+        ("Contact.bearing_deg", "v.contacts[0].bearing_deg"),
+        ("Contact.relative_deg", "v.contacts[0].relative_deg"),
+        ("Contact.range_m", "v.contacts[0].range_m"),
+        ("Contact.band", "v.contacts[0].band"),
+        ("Contact.age_ms", "v.contacts[0].age_ms"),
+        ("Contact.cell", "v.contacts[0].cell"),
+        ("Contact.condition", "v.contacts[0].condition"),
+        ("Contact.fatal", "v.contacts[0].fatal"),
+        ("Contact.aspect", "v.contacts[0].aspect"),
+        ("Contact.odds", "v.contacts[0].odds(\"cannon\")"),
+        ("Contact.reads_dead", "v.contacts[0].reads_dead"),
+        ("Weapon.index", "v.weapons[0].index"),
+        ("Weapon.id", "v.weapons[0].id"),
+        ("Weapon.ready", "v.weapons[0].ready"),
+        ("Weapon.ready_in_ms", "v.weapons[0].ready_in_ms"),
+        ("Weapon.rounds", "v.weapons[0].rounds"),
+        ("Weapon.rounds_max", "v.weapons[0].rounds_max"),
+        ("Weapon.range_band", "v.weapons[0].range_band"),
+        ("Weapon.p_permille", "v.weapons[0].p_permille"),
+        ("Weapon.bands_cm", "v.weapons[0].bands_cm"),
+        ("Weapon.heat_per_shot", "v.weapons[0].heat_per_shot"),
+        ("Weapon.armed", "v.weapons[0].armed"),
+        ("Armed.slot", "v.weapons[0].armed.slot"),
+        ("Armed.target", "v.weapons[0].armed.target"),
+        ("Armed.min_permille", "v.weapons[0].armed.min_permille"),
+        ("Armed.aspects", "v.weapons[0].armed.aspects"),
+        ("Armed.keeps", "v.weapons[0].armed.keeps"),
+        ("Armed.min_range_m", "v.weapons[0].armed.min_range_m"),
+        ("Armed.max_range_m", "v.weapons[0].armed.max_range_m"),
+        ("Section.id", "v.sections[0].id"),
+        ("Section.condition", "v.sections[0].condition"),
+        ("Section.internals", "v.sections[0].internals"),
+        ("Section.internals_max", "v.sections[0].internals_max"),
+        ("Section.facets", "v.sections[0].facets"),
+        ("Facet.id", "v.sections[0].facets[0].id"),
+        ("Facet.armor", "v.sections[0].facets[0].armor"),
+        ("Facet.armor_max", "v.sections[0].facets[0].armor_max"),
+        ("Heat.heat", "v.heat.heat"),
+        ("Heat.max", "v.heat.max"),
+        ("Heat.overheated", "v.heat.overheated"),
+        ("Receiver.budget", "v.receiver.budget"),
+        ("Receiver.budget_max", "v.receiver.budget_max"),
+        ("Receiver.reach_permille", "v.receiver.reach_permille"),
+        ("Condition.table", "v.contacts[0].condition.table"),
+        ("Condition.bands", "v.contacts[0].condition.bands"),
+        ("Condition.age_ms", "v.contacts[0].condition.age_ms"),
+        ("Order.squad", "v.order.squad"),
+        ("Order.objective", "v.order.objective"),
+        ("Order.to", "v.order.to"),
+        ("Order.target", "v.order.target"),
+        ("Order.facing_mdeg", "v.order.facing_mdeg"),
+        ("Order.of", "v.order.of"),
+        ("Order.hold_fire", "v.order.hold_fire"),
+        ("Order.max_range_band", "v.order.max_range_band"),
+        ("Order.expires_ms", "v.order.expires_ms"),
+        ("Notice.kind", "v.notices[0].kind"),
+        ("Notice.contact", "v.notices[0].contact"),
+        ("Notice.designator", "v.notices[0].designator"),
+        ("Notice.was", "v.notices[0].was"),
+        ("Notice.section", "v.notices[0].section"),
+        ("Notice.cause", "v.notices[0].cause"),
+        ("Notice.refusal", "v.notices[0].refusal"),
+        ("Notice.order", "v.notices[0].order"),
+        ("Notice.weapon", "v.notices[0].weapon"),
+        ("Notice.radius_m", "v.notices[0].radius_m"),
+        ("Notice.secs", "v.notices[0].secs"),
+        ("Notice.heat", "v.notices[0].heat"),
+        ("Notice.max", "v.notices[0].max"),
+        ("Notice.floor_permille", "v.notices[0].floor_permille"),
+        ("Notice.why", "v.notices[0].why"),
+        ("Notice.floor", "v.notices[0].floor"),
+        ("Notice.range_m", "v.notices[0].range_m"),
+        ("Notice.min_m", "v.notices[0].min_m"),
+        ("Notice.max_m", "v.notices[0].max_m"),
+        ("Notice.rounds", "v.notices[0].rounds"),
+        ("Notice.keeps", "v.notices[0].keeps"),
+        ("Notice.friendly", "v.notices[0].friendly"),
+        ("Notice.spent", "v.notices[0].spent"),
+        ("Notice.reason", "v.notices[0].reason"),
+        ("Notice.outcome", "v.notices[0].outcome"),
+        ("Notice.slot", "v.notices[0].slot"),
+        ("Notice.percent", "v.notices[0].percent"),
+        ("Notice.aspect", "v.notices[0].aspect"),
+        ("Card.stance", "c.stance"),
+        ("Card.band_permille", "c.band_permille"),
+        ("Card.close_m", "c.close_m"),
+        ("Card.orbit_sense", "c.orbit_sense"),
+        ("Card.turn_into_hits", "c.turn_into_hits"),
+        ("Card.turn_s", "c.turn_s"),
+        ("Card.screen_bearing", "c.screen_bearing"),
+        ("Card.screen_arc", "c.screen_arc"),
+        ("Card.opening", "c.opening"),
+        ("Card.min_odds_permille", "c.min_odds_permille"),
+        ("Card.aspect", "c.aspect"),
+        ("Card.reserve_pct", "c.reserve_pct"),
+        ("Card.reserve_odds_pct", "c.reserve_odds_pct"),
+        ("Card.prefer", "c.prefer"),
+        ("Card.weight_range", "c.weight_range"),
+        ("Card.weight_facet", "c.weight_facet"),
+        ("Card.weight_health", "c.weight_health"),
+        ("Card.switch_m", "c.switch_m"),
+        ("Card.withdraw_permille", "c.withdraw_permille"),
+        ("Card.stand_min_permille", "c.stand_min_permille"),
+        ("Card.rally_ms", "c.rally_ms"),
+        ("Card.search_ms", "c.search_ms"),
+        ("Card.hunt_after_ms", "c.hunt_after_ms"),
+        ("Card.stop_unseen", "c.stop_unseen"),
+        ("Ranges.engage_cm", "ranges(v, 800, true).engage_cm"),
+        ("Ranges.release_cm", "ranges(v, 800, true).release_cm"),
+        ("Ranges.stand_cm", "ranges(v, 800, true).stand_cm"),
+        ("Ranges.limit_cm", "ranges(v, 800, true).limit_cm"),
+        (
+            "Walk.waypoint",
+            "patrol_step(v, false, (), (), ()).waypoint",
+        ),
+        (
+            "Walk.from_waypoint",
+            "patrol_step(v, false, (), (), ()).from_waypoint",
+        ),
+        ("Walk.goal", "patrol_step(v, false, (), (), ()).goal"),
+        (
+            "Walk.clear_route",
+            "patrol_step(v, false, (), (), ()).clear_route",
+        ),
+        (
+            "best_hostile",
+            "best_hostile(v, 1, 1, 1, 1000, (), (), (), ())",
+        ),
+        ("health_permille", "health_permille(v)"),
+        ("is_dry", "is_dry(v)"),
+        ("holds_a_hostile", "holds_a_hostile(v)"),
+        ("would_overheat", "would_overheat(v, \"cannon\")"),
+        ("fight_limit_cm", "fight_limit_cm(v)"),
+        ("contact", "contact(v, v.lock)"),
+        ("ranges", "ranges(v, 800, true)"),
+        ("line_to", "line_to(v, v.lock)"),
+        ("entry_cell", "entry_cell(v)"),
+        ("far_entry_cell", "far_entry_cell(v)"),
+        ("stand_off_cell", "stand_off_cell(v, v.lock, 500)"),
+        ("patrol_step", "patrol_step(v, false, (), (), ())"),
+        (
+            "fall_back_to_waypoint",
+            "fall_back_to_waypoint(v, [6, 4], (), ())",
+        ),
+        ("sin_m", "sin_m(90000)"),
+        ("cos_m", "cos_m(90000)"),
+        ("bearing_to", "bearing_to(v, [4, 4])"),
+        ("range_to", "range_to(v, [4, 4])"),
+        ("arc", "arc(0, 90000)"),
+        ("stand_off_want", "stand_off_want(4000, 1000, 300)"),
+        ("rand", "rand(10)"),
+        ("lands_ms", "lands_ms()"),
+        ("t_ms", "t_ms()"),
+        ("decide_ms", "decide_ms()"),
+        ("cell_cm", "cell_cm()"),
+        ("leash_cells", "leash_cells()"),
+        ("station_cells", "station_cells()"),
+        ("screen_half_arc_mdeg", "screen_half_arc_mdeg()"),
+        ("stand_ticks", "stand_ticks()"),
+        ("exposure_front", "exposure_front()"),
+        ("exposure_flank", "exposure_flank()"),
+        ("exposure_rear", "exposure_rear()"),
+        ("arrive_cells", "arrive_cells()"),
+        ("slots", "slots()"),
+        ("blocked", "blocked()"),
+        ("cover", "cover()"),
+        ("helm", "helm(0)"),
+        ("speed", "speed(0)"),
+        ("startup", "startup()"),
+        ("goto", "goto([1, 1])"),
+        ("hold", "hold()"),
+        ("goto_off", "goto_off()"),
+        ("lock", "lock(v.lock)"),
+        ("emcon", "emcon(true)"),
+        ("fire", "fire(\"cannon\", 1)"),
+        ("arm", "arm(\"cannon\", \"best\", 100, 15, 0, 0, 420)"),
+        ("disarm", "disarm(())"),
+        ("trace", "trace(\"t\")"),
+    ];
+
+    /// One call of every sandbox and package name, inside `think`.
+    const PACKAGE_CALLS: [(&str, &str); 17] = [
+        ("clamp", "clamp(15, 0, 10)"),
+        ("isqrt", "isqrt(17)"),
+        ("sleep", "sleep(1)"),
+        ("abs", "abs(-3)"),
+        ("min", "min(2, 5)"),
+        ("max", "max(2, 5)"),
+        ("exit", "exit()"),
+        ("take", "take(x)"),
+        ("tag", "x.tag"),
+        ("set_tag", "x.set_tag(2)"),
+        ("parse_json", "parse_json(\"{}\")"),
+        ("get_fn_metadata_list", "get_fn_metadata_list()"),
+        ("print", "print(\"p\")"),
+        ("debug", "debug(\"d\")"),
+        ("type_of", "type_of(x)"),
+        ("is_def_fn", "is_def_fn(\"think\", 2)"),
+        ("is_def_var", "is_def_var(\"x\")"),
+    ];
+}
