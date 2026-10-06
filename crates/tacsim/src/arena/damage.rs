@@ -1905,6 +1905,9 @@ mod tests {
     fn enter_with(record: mush_tactics::TacticalUnit) -> Arena {
         let mut custody = line_tank(BLUE, Team::Blue, pose(1_500, 2_500));
         custody.unit = record;
+        custody
+            .reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         arena_of(vec![line_tank(RED, Team::Red, pose(1_500, 1_500)), custody])
     }
 

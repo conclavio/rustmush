@@ -100,9 +100,11 @@ use crate::config::{ArenaConfig, ReflexConfig};
 /// they schedule.
 pub const STOCK_THINK_MS: i64 = 1_000;
 
-/// **The class every mind is rated at until 17b cut M3.3's seal** (17b cut
-/// M3.1; doc 17 §9, D-UM-35): Standard Doctrine's, Class I — the one mind
-/// there is. A mind thinks at `min(rated, core)` ([`Arena::mind_class`]), so
+/// **The class every mind is rated at** (17b cut M3.1; doc 17 §9, D-UM-35):
+/// Standard Doctrine's, Class I — the one mind there is. **17b cut M3.3's
+/// seal records** `min(STOCK_RATED_CLASS, core)` as [`MindSeal::class`]; the
+/// think side still reads the arena's `rated_class` (this constant, or a
+/// test's lever). A mind thinks at `min(rated, core)` ([`Arena::mind_class`]), so
 /// on every shipped chassis (cores I to III) it thinks at Class I's row,
 /// today's figures. `tests/content.rs` pins it equal to the Standard Doctrine
 /// manifest's own `rated_class`.
@@ -264,9 +266,9 @@ impl SealEngine {
 /// core class the seal recorded, the class the mind thinks at, the engine,
 /// whether the core is governed and whether the sortie is closed.
 ///
-/// On [`crate::arena::state::UnitState::seal`]: **laid down empty**
-/// ([`SealRef::none`]) by [`Arena::new`] in this cut; 17b cut M3.3 fills it
-/// from the custody's seal at check-out. Carried by the snapshot (the unit's
+/// On [`crate::arena::state::UnitState::seal`]: laid down empty
+/// ([`SealRef::none`]) in 17b cut M3.2; **since 17b cut M3.3** [`Arena::new`]
+/// writes it from the custody's seal at check-out ([`MindSeal::seal_ref`]). Carried by the snapshot (the unit's
 /// derive) and **NOT folded into `state_hash`**: a per-match constant, as
 /// [`Arena::odds_floor_permille`] is, whose `closed` moves only with a ledger
 /// line (17b cut M3.6's `sortie_closed`), which the hash folds through the
@@ -276,7 +278,7 @@ impl SealEngine {
 pub struct SealRef {
     /// The sortie ([`SortieId::in_match`]).
     pub sortie: SortieId,
-    /// The seal's SHA-256 digest (zero until 17b cut M3.3).
+    /// The seal's SHA-256 digest ([`MindSeal::digest`]; zero on [`SealRef::none`]).
     pub digest: [u8; 32],
     /// **The core the seal recorded** — the class fitted at check-out, which
     /// 17b cut M3.4's cause-`core` drop keys on (a hull sealed with a core
@@ -295,8 +297,9 @@ pub struct SealRef {
 
 impl SealRef {
     /// **No seal**: sortie 0, a zero digest, Class 0 recorded and thought at,
-    /// the reflex, governed, open — what [`Arena::new`] lays down on every
-    /// unit until 17b cut M3.3 seals them.
+    /// the reflex, governed, open — what [`Arena::new`] laid down on every
+    /// unit before 17b cut M3.3 sealed them, and what a unit no seal reached
+    /// reads.
     #[must_use]
     pub const fn none() -> SealRef {
         SealRef {
@@ -315,6 +318,149 @@ impl Default for SealRef {
     /// [`SealRef::none`].
     fn default() -> Self {
         SealRef::none()
+    }
+}
+
+/// **The seal a hull is checked out under** (17b cut M3.3; doc 17 §12
+/// "Sealing", §13 "The seal"; D-UM-45, D-UM-46): one immutable record per
+/// sortie binding the hull, its core, the licence, the mind's revision and the
+/// card into one value, computed world-side at the principal's dispatch — in
+/// the arena at check-out, LAST, from the finished custody
+/// (`crate::match_::seal::seal_for`, the one computation) — and carried on
+/// [`crate::arena::state::CustodyUnit::seal`] beside `sensor`, `weapons` and
+/// `gunnery` for every unit, piloted or not, armed or not.
+///
+/// The arena keeps a reference to it ([`SealRef`], [`MindSeal::seal_ref`])
+/// on the unit's state and its digest on a mind's row
+/// ([`MindState::seal_digest`]); the world keeps it whole on
+/// `crate::match_::MatchRecord::minds`, keyed by unit.
+///
+/// **What each field holds before 17b cut M5** (one mind ships): `mind`
+/// `Standard Doctrine`, `charter` `registry`, `line` `standard`, `revision`
+/// the stock version, `source_sha256` the stock script's digest, `card` the
+/// canonical bytes of the Line preset over the match's doctrine, `armed`
+/// empty, `licence` `doctrine`, `channels` helm and sensors plus fire on a
+/// hull that carries a weapon row, `fallback` `no core: the ROM` on a hull
+/// with no core, `engine` [`SealEngine::Reflex`] for a reflex or a piloted
+/// hull and [`SealEngine::Native`] for a mind's.
+///
+/// The two 32-byte digests are written as 64 lowercase base-16 characters
+/// ([`crate::arena::snapshot::digest_serde`]), the tree's one digest form;
+/// [`MindSeal::digest`] is SHA-256 over this record's own JSON bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MindSeal {
+    /// The hull.
+    pub unit: ObjId,
+    /// The sortie ([`SortieId::in_match`]).
+    pub sortie: SortieId,
+    /// The core component's id (`core` on every shipped chassis), or `None`
+    /// for a hull with no core.
+    pub core: Option<SmolStr>,
+    /// The core's class at the seal (Class 0 with no core) — what 17b cut
+    /// M3.4's cause-`core` drop keys on.
+    pub core_class: crate::arena::core::CoreClass,
+    /// The class the sealed mind thinks at: `min(its rated class, the
+    /// core's)` (17b cut M3's ruling, the plan's F4).
+    pub class: crate::arena::core::CoreClass,
+    /// Whether the core runs under the governor (doc 17 §10); `true` with no
+    /// core.
+    pub governed: bool,
+    /// The mind's name (`Standard Doctrine`).
+    pub mind: SmolStr,
+    /// The charter it was filed under (`registry`).
+    pub charter: SmolStr,
+    /// The line of revisions it belongs to (`standard`).
+    pub line: SmolStr,
+    /// The revision sealed.
+    pub revision: u32,
+    /// The SHA-256 of the sealed source — the key of the world's immutable
+    /// source store (`tacsim:mindsrc:<sha256>`).
+    #[serde(with = "crate::arena::snapshot::digest_serde")]
+    pub source_sha256: [u8; 32],
+    /// The canonical card bytes (`serde_json::to_vec` of the card validated
+    /// at the seal).
+    pub card: Vec<u8>,
+    /// SHA-256 over [`MindSeal::card`].
+    #[serde(with = "crate::arena::snapshot::digest_serde")]
+    pub card_digest: [u8; 32],
+    /// The condition slots armed at the seal (none before 17b cut M5).
+    pub armed: Vec<FireCondition>,
+    /// The engine ABI the mind was sealed against (`MIND_ABI`); a resume
+    /// under another is refused by name.
+    pub abi: SmolStr,
+    /// The licence the core holds, or `doctrine`.
+    pub licence: SmolStr,
+    /// **The warrant principal** (doc 17 §19): the character who chose the
+    /// mind — the hull's pilot, or the side lead for the fill — as an access
+    /// and display fact only; `None` where nobody chose (a staff match).
+    pub principal: Option<crate::deliberation::order::CharacterRef>,
+    /// The station channels the hull grants (doc 17 §12, D-UM-47).
+    pub channels: Vec<Channel>,
+    /// The Compact floor the card was validated against, per mille.
+    pub odds_floor_permille: u32,
+    /// Why the hull flies a fallback from the start, if it does.
+    pub fallback: Option<SmolStr>,
+    /// What flies the hull.
+    pub engine: SealEngine,
+}
+
+impl MindSeal {
+    /// **SHA-256 over this record's canonical bytes** — `serde_json::to_vec`
+    /// of the whole seal, in field order. A record that does not serialise
+    /// (none can: every field is a string, a number, a list or a map with
+    /// string keys) digests as the empty input, and is never stored.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        use sha2::{Digest as _, Sha256};
+        let bytes = serde_json::to_vec(self).unwrap_or_default();
+        Sha256::digest(&bytes).into()
+    }
+
+    /// **What the arena keeps of it** ([`SealRef`]): the sortie, the digest,
+    /// the core class, the class, the engine and the governor bit, open.
+    #[must_use]
+    pub fn seal_ref(&self) -> SealRef {
+        SealRef {
+            sortie: self.sortie,
+            digest: self.digest(),
+            core_class: self.core_class,
+            class: self.class,
+            engine: self.engine,
+            governed: self.governed,
+            closed: false,
+        }
+    }
+
+    /// **A value no seal computes**, for a custody literal built before its
+    /// seal: object 0, no sortie, empty words, zero digests. Every literal in
+    /// the tree replaces it at once (`crate::arena::state::CustodyUnit`'s
+    /// `sealed`, `crate::match_::seal`), so no arena is ever opened on it.
+    #[must_use]
+    pub fn placeholder() -> MindSeal {
+        MindSeal {
+            unit: ObjId(0),
+            sortie: SortieId::none(),
+            core: None,
+            core_class: crate::arena::core::CoreClass::Zero,
+            class: crate::arena::core::CoreClass::Zero,
+            governed: true,
+            mind: SmolStr::default(),
+            charter: SmolStr::default(),
+            line: SmolStr::default(),
+            revision: 0,
+            source_sha256: [0; 32],
+            card: Vec::new(),
+            card_digest: [0; 32],
+            armed: Vec::new(),
+            abi: SmolStr::default(),
+            licence: SmolStr::default(),
+            principal: None,
+            channels: Vec::new(),
+            odds_floor_permille: 0,
+            fallback: None,
+            engine: SealEngine::Reflex,
+        }
     }
 }
 
@@ -372,7 +518,9 @@ pub struct MindState {
     /// M3.6** (on strikes it is a function of `strikes`, which is folded).
     pub dropped: Option<DropCause>,
     /// **The digest of the seal the mind was checked out under** (17b cut
-    /// M3.2; doc 17 §13, D-UM-45): zero until 17b cut M3.3 lays seals down.
+    /// M3.2; doc 17 §13, D-UM-45): since 17b cut M3.3 the custody seal's
+    /// [`MindSeal::digest`], read off [`crate::arena::state::UnitState::seal`]
+    /// when the row is laid down (`Arena::adopt_mind`).
     /// Carried by the snapshot; **NOT folded into `state_hash` until 17b cut
     /// M3.6** (§13's fold list; the one re-bless).
     pub seal_digest: [u8; 32],
@@ -792,10 +940,18 @@ impl Arena {
     /// (17b cut M3.1: [`Arena::mind_profile`], read now; Class I's 1,000 ms,
     /// [`STOCK_THINK_MS`], on every shipped chassis).
     pub(crate) fn adopt_mind(&mut self, unit: ObjId) {
+        // **17b cut M3.3** (doc 17 §13): a row laid down here carries the
+        // digest of the seal the hull was checked out under, read off the
+        // unit's own seal reference — at check-out and at any later adoption
+        // alike; a standing row keeps its own.
+        let sealed = self.unit(unit).map_or([0; 32], |state| state.seal.digest);
         let think_seq = self
             .minds
             .entry(unit)
-            .or_insert_with(|| MindState::fresh(&self.arena_cfg.reflex))
+            .or_insert_with(|| MindState {
+                seal_digest: sealed,
+                ..MindState::fresh(&self.arena_cfg.reflex)
+            })
             .think_seq;
         if self
             .due
@@ -1372,6 +1528,8 @@ mod tests {
     fn minded() -> Arena {
         let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
         red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))])
     }
 
@@ -1795,6 +1953,8 @@ mod tests {
         let (x0, y0) = (1_500_i64, 1_500_i64);
         let mut red = laser_tank(RED, Team::Red, pose(x0, y0));
         red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         let mut units = vec![red];
         let mut others: Vec<ObjId> = Vec::new();
         for (k, (dx, dy)) in (0_u16..).zip(offsets) {
@@ -2186,6 +2346,8 @@ mod tests {
         use crate::match_::cockpit::{arming_json, status_frame_held};
         let mut red = line_tank(RED, Team::Red, pose(1_500, 1_500));
         red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         let mut mg = cannon();
         mg.id = SmolStr::new("machine_gun");
         mg.mount_section = SmolStr::new("hull");
@@ -2284,6 +2446,8 @@ mod tests {
         use crate::arena::view::range_m_rounded;
         let mut red = crate::arena::test_support::scout(RED, Team::Red, pose(1_500, 1_500));
         red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         let mut arena = wide(vec![
             red,
             line_tank(BLUE, Team::Blue, pose(1_500, 1_500 + 42_000)),
@@ -2452,7 +2616,8 @@ mod tests {
     /// 0, a zero digest, Class 0 recorded and thought at, the reflex, governed
     /// and open, and is the `Default`; every [`DropCause`] and [`SealEngine`]
     /// serialises as its `as_str` word and reads back from it; [`Arena::new`]
-    /// lays `none()` on every unit; and a FILLED seal (Class III recorded,
+    /// lays each unit's custody seal's reference (`none()` until 17b cut M3.3);
+    /// and a FILLED seal (Class III recorded,
     /// Class II thought at, scripted, ungoverned, closed) on a unit survives a
     /// snapshot round trip field for field.
     #[test]
@@ -2511,9 +2676,22 @@ mod tests {
             ["reflex", "native", "scripted"]
         );
 
-        // `Arena::new` lays `none()` on every unit.
+        // `Arena::new` lays `none()` on every unit — **until 17b cut M3.3**,
+        // which writes each unit's custody seal's reference instead (the
+        // fixture seal: sortie `in_match(0, unit)`, never `none()`), and a
+        // mind's row carries that seal's digest.
         let mut arena = minded();
-        assert!(arena.units.iter().all(|unit| unit.seal == SealRef::none()));
+        assert!(arena.units.iter().all(|unit| unit.seal != SealRef::none()));
+        assert!(
+            arena
+                .units
+                .iter()
+                .all(|unit| unit.seal.sortie == SortieId::in_match(0, unit.id))
+        );
+        assert_eq!(
+            arena.minds.get(&RED).map(|row| row.seal_digest),
+            arena.unit(RED).map(|unit| unit.seal.digest)
+        );
         // A filled seal round-trips through a snapshot.
         let filled = SealRef {
             sortie: SortieId::in_match(3, RED),
@@ -2557,6 +2735,11 @@ mod tests {
             panic!("and decodes");
         };
         assert_eq!(back.unit(RED).map(|unit| unit.seal), Some(filled));
-        assert_eq!(back.unit(BLUE).map(|unit| unit.seal), Some(SealRef::none()));
+        // 17b cut M3.3: blue carries its own custody seal (no longer `none()`),
+        // whole, through the round trip.
+        assert_eq!(
+            back.unit(BLUE).map(|unit| unit.seal),
+            arena.unit(BLUE).map(|unit| unit.seal)
+        );
     }
 }

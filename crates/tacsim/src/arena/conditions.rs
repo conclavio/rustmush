@@ -1055,14 +1055,18 @@ mod tests {
         assert!(none.is_empty_for(RED), "no row laid down");
 
         // Two guns on each hull, so the capacity is what refuses.
-        let two_guns = |unit: crate::arena::state::CustodyUnit| crate::arena::state::CustodyUnit {
-            weapons: vec![cannon(), laser()],
-            ..unit
+        let two_guns = |unit: crate::arena::state::CustodyUnit| {
+            crate::arena::state::CustodyUnit {
+                weapons: vec![cannon(), laser()],
+                ..unit
+            }
+            .sealed()
         };
         let bare = crate::arena::state::CustodyUnit {
             unit: tactical_unit(BLUE),
             ..two_guns(scout(BLUE, Team::Blue, pose(6_500, 4_500)))
-        };
+        }
+        .sealed();
         let mut arena = arena_of(vec![
             two_guns(scout(RED, Team::Red, pose(1_500, 4_500))),
             bare,
@@ -1516,6 +1520,8 @@ mod tests {
                     pose(i64::from(x) * 1_000 + 500, i64::from(50 + i) * 1_000 + 500),
                 );
                 unit.weapons = vec![cannon(), machine_gun.clone()];
+                unit.reseal(&crate::match_::SealTerms::fixture())
+                    .expect("the fixture terms seal");
                 units.push(unit);
             }
         }

@@ -396,6 +396,62 @@ pub fn digest_text(digest: &[u8; 32]) -> String {
     out
 }
 
+/// **[`digest_text`] read back** (17b cut M3.3): exactly 64 lowercase
+/// base-16 characters to their 32 bytes; anything else — a capital, a short
+/// string, a stray character — is `None`, so the one form is the only form.
+#[must_use]
+pub fn digest_from_text(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    for (byte, pair) in out.iter_mut().zip(text.as_bytes().chunks(2)) {
+        let mut value = 0_u8;
+        for digit in pair {
+            let nibble = match digit {
+                b'0'..=b'9' => digit - b'0',
+                b'a'..=b'f' => digit - b'a' + 10,
+                _ => return None,
+            };
+            value = value.wrapping_mul(16).wrapping_add(nibble);
+        }
+        *byte = value;
+    }
+    Some(out)
+}
+
+/// **A 32-byte digest field as the tree writes every digest** (17b cut M3.3):
+/// `#[serde(with = "crate::arena::snapshot::digest_serde")]` writes
+/// [`digest_text`] and reads [`digest_from_text`], refusing any other form —
+/// the seal's two digests ([`crate::arena::mind::MindSeal`]) ride a record a
+/// person may read, where a list of thirty-two numbers would not be.
+pub mod digest_serde {
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    /// Write `digest` as 64 lowercase base-16 characters.
+    ///
+    /// # Errors
+    ///
+    /// The serializer's own.
+    pub fn serialize<S: Serializer>(digest: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::digest_text(digest))
+    }
+
+    /// Read 64 lowercase base-16 characters.
+    ///
+    /// # Errors
+    ///
+    /// A string of any other form, named.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        super::digest_from_text(&text).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "a digest is 64 lowercase base-16 characters, not {text:?}"
+            ))
+        })
+    }
+}
+
 /// SHA-256 over the state string's bytes, as [`digest_text`] renders it.
 fn state_digest(state: &str) -> String {
     digest_text(&Sha256::digest(state.as_bytes()).into())

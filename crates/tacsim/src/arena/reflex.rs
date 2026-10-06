@@ -3412,6 +3412,8 @@ mod tests {
     fn d2_a_weapon_that_makes_no_heat_never_holds_the_controller_back() {
         let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
         unit.unit = hot_tactical_unit(ObjId(4));
+        unit.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         let mut arena = arena_of(vec![unit]);
         if let Some(state) = arena.unit_mut(ObjId(4)) {
             state.heat = Some(crate::arena::state::HeatState {

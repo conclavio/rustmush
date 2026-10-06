@@ -225,27 +225,31 @@ fn custody() -> CustodyOut {
             waypoints: tacsim::arena::state::Waypoints::default(),
             modes: Vec::new(),
         },
-        units: vec![CustodyUnit {
-            id: UNIT,
-            team: Team::Red,
-            pose: Pose::at(1_500, 1_500, 0, rules()),
-            mobility: TrackedRules {
-                max_speed_cms: 1_000,
-                accel_cms2: 200,
-                brake_cms2: 400,
-                turn_rate_mdeg_s: 30_000,
-                reverse_factor_pct: 40,
-            },
-            sensor_height_cm: 150,
-            sensor: None,
-            weapons: Vec::new(),
-            profile: tacsim::arena::resolution::UnitProfile::default(),
-            gunnery: 0,
-            controller: tacsim::arena::state::Controller::Pilot,
-            // 16b cut Q.1: no pod behind it.
-            slot: 0,
-            unit: tactical_unit(UNIT),
-        }],
+        units: vec![
+            CustodyUnit {
+                id: UNIT,
+                team: Team::Red,
+                pose: Pose::at(1_500, 1_500, 0, rules()),
+                mobility: TrackedRules {
+                    max_speed_cms: 1_000,
+                    accel_cms2: 200,
+                    brake_cms2: 400,
+                    turn_rate_mdeg_s: 30_000,
+                    reverse_factor_pct: 40,
+                },
+                sensor_height_cm: 150,
+                sensor: None,
+                weapons: Vec::new(),
+                profile: tacsim::arena::resolution::UnitProfile::default(),
+                gunnery: 0,
+                controller: tacsim::arena::state::Controller::Pilot,
+                // 16b cut Q.1: no pod behind it.
+                slot: 0,
+                unit: tactical_unit(UNIT),
+                seal: tacsim::arena::MindSeal::placeholder(),
+            }
+            .sealed(),
+        ],
         pilots: vec![Pilot {
             unit: UNIT,
             pilot: GOD,

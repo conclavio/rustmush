@@ -973,10 +973,25 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
                 0,
                 muster.controller,
                 muster.slot,
-            );
-            // **17b cut M2.5**: an unarmed muster fields no weapon rows.
+                &tacsim::match_::SealTerms::fixture(),
+            )
+            .expect("the fixture terms seal");
+            // **17b cut M2.5**: an unarmed muster fields no weapon rows —
+            // and (**17b cut M3.3**) is sealed again as it now stands, so its
+            // seal grants no fire channel (the seal is a function of the
+            // finished custody; doc 17 §13).
             if muster.unarmed {
                 unit.weapons.clear();
+                unit.reseal(&tacsim::match_::SealTerms::fixture())
+                    .expect("the fixture terms seal");
+                assert_eq!(
+                    unit.seal.channels,
+                    [
+                        tacsim::arena::state::Channel::Helm,
+                        tacsim::arena::state::Channel::Sensors
+                    ],
+                    "an unarmed muster's seal grants no fire channel"
+                );
             }
             units.push(unit);
         }
@@ -1947,16 +1962,20 @@ pub fn lance_arena(world: &TestWorld, seed: u64) -> Arena {
             posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
                 .expect("an empty posture"),
         };
-        units.push(tacsim::match_::custody_unit(
-            &catalog,
-            cells,
-            id,
-            team,
-            pose,
-            1,
-            Controller::Mind,
-            0,
-        ));
+        units.push(
+            tacsim::match_::custody_unit(
+                &catalog,
+                cells,
+                id,
+                team,
+                pose,
+                1,
+                Controller::Mind,
+                0,
+                &tacsim::match_::SealTerms::fixture(),
+            )
+            .expect("the fixture terms seal"),
+        );
     }
     Arena::new(
         CustodyOut {

@@ -209,6 +209,8 @@ mod tests {
     fn minded(id: ObjId, team: Team, x: i64, y: i64) -> CustodyUnit {
         let mut unit = line_tank(id, team, pose(x, y));
         unit.controller = Controller::Mind;
+        unit.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         unit
     }
 
@@ -462,6 +464,8 @@ mod tests {
         let mut red = scout(RED, Team::Red, pose(20_500, 20_500));
         red.weapons.clear();
         red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         let mut arena = field(vec![
             red,
             line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),

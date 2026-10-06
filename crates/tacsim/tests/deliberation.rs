@@ -329,7 +329,9 @@ fn tank_seeing(
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 fn match_cfg() -> MatchConfig {
@@ -4451,16 +4453,20 @@ fn o3_range(cfg: &ArenaConfig, targets: Controller) -> Arena {
         let id = ObjId(40 + u32::try_from(n).unwrap_or(0));
         let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("a target");
         let slot = u8::try_from(n + 1).unwrap_or(1);
-        units.push(tacsim::match_::custody_unit(
-            &catalog,
-            cells,
-            id,
-            Team::Blue,
-            centre(12, y),
-            0,
-            targets,
-            slot,
-        ));
+        units.push(
+            tacsim::match_::custody_unit(
+                &catalog,
+                cells,
+                id,
+                Team::Blue,
+                centre(12, y),
+                0,
+                targets,
+                slot,
+                &tacsim::match_::SealTerms::fixture(),
+            )
+            .expect("the fixture terms seal"),
+        );
     }
     let mut arena = Arena::new(
         CustodyOut {

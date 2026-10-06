@@ -319,7 +319,9 @@ fn tank(
         controller,
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// `tests/reflex.rs`' doctrine: decide every 500 ms, re-plan at once.
@@ -461,6 +463,7 @@ fn presenting(unit: CustodyUnit) -> CustodyUnit {
         profile: every_band_profile(),
         ..unit
     }
+    .sealed()
 }
 
 // ---------------------------------------------------------------------------
@@ -2568,6 +2571,7 @@ fn m1b0_a_mixed_chassis_view_carries_its_own_scan_tables() {
                 unit: chassis(entry, *id),
                 ..tank(*id, *team, centre(*x, *y), vec![cannon()], controller)
             }
+            .sealed()
         })
         .collect();
     let tank_words = words(&chassis(content::LINE_TANK, ObjId(1)));
@@ -2672,9 +2676,12 @@ fn every_band_profile() -> UnitProfile {
 /// that say nothing. Answers the arena, the runner, and red's landing
 /// millisecond.
 fn arming_field(says_at_0: Vec<IntentKind>) -> (Arena, Arc<ScriptedMind>, i64) {
-    let target = |id: ObjId, y: u16| CustodyUnit {
-        profile: every_band_profile(),
-        ..tank(id, Team::Blue, centre(9, y), Vec::new(), Controller::Mind)
+    let target = |id: ObjId, y: u16| {
+        CustodyUnit {
+            profile: every_band_profile(),
+            ..tank(id, Team::Blue, centre(9, y), Vec::new(), Controller::Mind)
+        }
+        .sealed()
     };
     let units = vec![
         tank(
@@ -3008,9 +3015,12 @@ fn m1a5_an_order_to_a_mind_is_re_keyed_to_its_own_held_contact_or_none() {
 ///   and the mind's own row once it is classified (17b cut L.2's rule).
 #[test]
 fn m1b3_an_order_hint_re_keys_only_to_a_classified_row() {
-    let blind = |unit: CustodyUnit| CustodyUnit {
-        sensor: None,
-        ..unit
+    let blind = |unit: CustodyUnit| {
+        CustodyUnit {
+            sensor: None,
+            ..unit
+        }
+        .sealed()
     };
     let mut rig = Rig::new(arena_of(
         vec![
@@ -3257,6 +3267,80 @@ fn m1a5_a_mind_mustered_on_the_shipped_ground_thinks_on_its_grid() {
         Some(tacsim::arena::state::Power::Starting),
         "the default runner, the native stock mind, starts the cold tank"
     );
+}
+
+/// **An unarmed muster is sealed as it stands** (17b cut M3.3; doc 17 §13,
+/// D-UM-45): the seal is a function of the FINISHED custody, so
+/// [`support::Muster::mind_unarmed`], which takes the weapon rows off after
+/// `custody_unit` sealed the hull, reseals it — the arena it checks out
+/// carries the seal of the weaponless custody (no fire channel), not the
+/// armed hull's. The expected seals are computed here by the one production
+/// computation over the same M32 record, and the arena's `UnitState.seal`
+/// and `MindState.seal_digest` are held to each, armed and unarmed.
+#[test]
+fn m3_an_unarmed_muster_is_sealed_with_no_fire_channel() {
+    let world = support::booted_world();
+    let w = world.world();
+    let red = support::tank(&world, Team::Red, 1);
+    let fielded = |muster: support::Muster| {
+        support::shipped_arena(
+            &world,
+            &[&[muster], &[support::Muster::reflex(Team::Blue, 1)]],
+        )
+    };
+    let armed_arena = fielded(support::Muster::mind(Team::Red, 1));
+    let unarmed_arena = fielded(support::Muster::mind_unarmed(Team::Red, 1));
+
+    // The production computation over the same record (the pose is not a
+    // seal input).
+    let catalog = w
+        .module_state::<tacsim::TacsimStore>()
+        .map(|slot| slot.definitions().clone())
+        .unwrap_or_default();
+    let cells = mush_tactics::module::unit_of(w, red)
+        .expect("the red tank is a tactical unit")
+        .clone();
+    let (_, pose) = mush_sim::pose_of(w, red).expect("the red tank is placed");
+    let terms = tacsim::match_::SealTerms::fixture();
+    let mut custody = tacsim::match_::custody_unit(
+        &catalog,
+        cells,
+        red,
+        Team::Red,
+        pose,
+        0,
+        Controller::Mind,
+        1,
+        &terms,
+    )
+    .expect("the fixture terms seal");
+    assert!(!custody.weapons.is_empty(), "the stock tank is armed");
+    let armed = custody.seal.clone();
+    assert_eq!(
+        armed.channels,
+        [Channel::Helm, Channel::Sensors, Channel::Fire]
+    );
+    custody.weapons.clear();
+    custody.reseal(&terms).expect("the fixture terms seal");
+    let unarmed = custody.seal.clone();
+    assert_eq!(unarmed.channels, [Channel::Helm, Channel::Sensors]);
+    assert_ne!(armed.digest(), unarmed.digest(), "the channels are sealed");
+
+    for (arena, seal, word) in [
+        (&armed_arena, &armed, "armed"),
+        (&unarmed_arena, &unarmed, "unarmed"),
+    ] {
+        assert_eq!(
+            arena.unit(red).map(|unit| unit.seal),
+            Some(seal.seal_ref()),
+            "the {word} muster's arena seal"
+        );
+        assert_eq!(
+            arena.minds.get(&red).map(|state| state.seal_digest),
+            Some(seal.digest()),
+            "the {word} muster's mind row"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7934,6 +8018,8 @@ fn crowded_field(core_cell: i64) -> Arena {
         Controller::Mind,
     );
     red.unit = core_cell_at(&red.unit, core_cell);
+    red.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
     let mut units = vec![red];
     let blues: Vec<(ObjId, (u16, u16))> = (0_u16..14)
         .map(|k| {
@@ -8057,7 +8143,9 @@ fn shipped_heavy(controller: Controller) -> CustodyUnit {
         0,
         controller,
         1,
+        &tacsim::match_::SealTerms::fixture(),
     )
+    .expect("the fixture terms seal")
 }
 
 /// **A Class III mind on the heavy thinks every 250 ms** (17b cut M3.1;
@@ -8138,7 +8226,8 @@ fn m3_a_never_cored_mind_thinks_on_the_stand_in_from_its_first_think() {
             vec![cannon()],
             Controller::Mind,
         )
-    };
+    }
+    .sealed();
     assert!(
         never.unit.component(&core).is_none(),
         "never fitted: no core component"
@@ -8168,6 +8257,9 @@ fn m3_a_never_cored_mind_thinks_on_the_stand_in_from_its_first_think() {
     revoked.unit = mush_tactics::apply(&revoked.unit, &plan, 0)
         .expect("revoked")
         .0;
+    revoked
+        .reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
     assert!(
         revoked.unit.component(&core).is_some(),
         "the revoked hull keeps its component"
@@ -8271,7 +8363,8 @@ fn m3_a_class_iii_and_a_class_0_mind_at_three_cadences_are_one_event_list_and_on
                 vec![cannon()],
                 Controller::Mind,
             ))
-        };
+        }
+        .sealed();
         let mut red2 = seeing(tank(
             RED2,
             Team::Red,

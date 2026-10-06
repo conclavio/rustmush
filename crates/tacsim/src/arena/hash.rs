@@ -2213,12 +2213,18 @@ mod tests {
             "pending's presence"
         );
 
-        // Never folded: the seal reference, every field of it.
+        // Never folded: the seal reference, every field of it. Since 17b cut
+        // M3.3 the fixture hull carries its check-out seal (sortie, digest,
+        // class I on its class I core), so each probe is held to differ from
+        // the base unit's OWN seal — not from `SealRef::none()` — and every
+        // probe writes a value the base does not already hold.
+        let was = base.unit(ObjId(4)).map(|unit| unit.seal);
+        assert_ne!(was, Some(SealRef::none()), "the fixture hull is sealed");
         let sealed = |change: &dyn Fn(&mut SealRef)| {
             let mut arena = base.clone();
             if let Some(unit) = arena.unit_mut(ObjId(4)) {
                 change(&mut unit.seal);
-                assert_ne!(unit.seal, SealRef::none(), "the probe changed the seal");
+                assert_ne!(Some(unit.seal), was, "the probe changed the seal");
             }
             state_hash(&arena)
         };
@@ -2229,7 +2235,7 @@ mod tests {
             ),
             ("seal.digest", sealed(&|s| s.digest = [9; 32])),
             ("seal.core_class", sealed(&|s| s.core_class = CoreClass::II)),
-            ("seal.class", sealed(&|s| s.class = CoreClass::I)),
+            ("seal.class", sealed(&|s| s.class = CoreClass::Zero)),
             ("seal.engine", sealed(&|s| s.engine = SealEngine::Scripted)),
             ("seal.governed", sealed(&|s| s.governed = false)),
             ("seal.closed", sealed(&|s| s.closed = true)),

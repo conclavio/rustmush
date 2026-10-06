@@ -431,6 +431,33 @@ pub struct MatchRecord {
     /// [`crate::match_::start`] was given it and the `CustodyOut` carried it —
     /// what the result document's `"mode"` and the replay's say.
     pub mode: MatchMode,
+    /// **Every unit's seal** (17b cut M3.3; doc 17 §13 "Where it goes",
+    /// D-UM-46): one [`MindSealRecord`] per unit, keyed by unit — in the arena
+    /// exactly one sortie per unit, opened at the pod's exit and closed at the
+    /// match's end. Written by [`crate::match_::start`] from each
+    /// `CustodyUnit::seal` before the record is inserted, and carried by the
+    /// live record, so a resume can refuse by name a seal this server cannot
+    /// run (`crate::match_::resume::resume_pending`). The arena's own copy of
+    /// each seal's reference rides its snapshot and is never re-derived from
+    /// this. The result document carries nothing of it.
+    ///
+    /// `#[serde(default)]` under this module head's `LIVE_FORMAT` policy (no
+    /// bump, [`MatchRecord::leaders`]' precedent): a live record written
+    /// before this cut has no seals, which is true of it.
+    #[serde(default)]
+    pub minds: BTreeMap<ObjId, MindSealRecord>,
+}
+
+/// **One sortie's seal, as the world keeps it** (17b cut M3.3; doc 17 §13,
+/// D-UM-46): the record is keyed by `(unit, sortie)` — the unit is
+/// [`MatchRecord::minds`]' key, the sortie is here — and holds the seal whole.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MindSealRecord {
+    /// The sortie ([`crate::arena::mind::SortieId::in_match`]).
+    pub sortie: crate::arena::mind::SortieId,
+    /// The seal.
+    pub seal: crate::arena::mind::MindSeal,
 }
 
 /// The four integers of a pose (doc 16 §3.2), without the opaque posture.
@@ -1722,6 +1749,7 @@ mod tests {
             unparsed: 0,
             replay: None,
             mode: MatchMode::Skirmish,
+            minds: BTreeMap::new(),
         };
         let end = MatchEnd {
             reason: EndReason::Timeout,
@@ -1870,6 +1898,7 @@ mod tests {
             unparsed: 0,
             replay: None,
             mode: MatchMode::Skirmish,
+            minds: BTreeMap::new(),
         }
     }
 

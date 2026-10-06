@@ -441,7 +441,9 @@ fn unit_of(
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: cells,
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// An arena of `units` over a window with `paint`ed cells, every unit seated.
@@ -3194,6 +3196,8 @@ fn x5_a_filter_shot_off_its_mount_recovers_nothing_and_a_cold_one_recovers_every
     let shot = units.first_mut().expect("the observer");
     let (post, _) = mush_tactics::apply(&shot.unit, &plan, 0).expect("the filter is shot off");
     shot.unit = post;
+    shot.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
 
     let mut gone = arena_of(&catalog, units, &[]);
     for id in [RED, POD] {
@@ -3496,6 +3500,7 @@ fn under_reflex(unit: CustodyUnit) -> CustodyUnit {
         controller: tacsim::arena::state::Controller::Reflex,
         ..unit
     }
+    .sealed()
 }
 
 /// The same unit with no sight at all (16b cut X.6) — what a fixture about
@@ -3506,6 +3511,7 @@ fn blind(unit: CustodyUnit) -> CustodyUnit {
         sensor: None,
         ..unit
     }
+    .sealed()
 }
 
 /// The same unit with `tests/reflex.rs`'s own fixture helm (16b cut X.6): 10 m/s
@@ -3526,6 +3532,7 @@ fn nimble(unit: CustodyUnit) -> CustodyUnit {
         },
         ..unit
     }
+    .sealed()
 }
 
 /// Wake `id` and point it: online, at `heading_mdeg`, already at `speed_cms` —
@@ -5648,6 +5655,8 @@ fn duel_with_a_spent_track() -> Arena {
     .expect("a one-op plan");
     let (post, _) = mush_tactics::apply(&blue.unit, &plan, 0).expect("the track is spent");
     blue.unit = post;
+    blue.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
     let mut arena = arena_of(
         &catalog,
         vec![
@@ -8277,6 +8286,8 @@ fn with_condition(mut unit: CustodyUnit, component: &str, value: i64) -> Custody
     .expect("a one-op plan");
     let (post, _) = mush_tactics::apply(&unit.unit, &plan, 0).expect("the cell takes the value");
     unit.unit = post;
+    unit.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
     unit
 }
 
@@ -8540,7 +8551,9 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
             0,
             tacsim::arena::state::Controller::Reflex,
             1,
+            &tacsim::match_::SealTerms::fixture(),
         )
+        .expect("the fixture terms seal")
     };
     let shooter = || {
         let cells = tacsim::definitions::to_tactical_unit(

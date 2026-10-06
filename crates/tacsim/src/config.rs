@@ -683,8 +683,9 @@ impl Default for CommandConfig {
 #[serde(deny_unknown_fields)]
 pub struct MindsConfig {
     /// **The Compact floor**, per mille: a condition under it is refused
-    /// `unlawful` at the landing of its arming. `10` to `100` in steps of `10`
-    /// ([`MindsConfig::validate`]).
+    /// `unlawful` at the landing of its arming, and a card under it is refused
+    /// at the seal (17b cut M3.3). `10` to `950` in steps of `10`
+    /// ([`MindsConfig::validate`]; widened from `100` by 17b cut M3.3).
     pub odds_floor_permille: u32,
     /// **Who flies a match's unseated hulls** (17b cut M1b.5; doc 16 §6's AI
     /// fill; 17b's (b)): `reflex` (the default, today's machine, T0) or `mind`
@@ -732,12 +733,15 @@ impl Default for MindsConfig {
 impl MindsConfig {
     /// **Check `[tacsim.minds]`** (17b cut M1b.1, in Q.7's pattern).
     ///
-    /// The floor is **10 to 100 in steps of 10**: the step because every
+    /// The floor is **10 to 950 in steps of 10**: the step because every
     /// sentence that names the floor prints it in whole per cents
-    /// (`floor / 10`), and the ceiling because until 17b cut M3's seal can
-    /// refuse a card by name the floor must not exceed Standard Doctrine's Line
-    /// default of 10 per cent, so the stock mind's own arming is lawful by
-    /// construction. M3 widens it.
+    /// (`floor / 10`), and the ceiling the card's own `min_odds` ceiling of 95
+    /// per cent. **17b cut M3.3 widened it from 100**: the seal now validates
+    /// the card against the floor by name (`crate::match_::seal::seal_for`),
+    /// so an operator floor above 100 — above the Line card's 10 per cent —
+    /// refuses every Line-carded check-out
+    /// (`crate::match_::StartError::CardUnlawful`) until 17b cut M5 lets a
+    /// principal choose a card.
     ///
     /// # Errors
     ///
@@ -746,9 +750,9 @@ impl MindsConfig {
     /// **17b cut M1b.5**: `fill_controller` is `reflex` or `mind`, by name.
     pub fn validate(&self) -> Result<(), String> {
         let floor = self.odds_floor_permille;
-        if !(10..=100).contains(&floor) || !floor.is_multiple_of(10) {
+        if !(10..=950).contains(&floor) || !floor.is_multiple_of(10) {
             return Err(format!(
-                "[tacsim.minds].odds_floor_permille must be 10 to 100 in steps of 10 (it is {floor})"
+                "[tacsim.minds].odds_floor_permille must be 10 to 950 in steps of 10 (it is {floor})"
             ));
         }
         if !matches!(self.fill_controller.as_str(), "reflex" | "mind") {
@@ -1761,12 +1765,13 @@ mod tests {
     }
 
     /// **17b cut M1b.1**: the Compact floor is 10 to 100 in steps of 10, and
-    /// every refusal names the key and the value.
+    /// every refusal names the key and the value. **17b cut M3.3** widened the
+    /// bound to 950 (the seal refuses a card under it by name).
     #[test]
     fn m1b1_the_floor_is_ten_to_a_hundred_in_steps_of_ten() {
         use super::MindsConfig;
         assert_eq!(MindsConfig::default().odds_floor_permille, 100);
-        for floor in [10, 50, 100] {
+        for floor in [10, 50, 100, 110, 200, 950] {
             assert_eq!(
                 MindsConfig {
                     odds_floor_permille: floor,
@@ -1777,7 +1782,7 @@ mod tests {
                 "{floor}"
             );
         }
-        for floor in [0, 15, 110] {
+        for floor in [0, 15, 205, 960] {
             assert_eq!(
                 MindsConfig {
                     odds_floor_permille: floor,
@@ -1785,7 +1790,7 @@ mod tests {
                 }
                 .validate(),
                 Err(format!(
-                    "[tacsim.minds].odds_floor_permille must be 10 to 100 in steps of 10 (it is \
+                    "[tacsim.minds].odds_floor_permille must be 10 to 950 in steps of 10 (it is \
                      {floor})"
                 ))
             );

@@ -1756,6 +1756,14 @@ pub struct CustodyUnit {
     /// a harness unit and a staff-fielded tank have stable callsigns with no lobby
     /// at all.
     pub slot: u8,
+    /// **The seal it is checked out under** (17b cut M3.3; doc 17 §13, D-UM-45,
+    /// D-UM-46) — beside `sensor`, `weapons` and `gunnery`, for every unit,
+    /// piloted or not, armed or not. Computed LAST, from the finished custody, by
+    /// `crate::match_::seal::seal_for` (through `crate::match_::custody_unit`,
+    /// `CustodyUnit::reseal` and, for a hand-built literal, `CustodyUnit::sealed`);
+    /// [`Arena::new`] keeps its reference on [`UnitState::seal`] and, for a
+    /// mind's hull, its digest on the mind's row.
+    pub seal: crate::arena::mind::MindSeal,
     /// M32 unit truth, carried opaque: cut A applies no plan to it (D-16-6).
     pub unit: TacticalUnit,
 }
@@ -2077,10 +2085,11 @@ pub struct UnitState {
     /// §13, D-UM-45, D-UM-46): its sortie, the seal's digest, the core class
     /// the seal recorded (what 17b cut M3.4's cause-`core` drop keys on), the
     /// class its mind thinks at, the engine that flies it, the governor bit
-    /// and whether the sortie is closed. **Laid down empty**
-    /// ([`crate::arena::mind::SealRef::none`]) on every unit by
-    /// [`Arena::new`] in this cut; 17b cut M3.3 fills it from the custody's
-    /// seal.
+    /// and whether the sortie is closed. Laid down empty
+    /// ([`crate::arena::mind::SealRef::none`]) in 17b cut M3.2; **since 17b cut
+    /// M3.3** [`Arena::new`] writes it from the custody's own seal
+    /// ([`crate::arena::mind::MindSeal::seal_ref`]), and a snapshot carries it
+    /// whole — a resume never re-derives it from the world's record.
     ///
     /// Carried by this struct's derive (`SNAPSHOT_FORMAT` 8) and **NOT
     /// folded into [`crate::arena::hash::state_hash`]**: a per-match
@@ -3958,7 +3967,8 @@ pub struct Arena {
     /// [`crate::arena::mind::STOCK_RATED_CLASS`] — Standard Doctrine's — from
     /// [`Arena::new`] and from the snapshot's decode; moved only by
     /// [`Arena::set_rated_class_for_tests`], which no production path calls.
-    /// 17b cut M3.3's seal replaces it with each hull's own rated class.
+    /// (17b cut M3.3's seal records each hull's class beside it,
+    /// `MindSeal::class`; nothing of the think side moved onto the seal.)
     /// Neither hashed nor carried.
     pub(crate) rated_class: crate::arena::core::CoreClass,
     /// **The card changes waiting for the next pulse** (17b cut M1b.5; doc 17
@@ -4501,9 +4511,10 @@ impl Arena {
                 },
                 heat,
                 controller: unit.controller,
-                // **17b cut M3.2**: the seal reference, laid down empty on
-                // every unit; 17b cut M3.3 fills it from the custody's seal.
-                seal: crate::arena::mind::SealRef::none(),
+                // **17b cut M3.3** (doc 17 §13): the seal's reference, off the
+                // custody's own seal — what the check-out sealed, never
+                // re-derived here (a resume decodes it whole).
+                seal: unit.seal.seal_ref(),
                 unit: unit.unit,
                 condition,
                 lock: None,
@@ -5972,6 +5983,8 @@ mod tests {
             let mut unit = fast(ObjId(4), Team::Red, pose(1_500, 1_500), speed_cms);
             if let Some(locomotion) = locomotion {
                 unit.unit = tactical_unit_on(ObjId(4), locomotion);
+                unit.reseal(&crate::match_::SealTerms::fixture())
+                    .expect("the fixture terms seal");
             }
             let mut out = custody(vec![unit], Vec::new());
             out.definition.terrain =
@@ -6026,6 +6039,8 @@ mod tests {
             let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
             if let Some(locomotion) = locomotion {
                 unit.unit = tactical_unit_on(ObjId(4), locomotion);
+                unit.reseal(&crate::match_::SealTerms::fixture())
+                    .expect("the fixture terms seal");
             }
             let mut out = custody(vec![unit], Vec::new());
             out.definition.terrain = priced_terrain(8, 8, TerrainClass::Grass, &[((1, 1), class)]);

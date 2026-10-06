@@ -257,7 +257,9 @@ fn tank(id: ObjId, team: Team, pose: Pose, sensor: Option<SensorProfile>) -> Cus
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// The 80 by 80 window with `paint`ed cells and one pilot per unit.

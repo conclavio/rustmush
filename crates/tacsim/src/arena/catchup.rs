@@ -758,6 +758,7 @@ mod tests {
             unit: mush_tactics::TacticalUnit::from_spec(&spec, id).expect("the big unit"),
             ..tank(id, Team::Red, pose(500, 500))
         }
+        .sealed()
     }
 
     #[test]

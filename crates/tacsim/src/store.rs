@@ -7,6 +7,7 @@
 //! | `tacsim:seed:{pack}@{version}` | latch | **skipped loudly**, and the world boots — but the **key still bars a re-seed**. This is the one place where losing the body must not lose the fact: "we cannot read the latch" has to mean *do not seed again*, never *seed again* (§3.1 invariant (ii)). The cost is that the seeded objects' pack-local names are gone, so the corridor's routes cannot be re-materialized until `@tacsim/seed` is re-run against a fresh store; the objects themselves are untouched |
 //! | `tacsim:pin:{subject}` | pin | **skipped loudly**. A lost pin does **not** float its subject onto a newer version: resolution refuses, naming the pack, because §3.1 invariant (i)'s whole point is that a published contract's assumptions never shift underneath it |
 //! | `tacsim:tutorial:{account}` | per-account | **skipped loudly**; that account reads its hints again (16b cut AH.1: `crate::match_::tutorial`) |
+//! | `tacsim:mindsrc:{sha256}` | immutable source | **skipped loudly** when its `sha256` disagrees with its key or its bytes do not hash to it (17b cut M3.3; doc 17 §13). The **key still counts**: the boot never rewrites a document under a key it holds, so a tampered stock source stays unreadable rather than silently replaced, and a scripted seal naming it refuses its resume by name (`crate::match_::resume`) |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -90,6 +91,37 @@ pub fn seed_key(pack: &CanonicalId, version: u32) -> SmolStr {
 #[must_use]
 pub fn pin_key(subject: &CanonicalId) -> SmolStr {
     SmolStr::new(format!("tacsim:pin:{subject}"))
+}
+
+/// The prefix of every sealed mind source's document (17b cut M3.3).
+pub(crate) const MINDSRC_PREFIX: &str = "tacsim:mindsrc:";
+
+/// **`tacsim:mindsrc:<sha256>`** (17b cut M3.3; doc 17 §13): the key a sealed
+/// mind source is held under, its digest as the tree writes every digest (64
+/// lowercase base-16 characters). Content-addressed: the key IS the bytes'
+/// digest, so a source is written once and never rewritten.
+#[must_use]
+pub(crate) fn mindsrc_key(digest: &[u8; 32]) -> SmolStr {
+    SmolStr::new(format!(
+        "{MINDSRC_PREFIX}{}",
+        crate::arena::digest_text(digest)
+    ))
+}
+
+/// **One sealed mind source, whole** (17b cut M3.3; doc 17 §13): the document
+/// at `mindsrc_key` — the bytes' SHA-256 (64 lowercase base-16 characters,
+/// the key's own tail), the engine ABI it was first stored under, and the
+/// source text. A bounded whole-document record, written once by
+/// `put_mind_source` and never rewritten.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MindSourceRecord {
+    /// SHA-256 of `bytes`, as the key writes it.
+    pub sha256: String,
+    /// The `MIND_ABI` it was stored under.
+    pub abi: String,
+    /// The source.
+    pub bytes: String,
 }
 
 /// Split an `{id}@{version}` key tail. `None` when either half is unusable, which is
@@ -196,6 +228,15 @@ pub struct TacsimStore {
     /// ([`crate::match_::tutorial`]). Keyed by the immutable account id, never by a
     /// character: an alt is the same person.
     pub(crate) tutorials: BTreeMap<mush_core::AccountId, crate::match_::tutorial::TutorialRec>,
+    /// **17b cut M3.3** — `tacsim:mindsrc:{sha256}`: every sealed mind source
+    /// this world holds, by digest, each one checked against its key and its
+    /// bytes at boot (doc 17 §13: *sources live immutably*). A seal names its
+    /// source by digest alone ([`crate::arena::mind::MindSeal::source_sha256`]).
+    pub(crate) mind_sources: BTreeMap<[u8; 32], String>,
+    /// **Every digest a `tacsim:mindsrc:` key claimed**, readable or not (the R8
+    /// rule this loader applies to packs and seeds): [`put_mind_source`] never
+    /// writes under one of them, so an immutable document is never rewritten.
+    pub(crate) mind_source_keys: BTreeSet<[u8; 32]>,
 }
 
 impl TacsimStore {
@@ -219,6 +260,20 @@ impl TacsimStore {
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.cfg.enabled
+    }
+
+    /// **The sealed mind source under `digest`** (17b cut M3.3; doc 17 §13),
+    /// or `None` when this world holds no readable document for it.
+    #[must_use]
+    pub fn mind_source(&self, digest: &[u8; 32]) -> Option<&str> {
+        self.mind_sources.get(digest).map(String::as_str)
+    }
+
+    /// **Whether this world holds the sealed source under `digest`**, readable
+    /// and checked — what a resume asks of a scripted seal.
+    #[must_use]
+    pub fn has_mind_source(&self, digest: &[u8; 32]) -> bool {
+        self.mind_sources.contains_key(digest)
     }
 
     /// Every loaded pack, in `(id, version)` order.
@@ -839,6 +894,39 @@ pub(crate) fn put_tutorial(
     );
 }
 
+/// **Store one mind source, content-addressed** (17b cut M3.3; doc 17 §13) —
+/// the single write path of `tacsim:mindsrc:<sha256>`: its digest computed
+/// from its own bytes, installed into RAM and its whole document queued on the
+/// module's own lane, **only when this world holds no document under that
+/// key** (readable or not): a source is immutable and never rewritten.
+/// Answers whether it wrote. `TacsimRuleset::on_world_loaded` calls it for the
+/// stock mind's source at every boot, so the first boot writes it and every
+/// later one finds it.
+pub(crate) fn put_mind_source(ctx: &mut Ctx<'_>, source: &str) -> bool {
+    use sha2::{Digest as _, Sha256};
+    let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+    let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {
+        return false;
+    };
+    if store.mind_source_keys.contains(&digest) {
+        return false;
+    }
+    store.mind_source_keys.insert(digest);
+    store.mind_sources.insert(digest, source.to_owned());
+    let record = MindSourceRecord {
+        sha256: crate::arena::digest_text(&digest),
+        abi: crate::minds::MIND_ABI.to_owned(),
+        bytes: source.to_owned(),
+    };
+    let key = mindsrc_key(&digest);
+    let Ok(value) = serde_json::to_value(&record) else {
+        tracing::error!(%key, "tacsim: a mind source did not serialize");
+        return false;
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+    true
+}
+
 /// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
 ///
 /// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
@@ -1001,6 +1089,15 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 }
                 None => tracing::warn!("tacsim: a tutorial record did not parse; skipped"),
             }
+        } else if let Some(rest) = key.strip_prefix(MINDSRC_PREFIX) {
+            // 17b cut M3.3. The claim is the KEY's (the R8 rule): a document
+            // that will not read still bars a rewrite under its key.
+            let Some(digest) = crate::arena::digest_from_text(rest) else {
+                tracing::warn!(%key, "tacsim: a mind source has an unreadable key; skipped");
+                continue;
+            };
+            store.mind_source_keys.insert(digest);
+            load_mind_source(&mut store, key, rest, digest, value);
         } else if key == META_KEY {
             load_meta(&mut store, value);
         }
@@ -1071,6 +1168,40 @@ fn load_pin_row(
             "tacsim: a pin disagrees with its own key; skipped"
         ),
         Err(error) => tracing::warn!(%key, %error, "tacsim: a pin did not parse; skipped"),
+    }
+}
+
+/// **One `tacsim:mindsrc:` document** (17b cut M3.3): held only when its
+/// `sha256` is its key's tail and its bytes hash to it — anything else is
+/// skipped loudly (the identity rule, DL-07, and the content address).
+fn load_mind_source(
+    store: &mut TacsimStore,
+    key: &str,
+    tail: &str,
+    digest: [u8; 32],
+    value: &serde_json::Value,
+) {
+    use sha2::{Digest as _, Sha256};
+    match serde_json::from_value::<MindSourceRecord>(value.clone()) {
+        Ok(record) if record.sha256 != tail => tracing::warn!(
+            %key,
+            "tacsim: a mind source disagrees with its own key; skipped (the key still bars a \
+             rewrite)"
+        ),
+        Ok(record) if <[u8; 32]>::from(Sha256::digest(record.bytes.as_bytes())) != digest => {
+            tracing::warn!(
+                %key,
+                "tacsim: a mind source's bytes do not hash to its key; skipped (the key still \
+                 bars a rewrite)"
+            );
+        }
+        Ok(record) => {
+            store.mind_sources.insert(digest, record.bytes);
+        }
+        Err(error) => tracing::warn!(
+            %key, %error,
+            "tacsim: a mind source did not parse; skipped (the key still bars a rewrite)"
+        ),
     }
 }
 

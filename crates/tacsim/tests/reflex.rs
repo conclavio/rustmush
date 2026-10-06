@@ -369,7 +369,9 @@ fn tank(
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// The same tank with a longer sight, so a hostile stays held while the machine
@@ -4488,6 +4490,8 @@ fn body_unit(id: ObjId) -> TacticalUnit {
 /// A tank a round can kill.
 fn killable(mut unit: CustodyUnit) -> CustodyUnit {
     unit.unit = body_unit(unit.id);
+    unit.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
     unit.profile = body_profile();
     unit
 }
@@ -4560,6 +4564,8 @@ fn hull_is_the_body() -> tacsim::arena::resolution::UnitProfile {
 /// A tank whose hull kills it and whose turret does not.
 fn two_sectioned(mut unit: CustodyUnit) -> CustodyUnit {
     unit.unit = hull_and_turret(unit.id);
+    unit.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
     unit.profile = hull_is_the_body();
     unit
 }
@@ -11472,7 +11478,18 @@ fn o3_target(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
     let spec = catalog.specs.get(&key).expect("the target is fielded");
     let binding = catalog.bindings.get(&key).expect("its binding");
     let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("the target");
-    tacsim::match_::custody_unit(&catalog, cells, id, team, pose, 0, Controller::Reflex, 1)
+    tacsim::match_::custody_unit(
+        &catalog,
+        cells,
+        id,
+        team,
+        pose,
+        0,
+        Controller::Reflex,
+        1,
+        &tacsim::match_::SealTerms::fixture(),
+    )
+    .expect("the fixture terms seal")
 }
 
 /// **Destroy one of `unit`'s sections the way an impact does**: the M32 section
@@ -11712,6 +11729,8 @@ fn ae3_drone(id: ObjId, team: Team, cell: (u16, u16), sight: u16, share: u16) ->
         )
         .expect("a rules blob"),
     );
+    unit.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
     unit
 }
 
@@ -11985,6 +12004,7 @@ fn slow_tank(
         },
         ..tank(id, team, pose, weapons, controller)
     }
+    .sealed()
 }
 
 /// **A window of `width` by `height`** (16b cut AI.1): a turning circle of

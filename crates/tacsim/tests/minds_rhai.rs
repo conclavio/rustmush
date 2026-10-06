@@ -322,7 +322,9 @@ fn tank(
         controller,
         slot: 0,
         unit: tactical_unit(id, None),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// `tests/reflex.rs`' doctrine: decide every 500 ms, re-plan at once.
@@ -398,6 +400,7 @@ fn presenting(unit: CustodyUnit) -> CustodyUnit {
         profile: every_band_profile(),
         ..unit
     }
+    .sealed()
 }
 
 /// **The (j) field** (`tests/minds.rs`' `the_j_field`): the armed red at

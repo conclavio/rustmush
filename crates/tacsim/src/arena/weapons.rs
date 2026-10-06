@@ -1954,6 +1954,8 @@ mod tests {
         mg.id = SmolStr::new("machine_gun");
         red.weapons.push(mg);
         red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         let mut arena = arena_of(vec![red, line_tank(BLUE, Team::Blue, pose(5_500, 3_500))]);
         arena.resolution.p_min = 500;
         arena.resolution.p_max = 500;

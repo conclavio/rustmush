@@ -487,16 +487,20 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             posture: posture.clone(),
         };
         names.push(entry.as_str().to_owned());
-        units.push(custody_unit(
-            &catalog,
-            cells,
-            id,
-            Team::Red,
-            pose,
-            0,
-            Controller::Reflex,
-            0,
-        ));
+        units.push(
+            custody_unit(
+                &catalog,
+                cells,
+                id,
+                Team::Red,
+                pose,
+                0,
+                Controller::Reflex,
+                0,
+                &tacsim::match_::SealTerms::fixture(),
+            )
+            .expect("the fixture terms seal"),
+        );
     }
     let mut arena = Arena::new(
         CustodyOut {

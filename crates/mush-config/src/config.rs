@@ -101,7 +101,7 @@
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
 //! | `[tacsim.minds].fill_controller` | `"reflex"` | **17b cut M1b.5** (doc 16 §6's AI fill; a LAB knob): who flies a match's unseated hulls — `reflex` (today's machine) or `mind` (the native stock mind on Line); production configs do not set it, `mush-bot`'s pooled measure does, and 17b cut M4's flip retires it; by name |
-//! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `100` in steps of `10` |
+//! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out until 17b cut M5) |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
@@ -1392,7 +1392,8 @@ impl Default for TacsimCommandCfg {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimMindsCfg {
-    /// The Compact floor, per mille. `10` to `100` in steps of `10`.
+    /// The Compact floor, per mille. `10` to `950` in steps of `10` (17b cut
+    /// M3.3; above `100` every Line-carded check-out is refused until M5).
     pub odds_floor_permille: u32,
     /// **17b cut M1b.5**: who flies a match's unseated hulls, `reflex` or
     /// `mind` — a lab knob for `mush-bot`'s pooled measure; production configs

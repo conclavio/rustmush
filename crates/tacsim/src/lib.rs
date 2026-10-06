@@ -507,6 +507,17 @@ impl GameModule for TacsimRuleset {
             return Err(ModError::msg("tacsim: no module state"));
         };
         *slot = loaded;
+        // **17b cut M3.3** (doc 17 §13): the stock mind's source, stored
+        // immutably under its digest (`tacsim:mindsrc:<sha256>`) — written by
+        // the first boot that finds no document under that key and never
+        // again. Every seal names its source by that digest alone.
+        if ctx
+            .w
+            .module_state::<TacsimStore>()
+            .is_some_and(TacsimStore::enabled)
+        {
+            store::put_mind_source(ctx, minds::content::STANDARD_RHAI);
+        }
         boot_check_placements(ctx);
         // **16b cut AF.3**: the ledger's chunk documents and the loader's
         // floors too — a resumed match's log tail is restored from them.

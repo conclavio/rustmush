@@ -101,7 +101,9 @@ pub struct PendingResume {
 }
 
 /// **Why a running match could not resume** (16b cut AF.3): the closed list of
-/// nineteen, fourteen decided in phase A and five in phase B. Its `Display` is
+/// twenty-one, fourteen decided in phase A and seven in phase B (17b cut M3.3
+/// adds the two seal refusals, [`ResumeRefusal::MindAbi`] and
+/// [`ResumeRefusal::MindSource`]). Its `Display` is
 /// the reason the boot's one error line names, word for word.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ResumeRefusal {
@@ -217,6 +219,33 @@ pub enum ResumeRefusal {
     /// The task could not be opened.
     #[error("the arena could not be opened: {0}")]
     NotOpened(String),
+    /// **17b cut M3.3** (doc 17 §13; D-UM-23's R-B clause, D-16-3): a unit's
+    /// seal was taken under another mind engine ABI than this server's
+    /// `MIND_ABI` — checked on EVERY seal, a reflex one included, as
+    /// `SnapshotError::Physics` voids regardless of use, so a deploy that
+    /// bumps `MIND_ABI` voids every in-flight match at that boot.
+    #[error("{unit}'s mind was sealed on engine {recorded} and this server runs {running}")]
+    MindAbi {
+        /// The unit.
+        unit: ObjId,
+        /// The seal's `abi`.
+        recorded: SmolStr,
+        /// This server's `MIND_ABI`.
+        running: SmolStr,
+    },
+    /// **17b cut M3.3** (doc 17 §13): a scripted seal names a source the
+    /// store does not hold (`tacsim:mindsrc:<sha256>`), so the mind cannot be
+    /// run again.
+    #[error(
+        "{unit}'s mind source {} is not in this server's store",
+        crate::arena::digest_text(.digest)
+    )]
+    MindSource {
+        /// The unit.
+        unit: ObjId,
+        /// The seal's `source_sha256`.
+        digest: [u8; 32],
+    },
 }
 
 /// A snapshot refusal in the words after `the snapshot does not decode:` — its
@@ -502,7 +531,10 @@ pub(crate) fn phase_b(ctx: &mut Ctx<'_>) {
 ///    it), and refused unless its digest is the head's;
 /// 2. **the one decode** ([`Snapshot::decode`]: every check of 16b cut AF.1 —
 ///    the movement table again, the state digest, the parse, the pose checks on
-///    the real ground, and the state hash);
+///    the real ground, and the state hash); then (**17b cut M3.3**) **every
+///    seal** the record carries held runnable here — its `abi` this build's
+///    `MIND_ABI`, a scripted seal's source in the store
+///    ([`ResumeRefusal::MindAbi`], [`ResumeRefusal::MindSource`]);
 /// 3. **the tape's resume marker, prepared** — `{"resumed": {"from_chunk",
 ///    "at_ms", "restart_ms"}}` — because a tail sealed at its target refuses it;
 /// 4. **the task** ([`arena_bridge::resume_match`]), which answers the decoded
@@ -555,6 +587,11 @@ pub fn resume_pending(ctx: &mut Ctx<'_>, pending: PendingResume) -> Result<(), R
             }
             other => ResumeRefusal::Snapshot(other),
         })?;
+    // (2b) **17b cut M3.3** (doc 17 §13): every seal the record carries must
+    // be runnable on this server — its ABI this build's, and a scripted
+    // seal's source in the store. The decoded arena keeps its own seal
+    // references (the snapshot carries them); nothing here re-derives them.
+    refuse_unrunnable_seals(ctx, &live.record)?;
     // (3) The marker, prepared.
     let now_ms = ctx.w.now().saturating_mul(1_000);
     let marker = serde_json::json!({
@@ -606,6 +643,40 @@ pub fn resume_pending(ctx: &mut Ctx<'_>, pending: PendingResume) -> Result<(), R
         match_id.0,
         head.at_ms
     );
+    Ok(())
+}
+
+/// **Step 2b of [`resume_pending`]** (17b cut M3.3; doc 17 §13, D-16-3): the
+/// first seal, in unit order, that this server cannot run, refused by name —
+/// one recorded under another `MIND_ABI` (every engine's, the reflex's
+/// included), or a [`SealEngine::Scripted`] one whose source the store does
+/// not hold. The caller voids the match with the refusal's own sentence
+/// ([`void_at_boot`], which writes no tape line).
+///
+/// [`SealEngine::Scripted`]: crate::arena::mind::SealEngine::Scripted
+fn refuse_unrunnable_seals(
+    ctx: &Ctx<'_>,
+    record: &crate::match_::MatchRecord,
+) -> Result<(), ResumeRefusal> {
+    let store = ctx.w.module_state::<crate::store::TacsimStore>();
+    for (unit, sealed) in &record.minds {
+        let seal = &sealed.seal;
+        if seal.abi != crate::minds::MIND_ABI {
+            return Err(ResumeRefusal::MindAbi {
+                unit: *unit,
+                recorded: seal.abi.clone(),
+                running: SmolStr::new_static(crate::minds::MIND_ABI),
+            });
+        }
+        if seal.engine == crate::arena::mind::SealEngine::Scripted
+            && !store.is_some_and(|store| store.has_mind_source(&seal.source_sha256))
+        {
+            return Err(ResumeRefusal::MindSource {
+                unit: *unit,
+                digest: seal.source_sha256,
+            });
+        }
+    }
     Ok(())
 }
 

@@ -332,7 +332,10 @@ max_span = 4
 orders_per_minute = 12
 
 # (17b cut M1b.1, doc 17 section 5) the Compact floor: the least chance to hit, per mille,
-# a condition slot may name; captured into each arena at check-out. 10..100 in steps of 10.
+# a condition slot may name; captured into each arena at check-out. 10..950 in steps of 10.
+# (17b cut M3.3) every unit's seal validates its card against this floor: above 100
+# (the Line card's 10%) every check-out is refused by name until a principal can
+# choose a card (17b cut M5).
 # [tacsim.minds]
 # odds_floor_permille = 100
 # (17b cut M1b.5) a LAB knob: who flies the unseated hulls, "reflex" (today's

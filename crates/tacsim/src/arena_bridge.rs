@@ -4893,11 +4893,13 @@ mod tests {
                         crate::arena::state::CustodyUnit {
                             controller: Controller::Mind,
                             ..line_tank(ARMED, Team::Red, pose(1_500, 1_500))
-                        },
+                        }
+                        .sealed(),
                         crate::arena::state::CustodyUnit {
                             controller: Controller::Mind,
                             ..tank(UNARMED, Team::Blue, pose(6_500, 6_500))
-                        },
+                        }
+                        .sealed(),
                     ],
                     Vec::new(),
                 ),

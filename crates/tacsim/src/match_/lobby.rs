@@ -682,6 +682,28 @@ pub fn centre(w: &World) -> Option<&Centre> {
     w.module_state::<MatchBook>().map(MatchBook::centre)
 }
 
+/// **The character leading `team` on the centre's board** (17b cut M3.3; doc
+/// 17 §12, §19): the slot of the side's lead account ([`Centre::leads`]),
+/// its pilot — the warrant principal of the side's AI fill, the one who set
+/// what the fill flies. `None` unless the centre is `Boarding`: the
+/// check-out (`crate::match_::start`) runs there for a lobby match and never
+/// for a staff `@arena/start` (refused while the centre is busy), so a staff
+/// match's fill, and a side with no lead, have no principal and nobody is
+/// told.
+#[must_use]
+pub fn lead_character_of(w: &World, team: Team) -> Option<ObjId> {
+    let centre = centre(w)?;
+    if centre.state != MatchState::Boarding {
+        return None;
+    }
+    let (_, account) = centre.leads.iter().find(|(side, _)| *side == team)?;
+    centre
+        .slots
+        .iter()
+        .find(|slot| slot.team == team && slot.account == *account)
+        .map(|slot| slot.pilot)
+}
+
 /// The configured `[tacsim.arena]` and `[tacsim.match]` blocks, which every
 /// transition past `Selection` needs and which cut K.2's `BOARD` does not carry.
 ///
@@ -2388,9 +2410,15 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
         Err(error) => {
             // Nothing is deployed (cut T.3's `start` rolls its own writes back),
             // so the centre gives the pods and the slots back and says why.
+            // **17b cut M3.3**: `CardUnlawful` is a whole sentence with its own
+            // full stop, so the stop is trimmed as AE.3 trims `ready`'s.
+            let said = error.to_string();
             call_off(
                 ctx,
-                format!("Match {match_id} could not start: {error}. The pods are free again."),
+                format!(
+                    "Match {match_id} could not start: {}. The pods are free again.",
+                    said.trim_end_matches('.')
+                ),
             );
             Err(SimError::Start(error.to_string()))
         }

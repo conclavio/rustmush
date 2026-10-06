@@ -1896,8 +1896,18 @@ fn field(
                 epoch: 1,
             });
         }
-        let mut unit =
-            tacsim::match_::custody_unit(catalog, cells, id, team, pose, 1, Controller::Reflex, 0);
+        let mut unit = tacsim::match_::custody_unit(
+            catalog,
+            cells,
+            id,
+            team,
+            pose,
+            1,
+            Controller::Reflex,
+            0,
+            &tacsim::match_::SealTerms::fixture(),
+        )
+        .expect("the fixture terms seal");
         if reach == Reach::Ci {
             scale_to_ci(&mut unit);
         }
@@ -7507,16 +7517,20 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
                 .expect("an empty posture"),
         };
-        units.push(tacsim::match_::custody_unit(
-            &catalog,
-            cells,
-            id,
-            team,
-            pose,
-            1,
-            Controller::Reflex,
-            0,
-        ));
+        units.push(
+            tacsim::match_::custody_unit(
+                &catalog,
+                cells,
+                id,
+                team,
+                pose,
+                1,
+                Controller::Reflex,
+                0,
+                &tacsim::match_::SealTerms::fixture(),
+            )
+            .expect("the fixture terms seal"),
+        );
     }
 
     // ---- (3) the arena ----

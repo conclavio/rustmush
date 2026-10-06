@@ -241,7 +241,9 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// An arena over [`definition`] with seed 2350 and one seated pilot per unit.
@@ -3021,6 +3023,7 @@ fn watcher(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         }],
         ..tank(id, team, pose)
     }
+    .sealed()
 }
 
 /// **The scripted approach**: start up, close on the parked tank, hold, then back
@@ -4318,6 +4321,7 @@ fn ae3_drone(id: ObjId, team: Team, at: Pose) -> CustodyUnit {
         ),
         ..tank(id, team, at)
     }
+    .sealed()
 }
 
 /// The four units, seated: each side's drone five cells out in front of its

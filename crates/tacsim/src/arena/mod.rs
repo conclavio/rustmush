@@ -346,12 +346,13 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 // 17b cut M3.2: `Landing` retired (the answer rides `PendingThink`); the drop
-// cause and the seal reference join.
+// cause and the seal reference join; 17b cut M3.3: the seal itself.
 pub use mind::{
     DropCause, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue, Memory,
-    MindRunner, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS, STOCK_MEMORY_LIMITS,
-    STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SortieId, ThinkFault, ThinkJob,
-    ThinkResult, ViewContact, decode_memory, default_mind_runner, encode_memory, memory_check,
+    MindRunner, MindSeal, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS,
+    STOCK_MEMORY_LIMITS, STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SortieId,
+    ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory, default_mind_runner,
+    encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
 pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
@@ -373,7 +374,7 @@ pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use slope::{
     SlopeLimit, driving_mode, effective_cost, grade_pct, steepness_pct, step_kind, too_steep,
 };
-pub use snapshot::{Snapshot, SnapshotError, SnapshotHead, digest_text};
+pub use snapshot::{Snapshot, SnapshotError, SnapshotHead, digest_from_text, digest_text};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaMode, ArenaTerrain, COCKPIT_CHANNEL_IDS, Channel,
     Classification, ContactId, Controller, CostRow, CustodyOut, CustodyUnit,
@@ -723,7 +724,9 @@ pub(crate) mod test_support {
             // fixture tank holds two slots and a mind on it thinks at today's
             // figures.
             unit: tactical_unit_cored(id, crate::arena::core::CoreClass::I),
+            seal: crate::arena::MindSeal::placeholder(),
         }
+        .sealed()
     }
 
     /// **A drone** (16b cut AE.3): [`tank`] — no sight, no weapon — whose rules
@@ -734,6 +737,7 @@ pub(crate) mod test_support {
             unit: tactical_unit_with(id, serde_json::json!({ "class": "drone" })),
             ..tank(id, team, pose)
         }
+        .sealed()
     }
 
     /// **The shipped sensor's numbers**, as the arena carries them
@@ -831,6 +835,7 @@ pub(crate) mod test_support {
             weapons: vec![cannon()],
             ..tank(id, team, pose)
         }
+        .sealed()
     }
 
     /// **The stock tank's structure**, as `content/units/line_tank.json` authors it
@@ -1052,6 +1057,7 @@ pub(crate) mod test_support {
             unit: line_tank_unit(id),
             ..tank(id, team, pose)
         }
+        .sealed()
     }
 
     /// **A laser** (16b cut X.1; doc 16 §9 item 1): a beam, so `muzzle_speed_cms`
@@ -1209,6 +1215,7 @@ pub(crate) mod test_support {
             unit: laser_tank_unit(id),
             ..tank(id, team, pose)
         }
+        .sealed()
     }
 
     /// **The shipped resolution table**, as the arena carries it

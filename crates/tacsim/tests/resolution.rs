@@ -491,7 +491,9 @@ fn tank(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> Custo
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: line_tank_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// A match short enough to test: power comes up in half a second.
@@ -4041,7 +4043,8 @@ fn meshed_trio() -> Arena {
                     centre(RED_CELL.0, RED_CELL.1),
                     vec![cannon()],
                 )
-            },
+            }
+            .sealed(),
             tank(
                 BLUE,
                 Team::Blue,
@@ -4058,7 +4061,8 @@ fn meshed_trio() -> Arena {
                     centre(RED_CELL.0 - 1, RED_CELL.1),
                     Vec::new(),
                 )
-            },
+            }
+            .sealed(),
         ],
         &[],
         &match_cfg(),

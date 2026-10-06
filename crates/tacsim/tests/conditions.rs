@@ -331,7 +331,9 @@ fn unit(
         controller: Controller::Pilot,
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// Power in half a second.
@@ -1867,7 +1869,9 @@ fn shipped_heavy(core_cell: Option<i64>) -> CustodyUnit {
         0,
         Controller::Pilot,
         1,
+        &tacsim::match_::SealTerms::fixture(),
     )
+    .expect("the fixture terms seal")
 }
 
 /// `unit` with its core's `core_class` cell set to `value` by one plan
@@ -1952,7 +1956,8 @@ fn m3_the_condition_row_is_the_cores_slots() {
     let seven = CustodyUnit {
         unit: tactical_unit_classed(RED, CoreClass::III),
         ..unit(RED, Team::Red, facing(5, 8, 90_000), guns(7), None)
-    };
+    }
+    .sealed();
     let mut arena = arena_of(vec![
         seven,
         unit(BLUE, Team::Blue, facing(9, 8, 0), Vec::new(), None),
@@ -1997,7 +2002,8 @@ fn m3_the_condition_row_is_the_cores_slots() {
     let line = CustodyUnit {
         unit: tactical_unit_classed(RED, CoreClass::II),
         ..unit(RED, Team::Red, facing(5, 8, 90_000), guns(5), None)
-    };
+    }
+    .sealed();
     assert_eq!(line.controller, Controller::Pilot);
     let mut arena = arena_of(vec![
         line,
@@ -2677,6 +2683,7 @@ fn minded(unit: CustodyUnit) -> CustodyUnit {
         controller: Controller::Mind,
         ..unit
     }
+    .sealed()
 }
 
 /// **An arena of `units` with only `seated` seated** (pilots `#1001` up), the
@@ -3774,16 +3781,19 @@ fn stock_field(
     controller: Controller,
     targets: &[(ObjId, (u16, u16), u32, bool)],
 ) -> Arena {
-    let mut units = vec![CustodyUnit {
-        controller,
-        ..unit(
-            RED,
-            Team::Red,
-            facing(5, 8, 90_000),
-            vec![cannon()],
-            Some(wide_sight()),
-        )
-    }];
+    let mut units = vec![
+        CustodyUnit {
+            controller,
+            ..unit(
+                RED,
+                Team::Red,
+                facing(5, 8, 90_000),
+                vec![cannon()],
+                Some(wide_sight()),
+            )
+        }
+        .sealed(),
+    ];
     for (id, (x, y), heading, presents) in targets {
         let mut blue = unit(*id, Team::Blue, facing(*x, *y, *heading), Vec::new(), None);
         if !presents {
@@ -4071,7 +4081,9 @@ fn shipped_unit(
         controller: Controller::Pilot,
         slot: 0,
         unit: cells,
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// The shipped content with the extension packs (the laser and its tank),
@@ -5326,7 +5338,8 @@ fn kill_duel() -> Arena {
                 Vec::new(),
                 Some(sight(0)),
             )
-        },
+        }
+        .sealed(),
         unit(BLUE2, Team::Blue, facing(14, 1, 0), Vec::new(), None),
     ]);
     arena.resolution.p_min = 1_000;

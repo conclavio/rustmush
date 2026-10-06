@@ -1665,8 +1665,9 @@ mod tests {
                 "601",
             ),
             // 17b cut M1b.1 (doc 17 §5, D-UM-17 as amended): the Compact floor
-            // is 10 to 100 in steps of 10 — nought, a half step and past the
-            // Line default are each refused by name.
+            // is 10 to 950 in steps of 10 (17b cut M3.3 widened it from 100) —
+            // nought, a half step and past the card's 95 per cent ceiling are
+            // each refused by name.
             (
                 "[tacsim.minds]",
                 "odds_floor_permille = 0\n",
@@ -1681,9 +1682,9 @@ mod tests {
             ),
             (
                 "[tacsim.minds]",
-                "odds_floor_permille = 110\n",
+                "odds_floor_permille = 960\n",
                 "[tacsim.minds].odds_floor_permille",
-                "110",
+                "960",
             ),
             // 17b cut M1b.5: the fill controller is reflex or mind, by name.
             (

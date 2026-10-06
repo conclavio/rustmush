@@ -305,7 +305,9 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// Two tanks, two seated pilots, one window, one seed.
@@ -2804,6 +2806,8 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
         let mut custody = unseated_custody(seed);
         if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == RED) {
             unit.weapons = vec![gun.clone()];
+            unit.reseal(&tacsim::match_::SealTerms::fixture())
+                .expect("the fixture terms seal");
         }
         let (egress_tx, egress_rx) = mpsc::channel(256);
         let (handle, _join, _callsigns) = spawn_arena(
@@ -2956,6 +2960,8 @@ async fn m1b5_two_card_changes_land_in_arrival_order() {
     let mut custody = custody(seed);
     if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == RED) {
         unit.controller = tacsim::arena::state::Controller::Mind;
+        unit.reseal(&tacsim::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
     }
     custody.pilots.retain(|pilot| pilot.unit != RED);
     let (egress_tx, mut rx) = mpsc::channel(256);
@@ -3027,6 +3033,8 @@ async fn mind_match_to_five_seconds(
     let mut custody = unseated_custody(seed);
     if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == RED) {
         unit.controller = tacsim::arena::state::Controller::Mind;
+        unit.reseal(&tacsim::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
     }
     let (egress_tx, mut rx) = mpsc::channel(256);
     let (handle, _join, _callsigns) = spawn_arena(

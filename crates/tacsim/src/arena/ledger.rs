@@ -43,9 +43,12 @@ use smol_str::SmolStr;
 
 use crate::arena::card::StockCard;
 use crate::arena::clock::Tempo;
+use crate::arena::core::CoreClass;
+use crate::arena::mind::SortieId;
 use crate::arena::snapshot::SnapshotError;
 use crate::arena::state::{ContactId, EndReason, Team};
 use crate::config::LedgerConfig;
+use crate::deliberation::order::CharacterRef;
 
 /// One chunk of the streamed ledger, in bytes (doc 16 §3.1: *`Ledger` chunks
 /// (16 KiB) leave the arena as they fill*).
@@ -64,7 +67,12 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// [`EventKind::TempoFloor`], [`EventKind::Placed`] and
 /// [`EventKind::PlaceRefused`]; **16b cut O.2** adds [`EventKind::Emcon`]
 /// (twenty-nine kinds); **17b cut M1b.5** adds the card lever's two,
-/// [`EventKind::MindCard`] and [`EventKind::MindCardRefused`] (thirty-one).
+/// [`EventKind::MindCard`] and [`EventKind::MindCardRefused`] (thirty-one);
+/// **17b cut M3.3** adds [`EventKind::MindSealed`],
+/// [`EventKind::SortieClosed`], [`EventKind::MindFault`] and
+/// [`EventKind::MindDropped`] (thirty-five) — defined in 17b cut M3.3 so the
+/// kind vocabulary is one reviewed diff; `mind_fault` and `mind_dropped`
+/// journalled from M3.4, `mind_sealed` and `sortie_closed` from M3.6.
 /// The rest are the
 /// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
 /// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
@@ -549,6 +557,75 @@ pub enum EventKind {
         /// ([`crate::arena::card::CardError`]'s sentence).
         reason: SmolStr,
     },
+    /// **A sortie opened under its seal** (17b cut M3.3 defines it; doc 17
+    /// §13, §19; D-UM-45, D-UM-46): one line per unit at the match's opening,
+    /// so the ledger's digest attests which minds flew. **Journalled from 17b
+    /// cut M3.6** — the line shifts the folded ledger sequence of every match,
+    /// and that cut is the one that re-blesses.
+    MindSealed {
+        /// The hull.
+        unit: ObjId,
+        /// Its sortie ([`crate::arena::mind::SortieId::in_match`]).
+        sortie: SortieId,
+        /// The sealed mind's name (`Standard Doctrine`).
+        mind: SmolStr,
+        /// The first sixteen base-16 characters of the sealed source's
+        /// SHA-256 (`crate::arena::mind::MindSeal::source_sha256`).
+        source: SmolStr,
+        /// All sixty-four of the card's digest.
+        card_digest: SmolStr,
+        /// The class the mind thinks at.
+        class: CoreClass,
+        /// Whether the core runs under the governor.
+        governed: bool,
+        /// The licence the core holds, or `doctrine`.
+        licence: SmolStr,
+        /// The warrant principal, absent on the wire where nobody chose.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<CharacterRef>,
+    },
+    /// **A sortie closed** (17b cut M3.3 defines it; doc 17 §12, §13): at the
+    /// match's end (`match_end`, every open sortie, immediately before the
+    /// end's own line) or at the hull's destruction (`destroyed`). Journalled
+    /// from 17b cut M3.6.
+    SortieClosed {
+        /// The hull.
+        unit: ObjId,
+        /// Its sortie.
+        sortie: SortieId,
+        /// `match_end` or `destroyed`.
+        word: SmolStr,
+    },
+    /// **A mind's think faulted** (17b cut M3.3 defines it; doc 17 §8;
+    /// D-UM-31): the think landed nothing and kept its old memory. Journalled
+    /// from 17b cut M3.4.
+    MindFault {
+        /// The hull.
+        unit: ObjId,
+        /// The faulted think's sequence number.
+        think_seq: u64,
+        /// The fault's cause word.
+        cause: SmolStr,
+    },
+    /// **A hull dropped to the ROM** (17b cut M3.3 defines it; doc 17 §8,
+    /// §13; D-UM-31, D-UM-32): once per sortie. It carries what the
+    /// principal's sentence needs, so the world tells it from the tape and
+    /// reads no live config (16b cut V.3's rule). Journalled from 17b cut
+    /// M3.4.
+    MindDropped {
+        /// The hull.
+        unit: ObjId,
+        /// `strikes`, `core` or `abi`
+        /// ([`crate::arena::mind::DropCause::as_str`]).
+        cause: SmolStr,
+        /// The last faulting think's cause word — on `strikes` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fault: Option<SmolStr>,
+        /// The op budget the faulting thinks were charged against — on
+        /// `strikes` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ops: Option<u64>,
+    },
     /// A pulse absorbed more wall time than `max_catch_up_steps × period`, or the
     /// egress backed up past `ledger.max_unflushed_chunks`.
     Lagged {
@@ -598,6 +675,10 @@ impl EventKind {
             EventKind::PlaceRefused { .. } => "place_refused",
             EventKind::MindCard { .. } => "mind_card",
             EventKind::MindCardRefused { .. } => "mind_card_refused",
+            EventKind::MindSealed { .. } => "mind_sealed",
+            EventKind::SortieClosed { .. } => "sortie_closed",
+            EventKind::MindFault { .. } => "mind_fault",
+            EventKind::MindDropped { .. } => "mind_dropped",
             EventKind::Lagged { .. } => "lagged",
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",
@@ -1329,6 +1410,34 @@ mod tests {
                 unit: ObjId(9),
                 reason: SmolStr::new_static("not_mind"),
             },
+            // 17b cut M3.3: the four mind kinds, defined (none journalled yet).
+            EventKind::MindSealed {
+                unit: ObjId(4),
+                sortie: SortieId::in_match(7, ObjId(4)),
+                mind: SmolStr::new_static("Standard Doctrine"),
+                source: SmolStr::new_static("8b3ec78c9d957865"),
+                card_digest: SmolStr::new("a".repeat(64)),
+                class: CoreClass::I,
+                governed: true,
+                licence: SmolStr::new_static("doctrine"),
+                principal: Some(CharacterRef::Character { id: ObjId(77) }),
+            },
+            EventKind::SortieClosed {
+                unit: ObjId(4),
+                sortie: SortieId::in_match(7, ObjId(4)),
+                word: SmolStr::new_static("match_end"),
+            },
+            EventKind::MindFault {
+                unit: ObjId(4),
+                think_seq: 3,
+                cause: SmolStr::new_static("ops"),
+            },
+            EventKind::MindDropped {
+                unit: ObjId(4),
+                cause: SmolStr::new_static("strikes"),
+                fault: Some(SmolStr::new_static("ops")),
+                ops: Some(1_500),
+            },
             EventKind::Lagged { dt_ms: 20_000 },
             EventKind::MatchEnded {
                 reason: EndReason::Elimination {
@@ -1372,6 +1481,126 @@ mod tests {
                 "both draws survive the round trip, in order"
             );
         }
+    }
+
+    /// **17b cut M3.3** (doc 17 §19's reviewed diff): the four mind kinds'
+    /// words and their exact wire shapes — `principal`, `fault` and `ops`
+    /// absent on the wire when `None` — and each round-trips, the `None`s
+    /// included.
+    #[test]
+    fn m3_the_four_mind_kinds_have_their_words_and_shapes() {
+        let sortie = SortieId::in_match(7, ObjId(4));
+        let sealed = |principal: Option<CharacterRef>| EventKind::MindSealed {
+            unit: ObjId(4),
+            sortie,
+            mind: SmolStr::new_static("Standard Doctrine"),
+            source: SmolStr::new_static("8b3ec78c9d957865"),
+            card_digest: SmolStr::new("a".repeat(64)),
+            class: CoreClass::I,
+            governed: true,
+            licence: SmolStr::new_static("doctrine"),
+            principal,
+        };
+        let cases = [
+            (
+                sealed(Some(CharacterRef::Character { id: ObjId(77) })),
+                serde_json::json!({
+                    "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
+                    "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
+                    "card_digest": "a".repeat(64), "class": "I", "governed": true,
+                    "licence": "doctrine",
+                    "principal": {"kind": "character", "id": 77},
+                }),
+            ),
+            (
+                sealed(None),
+                serde_json::json!({
+                    "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
+                    "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
+                    "card_digest": "a".repeat(64), "class": "I", "governed": true,
+                    "licence": "doctrine",
+                }),
+            ),
+            (
+                EventKind::SortieClosed {
+                    unit: ObjId(4),
+                    sortie,
+                    word: SmolStr::new_static("destroyed"),
+                },
+                serde_json::json!({
+                    "kind": "sortie_closed", "unit": 4, "sortie": 30_064_771_076_u64,
+                    "word": "destroyed",
+                }),
+            ),
+            (
+                EventKind::MindFault {
+                    unit: ObjId(4),
+                    think_seq: 3,
+                    cause: SmolStr::new_static("ops"),
+                },
+                serde_json::json!({
+                    "kind": "mind_fault", "unit": 4, "think_seq": 3, "cause": "ops",
+                }),
+            ),
+            (
+                EventKind::MindDropped {
+                    unit: ObjId(4),
+                    cause: SmolStr::new_static("strikes"),
+                    fault: Some(SmolStr::new_static("ops")),
+                    ops: Some(1_500),
+                },
+                serde_json::json!({
+                    "kind": "mind_dropped", "unit": 4, "cause": "strikes", "fault": "ops",
+                    "ops": 1_500,
+                }),
+            ),
+            (
+                EventKind::MindDropped {
+                    unit: ObjId(4),
+                    cause: SmolStr::new_static("core"),
+                    fault: None,
+                    ops: None,
+                },
+                serde_json::json!({"kind": "mind_dropped", "unit": 4, "cause": "core"}),
+            ),
+        ];
+        for (kind, wire) in cases {
+            assert_eq!(
+                serde_json::to_value(&kind).ok(),
+                Some(wire.clone()),
+                "{kind:?}"
+            );
+            assert_eq!(
+                serde_json::from_value::<EventKind>(wire).ok(),
+                Some(kind.clone()),
+                "{kind:?} reads back"
+            );
+        }
+        assert_eq!(
+            [
+                sealed(None).as_str(),
+                EventKind::SortieClosed {
+                    unit: ObjId(4),
+                    sortie,
+                    word: SmolStr::new_static("match_end"),
+                }
+                .as_str(),
+                EventKind::MindFault {
+                    unit: ObjId(4),
+                    think_seq: 0,
+                    cause: SmolStr::default(),
+                }
+                .as_str(),
+                EventKind::MindDropped {
+                    unit: ObjId(4),
+                    cause: SmolStr::default(),
+                    fault: None,
+                    ops: None,
+                }
+                .as_str(),
+            ],
+            ["mind_sealed", "sortie_closed", "mind_fault", "mind_dropped"]
+        );
     }
 
     #[test]

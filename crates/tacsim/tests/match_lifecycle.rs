@@ -4007,16 +4007,20 @@ fn replacement_custody(rig: &Rig) -> tacsim::arena::state::CustodyOut {
             heading_mdeg: 0,
             posture: posture.clone(),
         };
-        units.push(custody_unit(
-            &catalog,
-            cells,
-            unit,
-            team,
-            pose,
-            0,
-            tacsim::arena::state::Controller::Pilot,
-            0,
-        ));
+        units.push(
+            custody_unit(
+                &catalog,
+                cells,
+                unit,
+                team,
+                pose,
+                0,
+                tacsim::arena::state::Controller::Pilot,
+                0,
+                &tacsim::match_::SealTerms::fixture(),
+            )
+            .expect("the fixture terms seal"),
+        );
     }
     tacsim::arena::state::CustodyOut {
         definition: stock_definition(&smol_str::SmolStr::new_static(STAND_IN))
@@ -8534,4 +8538,657 @@ async fn m3_a_roster_tank_without_a_core_is_refitted_with_one_at_the_reset() {
         !again.changed(),
         "a second reset changes nothing: {again:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.3 — the seal and the record (doc 17 §12, §13; D-UM-45, D-UM-46)
+// ---------------------------------------------------------------------------
+
+/// The engine ABI the resume refusals rewrite a seal to: the rhai version
+/// before this build's.
+const FOREIGN_ABI: &str = "rhai=1.25.0;api=1;stock=1";
+
+/// **`start` seals every unit and the record keeps one seal per unit** (17b
+/// cut M3.3; doc 17 §13 "Where it goes", D-UM-46), through the real lobby with
+/// the AI fill on: one red pilot, two a side. The pilot's hull's warrant
+/// principal is the pilot; red's fill hull's is red's side lead (the same
+/// pilot — the character who set what the fill flies); blue has no claimed
+/// slot and so no lead, and its two fill hulls name nobody. Every seal is the
+/// stock one (the reflex engine, `MIND_ABI`, the stock source, the Line card
+/// at the configured floor, the sortie `in_match(match, unit)`), and the
+/// live record the check-out wrote carries the same map. A staff
+/// `@arena/start` match seals its unseated hulls with no principal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_start_writes_one_seal_per_unit_and_the_live_record_carries_them() {
+    use tacsim::arena::state::Channel;
+    use tacsim::arena::{CoreClass, SealEngine, SortieId};
+    use tacsim::deliberation::CharacterRef;
+    let mut rig = fill_rig(1);
+    rig.tick_to(1);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim ai 2");
+    assert!(said.contains("AI fill set to 2 a side."), "{said}");
+    rig.say(0, "sim start");
+    let (said, writes) = rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let pilot = rig.pilot(0);
+    let record = rig.book().get(match_id).cloned().expect("the record");
+    let units = record.units();
+    assert_eq!(units.len(), 4, "two a side");
+    assert_eq!(
+        record.minds.keys().copied().collect::<Vec<ObjId>>(),
+        {
+            let mut sorted = units.clone();
+            sorted.sort_unstable();
+            sorted
+        },
+        "one seal per unit, keyed by unit"
+    );
+    let piloted = record
+        .teams
+        .iter()
+        .flat_map(|side| side.pilots.iter())
+        .map(|(_, unit)| *unit)
+        .collect::<Vec<ObjId>>();
+    assert_eq!(piloted.len(), 1);
+    for side in &record.teams {
+        for unit in &side.units {
+            let sealed = record.minds.get(unit).expect("a seal");
+            let seal = &sealed.seal;
+            assert_eq!(sealed.sortie, seal.sortie);
+            assert_eq!(seal.sortie, SortieId::in_match(match_id.0, *unit));
+            assert_eq!(seal.unit, *unit);
+            assert_eq!(seal.engine, SealEngine::Reflex, "#{}", unit.0);
+            assert_eq!(seal.abi.as_str(), tacsim::minds::MIND_ABI);
+            assert_eq!(
+                tacsim::arena::digest_text(&seal.source_sha256),
+                tacsim::minds::content::STANDARD_SHA256
+            );
+            assert_eq!(seal.odds_floor_permille, 100);
+            assert_eq!(seal.mind.as_str(), "Standard Doctrine");
+            assert_eq!(seal.licence.as_str(), "doctrine");
+            assert_eq!(seal.core_class, CoreClass::II, "a line tank's core");
+            assert_eq!(seal.class, CoreClass::I);
+            assert!(seal.channels.contains(&Channel::Fire));
+            let principal = match side.team {
+                Team::Red => Some(CharacterRef::Character { id: pilot }),
+                _ => None,
+            };
+            assert_eq!(
+                seal.principal,
+                principal,
+                "#{} on {:?} (piloted: {})",
+                unit.0,
+                side.team,
+                piloted.contains(unit)
+            );
+        }
+    }
+    // The live record the check-out wrote carries the map, whole.
+    let live = set_of(&writes, &match_::live_key(match_id))
+        .map(|document| match_::LiveRecord::from_document(&document))
+        .expect("the check-out wrote the live record")
+        .expect("and it decodes");
+    assert_eq!(live.record.minds, record.minds);
+    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
+
+    // A staff `@arena/start`: nobody chose the unseated hulls' mind.
+    let mut rig = Rig::boot(1);
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let said = rig.staff(&format!(
+        "@arena/start {}=#{}/#{}",
+        match_::CENTRE_ARENA,
+        red.0,
+        blue.0
+    ));
+    assert!(said.contains("is running on"), "{said}");
+    let match_id = rig.centre().match_id.expect("a running match");
+    let record = rig.book().get(match_id).cloned().expect("the record");
+    assert_eq!(record.minds.len(), 2);
+    for unit in [red, blue] {
+        let seal = &record.minds.get(&unit).expect("a seal").seal;
+        assert_eq!(seal.principal, None, "a staff match tells nobody");
+        assert_eq!(seal.sortie, SortieId::in_match(match_id.0, unit));
+    }
+    rig.staff("@arena/abort");
+}
+
+/// **A second pilot's hull names its own pilot, and the fill names the lead**
+/// (17b cut M3.3; doc 17 §13, D-UM-46): two humans on red — pilot 0 claims
+/// first and so leads the side, pilot 1 takes the second slot — and the AI
+/// fill at three a side, so red fields one machine beside them. Each piloted
+/// hull's principal is ITS OWN seated pilot (never the side's lead), red's
+/// fill hull's is the lead, and blue, which nobody claimed, names nobody.
+/// This is the case that tells the two rules of `start` apart: with one
+/// human a side the lead and the pilot are one character.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_second_pilots_hull_names_its_own_pilot_and_the_fill_names_the_lead() {
+    use tacsim::deliberation::CharacterRef;
+    let mut rig = fill_rig(2);
+    rig.tick_to(1);
+    let said = rig.say(0, "sim team red");
+    assert!(said.contains("red slot 1"), "{said}");
+    let said = rig.say(1, "sim team red");
+    assert!(said.contains("red slot 2"), "{said}");
+    let said = rig.say(0, "sim ai 3");
+    assert!(said.contains("AI fill set to 3 a side."), "{said}");
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    // The real `BOARD`, which seats each pilot on its hull's stations (the
+    // `seat` stand-in fires the trigger without seating anyone).
+    let (said, _) = rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    assert_eq!(
+        rig.state(),
+        MatchState::Boarding,
+        "one of two is not every one"
+    );
+    let (said, _) = rig.board_writes(1, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let (lead, second) = (rig.pilot(0), rig.pilot(1));
+    let record = rig.book().get(match_id).cloned().expect("the record");
+    let hull_of = |pilot: ObjId| {
+        record
+            .teams
+            .iter()
+            .flat_map(|side| side.pilots.iter())
+            .find(|(seated, _)| *seated == pilot)
+            .map(|(_, unit)| *unit)
+            .expect("the pilot flies a hull")
+    };
+    let (lead_hull, second_hull) = (hull_of(lead), hull_of(second));
+    assert_ne!(lead_hull, second_hull);
+    let principal_of = |unit: ObjId| {
+        record
+            .minds
+            .get(&unit)
+            .map(|sealed| sealed.seal.principal.clone())
+            .expect("a seal")
+    };
+    assert_eq!(
+        principal_of(second_hull),
+        Some(CharacterRef::Character { id: second }),
+        "the second pilot's hull names the second pilot, not the lead"
+    );
+    assert_eq!(
+        principal_of(lead_hull),
+        Some(CharacterRef::Character { id: lead })
+    );
+    let mut fills = 0_usize;
+    for side in &record.teams {
+        for unit in &side.units {
+            if *unit == lead_hull || *unit == second_hull {
+                continue;
+            }
+            fills += 1;
+            let expected = match side.team {
+                Team::Red => Some(CharacterRef::Character { id: lead }),
+                _ => None,
+            };
+            assert_eq!(
+                principal_of(*unit),
+                expected,
+                "fill #{} on {:?}",
+                unit.0,
+                side.team
+            );
+        }
+    }
+    assert_eq!(fills, 4, "one red fill hull and three blue");
+    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
+}
+
+/// **A live record written before 17b cut M3.3 decodes, and resumes, with no
+/// seals** (`#[serde(default)]` under `LIVE_FORMAT` 1, the `leaders`
+/// precedent): the running match's live record with its `minds` key taken out
+/// of the state reads back an empty map, and the boot resumes the match from
+/// it — the seal checks have nothing to refuse.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_pre_m3_live_record_decodes_with_no_seals_and_resumes() {
+    let mut rig = af3_rig(2);
+    let match_id = af3_running(&mut rig);
+    let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
+    let key = match_::live_key(match_id).to_string();
+    let mut document = rig.image_doc(&key).expect("the live record");
+    af3_state_edit(&mut document, |state| {
+        let removed = state["record"]
+            .as_object_mut()
+            .and_then(|record| record.remove("minds"));
+        assert!(removed.is_some_and(|minds| minds.as_object().is_some_and(|m| m.len() == 2)));
+    });
+    let live = match_::LiveRecord::from_document(&document).expect("a pre-M3 record decodes");
+    assert!(live.record.minds.is_empty());
+    let older = document.clone();
+    let writes = rig
+        .reboot_mid_match_editing(|image| {
+            tacsim_docs(image).insert(smol_str::SmolStr::new(&key), older);
+        })
+        .await;
+    assert!(rig.registry().tasks().is_live(match_id), "it resumed");
+    assert!(set_of(&writes, &match_::result_key(match_id)).is_none());
+    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
+}
+
+/// **A floor the Line card sits under refuses the check-out by name, before
+/// any write** (17b cut M3.3; D-UM-17, refuse-not-clamp): with
+/// `[tacsim.minds].odds_floor_permille = 200` on the world's config, the
+/// lobby's `Boarding → Running` trigger is refused with
+/// `StartError::CardUnlawful`'s sentence naming red's first pod (`RA`), the
+/// pods are freed, and nothing was written: no record on the book, no live
+/// record, no `deployed` marker. A staff `@arena/start` is refused the same
+/// way, naming the tank by its world name (it has no pod).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_write() {
+    let mut cfg = config();
+    cfg.minds.odds_floor_permille = 200;
+    let mut rig = Rig::boot_on(2, roster_with(cfg.clone()));
+    rig.tick_to(1);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    let match_id = rig.centre().match_id.expect("a match in boarding");
+    let (said, _) = rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    let (said, writes) = rig.board_writes(1, match_::BLUE_ROOM_ENTRY);
+    // The boarding pilot is answered by `SimError::Start` over the check-out's
+    // own sentence, byte for byte.
+    assert!(
+        said.contains(
+            "The match could not start: RA's card asks for odds under the Compact floor of \
+             20%; the match cannot start."
+        ),
+        "{said}"
+    );
+    // The call-off left the centre `Aborted` with every slot and pod free.
+    assert_eq!(rig.state(), MatchState::Aborted);
+    assert!(rig.centre().slots.is_empty(), "the slots are given back");
+    for (n, team) in [(0, Team::Red), (1, Team::Blue)] {
+        let pod = match_::pod_object(rig.tw.world(), team, 1).expect("pod 1");
+        assert_eq!(
+            match_::pilot_of(rig.tw.world(), pod),
+            None,
+            "{team:?} pod 1"
+        );
+        assert!(
+            !tacsim::match_::cockpit::in_a_pod(rig.tw.world(), rig.pilot(n)),
+            "pilot {n} is out of the pod"
+        );
+    }
+    assert!(rig.book().get(match_id).is_none(), "no record was inserted");
+    assert!(
+        set_of(&writes, &match_::live_key(match_id)).is_none(),
+        "no live record: {:?}",
+        keys_of(&writes)
+    );
+    for team in [Team::Red, Team::Blue] {
+        let tank = match_::tank_for_slot(rig.tw.world(), team, 1).expect("a tank");
+        assert!(mush_tactics::custody::marker_of(rig.tw.world(), tank).is_none());
+        assert!(!mush_sim::deployed::is_deployed(rig.tw.world(), tank));
+    }
+
+    // The centre's call-off line, read off the seat funnel itself (the
+    // `ready` call-off tests' way: `board`'s refusal hands the pilot the
+    // error alone): the check-out's sentence once, with its own full stop
+    // (`lobby::run` trims it, so the line never reads `start.. The pods`).
+    let mut rig = Rig::boot_on(2, roster_with(cfg.clone()));
+    rig.tick_to(1);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    let match_id = rig.centre().match_id.expect("a match in boarding");
+    let (said, _) = rig.board_writes(0, match_::RED_ROOM_ENTRY);
+    assert!(said.contains("climb into"), "{said}");
+    let pilot = rig.pilot(1);
+    let unit =
+        match_::tank_of(rig.tw.world(), rig.pod(1).expect("a locked pod")).expect("the pod's tank");
+    let heard = {
+        let mut out = Outbox::new();
+        {
+            let engine = rig.tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: pilot,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(smol_str::SmolStr::new(tacsim::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            assert!(
+                match_::slot_seated(&mut ctx, match_id, pilot, unit).is_err(),
+                "the floor refuses the check-out"
+            );
+        }
+        rig.seen(pilot, &out.take())
+    };
+    assert!(
+        heard.contains(&format!(
+            "Match {match_id} could not start: RA's card asks for odds under the Compact \
+             floor of 20%; the match cannot start. The pods are free again."
+        )),
+        "{heard}"
+    );
+    assert_eq!(rig.state(), MatchState::Aborted);
+    assert!(rig.centre().slots.is_empty(), "the slots are given back");
+
+    // The staff shortcut, on a fresh centre under the same floor.
+    let mut rig = Rig::boot_on(1, roster_with(cfg));
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let name = mush_core::output::display_name(rig.tw.world(), red);
+    let said = rig.staff(&format!(
+        "@arena/start {}=#{}/#{}",
+        match_::CENTRE_ARENA,
+        red.0,
+        blue.0
+    ));
+    assert!(
+        said.contains(&format!(
+            "{name}'s card asks for odds under the Compact floor of 20%; the match cannot start."
+        )),
+        "{said}"
+    );
+    assert!(!mush_sim::deployed::is_deployed(rig.tw.world(), red));
+    assert!(!mush_sim::deployed::is_deployed(rig.tw.world(), blue));
+    assert_ne!(rig.state(), MatchState::Running);
+}
+
+/// **The stock mind's source is stored once, immutably** (17b cut M3.3; doc
+/// 17 §13: *sources live immutably at `tacsim:mindsrc:<sha256>`*): the first
+/// boot writes `{sha256, abi, bytes}` under the script's digest and the store
+/// answers the bytes; a second boot over that document writes nothing and
+/// still answers; a boot over a tampered document (its bytes edited, or its
+/// `sha256` not its key's) skips it loudly, does NOT rewrite it, and answers
+/// nothing for the digest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_the_stock_source_is_stored_once_and_never_rewritten() {
+    let digest =
+        tacsim::arena::digest_from_text(tacsim::minds::content::STANDARD_SHA256).expect("pinned");
+    let key = format!("tacsim:mindsrc:{}", tacsim::minds::content::STANDARD_SHA256);
+    let mut rig = Rig::boot(0);
+    let first = writes_of(rig.pump_ops());
+    let document = set_of(&first, &key)
+        .unwrap_or_else(|| panic!("the first boot stores the source: {:?}", keys_of(&first)));
+    assert_eq!(
+        document,
+        serde_json::json!({
+            "sha256": tacsim::minds::content::STANDARD_SHA256,
+            "abi": tacsim::minds::MIND_ABI,
+            "bytes": tacsim::minds::content::STANDARD_RHAI,
+        })
+    );
+    let held = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(|store| store.mind_source(&digest).map(str::to_owned))
+    };
+    assert_eq!(
+        held(&rig).as_deref(),
+        Some(tacsim::minds::content::STANDARD_RHAI)
+    );
+
+    // A second boot over it: nothing written, the same bytes held.
+    let second = rig.reboot_mid_match().await;
+    assert!(set_of(&second, &key).is_none(), "{:?}", keys_of(&second));
+    assert_eq!(
+        held(&rig).as_deref(),
+        Some(tacsim::minds::content::STANDARD_RHAI)
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .is_some_and(|store| store.has_mind_source(&digest))
+    );
+
+    // Tampered: its bytes edited, then its `sha256` not its key's.
+    for tamper in [
+        serde_json::json!({
+            "sha256": tacsim::minds::content::STANDARD_SHA256,
+            "abi": tacsim::minds::MIND_ABI,
+            "bytes": "// not the stock mind",
+        }),
+        serde_json::json!({
+            "sha256": "0".repeat(64),
+            "abi": tacsim::minds::MIND_ABI,
+            "bytes": tacsim::minds::content::STANDARD_RHAI,
+        }),
+    ] {
+        let captured = Captured::default();
+        let writes = {
+            let _guard = tracing::subscriber::set_default(captured.clone());
+            let doc = tamper.clone();
+            let key = key.clone();
+            rig.reboot_mid_match_editing(move |image| {
+                tacsim_docs(image).insert(smol_str::SmolStr::new(&key), doc);
+            })
+            .await
+        };
+        assert!(
+            set_of(&writes, &key).is_none(),
+            "a tampered source is never rewritten: {:?}",
+            keys_of(&writes)
+        );
+        assert_eq!(held(&rig), None, "{tamper}");
+        assert_eq!(
+            captured.said("a mind source's bytes do not hash to its key")
+                + captured.said("a mind source disagrees with its own key"),
+            1,
+            "skipped loudly: {tamper}"
+        );
+    }
+}
+
+/// **A resume across another `MIND_ABI` is refused by name and voided — on a
+/// reflex seal too** (17b cut M3.3; doc 17 §13, D-UM-23's R-B clause, D-16-3):
+/// a lobby match of two pilots (both hulls `reflex`-sealed), its live record's
+/// seals rewritten to [`FOREIGN_ABI`], is voided by the boot with
+/// `ResumeRefusal::MindAbi`'s sentence naming the first unit — the void of
+/// every other reason, with no tape line written for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_resume_across_another_abi_is_refused_by_name_on_a_reflex_seal() {
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    let record = m
+        .rig
+        .book()
+        .get(m.match_id)
+        .cloned()
+        .expect("the running record");
+    let first = *record.minds.keys().next().expect("a seal");
+    assert!(
+        record
+            .minds
+            .values()
+            .all(|sealed| sealed.seal.engine == tacsim::arena::SealEngine::Reflex),
+        "every hull of a two-pilot match is reflex-sealed"
+    );
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    if let Some(minds) = state["record"]["minds"].as_object_mut() {
+                        for sealed in minds.values_mut() {
+                            sealed["seal"]["abi"] = serde_json::json!(FOREIGN_ABI);
+                        }
+                    }
+                });
+            }
+        },
+        Reason::Exact(format!(
+            "#{}'s mind was sealed on engine {FOREIGN_ABI} and this server runs {}",
+            first.0,
+            tacsim::minds::MIND_ABI
+        )),
+    )
+    .await;
+}
+
+/// **A scripted seal whose source the store lacks is refused by name and
+/// voided** (17b cut M3.3; doc 17 §13): one seal of the live record rewritten
+/// to the `scripted` engine over a digest no `tacsim:mindsrc:` document holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_scripted_seal_whose_source_is_missing_is_refused_by_name() {
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    let first = *m
+        .rig
+        .book()
+        .get(m.match_id)
+        .expect("the running record")
+        .minds
+        .keys()
+        .next()
+        .expect("a seal");
+    let missing = "0".repeat(64);
+    let written = missing.clone();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    let sealed = &mut state["record"]["minds"][first.0.to_string()]["seal"];
+                    sealed["engine"] = serde_json::json!("scripted");
+                    sealed["source_sha256"] = serde_json::json!(written);
+                });
+            }
+        },
+        Reason::Exact(format!(
+            "#{}'s mind source {missing} is not in this server's store",
+            first.0
+        )),
+    )
+    .await;
+}
+
+/// **Only a scripted seal needs its source in the store** (17b cut M3.3; doc
+/// 17 §13): every seal of the live record rewritten to a digest no
+/// `tacsim:mindsrc:` document holds, with each engine left `reflex` as the
+/// check-out sealed it — the boot resumes the match. The reflex and native
+/// engines run compiled code and never read a source, so a store that lost
+/// (or never had) a document voids no match that does not run one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_reflex_seal_whose_source_is_missing_still_resumes() {
+    let mut rig = af3_rig(2);
+    let match_id = af3_running(&mut rig);
+    let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
+    let record = rig.book().get(match_id).cloned().expect("the record");
+    assert!(!record.minds.is_empty());
+    assert!(
+        record
+            .minds
+            .values()
+            .all(|sealed| sealed.seal.engine == tacsim::arena::SealEngine::Reflex),
+        "every hull of a lobby match is sealed to the reflex engine"
+    );
+    let key = match_::live_key(match_id).to_string();
+    let units: Vec<ObjId> = record.minds.keys().copied().collect();
+    let missing = "0".repeat(64);
+    let writes = rig
+        .reboot_mid_match_editing(|image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    for unit in &units {
+                        let sealed = &mut state["record"]["minds"][unit.0.to_string()]["seal"];
+                        assert_eq!(sealed["engine"], serde_json::json!("reflex"));
+                        sealed["source_sha256"] = serde_json::json!(missing);
+                    }
+                });
+            }
+        })
+        .await;
+    assert!(rig.registry().tasks().is_live(match_id), "it resumed");
+    assert!(set_of(&writes, &match_::result_key(match_id)).is_none());
+    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
+}
+
+/// **An unchanged record resumes, and the arena keeps the seal it was checked
+/// out under** (17b cut M3.3; doc 17 §13): the arena's `UnitState.seal` rides
+/// the snapshot and is never re-derived from the world's record — the
+/// snapshot the boot decodes, and the first one the resumed task writes, both
+/// carry each unit's seal reference with the record's digest and sortie; and
+/// a `scripted` seal whose source the store DOES hold (the stock one) resumes
+/// too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_an_unchanged_record_resumes_with_the_seal_it_was_checked_out_under() {
+    let mut rig = af3_rig(2);
+    let match_id = af3_running(&mut rig);
+    let head = af3_snapshot_after(&mut rig, match_id, 0).await;
+    let record = rig.book().get(match_id).cloned().expect("the record");
+    let snapshot_key = match_::snapshot_key(match_id).to_string();
+    let seals_of = |rig: &Rig| {
+        let document = rig.image_doc(&snapshot_key).expect("a snapshot");
+        let ground = match_::definition_for(rig.tw.world(), &head.arena)
+            .expect("the ground builds")
+            .expect("and is loaded");
+        let arena =
+            tacsim::arena::Snapshot::decode(&document, ground).expect("the snapshot decodes");
+        (
+            arena.now_ms,
+            arena
+                .units
+                .iter()
+                .map(|unit| (unit.id, unit.seal))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let check = |seals: &[(ObjId, tacsim::arena::SealRef)]| {
+        assert_eq!(seals.len(), record.minds.len());
+        for (unit, seal) in seals {
+            let sealed = record.minds.get(unit).expect("a recorded seal");
+            assert_eq!(seal.digest, sealed.seal.digest(), "#{}", unit.0);
+            assert_eq!(seal.sortie, sealed.sortie, "#{}", unit.0);
+            assert_eq!(seal.engine, sealed.seal.engine);
+            assert!(!seal.closed);
+        }
+    };
+    let (before_ms, before) = seals_of(&rig);
+    check(&before);
+    // The stock source is in the store, so a scripted seal naming it passes.
+    let key = match_::live_key(match_id).to_string();
+    let first = *record.minds.keys().next().expect("a seal");
+    let writes = rig
+        .reboot_mid_match_editing(|image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    state["record"]["minds"][first.0.to_string()]["seal"]["engine"] =
+                        serde_json::json!("scripted");
+                });
+            }
+        })
+        .await;
+    assert!(rig.registry().tasks().is_live(match_id), "it resumed");
+    assert!(set_of(&writes, &match_::result_key(match_id)).is_none());
+    // The first snapshot the resumed task writes carries the same seals.
+    let mut after: Option<Vec<(ObjId, tacsim::arena::SealRef)>> = None;
+    for _ in 0..3_000 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+        let _ = rig.pump_ops();
+        let (now_ms, seals) = seals_of(&rig);
+        if now_ms > before_ms {
+            after = Some(seals);
+            break;
+        }
+    }
+    let after = after.expect("the resumed task snapshots again");
+    check(&after);
+    assert_eq!(
+        after, before,
+        "the arena kept the seals it was checked out under"
+    );
+    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
 }

@@ -3486,9 +3486,13 @@ mod tests {
         ];
         if let Some(unit) = units.get_mut(0) {
             unit.unit = tactical_unit_on(car, crate::definitions::unit::WHEELED);
+            unit.reseal(&crate::match_::SealTerms::fixture())
+                .expect("the fixture terms seal");
         }
         if let Some(unit) = units.get_mut(1) {
             unit.unit = tactical_unit_on(walker, crate::definitions::unit::LEGGED);
+            unit.reseal(&crate::match_::SealTerms::fixture())
+                .expect("the fixture terms seal");
         }
         let mut arena = arena_of(units);
         // Both zones are rubble but for one grass cell each, and the stand-off

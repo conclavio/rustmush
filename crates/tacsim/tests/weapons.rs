@@ -307,7 +307,9 @@ fn scout(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> Cust
         // 16b cut Q.1: no pod behind it.
         slot: 0,
         unit: tactical_unit(id),
+        seal: tacsim::arena::MindSeal::placeholder(),
     }
+    .sealed()
 }
 
 /// A match short enough to test: power comes up in half a second.
@@ -2282,7 +2284,18 @@ fn fielded_unit(
     let spec = catalog.specs.get(&key).expect("the unit entry");
     let binding = catalog.bindings.get(&key).expect("the unit binding");
     let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("the unit");
-    tacsim::match_::custody_unit(catalog, cells, id, team, pose, 0, controller, slot)
+    tacsim::match_::custody_unit(
+        catalog,
+        cells,
+        id,
+        team,
+        pose,
+        0,
+        controller,
+        slot,
+        &tacsim::match_::SealTerms::fixture(),
+    )
+    .expect("the fixture terms seal")
 }
 
 /// The cell centre of `(x, y)`, facing `heading_mdeg`.

@@ -284,7 +284,18 @@ pub fn opening_cell_pose(
 /// pose (through [`opening_pose`], which is the rest of what `start` does per
 /// unit), its side, its gunnery, whether anybody is sitting in it, and the pod it
 /// came out of — and everything else is read off the catalog here.
-#[must_use]
+///
+/// **17b cut M3.3** (doc 17 §13; D-UM-45, D-UM-46): and, LAST, the seal —
+/// [`crate::match_::seal::seal_for`] under `terms`, as a function of the
+/// finished custody (its cells, id, controller and weapon rows), so the
+/// channel set reads the weapon rows this function has just decoded. A rig
+/// that changes the custody afterwards re-seals it
+/// (`CustodyUnit::reseal`).
+///
+/// # Errors
+///
+/// [`crate::match_::seal::SealError`] when the terms' card does not pair or
+/// sits under their Compact floor — refused, never clamped.
 #[allow(clippy::too_many_arguments)]
 pub fn custody_unit(
     catalog: &Catalog,
@@ -295,8 +306,9 @@ pub fn custody_unit(
     gunnery: u8,
     controller: crate::arena::state::Controller,
     slot: u8,
-) -> crate::arena::state::CustodyUnit {
-    crate::arena::state::CustodyUnit {
+    terms: &crate::match_::seal::SealTerms,
+) -> Result<crate::arena::state::CustodyUnit, crate::match_::seal::SealError> {
+    let mut unit = crate::arena::state::CustodyUnit {
         id,
         team,
         pose,
@@ -317,8 +329,12 @@ pub fn custody_unit(
         // lobby is the only thing that knows it, and `Arena::new` is the only
         // thing that resolves it into a name.
         slot,
+        // Laid down empty, and sealed below once every other field stands.
+        seal: crate::arena::mind::MindSeal::placeholder(),
         unit: cells,
-    }
+    };
+    unit.reseal(terms)?;
+    Ok(unit)
 }
 
 /// **The mode rules a unit drives under** (doc 16 §3.3 "Mobility mode rules").

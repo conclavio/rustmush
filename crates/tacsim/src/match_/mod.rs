@@ -66,6 +66,9 @@ mod record;
 // B's re-open, the seats reconciled and the void by name. Documented by its
 // own module doc.
 pub mod resume;
+// 17b cut M3.3 (doc 17 §12, §13; D-UM-45, D-UM-46): the seal, computed once
+// from the finished custody. Documented by its own module doc.
+pub mod seal;
 // 16b cut I.1: the replay — the pure fold from the tape to one objective
 // picture of both sides, the replay documents, `SIM REPLAY` and the two queries'
 // reads. Documented by its own module doc, as `report` is.
@@ -116,15 +119,19 @@ pub use lobby::{
 pub use net::{BLUE_NET, RED_NET, net_name};
 pub use record::{
     HISTORY_DEPTH, HistoryRow, HistoryUnit, LIVE_FORMAT, LIVE_RECORD, LiveRecord, LiveRecordError,
-    MatchOutcome, MatchRecord, MatchState, NO_HISTORY, PoseNumbers, TeamRoster, UnitOutcome,
-    UnitResult, arena_label, civil_utc, delete_live_and_snapshot, duration_words, end_words,
-    history_lines, live_id_of_key, live_key, match_id_of_key, outcome_words, report_key,
+    MatchOutcome, MatchRecord, MatchState, MindSealRecord, NO_HISTORY, PoseNumbers, TeamRoster,
+    UnitOutcome, UnitResult, arena_label, civil_utc, delete_live_and_snapshot, duration_words,
+    end_words, history_lines, live_id_of_key, live_key, match_id_of_key, outcome_words, report_key,
     result_key, snapshot_id_of_key, snapshot_key, write_live, write_replay, write_report,
     write_restart_abort,
 };
 pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
 pub use resume::{
     PendingResume, RESUME_LINE, ResumeRefusal, doctrine_line, resume_pending, void_at_boot,
+};
+pub use seal::{
+    NO_CORE_FALLBACK, SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE, SEALED_MIND, SealError,
+    SealTerms, seal_for,
 };
 pub use sim::{SIM_VERB, Selector, sim_command};
 pub use verbs::{
@@ -144,6 +151,7 @@ use crate::arena::state::{
 use crate::arena_bridge::{ArenaRegistry, OpenMatchError, match_log_id};
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+use crate::deliberation::order::CharacterRef;
 
 /// The persisted key of the match counter, inside the tacsim namespace.
 pub const SEQ_KEY: &str = "tacsim:match:seq";
@@ -822,6 +830,25 @@ pub enum StartError {
         /// The arena's id.
         arena: SmolStr,
     },
+    /// **17b cut M3.3** (doc 17 §13, D-UM-17): a unit's seal refused its card
+    /// against the Compact floor — refused, never clamped. Reachable from an
+    /// operator floor above the Line card's 10 per cent
+    /// (`[tacsim.minds].odds_floor_permille` above 100) until 17b cut M5 lets
+    /// a principal choose a card. Refused before the first write.
+    #[error(
+        "{callsign}'s card asks for odds under the Compact floor of {}%; the match cannot start.",
+        .floor / 10
+    )]
+    CardUnlawful {
+        /// The unit.
+        unit: ObjId,
+        /// How the unit is named before the arena resolves a callsign: its
+        /// pod's designator (`RA`) when the lobby fielded it from a slot, else
+        /// the unit's world name (a staff `@arena/start`).
+        callsign: String,
+        /// The floor, per mille.
+        floor: u32,
+    },
 }
 
 /// **`Boarding → Running`** (doc 16 §3.8): check every unit out and open the
@@ -938,6 +965,12 @@ pub fn start(
         .module_state::<crate::store::TacsimStore>()
         .map(|slot| slot.definitions().clone())
         .unwrap_or_default();
+    // **17b cut M3.3** (D-UM-17): the Compact floor every seal's card is
+    // validated against — the same `[tacsim.minds]` read `open_match` hands
+    // the arena, so the seal and the arena hold one floor.
+    let floor = lobby::minds_config(ctx.w)
+        .unwrap_or_default()
+        .odds_floor_permille;
     for side in sides {
         let mut roster = TeamRoster {
             team: side.team,
@@ -984,12 +1017,29 @@ pub fn start(
             // (16b §0.4), so a shipped-scale test rig builds the same unit this
             // loop does instead of a second copy of it.
             // 17b cut M1b.5: an unseated hull is the fill's.
-            let controller = if seated_pilots(ctx, unit).is_empty() {
+            let seated = seated_pilots(ctx, unit);
+            let controller = if seated.is_empty() {
                 fill
             } else {
                 crate::arena::state::Controller::Pilot
             };
-            custody_units.push(arena_def::custody_unit(
+            // **17b cut M3.3** (doc 17 §13, §19; D-UM-45): the seal's terms.
+            // The warrant principal is the character who chose the mind — the
+            // hull's first seated pilot, else the side lead (a fill hull; the
+            // lead set what the fill flies), else nobody: a staff
+            // `@arena/start` match, or a side with no lead, tells nobody.
+            let principal = match seated.first() {
+                Some((pilot, _)) => Some(CharacterRef::Character { id: *pilot }),
+                None => lobby::lead_character_of(ctx.w, side.team)
+                    .map(|id| CharacterRef::Character { id }),
+            };
+            let terms = seal::SealTerms {
+                match_id,
+                principal,
+                card: crate::arena::card::line(&arena_cfg.reflex),
+                odds_floor_permille: floor,
+            };
+            let custody = arena_def::custody_unit(
                 &catalog,
                 cells,
                 unit,
@@ -998,8 +1048,23 @@ pub fn start(
                 gunnery_of(ctx, unit),
                 controller,
                 fielded.slot,
-            ));
-            for (pilot, station) in seated_pilots(ctx, unit) {
+                &terms,
+            )
+            .map_err(|error| match error {
+                seal::SealError::Unlawful { floor } => StartError::CardUnlawful {
+                    unit,
+                    callsign: unsealed_callsign(ctx.w, unit, side.team, fielded.slot),
+                    floor,
+                },
+                // The Line card over a validated doctrine always pairs; a
+                // card that does not is the check-out's own refusal, named.
+                card @ seal::SealError::Card(_) => StartError::Custody {
+                    unit,
+                    detail: card.to_string(),
+                },
+            })?;
+            custody_units.push(custody);
+            for (pilot, station) in seated {
                 roster.pilots.push((pilot, unit));
                 pilots.push(Pilot {
                     unit,
@@ -1055,6 +1120,21 @@ pub fn start(
         // 17b cut L.1 (D-UM-53): one sim persona per squad, minted beside them.
         leaders: crate::deliberation::fill_leaders(&squads),
         squads,
+        // 17b cut M3.3 (doc 17 §13, D-UM-46): one seal record per unit, off
+        // the custody's own seal — written here, before the record is
+        // inserted, so a refused check-out leaves no half record.
+        minds: custody_units
+            .iter()
+            .map(|unit| {
+                (
+                    unit.id,
+                    MindSealRecord {
+                        sortie: unit.seal.sortie,
+                        seal: unit.seal.clone(),
+                    },
+                )
+            })
+            .collect(),
     };
     {
         let book = ctx
@@ -1281,6 +1361,22 @@ fn gunnery_of(ctx: &Ctx<'_>, unit: ObjId) -> u8 {
         .map(|(pilot, _)| crate::sheet::profile_of(ctx.w, pilot).gunnery)
         .max()
         .unwrap_or(crate::arena::resolution::STOCK_GUNNERY)
+}
+
+/// **How a unit is named before the arena resolves a callsign** (17b cut
+/// M3.3; [`StartError::CardUnlawful`]): a lobby-fielded unit by its pod's
+/// designator — the callsign 16b cut Q.1's first pass will give it, `RA` —
+/// and a staff `@arena/start` unit (slot 0, no pod) by its world name, which
+/// is what that staff console already calls it.
+fn unsealed_callsign(w: &mush_core::World, unit: ObjId, team: Team, slot: u8) -> String {
+    if slot == 0 {
+        return mush_core::output::display_name(w, unit);
+    }
+    crate::arena::state::Designator::Slot {
+        team,
+        slot: u16::from(slot),
+    }
+    .to_string()
 }
 
 /// Every actor seated on a station of `unit`, with the station's id.

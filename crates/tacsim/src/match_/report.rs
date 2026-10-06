@@ -62,6 +62,7 @@ use crate::arena::resolution::{Consequence, UnitProfile};
 use crate::arena::state::{ContactId, CustodyUnit, EndReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
+use crate::deliberation::order::CharacterRef;
 use crate::match_::MatchBook;
 use crate::match_::cockpit::{consequence_words, miss_words};
 use crate::match_::lobby;
@@ -949,6 +950,26 @@ impl Fold {
         }
     }
 
+    /// **A warrant principal as staff read it** (17b cut M3.3): a character by
+    /// the unit word of the first roster unit it pilots (`RA(#101)` — the
+    /// unit-word rule, never the character's own object number), `character`
+    /// for one that pilots none; a sim persona by its name in quotes
+    /// (`"red lance leader 1"`); nobody as `-`.
+    fn principal_word(&self, principal: Option<&CharacterRef>) -> String {
+        match principal {
+            None => "-".to_owned(),
+            Some(CharacterRef::Character { id }) => self
+                .roster
+                .units
+                .iter()
+                .find(|(_, unit)| unit.pilot == Some(*id))
+                .map_or_else(|| "character".to_owned(), |(unit, _)| self.unit_word(*unit)),
+            Some(CharacterRef::Persona { squad }) => {
+                format!("\"{}\"", CharacterRef::persona_name(*squad))
+            }
+        }
+    }
+
     /// **The staff spelling of one event**: its kind word, then every field it
     /// carries as `key=value` — units as [`Fold::unit_word`], contacts as their
     /// sixteen digits, teams as their word. The hash is never printed: it is the
@@ -1170,6 +1191,55 @@ impl Fold {
             ),
             EventKind::MindCardRefused { unit: id, reason } => {
                 format!("{word} unit={}: {reason}", unit(id))
+            }
+            // **17b cut M3.3** (doc 17 §13, §19): the four mind kinds, as staff
+            // read them (defined here; journalled from 17b cut M3.4 and M3.6).
+            // A principal is named as the unit-word rule names a unit — the
+            // hull its character flies — never by an object number of its own.
+            EventKind::MindSealed {
+                unit: id,
+                sortie,
+                mind,
+                class,
+                governed,
+                licence,
+                principal,
+                ..
+            } => format!(
+                "{word} unit={} sortie={} mind=\"{mind}\" class={} governed={governed} \
+                 licence={licence} principal={}",
+                unit(id),
+                sortie.0,
+                class.as_str(),
+                self.principal_word(principal.as_ref())
+            ),
+            EventKind::SortieClosed {
+                unit: id,
+                sortie,
+                word: closed,
+            } => format!("{word} unit={} sortie={} word={closed}", unit(id), sortie.0),
+            EventKind::MindFault {
+                unit: id,
+                think_seq,
+                cause,
+            } => format!(
+                "{word} unit={} think_seq={think_seq} cause={cause}",
+                unit(id)
+            ),
+            EventKind::MindDropped {
+                unit: id,
+                cause,
+                fault,
+                ops,
+            } => {
+                let mut text = format!("{word} unit={} cause={cause}", unit(id));
+                if let Some(fault) = fault {
+                    text.push_str(&format!(" fault={fault}"));
+                }
+                if let Some(ops) = ops {
+                    text.push_str(&format!(" ops={ops}"));
+                }
+                text
             }
             EventKind::Lagged { dt_ms } => format!("{word} dt_ms={dt_ms}"),
             EventKind::MatchEnded { reason } => {
@@ -2845,6 +2915,102 @@ mod tests {
                 "  0:02.000  mind_card_refused unit=RA(#101): not_mind",
             ]
         );
+        let pilot = fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES);
+        assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
+    }
+
+    /// **17b cut M3.3** (doc 17 §13, §19): the staff fold spells the four mind
+    /// kinds — a principal by the unit its character flies (`RA(#101)`), a
+    /// persona by its name and nobody as `-`, the drop's fault and budget
+    /// only where the line carries them — and the pilot's fold prints none of
+    /// them, even of the pilot's own tank.
+    #[test]
+    fn m3_the_staff_read_the_four_mind_lines_and_the_pilot_reads_nothing_of_them() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::mind::SortieId;
+        use crate::deliberation::order::CharacterRef;
+        let sealed = |unit: ObjId, principal: Option<CharacterRef>| EventKind::MindSealed {
+            unit,
+            sortie: SortieId::in_match(12, unit),
+            mind: SmolStr::new_static("Standard Doctrine"),
+            source: SmolStr::new_static("8b3ec78c9d957865"),
+            card_digest: SmolStr::new("a".repeat(64)),
+            class: CoreClass::I,
+            governed: true,
+            licence: SmolStr::new_static("doctrine"),
+            principal,
+        };
+        let mut tape = Tape::new();
+        tape.at(
+            0,
+            sealed(ME, Some(CharacterRef::Character { id: ObjId(5) })),
+        )
+        .at(
+            0,
+            sealed(
+                ObjId(301),
+                Some(CharacterRef::Persona {
+                    squad: crate::deliberation::SquadId {
+                        team: Team::Red,
+                        index: 1,
+                    },
+                }),
+            ),
+        )
+        .at(0, sealed(THEM, None))
+        .at(
+            1_000,
+            EventKind::MindFault {
+                unit: ME,
+                think_seq: 3,
+                cause: SmolStr::new_static("ops"),
+            },
+        )
+        .at(
+            2_000,
+            EventKind::MindDropped {
+                unit: ME,
+                cause: SmolStr::new_static("strikes"),
+                fault: Some(SmolStr::new_static("ops")),
+                ops: Some(1_500),
+            },
+        )
+        .at(
+            3_000,
+            EventKind::MindDropped {
+                unit: THEM,
+                cause: SmolStr::new_static("core"),
+                fault: None,
+                ops: None,
+            },
+        )
+        .at(
+            4_000,
+            EventKind::SortieClosed {
+                unit: ME,
+                sortie: SortieId::in_match(12, ME),
+                word: SmolStr::new_static("match_end"),
+            },
+        );
+        let staff = fold(&tape.0, &roster(), Reader::Staff, RULES);
+        assert_eq!(
+            staff.lines,
+            vec![
+                "  0:00.000  mind_sealed unit=RA(#101) sortie=51539607653 mind=\"Standard \
+                 Doctrine\" class=I governed=true licence=doctrine principal=RA(#101)",
+                "  0:00.000  mind_sealed unit=#301 sortie=51539607853 mind=\"Standard Doctrine\" \
+                 class=I governed=true licence=doctrine principal=\"red lance leader 1\"",
+                "  0:00.000  mind_sealed unit=BA(#201) sortie=51539607753 mind=\"Standard \
+                 Doctrine\" class=I governed=true licence=doctrine principal=-",
+                "  0:01.000  mind_fault unit=RA(#101) think_seq=3 cause=ops",
+                "  0:02.000  mind_dropped unit=RA(#101) cause=strikes fault=ops ops=1500",
+                "  0:03.000  mind_dropped unit=BA(#201) cause=core",
+                "  0:04.000  sortie_closed unit=RA(#101) sortie=51539607653 word=match_end",
+            ]
+        );
+        for line in &staff.lines {
+            assert!(!line.contains("#5)") && !line.contains("=#5"), "{line}");
+        }
         let pilot = fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES);
         assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
     }

@@ -451,8 +451,8 @@ impl Arena {
     }
 
     /// **Rate every mind in this arena at `class`** — a test's lever, with no
-    /// production caller, until 17b cut M3.3's seal records each hull's rated
-    /// class. Neither hashed nor carried.
+    /// production caller. (17b cut M3.3's seal records each hull's class,
+    /// `MindSeal::class`; the think side keeps reading this lever.) Neither hashed nor carried.
     #[doc(hidden)]
     pub fn set_rated_class_for_tests(&mut self, class: CoreClass) {
         self.rated_class = class;
@@ -604,10 +604,13 @@ mod tests {
         const BLUE: ObjId = ObjId(9);
         let mut red = line_tank(RED, Team::Red, pose(1_500, 4_500));
         red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
         let bare = crate::arena::state::CustodyUnit {
             unit: tactical_unit(BLUE),
             ..scout(BLUE, Team::Blue, pose(6_500, 4_500))
-        };
+        }
+        .sealed();
         let mut arena = arena_of(vec![red, bare]);
         assert_eq!(
             arena.core_of(RED).map(|core| core.class),
