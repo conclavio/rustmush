@@ -14,7 +14,8 @@
 //! their fees (D-UM-26), and `rand(k)` over the sixth draw label (D-UM-29).
 //! The arena never names this module or its interpreter: `crate::arena`'s
 //! [`crate::arena::mind::MindRunner`] seam is the whole contract, and the
-//! runner that drives a think through this API is 17b cut M2.4's.
+//! runner that drives a think through this API is
+//! [`RhaiRunner`](crate::minds::runner::RhaiRunner) (17b cut M2.4).
 //!
 //! * **The context** (`context.rs`): the think's thread-local
 //!   [`ThinkContext`](crate::minds::context::ThinkContext) — the view and the
@@ -37,6 +38,10 @@
 //! * **The kernels** (`kernels.rs`, `fees.rs`): each a thin wrapper over the
 //!   ONE free function the native stock mind (T1) calls, charged its fee
 //!   through `mush_mind::budget` at the call (D-UM-24, D-UM-26).
+//! * **The runner** (`runner.rs`, 17b cut M2.4): `RhaiRunner`, a
+//!   `MindRunner` that runs a compiled script synchronously at the think
+//!   point, reads the label rule on both ends of the call, and answers a
+//!   dropped hull (three faults running) with the native stand-in.
 //! * **The stations** (`stations.rs`): exactly doc 17 §4's list — `helm`,
 //!   `speed`, `startup`, `goto`, `hold`, `goto_off`; `lock`, `emcon`; `fire`,
 //!   `arm`, `disarm`; `trace` — each pushing the
@@ -114,7 +119,10 @@ pub mod card;
 pub mod context;
 pub mod fees;
 pub mod kernels;
+pub mod runner;
 pub mod stations;
+
+pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
 
 /// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
