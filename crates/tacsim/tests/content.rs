@@ -1863,56 +1863,25 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 
 /// **The digest `content/minds/standard.rhai` ships with**, written down by
 /// hand (doc 17 §13): a script change is a reviewed re-bless of this string
-/// and of `tacsim::minds::STANDARD_SHA256` (17b cut M2.6 re-blesses both
-/// once, with the fire half).
+/// and of `tacsim::minds::STANDARD_SHA256`.
+///
+/// **Re-blessed by 17b cut M2.6 — the fire half written** (doc 17 §5,
+/// D-UM-16, D-UM-17, D-UM-18): the stubs M2.5 left (`arming`, the citation
+/// past `engage_orders`' lock) became `arming_for` (the slots on change, the
+/// slot number excluded, with `aspect_mask`) and `engage_orders`' gates, arm
+/// ceiling and citation beside a fresh lock, and the emission cites
+/// `fire(weapon, slot)` after `lock`. **And four cost-only rewrites of the
+/// helm half M2.5 landed**, behaviour unchanged (Gate A asserts every think
+/// of every lane): `read_notices` reads a notice's kind through one `switch`
+/// rather than an else-if chain, `hostile_edges` reads the leash's two radii
+/// only under a leash, `stand` and `withdraw_stand` read the think's `p.dry`
+/// rather than calling `is_dry` again, and `engage_orders` reads `p.dry` and
+/// the held row's range inline — a reviewer of this digest's history
+/// re-reads those four helm-half functions too. Was
+/// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
+/// cut M2.5, the helm half).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd";
-
-/// One script function as the text reads it: its name, its parameters and
-/// its body's lines.
-type ScriptFn = (String, Vec<String>, Vec<String>);
-
-/// The script's `fn`s in order — read off the text (every `fn` opens at the
-/// start of a line).
-fn script_fns(source: &str) -> Vec<ScriptFn> {
-    let mut fns: Vec<ScriptFn> = Vec::new();
-    for line in source.lines() {
-        if let Some(head) = line.strip_prefix("fn ") {
-            let (name, rest) = head.split_once('(').expect("a fn head");
-            let (params, _) = rest.split_once(')').expect("a fn head");
-            let params = params
-                .split(',')
-                .map(str::trim)
-                .filter(|param| !param.is_empty())
-                .map(str::to_owned)
-                .collect();
-            fns.push((name.to_owned(), params, Vec::new()));
-        } else if let Some((_, _, body)) = fns.last_mut() {
-            body.push(line.to_owned());
-        }
-    }
-    fns
-}
-
-/// The names a body binds (`let x`, `for x in`), each once.
-fn bound_names(body: &[String]) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for line in body {
-        let code = line.split("//").next().unwrap_or_default();
-        for binder in ["let ", "for "] {
-            for after in code.split(binder).skip(1) {
-                let name: String = after
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .collect();
-                if !name.is_empty() {
-                    names.insert(name);
-                }
-            }
-        }
-    }
-    names
-}
+    "8b3ec78c9d957865c8d6d7696fbf422ca8939d05a51370befcff621287d74996";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2048,7 +2017,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
     assert!(literals > 20, "{literals} state literals read");
 
     // 5. The binding limits, measured.
-    let fns = script_fns(STANDARD_RHAI);
+    let fns = support::script_fns(STANDARD_RHAI);
     assert!(
         fns.len() <= 32,
         "{} functions: max_functions is 32",
@@ -2062,7 +2031,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
         .iter()
         .map(|(name, params, body)| {
             let mut names: BTreeSet<String> = params.iter().cloned().collect();
-            names.extend(bound_names(body));
+            names.extend(support::bound_names(body));
             (name.clone(), names.len())
         })
         .max_by_key(|(_, width)| *width)

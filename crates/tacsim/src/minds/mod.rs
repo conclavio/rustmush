@@ -46,8 +46,8 @@
 //!   Rhai (T2, `content/minds/standard.rhai`) with its manifest
 //!   (`standard.json`, the role `combat`) and its pinned SHA-256, and
 //!   [`standard_runner`](crate::minds::standard_runner) — the native stock
-//!   mind ported arm for arm, the helm half whole and the fire half a stub
-//!   until 17b cut M2.6.
+//!   mind ported arm for arm: the helm half (17b cut M2.5) and the fire
+//!   half (17b cut M2.6).
 //! * **The stations** (`stations.rs`): exactly doc 17 §4's list — `helm`,
 //!   `speed`, `startup`, `goto`, `hold`, `goto_off`; `lock`, `emcon`; `fire`,
 //!   `arm`, `disarm`; `trace` — each pushing the

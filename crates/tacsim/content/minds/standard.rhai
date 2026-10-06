@@ -26,7 +26,9 @@
 //   heading   the facing a stand turns onto, millidegrees, or `()`
 //   lock      the lock to take, a contact INT, or `()`
 //   stood     the cell of the row a stand stood on, or `()`
-//   arm_ceiling  the ceiling the slots arm on (the fire half's: M2.6), `()`
+//   arm_ceiling  the ceiling the slots arm on (`engage_orders` records it
+//             past its gates), `()` for none — the slots disarm
+//   fire      the citation `[weapon, slot]` planned beside a fresh lock, or `()`
 //   view_order, order, objective   the view's order, the OBEYED order and
 //             its objective word (`()` once ended or ignored)
 //   health, dry, ranges            the think's own readings
@@ -57,13 +59,25 @@
 // in practice: the lost edge drops a target whose row is gone and the
 // hostile edges pick only rows the view holds.
 //
-// # The fire half (17b cut M2.6 fills it)
+// # The fire half (17b cut M2.6; D-UM-16, D-UM-17, D-UM-18)
 //
 // D-UM-48: on a hull with no weapons station Standard Doctrine's fire half
-// is absent. Here it is a STUB on every hull: `arming` (T1's `arming_for`)
-// emits nothing, and `engage_orders` takes the lock (the lock is sensors,
-// ported here) and plans no shot. On an armed hull T1 and this script part
-// exactly on the `arm`/`disarm`/`fire` intents until M2.6.
+// is absent — every fire-half function returns before it reads a weapon.
+// On an armed hull the SLOT owns the shot: `engage_orders`, reached with a
+// row and past the power, `hold_fire` and dry gates, records the ceiling
+// that admitted the row (`p.arm_ceiling`), and the emission arms the first
+// `slots()` weapons on it, in component order and whatever the heat
+// (`arming_for`: one `arm(weapon, "best", ..)` per weapon whose view row
+// does not already hold the terms wanted, the slot NUMBER never compared —
+// it is the arena's — and one `disarm(())` only where some row is armed and
+// the think wants none). A `fire(weapon, slot)` is cited ONLY beside a
+// fresh lock, which no slot has yet been evaluated against: the first armed
+// weapon ready at the landing (`lands_ms()` against the VIEW's clock,
+// `view.t_ms`, as T1 reads it), loaded, in reach and not held back by heat,
+// numbered as the view's row shows it (`armed.slot`), else `index + 1` for a
+// weapon this very think arms. The emission is the arming first (after
+// `startup()` in the power arms), then the helm half, then `lock`, then
+// `fire` — the landing applies them in that order.
 //
 // # No float, no clock, no draw
 //
@@ -91,7 +105,16 @@
 //                 clock of any INT never overflows (the search, the hunt and
 //                 the rally);
 //   the bearings  `bearing_deg * 1000` on a view's whole degrees (0 to 359;
-//                 an INT product of a u32 and 1,000 cannot overflow).
+//                 an INT product of a u32 and 1,000 cannot overflow);
+//   the landing   T1's `lands_ms.saturating_sub(view.t_ms).max(0)`, written
+//                 as `0` when the view's clock is at or past the landing and
+//                 the plain difference otherwise — the view's clock is the
+//                 arena clock (never below zero), so it cannot overflow;
+//   the reserve   T1's `reserve_pct.saturating_mul(rounds_max) / 100` held to
+//                 a u32: the product of two u32s can pass an INT, so a product
+//                 past `i64::MAX` (whose hundredth is past every u32) reads
+//                 4294967295 before it is formed, and the hundredth is held
+//                 at 4294967295 otherwise.
 
 // ---------------------------------------------------------------------------
 // The entry
@@ -120,7 +143,7 @@ fn think(view, card) {
     let held = if words[1] { () } else { goal_was };
     let p = #{
         here: view.cell, reached: reached, held: held, goal: held,
-        stop: false, heading: (), lock: (), stood: (), arm_ceiling: (),
+        stop: false, heading: (), lock: (), stood: (), arm_ceiling: (), fire: (),
         view_order: view.order, order: (), objective: (),
         health: 1000, dry: false, ranges: (),
         leash_on: false, charge: (), off_leash: false, leash_cm: 0, station_cm: 0,
@@ -154,8 +177,8 @@ fn think(view, card) {
             this.goal = p.held;
             startup();
             // 17b cut M1b.2: a cold hull's slots are disarmed, after the
-            // `Startup` (the fire half: M2.6).
-            arming(view, card, ());
+            // `Startup` — 17b cut M1b.3: where its view shows one armed.
+            arming_for(view, card, ());
             return;
         }
         "starting" => {
@@ -163,7 +186,7 @@ fn think(view, card) {
                 this.state = 0;
             }
             this.goal = p.held;
-            arming(view, card, ());
+            arming_for(view, card, ());
             return;
         }
         _ => {
@@ -257,16 +280,22 @@ fn fresh() {
 fn read_notices(view) {
     let arrived_word = false;
     let no_route = false;
+    // 17b cut M2.6: one `switch` on the kind word, not an else-if chain —
+    // the same three readings at a third of the operations a notice (a
+    // busy twelve-a-side view carries sixteen notices).
     for notice in view.notices {
-        let kind = notice.kind;
-        if kind == "drive_arrived" {
-            arrived_word = true;
-        } else if kind == "drive_no_route" {
-            no_route = true;
-        } else if kind == "miss" {
-            let reason = notice.reason;
-            if reason == blocked() || reason == cover() {
-                this.no_line = true;
+        switch notice.kind {
+            "drive_arrived" => {
+                arrived_word = true;
+            }
+            "drive_no_route" => {
+                no_route = true;
+            }
+            "miss" => {
+                let reason = notice.reason;
+                if reason == blocked() || reason == cover() {
+                    this.no_line = true;
+                }
             }
         }
     }
@@ -484,10 +513,14 @@ fn hostile_edges(view, card, p) {
             p.charge = contact(view, of);
         }
     }
-    let cell = cell_cm();
-    p.leash_cm = leash_cells() * cell;
-    p.station_cm = station_cells() * cell;
-    p.off_leash = p.leash_on && (p.charge == () || range_cm(p.charge) > p.leash_cm);
+    // The leash's two radii, read only under a leash (17b cut M2.6: nothing
+    // but the leash reads them, and a think pays for what it computes).
+    if p.leash_on {
+        let cell = cell_cm();
+        p.leash_cm = leash_cells() * cell;
+        p.station_cm = station_cells() * cell;
+        p.off_leash = p.charge == () || range_cm(p.charge) > p.leash_cm;
+    }
     let objective = p.objective;
     let may_pursue = !p.off_leash && objective != "hold" && objective != "advance" && objective != "screen";
     if !may_pursue || !(state == 1 || state == 2 || state == 3) {
@@ -556,30 +589,73 @@ fn leash_arms(view, card, p) {
 
 // **A stand on `row`**: the cell it stood on, the facing onto the row's
 // whole-degree bearing, and `Engage`'s orders at `ceiling` (the ceiling
-// that admitted the row: the fire half's, M2.6).
+// that admitted the row: `release_cm`, or a withdraw stand's `stand_cm` en
+// route).
 fn face(view, row, ceiling, p) {
     p.stood = row.cell;
     p.heading = row.bearing_deg * 1000;
     engage_orders(view, row, ceiling, p)
 }
 
-// **`Engage`'s two discrete actions** (T1's `engage_orders`), the LOCK half:
-// the lock on a fresh row (the lock is sensors). D-UM-48: on a hull with no
-// weapon rows the fire half is absent — not idled — and the guard says so
-// where the reader looks.
+// **`Engage`'s two discrete actions** (T1's `engage_orders`): the lock on a
+// fresh row (the lock is sensors), then — inside `release_cm`, with power
+// and not under `hold_fire` — the slots and the citation. D-UM-48: on a hull
+// with no weapon rows the fire half is absent — not idled — and the guard
+// says so where the reader looks.
 //
-// THE FIRE HALF IS A STUB (17b cut M2.6 fills it): past the power,
-// `hold_fire` and dry gates the think records `ceiling` as the slots' arm
-// ceiling (`p.arm_ceiling`), and beside a fresh lock cites the first armed
-// weapon ready at
-// `lands_ms()`, loaded, in reach and not held by heat (`fire(weapon, n)`,
-// `n` the view row's `armed.slot`, else `i + 1`). M2.5 plans no shot.
+// 17b cut M1b.2 (D-UM-16, D-UM-17, D-UM-18): past the power, `hold_fire` and
+// dry gates the think records `ceiling` — the ceiling that admitted `row` —
+// as the slots' arm ceiling (`p.arm_ceiling`); the emission arms on it
+// (`arming_for`) and from then on the SLOT owns the shot. A citation is
+// planned ONLY beside a fresh lock (one no slot has been evaluated against):
+// the first weapon of the first `slots()` that is ready AT THE LANDING (its
+// countdown against the milliseconds from the view's clock to `lands_ms()`:
+// T1's 16b cut M.2 rule), loaded, reaches the row's held range and is not
+// held back by heat (`would_overheat`), cited by the number its view row
+// shows (`armed.slot`, the arena's stable number: 17b cut M1b.3), else
+// `index + 1` for a weapon this very think arms.
 fn engage_orders(view, row, ceiling, p) {
-    if view.weapons.len() == 0 {
+    let weapons = view.weapons;
+    if weapons.len() == 0 {
         return p;
     }
-    if view.lock != row.id {
-        p.lock = row.id;
+    let id = row.id;
+    let fresh = view.lock != id;
+    if fresh {
+        p.lock = id;
+    }
+    // The power, `hold_fire` and dry gates (`p.dry` is this view's
+    // `is_dry`, read once by `standing_order`).
+    if view.power != "online" || (p.order != () && p.order.hold_fire) || p.dry {
+        return p;
+    }
+    // Reached with a row, the gates passed: the slots arm.
+    p.arm_ceiling = ceiling;
+    // The row's held range (`range_cm` of a row the view holds).
+    let range = min(row.range_m, 92233720368547758) * 100;
+    if range > p.ranges.release_cm || !fresh {
+        // Out of the release band, or the lock is held: the armed slot owns
+        // the shot.
+        return p;
+    }
+    // The milliseconds from the view's clock to the landing (the head's
+    // saturation): a weapon whose countdown ends inside them is ready when
+    // the shot is resolved.
+    let lands = lands_ms();
+    let to_landing = if view.t_ms >= lands { 0 } else { lands - view.t_ms };
+    let n = slots();
+    for (weapon, i) in weapons {
+        if i >= n {
+            break;
+        }
+        if weapon.ready_in_ms <= to_landing && weapon.rounds > 0 {
+            let reach = weapon.bands_cm;
+            if reach.len() > 0 && reach[-1] >= range && !would_overheat(view, weapon.id) {
+                let armed = weapon.armed;
+                p.fire = [weapon.id, if armed == () { i + 1 } else { armed.slot }];
+                return p;
+            }
+        }
     }
     p
 }
@@ -588,7 +664,8 @@ fn engage_orders(view, row, ceiling, p) {
 // for a screen, inside `sector[1]` of `sector[0]` off the row's whole-degree
 // bearing — with a line; `()` with nothing to fire.
 fn stand(view, card, p, sector) {
-    if is_dry(view) {
+    // `p.dry`: this view's `is_dry`, read once by `standing_order`.
+    if p.dry {
         return ();
     }
     let ceiling = max(p.ranges.release_cm, 1);
@@ -613,7 +690,7 @@ fn stand(view, card, p, sector) {
 // best hostile, inside `release_cm` once home and `stand_cm` (and the card's
 // `stand_min_permille` of health) en route, with a line.
 fn withdraw_stand(view, card, p, home) {
-    if is_dry(view) || (p.order != () && p.order.hold_fire) {
+    if p.dry || (p.order != () && p.order.hold_fire) {
         return ();
     }
     let w = weights(card);
@@ -921,15 +998,14 @@ fn stamps(view, p) {
     }
 }
 
-// **The emission, in T1's order**: the slots (the fire half's stub), then
-// the helm half — `hold()` and the facing `helm(mdeg)` for a stand,
-// `goto([x, y])` only when the goal CHANGED, `hold()` when a held goal is
-// dropped — then the lock, then the citation (the fire half's stub). A hull
-// whose motion is disabled is handed no goal and no heading.
+// **The emission, in T1's order**: the slots, then the helm half — `hold()`
+// and the facing `helm(mdeg)` for a stand, `goto([x, y])` only when the goal
+// CHANGED, `hold()` when a held goal is dropped — then the lock, then the
+// citation. A hull whose motion is disabled is handed no goal and no
+// heading.
 fn emit(view, card, p) {
-    // 17b cut M1b.2: the slots first, after `Startup` and before `Goal`
-    // (the fire half: M2.6).
-    arming(view, card, p.arm_ceiling);
+    // 17b cut M1b.2: the slots first, after `Startup` and before `Goal`.
+    arming_for(view, card, p.arm_ceiling);
     let held = p.held;
     if view.immobile {
         held = ();
@@ -952,16 +1028,85 @@ fn emit(view, card, p) {
     if p.lock != () {
         lock(p.lock);
     }
-    // The citation `engage_orders` plans beside a fresh lock (the fire
-    // half: M2.6).
+    // The citation `engage_orders` planned beside a fresh lock, resolved
+    // right after the lock lands.
+    if p.fire != () {
+        fire(p.fire[0], p.fire[1]);
+    }
 }
 
-// **T1's slots for this think** (`arming_for`) — THE FIRE HALF'S STUB (17b
-// cut M2.6 fills it): one `arm(weapon, "best", ..)` per weapon of the first
-// `slots()` whose view row does not already hold the terms wanted, or one
-// `disarm(())` where some row is armed and the think wants none; nothing on
-// a hull with no weapon rows (D-UM-48). `ceiling` is the arm ceiling
-// `engage_orders` recorded (`p.arm_ceiling`), `()` to disarm. M2.5 emits
-// nothing.
-fn arming(view, card, ceiling) {
+// **T1's slots for this think** (`arming_for`; 17b cuts M1b.2, M1b.3;
+// D-UM-16, D-UM-18, D-UM-43): what the stock mind arms or disarms, emitted
+// after `startup()` and before the helm half — answers nothing.
+//
+//   * `ceiling` an INT — `engage_orders` was reached with a row and its
+//     gates passed: one `arm(weapon, "best", card.min_odds_permille,
+//     aspect_mask(card.aspect), keeps, 0, min(ceiling, reach) / 100)` per
+//     weapon of the first `slots()`, in component order, WHATEVER THE HEAT
+//     (the resolver holds a hot slot's shot silently and the slot stays
+//     armed: a heat skip here would put the numbering out of step with the
+//     arena's), `keeps` the card's `reserve_pct` of the weapon's
+//     `rounds_max` and `reach` the last of its `bands_cm` (0 for none);
+//   * `ceiling` `()` — one `disarm(())` when some row is armed, else
+//     nothing;
+//   * a hull with no weapon rows — nothing (D-UM-48).
+//
+// Emitted ON CHANGE (D-UM-4's parity rule: a mind reads its own armed slots
+// off its view exactly as a pilot reads them off `WEAPONSTATUS`): an `arm`
+// only for a row whose `armed` is `()` or differs in any term but the slot
+// NUMBER, which is the arena's and is not compared (T1's
+// `FrameArming::of(armed.slot, &wanted) == armed`).
+fn arming_for(view, card, ceiling) {
+    let weapons = view.weapons;
+    if weapons.len() == 0 {
+        return;
+    }
+    if ceiling == () {
+        // 17b cut M1b.3: nothing to clear is nothing said.
+        for weapon in weapons {
+            if weapon.armed != () {
+                disarm(());
+                return;
+            }
+        }
+        return;
+    }
+    // The card's terms and the slot count, read once (each read is
+    // operations a think pays: 17b §1 (iv)).
+    let floor = card.min_odds_permille;
+    let mask = aspect_mask(card.aspect);
+    let reserve = card.reserve_pct;
+    let n = slots();
+    for (weapon, i) in weapons {
+        if i >= n {
+            break;
+        }
+        let reach = weapon.bands_cm;
+        reach = if reach.len() == 0 { 0 } else { reach[-1] };
+        // T1's saturating reserve, held to a u32 (the head's saturation);
+        // no reserve (Line's) keeps nothing, whatever the magazine.
+        let keeps = 0;
+        if reserve != 0 {
+            let rounds_max = weapon.rounds_max;
+            if rounds_max != 0 {
+                keeps = if reserve > 9223372036854775807 / rounds_max { 4294967295 } else { min(reserve * rounds_max / 100, 4294967295) };
+            }
+        }
+        let under_m = min(ceiling, reach) / 100;
+        let armed = weapon.armed;
+        if armed == () || armed.target != "best" || armed.min_permille != floor || armed.aspects != mask || armed.keeps != keeps || armed.min_range_m != 0 || armed.max_range_m != under_m {
+            arm(weapon.id, "best", floor, mask, keeps, 0, under_m);
+        }
+    }
+}
+
+// **The card's aspect word as a slot's facet mask** (T1's
+// `AspectWord::mask`): `any` every facet (15), `flank` the two sides (6),
+// `rear` the rear (8).
+fn aspect_mask(word) {
+    switch word {
+        "flank" => 6,
+        "rear" => 8,
+        _ => 15,
+    }
 }

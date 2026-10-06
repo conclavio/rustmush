@@ -3725,10 +3725,23 @@ struct Stock {
 }
 
 impl Stock {
+    /// The recorder over the production stock mind the arena flies: the
+    /// runner its field was opened with (`default_mind_runner`, T1 —
+    /// `NativeStockMind` on the arena's own doctrine). **17b cut M2.6**: it
+    /// reads the arena's runner, so a field a fixture builds under the twin
+    /// (`support::under_the_twin`, whose field builders call
+    /// `support::twin_if_asked` and thereby `support::with_twin` BEFORE this
+    /// recorder reads the runner) is recorded over that field's own asserting
+    /// twin, whose answer is T1's. Anything else on the arena is a fixture's
+    /// own runner and is [`Stock::over`]'s to record, never this one's.
     fn on(arena: &Arena) -> Arc<Stock> {
-        Stock::over(Arc::new(tacsim::arena::stock_mind::NativeStockMind::with(
-            &arena.arena_cfg.reflex,
-        )))
+        let runner = Arc::clone(&arena.mind_runner);
+        let name = format!("{runner:?}");
+        assert!(
+            name.starts_with("NativeStockMind") || name.starts_with("TwinRunner"),
+            "Stock::on records the production stock mind (or the twin over it), not {name:.40}"
+        );
+        Stock::over(runner)
     }
 
     /// The same recorder over `inner` (17b cut M2.5).
@@ -3822,7 +3835,9 @@ fn the_j_field(controller: Controller) -> Arena {
     the_j_field_on(controller, reflex_cfg())
 }
 
-/// [`the_j_field`] on the doctrine `reflex` (17b cut M1b.5).
+/// [`the_j_field`] on the doctrine `reflex` (17b cut M1b.5). **17b cut
+/// M2.6**: inside `support::under_the_twin` its minds fly an asserting twin
+/// (`support::twin_if_asked`) until a fixture hands the arena another runner.
 fn the_j_field_on(controller: Controller, reflex: ReflexConfig) -> Arena {
     let seeing = |mut unit: CustodyUnit| {
         unit.sensor = Some(SensorProfile {
@@ -3831,7 +3846,7 @@ fn the_j_field_on(controller: Controller, reflex: ReflexConfig) -> Arena {
         });
         unit
     };
-    arena_on(
+    let mut arena = arena_on(
         vec![
             seeing(tank(
                 RED,
@@ -3851,7 +3866,9 @@ fn the_j_field_on(controller: Controller, reflex: ReflexConfig) -> Arena {
         ],
         &[BLUE],
         reflex,
-    )
+    );
+    support::twin_if_asked(&mut arena);
+    arena
 }
 
 /// The (j) field with both reds stock minds, run 30 s under `drive`.
@@ -4805,7 +4822,8 @@ fn pea_shooter() -> WeaponSummary {
 /// **The lance field**: [`the_j_field`]'s three tanks with both reds minds —
 /// the armed one (a [`pea_shooter`]) at (6, 8), the unarmed one at (6, 10),
 /// each with the ten-cell sight — a third red mind ([`RED3`]) at (1, 1) with
-/// no sensor and no weapon, and the seated blue at (9, 8).
+/// no sensor and no weapon, and the seated blue at (9, 8). **17b cut M2.6**:
+/// inside `support::under_the_twin` its minds fly an asserting twin.
 fn lance_field() -> Arena {
     let seeing = |mut unit: CustodyUnit| {
         unit.sensor = Some(SensorProfile {
@@ -4816,7 +4834,7 @@ fn lance_field() -> Arena {
     };
     let mut blind = tank(RED3, Team::Red, centre(1, 1), Vec::new(), Controller::Mind);
     blind.sensor = None;
-    arena_of(
+    let mut arena = arena_of(
         vec![
             seeing(tank(
                 RED,
@@ -4842,7 +4860,9 @@ fn lance_field() -> Arena {
             )),
         ],
         &[BLUE],
-    )
+    );
+    support::twin_if_asked(&mut arena);
+    arena
 }
 
 /// What one lance run produced: the run itself, each red's row for the blue
@@ -5092,7 +5112,8 @@ fn l2_two_minds_are_one_squad_under_a_leader_at_three_cadences() {
 /// **The charge field**: a mind of red at (1, 8) with one short gun — a single
 /// 100 m band, one point a round — and a fifteen-cell sight; a seated red at
 /// (1, 10) with the same sight and no gun; and the seated blue at (14, 8),
-/// 130 m off — in sight, and outside every band the red mind has.
+/// 130 m off — in sight, and outside every band the red mind has. **17b cut
+/// M2.6**: inside `support::under_the_twin` its mind flies an asserting twin.
 fn charge_field() -> Arena {
     let short = WeaponSummary {
         max_range_cm: 10_000,
@@ -5109,7 +5130,7 @@ fn charge_field() -> Arena {
         });
         unit
     };
-    arena_of(
+    let mut arena = arena_of(
         vec![
             seeing(tank(
                 RED,
@@ -5136,7 +5157,9 @@ fn charge_field() -> Arena {
             ))),
         ],
         &[RED2, BLUE],
-    )
+    );
+    support::twin_if_asked(&mut arena);
+    arena
 }
 
 /// How [`charge_run`] charges the red mind.
@@ -6032,14 +6055,17 @@ fn m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert() {
 #[test]
 fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
     use tacsim::arena::perception::DriveOutcome;
-    use tacsim::arena::stock_mind::{NativeStockMind, StockMemory};
+    use tacsim::arena::stock_mind::StockMemory;
     let mut arena = the_j_field(Controller::Mind);
     if let Some(state) = arena.unit_mut(RED) {
         state.power = Power::Online;
     }
     let base = arena.mind_view(RED).expect("red's view");
     let card = preset_on_field("line");
-    let mind = NativeStockMind::with(&reflex_cfg());
+    // 17b cut M2.6: the arena's own runner — the production stock mind the
+    // (j) field opened with, or the field's twin under
+    // `support::under_the_twin`.
+    let mind = Arc::clone(&arena.mind_runner);
     let failed = (12_u16, 3_u16);
     let advance = |to: (u16, u16), expires_ms: i64| FrameOrder {
         squad: SmolStr::new("red-1"),
@@ -7134,5 +7160,163 @@ fn m2_the_arena_refuses_a_preset_that_breaks_the_pair_by_name() {
     assert_eq!(
         arena.minds.get(&RED).map(|state| state.card.clone()),
         Some(tacsim::arena::line(&high))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.6: the T1 fixtures under the twin (doc 17 §17 "Gate A"; 17b
+// §1 (iii))
+// ---------------------------------------------------------------------------
+//
+// Each fixture of this file that flies the native stock mind (T1) is run
+// once more inside `support::under_the_twin`: the SAME body, its field
+// builders ([`the_j_field_on`], [`lance_field`], [`charge_field`]) installing
+// an asserting `support::TwinRunner` and its recorder ([`Stock::on`]) wrapping
+// the field's runner, that twin, so every think the fixture flies is T1 and
+// T2 (the Rhai Standard Doctrine) on one job — the Rhai fault refused first,
+// then the intents, then the memory bytes — with T1's answer flown. The
+// fixture's own assertions on T1 stand untouched (its recorded constants
+// among them: `M1B2_TWO_T1_FIRED`, `M1B5_TWO_T1_EVENTS`,
+// `M1B5_TWO_T1_INTENTS`, `M1B5_WITHDRAWS_AT`); `under_the_twin` asserts the
+// twins compared at least one think and prints how many. The fixtures that
+// field no T1 (the scripted minds of 17b cuts M1a.5, M1b.0, M1b.1 and M1b.3's
+// hint re-key, the faulting and pairing fixtures of M2.2) are not repeated.
+
+/// **The two-T1 fixture under the twin** (17b cut M2.6): [`stock_minds`] —
+/// the (j) field's two reds, the armed one finding, classifying, locking,
+/// arming its slot and citing it — flown by the twin at 5,000, 1,000 and
+/// 500 ms and on the task's wakes at the three periods, each equal to the
+/// native run (events, the hash sequence, every think's view and answer);
+/// [`two_t1_slots_and_citations`] passes on the twin-flown run —
+/// [`M1B2_TWO_T1_FIRED`] kept — and its event list and answers are 17b cut
+/// M1b.5's anchor ([`M1B5_TWO_T1_EVENTS`], [`M1B5_TWO_T1_INTENTS`]). (The
+/// native fixture's last arm — the arena's DEFAULT runner is the native
+/// stock mind — is the native fixture's alone: under the twin the field's
+/// runner is the twin.)
+#[test]
+fn m2_the_two_t1_fixture_under_the_twin() {
+    let (native, native_kept) = stock_minds(Drive::Every(5_000));
+    support::under_the_twin("the two-T1 fixture", || {
+        let (first, kept) = stock_minds(Drive::Every(5_000));
+        assert_eq!(first.events, native.events, "the native event list");
+        assert_eq!(first.hashes, native.hashes, "the native hash sequence");
+        assert_eq!(kept, native_kept, "the native thinks");
+        two_t1_slots_and_citations(&first, &kept);
+        let events: Vec<(i64, &str)> = first
+            .events
+            .iter()
+            .map(|(t_ms, json, _)| (*t_ms, json.as_str()))
+            .collect();
+        assert_eq!(events, M1B5_TWO_T1_EVENTS, "17b cut M1b.5's anchor");
+        let answers: Vec<(u32, i64, String)> = kept
+            .iter()
+            .map(|(unit, t_ms, _, result)| {
+                (
+                    unit.0,
+                    *t_ms,
+                    serde_json::to_string(&result.intents).unwrap_or_default(),
+                )
+            })
+            .collect();
+        let recorded: Vec<(u32, i64, String)> = M1B5_TWO_T1_INTENTS
+            .iter()
+            .map(|(unit, t_ms, json)| (*unit, *t_ms, (*json).to_owned()))
+            .collect();
+        assert_eq!(answers, recorded, "17b cut M1b.5's recorded answers");
+        for drive in [
+            Drive::Every(1_000),
+            Drive::Every(500),
+            Drive::Task(5_000),
+            Drive::Task(1_000),
+            Drive::Task(500),
+        ] {
+            let (other, other_kept) = stock_minds(drive);
+            assert_eq!(other.events, first.events, "the event list at {drive:?}");
+            assert_eq!(other.hashes, first.hashes, "the hash sequence at {drive:?}");
+            assert_eq!(other_kept, kept, "a think at {drive:?}");
+        }
+    });
+}
+
+/// [`m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing`] under the
+/// twin (17b cut M2.6).
+#[test]
+fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing_under_the_twin() {
+    support::under_the_twin(
+        "m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing",
+        m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing,
+    );
+}
+
+/// [`m1a6_the_stock_mind_is_t0_on_the_first_decide_window`] under the twin
+/// (17b cut M2.6): the (j) field's T1 window flown by the twin.
+#[test]
+fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window_under_the_twin() {
+    support::under_the_twin(
+        "m1a6_the_stock_mind_is_t0_on_the_first_decide_window",
+        m1a6_the_stock_mind_is_t0_on_the_first_decide_window,
+    );
+}
+
+/// [`l2_two_minds_are_one_squad_under_a_leader_at_three_cadences`] under the
+/// twin (17b cut M2.6): [`lance_field`]'s three minds under the leader's
+/// hinted `ENGAGE`, every think compared.
+#[test]
+fn l2_two_minds_are_one_squad_under_a_leader_at_three_cadences_under_the_twin() {
+    support::under_the_twin(
+        "l2_two_minds_are_one_squad_under_a_leader_at_three_cadences",
+        l2_two_minds_are_one_squad_under_a_leader_at_three_cadences,
+    );
+}
+
+/// [`l2_a_self_charged_support_fights_on_doctrine`] under the twin (17b cut
+/// M2.6): [`charge_field`]'s self-charged and blind supporters.
+#[test]
+fn l2_a_self_charged_support_fights_on_doctrine_under_the_twin() {
+    support::under_the_twin(
+        "l2_a_self_charged_support_fights_on_doctrine",
+        l2_a_self_charged_support_fights_on_doctrine,
+    );
+}
+
+/// [`m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged`] under
+/// the twin (17b cut M2.6): the M1b.5 anchor's recorded events and answers
+/// and the withdrawal at [`M1B5_WITHDRAWS_AT`] on the non-default doctrine.
+#[test]
+fn m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged_under_the_twin() {
+    support::under_the_twin(
+        "m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged",
+        m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged,
+    );
+}
+
+/// [`m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it`]
+/// under the twin (17b cut M2.6): a staged card read at the next think —
+/// the re-arm at Rearguard's 500 per mille compared whole.
+#[test]
+fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it_under_the_twin() {
+    support::under_the_twin(
+        "m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it",
+        m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it,
+    );
+}
+
+/// [`m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert`]
+/// under the twin (17b cut M2.6).
+#[test]
+fn m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert_under_the_twin() {
+    support::under_the_twin(
+        "m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert",
+        m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert,
+    );
+}
+
+/// [`m1b5_a_newer_order_is_obeyed_after_an_early_end`] under the twin (17b
+/// cut M2.6): the four thinks through the (j) field's twin.
+#[test]
+fn m1b5_a_newer_order_is_obeyed_after_an_early_end_under_the_twin() {
+    support::under_the_twin(
+        "m1b5_a_newer_order_is_obeyed_after_an_early_end",
+        m1b5_a_newer_order_is_obeyed_after_an_early_end,
     );
 }

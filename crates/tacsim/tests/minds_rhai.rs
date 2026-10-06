@@ -2971,8 +2971,8 @@ fn m2_the_default_runner_is_still_the_native_stock_mind() {
 /// T2 does not fault, its memory bytes are T1's (the prologue writes all
 /// fourteen keys of `StockMemory`, so an empty memory's first answer is the
 /// default's encoding), the keys are exactly `STOCK_MEMORY_KEY_NAMES`, and
-/// its intents are T1's (the fire half's `Condition`/`Fire` filtered out on
-/// the armed red until 17b cut M2.6).
+/// its intents are T1's — whole: 17b cut M2.6 ported the fire half, and the
+/// `Condition`/`Fire` filter M2.5 held on the armed red is gone.
 #[test]
 fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
     use tacsim::arena::stock_mind::STOCK_MEMORY_KEY_NAMES;
@@ -3033,12 +3033,7 @@ fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
                     .collect::<Vec<&str>>(),
                 keys
             );
-            let helm: Vec<&IntentKind> = native
-                .intents
-                .iter()
-                .filter(|kind| !matches!(kind, IntentKind::Condition(_) | IntentKind::Fire { .. }))
-                .collect();
-            assert_eq!(rhai.intents.iter().collect::<Vec<&IntentKind>>(), helm);
+            assert_eq!(rhai.intents, native.intents, "#{} online {online}", unit.0);
             if !online {
                 assert_eq!(native.intents, vec![IntentKind::Startup]);
             }

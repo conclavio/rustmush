@@ -1249,11 +1249,12 @@ pub struct TwinThought {
     /// The Rhai think did not fault and answered other intents or other
     /// memory bytes than T1.
     pub diverged: bool,
-    /// The view carried weapon rows (an armed hull: the fire half's stubs
-    /// diverge there until 17b cut M2.6).
+    /// The view carried weapon rows (an armed hull, whose fire half 17b cut
+    /// M2.6 ported: every lane asserts its thinks whole).
     pub armed: bool,
     /// The divergence is the fire half's alone: the memory bytes equal, and
-    /// the intents equal once every `Condition` and `Fire` is filtered out.
+    /// the intents equal once every `Condition` and `Fire` is filtered out (a
+    /// counting twin's classification; since 17b cut M2.6 no lane allows it).
     pub fire_only: bool,
     /// T1's state code after the think (`ReflexState::code`).
     pub state: u8,
@@ -1262,6 +1263,10 @@ pub struct TwinThought {
     /// T1's `stand_until_ms` is set after the think: a withdrawing hull's
     /// dwell (16b cut Q.7), its clock compared byte for byte.
     pub dwelling: bool,
+    /// **17b cut M2.6**: the view carried a standing order (`view.order`
+    /// present) — an ordered think, the basis of every order arm Gate A
+    /// compares.
+    pub ordered: bool,
 }
 
 /// **Gate A's runner** (17b cut M2.5; doc 17 §17 "Gate A: T1 ≡ T2 exactly";
@@ -1490,6 +1495,7 @@ impl MindRunner for TwinRunner {
                 state: after.state.code(),
                 rallied: after.rallied,
                 dwelling: after.stand_until_ms.is_some(),
+                ordered: job.view.order.is_some(),
             });
         }
         native
@@ -1579,4 +1585,532 @@ pub fn play(
         state_hash: tacsim::arena::hash::state_hash(&arena),
         ledger_digest: arena.ledger.digest(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.6 — the fixtures under the twin, and the authored lance field
+// ---------------------------------------------------------------------------
+
+/// **Fly `arena`'s minds on an asserting [`TwinRunner`]** (17b cut M2.6):
+/// `arena.mind_runner` becomes the twin on the arena's own doctrine
+/// (`arena.arena_cfg`), which is handed back so a fixture can count what it
+/// compared. Applied BEFORE any recorder (`tests/minds.rs`' `Stock`,
+/// `tests/conditions.rs`' `Kept`) reads the arena's runner, so the recorder
+/// wraps the twin. The twin answers T1's answer: every assertion a fixture
+/// makes of T1 holds of a twin-flown run unchanged, and every think is
+/// Gate A — the Rhai fault first, then the intents, then the memory bytes.
+pub fn with_twin(arena: &mut Arena) -> Arc<TwinRunner> {
+    let twin = Arc::new(TwinRunner::new(&arena.arena_cfg));
+    arena.mind_runner = twin.clone();
+    twin
+}
+
+thread_local! {
+    /// The twins [`under_the_twin`] asked for on this thread, `None` outside
+    /// one (each test runs on its own thread).
+    static TWINS: std::cell::RefCell<Option<Vec<Arc<TwinRunner>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// **Run `test` with its T1 fields flown by the twin** (17b cut M2.6): inside
+/// it a fixture's field builder installs an asserting twin on the field
+/// ([`twin_if_asked`], through [`with_twin`]) before any recorder reads the
+/// arena's runner, so the recorder (`tests/minds.rs`' `Stock::on`) wraps that
+/// twin — the SAME fixture body, its assertions on T1 untouched, with every
+/// think it flies compared T1 against T2. Answers how many thinks the twins
+/// compared, asserted nonzero (a sibling that compared nothing proves
+/// nothing) and printed with the fixture's name.
+pub fn under_the_twin(name: &str, test: impl FnOnce()) -> usize {
+    TWINS.with(|twins| *twins.borrow_mut() = Some(Vec::new()));
+    test();
+    let twins = TWINS
+        .with(|twins| twins.borrow_mut().take())
+        .unwrap_or_default();
+    let thinks: usize = twins.iter().map(|twin| twin.thoughts().len()).sum();
+    for twin in &twins {
+        assert_eq!(
+            twin.divergences(),
+            (0, 0),
+            "{name}: an asserting twin counted"
+        );
+    }
+    let budget: Vec<u64> = twins
+        .iter()
+        .flat_map(|twin| twin.thoughts())
+        .map(|thought| thought.ops + thought.fee)
+        .collect();
+    let (p50, p99, max) = spread(&budget);
+    println!(
+        "m2_under_the_twin: fixture={name} twins={} thinks_compared={thinks} \
+         ops_plus_fee_p50={p50} p99={p99} max={max}",
+        twins.len()
+    );
+    assert!(thinks > 0, "{name}: the twin compared no think");
+    thinks
+}
+
+/// **[`with_twin`] when the running test asked for it** ([`under_the_twin`]),
+/// the twin kept for that count; otherwise `arena` is left on its runner.
+/// A field builder calls it last, so the field it answers flies the twin
+/// before any recorder reads the arena's runner.
+pub fn twin_if_asked(arena: &mut Arena) {
+    TWINS.with(|twins| {
+        if let Some(twins) = twins.borrow_mut().as_mut() {
+            twins.push(with_twin(arena));
+        }
+    });
+}
+
+/// **The lance lane's cohort** (`tests/harness.rs`' `COHORT`, copied: an
+/// integration test cannot import another): hull `n` of the field is entry
+/// `LANCE_COHORT[(n / 2) % 8]`, red for even `n` — three line tanks, then the
+/// laser, the biped, the thermal, the ECM and the ECCM variants.
+pub const LANCE_COHORT: [&str; 8] = [
+    tacsim::definitions::content::LINE_TANK,
+    tacsim::definitions::content::LINE_TANK,
+    tacsim::definitions::content::LINE_TANK,
+    tacsim::definitions::content::LINE_TANK_LASER,
+    tacsim::definitions::content::BIPED_MK1,
+    tacsim::definitions::content::LINE_TANK_THERMAL,
+    tacsim::definitions::content::LINE_TANK_ECM,
+    tacsim::definitions::content::LINE_TANK_ECCM,
+];
+
+/// The lance lane's hulls a side (`TACSIM_LANCE_UNITS` 24 over two).
+pub const LANCE_PER_SIDE: u32 = 12;
+
+/// Red's muster column, heading east (`tests/harness.rs`' `LANCE_RED_COLUMN`).
+pub const LANCE_RED_COLUMN: u16 = 102;
+
+/// Blue's muster column, heading west (`LANCE_BLUE_COLUMN`).
+pub const LANCE_BLUE_COLUMN: u16 = 156;
+
+/// The muster's first row and the axis of the alternation (`LANCE_ROW`).
+pub const LANCE_ROW: i64 = 97;
+
+/// The crossroads the script's `Advance` names (`CROSSROADS`).
+pub const LANCE_CROSSROADS: (u16, u16) = (129, 97);
+
+/// One script minute (`LANCE_MINUTE_MS`).
+pub const LANCE_MINUTE_MS: i64 = 60_000;
+
+/// Every scripted order's time to live and horizon (`LANCE_ORDER_MS`).
+pub const LANCE_ORDER_MS: u32 = 90_000;
+
+/// The engaged period the script's marks are rounded to (`WINDOW_MS`).
+pub const LANCE_WINDOW_MS: i64 = 500;
+
+/// **The authored lance field, flown by minds** (17b cut M2.6; 17b §1 (iii)'s
+/// third lane; doc 17 §17's "authored-cohort runs"): `tests/harness.rs`'
+/// `measure_lance` muster with every hull a mind. Twenty-four hulls of the
+/// fielded catalog off `world` (the booted production roster's
+/// `TacsimStore`, the catalog `match_::start` checks units out against),
+/// built by the lance lane's own rule — hull `n` (`ObjId(100_000 + n)`) is
+/// [`LANCE_COHORT`]`[(n / 2) % 8]`, red for even `n` — through
+/// `definitions::unit::to_tactical_unit` and `match_::custody_unit` at the
+/// authored reach; red on column 102 heading east and blue on 156 heading
+/// west, rows 97, 95, 99, 93, 101, … (slot `n / 2`: the fan-out lane's
+/// alternation); `Controller::Mind`, gunnery 1 as the lance lane's; on the
+/// shipped proving ground at `seed`, `ArenaConfig { squad_size: 4 }` (the
+/// default) so the arena deals each side into three lances of four. Not a
+/// [`Muster`]: a `Muster` names a pod's slot, and the shipped content fields
+/// six stock tanks a side, not twelve of the cohort.
+#[must_use]
+pub fn lance_arena(world: &TestWorld, seed: u64) -> Arena {
+    let w = world.world();
+    let definition = tacsim::match_::definition_for(w, &SmolStr::new_static(PROVING_GROUND))
+        .expect("the proving ground's ground builds")
+        .expect("the proving ground is shipped");
+    let catalog = w
+        .module_state::<tacsim::TacsimStore>()
+        .map(|slot| slot.definitions().clone())
+        .expect("the tacsim store is booted");
+    let mut units: Vec<CustodyUnit> = Vec::new();
+    for n in 0..2 * LANCE_PER_SIDE {
+        let id = ObjId(100_000 + n);
+        let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+        let entry = LANCE_COHORT
+            .get(usize::try_from(n / 2).unwrap_or(0) % LANCE_COHORT.len())
+            .copied()
+            .unwrap_or(tacsim::definitions::content::LINE_TANK);
+        let key = mush_core::CanonicalId::new(entry).expect("a canonical entry id");
+        let spec = catalog
+            .specs
+            .get(&key)
+            .unwrap_or_else(|| panic!("the booted catalog fields {entry}"));
+        let binding = catalog
+            .bindings
+            .get(&key)
+            .unwrap_or_else(|| panic!("the booted catalog binds {entry}"));
+        let cells = tacsim::definitions::unit::to_tactical_unit(spec, binding, id)
+            .expect("the cohort entry builds a unit");
+        let slot = i64::from(n / 2);
+        let row = LANCE_ROW + if slot % 2 == 1 { -1 } else { 1 } * 2 * ((slot + 1) / 2);
+        let (column, heading_mdeg) = if team == Team::Red {
+            (LANCE_RED_COLUMN, 90_000)
+        } else {
+            (LANCE_BLUE_COLUMN, 270_000)
+        };
+        let pose = Pose {
+            x_cm: i64::from(column) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            y_cm: row * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            z_cm: 0,
+            heading_mdeg,
+            posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
+                .expect("an empty posture"),
+        };
+        units.push(tacsim::match_::custody_unit(
+            &catalog,
+            cells,
+            id,
+            team,
+            pose,
+            1,
+            Controller::Mind,
+            0,
+        ));
+    }
+    Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig {
+            squad_size: 4,
+            ..ArenaConfig::default()
+        },
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the lance arena opens on the proving ground")
+}
+
+/// **When the lance lane's script starts** (`measure_lance`'s warm-up end):
+/// the match's start-up, one decide period and one engaged period.
+#[must_use]
+pub fn lance_start_ms(arena: &Arena) -> i64 {
+    i64::from(MatchConfig::default().startup_ms)
+        .saturating_add(i64::from(arena.arena_cfg.reflex.decide_ms))
+        .saturating_add(i64::from(arena.arena_cfg.tempo.engaged_ms))
+}
+
+/// **The lance lane's scripted order table** (`tests/harness.rs`'
+/// `lance_schedule` and `LANCE_TABLE`, re-expressed: 17b cut M2.6), as
+/// `(at_ms, squad, objective, horizon_ms)` in the order given.
+///
+/// At `start_ms` every squad of both sides is ordered `Engage`. Then in
+/// minute `m` (1, 2, …, from `start_ms` rounded up to the engaged period)
+/// each side's squads are ordered one at a time, ordinal `k` at `k − 1`
+/// staggers into the minute (the stagger `60 s / squads` rounded down to the
+/// period): the squad whose ordinal is `(m − 1) % squads_per_side + 1` takes
+/// the table's `(m − 1) % 5`-th arm — `Hold`, `Advance` on the crossroads,
+/// `Withdraw`, `Screen` toward the enemy's column (90° red, 270° blue),
+/// `Support` of its own commander — and every other squad `Engage` again.
+/// Every order's horizon (and time to live) is [`LANCE_ORDER_MS`]. Only marks
+/// before `until_ms` are listed.
+///
+/// **The release is not a row of this shape** (no objective, no horizon):
+/// `lance_schedule`'s one `ReleaseOrder` a side is [`lance_releases`]. What
+/// the lane's own 120 seconds reach of an order's END is the deadline (a
+/// lance whose opening order runs out before its first-minute order: the
+/// third, at the opening's `start_ms` plus [`LANCE_ORDER_MS`]) and the
+/// release; a mind's own early ends (an `Advance` a hull cannot carry out, a
+/// `Support` whose charge reads dead) need the table's later arms, which
+/// those seconds never reach.
+#[must_use]
+pub fn lance_orders(
+    squads: &[tacsim::deliberation::SquadRoster],
+    start_ms: i64,
+    until_ms: i64,
+) -> Vec<(
+    i64,
+    tacsim::deliberation::SquadId,
+    tacsim::deliberation::Objective,
+    u32,
+)> {
+    use tacsim::deliberation::Objective;
+    let per_side = |team: Team| {
+        squads
+            .iter()
+            .filter(|roster| roster.id.team == team)
+            .count()
+    };
+    let squads_per_side = per_side(Team::Red).max(per_side(Team::Blue)).max(1);
+    let stagger = (LANCE_MINUTE_MS / i64::try_from(squads_per_side).unwrap_or(1)) / LANCE_WINDOW_MS
+        * LANCE_WINDOW_MS;
+    let arm = |minute: i64, roster: &tacsim::deliberation::SquadRoster| -> Objective {
+        match (minute - 1).rem_euclid(5) {
+            0 => Objective::Hold,
+            1 => Objective::Advance {
+                to: LANCE_CROSSROADS,
+            },
+            2 => Objective::Withdraw,
+            3 => Objective::Screen {
+                facing_mdeg: if roster.id.team == Team::Red {
+                    90_000
+                } else {
+                    270_000
+                },
+            },
+            _ => Objective::Support {
+                of: roster.commander,
+            },
+        }
+    };
+    let mut out: Vec<(i64, tacsim::deliberation::SquadId, Objective, u32)> = squads
+        .iter()
+        .map(|roster| {
+            (
+                start_ms,
+                roster.id,
+                Objective::Engage { target_hint: None },
+                LANCE_ORDER_MS,
+            )
+        })
+        .collect();
+    let anchor = start_ms
+        .div_euclid(LANCE_WINDOW_MS)
+        .saturating_add(i64::from(start_ms.rem_euclid(LANCE_WINDOW_MS) != 0))
+        * LANCE_WINDOW_MS;
+    let mut minute = 1_i64;
+    loop {
+        let base = anchor.saturating_add(minute.saturating_mul(LANCE_MINUTE_MS));
+        if base >= until_ms {
+            break;
+        }
+        let stepped = usize::try_from((minute - 1) % i64::try_from(squads_per_side).unwrap_or(1))
+            .unwrap_or(0)
+            + 1;
+        for ordinal in 1..=squads_per_side {
+            let at_ms = base.saturating_add(
+                i64::try_from(ordinal - 1)
+                    .unwrap_or(0)
+                    .saturating_mul(stagger),
+            );
+            if at_ms >= until_ms {
+                break;
+            }
+            for roster in squads
+                .iter()
+                .filter(|roster| usize::from(roster.id.index) == ordinal)
+            {
+                let objective = if ordinal == stepped {
+                    arm(minute, roster)
+                } else {
+                    Objective::Engage { target_hint: None }
+                };
+                out.push((at_ms, roster.id, objective, LANCE_ORDER_MS));
+            }
+        }
+        minute += 1;
+    }
+    out.sort_by_key(|(at_ms, ..)| *at_ms);
+    out
+}
+
+/// **The lance lane's scripted release** (`tests/harness.rs`'
+/// `LANCE_RELEASE_MS`): the arena millisecond each side's first squad is
+/// released at, once, when the run spans it.
+pub const LANCE_RELEASE_MS: i64 = 90_000;
+
+/// **The lance lane's release, re-expressed** (`lance_schedule`'s 16b cut
+/// Z.2 rows; 17b cut M2.6): at [`LANCE_RELEASE_MS`], when `start_ms <=`
+/// it `< until_ms`, each side's first squad (`index` 1), as `(at_ms,
+/// squad)` in the squads' order. The harness lists it after every scripted
+/// order of the same millisecond, so the lane issues a mark's orders before
+/// a release due with them.
+#[must_use]
+pub fn lance_releases(
+    squads: &[tacsim::deliberation::SquadRoster],
+    start_ms: i64,
+    until_ms: i64,
+) -> Vec<(i64, tacsim::deliberation::SquadId)> {
+    if LANCE_RELEASE_MS < start_ms || LANCE_RELEASE_MS >= until_ms {
+        return Vec::new();
+    }
+    squads
+        .iter()
+        .filter(|roster| roster.id.index == 1)
+        .map(|roster| (LANCE_RELEASE_MS, roster.id))
+        .collect()
+}
+
+/// **One scripted release as the intents phase 2 applies** (17b cut M2.6;
+/// `tests/harness.rs`' `lance_intents`' release arm): one
+/// `IntentKind::ReleaseOrder` a hull of the squad the arena still holds, at
+/// its epoch, from the lance-leader persona that gave the order (`issuer:
+/// None`, as [`lance_intents`]).
+pub fn lance_release_intents(
+    arena: &Arena,
+    squad: tacsim::deliberation::SquadId,
+    seq: &mut u64,
+) -> Vec<tacsim::arena::intents::Intent> {
+    squad_intents(
+        arena,
+        squad,
+        &IntentKind::ReleaseOrder {
+            squad,
+            issuer: None,
+        },
+        seq,
+    )
+}
+
+/// **One scripted order as the intents the arena's phase 2 applies** (17b
+/// cut M2.6; `tests/harness.rs`' `lance_intents`, and `tests/minds.rs`'
+/// `order(..)` shape): one `IntentKind::Order` a hull of the squad the arena
+/// still holds, at that hull's own current epoch, the order the squad's
+/// lance-leader persona's (`issuer: None`, `by: Persona`) — a machine order,
+/// as every order a mind's squad is given by its leader.
+pub fn lance_intents(
+    arena: &Arena,
+    squad: tacsim::deliberation::SquadId,
+    objective: tacsim::deliberation::Objective,
+    horizon_ms: u32,
+    seq: &mut u64,
+) -> Vec<tacsim::arena::intents::Intent> {
+    let kind = IntentKind::Order(Box::new(tacsim::deliberation::Order {
+        squad,
+        objective,
+        target: None,
+        horizon_ms,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: horizon_ms,
+        issued_ms: 0,
+        issuer: None,
+        by: tacsim::deliberation::CharacterRef::Persona { squad },
+        spot: None,
+    }));
+    squad_intents(arena, squad, &kind, seq)
+}
+
+/// `kind` once a hull of `squad` the arena still holds, each at the hull's
+/// own current epoch on the channel `kind` requires.
+fn squad_intents(
+    arena: &Arena,
+    squad: tacsim::deliberation::SquadId,
+    kind: &IntentKind,
+    seq: &mut u64,
+) -> Vec<tacsim::arena::intents::Intent> {
+    use tacsim::arena::intents::Intent;
+    let Some(roster) = arena.squads.iter().find(|roster| roster.id == squad) else {
+        return Vec::new();
+    };
+    roster
+        .units
+        .iter()
+        .filter(|unit| arena.unit(**unit).is_some())
+        .map(|unit| {
+            *seq += 1;
+            let channel = kind.channel_required();
+            Intent {
+                unit: *unit,
+                channel,
+                epoch: arena.epochs.current(*unit, channel),
+                kind: kind.clone(),
+                seq: *seq,
+            }
+        })
+        .collect()
+}
+
+/// One script function as the text reads it: its name, its parameters and
+/// its body's lines (17b cut M2.5's pin, lifted here by 17b cut M2.6 so the
+/// authored lane reports the same figures).
+pub type ScriptFn = (String, Vec<String>, Vec<String>);
+
+/// The script's `fn`s in order — read off the text (every `fn` opens at the
+/// start of a line).
+#[must_use]
+pub fn script_fns(source: &str) -> Vec<ScriptFn> {
+    let mut fns: Vec<ScriptFn> = Vec::new();
+    for line in source.lines() {
+        if let Some(head) = line.strip_prefix("fn ") {
+            let (name, rest) = head.split_once('(').expect("a fn head");
+            let (params, _) = rest.split_once(')').expect("a fn head");
+            let params = params
+                .split(',')
+                .map(str::trim)
+                .filter(|param| !param.is_empty())
+                .map(str::to_owned)
+                .collect();
+            fns.push((name.to_owned(), params, Vec::new()));
+        } else if let Some((_, _, body)) = fns.last_mut() {
+            body.push(line.to_owned());
+        }
+    }
+    fns
+}
+
+/// The names a body binds (`let x`, `for x in`, `for (x, i) in` — 17b cut
+/// M2.6), each once.
+#[must_use]
+pub fn bound_names(body: &[String]) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for line in body {
+        let code = line.split("//").next().unwrap_or_default();
+        for binder in ["let ", "for "] {
+            for after in code.split(binder).skip(1) {
+                let binds = after
+                    .strip_prefix('(')
+                    .and_then(|pair| pair.split_once(')'))
+                    .map_or(after, |(pair, _)| pair);
+                for bound in binds.split(',') {
+                    let name: String = bound
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() {
+                        names.insert(name);
+                    }
+                    if !after.starts_with('(') {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// **The script's figures under the binding limits** (17b cut M2.5's pin,
+/// 17b cut M2.6's report): `(functions, the smallest max_function_expr_depth
+/// it compiles at, the widest scope's function, its width)` — the width the
+/// parameters plus every bound name of one body.
+#[must_use]
+pub fn script_figures(source: &str) -> (usize, usize, String, usize) {
+    use sha2::{Digest as _, Sha256};
+    use tacsim::minds::{MIND_ABI, STOCK_OPS_PER_THINK, register_api};
+    let fns = script_fns(source);
+    let (widest, width) = fns
+        .iter()
+        .map(|(name, params, body)| {
+            let mut names: std::collections::BTreeSet<String> = params.iter().cloned().collect();
+            names.extend(bound_names(body));
+            (name.clone(), names.len())
+        })
+        .max_by_key(|(_, width)| *width)
+        .unwrap_or_default();
+    let digest = mush_mind::Digest(Sha256::digest(source.as_bytes()).into());
+    let depth = (1..=24)
+        .find(|depth| {
+            mush_mind::Sandbox::new(
+                &mush_mind::EngineLimits {
+                    max_ops_backstop: STOCK_OPS_PER_THINK,
+                },
+                |engine| {
+                    register_api(engine);
+                    engine.set_max_expr_depths(48, *depth);
+                },
+            )
+            .compile(source, digest, MIND_ABI)
+            .is_ok()
+        })
+        .unwrap_or(0);
+    (fns.len(), depth, widest, width)
 }

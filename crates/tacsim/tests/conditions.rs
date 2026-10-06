@@ -40,7 +40,11 @@
 //!     T1 arming both its weapons whatever the heat and numbering them as the
 //!     arena does; a retarget think's citation on the new lock and the stale
 //!     `WeaponReady` window the twin counts as `cond_stale` — every T1
-//!     fixture at 5,000, 1,000 and 500 ms.
+//!     fixture at 5,000, 1,000 and 500 ms; **17b cut M2.6**: and once more
+//!     under Gate A's asserting twin (`support::with_twin`, through
+//!     [`at_three_cadences`]' keep arm), T1 and T2 compared on every think.
+
+mod support;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -2720,13 +2724,17 @@ fn m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_on
 }
 
 /// What one mind run produced: every line `(t_ms, kind as JSON, hash)`, every
-/// substep's hash, and every stock think kept.
+/// substep's hash, and every stock think kept. **17b cut M2.6**: and, on the
+/// run [`at_three_cadences`] answers, how many thinks its twin-flown run
+/// compared T1 against T2 (`twinned`; 0 where no twin flew), so a T1 fixture
+/// asserts it was held to Gate A rather than trusting the keep arm's trigger.
 #[derive(Debug)]
 struct MindRun {
     events: Vec<(i64, String, u64)>,
     hashes: Vec<u64>,
     thoughts: Vec<Thought>,
     pulses: u32,
+    twinned: usize,
 }
 
 impl MindRun {
@@ -2879,7 +2887,18 @@ fn mind_run(
         hashes,
         thoughts: kept.map(Kept::thoughts).unwrap_or_default(),
         pulses,
+        twinned: 0,
     }
+}
+
+/// **17b cut M2.6: the T1 fixture's run was held to Gate A** — its field's
+/// fourth run flew an asserting twin and compared at least one think
+/// (`MindRun::twinned`, set by [`at_three_cadences`]' keep arm).
+fn assert_twinned(run: &MindRun) {
+    assert!(
+        run.twinned > 0,
+        "the T1 field flew no think under the twin (the keep arm did not fire)"
+    );
 }
 
 /// **[`mind_run`] at 5,000, 1,000 and 500 ms**, a fresh arena and recorder
@@ -2887,6 +2906,21 @@ fn mind_run(
 /// the arena's runner's thinks ([`Kept`]: each view — its buffered refusals
 /// included — and each answer) — the mandatory cross-tempo property (16b
 /// §11). Answers the 5,000 ms run.
+///
+/// **17b cut M2.6 — the T1 fixtures under the twin** (doc 17 §17 "Gate A";
+/// 17b §1 (iii)): with `keep`, on a field whose runner is the production
+/// stock mind (T1, `NativeStockMind` — every stock field; never a
+/// [`Scripted`] one), the run is played a fourth time at 5,000 ms with the
+/// arena's runner made an asserting `support::TwinRunner` BEFORE the
+/// recorder reads it (`support::with_twin`): every think T1 and T2 (the Rhai
+/// Standard Doctrine) on one job — the Rhai fault refused first, then the
+/// intents, then the memory bytes — with T1's answer flown, so the twin-flown
+/// run is the native one: one event list, one hash sequence, one sequence of
+/// thinks; the twin compared every kept think (`each` is not called again).
+/// The answered run carries the count (`MindRun::twinned`), and every T1
+/// fixture held to Gate A here asserts it nonzero ([`twinned`]): the keep
+/// arm's trigger (the runner's printed name) cannot stop firing for one of
+/// them without that fixture failing.
 fn at_three_cadences(
     make: &dyn Fn() -> Arena,
     keep: bool,
@@ -2919,7 +2953,7 @@ fn at_three_cadences(
         );
         runs.push((cadence, run));
     }
-    let (_, first) = runs.remove(0);
+    let (_, mut first) = runs.remove(0);
     for (cadence, run) in &runs {
         if let Some(at) = (0..run.events.len().max(first.events.len()))
             .find(|at| run.events.get(*at) != first.events.get(*at))
@@ -2939,6 +2973,37 @@ fn at_three_cadences(
             "a think differs at {cadence} ms"
         );
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+    // 17b cut M2.6: a stock field once more, flown by the twin.
+    if keep && format!("{:?}", make().mind_runner).starts_with("NativeStockMind") {
+        let mut arena = make();
+        let twin = support::with_twin(&mut arena);
+        let kept = Kept::on(&arena);
+        arena.mind_runner = kept.clone();
+        let run = mind_run(
+            arena,
+            Some(&kept),
+            5_000,
+            until_ms,
+            beats,
+            edits,
+            &mut |_| {},
+        );
+        assert_eq!(run.events, first.events, "the event list under the twin");
+        assert_eq!(run.hashes, first.hashes, "the hashes under the twin");
+        assert_eq!(run.thoughts, first.thoughts, "a think under the twin");
+        assert_eq!(twin.divergences(), (0, 0));
+        assert_eq!(
+            twin.thoughts().len(),
+            run.thoughts.len(),
+            "the twin compared every kept think"
+        );
+        assert!(!run.thoughts.is_empty(), "the stock field thought");
+        println!(
+            "m2_conditions_under_the_twin: thinks_compared={}",
+            run.thoughts.len()
+        );
+        first.twinned = run.thoughts.len();
     }
     first
 }
@@ -3325,6 +3390,7 @@ fn m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot() {
         ),
     ];
     let run = at_three_cadences(&make, true, 15_000, &beats, &[], &mut |_| {});
+    assert_twinned(&run);
     let held: Vec<&Thought> = run
         .thoughts
         .iter()
@@ -3418,6 +3484,7 @@ fn m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot() {
     );
     let t1 = || stock_field(walled(), Controller::Mind, &[(BLUE, (9, 8), 270_000, true)]);
     let mind = at_three_cadences(&t1, true, 20_000, &[(0, to_the_wall())], &[], &mut |_| {});
+    assert_twinned(&mind);
     assert!(
         mind.thoughts.iter().any(|(_, _, view, result)| view
             .order
@@ -3691,6 +3758,7 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
         &[(COOLS_AT, &cool), (UNLOCKS_AT, &unlock)],
         &mut each,
     );
+    assert_twinned(&run);
     assert!(probed.get(), "the ceiling was probed");
     assert!(numbered > 0, "the slots were read");
     // Every arming: the laser, then the machine gun — hot or not. **17b cut
@@ -3837,6 +3905,7 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
         );
     };
     let hot = at_three_cadences(&make, true, 15_000, &[], &[(COOLS_AT, &strip)], &mut |_| {});
+    assert_twinned(&hot);
     let laser_arm = |result: &ThinkResult| {
         armings(&result.intents)
             .iter()
@@ -4011,6 +4080,7 @@ fn m1b2_a_retarget_think_fires_its_slot_at_the_new_lock_at_the_landing() {
         &[(10_000, &turn)],
         &mut |_| {},
     );
+    assert_twinned(&run);
     let (think, intents) = retarget(&run);
     assert!(think > 10_000, "after the turn: {think}");
     in_order(&intents);
@@ -4049,6 +4119,7 @@ fn m1b2_a_retarget_think_fires_its_slot_at_the_new_lock_at_the_landing() {
         &[(20_000, &turn)],
         &mut |_| {},
     );
+    assert_twinned(&run);
     let (think, intents) = retarget(&run);
     in_order(&intents);
     assert_eq!(shown(&run, think), Some(1), "the view's S1");
@@ -4121,6 +4192,7 @@ fn m1b3_t1_disarms_once_on_change_when_a_hold_fire_lands_on_its_armed_slot() {
     let run = at_three_cadences(&make, true, 15_000, &beats, &[], &mut |arena| {
         tables.push((arena.now_ms, arena.conditions.is_empty_for(RED)));
     });
+    assert_twinned(&run);
     let substep = make().substep_len_ms();
     // Armed before the order, and shown armed on every view after that.
     let Some((_, armed_at, ..)) = run
@@ -4292,6 +4364,7 @@ fn m1b3_t1_cites_the_slot_its_view_shows_after_its_s1_gun_is_lost() {
         &[(TURRET_LOST_AT, &lose_the_turret)],
         &mut |_| {},
     );
+    assert_twinned(&run);
     let substep = two_gun_field().substep_len_ms();
     // The think that takes the lock again, and what it cites.
     let Some((_, think, view, result)) = run.thoughts.iter().find(|(_, t_ms, _, result)| {
