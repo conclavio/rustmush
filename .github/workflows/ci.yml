@@ -39,6 +39,22 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build
         run: cargo build --workspace --all-targets
+      # 17b cut M2.7 (doc 17 D-UM-28): the unit minds' cross-platform pin.
+      # The stock corpus flown by the Rhai Standard Doctrine and a float-probe
+      # mind, each match's end, final state hash, substep-hash digest and
+      # ledger digest pinned on the Windows blessing host; this step runs it
+      # on BOTH matrix hosts, so a Linux divergence fails here by name. The
+      # test is #[ignore]d so the workspace run below does not run it twice;
+      # naming it here is what covers it in the gated-test inventory.
+      - name: Cross-platform mind hashes (17b cut M2.7; D-UM-28)
+        run: cargo test -p tacsim --test minds_rhai m2_the_twin_corpus_hashes_the_same_on_every_host -- --ignored --exact --nocapture
+      # 17b cut M2.7 (doc 17 §22's M2 gate, "Gate A on whole-match hashes"):
+      # the pooled lane's thirty matches flown by T1 and by the Rhai Standard
+      # Doctrine alone, every substep hash equal. Sixty debug matches pass the
+      # thirty seconds a lane may spend in the workspace run (17b §1 (iii)),
+      # so the test is #[ignore]d and run here, on both hosts, by name.
+      - name: Whole-match mind hashes (17b cut M2.7; Gate A)
+        run: cargo test -p tacsim --test twin m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -- --ignored --exact --nocapture
       # The bot crate is excluded from the workspace test run and tested on its own:
       # its serde_json `arbitrary_precision` feature would otherwise unify into every
       # engine test binary and break untagged number decoding (the worldgen proposal

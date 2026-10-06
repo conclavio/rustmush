@@ -55,6 +55,14 @@
 //! (`m2_gate_a_on_a_mixed_pool`), and the authored lance field under the
 //! lance lane's order table (`m2_gate_a_over_the_authored_lance_field`); and
 //! beside them a twin against a twin over the fifteen seeds.
+//!
+//! **17b cut M2.7** closes Gate A with its third proof, whole-match hashes:
+//! each of the pooled lane's thirty plays flown once by T1 and once by T2
+//! ALONE (`Flier::T2`, T2's own answers flown), every substep's hash, the
+//! ledger, the end and the final state hash equal
+//! (`m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool`,
+//! `#[ignore]`d past thirty debug seconds and run by a named `ci.yml` step);
+//! and prints doc 17 §18's figures over lanes 1 and 3 (`twin_rhai_timing`).
 
 mod support;
 
@@ -2298,6 +2306,108 @@ impl MindRunner for LanceProbe {
     }
 }
 
+/// What one [`fly_lance`] came to.
+struct LanceFlown {
+    /// The script's start (`support::lance_start_ms`).
+    start_ms: i64,
+    /// The scripted orders and releases inside the run.
+    orders: usize,
+    releases: usize,
+    /// The releases issued (every one, or the run ended early).
+    releases_issued: usize,
+    /// The hulls each scripted order and release reached while they were no
+    /// wreck: the lines the arena must journal for them.
+    ordered_living: usize,
+    released_living: usize,
+    /// The substeps played (one hash each, accumulated and asserted).
+    substeps: usize,
+    /// Every ledger line, flushed.
+    events: Vec<LedgerEvent>,
+    /// How the field ended, or `None` at [`LANCE_ARENA_S`].
+    ended: Option<tacsim::arena::state::MatchEnd>,
+}
+
+/// **The authored lance lane's run** (17b cut M2.6's
+/// [`m2_gate_a_over_the_authored_lance_field`] loop, lifted by 17b cut M2.7
+/// so [`twin_rhai_timing`] flies the same field): `arena` (a
+/// `support::lance_arena`, its minds on whatever runner the caller set)
+/// stepped one substep a pulse for [`LANCE_ARENA_S`] arena seconds after the
+/// script's start, the scripted orders and releases issued at their
+/// millisecond through the arena's own order path (a release after the
+/// orders of its millisecond, the harness's order).
+fn fly_lance(arena: &mut Arena) -> LanceFlown {
+    let start_ms = support::lance_start_ms(arena);
+    let until_ms = start_ms + LANCE_ARENA_S * 1_000;
+    let orders = support::lance_orders(&arena.squads, start_ms, until_ms);
+    let releases = support::lance_releases(&arena.squads, start_ms, until_ms);
+    let (mut next, mut next_release) = (0_usize, 0_usize);
+    let mut seq = 0_u64;
+    let (mut ordered_living, mut released_living) = (0_usize, 0_usize);
+    let living = |arena: &Arena, intents: &[tacsim::arena::intents::Intent]| {
+        intents
+            .iter()
+            .filter(|intent| {
+                arena
+                    .unit(intent.unit)
+                    .is_some_and(|unit| !unit.limits.wreck)
+            })
+            .count()
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut substeps = 0_usize;
+    let mut wall = arena.now_ms;
+    let ended = loop {
+        let mut intents = Vec::new();
+        while let Some((at, squad, objective, horizon)) = orders.get(next) {
+            if *at > arena.now_ms {
+                break;
+            }
+            let ordered = support::lance_intents(arena, *squad, *objective, *horizon, &mut seq);
+            ordered_living += living(arena, &ordered);
+            intents.extend(ordered);
+            next += 1;
+        }
+        // A release after the orders of its millisecond (the harness's
+        // order).
+        while let Some((at, squad)) = releases.get(next_release) {
+            if *at > arena.now_ms {
+                break;
+            }
+            let released = support::lance_release_intents(arena, *squad, &mut seq);
+            released_living += living(arena, &released);
+            intents.extend(released);
+            next_release += 1;
+        }
+        let out = arena.step(wall, &[], &intents);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        substeps += usize::try_from(out.substeps).unwrap_or(0);
+        assert_eq!(hashes.len(), substeps, "one hash a substep played");
+        if out.ended.is_some() {
+            break out.ended;
+        }
+        if arena.now_ms >= until_ms {
+            break None;
+        }
+        wall = arena.now_ms + arena.substep_len_ms();
+    };
+    let events = support::ledger_events(arena, &mut bytes);
+    LanceFlown {
+        start_ms,
+        orders: orders.len(),
+        releases: releases.len(),
+        releases_issued: next_release,
+        ordered_living,
+        released_living,
+        substeps: hashes.len(),
+        events,
+        ended,
+    }
+}
+
 /// **Gate A over the authored lance field** (17b cut M2.6; doc 17 §17's
 /// "30 seeded authored-cohort runs, armed and unarmed hulls both", §18; 17b
 /// §1 (iii)'s third lane, §5's adv F3 and feas F8): the harness's lance lane
@@ -2395,68 +2505,17 @@ fn m2_gate_a_over_the_authored_lance_field() {
         );
         let probe = Arc::new(LanceProbe::new(&arena.arena_cfg));
         arena.mind_runner = probe.clone();
-        let start_ms = support::lance_start_ms(&arena);
-        let until_ms = start_ms + LANCE_ARENA_S * 1_000;
-        let orders = support::lance_orders(&arena.squads, start_ms, until_ms);
-        let releases = support::lance_releases(&arena.squads, start_ms, until_ms);
-        let (mut next, mut next_release) = (0_usize, 0_usize);
-        let mut seq = 0_u64;
-        // The hulls each scripted order and release reached while they were
-        // no wreck: the lines the arena must journal for them.
-        let (mut ordered_living, mut released_living) = (0_usize, 0_usize);
-        let living = |arena: &Arena, intents: &[tacsim::arena::intents::Intent]| {
-            intents
-                .iter()
-                .filter(|intent| {
-                    arena
-                        .unit(intent.unit)
-                        .is_some_and(|unit| !unit.limits.wreck)
-                })
-                .count()
-        };
-        let mut bytes: Vec<u8> = Vec::new();
-        let mut hashes: Vec<u64> = Vec::new();
-        let mut substeps = 0_usize;
-        let mut wall = arena.now_ms;
-        let ended = loop {
-            let mut intents = Vec::new();
-            while let Some((at, squad, objective, horizon)) = orders.get(next) {
-                if *at > arena.now_ms {
-                    break;
-                }
-                let ordered =
-                    support::lance_intents(&arena, *squad, *objective, *horizon, &mut seq);
-                ordered_living += living(&arena, &ordered);
-                intents.extend(ordered);
-                next += 1;
-            }
-            // A release after the orders of its millisecond (the harness's
-            // order).
-            while let Some((at, squad)) = releases.get(next_release) {
-                if *at > arena.now_ms {
-                    break;
-                }
-                let released = support::lance_release_intents(&arena, *squad, &mut seq);
-                released_living += living(&arena, &released);
-                intents.extend(released);
-                next_release += 1;
-            }
-            let out = arena.step(wall, &[], &intents);
-            for chunk in &out.ledger_chunks {
-                bytes.extend_from_slice(&chunk.bytes);
-            }
-            hashes.extend(arena.substep_hashes.iter().copied());
-            substeps += usize::try_from(out.substeps).unwrap_or(0);
-            assert_eq!(hashes.len(), substeps, "one hash a substep played");
-            if out.ended.is_some() {
-                break out.ended;
-            }
-            if arena.now_ms >= until_ms {
-                break None;
-            }
-            wall = arena.now_ms + arena.substep_len_ms();
-        };
-        let events = support::ledger_events(&mut arena, &mut bytes);
+        let LanceFlown {
+            start_ms,
+            orders,
+            releases,
+            releases_issued,
+            ordered_living,
+            released_living,
+            substeps,
+            events,
+            ended,
+        } = fly_lance(&mut arena);
         let lines_of = |kind: &str| {
             events
                 .iter()
@@ -2478,8 +2537,7 @@ fn m2_gate_a_over_the_authored_lance_field() {
             "seed {seed}: one `order_released` line a living hull released"
         );
         assert_eq!(
-            next_release,
-            releases.len(),
+            releases_issued, releases,
             "seed {seed}: every release issued"
         );
         let thoughts = probe.twin.thoughts();
@@ -2512,9 +2570,9 @@ fn m2_gate_a_over_the_authored_lance_field() {
             arena.now_ms,
             thoughts.len(),
             seed_ordered_thinks,
-            orders.len(),
-            releases.len(),
-            hashes.len()
+            orders,
+            releases,
+            substeps
         );
         thinks += thoughts.len();
         ordered_thinks += seed_ordered_thinks;
@@ -2587,4 +2645,582 @@ fn m2_the_fliers_name_their_runners() {
     assert!(name(Flier::Twin, Flier::T0).starts_with("TwinRunner"));
     assert!(name(Flier::T1, Flier::T0).starts_with("NativeStockMind"));
     assert!(name(Flier::T2, Flier::T2).starts_with("RhaiRunner"));
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.7: Gate A on whole-match hashes, and the figures (doc 17 §17,
+// §18, §22's M2 gate)
+// ---------------------------------------------------------------------------
+
+/// **Gate A on whole-match hashes** (17b cut M2.7; doc 17 §22's M2 gate,
+/// "Gate A … on whole-match hashes"; 17b §1 (iii)): each of the pooled
+/// lane's thirty plays — `(T0, T1)` and `(T1, T0)` per seed over the fifteen
+/// seeds, as the lane deals them — played ONCE with its mind side flown by
+/// T1 (`NativeStockMind`) and ONCE by T2 ALONE (`Flier::T2`: the Rhai
+/// Standard Doctrine, `tacsim::minds::standard_runner`, nothing native
+/// beside it), each through `support::play` (one substep a pulse to the
+/// end, every substep's hash accumulated after every step with its length
+/// asserted). The two plays of each match are one match: equal substep hash
+/// sequences (the length first, then the first substep that parts named),
+/// equal ledger lines and ledger digests (the ledger's bytes), the same end
+/// and the same final `state_hash`. And each T1 play's end is the one
+/// [`M1B5_POOLED_RECORD`] recorded for that match.
+///
+/// Unlike [`m2_gate_a_over_the_pooled_lanes_matches`], whose twin flies T1's
+/// answer, here T2's own answers are flown: a single op, fee or rounding
+/// that parted a think would part the hash at its landing.
+///
+/// **`#[ignore]`d under 17b §1 (iii)'s thirty-second rule**: sixty debug
+/// matches measured 30,160 ms run alone (`--test-threads=1`) on the blessing
+/// host and about 39 s beside the other targets, past the thirty seconds an
+/// ordinary run may spend on a lane; so it is run by the named step
+/// `Whole-match mind hashes (17b cut M2.7; Gate A)` of `ci.yml`'s `test`
+/// job on both hosts (the gated-test inventory covers it by that verbatim
+/// name) and by hand with `cargo test -p tacsim --test twin
+/// m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool --
+/// --ignored --exact --nocapture`. Its wall time is printed (`wall_ms`).
+#[test]
+#[ignore = "17b §1 (iii): over thirty debug seconds; run by ci.yml's named step on both hosts"]
+fn m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool() {
+    let started = Instant::now();
+    let world = support::booted_world();
+    let cfg = tacsim::config::ArenaConfig::default();
+    let side = |team: Team, flier: Flier| match flier {
+        Flier::T0 => [Muster::reflex(team, 1), Muster::reflex(team, 2)],
+        Flier::T1 | Flier::T2 | Flier::Twin => [Muster::mind(team, 1), Muster::mind(team, 2)],
+    };
+    let rhai = |flier: Flier| {
+        if flier == Flier::T1 { Flier::T2 } else { flier }
+    };
+    let (mut matches, mut substeps, mut lines) = (0_usize, 0_usize, 0_usize);
+    for k in 0..SEEDS {
+        let seed = SEED_0 + k;
+        for (at, (red, blue)) in [(Flier::T0, Flier::T1), (Flier::T1, Flier::T0)]
+            .into_iter()
+            .enumerate()
+        {
+            let (reds, blues) = (side(Team::Red, red), side(Team::Blue, blue));
+            let t1 = support::play(
+                &world,
+                seed,
+                &reds,
+                &blues,
+                runner_for(red, blue, &cfg),
+                None,
+            );
+            let t2 = support::play(
+                &world,
+                seed,
+                &reds,
+                &blues,
+                runner_for(rhai(red), rhai(blue), &cfg),
+                None,
+            );
+            let named = format!("seed {seed} red {red:?} blue {blue:?}");
+            assert_eq!(
+                t2.hashes.len(),
+                t1.hashes.len(),
+                "{named}: the substeps played"
+            );
+            if let Some(step) =
+                (0..t1.hashes.len()).find(|step| t2.hashes.get(*step) != t1.hashes.get(*step))
+            {
+                panic!(
+                    "{named}: substep {step}'s hash parts — T2 {:?} against T1 {:?}",
+                    t2.hashes.get(step),
+                    t1.hashes.get(step)
+                );
+            }
+            if let Some(line) = (0..t1.events.len().max(t2.events.len()))
+                .find(|line| t2.events.get(*line) != t1.events.get(*line))
+            {
+                panic!(
+                    "{named}: ledger line {line} parts — T2 {:?} against T1 {:?}",
+                    t2.events.get(line),
+                    t1.events.get(line)
+                );
+            }
+            assert_eq!(
+                t2.ledger_digest, t1.ledger_digest,
+                "{named}: the ledger bytes"
+            );
+            assert_eq!(t2.ended, t1.ended, "{named}: the end");
+            assert_eq!(t2.t_ms, t1.t_ms, "{named}: the stop");
+            assert_eq!(
+                t2.state_hash, t1.state_hash,
+                "{named}: the final state hash"
+            );
+            let ended = t1
+                .ended
+                .unwrap_or_else(|| panic!("{named}: the match ends inside its cap"));
+            let recorded = format!(
+                "twin_match: seed={seed} t1={} end={} t_ms={}",
+                if red == Flier::T1 { "red" } else { "blue" },
+                end_word(ended.reason),
+                ended.t_ms
+            );
+            let index = usize::try_from(2 * k).unwrap_or(usize::MAX) + at;
+            assert_eq!(
+                M1B5_POOLED_RECORD.get(index).copied(),
+                Some(recorded.as_str()),
+                "{named}: the pooled lane's record of this match"
+            );
+            matches += 1;
+            substeps += t1.hashes.len();
+            lines += t1.events.len();
+        }
+    }
+    println!(
+        "m2_whole_match: matches={matches} plays={} substeps_compared={substeps} \
+         lines_compared={lines} divergences=0 build={} wall_ms={}",
+        2 * matches,
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        started.elapsed().as_millis()
+    );
+    assert_eq!(matches, 30, "the pooled lane's thirty matches");
+}
+
+/// **The timing wrapper of [`twin_rhai_timing`]**: around a lane's runner
+/// (the twin, or the lance lane's probe), on every think it times, on the
+/// job the runner is handed, what the Rhai runner does around the script —
+/// the two `Arc` clones and the card's clone (`view_wrap`), the memory's
+/// decode and encode through `mush_mind::memory` (and its round trip
+/// through the script's map) — and, on the first [`TIMED_THINKS`] thinks it
+/// sees, the same job once more through two recording Rhai runners: the
+/// shipped script, and the shipped script with eight `trace` lines at the
+/// head of `think` (the trace's cost). The inner runner's answer is flown,
+/// untouched; the clock is the test's (doc 17 §23: measured from the test,
+/// never in the library).
+#[derive(Debug)]
+struct Timed {
+    inner: Arc<dyn MindRunner>,
+    plain: tacsim::minds::RhaiRunner,
+    traced: tacsim::minds::RhaiRunner,
+    samples: Mutex<TimedSamples>,
+}
+
+/// What [`Timed`] measured, in nanoseconds.
+#[derive(Clone, Debug, Default)]
+struct TimedSamples {
+    view_wrap_ns: Vec<u64>,
+    mem_ns: Vec<u64>,
+    mem_map_ns: Vec<u64>,
+    mem_keys: Vec<usize>,
+    traced_thinks: u32,
+}
+
+/// The shipped script with eight `trace` lines at the head of its `think`.
+fn traced_script() -> String {
+    let head = "fn think(view, card) {";
+    assert_eq!(
+        tacsim::minds::STANDARD_RHAI.matches(head).count(),
+        1,
+        "the stock script's one think"
+    );
+    let lines: String = (1..=8)
+        .map(|n| format!("\n    trace(\"timing line {n}\");"))
+        .collect();
+    tacsim::minds::STANDARD_RHAI.replacen(head, &format!("{head}{lines}"), 1)
+}
+
+impl Timed {
+    fn new(inner: Arc<dyn MindRunner>, cfg: &tacsim::config::ArenaConfig) -> Arc<Timed> {
+        use sha2::{Digest as _, Sha256};
+        let traced = traced_script();
+        let digest = mush_mind::Digest(Sha256::digest(traced.as_bytes()).into());
+        Arc::new(Timed {
+            inner,
+            plain: tacsim::minds::RhaiRunner::new(
+                cfg,
+                tacsim::minds::STANDARD_RHAI,
+                tacsim::minds::standard_digest(),
+            )
+            .unwrap_or_else(|error| panic!("Standard Doctrine compiles: {error}"))
+            .recording(),
+            traced: tacsim::minds::RhaiRunner::new(cfg, &traced, digest)
+                .unwrap_or_else(|error| panic!("the traced script compiles: {error}"))
+                .recording(),
+            samples: Mutex::new(TimedSamples::default()),
+        })
+    }
+
+    fn samples(&self) -> TimedSamples {
+        self.samples
+            .lock()
+            .map(|samples| samples.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Nanoseconds since `started`, saturated.
+fn ns_since(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+impl MindRunner for Timed {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        // The runner's wraps (`runner.rs`' `run`): the view's and the map's
+        // `Arc`s and the card's clone into its own.
+        let started = Instant::now();
+        let wrapped = (
+            Arc::clone(job.view),
+            Arc::clone(job.map),
+            Arc::new(job.card.clone()),
+        );
+        let wrap_ns = ns_since(started);
+        drop(std::hint::black_box(wrapped));
+        // The memory through the one codec, and through the script's map.
+        let mut mem = None;
+        if !job.memory.is_empty() {
+            let started = Instant::now();
+            let decoded = mush_mind::memory::decode(job.memory);
+            let bytes = decoded.as_ref().map(mush_mind::memory::encode);
+            let mem_ns = ns_since(started);
+            if let Some(decoded) = decoded {
+                let started = Instant::now();
+                let map = mush_mind::memory::to_map(&decoded);
+                let back =
+                    mush_mind::memory::from_map(&map, &tacsim::arena::mind::STOCK_MEMORY_LIMITS);
+                let map_ns = ns_since(started);
+                assert_eq!(back.ok().as_ref(), Some(&decoded), "the map round trip");
+                assert_eq!(bytes.as_deref(), Some(job.memory), "the codec round trip");
+                mem = Some((mem_ns, map_ns, decoded.len()));
+            }
+        }
+        let trace_it = self
+            .samples
+            .lock()
+            .is_ok_and(|samples| samples.traced_thinks < TIMED_THINKS);
+        if trace_it {
+            let plain = self.plain.think(job);
+            let traced = self.traced.think(job);
+            assert_eq!(
+                (plain.fault.as_ref(), traced.fault.as_ref()),
+                (None, None),
+                "the timing runners do not fault"
+            );
+            assert_eq!(
+                plain.intents, traced.intents,
+                "a trace line changes nothing"
+            );
+            assert_eq!(traced.trace.len(), 8, "the eight lines traced");
+        }
+        if let Ok(mut samples) = self.samples.lock() {
+            samples.view_wrap_ns.push(wrap_ns);
+            if let Some((mem_ns, map_ns, keys)) = mem {
+                samples.mem_ns.push(mem_ns);
+                samples.mem_map_ns.push(map_ns);
+                samples.mem_keys.push(keys);
+            }
+            samples.traced_thinks += u32::from(trace_it);
+        }
+        self.inner.think(job)
+    }
+}
+
+/// `(p50, p99)` of `values` (`0`s for none).
+fn p50_p99(values: &[u64]) -> (u64, u64) {
+    let (p50, p99, _) = support::spread(values);
+    (p50, p99)
+}
+
+/// A per-mille figure printed with one decimal (`24.3`).
+fn tenths(per_mille: u64) -> String {
+    format!("{}.{}", per_mille / 1_000, (per_mille % 1_000) / 100)
+}
+
+/// **One lane's figures** (doc 17 §18): its Rhai thinks' ops and fees, the
+/// measured ops per microsecond, the Rhai and native `think_us`.
+fn lane_figures(lane: &str, thoughts: &[support::TwinThought]) {
+    let ops: Vec<u64> = thoughts.iter().map(|thought| thought.ops).collect();
+    let fee: Vec<u64> = thoughts.iter().map(|thought| thought.fee).collect();
+    let (p50, p99, max) = support::spread(&ops);
+    println!(
+        "twin_rhai_ops[{lane}]=p50:{p50} p99:{p99} max:{max} ceiling:{} class0:400 \
+         thinks:{} over_400:{} (ops alone; ops plus fees is what the ceiling bounds)",
+        tacsim::minds::STOCK_OPS_PER_THINK,
+        thoughts.len(),
+        ops.iter().filter(|ops| **ops > 400).count()
+    );
+    let budget: Vec<u64> = thoughts
+        .iter()
+        .map(|thought| thought.ops + thought.fee)
+        .collect();
+    let (fee_p50, fee_p99) = p50_p99(&fee);
+    let (budget_p50, budget_p99, budget_max) = support::spread(&budget);
+    println!(
+        "twin_rhai_fee[{lane}]=p50:{fee_p50} p99:{fee_p99} ops_plus_fee=p50:{budget_p50} \
+         p99:{budget_p99} max:{budget_max}"
+    );
+    // Ops per microsecond, per think, in thousandths (a think under one
+    // microsecond reads nothing).
+    let rate: Vec<u64> = thoughts
+        .iter()
+        .filter(|thought| thought.rhai_us > 0)
+        .map(|thought| thought.ops * 1_000 / u64::try_from(thought.rhai_us).unwrap_or(u64::MAX))
+        .collect();
+    let (rate_p50, rate_p99) = p50_p99(&rate);
+    // The slow tail: the first percentile of the rate.
+    let mut sorted = rate.clone();
+    sorted.sort_unstable();
+    let rate_p1 = sorted.get(sorted.len() / 100).copied().unwrap_or_default();
+    println!(
+        "twin_rhai_ops_per_us[{lane}]=p50:{} p99:{} p1:{} (the whole Rhai think: the wraps, \
+         the memory's decode and encode, the script — the first two a few per cent of it, \
+         see twin_rhai_script_rate; doc 17 §7 and §18 measured 19.5-24.1 on the blessing \
+         host's micro-benchmark, fees calibrated at 24; dev1's is unmeasured and may be \
+         markedly lower: the op budget is deterministic everywhere, the CPU lens is wall \
+         time on whatever host runs it)",
+        tenths(rate_p50),
+        tenths(rate_p99),
+        tenths(rate_p1)
+    );
+    let rhai_us: Vec<u64> = thoughts
+        .iter()
+        .map(|thought| u64::try_from(thought.rhai_us).unwrap_or(u64::MAX))
+        .collect();
+    let native_us: Vec<u64> = thoughts
+        .iter()
+        .map(|thought| u64::try_from(thought.native_us).unwrap_or(u64::MAX))
+        .collect();
+    let (rhai_p50, rhai_p99) = p50_p99(&rhai_us);
+    let (native_p50, native_p99) = p50_p99(&native_us);
+    println!(
+        "twin_rhai_think_us[{lane}]=rhai_p50:{rhai_p50} rhai_p99:{rhai_p99} \
+         native_p50:{native_p50} native_p99:{native_p99} (the same thinks; 17b cut M1a.6 of \
+         record: think_us 3/10, view_us 4/16)"
+    );
+}
+
+/// **The figures of doc 17 §18, for the 17b §2 table** (17b cut M2.7;
+/// report, never assert — beside [`m1a6_t0_versus_t1_over_thirty_pooled_matches_is_inside_a_wilson_interval_containing_half`]'s
+/// `twin_timing`). Over the two Gate A lanes — lane 1, the pooled lane's
+/// thirty matches flown `Twin` where it flies T1, and lane 3, the authored
+/// lance field (twelve a side, the order table, where a think's cost is
+/// largest) — every Rhai think's figures as the asserting twin recorded them
+/// (`support::TwinThought`): `ops` p50/p99/max against class I's 1,500 and
+/// Class 0's 400 (`twin_rhai_ops`), the fees (`twin_rhai_fee`), the
+/// measured ops per microsecond (`twin_rhai_ops_per_us`, against doc 17
+/// §7's twenty-four, with dev1's caveat), the Rhai `think_us` beside the
+/// native's on the same thinks and beside 17b cut M1a.6's figures of record
+/// (`twin_rhai_think_us`); then over both lanes through [`Timed`]: the
+/// wraps (`twin_rhai_view_wrap_us`), the memory's codec
+/// (`twin_rhai_mem_us`), the trace's cost (`twin_rhai_trace_cost`: a think
+/// with eight `trace` lines against the same think with none); one cold
+/// compile of the shipped script on a fresh sandbox and the cache's hit
+/// (`twin_rhai_compile_us`); the script's figures and the most `line_to`
+/// calls a lance think made (`twin_rhai_script`).
+///
+/// In a release build both lanes are flown whole; a debug build — whose
+/// figures are not the ones of record — flies one pooled seed and one lance
+/// seed, so the ordinary sweep spends seconds here, and prints
+/// `build=debug`. **The figures of record are taken alone**, on a quiet
+/// host: `cargo test --release -p tacsim --test twin twin_rhai_timing --
+/// --exact --nocapture --test-threads=1` (beside the target's other lanes
+/// the wall clock is shared and every `_us` figure reads high). The
+/// script's own rate (`twin_rhai_script_rate`) is the think's p50 less the
+/// wraps and the codecs: the gap to §7's twenty-four is the script's.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn twin_rhai_timing() {
+    let started = Instant::now();
+    let release = !cfg!(debug_assertions);
+    let (pool_seeds, lance_seeds) = if release {
+        (SEEDS, LANCE_SEEDS)
+    } else {
+        (1, 1)
+    };
+    let world = support::booted_world();
+    let cfg = tacsim::config::ArenaConfig::default();
+    let mut samples = TimedSamples::default();
+    let mut absorb = |timed: &Timed| {
+        let more = timed.samples();
+        samples.view_wrap_ns.extend(more.view_wrap_ns);
+        samples.mem_ns.extend(more.mem_ns);
+        samples.mem_map_ns.extend(more.mem_map_ns);
+        samples.mem_keys.extend(more.mem_keys);
+        samples.traced_thinks += more.traced_thinks;
+    };
+    let mut plain: Vec<tacsim::minds::ThinkStat> = Vec::new();
+    let mut traced: Vec<tacsim::minds::ThinkStat> = Vec::new();
+
+    // Lane 1: the pooled lane's matches, the twin where it flies T1.
+    let mut pooled: Vec<support::TwinThought> = Vec::new();
+    for k in 0..pool_seeds {
+        let seed = SEED_0 + k;
+        for (red, blue) in [(Flier::T0, Flier::Twin), (Flier::Twin, Flier::T0)] {
+            let twin = Arc::new(support::TwinRunner::new(&cfg));
+            let timed = Timed::new(twin.clone(), &cfg);
+            let side = |team: Team, flier: Flier| match flier {
+                Flier::T0 => [Muster::reflex(team, 1), Muster::reflex(team, 2)],
+                _ => [Muster::mind(team, 1), Muster::mind(team, 2)],
+            };
+            let _ = support::play(
+                &world,
+                seed,
+                &side(Team::Red, red),
+                &side(Team::Blue, blue),
+                timed.clone(),
+                None,
+            );
+            assert_eq!(twin.divergences(), (0, 0), "seed {seed}");
+            pooled.extend(twin.thoughts());
+            absorb(&timed);
+            plain.extend(timed.plain.take_stats());
+            traced.extend(timed.traced.take_stats());
+        }
+    }
+
+    // Lane 3: the authored lance field.
+    let mut lance: Vec<support::TwinThought> = Vec::new();
+    let mut line_to_max = 0_usize;
+    for k in 0..lance_seeds {
+        let seed = SEED_0 + k;
+        let mut arena = support::lance_arena(&world, seed);
+        let probe = Arc::new(LanceProbe::new(&arena.arena_cfg));
+        let timed = Timed::new(probe.clone(), &arena.arena_cfg);
+        arena.mind_runner = timed.clone();
+        let _ = fly_lance(&mut arena);
+        assert_eq!(probe.twin.divergences(), (0, 0), "seed {seed}");
+        lance.extend(probe.twin.thoughts());
+        line_to_max = probe
+            .seen()
+            .iter()
+            .map(|one| one.line_to)
+            .fold(line_to_max, usize::max);
+        absorb(&timed);
+        plain.extend(timed.plain.take_stats());
+        traced.extend(timed.traced.take_stats());
+    }
+
+    lane_figures("pooled", &pooled);
+    lane_figures("lance", &lance);
+    let both: Vec<support::TwinThought> = pooled.iter().chain(&lance).copied().collect();
+    lane_figures("both", &both);
+
+    let (wrap_p50, wrap_p99) = p50_p99(&samples.view_wrap_ns);
+    println!(
+        "twin_rhai_view_wrap_us=p50:{} p99:{} (ns p50:{wrap_p50} p99:{wrap_p99}; the view's \
+         and the map's Arc clones and the card's clone, on the job, {} thinks)",
+        wrap_p50 / 1_000,
+        wrap_p99 / 1_000,
+        samples.view_wrap_ns.len()
+    );
+    let (mem_p50, mem_p99) = p50_p99(&samples.mem_ns);
+    let (map_p50, map_p99) = p50_p99(&samples.mem_map_ns);
+    let keys: std::collections::BTreeSet<usize> = samples.mem_keys.iter().copied().collect();
+    println!(
+        "twin_rhai_mem_us=p50:{} p99:{} (ns p50:{mem_p50} p99:{mem_p99}; mush_mind::memory \
+         decode plus encode of the stock memory, keys {keys:?}, {} thinks; the script's map \
+         round trip to_map plus from_map ns p50:{map_p50} p99:{map_p99})",
+        mem_p50 / 1_000,
+        mem_p99 / 1_000,
+        samples.mem_ns.len()
+    );
+    // The script's own rate: the Rhai think's p50 less the wraps and the
+    // memory's two codecs (their p50s, measured above on the same jobs), so
+    // the gap to §7's twenty-four is read as the script's and not as the
+    // think's overhead.
+    let think_ns: Vec<u64> = both
+        .iter()
+        .map(|thought| u64::try_from(thought.rhai_us).unwrap_or(u64::MAX) * 1_000)
+        .collect();
+    let both_ops: Vec<u64> = both.iter().map(|thought| thought.ops).collect();
+    let (think_p50, _) = p50_p99(&think_ns);
+    let (ops_p50, _) = p50_p99(&both_ops);
+    let around_ns = wrap_p50 + mem_p50 + map_p50;
+    let script_ns = think_p50.saturating_sub(around_ns).max(1);
+    println!(
+        "twin_rhai_script_rate=ops_per_us_p50:{} (ops p50 {ops_p50} over the think's p50 \
+         {think_p50} ns less the wraps and the codecs' p50s {around_ns} ns, {} per mille of \
+         the think; doc 17 §7's micro-benchmark 19.5-24.1, fees calibrated at 24)",
+        tenths(ops_p50 * 1_000_000 / script_ns),
+        around_ns * 1_000 / think_p50.max(1)
+    );
+
+    // The compile: one cold compile on a fresh sandbox, then the hit.
+    let sandbox_started = Instant::now();
+    let sandbox = mush_mind::Sandbox::new(
+        &mush_mind::EngineLimits {
+            max_ops_backstop: tacsim::minds::STOCK_OPS_PER_THINK,
+        },
+        tacsim::minds::register_api,
+    );
+    let sandbox_us = sandbox_started.elapsed().as_micros();
+    // The digest (a SHA-256 of the bytes, the seal's key) is taken before the
+    // clock starts: the cache is keyed by it, and the figures are the
+    // compile's and the lookup's alone.
+    let digest = tacsim::minds::standard_digest();
+    let cold_started = Instant::now();
+    let cold = sandbox.compile(
+        tacsim::minds::STANDARD_RHAI,
+        digest,
+        tacsim::minds::MIND_ABI,
+    );
+    let cold_us = cold_started.elapsed().as_micros();
+    let hit_started = Instant::now();
+    let hit = sandbox.compile(
+        tacsim::minds::STANDARD_RHAI,
+        digest,
+        tacsim::minds::MIND_ABI,
+    );
+    let hit_ns = hit_started.elapsed().as_nanos();
+    assert!(
+        matches!((&cold, &hit), (Ok(cold), Ok(hit)) if Arc::ptr_eq(cold, hit)),
+        "the second compile is the cache's hit"
+    );
+    println!(
+        "twin_rhai_compile_us=cold:{cold_us} hit:{} (hit ns {hit_ns}; a fresh sandbox's \
+         Sandbox::new with register_api {sandbox_us} us; doc 17 §18: compile plus seal 270 us)",
+        hit_ns / 1_000
+    );
+
+    // The trace's cost: the same jobs through the shipped script and through
+    // it with eight trace lines.
+    let ops_of = |stats: &[tacsim::minds::ThinkStat]| -> Vec<u64> {
+        stats.iter().map(|stat| stat.ops).collect()
+    };
+    let us_of = |stats: &[tacsim::minds::ThinkStat]| -> Vec<u64> {
+        stats
+            .iter()
+            .map(|stat| u64::try_from(stat.rhai_us).unwrap_or(u64::MAX))
+            .collect()
+    };
+    let (plain_ops, _) = p50_p99(&ops_of(&plain));
+    let (traced_ops, _) = p50_p99(&ops_of(&traced));
+    let (plain_us_p50, plain_us_p99) = p50_p99(&us_of(&plain));
+    let (traced_us_p50, traced_us_p99) = p50_p99(&us_of(&traced));
+    let extra_ops: Vec<u64> = traced
+        .iter()
+        .zip(&plain)
+        .map(|(traced, plain)| traced.ops.saturating_sub(plain.ops))
+        .collect();
+    let extra: std::collections::BTreeSet<u64> = extra_ops.iter().copied().collect();
+    println!(
+        "twin_rhai_trace_cost=thinks:{} ops_none_p50:{plain_ops} ops_eight_p50:{traced_ops} \
+         extra_ops:{extra:?} us_none:p50:{plain_us_p50} p99:{plain_us_p99} \
+         us_eight:p50:{traced_us_p50} p99:{traced_us_p99}",
+        plain.len()
+    );
+
+    let (functions, depth, widest, width) = support::script_figures(tacsim::minds::STANDARD_RHAI);
+    println!(
+        "twin_rhai_script=functions:{functions} max_fn_expr_depth:{depth} \
+         widest_scope:{width} ({widest}) line_to_max:{line_to_max} (cap {})",
+        tacsim::minds::STOCK_LINE_TO_PER_THINK
+    );
+    println!(
+        "twin_rhai_timing: build={} pooled_matches={} lance_seeds={lance_seeds} \
+         pooled_thinks={} lance_thinks={} wall_ms={}",
+        if release { "release" } else { "debug" },
+        2 * pool_seeds,
+        pooled.len(),
+        lance.len(),
+        started.elapsed().as_millis()
+    );
+    assert!(!pooled.is_empty() && !lance.is_empty() && !plain.is_empty());
 }

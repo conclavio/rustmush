@@ -16,7 +16,12 @@
 //!   flag (`RUN_*` / `*_RUN`) and returns early. Paid-provider opt-ins must
 //!   have an explicit exemption below; a named job alone does not enable them.
 //! - it is **covered** when `ci.yml` names the function verbatim, or (for an
-//!   integration target) names that whole target as `-p <pkg> --test <target>`.
+//!   integration target) names that target as `-p <pkg> --test <target>`,
+//!   the target's name ending there (`--test minds_rhai` is not `--test
+//!   minds`). An `#[ignore]`d test, which nothing but such a step runs, is
+//!   covered by its target only when the step runs the whole target, with no
+//!   test-name filter after it (`invokes_target`; a filtered `--ignored`
+//!   step runs only the test it names, and covers that one by its name).
 //!   A unit test under `src/` must be named verbatim: `-p <pkg> --lib` with a
 //!   filter proves nothing about a *different* ignored test in the same crate.
 //!
@@ -237,6 +242,99 @@ fn discovered_tests(root: &Path) -> Vec<DiscoveredTest> {
     tests
 }
 
+/// Cargo's own options (before `--`) that take a value as the next word, so
+/// the value is not read as a test-name filter.
+const CARGO_VALUE_OPTIONS: [&str; 14] = [
+    "-p",
+    "--package",
+    "--test",
+    "--features",
+    "-F",
+    "--target",
+    "--profile",
+    "-j",
+    "--jobs",
+    "--bin",
+    "--example",
+    "--bench",
+    "--manifest-path",
+    "--color",
+];
+
+/// **Whether `workflow` invokes the integration target** `<target>` of
+/// `<package>` (17b cut M2.7): some line holds `-p <package> --test
+/// <target>` with the target's name ending there (whitespace or the line's
+/// end — so `--test minds_rhai` is not `--test minds`); and, when `whole`,
+/// with no test-name filter among cargo's own arguments after it. A filtered
+/// invocation (`--test twin some_test -- --ignored --exact`, or a bare
+/// substring filter) runs only the tests it names, which are covered by
+/// their verbatim names: for an `#[ignore]`d test, which nothing else runs,
+/// a named single-test step must not cover every other ignored test of its
+/// file. (A test that only reads `REDIS_URL` runs in the workspace sweep
+/// either way, and keeps the target rule without `whole`.)
+fn invokes_target(workflow: &str, package: &str, target: &str, whole: bool) -> bool {
+    let needle = format!("-p {package} --test {target}");
+    workflow.lines().any(|line| {
+        line.match_indices(&needle).any(|(at, _)| {
+            let rest = line.get(at + needle.len()..).unwrap_or_default();
+            if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+                return false;
+            }
+            if !whole {
+                return true;
+            }
+            let mut words = rest.split_whitespace();
+            while let Some(word) = words.next() {
+                if word == "--" {
+                    break;
+                }
+                if word.starts_with('-') {
+                    if CARGO_VALUE_OPTIONS.contains(&word) {
+                        let _ = words.next();
+                    }
+                    continue;
+                }
+                // A positional word before `--` is a test-name filter.
+                return false;
+            }
+            true
+        })
+    })
+}
+
+#[test]
+fn an_ignored_test_is_covered_only_by_an_unfiltered_invocation_of_its_target() {
+    let whole = "run: cargo test -p mushd --test persistence -- --test-threads=1";
+    assert!(invokes_target(whole, "mushd", "persistence", true));
+    assert!(invokes_target(
+        "cargo test -p mush-proto --test ts_export --features ts",
+        "mush-proto",
+        "ts_export",
+        true
+    ));
+    assert!(invokes_target(
+        "cargo test -p tacsim --test harness",
+        "tacsim",
+        "harness",
+        true
+    ));
+    // A longer target's name is not this one's, filtered or not.
+    let named = "run: cargo test -p tacsim --test minds_rhai m2_one -- --ignored --exact";
+    for whole in [true, false] {
+        assert!(!invokes_target(named, "tacsim", "minds", whole));
+    }
+    // A filtered invocation covers only the test it names (by its name) when
+    // the whole target is asked for, and names the target otherwise.
+    assert!(!invokes_target(named, "tacsim", "minds_rhai", true));
+    assert!(invokes_target(named, "tacsim", "minds_rhai", false));
+    assert!(!invokes_target(
+        "cargo test -p mush-bot --test arena_win_rate some_test -- --ignored",
+        "mush-bot",
+        "arena_win_rate",
+        true
+    ));
+}
+
 #[test]
 fn every_backend_gated_proof_is_named_by_a_ci_job() {
     let root = repo_root();
@@ -281,7 +379,7 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
             continue;
         }
         if let Some((package, target)) = test.integration_target()
-            && workflow.contains(&format!("-p {package} --test {target}"))
+            && invokes_target(&workflow, package, target, test.ignored)
         {
             continue;
         }

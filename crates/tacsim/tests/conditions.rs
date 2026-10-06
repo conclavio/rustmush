@@ -42,7 +42,10 @@
 //!     `WeaponReady` window the twin counts as `cond_stale` — every T1
 //!     fixture at 5,000, 1,000 and 500 ms; **17b cut M2.6**: and once more
 //!     under Gate A's asserting twin (`support::with_twin`, through
-//!     [`at_three_cadences`]' keep arm), T1 and T2 compared on every think.
+//!     [`at_three_cadences`]' keep arm), T1 and T2 compared on every think;
+//!     **17b cut M2.7**: and at 5,000, 1,000 and 500 ms on the Rhai Standard
+//!     Doctrine ALONE (`support::with_rhai`, the same arm), each run the
+//!     native one's event list, hash sequence and thinks.
 
 mod support;
 
@@ -2728,6 +2731,9 @@ fn m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_on
 /// run [`at_three_cadences`] answers, how many thinks its twin-flown run
 /// compared T1 against T2 (`twinned`; 0 where no twin flew), so a T1 fixture
 /// asserts it was held to Gate A rather than trusting the keep arm's trigger.
+/// **17b cut M2.7**: and how many thinks its three runs flown by the Rhai
+/// Standard Doctrine ALONE made (`rhai_alone`; 0 where none flew), each run
+/// equal to the native one.
 #[derive(Debug)]
 struct MindRun {
     events: Vec<(i64, String, u64)>,
@@ -2735,6 +2741,7 @@ struct MindRun {
     thoughts: Vec<Thought>,
     pulses: u32,
     twinned: usize,
+    rhai_alone: usize,
 }
 
 impl MindRun {
@@ -2888,16 +2895,24 @@ fn mind_run(
         thoughts: kept.map(Kept::thoughts).unwrap_or_default(),
         pulses,
         twinned: 0,
+        rhai_alone: 0,
     }
 }
 
 /// **17b cut M2.6: the T1 fixture's run was held to Gate A** — its field's
 /// fourth run flew an asserting twin and compared at least one think
-/// (`MindRun::twinned`, set by [`at_three_cadences`]' keep arm).
+/// (`MindRun::twinned`, set by [`at_three_cadences`]' keep arm). **17b cut
+/// M2.7**: and its three runs on the Rhai Standard Doctrine ALONE, at 5,000,
+/// 1,000 and 500 ms, thought (`MindRun::rhai_alone`) — each equal to the
+/// native run, which the keep arm asserts.
 fn assert_twinned(run: &MindRun) {
     assert!(
         run.twinned > 0,
         "the T1 field flew no think under the twin (the keep arm did not fire)"
+    );
+    assert!(
+        run.rhai_alone > 0,
+        "the T1 field flew no think on the Rhai runner alone (the keep arm did not fire)"
     );
 }
 
@@ -2921,6 +2936,15 @@ fn assert_twinned(run: &MindRun) {
 /// fixture held to Gate A here asserts it nonzero ([`twinned`]): the keep
 /// arm's trigger (the runner's printed name) cannot stop firing for one of
 /// them without that fixture failing.
+///
+/// **17b cut M2.7 — the T1 fixtures under the Rhai runner ALONE** (doc 17
+/// §22's "Gate A on the cross-tempo fixture"): the same arm then plays the
+/// stock field at 5,000, 1,000 and 500 ms with the arena's runner the Rhai
+/// Standard Doctrine alone (`support::with_rhai`, before the recorder reads
+/// it) — T2's own answers flown, so unlike the twin's run these prove T2 ≡
+/// T1 on the fixture — each with the native run's event list, hash sequence
+/// and sequence of thinks; the thinks flown are carried
+/// (`MindRun::rhai_alone`) and asserted nonzero beside `twinned`.
 fn at_three_cadences(
     make: &dyn Fn() -> Arena,
     keep: bool,
@@ -3004,6 +3028,57 @@ fn at_three_cadences(
             run.thoughts.len()
         );
         first.twinned = run.thoughts.len();
+        // 17b cut M2.7 (doc 17 §22's "Gate A on the cross-tempo fixture"):
+        // the stock field three times more, flown by the Rhai Standard
+        // Doctrine ALONE (`support::with_rhai`, applied before the recorder
+        // reads the arena's runner) — T2's own answers flown, nothing native
+        // beside it — at 5,000, 1,000 and 500 ms: each the native run's event
+        // list, hash sequence and sequence of thinks (each view and each
+        // answer, the Rhai trace among it).
+        let mut flown = 0_usize;
+        for cadence in [5_000_i64, 1_000, 500] {
+            let mut arena = make();
+            support::with_rhai(&mut arena);
+            let kept = Kept::on(&arena);
+            arena.mind_runner = kept.clone();
+            let run = mind_run(
+                arena,
+                Some(&kept),
+                cadence,
+                until_ms,
+                beats,
+                edits,
+                &mut |_| {},
+            );
+            if let Some(at) = (0..run.events.len().max(first.events.len()))
+                .find(|at| run.events.get(*at) != first.events.get(*at))
+            {
+                panic!(
+                    "the event list on the Rhai runner alone differs at {cadence} ms, line \
+                     {at}: {:?} against the native {:?}",
+                    run.events.get(at),
+                    first.events.get(at)
+                );
+            }
+            assert_eq!(
+                run.hashes, first.hashes,
+                "the hashes on the Rhai runner alone at {cadence} ms"
+            );
+            if let Some(at) = (0..run.thoughts.len().max(first.thoughts.len()))
+                .find(|at| run.thoughts.get(*at) != first.thoughts.get(*at))
+            {
+                panic!(
+                    "think {at} on the Rhai runner alone differs at {cadence} ms:\n  Rhai: \
+                     {:?}\n  native: {:?}",
+                    run.thoughts.get(at),
+                    first.thoughts.get(at)
+                );
+            }
+            assert!(!run.thoughts.is_empty(), "the stock field thought");
+            flown += run.thoughts.len();
+        }
+        println!("m2_conditions_under_the_rhai_runner: thinks_flown={flown}");
+        first.rhai_alone = flown;
     }
     first
 }

@@ -1605,10 +1605,24 @@ pub fn with_twin(arena: &mut Arena) -> Arc<TwinRunner> {
     twin
 }
 
+/// **What the running test asked its T1 fields to fly** (17b cuts M2.6 and
+/// M2.7): the asserting twin ([`under_the_twin`], the twins kept for the
+/// count) or the Rhai Standard Doctrine ALONE ([`under_the_rhai_runner`],
+/// the fields counted).
+enum Asked {
+    Twin(Vec<Arc<TwinRunner>>),
+    Rhai(usize),
+}
+
 thread_local! {
-    /// The twins [`under_the_twin`] asked for on this thread, `None` outside
-    /// one (each test runs on its own thread).
-    static TWINS: std::cell::RefCell<Option<Vec<Arc<TwinRunner>>>> =
+    /// What [`under_the_twin`] or [`under_the_rhai_runner`] asked for on this
+    /// thread, `None` outside both (each test runs on its own thread).
+    static ASKED: std::cell::RefCell<Option<Asked>> =
+        const { std::cell::RefCell::new(None) };
+    /// The runs and thinks a fixture body noted ([`note_run`],
+    /// [`note_think`]) while [`under_the_rhai_runner`] listens, `None`
+    /// otherwise.
+    static NOTES: std::cell::RefCell<Option<Notes>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1621,11 +1635,12 @@ thread_local! {
 /// compared, asserted nonzero (a sibling that compared nothing proves
 /// nothing) and printed with the fixture's name.
 pub fn under_the_twin(name: &str, test: impl FnOnce()) -> usize {
-    TWINS.with(|twins| *twins.borrow_mut() = Some(Vec::new()));
+    ASKED.with(|asked| *asked.borrow_mut() = Some(Asked::Twin(Vec::new())));
     test();
-    let twins = TWINS
-        .with(|twins| twins.borrow_mut().take())
-        .unwrap_or_default();
+    let twins = match ASKED.with(|asked| asked.borrow_mut().take()) {
+        Some(Asked::Twin(twins)) => twins,
+        _ => Vec::new(),
+    };
     let thinks: usize = twins.iter().map(|twin| twin.thoughts().len()).sum();
     for twin in &twins {
         assert_eq!(
@@ -1650,15 +1665,188 @@ pub fn under_the_twin(name: &str, test: impl FnOnce()) -> usize {
 }
 
 /// **[`with_twin`] when the running test asked for it** ([`under_the_twin`]),
-/// the twin kept for that count; otherwise `arena` is left on its runner.
-/// A field builder calls it last, so the field it answers flies the twin
-/// before any recorder reads the arena's runner.
+/// the twin kept for that count; **[`with_rhai`] when it asked for the Rhai
+/// runner alone** ([`under_the_rhai_runner`], 17b cut M2.7), the field
+/// counted; otherwise `arena` is left on its runner. A field builder calls it
+/// last, so the field it answers flies the twin or the Rhai runner before any
+/// recorder reads the arena's runner.
 pub fn twin_if_asked(arena: &mut Arena) {
-    TWINS.with(|twins| {
-        if let Some(twins) = twins.borrow_mut().as_mut() {
-            twins.push(with_twin(arena));
+    ASKED.with(|asked| match asked.borrow_mut().as_mut() {
+        Some(Asked::Twin(twins)) => twins.push(with_twin(arena)),
+        Some(Asked::Rhai(fields)) => {
+            with_rhai(arena);
+            *fields += 1;
+        }
+        None => {}
+    });
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.7 — the fixtures under the Rhai runner ALONE
+// ---------------------------------------------------------------------------
+
+/// **The Rhai Standard Doctrine alone, on `cfg`'s doctrine** (17b cut M2.7;
+/// doc 17 §17 "Gate A", §22's M2 gate): `tacsim::minds::standard_runner` —
+/// the production entry point, `RhaiRunner::new(cfg, STANDARD_RHAI,
+/// standard_digest())` — with its `Result` handled: a script that does not
+/// compile fails the test HERE, by name. Unlike the twin, nothing native
+/// answers beside it: a fixture flown on it flies T2's own answers, so a
+/// fixture whose event list and hash sequence equal the native run's proves
+/// T2 ≡ T1 on that fixture (the twin, which flies T1's answer, cannot).
+#[must_use]
+pub fn rhai_alone(cfg: &ArenaConfig) -> Arc<dyn MindRunner> {
+    tacsim::minds::standard_runner(cfg).unwrap_or_else(|error| {
+        panic!("with_rhai: the Standard Doctrine (standard.rhai) does not compile: {error}")
+    })
+}
+
+/// **Fly `arena`'s minds on the Rhai Standard Doctrine alone** (17b cut
+/// M2.7): `arena.mind_runner` becomes [`rhai_alone`] on the arena's own
+/// doctrine (`arena.arena_cfg`), asserted to print as a `RhaiRunner`.
+/// Applied BEFORE any recorder reads the arena's runner, as [`with_twin`]
+/// is. **A decoded snapshot re-installs `default_mind_runner`** (the native
+/// stock mind: `Snapshot::decode`), so a fixture that resumes from one calls
+/// this again after the decode — the runner's `Debug` name is the only thing
+/// that tells a resumed T2 field from a T1 one, since T2 ≡ T1.
+pub fn with_rhai(arena: &mut Arena) -> Arc<dyn MindRunner> {
+    let runner = rhai_alone(&arena.arena_cfg);
+    arena.mind_runner = Arc::clone(&runner);
+    let shown = format!("{:?}", arena.mind_runner);
+    assert!(
+        shown.starts_with("RhaiRunner"),
+        "with_rhai installs the Rhai runner, not {shown:.40}"
+    );
+    runner
+}
+
+/// **Whether the running test asked for the Rhai runner alone**
+/// ([`under_the_rhai_runner`]'s second pass, 17b cut M2.7): a recorder that
+/// admits the Rhai Standard Doctrine as "the stock mind" admits it only here,
+/// so a fixture's own scripted `RhaiRunner` is never recorded as it.
+#[must_use]
+pub fn rhai_asked() -> bool {
+    ASKED.with(|asked| matches!(*asked.borrow(), Some(Asked::Rhai(_))))
+}
+
+/// One noted run: its event list `(t_ms, kind as JSON, line hash)` and its
+/// substep hash sequence.
+pub type NotedRun = (Vec<(i64, String, u64)>, Vec<u64>);
+
+/// **What a fixture body noted while [`under_the_rhai_runner`] listened**
+/// (17b cut M2.7): every run's event list `(t_ms, kind as JSON, line hash)`
+/// and substep hash sequence ([`note_run`]), and every recorded stock think
+/// `(unit, t_ms, answer)` ([`note_think`]), in the order the body made them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Notes {
+    /// Each run, `(events, hashes)`.
+    pub runs: Vec<NotedRun>,
+    /// Each think a stock recorder kept, `(unit, t_ms, answer)`.
+    pub thinks: Vec<(u32, i64, ThinkResult)>,
+}
+
+/// **Note one run's event list and hash sequence** for
+/// [`under_the_rhai_runner`] (a no-op outside it). A fixture's run helper
+/// calls it once with what it answers.
+pub fn note_run(events: &[(i64, String, u64)], hashes: &[u64]) {
+    NOTES.with(|notes| {
+        if let Some(notes) = notes.borrow_mut().as_mut() {
+            notes.runs.push((events.to_vec(), hashes.to_vec()));
         }
     });
+}
+
+/// **Note one stock think's answer** for [`under_the_rhai_runner`] (a no-op
+/// outside it). A fixture's stock recorder calls it on every think.
+pub fn note_think(unit: ObjId, t_ms: i64, result: &ThinkResult) {
+    NOTES.with(|notes| {
+        if let Some(notes) = notes.borrow_mut().as_mut() {
+            notes.thinks.push((unit.0, t_ms, result.clone()));
+        }
+    });
+}
+
+/// **Run `test` twice — natively, then with its T1 fields flown by the Rhai
+/// runner ALONE — and hold the second to the first** (17b cut M2.7; doc 17
+/// §17 "Gate A", §22's "Gate A on the cross-tempo fixture"; 17b §1 (iii)).
+/// The first pass flies every field as the fixture opens it (the native
+/// stock mind, T1); the second asks the fields' builders ([`twin_if_asked`])
+/// to install [`with_rhai`] before any recorder reads the arena's runner, so
+/// the SAME body — its assertions on T1 untouched, its cadences as it plays
+/// them — flies T2's own answers. Every run the body noted ([`note_run`]: the
+/// event list and the hash sequence of each run at each cadence it plays)
+/// and every stock think it recorded ([`note_think`]) must equal the native
+/// pass's, in order, index by index; the Rhai pass must have opened at
+/// least one field, the body must have noted at least one run or think, and
+/// the Rhai pass's notes must be as many as the native pass's.
+/// Prints `m2_under_the_rhai_runner: fixture=… fields=… runs=… lines=…
+/// substeps=… thinks=…` and answers the fields flown.
+pub fn under_the_rhai_runner(name: &str, test: impl Fn()) -> usize {
+    let listen = |asked: Option<Asked>| {
+        ASKED.with(|slot| *slot.borrow_mut() = asked);
+        NOTES.with(|notes| *notes.borrow_mut() = Some(Notes::default()));
+        test();
+        let fields = match ASKED.with(|slot| slot.borrow_mut().take()) {
+            Some(Asked::Rhai(fields)) => fields,
+            _ => 0,
+        };
+        let notes = NOTES
+            .with(|notes| notes.borrow_mut().take())
+            .unwrap_or_default();
+        (fields, notes)
+    };
+    let (_, native) = listen(None);
+    let (fields, rhai) = listen(Some(Asked::Rhai(0)));
+    assert!(fields > 0, "{name}: no field flew the Rhai runner");
+    // A sibling that compared nothing proves nothing (as `under_the_twin`
+    // asserts its thinks): the body must have noted a run or a think.
+    assert!(
+        !native.runs.is_empty() || !native.thinks.is_empty(),
+        "{name}: the body noted no run and no think, so nothing was held to the native pass"
+    );
+    assert_eq!(
+        rhai.runs.len(),
+        native.runs.len(),
+        "{name}: the runs noted under the Rhai runner"
+    );
+    for (at, (flown, recorded)) in rhai.runs.iter().zip(&native.runs).enumerate() {
+        if let Some(line) = (0..flown.0.len().max(recorded.0.len()))
+            .find(|line| flown.0.get(*line) != recorded.0.get(*line))
+        {
+            panic!(
+                "{name}: run {at}'s event list parts from the native run's at line {line}:\n  \
+                 Rhai:   {:?}\n  native: {:?}",
+                flown.0.get(line),
+                recorded.0.get(line)
+            );
+        }
+        assert_eq!(
+            flown.1, recorded.1,
+            "{name}: run {at}'s hash sequence under the Rhai runner"
+        );
+    }
+    assert_eq!(
+        rhai.thinks.len(),
+        native.thinks.len(),
+        "{name}: the thinks noted under the Rhai runner"
+    );
+    if let Some(at) =
+        (0..rhai.thinks.len()).find(|at| rhai.thinks.get(*at) != native.thinks.get(*at))
+    {
+        panic!(
+            "{name}: think {at} parts from the native one:\n  Rhai:   {:?}\n  native: {:?}",
+            rhai.thinks.get(at),
+            native.thinks.get(at)
+        );
+    }
+    println!(
+        "m2_under_the_rhai_runner: fixture={name} fields={fields} runs={} lines={} substeps={} \
+         thinks={}",
+        rhai.runs.len(),
+        rhai.runs.iter().map(|run| run.0.len()).sum::<usize>(),
+        rhai.runs.iter().map(|run| run.1.len()).sum::<usize>(),
+        rhai.thinks.len()
+    );
+    fields
 }
 
 /// **The lance lane's cohort** (`tests/harness.rs`' `COHORT`, copied: an

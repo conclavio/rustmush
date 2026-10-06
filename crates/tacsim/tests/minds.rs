@@ -576,7 +576,7 @@ fn run(arena: &mut Arena, drive: Drive, until_ms: i64) -> Run {
             Drive::Task(_) => out.next_due_ms,
         };
     }
-    let events = events(arena, &mut bytes)
+    let events: Vec<(i64, String, u64)> = events(arena, &mut bytes)
         .into_iter()
         .map(|event| {
             (
@@ -586,6 +586,8 @@ fn run(arena: &mut Arena, drive: Drive, until_ms: i64) -> Run {
             )
         })
         .collect();
+    // 17b cut M2.7: held to the native run under `support::under_the_rhai_runner`.
+    support::note_run(&events, &hashes);
     Run {
         events,
         hashes,
@@ -3734,12 +3736,25 @@ impl Stock {
     /// recorder reads the runner) is recorded over that field's own asserting
     /// twin, whose answer is T1's. Anything else on the arena is a fixture's
     /// own runner and is [`Stock::over`]'s to record, never this one's.
+    /// **17b cut M2.7**: or, inside `support::under_the_rhai_runner`, over the
+    /// field's Rhai Standard Doctrine alone (`support::with_rhai`), whose
+    /// answer is T2's own. A `RhaiRunner` is admitted ONLY there
+    /// (`support::rhai_asked`) and only over the shipped script (its compiled
+    /// digest is `standard_digest()`): every `RhaiRunner` prints the same
+    /// prefix, so a fixture's own scripted runner is never recorded as the
+    /// stock mind.
     fn on(arena: &Arena) -> Arc<Stock> {
         let runner = Arc::clone(&arena.mind_runner);
         let name = format!("{runner:?}");
+        let standard = format!("{:?}", tacsim::minds::standard_digest());
         assert!(
-            name.starts_with("NativeStockMind") || name.starts_with("TwinRunner"),
-            "Stock::on records the production stock mind (or the twin over it), not {name:.40}"
+            name.starts_with("NativeStockMind")
+                || name.starts_with("TwinRunner")
+                || (name.starts_with("RhaiRunner")
+                    && support::rhai_asked()
+                    && name.contains(&standard)),
+            "Stock::on records the production stock mind (or the twin over it, or the Rhai \
+             Standard Doctrine alone under support::under_the_rhai_runner), not {name:.40}"
         );
         Stock::over(runner)
     }
@@ -3763,6 +3778,9 @@ impl Stock {
 impl MindRunner for Stock {
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let result = self.inner.think(job);
+        // 17b cut M2.7: held to the native think under
+        // `support::under_the_rhai_runner` (a no-op outside it).
+        support::note_think(job.unit, job.t_ms, &result);
         if let Ok(mut kept) = self.kept.lock() {
             kept.push((job.unit, job.t_ms, (**job.view).clone(), result.clone()));
         }
@@ -4361,7 +4379,7 @@ fn unarmed_run_on(cadence_ms: i64, runner: Option<Arc<dyn MindRunner>>) -> (Run,
         }
         wall += cadence_ms;
     }
-    let events = events(&mut arena, &mut bytes)
+    let events: Vec<(i64, String, u64)> = events(&mut arena, &mut bytes)
         .into_iter()
         .map(|event| {
             (
@@ -4371,6 +4389,8 @@ fn unarmed_run_on(cadence_ms: i64, runner: Option<Arc<dyn MindRunner>>) -> (Run,
             )
         })
         .collect();
+    // 17b cut M2.7: held to the native run under `support::under_the_rhai_runner`.
+    support::note_run(&events, &hashes);
     (
         Run {
             events,
@@ -4579,11 +4599,13 @@ fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
         let mut helm: Vec<Helm> = Vec::new();
         let mut wall = arena.now_ms;
         let mut bytes: Vec<u8> = Vec::new();
+        let mut hashes: Vec<u64> = Vec::new();
         loop {
             let out = arena.step(wall, &[], &[]);
             for chunk in &out.ledger_chunks {
                 bytes.extend_from_slice(&chunk.bytes);
             }
+            hashes.extend(arena.substep_hashes.iter().copied());
             for id in [RED, RED2] {
                 if let Some(unit) = arena.unit(id) {
                     helm.push(Helm {
@@ -4602,6 +4624,19 @@ fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
             wall += SUBSTEP;
         }
         let journal = events(&mut arena, &mut bytes);
+        // 17b cut M2.7: each window's event list and hash sequence held to the
+        // native run's under `support::under_the_rhai_runner`.
+        let noted: Vec<(i64, String, u64)> = journal
+            .iter()
+            .map(|event| {
+                (
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).unwrap_or_default(),
+                    event.hash,
+                )
+            })
+            .collect();
+        support::note_run(&noted, &hashes);
         let actions: Vec<(i64, String, u32)> = journal
             .iter()
             .filter_map(|event| {
@@ -4957,7 +4992,7 @@ fn lance_run(cadence_ms: i64) -> LanceRun {
         }
         wall += cadence_ms;
     }
-    let events = events(&mut arena, &mut bytes)
+    let events: Vec<(i64, String, u64)> = events(&mut arena, &mut bytes)
         .into_iter()
         .map(|event| {
             (
@@ -4967,6 +5002,8 @@ fn lance_run(cadence_ms: i64) -> LanceRun {
             )
         })
         .collect();
+    // 17b cut M2.7: held to the native run under `support::under_the_rhai_runner`.
+    support::note_run(&events, &hashes);
     LanceRun {
         run: Run {
             events,
@@ -5508,7 +5545,7 @@ fn card_run(
         }
         wall += cadence_ms;
     }
-    let events = events(&mut arena, &mut bytes)
+    let events: Vec<(i64, String, u64)> = events(&mut arena, &mut bytes)
         .into_iter()
         .map(|event| {
             (
@@ -5518,6 +5555,8 @@ fn card_run(
             )
         })
         .collect();
+    // 17b cut M2.7: held to the native run under `support::under_the_rhai_runner`.
+    support::note_run(&events, &hashes);
     (
         Run {
             events,
@@ -6091,6 +6130,9 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
                 map: &arena.definition,
                 card: &card,
             });
+            // 17b cut M2.7: held to the native think under
+            // `support::under_the_rhai_runner`.
+            support::note_think(RED, t_ms, &result);
             (
                 result.intents,
                 StockMemory::from(&tacsim::arena::mind::decode_memory(&result.memory)),
@@ -7316,6 +7358,313 @@ fn m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert_under_the_t
 #[test]
 fn m1b5_a_newer_order_is_obeyed_after_an_early_end_under_the_twin() {
     support::under_the_twin(
+        "m1b5_a_newer_order_is_obeyed_after_an_early_end",
+        m1b5_a_newer_order_is_obeyed_after_an_early_end,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.7: the T1 fixtures under the Rhai runner ALONE (doc 17 §17
+// "Gate A", §22's M2 gate: "Gate A on the cross-tempo fixture"; 17b §1 (iii))
+// ---------------------------------------------------------------------------
+//
+// The twin of 17b cut M2.6 flies T1's answer, so a twin-flown fixture is the
+// native fixture by construction and proves Gate A only through the twin's
+// own comparison. Here the fixtures that field T1 fly the Rhai Standard
+// Doctrine ALONE (`support::with_rhai`: `tacsim::minds::standard_runner` on
+// the field's own doctrine, nothing native beside it), so every answer the
+// arena lands is T2's own — and each run must still be the native run's: one
+// event list, one hash sequence (and, where a stock recorder keeps them, one
+// sequence of thinks) at every cadence the fixture plays. Two shapes:
+//
+// * the dedicated siblings, which compare against the native run by hand —
+//   [`m2_the_two_t1_fixture_under_the_rhai_runner`] (the two-T1 fixture at
+//   all six drives, `M1B2_TWO_T1_FIRED` kept, the M1b.5 anchor),
+//   [`m2_the_unarmed_stock_mind_under_the_rhai_runner_at_three_cadences`]
+//   and the resumed fixture,
+//   [`m2_a_resumed_field_flies_the_rhai_runner_again_after_the_decode`];
+// * `support::under_the_rhai_runner` over a fixture body, which plays the
+//   body natively and then on the Rhai runner and holds every run the body's
+//   helpers note (`run`, `unarmed_run_on`, `lance_run`, `card_run`) and
+//   every think `Stock` records to the native pass's, index by index.
+//
+// The fixtures that field no T1 (the scripted minds of 17b cuts M1a.5,
+// M1b.0, M1b.1 and M1b.3's hint re-key, the faulting and pairing fixtures of
+// M2.2) are not repeated: a `ScriptedMind` answers its script whoever runs.
+
+/// **The two-T1 fixture on the Rhai runner alone** (17b cut M2.7):
+/// [`stock_minds`] — the (j) field's two reds, the armed one finding,
+/// classifying, locking, arming its slot and citing it — flown by T2 alone
+/// at 5,000, 1,000 and 500 ms and on the task's wakes at the three periods,
+/// each equal to the native run (events, the hash sequence, every think's
+/// view and answer); [`two_t1_slots_and_citations`] passes on the T2-flown
+/// run — [`M1B2_TWO_T1_FIRED`] kept — and its event list and answers are 17b
+/// cut M1b.5's anchor ([`M1B5_TWO_T1_EVENTS`], [`M1B5_TWO_T1_INTENTS`]): the
+/// answers recorded there are now the Rhai runner's.
+#[test]
+fn m2_the_two_t1_fixture_under_the_rhai_runner() {
+    let (native, native_kept) = stock_minds(Drive::Every(5_000));
+    support::under_the_rhai_runner("the two-T1 fixture", || {
+        let (first, kept) = stock_minds(Drive::Every(5_000));
+        assert_eq!(first.events, native.events, "the native event list");
+        assert_eq!(first.hashes, native.hashes, "the native hash sequence");
+        assert_eq!(kept, native_kept, "the native thinks");
+        two_t1_slots_and_citations(&first, &kept);
+        let events: Vec<(i64, &str)> = first
+            .events
+            .iter()
+            .map(|(t_ms, json, _)| (*t_ms, json.as_str()))
+            .collect();
+        assert_eq!(events, M1B5_TWO_T1_EVENTS, "17b cut M1b.5's anchor");
+        let answers: Vec<(u32, i64, String)> = kept
+            .iter()
+            .map(|(unit, t_ms, _, result)| {
+                (
+                    unit.0,
+                    *t_ms,
+                    serde_json::to_string(&result.intents).unwrap_or_default(),
+                )
+            })
+            .collect();
+        let recorded: Vec<(u32, i64, String)> = M1B5_TWO_T1_INTENTS
+            .iter()
+            .map(|(unit, t_ms, json)| (*unit, *t_ms, (*json).to_owned()))
+            .collect();
+        assert_eq!(answers, recorded, "17b cut M1b.5's recorded answers");
+        for drive in [
+            Drive::Every(1_000),
+            Drive::Every(500),
+            Drive::Task(5_000),
+            Drive::Task(1_000),
+            Drive::Task(500),
+        ] {
+            let (other, other_kept) = stock_minds(drive);
+            assert_eq!(other.events, native.events, "the event list at {drive:?}");
+            assert_eq!(
+                other.hashes, native.hashes,
+                "the hash sequence at {drive:?}"
+            );
+            assert_eq!(other_kept, native_kept, "a think at {drive:?}");
+        }
+    });
+}
+
+/// **The unarmed fixture on the Rhai runner alone** (17b cut M2.7; D-UM-48):
+/// [`unarmed_run`] — the weaponless stock mind that starts up, walks, holds
+/// under `HOLD` and withdraws under `WITHDRAW` with a hostile in its sight —
+/// with its stock recorder over `support::rhai_alone` on the field's
+/// doctrine, so every answer landed is T2's own: at 5,000, 1,000 and 500 ms
+/// the native run's event list, hash sequence and sequence of thinks, and
+/// the recorder's runner prints as the Rhai one.
+#[test]
+fn m2_the_unarmed_stock_mind_under_the_rhai_runner_at_three_cadences() {
+    let (native, native_kept, _) = unarmed_run(5_000);
+    let cfg = ArenaConfig {
+        reflex: reflex_cfg(),
+        ..ArenaConfig::default()
+    };
+    for cadence in [5_000_i64, 1_000, 500] {
+        let (run, kept, arena) = unarmed_run_on(cadence, Some(support::rhai_alone(&cfg)));
+        assert!(
+            format!("{:?}", arena.mind_runner).starts_with("Stock { inner: RhaiRunner"),
+            "the recorder over the Rhai runner"
+        );
+        assert_eq!(run.events, native.events, "the event list at {cadence} ms");
+        assert_eq!(
+            run.hashes, native.hashes,
+            "the hash sequence at {cadence} ms"
+        );
+        assert_eq!(kept, native_kept, "a think at {cadence} ms");
+        assert!(!kept.is_empty());
+    }
+}
+
+/// One run one substep a pulse from wall `wall` to `until_ms`: the ledger
+/// bytes, every substep's hash (accumulated after every step) and the wall
+/// of the next pulse. The tempo is pinned `Quiet` before every pulse, as
+/// `tests/conditions.rs`' resumed run pins it. The (j) field is pinned
+/// `Quiet` at construction (`arena_on`), so the uninterrupted run never lets
+/// its clock evaluate a tempo; the snapshot carries the clock's tempo and its
+/// signals (16b cut AF.1's `ClockState`) but deliberately not the pin, a test
+/// lever (`Clock::from_state`'s head: "a test that pins pins again"). Without
+/// the re-pin the decoded clock, holding the `Quiet` the pin held and the
+/// engaged signals `evaluate` kept recording under it, journals `Quiet` to
+/// `Engaged` one substep after the resume — the dropped pin, not a gap in the
+/// snapshot: an unpinned match resumes hash-continuous.
+fn stepped(arena: &mut Arena, mut wall: i64, until_ms: i64) -> (Vec<u8>, Vec<u64>, i64) {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    while arena.now_ms < until_ms {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        wall = arena.now_ms + SUBSTEP;
+        if out.ended.is_some() {
+            break;
+        }
+    }
+    (bytes, hashes, wall)
+}
+
+/// **A resumed field flies the Rhai runner again only because the fixture
+/// says so** (17b cut M2.7; 17b §5's adversarial F11): the (j) field's two
+/// stock minds flown by T2 alone (`support::with_rhai`), one substep a pulse
+/// with the tempo pinned ([`stepped`]), encoded at the first pulse boundary
+/// past 15,000 ms with no think in
+/// flight (no `pending` row, the landing scratch empty — the scratch does
+/// not round-trip) and decoded. The decode re-installs `default_mind_runner`
+/// — the decoded arena prints `NativeStockMind`, and since T2 ≡ T1 nothing
+/// else would show a resumed fixture flying T1 — so the fixture re-applies
+/// `support::with_rhai` and asserts the runner's `Debug` name holds
+/// `RhaiRunner` before it steps on. To 30,000 ms the stitched run (the T2
+/// field before the snapshot, the resumed T2 field after it) is the native
+/// run's: one hash sequence, one ledger byte for byte, one final state hash.
+#[test]
+fn m2_a_resumed_field_flies_the_rhai_runner_again_after_the_decode() {
+    const UNTIL_MS: i64 = 30_000;
+    // The native run, uninterrupted.
+    let mut native = the_j_field(Controller::Mind);
+    assert!(format!("{:?}", native.mind_runner).starts_with("NativeStockMind"));
+    let start = native.now_ms;
+    let (mut native_bytes, native_hashes, _) = stepped(&mut native, start, UNTIL_MS);
+    let native_events = events(&mut native, &mut native_bytes);
+
+    // The T2 field, to a pulse boundary past 15 s with no think in flight.
+    let mut flown = the_j_field(Controller::Mind);
+    support::with_rhai(&mut flown);
+    let start = flown.now_ms;
+    let (mut bytes, mut hashes, mut wall) = stepped(&mut flown, start, 15_000);
+    while flown.minds.values().any(|state| state.pending.is_some())
+        || !flown.mind_landings.is_empty()
+    {
+        let next = flown.now_ms + SUBSTEP;
+        let (more, more_hashes, after) = stepped(&mut flown, wall, next);
+        bytes.extend(more);
+        hashes.extend(more_hashes);
+        wall = after;
+    }
+    let snapshot = Snapshot::encode(&flown).expect("the arena encodes");
+    let mut resumed = Snapshot::decode(&snapshot.document, (*flown.definition).clone())
+        .expect("the document decodes");
+    let shown = format!("{:?}", resumed.mind_runner);
+    assert!(
+        shown.starts_with("NativeStockMind"),
+        "the decode re-installs the native stock mind: {shown:.40}"
+    );
+    support::with_rhai(&mut resumed);
+    let shown = format!("{:?}", resumed.mind_runner);
+    assert!(
+        shown.starts_with("RhaiRunner"),
+        "the resumed field flies the Rhai runner: {shown:.40}"
+    );
+    let now = resumed.now_ms;
+    let _ = resumed.resume_at(now);
+    let (more, more_hashes, _) = stepped(&mut resumed, now + SUBSTEP, UNTIL_MS);
+    bytes.extend(more);
+    hashes.extend(more_hashes);
+    let resumed_events = events(&mut resumed, &mut bytes);
+    assert!(
+        !native_events.is_empty() && hashes.len() > 100,
+        "the run journalled and stepped"
+    );
+    assert_eq!(hashes, native_hashes, "the stitched hash sequence");
+    assert_eq!(resumed_events, native_events, "the stitched ledger");
+    assert_eq!(bytes, native_bytes, "byte for byte");
+    assert_eq!(
+        tacsim::arena::state_hash(&resumed),
+        tacsim::arena::state_hash(&native),
+        "the final state hash"
+    );
+}
+
+/// [`m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing`] on the Rhai
+/// runner alone (17b cut M2.7): every recorded think held to the native one.
+#[test]
+fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
+        "m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing",
+        m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing,
+    );
+}
+
+/// [`m1a6_the_stock_mind_is_t0_on_the_first_decide_window`] on the Rhai
+/// runner alone (17b cut M2.7): the (j) field's T1 window flown by T2, held
+/// to the fixture's own assertions on T1 against T0 (it notes no run).
+#[test]
+fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
+        "m1a6_the_stock_mind_is_t0_on_the_first_decide_window",
+        m1a6_the_stock_mind_is_t0_on_the_first_decide_window,
+    );
+}
+
+/// [`l2_two_minds_are_one_squad_under_a_leader_at_three_cadences`] on the
+/// Rhai runner alone (17b cut M2.7): [`lance_field`]'s three minds under the
+/// leader's hinted `ENGAGE`, each of the fixture's three runs (5,000, 1,000
+/// and 500 ms) the native one's event list and hash sequence.
+#[test]
+fn l2_two_minds_are_one_squad_under_a_leader_at_three_cadences_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
+        "l2_two_minds_are_one_squad_under_a_leader_at_three_cadences",
+        l2_two_minds_are_one_squad_under_a_leader_at_three_cadences,
+    );
+}
+
+/// [`l2_a_self_charged_support_fights_on_doctrine`] on the Rhai runner alone
+/// (17b cut M2.7): [`charge_field`]'s self-charged and blind supporters,
+/// every recorded think held to the native one.
+#[test]
+fn l2_a_self_charged_support_fights_on_doctrine_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
+        "l2_a_self_charged_support_fights_on_doctrine",
+        l2_a_self_charged_support_fights_on_doctrine,
+    );
+}
+
+/// [`m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged`] on
+/// the Rhai runner alone (17b cut M2.7): the M1b.5 anchor's recorded events
+/// and answers, and the withdrawal at [`M1B5_WITHDRAWS_AT`] on the
+/// non-default doctrine, flown by T2.
+#[test]
+fn m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
+        "m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged",
+        m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged,
+    );
+}
+
+/// [`m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it`] on
+/// the Rhai runner alone (17b cut M2.7) — **M1b.5's card fixture**: a staged
+/// `Rearguard` read at the next think and the withdrawal at its `break_off`,
+/// at 5,000, 1,000 and 500 ms the same event list, hash sequence and
+/// sequence of thinks as the native run's.
+#[test]
+fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
+        "m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it",
+        m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it,
+    );
+}
+
+/// [`m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert`] on
+/// the Rhai runner alone (17b cut M2.7).
+#[test]
+fn m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
+        "m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert",
+        m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert,
+    );
+}
+
+/// [`m1b5_a_newer_order_is_obeyed_after_an_early_end`] on the Rhai runner
+/// alone (17b cut M2.7): the four thinks through the (j) field's Rhai runner
+/// (direct thinks, held to the fixture's own assertions; no run is noted).
+#[test]
+fn m1b5_a_newer_order_is_obeyed_after_an_early_end_under_the_rhai_runner() {
+    support::under_the_rhai_runner(
         "m1b5_a_newer_order_is_obeyed_after_an_early_end",
         m1b5_a_newer_order_is_obeyed_after_an_early_end,
     );

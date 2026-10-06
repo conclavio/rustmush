@@ -32,9 +32,19 @@
 //! and that `default_mind_runner` is still the native stock mind: nothing of
 //! production names the Rhai runner in this cut.
 //!
+//! **17b cut M2.7** adds the cross-platform pin (D-UM-28):
+//! `m2_the_twin_corpus_hashes_the_same_on_every_host`, `#[ignore]`d and run
+//! by name by a step of `ci.yml`'s `test` job on both hosts — the stock
+//! corpus flown by the Rhai Standard Doctrine alone and a float-probe mind,
+//! each match's digests pinned on the Windows blessing host.
+//!
 //! Recording a runner's answers (`Recorded`) and replaying them
 //! (`ScriptedMind`) are inputs to `Arena::step`, as a scripted intent log is,
 //! never a stand-in for a production module (16b §0.4).
+
+/// **17b cut M2.7**: the shipped-scale rig, for the cross-platform pin's
+/// stock corpus (`support::play` on the proving ground).
+mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -3039,4 +3049,357 @@ fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M2.7: the cross-platform pin (D-UM-28; 17b §1 (vi))
+// ---------------------------------------------------------------------------
+
+/// **The float probe** (17b cut M2.7; D-UM-28, doc 17 §23's "Floats across
+/// platforms"; 17b §5's feas F12 / adv F6): a scripted mind whose `think`
+/// runs a fixed battery of FLOAT expressions — `**` at non-integer exponents
+/// (the platform's `powf`, the libm call D-UM-28's risk is about), `/`, `%`,
+/// `+`, `-`, `*`, mixed INT and FLOAT — each against its value as this
+/// (Windows) host computes it, EXACTLY, and between two bracketing
+/// literals; the outcomes folded into an INT bitmask (bit `2k` exact, bit
+/// `2k + 1` bracketed, for the [`FLOAT_PROBE_NAMES`]' `k`; then four
+/// closing bits), written to `this.probe` and emitted as
+/// `helm(bits % 360000)` after a first think's `startup()`. Every operand is
+/// scaled by a FLOAT read off the view at think time, so nothing is folded
+/// at compile time. No FLOAT reaches memory or an intent (D-UM-28: a type
+/// fault).
+///
+/// **Rhai's FLOAT comparisons are not exact** (rhai 1.26.0 without
+/// `unchecked`, `func/builtin.rs`' `impl_float` and `packages/logic.rs`):
+/// `x == y` reads `|x - y| / max(|x|, |y|) <= f64::EPSILON`, so a value one
+/// unit in the last place away compares EQUAL — the probe would see no libm
+/// difference through `==`. So the exact bit tests the difference scaled
+/// past the tolerance, `(v - exact) * 1000000.0 == 0.0` (a near-equal
+/// subtraction is exact; any nonzero difference scaled by a million is
+/// past `EPSILON` against zero), and the closing bits pin the tolerance
+/// itself: bit 24 `0.1 + 0.2 == 0.3` TRUE under Rhai's `==`, bit 25
+/// `7.5 % 2.2 == 0.9` false (five units apart), bit 26 a mixed INT/FLOAT
+/// comparison true, bit 27 `0.1 + 0.2` against `0.3` exactly — false; and
+/// the exact test's own proof against `2.0 ** 0.5`'s next float up
+/// (`1.4142135623730954`, one unit in the last place): bit 28 Rhai's `==`
+/// TRUE, bit 29 the scaled test false.
+const FLOAT_PROBE: &str = r#"
+fn think(view, card) {
+    let one = if view.t_ms >= 0 { 1 } else { 2 };
+    let o = one * 1.0;
+    let v = [
+        (2.0 * o) ** 0.5,
+        (10.0 * o) ** -1.5,
+        (1.7 * o) ** 2.3,
+        (2.0 * o) ** (1.0 / 3.0),
+        (0.5 * o) ** 0.1,
+        (123.456 * o) ** 0.789,
+        (3 * o) / 7.0,
+        (7.5 * o) % 2.2,
+        (0.1 * o) + 0.2,
+        (one + 0.5) * 3,
+        (0.001 * o) * 7,
+        (9.99 * o) - 9
+    ];
+    let exact = [
+        1.4142135623730951,
+        0.03162277660168379,
+        3.388695291147646,
+        1.2599210498948732,
+        0.9330329915368074,
+        44.68925627034346,
+        0.42857142857142855,
+        0.8999999999999995,
+        0.30000000000000004,
+        4.5,
+        0.007,
+        0.9900000000000002
+    ];
+    let low = [1.41421, 0.03162, 3.38869, 1.25992, 0.93303, 44.68925, 0.42857, 0.89999, 0.29999, 4.49999, 0.00699, 0.98999];
+    let high = [1.41422, 0.03163, 3.3887, 1.25993, 0.93304, 44.68926, 0.42858, 0.90001, 0.30001, 4.50001, 0.00701, 0.99001];
+    let bits = 0;
+    let bit = 1;
+    for k in 0..12 {
+        if (v[k] - exact[k]) * 1000000.0 == 0.0 { bits += bit; }
+        bit *= 2;
+        if v[k] > low[k] && v[k] < high[k] { bits += bit; }
+        bit *= 2;
+    }
+    if v[8] == 0.3 { bits += bit; }
+    bit *= 2;
+    if v[7] == 0.9 { bits += bit; }
+    bit *= 2;
+    if one + 0.5 > 1 { bits += bit; }
+    bit *= 2;
+    if (v[8] - 0.3) * 1000000.0 == 0.0 { bits += bit; }
+    bit *= 2;
+    if v[0] == 1.4142135623730954 { bits += bit; }
+    bit *= 2;
+    if (v[0] - 1.4142135623730954) * 1000000.0 == 0.0 { bits += bit; }
+    this.probe = bits;
+    if !("started" in this) {
+        this.started = true;
+        startup();
+    }
+    helm(bits % 360000);
+}
+"#;
+
+/// The battery's twelve expressions, bit `2k` (exact) and `2k + 1`
+/// (bracketed) of [`FLOAT_PROBE`]'s mask, then the four closing bits — the
+/// names a divergence is printed with.
+const FLOAT_PROBE_NAMES: [&str; 12] = [
+    "2.0 ** 0.5",
+    "10.0 ** -1.5",
+    "1.7 ** 2.3",
+    "2.0 ** (1.0 / 3.0)",
+    "0.5 ** 0.1",
+    "123.456 ** 0.789",
+    "3 / 7.0",
+    "7.5 % 2.2",
+    "0.1 + 0.2",
+    "(1 + 0.5) * 3",
+    "0.001 * 7",
+    "9.99 - 9",
+];
+
+/// **The float probe's per-think bitmask, blessed on this Windows host**:
+/// every exact and every bracketed comparison true (bits 0 to 23), Rhai's
+/// tolerant `0.1 + 0.2 == 0.3` true (bit 24), `7.5 % 2.2 == 0.9` false (bit
+/// 25), the mixed comparison true (bit 26), `0.1 + 0.2` exactly `0.3` false
+/// (bit 27), Rhai's `==` against the next float up true (bit 28), the scaled
+/// test against it false (bit 29) — `369098751`, the same value on every
+/// think of every hull (the battery reads no per-think figure but the scale,
+/// which is `1.0`).
+const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
+
+/// **The cross-platform pins** (17b cut M2.7; D-UM-28), blessed on the
+/// Windows host from the first run: per row `(seed, the arena millisecond the
+/// match stopped at, the final state_hash, the SHA-256 of every substep hash
+/// accumulated over the match as little-endian u64s, the ledger's SHA-256)`.
+/// Rows one to three: the stock corpus (`2_350`, `2_351`, `2_352`, two
+/// stock tanks a side, the Rhai Standard Doctrine alone on both); row four:
+/// the float probe ([`FLOAT_PROBE`], two a side, seed `2_350`).
+const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
+    (
+        2_350,
+        172_250,
+        6_931_363_578_786_187_204,
+        "b9725b929e954e618d5ab136859ba1fb385d096cc67fcc8c0f222d5013546705",
+        "a4a3e658ce944726b2b3c9f981e57e970b970b0a36caebc667c43141528c838e",
+    ),
+    (
+        2_351,
+        193_500,
+        15_956_944_004_013_285_482,
+        "fade7344c1239ffac3d3148750ad01d552c595b08580c1c05654ce2be88f853c",
+        "0f7ca61c98addadaf8cd0c9c635df37196cc1222c47d84c77c8d4518d5572d91",
+    ),
+    (
+        2_352,
+        166_500,
+        13_222_333_907_623_429_933,
+        "37eb2f9dd49b1d5727a3bbfc5f7934e6e57f02fa357b647508766a8a9eefc303",
+        "c7c50fcc9108f58aaa26129fa84dae94d3a3e64c07a94e77b91a9a8288af24fd",
+    ),
+    (
+        2_350,
+        900_000,
+        5_294_377_710_264_198_459,
+        "1d0d07a9d7bfba31406efa2dbeb55b388acc549421aba35eb23407cdc076fbe9",
+        "e6c5f0eb17b65d4ac20f635534f2182369dec8d3b4d693e5b5e9ccb2449e7611",
+    ),
+];
+
+/// One probe think: `(unit, think_seq, this.probe, the intents)`.
+type ProbeThink = (ObjId, u64, Option<i64>, Vec<IntentKind>);
+
+/// The probe's recorder: every think's `(unit, think_seq, this.probe, the
+/// intents)`, the Rhai answer flown untouched (an input recorder, 16b §0.4).
+#[derive(Debug)]
+struct Probed {
+    inner: Arc<RhaiRunner>,
+    seen: Mutex<Vec<ProbeThink>>,
+}
+
+impl MindRunner for Probed {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        let result = self.inner.think(job);
+        let probe = match decode_memory(&result.memory).get("probe") {
+            Some(MemValue::Int(bits)) => Some(*bits),
+            _ => None,
+        };
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push((job.unit, job.think_seq, probe, result.intents.clone()));
+        }
+        result
+    }
+}
+
+/// Lowercase hexadecimal of `bytes`.
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// One pinned row of a played match.
+fn pinned_row(seed: u64, played: &support::Played) -> (u64, i64, u64, String, String) {
+    let mut substeps = Sha256::new();
+    for hash in &played.hashes {
+        substeps.update(hash.to_le_bytes());
+    }
+    (
+        seed,
+        played.t_ms,
+        played.state_hash,
+        hex_of(&substeps.finalize()),
+        hex_of(&played.ledger_digest),
+    )
+}
+
+/// **The twin corpus hashes the same on every host** (17b cut M2.7; doc 17
+/// §22's M2 sandbox tests, "the cross-platform hash test"; **D-UM-28**:
+/// cross-platform determinism between the Windows blessing host and the
+/// Linux build, asserted by a CI test over the twin corpus; doc 17 §23's
+/// "Floats across platforms").
+///
+/// **This is the D-UM-28 gate.** `#[ignore]`d, it is run by name by the
+/// named step `Cross-platform mind hashes (17b cut M2.7; D-UM-28)` of
+/// `.github/workflows/ci.yml`'s `test` job on BOTH matrix hosts
+/// (`ubuntu-latest`, `windows-latest`) before the workspace run — which is
+/// how the gated-test inventory (`ci_gated_test_inventory.rs`) finds it
+/// covered — and by hand with `-- --ignored --exact --nocapture`.
+///
+/// (a) **The stock corpus**: seeds 2,350, 2,351 and 2,352 of the shipped
+/// proving ground, two stock tanks a side, the Rhai Standard Doctrine alone
+/// (`Flier::T2`: `tacsim::minds::standard_runner`) on BOTH sides, one
+/// substep a pulse to the end (`support::play`, the substep hashes
+/// accumulated after every step); each match's stop millisecond, final
+/// `state_hash`, the SHA-256 of its substep hashes and its ledger digest
+/// pinned ([`M2_CROSS_PLATFORM_PINS`]). The stock script is FLOAT-FREE by
+/// design (D-UM-28: memory and intent arguments are INT; Standard Doctrine
+/// computes in integers), so these rows prove the interpreter, the op
+/// counts and the integer kernels portable — never a float.
+///
+/// (b) **The float probe carries the float risk**: [`FLOAT_PROBE`] flown two
+/// a side at seed 2,350 to the end, its own row pinned, and every think's
+/// bitmask pinned ([`M2_FLOAT_PROBE_BITMASK`]): a host whose `powf` (or any
+/// FLOAT built-in) answers another bit fails HERE, by the expression's name,
+/// before the row's hashes are compared.
+///
+/// A Linux divergence fails this test by name on the `ubuntu-latest` host.
+/// The pins are blessed on the Windows host; **a re-bless is a declared
+/// encoding re-bless with its reason in the 17b ledger row** (a moved
+/// script, rhai pin, hash fold or ledger encoding moves rows (a)), never a
+/// silent edit — and a float probe that parts between hosts is not re-blessed
+/// at all: it is D-UM-28's risk come true, for the lead.
+#[test]
+#[ignore = "D-UM-28's cross-platform pin: run by name by ci.yml's `Cross-platform mind hashes` step on both hosts"]
+fn m2_the_twin_corpus_hashes_the_same_on_every_host() {
+    use support::Muster;
+    let started = std::time::Instant::now();
+    // The pins are against THIS script: the shipped bytes (LF by
+    // .gitattributes) and their digest.
+    assert_eq!(
+        hex_of(&tacsim::minds::standard_digest().0),
+        tacsim::minds::STANDARD_SHA256,
+        "the Standard Doctrine's bytes"
+    );
+    let world = support::booted_world();
+    let cfg = ArenaConfig::default();
+    let reds = [Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)];
+    let blues = [Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)];
+    let mut rows: Vec<(u64, i64, u64, String, String)> = Vec::new();
+    // (a) The stock corpus, T2 against T2.
+    for seed in [2_350_u64, 2_351, 2_352] {
+        let played = support::play(&world, seed, &reds, &blues, support::rhai_alone(&cfg), None);
+        assert!(played.ended.is_some(), "seed {seed} ends");
+        rows.push(pinned_row(seed, &played));
+    }
+    // (b) The float probe.
+    let probe = Arc::new(Probed {
+        inner: Arc::new(
+            RhaiRunner::new(&cfg, FLOAT_PROBE, digest(FLOAT_PROBE))
+                .unwrap_or_else(|error| panic!("the float probe compiles: {error}")),
+        ),
+        seen: Mutex::new(Vec::new()),
+    });
+    let played = support::play(&world, 2_350, &reds, &blues, probe.clone(), None);
+    rows.push(pinned_row(2_350, &played));
+    let seen = probe
+        .seen
+        .lock()
+        .map(|seen| seen.clone())
+        .unwrap_or_default();
+    for (seed, t_ms, state_hash, substeps, ledger) in &rows {
+        println!(
+            "m2_cross_platform_pin: ({seed}, {t_ms}, {state_hash}, \"{substeps}\", \"{ledger}\"),"
+        );
+    }
+    let thinks = seen.len();
+    println!(
+        "m2_cross_platform_probe: thinks={thinks} bitmask={:?} pinned={M2_FLOAT_PROBE_BITMASK} \
+         wall_ms={} host={}",
+        seen.first().and_then(|(_, _, bits, _)| *bits),
+        started.elapsed().as_millis(),
+        std::env::consts::OS
+    );
+    // The probe first: a FLOAT that parts names its expression.
+    assert!(thinks > 0, "the probe thought");
+    for (unit, think_seq, bits, intents) in &seen {
+        let Some(bits) = *bits else {
+            panic!("#{} think {think_seq} wrote no probe: {intents:?}", unit.0);
+        };
+        if bits != M2_FLOAT_PROBE_BITMASK {
+            let parted: Vec<String> = (0..30_u32)
+                .filter(|bit| (bits ^ M2_FLOAT_PROBE_BITMASK) & (1 << bit) != 0)
+                .map(
+                    |bit| match FLOAT_PROBE_NAMES.get(usize::try_from(bit / 2).unwrap_or(99)) {
+                        Some(name) if bit % 2 == 0 => format!("{name} (exact)"),
+                        Some(name) => format!("{name} (bracketed)"),
+                        None => format!("closing bit {bit}"),
+                    },
+                )
+                .collect();
+            panic!(
+                "D-UM-28: the float probe parts from the blessing host on {} at #{} think \
+                 {think_seq}: {bits} against {M2_FLOAT_PROBE_BITMASK}; parted: {parted:?}",
+                std::env::consts::OS,
+                unit.0
+            );
+        }
+        assert_eq!(
+            intents.last(),
+            Some(&IntentKind::Heading {
+                mdeg: u32::try_from(bits % 360_000).unwrap_or(0)
+            }),
+            "#{} think {think_seq} emits the mask as its helm",
+            unit.0
+        );
+    }
+    let pinned: Vec<(u64, i64, u64, String, String)> = M2_CROSS_PLATFORM_PINS
+        .iter()
+        .map(|(seed, t_ms, state_hash, substeps, ledger)| {
+            (
+                *seed,
+                *t_ms,
+                *state_hash,
+                (*substeps).to_owned(),
+                (*ledger).to_owned(),
+            )
+        })
+        .collect();
+    for (at, (row, pin)) in rows.iter().zip(&pinned).enumerate() {
+        assert_eq!(
+            row,
+            pin,
+            "D-UM-28: row {at} ({}) parts from the blessing host's on {}",
+            if at < 3 {
+                "the stock corpus"
+            } else {
+                "the float probe"
+            },
+            std::env::consts::OS
+        );
+    }
+    assert_eq!(rows.len(), pinned.len());
 }
