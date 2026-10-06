@@ -338,6 +338,49 @@ orders_per_minute = 12
 # (17b cut M1b.5) a LAB knob: who flies the unseated hulls, "reflex" (today's
 # machine) or "mind" (the native stock mind on Line); production leaves it unset.
 # fill_controller = "reflex"
+# (17b cut M3.1) the Compact class table, doc 17 section 9's: one table per
+# class word ("0", "I", "II", "III"), and any figure left out -- or any class
+# left out -- is the stock row's. Each is checked by name at boot: think_ms
+# 250 to 5000 in steps of 250 and never longer than the class below; ops 100
+# to 4500; rows 1 to 32 and odds_rows up to rows; slots 1 to 6; memory_keys 1
+# to 128 -- ops, rows, slots and memory_keys never fewer than the class
+# below's; line_to 0 to 8; profiles 1 to 4. The stock table:
+# [tacsim.minds.classes."0"]
+# think_ms = 1000
+# ops = 400
+# rows = 8
+# odds_rows = 0
+# slots = 1
+# memory_keys = 16
+# line_to = 1
+# profiles = 1
+# [tacsim.minds.classes.I]
+# think_ms = 1000
+# ops = 1500
+# rows = 12
+# odds_rows = 2
+# slots = 2
+# memory_keys = 32
+# line_to = 2
+# profiles = 2
+# [tacsim.minds.classes.II]
+# think_ms = 500
+# ops = 3000
+# rows = 16
+# odds_rows = 4
+# slots = 4
+# memory_keys = 64
+# line_to = 4
+# profiles = 3
+# [tacsim.minds.classes.III]
+# think_ms = 250
+# ops = 4500
+# rows = 24
+# odds_rows = 8
+# slots = 6
+# memory_keys = 128
+# line_to = 6
+# profiles = 4
 
 [tacsim.sensors]
 pass_ms = 1000

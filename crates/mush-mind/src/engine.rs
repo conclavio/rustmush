@@ -47,6 +47,14 @@ pub const MAX_MEMORY_ANY_CLASS: Limits = Limits {
     array_len: 32,
 };
 
+/// **The largest op ceiling any class may run** (doc 17 §9's class table, Class
+/// III's `ops`; 17b cut M3.1): 4,500 operations plus fees a think. The default
+/// engine backstop ([`EngineLimits::default`]) — the one engine every class's
+/// think runs on — and the ceiling past which [`Sandbox::think`] refuses a
+/// think before running it ([`crate::Fault::Limit`]): a caller that hands a
+/// think more than the engine was built for is refused, never trusted.
+pub const MAX_OPS_ANY_CLASS: u64 = 4_500;
+
 /// **The engine's map-size backstop** (D-UM-25 as amended 2026-10-04 after
 /// review, finding 6): the data-size limits are a shared backstop against
 /// runaway allocation only — twice the largest valid Class III memory —
@@ -87,10 +95,11 @@ pub struct EngineLimits {
 }
 
 impl Default for EngineLimits {
-    /// Class I's ceiling (doc 17 §9, D-UM-35): 1,500 operations.
+    /// The largest class's ceiling (doc 17 §9, D-UM-35; 17b cut M3.1):
+    /// [`MAX_OPS_ANY_CLASS`], 4,500 operations — Class I's 1,500 until M3.1.
     fn default() -> Self {
         EngineLimits {
-            max_ops_backstop: 1_500,
+            max_ops_backstop: MAX_OPS_ANY_CLASS,
         }
     }
 }
@@ -105,6 +114,9 @@ pub struct Sandbox {
     /// One compiled mind per `(source digest, MIND_ABI)` (D-UM-27): 300 hulls
     /// on 300 differently tuned cards compile once.
     pub(crate) asts: Mutex<BTreeMap<(Digest, &'static str), Arc<Compiled>>>,
+    /// **The engine's op backstop** (17b cut M3.1): `limits.max_ops_backstop`
+    /// as built, which [`Sandbox::think`] refuses a think's `ops_limit` past.
+    pub(crate) max_ops_backstop: u64,
 }
 
 impl fmt::Debug for Sandbox {
@@ -210,6 +222,7 @@ impl Sandbox {
         Sandbox {
             engine,
             asts: Mutex::new(BTreeMap::new()),
+            max_ops_backstop: limits.max_ops_backstop,
         }
     }
 }
@@ -403,7 +416,8 @@ mod tests {
         assert!(engine.fail_on_invalid_map_property());
         assert!(!engine.allow_anonymous_fn());
         assert_eq!(engine.optimization_level(), OptimizationLevel::Simple);
-        assert_eq!(EngineLimits::default().max_ops_backstop, 1_500);
+        assert_eq!(EngineLimits::default().max_ops_backstop, 4_500);
+        assert_eq!(MAX_OPS_ANY_CLASS, 4_500);
     }
 
     /// The pool shares one sandbox across workers (17b cut M4).

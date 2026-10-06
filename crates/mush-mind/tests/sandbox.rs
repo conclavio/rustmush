@@ -1096,6 +1096,12 @@ fn callbacks_spend_the_same_budget_and_keep_their_cause_words() {
 /// think whose limit sits above the engine's backstop ends `limit`, not
 /// `ops` (`EngineLimits`' doc); and the function cap (32) is a parse-time
 /// limit: a 33rd function never compiles (review finding T4).
+///
+/// **17b cut M3.1** moved the proof onto the backstop exactly (`ops_limit`
+/// 100, was 1,000): a think whose limit is PAST the backstop is now refused
+/// before it runs (`m3_a_think_past_the_backstop_is_refused_before_it_runs`),
+/// so the race between Rhai's cap and the budget is run at the one limit
+/// where both could trip — and Rhai's still wins, at the same op.
 #[test]
 fn the_backstop_ends_a_think_limit_and_the_function_cap_is_a_compile_error() {
     let low = Sandbox::new(
@@ -1111,7 +1117,7 @@ fn the_backstop_ends_a_think_limit_and_the_function_cap_is_a_compile_error() {
         vec![Dynamic::UNIT, Dynamic::UNIT],
         b"",
         &CLASS_I,
-        1_000,
+        100,
         0,
     );
     assert_eq!(result, Err(Fault::Limit));
@@ -1185,4 +1191,150 @@ fn a_fault_text_and_a_trace_line_are_bounded_and_have_no_control_characters() {
         }
         other => panic!("answered {other:?}"),
     }
+}
+
+/// **17b cut M3.1: a think asking past the engine's backstop is refused
+/// before it runs** — fail closed (doc 17 §9's class table: the backstop is
+/// the largest class's ceiling, [`mush_mind::MAX_OPS_ANY_CLASS`] 4,500, and
+/// [`EngineLimits::default`] is it). On the stock backstop a think with
+/// `ops_limit` 4,501 answers `limit` with an empty trace, nothing charged and
+/// no operation run (the script would have printed and written); at 4,500 the
+/// same think runs clean.
+#[test]
+fn m3_a_think_past_the_backstop_is_refused_before_it_runs() {
+    assert_eq!(EngineLimits::default().max_ops_backstop, 4_500);
+    assert_eq!(mush_mind::MAX_OPS_ANY_CLASS, 4_500);
+    let stock = Sandbox::new(&EngineLimits::default(), |_| {});
+    let source = r#"fn think(a, b) { print("ran"); this.k = 1; }"#;
+    let compiled = compile(&stock, source).unwrap();
+    let (result, trace) = think_with(
+        &stock,
+        &compiled,
+        vec![Dynamic::UNIT, Dynamic::UNIT],
+        b"",
+        &CLASS_I,
+        4_501,
+        20,
+    );
+    assert_eq!(result, Err(Fault::Limit));
+    assert!(trace.is_empty(), "nothing ran: {trace:?}");
+    assert_eq!(budget::spent(), (0, 0), "no operation and no fee");
+    let (result, trace) = think_with(
+        &stock,
+        &compiled,
+        vec![Dynamic::UNIT, Dynamic::UNIT],
+        b"",
+        &CLASS_I,
+        4_500,
+        20,
+    );
+    assert_eq!(wrote(&result), r#"{"k":1}"#);
+    assert_eq!(trace, vec!["ran".to_owned()]);
+}
+
+/// A memory of `n` integer keys, `k00` … .
+fn keys(n: usize) -> Memory {
+    (0..n)
+        .map(|i| (format!("k{i:02}"), Value::Int(1)))
+        .collect()
+}
+
+/// **17b cut M3.1: a memory past a lowered cap keeps its keys and admits no
+/// new one** (D-UM-30; the lead's ruling). Under the cap the check is
+/// [`memory::check`]'s, exactly; over it the memory's keys must be a subset
+/// of the keys the think was handed — kept whole, or one dropped, passes; a
+/// swap (one dropped, one new) and a key added are `Count`. Through
+/// [`Sandbox::think`] the handed keys are the decoded memory's own: forty
+/// keys handed under Class I's 32 are kept, written back, thinned, and a swap
+/// or a new key faults `memory`; a memory written from nothing past the cap
+/// still faults at 33 as before.
+#[test]
+fn m3_a_memory_past_a_lowered_cap_keeps_its_keys_and_admits_none() {
+    use std::collections::BTreeSet;
+    let forty = keys(40);
+    let held: BTreeSet<String> = forty.keys().cloned().collect();
+    assert_eq!(memory::check_held(&forty, &CLASS_I, &held), Ok(()));
+    let mut thinner = forty.clone();
+    thinner.remove("k00");
+    assert_eq!(memory::check_held(&thinner, &CLASS_I, &held), Ok(()));
+    let mut swapped = thinner.clone();
+    swapped.insert("new".to_owned(), Value::Int(1));
+    assert_eq!(
+        memory::check_held(&swapped, &CLASS_I, &held),
+        Err(MemError::Count(40)),
+        "a swap past the cap is a new key"
+    );
+    // Under the cap the handed keys are not read: `check`, exactly.
+    assert_eq!(
+        memory::check_held(&keys(32), &CLASS_I, &BTreeSet::new()),
+        memory::check(&keys(32), &CLASS_I)
+    );
+    assert_eq!(
+        memory::check_held(&keys(33), &CLASS_I, &BTreeSet::new()),
+        Err(MemError::Count(33))
+    );
+    // Past the cap the per-key rules still hold.
+    let mut long = forty.clone();
+    long.insert("s".to_owned(), Value::Str("x".repeat(33)));
+    let mut long_held = held.clone();
+    long_held.insert("s".to_owned());
+    assert_eq!(
+        memory::check_held(&long, &CLASS_I, &long_held),
+        Err(MemError::Value("s".to_owned()))
+    );
+
+    // Through a think: the handed keys are the decoded memory's.
+    let sandbox = sandbox();
+    let handed = memory::encode(&forty);
+    let run = |source: &str| {
+        let compiled = compile(&sandbox, source).unwrap_or_else(|e| panic!("{source}: {e}"));
+        think_with(
+            &sandbox,
+            &compiled,
+            vec![Dynamic::UNIT, Dynamic::UNIT],
+            &handed,
+            &CLASS_I,
+            ROOMY,
+            20,
+        )
+        .0
+    };
+    assert_eq!(
+        run("fn think(a, b) { this.k01 = 2; }").map(|outcome| outcome.memory.len()),
+        Ok(handed.len()),
+        "the forty kept whole, one rewritten"
+    );
+    assert!(
+        run(r#"fn think(a, b) { this.remove("k00"); }"#).is_ok(),
+        "a key may be dropped"
+    );
+    assert_eq!(
+        run(r#"fn think(a, b) { this.remove("k00"); this.fresh = 1; }"#),
+        Err(Fault::Memory(MemError::Count(40))),
+        "a swap is refused"
+    );
+    assert_eq!(
+        run("fn think(a, b) { this.fresh = 1; }"),
+        Err(Fault::Memory(MemError::Count(41))),
+        "a new key is refused"
+    );
+    let compiled = compile(
+        &sandbox,
+        "fn think(a, b) { for i in 0..33 { this[`k${i}`] = i; } }",
+    )
+    .unwrap();
+    let (result, _) = think_with(
+        &sandbox,
+        &compiled,
+        vec![Dynamic::UNIT, Dynamic::UNIT],
+        b"",
+        &CLASS_I,
+        ROOMY,
+        20,
+    );
+    assert_eq!(
+        result,
+        Err(Fault::Memory(MemError::Count(33))),
+        "from nothing, 33 is past the cap as before"
+    );
 }

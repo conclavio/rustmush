@@ -128,6 +128,17 @@ fn rules() -> RulesValue {
 
 /// The smallest M32 unit the arena carries: one hull section.
 fn tactical_unit(id: ObjId) -> TacticalUnit {
+    // 17b cut M3.1 (plan F6): a Class I core in the hull, through
+    // `tacsim::definitions::core::core_component` — the shape `bind` lays
+    // down from content — so the hull holds two condition slots and a mind
+    // on it thinks at Class I's figures, as it did before cores existed.
+    let (core, capability) = tacsim::definitions::core::core_component(
+        "hull",
+        tacsim::arena::core::CoreClass::I,
+        dref("component", "tacsim.unit.line_tank.core"),
+        dref("schema", tacsim::definitions::unit::CORE_RULES_SCHEMA),
+    )
+    .expect("a core");
     let spec = UnitSpec {
         definition: dref("unit", "tacsim.unit.line_tank"),
         sections: vec![SectionSpec {
@@ -151,8 +162,8 @@ fn tactical_unit(id: ObjId) -> TacticalUnit {
             }],
         }],
         unit_cells: Vec::new(),
-        components: Vec::new(),
-        capabilities: Vec::new(),
+        components: vec![core],
+        capabilities: vec![capability],
         mobility: None,
         rules: rules(),
     };

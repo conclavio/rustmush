@@ -699,6 +699,16 @@ pub struct MindsConfig {
     /// doctrine` stays true under `mind`: T1 IS Standard Doctrine.
     #[serde(default = "default_fill_controller")]
     pub fill_controller: String,
+    /// **The Compact class table** (17b cut M3.1; doc 17 §9, D-UM-35): the
+    /// four classes' figures, keyed by class word —
+    /// `[tacsim.minds.classes.II]` / `think_ms = 500` and so on. An absent key,
+    /// an absent class and an absent figure each read
+    /// [`ClassTable::STOCK`](crate::arena::core::ClassTable::STOCK)'s
+    /// (the wire shape is [`crate::arena::core::ClassTable`]'s), and
+    /// [`MindsConfig::validate`] holds every figure by name. Captured into
+    /// each arena at check-out (`crate::arena_task::spawn_arena`).
+    #[serde(default)]
+    pub classes: crate::arena::core::ClassTable,
 }
 
 /// `fill_controller`'s default: today's machine.
@@ -713,6 +723,8 @@ impl Default for MindsConfig {
             // `min_odds`.
             odds_floor_permille: 100,
             fill_controller: default_fill_controller(),
+            // 17b cut M3.1: doc 17 §9's table.
+            classes: crate::arena::core::ClassTable::STOCK,
         }
     }
 }
@@ -744,6 +756,97 @@ impl MindsConfig {
                 "[tacsim.minds].fill_controller must be reflex or mind (it is \"{}\")",
                 self.fill_controller
             ));
+        }
+        self.validate_classes()
+    }
+
+    /// **`[tacsim.minds].classes`, by name** (17b cut M3.1; doc 17 §9,
+    /// D-UM-35), lowest class first and each class's figures in the row's
+    /// order, each refused in one sentence naming the class, the figure and
+    /// its value:
+    ///
+    /// * `think_ms` 250 to 5000 in steps of 250 (the substep's lattice), and
+    ///   no longer than the class below's — a better core never thinks less
+    ///   often;
+    /// * `ops` 100 to `mush_mind::MAX_OPS_ANY_CLASS` (the engine's backstop:
+    ///   a think past it is refused before it runs), and no fewer than the
+    ///   class below's;
+    /// * `rows` 1 to 32 and no fewer than the class below's; `odds_rows` 0 to
+    ///   the class's own `rows`;
+    /// * `slots` 1 to [`crate::arena::core::MAX_CONDITION_SLOTS`] and no fewer
+    ///   than the class below's;
+    /// * `memory_keys` 1 to `mush_mind::MAX_MEMORY_ANY_CLASS.keys` (the
+    ///   engine's data-size backstop is twice that) and no fewer than the
+    ///   class below's;
+    /// * `line_to` 0 to 8; `profiles` 1 to 4.
+    ///
+    /// # Errors
+    ///
+    /// The first refusal, as one sentence.
+    fn validate_classes(&self) -> Result<(), String> {
+        use crate::arena::core::{CoreClass, CoreProfile, MAX_CONDITION_SLOTS};
+        let to_u64 = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+        let mut below: Option<CoreProfile> = None;
+        for class in CoreClass::ALL {
+            let row = self.classes.row(class);
+            let key = |figure: &str| format!("[tacsim.minds].classes.{}.{figure}", class.as_str());
+            let think = row.think_ms;
+            if !(250..=5_000).contains(&think) || think % 250 != 0 {
+                return Err(format!(
+                    "{} must be 250 to 5000 in steps of 250 (it is {think})",
+                    key("think_ms")
+                ));
+            }
+            between(&key("ops"), 100, mush_mind::MAX_OPS_ANY_CLASS, row.ops)?;
+            between(&key("rows"), 1, 32, to_u64(row.rows))?;
+            between(
+                &key("odds_rows"),
+                0,
+                to_u64(row.rows),
+                to_u64(row.odds_rows),
+            )?;
+            between(
+                &key("slots"),
+                1,
+                to_u64(MAX_CONDITION_SLOTS),
+                to_u64(row.slots),
+            )?;
+            between(
+                &key("memory_keys"),
+                1,
+                to_u64(mush_mind::MAX_MEMORY_ANY_CLASS.keys),
+                to_u64(row.memory_keys),
+            )?;
+            between(&key("line_to"), 0, 8, u64::from(row.line_to))?;
+            between(&key("profiles"), 1, 4, u64::from(row.profiles))?;
+            if let Some(lower) = below {
+                let name = lower.class.as_str();
+                if think > lower.think_ms {
+                    return Err(format!(
+                        "{} must be at most class {name}'s {} (it is {think})",
+                        key("think_ms"),
+                        lower.think_ms
+                    ));
+                }
+                for (figure, value, floor) in [
+                    ("ops", row.ops, lower.ops),
+                    ("rows", to_u64(row.rows), to_u64(lower.rows)),
+                    ("slots", to_u64(row.slots), to_u64(lower.slots)),
+                    (
+                        "memory_keys",
+                        to_u64(row.memory_keys),
+                        to_u64(lower.memory_keys),
+                    ),
+                ] {
+                    if value < floor {
+                        return Err(format!(
+                            "{} must be at least class {name}'s {floor} (it is {value})",
+                            key(figure)
+                        ));
+                    }
+                }
+            }
+            below = Some(row);
         }
         Ok(())
     }
@@ -1715,5 +1818,152 @@ mod tests {
                 ))
             );
         }
+    }
+
+    /// **17b cut M3.1** (doc 17 §9, D-UM-35): `[tacsim.minds].classes` reads
+    /// the stock table where it is absent — the whole key, a class, a figure
+    /// — the stock table validates, and every refusal names its class, its
+    /// figure and its value in one sentence.
+    #[test]
+    fn m3_the_class_table_validates_by_name() {
+        use super::MindsConfig;
+        use crate::arena::core::{ClassTable, CoreClass};
+        // Absent reads stock: the key, a class, a figure.
+        let absent: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100}"#).expect("decodes");
+        assert_eq!(absent.classes, ClassTable::STOCK);
+        let one: MindsConfig = serde_json::from_str(
+            r#"{"odds_floor_permille": 100, "classes": {"III": {"think_ms": 500}}}"#,
+        )
+        .expect("decodes");
+        assert_eq!(one.classes.row(CoreClass::III).think_ms, 500);
+        assert_eq!(one.classes.row(CoreClass::III).ops, 4_500);
+        assert_eq!(one.validate(), Ok(()), "III at II's period is lawful");
+        assert_eq!(MindsConfig::default().classes, ClassTable::STOCK);
+        assert_eq!(MindsConfig::default().validate(), Ok(()));
+        // Every refusal, by name: (the class, the JSON figures, the sentence).
+        let refused = |class: &str, figures: &str| {
+            let text =
+                format!(r#"{{"odds_floor_permille": 100, "classes": {{"{class}": {figures}}}}}"#);
+            let config: MindsConfig = serde_json::from_str(&text).expect("decodes");
+            config.validate().expect_err("refused")
+        };
+        for (class, figures, sentence) in [
+            (
+                "I",
+                r#"{"think_ms": 200}"#,
+                "[tacsim.minds].classes.I.think_ms must be 250 to 5000 in steps of 250 (it is 200)",
+            ),
+            (
+                "I",
+                r#"{"think_ms": 300}"#,
+                "[tacsim.minds].classes.I.think_ms must be 250 to 5000 in steps of 250 (it is 300)",
+            ),
+            (
+                "0",
+                r#"{"think_ms": 5250}"#,
+                "[tacsim.minds].classes.0.think_ms must be 250 to 5000 in steps of 250 (it is 5250)",
+            ),
+            (
+                "II",
+                r#"{"think_ms": 1250}"#,
+                "[tacsim.minds].classes.II.think_ms must be at most class I's 1000 (it is 1250)",
+            ),
+            (
+                "I",
+                r#"{"ops": 99}"#,
+                "[tacsim.minds].classes.I.ops must be 100 to 4500 (it is 99)",
+            ),
+            (
+                "III",
+                r#"{"ops": 4501}"#,
+                "[tacsim.minds].classes.III.ops must be 100 to 4500 (it is 4501)",
+            ),
+            (
+                "II",
+                r#"{"ops": 1000}"#,
+                "[tacsim.minds].classes.II.ops must be at least class I's 1500 (it is 1000)",
+            ),
+            (
+                "0",
+                r#"{"rows": 0}"#,
+                "[tacsim.minds].classes.0.rows must be 1 to 32 (it is 0)",
+            ),
+            (
+                "III",
+                r#"{"rows": 33}"#,
+                "[tacsim.minds].classes.III.rows must be 1 to 32 (it is 33)",
+            ),
+            (
+                "II",
+                r#"{"rows": 10}"#,
+                "[tacsim.minds].classes.II.rows must be at least class I's 12 (it is 10)",
+            ),
+            (
+                "I",
+                r#"{"odds_rows": 13}"#,
+                "[tacsim.minds].classes.I.odds_rows must be 0 to 12 (it is 13)",
+            ),
+            (
+                "0",
+                r#"{"slots": 0}"#,
+                "[tacsim.minds].classes.0.slots must be 1 to 6 (it is 0)",
+            ),
+            (
+                "III",
+                r#"{"slots": 7}"#,
+                "[tacsim.minds].classes.III.slots must be 1 to 6 (it is 7)",
+            ),
+            (
+                "II",
+                r#"{"slots": 1}"#,
+                "[tacsim.minds].classes.II.slots must be at least class I's 2 (it is 1)",
+            ),
+            (
+                "0",
+                r#"{"memory_keys": 0}"#,
+                "[tacsim.minds].classes.0.memory_keys must be 1 to 128 (it is 0)",
+            ),
+            (
+                "III",
+                r#"{"memory_keys": 129}"#,
+                "[tacsim.minds].classes.III.memory_keys must be 1 to 128 (it is 129)",
+            ),
+            (
+                "II",
+                r#"{"memory_keys": 31}"#,
+                "[tacsim.minds].classes.II.memory_keys must be at least class I's 32 (it is 31)",
+            ),
+            (
+                "I",
+                r#"{"line_to": 9}"#,
+                "[tacsim.minds].classes.I.line_to must be 0 to 8 (it is 9)",
+            ),
+            (
+                "I",
+                r#"{"profiles": 0}"#,
+                "[tacsim.minds].classes.I.profiles must be 1 to 4 (it is 0)",
+            ),
+            (
+                "I",
+                r#"{"profiles": 5}"#,
+                "[tacsim.minds].classes.I.profiles must be 1 to 4 (it is 5)",
+            ),
+        ] {
+            assert_eq!(refused(class, figures), sentence, "{class} {figures}");
+        }
+        // A word that is no class, and a figure that is none, refuse at decode.
+        let wrong = serde_json::from_str::<MindsConfig>(
+            r#"{"odds_floor_permille": 100, "classes": {"IV": {}}}"#,
+        )
+        .expect_err("no class IV")
+        .to_string();
+        assert!(wrong.contains("`IV` is not a core class"), "{wrong}");
+        assert!(
+            serde_json::from_str::<MindsConfig>(
+                r#"{"odds_floor_permille": 100, "classes": {"I": {"speed": 1}}}"#
+            )
+            .is_err()
+        );
     }
 }

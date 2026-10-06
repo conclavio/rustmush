@@ -22,8 +22,8 @@
 //!   its own obeyed-order local after the early ends — as T1 passes
 //!   `obeyed(view, mem)` and never `view.order`: 17b §5's feas F6);
 //! * `line_to` → `stock_mind::line_between` (a `()` cell on either end is a
-//!   line, with no trace), capped at [`super::STOCK_LINE_TO_PER_THINK`] a
-//!   think;
+//!   line, with no trace), capped at the row's `line_to` a think (17b cut
+//!   M3.1; Class I's [`super::STOCK_LINE_TO_PER_THINK`]);
 //! * `entry_cell`, `far_entry_cell`, `patrol_step`, `fall_back_to_waypoint`
 //!   → the motor's pickers (`crate::arena::motor`), and `stand_off_cell` →
 //!   `stock_mind::stand_off_of`, every one through the context's map and as
@@ -49,6 +49,7 @@
 
 use mush_mind::rhai::{Array, Dynamic, EvalAltResult, INT, ImmutableString};
 
+use super::RAND_MAX_K;
 use super::Registrar;
 use super::api::{
     Contact, View, bounded, cell, cell_arg, contact_int, contact_of, int, opt, opt_cell_arg,
@@ -59,7 +60,6 @@ use super::fees::{
     FEE_HEALTH, FEE_HOLDS_ROW, FEE_HOSTILE_BASE, FEE_HOSTILE_ROW, FEE_LINE_TO, FEE_NAV, FEE_RAND,
     FEE_RANGES, FEE_READ, charge, per_row,
 };
-use super::{RAND_MAX_K, STOCK_LINE_TO_PER_THINK};
 use crate::arena::index::range_between;
 use crate::arena::mind::{MindView, ViewContact};
 use crate::arena::motion::{cos_fx, sin_fx};
@@ -176,18 +176,26 @@ fn ranges(v: &mut View, band: INT, obey_order: bool) -> Result<Ranges, Box<EvalA
     Ok(Ranges(view_ranges(view, band, order)))
 }
 
-/// **`line_to(v, id)`** — fee 20; the third of a think refused `limit`; an id
-/// the view does not hold `unknown`.
+/// **The refusal a `line_to` past the cap raises** (17b cut M3.1): Class I's
+/// sentence byte for byte (`twice`), and the cap spelled out for another row.
+fn line_to_cap_text(max: u32) -> String {
+    match max {
+        1 => "line_to is traced at most once a think".to_owned(),
+        2 => "line_to is traced at most twice a think".to_owned(),
+        n => format!("line_to is traced at most {n} times a think"),
+    }
+}
+
+/// **`line_to(v, id)`** — fee 20; a call past the think's cap refused `limit`
+/// (17b cut M3.1: the row's `line_to`, `ThinkContext::line_to_max` — Class I's
+/// two, so the third); an id the view does not hold `unknown`.
 fn line_to(v: &mut View, id: INT) -> Result<bool, Box<EvalAltResult>> {
     let view = &v.0;
     with(|ctx| {
         ctx.line_to_calls = ctx.line_to_calls.saturating_add(1);
-        if ctx.line_to_calls > STOCK_LINE_TO_PER_THINK {
-            return Err(refuse(
-                ctx,
-                REFUSED_LIMIT,
-                "line_to is traced at most twice a think",
-            ));
+        if ctx.line_to_calls > ctx.line_to_max {
+            let text = line_to_cap_text(ctx.line_to_max);
+            return Err(refuse(ctx, REFUSED_LIMIT, &text));
         }
         charge(FEE_LINE_TO);
         let Some(row) = stock_mind::contact(view, contact_of(id)) else {

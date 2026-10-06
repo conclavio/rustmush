@@ -16300,6 +16300,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         store.replace_minds_config_for_tests(tacsim::config::MindsConfig {
             odds_floor_permille: 50,
             fill_controller: "mind".to_owned(),
+            ..tacsim::config::MindsConfig::default()
         });
     }
     rig.fly_with_ai(1, 1, 2).await;
@@ -16309,6 +16310,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         store.replace_minds_config_for_tests(tacsim::config::MindsConfig {
             odds_floor_permille: 100,
             fill_controller: "mind".to_owned(),
+            ..tacsim::config::MindsConfig::default()
         });
     }
     assert_eq!(

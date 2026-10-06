@@ -17,6 +17,7 @@
 //! see, and a script-to-script call runs on an empty scope —
 //! `the_scope_contract_a_function_body_sees_no_call_scope_and_a_native_function_resolves_at_depth`).
 
+use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use rhai::{CallFnOptions, Dynamic, EvalAltResult, Map, Scope};
@@ -136,8 +137,11 @@ impl Sandbox {
     /// **Run one think** (doc 17 §6–§8): answers the think's result and its
     /// trace ([`crate::trace`]), the trace on every path.
     ///
-    /// 1. The budget opens at `ops_limit` and charges `fee_per_think`; the
-    ///    trace is cleared.
+    /// 1. The budget opens at `ops_limit` and the trace is cleared; **a think
+    ///    whose `ops_limit` is past the engine's own backstop
+    ///    ([`crate::EngineLimits::max_ops_backstop`] as built) is
+    ///    [`Fault::Limit`] here**, nothing charged, nothing run, an empty trace
+    ///    (17b cut M3.1: fail closed); otherwise `fee_per_think` is charged.
     /// 2. The memory: empty bytes are the empty map (a fresh sortie); bytes
     ///    that do not decode are the empty map too — the arena's own rule: a
     ///    mind handed them starts over rather than faulting.
@@ -160,8 +164,10 @@ impl Sandbox {
     ///    the last kernel call has no next operation to trip on, and this is
     ///    that operation ([`Fault::Ops`]); then `this` is read back (replaced
     ///    by something not a map: [`Fault::Type`]), converted and checked
-    ///    ([`memory::from_map`]: a FLOAT is [`Fault::Type`] holding its key,
-    ///    a wrong shape [`Fault::Memory`]) and encoded.
+    ///    ([`memory::from_map_held`]: a FLOAT is [`Fault::Type`] holding its key,
+    ///    a wrong shape [`Fault::Memory`] — and, since 17b cut M3.1, a memory
+    ///    past `limits.keys` passes only when its keys are a subset of the keys
+    ///    the think was handed, [`memory::check_held`]) and encoded.
     ///
     /// **`exit()` is a return.** `LanguageCorePackage`'s `exit()` and
     /// `exit(value)` end the script at once, and `call_fn` reads an exit as
@@ -175,22 +181,31 @@ impl Sandbox {
     /// memory (D-UM-31).
     pub fn think(&self, think: Think<'_>) -> (Result<Outcome, Fault>, Vec<String>) {
         budget::begin(think.ops_limit);
-        budget::charge(think.fee_per_think);
         trace::begin();
         engine::refusal_begin();
+        // 17b cut M3.1: fail closed — a think asking for more than this
+        // engine was built for is refused before it runs, with nothing spent
+        // and an empty trace.
+        if think.ops_limit > self.max_ops_backstop {
+            return (Err(Fault::Limit), trace::take());
+        }
+        budget::charge(think.fee_per_think);
         let result = self.run(think);
         (result, trace::take())
     }
 
     /// Steps 2–6 of [`Sandbox::think`].
     fn run(&self, think: Think<'_>) -> Result<Outcome, Fault> {
-        let map = if think.memory.is_empty() {
-            Map::new()
+        let decoded = if think.memory.is_empty() {
+            memory::Memory::new()
         } else {
-            memory::decode(think.memory)
-                .map(|decoded| memory::to_map(&decoded))
-                .unwrap_or_default()
+            memory::decode(think.memory).unwrap_or_default()
         };
+        // 17b cut M3.1 (D-UM-30): the keys the think was handed, before the
+        // script runs — a memory past a lowered cap may keep them and admit
+        // no other (`memory::check_held`).
+        let held: BTreeSet<String> = decoded.keys().cloned().collect();
+        let map = memory::to_map(&decoded);
         let mut this = Dynamic::from_map(map);
         let ast = &think.compiled.ast;
         let args = think.args;
@@ -225,10 +240,11 @@ impl Sandbox {
         let map = this
             .try_cast::<Map>()
             .ok_or_else(|| Fault::Type("this is no longer a map".to_owned()))?;
-        let memory = memory::from_map(&map, think.limits).map_err(|fault| match fault {
-            MemFault::Float(key) => Fault::Type(trace::line(&key)),
-            MemFault::Shape(error) => Fault::Memory(error),
-        })?;
+        let memory =
+            memory::from_map_held(&map, think.limits, &held).map_err(|fault| match fault {
+                MemFault::Float(key) => Fault::Type(trace::line(&key)),
+                MemFault::Shape(error) => Fault::Memory(error),
+            })?;
         Ok(Outcome {
             memory: memory::encode(&memory),
             ops,

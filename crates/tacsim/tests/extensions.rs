@@ -110,6 +110,9 @@ const UNSIGNED: &str = "00000000000000000000000000000000000000000000000000000000
 /// They are here rather than in `tests/content.rs`'s table because that table is
 /// driven by `content::SOURCES` and asserts it names every shipped pack; a row for
 /// a pack the game does not ship would fail it. The pin is the same pin.
+///
+/// **17b cut M3.1** moved `tacsim.pack.line_tank_laser` (version 3): a core
+/// component, the line core in the turret. Was `558a1cef…` at version 2.
 const DIGESTS: [(&str, &str); 3] = [
     (
         "tacsim.pack.laser_charge",
@@ -121,7 +124,7 @@ const DIGESTS: [(&str, &str); 3] = [
     ),
     (
         "tacsim.pack.line_tank_laser",
-        "558a1cef3200fa228fb65de02cd8ee5f71a2b376086f9f950f91412bae1c6881",
+        "e4f008666f33da22ab4c3a66fec6fb3c9e0bf4da72438dcee3f1de30ac54affa",
     ),
 ];
 
@@ -133,9 +136,12 @@ const PACK_FILES: [&str; 3] = [
 ];
 
 /// **The biped's digest pin** (16b cut X.2), the way X.1 pins the laser's.
+///
+/// **17b cut M3.1** moved it (version 2): a core component, the line core in
+/// the torso. Was `6d2272a0…` at version 1.
 const DIGESTS_BIPED: [(&str, &str); 1] = [(
     "tacsim.pack.biped_mk1",
-    "6d2272a002628d03e864e50966a79922427dbdff037d20f1d0eb33c7ca51935b",
+    "cf38ed133b16e510880215d365b8743f3e16bf19c0462b3de2a089dc273df837",
 )];
 
 /// The biped's pack file, by its path under `content/`.
@@ -143,6 +149,9 @@ const PACK_FILES_BIPED: [&str; 1] = ["units/biped_mk1.json"];
 
 /// **The thermal sight's digest pins** (16b cut X.3), the way X.1 pins the
 /// laser's: the sight, then the tank that mounts it.
+///
+/// **17b cut M3.1** moved the tank's (version 3): a core component, the line
+/// core in the turret. Was `cecaa090…` at version 2.
 const DIGESTS_THERMAL: [(&str, &str); 2] = [
     (
         "tacsim.pack.thermal_mk1",
@@ -150,7 +159,7 @@ const DIGESTS_THERMAL: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_thermal",
-        "cecaa090602ef7a5d170f6f15ee8e6432c9dc1017820a9ab2bd7e5690a039f13",
+        "b9f0ce77fb0f82228341b17846ab16b0eba8d2234fa19355d8b2706f2940bdc3",
     ),
 ];
 
@@ -159,6 +168,9 @@ const PACK_FILES_THERMAL: [&str; 2] = ["sensors/thermal_mk1.json", "units/line_t
 
 /// **The jamming pod's digest pins** (16b cut X.4), the way X.1 pins the laser's:
 /// the pod's row, then the tank that carries it.
+///
+/// **17b cut M3.1** moved the tank's (version 3): a core component, the line
+/// core in the turret. Was `227d8de5…` at version 2.
 const DIGESTS_ECM: [(&str, &str); 2] = [
     (
         "tacsim.pack.ecm_mk1",
@@ -166,7 +178,7 @@ const DIGESTS_ECM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_ecm",
-        "227d8de53a01560bafcd481c6e4f0e7fae3084d3207110e19379947b260368f8",
+        "77b9fcd26cb97c97498fd13f62533ee98247cf76d8eb96d7b826d62049efee61",
     ),
 ];
 
@@ -175,6 +187,10 @@ const PACK_FILES_ECM: [&str; 2] = ["sensors/ecm_mk1.json", "units/line_tank_ecm.
 
 /// **The filter's digest pins** (16b cut X.5), the way X.1 pins the laser's: the
 /// filter's row, then the tank that carries it.
+///
+/// **17b cut M3.1** moved the tank's (version 3): a core component, the line
+/// core in the turret (and its note's M.4 sentence shortened to fit the
+/// 1,024-byte bound). Was `ba7bc418…` at version 2.
 const DIGESTS_ECCM: [(&str, &str); 2] = [
     (
         "tacsim.pack.eccm_mk1",
@@ -182,7 +198,7 @@ const DIGESTS_ECCM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_eccm",
-        "ba7bc4182d337ad8e9c50f20ca38ac3e4feaaac1787c2ae4119d8669a0a6e585",
+        "b4be914cec9033367a800c250cd222675f2e661fa3aae412193bd85391564215",
     ),
 ];
 
@@ -233,7 +249,19 @@ const VISUAL_MK1_SIGNATURE: &str = concat!(
 /// pointing at the old digest is refitted at boot (`match_/reset.rs`'s
 /// `refit_unit` of a roster tank whose schema is not the loaded binding's). Was
 /// `72a52d55e73e3d1d4308c8d69ebd3b0a91504a5935571f87ae319c69cd131660`.
-const LINE_TANK_DIGEST: &str = "d908bc1f8d1a5b950ab2802db0e0ddc96c38360611d8f7df25cd35a4d853bb63";
+///
+/// **17b cut M3.1 moved it again, with the content** (doc 17 §9, D-UM-33): the
+/// line tank fits the line core in its turret from `tacsim.pack.line_tank`
+/// version 3 — a `core` component, its `core_class` cell and its `tacsim.core`
+/// capability — so the definition is a new one by content again; a persisted
+/// `line_tank` is refitted at the next server-half restart by the same
+/// `reset_stock_tanks` rule (`tests/match_lifecycle.rs`,
+/// `m3_a_roster_tank_without_a_core_is_refitted_with_one_at_the_reset`). Was
+/// `d908bc1f8d1a5b950ab2802db0e0ddc96c38360611d8f7df25cd35a4d853bb63`. (Within
+/// the cut, the line core's minted definition is referenced by the tank's
+/// `core` component, so the cores pack's note wording — reworded to placement
+/// alone before it was ever committed — is part of this digest.)
+const LINE_TANK_DIGEST: &str = "b8fa366613da1a39345a0a74eacc662aba00f954213972bc4ff135aaa9ef74dc";
 
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
@@ -8575,18 +8603,24 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
 /// **16b cut AE.2** moved the first two with the carriers' version 2 (the
 /// autocannon and the rack). Were `20b59cec…` (scout) and `fbb5c73c…` (heavy),
 /// both at version 1.
+///
+/// **17b cut M3.1** moved all three for a core component: the scout to version
+/// 3 (the doctrine core in its turret; two sentences of its note shortened to
+/// fit the 1,024-byte bound), the heavy to 3 (the command core in its hull),
+/// the Mk2 to 2 (the line core in its torso). Were `8c76e3b2…`, `86b6fbfb…`
+/// and `0a7346e0…`.
 const DIGESTS_CHASSIS: [(&str, &str); 3] = [
     (
         "tacsim.pack.scout_mk1",
-        "8c76e3b2274bbe026a0f4a4cf7b19ef8dd0dd58aa7204a98371264a4699ca383",
+        "294b48743c9fd1e34ff01cfcab5240afdebcf714a3d40d72f6aa1f520724834d",
     ),
     (
         "tacsim.pack.heavy_mk1",
-        "86b6fbfb9d5b24366aa412466db1b612f19eb58e76306714bf74c7365aeb749c",
+        "6f08cfc9129a9ebabecf4af0d826b9e6c37d16b9106e285f39249ba65679e590",
     ),
     (
         "tacsim.pack.biped_mk2",
-        "0a7346e049f6b833c2f8afc8dcdf90c58504cfadd15c44fed8b97d861e56a625",
+        "c0bb3689551f5b7f914ed9249516ef955a0f8cd55eefe3dbe300a94d5dcaf217",
     ),
 ];
 
@@ -8639,8 +8673,9 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
             "{id}'s digest moved; re-review the content and re-pin it"
         );
         // 16b cut AE.2 moved the scout car and the heavy to version 2 (their
-        // guns); the Mk2 is still at 1.
-        let version = if id == "tacsim.pack.biped_mk2" { 1 } else { 2 };
+        // guns); 17b cut M3.1 moved all three one more for their cores — the
+        // scout and the heavy to 3, the Mk2 to 2 (was "1 else 2").
+        let version = if id == "tacsim.pack.biped_mk2" { 2 } else { 3 };
         assert_eq!(pack.manifest().version(), version, "{id}'s version");
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_CHASSIS.len());
@@ -10169,22 +10204,24 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_ORDNANCE.len());
 
-    // The carriers at version 2, requiring the new weapons; the Mk2 at 1.
+    // The carriers at version 2, requiring the new weapons; the Mk2 at 1 —
+    // and, since 17b cut M3.1, each one version more for its core: the
+    // carriers at 3, the Mk2 at 2 (were 2, 2 and 1).
     let chassis: std::collections::BTreeMap<&str, &str> = DIGESTS_CHASSIS.into_iter().collect();
     for (json, id, version, requires) in [
         (
             content::SCOUT_MK1_JSON,
             "tacsim.pack.scout_mk1",
-            2,
+            3,
             Some("tacsim.pack.autocannon_30"),
         ),
         (
             content::HEAVY_MK1_JSON,
             "tacsim.pack.heavy_mk1",
-            2,
+            3,
             Some("tacsim.pack.missile_lr"),
         ),
-        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 1, None),
+        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2, None),
     ] {
         let pack = tacsim::pack::load_pack(json)
             .unwrap_or_else(|error| panic!("{id} does not verify: {error}"));
@@ -10848,9 +10885,12 @@ fn ae2_the_round_is_traced_from_where_it_left() {
 
 /// **The drone's digest pin** (16b cut AE.3; 16c N15), the way X.1 pins the
 /// laser's.
+///
+/// **17b cut M3.1** moved it (version 2): a core component, the doctrine core
+/// in its body. Was `f97b0a8b…` at version 1.
 const DIGESTS_DRONE: [(&str, &str); 1] = [(
     "tacsim.pack.drone_mk1",
-    "f97b0a8bcad8d45c48b685d92a001d235dcdb475f757a8ea90b1fe745311cb16",
+    "1bfeca3a34a13eeddc48b8fca7534d8082a21225735053a08eee94624a9d7b13",
 )];
 
 /// The drone's pack file, by its path under `content/`.
@@ -10893,7 +10933,8 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
             Some(pack.manifest().digest().to_hex().as_str()),
             "{id}'s digest moved; re-review the content and re-pin it"
         );
-        assert_eq!(pack.manifest().version(), 1, "{id}'s version");
+        // 17b cut M3.1: version 2, for its core (was 1).
+        assert_eq!(pack.manifest().version(), 2, "{id}'s version");
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_DRONE.len());
 
@@ -11091,5 +11132,152 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     assert_eq!(
         arena.unit(BLUE).map(|unit| unit.class),
         Some(UnitClass::Armour)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.1 — an operator's core (doc 17 §9, D-UM-33)
+// ---------------------------------------------------------------------------
+
+/// **An operator's cores pack**: one core, `house.core.relay`, of class II and
+/// NOT governed, signed.
+fn house_cores_pack() -> String {
+    sign(&format!(
+        r#"{{
+  "manifest": {{
+    "id": "house.pack.cores",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "{UNSIGNED}",
+    "requires": []
+  }},
+  "entries": {{
+    "house.core.relay": {{
+      "kind": "core",
+      "def": {{
+        "label": "relay core",
+        "class": "II",
+        "governed": false,
+        "note": "An operator's box, for 17b cut M3.1's test."
+      }}
+    }}
+  }}
+}}
+"#
+    ))
+}
+
+/// **The shipped line tank re-badged as an operator's unit** naming `core`
+/// where the line tank names the line core, and with `extra` spliced in
+/// before its power component (a second core, for the refusal), signed.
+fn house_tank_pack(core: &str, extra: &str) -> String {
+    let named = format!("\"core\": \"{core}\"");
+    let raw = content::LINE_TANK_JSON
+        .replace("\r\n", "\n")
+        .replace("tacsim.pack.line_tank", "house.pack.relay_tank")
+        .replace("tacsim.unit.line_tank", "house.unit.relay_tank")
+        .replace("\"core\": \"tacsim.core.line\"", &named)
+        .replace(
+            "          {\n            \"id\": \"power\",",
+            &format!("{extra}          {{\n            \"id\": \"power\","),
+        );
+    assert!(raw.contains(&named), "the core was renamed");
+    assert!(raw.contains(extra), "the extra component was spliced in");
+    sign(&raw)
+}
+
+/// One source loaded as an operator's pack.
+fn operator(name: &str, raw: &str) -> Result<LoadedPack, String> {
+    tacsim::pack::load_pack(raw)
+        .map(|pack| LoadedPack {
+            pack,
+            source: name.to_owned(),
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// **An operator's pack may carry a `core` and a unit naming it binds** (17b
+/// cut M3.1; doc 17 §9, D-UM-33): the content kind is a pack kind like any
+/// other — loaded, checked, minted as a `core` definition beside the shipped
+/// three — and a unit that fits it reads its class and its governed bit off
+/// the bound unit ([`tacsim::arena::core::read_core`]), the payload the
+/// fitting's record.
+#[test]
+fn m3_an_operator_pack_carrying_a_core_binds_a_unit_naming_it() {
+    use tacsim::arena::core::{CoreClass, read_core};
+    let packs = [
+        operator("<operator house cores>", &house_cores_pack()).expect("the cores pack loads"),
+        operator(
+            "<operator relay tank>",
+            &house_tank_pack("house.core.relay", ""),
+        )
+        .expect("the tank pack loads"),
+    ];
+    let catalog = Catalog::build_game(&packs, tacsim::NS).expect("an operator's core binds");
+    assert_eq!(
+        catalog.cores.len(),
+        4,
+        "the shipped three and the operator's"
+    );
+    let relay = CanonicalId::new("house.core.relay").expect("a canonical id");
+    assert_eq!(
+        catalog
+            .references
+            .get(&relay)
+            .map(|r| r.key().kind.as_str()),
+        Some("core")
+    );
+    let key = CanonicalId::new("house.unit.relay_tank").expect("a canonical id");
+    let spec = catalog.specs.get(&key).expect("the unit is loaded");
+    let binding = catalog.bindings.get(&key).expect("its binding");
+    let unit = tacsim::definitions::to_tactical_unit(spec, binding, mush_core::ObjId(30))
+        .expect("it instantiates");
+    let core = read_core(&unit).expect("it carries the operator's core");
+    assert_eq!(core.class, CoreClass::II);
+    assert!(!core.governed, "the operator's governed bit");
+}
+
+/// **A unit naming a core no loaded pack declares is refused `Reference`**
+/// (17b cut M3.1): the reference check at load names the unit, the kind
+/// `core` and the id.
+#[test]
+fn m3_a_unit_naming_an_undeclared_core_is_refused_by_reference() {
+    let packs = [operator(
+        "<operator relay tank>",
+        &house_tank_pack("house.core.missing", ""),
+    )
+    .expect("the tank pack loads")];
+    let refused =
+        Catalog::build_game(&packs, tacsim::NS).expect_err("an undeclared core is refused");
+    assert_eq!(
+        refused,
+        tacsim::definitions::DefinitionError::Reference {
+            entry: "house.unit.relay_tank".to_owned(),
+            kind: "core".to_owned(),
+            id: "house.core.missing".to_owned(),
+        }
+    );
+}
+
+/// **A unit with two cores is refused** (17b cut M3.1; D-UM-33: one core a
+/// hull): the pack's own bounds refuse it at load, naming the count.
+#[test]
+fn m3_a_unit_with_two_cores_is_refused() {
+    let second = concat!(
+        "          {\n",
+        "            \"id\": \"spare_core\",\n",
+        "            \"section\": \"hull\",\n",
+        "            \"role\": { \"kind\": \"core\", \"core\": \"house.core.relay\" }\n",
+        "          },\n",
+    );
+    let refused = operator(
+        "<operator relay tank>",
+        &house_tank_pack("house.core.relay", second),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("two cores load"));
+    assert!(
+        refused.contains("a unit carries at most one core; 2 are declared"),
+        "{refused}"
     );
 }

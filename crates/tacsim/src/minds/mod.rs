@@ -150,15 +150,18 @@ pub const STOCK_VERSION: u32 = 1;
 pub const MIND_ABI: &str = "rhai=1.26.0;api=1;stock=1";
 
 /// **The stock class's op ceiling per think** (doc 17 §9, D-UM-35's class I
-/// `ops` column): operations plus fees a think may spend. A constant until 17b
-/// cut M3's `CoreProfile` replaces it; [`standard_sandbox`]'s engine backstop
-/// is set here, the largest ceiling this cut runs.
+/// `ops` column): operations plus fees a think may spend. **The Class I row of
+/// `ClassTable::STOCK`; production reads the profile, the tests' arithmetic
+/// keeps the constant** (17b cut M3.1: [`RhaiRunner`] runs a think at its
+/// row's `ops`, and [`standard_sandbox`]'s engine backstop is the largest
+/// class's, `mush_mind::MAX_OPS_ANY_CLASS`).
 pub const STOCK_OPS_PER_THINK: u64 = 1_500;
 
 /// **How many `line_to` traces one think may ask for** (D-UM-35's `line_to`
 /// column, class I: 2): a third call is refused `limit`
-/// (`kernels::line_to`). The cap has its source in the class table; 17b cut
-/// M3's `CoreProfile` replaces the constant.
+/// (`kernels::line_to`). **The Class I row of `ClassTable::STOCK`; production
+/// reads the profile, the tests' arithmetic keeps the constant** (17b cut
+/// M3.1: the cap is the think's row's, `context::ThinkContext::line_to_max`).
 pub const STOCK_LINE_TO_PER_THINK: u32 = 2;
 
 /// **The largest `k` a `rand(k)` may ask for** (D-UM-29 as read by 17b §1 (iv),
@@ -261,7 +264,10 @@ pub fn registered_names() -> Vec<String> {
 
 /// **The one sandbox every stock think of the process runs on** (doc 17 §7,
 /// D-UM-24: one shared engine per process): `mush_mind`'s sandbox with its
-/// engine backstop at [`STOCK_OPS_PER_THINK`] and the API registered
+/// engine backstop at the largest class's ceiling (17b cut M3.1:
+/// `mush_mind::MAX_OPS_ANY_CLASS`, Class III's 4,500, so every class's think
+/// runs on the one engine and a think asking past it is refused before it
+/// runs) and the API registered
 /// ([`register_api`]), built once (a process-wide `OnceLock`) and shared — two
 /// calls answer one `Arc`.
 #[must_use]
@@ -270,7 +276,7 @@ pub fn standard_sandbox() -> Arc<Sandbox> {
     Arc::clone(SANDBOX.get_or_init(|| {
         Arc::new(Sandbox::new(
             &EngineLimits {
-                max_ops_backstop: STOCK_OPS_PER_THINK,
+                max_ops_backstop: mush_mind::MAX_OPS_ANY_CLASS,
             },
             register_api,
         ))
@@ -645,6 +651,8 @@ pub(crate) mod fixture {
             decide_ms: 1_000,
             draws: 0,
             line_to_calls: 0,
+            line_to_max: super::STOCK_LINE_TO_PER_THINK,
+            slots: crate::arena::conditions::STOCK_CONDITION_SLOTS,
             intents: Vec::new(),
             overflowed: false,
             refused: None,
@@ -767,6 +775,37 @@ mod tests {
         let one = standard_sandbox();
         let two = standard_sandbox();
         assert!(Arc::ptr_eq(&one, &two), "two calls built two sandboxes");
+    }
+
+    /// **17b cut M3.1** (doc 17 §9, D-UM-35): every think-side `STOCK_*`
+    /// constant is the Class I row of `ClassTable::STOCK` — production reads
+    /// the profile, the tests' arithmetic keeps the constant, and the two
+    /// cannot part.
+    #[test]
+    fn m3_every_stock_constant_is_the_class_i_row() {
+        use crate::arena::conditions::STOCK_CONDITION_SLOTS;
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::mind::{
+            STOCK_CONTACT_ROWS, STOCK_MEMORY_LIMITS, STOCK_RATED_CLASS, STOCK_THINK_MS,
+        };
+        use crate::arena::step::STOCK_ODDS_ROWS;
+        let one = ClassTable::STOCK.row(CoreClass::I);
+        assert_eq!(STOCK_THINK_MS, one.think_ms);
+        assert_eq!(STOCK_CONTACT_ROWS, one.rows);
+        assert_eq!(STOCK_ODDS_ROWS, one.odds_rows);
+        assert_eq!(STOCK_CONDITION_SLOTS, one.slots);
+        assert_eq!(STOCK_MEMORY_LIMITS.keys, one.memory_keys);
+        assert_eq!(STOCK_OPS_PER_THINK, one.ops);
+        assert_eq!(STOCK_LINE_TO_PER_THINK, one.line_to);
+        assert_eq!(STOCK_RATED_CLASS, CoreClass::I);
+        // The engine backstop is the largest class's ceiling.
+        assert_eq!(
+            CoreClass::ALL
+                .map(|class| ClassTable::STOCK.row(class).ops)
+                .into_iter()
+                .max(),
+            Some(mush_mind::MAX_OPS_ANY_CLASS)
+        );
     }
 
     /// **The registered names, pinned** (17b §2's M2.3 test 9; D-UM-11): every

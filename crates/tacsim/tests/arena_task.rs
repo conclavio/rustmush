@@ -90,7 +90,7 @@ use tokio::task::JoinHandle;
 /// U.1** `2_400` and `2_401`, **16b cut AF.2** `2_402` to `2_407`, and **16b
 /// cut AF.3** `2_408`, and **17b cut M1b.1** `2_409`, and **17b cut M1b.5**
 /// `2_410` and `2_411`.
-const SEEDS: [(u64, &str); 31] = [
+const SEEDS: [(u64, &str); 32] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -149,6 +149,10 @@ const SEEDS: [(u64, &str); 31] = [
         "M1b.5: a card change held to the reserve and refused when stopped",
     ),
     (2_411, "M1b.5: two card changes land in arrival order"),
+    (
+        2_412,
+        "M3.1: the class table captured at check-out, stock at a resume",
+    ),
 ];
 
 /// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
@@ -192,6 +196,17 @@ fn rules() -> RulesValue {
 }
 
 fn tactical_unit(id: ObjId) -> TacticalUnit {
+    // 17b cut M3.1 (plan F6): a Class I core in the hull, through
+    // `tacsim::definitions::core::core_component` — the shape `bind` lays
+    // down from content — so the hull holds two condition slots and a mind
+    // on it thinks at Class I's figures, as it did before cores existed.
+    let (core, capability) = tacsim::definitions::core::core_component(
+        "hull",
+        tacsim::arena::core::CoreClass::I,
+        dref("component", "tacsim.unit.line_tank.core"),
+        dref("schema", tacsim::definitions::unit::CORE_RULES_SCHEMA),
+    )
+    .expect("a core");
     let spec = UnitSpec {
         definition: dref("unit", "tacsim.unit.line_tank"),
         sections: vec![SectionSpec {
@@ -215,8 +230,8 @@ fn tactical_unit(id: ObjId) -> TacticalUnit {
             }],
         }],
         unit_cells: Vec::new(),
-        components: Vec::new(),
-        capabilities: Vec::new(),
+        components: vec![core],
+        capabilities: vec![capability],
         mobility: None,
         rules: rules(),
     };
@@ -2993,5 +3008,93 @@ async fn m1b5_two_card_changes_land_in_arrival_order() {
             (at, format!("#{} refused not_mind", BLUE.0)),
         ],
         "arrival order, one pulse"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (n) 17b cut M3.1 — the class table captured at check-out
+// ---------------------------------------------------------------------------
+
+/// One match of `seed` with red flown by a mind, spawned through
+/// [`spawn_arena`] under `classes`, stopped after its 5,000 ms snapshot:
+/// that snapshot decoded — red's `think_seq` there and the decoded arena's
+/// own class table.
+async fn mind_match_to_five_seconds(
+    seed: u64,
+    arena_cfg: &ArenaConfig,
+    classes: tacsim::arena::core::ClassTable,
+) -> (u64, tacsim::arena::core::ClassTable) {
+    let mut custody = unseated_custody(seed);
+    if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == RED) {
+        unit.controller = tacsim::arena::state::Controller::Mind;
+    }
+    let (egress_tx, mut rx) = mpsc::channel(256);
+    let (handle, _join, _callsigns) = spawn_arena(
+        &tokio::runtime::Handle::current(),
+        MatchId(seed),
+        custody,
+        arena_cfg,
+        &MatchConfig::default(),
+        &no_passes(),
+        &tacsim::config::MindsConfig {
+            classes,
+            ..tacsim::config::MindsConfig::default()
+        },
+        egress_tx,
+    )
+    .expect("the test check-out is accepted");
+    let messages = collect(&mut rx, Duration::from_millis(5_050)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let document = snapshots(&messages)
+        .into_iter()
+        .map(|(_, snapshot)| snapshot)
+        .find(|snapshot| snapshot.at_ms == 5_000)
+        .map(|snapshot| snapshot.document.clone())
+        .expect("the 5,000 ms snapshot");
+    let arena = tacsim::arena::Snapshot::decode(&document, definition())
+        .expect("the snapshot decodes against its ground");
+    let think_seq = arena
+        .minds
+        .get(&RED)
+        .map(|row| row.think_seq)
+        .expect("red's mind row");
+    (think_seq, arena.classes)
+}
+
+/// **`[tacsim.minds].classes` is captured at check-out** (17b cut M3.1; doc
+/// 17 §9, D-UM-35): a match spawned through [`spawn_arena`] with red a mind
+/// (Class I: its core and Standard Doctrine's rating) and a table whose
+/// Class I `think_ms` is 500 has thought more often by its 5,000 ms snapshot
+/// than the same match spawned on the stock table — every think after the
+/// first reads the captured row (`Arena::new` laid the first on the stock
+/// grid). The snapshot does NOT carry the table yet: its decode reads
+/// `ClassTable::STOCK` whatever the check-out captured — the declared gap of
+/// `Arena::classes`, which 17b cut M3.2 closes (and inverts this assertion).
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m3_the_class_table_is_captured_at_check_out_and_resumes_stock() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let seed = SEEDS[31].0;
+    let mut arena_cfg = arena_at(1_000);
+    arena_cfg.snapshot_ms = 5_000;
+    let quick: ClassTable = serde_json::from_value(serde_json::json!({ "I": { "think_ms": 500 } }))
+        .expect("a one-figure table");
+    assert_eq!(quick.row(CoreClass::I).think_ms, 500);
+    assert_ne!(quick, ClassTable::STOCK);
+
+    let (stock_thinks, stock_table) =
+        mind_match_to_five_seconds(seed, &arena_cfg, ClassTable::STOCK).await;
+    let (quick_thinks, quick_table) = mind_match_to_five_seconds(seed, &arena_cfg, quick).await;
+    assert!(stock_thinks >= 4, "the stock mind thought: {stock_thinks}");
+    assert!(
+        quick_thinks >= stock_thinks + 3,
+        "the captured row's 500 ms: {quick_thinks} thinks against {stock_thinks}"
+    );
+    assert_eq!(stock_table, ClassTable::STOCK);
+    assert_eq!(
+        quick_table,
+        ClassTable::STOCK,
+        "until 17b cut M3.2 a resume reads the stock table"
     );
 }

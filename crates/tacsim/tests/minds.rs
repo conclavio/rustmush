@@ -133,6 +133,29 @@ fn rules() -> RulesValue {
 
 /// `tests/reflex.rs`' eighteen-point tank: one hull section, one front facet.
 fn tactical_unit(id: ObjId) -> TacticalUnit {
+    // 17b cut M3.1 (plan F6): a Class I core in the hull, through
+    // `tacsim::definitions::core::core_component` — the shape `bind` lays
+    // down from content — so the hull holds two condition slots and a mind
+    // on it thinks at Class I's figures, as it did before cores existed.
+    tactical_unit_fitted(id, Some(tacsim::arena::core::CoreClass::I))
+}
+
+/// [`tactical_unit`] with a governed core of `class` in its hull, or with
+/// none at all — a hull that never had a core (17b cut M3.1).
+fn tactical_unit_fitted(id: ObjId, class: Option<tacsim::arena::core::CoreClass>) -> TacticalUnit {
+    let (components, capabilities) = class.map_or_else(
+        || (Vec::new(), Vec::new()),
+        |class| {
+            let (core, capability) = tacsim::definitions::core::core_component(
+                "hull",
+                class,
+                dref("component", "tacsim.unit.line_tank.core"),
+                dref("schema", tacsim::definitions::unit::CORE_RULES_SCHEMA),
+            )
+            .expect("a core");
+            (vec![core], vec![capability])
+        },
+    );
     let spec = UnitSpec {
         definition: dref("unit", "tacsim.unit.line_tank"),
         sections: vec![SectionSpec {
@@ -156,8 +179,8 @@ fn tactical_unit(id: ObjId) -> TacticalUnit {
             }],
         }],
         unit_cells: Vec::new(),
-        components: Vec::new(),
-        capabilities: Vec::new(),
+        components,
+        capabilities,
         mobility: None,
         rules: rules(),
     };
@@ -6113,31 +6136,33 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
         max_range_band: None,
         expires_ms,
     };
-    let think =
-        |view: &MindView, memory: &StockMemory, t_ms: i64| -> (Vec<IntentKind>, StockMemory) {
-            let bytes = tacsim::arena::mind::encode_memory(&tacsim::arena::mind::Memory::from(
-                memory.clone(),
-            ));
-            let result = mind.think(&ThinkJob {
-                unit: RED,
-                think_seq: 1,
-                t_ms,
-                lands_ms: t_ms + SUBSTEP,
-                seed: arena.seed,
-                dropped: false,
-                view: &Arc::new(view.clone()),
-                memory: &bytes,
-                map: &arena.definition,
-                card: &card,
-            });
-            // 17b cut M2.7: held to the native think under
-            // `support::under_the_rhai_runner`.
-            support::note_think(RED, t_ms, &result);
-            (
-                result.intents,
-                StockMemory::from(&tacsim::arena::mind::decode_memory(&result.memory)),
-            )
-        };
+    let think = |view: &MindView,
+                 memory: &StockMemory,
+                 t_ms: i64|
+     -> (Vec<IntentKind>, StockMemory) {
+        let bytes =
+            tacsim::arena::mind::encode_memory(&tacsim::arena::mind::Memory::from(memory.clone()));
+        let result = mind.think(&ThinkJob {
+            unit: RED,
+            think_seq: 1,
+            t_ms,
+            lands_ms: t_ms + SUBSTEP,
+            seed: arena.seed,
+            dropped: false,
+            profile: &tacsim::arena::core::ClassTable::STOCK.row(tacsim::arena::core::CoreClass::I),
+            view: &Arc::new(view.clone()),
+            memory: &bytes,
+            map: &arena.definition,
+            card: &card,
+        });
+        // 17b cut M2.7: held to the native think under
+        // `support::under_the_rhai_runner`.
+        support::note_think(RED, t_ms, &result);
+        (
+            result.intents,
+            StockMemory::from(&tacsim::arena::mind::decode_memory(&result.memory)),
+        )
+    };
     let start = StockMemory {
         state: ReflexState::Patrol,
         goal: Some(failed),
@@ -7667,5 +7692,575 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end_under_the_rhai_runner() {
     support::under_the_rhai_runner(
         "m1b5_a_newer_order_is_obeyed_after_an_early_end",
         m1b5_a_newer_order_is_obeyed_after_an_early_end,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.1 — the core under the mind (doc 17 §9, D-UM-33, D-UM-35)
+// ---------------------------------------------------------------------------
+
+/// **What a think was handed, by the row** (17b cut M3.1): its hull, its
+/// sequence, its millisecond, `dropped`, the profile and the view's rows.
+#[derive(Clone, Debug, PartialEq)]
+struct Handed {
+    unit: ObjId,
+    think_seq: u64,
+    t_ms: i64,
+    dropped: bool,
+    profile: tacsim::arena::core::CoreProfile,
+    rows: usize,
+}
+
+/// **A runner that thinks nothing and keeps what each think was handed**,
+/// in front of `inner` when one is given (its answer is the think's).
+#[derive(Debug)]
+struct Handing {
+    inner: Option<Arc<dyn MindRunner>>,
+    seen: Mutex<Vec<(Handed, ThinkResult)>>,
+}
+
+impl Handing {
+    fn new(inner: Option<Arc<dyn MindRunner>>) -> Arc<Handing> {
+        Arc::new(Handing {
+            inner,
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn seen(&self) -> Vec<(Handed, ThinkResult)> {
+        self.seen
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl MindRunner for Handing {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        let result = self.inner.as_ref().map_or_else(
+            || ThinkResult {
+                intents: Vec::new(),
+                memory: job.memory.to_vec(),
+                fault: None,
+                trace: Vec::new(),
+            },
+            |inner| inner.think(job),
+        );
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push((
+                Handed {
+                    unit: job.unit,
+                    think_seq: job.think_seq,
+                    t_ms: job.t_ms,
+                    dropped: job.dropped,
+                    profile: *job.profile,
+                    rows: job.view.contacts.len(),
+                },
+                result.clone(),
+            ));
+        }
+        result
+    }
+}
+
+/// `unit`'s `core_class` cell set to `value` by one plan — the live class
+/// `read_core` reads (17b cut M3.1).
+fn core_cell_at(unit: &TacticalUnit, value: i64) -> TacticalUnit {
+    let addr = CellAddr::Component {
+        component: mush_tactics::ComponentId::new("core").expect("a component"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::CORE_CLASS_CELL)
+            .expect("a cell"),
+    };
+    let plan = UnitMutationPlan::new(vec![UnitMutationOp::SetCell { addr, value }], None, None)
+        .expect("a plan");
+    mush_tactics::apply(unit, &plan, 0)
+        .expect("the plan applies")
+        .0
+}
+
+/// **A field where red holds fourteen classified hostiles**, locked on the
+/// fifth nearest, its own core cell at `core_cell` (set by a plan before the
+/// check-out): red at (2, 8) armed with the cannon, the fourteen blues on
+/// cells two to fifteen away.
+fn crowded_field(core_cell: i64) -> Arena {
+    use tacsim::arena::state::SeenPose;
+    let mut red = tank(
+        RED,
+        Team::Red,
+        centre(2, 8),
+        vec![cannon()],
+        Controller::Mind,
+    );
+    red.unit = core_cell_at(&red.unit, core_cell);
+    let mut units = vec![red];
+    let blues: Vec<(ObjId, (u16, u16))> = (0_u16..14)
+        .map(|k| {
+            (
+                ObjId(20 + u32::from(k)),
+                (3 + k % 13, if k < 13 { 3 } else { 13 }),
+            )
+        })
+        .collect();
+    for (id, (x, y)) in &blues {
+        units.push(tank(
+            *id,
+            Team::Blue,
+            centre(*x, *y),
+            Vec::new(),
+            Controller::Pilot,
+        ));
+    }
+    let mut arena = arena_of(units, &[]);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+    }
+    let mut by_range: Vec<(u64, ObjId, ContactId)> = Vec::new();
+    for (id, _) in &blues {
+        let plot = arena.unit(*id).map(SeenPose::of).expect("a blue");
+        let contact = draw_contact_id(SEED, RED, *id);
+        arena.contacts.insert(
+            RED,
+            contact,
+            ShadowContact::sighted(
+                *id,
+                Classification::Classified { team: Team::Blue },
+                0,
+                plot,
+            ),
+        );
+        let red = arena.unit(RED).expect("red");
+        by_range.push((plot.range_from(&red.pose), *id, contact));
+    }
+    by_range.sort_unstable();
+    let fifth = by_range
+        .get(4)
+        .map(|(_, _, contact)| *contact)
+        .expect("five");
+    assert_eq!(
+        arena.resolve_lock(RED, fifth, 0),
+        Ok(()),
+        "red locks the fifth"
+    );
+    arena
+}
+
+/// **The view is cut to the mind's class** (17b cut M3.1; doc 17 §9,
+/// D-UM-35, D-UM-4). Red holds fourteen classified hostiles, locked on the
+/// fifth nearest. On a Class I mind (rated I on its core) the view carries
+/// the nearest twelve and the odds on two — the lock's and the nearest's, the
+/// frame's two. With red's core cell set to 0 by a plan before the check-out
+/// the mind is Class 0, the ROM: eight rows, the lock's odds alone, and the
+/// think is handed `dropped` and Class 0's row.
+#[test]
+fn m3_the_view_is_cut_to_the_minds_class() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    for (cell, class, rows) in [(1, CoreClass::I, 12), (0, CoreClass::Zero, 8)] {
+        let mut arena = crowded_field(cell);
+        assert_eq!(arena.mind_class(RED), class);
+        let view = arena.mind_view(RED).expect("red's view");
+        assert_eq!(view.contacts.len(), rows, "{class:?}'s rows");
+        let lock = view.lock.expect("the lock");
+        let odds: Vec<ContactId> = view
+            .contacts
+            .iter()
+            .filter(|row| !row.odds.is_empty())
+            .map(|row| row.id)
+            .collect();
+        if class == CoreClass::Zero {
+            assert_eq!(odds, vec![lock], "Class 0: the lock's odds alone");
+        } else {
+            assert_eq!(odds.len(), 2, "Class I: the frame's two");
+            assert!(odds.contains(&lock), "the lock among them: {odds:?}");
+        }
+
+        let mut arena = crowded_field(cell);
+        let handing = Handing::new(None);
+        arena.mind_runner = handing.clone();
+        let ran = run(&mut arena, Drive::Every(1_000), think_at(RED, 0) + SUBSTEP);
+        let (first, _) = handing.seen().first().cloned().expect("a think");
+        assert_eq!(
+            first.dropped,
+            class == CoreClass::Zero,
+            "{class:?}'s dropped"
+        );
+        assert_eq!(first.profile, ClassTable::STOCK.row(class));
+        assert_eq!(first.rows, rows);
+        let row = arena.minds.get(&RED).expect("red's row");
+        assert_eq!(row.strikes, 0, "no fault, no strike");
+        let lines: Vec<String> = ran.events.into_iter().map(|(_, kind, _)| kind).collect();
+        assert!(
+            lines.iter().all(|kind| !kind.contains("drop")),
+            "no drop line: {lines:?}"
+        );
+    }
+}
+
+/// **The shipped heavy as red** (the command core, Class III, in its hull),
+/// at (2, 8) under `controller`, off the fielded catalog (17b cut M3.1).
+fn shipped_heavy(controller: Controller) -> CustodyUnit {
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let key = CanonicalId::new(content::HEAVY_MK1).expect("a canonical id");
+    let cells = tacsim::definitions::to_tactical_unit(
+        catalog.specs.get(&key).expect("the heavy"),
+        catalog.bindings.get(&key).expect("its binding"),
+        RED,
+    )
+    .expect("the heavy instantiates");
+    tacsim::match_::custody_unit(
+        &catalog,
+        cells,
+        RED,
+        Team::Red,
+        centre(2, 8),
+        0,
+        controller,
+        1,
+    )
+}
+
+/// **A Class III mind on the heavy thinks every 250 ms** (17b cut M3.1;
+/// D-UM-35's `think_ms`, read at each scheduling): the shipped heavy (the
+/// command core, Class III) flown by a mind rated III
+/// (`Arena::set_rated_class_for_tests`) is handed Class III's row and thinks
+/// a quarter-second apart — its first think on the grid the check-out laid
+/// at Standard Doctrine's rating, every one after it at its own row's period.
+#[test]
+fn m3_a_class_iii_mind_on_the_heavy_thinks_every_250_ms() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let heavy = shipped_heavy(Controller::Mind);
+    let blue = tank(
+        BLUE,
+        Team::Blue,
+        centre(13, 8),
+        Vec::new(),
+        Controller::Pilot,
+    );
+    let mut arena = arena_of(vec![heavy, blue], &[BLUE]);
+    assert_eq!(
+        arena.core_of(RED).map(|core| core.class),
+        Some(CoreClass::III)
+    );
+    assert_eq!(
+        arena.mind_class(RED),
+        CoreClass::I,
+        "Standard Doctrine is rated I"
+    );
+    arena.set_rated_class_for_tests(CoreClass::III);
+    assert_eq!(
+        arena.mind_profile(RED),
+        ClassTable::STOCK.row(CoreClass::III)
+    );
+    let handing = Handing::new(None);
+    arena.mind_runner = handing.clone();
+    let _ = run(&mut arena, Drive::Every(1_000), think_at(RED, 0) + 2_000);
+    let seen = handing.seen();
+    assert!(
+        seen.len() >= 8,
+        "eight thinks in two seconds: {}",
+        seen.len()
+    );
+    for pair in seen.windows(2) {
+        if let [(a, _), (b, _)] = pair {
+            assert_eq!(b.think_seq, a.think_seq + 1);
+            assert_eq!(b.t_ms - a.t_ms, 250, "a quarter-second apart");
+        }
+    }
+    assert!(seen.iter().all(
+        |(handed, _)| handed.profile == ClassTable::STOCK.row(CoreClass::III) && !handed.dropped
+    ));
+}
+
+/// **A hull that never had a core thinks on the stand-in from its first
+/// think** (17b cut M3.1; D-UM-33: Class 0, the ROM alone): a
+/// `Controller::Mind` hull built with no core at all — no `core` component,
+/// no `core_class` cell, no `tacsim.core` capability — is handed `dropped`
+/// and Class 0's row from its first think, the Rhai runner answers with its
+/// native stand-in (`DROPPED_LINE` its whole trace) and no fault, the row
+/// takes no strike and no line says it dropped (17b cut M3.4 writes one only
+/// on strikes and on a sealed core that is gone). A hull whose core
+/// capability was revoked BEFORE the check-out reads the same `None` today
+/// and is asserted beside it as its own case: from 17b cut M3.4 a core the
+/// seal recorded and lost is the other rule, with a line, and the
+/// never-cored case keeps this proof whatever that one becomes.
+#[test]
+fn m3_a_never_cored_mind_thinks_on_the_stand_in_from_its_first_think() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    use tacsim::definitions::unit::CORE_CAPABILITY;
+    let core = mush_tactics::ComponentId::new("core").expect("a component");
+    let never = CustodyUnit {
+        unit: tactical_unit_fitted(RED, None),
+        ..tank(
+            RED,
+            Team::Red,
+            centre(6, 8),
+            vec![cannon()],
+            Controller::Mind,
+        )
+    };
+    assert!(
+        never.unit.component(&core).is_none(),
+        "never fitted: no core component"
+    );
+    assert!(
+        never
+            .unit
+            .capabilities()
+            .all(|key| key.id.as_str() != CORE_CAPABILITY),
+        "never fitted: no core capability"
+    );
+    let mut revoked = tank(
+        RED,
+        Team::Red,
+        centre(6, 8),
+        vec![cannon()],
+        Controller::Mind,
+    );
+    let key = revoked
+        .unit
+        .capabilities()
+        .find(|key| key.id.as_str() == CORE_CAPABILITY)
+        .cloned()
+        .expect("the fixture's core");
+    let plan = UnitMutationPlan::new(vec![UnitMutationOp::RevokeCapability { key }], None, None)
+        .expect("a plan");
+    revoked.unit = mush_tactics::apply(&revoked.unit, &plan, 0)
+        .expect("revoked")
+        .0;
+    assert!(
+        revoked.unit.component(&core).is_some(),
+        "the revoked hull keeps its component"
+    );
+
+    for (case, red) in [
+        ("never cored", never),
+        ("revoked before the check-out", revoked),
+    ] {
+        let blue = tank(
+            BLUE,
+            Team::Blue,
+            centre(9, 8),
+            Vec::new(),
+            Controller::Pilot,
+        );
+        let mut arena = arena_of(vec![red, blue], &[BLUE]);
+        assert_eq!(arena.core_of(RED), None, "{case}: no core, the ROM alone");
+        assert_eq!(arena.mind_class(RED), CoreClass::Zero, "{case}");
+        assert_eq!(
+            arena.slot_capacity(RED),
+            ClassTable::STOCK.row(CoreClass::Zero).slots,
+            "{case}: Class 0's one slot"
+        );
+        let source = "fn think(v, c) { this.never = 1; }";
+        let rhai: Arc<dyn MindRunner> = Arc::new(
+            tacsim::minds::RhaiRunner::new(
+                &arena.arena_cfg,
+                source,
+                mush_mind::Digest(*b"m3.1 never cored stand-in source"),
+            )
+            .expect("compiles"),
+        );
+        let handing = Handing::new(Some(rhai));
+        arena.mind_runner = handing.clone();
+        let ran = run(&mut arena, Drive::Every(1_000), think_at(RED, 3) + SUBSTEP);
+        let seen = handing.seen();
+        assert!(seen.len() >= 4, "{case}: four thinks: {}", seen.len());
+        assert_eq!(
+            seen.first().map(|(handed, _)| handed.think_seq),
+            Some(0),
+            "{case}: from the first think"
+        );
+        for (handed, result) in &seen {
+            assert!(
+                handed.dropped,
+                "{case}: think {} is handed dropped",
+                handed.think_seq
+            );
+            assert_eq!(
+                handed.profile,
+                ClassTable::STOCK.row(CoreClass::Zero),
+                "{case}"
+            );
+            assert_eq!(result.fault, None, "{case}: the stand-in faults nothing");
+            assert_eq!(
+                result.trace,
+                vec![tacsim::minds::DROPPED_LINE.to_owned()],
+                "{case}"
+            );
+        }
+        let row = arena.minds.get(&RED).expect("red's row");
+        assert_eq!(row.strikes, 0, "{case}: no strike");
+        assert!(!row.dropped(), "{case}: not dropped by strikes");
+        assert!(
+            ran.events.iter().all(|(_, kind, _)| !kind.contains("drop")),
+            "{case}: no drop line"
+        );
+    }
+}
+
+/// **A Class III mind and a Class 0 mind at three cadences are one event
+/// list and one hash sequence** (17b cut M3.1; 16b §11's cross-tempo rule
+/// over the class-driven cadence, the view's cut and the ROM's hand-off).
+/// The (j) field's scene with red on a Class III core rated III — thinking
+/// every 250 ms, one substep, so every landing shares its millisecond with
+/// the next think and runs before it (D-UM-20) — and red2 armed on a core
+/// whose cell a plan set to 0 before the check-out (Class 0: the ROM from
+/// its first think, eight rows, the lock's odds alone, one slot), both flown
+/// by the production stock mind, run 30 s at 5,000, 1,000 and 500 ms and by
+/// the task's own wakes at each: one event list, one hash sequence and one
+/// sequence of handed thinks (hull, millisecond, `dropped`, row and the
+/// view's rows) with one answer each.
+#[test]
+fn m3_a_class_iii_and_a_class_0_mind_at_three_cadences_are_one_event_list_and_one_hash_sequence() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let flown = |drive: Drive| {
+        let seeing = |mut unit: CustodyUnit| {
+            unit.sensor = Some(SensorProfile {
+                max_range_cells: 10,
+                ..sight()
+            });
+            unit
+        };
+        let red = CustodyUnit {
+            unit: tactical_unit_fitted(RED, Some(CoreClass::III)),
+            ..seeing(tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Mind,
+            ))
+        };
+        let mut red2 = seeing(tank(
+            RED2,
+            Team::Red,
+            centre(6, 10),
+            vec![cannon()],
+            Controller::Mind,
+        ));
+        red2.unit = core_cell_at(&red2.unit, 0);
+        let blue = presenting(seeing(tank(
+            BLUE,
+            Team::Blue,
+            centre(9, 8),
+            Vec::new(),
+            Controller::Pilot,
+        )));
+        let mut arena = arena_of(vec![red, red2, blue], &[BLUE]);
+        arena.set_rated_class_for_tests(CoreClass::III);
+        assert_eq!(arena.mind_class(RED), CoreClass::III);
+        assert_eq!(arena.mind_class(RED2), CoreClass::Zero);
+        assert!(format!("{:?}", arena.mind_runner).starts_with("NativeStockMind"));
+        let handing = Handing::new(Some(Arc::clone(&arena.mind_runner)));
+        arena.mind_runner = handing.clone();
+        let ran = run(&mut arena, drive, 30_000);
+        (ran, handing.seen())
+    };
+
+    let (first, seen) = flown(Drive::Every(5_000));
+    let of = |unit: ObjId| -> Vec<Handed> {
+        seen.iter()
+            .filter(|(handed, _)| handed.unit == unit)
+            .map(|(handed, _)| handed.clone())
+            .collect()
+    };
+    let three = of(RED);
+    assert!(three.len() >= 100, "Class III's thinks: {}", three.len());
+    assert!(
+        three.iter().all(
+            |handed| !handed.dropped && handed.profile == ClassTable::STOCK.row(CoreClass::III)
+        )
+    );
+    assert!(
+        three
+            .windows(2)
+            .all(|pair| matches!(pair, [a, b] if b.t_ms - a.t_ms == 250)),
+        "Class III thinks a substep apart"
+    );
+    let zero = of(RED2);
+    assert!(zero.len() >= 25, "Class 0's thinks: {}", zero.len());
+    assert!(zero.iter().all(|handed| handed.dropped
+        && handed.profile == ClassTable::STOCK.row(CoreClass::Zero)
+        && handed.rows <= ClassTable::STOCK.row(CoreClass::Zero).rows));
+    assert!(
+        zero.windows(2)
+            .all(|pair| matches!(pair, [a, b] if b.t_ms - a.t_ms == 1_000)),
+        "Class 0 thinks a second apart"
+    );
+    let words: Vec<(String, Option<u32>)> = first
+        .events
+        .iter()
+        .map(|(_, json, _)| kind_and_unit(json))
+        .collect();
+    for (unit, want) in [(RED, "locked"), (RED, "fired"), (RED2, "fired")] {
+        assert!(
+            words
+                .iter()
+                .any(|(word, on)| word == want && *on == Some(unit.0)),
+            "#{} never journalled a {want}: {words:?}",
+            unit.0
+        );
+    }
+    for drive in [
+        Drive::Every(1_000),
+        Drive::Every(500),
+        Drive::Task(5_000),
+        Drive::Task(1_000),
+        Drive::Task(500),
+    ] {
+        let (other, other_seen) = flown(drive);
+        assert_eq!(
+            other.events, first.events,
+            "the event list diverged at {drive:?}"
+        );
+        assert_eq!(
+            other.hashes, first.hashes,
+            "the hash sequence diverged at {drive:?}"
+        );
+        assert_eq!(other_seen, seen, "a think diverged at {drive:?}");
+        assert_ne!(other.pulses, first.pulses, "{drive:?} ran the same pulses");
+    }
+}
+
+/// **A mind adopted at Class III is put on Class III's grid** (17b cut M3.1;
+/// `Arena::adopt_mind` reads `Arena::mind_profile` at the adoption): the
+/// shipped heavy checked out under a pilot, its rating set to III, then
+/// handed to a mind (`Arena::set_controller`) — its first think falls on the
+/// 250 ms stagger grid, not on Class I's 1,000 ms one, and every think after
+/// it is 250 ms on.
+#[test]
+fn m3_a_mind_adopted_at_class_iii_thinks_on_its_own_grid() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let grid = |now: i64, cadence: i64| {
+        let mut at = now - now.rem_euclid(cadence) + stagger_ms(SEED, RED, cadence);
+        if at < now {
+            at += cadence;
+        }
+        at
+    };
+    let blue = tank(
+        BLUE,
+        Team::Blue,
+        centre(13, 8),
+        Vec::new(),
+        Controller::Pilot,
+    );
+    let mut arena = arena_of(vec![shipped_heavy(Controller::Pilot), blue], &[BLUE]);
+    assert!(!arena.minds.contains_key(&RED), "no mind at the check-out");
+    arena.set_rated_class_for_tests(CoreClass::III);
+    let now = arena.now_ms;
+    let (at_iii, at_i) = (grid(now, 250), grid(now, STOCK_THINK_MS));
+    assert_ne!(at_iii, at_i, "the two grids part on this seed");
+    arena.set_controller(RED, Controller::Mind, ReflexState::Startup);
+    let handing = Handing::new(None);
+    arena.mind_runner = handing.clone();
+    let _ = run(&mut arena, Drive::Every(1_000), at_i.max(at_iii) + 1_000);
+    let seen = handing.seen();
+    let (first, _) = seen.first().cloned().expect("a think");
+    assert_eq!(first.t_ms, at_iii, "the first think on Class III's grid");
+    assert_eq!(first.profile, ClassTable::STOCK.row(CoreClass::III));
+    assert!(
+        seen.windows(2)
+            .all(|pair| matches!(pair, [(a, _), (b, _)] if b.t_ms - a.t_ms == 250)),
+        "every think after it a substep on"
     );
 }

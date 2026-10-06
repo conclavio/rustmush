@@ -7,6 +7,13 @@
 //! bounded on load, and registered at composition through the C1 registry as
 //! [`mush_core::DefinitionDescriptor`]s with exact [`mush_core::DefinitionRef`]s.
 //!
+//! **17b cut M3.1** adds a seventh content kind, `core`
+//! ([`crate::definitions::core::CoreDef`]; doc 17 §9, D-UM-33): a Compact
+//! class and a governed bit, minted before the units whose `core` components
+//! name it, and fitted by `bind` as a component, a `core_class` cell and a
+//! `tacsim.core` capability under the sixth minted schema,
+//! `tacsim.core.profile`.
+//!
 //! # Three things happen in one place, on purpose
 //!
 //! [`crate::definitions::Catalog::build`] decodes the entries, checks every reference among them,
@@ -38,6 +45,7 @@
 pub mod ammunition;
 pub mod arena;
 pub mod content;
+pub mod core;
 pub mod resolution;
 pub mod resources;
 pub mod sensor;
@@ -58,6 +66,7 @@ use crate::pack::PackEntry;
 
 pub use ammunition::AmmunitionDef;
 pub use arena::{ArenaBuildError, ArenaDef, arena_map_within_bound, from_pack};
+pub use core::CoreDef;
 pub use resolution::ResolutionDef;
 pub use resources::ResourceTable;
 pub use sensor::SensorDef;
@@ -83,24 +92,31 @@ pub const MAX_ENTRY_REFERENCES: usize = 32;
 /// `validate_spec_definition_kinds` fixes them), and the other six are doc 16
 /// §4's content kinds. Every one needs exactly one owner-side validator, which
 /// is why the list is a constant rather than six literals.
-pub const KINDS: [&str; 8] = [
+///
+/// **17b cut M3.1** adds the ninth, `core` (doc 17 §9, D-UM-33), after
+/// `sensor` and before `resolution`: a core is minted before the components
+/// that name it, as a sensor is.
+pub const KINDS: [&str; 9] = [
     "schema",
     "ammunition",
     "weapon",
     "sensor",
+    "core",
     "resolution",
     "component",
     "unit",
     "arena",
 ];
 
-/// The six kinds a TacSim pack may carry (the other two are minted, never
-/// authored).
-pub const CONTENT_KINDS: [&str; 6] = [
+/// The kinds a TacSim pack may carry (the other two are minted, never
+/// authored): doc 16 §4's six and, since **17b cut M3.1**, the seventh,
+/// `core` (doc 17 §9, D-UM-33).
+pub const CONTENT_KINDS: [&str; 7] = [
     "unit",
     "weapon",
     "ammunition",
     "sensor",
+    "core",
     "resolution",
     "arena",
 ];
@@ -218,6 +234,8 @@ pub struct Catalog {
     pub ammunition: BTreeMap<CanonicalId, AmmunitionDef>,
     /// The sensors, by entry id.
     pub sensors: BTreeMap<CanonicalId, SensorDef>,
+    /// **The cores, by entry id** (17b cut M3.1; doc 17 §9, D-UM-33).
+    pub cores: BTreeMap<CanonicalId, CoreDef>,
     /// The resolution tables, by entry id.
     pub resolutions: BTreeMap<CanonicalId, ResolutionDef>,
     /// Every minted reference, by entry id — the exact identity a persisted
@@ -238,6 +256,7 @@ impl Catalog {
         let mut ammunition: BTreeMap<CanonicalId, Sourced<AmmunitionDef>> = BTreeMap::new();
         let mut weapons: BTreeMap<CanonicalId, Sourced<WeaponDef>> = BTreeMap::new();
         let mut sensors: BTreeMap<CanonicalId, Sourced<SensorDef>> = BTreeMap::new();
+        let mut cores: BTreeMap<CanonicalId, Sourced<CoreDef>> = BTreeMap::new();
         let mut resolutions: BTreeMap<CanonicalId, Sourced<ResolutionDef>> = BTreeMap::new();
         let mut units: BTreeMap<CanonicalId, Sourced<UnitSpec>> = BTreeMap::new();
         let mut arenas: BTreeMap<CanonicalId, Sourced<ArenaDef>> = BTreeMap::new();
@@ -263,6 +282,12 @@ impl Catalog {
                     PackEntry::Sensor(def) => {
                         def.check(name)?;
                         insert(&mut sensors, id, &pack, version, def.clone())?;
+                    }
+                    // 17b cut M3.1: a core, checked and refused a duplicate as
+                    // every other kind is.
+                    PackEntry::Core(def) => {
+                        def.check(name)?;
+                        insert(&mut cores, id, &pack, version, def.clone())?;
                     }
                     PackEntry::Resolution(def) => {
                         def.check(name)?;
@@ -324,6 +349,17 @@ impl Catalog {
                         id.as_str(),
                         "sensor",
                         sensor.as_str(),
+                    ));
+                }
+            }
+            // 17b cut M3.1: a unit's core names a core some loaded pack
+            // declares.
+            for core in sourced.def.cores() {
+                if !cores.contains_key(core) {
+                    return Err(DefinitionError::reference(
+                        id.as_str(),
+                        "core",
+                        core.as_str(),
                     ));
                 }
             }
@@ -405,6 +441,21 @@ impl Catalog {
             )?;
             out.sensors.insert(id.clone(), sourced.def.clone());
         }
+        // 17b cut M3.1: the cores, minted as `core` definitions before the
+        // units whose core components name them.
+        for (id, sourced) in &cores {
+            let payload = serde_json::to_value(&sourced.def)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.mint(
+                &mut minter,
+                "core",
+                id,
+                sourced.version,
+                payload,
+                Vec::new(),
+            )?;
+            out.cores.insert(id.clone(), sourced.def.clone());
+        }
         for (id, sourced) in &resolutions {
             let payload = serde_json::to_value(&sourced.def)
                 .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
@@ -421,8 +472,9 @@ impl Catalog {
         let weapon_defs: BTreeMap<CanonicalId, WeaponDef> = out.weapons.clone();
         let ammunition_defs: BTreeMap<CanonicalId, AmmunitionDef> = out.ammunition.clone();
         let sensor_defs: BTreeMap<CanonicalId, SensorDef> = out.sensors.clone();
+        let core_defs: BTreeMap<CanonicalId, CoreDef> = out.cores.clone();
         // Every reference minted so far: the ammunition, the weapons, the
-        // sensors and the resolution tables. A unit's binding looks its weapon
+        // sensors, the cores (17b cut M3.1) and the resolution tables. A unit's binding looks its weapon
         // and sensor rows up in it by id, and the two lookups share one map
         // because an id is unique across the kinds by construction.
         let minted = out.references.clone();
@@ -440,6 +492,8 @@ impl Catalog {
                     sensors: &sensor_defs,
                     weapon_refs: &minted,
                     sensor_refs: &minted,
+                    cores: &core_defs,
+                    core_refs: &minted,
                     schemas: &schemas,
                 },
             )?;
@@ -483,7 +537,10 @@ impl Catalog {
     ///
     /// Two weapons, one sensor, one unit schema and one arena — doc 16 §9's own
     /// measure of what an extension adds, and what every cut-X acceptance
-    /// compares its own item against. **16b cut Q.8** moved the three production
+    /// compares its own item against — and, since **17b cut M3.1**, the three
+    /// cores of `tacsim.pack.cores`, which every chassis from then on fits one
+    /// of and so must find in any game it loads into (no cut-X count of
+    /// weapons, sensors or unit schemas moves). **16b cut Q.8** moved the three production
     /// callers to [`Catalog::build_fielded`] and left this one exactly as it
     /// was, so those acceptances keep meaning what they said. Nothing in
     /// production calls it.
@@ -645,6 +702,9 @@ pub struct Minter<'a> {
 ///
 /// **16b cut AE.1** adds the fifth, for the wheeled mode, by the same rule and
 /// with the same consequence: no other definition moves.
+///
+/// **17b cut M3.1** adds the sixth, [`unit::CORE_RULES_SCHEMA`], last, by the
+/// same rule: `tacsim.power.states`' minted reference is the bytes it was.
 fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
     let mode_rules = serde_json::json!({
         "carries": [
@@ -673,6 +733,18 @@ fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
         // 16b cut AE.1: the fifth, for the wheeled mode — added, as X.2 added
         // the legged one, and nothing above it touched.
         (unit::WHEELED_RULES_SCHEMA, mode_rules),
+        // 17b cut M3.1: the sixth, for the core's capability — the fitting's
+        // record (`core::profile_payload`), appended last by AE.1's rule.
+        (
+            unit::CORE_RULES_SCHEMA,
+            serde_json::json!({
+                "carries": [
+                    "class", "governed", "think_ms", "ops", "rows", "odds_rows",
+                    "slots", "memory_keys", "line_to", "profiles"
+                ],
+                "read_by": "tacsim"
+            }),
+        ),
     ]
 }
 

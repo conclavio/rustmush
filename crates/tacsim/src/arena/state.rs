@@ -3921,6 +3921,37 @@ pub struct Arena {
     /// M4); **carried by the snapshot**, so a config reload between a check-out
     /// and a resume moves nothing — a resumed arena keeps its own.
     pub odds_floor_permille: u32,
+    /// **The class table this match thinks under** (17b cut M3.1; doc 17 §9,
+    /// D-UM-35): every figure of every class — the think period, the op
+    /// ceiling, the view's rows and odds rows, the slots, the memory keys,
+    /// `line_to` and the profiles — that [`Arena::mind_profile`] and
+    /// [`Arena::slot_capacity`] read. [`Arena::new`] sets
+    /// [`crate::arena::core::ClassTable::STOCK`]; `crate::arena_task::spawn_arena`
+    /// writes `[tacsim.minds].classes` here right after the floor, so it is
+    /// **captured at check-out** as the floor is.
+    ///
+    /// **Not folded into `state_hash`** (a per-match constant, the floor's
+    /// argument) and, in 17b cut M3.1, **not carried**: the snapshot's decode
+    /// re-derives [`crate::arena::core::ClassTable::STOCK`] (`snapshot.rs`' head
+    /// lists it re-derived). 17b cut M3.2 carries it with the format move, so
+    /// a resumed match keeps its own. **Until then an operator's table is lost
+    /// across a resume, and a production match CAN see it** under a lawful
+    /// non-stock table: `[tacsim.minds.classes.I] slots = 1` holds a pilot on
+    /// the scout or the drone (Class I cores) to one slot before a server-half
+    /// restart and two after it ([`Arena::slot_capacity`]), and
+    /// `fill_controller = "mind"` fields minds whose period is the configured
+    /// row's before the restart and the stock row's after it — the same input
+    /// then gives another outcome from an equal hash, against 16b cut AF.1's
+    /// resume equivalence. On the stock table (the default) nothing differs.
+    /// Declared for the committer; 17b cut M3.2 closes it.
+    pub classes: crate::arena::core::ClassTable,
+    /// **The class every mind in this match is rated at** (17b cut M3.1):
+    /// [`crate::arena::mind::STOCK_RATED_CLASS`] — Standard Doctrine's — from
+    /// [`Arena::new`] and from the snapshot's decode; moved only by
+    /// [`Arena::set_rated_class_for_tests`], which no production path calls.
+    /// 17b cut M3.3's seal replaces it with each hull's own rated class.
+    /// Neither hashed nor carried.
+    pub(crate) rated_class: crate::arena::core::CoreClass,
     /// **The thinks waiting to land** (17b cut M1a.5; D-UM-21): the intents,
     /// the new memory and the epochs of each hull's last think, from its
     /// [`DueKind::MindThink`] to its [`DueKind::MindLand`] one substep later.
@@ -4665,6 +4696,10 @@ impl Arena {
             conditions: crate::arena::conditions::ConditionTable::default(),
             held_said: BTreeMap::new(),
             odds_floor_permille: crate::config::MindsConfig::default().odds_floor_permille,
+            // 17b cut M3.1: the stock table and Standard Doctrine's rating —
+            // `spawn_arena` writes the configured table before the move.
+            classes: crate::arena::core::ClassTable::STOCK,
+            rated_class: crate::arena::mind::STOCK_RATED_CLASS,
             mind_landings: BTreeMap::new(),
             // 17b cut M1b.5: no card change offered yet.
             pending_cards: BTreeMap::new(),

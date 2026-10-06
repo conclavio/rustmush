@@ -260,6 +260,19 @@
 //! [`crate::arena::card`] is doc 17 §11's stock card, the shape and the Line
 //! anchor only. No production hull arms a slot.
 //!
+//! # 17b cut M3.1: the core
+//!
+//! [`crate::arena::core`] is doc 17 §9's hardware (D-UM-33, D-UM-35): the
+//! class table ([`crate::arena::core::ClassTable`], carried on
+//! [`crate::arena::state::Arena::classes`]), the core read LIVE off the M32
+//! unit every time ([`crate::arena::core::read_core`] — never copied onto
+//! `UnitState`), the class a mind thinks at (`min(rated, core)`,
+//! [`crate::arena::state::Arena::mind_class`]) and the hull's slot capacity.
+//! Every think-side figure — the cadence, the view's rows and odds, the op
+//! ceiling, the memory keys, `line_to` and the slots — is read off the
+//! mind's row ([`crate::arena::mind::ThinkJob::profile`]); Standard Doctrine
+//! is rated I, so on every shipped chassis it thinks at today's figures.
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
@@ -270,6 +283,7 @@ pub mod clock;
 pub mod command;
 pub mod condition;
 pub mod conditions;
+pub mod core;
 pub mod damage;
 pub mod hash;
 pub mod heat;
@@ -316,6 +330,8 @@ pub use conditions::{
     ASPECTS_ANY, Arming, ConditionTable, ConditionTrigger, FireCondition, HELD_SAID_MS, HeldWhy,
     STOCK_CONDITION_SLOTS, SlotTarget, aspect_in, aspect_mask, condition_is_lawful,
 };
+// 17b cut M3.1: the hardware under every mind.
+pub use core::{ClassTable, CoreClass, CoreHardware, CoreProfile, MAX_CONDITION_SLOTS, read_core};
 pub use damage::{
     BLOCKED, COVER, DISPERSION, HULL_SECTION, MISS_REASONS, MOVED, REFUSED, TARGET_GONE, WRECK,
     WRECK_CONDITION, is_wreck,
@@ -332,8 +348,8 @@ pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, Ledge
 pub use mind::{
     Landing, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue, Memory,
     MindRunner, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS, STOCK_MEMORY_LIMITS,
-    STOCK_THINK_MS, ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory,
-    default_mind_runner, encode_memory, memory_check,
+    STOCK_RATED_CLASS, STOCK_THINK_MS, ThinkFault, ThinkJob, ThinkResult, ViewContact,
+    decode_memory, default_mind_runner, encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
 pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
@@ -447,9 +463,47 @@ pub(crate) mod test_support {
         )
     }
 
+    /// **[`tactical_unit`] with a governed core of `class` in its hull** (17b
+    /// cut M3.1): the shape `bind` lays down from content, through the one
+    /// helper every hand-built hull uses
+    /// ([`crate::definitions::core::core_component`]) — what [`tank`] stands on,
+    /// so every fixture tank, pilot or mind, keeps Class I's figures (two
+    /// slots; Standard Doctrine at Class I).
+    pub(crate) fn tactical_unit_cored(
+        id: ObjId,
+        class: crate::arena::core::CoreClass,
+    ) -> TacticalUnit {
+        let mut spec = tactical_unit_spec(rules());
+        with_core(&mut spec, "hull", class);
+        TacticalUnit::from_spec(&spec, id).expect("a one-section unit with a core")
+    }
+
+    /// **Fit a governed core of `class` in `section`** of a hand-built spec
+    /// (17b cut M3.1), through [`crate::definitions::core::core_component`].
+    pub(crate) fn with_core(
+        spec: &mut UnitSpec,
+        section: &str,
+        class: crate::arena::core::CoreClass,
+    ) {
+        let (component, capability) = crate::definitions::core::core_component(
+            section,
+            class,
+            dref("component", "tacsim.unit.line_tank.core"),
+            dref("schema", crate::definitions::unit::CORE_RULES_SCHEMA),
+        )
+        .expect("a core");
+        spec.components.push(component);
+        spec.capabilities.push(capability);
+    }
+
     /// [`tactical_unit`]'s one shape, under any rules blob.
     fn tactical_unit_ruled(id: ObjId, rules: RulesValue) -> TacticalUnit {
-        let spec = UnitSpec {
+        TacticalUnit::from_spec(&tactical_unit_spec(rules), id).expect("a one-section unit")
+    }
+
+    /// [`tactical_unit`]'s spec, under any rules blob.
+    fn tactical_unit_spec(rules: RulesValue) -> UnitSpec {
+        UnitSpec {
             definition: dref("unit", "tacsim.unit.line_tank"),
             sections: vec![SectionSpec {
                 id: SectionId::new("hull").expect("a canonical section"),
@@ -476,8 +530,7 @@ pub(crate) mod test_support {
             capabilities: Vec::new(),
             mobility: None,
             rules,
-        };
-        TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
+        }
     }
 
     /// **[`tactical_unit`] with one ground mode of `locomotion`** (16b cut AE.1)
@@ -638,6 +691,9 @@ pub(crate) mod test_support {
     /// A stock tank: 1,000 cm/s forward, 40% in reverse, 200/400 cm/s²,
     /// 30 degrees a second. **No sensor and no weapon**, which is cut A's arena
     /// exactly: it runs no pass and derives an `Alert` range of zero.
+    /// **17b cut M3.1**: and a Class I core in its hull
+    /// ([`tactical_unit_cored`]) — every fixture built on it ([`scout`] among
+    /// them) is Class I.)
     pub(crate) fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             id,
@@ -661,7 +717,10 @@ pub(crate) mod test_support {
             // 16b cut Q.1: no lobby fielded it, so `Arena::new` gives it the
             // lowest free slot of its team in unit-id order.
             slot: 0,
-            unit: tactical_unit(id),
+            // 17b cut M3.1: a Class I core in its hull (it has no turret), so a
+            // fixture tank holds two slots and a mind on it thinks at today's
+            // figures.
+            unit: tactical_unit_cored(id, crate::arena::core::CoreClass::I),
         }
     }
 
@@ -885,6 +944,10 @@ pub(crate) mod test_support {
             mobility: None,
             rules: rules(),
         };
+        // 17b cut M3.1: the line core (Class II) in the turret, as the
+        // version-3 pack fits it.
+        let mut spec = spec;
+        with_core(&mut spec, "turret", crate::arena::core::CoreClass::II);
         TacticalUnit::from_spec(&spec, id).expect("the stock tank")
     }
 
@@ -1127,6 +1190,10 @@ pub(crate) mod test_support {
             mobility: None,
             rules: rules(),
         };
+        // 17b cut M3.1: the line core (Class II) in the turret, as the
+        // version-3 pack fits it.
+        let mut spec = spec;
+        with_core(&mut spec, "turret", crate::arena::core::CoreClass::II);
         TacticalUnit::from_spec(&spec, id).expect("the laser tank")
     }
 

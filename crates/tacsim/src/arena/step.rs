@@ -311,9 +311,14 @@ pub struct Frame {
 }
 
 /// **How many contacts a frame carries odds for** (17b cut M1a.3; doc 17 §9,
-/// D-UM-35): the stock tank's class I core's `odds_rows`, a constant until 17b
-/// cut M3's `CoreProfile.odds_rows` replaces it — and read in one place,
-/// `Arena::frame_odds`.
+/// D-UM-35): the stock tank's class I core's `odds_rows` — read in one place,
+/// `Arena::frame_odds`. **The Class I row of `ClassTable::STOCK`; production
+/// reads the profile, the tests' arithmetic keeps the constant** (17b cut
+/// M3.1): a mind's view keeps the odds of the first `odds_rows` of the
+/// frame's rows (`Arena::mind_view`). The FRAME itself stays at this width —
+/// it is the pilot's picture, and it does not move before 17b cut M5 — so a
+/// Class II or III mind reads at most these two (D-UM-4: a tier never
+/// extends the keyframe).
 pub const STOCK_ODDS_ROWS: usize = 2;
 
 /// **One facet's armour, as the pilot's own status block carries it** (16b cut
@@ -1469,8 +1474,10 @@ impl Arena {
         //    held, **the thinks** run (`Arena::run_mind_thinks`), by unit then
         //    `think_seq`: unit-id order by construction, whatever their `seq`
         //    and whenever a mind was adopted. A think schedules nothing at its
-        //    own millisecond (its landing one substep on, its next think
-        //    `STOCK_THINK_MS` on).
+        //    own millisecond (its landing one substep on, its next think its
+        //    row's `think_ms` on — 17b cut M3.1; at Class III's 250 ms, one
+        //    substep, the landing and the next think share a millisecond and
+        //    the landing runs first, by step 1).
         //
         // **Declared asymmetry** (doc 17 §24; 17b cut M1b.0): reflex ticks and
         // mind landings at one millisecond are NOT mutual. A `ReflexTick` is an

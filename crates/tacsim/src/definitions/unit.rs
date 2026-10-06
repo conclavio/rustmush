@@ -91,6 +91,24 @@ pub const WHEELED_RULES_SCHEMA: &str = "tacsim.mobility.wheeled";
 /// The `schema` definition the power capability's rules blob is bound to.
 pub const POWER_RULES_SCHEMA: &str = "tacsim.power.states";
 
+/// **The capability a core grants** (17b cut M3.1; doc 17 §9, D-UM-33): its
+/// key's source is the core's component, and its rules payload is the
+/// fitting's record ([`crate::definitions::core::profile_payload`]). What
+/// [`crate::arena::core::read_core`] looks for: a hull without it is Class 0.
+pub const CORE_CAPABILITY: &str = "tacsim.core";
+
+/// **The cell on a core's component that holds its class now** (17b cut
+/// M3.1; D-UM-33, D-UM-34): `0` to `3`, born at the fitted class's ordinal —
+/// the live class [`crate::arena::core::read_core`] reads, and what 17b cut
+/// M3.4's `degrade_core` lowers.
+pub const CORE_CLASS_CELL: &str = "core_class";
+
+/// **The `schema` definition the core capability's rules blob is bound to**
+/// (17b cut M3.1): the sixth minted schema, appended last
+/// (`crate::definitions`' `schema_payloads`), so no schema minted before it
+/// moves.
+pub const CORE_RULES_SCHEMA: &str = "tacsim.core.profile";
+
 /// The locomotion id doc 16 §3.3's mode rules belong to — the atlas's own
 /// (`mush_atlas::physics::BASE_LOCOMOTIONS`), so the arena's move costs and the
 /// unit's mobility name the same thing.
@@ -447,6 +465,17 @@ pub enum ComponentRole {
         states: Vec<CanonicalId>,
         /// The state a freshly made unit is in.
         initial: CanonicalId,
+    },
+    /// **A core** (17b cut M3.1; doc 17 §9, D-UM-33, D-UM-34): the hardware a
+    /// mind thinks on, of the class the [`crate::definitions::core::CoreDef`]
+    /// it names declares. Bound as a component carrying one
+    /// [`CORE_CLASS_CELL`] and a [`CORE_CAPABILITY`] sourced on it, beside
+    /// [`ComponentRole::Power`], the other role that grants a capability. A
+    /// unit carries at most one ([`UnitSpec::check`]); a unit with none is
+    /// Class 0, the ROM alone.
+    Core {
+        /// The core definition it is — an entry id, checked at load.
+        core: CanonicalId,
     },
 }
 
@@ -821,6 +850,16 @@ impl UnitSpec {
         })
     }
 
+    /// **Every core definition this unit names**, in component order (17b cut
+    /// M3.1) — at most one for a unit [`UnitSpec::check`] admits; what the
+    /// reference check at load walks.
+    pub fn cores(&self) -> impl Iterator<Item = &CanonicalId> {
+        self.components.iter().filter_map(|c| match &c.role {
+            ComponentRole::Core { core } => Some(core),
+            _ => None,
+        })
+    }
+
     /// The section named `id`, when there is one.
     #[must_use]
     pub fn section(&self, id: &CanonicalId) -> Option<&SectionDef> {
@@ -1088,6 +1127,16 @@ impl UnitSpec {
                 }
             }
         }
+        // **17b cut M3.1** (D-UM-33): one core a hull. Two would be two classes
+        // and two `tacsim.core` capabilities, and "the hull's class" would
+        // depend on which `read_core` found first.
+        let cores = self.cores().count();
+        if cores > 1 {
+            return Err(DefinitionError::value(
+                entry,
+                format!("a unit carries at most one core; {cores} are declared"),
+            ));
+        }
         self.check_bands(entry)?;
         self.check_heat(entry)?;
         self.check_mobility(entry)?;
@@ -1301,6 +1350,11 @@ pub struct UnitContext<'a> {
     pub weapon_refs: &'a BTreeMap<CanonicalId, DefinitionRef>,
     /// The already-minted reference of every sensor entry.
     pub sensor_refs: &'a BTreeMap<CanonicalId, DefinitionRef>,
+    /// **Every core entry, by id** (17b cut M3.1): a core component's class
+    /// and governed bit are its definition's.
+    pub cores: &'a BTreeMap<CanonicalId, crate::definitions::core::CoreDef>,
+    /// The already-minted reference of every core entry (17b cut M3.1).
+    pub core_refs: &'a BTreeMap<CanonicalId, DefinitionRef>,
     /// The already-minted `schema` references, by id.
     pub schemas: &'a BTreeMap<&'static str, DefinitionRef>,
 }
@@ -1640,6 +1694,48 @@ pub fn bind(
                         }),
                         Vec::new(),
                         Vec::new(),
+                    )
+                }
+                // **17b cut M3.1** (doc 17 §9, D-UM-33): the core. One cell —
+                // the class NOW, born at the fitted class's ordinal, what
+                // `degrade_core` will lower — and the `tacsim.core` capability
+                // sourced on this component, whose payload is the fitting's
+                // record: the class, the governed bit and that class's row of
+                // the compiled-in `ClassTable::STOCK`, through the ONE helper
+                // every test hull uses too (`core::profile_payload`). The class
+                // a mind thinks at is read live off the cell
+                // (`crate::arena::core::read_core`), never off the payload.
+                ComponentRole::Core { core } => {
+                    let def = cx
+                        .cores
+                        .get(core)
+                        .ok_or_else(|| DefinitionError::reference(name, "core", core.as_str()))?;
+                    let core_ref = cx
+                        .core_refs
+                        .get(core)
+                        .ok_or_else(|| DefinitionError::reference(name, "core", core.as_str()))?;
+                    let schema = schema_ref(name, cx.schemas, CORE_RULES_SCHEMA)?;
+                    let source =
+                        tactics_id!(name, "component", component.id.as_str(), ComponentId)?;
+                    let unbuilt = || {
+                        DefinitionError::value(
+                            name,
+                            format!("component `{}`'s core will not bind", component.id),
+                        )
+                    };
+                    capabilities.push(
+                        crate::definitions::core::core_capability(
+                            &source,
+                            def.class,
+                            def.governed,
+                            schema,
+                        )
+                        .ok_or_else(unbuilt)?,
+                    );
+                    (
+                        serde_json::json!({ "role": "core", "core": core.as_str() }),
+                        vec![core_ref.clone()],
+                        vec![crate::definitions::core::core_cell(def.class).ok_or_else(unbuilt)?],
                     )
                 }
             };

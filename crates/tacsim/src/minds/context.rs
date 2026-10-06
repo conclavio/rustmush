@@ -23,8 +23,9 @@
 //! **zero-argument native functions** — `lands_ms()`, `t_ms()`,
 //! `decide_ms()`, `cell_cm()`, `leash_cells()`, `station_cells()`,
 //! `screen_half_arc_mdeg()`, `stand_ticks()`, `exposure_front()`,
-//! `exposure_flank()`, `exposure_rear()`, `arrive_cells()`, `slots()`,
-//! `blocked()`, `cover()` — never scope constants and never script `const`s
+//! `exposure_flank()`, `exposure_rear()`, `arrive_cells()`, `slots()` (since
+//! 17b cut M3.1 the think's own row's, `ThinkJob::profile`), `blocked()`,
+//! `cover()` — never scope constants and never script `const`s
 //! (17b §5's feas F1 / adv F1, verified against the rhai 1.26 source): under
 //! strict variables a function body cannot name a scope variable, a top-level
 //! `const` is invisible inside a `fn` and cleared with the statements, a
@@ -45,7 +46,6 @@ use mush_mind::rhai::{EvalAltResult, INT, ImmutableString};
 use mush_mind::system_error;
 
 use super::Registrar;
-use crate::arena::conditions::STOCK_CONDITION_SLOTS;
 use crate::arena::damage::{BLOCKED, COVER};
 use crate::arena::intents::IntentKind;
 use crate::arena::mind::{MindView, ThinkJob};
@@ -101,6 +101,15 @@ pub struct ThinkContext {
     pub draws: u32,
     /// The `line_to` traces asked for so far.
     pub line_to_calls: u32,
+    /// **The most `line_to` traces this think may ask for** (17b cut M3.1;
+    /// D-UM-35's `line_to` column): the job's row's
+    /// ([`ThinkJob::profile`]) — Class I's two,
+    /// [`super::STOCK_LINE_TO_PER_THINK`], on every shipped chassis.
+    pub line_to_max: u32,
+    /// **The condition slots the think is held to** (17b cut M3.1;
+    /// D-UM-35's `slots` column): the job's row's — what `slots()` answers
+    /// and what `fire(weapon, slot)` bounds its slot number by.
+    pub slots: usize,
     /// **The intent buffer** (D-UM-9): what the station functions pushed, in
     /// call order, at most `MIND_INTENTS_MAX`.
     pub intents: Vec<IntentKind>,
@@ -131,6 +140,8 @@ impl ThinkContext {
             decide_ms,
             draws: 0,
             line_to_calls: 0,
+            line_to_max: job.profile.line_to,
+            slots: job.profile.slots,
             intents: Vec::new(),
             overflowed: false,
             refused: None,
@@ -244,8 +255,9 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     function!(api, "arrive_cells", || {
         constant(INT::from(ARRIVE_CELLS))
     });
+    // 17b cut M3.1: the think's own row's slots, no longer a constant.
     function!(api, "slots", || {
-        constant(INT::try_from(STOCK_CONDITION_SLOTS).unwrap_or(INT::MAX))
+        read(|ctx| INT::try_from(ctx.slots).unwrap_or(INT::MAX))
     });
     function!(api, "blocked", || { word(BLOCKED) });
     function!(api, "cover", || { word(COVER) });
@@ -254,6 +266,8 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
 #[cfg(test)]
 mod tests {
     use mush_mind::memory::{Value, decode};
+
+    use crate::arena::conditions::STOCK_CONDITION_SLOTS;
 
     use super::super::fixture::{self, card, context_on, think_with, view};
     use super::*;

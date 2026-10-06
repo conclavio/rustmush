@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.line_tank_ecm",
-    "version": 2,
+    "version": 3,
     "kind": "rules_definition",
-    "digest": "227d8de53a01560bafcd481c6e4f0e7fae3084d3207110e19379947b260368f8",
+    "digest": "77b9fcd26cb97c97498fd13f62533ee98247cf76d8eb96d7b826d62049efee61",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -19,6 +19,10 @@
       },
       {
         "id": "tacsim.pack.ecm_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.cores",
         "version": 1
       }
     ]
@@ -124,6 +128,14 @@
               "states": ["off", "starting", "online"],
               "initial": "off"
             }
+          },
+          {
+            "id": "core",
+            "section": "turret",
+            "role": {
+              "kind": "core",
+              "core": "tacsim.core.line"
+            }
           }
         ],
         "mobility": {
@@ -183,7 +195,7 @@
           { "band": "top", "width_cm": 700, "height_cm": 350 }
         ],
         "sensor_height_cm": 150,
-        "note": "The line tank with doc 16 section 9 item 4's jamming pod bolted to the hull and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same two guns and the same Mk1 visual sight, so a match against a stock tank is a match about the pod. On the HULL and not the turret for a reason: the hull's consequence is destroy_unit, so the one hit that stops the pod radiating is the one that makes the tank a wreck, and the arena reads the wreck it already reads. The pod's three numbers live on the sensor row it names (tacsim.sensor.ecm_mk1) and reach the arena as cells on this component; role ecm rather than a second role sensor because a pod is not something the tank SEES with, and a second sensor mount would shadow the sight the tank aims by. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns."
+        "note": "The line tank with doc 16 section 9 item 4's jamming pod bolted to the hull and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same two guns and the same Mk1 visual sight, so a match against a stock tank is a match about the pod. On the HULL and not the turret for a reason: the hull's consequence is destroy_unit, so the one hit that stops the pod radiating is the one that makes the tank a wreck, and the arena reads the wreck it already reads. The pod's three numbers live on the sensor row it names (tacsim.sensor.ecm_mk1) and reach the arena as cells on this component; role ecm rather than a second role sensor because a pod is not something the tank SEES with, and a second sensor mount would shadow the sight the tank aims by. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns. Version 3 (17b cut M3.1): a line core in the turret."
       }
     }
   }

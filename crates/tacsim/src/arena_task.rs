@@ -559,7 +559,12 @@ pub type Callsigns = Vec<(ObjId, Designator)>;
 /// onto the arena (`Arena::odds_floor_permille`) after `Arena::new` and before
 /// the arena moves into the task: **captured once**. The task and the snapshot
 /// carry it from there, and [`resume_arena`] takes the decoded arena's own, so
-/// a config reload between a check-out and a resume moves nothing.
+/// a config reload between a check-out and a resume moves nothing. **17b cut
+/// M3.1**: its class table (`Arena::classes`) is written beside the floor —
+/// captured here too, and (until 17b cut M3.2 carries it) re-derived as the
+/// stock table by a resume: under a non-stock `[tacsim.minds].classes` a
+/// resumed match then reads other slots and think periods than the match it
+/// resumes (declared on `Arena::classes`; the stock table moves nothing).
 ///
 /// # Errors
 ///
@@ -579,6 +584,10 @@ pub fn spawn_arena(
     let mut arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
     // 17b cut M1b.1: the floor, captured at check-out.
     arena.odds_floor_permille = minds_cfg.odds_floor_permille;
+    // 17b cut M3.1 (doc 17 §9, D-UM-35): and the class table, the same way.
+    // `Arena::new` scheduled each mind's first think on the stock table's
+    // period; every later think reads this one.
+    arena.classes = minds_cfg.classes;
     // 16b cut V.2: read before `arena` is moved into the task below.
     let callsigns = arena.callsigns();
     let (handle, join) = spawn(runtime, match_id, arena, arena_cfg, egress, false);

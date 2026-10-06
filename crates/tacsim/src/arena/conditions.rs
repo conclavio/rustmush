@@ -87,8 +87,11 @@ use crate::arena::view::range_m_rounded;
 use crate::arena::weapons::FiredBy;
 
 /// **How many condition slots a hull holds** (17b cut M1b.1; doc 17 §9's class
-/// I figure). A constant on the precedent of `STOCK_ODDS_ROWS` until 17b cut
-/// M3's `CoreProfile.condition_slots` replaces it.
+/// I figure). **The Class I row of `ClassTable::STOCK`; production reads the
+/// profile, the tests' arithmetic keeps the constant** (17b cut M3.1): a
+/// hull's capacity is its core's row's `slots` (`Arena::slot_capacity`), which
+/// [`ConditionTable::arm`] holds an arming to — under THIS width, which is
+/// still the row's until 17b cut M3.2 sizes the row by the capacity.
 pub const STOCK_CONDITION_SLOTS: usize = 2;
 
 /// **Every aspect**: the mask bits are `0` front, `1` left, `2` right, `3` rear
@@ -241,18 +244,30 @@ impl ConditionTable {
 
     /// **Arm `cond` on `unit`**, answering its 1-based slot: the slot of the
     /// same weapon replaced in place (it keeps its number), else the first free
-    /// one.
+    /// one among the hull's first `capacity` (17b cut M3.1: its core's
+    /// `slots`, `Arena::slot_capacity` — held under the row's own width,
+    /// [`STOCK_CONDITION_SLOTS`], until 17b cut M3.2 sizes the row by it).
     ///
     /// # Errors
     ///
-    /// [`Refusal::NoSlot`] when every slot is armed with another weapon (the
-    /// count's own word, not the law's).
-    pub fn arm(&mut self, unit: ObjId, cond: FireCondition) -> Result<u8, Refusal> {
+    /// [`Refusal::NoSlot`] when every slot the hull holds is armed with another
+    /// weapon (the count's own word, not the law's) — and for a capacity of
+    /// none, with no row laid down.
+    pub fn arm(
+        &mut self,
+        unit: ObjId,
+        cond: FireCondition,
+        capacity: usize,
+    ) -> Result<u8, Refusal> {
+        let holds = capacity.min(STOCK_CONDITION_SLOTS);
+        if holds == 0 {
+            return Err(Refusal::NoSlot);
+        }
         let row = self.rows.entry(unit).or_insert(NO_SLOTS);
         let at = row
             .iter()
             .position(|slot| slot.as_ref().is_some_and(|had| had.weapon == cond.weapon))
-            .or_else(|| row.iter().position(Option::is_none));
+            .or_else(|| row.iter().take(holds).position(Option::is_none));
         let Some(at) = at else {
             return Err(Refusal::NoSlot);
         };
@@ -673,7 +688,9 @@ impl Arena {
                     return Err(Refusal::NoWeapon);
                 }
                 condition_is_lawful(cond, self.odds_floor_permille)?;
-                let n = self.conditions.arm(unit, cond.clone())?;
+                // 17b cut M3.1 (D-UM-35): the hull's own capacity, its core's.
+                let capacity = self.slot_capacity(unit);
+                let n = self.conditions.arm(unit, cond.clone(), capacity)?;
                 self.forget_held_said(unit, &[n]);
                 Ok(Some(n))
             }
@@ -903,10 +920,23 @@ mod tests {
         assert!(table.is_empty_for(RED));
         assert_eq!(table.slots(RED).len(), STOCK_CONDITION_SLOTS);
         assert!(table.slots(RED).iter().all(Option::is_none));
-        assert_eq!(table.arm(RED, slot("cannon", 100)), Ok(1));
-        assert_eq!(table.arm(RED, slot("machine_gun", 100)), Ok(2));
-        assert_eq!(table.arm(RED, slot("missiles", 100)), Err(Refusal::NoSlot));
-        assert_eq!(table.arm(RED, slot("cannon", 300)), Ok(1), "in place");
+        assert_eq!(
+            table.arm(RED, slot("cannon", 100), STOCK_CONDITION_SLOTS),
+            Ok(1)
+        );
+        assert_eq!(
+            table.arm(RED, slot("machine_gun", 100), STOCK_CONDITION_SLOTS),
+            Ok(2)
+        );
+        assert_eq!(
+            table.arm(RED, slot("missiles", 100), STOCK_CONDITION_SLOTS),
+            Err(Refusal::NoSlot)
+        );
+        assert_eq!(
+            table.arm(RED, slot("cannon", 300), STOCK_CONDITION_SLOTS),
+            Ok(1),
+            "in place"
+        );
         assert_eq!(
             table.slots(RED).first().cloned().flatten(),
             Some(slot("cannon", 300))
@@ -914,7 +944,10 @@ mod tests {
         assert_eq!(table.slot_of(RED, "machine_gun"), Some(2));
         assert_eq!(table.disarm(RED, Some("cannon")), vec![1]);
         assert_eq!(table.slot_of(RED, "machine_gun"), Some(2), "stable");
-        assert_eq!(table.arm(RED, slot("missiles", 100)), Ok(1));
+        assert_eq!(
+            table.arm(RED, slot("missiles", 100), STOCK_CONDITION_SLOTS),
+            Ok(1)
+        );
         assert_eq!(table.disarm(RED, Some("nothing")), Vec::<u8>::new());
         assert_eq!(
             table.clear_weapons(RED, &[SmolStr::new("missiles")]),
@@ -925,9 +958,76 @@ mod tests {
         assert_eq!(table.disarm(RED, None), vec![2]);
         assert!(table.is_empty_for(RED), "the key goes with the last slot");
         assert_eq!(table.disarm(RED, None), Vec::<u8>::new());
-        let _ = table.arm(BLUE, slot("cannon", 100));
+        let _ = table.arm(BLUE, slot("cannon", 100), STOCK_CONDITION_SLOTS);
         table.clear(BLUE);
         assert!(table.is_empty_for(BLUE));
+    }
+
+    /// **17b cut M3.1** (D-UM-35): an arming is held to the hull's capacity,
+    /// under the row's own width — one slot holds one gun (the second refused
+    /// `NoSlot`, the in-place re-arm still taken), six hold the row's two, and
+    /// none refuses with no row laid down. On the arena, a hull with no core
+    /// (Class 0) holds one and a Class I hull two (`Arena::slot_capacity`),
+    /// through `Arena::resolve_arming` as a pilot's `FIRE … WHEN` and a
+    /// mind's landing arm.
+    #[test]
+    fn m3_an_arming_is_held_to_the_hulls_capacity() {
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::test_support::{arena_of, cannon, laser, pose, scout, tactical_unit};
+        let mut table = ConditionTable::default();
+        assert_eq!(table.arm(RED, slot("cannon", 100), 1), Ok(1));
+        assert_eq!(
+            table.arm(RED, slot("machine_gun", 100), 1),
+            Err(Refusal::NoSlot)
+        );
+        assert_eq!(table.arm(RED, slot("cannon", 300), 1), Ok(1), "in place");
+        assert_eq!(table.arm(BLUE, slot("cannon", 100), 6), Ok(1));
+        assert_eq!(table.arm(BLUE, slot("machine_gun", 100), 6), Ok(2));
+        assert_eq!(
+            table.arm(BLUE, slot("missiles", 100), 6),
+            Err(Refusal::NoSlot),
+            "the row's width until 17b cut M3.2"
+        );
+        let mut none = ConditionTable::default();
+        assert_eq!(none.arm(RED, slot("cannon", 100), 0), Err(Refusal::NoSlot));
+        assert!(none.is_empty_for(RED), "no row laid down");
+
+        // Two guns on each hull, so the capacity is what refuses.
+        let two_guns = |unit: crate::arena::state::CustodyUnit| crate::arena::state::CustodyUnit {
+            weapons: vec![cannon(), laser()],
+            ..unit
+        };
+        let bare = crate::arena::state::CustodyUnit {
+            unit: tactical_unit(BLUE),
+            ..two_guns(scout(BLUE, Team::Blue, pose(6_500, 4_500)))
+        };
+        let mut arena = arena_of(vec![
+            two_guns(scout(RED, Team::Red, pose(1_500, 4_500))),
+            bare,
+        ]);
+        assert_eq!(
+            arena.slot_capacity(RED),
+            ClassTable::STOCK.row(CoreClass::I).slots
+        );
+        assert_eq!(
+            arena.slot_capacity(BLUE),
+            ClassTable::STOCK.row(CoreClass::Zero).slots
+        );
+        // And through the arena's own arming (`Arena::resolve_arming`, which
+        // reads `slot_capacity` at the arm): the Class I hull takes both guns,
+        // the coreless one the first alone, the second refused `NoSlot` with
+        // nothing laid down for it, and the first still re-armed in place.
+        let arm = |weapon: &str| Arming::Arm(slot(weapon, 1_000));
+        assert_eq!(arena.resolve_arming(RED, &arm("cannon"), 0), Ok(Some(1)));
+        assert_eq!(arena.resolve_arming(RED, &arm("laser"), 0), Ok(Some(2)));
+        assert_eq!(arena.resolve_arming(BLUE, &arm("cannon"), 0), Ok(Some(1)));
+        assert_eq!(
+            arena.resolve_arming(BLUE, &arm("laser"), 0),
+            Err(Refusal::NoSlot),
+            "a coreless hull holds one slot"
+        );
+        assert_eq!(arena.conditions.slot_of(BLUE, "laser"), None);
+        assert_eq!(arena.resolve_arming(BLUE, &arm("cannon"), 0), Ok(Some(1)));
     }
 
     /// **The mask**: one bit per facet, `ASPECTS_ANY` all four.

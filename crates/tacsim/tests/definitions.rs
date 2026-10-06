@@ -185,11 +185,14 @@ fn every_shipped_definition_loads_validates_and_binds() {
         sections,
         ["hull", "turret", "left_track", "right_track", "engine"]
     );
+    // 17b cut M3.1 (doc 17 §9, D-UM-33): doc 16 §3.3's four components and,
+    // fifth, the line core in the turret (was the four alone).
     let components: Vec<&str> = spec.components.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(
         components,
-        ["cannon", "machine_gun", "visual_sensor", "power"]
+        ["cannon", "machine_gun", "visual_sensor", "power", "core"]
     );
+    assert_eq!(catalog.cores.len(), 3, "the cores pack's three");
     assert_eq!(
         spec.sensor_height_cm, 150,
         "doc 16 §3.2's default, authored"
@@ -405,7 +408,13 @@ fn the_six_content_kinds_are_the_six_the_pack_format_owns() {
     // doc 16 §4 names six kinds, `PackEntry` decodes six, and `OWNED_KINDS` — the
     // list that decides whether an entry is this crate's or another module's —
     // carries every one of them. A seventh kind that reached only one of the
-    // three would be a kind nothing applies or a kind nothing decodes.
+    // three would be a kind nothing applies or a kind nothing decodes. **17b
+    // cut M3.1** added that seventh, `core` (doc 17 §9), to all three at once
+    // — and the shipped content carries it (the cores pack), so the stock game
+    // exercises all seven.
+    assert_eq!(tacsim::definitions::CONTENT_KINDS.len(), 7);
+    assert!(tacsim::definitions::CONTENT_KINDS.contains(&"core"));
+    assert!(tacsim::definitions::KINDS.contains(&"core"));
     for kind in tacsim::definitions::CONTENT_KINDS {
         assert!(
             tacsim::pack::OWNED_KINDS.contains(&kind),

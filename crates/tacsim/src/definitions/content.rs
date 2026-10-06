@@ -1,7 +1,8 @@
 //! **The game's content, compiled in** (16b cut C.2; doc 16 §4 "Content
 //! packs").
 //!
-//! Nine files under `crates/tacsim/content/`, `include_str!`ed here and pinned
+//! Ten files under `crates/tacsim/content/` (the cores pack, 17b cut M3.1, the
+//! tenth), `include_str!`ed here and pinned
 //! by digest in `crates/tacsim/tests/content.rs`, in the shape
 //! `mush_atlas::starter` already uses for the lot: **the game's own content
 //! loads on every boot without an operator naming a path**.
@@ -40,6 +41,7 @@
 //! | `weapons/cannon_105.json` | `tacsim.pack.cannon_105` | rules | never |
 //! | `weapons/mg_coax.json` | `tacsim.pack.mg_coax` | rules | never |
 //! | `sensors/visual_mk1.json` | `tacsim.pack.visual_mk1` | rules | never |
+//! | `cores/cores.json` | `tacsim.pack.cores` | rules | never (17b cut M3.1) |
 //! | `units/line_tank.json` | `tacsim.pack.line_tank` | rules | never |
 //! | `resolution.json` | `tacsim.pack.resolution` | rules | never |
 //! | `atlas/proving_ground.json` | `tacsim.proving_ground` | atlas region | the content latch, at a first boot |
@@ -108,7 +110,10 @@
 //!
 //! [`SOURCES`] and [`sources`] are untouched, and so is
 //! [`super::Catalog::build_game`]: "the stock game" is a statement about the
-//! eight packs in the table above, it is what every cut-X acceptance compares
+//! packs in the table above — eight until **17b cut M3.1** added the cores pack
+//! as a ninth, because every chassis fits a core from then on and a chassis
+//! must find its core in the game it is loaded into — it is what every cut-X
+//! acceptance compares
 //! its own item against, and a cut that moved it would have rewritten seven
 //! tests about lasers, bipeds and pods to say something about a lobby.
 //!
@@ -130,6 +135,8 @@ pub const CANNON_105_JSON: &str = include_str!("../../content/weapons/cannon_105
 pub const MG_COAX_JSON: &str = include_str!("../../content/weapons/mg_coax.json");
 /// `crates/tacsim/content/sensors/visual_mk1.json`.
 pub const VISUAL_MK1_JSON: &str = include_str!("../../content/sensors/visual_mk1.json");
+/// `crates/tacsim/content/cores/cores.json` (17b cut M3.1).
+pub const CORES_JSON: &str = include_str!("../../content/cores/cores.json");
 /// `crates/tacsim/content/units/line_tank.json`.
 pub const LINE_TANK_JSON: &str = include_str!("../../content/units/line_tank.json");
 /// `crates/tacsim/content/resolution.json`.
@@ -156,6 +163,20 @@ pub const LINE_TANK: &str = "tacsim.unit.line_tank";
 
 /// The resolution table the shipped content declares.
 pub const RESOLUTION: &str = "tacsim.resolution.stock";
+
+/// **The cores pack** (17b cut M3.1; doc 17 §9, D-UM-33): the doctrine core
+/// (Class I), the line core (II) and the command core (III), which every
+/// shipped chassis but the range's target fits one of.
+pub const CORES: &str = "tacsim.pack.cores";
+
+/// The Class I core (`tacsim.pack.cores`): the scout's and the drone's.
+pub const CORE_DOCTRINE: &str = "tacsim.core.doctrine";
+
+/// The Class II core: the line tanks' and the bipeds'.
+pub const CORE_LINE: &str = "tacsim.core.line";
+
+/// The Class III core: the heavy's.
+pub const CORE_COMMAND: &str = "tacsim.core.command";
 
 // ---------------------------------------------------------------------------
 // Doc 16 §9's extensions
@@ -456,12 +477,18 @@ pub fn extension_sources_of(rows: &[(&str, &str)]) -> Vec<PackSource> {
 
 /// Every TacSim pack this crate ships, in `requires` order — a pack after every
 /// pack it names.
-pub const SOURCES: [(&str, &str); 8] = [
+///
+/// **17b cut M3.1** puts the cores pack ([`CORES`]) ninth, before
+/// `line_tank.json`, which requires it from its version 3 — and every chassis
+/// of the extension tables after it does too, which this table being ahead of
+/// all of them satisfies.
+pub const SOURCES: [(&str, &str); 9] = [
     ("tacsim/content/ammunition/he_105.json", HE_105_JSON),
     ("tacsim/content/ammunition/ball_762.json", BALL_762_JSON),
     ("tacsim/content/weapons/cannon_105.json", CANNON_105_JSON),
     ("tacsim/content/weapons/mg_coax.json", MG_COAX_JSON),
     ("tacsim/content/sensors/visual_mk1.json", VISUAL_MK1_JSON),
+    ("tacsim/content/cores/cores.json", CORES_JSON),
     ("tacsim/content/units/line_tank.json", LINE_TANK_JSON),
     ("tacsim/content/resolution.json", RESOLUTION_JSON),
     (

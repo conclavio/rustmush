@@ -58,9 +58,7 @@ use super::api::{bounded, cell_arg, contact_of, int_arg, word_arg};
 use super::context::{
     REFUSED_INTENTS, REFUSED_TYPE, REFUSED_UNKNOWN, ThinkContext, refuse, refused, with,
 };
-use crate::arena::conditions::{
-    ASPECTS_ANY, Arming, FireCondition, STOCK_CONDITION_SLOTS, SlotTarget,
-};
+use crate::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::MIND_INTENTS_MAX;
 use crate::arena::state::NO_SUCH_CONTACT;
@@ -193,7 +191,8 @@ fn fire(weapon: Dynamic, slot: Dynamic) -> Result<(), Box<EvalAltResult>> {
     };
     fire_station(kind, |ctx| {
         carried(ctx, weapon.as_str())?;
-        if slot == 0 || usize::from(slot) > STOCK_CONDITION_SLOTS {
+        // 17b cut M3.1: the think's own row's slots (`slots()`).
+        if slot == 0 || usize::from(slot) > ctx.slots {
             return Err(refuse(ctx, REFUSED_UNKNOWN, NO_SUCH_SLOT));
         }
         Ok(())
@@ -329,6 +328,7 @@ mod tests {
     use super::super::fixture::{FRIEND, card, context_on, think, think_with, unarmed_view};
     use super::*;
     use crate::arena::card::line;
+    use crate::arena::conditions::STOCK_CONDITION_SLOTS;
     use crate::arena::stock_mind::arming_for;
     use crate::config::ReflexConfig;
 
@@ -371,7 +371,12 @@ mod tests {
         for row in &mut clear.weapons {
             row.armed = None;
         }
-        let built = arming_for(&clear, &line(&ReflexConfig::default()), Some(42_000));
+        let built = arming_for(
+            &clear,
+            &line(&ReflexConfig::default()),
+            Some(42_000),
+            STOCK_CONDITION_SLOTS,
+        );
         let Some(IntentKind::Condition(Arming::Arm(t1))) = built.first().cloned() else {
             panic!("T1 arms the cannon: {built:?}");
         };

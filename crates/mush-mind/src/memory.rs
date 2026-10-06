@@ -13,9 +13,9 @@
 //! re-exports this codec and its `encode_memory` and `decode_memory` are thin
 //! calls of these two — so the bytes a Rhai mind's memory hashes as are
 //! exactly the bytes the native stock mind's do. The first half is rhai-free
-//! ([`Value`], [`Memory`], [`Limits`], [`MemError`], [`check`], [`encode`],
-//! [`decode`]); the second converts to and from Rhai's map ([`MemFault`],
-//! [`from_map`], [`to_map`]).
+//! ([`Value`], [`Memory`], [`Limits`], [`MemError`], [`check`], [`check_held`]
+//! since 17b cut M3.1, [`encode`], [`decode`]); the second converts to and from
+//! Rhai's map ([`MemFault`], [`from_map`], [`from_map_held`], [`to_map`]).
 //!
 //! # The grammar
 //!
@@ -38,7 +38,7 @@
 //! M2.2 pins that in tacsim (`tests/minds.rs`'
 //! `m2_the_memory_codec_writes_the_native_bytes`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use rhai::{Array, Dynamic, ImmutableString, Map};
@@ -137,6 +137,41 @@ pub fn check(memory: &Memory, limits: &Limits) -> Result<(), MemError> {
         }
     }
     Ok(())
+}
+
+/// **Whether a memory fits a class it may already be past** (17b cut M3.1;
+/// D-UM-30, the lead's ruling on a lowered cap: *no new key is admitted*).
+///
+/// `held` is the key set the think was HANDED — the decoded memory's keys,
+/// which [`crate::Sandbox::think`] reads before the script runs. At or under
+/// `limits.keys` this is [`check`], exactly. Over it — a memory written under
+/// a higher class, on a core since degraded — the memory's key set must be a
+/// SUBSET of `held`: kept whole, or with keys dropped, and never with a key
+/// it was not handed; else [`MemError::Count`]. Not `len <= max(cap, held)`,
+/// which would admit a swap. The per-key and per-value rules are [`check`]'s
+/// either way.
+///
+/// # Errors
+///
+/// [`MemError::Count`] for a new key past the cap; otherwise [`check`]'s.
+pub fn check_held(
+    memory: &Memory,
+    limits: &Limits,
+    held: &BTreeSet<String>,
+) -> Result<(), MemError> {
+    if memory.len() <= limits.keys {
+        return check(memory, limits);
+    }
+    if memory.keys().any(|key| !held.contains(key)) {
+        return Err(MemError::Count(memory.len()));
+    }
+    check(
+        memory,
+        &Limits {
+            keys: memory.len(),
+            ..*limits
+        },
+    )
 }
 
 /// Write `text` as a JSON string: a quote, the text with `"` written `\"` and
@@ -402,6 +437,22 @@ fn value_of(value: &Dynamic) -> Option<Value> {
 ///
 /// The first refusal in that order.
 pub fn from_map(map: &Map, limits: &Limits) -> Result<Memory, MemFault> {
+    from_map_held(map, limits, &BTreeSet::new())
+}
+
+/// **[`from_map`] under [`check_held`]** (17b cut M3.1): the conversion as
+/// [`from_map`] runs it, then the whole checked against `limits` with the
+/// key set the think was handed (`held`) — what [`crate::Sandbox::think`]
+/// calls.
+///
+/// # Errors
+///
+/// As [`from_map`], with [`check_held`]'s count rule.
+pub fn from_map_held(
+    map: &Map,
+    limits: &Limits,
+    held: &BTreeSet<String>,
+) -> Result<Memory, MemFault> {
     let mut memory = Memory::new();
     for (key, value) in map {
         if holds_float(value) {
@@ -411,7 +462,7 @@ pub fn from_map(map: &Map, limits: &Limits) -> Result<Memory, MemFault> {
             value_of(value).ok_or_else(|| MemFault::Shape(MemError::Value(key.to_string())))?;
         memory.insert(key.to_string(), converted);
     }
-    check(&memory, limits).map_err(MemFault::Shape)?;
+    check_held(&memory, limits, held).map_err(MemFault::Shape)?;
     Ok(memory)
 }
 

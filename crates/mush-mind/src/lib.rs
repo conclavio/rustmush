@@ -67,8 +67,8 @@ pub mod trace;
 
 pub use cache::{CompileError, Compiled, Digest};
 pub use engine::{
-    EngineLimits, MAX_ARRAY_SIZE, MAX_MAP_SIZE, MAX_MEMORY_ANY_CLASS, MAX_STRING_BYTES,
-    MindRefusal, RHAI_ABI, Sandbox, system_error,
+    EngineLimits, MAX_ARRAY_SIZE, MAX_MAP_SIZE, MAX_MEMORY_ANY_CLASS, MAX_OPS_ANY_CLASS,
+    MAX_STRING_BYTES, MindRefusal, RHAI_ABI, Sandbox, system_error,
 };
 pub use run::{Fault, Outcome, Think};
 

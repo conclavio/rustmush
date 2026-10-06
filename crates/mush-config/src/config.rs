@@ -1398,6 +1398,16 @@ pub struct TacsimMindsCfg {
     /// `mind` — a lab knob for `mush-bot`'s pooled measure; production configs
     /// leave it at `reflex`.
     pub fill_controller: String,
+    /// **17b cut M3.1** (doc 17 §9, D-UM-35): `[tacsim.minds.classes.<class>]`,
+    /// the Compact class table's overrides — the class word (`0`, `I`, `II`,
+    /// `III`) to any of its eight figures (`think_ms`, `ops`, `rows`,
+    /// `odds_rows`, `slots`, `memory_keys`, `line_to`, `profiles`). Kept as
+    /// the table the file wrote and decoded ONCE, by
+    /// `tacsim::arena::core::ClassTable`'s own wire, in
+    /// `mush_server::config_ext::tacsim_config`: an absent class or figure
+    /// reads the stock row, an unknown word refuses the boot by name, and
+    /// `MindsConfig::validate` holds every figure.
+    pub classes: serde_json::Value,
 }
 
 impl Default for TacsimMindsCfg {
@@ -1405,6 +1415,7 @@ impl Default for TacsimMindsCfg {
         TacsimMindsCfg {
             odds_floor_permille: 100,
             fill_controller: "reflex".to_owned(),
+            classes: serde_json::Value::Object(serde_json::Map::new()),
         }
     }
 }

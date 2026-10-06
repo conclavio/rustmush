@@ -8446,3 +8446,92 @@ async fn ah1_a_hint_waits_for_a_live_connection() {
     let said = rig.out_and_in(1);
     assert_eq!(hints_in(&said), vec![HINT_LINES[0]], "{said}");
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.1 — a live world takes the cores at the next reset
+// ---------------------------------------------------------------------------
+
+/// **A roster tank without a core is refitted with one at the reset** (17b
+/// cut M3.1; doc 17 §9, D-UM-33; 16b cut Q.8's refit rule). A live world
+/// whose roster tank was made before the cores — the line tank of its
+/// version 2, hand-rolled here: the bound spec with the core component and
+/// the `tacsim.core` capability taken out, under a version-2 definition — is
+/// put back to the CURRENT definition on the way into `Idle` and at boot by
+/// `match_::reset_stock_tanks`: the schema is not the loaded binding's, so the
+/// tank is refitted (`ResetReport::refitted`), and afterwards it points at the
+/// version-3 definition and carries the line core (Class II, governed), read
+/// live off the unit. A second reset changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_roster_tank_without_a_core_is_refitted_with_one_at_the_reset() {
+    use tacsim::arena::core::{CoreClass, CoreHardware, read_core};
+    let mut rig = Rig::boot(1);
+    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let binding = rig
+        .tw
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .expect("the tacsim store")
+        .definitions()
+        .bindings
+        .get(&mush_core::CanonicalId::new(tacsim::definitions::content::LINE_TANK).expect("an id"))
+        .expect("the line tank is loaded")
+        .clone();
+    assert_eq!(
+        binding.spec.definition.version(),
+        3,
+        "the loaded line tank is the version-3 definition"
+    );
+
+    // The version-2 tank: no core component, no core capability.
+    let mut stale = binding.spec.clone();
+    stale.definition = mush_tactics::DefinitionRef::new(
+        binding.spec.definition.key().clone(),
+        2,
+        mush_core::DefinitionDigest::from_bytes([2_u8; 32]),
+    )
+    .expect("version 2 is not zero");
+    stale
+        .components
+        .retain(|component| component.id.as_str() != "core");
+    stale
+        .capabilities
+        .retain(|init| init.key.id.as_str() != tacsim::definitions::unit::CORE_CAPABILITY);
+    let old = mush_tactics::TacticalUnit::from_spec(&stale, tank).expect("the old tank");
+    assert_eq!(read_core(&old), None, "the version-2 tank had no core");
+    rig.tw
+        .world_mut()
+        .module_state_mut::<mush_tactics::module::UnitStore>()
+        .expect("the tactics store")
+        .units
+        .insert(tank, old);
+
+    let report =
+        rig.with_ctx(|ctx| match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new()));
+    assert!(
+        report.refitted >= 1,
+        "the stale tank was refitted: {report:?}"
+    );
+    assert!(report.failed.is_empty(), "{report:?}");
+    let now = mush_tactics::module::unit_of(rig.tw.world(), tank).expect("a unit");
+    assert_eq!(
+        now.schema(),
+        &binding.spec.definition,
+        "the current definition"
+    );
+    assert_eq!(
+        read_core(now),
+        Some(CoreHardware {
+            component: smol_str::SmolStr::new("core"),
+            class: CoreClass::II,
+            governed: true,
+        }),
+        "the refitted tank carries the line core"
+    );
+    let again =
+        rig.with_ctx(|ctx| match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new()));
+    assert_eq!(again.refitted, 0, "{again:?}");
+    assert!(
+        !again.changed(),
+        "a second reset changes nothing: {again:?}"
+    );
+}

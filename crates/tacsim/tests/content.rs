@@ -75,12 +75,14 @@ fn pin_file(relative: &str, want: &str) {
 }
 
 /// Every shipped pack file, by its path under `content/`.
-const PACK_FILES: [&str; 8] = [
+const PACK_FILES: [&str; 9] = [
     "ammunition/he_105.json",
     "ammunition/ball_762.json",
     "weapons/cannon_105.json",
     "weapons/mg_coax.json",
     "sensors/visual_mk1.json",
+    // 17b cut M3.1: the cores pack, ahead of the line tank that requires it.
+    "cores/cores.json",
     "units/line_tank.json",
     "resolution.json",
     "arenas/proving_ground.json",
@@ -88,7 +90,11 @@ const PACK_FILES: [&str; 8] = [
 
 /// **The digest pins.** A content change moves one of these, and moving one is a
 /// reviewed diff.
-const DIGESTS: [(&str, &str); 9] = [
+///
+/// **17b cut M3.1** added the cores pack and moved the line tank's, for a core
+/// component (the line core in the turret; version 3). Was `607a1d6c…` at
+/// version 2.
+const DIGESTS: [(&str, &str); 10] = [
     (
         "tacsim.pack.he_105",
         "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
@@ -110,8 +116,12 @@ const DIGESTS: [(&str, &str); 9] = [
         "78776cb2738a1c210cd55f9a2aba94b42eaf1754750195772eab66f58c65d32e",
     ),
     (
+        "tacsim.pack.cores",
+        "3ad7f6910ec8ba53e82a93b852b3d82ef771206516b084e3238696a675233903",
+    ),
+    (
         "tacsim.pack.line_tank",
-        "607a1d6c9ab1dfb182df4b64983719d7e83df492fe0d63e6102679c216d904ee",
+        "2cdf945e7b6422a3810b4726ec4bc257eae3493b05a260c62f83c494241b3b06",
     ),
     (
         "tacsim.pack.resolution",
@@ -992,10 +1002,17 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
 fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_order() {
     let stock = content::sources();
     let fielded = content::fielded_sources();
+    // 17b cut M3.1: the stock game is nine packs — the cores pack joined the
+    // eight, ahead of the line tank that requires it.
+    assert_eq!(
+        stock.len(),
+        9,
+        "nine shipped packs, the cores pack among them"
+    );
     assert_eq!(
         fielded.len(),
         stock.len() + 19,
-        "eight shipped packs and nineteen extension files: doc 16 section 9's ten, \
+        "nine shipped packs and nineteen extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
          16b cut AE.1's three chassis and 16b cut AE.3's drone"
     );
@@ -1192,37 +1209,60 @@ fn m4_every_fielded_tanks_two_tracks_carry_the_pair_rule() {
     assert_eq!(cars, vec![content::SCOUT_MK1], "the one wheeled chassis");
 }
 
-/// **16b cut M.4 (16c `B-47`): the five tank packs are version 2.** Their bytes
-/// moved (the pair rule), and `boot_reconcile` refuses a published `(id,
-/// version)` whose digest moved, so the version had to. The biped is not among
-/// them: its legs carried the pair rule since X.2, and nothing in its file moved.
+/// **16b cut M.4 (16c `B-47`), then 17b cut M3.1: every chassis pack but the
+/// target's moved, the five tanks to version 3.** M.4 moved the five tank
+/// packs to version 2 (the pair rule); M3.1 moves every chassis that fits a
+/// core one version more (its `core` component, D-UM-33): the five line
+/// tanks, the heavy and the scout 2 → 3, both bipeds and the drone 1 → 2 —
+/// and each now requires `tacsim.pack.cores` at version 1. `boot_reconcile`
+/// refuses a published `(id, version)` whose digest moved, so the versions
+/// had to. The range's target fits no core (Class 0, the ROM alone) and is
+/// not moved. (Was `m4_the_five_tank_packs_are_version_two_and_the_biped_is_not_moved`:
+/// the five at 2 and the biped at 1.)
 #[test]
-fn m4_the_five_tank_packs_are_version_two_and_the_biped_is_not_moved() {
-    for (json, id) in [
-        (content::LINE_TANK_JSON, "tacsim.pack.line_tank"),
-        (content::LINE_TANK_LASER_JSON, "tacsim.pack.line_tank_laser"),
+fn m4_the_tank_packs_are_version_three_and_every_chassis_but_the_target_moved() {
+    let cores = mush_core::CanonicalId::new(content::CORES).expect("a canonical id");
+    for (json, id, version) in [
+        (content::LINE_TANK_JSON, "tacsim.pack.line_tank", 3),
+        (
+            content::LINE_TANK_LASER_JSON,
+            "tacsim.pack.line_tank_laser",
+            3,
+        ),
         (
             content::LINE_TANK_THERMAL_JSON,
             "tacsim.pack.line_tank_thermal",
+            3,
         ),
-        (content::LINE_TANK_ECM_JSON, "tacsim.pack.line_tank_ecm"),
-        (content::LINE_TANK_ECCM_JSON, "tacsim.pack.line_tank_eccm"),
+        (content::LINE_TANK_ECM_JSON, "tacsim.pack.line_tank_ecm", 3),
+        (
+            content::LINE_TANK_ECCM_JSON,
+            "tacsim.pack.line_tank_eccm",
+            3,
+        ),
+        (content::HEAVY_MK1_JSON, "tacsim.pack.heavy_mk1", 3),
+        (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 3),
+        (content::BIPED_MK1_JSON, "tacsim.pack.biped_mk1", 2),
+        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2),
+        (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 2),
     ] {
         let pack = tacsim::pack::load_pack(json).unwrap_or_else(|error| panic!("{id}: {error}"));
         assert_eq!(pack.manifest().id().as_str(), id);
-        assert_eq!(pack.manifest().version(), 2, "{id} is version 2");
+        assert_eq!(pack.manifest().version(), version, "{id}'s version");
+        assert!(
+            pack.manifest()
+                .requires()
+                .iter()
+                .any(|required| required.id == cores && required.version == 1),
+            "{id} requires the cores pack"
+        );
     }
-    let biped = content::extension_sources_of(&content::EXTENSIONS_BIPED)
-        .into_iter()
-        .find_map(|source| {
-            let pack = tacsim::pack::load_pack(&source.bytes).ok()?;
-            (pack.manifest().id().as_str() == "tacsim.pack.biped_mk1").then_some(pack)
-        })
-        .unwrap_or_else(|| panic!("the biped ships as an extension"));
-    assert_eq!(
-        biped.manifest().version(),
-        1,
-        "the biped is not re-versioned"
+    let target =
+        tacsim::pack::load_pack(content::TARGET_MK1_JSON).expect("the target's pack verifies");
+    assert_eq!(target.manifest().version(), 1, "the target is not moved");
+    assert!(
+        target.manifest().requires().is_empty(),
+        "the target requires nothing: it fits no core"
     );
 }
 
@@ -2108,5 +2148,289 @@ fn m2_the_standard_doctrine_source_is_pinned() {
          ({widest}) lines={} sha256={STANDARD_DOCTRINE_SHA256}",
         fns.len(),
         STANDARD_RHAI.lines().count()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.1 — the cores, fitted to the shipped chassis
+// ---------------------------------------------------------------------------
+
+/// **The `tacsim.power.states` schema's minted digest** (17b cut M3.1): the
+/// fourth schema's, which the sixth — `tacsim.core.profile`, appended last
+/// (AE.1's rule) — must not move. A `DefinitionRef` digest is a function of
+/// its own `(owner, kind, id, version, payload, references)` alone. The value
+/// was taken at `634ce9dc`, the commit before the cut, and is unmoved.
+const POWER_STATES_SCHEMA_DIGEST: &str =
+    "7b126afa67bdfc00be74e463d6ec387520408c2309e10b17e8457e137d288c40";
+
+/// **Every shipped chassis binds its core** (17b cut M3.1; doc 17 §9,
+/// D-UM-33, D-UM-34): the fielded catalog's eleven unit schemas, each with
+/// the core content places on it — the five line tanks and both bipeds the
+/// line core (II), the heavy the command core (III), the scout and the drone
+/// the doctrine core (I), the range's target none. On each: the authored spec
+/// names exactly that core; the bound unit carries a `core` component in the
+/// section content placed it in, its `core_class` cell born at the class's
+/// ordinal, and one `tacsim.core` capability sourced on it whose payload is
+/// `profile_payload(class, true)` under the minted `tacsim.core.profile`
+/// schema; `tacsim::arena::core::read_core` answers the class, governed.
+/// The cores pack mints three `core` definitions, the component's reference
+/// names its core's, and `tacsim.power.states`' minted reference is the
+/// bytes it was.
+#[test]
+fn m3_every_shipped_chassis_binds_its_core() {
+    use tacsim::arena::core::{CoreClass, CoreHardware, read_core};
+    use tacsim::definitions::core::profile_payload;
+    use tacsim::definitions::unit::{CORE_CAPABILITY, CORE_CLASS_CELL, CORE_RULES_SCHEMA};
+
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let id = |word: &str| mush_core::CanonicalId::new(word).expect("a canonical id");
+
+    // The three cores, minted as `core` definitions.
+    assert_eq!(fielded.cores.len(), 3, "the cores pack's three");
+    for (core, class) in [
+        (content::CORE_DOCTRINE, CoreClass::I),
+        (content::CORE_LINE, CoreClass::II),
+        (content::CORE_COMMAND, CoreClass::III),
+    ] {
+        let def = fielded.cores.get(&id(core)).expect("the core is loaded");
+        assert_eq!(def.class, class, "{core}'s class");
+        assert!(def.governed, "{core} is governed");
+        let reference = fielded.references.get(&id(core)).expect("minted");
+        assert_eq!(reference.key().kind.as_str(), "core", "{core}");
+    }
+
+    /// The core a chassis fits: its id, its section and its class.
+    type Fitted<'a> = Option<(&'a str, &'a str, CoreClass)>;
+    let line = Some((content::CORE_LINE, "turret", CoreClass::II));
+    let expected: [(&str, Fitted<'_>); 11] = [
+        (content::LINE_TANK, line),
+        (content::LINE_TANK_LASER, line),
+        (content::LINE_TANK_THERMAL, line),
+        (content::LINE_TANK_ECM, line),
+        (content::LINE_TANK_ECCM, line),
+        (
+            content::BIPED_MK1,
+            Some((content::CORE_LINE, "torso", CoreClass::II)),
+        ),
+        (
+            content::BIPED_MK2,
+            Some((content::CORE_LINE, "torso", CoreClass::II)),
+        ),
+        (
+            content::HEAVY_MK1,
+            Some((content::CORE_COMMAND, "hull", CoreClass::III)),
+        ),
+        (
+            content::SCOUT_MK1,
+            Some((content::CORE_DOCTRINE, "turret", CoreClass::I)),
+        ),
+        (
+            content::DRONE_MK1,
+            Some((content::CORE_DOCTRINE, "body", CoreClass::I)),
+        ),
+        (content::TARGET_MK1, None),
+    ];
+    assert_eq!(fielded.specs.len(), expected.len(), "every fielded chassis");
+    for (entry, fitted) in expected {
+        let key = id(entry);
+        let spec = fielded.specs.get(&key).expect("the chassis is fielded");
+        let binding = fielded.bindings.get(&key).expect("its binding");
+        let unit = tacsim::definitions::to_tactical_unit(spec, binding, ObjId(21))
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+        let named: Vec<&str> = spec.cores().map(mush_core::CanonicalId::as_str).collect();
+        let Some((core, section, class)) = fitted else {
+            assert!(named.is_empty(), "{entry} fits no core: {named:?}");
+            assert_eq!(read_core(&unit), None, "{entry}: Class 0, the ROM alone");
+            continue;
+        };
+        assert_eq!(named, vec![core], "{entry} names its core");
+        let component = mush_tactics::ComponentId::new("core").expect("a component id");
+        let installed = unit.component(&component).expect("the core component");
+        assert_eq!(
+            installed.install,
+            mush_tactics::InstallPoint::Section(
+                mush_tactics::SectionId::new(section).expect("a section id")
+            ),
+            "{entry}'s core sits in its {section}"
+        );
+        let cell = unit
+            .cell(&mush_tactics::CellAddr::Component {
+                component: component.clone(),
+                cell: mush_tactics::CellId::new(CORE_CLASS_CELL).expect("a cell id"),
+            })
+            .expect("the core_class cell");
+        assert_eq!(
+            (cell.min, cell.max, cell.current),
+            (0, 3, i64::from(class.ordinal())),
+            "{entry}'s cell"
+        );
+        let keys: Vec<&mush_tactics::CapabilityKey> = unit
+            .capabilities()
+            .filter(|key| key.id.as_str() == CORE_CAPABILITY)
+            .collect();
+        assert_eq!(keys.len(), 1, "{entry}: one core capability");
+        let key = *keys.first().expect("the key");
+        assert_eq!(key.source.as_ref(), Some(&component), "{entry}'s source");
+        let rules = unit.capability(key).expect("its rules");
+        assert_eq!(
+            rules.data(),
+            &profile_payload(class, true),
+            "{entry}'s payload is the fitting's record"
+        );
+        assert_eq!(
+            rules.schema().key().id.as_str(),
+            CORE_RULES_SCHEMA,
+            "{entry}'s schema"
+        );
+        assert_eq!(
+            read_core(&unit),
+            Some(CoreHardware {
+                component: smol_str::SmolStr::new("core"),
+                class,
+                governed: true,
+            }),
+            "{entry} reads its core"
+        );
+        // The component's definition names its core's.
+        let core_ref = fielded.references.get(&id(core)).expect("minted");
+        let component_def = binding
+            .descriptors
+            .iter()
+            .find(|descriptor| descriptor.id().as_str() == format!("{entry}.core"))
+            .expect("the core component's descriptor");
+        assert_eq!(
+            component_def.references(),
+            std::slice::from_ref(core_ref),
+            "{entry}"
+        );
+    }
+
+    // The fitting's record pinned literally, not through the helper `bind`
+    // itself calls: the line core's payload is Class II's row of doc 17 §9,
+    // figure by figure under its own key, and its keys are exactly the ones
+    // the minted `tacsim.core.profile` schema says it carries.
+    let line_payload = serde_json::json!({
+        "class": "II", "governed": true, "think_ms": 500, "ops": 3000,
+        "rows": 16, "odds_rows": 4, "slots": 4, "memory_keys": 64,
+        "line_to": 4, "profiles": 3
+    });
+    assert_eq!(profile_payload(CoreClass::II, true), line_payload);
+    let schema = fielded
+        .descriptors
+        .iter()
+        .find(|descriptor| {
+            descriptor.kind().as_str() == "schema" && descriptor.id().as_str() == CORE_RULES_SCHEMA
+        })
+        .expect("the minted core schema");
+    let carries: std::collections::BTreeSet<&str> = schema
+        .payload()
+        .get("carries")
+        .and_then(serde_json::Value::as_array)
+        .expect("the schema's carries")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let keys: std::collections::BTreeSet<&str> = line_payload
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(carries, keys, "the payload carries what its schema says");
+
+    // `tacsim.power.states` is the bytes it was: the sixth schema moved no
+    // other.
+    let tank = fielded
+        .bindings
+        .get(&id(content::LINE_TANK))
+        .expect("the tank");
+    let unit = tacsim::definitions::to_tactical_unit(
+        fielded
+            .specs
+            .get(&id(content::LINE_TANK))
+            .expect("the spec"),
+        tank,
+        ObjId(21),
+    )
+    .expect("the tank instantiates");
+    let power = unit
+        .capabilities()
+        .find(|key| key.id.as_str() == "tacsim.power")
+        .and_then(|key| unit.capability(key))
+        .expect("the power capability");
+    assert_eq!(
+        power.schema().key().id.as_str(),
+        tacsim::definitions::unit::POWER_RULES_SCHEMA
+    );
+    assert_eq!(
+        power.schema().digest().to_hex(),
+        POWER_STATES_SCHEMA_DIGEST,
+        "tacsim.power.states' minted reference moved"
+    );
+}
+
+/// **The stock class table is doc 17 §9's table** (17b cut M3.1; D-UM-35,
+/// D-UM-36): the four rows' figures, the ceilings per second (400, 1,500,
+/// 6,000 and 18,000), the engine backstop equal to the largest class's
+/// `ops`, `[tacsim.minds].classes`' default equal to the compiled-in table,
+/// and Standard Doctrine's manifest rated at `STOCK_RATED_CLASS`.
+#[test]
+fn m3_the_stock_class_table_is_the_doc_17_table() {
+    use tacsim::arena::core::{ClassTable, CoreClass, MAX_CONDITION_SLOTS};
+    let figures = |class: CoreClass| {
+        let row = ClassTable::STOCK.row(class);
+        assert_eq!(row.class, class);
+        (
+            row.think_ms,
+            row.ops,
+            row.rows,
+            row.odds_rows,
+            row.slots,
+            row.memory_keys,
+            row.line_to,
+            row.profiles,
+        )
+    };
+    assert_eq!(figures(CoreClass::Zero), (1_000, 400, 8, 0, 1, 16, 1, 1));
+    assert_eq!(figures(CoreClass::I), (1_000, 1_500, 12, 2, 2, 32, 2, 2));
+    assert_eq!(figures(CoreClass::II), (500, 3_000, 16, 4, 4, 64, 4, 3));
+    assert_eq!(figures(CoreClass::III), (250, 4_500, 24, 8, 6, 128, 6, 4));
+    assert_eq!(
+        CoreClass::ALL.map(|class| ClassTable::STOCK.ceiling_per_s(class)),
+        [400, 1_500, 6_000, 18_000]
+    );
+    assert_eq!(
+        ClassTable::STOCK.row(CoreClass::III).ops,
+        mush_mind::MAX_OPS_ANY_CLASS,
+        "the engine backstop is the largest class's ceiling"
+    );
+    assert_eq!(
+        mush_mind::EngineLimits::default().max_ops_backstop,
+        mush_mind::MAX_OPS_ANY_CLASS
+    );
+    assert_eq!(
+        ClassTable::STOCK.row(CoreClass::III).memory_keys,
+        mush_mind::MAX_MEMORY_ANY_CLASS.keys
+    );
+    assert_eq!(
+        ClassTable::STOCK.row(CoreClass::III).slots,
+        MAX_CONDITION_SLOTS
+    );
+    assert_eq!(
+        tacsim::config::MindsConfig::default().classes,
+        ClassTable::STOCK,
+        "the config's default is the compiled-in table"
+    );
+    let manifest = tacsim::minds::standard_manifest().expect("the manifest decodes");
+    assert_eq!(
+        CoreClass::parse(&manifest.rated_class),
+        Some(tacsim::arena::mind::STOCK_RATED_CLASS),
+        "Standard Doctrine is rated at the arena's stock rating"
+    );
+    assert_eq!(
+        manifest.ops_ceiling,
+        ClassTable::STOCK
+            .row(tacsim::arena::mind::STOCK_RATED_CLASS)
+            .ops
     );
 }

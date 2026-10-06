@@ -370,6 +370,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // 17b cut M1b.5: the lab's fill controller, by name (banded by
             // `validate` below).
             fill_controller: cfg.minds.fill_controller.clone(),
+            // 17b cut M3.1 (doc 17 §9, D-UM-35): the class table, decoded by
+            // its own wire — an absent class or figure is the stock row's —
+            // and held by name by `validate` below.
+            classes: serde_json::from_value(cfg.minds.classes.clone())
+                .map_err(|error| format!("[tacsim.minds].classes: {error}"))?,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
@@ -1888,6 +1893,45 @@ mod tests {
         for (text, needle) in cases {
             let refused = economy_config(&economy_cfg(text)).expect_err(text);
             assert!(refused.contains(needle), "{text}: {refused}");
+        }
+    }
+
+    /// **17b cut M3.1** (doc 17 §9, D-UM-35): `[tacsim.minds.classes.<class>]`
+    /// maps across through the class table's own wire — an absent table, class
+    /// or figure is the stock row's — and a figure out of its band, a class
+    /// the table orders against, or a word that names no class refuses the
+    /// boot by name.
+    #[test]
+    fn m3_the_class_table_maps_across_and_refuses_by_name() {
+        use tacsim::arena::core::{ClassTable, CoreClass};
+        let stock = tacsim_config(&TacsimCfg::default()).expect("the defaults boot");
+        assert_eq!(stock.minds.classes, ClassTable::STOCK);
+        let cfg = tacsim_cfg("[tacsim.minds.classes.II]\nthink_ms = 750\n");
+        let typed = tacsim_config(&cfg).expect("one figure boots");
+        assert_eq!(typed.minds.classes.row(CoreClass::II).think_ms, 750);
+        assert_eq!(typed.minds.classes.row(CoreClass::II).ops, 3_000);
+        assert_eq!(
+            typed.minds.classes.row(CoreClass::I),
+            ClassTable::STOCK.row(CoreClass::I)
+        );
+        for (body, needles) in [
+            (
+                "[tacsim.minds.classes.II]\nthink_ms = 1250\n",
+                ["[tacsim.minds].classes.II.think_ms", "1250"],
+            ),
+            (
+                "[tacsim.minds.classes.III]\nops = 4501\n",
+                ["[tacsim.minds].classes.III.ops", "4501"],
+            ),
+            (
+                "[tacsim.minds.classes.IV]\nops = 100\n",
+                ["[tacsim.minds].classes", "IV"],
+            ),
+        ] {
+            let refused = tacsim_config(&tacsim_cfg(body)).expect_err(body);
+            for needle in needles {
+                assert!(refused.contains(needle), "{body:?}: {refused}");
+            }
         }
     }
 }

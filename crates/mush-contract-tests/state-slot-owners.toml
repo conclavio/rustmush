@@ -306,6 +306,21 @@ pilot would still appear to fly a tank the resume released.
 """
 
 [[site]]
+path = "crates/tacsim/tests/match_lifecycle.rs"
+accessor = "World::module_state_mut"
+slot = "UnitStore"
+owner = "tactics"
+reason = """
+17b cut M3.1: a live world made before the cores holds roster tanks of an older
+definition, and the next reset must refit them to the current one. A
+version-2 line tank cannot be created through `refit_unit` (its definition is
+no longer registered), so the test plants it in the tactics store's RAM index
+(`UnitStore.units`, a pub field) as the boot's hydration would have, then runs
+`match_::reset_stock_tanks` — the production path under test — which refits it
+through `mush_tactics::module::refit_unit`. Test-only; no production write.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/cockpit.rs"
 accessor = "World::module_state_mut"
 slot = "DeployedUnits"
@@ -698,4 +713,6 @@ register at the welcome screen after boot can each claim a simulator slot.
 # which added two: the release half's own harness and its SSH lens, both wiring
 # the account oracle a boot would have hydrated; the figure this comment carried
 # before had drifted behind the rows the arena cuts added. 16b cut F.4 added a
-# thirty-eighth, `front_door.rs`, for the same slot and the same reason).
+# thirty-eighth, `front_door.rs`, for the same slot and the same reason; 17b cut
+# M3.1 another, `match_lifecycle.rs`' `UnitStore` row, a test planting an old
+# roster tank for the reset to refit).

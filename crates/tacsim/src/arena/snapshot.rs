@@ -69,7 +69,7 @@
 //!
 //! # The three lists
 //!
-//! [`Arena`] has 51 fields, and every one is placed by name, twice: in the
+//! [`Arena`] has 53 fields, and every one is placed by name, twice: in the
 //! exhaustive destructuring that builds the encode's borrowed `ArenaStateRef`,
 //! and in the exhaustive literal the decode builds the arena with. A field a
 //! later cut adds is a compile error in both until it is put in one of these:
@@ -93,14 +93,20 @@
 //!   views `squad_watch` and `squads_expired` — integers, carried so a resumed
 //!   squad's `SignalReason` stays true (`no_order` is chosen exactly when a
 //!   squad was never reported) and a resume does not re-ask every squad at once.
-//! - **Re-derived** (5), from the caller's ground — whose digest must be the
+//! - **Re-derived** (7), from the caller's ground — whose digest must be the
 //!   recorded one — and from compiled code: `definition` (and the horizon index
 //!   inside its terrain), `index` (built and rebuilt over the carried units, as
 //!   [`Arena::new`] builds it), `min_cost` (`Arena::new`'s own line),
-//!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule) and `mind_runner`
+//!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule), `mind_runner`
 //!   (17b cut M1a.5: `crate::arena::mind::default_mind_runner`, the call
 //!   [`Arena::new`] makes, so a resumed match thinks with the runner a fresh
-//!   one would).
+//!   one would), and (17b cut M3.1) `classes` — the compiled-in
+//!   `crate::arena::core::ClassTable::STOCK`, which 17b cut M3.2 carries with
+//!   its one format move (until then a check-out under a non-stock
+//!   `[tacsim.minds].classes` resumes on the stock table, declared on
+//!   `Arena::classes`) — and `rated_class`
+//!   (`crate::arena::mind::STOCK_RATED_CLASS`, a test's lever until 17b cut
+//!   M3.3's seal).
 //! - **Reset** (10), views and per-pulse scratch: `mind_landings` (17b cut
 //!   M1a.5: the thinks waiting to land; a resumed match's landing finds none,
 //!   clears its `pending` row and lands nothing — the residual 17b cut M3's
@@ -733,6 +739,11 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             conditions,
             held_said,
             odds_floor_permille,
+            // Re-derived (17b cut M3.1): the stock class table and Standard
+            // Doctrine's rating — 17b cut M3.2 carries the table, M3.3's seal
+            // replaces the rating.
+            classes: _classes,
+            rated_class: _rated_class,
             // Reset (17b cut M1a.5): the thinks waiting to land are scratch.
             mind_landings: _mind_landings,
             // Reset (17b cut M1b.5): the card changes waiting for the next
@@ -937,6 +948,9 @@ impl ArenaState {
             conditions,
             held_said,
             odds_floor_permille,
+            // 17b cut M3.1: re-derived, as `Arena::new` sets them.
+            classes: crate::arena::core::ClassTable::STOCK,
+            rated_class: crate::arena::mind::STOCK_RATED_CLASS,
             mind_landings: BTreeMap::new(),
             pending_cards: BTreeMap::new(),
             mind_runner,
@@ -1449,6 +1463,7 @@ mod tests {
                 min_range_m: 0,
                 max_range_m: u32::MAX,
             },
+            crate::arena::conditions::STOCK_CONDITION_SLOTS,
         );
         let text = round_trip(&slots);
         assert!(text.starts_with(r#"{"4":[{"weapon":"cannon""#), "{text}");

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.line_tank_eccm",
-    "version": 2,
+    "version": 3,
     "kind": "rules_definition",
-    "digest": "ba7bc4182d337ad8e9c50f20ca38ac3e4feaaac1787c2ae4119d8669a0a6e585",
+    "digest": "b4be914cec9033367a800c250cd222675f2e661fa3aae412193bd85391564215",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -19,6 +19,10 @@
       },
       {
         "id": "tacsim.pack.eccm_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.cores",
         "version": 1
       }
     ]
@@ -124,6 +128,14 @@
               "states": ["off", "starting", "online"],
               "initial": "off"
             }
+          },
+          {
+            "id": "core",
+            "section": "turret",
+            "role": {
+              "kind": "core",
+              "core": "tacsim.core.line"
+            }
           }
         ],
         "mobility": {
@@ -183,7 +195,7 @@
           { "band": "top", "width_cm": 700, "height_cm": 350 }
         ],
         "sensor_height_cm": 150,
-        "note": "The line tank with doc 16 section 9 item 5's counter-jamming filter bolted to the hull and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same two guns and the same Mk1 visual sight, so a match against a stock tank is a match about the filter. On the HULL and not the turret for the reason the pod is: the hull's consequence is destroy_unit, so the one hit that takes the filter out is the one that makes the tank a wreck, and a wreck runs no sensor pass at all. The filter's two numbers live on the sensor row it names (tacsim.sensor.eccm_mk1) and reach the arena as cells on this component, beside the condition cell that says whether the filter is still there; role eccm rather than a second role sensor because a filter is not something the tank SEES with. It carries no pod: this tank jams nobody. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns."
+        "note": "The line tank with doc 16 section 9 item 5's counter-jamming filter bolted to the hull and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same two guns and the same Mk1 visual sight, so a match against a stock tank is a match about the filter. On the HULL and not the turret for the reason the pod is: the hull's consequence is destroy_unit, so the one hit that takes the filter out is the one that makes the tank a wreck, and a wreck runs no sensor pass at all. The filter's two numbers live on the sensor row it names (tacsim.sensor.eccm_mk1) and reach the arena as cells on this component, beside the condition cell that says whether the filter is still there; role eccm rather than a second role sensor because a filter is not something the tank SEES with. It carries no pod: this tank jams nobody. Version 2 (16b cut M.4): both tracks carry the pair rule. Version 3 (17b cut M3.1): a line core in the turret."
       }
     }
   }

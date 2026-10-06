@@ -223,6 +223,9 @@ pub enum PackEntry {
     Ammunition(crate::definitions::AmmunitionDef),
     /// **16b cut C.2 (C1)** — one sensor (doc 16 §3.6).
     Sensor(crate::definitions::SensorDef),
+    /// **17b cut M3.1** — one core (doc 17 §9, D-UM-33): a Compact class and
+    /// a governed bit, fitted to a chassis by a `core` component.
+    Core(crate::definitions::CoreDef),
     /// **16b cut C.2 (C1)** — one resolution table (doc 16 §3.5, D-16-8).
     Resolution(crate::definitions::ResolutionDef),
     /// **16b cut C.2 (C3)** — one arena: the window, its zones, its waypoints
@@ -247,6 +250,7 @@ impl PackEntry {
             PackEntry::Weapon(_) => "weapon",
             PackEntry::Ammunition(_) => "ammunition",
             PackEntry::Sensor(_) => "sensor",
+            PackEntry::Core(_) => "core",
             PackEntry::Resolution(_) => "resolution",
             PackEntry::Arena(_) => "arena",
         }
@@ -279,6 +283,8 @@ impl PackEntry {
             PackEntry::Weapon(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Ammunition(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Sensor(def) => def.check(&def.label).map_err(definition_error)?,
+            // 17b cut M3.1: the seventh content kind, on the same rule.
+            PackEntry::Core(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Resolution(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Arena(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Commodity(def) => {
@@ -874,8 +880,9 @@ fn is_unbanded(value: &u8) -> bool {
 /// The entry kinds this crate decodes; any other kind in a pack is another
 /// module's, applied through the content module (S9.1).
 ///
-/// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight.
-pub const OWNED_KINDS: [&str; 14] = [
+/// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight; 17b cut M3.1
+/// the fifteenth, `core` (doc 17 §9).
+pub const OWNED_KINDS: [&str; 15] = [
     "commodity",
     "recipe",
     "route",
@@ -888,6 +895,7 @@ pub const OWNED_KINDS: [&str; 14] = [
     "weapon",
     "ammunition",
     "sensor",
+    "core",
     "resolution",
     "arena",
 ];
@@ -1112,7 +1120,8 @@ impl RulesPack {
             // that are re-pinned and diffed; an `arena` **instantiates** — its
             // applier makes the room, the domain and the stock tanks of
             // doc 16 §3.3, and re-running it would duplicate them exactly as
-            // re-running a mine would — so it belongs on the seed side.
+            // re-running a mine would — so it belongs on the seed side. 17b cut
+            // M3.1's `core` is a rules kind with the sensor.
             let misplaced = matches!(
                 (manifest.kind(), entry),
                 (
@@ -1130,6 +1139,7 @@ impl RulesPack {
                         | PackEntry::Weapon(_)
                         | PackEntry::Ammunition(_)
                         | PackEntry::Sensor(_)
+                        | PackEntry::Core(_)
                         | PackEntry::Resolution(_)
                 )
             );

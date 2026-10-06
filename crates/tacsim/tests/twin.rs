@@ -589,6 +589,8 @@ fn play_on(
                 lands_ms: thought.lands_ms,
                 seed: clone.seed,
                 dropped: false,
+                profile: &tacsim::arena::core::ClassTable::STOCK
+                    .row(tacsim::arena::core::CoreClass::I),
                 view: &view,
                 memory: &memory,
                 map: &clone.definition,

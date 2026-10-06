@@ -325,6 +325,7 @@ mod tests {
             lands_ms: t_ms.saturating_add(arena.substep_len_ms()),
             seed: arena.seed,
             dropped: false,
+            profile: &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
             view: &view,
             memory: &bytes,
             map: &arena.definition,
@@ -1159,7 +1160,12 @@ mod tests {
     ) -> Vec<IntentKind> {
         use crate::arena::mind::MemValue;
         use crate::arena::stock_mind::arming_for;
-        let native = arming_for(view, card, ceiling);
+        let native = arming_for(
+            view,
+            card,
+            ceiling,
+            crate::arena::conditions::STOCK_CONDITION_SLOTS,
+        );
         let mut memory = Memory::new();
         memory.insert(
             "ceiling".to_owned(),
@@ -1176,6 +1182,7 @@ mod tests {
             lands_ms: 1_000_i64.saturating_add(arena.substep_len_ms()),
             seed: arena.seed,
             dropped: false,
+            profile: &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
             view: &view,
             memory: &bytes,
             map: &arena.definition,

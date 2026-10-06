@@ -1,0 +1,38 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.cores",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "3ad7f6910ec8ba53e82a93b852b3d82ef771206516b084e3238696a675233903",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.core.doctrine": {
+      "kind": "core",
+      "def": {
+        "label": "doctrine core",
+        "class": "I",
+        "governed": true,
+        "note": "Class I of doc 17 section 9 (17b cut M3.1): a think every second at 1,500 operations, twelve contact rows with the odds on two, two condition slots and thirty-two memory keys. The box the Registry's doctrine is rated for, fitted to the scout car and the drone, which their pilots fly. Compute is scarce in 2350, so the automation that runs on it is excellent and narrow, and the people above it are decisive. The figures are the class table's and are not authored here; a core is its class and whether it is governed."
+      }
+    },
+    "tacsim.core.line": {
+      "kind": "core",
+      "def": {
+        "label": "line core",
+        "class": "II",
+        "governed": true,
+        "note": "Class II of doc 17 section 9 (17b cut M3.1): a think every half second at 3,000 operations, sixteen contact rows with the odds on four, four condition slots and sixty-four memory keys. The box a line machine carries, fitted in the line tanks' turret beside the fire control, and in the bipeds' torso. A mind rated below the box thinks at its own rating: the hardware never raises what a licence allows."
+      }
+    },
+    "tacsim.core.command": {
+      "kind": "core",
+      "def": {
+        "label": "command core",
+        "class": "III",
+        "governed": true,
+        "note": "Class III of doc 17 section 9 (17b cut M3.1): a think every quarter second at 4,500 operations, twenty-four contact rows with the odds on eight, six condition slots and a hundred and twenty-eight memory keys. Named for the command vehicles that carry it and not for commanding: no core of any class gives an order (D-UM-52). Fitted in the heavy's hull, under the armour."
+      }
+    }
+  }
+}

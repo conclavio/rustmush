@@ -1959,7 +1959,7 @@ mod tests {
         };
         let armed_with = |cond: FireCondition| {
             let mut arena = base_arena.clone();
-            let _ = arena.conditions.arm(ObjId(4), cond);
+            let _ = arena.conditions.arm(ObjId(4), cond, 2);
             state_hash(&arena)
         };
         let armed = armed_with(cond.clone());
@@ -2016,8 +2016,9 @@ mod tests {
                 weapon: SmolStr::new("other"),
                 ..cond.clone()
             },
+            2,
         );
-        let _ = second.conditions.arm(ObjId(4), cond.clone());
+        let _ = second.conditions.arm(ObjId(4), cond.clone(), 2);
         let _ = second.conditions.disarm(ObjId(4), Some("other"));
         assert_ne!(state_hash(&second), armed, "slot 2 is not slot 1");
         // Item 3e: each field of a held-shot row.

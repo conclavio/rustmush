@@ -80,10 +80,20 @@ use crate::arena::weapons::FrameWeapon;
 use crate::config::{ArenaConfig, ReflexConfig};
 
 /// **How often a stock mind thinks**, arena milliseconds (17b cut M1a.5; doc
-/// 17 §9, D-UM-35's class 0/I cadence). A constant until 17b cut M3's
-/// `CoreProfile.think_ms` replaces it, read in one place: the think arm
-/// schedules the next think this far after its own lattice millisecond.
+/// 17 §9, D-UM-35's class 0/I cadence). **The Class I row of
+/// `ClassTable::STOCK`; production reads the profile, the tests' arithmetic
+/// keeps the constant** (17b cut M3.1): the think arm and `adopt_mind` read
+/// [`ThinkJob::profile`]'s `think_ms` ([`Arena::mind_profile`]) at the moment
+/// they schedule.
 pub const STOCK_THINK_MS: i64 = 1_000;
+
+/// **The class every mind is rated at until 17b cut M3.3's seal** (17b cut
+/// M3.1; doc 17 §9, D-UM-35): Standard Doctrine's, Class I — the one mind
+/// there is. A mind thinks at `min(rated, core)` ([`Arena::mind_class`]), so
+/// on every shipped chassis (cores I to III) it thinks at Class I's row,
+/// today's figures. `tests/content.rs` pins it equal to the Standard Doctrine
+/// manifest's own `rated_class`.
+pub const STOCK_RATED_CLASS: crate::arena::core::CoreClass = crate::arena::core::CoreClass::I;
 
 /// **How many notices a mind's buffer holds** (D-UM-8): the newest
 /// `MIND_NOTICES`, the oldest dropped first.
@@ -101,7 +111,9 @@ pub const MIND_STRIKES_TO_DROP: u8 = 3;
 
 /// **How many contacts a view carries** (doc 17 §3; D-UM-35's class I
 /// `contact_rows`): the nearest twelve by the held range, then by
-/// [`ContactId`]. A constant until 17b cut M3's `CoreProfile` replaces it.
+/// [`ContactId`]. **The Class I row of `ClassTable::STOCK`; production reads
+/// the profile, the tests' arithmetic keeps the constant** (17b cut M3.1:
+/// [`Arena::mind_view`] truncates at the mind's own `rows`).
 pub const STOCK_CONTACT_ROWS: usize = 12;
 
 /// **The think in flight** (D-UM-23's two rows): which think and the lattice
@@ -278,10 +290,21 @@ pub struct ThinkJob<'a> {
     /// n }` — the arena's own [`Arena::seed`].
     pub seed: u64,
     /// **Whether the hull is dropped to doctrine** (17b cut M2.2; D-UM-31,
-    /// D-UM-32): [`MindState::dropped`] — three faults running. A scripted
-    /// runner answers a dropped job with its native stand-in; the native
-    /// stock mind ignores it (it is the stand-in).
+    /// D-UM-32): [`MindState::dropped`] — three faults running — or, since
+    /// 17b cut M3.1 (D-UM-33), a mind class of `Zero` ([`Arena::mind_class`]):
+    /// a hull with no core, or one whose core reads Class 0, is handed to the
+    /// ROM from its first think, with no drop line (17b cut M3.4 writes one
+    /// only on strikes and on a sealed core that is gone). A scripted runner
+    /// answers a dropped job with its native stand-in; the native stock mind
+    /// ignores it (it is the stand-in).
     pub dropped: bool,
+    /// **The row the mind thinks at** (17b cut M3.1; doc 17 §9, D-UM-35,
+    /// D-UM-4): [`Arena::mind_profile`] — the class table's row of
+    /// `min(rated, core)`, Class 0's for a dropped job. The view was cut to
+    /// its `rows` and `odds_rows`; a runner reads its op ceiling, its memory
+    /// keys, its `line_to` cap and its `slots` here. Standard Doctrine on any
+    /// shipped core reads Class I's row, today's constants.
+    pub profile: &'a crate::arena::core::CoreProfile,
     /// The hull's view, behind the `Arc` the arena wrapped it in once for
     /// this think (17b cut M2.2).
     pub view: &'a Arc<MindView>,
@@ -385,10 +408,13 @@ pub use mush_mind::memory::{MemError, Memory, Value as MemValue};
 /// **The stock class's memory limits** (doc 17 §8; D-UM-35's class I
 /// `memory_keys`): at most 32 keys of 1 to 24 characters, strings of at most
 /// 32 bytes, INT arrays of at most 32 — and, since 17b cut M2.2, keys and
-/// strings in printable ASCII (`0x20..=0x7E`; D-UM-30 as amended). A constant
-/// until 17b cut M3's `CoreProfile` replaces it. The ASCII rule changes nothing
-/// the native stock mind writes: its fourteen keys are ASCII words and it
-/// writes no string value.
+/// strings in printable ASCII (`0x20..=0x7E`; D-UM-30 as amended). **The Class
+/// I row of `ClassTable::STOCK`; production reads the profile, the tests'
+/// arithmetic keeps the constant** (17b cut M3.1: the scripted runner holds a
+/// think to `Limits { keys: profile.memory_keys, ..STOCK_MEMORY_LIMITS }` —
+/// the key count is the class's, the shape bounds are every class's). The
+/// ASCII rule changes nothing the native stock mind writes: its fourteen keys
+/// are ASCII words and it writes no string value.
 pub const STOCK_MEMORY_LIMITS: mush_mind::memory::Limits = mush_mind::memory::Limits {
     keys: 32,
     key_chars: 24,
@@ -569,8 +595,10 @@ impl Arena {
     }
 
     /// **Hand a hull to a mind** (17b cut M1a.5): a [`MindState`] row if it
-    /// has none, and its first think at its next slot of the stagger grid
-    /// ([`STOCK_THINK_MS`] apart) if the heap holds none for it.
+    /// has none, and its first think at its next slot of the stagger grid if
+    /// the heap holds none for it — the grid of the mind's own `think_ms`
+    /// (17b cut M3.1: [`Arena::mind_profile`], read now; Class I's 1,000 ms,
+    /// [`STOCK_THINK_MS`], on every shipped chassis).
     pub(crate) fn adopt_mind(&mut self, unit: ObjId) {
         let think_seq = self
             .minds
@@ -584,7 +612,7 @@ impl Arena {
         {
             return;
         }
-        let at = self.grid_at(unit, STOCK_THINK_MS);
+        let at = self.grid_at(unit, self.mind_profile(unit).think_ms);
         self.due
             .schedule(at, DueKind::MindThink { unit, think_seq });
     }
@@ -609,10 +637,22 @@ impl Arena {
     /// [`crate::arena::view::frame_contacts_held`] against the mind's own range
     /// memory, which it then settles ([`crate::arena::view::settle_ranges`]):
     /// the rows nearest-first by the held `range_m` then by [`ContactId`],
-    /// the first [`STOCK_CONTACT_ROWS`] of them. It **drains** the mind's
-    /// notice buffer into the view. Two writes, both hashed state, which is why
-    /// it takes `&mut self` and why only the think arm calls it in a match.
+    /// the first `rows` of them. It **drains** the mind's notice buffer into
+    /// the view. Two writes, both hashed state, which is why it takes
+    /// `&mut self` and why only the think arm calls it in a match.
+    ///
+    /// **17b cut M3.1** (doc 17 §9, D-UM-35, D-UM-4): the cut is the mind's
+    /// own row ([`Arena::mind_profile`]) — `rows` contacts (Class I's 12,
+    /// [`STOCK_CONTACT_ROWS`]), and the odds kept for the first `odds_rows`
+    /// contacts the FRAME carries odds for, in the frame's order (a hostile
+    /// lock first, then nearest). The frame carries at most
+    /// `crate::arena::step::STOCK_ODDS_ROWS` — the pilot's picture, which
+    /// does not move before 17b cut M5 — so a Class II or III mind reads at
+    /// most the frame's two (D-UM-4: a tier never extends the keyframe). At
+    /// `odds_rows == 0` (Class 0, the ROM) only the hull's lock row keeps its
+    /// odds.
     pub fn mind_view(&mut self, unit: ObjId) -> Option<MindView> {
+        let profile = self.mind_profile(unit);
         let frame = self.frame_for(unit, self.clock.tempo())?;
         let lock = crate::arena::view::frame_lock(&frame);
         let state = self.minds.get_mut(&unit)?;
@@ -621,7 +661,21 @@ impl Arena {
         state.ranges = crate::arena::view::settle_ranges(&frame, &state.ranges);
         let notices = std::mem::take(&mut state.notices);
         rows.sort_by_key(|row| (row.range_m, row.id));
-        rows.truncate(STOCK_CONTACT_ROWS);
+        rows.truncate(profile.rows);
+        // The contacts whose odds the view keeps: the frame's own odds rows,
+        // in the frame's order, the first `odds_rows` of them — or the lock's
+        // alone at nought.
+        let mut odds_rows: Vec<ContactId> = Vec::new();
+        for odds in &frame.odds {
+            if !odds_rows.contains(&odds.contact) {
+                odds_rows.push(odds.contact);
+            }
+        }
+        if profile.odds_rows == 0 {
+            odds_rows.retain(|id| Some(*id) == lock);
+        } else {
+            odds_rows.truncate(profile.odds_rows);
+        }
         let contacts = rows
             .into_iter()
             .filter_map(|row| {
@@ -644,7 +698,7 @@ impl Arena {
                     odds: frame
                         .odds
                         .iter()
-                        .filter(|odds| odds.contact == row.id)
+                        .filter(|odds| odds.contact == row.id && odds_rows.contains(&row.id))
                         .map(|odds| (odds.weapon.clone(), odds.p_permille))
                         .collect(),
                     reads_dead: held.reads_dead,
@@ -702,7 +756,11 @@ impl Arena {
     /// nothing to land; otherwise the strikes are cleared unless the hull is
     /// dropped, the [`Landing`] is put on the scratch, `pending` set, and a
     /// [`DueKind::MindLand`] scheduled one substep later. Either way the next
-    /// think is scheduled [`STOCK_THINK_MS`] after this one's own millisecond.
+    /// think is scheduled the mind's `think_ms` after this one's own
+    /// millisecond (17b cut M3.1: [`Arena::mind_profile`] read at the
+    /// scheduling; Class I's [`STOCK_THINK_MS`] on every shipped chassis).
+    /// The job carries the row the think is held to ([`ThinkJob::profile`])
+    /// and `dropped` for a drop or a mind class of `Zero`.
     /// The runner's trace is dropped: never hashed, never journalled.
     pub(crate) fn mind_think(
         &mut self,
@@ -743,6 +801,21 @@ impl Arena {
         // shots for the millisecond they are resolved at.
         let land_at = t_ms.saturating_add(self.substep_len_ms());
         let runner = Arc::clone(&self.mind_runner);
+        // 17b cut M3.1 (doc 17 §9, D-UM-35): the row this think is held to,
+        // read now — the view above was cut to it, and the next think is
+        // scheduled at its `think_ms` below. A mind class of `Zero` (no core,
+        // a core at Class 0, or the drop) hands the job to the ROM.
+        //
+        // Declared interim (until 17b cut M3.4 truncates the condition row at
+        // every drop): a hull dropped by strikes keeps its HARDWARE's slots
+        // (`Arena::slot_capacity`, its core's), but the ROM thinks at Class
+        // 0's one and re-arms only its first — a second slot the mind armed
+        // before the drop keeps the terms it was armed on. Reachable only
+        // through a scripted runner's strikes, which no production hull has
+        // before 17b cut M4; a never-cored hull or a core at Class 0 holds one
+        // slot already.
+        let class = self.mind_class(unit);
+        let profile = self.classes.row(class);
         let Some(state) = self.minds.get(&unit) else {
             return;
         };
@@ -752,7 +825,8 @@ impl Arena {
             t_ms,
             lands_ms: land_at,
             seed: self.seed,
-            dropped: state.dropped(),
+            dropped: state.dropped() || class == crate::arena::core::CoreClass::Zero,
+            profile: &profile,
             view: &view,
             memory: &state.memory,
             map: &self.definition,
@@ -809,8 +883,12 @@ impl Arena {
             self.due
                 .schedule(land_at, DueKind::MindLand { unit, think_seq });
         }
+        // 17b cut M3.1: the cadence read at the moment of scheduling — after
+        // this think's strike, so a hull that has just dropped is on Class
+        // 0's period from its next think.
+        let period = self.mind_profile(unit).think_ms;
         self.due.schedule(
-            t_ms.saturating_add(STOCK_THINK_MS),
+            t_ms.saturating_add(period),
             DueKind::MindThink {
                 unit,
                 think_seq: think_seq.saturating_add(1),
@@ -1128,6 +1206,7 @@ mod tests {
             lands_ms: arena.substep_len_ms(),
             seed: arena.seed,
             dropped: false,
+            profile: &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
             view: &Arc::new(view),
             memory: &[1, 2, 3],
             map: &arena.definition,

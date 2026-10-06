@@ -22,7 +22,9 @@
 //! # One think
 //!
 //! 1. **A dropped job** (D-UM-32: three faults running,
-//!    `crate::arena::mind::MindState::dropped`) is answered by the runner's
+//!    `crate::arena::mind::MindState::dropped`; since 17b cut M3.1 also a
+//!    hull whose mind class is `Zero` — no core, or a core at Class 0 — from
+//!    its first think) is answered by the runner's
 //!    native stand-in — `NativeStockMind` on the match's doctrine, Standard
 //!    Doctrine's native body — with [`DROPPED_LINE`] as the whole trace. 17b
 //!    cut M3 replaces the stand-in with the ROM and a `MindDropped` line.
@@ -30,8 +32,10 @@
 //!    the view and the map behind the job's own `Arc`s (cloned, never
 //!    copied), the seed, the hull, the sequence and the two clocks, the
 //!    doctrine's `decide_ms`; the script is called as `think(view, card)`
-//!    with the job's memory bound as `this`, at the stock class's ceiling
-//!    ([`STOCK_OPS_PER_THINK`]) and memory limits (`STOCK_MEMORY_LIMITS`)
+//!    with the job's memory bound as `this`, at the job's row's op ceiling and
+//!    memory keys (17b cut M3.1: `ThinkJob::profile` — Class I's
+//!    [`super::STOCK_OPS_PER_THINK`] and `STOCK_MEMORY_LIMITS` on every shipped
+//!    chassis, the shape bounds `STOCK_MEMORY_LIMITS`' for every class)
 //!    and the per-think fee ([`FEE_THINK`]); the context is taken back
 //!    ([`context::take`]).
 //! 3. **The label rule** (D-UM-31), on BOTH ends of the call — a clean return
@@ -67,6 +71,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use mush_core::ObjId;
+use mush_mind::memory::Limits;
 use mush_mind::rhai::Dynamic;
 use mush_mind::{CompileError, Compiled, Digest, Fault, Sandbox, Think, budget};
 use smol_str::SmolStr;
@@ -75,7 +80,7 @@ use super::api::View;
 use super::card::Card;
 use super::context::{self, REFUSED_INTENTS, ThinkContext};
 use super::fees::FEE_THINK;
-use super::{MIND_ABI, STOCK_OPS_PER_THINK, standard_sandbox};
+use super::{MIND_ABI, standard_sandbox};
 use crate::arena::mind::{MindRunner, STOCK_MEMORY_LIMITS, ThinkFault, ThinkJob, ThinkResult};
 use crate::arena::stock_mind::NativeStockMind;
 use crate::config::ArenaConfig;
@@ -196,6 +201,13 @@ impl RhaiRunner {
         job: &ThinkJob<'_>,
     ) -> (Result<mush_mind::Outcome, Fault>, Vec<String>, ThinkContext) {
         context::set(ThinkContext::of(job, self.decide_ms));
+        // 17b cut M3.1 (doc 17 §9, D-UM-35): the row the think is held to —
+        // its op ceiling and its memory keys (the shape bounds are every
+        // class's). Class I's 1,500 and 32 on every shipped chassis.
+        let limits = Limits {
+            keys: job.profile.memory_keys,
+            ..STOCK_MEMORY_LIMITS
+        };
         let (result, trace) = self.sandbox.think(Think {
             compiled: &self.compiled,
             args: vec![
@@ -203,8 +215,8 @@ impl RhaiRunner {
                 Dynamic::from(Card(Arc::new(job.card.clone()))),
             ],
             memory: job.memory,
-            limits: &STOCK_MEMORY_LIMITS,
-            ops_limit: STOCK_OPS_PER_THINK,
+            limits: &limits,
+            ops_limit: job.profile.ops,
             fee_per_think: FEE_THINK,
         });
         // The context was set above on this thread and nothing between takes
@@ -334,6 +346,7 @@ mod tests {
             lands_ms: 5_100,
             seed: 42,
             dropped: false,
+            profile: &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
             view: &seen,
             memory: b"{\"k\":0}",
             map: &defined,
@@ -373,6 +386,7 @@ mod tests {
     /// second sandbox sets the flag and returns, so the sandbox answers `Ok`.
     #[test]
     fn a_flag_left_on_a_clean_return_is_still_the_thinks_fault() {
+        use super::super::STOCK_OPS_PER_THINK;
         use mush_mind::EngineLimits;
 
         use super::super::register_api;
@@ -403,6 +417,7 @@ mod tests {
             lands_ms: 5_100,
             seed: 42,
             dropped: false,
+            profile: &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
             view: &seen,
             memory: b"{\"k\":0}",
             map: &defined,

@@ -764,6 +764,18 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 "{} — {} cells, classifies after {} ms",
                 def.label, def.max_range_cells, def.classify_after_ms
             ),
+            // 17b cut M3.1: a core is its class and its governed bit; the
+            // figures are the class table's.
+            PackEntry::Core(def) => format!(
+                "{} — class {}, {}",
+                def.label,
+                def.class.as_str(),
+                if def.governed {
+                    "governed"
+                } else {
+                    "ungoverned"
+                }
+            ),
             PackEntry::Resolution(def) => format!(
                 "{} — {} curve points, clamped {}‰ to {}‰",
                 def.label,

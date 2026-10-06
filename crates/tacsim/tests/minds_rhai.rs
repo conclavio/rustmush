@@ -154,6 +154,17 @@ fn tactical_unit(id: ObjId, heat: Option<(i64, i64)>) -> TacticalUnit {
             init: now,
         });
     }
+    // 17b cut M3.1 (plan F6): a Class I core in the hull, through
+    // `tacsim::definitions::core::core_component` — the shape `bind` lays
+    // down from content — so the hull holds two condition slots and a mind
+    // on it thinks at Class I's figures, as it did before cores existed.
+    let (core, capability) = tacsim::definitions::core::core_component(
+        "hull",
+        tacsim::arena::core::CoreClass::I,
+        dref("component", "tacsim.unit.line_tank.core"),
+        dref("schema", tacsim::definitions::unit::CORE_RULES_SCHEMA),
+    )
+    .expect("a core");
     let spec = UnitSpec {
         definition: dref("unit", "tacsim.unit.line_tank"),
         sections: vec![SectionSpec {
@@ -172,8 +183,8 @@ fn tactical_unit(id: ObjId, heat: Option<(i64, i64)>) -> TacticalUnit {
             cells,
         }],
         unit_cells: Vec::new(),
-        components: Vec::new(),
-        capabilities: Vec::new(),
+        components: vec![core],
+        capabilities: vec![capability],
         mobility: None,
         rules: rules(),
     };
@@ -602,6 +613,8 @@ struct Kept {
     lands_ms: i64,
     seed: u64,
     dropped: bool,
+    /// 17b cut M3.1: the row the think was held to.
+    profile: tacsim::arena::core::CoreProfile,
     view: Arc<MindView>,
     memory: Vec<u8>,
     map: Arc<ArenaDefinition>,
@@ -619,6 +632,7 @@ impl Kept {
             lands_ms: self.lands_ms,
             seed: self.seed,
             dropped: self.dropped,
+            profile: &self.profile,
             view: &self.view,
             memory: &self.memory,
             map: &self.map,
@@ -686,6 +700,7 @@ impl MindRunner for Recorded {
                 lands_ms: job.lands_ms,
                 seed: job.seed,
                 dropped: job.dropped,
+                profile: *job.profile,
                 view: Arc::clone(job.view),
                 memory: job.memory.to_vec(),
                 map: Arc::clone(job.map),
@@ -1315,6 +1330,7 @@ fn parity_at(moment: &Moment, unit: ObjId) -> Exercised {
             lands_ms: view.t_ms + SUBSTEP,
             seed: SEED,
             dropped: false,
+            profile: &tacsim::arena::core::ClassTable::STOCK.row(tacsim::arena::core::CoreClass::I),
             view: &moment.view,
             memory: &[],
             map: &moment.map,
@@ -2557,6 +2573,7 @@ fn kernels_on(runner: &RhaiRunner, view: &Arc<MindView>, arena: &Arena) -> Memor
         lands_ms: view.t_ms + SUBSTEP,
         seed: arena.seed,
         dropped: false,
+        profile: &tacsim::arena::core::ClassTable::STOCK.row(tacsim::arena::core::CoreClass::I),
         view,
         memory: &[],
         map: &arena.definition,
@@ -3018,6 +3035,8 @@ fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
                 lands_ms: arena.now_ms + arena.substep_len_ms(),
                 seed: arena.seed,
                 dropped: false,
+                profile: &tacsim::arena::core::ClassTable::STOCK
+                    .row(tacsim::arena::core::CoreClass::I),
                 view: &view,
                 memory: &[],
                 map: &arena.definition,
@@ -3402,4 +3421,258 @@ fn m2_the_twin_corpus_hashes_the_same_on_every_host() {
         );
     }
     assert_eq!(rows.len(), pinned.len());
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.1 — the row a Rhai think is held to (doc 17 §9, D-UM-35)
+// ---------------------------------------------------------------------------
+
+/// **The (j) field with red's core at `class` and every mind rated at
+/// `rated`**, red holding blue classified and locked — the hull's own
+/// `core_class` cell set by one plan (the cell is the live class
+/// `read_core` reads), so its `tactical_unit` core needs no second shape.
+fn classed_field(
+    class: tacsim::arena::core::CoreClass,
+    rated: tacsim::arena::core::CoreClass,
+) -> Arena {
+    use tacsim::arena::state::{Classification, Power, SeenPose, ShadowContact};
+    let mut arena = the_j_field(Controller::Mind);
+    let addr = mush_tactics::CellAddr::Component {
+        component: mush_tactics::ComponentId::new("core").expect("a component"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::CORE_CLASS_CELL)
+            .expect("a cell"),
+    };
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr,
+            value: i64::from(class.ordinal()),
+        }],
+        None,
+        None,
+    )
+    .expect("a plan");
+    if let Some(state) = arena.unit_mut(RED) {
+        let (unit, _) = mush_tactics::apply(&state.unit, &plan, 0).expect("the plan applies");
+        state.unit = unit;
+        state.power = Power::Online;
+    }
+    arena.set_rated_class_for_tests(rated);
+    let plot = arena.unit(BLUE).map(SeenPose::of).expect("blue");
+    let contact = tacsim::arena::rng::draw_contact_id(SEED, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot,
+        ),
+    );
+    assert_eq!(
+        arena.resolve_lock(RED, contact, 0),
+        Ok(()),
+        "red locks blue"
+    );
+    arena
+}
+
+/// One think of `source` by red on `arena`, handed red's own row
+/// (`Arena::mind_profile`) and `memory`: the answer.
+fn think_on_row(arena: &mut Arena, source: &str, memory: &[u8]) -> ThinkResult {
+    let profile = arena.mind_profile(RED);
+    let view = Arc::new(arena.mind_view(RED).expect("red's view"));
+    let card = arena.minds.get(&RED).expect("red's row").card.clone();
+    rhai(arena, source).think(&ThinkJob {
+        unit: RED,
+        think_seq: 0,
+        t_ms: view.t_ms,
+        lands_ms: view.t_ms + SUBSTEP,
+        seed: arena.seed,
+        dropped: false,
+        profile: &profile,
+        view: &view,
+        memory,
+        map: &arena.definition,
+        card: &card,
+    })
+}
+
+/// **`slots()`, the `line_to` cap and the op ceiling are the think's row's**
+/// (17b cut M3.1; D-UM-35): rated III on a Class III core, a think reads
+/// `slots()` 6, may trace `line_to` six times and faults `limit` at the
+/// seventh, and runs a loop Class I's 1,500 operations fault `ops` on; rated
+/// I on the same core (`min`), `slots()` reads 2, the third `line_to` is
+/// `limit` and the loop is `ops`. A rated-III mind on a II core thinks at II.
+/// `fire(w, 3)` cites S3 on the Class III think and is `unknown` on the
+/// Class I one.
+#[test]
+fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let mut three = classed_field(CoreClass::III, CoreClass::III);
+    assert_eq!(
+        three.mind_profile(RED),
+        ClassTable::STOCK.row(CoreClass::III)
+    );
+    let mut one = classed_field(CoreClass::III, CoreClass::I);
+    assert_eq!(one.mind_profile(RED), ClassTable::STOCK.row(CoreClass::I));
+    let mut capped = classed_field(CoreClass::II, CoreClass::III);
+    assert_eq!(
+        capped.mind_class(RED),
+        CoreClass::II,
+        "the core caps the rating"
+    );
+
+    let slots = "fn think(v, c) { this.s = slots(); }";
+    for (arena, want) in [(&mut three, 6), (&mut one, 2), (&mut capped, 4)] {
+        let result = think_on_row(arena, slots, &[]);
+        assert_eq!(result.fault, None);
+        assert_eq!(
+            mem(&decode_memory(&result.memory), "s"),
+            MemValue::Int(want),
+            "slots()"
+        );
+    }
+
+    // `fire`'s slot number is bounded by the same row: S3 is a slot on a
+    // Class III think and `unknown` on a Class I one.
+    let third = r#"fn think(v, c) { fire("cannon", 3); }"#;
+    let cited = think_on_row(&mut three, third, &[]);
+    assert_eq!(cited.fault, None, "S3 on Class III");
+    assert_eq!(
+        cited.intents,
+        vec![IntentKind::Fire {
+            weapon: SmolStr::new("cannon"),
+            slot: Some(3),
+        }]
+    );
+    assert_eq!(
+        think_on_row(&mut one, third, &[])
+            .fault
+            .map(|fault| fault.cause),
+        Some("unknown".into()),
+        "S3 on Class I"
+    );
+
+    let traces = |n: usize| {
+        let calls = "let x = line_to(v, v.lock); ".repeat(n);
+        format!("fn think(v, c) {{ {calls}this.ok = true; }}")
+    };
+    assert_eq!(think_on_row(&mut three, &traces(6), &[]).fault, None);
+    assert_eq!(
+        think_on_row(&mut three, &traces(7), &[])
+            .fault
+            .map(|fault| fault.cause),
+        Some("limit".into()),
+        "the seventh line_to on Class III"
+    );
+    assert_eq!(think_on_row(&mut one, &traces(2), &[]).fault, None);
+    assert_eq!(
+        think_on_row(&mut one, &traces(3), &[])
+            .fault
+            .map(|fault| fault.cause),
+        Some("limit".into()),
+        "the third line_to on Class I"
+    );
+
+    let spin = "fn think(v, c) { let x = 0; for i in 0..800 { x += 1; } this.x = x; }";
+    let runner = rhai(&three, spin);
+    let profile = three.mind_profile(RED);
+    let view = Arc::new(three.mind_view(RED).expect("red's view"));
+    let card = three.minds.get(&RED).expect("red's row").card.clone();
+    let job = |profile| ThinkJob {
+        unit: RED,
+        think_seq: 0,
+        t_ms: view.t_ms,
+        lands_ms: view.t_ms + SUBSTEP,
+        seed: three.seed,
+        dropped: false,
+        profile,
+        view: &view,
+        memory: &[],
+        map: &three.definition,
+        card: &card,
+    };
+    assert_eq!(runner.think(&job(&profile)).fault, None, "III's 4,500");
+    let spent = runner.take_stats();
+    let ops = spent.first().map_or(0, |stat| stat.ops + stat.fee);
+    assert!(
+        ops > STOCK_OPS_PER_THINK && ops <= profile.ops,
+        "the loop spends past Class I's ceiling and inside III's: {ops}"
+    );
+    let class_one = ClassTable::STOCK.row(CoreClass::I);
+    assert_eq!(
+        runner
+            .think(&job(&class_one))
+            .fault
+            .map(|fault| fault.cause),
+        Some("ops".into()),
+        "Class I's 1,500"
+    );
+}
+
+/// **The memory's key cap is the row's, and past a lowered cap no new key is
+/// admitted** (17b cut M3.1; D-UM-30, the lead's ruling): at Class I a
+/// script writing 33 keys from nothing faults `memory`; a memory of forty
+/// keys handed under Class I's 32 passes when the think writes the same
+/// forty or drops one, and faults `memory` when it swaps one in — the subset
+/// rule, `mush_mind::memory::check_held`, through the runner. And the cap is
+/// the row's own: rated III on a Class III core, forty and a hundred and
+/// twenty-eight fresh keys pass and a hundred and twenty-nine fault.
+#[test]
+fn m3_the_memory_cap_is_the_rows_and_admits_no_new_key_past_it() {
+    use tacsim::arena::core::CoreClass;
+    let mut arena = classed_field(CoreClass::II, CoreClass::I);
+    let wide = "fn think(v, c) { for i in 0..33 { this[`k${i}`] = i; } }";
+    assert_eq!(
+        think_on_row(&mut arena, wide, &[])
+            .fault
+            .map(|fault| fault.cause),
+        Some("memory".into()),
+        "33 keys past Class I's 32"
+    );
+    let forty: Memory = (0..40)
+        .map(|i| (format!("k{i:02}"), MemValue::Int(i)))
+        .collect();
+    let handed = tacsim::arena::mind::encode_memory(&forty);
+    let kept = think_on_row(&mut arena, "fn think(v, c) { this.k01 = 7; }", &handed);
+    assert_eq!(kept.fault, None, "the forty kept whole");
+    assert_eq!(decode_memory(&kept.memory).len(), 40);
+    let thinned = think_on_row(
+        &mut arena,
+        r#"fn think(v, c) { this.remove("k00"); }"#,
+        &handed,
+    );
+    assert_eq!(thinned.fault, None, "one dropped");
+    assert_eq!(decode_memory(&thinned.memory).len(), 39);
+    let swapped = think_on_row(
+        &mut arena,
+        r#"fn think(v, c) { this.remove("k00"); this.fresh = 1; }"#,
+        &handed,
+    );
+    assert_eq!(
+        swapped.fault.map(|fault| fault.cause),
+        Some("memory".into()),
+        "a swap past the cap"
+    );
+    assert_eq!(swapped.memory, handed, "the memory as it was handed");
+
+    // The cap is the ROW's, not Class I's constant: rated III on a Class III
+    // core, forty fresh keys from nothing pass and a hundred and twenty-eight
+    // fill the row; a hundred and twenty-nine fault `memory`.
+    let mut wide_row = classed_field(CoreClass::III, CoreClass::III);
+    let fresh =
+        |n: usize| format!("fn think(v, c) {{ for i in 0..{n} {{ this[`k${{i}}`] = i; }} }}");
+    for n in [40, 128] {
+        let result = think_on_row(&mut wide_row, &fresh(n), &[]);
+        assert_eq!(result.fault, None, "{n} keys under Class III's 128");
+        assert_eq!(decode_memory(&result.memory).len(), n);
+    }
+    assert_eq!(
+        think_on_row(&mut wide_row, &fresh(129), &[])
+            .fault
+            .map(|fault| fault.cause),
+        Some("memory".into()),
+        "129 keys past Class III's 128"
+    );
 }
