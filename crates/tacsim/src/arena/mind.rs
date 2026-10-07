@@ -187,8 +187,9 @@ impl PendingThink {
 /// **Why a hull was dropped to the ROM** (17b cut M3.2; doc 17 §8, §13;
 /// D-UM-31, D-UM-32): three faulted thinks running, a core the seal recorded
 /// that is gone, or a mind this engine cannot run. Written to
-/// [`MindState::dropped`] once a sortie and never cleared by a think (a
-/// released row is M3.5's: [`MindState::dropped`]), and journalled as
+/// [`MindState::dropped`] once a sortie and never cleared by a think — nor by
+/// a possess and a release, which keep the row (17b cut M3.5:
+/// [`MindState::dropped`]) — and journalled as
 /// one [`EventKind::MindDropped`] line carrying [`DropCause::as_str`] (17b cut
 /// M3.4):
 ///
@@ -496,7 +497,14 @@ impl MindSeal {
 }
 
 /// **What one unit mind holds between thinks** (17b cut M1a.5; doc 17 §3, §6,
-/// §8), one row per [`Controller::Mind`] hull on [`Arena::minds`].
+/// §8), one row per [`Controller::Mind`] hull on [`Arena::minds`] — and,
+/// **since 17b cut M3.5** (doc 17 §12 "Release and possess"; D-UM-2, D-UM-30),
+/// one DORMANT row per hull a pilot possessed from its mind: a possess keeps
+/// the row (`Arena::suspend_mind`), nothing thinks on it, stages a notice
+/// into it or reads its order while the hull is piloted, and a release
+/// adopts it again as it stood. The hash folds a dormant row as any row
+/// (no production hull carries one before 17b cut M4: the fill is the
+/// reflex's, and a piloted hull has no row at check-out).
 ///
 /// Every field decides a later intent, so every field is hashed
 /// (`crate::arena::hash`, item 3c) and carried by a snapshot — the argument
@@ -520,7 +528,10 @@ pub struct MindState {
     /// **The notice buffer** (D-UM-8): every notice staged on the hull since
     /// the last think — the pilot's own notices, and the mind's own refusals
     /// — at most [`MIND_NOTICES`], the oldest dropped; drained into the next
-    /// view.
+    /// view. **17b cut M3.5** (doc 17 §12): filled only while the hull is the
+    /// mind's ([`Controller::Mind`]) — a dormant row under a pilot is never
+    /// pushed to, so the pilot's notices never reach the mind's buffer and
+    /// the first think after a release drains none of them.
     pub notices: Vec<FrameNotice>,
     /// **The range memory** (doc 17 §3; 16b cut B.4's `T-60` hysteresis read
     /// for a mind): the figure each contact's `range_m` was last given as,
@@ -535,10 +546,9 @@ pub struct MindState {
     /// only while the row is not dropped. **Since 17b cut M3.2 the drop is
     /// its own field, [`MindState::dropped`]**, which the think arm writes
     /// `Some(DropCause::Strikes)` the think the strikes reach three; the
-    /// count itself no longer IS the drop. Until 17b cut M3.5 keeps the row
-    /// across a possess, a possess-then-release lays down a fresh row
-    /// (`Arena::release_mind` removes it) and un-drops the hull — M3.5's to
-    /// close.
+    /// count itself no longer IS the drop. **Since 17b cut M3.5** the row is
+    /// kept across a possess (`Arena::suspend_mind`, doc 17 §12), so a
+    /// possess-then-release resumes the strikes and the drop where they stood.
     pub strikes: u8,
     /// **The drop to the ROM, and why** (17b cut M3.2; D-UM-31, D-UM-32, doc
     /// 17 §13): `None` while the mind flies, `Some(cause)` for the rest of the
@@ -547,14 +557,12 @@ pub struct MindState {
     /// and, since 17b cut M3.4, by the landing arm (or the think arm with no
     /// landing pending) for a sealed core that is gone (`Some(DropCause::Core)`),
     /// each with one `mind_dropped` line ([`DropCause`]'s head).
-    /// **Declared gap, M3.5's to close** (as `strikes`' is): a controller
-    /// transition away from the mind (`Arena::release_mind`) removes the row,
-    /// and a later adoption lays a fresh one with `dropped: None` — the
-    /// scripted mind flies again after a strikes drop, and a hull whose sealed
-    /// core is gone drops a second time (a second `mind_dropped { core }`
-    /// line, a second telling). No production path hands a hull back to a
-    /// mind before 17b cut M4; M3.5's dormant row keeps the row across a
-    /// possess and asserts the drop survives it.
+    /// **17b cut M3.5 closed M3.2's gap**: a possess keeps the row DORMANT
+    /// (`Arena::suspend_mind`) and the release adopts it again
+    /// (`Arena::adopt_mind` keeps a standing row), so a dropped hull possessed
+    /// and released stays dropped — the ROM thinks, and no second
+    /// `mind_dropped` line is journalled. Only the `Mind → Reflex` transition
+    /// (`Arena::release_mind`, a fixture's alone) still removes the row.
     /// Carried by the snapshot; **NOT folded into `state_hash` until 17b cut
     /// M3.6** (on strikes it is a function of `strikes`, which is folded).
     pub dropped: Option<DropCause>,
@@ -983,11 +991,21 @@ impl Arena {
     /// the heap holds none for it — the grid of the mind's own `think_ms`
     /// (17b cut M3.1: [`Arena::mind_profile`], read now; Class I's 1,000 ms,
     /// [`STOCK_THINK_MS`], on every shipped chassis).
+    ///
+    /// **17b cut M3.5** (doc 17 §12 "Release and possess"; D-UM-2, D-UM-30,
+    /// D-UM-32): a row that STANDS is kept — the dormant row a possess left
+    /// ([`Arena::suspend_mind`]) — so a release adopts the mind again with its
+    /// memory, its strikes, its drop, its seal digest, its card, its range
+    /// memory, its order and its notice buffer as the possess found them, and
+    /// its first think after the release is `think_seq` continued (the think
+    /// the possess took off the heap, scheduled again on the grid). Only a
+    /// hull with no row is laid a fresh one.
     pub(crate) fn adopt_mind(&mut self, unit: ObjId) {
         // **17b cut M3.3** (doc 17 §13): a row laid down here carries the
         // digest of the seal the hull was checked out under, read off the
         // unit's own seal reference — at check-out and at any later adoption
-        // alike; a standing row keeps its own.
+        // alike; a standing row keeps its own (17b cut M3.5: the dormant row's
+        // digest is the one it was laid with — a re-seat never re-seals).
         let sealed = self.unit(unit).map_or([0; 32], |state| state.seal.digest);
         let think_seq = self
             .minds
@@ -1009,11 +1027,53 @@ impl Arena {
             .schedule(at, DueKind::MindThink { unit, think_seq });
     }
 
-    /// **Take a hull back from its mind** (17b cut M1a.5): the row — with it
-    /// the think waiting to land, whose answer the row carries (17b cut M3.2)
-    /// — and every think and landing on the heap.
+    /// **The runner `unit` thinks on** (17b cut M3.5; doc 17 §13, D-UM-1):
+    /// its own on [`Arena::runners`] — installed by its seal — else the
+    /// arena-wide fallback, [`Arena::mind_runner`].
+    #[must_use]
+    pub fn runner_for(&self, unit: ObjId) -> &Arc<dyn MindRunner> {
+        self.runners.get(&unit).unwrap_or(&self.mind_runner)
+    }
+
+    /// **Put a hull's mind to sleep under a pilot** (17b cut M3.5; doc 17 §12
+    /// "Release and possess"; D-UM-2, D-UM-30, D-UM-32) — the `Mind → Pilot`
+    /// transition of [`Arena::set_controller`]. The row STAYS, DORMANT: its
+    /// memory, strikes, drop, seal digest, card, range memory, order and
+    /// notice buffer are kept as they stand, for the release that adopts the
+    /// mind again ([`Arena::adopt_mind`]). Every think and landing of the hull
+    /// leaves the heap, and the think waiting to land is discarded (`pending`
+    /// cleared): its landing would be refused [`crate::arena::Refusal::Epoch`]
+    /// at the reclaim's raised epochs anyway, so the answer is dropped here
+    /// rather than carried to a landing that never comes (declared, doc 17
+    /// §24). While the hull is piloted nothing reaches the row: a staged
+    /// notice is the pilot's alone (`Arena::stage_notice` gates its buffer
+    /// push on [`Controller::Mind`]) and the row's held order is not the
+    /// pilot's (`holds_order_for`, the same gate). A re-seat is a seat
+    /// activation inside the same sortie, never a new seal: nothing here
+    /// touches [`crate::arena::state::UnitState::seal`].
+    pub(crate) fn suspend_mind(&mut self, unit: ObjId) {
+        if let Some(state) = self.minds.get_mut(&unit) {
+            state.pending = None;
+        }
+        self.forget_mind_events(unit);
+    }
+
+    /// **Take a hull back from its mind for good** (17b cut M1a.5): the row —
+    /// with it the think waiting to land, whose answer the row carries (17b
+    /// cut M3.2) — and every think and landing on the heap. **Since 17b cut
+    /// M3.5** this is the `Mind → Reflex` transition alone, reachable from a
+    /// fixture and from no production path (a `Released` hands a hull with a
+    /// row back to its mind, `crate::arena::intents::apply_control`); a
+    /// possess is [`Arena::suspend_mind`], which keeps the row.
     pub(crate) fn release_mind(&mut self, unit: ObjId) {
         self.minds.remove(&unit);
+        self.forget_mind_events(unit);
+    }
+
+    /// Every [`DueKind::MindThink`] and [`DueKind::MindLand`] of `unit` off
+    /// the heap — the half [`Arena::suspend_mind`] and [`Arena::release_mind`]
+    /// share.
+    fn forget_mind_events(&mut self, unit: ObjId) {
         self.due.retain(|kind| match kind {
             DueKind::MindThink { unit: on, .. } | DueKind::MindLand { unit: on, .. } => *on != unit,
             _ => true,
@@ -1217,7 +1277,9 @@ impl Arena {
         // below and handed to the runner (17b cut M1a.6), which plans its
         // shots for the millisecond they are resolved at.
         let land_at = t_ms.saturating_add(self.substep_len_ms());
-        let runner = Arc::clone(&self.mind_runner);
+        // 17b cut M3.5 (doc 17 §13): the hull's own runner, by its seal, else
+        // the arena-wide fallback.
+        let runner = Arc::clone(self.runner_for(unit));
         // 17b cut M3.1 (doc 17 §9, D-UM-35): the row this think is held to,
         // read now — the view above was cut to it, and the next think is
         // scheduled at its `think_ms` below. A mind class of `Zero` (no core,
@@ -1372,8 +1434,10 @@ impl Arena {
     ///    think (a stale landing — a think since faulted, a row since laid
     ///    down afresh — lands nothing);
     /// 2. nothing after the match ended, nor for a unit gone, a wreck or no
-    ///    longer a mind's (a reclaimed seat: `Arena::set_controller` took the
-    ///    row already) — the row's `pending` is left as it stands;
+    ///    longer a mind's (a reclaimed seat: 17b cut M3.5's
+    ///    `Arena::suspend_mind` already cleared `pending` and took this
+    ///    landing off the heap, and kept the row dormant) — the row's
+    ///    `pending` is left as it stands;
     /// 3. **the answer is taken off the row** (17b cut M3.2; D-UM-23 as
     ///    amended): `pending` cleared, its memory written — the answer the
     ///    think gave, carried across a snapshot if one fell between the two,
@@ -1510,6 +1574,8 @@ impl Arena {
     /// (`UnitState::seal`'s `core_class` above Class 0), the unit carries
     /// none now ([`Arena::core_of`]: the capability revoked by a
     /// `destroy_core`), and its mind row stands and is not already dropped.
+    /// It reads a DORMANT row (a possessed hull's, 17b cut M3.5) as it reads
+    /// a live one and does not look at the controller: its callers do.
     ///
     /// **The seal's `core_class` is the gate**: a hull sealed WITHOUT a core —
     /// the target, a coreless chassis, a never-cored fixture hull — runs the
@@ -1532,8 +1598,11 @@ impl Arena {
     /// ([`Arena::event_hash`] under the lazy slot `run_mind_landings`
     /// opened), the think arm [`Arena::think_line_hash`]. Continuous orders
     /// hold — the motor's goal and the desired heading and speed are not
-    /// touched — and a seated pilot's hull has no row, so nothing here
-    /// reaches it.
+    /// touched. A possessed hull keeps its DORMANT row (17b cut M3.5,
+    /// `Arena::suspend_mind`), so what keeps a pilot's hull out of here is
+    /// its two callers, the think and landing arms, both gated on
+    /// `Controller::Mind`: a dormant row is never dropped under its pilot,
+    /// and a caller that is not so gated must gate itself.
     fn drop_for_core(&mut self, unit: ObjId, t_ms: i64, hash: u64) {
         if let Some(state) = self.minds.get_mut(&unit) {
             state.dropped = Some(DropCause::Core);

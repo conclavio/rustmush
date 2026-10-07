@@ -1011,13 +1011,21 @@ impl Arena {
     /// **17b cut M1a.5: the outgoing controller is released on every
     /// transition**, read off the unit before anything is written. From
     /// [`Controller::Reflex`]: its machine and its `ReflexTick`s (today's rule).
-    /// From [`Controller::Mind`]: its [`crate::arena::mind::MindState`], its
-    /// think waiting to land and every `MindThink` and `MindLand` of the unit.
+    /// From [`Controller::Mind`]: every `MindThink` and `MindLand` of the unit
+    /// and its think waiting to land — and, **since 17b cut M3.5** (doc 17
+    /// §12 "Release and possess"), its [`crate::arena::mind::MindState`] only
+    /// when the hull goes to the reflex machine (`Arena::release_mind`, a
+    /// fixture's transition alone): to a pilot the row STAYS, dormant
+    /// (`Arena::suspend_mind`), for the release that hands the hull back.
     /// From **any**: the hull's motor row and every `MotorTick` — a pilot's
-    /// `DRIVE` dies with the seat, and a machine's goal with the machine.
-    /// Then the incoming one is installed: `Reflex` adopts the machine in
-    /// `state` and schedules its tick; `Mind` lays a fresh row down and
-    /// schedules its first think; `Pilot` installs nothing. Since 17b cut M1a.1
+    /// `DRIVE` dies with the seat, and a machine's goal with the machine — and
+    /// the condition slots (17b cut M1b.1; doc 17 §12's "conditions stay
+    /// dormant" is NOT built: the slots are the outgoing principal's on every
+    /// transition, declared). Then the incoming one is installed: `Reflex`
+    /// adopts the machine in `state` and schedules its tick; `Mind` keeps a
+    /// standing row or lays a fresh one down, and schedules its first think;
+    /// `Pilot` installs nothing. Nothing here touches the unit's seal: a
+    /// re-seat is a seat activation inside the same sortie. Since 17b cut M1a.1
     /// the motor's readers (`Arena::hold_routeless`, `Arena::note_blocked`)
     /// gate on the motor row and not on the controller, which is why no path
     /// that moves the controller may leave one behind.
@@ -1044,7 +1052,19 @@ impl Arena {
                     |kind| !matches!(kind, DueKind::ReflexTick { unit: on, .. } if *on == unit),
                 );
             }
+            // 17b cut M3.5 (doc 17 §12): a possess keeps the mind's row
+            // dormant; only a hand-over to the reflex machine (a fixture's
+            // alone) removes it.
+            Controller::Mind if controller == Controller::Pilot => self.suspend_mind(unit),
             Controller::Mind => self.release_mind(unit),
+            // A dormant row a possess left goes with a hand-over to the
+            // machine as a live one does — no production path reaches it (a
+            // `Released` over a row hands the hull back to its mind).
+            Controller::Pilot
+                if controller == Controller::Reflex && self.minds.contains_key(&unit) =>
+            {
+                self.release_mind(unit);
+            }
             Controller::Pilot => {}
         }
         // **17b cut M1b.1** (doc 17 §5): the condition slots are the outgoing

@@ -575,6 +575,17 @@ pub enum SimError {
         /// `[tacsim.arena].max_units_by_class` for that class.
         cap: u32,
     },
+    /// **`SIM UNIT <type>` past the side's half of the centre's compute pool**
+    /// (17b cut M3.5; doc 17 §9, D-UM-36: *`SIM MIND` and `SIM UNIT` check at
+    /// choice time … refused with the arithmetic*), said in doc 17's own
+    /// sentence ([`crate::match_::pool::PoolRefusal`]). **It cannot refuse
+    /// before 17b cut M5**: the caller's hull is seated and loads nothing
+    /// until `SIM MIND` names a mind for it, and so does every other claimed
+    /// slot of the side (declared). The arithmetic and the sentence are
+    /// pinned in-source on the choice's one check, `pool_at_the_choice`,
+    /// with a class named; no `SIM UNIT` can reach this variant yet.
+    #[error("{0}")]
+    Pool(crate::match_::pool::PoolRefusal),
     /// **A side that fields no gun** (16b cut AE.3; plan §6 AE-X3).
     ///
     /// Every machine the side would fly carries no weapon component — a lone
@@ -1404,7 +1415,10 @@ fn fill_pods(
 /// type.` at a cap of zero. Re-choosing a type of the class the caller's slot
 /// already holds is never refused: the count leaves the caller's own slot out.
 /// `Arena::new` is the final word (`ArenaError::ClassCap`); this is the refusal
-/// at the choice, where the pilot can still pick another type.
+/// at the choice, where the pilot can still pick another type. **17b cut
+/// M3.5** (doc 17 §9, D-UM-36): then [`SimError::Pool`], the centre's compute
+/// pool at the choice with the arithmetic — unreachable before 17b cut M5
+/// (a seated hull loads nothing; `crate::match_::pool`'s head).
 pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
     let actor = ctx.actor;
     require_layer(ctx.w)?;
@@ -1512,6 +1526,31 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
             return Err(SimError::ClassCap { class, cap });
         }
     }
+    // **17b cut M3.5** (doc 17 §9, D-UM-36): the pool, at the choice, after
+    // the class cap — the caller's hull's load against what the side's other
+    // claimed slots speak for, under the pool of the most units this centre
+    // can field (its pods, both sides: the smallest pool any match of it
+    // runs under). Every claimed slot is a seated pilot's, whose hull loads
+    // nothing until 17b cut M5's `SIM MIND` names a mind, so this cannot
+    // refuse before then (declared); the arithmetic and the sentence are
+    // pinned on [`pool_at_the_choice`] in-source, with a class named.
+    if let Some(minds_cfg) = minds_config(ctx.w) {
+        let others = centre(ctx.w)
+            .map(|centre| {
+                centre
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.team == held.team && slot.account != account)
+                    .count()
+            })
+            .unwrap_or_default();
+        pool_at_the_choice(
+            &minds_cfg,
+            centre::fieldable_per_side(ctx.w),
+            std::iter::repeat_n(None, others),
+            None,
+        )?;
+    }
     let spelling = type_word(ctx.w, chosen.as_str());
     let stored =
         (authored.as_deref() != Some(chosen.as_str())).then(|| SmolStr::new(chosen.as_str()));
@@ -1535,6 +1574,33 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
         ),
     );
     Ok(())
+}
+
+/// **The pool at the choice** (17b cut M3.5; doc 17 §9, D-UM-36) — what
+/// [`unit_type`] asks after the class cap: the caller's hull's load at `mine`
+/// against what the side's other claimed slots (`others`, one class each)
+/// speak for, under the pool of `per_side` pods a side, both sides
+/// (`centre::fieldable_per_side`: the most units the centre can field, so the
+/// smallest pool any match of it runs under). Before 17b cut M5 every class
+/// [`unit_type`] passes is `None` — a seated hull loads nothing — so it cannot
+/// refuse; the arithmetic is the same one check-out's last gate does.
+///
+/// # Errors
+///
+/// [`SimError::Pool`] with the arithmetic.
+fn pool_at_the_choice(
+    cfg: &MindsConfig,
+    per_side: u8,
+    others: impl IntoIterator<Item = Option<crate::arena::core::CoreClass>>,
+    mine: Option<crate::arena::core::CoreClass>,
+) -> Result<(), SimError> {
+    use crate::match_::pool::{admit, load_of, pool_for};
+    let compute = pool_for(cfg, usize::from(per_side).saturating_mul(2));
+    let spoken = others
+        .into_iter()
+        .map(|class| load_of(&cfg.classes, class))
+        .fold(0_u64, u64::saturating_add);
+    admit(compute, spoken, load_of(&cfg.classes, mine)).map_err(SimError::Pool)
 }
 
 /// Re-ask `Boarding`'s two questions after a slot moved: did a side empty, and
@@ -2539,6 +2605,9 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                         unit: tank,
                         slot: index,
                         opening: openings.get(&(team, index)).copied(),
+                        // 17b cut M3.5: the pool admits it by the fill rule until
+                        // 17b cut M5 lets the lead or `SIM MIND` name a class.
+                        mind_class: None,
                     });
                 }
                 if units.is_empty() {
@@ -2560,6 +2629,9 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                         unit,
                         slot: slot.index,
                         opening: openings.get(&(team, slot.index)).copied(),
+                        // 17b cut M3.5: the pool admits it by the fill rule until
+                        // 17b cut M5 lets the lead or `SIM MIND` name a class.
+                        mind_class: None,
                     })
                 })
                 .collect();
@@ -2604,6 +2676,9 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                         unit: tank,
                         slot: index,
                         opening: openings.get(&(team, index)).copied(),
+                        // 17b cut M3.5: the pool admits it by the fill rule until
+                        // 17b cut M5 lets the lead or `SIM MIND` name a class.
+                        mind_class: None,
                     });
                 }
             }
@@ -4030,6 +4105,83 @@ pub(crate) fn display_name(w: &World, object: ObjId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **`SIM UNIT`'s pool at the choice** (17b cut M3.5; doc 17 §9,
+    /// D-UM-36), with a class named as 17b cut M5 will name one:
+    ///
+    /// * today's call — every load `None` — is admitted under any pool, the
+    ///   smallest legal one (1/1/1, a half of nothing) included;
+    /// * under base 9,000, per unit 1, floor 1 and six pods a side, the pool
+    ///   is over TWELVE units (8,988, a half of 4,494 — over six it would be
+    ///   4,497): eleven Class 0 slots speak for 4,400 and the caller's Class
+    ///   0 is refused with `SimError::Pool`, said in doc 17 §9's sentence;
+    ///   ten slots and the caller fit;
+    /// * a Class III choice under the 1/1/1 pool is refused against a half of
+    ///   0 with nothing spoken for.
+    #[test]
+    fn m3_the_pool_at_the_choice_refuses_with_the_arithmetic() {
+        use crate::arena::core::CoreClass;
+        use crate::match_::pool::PoolRefusal;
+        let smallest = MindsConfig {
+            pool_base_ops_s: 1,
+            pool_per_unit_ops_s: 1,
+            pool_floor_ops_s: 1,
+            ..MindsConfig::default()
+        };
+        for cfg in [MindsConfig::default(), smallest.clone()] {
+            assert_eq!(
+                pool_at_the_choice(&cfg, PODS_PER_SIDE, std::iter::repeat_n(None, 5), None),
+                Ok(())
+            );
+        }
+
+        let tiny = MindsConfig {
+            pool_base_ops_s: 9_000,
+            pool_per_unit_ops_s: 1,
+            pool_floor_ops_s: 1,
+            ..MindsConfig::default()
+        };
+        let refused = pool_at_the_choice(
+            &tiny,
+            6,
+            std::iter::repeat_n(Some(CoreClass::Zero), 11),
+            Some(CoreClass::Zero),
+        );
+        assert_eq!(
+            refused,
+            Err(SimError::Pool(PoolRefusal {
+                would: 400,
+                half: 4_494,
+                spoken: 4_400,
+            }))
+        );
+        assert_eq!(
+            refused.map_err(|error| error.to_string()),
+            Err(
+                "This side would think 400 ops a second; its half of the centre's pool is 4,494 \
+                 and 4,400 are spoken for."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            pool_at_the_choice(
+                &tiny,
+                6,
+                std::iter::repeat_n(Some(CoreClass::Zero), 10),
+                Some(CoreClass::Zero),
+            ),
+            Ok(())
+        );
+
+        assert_eq!(
+            pool_at_the_choice(&smallest, 6, [], Some(CoreClass::III)),
+            Err(SimError::Pool(PoolRefusal {
+                would: 18_000,
+                half: 0,
+                spoken: 0,
+            }))
+        );
+    }
 
     fn account(n: u8) -> AccountId {
         AccountId::mint(&format!("pilot-{n}"), i64::from(n)).expect("an account id mints")

@@ -1409,6 +1409,14 @@ pub struct TacsimMindsCfg {
     /// reads the stock row, an unknown word refuses the boot by name, and
     /// `MindsConfig::validate` holds every figure.
     pub classes: serde_json::Value,
+    /// **17b cut M3.5** (doc 17 §9, D-UM-36): the compute pool's base, ops a
+    /// sim second — a task's allotment is `max(floor, base − per_unit ×
+    /// units)`. At least 1.
+    pub pool_base_ops_s: u64,
+    /// The pool's charge per unit on the task, ops a sim second. At least 1.
+    pub pool_per_unit_ops_s: u64,
+    /// The pool's floor, ops a sim second. At least 1, at most the base.
+    pub pool_floor_ops_s: u64,
 }
 
 impl Default for TacsimMindsCfg {
@@ -1417,6 +1425,9 @@ impl Default for TacsimMindsCfg {
             odds_floor_permille: 100,
             fill_controller: "reflex".to_owned(),
             classes: serde_json::Value::Object(serde_json::Map::new()),
+            pool_base_ops_s: 500_000,
+            pool_per_unit_ops_s: 1_000,
+            pool_floor_ops_s: 120_000,
         }
     }
 }

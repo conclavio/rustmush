@@ -341,6 +341,14 @@ orders_per_minute = 12
 # (17b cut M1b.5) a LAB knob: who flies the unseated hulls, "reflex" (today's
 # machine) or "mind" (the native stock mind on Line); production leaves it unset.
 # fill_controller = "reflex"
+# (17b cut M3.5, doc 17 section 9) the centre's compute pool, ops a sim second:
+# a match's allotment is max(floor, base - per_unit x units), split evenly between
+# the sides; SIM UNIT and the check-out refuse a side whose minds' class ceilings
+# would think past its half, with the arithmetic. Each at least 1; the floor at
+# most the base. At these figures a full arena side of twelve class III cores fits.
+# pool_base_ops_s = 500000
+# pool_per_unit_ops_s = 1000
+# pool_floor_ops_s = 120000
 # (17b cut M3.1) the Compact class table, doc 17 section 9's: one table per
 # class word ("0", "I", "II", "III"), and any figure left out -- or any class
 # left out -- is the stock row's. Each is checked by name at boot: think_ms

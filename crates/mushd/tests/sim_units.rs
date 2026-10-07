@@ -1453,6 +1453,64 @@ async fn ae3_the_second_drone_and_a_gunless_side_are_refused_at_the_lobby() {
     );
 }
 
+/// **`SIM UNIT` is never refused for the pool before 17b cut M5** (17b cut
+/// M3.5; doc 17 §9, D-UM-36: *`SIM MIND` and `SIM UNIT` check at choice
+/// time*). The check is wired after the class cap, but every claimed slot is a
+/// seated pilot's, whose hull loads nothing until `SIM MIND` names a mind —
+/// so even on a server whose pool is the smallest the keys allow (one op a
+/// second: `pool_base_ops_s = pool_floor_ops_s = pool_per_unit_ops_s = 1`, a
+/// side's half nought) Ada's `SIM UNIT heavy_mk1`, the Class III chassis,
+/// beside Bo on her side, is announced and never refused with the pool's
+/// sentence. The help page says what such a refusal would say.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m3_sim_unit_is_never_refused_for_the_pool_before_m5() {
+    let mut cfg = tacsim_config();
+    cfg.minds.pool_base_ops_s = 1;
+    cfg.minds.pool_per_unit_ops_s = 1;
+    cfg.minds.pool_floor_ops_s = 1;
+    assert_eq!(cfg.minds.validate(), Ok(()), "the smallest pool is lawful");
+    let server = boot_with("sim-units-m3-pool", cfg).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM red", "takes red slot 2").await;
+    let mark = ada.mark();
+    say(
+        &mut ada,
+        "SIM UNIT heavy_mk1",
+        "Slot red 1 will field heavy_mk1.",
+    )
+    .await;
+    say(
+        &mut bo,
+        "SIM UNIT heavy_mk1",
+        "Slot red 2 will field heavy_mk1.",
+    )
+    .await;
+    let seen = strip_ansi(&ada.seen[mark..]);
+    assert!(
+        !seen.contains("ops a second"),
+        "no pool refusal before 17b cut M5: {seen}"
+    );
+
+    let help = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/help/simulator.md"
+    ))
+    .expect("the simulator help page");
+    let help = help.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(
+        help.contains(
+            "A choice the centre's compute cannot carry is refused with the arithmetic: how \
+             much your side would think a second, your side's half of the pool, and what is \
+             spoken for."
+        ),
+        "the help's pool sentence under SIM UNIT"
+    );
+}
+
 /// **A pilot flies the drone** (16b cut AE.3; 16c N15), on a server whose fill
 /// brings red a gun beside it (`SIM AI 2`).
 ///

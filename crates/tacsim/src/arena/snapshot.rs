@@ -99,17 +99,21 @@
 //!   views `squad_watch` and `squads_expired` — integers, carried so a resumed
 //!   squad's `SignalReason` stays true (`no_order` is chosen exactly when a
 //!   squad was never reported) and a resume does not re-ask every squad at once.
-//! - **Re-derived** (6), from the caller's ground — whose digest must be the
+//! - **Re-derived** (7), from the caller's ground — whose digest must be the
 //!   recorded one — and from compiled code: `definition` (and the horizon index
 //!   inside its terrain), `index` (built and rebuilt over the carried units, as
 //!   [`Arena::new`] builds it), `min_cost` (`Arena::new`'s own line),
 //!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule), `mind_runner`
 //!   (17b cut M1a.5: `crate::arena::mind::default_mind_runner`, the call
 //!   [`Arena::new`] makes, so a resumed match thinks with the runner a fresh
-//!   one would), and (17b cut M3.1) `rated_class`
+//!   one would), (17b cut M3.1) `rated_class`
 //!   (`crate::arena::mind::STOCK_RATED_CLASS`, a test's lever until 17b cut
-//!   M3.3's seal). (`classes` was re-derived stock here in 17b cut M3.1 and
-//!   is carried from 17b cut M3.2.)
+//!   M3.3's seal), and (17b cut M3.5) `runners`, each hull's own runner by
+//!   its seal — empty at decode; `crate::minds::install_sealed_runners`
+//!   refills it from the decoded seals (`crate::arena_task::resume_arena`
+//!   calls it), so a resumed scripted hull thinks on the runner its seal
+//!   names. (`classes` was re-derived stock here in 17b cut M3.1 and is
+//!   carried from 17b cut M3.2.)
 //! - **Reset** (9), views and per-pulse scratch: `pending_cards` (17b cut
 //!   M1b.5: the card changes `@mind/set` offered, applied and emptied at the next pulse's start, so
 //!   empty between two pulses; not carried, so `SNAPSHOT_FORMAT` does not
@@ -822,6 +826,9 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             pending_cards: _pending_cards,
             // Re-derived (17b cut M1a.5): compiled code, `default_mind_runner`.
             mind_runner: _mind_runner,
+            // Re-derived (17b cut M3.5): compiled code, empty at decode —
+            // `crate::minds::install_sealed_runners` refills it off the seals.
+            runners: _runners,
             // Re-derived: `Arena::new`'s line over the definition.
             min_cost: _min_cost,
             pending,
@@ -950,7 +957,7 @@ struct ArenaState {
 
 impl ArenaState {
     /// **The arena, by an exhaustive literal** over every field of [`Arena`]:
-    /// the 37 carried placed, the 6 re-derived derived and the 9 reset reset.
+    /// the 37 carried placed, the 7 re-derived derived and the 9 reset reset.
     fn into_arena(self, definition: ArenaDefinition) -> Result<Arena, SnapshotError> {
         let ArenaState {
             units,
@@ -1029,6 +1036,9 @@ impl ArenaState {
             rated_class: crate::arena::mind::STOCK_RATED_CLASS,
             pending_cards: BTreeMap::new(),
             mind_runner,
+            // 17b cut M3.5: re-derived empty, as `Arena::new` lays it; the
+            // sealed installer refills it (`crate::arena_task::resume_arena`).
+            runners: BTreeMap::new(),
             min_cost,
             pending,
             shots,

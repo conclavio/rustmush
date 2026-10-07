@@ -42,7 +42,10 @@ the same thing this topic does, in fewer words.
                       range.`: the machines fill no pod there.
   SIM UNIT [type]     which unit type your own slot fields. The bare word lists
                       what this server can field, for anybody in the centre, and
-                      adds what you are flying if you hold a slot.
+                      adds what you are flying if you hold a slot. A choice the
+                      centre's compute cannot carry is refused with the
+                      arithmetic: how much your side would think a second, your
+                      side's half of the pool, and what is spoken for.
   SIM MODE [mode]     which rule the match is fought under: skirmish (eliminate
                       the other side) or hold (keep the ground's key spot
                       uncontested for its time). A side's lead or staff sets it

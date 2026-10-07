@@ -104,6 +104,12 @@ pub struct Muster {
     /// tank with its weapon rows taken off the custody unit
     /// [`tacsim::match_::custody_unit`] assembled ([`Muster::mind_unarmed`]).
     pub unarmed: bool,
+    /// **Sealed on a scripted mind** (17b cut M3.5; doc 17 §13): the rig seals
+    /// this hull `scripted` (`SealTerms::engine_for_minds`) on Standard
+    /// Doctrine's source, and installs its runner through the production
+    /// installer (`tacsim::minds::install_sealed_runners`) after
+    /// [`Arena::new`] ([`Muster::scripted`]).
+    pub scripted: bool,
 }
 
 /// **The condition a [`Muster`] opens in** (16b cut E.4).
@@ -135,6 +141,7 @@ impl Muster {
             at: None,
             wear: None,
             unarmed: false,
+            scripted: false,
         }
     }
 
@@ -174,6 +181,21 @@ impl Muster {
     pub fn mind_unarmed(team: Team, slot: u8) -> Muster {
         Muster {
             unarmed: true,
+            ..Muster::mind(team, slot)
+        }
+    }
+
+    /// **A [`Muster::mind`] sealed on a scripted mind** (17b cut M3.5; doc 17
+    /// §13): a `Controller::Mind` hull whose seal says
+    /// [`tacsim::arena::SealEngine::Scripted`] with Standard Doctrine's source
+    /// digest (`SealTerms::engine_for_minds`), its runner a `RhaiRunner`
+    /// installed on `Arena::runners` by the production installer after
+    /// [`Arena::new`] — never by `with_rhai`, and never the arena-wide
+    /// fallback, which stays the native stock mind for every other hull.
+    #[must_use]
+    pub fn scripted(team: Team, slot: u8) -> Muster {
+        Muster {
+            scripted: true,
             ..Muster::mind(team, slot)
         }
     }
@@ -921,8 +943,70 @@ pub fn shipped_arena(world: &TestWorld, sides: &[&[Muster]]) -> Arena {
 /// **[`shipped_arena`] on another match seed** (17b cut M1a.6): the twin lane
 /// (`tests/twin.rs`) plays fifteen seeds, and the seed is the one input of
 /// the check-out the rig otherwise pins to [`SEED`].
+///
+/// **17b cut M3.5** (doc 17 §13): a [`Muster::scripted`] hull is sealed
+/// `scripted`, and once [`Arena::new`] has opened the field the production
+/// installer (`tacsim::minds::install_sealed_runners`) gives it its runner
+/// from [`sealed_sources`] — the rig's sources, Standard Doctrine's text for
+/// its digest ([`fixture_source`]).
 #[must_use]
 pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -> Arena {
+    let custody = shipped_custody_seeded(world, sides, seed);
+    let sources = sealed_sources(&custody.units);
+    let mut arena = Arena::new(
+        custody,
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the shipped-scale arena checks out");
+    install_sealed(&mut arena, &sources);
+    arena
+}
+
+/// **The source a fixture's seal may name, by its SHA-256** (17b cut M3.5):
+/// Standard Doctrine's text for its digest (`STANDARD_SHA256`), `None` for
+/// any other.
+#[must_use]
+pub fn fixture_source(source_sha256: &[u8; 32]) -> Option<String> {
+    (*source_sha256 == tacsim::minds::standard_digest().0)
+        .then(|| tacsim::minds::STANDARD_RHAI.to_owned())
+}
+
+/// **The sources the scripted seals of `units` name, keyed by each seal's
+/// digest** (17b cut M3.5) — the map production's `open_match` builds off the
+/// store, built here off [`fixture_source`]: what
+/// `tacsim::minds::install_sealed_runners` is asked for by `UnitState::seal`'s
+/// digest. A digest the decode carried resolves through the same map, so a
+/// fixture that resumes from a snapshot rebuilds it from the custody it
+/// opened on.
+#[must_use]
+pub fn sealed_sources(units: &[CustodyUnit]) -> BTreeMap<[u8; 32], String> {
+    units
+        .iter()
+        .filter(|unit| unit.seal.engine == tacsim::arena::SealEngine::Scripted)
+        .filter_map(|unit| {
+            fixture_source(&unit.seal.source_sha256).map(|source| (unit.seal.digest(), source))
+        })
+        .collect()
+}
+
+/// **The production installer over `sources`** (17b cut M3.5;
+/// `tacsim::minds::install_sealed_runners`) on the arena's own doctrine —
+/// every scripted seal's runner installed on `Arena::runners`. Answers how
+/// many.
+pub fn install_sealed(arena: &mut Arena, sources: &BTreeMap<[u8; 32], String>) -> usize {
+    let cfg = arena.arena_cfg.clone();
+    tacsim::minds::install_sealed_runners(arena, &cfg, &|digest| sources.get(digest).cloned())
+        .unwrap_or_else(|error| panic!("the fixture's sealed runners install: {error}"))
+}
+
+/// **The custody [`shipped_arena_seeded`] opens on** (17b cut M3.5 split it
+/// out): every muster assembled, posed and sealed exactly as
+/// [`tacsim::match_::start`] does, under the fixture terms — `scripted` for a
+/// [`Muster::scripted`] hull.
+#[must_use]
+pub fn shipped_custody_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -> CustodyOut {
     let w = world.world();
     let definition = tacsim::match_::definition_for(w, &SmolStr::new_static(PROVING_GROUND))
         .expect("the proving ground's ground builds")
@@ -964,6 +1048,15 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
                 tacsim::arena::CostRow::Tracked,
             )
             .unwrap_or_else(|| panic!("{:?} has an entry cell", muster.team));
+            // **17b cut M3.5**: a scripted muster's mind is sealed `scripted`.
+            let terms = tacsim::match_::SealTerms {
+                engine_for_minds: if muster.scripted {
+                    tacsim::arena::SealEngine::Scripted
+                } else {
+                    tacsim::arena::SealEngine::Native
+                },
+                ..tacsim::match_::SealTerms::fixture()
+            };
             let mut unit = tacsim::match_::custody_unit(
                 &catalog,
                 cells,
@@ -973,7 +1066,7 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
                 0,
                 muster.controller,
                 muster.slot,
-                &tacsim::match_::SealTerms::fixture(),
+                &terms,
             )
             .expect("the fixture terms seal");
             // **17b cut M2.5**: an unarmed muster fields no weapon rows —
@@ -982,8 +1075,7 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
             // finished custody; doc 17 §13).
             if muster.unarmed {
                 unit.weapons.clear();
-                unit.reseal(&tacsim::match_::SealTerms::fixture())
-                    .expect("the fixture terms seal");
+                unit.reseal(&terms).expect("the fixture terms seal");
                 assert_eq!(
                     unit.seal.channels,
                     [
@@ -996,20 +1088,14 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
             units.push(unit);
         }
     }
-    Arena::new(
-        CustodyOut {
-            definition,
-            units,
-            pilots: Vec::new(),
-            resolution: tacsim::match_::resolution_for(&catalog),
-            seed,
-            mode: tacsim::arena::MatchMode::Skirmish,
-        },
-        &ArenaConfig::default(),
-        &MatchConfig::default(),
-        &SensorsConfig::default(),
-    )
-    .expect("the shipped-scale arena checks out")
+    CustodyOut {
+        definition,
+        units,
+        pilots: Vec::new(),
+        resolution: tacsim::match_::resolution_for(&catalog),
+        seed,
+        mode: tacsim::arena::MatchMode::Skirmish,
+    }
 }
 
 /// The object a side's slot fields, the way [`shipped_arena`] resolves it.
@@ -1722,7 +1808,12 @@ pub fn rhai_alone(cfg: &ArenaConfig) -> Arc<dyn MindRunner> {
 /// is. **A decoded snapshot re-installs `default_mind_runner`** (the native
 /// stock mind: `Snapshot::decode`), so a fixture that resumes from one calls
 /// this again after the decode — the runner's `Debug` name is the only thing
-/// that tells a resumed T2 field from a T1 one, since T2 ≡ T1.
+/// that tells a resumed T2 field from a T1 one, since T2 ≡ T1. **Since 17b
+/// cut M3.5** that is the rule for THIS lever alone: it swaps the arena-wide
+/// fallback under hulls sealed `native`, which no seal records, so nothing
+/// the decode carries can bring it back. A hull sealed `scripted`
+/// ([`Muster::scripted`]) is given its runner by the production installer at
+/// the check-out and again after a decode ([`install_sealed`]), with no lever.
 pub fn with_rhai(arena: &mut Arena) -> Arc<dyn MindRunner> {
     let runner = rhai_alone(&arena.arena_cfg);
     arena.mind_runner = Arc::clone(&runner);

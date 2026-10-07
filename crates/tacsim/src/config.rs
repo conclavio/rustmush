@@ -710,11 +710,41 @@ pub struct MindsConfig {
     /// each arena at check-out (`crate::arena_task::spawn_arena`).
     #[serde(default)]
     pub classes: crate::arena::core::ClassTable,
+    /// **The pool's base, ops a sim second** (17b cut M3.5; doc 17 §9 "The
+    /// pool", D-UM-36): a sim task's deterministic compute allotment before
+    /// the per-unit charge — `crate::match_::pool::pool_for` is
+    /// `max(floor, base − per_unit × units)`. Stock 500,000. At least 1.
+    #[serde(default = "default_pool_base_ops_s")]
+    pub pool_base_ops_s: u64,
+    /// **The pool's charge per unit on the task, ops a sim second** (17b cut
+    /// M3.5; D-UM-36): stock 1,000. At least 1.
+    #[serde(default = "default_pool_per_unit_ops_s")]
+    pub pool_per_unit_ops_s: u64,
+    /// **The pool's floor, ops a sim second** (17b cut M3.5; D-UM-36): no
+    /// task's allotment is less, however many units it carries. Stock
+    /// 120,000. At least 1, and at most `pool_base_ops_s`.
+    #[serde(default = "default_pool_floor_ops_s")]
+    pub pool_floor_ops_s: u64,
 }
 
 /// `fill_controller`'s default: today's machine.
 fn default_fill_controller() -> String {
     "reflex".to_owned()
+}
+
+/// `pool_base_ops_s`' default: doc 17 §9's 500,000.
+const fn default_pool_base_ops_s() -> u64 {
+    500_000
+}
+
+/// `pool_per_unit_ops_s`' default: doc 17 §9's 1,000.
+const fn default_pool_per_unit_ops_s() -> u64 {
+    1_000
+}
+
+/// `pool_floor_ops_s`' default: doc 17 §9's 120,000.
+const fn default_pool_floor_ops_s() -> u64 {
+    120_000
 }
 
 impl Default for MindsConfig {
@@ -726,6 +756,10 @@ impl Default for MindsConfig {
             fill_controller: default_fill_controller(),
             // 17b cut M3.1: doc 17 §9's table.
             classes: crate::arena::core::ClassTable::STOCK,
+            // 17b cut M3.5: doc 17 §9's pool (D-UM-36).
+            pool_base_ops_s: default_pool_base_ops_s(),
+            pool_per_unit_ops_s: default_pool_per_unit_ops_s(),
+            pool_floor_ops_s: default_pool_floor_ops_s(),
         }
     }
 }
@@ -761,7 +795,37 @@ impl MindsConfig {
                 self.fill_controller
             ));
         }
+        self.validate_pool()?;
         self.validate_classes()
+    }
+
+    /// **The pool's three keys, by name** (17b cut M3.5; doc 17 §9, D-UM-36):
+    /// each at least 1, and the floor at most the base — a floor above the
+    /// base would make the per-unit charge meaningless at every count.
+    ///
+    /// # Errors
+    ///
+    /// The first refusal, as one sentence naming the key and its value.
+    fn validate_pool(&self) -> Result<(), String> {
+        for (key, value) in [
+            ("pool_base_ops_s", self.pool_base_ops_s),
+            ("pool_per_unit_ops_s", self.pool_per_unit_ops_s),
+            ("pool_floor_ops_s", self.pool_floor_ops_s),
+        ] {
+            if value == 0 {
+                return Err(format!(
+                    "[tacsim.minds].{key} must be at least 1 (it is {value})"
+                ));
+            }
+        }
+        if self.pool_floor_ops_s > self.pool_base_ops_s {
+            return Err(format!(
+                "[tacsim.minds].pool_floor_ops_s must be at most pool_base_ops_s (it is {} \
+                 against {})",
+                self.pool_floor_ops_s, self.pool_base_ops_s
+            ));
+        }
+        Ok(())
     }
 
     /// **`[tacsim.minds].classes`, by name** (17b cut M3.1; doc 17 §9,
@@ -1969,6 +2033,74 @@ mod tests {
                 r#"{"odds_floor_permille": 100, "classes": {"I": {"speed": 1}}}"#
             )
             .is_err()
+        );
+    }
+
+    /// **17b cut M3.5** (doc 17 §9, D-UM-36): the pool's three keys default to
+    /// doc 17's figures, an absent key reads its default, each is held to at
+    /// least 1 by name, and the floor to at most the base.
+    #[test]
+    fn m3_the_pool_keys_default_and_validate_by_name() {
+        use super::MindsConfig;
+        let stock = MindsConfig::default();
+        assert_eq!(
+            (
+                stock.pool_base_ops_s,
+                stock.pool_per_unit_ops_s,
+                stock.pool_floor_ops_s
+            ),
+            (500_000, 1_000, 120_000)
+        );
+        let absent: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100}"#).expect("decodes");
+        assert_eq!(absent, stock, "an absent key reads its default");
+        let set: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100, "pool_base_ops_s": 300000}"#)
+                .expect("decodes");
+        assert_eq!(set.pool_base_ops_s, 300_000);
+        assert_eq!(set.validate(), Ok(()));
+        for (config, sentence) in [
+            (
+                MindsConfig {
+                    pool_base_ops_s: 0,
+                    pool_floor_ops_s: 0,
+                    ..MindsConfig::default()
+                },
+                "[tacsim.minds].pool_base_ops_s must be at least 1 (it is 0)",
+            ),
+            (
+                MindsConfig {
+                    pool_per_unit_ops_s: 0,
+                    ..MindsConfig::default()
+                },
+                "[tacsim.minds].pool_per_unit_ops_s must be at least 1 (it is 0)",
+            ),
+            (
+                MindsConfig {
+                    pool_floor_ops_s: 0,
+                    ..MindsConfig::default()
+                },
+                "[tacsim.minds].pool_floor_ops_s must be at least 1 (it is 0)",
+            ),
+            (
+                MindsConfig {
+                    pool_floor_ops_s: 500_001,
+                    ..MindsConfig::default()
+                },
+                "[tacsim.minds].pool_floor_ops_s must be at most pool_base_ops_s (it is 500001 \
+                 against 500000)",
+            ),
+        ] {
+            assert_eq!(config.validate(), Err(sentence.to_owned()));
+        }
+        let even = MindsConfig {
+            pool_floor_ops_s: 500_000,
+            ..MindsConfig::default()
+        };
+        assert_eq!(
+            even.validate(),
+            Ok(()),
+            "a floor equal to the base is lawful"
         );
     }
 }

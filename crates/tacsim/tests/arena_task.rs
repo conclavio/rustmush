@@ -90,7 +90,7 @@ use tokio::task::JoinHandle;
 /// U.1** `2_400` and `2_401`, **16b cut AF.2** `2_402` to `2_407`, and **16b
 /// cut AF.3** `2_408`, and **17b cut M1b.1** `2_409`, and **17b cut M1b.5**
 /// `2_410` and `2_411`.
-const SEEDS: [(u64, &str); 32] = [
+const SEEDS: [(u64, &str); 33] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
@@ -152,6 +152,10 @@ const SEEDS: [(u64, &str); 32] = [
     (
         2_412,
         "M3.1: the class table captured at check-out, stock at a resume",
+    ),
+    (
+        2_413,
+        "M3.5: each scripted seal's runner installed at spawn and resume",
     ),
 ];
 
@@ -410,6 +414,7 @@ fn start_with_egress(
         match_cfg,
         &SensorsConfig::default(),
         &tacsim::config::MindsConfig::default(),
+        &std::collections::BTreeMap::new(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -991,6 +996,7 @@ fn start_unseated(
         &MatchConfig::default(),
         sensors_cfg,
         &tacsim::config::MindsConfig::default(),
+        &std::collections::BTreeMap::new(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -2031,6 +2037,7 @@ async fn m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone() 
             &MatchConfig::default(),
             &SensorsConfig::default(),
             &tacsim::config::MindsConfig::default(),
+            &std::collections::BTreeMap::new(),
             tasks.egress_sender().expect("the egress sender"),
         )
         .expect("the test check-out is accepted")
@@ -2740,8 +2747,10 @@ async fn af3_a_resumed_task_pulses_on_the_lattice_and_skips_the_snapshot_s_own_p
         MatchId(seed),
         arena,
         &arena_cfg,
+        &std::collections::BTreeMap::new(),
         egress_tx,
-    );
+    )
+    .expect("the resumed arena installs its sealed runners");
     assert!(
         tokio::time::timeout(Duration::from_millis(999), rx.recv())
             .await
@@ -2821,6 +2830,7 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
                 odds_floor_permille: floor,
                 ..tacsim::config::MindsConfig::default()
             },
+            &std::collections::BTreeMap::new(),
             egress_tx,
         )
         .expect("the test check-out is accepted");
@@ -2871,8 +2881,10 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
         MatchId(seed),
         arena,
         &arena_cfg,
+        &std::collections::BTreeMap::new(),
         egress_tx,
-    );
+    )
+    .expect("the resumed arena installs its sealed runners");
     let messages = collect(&mut rx, Duration::from_millis(10_050)).await;
     let (document, resumed_hash) = snapshot_at(&messages, 15_000);
     let resumed = tacsim::arena::Snapshot::decode(&document, definition())
@@ -2973,6 +2985,7 @@ async fn m1b5_two_card_changes_land_in_arrival_order() {
         &MatchConfig::default(),
         &SensorsConfig::default(),
         &tacsim::config::MindsConfig::default(),
+        &std::collections::BTreeMap::new(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -3048,6 +3061,7 @@ async fn mind_match_to_five_seconds(
             classes,
             ..tacsim::config::MindsConfig::default()
         },
+        &std::collections::BTreeMap::new(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -3107,4 +3121,113 @@ async fn m3_the_class_table_is_captured_at_check_out_and_carried_by_the_resume()
         quick_table, quick,
         "a resume reads the table the check-out captured (17b cut M3.2)"
     );
+}
+
+/// **The production entry points install each scripted seal's runner, or
+/// refuse the match by name** (17b cut M3.5; doc 17 §13). Red is checked out
+/// a mind's and sealed `scripted` (`SealTerms::engine_for_minds`) on Standard
+/// Doctrine's source; the world hands the task the sources keyed by each
+/// SEAL's digest (`arena_bridge`'s `sealed_sources`):
+///
+/// * `spawn_arena` with no source for the seal is refused
+///   `SpawnError::Mind(InstallError::NoSource)` naming red and its seal's
+///   digest, and so is one handed the source under its own `source_sha256`
+///   (the wrong key) — nothing is spawned;
+/// * with the stock source under the seal's digest the match opens;
+/// * a snapshot of that arena decodes with `Arena::runners` EMPTY, and
+///   `resume_arena` is refused the same way without the source, and resumes
+///   with it.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m3_spawn_and_resume_install_each_scripted_seal_s_runner_or_refuse() {
+    use tacsim::arena::mind::SealEngine;
+    use tacsim::arena_task::SpawnError;
+    use tacsim::minds::{InstallError, STANDARD_RHAI};
+    let seed = SEEDS[32].0;
+    let arena_cfg = fast_arena();
+    let mut custody = unseated_custody(seed);
+    let terms = tacsim::match_::SealTerms {
+        engine_for_minds: SealEngine::Scripted,
+        ..tacsim::match_::SealTerms::fixture()
+    };
+    for unit in custody.units.iter_mut().filter(|unit| unit.id == RED) {
+        unit.controller = tacsim::arena::state::Controller::Mind;
+        unit.reseal(&terms).expect("the fixture terms seal");
+    }
+    let seal = custody
+        .units
+        .iter()
+        .find(|unit| unit.id == RED)
+        .map(|unit| unit.seal.clone())
+        .expect("red's seal");
+    assert_eq!(seal.engine, SealEngine::Scripted);
+    assert_ne!(seal.digest(), seal.source_sha256, "two different keys");
+    let refusal = InstallError::NoSource {
+        unit: RED,
+        digest: seal.digest(),
+    };
+    let sources = BTreeMap::from([(seal.digest(), STANDARD_RHAI.to_owned())]);
+    let wrong_key = BTreeMap::from([(seal.source_sha256, STANDARD_RHAI.to_owned())]);
+    let spawn = |sources: &BTreeMap<[u8; 32], String>| {
+        let (egress_tx, _egress_rx) = mpsc::channel(256);
+        spawn_arena(
+            &tokio::runtime::Handle::current(),
+            MatchId(seed),
+            custody.clone(),
+            &arena_cfg,
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+            &tacsim::config::MindsConfig::default(),
+            sources,
+            egress_tx,
+        )
+        .map(|(handle, _join, _callsigns)| handle)
+    };
+    for refused in [&BTreeMap::new(), &wrong_key] {
+        assert_eq!(
+            spawn(refused).err(),
+            Some(SpawnError::Mind(refusal.clone())),
+            "no runner, no match"
+        );
+    }
+    let handle = spawn(&sources).expect("the scripted seal's source opens the match");
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+
+    let arena = Arena::new(
+        custody,
+        &arena_cfg,
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the check-out is accepted");
+    let snapshot = tacsim::arena::Snapshot::encode(&arena).expect("the arena encodes");
+    let decoded = || {
+        let mut arena = tacsim::arena::Snapshot::decode(&snapshot.document, definition())
+            .expect("the snapshot decodes against its ground");
+        arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+        arena
+    };
+    assert!(decoded().runners.is_empty(), "the decode installs nothing");
+    let resume = |sources: &BTreeMap<[u8; 32], String>| {
+        let (egress_tx, _egress_rx) = mpsc::channel(256);
+        resume_arena(
+            &tokio::runtime::Handle::current(),
+            MatchId(seed),
+            decoded(),
+            &arena_cfg,
+            sources,
+            egress_tx,
+        )
+        .map(|(handle, _join)| handle)
+    };
+    assert_eq!(
+        resume(&BTreeMap::new()).err(),
+        Some(refusal),
+        "no runner, no resume"
+    );
+    let handle = resume(&sources).expect("the scripted seal's source resumes the match");
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
 }

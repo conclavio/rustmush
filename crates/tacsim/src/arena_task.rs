@@ -564,10 +564,21 @@ pub type Callsigns = Vec<(ObjId, Designator)>;
 /// captured here too, and since 17b cut M3.2 carried by the snapshot, so
 /// [`resume_arena`] takes the decoded arena's own table as it takes its floor.
 ///
+/// **17b cut M3.5** (doc 17 §13): `sources` is the source text of every
+/// scripted seal of the custody, keyed by the seal's digest
+/// ([`crate::arena::mind::SealRef::digest`]) — `open_match` reads it off the
+/// store — and [`crate::minds::install_sealed_runners`] installs each such
+/// hull's own runner after `Arena::new`, before the arena moves into the task.
+/// Before 17b cut M4 no production seal is scripted: the map is empty and
+/// nothing is installed.
+///
 /// # Errors
 ///
-/// Whatever [`Arena::new`] refuses: a unit off the window, two units in one
-/// cell, a duplicate id, a pilot seated on a unit that was not handed over.
+/// [`SpawnError::Arena`]: whatever [`Arena::new`] refuses — a unit off the
+/// window, two units in one cell, a duplicate id, a pilot seated on a unit
+/// that was not handed over; [`SpawnError::Mind`]: a scripted seal whose
+/// source is not in `sources` or does not compile (unreachable before 17b
+/// cut M4).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_arena(
     runtime: &tokio::runtime::Handle,
@@ -577,8 +588,9 @@ pub fn spawn_arena(
     match_cfg: &MatchConfig,
     sensors_cfg: &SensorsConfig,
     minds_cfg: &MindsConfig,
+    sources: &BTreeMap<[u8; 32], String>,
     egress: mpsc::Sender<ArenaOut>,
-) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), ArenaError> {
+) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), SpawnError> {
     let mut arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
     // 17b cut M1b.1: the floor, captured at check-out.
     arena.odds_floor_permille = minds_cfg.odds_floor_permille;
@@ -586,6 +598,9 @@ pub fn spawn_arena(
     // `Arena::new` scheduled each mind's first think on the stock table's
     // period; every later think reads this one.
     arena.classes = minds_cfg.classes;
+    // 17b cut M3.5 (doc 17 §13): each scripted seal's runner, on the arena's
+    // own doctrine — before the first think, which is a pulse away.
+    install_runners(&mut arena, sources)?;
     // 16b cut V.2: read before `arena` is moved into the task below.
     let callsigns = arena.callsigns();
     let (handle, join) = spawn(runtime, match_id, arena, arena_cfg, egress, false);
@@ -609,15 +624,52 @@ pub fn spawn_arena(
 /// `arena_cfg` is the server's `[tacsim.arena]`: the task's own bounds (the
 /// inbox, the stall, the backlog, the cadence) are the host's, as a fresh
 /// check-out's are; the arena keeps its own frozen copy for its rules.
-#[must_use]
+///
+/// **17b cut M3.5** (doc 17 §13): the decode re-derives `Arena::runners`
+/// EMPTY, so every scripted seal's runner is installed again here from
+/// `sources` (keyed by the decoded seal's digest; `resume_match` reads it off
+/// the record's seals and the store) — a resumed hull thinks on the runner
+/// its seal names, never on what the decode defaulted to.
+///
+/// # Errors
+///
+/// [`crate::minds::InstallError`] for a scripted seal whose source is not in
+/// `sources` or does not compile (unreachable before 17b cut M4); nothing is
+/// spawned.
 pub fn resume_arena(
     runtime: &tokio::runtime::Handle,
     match_id: MatchId,
-    arena: Arena,
+    mut arena: Arena,
     arena_cfg: &ArenaConfig,
+    sources: &BTreeMap<[u8; 32], String>,
     egress: mpsc::Sender<ArenaOut>,
-) -> (ArenaHandle, JoinHandle<()>) {
-    spawn(runtime, match_id, arena, arena_cfg, egress, true)
+) -> Result<(ArenaHandle, JoinHandle<()>), crate::minds::InstallError> {
+    install_runners(&mut arena, sources)?;
+    Ok(spawn(runtime, match_id, arena, arena_cfg, egress, true))
+}
+
+/// **Why [`spawn_arena`] could not start a match** (17b cut M3.5 split it
+/// from [`ArenaError`]).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SpawnError {
+    /// [`Arena::new`] refused the check-out.
+    #[error(transparent)]
+    Arena(#[from] ArenaError),
+    /// A scripted seal's runner could not be installed
+    /// ([`crate::minds::install_sealed_runners`]).
+    #[error(transparent)]
+    Mind(#[from] crate::minds::InstallError),
+}
+
+/// **[`crate::minds::install_sealed_runners`] over `sources`** (17b cut
+/// M3.5), on the arena's own frozen doctrine — the one both entry points
+/// call, so a fresh and a resumed match install by one rule.
+fn install_runners(
+    arena: &mut Arena,
+    sources: &BTreeMap<[u8; 32], String>,
+) -> Result<usize, crate::minds::InstallError> {
+    let cfg = arena.arena_cfg.clone();
+    crate::minds::install_sealed_runners(arena, &cfg, &|digest| sources.get(digest).cloned())
 }
 
 /// **The one construction both entry points share** (16b cut AF.3 factored it

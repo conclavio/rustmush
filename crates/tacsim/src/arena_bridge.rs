@@ -82,6 +82,9 @@ use crate::arena::state::{Channel, ContactId, Controller, MatchEnd, Power, StopR
 use crate::arena::step::Frame;
 use crate::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId};
 use crate::deliberation::CharacterRef;
+// 17b cut M3.5: `n` with a comma every three digits, how a player line writes
+// an op budget — the one helper the pool's sentence shares.
+use crate::match_::pool::thousands;
 use crate::store::{NS, push_op};
 
 /// The panel feed cockpit frames go out on (doc 16 §5). Cut K builds the real
@@ -591,13 +594,24 @@ pub struct MatchMirror {
     /// **Who flies each unit, as far as the world knows** (17b cut M1b.5):
     /// written at check-out from the custody units' controllers (and at resume
     /// from the decoded arena's) and on every [`Control`] the world delivers —
-    /// `Live` is the pilot's, `Released` the reflex controller's, exactly as
-    /// `apply_control` moves the arena's own row. `@mind/set` refuses a hull
-    /// that is not [`Controller::Mind`] here first; the arena refuses it again
+    /// `Live` is the pilot's, `Released` the reflex controller's — or, since
+    /// 17b cut M3.5, the mind's for a hull in [`MatchMirror::minded`] —
+    /// exactly as `apply_control` moves the arena's own row. `@mind/set`
+    /// refuses a hull that is not [`Controller::Mind`] here first; the arena refuses it again
     /// at apply (`not_mind`). Kept here because no cheaper world-side read
     /// exists: the staff picture knows the controllers only while somebody
     /// watches.
     pub controllers: BTreeMap<ObjId, Controller>,
+    /// **The hulls whose arena carries a mind row** (17b cut M3.5; doc 17
+    /// §12 "Release and possess"): written at check-out from the custody
+    /// units checked out [`Controller::Mind`] (`Arena::new` adopts each) and at
+    /// resume from the decoded arena's own `minds` keys. A possess keeps the
+    /// row dormant and a `Released` hands the hull back to its mind
+    /// (`apply_control`), and no [`Control`] the world can deliver removes a
+    /// row — so the set only ever matters to a `Released`, which
+    /// [`send_control`] mirrors as [`Controller::Mind`] for a hull in it and
+    /// [`Controller::Reflex`] for every other, the arena's own rule.
+    pub minded: BTreeSet<ObjId>,
     /// **The hulls checked out with a weapon** (17b cut M1b.5): the read-back's
     /// fire-discipline section is shown live for these and inert (`no weapons
     /// station on this hull`, doc 17 §11) for every other. Written at check-out
@@ -1515,6 +1529,54 @@ pub enum OpenMatchError {
     /// The check-out itself was refused.
     #[error("that check-out is not a match: {0}")]
     Arena(#[from] crate::arena::state::ArenaError),
+    /// **17b cut M3.5** (doc 17 §13): a scripted seal's runner could not be
+    /// installed — its source is not in this server's store, or does not
+    /// compile ([`crate::minds::InstallError`], in words). Unreachable before
+    /// 17b cut M4: no production seal is scripted.
+    #[error("a sealed mind cannot be run: {0}")]
+    Mind(String),
+}
+
+impl From<crate::arena_task::SpawnError> for OpenMatchError {
+    fn from(error: crate::arena_task::SpawnError) -> Self {
+        match error {
+            crate::arena_task::SpawnError::Arena(error) => OpenMatchError::Arena(error),
+            crate::arena_task::SpawnError::Mind(error) => OpenMatchError::Mind(error.to_string()),
+        }
+    }
+}
+
+/// **The sources the scripted seals among `seals` name** (17b cut M3.5; doc
+/// 17 §13), keyed by each seal's digest — what
+/// `crate::minds::install_sealed_runners` is handed through
+/// [`crate::arena_task::spawn_arena`] and [`crate::arena_task::resume_arena`]:
+/// the store's text at the seal's `source_sha256`
+/// (`crate::store::TacsimStore::mind_source`). A seal whose source the store
+/// does not hold is left out, so the installer refuses it by name. `native` and
+/// `reflex` seals name nothing to run: empty on every production check-out
+/// before 17b cut M4.
+fn sealed_sources<'a>(
+    w: &mush_core::World,
+    seals: impl Iterator<Item = &'a crate::arena::MindSeal>,
+) -> BTreeMap<[u8; 32], String> {
+    let Some(store) = w.module_state::<crate::store::TacsimStore>() else {
+        return BTreeMap::new();
+    };
+    sources_by_seal(seals, |sha256| store.mind_source(sha256))
+}
+
+/// **[`sealed_sources`]' rule over any source lookup** (17b cut M3.5): each
+/// scripted seal's text, looked up by its `source_sha256` and KEYED BY THE
+/// SEAL'S DIGEST — the only digest the arena holds of a unit's seal
+/// (`crate::arena::mind::SealRef::digest`), which the installer asks by.
+fn sources_by_seal<'a, 's>(
+    seals: impl Iterator<Item = &'a crate::arena::MindSeal>,
+    source: impl Fn(&[u8; 32]) -> Option<&'s str>,
+) -> BTreeMap<[u8; 32], String> {
+    seals
+        .filter(|seal| seal.engine == crate::arena::mind::SealEngine::Scripted)
+        .filter_map(|seal| source(&seal.source_sha256).map(|text| (seal.digest(), text.to_owned())))
+        .collect()
 }
 
 /// **Start one match and register it** (16b T1, the world side).
@@ -1590,6 +1652,9 @@ pub fn open_match(
     // is absent) and captured into the arena by `spawn_arena`; nothing after
     // check-out reads the config's floor again.
     let minds_cfg = crate::match_::lobby::minds_config(ctx.w).unwrap_or_default();
+    // **17b cut M3.5** (doc 17 §13): the sources the custody's scripted seals
+    // name, off the store — none before 17b cut M4.
+    let sources = sealed_sources(ctx.w, custody.units.iter().map(|unit| &unit.seal));
     let (handle, join, callsigns) = crate::arena_task::spawn_arena(
         &runtime,
         match_id,
@@ -1598,6 +1663,7 @@ pub fn open_match(
         match_cfg,
         sensors_cfg,
         &minds_cfg,
+        &sources,
         egress,
     )?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
@@ -1628,6 +1694,12 @@ pub fn open_match(
                 );
             }
         }
+        // 17b cut M3.5: every hull checked out a mind's carries a row.
+        mirror.minded = controllers
+            .iter()
+            .filter(|(_, controller)| **controller == Controller::Mind)
+            .map(|(unit, _)| *unit)
+            .collect();
         mirror.controllers = controllers;
         mirror.armed = armed;
     }
@@ -1729,14 +1801,23 @@ pub fn resume_match(
         .filter(|unit| !unit.weapons.is_empty())
         .map(|unit| unit.id)
         .collect();
+    // 17b cut M3.5: the decoded arena's own mind rows, a dormant one under a
+    // pilot included — the hulls a `Released` hands back to their mind.
+    let minded: BTreeSet<ObjId> = arena.minds.keys().copied().collect();
     // 17b cut M2.2: the resumed arena's own `Arc` (`Arena.definition`), shared.
     let ground = Arc::clone(&arena.definition);
     // 16c N16: the snapshot carries no chunk bytes, and every chunk closed
     // before it is durable (the backlog's order, and phase A's tape check), so
     // the resumed ledger owes the world nothing below its last closed chunk.
     arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+    // **17b cut M3.5** (doc 17 §13): the decode left `Arena::runners` empty;
+    // every scripted seal's runner is installed again from the sources the
+    // record's seals name, keyed by each seal's digest — the decoded
+    // `UnitState::seal` must be the record's for a source to be found.
+    let sources = sealed_sources(ctx.w, live.record.minds.values().map(|row| &row.seal));
     let (handle, join) =
-        crate::arena_task::resume_arena(&runtime, match_id, arena, &arena_cfg, egress);
+        crate::arena_task::resume_arena(&runtime, match_id, arena, &arena_cfg, &sources, egress)
+            .map_err(|error| OpenMatchError::Mind(error.to_string()))?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
         // Cannot happen (the id was checked above); stopped rather than leaked.
         old.signal_stop();
@@ -1767,6 +1848,7 @@ pub fn resume_match(
         mirror.resumed_from_ms = Some(at_ms);
         mirror.odds_floor_permille = odds_floor_permille;
         mirror.controllers = controllers;
+        mirror.minded = minded;
         mirror.armed = armed;
     }
     Ok(roster)
@@ -2300,21 +2382,24 @@ pub fn send_control(
         .offer(match_id, ArenaMsg::Control(control))
         .map_err(|_| ControlRefusal::Gone)?;
     // **17b cut M1b.5**: the mirror's controller moves as `apply_control`
-    // moves the arena's row — a released seat is the reflex controller's, a
-    // live one the pilot's.
-    let now = match state {
-        ControlState::Released => Some(Controller::Reflex),
-        ControlState::Live => Some(Controller::Pilot),
-        ControlState::Linkdead => None,
-    };
-    if let Some(now) = now
-        && let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>()
-        && let Some(held) = registry
-            .matches
-            .get_mut(&match_id)
-            .and_then(|mirror| mirror.controllers.get_mut(&unit))
+    // moves the arena's row — a live seat is the pilot's, a released one the
+    // reflex controller's, or (17b cut M3.5, doc 17 §12) the mind's where the
+    // arena carries a mind row for the hull (`MatchMirror::minded`): the
+    // possess kept it dormant and the release hands the hull back to it.
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>()
+        && let Some(mirror) = registry.matches.get_mut(&match_id)
     {
-        *held = now;
+        let now = match state {
+            ControlState::Released if mirror.minded.contains(&unit) => Some(Controller::Mind),
+            ControlState::Released => Some(Controller::Reflex),
+            ControlState::Live => Some(Controller::Pilot),
+            ControlState::Linkdead => None,
+        };
+        if let Some(now) = now
+            && let Some(held) = mirror.controllers.get_mut(&unit)
+        {
+            *held = now;
+        }
     }
     Ok(())
 }
@@ -4770,20 +4855,6 @@ const OPS_FAULT: &str = "ops";
 /// Every tripped sentence's second half (17b cut M3.4; D-UM-32).
 const ROM_TAIL: &str = "The hull is on the ROM; MIND is off for the match.";
 
-/// **`n` with a comma every three digits** (`1,500`, `18,000`): how a
-/// player line writes an op budget.
-fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
-    for (at, digit) in digits.chars().enumerate() {
-        if at > 0 && digits.len().saturating_sub(at) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 /// **The tripped sentence** (17b cut M3.4; doc 17 §8, D-UM-32): what the
 /// warrant principal of a hull dropped to the ROM reads, in the words of the
 /// tape's `mind_dropped` line — its cause, its last fault's word and the op
@@ -4946,7 +5017,9 @@ mod tests {
     use mush_core::{GOD, ObjId};
     use smol_str::SmolStr;
 
-    use super::{ArenaRegistry, dropped_line, lapse_line, open_match, staff_line, thousands};
+    use super::{
+        ArenaRegistry, dropped_line, lapse_line, open_match, sources_by_seal, staff_line, thousands,
+    };
     use crate::arena::mind::DropCause;
     use crate::arena::state::{Pilot, Team};
     use crate::arena::test_support::{custody, pose, tank};
@@ -5732,6 +5805,65 @@ mod tests {
         assert!(
             !registry.note_watch_block(other, "Watch RA: online, 4 kph, heading 090°"),
             "another match's pilot lost their last block"
+        );
+    }
+
+    /// **The sources are keyed by the SEAL's digest** (17b cut M3.5; doc 17
+    /// §13): a scripted seal's text, looked up by its `source_sha256`, is
+    /// handed on under `MindSeal::digest` — the digest the arena's
+    /// `UnitState::seal` carries — so the installer finds it for the hull
+    /// sealed with it; a native seal names nothing, and a scripted seal whose
+    /// source the store lacks is left out (the installer refuses it by name).
+    #[test]
+    fn m3_the_sources_are_keyed_by_the_seal_s_digest() {
+        use crate::arena::MindSeal;
+        use crate::arena::mind::SealEngine;
+        use crate::minds::{STANDARD_RHAI, install_sealed_runners, standard_digest};
+        let stock = standard_digest().0;
+        let scripted = MindSeal {
+            unit: ObjId(1),
+            source_sha256: stock,
+            engine: SealEngine::Scripted,
+            ..MindSeal::placeholder()
+        };
+        let native = MindSeal {
+            unit: ObjId(2),
+            source_sha256: stock,
+            engine: SealEngine::Native,
+            ..MindSeal::placeholder()
+        };
+        let missing = MindSeal {
+            unit: ObjId(3),
+            source_sha256: [5; 32],
+            engine: SealEngine::Scripted,
+            ..MindSeal::placeholder()
+        };
+        let sources = sources_by_seal([&scripted, &native, &missing].into_iter(), |sha256| {
+            (*sha256 == stock).then_some(STANDARD_RHAI)
+        });
+        assert_eq!(
+            sources.keys().copied().collect::<Vec<[u8; 32]>>(),
+            vec![scripted.digest()],
+            "one key, the scripted seal's digest"
+        );
+        assert_ne!(scripted.digest(), stock);
+        assert_eq!(
+            sources.get(&scripted.digest()).map(String::as_str),
+            Some(STANDARD_RHAI)
+        );
+
+        let mut arena = crate::arena::test_support::arena_of(vec![
+            tank(ObjId(1), Team::Red, pose(1_500, 1_500)),
+            tank(ObjId(2), Team::Blue, pose(6_500, 6_500)),
+        ]);
+        if let Some(unit) = arena.unit_mut(ObjId(1)) {
+            unit.seal = scripted.seal_ref();
+        }
+        let cfg = arena.arena_cfg.clone();
+        assert_eq!(
+            install_sealed_runners(&mut arena, &cfg, &|digest| sources.get(digest).cloned()),
+            Ok(1),
+            "the installer finds the source by the arena's seal reference"
         );
     }
 }

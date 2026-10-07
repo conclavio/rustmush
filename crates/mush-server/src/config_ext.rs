@@ -375,6 +375,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // and held by name by `validate` below.
             classes: serde_json::from_value(cfg.minds.classes.clone())
                 .map_err(|error| format!("[tacsim.minds].classes: {error}"))?,
+            // 17b cut M3.5 (doc 17 §9, D-UM-36): the compute pool, mapped
+            // straight across and held by name by `validate` below.
+            pool_base_ops_s: cfg.minds.pool_base_ops_s,
+            pool_per_unit_ops_s: cfg.minds.pool_per_unit_ops_s,
+            pool_floor_ops_s: cfg.minds.pool_floor_ops_s,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
@@ -1692,6 +1697,20 @@ mod tests {
                 "fill_controller = \"fast\"\n",
                 "[tacsim.minds].fill_controller",
                 "fast",
+            ),
+            // 17b cut M3.5 (doc 17 §9, D-UM-36): the pool's keys are each at
+            // least 1, and the floor at most the base, by name.
+            (
+                "[tacsim.minds]",
+                "pool_per_unit_ops_s = 0\n",
+                "[tacsim.minds].pool_per_unit_ops_s",
+                "0",
+            ),
+            (
+                "[tacsim.minds]",
+                "pool_floor_ops_s = 600000\n",
+                "[tacsim.minds].pool_floor_ops_s",
+                "600000",
             ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));

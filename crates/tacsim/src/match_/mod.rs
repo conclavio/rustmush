@@ -61,6 +61,10 @@ pub(crate) mod net;
 // its own module and never the cockpit's, which builds only what a pilot is
 // sent. Documented by its own module doc.
 pub mod observer;
+// 17b cut M3.5 (doc 17 §9, D-UM-36): the compute pool — the allotment, the
+// class loads and the admission, at `SIM UNIT` and at check-out. Documented by
+// its own module doc.
+pub mod pool;
 mod record;
 // 16b cut AF.3 (16c N16): the boot's resume — phase A's named checks, phase
 // B's re-open, the seats reconciled and the void by name. Documented by its
@@ -742,16 +746,25 @@ pub struct Fielded {
     /// entry zone behind it. [`start`] offers it to [`opening_pose`] as the
     /// world pose, so it is held to exactly what a staff placement is held to.
     pub opening: Option<OpeningCell>,
+    /// **17b cut M3.5** (doc 17 §9, D-UM-36): the class the pool admits this
+    /// hull's mind at — `None` for the fill rule
+    /// ([`pool::admitted_class`]: nothing on a seated hull, and
+    /// [`pool::FILL_CLASS_UNTIL_M5`] on an unseated one), `Some` for a
+    /// fixture's choice and, from 17b cut M5, the lead's or `SIM MIND`'s.
+    /// Read by [`start`]'s pool gate alone; it decides no seal and no class
+    /// the arena thinks at.
+    pub mind_class: Option<crate::arena::core::CoreClass>,
 }
 
 impl Fielded {
-    /// A unit no lobby placed.
+    /// A unit no lobby placed, admitted to the pool by the fill rule.
     #[must_use]
     pub const fn unslotted(unit: ObjId) -> Fielded {
         Fielded {
             unit,
             slot: 0,
             opening: None,
+            mind_class: None,
         }
     }
 }
@@ -858,6 +871,21 @@ pub enum StartError {
         /// The floor, per mille.
         floor: u32,
     },
+    /// **17b cut M3.5** (doc 17 §9, D-UM-36): a side whose minds' class
+    /// ceilings would think past its half of the centre's pool — the last
+    /// gate of [`start`]'s every-refusal block (after the unit checks, the
+    /// entry cells and [`StartError::CardUnlawful`]), before the first write, with
+    /// the arithmetic ([`pool::PoolRefusal`]). **At the stock pool it cannot
+    /// refuse in the arena** ([`pool`]'s head: twelve Class III a side fit,
+    /// and a thirteenth is [`StartError::TooManyUnits`]); an operator's
+    /// lowered pool reaches it.
+    #[error("{team}: {refusal}")]
+    Pool {
+        /// Which side.
+        team: &'static str,
+        /// The arithmetic at the first hull refused.
+        refusal: pool::PoolRefusal,
+    },
 }
 
 /// **`Boarding → Running`** (doc 16 §3.8): check every unit out and open the
@@ -868,7 +896,10 @@ pub enum StartError {
 /// 1. **Every refusal first.** Sides non-empty and inside
 ///    `match.max_slots_per_side`, no duplicate, every unit a live tactical unit,
 ///    placed, and not already deployed; the arena definition resolved; an entry
-///    cell for every unit. Nothing is written while any of this can still fail.
+///    cell for every unit; (17b cut M3.3) every seal's card lawful; and last
+///    (17b cut M3.5) every side inside its half of the centre's compute pool
+///    ([`StartError::Pool`], [`pool`]). Nothing is written while any of this
+///    can still fail.
 /// 2. **Check out.** One marker per unit, one write each, the world placement
 ///    left where it is.
 /// 3. **Open.** The task is spawned, the registry tracks it, every unit and pilot
@@ -957,6 +988,9 @@ pub fn start(
             }
         }
     }
+    // **17b cut M3.5**: the one `[tacsim.minds]` read the cards' floor and the
+    // pool gate at the end of this block both take.
+    let minds_cfg = lobby::minds_config(ctx.w).unwrap_or_default();
 
     // The opening poses, and the roster the record keeps.
     let mut custody_units: Vec<CustodyUnit> = Vec::new();
@@ -977,9 +1011,7 @@ pub fn start(
     // **17b cut M3.3** (D-UM-17): the Compact floor every seal's card is
     // validated against — the same `[tacsim.minds]` read `open_match` hands
     // the arena, so the seal and the arena hold one floor.
-    let floor = lobby::minds_config(ctx.w)
-        .unwrap_or_default()
-        .odds_floor_permille;
+    let floor = minds_cfg.odds_floor_permille;
     for side in sides {
         let mut roster = TeamRoster {
             team: side.team,
@@ -1047,6 +1079,10 @@ pub fn start(
                 principal,
                 card: crate::arena::card::line(&arena_cfg.reflex),
                 odds_floor_permille: floor,
+                // 17b cut M3.5: the lab knob's mind fill is the native stock
+                // mind; nothing in production seals a scripted mind before
+                // 17b cut M4.
+                engine_for_minds: crate::arena::mind::SealEngine::Native,
             };
             let custody = arena_def::custody_unit(
                 &catalog,
@@ -1084,6 +1120,37 @@ pub fn start(
             }
         }
         rosters.push(roster);
+    }
+
+    // **17b cut M3.5** (doc 17 §9, D-UM-36) — the LAST of the refusals,
+    // after every unit check, the entry cells and the cards (doc 17 §9:
+    // "check-out refuses an over-subscribed roster by name as the last
+    // gate"), and still before the first write: the centre's compute pool
+    // over every unit of the match, split evenly between the sides and
+    // spoken for first-come within a side in slot order, each hull at its
+    // admitted class's ceiling (`pool::admitted_class`: the fielded unit's
+    // own, else the fill rule — a seated hull nothing, an unseated one the
+    // fill's Class 0 until 17b cut M5). **At the stock pool this cannot
+    // refuse**: `TooManyUnits` above holds a side to twelve, and twelve
+    // Class III load 216,000 of a half of 238,000 (`pool`'s head).
+    let fielded_units: usize = sides.iter().map(|side| side.units.len()).sum();
+    let compute = pool::pool_for(&minds_cfg, fielded_units);
+    for side in sides {
+        let loads: Vec<u64> = side
+            .units
+            .iter()
+            .map(|fielded| {
+                let seated = !seated_pilots(ctx, fielded.unit).is_empty();
+                pool::load_of(
+                    &minds_cfg.classes,
+                    pool::admitted_class(fielded.mind_class, seated),
+                )
+            })
+            .collect();
+        pool::admit_side(compute, loads).map_err(|refusal| StartError::Pool {
+            team: side.team.as_str(),
+            refusal,
+        })?;
     }
 
     // (2) The record, in `Boarding`. The machine is walked, not jumped: this is

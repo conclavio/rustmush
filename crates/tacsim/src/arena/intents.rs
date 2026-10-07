@@ -616,6 +616,14 @@ impl Refusal {
 /// above (`Arena::settle_catchup`), reading the machine's words before its row
 /// goes, and a `Live` that re-seats nobody spends the snapshot. Both tables are
 /// views ([`crate::arena::catchup`]) and a stale control reaches neither.
+///
+/// **Who a `Released` hands the hull to** (17b cut M3.5; doc 17 §12 "Release
+/// and possess"): [`Controller::Mind`] when [`Arena::minds`] holds a row for
+/// it — the dormant row a possess left, adopted again with its memory — and
+/// [`Controller::Reflex`] in `Withdraw` otherwise (today's rule, and every
+/// production hull's before 17b cut M4). A `Released` names no seal and
+/// touches none: a re-seat after it is a seat activation inside the same
+/// sortie.
 pub fn apply_control(arena: &mut Arena, c: &Control) {
     arena.epochs.raise(c.unit, c.channel, c.epoch);
     let current = arena.epochs.current(c.unit, c.channel);
@@ -679,7 +687,19 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             if let Some(pilot) = c.pilot {
                 arena.drop_pilot(pilot, c.unit);
             }
-            arena.set_controller(c.unit, Controller::Reflex, ReflexState::Withdraw);
+            // **17b cut M3.5** (doc 17 §12 "Release and possess"): a hull a
+            // pilot possessed from its mind goes back to that mind — its row
+            // stood dormant through the seat (`Arena::suspend_mind`), and the
+            // adoption resumes it with its memory, strikes and drop intact.
+            // Every other hull goes to the reflex machine, as before: every
+            // production hull before 17b cut M4 (no production hull carries a
+            // mind row under a pilot), so the production hash is unmoved.
+            let back_to = if arena.minds.contains_key(&c.unit) {
+                Controller::Mind
+            } else {
+                Controller::Reflex
+            };
+            arena.set_controller(c.unit, back_to, ReflexState::Withdraw);
         }
         ControlState::Live => {
             // **16b cut Y.3**: a `Live` naming a pilot is that pilot in the seat,
@@ -1056,16 +1076,25 @@ fn release_machine_order(
 /// reflex machine's standing order, or a mind's held one (matched by the
 /// squad's rendered word, which is how a [`crate::arena::perception::FrameOrder`]
 /// carries it).
+///
+/// **17b cut M3.5** (doc 17 §12 "Release and possess"): the mind's row is
+/// read only while the hull IS the mind's ([`Controller::Mind`]) — a possess
+/// keeps the row dormant (`Arena::suspend_mind`), and a dormant row's held
+/// order is not the pilot's: it neither keeps the squad marked as ordered
+/// nor gives a release anything to drop.
 fn holds_order_for(arena: &Arena, unit: ObjId, squad: crate::deliberation::SquadId) -> bool {
     arena
         .reflex
         .order(unit)
         .is_some_and(|standing| standing.order.squad == squad)
-        || arena
-            .minds
-            .get(&unit)
-            .and_then(|state| state.order.as_ref())
-            .is_some_and(|order| order.squad == squad.to_string())
+        || (arena
+            .unit(unit)
+            .is_some_and(|state| state.controller == Controller::Mind)
+            && arena
+                .minds
+                .get(&unit)
+                .and_then(|state| state.order.as_ref())
+                .is_some_and(|order| order.squad == squad.to_string()))
 }
 
 /// **The `order_released` line and the squad's mark** (16b cut Z.2; one body
@@ -3659,5 +3688,44 @@ mod tests {
             serde_json::to_string(&Refusal::Unlawful).expect("serialises"),
             "\"unlawful\""
         );
+    }
+
+    /// **A dormant row's order is not the pilot's** (17b cut M3.5; doc 17
+    /// §12 "Release and possess"): `holds_order_for` reads a mind's row only
+    /// while the hull is the mind's. Red's mind holds an order for red-1; a
+    /// possess keeps the row with its order, and the hull holds none; the
+    /// hand-back holds it again.
+    #[test]
+    fn m3_holds_order_for_reads_no_dormant_order() {
+        let squad = crate::deliberation::SquadId {
+            team: Team::Red,
+            index: 1,
+        };
+        let mut arena = two_tanks(1);
+        arena.set_controller(RED, Controller::Mind, ReflexState::Withdraw);
+        if let Some(state) = arena.minds.get_mut(&RED) {
+            state.order = Some(crate::arena::perception::FrameOrder {
+                squad: SmolStr::new(squad.to_string()),
+                objective: crate::arena::perception::MindObjective::Hold,
+                hold_fire: false,
+                max_range_band: None,
+                expires_ms: 600_000,
+            });
+        }
+        assert!(holds_order_for(&arena, RED, squad), "the mind holds it");
+        arena.set_controller(RED, Controller::Pilot, ReflexState::Withdraw);
+        assert!(
+            arena
+                .minds
+                .get(&RED)
+                .is_some_and(|state| state.order.is_some()),
+            "the dormant row keeps its order"
+        );
+        assert!(
+            !holds_order_for(&arena, RED, squad),
+            "a dormant order is not the pilot's"
+        );
+        arena.set_controller(RED, Controller::Mind, ReflexState::Withdraw);
+        assert!(holds_order_for(&arena, RED, squad), "the mind's again");
     }
 }

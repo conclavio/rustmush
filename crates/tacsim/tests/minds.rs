@@ -1300,10 +1300,12 @@ fn m3_a_carried_answer_is_refused_epoch_at_a_raised_epoch_after_a_resume() {
 
 /// **A reclaimed seat lands nothing** (D-UM-13; `apply_control`'s `Live` arm).
 /// A `Control { Live }` naming a pilot between think 4 and its landing hands
-/// the hull to the pilot, which takes the mind's row (its pending answer with
-/// it, 17b cut M3.2) and its two
-/// due kinds with it: the landing never comes, nothing of the think is applied
-/// or journalled, and no refusal is staged.
+/// the hull to the pilot, which takes the mind's pending answer (17b cut
+/// M3.2) and its two due kinds off the hull: the landing never comes, nothing
+/// of the think is applied or journalled, and no refusal is staged. **17b cut
+/// M3.5** (doc 17 §12 "Release and possess"): the row itself STAYS, dormant
+/// (`Arena::suspend_mind`), with its answer discarded — this test asserted
+/// "the mind's row went" until then.
 #[test]
 fn m1a5_a_reclaimed_seat_lands_nothing() {
     let land = think_at(RED, 4) + SUBSTEP;
@@ -1323,9 +1325,16 @@ fn m1a5_a_reclaimed_seat_lands_nothing() {
         rig.arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Pilot)
     );
-    // The row went — and with it the think in flight, whose answer it
-    // carried (17b cut M3.2 retired the scratch beside it).
-    assert!(!rig.arena.minds.contains_key(&RED), "the mind's row went");
+    // 17b cut M3.5: the row stays, dormant — and the think in flight, whose
+    // answer it carried (17b cut M3.2 retired the scratch beside it), is
+    // discarded off it.
+    assert!(
+        rig.arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.pending.is_none()),
+        "the mind's row stays, its answer discarded"
+    );
     assert!(
         !rig.arena.due.iter().any(|event| event.kind.is_mind()),
         "and its thinks and landings"
@@ -3375,12 +3384,19 @@ fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
 
 /// **Every controller transition releases the outgoing rows** (17b cut M1a.5;
 /// `Arena::set_controller`). Reflex → Mind by `set_controller`; Mind → Reflex
-/// by a `Released` control with a think in flight; Reflex → Pilot by a `Live`
+/// by `set_controller` with a think in flight; Reflex → Pilot by a `Live`
 /// control; Pilot → Mind by `set_controller` with a pilot's `DRIVE` standing;
 /// Mind → Pilot by a `Live` control with a think in flight. After each,
 /// nothing of the outgoing controller is left — no reflex row or tick, no mind
 /// row, pending answer, think or landing, no motor row or motor tick — and the
 /// incoming controller's first event is on the heap.
+///
+/// **17b cut M3.5** (doc 17 §12 "Release and possess") moved two steps: the
+/// Mind → Reflex step was a `Released` control, which now hands a hull with a
+/// row back to its MIND (`apply_control`), so the step is `set_controller`
+/// itself — the fixture's own transition, the only one that still removes the
+/// row; and Mind → Pilot keeps the mind's row, dormant, with its pending
+/// answer, its thinks and its landing gone (it asserted no row until then).
 #[test]
 fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
     let mut rig = Rig::new(arena_of(
@@ -3408,13 +3424,12 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
         (false, true, false, false, vec!["mind_think"])
     );
 
-    // Mind -> Reflex, with a think in flight.
+    // Mind -> Reflex, with a think in flight (17b cut M3.5: by
+    // `set_controller` — a `Released` hands a hull with a row to its mind).
     let _ = rig.until(6_000, |arena| in_flight(arena, RED));
     let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
-    let _ = rig.pulse(
-        &[control(Channel::Helm, epoch, ControlState::Released, None)],
-        &[],
-    );
+    rig.arena
+        .set_controller(RED, Controller::Reflex, ReflexState::Withdraw);
     assert_eq!(
         rows_of(&rig.arena, RED),
         (true, false, false, true, vec!["reflex_tick"])
@@ -3466,9 +3481,10 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
         )],
         &[],
     );
+    // 17b cut M3.5: the mind's row stays, dormant — nothing else of it.
     assert_eq!(
         rows_of(&rig.arena, RED),
-        (false, false, false, false, vec![])
+        (false, true, false, false, vec![])
     );
     assert_eq!(
         rig.arena.unit(RED).map(|unit| unit.controller),
@@ -3984,7 +4000,8 @@ impl Stock {
     /// (`support::rhai_asked`) and only over the shipped script (its compiled
     /// digest is `standard_digest()`): every `RhaiRunner` prints the same
     /// prefix, so a fixture's own scripted runner is never recorded as the
-    /// stock mind.
+    /// stock mind. **17b cut M3.5**: this reads the arena-wide FALLBACK; a
+    /// hull's own runner, installed by its seal, is [`Stock::of`]'s.
     fn on(arena: &Arena) -> Arc<Stock> {
         let runner = Arc::clone(&arena.mind_runner);
         let name = format!("{runner:?}");
@@ -3997,6 +4014,29 @@ impl Stock {
                     && name.contains(&standard)),
             "Stock::on records the production stock mind (or the twin over it, or the Rhai \
              Standard Doctrine alone under support::under_the_rhai_runner), not {name:.40}"
+        );
+        Stock::over(runner)
+    }
+
+    /// **The recorder over `unit`'s own runner, installed by its seal** (17b
+    /// cut M3.5; doc 17 §13): `Arena::runner_for(unit)` — admitted as the
+    /// stock mind exactly as [`Stock::on`] admits `with_rhai`'s, a
+    /// `RhaiRunner` over the shipped script (its compiled digest
+    /// `standard_digest()`), and only where the PRODUCTION installer put it
+    /// on `Arena::runners` for that hull (`tacsim::minds::install_sealed_runners`
+    /// over a `scripted` seal) — never a fixture's own scripted runner.
+    fn of(arena: &Arena, unit: ObjId) -> Arc<Stock> {
+        let installed = arena.runners.contains_key(&unit)
+            && arena
+                .unit(unit)
+                .is_some_and(|state| state.seal.engine == tacsim::arena::SealEngine::Scripted);
+        let runner = Arc::clone(arena.runner_for(unit));
+        let name = format!("{runner:?}");
+        let standard = format!("{:?}", tacsim::minds::standard_digest());
+        assert!(
+            installed && name.starts_with("RhaiRunner") && name.contains(&standard),
+            "Stock::of records a Standard Doctrine RhaiRunner the seal installed, not \
+             {name:.40}"
         );
         Stock::over(runner)
     }
@@ -7803,7 +7843,14 @@ fn stepped(arena: &mut Arena, mut wall: i64, until_ms: i64) -> (Vec<u8>, Vec<u64
 /// — the decoded arena prints `NativeStockMind`, and since T2 ≡ T1 nothing
 /// else would show a resumed fixture flying T1 — so the fixture re-applies
 /// `support::with_rhai` and asserts the runner's `Debug` name holds
-/// `RhaiRunner` before it steps on. To 30,000 ms the stitched run (the T2
+/// `RhaiRunner` before it steps on. **Why it still must, since 17b cut
+/// M3.5**: these two hulls are sealed `native` (the fixture terms), and
+/// `with_rhai` swaps the arena-wide FALLBACK under them — a lever no seal
+/// records, so the decode's re-derived runners (empty) and the sealed
+/// installer (which installs nothing for a `native` seal) cannot bring it
+/// back. A hull sealed `scripted` needs no lever: its sibling
+/// [`m3_a_decode_reinstalls_each_unit_s_runner_from_its_seal`] resumes one on
+/// the production installer alone. To 30,000 ms the stitched run (the T2
 /// field before the snapshot, the resumed T2 field after it) is the native
 /// run's: one hash sequence, one ledger byte for byte, one final state hash.
 #[test]
@@ -8528,5 +8575,814 @@ fn m3_a_mind_adopted_at_class_iii_thinks_on_its_own_grid() {
         seen.windows(2)
             .all(|pair| matches!(pair, [(a, _), (b, _)] if b.t_ms - a.t_ms == 250)),
         "every think after it a substep on"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.5: the dormant row (doc 17 §12 "Release and possess"; D-UM-2,
+// D-UM-30, D-UM-32) and the runner by the seal (doc 17 §13)
+// ---------------------------------------------------------------------------
+
+/// The pilot who possesses red in the dormant-row fixtures.
+const POSSESSOR: ObjId = ObjId(2_000);
+
+/// A contact id nothing holds: a `LOCK` on it is refused `no_contact`.
+const STRANGER: ContactId = ContactId(4_242);
+
+/// **The dormant-row field** — [`epoch_rig`]'s three hulls, red flown by a
+/// [`ScriptedMind`] answering `script`.
+fn possess_field(script: Vec<Says>) -> (Rig, Arc<ScriptedMind>) {
+    let mut rig = Rig::new(arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Mind,
+            ),
+            presenting(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+            tank(
+                BLUE2,
+                Team::Blue,
+                centre(14, 1),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[BLUE],
+    ));
+    let mind = ScriptedMind::new(&[(RED, script)]);
+    rig.arena.mind_runner = mind.clone();
+    (rig, mind)
+}
+
+/// Whether the heap holds any think or landing of `unit`.
+fn mind_events_of(arena: &Arena, unit: ObjId) -> bool {
+    arena.due.iter().any(|event| match event.kind {
+        DueKind::MindThink { unit: on, .. } | DueKind::MindLand { unit: on, .. } => on == unit,
+        _ => false,
+    })
+}
+
+/// The `Refused` notices of `pilot`'s frames in `out`, as `(order, refusal)`.
+fn pilot_refusals(out: &StepOutput, pilot: ObjId) -> Vec<(String, Refusal)> {
+    out.frames
+        .iter()
+        .filter(|(to, _)| *to == pilot)
+        .flat_map(|(_, frame)| frame.notices.iter())
+        .filter_map(|notice| match notice {
+            FrameNotice::Refused { order, refusal, .. } => Some((order.to_string(), *refusal)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **A possess keeps the row dormant and a release resumes it** (17b cut
+/// M3.5; doc 17 §12 "Release and possess": `set_controller(Pilot)` does NOT
+/// delete the `MindState` row; D-UM-2, D-UM-30).
+///
+/// Think 0 starts the hull, locks a contact it does not hold (refused
+/// `no_contact` into the buffer at the landing) and writes memory; think 1
+/// faults (a strike, the drained notice put back in front of the buffer); the
+/// row is then given a standing order. A `Live` control naming a pilot takes
+/// the hull: the row is byte-equal to the one the possess found — memory,
+/// strikes, `dropped`, seal digest, card, ranges, order and the NOTICE
+/// BUFFER — no think or landing is on the heap and the unit's seal reference
+/// is untouched. While the pilot flies it the pilot's own refused `LOCK` is
+/// told to the pilot and never enters the mind's buffer (`stage_notice`'s
+/// controller gate), no think is taken, and the row does not move. A
+/// `Released` hands the hull back to its MIND (`apply_control`: a row
+/// stands): the row still byte-equal, and the first think after the release
+/// is `think_seq` continued, handed the OLD memory bytes and draining the old
+/// buffer — the pilot's notices nowhere in it. The seal reference is the
+/// check-out's throughout: a re-seat never re-seals.
+///
+/// A second possess with a think IN FLIGHT discards its answer: `pending`
+/// cleared, the landing off the heap, and the landing's millisecond passes
+/// with nothing of the think applied.
+#[test]
+fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
+    let (mut rig, mind) = possess_field(vec![
+        Says {
+            memory: Some(vec![3, 1, 4]),
+            ..says(
+                0,
+                vec![IntentKind::Startup, IntentKind::Lock { contact: STRANGER }],
+            )
+        },
+        Says {
+            fault: Some("type"),
+            ..says(1, Vec::new())
+        },
+    ]);
+    let _ = rig.until(10_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.think_seq == 2)
+    });
+    if let Some(state) = rig.arena.minds.get_mut(&RED) {
+        state.order = Some(FrameOrder {
+            squad: SmolStr::new("red-1"),
+            objective: MindObjective::Hold,
+            hold_fire: false,
+            max_range_band: None,
+            expires_ms: 600_000,
+        });
+    }
+    let found = rig.arena.minds.get(&RED).cloned().expect("the mind's row");
+    assert_eq!(found.strikes, 1, "think 1's strike");
+    assert_eq!(found.memory, vec![3, 1, 4], "think 0's memory");
+    assert!(found.pending.is_none());
+    assert!(
+        found.notices.iter().any(|notice| matches!(
+            notice,
+            FrameNotice::Refused {
+                refusal: Refusal::NoContact,
+                ..
+            }
+        )),
+        "the mind's own refusal is in its buffer: {:?}",
+        found.notices
+    );
+    assert_ne!(found.seal_digest, [0; 32], "laid with the seal's digest");
+    let sealed = rig.arena.unit(RED).map(|unit| unit.seal);
+
+    // The possess.
+    let helm = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+    let possessed_at = rig.arena.now_ms;
+    let _ = rig.pulse(
+        &[control(
+            Channel::Helm,
+            helm,
+            ControlState::Live,
+            Some(POSSESSOR),
+        )],
+        &[],
+    );
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Pilot)
+    );
+    assert_eq!(
+        rig.arena.minds.get(&RED),
+        Some(&found),
+        "the row is kept as the possess found it"
+    );
+    assert!(!mind_events_of(&rig.arena, RED), "no think or landing");
+
+    // Piloted: the pilot's own refusal is the pilot's alone, and nothing of
+    // the mind moves for eight seconds — several thinks' worth of grid.
+    let lock = intent(&rig.arena, RED, IntentKind::Lock { contact: STRANGER }, 1);
+    let out = rig.pulse(&[], &[lock]);
+    assert_eq!(
+        pilot_refusals(&out, POSSESSOR),
+        vec![("lock".to_owned(), Refusal::NoContact)],
+        "the pilot is told"
+    );
+    while rig.arena.now_ms < possessed_at + 8_000 {
+        let _ = rig.pulse(&[], &[]);
+        assert_eq!(
+            rig.arena.minds.get(&RED),
+            Some(&found),
+            "the dormant row never moves (at {})",
+            rig.arena.now_ms
+        );
+        assert!(!mind_events_of(&rig.arena, RED));
+    }
+    assert!(
+        mind.seen()
+            .iter()
+            .all(|seen| seen.unit != RED || seen.t_ms < possessed_at),
+        "no think while piloted"
+    );
+
+    // The release: back to the mind, the row as it stood.
+    let released_at = rig.arena.now_ms;
+    let _ = rig.pulse(
+        &[control(
+            Channel::Helm,
+            helm + 1,
+            ControlState::Released,
+            Some(POSSESSOR),
+        )],
+        &[],
+    );
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Mind),
+        "a Released over a standing row hands the hull back to its mind"
+    );
+    let _ = rig.until(released_at + 3_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.think_seq > found.think_seq)
+    });
+    let first = mind
+        .seen()
+        .into_iter()
+        .find(|seen| seen.unit == RED && seen.t_ms >= released_at)
+        .expect("a think after the release");
+    assert_eq!(first.think_seq, found.think_seq, "think_seq continued");
+    assert_eq!(first.memory, found.memory, "handed the OLD memory bytes");
+    assert_eq!(
+        first.view.notices, found.notices,
+        "the old buffer, byte for byte — the pilot's notices nowhere in it"
+    );
+    assert!(!first.dropped);
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.seal),
+        sealed,
+        "a re-seat never re-seals"
+    );
+    assert_eq!(
+        rig.arena.minds.get(&RED).map(|state| state.seal_digest),
+        Some(found.seal_digest)
+    );
+
+    // A second possess, with a think in flight: its answer is discarded.
+    let limit = rig.arena.now_ms + 3_000;
+    let _ = rig.until(limit, |arena| in_flight(arena, RED));
+    let flying = rig
+        .arena
+        .minds
+        .get(&RED)
+        .and_then(|state| state.pending.clone())
+        .expect("a think in flight");
+    let land = flying.t_ms + SUBSTEP;
+    let _ = rig.pulse(
+        &[control(
+            Channel::Helm,
+            helm + 2,
+            ControlState::Live,
+            Some(POSSESSOR),
+        )],
+        &[],
+    );
+    assert!(
+        rig.arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.pending.is_none()),
+        "pending cleared"
+    );
+    assert!(
+        !mind_events_of(&rig.arena, RED),
+        "the landing is off the heap"
+    );
+    let kept = rig.arena.minds.get(&RED).cloned();
+    while rig.arena.now_ms <= land + SUBSTEP {
+        let _ = rig.pulse(&[], &[]);
+    }
+    assert_eq!(rig.arena.minds.get(&RED).cloned(), kept, "nothing landed");
+    assert_eq!(rig.arena.unit(RED).map(|unit| unit.seal), sealed);
+}
+
+/// **A dropped hull possessed then released stays dropped** (17b cut M3.5;
+/// D-UM-32: the drop is for the rest of the sortie). Three faulted thinks
+/// drop the hull — one `mind_dropped` line; a pilot takes it and gives it
+/// back; the row's drop is the one the possess found, every think after the
+/// release is handed `dropped` (the ROM thinks), and no second `mind_dropped`
+/// line is journalled.
+#[test]
+fn m3_a_dropped_hull_possessed_and_released_stays_dropped() {
+    let fault = |n: u64| Says {
+        fault: Some("type"),
+        ..says(n, Vec::new())
+    };
+    let (mut rig, mind) = possess_field(vec![fault(0), fault(1), fault(2)]);
+    let _ = rig.until(10_000, |arena| {
+        arena.minds.get(&RED).is_some_and(MindState::dropped)
+    });
+    assert_eq!(rig.lines("mind_dropped", RED).len(), 1, "one drop line");
+    let found = rig.arena.minds.get(&RED).cloned().expect("the row");
+    assert_eq!(
+        found.dropped,
+        Some(tacsim::arena::DropCause::Strikes),
+        "dropped on strikes"
+    );
+    let helm = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+    let _ = rig.pulse(
+        &[control(
+            Channel::Helm,
+            helm,
+            ControlState::Live,
+            Some(POSSESSOR),
+        )],
+        &[],
+    );
+    assert_eq!(rig.arena.minds.get(&RED), Some(&found), "kept, dormant");
+    let limit = rig.arena.now_ms + 3_000;
+    let _ = rig.until(limit, |arena| arena.now_ms >= limit - 1_000);
+    let released_at = rig.arena.now_ms;
+    let _ = rig.pulse(
+        &[control(
+            Channel::Helm,
+            helm + 1,
+            ControlState::Released,
+            Some(POSSESSOR),
+        )],
+        &[],
+    );
+    let _ = rig.until(released_at + 5_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.think_seq >= found.think_seq + 3)
+    });
+    let after: Vec<Seen> = mind
+        .seen()
+        .into_iter()
+        .filter(|seen| seen.unit == RED && seen.t_ms >= released_at)
+        .collect();
+    assert!(after.len() >= 3, "{} thinks after the release", after.len());
+    assert!(
+        after.iter().all(|seen| seen.dropped),
+        "every think after the release is the ROM's"
+    );
+    assert_eq!(
+        rig.arena.minds.get(&RED).and_then(|state| state.dropped),
+        Some(tacsim::arena::DropCause::Strikes),
+        "still dropped"
+    );
+    assert_eq!(
+        rig.lines("mind_dropped", RED).len(),
+        1,
+        "no second drop line"
+    );
+}
+
+/// **Who a `Released` hands a hull to** (17b cut M3.5; `apply_control`):
+/// a hull seated from its check-out has no mind row and goes to the reflex
+/// machine, as before (pinned: every production hull before 17b cut M4), and
+/// no row is laid for it; a hull handed to the machine straight from its mind
+/// (`set_controller(Mind → Reflex)`, a fixture's transition alone) loses its
+/// row.
+#[test]
+fn m3_released_hands_a_hull_back_to_its_mind_only_where_a_row_stands() {
+    let (mut rig, _) = possess_field(Vec::new());
+    let _ = rig.until(3_000, |arena| arena.now_ms >= 2_000);
+    assert!(
+        !rig.arena.minds.contains_key(&BLUE),
+        "a seated hull has no row"
+    );
+    let epoch = rig.arena.epochs.current(BLUE, Channel::Helm) + 1;
+    let _ = rig.pulse(
+        &[Control {
+            unit: BLUE,
+            channel: Channel::Helm,
+            epoch,
+            state: ControlState::Released,
+            pilot: Some(ObjId(1_000)),
+        }],
+        &[],
+    );
+    assert_eq!(
+        rig.arena.unit(BLUE).map(|unit| unit.controller),
+        Some(Controller::Reflex)
+    );
+    assert!(rig.arena.reflex.unit(BLUE).is_some(), "the machine's row");
+    assert!(!rig.arena.minds.contains_key(&BLUE), "no mind row laid");
+
+    assert!(rig.arena.minds.contains_key(&RED));
+    rig.arena
+        .set_controller(RED, Controller::Reflex, ReflexState::Withdraw);
+    assert!(
+        !rig.arena.minds.contains_key(&RED),
+        "Mind → Reflex removes the row"
+    );
+    assert!(!mind_events_of(&rig.arena, RED));
+}
+
+/// **The possess-and-release run** — [`seat_run`]'s shape over red flown by
+/// the native stock mind (the default runner) with only blue seated: each
+/// beat a control raising the helm epoch by one and naming pilot `#1000`, or
+/// that pilot's order, delivered in the first pulse whose arena time has
+/// reached it (every beat a multiple of 5,000).
+fn possess_run(cadence_ms: i64, until_ms: i64, beats: &[(i64, Beat)]) -> (Run, Arena) {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Mind,
+            ),
+            presenting(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+        ],
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let mut pulses = 0_u32;
+    let mut next = 0_usize;
+    let mut seq = 0_u64;
+    let mut wall = 0_i64;
+    loop {
+        let mut intents: Vec<Intent> = Vec::new();
+        let mut controls: Vec<Control> = Vec::new();
+        while let Some((at, beat)) = beats.get(next) {
+            if *at > arena.now_ms {
+                break;
+            }
+            match beat {
+                Beat::Order(kind) => {
+                    seq += 1;
+                    intents.push(intent(&arena, RED, kind.clone(), seq));
+                }
+                Beat::Control(state) => controls.push(control(
+                    Channel::Helm,
+                    arena.epochs.current(RED, Channel::Helm) + 1,
+                    *state,
+                    Some(ObjId(1_000)),
+                )),
+            }
+            next += 1;
+        }
+        let out = arena.step(wall, &controls, &intents);
+        pulses += 1;
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        counters.absorb(&out.reflex);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    (
+        Run {
+            events,
+            hashes,
+            pulses,
+            counters,
+        },
+        arena,
+    )
+}
+
+/// **A possess and a release over a mind hull at three cadences** (17b cut
+/// M3.5; 16b §11's mandatory cross-tempo fixture; D-16-2): the native stock
+/// mind flies red; a pilot takes it at 5,000, turns it at 10,000 and lets it
+/// go at 15,000; the mind resumes on its dormant row to 30,000. At 5,000,
+/// 1,000 and 500 ms one event list and one hash sequence — and the mind
+/// thought before the possess and after the release, never between.
+#[test]
+fn m3_a_possess_and_a_release_hold_at_three_cadences() {
+    let beats = [
+        (5_000, Beat::Control(ControlState::Live)),
+        (10_000, Beat::Order(IntentKind::Heading { mdeg: 180_000 })),
+        (15_000, Beat::Control(ControlState::Released)),
+    ];
+    let (first, arena) = possess_run(5_000, 30_000, &beats);
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Mind),
+        "the mind flies it at the end"
+    );
+    let thinks = arena.minds.get(&RED).map_or(0, |state| state.think_seq);
+    assert!(
+        (15..25).contains(&thinks),
+        "thinks before the possess and after the release, none between: {thinks}"
+    );
+    assert!(!first.events.is_empty());
+    for cadence in [1_000, 500] {
+        let (other, _) = possess_run(cadence, 30_000, &beats);
+        assert_eq!(
+            other.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            other.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_ne!(other.pulses, first.pulses);
+    }
+}
+
+/// **The mixed shipped field** (17b cut M3.5): red's slot 1 sealed on a
+/// scripted mind ([`support::Muster::scripted`]) and slot 2 on the native
+/// one ([`support::Muster::mind`]); blue's slot 1 the same pair when `both`,
+/// else a seated pilot. Answers the arena (the production installer has run)
+/// and the sources it was handed.
+fn mixed_field(world: &mush_testkit::TestWorld, both: bool) -> (Arena, BTreeMap<[u8; 32], String>) {
+    let red = [
+        support::Muster::scripted(Team::Red, 1),
+        support::Muster::mind(Team::Red, 2),
+    ];
+    let blue_minds = [
+        support::Muster::scripted(Team::Blue, 1),
+        support::Muster::mind(Team::Blue, 2),
+    ];
+    let blue_pilot = [support::Muster::piloted(Team::Blue, 1)];
+    let blue: &[support::Muster] = if both { &blue_minds } else { &blue_pilot };
+    let sides: [&[support::Muster]; 2] = [&red, blue];
+    let custody = support::shipped_custody_seeded(world, &sides, support::SEED);
+    let sources = support::sealed_sources(&custody.units);
+    (support::shipped_arena(world, &sides), sources)
+}
+
+/// **Each hull thinks on its own runner, by its seal** (17b cut M3.5; doc 17
+/// §13; `Arena::runners`, `Arena::runner_for`). On the mixed field the
+/// production installer gave the scripted hull — and only it — a
+/// `RhaiRunner` over Standard Doctrine's source, compiled under its own
+/// digest; the native hull thinks on the arena-wide fallback, which stays the
+/// native stock mind. Then the asserting twin (Gate A: T1 and T2 on one job,
+/// panicking on the first difference) is installed as the SCRIPTED hull's
+/// runner through `runners`, and the fallback is wrapped in a recorder: over
+/// twenty seconds every think the twin compared is the scripted hull's, every
+/// think the fallback answered is the native hull's, and each thought.
+#[test]
+fn m3_each_hull_thinks_on_its_own_runner_by_its_seal() {
+    let world = support::booted_world();
+    let (mut arena, _) = mixed_field(&world, false);
+    let scripted = support::tank(&world, Team::Red, 1);
+    let native = support::tank(&world, Team::Red, 2);
+    assert_eq!(
+        arena.unit(scripted).map(|unit| unit.seal.engine),
+        Some(tacsim::arena::SealEngine::Scripted)
+    );
+    assert_eq!(
+        arena.unit(native).map(|unit| unit.seal.engine),
+        Some(tacsim::arena::SealEngine::Native)
+    );
+    assert_eq!(
+        arena.runners.keys().copied().collect::<Vec<_>>(),
+        vec![scripted],
+        "the scripted seal alone was given a runner"
+    );
+    let standard = format!("{:?}", tacsim::minds::standard_digest());
+    let shown = format!("{:?}", arena.runner_for(scripted));
+    assert!(
+        shown.starts_with("RhaiRunner") && shown.contains(&standard),
+        "Standard Doctrine's script under its own digest: {shown:.60}"
+    );
+    assert!(format!("{:?}", arena.runner_for(native)).starts_with("NativeStockMind"));
+    assert!(
+        format!("{:?}", arena.mind_runner).starts_with("NativeStockMind"),
+        "the fallback is untouched"
+    );
+
+    // The scripted hull's own runner is admitted as the stock mind because
+    // its seal installed it (`Stock::of`).
+    let _ = Stock::of(&arena, scripted);
+    let twin = Arc::new(support::TwinRunner::new(&arena.arena_cfg));
+    arena.runners.insert(scripted, twin.clone());
+    let fallback = Stock::on(&arena);
+    arena.mind_runner = fallback.clone();
+    let _ = support::run_until(&mut arena, 20_000, 1_000, |_, _| {});
+    let compared = twin.thoughts();
+    assert!(compared.len() >= 15, "{} thinks compared", compared.len());
+    assert!(
+        compared.iter().all(|thought| thought.unit == scripted),
+        "the twin thought for the scripted hull alone"
+    );
+    assert_eq!(twin.divergences(), (0, 0), "T2 is T1 on every think");
+    let answered = fallback.kept();
+    assert!(answered.len() >= 15, "{} native thinks", answered.len());
+    assert!(
+        answered.iter().all(|(unit, ..)| *unit == native),
+        "the fallback thought for the native hull alone"
+    );
+}
+
+/// **A decode reinstalls each unit's runner from its seal** (17b cut M3.5;
+/// doc 17 §13; the sibling of
+/// [`m2_a_resumed_field_flies_the_rhai_runner_again_after_the_decode`], M2's
+/// residual closed): the mixed field on both sides — one scripted seal and
+/// one native a side — stepped one substep a pulse with the tempo pinned
+/// ([`stepped`]), encoded at the first pulse boundary past 15,000 ms with no
+/// think in flight and decoded. The decoded arena's runners are re-derived
+/// EMPTY and its fallback the native stock mind; NO `with_rhai` is applied —
+/// the production installer alone (`support::install_sealed`, i.e.
+/// `tacsim::minds::install_sealed_runners`, over the sources the custody's
+/// seals name) gives each scripted hull a `RhaiRunner` again and the native
+/// hulls nothing. Each hull's runner is wrapped in a pass-through recorder:
+/// to 30,000 ms every scripted hull's think is answered by its `RhaiRunner`
+/// and every native hull's by the native fallback; and the stitched run is
+/// the uninterrupted one's — one hash sequence, one ledger byte for byte,
+/// one final state hash.
+#[test]
+fn m3_a_decode_reinstalls_each_unit_s_runner_from_its_seal() {
+    const UNTIL_MS: i64 = 30_000;
+    let world = support::booted_world();
+    let scripted = [
+        support::tank(&world, Team::Red, 1),
+        support::tank(&world, Team::Blue, 1),
+    ];
+    let native = [
+        support::tank(&world, Team::Red, 2),
+        support::tank(&world, Team::Blue, 2),
+    ];
+
+    // The uninterrupted run.
+    let (mut straight, _) = mixed_field(&world, true);
+    let (mut straight_bytes, straight_hashes, _) = stepped(&mut straight, 0, UNTIL_MS);
+    let straight_events = events(&mut straight, &mut straight_bytes);
+
+    // The same field, to a pulse boundary past 15 s with no think in flight.
+    let (mut flown, sources) = mixed_field(&world, true);
+    assert_eq!(sources.len(), 2, "two scripted seals name a source");
+    let (mut bytes, mut hashes, mut wall) = stepped(&mut flown, 0, 15_000);
+    while flown.minds.values().any(|state| state.pending.is_some()) {
+        let next = flown.now_ms + SUBSTEP;
+        let (more, more_hashes, after) = stepped(&mut flown, wall, next);
+        bytes.extend(more);
+        hashes.extend(more_hashes);
+        wall = after;
+    }
+    let snapshot = Snapshot::encode(&flown).expect("the arena encodes");
+    let mut resumed = Snapshot::decode(&snapshot.document, (*flown.definition).clone())
+        .expect("the document decodes");
+    assert!(resumed.runners.is_empty(), "re-derived empty at the decode");
+    assert!(format!("{:?}", resumed.mind_runner).starts_with("NativeStockMind"));
+    assert_eq!(
+        support::install_sealed(&mut resumed, &sources),
+        2,
+        "the production installer alone"
+    );
+    // Each hull's runner, recorded: a scripted hull's admitted by `Stock::of`
+    // only because its seal installed a Standard Doctrine `RhaiRunner`; a
+    // native hull's the fallback, the native stock mind.
+    let mut recorders: Vec<(ObjId, Arc<Stock>)> = Vec::new();
+    for unit in scripted {
+        recorders.push((unit, Stock::of(&resumed, unit)));
+    }
+    for unit in native {
+        assert!(
+            !resumed.runners.contains_key(&unit),
+            "a native seal installs nothing"
+        );
+        let shown = format!("{:?}", resumed.runner_for(unit));
+        assert!(
+            shown.starts_with("NativeStockMind"),
+            "#{}'s runner is the fallback: {shown:.40}",
+            unit.0
+        );
+        recorders.push((unit, Stock::over(Arc::clone(resumed.runner_for(unit)))));
+    }
+    for (unit, recorder) in &recorders {
+        resumed.runners.insert(*unit, recorder.clone());
+    }
+    let now = resumed.now_ms;
+    let _ = resumed.resume_at(now);
+    let (more, more_hashes, _) = stepped(&mut resumed, now + SUBSTEP, UNTIL_MS);
+    bytes.extend(more);
+    hashes.extend(more_hashes);
+    let resumed_events = events(&mut resumed, &mut bytes);
+    for (unit, recorder) in &recorders {
+        let kept = recorder.kept();
+        assert!(kept.len() >= 10, "#{} thought {} times", unit.0, kept.len());
+        assert!(
+            kept.iter().all(|(on, ..)| on == unit),
+            "#{}'s runner thought for it alone",
+            unit.0
+        );
+    }
+    assert!(
+        !straight_events.is_empty() && hashes.len() > 100,
+        "the run journalled and stepped"
+    );
+    assert_eq!(hashes, straight_hashes, "the stitched hash sequence");
+    assert_eq!(resumed_events, straight_events, "the stitched ledger");
+    assert_eq!(bytes, straight_bytes, "byte for byte");
+    assert_eq!(
+        tacsim::arena::state_hash(&resumed),
+        tacsim::arena::state_hash(&straight),
+        "the final state hash"
+    );
+}
+
+/// **A `Released` over a hull its mind is flying changes no controller** (17b
+/// cut M3.5; doc 17 §12, `apply_control`'s `Released` rule): the control's
+/// own half still stands — the speed is zeroed and the helm epoch raised —
+/// but the hull is handed to the controller it already has
+/// (`set_controller(Mind → Mind)` returns at once). With think 1 IN FLIGHT:
+///
+/// * after the control the controller is still `Mind`, the row is
+///   byte-equal to the one the control found (its `pending` answer
+///   included), the landing is still on the heap, and `desired_speed_cms` is
+///   0 where think 0 had set 500;
+/// * the landing then lands: the row takes think 1's memory and its speed is
+///   refused `epoch` into the buffer (the control raised the helm epoch
+///   after the think was taken — D-UM-13), so the speed stays 0;
+/// * the next think, taken at the new epoch, sets the speed again.
+#[test]
+fn m3_a_released_over_a_hull_its_mind_flies_changes_no_controller() {
+    let (mut rig, _) = possess_field(vec![
+        Says {
+            memory: Some(vec![7]),
+            ..says(0, vec![IntentKind::Speed { cms: 500 }])
+        },
+        Says {
+            memory: Some(vec![8]),
+            ..says(1, vec![IntentKind::Speed { cms: 600 }])
+        },
+        says(2, vec![IntentKind::Speed { cms: 700 }]),
+    ]);
+    if let Some(unit) = rig.arena.unit_mut(RED) {
+        unit.power = Power::Online;
+    }
+    let _ = rig.until(10_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .and_then(|state| state.pending.as_ref())
+            .is_some_and(|pending| pending.think_seq == 1)
+    });
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.desired_speed_cms),
+        Some(500),
+        "think 0 landed its speed"
+    );
+    let found = rig.arena.minds.get(&RED).cloned().expect("the mind's row");
+    assert!(
+        mind_events_of(&rig.arena, RED),
+        "the landing is on the heap"
+    );
+
+    let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+    apply_control(
+        &mut rig.arena,
+        &control(Channel::Helm, epoch, ControlState::Released, None),
+    );
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Mind),
+        "the mind keeps the hull"
+    );
+    assert_eq!(
+        rig.arena.minds.get(&RED),
+        Some(&found),
+        "the row is untouched, its answer still pending"
+    );
+    assert!(
+        rig.arena.due.iter().any(|event| matches!(
+            event.kind,
+            DueKind::MindLand { unit, think_seq: 1 } if unit == RED
+        )),
+        "the landing still stands"
+    );
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.desired_speed_cms),
+        Some(0),
+        "the release zeroes the speed"
+    );
+
+    let _ = rig.until(10_000, |arena| !in_flight(arena, RED));
+    let landed = rig.arena.minds.get(&RED).expect("the mind's row");
+    assert_eq!(landed.memory, vec![8], "think 1's answer landed");
+    assert_eq!(landed.think_seq, found.think_seq, "no think since");
+    assert!(
+        refusals(&rig.arena, RED).contains(&("speed".to_owned(), Refusal::Epoch)),
+        "{:?}",
+        refusals(&rig.arena, RED)
+    );
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.desired_speed_cms),
+        Some(0),
+        "the stale speed is refused"
+    );
+
+    let _ = rig.until(20_000, |arena| {
+        arena
+            .unit(RED)
+            .is_some_and(|unit| unit.desired_speed_cms == 700)
+    });
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.desired_speed_cms),
+        Some(700),
+        "think 2 flies it again"
+    );
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Mind)
     );
 }

@@ -17,8 +17,9 @@
 //! # Where the slots live
 //!
 //! In one transparent table on the arena, [`Arena::conditions`] — for a hull
-//! of **any** controller, not in a mind's row (a piloted hull has none, and
-//! `Arena::release_mind` deletes a mind's row on every transition): a declared
+//! of **any** controller, not in a mind's row (a piloted hull has none —
+//! since 17b cut M3.5 a possessed one keeps a DORMANT row, `Arena::suspend_mind`,
+//! but its slots are the pilot's, cleared at the possess as below): a declared
 //! departure from doc 17 §5's placement, for §24. A hull holds a key only while
 //! it has a slot armed, so the table of every match that exists is empty and
 //! every trigger's first question — [`ConditionTable::is_empty_for`] — is one

@@ -4071,6 +4071,7 @@ async fn m1_a_busy_arena_is_told_to_try_again_and_nothing_changes() {
         &cfg.match_,
         &cfg.sensors,
         &tacsim::config::MindsConfig::default(),
+        &std::collections::BTreeMap::new(),
         tasks.egress_sender().expect("the egress sender"),
     )
     .expect("the replacement check-out is accepted");
@@ -9191,4 +9192,335 @@ async fn m3_an_unchanged_record_resumes_with_the_seal_it_was_checked_out_under()
     );
     let said = rig.staff(&format!("@arena/abort {}", match_id.0));
     assert!(said.contains("is stopping"), "{said}");
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.5: the pool at check-out (doc 17 §9, D-UM-36)
+// ---------------------------------------------------------------------------
+
+/// **`n` more stock tanks in the world**, each made a tactical unit through
+/// `@unit/create` and placed in the proving ground's domain on red slot 1's
+/// pose — `match_::start` relocates every unit into its side's entry zone
+/// (`opening_pose`), so the shared pose is never where one opens.
+fn spare_hulls(rig: &mut Rig, n: usize) -> Vec<ObjId> {
+    let anchor = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let (domain, pose) = mush_sim::pose_of(rig.tw.world(), anchor).expect("the tank is placed");
+    let mut hulls = Vec::new();
+    for k in 0..n {
+        let thing = rig
+            .tw
+            .world_mut()
+            .create(
+                mush_core::ObjKind::Thing,
+                &format!("Spare Hull {k}"),
+                GOD,
+                Some(ObjId(0)),
+            )
+            .expect("a thing");
+        let said = rig.staff(&format!(
+            "@unit/create #{}={}",
+            thing.0,
+            tacsim::definitions::content::LINE_TANK
+        ));
+        assert!(said.contains("is now a tactical unit"), "{said}");
+        let mut out = Outbox::new();
+        let engine = rig.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_sim::window::place(&mut ctx, thing, domain, pose.clone()).expect("the hull is placed");
+        hulls.push(thing);
+    }
+    hulls
+}
+
+/// **Twelve hulls a side** for `match_::start`: the side's six shipped tanks
+/// then six of `spares`, the first `classed` of each red twelve fielded with
+/// a Class III mind (`Fielded::mind_class`), every other by the fill rule.
+fn twelve_a_side(
+    rig: &Rig,
+    spares: &[ObjId],
+    classed: usize,
+    class: tacsim::arena::core::CoreClass,
+) -> Vec<match_::Side> {
+    let mut sides = Vec::new();
+    for (team, extra) in [
+        (Team::Red, spares.get(..6).unwrap_or_default()),
+        (Team::Blue, spares.get(6..12).unwrap_or_default()),
+    ] {
+        let mut units: Vec<ObjId> = (1..=6)
+            .map(|slot| match_::tank_for_slot(rig.tw.world(), team, slot).expect("a shipped tank"))
+            .collect();
+        units.extend_from_slice(extra);
+        let fielded = units
+            .into_iter()
+            .enumerate()
+            .map(|(at, unit)| match_::Fielded {
+                mind_class: (team == Team::Red && at < classed).then_some(class),
+                ..match_::Fielded::unslotted(unit)
+            })
+            .collect();
+        sides.push(match_::Side {
+            team,
+            units: fielded,
+        });
+    }
+    sides
+}
+
+/// `match_::start` as staff's `@arena/start` calls it — the proving ground,
+/// a skirmish, the reflex fill — under `cfg`'s blocks.
+fn start_as_staff(
+    rig: &mut Rig,
+    cfg: &TacsimConfig,
+    match_id: u64,
+    sides: &[match_::Side],
+) -> Result<tacsim::arena_task::MatchId, match_::StartError> {
+    let mut out = Outbox::new();
+    let engine = rig.tw.engine_mut();
+    let mut ctx = Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(smol_str::SmolStr::new(tacsim::NS)),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    match_::start(
+        &mut ctx,
+        tacsim::arena_task::MatchId(match_id),
+        &smol_str::SmolStr::new_static(match_::PROVING_GROUND),
+        sides,
+        &cfg.arena,
+        &cfg.match_,
+        &cfg.sensors,
+        tacsim::arena::MatchMode::Skirmish,
+        tacsim::arena::state::Controller::Reflex,
+    )
+}
+
+/// **THE GATE FIXTURE: an over-subscribed roster is refused by name at
+/// check-out** (17b cut M3.5; doc 17 §9, D-UM-36: *check-out refuses an
+/// over-subscribed roster by name as the last gate*).
+///
+/// At the stock pool the arena's check-out gate cannot refuse (twelve Class
+/// III a side load 216,000 against a half of 238,000, and a thirteenth is
+/// `TooManyUnits` — `match_::pool`'s head), so this runs under the world's
+/// `[tacsim.minds].pool_base_ops_s = 300_000`: 276,000 at 24 units, a half of
+/// 138,000. Twelve a side (the six shipped tanks and six spare stock tanks
+/// each) through `match_::start` as staff calls it:
+///
+/// * eight of red's twelve fielded with a Class III mind: refused
+///   `StartError::Pool` on the EIGHTH — `would 18,000`, `half 138,000`,
+///   `spoken 126,000` (seven Class III before it), said in doc 17 §9's
+///   sentence behind the side — before any write: no unit deployed, no
+///   record in the book;
+/// * seven Class III (and five fill hulls at Class 0's 400): admitted, and
+///   the match opens;
+/// * on a fresh world under the same pool, twelve a side by the fill rule
+///   (4,800 a side): admitted;
+/// * and at the STOCK pool, on a fresh world, twelve Class III a side —
+///   216,000 a side: admitted (the declared fact).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_an_over_subscribed_roster_is_refused_by_name_at_check_out() {
+    use tacsim::arena::core::CoreClass;
+    use tacsim::match_::pool::PoolRefusal;
+    let mut lowered = config();
+    lowered.minds.pool_base_ops_s = 300_000;
+    assert_eq!(tacsim::match_::pool::pool_for(&lowered.minds, 24), 276_000);
+
+    let mut rig = Rig::boot_on(0, roster_with(lowered.clone()));
+    let spares = spare_hulls(&mut rig, 12);
+    let sides = twelve_a_side(&rig, &spares, 8, CoreClass::III);
+    let refused = start_as_staff(&mut rig, &lowered, 91, &sides);
+    let expected = PoolRefusal {
+        would: 18_000,
+        half: 138_000,
+        spoken: 126_000,
+    };
+    assert_eq!(
+        refused,
+        Err(match_::StartError::Pool {
+            team: "red",
+            refusal: expected,
+        })
+    );
+    assert_eq!(
+        refused.map_err(|error| error.to_string()),
+        Err(
+            "red: This side would think 18,000 ops a second; its half of the centre's pool is \
+             138,000 and 126,000 are spoken for."
+                .to_owned()
+        )
+    );
+    for side in &sides {
+        for fielded in &side.units {
+            assert!(
+                !mush_sim::deployed::is_deployed(rig.tw.world(), fielded.unit),
+                "#{} was checked out",
+                fielded.unit.0
+            );
+        }
+    }
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .and_then(|book| book.get(tacsim::arena_task::MatchId(91)))
+            .is_none(),
+        "no record was written"
+    );
+
+    // Seven Class III: admitted, and the match opens.
+    let sides = twelve_a_side(&rig, &spares, 7, CoreClass::III);
+    let opened = start_as_staff(&mut rig, &lowered, 92, &sides);
+    assert_eq!(opened, Ok(tacsim::arena_task::MatchId(92)), "seven pass");
+
+    // A fresh world under the same pool: twelve a side by the fill rule.
+    let mut rig = Rig::boot_on(0, roster_with(lowered.clone()));
+    let spares = spare_hulls(&mut rig, 12);
+    let sides = twelve_a_side(&rig, &spares, 0, CoreClass::III);
+    let opened = start_as_staff(&mut rig, &lowered, 93, &sides);
+    assert_eq!(
+        opened,
+        Ok(tacsim::arena_task::MatchId(93)),
+        "the fill passes"
+    );
+
+    // The stock pool: twelve Class III a side are admitted.
+    let stock = config();
+    assert_eq!(
+        stock.minds,
+        tacsim::config::MindsConfig::default(),
+        "the stock keys"
+    );
+    let mut rig = Rig::boot_on(0, roster_with(stock.clone()));
+    let spares = spare_hulls(&mut rig, 12);
+    let mut sides = twelve_a_side(&rig, &spares, 12, CoreClass::III);
+    for fielded in sides.iter_mut().flat_map(|side| side.units.iter_mut()) {
+        fielded.mind_class = Some(CoreClass::III);
+    }
+    let opened = start_as_staff(&mut rig, &stock, 94, &sides);
+    assert_eq!(
+        opened,
+        Ok(tacsim::arena_task::MatchId(94)),
+        "twelve Class III a side fit the stock pool"
+    );
+}
+
+/// **Pilot `n` walks to `unit` and takes its cockpit** — `Rig::station_on`
+/// proves reach from the room the unit stands in.
+fn seat_beside(rig: &mut Rig, n: usize, unit: ObjId) {
+    let room = rig
+        .tw
+        .world()
+        .get(unit)
+        .and_then(|thing| thing.location)
+        .expect("the hull stands somewhere");
+    let pilot = rig.pilot(n);
+    rig.tw
+        .world_mut()
+        .move_to(pilot, room)
+        .expect("a pilot walks to the hull");
+    rig.station_on(n, unit);
+}
+
+/// **The fill rule decides the pool, and the pool is the LAST gate** (17b cut
+/// M3.5; doc 17 §9, D-UM-36), under a pool small enough that Class 0's 400 is
+/// what tips a side: `[tacsim.minds]` at base 9,000, per unit 1, floor 1 —
+/// 8,976 at 24 units, a half of 4,488, so eleven fill hulls (4,400) fit and a
+/// twelfth (4,800) does not.
+///
+/// * twelve a side, nobody seated, every hull by the fill rule: red is
+///   refused on its TWELFTH hull — `would 400`, `spoken 4,400` — so an
+///   unseated hull loads the fill's Class 0;
+/// * a pilot stationed on red's seventh hull, a spare (the two writes
+///   `BOARD` makes): red is admitted with that hull loading nothing, and
+///   blue — all fill — is refused the same way: a seated hull loads 0;
+/// * a pilot on blue's seventh hull too: the match opens;
+/// * and on a fresh world whose roster is BOTH over the pool and carries a
+///   card under `odds_floor_permille = 200`, check-out is refused for the
+///   card (`StartError::CardUnlawful`), never the pool: the pool gate comes
+///   after every other refusal of check-out's block (doc 17 §9: "the last
+///   gate").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
+    use tacsim::arena::core::CoreClass;
+    use tacsim::match_::pool::PoolRefusal;
+    let mut tiny = config();
+    tiny.minds.pool_base_ops_s = 9_000;
+    tiny.minds.pool_per_unit_ops_s = 1;
+    tiny.minds.pool_floor_ops_s = 1;
+    assert_eq!(tacsim::match_::pool::pool_for(&tiny.minds, 24), 8_976);
+    let fill_refused = |team: &'static str| {
+        Err(match_::StartError::Pool {
+            team,
+            refusal: PoolRefusal {
+                would: 400,
+                half: 4_488,
+                spoken: 4_400,
+            },
+        })
+    };
+
+    let mut rig = Rig::boot_on(2, roster_with(tiny.clone()));
+    // The control-lease mirror is read on the first second of world time, and
+    // `request_seat_activation` fails closed before it (as in `d3_`).
+    rig.tick_to(1);
+    let spares = spare_hulls(&mut rig, 12);
+    let sides = twelve_a_side(&rig, &spares, 0, CoreClass::III);
+    assert_eq!(
+        start_as_staff(&mut rig, &tiny, 95, &sides),
+        fill_refused("red"),
+        "twelve unseated hulls load the fill's Class 0 each"
+    );
+
+    // Red's first spare (its seventh hull): a seat on it loads nothing.
+    seat_beside(&mut rig, 0, *spares.first().expect("red's first spare"));
+    assert_eq!(
+        start_as_staff(&mut rig, &tiny, 96, &sides),
+        fill_refused("blue"),
+        "a seated hull loads nothing, so red fits and blue is refused"
+    );
+    for side in &sides {
+        for fielded in &side.units {
+            assert!(
+                !mush_sim::deployed::is_deployed(rig.tw.world(), fielded.unit),
+                "#{} was checked out",
+                fielded.unit.0
+            );
+        }
+    }
+
+    seat_beside(&mut rig, 1, *spares.get(6).expect("blue's first spare"));
+    assert_eq!(
+        start_as_staff(&mut rig, &tiny, 97, &sides),
+        Ok(tacsim::arena_task::MatchId(97)),
+        "one seated hull a side: the match opens"
+    );
+
+    // Over the pool AND under the Compact floor: the card is refused first.
+    let mut both = tiny.clone();
+    both.minds.odds_floor_permille = 200;
+    let mut rig = Rig::boot_on(0, roster_with(both.clone()));
+    let spares = spare_hulls(&mut rig, 12);
+    let sides = twelve_a_side(&rig, &spares, 0, CoreClass::III);
+    let refused = start_as_staff(&mut rig, &both, 98, &sides);
+    let red_first = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    assert!(
+        matches!(
+            refused,
+            Err(match_::StartError::CardUnlawful { unit, floor: 200, .. }) if unit == red_first
+        ),
+        "the pool is the last gate: {refused:?}"
+    );
 }

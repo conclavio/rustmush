@@ -42,6 +42,10 @@
 //!   `MindRunner` that runs a compiled script synchronously at the think
 //!   point, reads the label rule on both ends of the call, and answers a
 //!   dropped hull (three faults running) with the native stand-in.
+//! * **The sealed runners** (`sealed.rs`, 17b cut M3.5):
+//!   [`install_sealed_runners`](crate::minds::install_sealed_runners), the
+//!   one place a scripted seal becomes a hull's own runner on
+//!   `Arena::runners` — at check-out and at a resume alike.
 //! * **The stock mind** (`content.rs`, 17b cut M2.5): Standard Doctrine in
 //!   Rhai (T2, `content/minds/standard.rhai`) with its manifest
 //!   (`standard.json`, the role `combat`) and its pinned SHA-256, and
@@ -127,6 +131,7 @@ pub mod context;
 pub mod fees;
 pub mod kernels;
 pub mod runner;
+pub mod sealed;
 pub mod stations;
 
 pub use content::{
@@ -134,6 +139,7 @@ pub use content::{
     standard_manifest, standard_runner,
 };
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
+pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.

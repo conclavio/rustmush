@@ -3355,8 +3355,20 @@ impl Arena {
     /// copy, in its bounded buffer (`crate::arena::mind::MindState::push_notice`,
     /// the oldest dropped past sixteen), drained into its next view. Every
     /// other hull costs one map miss.
+    ///
+    /// **17b cut M3.5** (doc 17 §12 "Release and possess"): only while the
+    /// hull IS the mind's ([`Controller::Mind`]). A possess keeps the mind's
+    /// row dormant (`Arena::suspend_mind`), and a dormant row is not pushed
+    /// to: the pilot's notices — the refusals of their own verbs, their
+    /// `drive_arrived`, the hits they take — never enter the mind's bounded
+    /// buffer and are never drained by the first think after a release.
     pub(crate) fn stage_notice(&mut self, platform: ObjId, notice: FrameNotice) {
-        if let Some(state) = self.minds.get_mut(&platform) {
+        // The map miss first: every hull with no row pays only that.
+        let minded = self.minds.contains_key(&platform)
+            && self
+                .unit(platform)
+                .is_some_and(|unit| unit.controller == Controller::Mind);
+        if minded && let Some(state) = self.minds.get_mut(&platform) {
             state.push_notice(notice.clone());
         }
         self.pending_notices

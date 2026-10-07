@@ -3991,7 +3991,22 @@ pub struct Arena {
     /// synchronously, inside the think's due event. Set by
     /// `crate::arena::mind::default_mind_runner` in [`Arena::new`] and in the
     /// snapshot's decode alike; neither hashed nor carried.
+    ///
+    /// **Since 17b cut M3.5** it is the arena-wide FALLBACK: a hull with a
+    /// runner of its own on [`Arena::runners`] thinks on that one
+    /// ([`Arena::runner_for`]), and every other hull on this.
     pub mind_runner: std::sync::Arc<dyn crate::arena::mind::MindRunner>,
+    /// **Each hull's own runner, by its seal** (17b cut M3.5; doc 17 §13,
+    /// D-UM-1): what `crate::minds::install_sealed_runners` installed for a
+    /// hull whose seal names a scripted mind — the script the seal's source
+    /// digest names, compiled once per digest and shared. Empty for a hull
+    /// sealed `native` or `reflex` (every production hull before 17b cut M4),
+    /// which thinks on [`Arena::mind_runner`]. Compiled code like the
+    /// fallback: neither hashed nor carried — **re-derived empty** by the
+    /// snapshot's decode, and refilled by the installer from the decoded
+    /// seals (`crate::arena_task::resume_arena`), so a resumed hull thinks on
+    /// the runner its seal names, never on whatever the decode defaulted to.
+    pub runners: BTreeMap<ObjId, std::sync::Arc<dyn crate::arena::mind::MindRunner>>,
     /// **The cheapest passable cell on the window for each row**, in
     /// [`CostRow::index`] order ([`ArenaTerrain::min_cost`]; each at least
     /// `1`), read once at check-out because the terrain is immutable for the
@@ -4721,6 +4736,9 @@ impl Arena {
             // 17b cut M1b.5: no card change offered yet.
             pending_cards: BTreeMap::new(),
             mind_runner: crate::arena::mind::default_mind_runner(arena_cfg),
+            // 17b cut M3.5: no hull's own runner until the sealed installer
+            // runs over the check-out (`crate::arena_task::spawn_arena`).
+            runners: BTreeMap::new(),
             min_cost,
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),

@@ -77,11 +77,22 @@ pub struct SealTerms {
     pub card: StockCard,
     /// The Compact floor, per mille (`[tacsim.minds].odds_floor_permille`).
     pub odds_floor_permille: u32,
+    /// **The engine a mind's hull is sealed on** (17b cut M3.5; doc 17 §13):
+    /// what [`seal_for`] writes as [`MindSeal::engine`] for a
+    /// [`Controller::Mind`] hull — [`SealEngine::Native`], the native stock
+    /// mind, everywhere in production before 17b cut M4 (no lobby or
+    /// check-out sets anything else), and [`SealEngine::Scripted`] where a
+    /// fixture's rig fields a scripted mind (`tests/support`'s
+    /// `Muster::scripted`), whose runner `crate::minds::install_sealed_runners`
+    /// then installs from the source the seal's digest names. A reflex or a
+    /// piloted hull is sealed `reflex` whatever this says.
+    pub engine_for_minds: SealEngine,
 }
 
 impl SealTerms {
     /// **The terms every fixture seals under**: match 0, no principal, the
-    /// Line preset over the default doctrine, the seed floor of 100.
+    /// Line preset over the default doctrine, the seed floor of 100, and a
+    /// mind's hull sealed native.
     #[must_use]
     pub fn fixture() -> SealTerms {
         SealTerms {
@@ -89,6 +100,7 @@ impl SealTerms {
             principal: None,
             card: crate::arena::card::line(&ReflexConfig::default()),
             odds_floor_permille: 100,
+            engine_for_minds: SealEngine::Native,
         }
     }
 }
@@ -183,9 +195,11 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         odds_floor_permille: terms.odds_floor_permille,
         fallback,
         // What a release hands a piloted hull to today is the reflex (17b cut
-        // M4 moves the fill); a mind's hull is the native stock mind's.
+        // M4 moves the fill); a mind's hull is the terms' engine — the native
+        // stock mind's in production (17b cut M3.5: a fixture's scripted
+        // muster asks for `scripted`).
         engine: match unit.controller {
-            Controller::Mind => SealEngine::Native,
+            Controller::Mind => terms.engine_for_minds,
             Controller::Reflex | Controller::Pilot => SealEngine::Reflex,
         },
     })

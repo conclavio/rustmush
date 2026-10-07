@@ -16667,3 +16667,141 @@ async fn m1b5_the_fill_controller_validates_by_name_and_fields_minds() {
         "the board reads the same under either fill"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.5: a re-seat is a seat activation inside the sortie (doc 17 §12)
+// ---------------------------------------------------------------------------
+
+/// Every unit's seal reference (`UnitState::seal`) in the running match's
+/// latest snapshot in the rig's image, by unit id.
+fn m3_snapshot_seals(rig: &Rig) -> BTreeMap<u64, serde_json::Value> {
+    let match_id = rig.centre().match_id.expect("a running match");
+    let key = match_::snapshot_key(match_id).to_string();
+    let state: serde_json::Value = rig
+        .image
+        .get(tacsim::NS)
+        .and_then(|docs| docs.get(key.as_str()))
+        .and_then(|document| document.get("state"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|text| serde_json::from_str(text).ok())
+        .expect("the snapshot's state");
+    state
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .expect("the snapshot's units")
+        .iter()
+        .filter_map(|unit| {
+            Some((
+                unit.get("id").and_then(serde_json::Value::as_u64)?,
+                unit.get("seal")?.clone(),
+            ))
+        })
+        .collect()
+}
+
+/// **A reclaim re-seals nothing** (17b cut M3.5; doc 17 §12 "Release and
+/// possess": *a re-seat is a seat activation inside the same sortie, never a
+/// new seal*), over the real rig: a lone pilot of an AI-filled match drops
+/// and `BOARD`s back — the world's `slot_reclaimed`, a `Live` control at a new
+/// epoch over the hull the machine flew meanwhile. The record's
+/// `MatchRecord::minds` is the check-out's, seal for seal, after the reclaim;
+/// and the arena's own seal reference of every unit (`UnitState::seal`, read
+/// off a snapshot taken after the reclaim) is the one a snapshot carried
+/// before the drop — each the record's seal's reference.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_reclaim_re_seals_nothing() {
+    let mut cfg = y1_config();
+    cfg.arena.snapshot_ms = 1_000;
+    let mut rig = Rig::boot_with(1, cfg);
+    rig.fly_with_ai(1, 0, 1).await;
+    let pilot = rig.pilot(0);
+    let tank = rig.tank(0);
+    let minds = rig.record().minds;
+    assert!(minds.contains_key(&tank), "the pilot's hull is sealed");
+    let _ = rig.af3_snapshot_at_or_after(0).await;
+    let before = m3_snapshot_seals(&rig);
+    assert_eq!(before.len(), minds.len(), "a seal reference per unit");
+    for (unit, row) in &minds {
+        let reference = serde_json::to_value(row.seal.seal_ref()).expect("a reference");
+        assert_eq!(
+            before.get(&u64::from(unit.0)),
+            Some(&reference),
+            "#{}: the arena's reference is the record's seal's",
+            unit.0
+        );
+    }
+
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert_eq!(rig.record().minds, minds, "the record's seals are unmoved");
+    let after_ms = rig.af3_arena_ms();
+    let _ = rig.af3_snapshot_at_or_after(after_ms + 1).await;
+    assert_eq!(
+        m3_snapshot_seals(&rig),
+        before,
+        "the arena's seal references are unmoved"
+    );
+    assert_eq!(rig.record().minds, minds);
+}
+
+/// **A released mind hull is its mind's again, on the world's mirror as in
+/// the arena** (17b cut M3.5; doc 17 §12 "Release and possess"), over the
+/// real rig with the lab's `mind` fill: a `Live` control on a fill hull the
+/// stock mind flies (the possess) makes the mirror read the pilot's and
+/// `@mind/set` refuse it as `not flown by a mind`; the `Released` that ends
+/// the seat hands it back — the mirror reads `Controller::Mind` again
+/// (`MatchMirror::minded`), and `@mind/set` offers a preset that the arena
+/// itself applies (a `mind_card` line naming it on the tape: the arena, too,
+/// handed the hull back to its mind and not to the reflex machine). The
+/// pilot's own hull, which carries no mind row, still goes to the reflex
+/// machine (`m1b5_mind_set_reads_sets_and_refuses_by_name`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m3_a_released_mind_hull_is_its_mind_s_again_on_the_mirror() {
+    use tacsim::arena::intents::ControlState;
+    use tacsim::arena::state::{Channel, Controller};
+    let mut rig = Rig::boot_with(2, m1b5_mind_config());
+    rig.fly_with_ai(1, 1, 2).await;
+    let mind = *m1b5_fill_units(&rig).first().expect("a fill hull");
+    let id = mind.0;
+    assert_eq!(m1b5_controller(&rig, mind), Some(Controller::Mind));
+
+    rig.with_ctx_mut(0, |ctx| {
+        tacsim::arena_bridge::send_control(ctx, mind, Channel::Helm, ControlState::Live, None)
+    })
+    .expect("the possess is offered");
+    assert_eq!(m1b5_controller(&rig, mind), Some(Controller::Pilot));
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}")),
+        format!("@mind/set: #{id} is not flown by a mind.")
+    );
+
+    rig.with_ctx_mut(0, |ctx| {
+        tacsim::arena_bridge::send_control(ctx, mind, Channel::Helm, ControlState::Released, None)
+    })
+    .expect("the release is offered");
+    assert_eq!(
+        m1b5_controller(&rig, mind),
+        Some(Controller::Mind),
+        "a released mind hull is its mind's"
+    );
+    let said = rig.staff(&format!("@mind/set #{id}=sniper"));
+    assert!(
+        said.starts_with(&format!(
+            "Mind card on #{id}: Sniper sent; the arena takes it at its next pulse."
+        )),
+        "{said}"
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, name, .. }
+                    if *unit == mind && name == "Sniper"
+            )
+        })
+        .await;
+    assert!(landed, "the arena applied the card: the hull is its mind's");
+}
