@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.heavy_mk1",
-    "version": 3,
+    "version": 4,
     "kind": "rules_definition",
-    "digest": "6f08cfc9129a9ebabecf4af0d826b9e6c37d16b9106e285f39249ba65679e590",
+    "digest": "162bed78096b89b4b77ec9f6ca19d11306b433ba9dc5cb59338d02ef1d7d6c04",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -54,7 +54,10 @@
               { "id": "rear", "armor": 220 }
             ],
             "internals": 220,
-            "consequences": [{ "kind": "remove_weapons", "section": "turret" }]
+            "consequences": [
+              { "kind": "remove_weapons", "section": "turret" },
+              { "kind": "degrade_core" }
+            ]
           },
           {
             "id": "left_track",
@@ -196,7 +199,7 @@
           { "band": "top", "width_cm": 780, "height_cm": 380 }
         ],
         "sensor_height_cm": 170,
-        "note": "The heavy tank of 16b cut AE.1: the stock tank's five sections, guns, sight and facet table, at 1.75 times its armour (700 against 400 on the front hull) and two thirds of its speed (1,000 cm/s against 1,500). At the 105's 120 a round, the front hull takes six rounds to strip and three more through its 320 internals, where the stock tank takes four and one. It starts, stops and turns slower too: 80 and 160 cm/s squared against 100 and 200, 20 degrees a second against 30, and 40 per cent in reverse against 50. The hull is 3.8 m by 7.8 m and 2.8 m tall, a bigger box than the tank's on every band, and the sight sits 1.7 m up. Five sections and not more, on purpose, so the damage pane fits it as it fits the tank. Both tracks carry disable_motion_when_all_of, so a heavy with no tracks neither drives nor turns. VERSION 2 (16b cut AE.2): a six-round missile rack beside the cannon; FIRE missiles names it, the cannon stays the bare FIRE. Version 3 (17b cut M3.1): a command core in the hull."
+        "note": "The heavy tank of 16b cut AE.1: the stock tank's five sections, guns, sight and facet table, at 1.75 times its armour (700 against 400 on the front hull) and two thirds of its speed (1,000 cm/s against 1,500). At the 105's 120 a round, the front hull takes six rounds to strip and three more through its 320 internals, where the stock tank takes four and one. It starts, stops and turns slower too: 80 and 160 cm/s squared against 100 and 200, 20 degrees a second against 30, and 40 per cent in reverse against 50. The hull is 3.8 m by 7.8 m and 2.8 m tall, a bigger box than the tank's on every band, and the sight sits 1.7 m up. Five sections and not more, on purpose, so the damage pane fits it as it fits the tank. Both tracks carry the pair rule. VERSION 2 (16b cut AE.2): a six-round missile rack beside the cannon; FIRE missiles names it, the cannon stays the bare FIRE. Version 3 (17b cut M3.1): a command core in the hull. Version 4 (17b cut M3.6): losing the turret degrades the core."
       }
     }
   }

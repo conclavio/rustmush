@@ -3350,6 +3350,13 @@ fn one_scripted_break_of_sight_at_three_cadences_is_one_lose_and_re_acquire_sequ
 /// a timeout takes — one `match_ended` line carrying its own reason — and a
 /// concede names the side that did **not** concede, so nothing downstream has to
 /// invert it.
+///
+/// **17b cut M3.6** extends the loop to EVERY [`StopReason`] — the abort's
+/// `aborted`, the world's timeout's `match_ended`, the void's `void` beside
+/// the two ends this test was written for — and holds each to the sortie
+/// rule: every open sortie closes (`sortie_closed { match_end }`, in unit-id
+/// order, at the stop's millisecond under its hash) immediately before the
+/// stop's own line, which is still the tape's last (16b cut W.2).
 #[test]
 fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
     for (stop, reason) in [
@@ -3362,6 +3369,9 @@ fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
             EndReason::Conceded { winner: Team::Red },
         ),
         (StopReason::Unattended, EndReason::Unattended),
+        (StopReason::Abort, EndReason::Abort),
+        (StopReason::Timeout, EndReason::Timeout),
+        (StopReason::Void, EndReason::Void),
     ] {
         let mut arena = scripted_arena();
         let mut bytes: Vec<u8> = Vec::new();
@@ -3378,13 +3388,18 @@ fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
         }
         let log = lines(&bytes);
         let last = log.last().map(|(_, kind, _, _)| kind.clone());
-        let expected =
-            serde_json::to_string(&EventKind::MatchEnded { reason }).expect("an event encodes");
+        let end = match stop {
+            StopReason::Abort => EventKind::Aborted,
+            StopReason::Void => EventKind::Void,
+            _ => EventKind::MatchEnded { reason },
+        };
+        let expected = serde_json::to_string(&end).expect("an event encodes");
         assert_eq!(
             last,
             Some(expected),
             "{stop:?}: it is an end with its own reason and not an abort"
         );
+        m3_closes_before_the_end(&log, &[MOVER, PARKED], end.as_str());
         // And the arena is finished with, exactly as after any other end.
         let after = arena.step(10_000, &[], &[]);
         assert_eq!(after.ended.map(|end| end.reason), Some(reason));
@@ -3439,6 +3454,9 @@ fn one_scripted_stop_at_three_cadences_is_one_end_one_event_list_and_one_hash_se
                 arena.now_ms, 25_000,
                 "{stop:?} at {cadence} ms stopped at a different arena time"
             );
+            // 17b cut M3.6: `Arena::stopped` closes both sorties before the
+            // stop's own line, at every cadence alike.
+            m3_closes_before_the_end(&run.events, &[MOVER, PARKED], "match_ended");
             runs.push((cadence, run));
         }
         let (_, first) = runs.first().expect("three cadences");
@@ -3517,6 +3535,10 @@ fn m2_a_duration_bound_mid_pulse_is_one_timeout_at_one_millisecond_at_three_cade
             arena.now_ms, 22_750,
             "at {cadence} ms the pulse did not stop at the substep the bound fell in"
         );
+        // 17b cut M3.6: the deadline inside a substep closes both sorties
+        // first, at the bound's millisecond — the same lines at each cadence
+        // (the event lists are compared below).
+        m3_closes_before_the_end(&run.events, &[MOVER, PARKED], "match_ended");
         runs.push((cadence, run));
     }
     let (_, first) = runs.first().expect("three cadences");
@@ -3925,6 +3947,9 @@ fn o1_a_hold_is_won_at_one_millisecond_at_three_cadences() {
         first.events.iter().all(|(t_ms, _, _, _)| *t_ms <= won_at),
         "a line after the win"
     );
+    // 17b cut M3.6: a hold won inside a substep (one of the three in-substep
+    // ends) closes both sorties first, at the win's millisecond.
+    m3_closes_before_the_end(&first.events, &[O1_RED, O1_BLUE], "match_ended");
 }
 
 /// **16b cut O.1's second cross-tempo test**: the red mover holds the spot, and
@@ -6291,4 +6316,338 @@ fn af3_a_resume_with_every_seat_released_at_three_cadences_is_one_event_list_and
         released_somewhere >= 3,
         "the resume released a seat at too few resume moments to mean anything"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.6 — the sortie lines (doc 17 §13; D-UM-45, D-UM-46)
+// ---------------------------------------------------------------------------
+
+/// One line's kind as JSON, for the field reads below.
+fn m3_kind(line: &Line) -> serde_json::Value {
+    serde_json::from_str(&line.1).unwrap_or(serde_json::Value::Null)
+}
+
+/// **The sortie rule at an end** (17b cut M3.6): the tape's LAST line is the
+/// end's (`end`: `match_ended`, `aborted` or `void`; 16b cut W.2 kept), and
+/// immediately before it stand one `sortie_closed { match_end }` per unit of
+/// `open`, in that (unit-id) order, at the end's millisecond and under the
+/// end's hash; no other `match_end` close is anywhere on the tape.
+fn m3_closes_before_the_end(log: &[Line], open: &[ObjId], end: &str) {
+    let Some(last) = log.last() else {
+        panic!("an empty tape");
+    };
+    assert_eq!(
+        m3_kind(last)["kind"].as_str(),
+        Some(end),
+        "the end is the tape's last line: {:?}",
+        log.iter().rev().take(4).collect::<Vec<_>>()
+    );
+    let closes: Vec<&Line> = log
+        .iter()
+        .filter(|line| {
+            let kind = m3_kind(line);
+            kind["kind"] == "sortie_closed" && kind["word"] == "match_end"
+        })
+        .collect();
+    assert_eq!(
+        closes.len(),
+        open.len(),
+        "one close per open sortie: {closes:?}"
+    );
+    let before = log.len() - 1 - open.len();
+    for (at, unit) in open.iter().enumerate() {
+        let line = &log[before + at];
+        let kind = m3_kind(line);
+        assert_eq!(kind["kind"], "sortie_closed", "{line:?}");
+        assert_eq!(kind["word"], "match_end", "{line:?}");
+        assert_eq!(kind["unit"].as_u64(), Some(u64::from(unit.0)), "{line:?}");
+        assert_eq!(
+            kind["sortie"].as_u64(),
+            Some(u64::from(unit.0)),
+            "the fixture's sortie `in_match(0, unit)`: {line:?}"
+        );
+        assert_eq!(
+            (line.0, line.3),
+            (last.0, last.3),
+            "the end's millisecond and hash: {line:?} against {last:?}"
+        );
+    }
+}
+
+/// Every line of an arena's tape so far, the open chunk included.
+fn m3_tape(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<Line> {
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    lines(bytes)
+}
+
+/// **The tape opens with the sorties** (17b cut M3.6; doc 17 §13): right
+/// after `match_started`, one `mind_sealed` per unit in unit-id order — the
+/// custody units handed over in the other order — at `t_ms` 0 under the
+/// opening hash, each the record the check-out sealed
+/// (`MindSeal::sealed_line`: the mind, the source's first sixteen base-16
+/// characters, the card's digest whole, the class, the governor bit, the
+/// licence, no principal on a fixture). The ledger's sequence after
+/// `Arena::new` is `1 + units`, which `state_hash` folds.
+#[test]
+fn m3_the_tape_opens_with_one_mind_sealed_per_unit_after_match_started() {
+    let parked = tank(PARKED, Team::Blue, centre(5, 12));
+    let mover = tank(MOVER, Team::Red, centre(5, 5));
+    let want = [mover.seal.sealed_line(), parked.seal.sealed_line()];
+    let mut arena = arena_of(vec![parked, mover], &MatchConfig::default());
+    assert_eq!(
+        arena.ledger.seq(),
+        3,
+        "match_started and one mind_sealed per unit"
+    );
+    let mut bytes = Vec::new();
+    let log = m3_tape(&mut arena, &mut bytes);
+    let Some(opening) = log.first() else {
+        panic!("an empty tape");
+    };
+    assert_eq!(m3_kind(opening)["kind"], "match_started");
+    for (line, want) in log.iter().skip(1).zip(&want) {
+        assert_eq!(
+            line.1,
+            serde_json::to_string(want).expect("an event encodes"),
+            "the record, never a view"
+        );
+        assert_eq!(
+            (line.0, line.3),
+            (0, opening.3),
+            "t 0 under the opening hash"
+        );
+    }
+    let sealed = m3_kind(&log[1]);
+    assert_eq!(sealed["unit"], 4);
+    assert_eq!(sealed["mind"], "Standard Doctrine");
+    assert_eq!(sealed["licence"], "doctrine");
+    assert_eq!(sealed["source"].as_str().map(str::len), Some(16));
+    assert_eq!(sealed["card_digest"].as_str().map(str::len), Some(64));
+    assert!(sealed.get("principal").is_none(), "nobody chose: skipped");
+    assert_eq!(m3_kind(&log[2])["unit"], 9);
+    assert_eq!(log.len(), 3, "nothing else before the first pulse");
+}
+
+/// **An elimination inside a substep, and a destroyed unit's own close**
+/// (17b cut M3.6): `Arena::destroy_unit` puts the wreck's
+/// `sortie_closed { destroyed }` into the journal its `unit_destroyed` went
+/// to, right after it, at the destruction's millisecond; the next substep
+/// settles the elimination and closes only the sortie still open, before
+/// `match_ended`. The wreck's sortie is not closed a second time.
+#[test]
+fn m3_a_destroyed_sortie_closes_at_its_destruction_and_not_again_at_the_end() {
+    let mut arena = scripted_arena();
+    let mut bytes = Vec::new();
+    absorb(&arena.step(0, &[], &[]), &mut bytes);
+    let mut journal = Vec::new();
+    arena.destroy_unit(PARKED, arena.now_ms, None, &mut journal);
+    let words: Vec<String> = journal
+        .iter()
+        .map(|(_, kind, _)| serde_json::to_string(kind).expect("an event encodes"))
+        .collect();
+    assert_eq!(
+        words,
+        vec![
+            r#"{"kind":"unit_destroyed","unit":9}"#.to_owned(),
+            r#"{"kind":"sortie_closed","unit":9,"sortie":9,"word":"destroyed"}"#.to_owned(),
+        ]
+    );
+    assert!(arena.unit(PARKED).is_some_and(|unit| unit.seal.closed));
+    // A wreck destroyed again journals nothing, its close included.
+    let mut again = Vec::new();
+    arena.destroy_unit(PARKED, arena.now_ms, None, &mut again);
+    assert!(again.is_empty(), "{again:?}");
+    let out = arena.step(5_000, &[], &[]);
+    absorb(&out, &mut bytes);
+    assert_eq!(
+        out.ended.map(|end| end.reason),
+        Some(EndReason::Elimination {
+            winner: Some(Team::Red)
+        })
+    );
+    assert!(out.substeps > 0, "settled inside a substep");
+    let log = m3_tape(&mut arena, &mut bytes);
+    m3_closes_before_the_end(&log, &[MOVER], "match_ended");
+}
+
+/// **The pulse's backstop ends close too** (17b cut M3.6): a side put out
+/// before the opening pulse (a rig's direct `destroy_unit`) is settled by the
+/// pulse's elimination backstop, and a `max_duration_ms` of `0` by its
+/// duration backstop — both journalled outside a substep, at the pulse's
+/// millisecond under its hash, each with every open sortie closed first.
+#[test]
+fn m3_the_pulse_backstops_close_every_open_sortie_before_the_end() {
+    // The elimination backstop.
+    let mut arena = scripted_arena();
+    let mut journal = Vec::new();
+    arena.destroy_unit(PARKED, 0, None, &mut journal);
+    let mut bytes = Vec::new();
+    let out = arena.step(0, &[], &[]);
+    absorb(&out, &mut bytes);
+    assert_eq!(out.substeps, 0, "the opening pulse runs no substep");
+    assert_eq!(
+        out.ended.map(|end| end.reason),
+        Some(EndReason::Elimination {
+            winner: Some(Team::Red)
+        })
+    );
+    let log = m3_tape(&mut arena, &mut bytes);
+    m3_closes_before_the_end(&log, &[MOVER], "match_ended");
+
+    // The duration backstop.
+    let mut arena = arena_of(
+        vec![
+            tank(MOVER, Team::Red, centre(5, 5)),
+            tank(PARKED, Team::Blue, centre(5, 12)),
+        ],
+        &MatchConfig {
+            max_duration_ms: 0,
+            ..MatchConfig::default()
+        },
+    );
+    let mut bytes = Vec::new();
+    let out = arena.step(0, &[], &[]);
+    absorb(&out, &mut bytes);
+    assert_eq!(out.substeps, 0);
+    assert_eq!(out.ended.map(|end| end.reason), Some(EndReason::Timeout));
+    let log = m3_tape(&mut arena, &mut bytes);
+    m3_closes_before_the_end(&log, &[MOVER, PARKED], "match_ended");
+}
+
+/// An arena over [`definition`] with its own ledger bounds.
+fn m3_arena_with_ledger(ledger: tacsim::config::LedgerConfig) -> Arena {
+    let units = vec![
+        tank(MOVER, Team::Red, centre(5, 5)),
+        tank(PARKED, Team::Blue, centre(5, 12)),
+    ];
+    let pilots = units
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: unit.id,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition: definition(),
+            units,
+            pilots,
+            resolution: tacsim::match_::stock_resolution(),
+            seed: 2_350,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &ArenaConfig {
+            ledger,
+            ..ArenaConfig::default()
+        },
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the test arena")
+}
+
+/// **The egress overflow's `void` closes too; a ledger-full end closes
+/// nothing** (17b cut M3.6). Past `ledger.max_unflushed_chunks` the match is
+/// voided at the pulse: every open sortie closes before the `void` line. At
+/// the ledger's byte bound the match ends `Timeout` with NO line — the ledger
+/// is what ran out — and no sortie closes on the tape either: every seal
+/// stays open (declared; the end recorded in the result alone).
+#[test]
+fn m3_an_overflow_void_closes_and_a_ledger_full_end_closes_nothing() {
+    // The overflow: one unflushed chunk allowed, more filled by hand.
+    let mut arena = m3_arena_with_ledger(tacsim::config::LedgerConfig {
+        max_unflushed_chunks: 1,
+        ..tacsim::config::LedgerConfig::default()
+    });
+    while !arena.ledger.overflowed() {
+        let _ = arena
+            .ledger
+            .append(0, EventKind::Lagged { dt_ms: 0 }, Vec::new(), 0);
+    }
+    let mut bytes = Vec::new();
+    let out = arena.step(0, &[], &[]);
+    absorb(&out, &mut bytes);
+    assert_eq!(
+        out.ended.map(|end| end.reason),
+        Some(EndReason::LedgerOverflow)
+    );
+    let log = m3_tape(&mut arena, &mut bytes);
+    m3_closes_before_the_end(&log, &[MOVER, PARKED], "void");
+
+    // The byte bound: the opening lines fit, and the first line after them
+    // does not.
+    let opening = {
+        let mut probe = scripted_arena();
+        let mut bytes = Vec::new();
+        let _ = m3_tape(&mut probe, &mut bytes);
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+    };
+    let mut arena = m3_arena_with_ledger(tacsim::config::LedgerConfig {
+        max_bytes: opening + 8,
+        ..tacsim::config::LedgerConfig::default()
+    });
+    let mut bytes = Vec::new();
+    let mut ended = None;
+    let mut wall = 0_i64;
+    let startup = [intent(MOVER, IntentKind::Startup, 1)];
+    for pulse in 0..20 {
+        let intents: &[Intent] = if pulse == 0 { &startup } else { &[] };
+        let out = arena.step(wall, &[], intents);
+        absorb(&out, &mut bytes);
+        if let Some(end) = out.ended {
+            ended = Some(end);
+            break;
+        }
+        wall += 5_000;
+    }
+    assert_eq!(
+        ended.map(|end| end.reason),
+        Some(EndReason::Timeout),
+        "the byte bound ended the match"
+    );
+    let log = m3_tape(&mut arena, &mut bytes);
+    assert_eq!(
+        log.iter()
+            .map(|line| m3_kind(line)["kind"].clone())
+            .collect::<Vec<_>>(),
+        vec!["match_started", "mind_sealed", "mind_sealed"],
+        "no end line and no close: the ledger is what ran out"
+    );
+    assert!(
+        arena.units.iter().all(|unit| !unit.seal.closed),
+        "no sortie closed"
+    );
+}
+
+/// **A resumed match does not re-close** (17b cut M3.6): `SealRef::closed` is
+/// carried by the snapshot (17b cut M3.2's shape), so a sortie closed before
+/// the snapshot — the parked tank's, at its destruction — is not closed again
+/// at the resumed match's end: the abort closes the mover's alone.
+#[test]
+fn m3_a_resumed_match_carries_its_closes_and_does_not_re_close() {
+    let mut arena = scripted_arena();
+    let mut bytes = Vec::new();
+    absorb(&arena.step(0, &[], &[]), &mut bytes);
+    let mut journal = Vec::new();
+    arena.destroy_unit(PARKED, arena.now_ms, None, &mut journal);
+    let snapshot = Snapshot::encode(&arena).expect("an arena between two pulses encodes");
+    let mut resumed =
+        Snapshot::decode(&snapshot.document, definition()).expect("the snapshot decodes");
+    assert!(
+        resumed.unit(PARKED).is_some_and(|unit| unit.seal.closed),
+        "the close is carried"
+    );
+    assert!(resumed.unit(MOVER).is_some_and(|unit| !unit.seal.closed));
+    let _ = resumed.resume_at(0);
+    resumed.stop(StopReason::Abort);
+    let mut tail = Vec::new();
+    absorb(&resumed.step(5_000, &[], &[]), &mut tail);
+    let log = m3_tape(&mut resumed, &mut tail);
+    m3_closes_before_the_end(&log, &[MOVER], "aborted");
 }

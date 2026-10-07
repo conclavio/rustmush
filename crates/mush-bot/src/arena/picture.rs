@@ -136,8 +136,9 @@
 //! the turret went, every `FIRE` of its guns for seconds was answered ``That
 //! unit carries no weapon called `cannon`.``). That answer strikes the gun
 //! ([`Picture::struck`]: never re-added by a row this match); `The turret is
-//! destroyed: its weapons are gone.` holds every gun ([`Picture::weapons_doubt`])
-//! until a `WEAPONSTATUS` reply or `This unit carries no weapon.` says what is
+//! destroyed: its weapons are gone.` (from 17b cut M3.6 the shipped line goes
+//! on `; its core is gone.`, which the reader reads past) holds every gun
+//! ([`Picture::weapons_doubt`]) until a `WEAPONSTATUS` reply or `This unit carries no weapon.` says what is
 //! left; and `FIRE {w} refused. Empty: …` empties that gun's rounds. What the
 //! picture says of it goes to the runner as `arena` events
 //! ([`Picture::take_notes`]).
@@ -1874,9 +1875,12 @@ impl Picture {
                 {
                     self.own.immobile = true;
                 }
-                // `The turret is destroyed: its weapons are gone.` (cut AL.1):
-                // which guns went with it only `WEAPONSTATUS` says, so every
-                // gun is held until it does (the doubt keeps its first time).
+                // `The turret is destroyed: its weapons are gone.` (cut AL.1;
+                // from 17b cut M3.6 the shipped line goes on `; its core is
+                // gone.` or `; its core is degraded.`, so the clause is looked
+                // for anywhere in the cost, never at its end): which guns went
+                // with it only `WEAPONSTATUS` says, so every gun is held until
+                // it does (the doubt keeps its first time).
                 if cost
                     .as_deref()
                     .is_some_and(|cost| cost.contains("its weapons are gone"))

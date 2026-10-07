@@ -1791,6 +1791,103 @@ fn object_at(event: &LedgerEvent, key: &str) -> Option<u32> {
         .and_then(|id| u32::try_from(id).ok())
 }
 
+/// **A Gate A lane's coverage, counted** (17b cut M3.6; plan §2(v), the
+/// review's R11): from this cut a turret kill on a shipped line tank fires
+/// `destroy_core`, and a mind on that hull drops to the ROM for the rest of
+/// the match — its later jobs are DROPPED, the Rhai runner answers with its
+/// native stand-in and records no `ThinkStat`, and Gate A compares native
+/// with native on those thinks. So each lane counts its scripted thinks
+/// (compared T1 against T2, each with its `ThinkStat`) and its stand-in
+/// thinks (dropped, with none), prints both and PINS the pair per lane
+/// ([`COVERAGE`]): the shrink is named, never silent — a content or drop-rule
+/// regression that stopped a turret kill dropping a mind (the stand-in count
+/// to nought) or that grew the shrink fails the lane by name.
+#[derive(Default)]
+struct Coverage {
+    /// Thinks the Rhai runner ran (a `ThinkStat` recorded: ops above nought).
+    scripted: usize,
+    /// Thinks of a hull on the ROM (`ThinkJob::dropped`): the stand-in's.
+    stand_in: usize,
+}
+
+impl Coverage {
+    /// Count one match's thinks — each held to its kind: a scripted think
+    /// recorded a `ThinkStat`, a stand-in think none — and answer the
+    /// match's stand-in count.
+    fn absorb(&mut self, thoughts: &[support::TwinThought]) -> usize {
+        let mut stand_in = 0_usize;
+        for thought in thoughts {
+            if thought.dropped {
+                assert_eq!(
+                    (thought.ops, thought.fee),
+                    (0, 0),
+                    "#{} think {}: a stand-in think ran no script",
+                    thought.unit.0,
+                    thought.think_seq
+                );
+                stand_in += 1;
+            } else {
+                assert!(
+                    thought.ops > 0,
+                    "#{} think {}: a scripted think recorded its ThinkStat",
+                    thought.unit.0,
+                    thought.think_seq
+                );
+                self.scripted += 1;
+            }
+        }
+        self.stand_in += stand_in;
+        stand_in
+    }
+
+    /// Print the lane's split and assert it against the lane's pinned pair
+    /// in [`COVERAGE`]: a stand-in count above nought (the shipped turret's
+    /// `destroy_core` drops a mind in this lane) and the exact pair.
+    fn report(&self, lane: &str, thinks: usize) {
+        println!(
+            "twin_coverage: lane={lane} thinks={thinks} scripted_thinks={} stand_in_thinks={} \
+             (a stand-in think is a hull on the ROM after its core was lost: native against \
+             native)",
+            self.scripted, self.stand_in
+        );
+        assert!(
+            self.stand_in > 0,
+            "{lane}: no turret kill dropped a mind to the ROM ({} scripted thinks)",
+            self.scripted
+        );
+        let pinned = COVERAGE
+            .iter()
+            .find(|(name, _)| *name == lane)
+            .map(|(_, pair)| *pair);
+        assert_eq!(
+            Some((self.scripted, self.stand_in)),
+            pinned,
+            "{lane}: (scripted, stand-in) thinks"
+        );
+    }
+}
+
+/// **Each Gate A lane's (scripted, stand-in) thinks** (17b cut M3.6, the
+/// cut's one re-bless — "17b cut M3.6: `mind_sealed` and `sortie_closed`
+/// shift the folded ledger sequence (`hash.rs:897`) of every match; the
+/// mind row's fold gains D-UM-23's answer, `dropped` and the seal digest;
+/// the chassis' core consequence words ride the hit lines and the pilot's
+/// sentence; every other byte's encoding is unchanged" — the turret's
+/// `destroy_core` now dropping the mind on the hull it kills): the lanes
+/// are deterministic, so the shrink Gate A takes to native-against-native
+/// thinks is pinned, not only printed. In the pooled lane 17 of the 30
+/// matches carry a stand-in think ([`POOLED_MATCHES_WITH_STAND_IN`]).
+const COVERAGE: [(&str, (usize, usize)); 4] = [
+    ("pooled", (10_271, 295)),
+    ("mixed", (12_443, 321)),
+    ("twin_twin", (10_098, 256)),
+    ("lance", (5_880, 156)),
+];
+
+/// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
+/// reason at [`COVERAGE`]): the matches whose record line may move.
+const POOLED_MATCHES_WITH_STAND_IN: usize = 17;
+
 /// **Gate A on unarmed hulls, under fire — and since 17b cut M2.6 on the
 /// armed hulls beside them** (17b cuts M2.5 and M2.6; doc 17 §17 "Gate A",
 /// §22's italics — *the twin corpus carries unarmed hulls and Gate A covers
@@ -1849,11 +1946,13 @@ fn m2_gate_a_on_a_mixed_pool() {
     let (mut hits, mut withdrew, mut rallied, mut disabled) = (0_u32, 0_u32, 0_u32, 0_u32);
     // `[unarmed, armed]` thinks at the `Disabled` edge, rallied, dwelling.
     let (mut at_disabled, mut at_rallied, mut at_dwell) = ([0_u32; 2], [0_u32; 2], [0_u32; 2]);
+    let mut coverage = Coverage::default();
     for k in 0..SEEDS {
         let seed = SEED_0 + k;
         let twin = Arc::new(support::TwinRunner::new(&cfg));
         let played = support::play(&world, seed, &reds, &blues, twin.clone(), Some(MIXED_CAP_S));
         let thoughts = twin.thoughts();
+        let _ = coverage.absorb(&thoughts);
         thinks += thoughts.len();
         budget.extend(thoughts.iter().map(|thought| thought.ops + thought.fee));
         ops.extend(thoughts.iter().map(|thought| thought.ops));
@@ -1951,6 +2050,7 @@ fn m2_gate_a_on_a_mixed_pool() {
          armed_dwell_thinks={} (every one compared)",
         at_disabled[0], at_rallied[0], at_dwell[0], at_disabled[1], at_rallied[1], at_dwell[1]
     );
+    coverage.report("mixed", thinks);
     assert!(
         unarmed_thinks > 0 && armed_thinks > 0,
         "both kinds of hull thought"
@@ -2083,12 +2183,29 @@ fn m2_gate_a_over_the_pooled_lanes_matches() {
     let mut thinks = 0_usize;
     let mut armed = 0_usize;
     let mut budget: Vec<u64> = Vec::new();
+    let mut coverage = Coverage::default();
+    let mut with_stand_in = 0_usize;
     for k in 0..SEEDS {
         let seed = SEED_0 + k;
         for (red, blue) in [(Flier::T0, Flier::Twin), (Flier::Twin, Flier::T0)] {
             let twin = Arc::new(support::TwinRunner::new(&cfg));
             pool.push(play_on(&world, seed, red, blue, Some(twin.clone())));
             let thoughts = twin.thoughts();
+            // 17b cut M3.6: a match with a stand-in think is one whose record
+            // line may move (a core lost to a turret kill), so it is named.
+            let stand_in = coverage.absorb(&thoughts);
+            if stand_in > 0 {
+                with_stand_in += 1;
+            }
+            println!(
+                "twin_stand_in: seed={seed} t1={} stand_in_thinks={stand_in} thinks={}",
+                if matches!(red, Flier::Twin) {
+                    "red"
+                } else {
+                    "blue"
+                },
+                thoughts.len()
+            );
             for thought in &thoughts {
                 assert!(
                     !thought.faulted && !thought.diverged,
@@ -2112,6 +2229,11 @@ fn m2_gate_a_over_the_pooled_lanes_matches() {
     for line in &lines {
         println!("{line}");
     }
+    coverage.report("pooled", thinks);
+    assert_eq!(
+        with_stand_in, POOLED_MATCHES_WITH_STAND_IN,
+        "pooled: the matches with a stand-in think"
+    );
     let (p50, p99, max) = support::spread(&budget);
     println!(
         "m2_gate_a_pooled: matches={} thinks_compared={thinks} armed_thinks={armed} \
@@ -2157,11 +2279,13 @@ fn m2_twin_against_twin_over_the_fifteen_seeds() {
     let blues = [Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)];
     let mut thinks = 0_usize;
     let mut budget: Vec<u64> = Vec::new();
+    let mut coverage = Coverage::default();
     for k in 0..SEEDS {
         let seed = SEED_0 + k;
         let twin = Arc::new(support::TwinRunner::new(&cfg));
         let played = support::play(&world, seed, &reds, &blues, twin.clone(), None);
         let thoughts = twin.thoughts();
+        let _ = coverage.absorb(&thoughts);
         assert_eq!(twin.divergences(), (0, 0), "seed {seed}");
         let reds_ids = [
             support::tank(&world, Team::Red, 1),
@@ -2187,6 +2311,7 @@ fn m2_twin_against_twin_over_the_fifteen_seeds() {
         thinks += thoughts.len();
         budget.extend(thoughts.iter().map(|thought| thought.ops + thought.fee));
     }
+    coverage.report("twin_twin", thinks);
     let (p50, p99, max) = support::spread(&budget);
     println!(
         "m2_twin_twin: matches={SEEDS} thinks_compared={thinks} divergences=0 \
@@ -2484,6 +2609,7 @@ fn m2_gate_a_over_the_authored_lance_field() {
         std::collections::BTreeMap::new();
     let mut budget: Vec<u64> = Vec::new();
     let mut ops: Vec<u64> = Vec::new();
+    let mut coverage = Coverage::default();
     let (mut rows_max, mut notices_max, mut line_to_max) = (0_usize, 0_usize, 0_usize);
     let (mut rows_capped, mut odds_capped) = (0_usize, 0_usize);
     let mut line_to_thinks = 0_usize;
@@ -2543,6 +2669,7 @@ fn m2_gate_a_over_the_authored_lance_field() {
             "seed {seed}: every release issued"
         );
         let thoughts = probe.twin.thoughts();
+        let _ = coverage.absorb(&thoughts);
         assert_eq!(probe.twin.divergences(), (0, 0), "seed {seed}");
         let seen = probe.seen();
         assert_eq!(seen.len(), thoughts.len());
@@ -2582,6 +2709,7 @@ fn m2_gate_a_over_the_authored_lance_field() {
         released_lines += seed_released;
         expired_lines += seed_expired;
     }
+    coverage.report("lance", thinks);
     let (p50, p99, max) = support::spread(&budget);
     let (ops_p50, ops_p99, ops_max) = support::spread(&ops);
     let (functions, depth, widest, width) = support::script_figures(tacsim::minds::STANDARD_RHAI);

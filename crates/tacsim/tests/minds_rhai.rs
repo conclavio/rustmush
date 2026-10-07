@@ -3205,34 +3205,53 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// Rows one to three: the stock corpus (`2_350`, `2_351`, `2_352`, two
 /// stock tanks a side, the Rhai Standard Doctrine alone on both); row four:
 /// the float probe ([`FLOAT_PROBE`], two a side, seed `2_350`).
+///
+/// **The cut's one declared re-bless** (17b cut M3.6: `mind_sealed` and
+/// `sortie_closed` shift the folded ledger sequence (`hash.rs:897`) of every
+/// match; the mind row's fold gains D-UM-23's answer, `dropped` and the seal
+/// digest; the chassis' core consequence words ride the hit lines and the
+/// pilot's sentence; every other byte's encoding is unchanged), blessed on
+/// this Windows host, the Linux run CI's. Each row's stop millisecond is
+/// unmoved; its state hash, substep digest and ledger digest moved. The
+/// tapes, diffed against HEAD `fbc5124a`'s ignoring `seq` and `hash`, differ
+/// by exactly four `mind_sealed` after `match_started`, the `sortie_closed`
+/// lines (`destroyed` after each `unit_destroyed`, `match_end` before
+/// `match_ended`), `destroy_core` after `remove_weapons` on the `hit` and
+/// `section_destroyed` of each turret that died — and, on seeds `2_351` and
+/// `2_352`, the one `mind_dropped { core }` that turret kill made of a Rhai
+/// hull still thinking (mover (d): the mind on the ROM from its next
+/// landing; every later line equal). Were, by row: `6_931_363_578_786_187_204`
+/// / `b9725b92…` / `a4a3e658…`, `15_956_944_004_013_285_482` / `fade7344…` /
+/// `0f7ca61c…`, `13_222_333_907_623_429_933` / `37eb2f9d…` / `c7c50fcc…`,
+/// `5_294_377_710_264_198_459` / `1d0d07a9…` / `e6c5f0eb…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2_350,
         172_250,
-        6_931_363_578_786_187_204,
-        "b9725b929e954e618d5ab136859ba1fb385d096cc67fcc8c0f222d5013546705",
-        "a4a3e658ce944726b2b3c9f981e57e970b970b0a36caebc667c43141528c838e",
+        4_504_819_013_333_549_817,
+        "fc108aa27e072f681270e4bfe29bf9d8e47d18e9b9bb0fba5534c6e0190c1f63",
+        "7e8b75aa3b52c861257f9388b6d51e4b7ca205cda3c771c527fb4467f6fd7c44",
     ),
     (
         2_351,
         193_500,
-        15_956_944_004_013_285_482,
-        "fade7344c1239ffac3d3148750ad01d552c595b08580c1c05654ce2be88f853c",
-        "0f7ca61c98addadaf8cd0c9c635df37196cc1222c47d84c77c8d4518d5572d91",
+        4_318_432_734_286_313_969,
+        "b1ad9530c7874e936e2252f30c467bf7b5c35acafe3088360fbfaa99f89b7253",
+        "bc8c8f22b280362346bfe65cede5eb6fa13d982127da75f05c0dfdbf8db41c77",
     ),
     (
         2_352,
         166_500,
-        13_222_333_907_623_429_933,
-        "37eb2f9dd49b1d5727a3bbfc5f7934e6e57f02fa357b647508766a8a9eefc303",
-        "c7c50fcc9108f58aaa26129fa84dae94d3a3e64c07a94e77b91a9a8288af24fd",
+        8_770_348_364_664_704_415,
+        "3f81543e15c78b306fe9e40f71414ad657ccacba02958f4de72ac9eefec6e26b",
+        "b4fa504408357104ba61ab8c130157b127f56b4d49453478f4daac5eff18e971",
     ),
     (
         2_350,
         900_000,
-        5_294_377_710_264_198_459,
-        "1d0d07a9d7bfba31406efa2dbeb55b388acc549421aba35eb23407cdc076fbe9",
-        "e6c5f0eb17b65d4ac20f635534f2182369dec8d3b4d693e5b5e9ccb2449e7611",
+        2_386_810_340_480_880_612,
+        "0450d808a3b98be6b60de4a288bf928aa3e1dfc9cd30d9210dd77388a250fdc1",
+        "0b9152d3ba02de9c097f73cc57ebcbbd707309980e6982c324d47b42f4750fa0",
     ),
 ];
 
@@ -5172,6 +5191,89 @@ fn m3_destroy_core_drops_one_at_its_next_landing_at_three_cadences() {
         "the coax armed in Class 0's one slot"
     );
     assert_eq!(arena.slot_capacity(victim), 1);
+}
+
+/// **THE GATE FIXTURE, on the SHIPPED content: `destroy_core` on the line
+/// tank's turret drops its mind at the next landing** (17b cut M3.6; the M3
+/// gate's (e); doc 17 §9, D-UM-34). The fielded catalog AS SHIPPED — no
+/// doctored list: `tacsim.pack.line_tank` version 4 authors the turret
+/// `[remove_weapons, destroy_core]` itself — instantiated through
+/// [`doctored_hull`] only for its geometry (every band to the turret, the coax
+/// and a bow gun on the hull), flown by [`core_mind`] as unit 17 and its
+/// turret killed by the seated blue's beam at 5,000, at 5,000, 1,000 and 500
+/// ms: the `hit` carries the shipped words, the core capability is gone, ONE
+/// `mind_dropped { core }` lands at the think in flight's landing, the row is
+/// dropped for the rest of the match (`DropCause::Core`), and the three runs
+/// are one event list and one hash sequence.
+#[test]
+fn m3_the_shipped_line_tanks_turret_drops_its_mind_at_three_cadences() {
+    let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let shipped = catalog
+        .specs
+        .get(&canonical("tacsim.unit.line_tank"))
+        .and_then(|spec| {
+            spec.sections
+                .iter()
+                .find(|section| section.id.as_str() == "turret")
+        })
+        .map(|section| section.consequences.clone());
+    assert_eq!(
+        shipped,
+        Some(destroy_words()),
+        "the shipped turret authors the core's word"
+    );
+    let victim = GATE_UNIT;
+    let think = GATE_END - STOCK_THINK_MS + stagger_ms(SEED, victim, STOCK_THINK_MS);
+    let lands = think + SUBSTEP;
+    let mut runs: Vec<(i64, BeatRun)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let hull = doctored_hull(
+            &catalog,
+            "tacsim.unit.line_tank",
+            victim,
+            Controller::Mind,
+            &["cannon"],
+            &["bow"],
+        );
+        let (mut arena, _) = core_mind_field(hull);
+        let run = beats(
+            &mut arena,
+            cadence,
+            10_000,
+            &|wall| shooter_orders(victim, wall),
+            &mut |_, _| {},
+        );
+        let hits = of_kind(&run.0, "hit");
+        assert_eq!(hits.len(), 1, "one round at {cadence} ms: {hits:?}");
+        let hit: Json = serde_json::from_str(&hits[0].1).unwrap_or_default();
+        assert_eq!(
+            hit["consequences"],
+            serde_json::json!(["remove_weapons", "destroy_core"]),
+            "the shipped words on the hit: {hit}"
+        );
+        assert_eq!(arena.core_of(victim), None, "the line core is gone");
+        let dropped = of_kind(&run.0, "mind_dropped");
+        assert_eq!(dropped.len(), 1, "one drop at {cadence} ms: {dropped:?}");
+        assert_eq!(dropped[0].0, lands, "at the think in flight's landing");
+        assert_eq!(
+            serde_json::from_str::<Json>(&dropped[0].1).unwrap_or_default(),
+            serde_json::json!({"kind": "mind_dropped", "unit": victim.0, "cause": "core"})
+        );
+        assert_eq!(
+            arena.minds.get(&victim).and_then(|state| state.dropped),
+            Some(tacsim::arena::mind::DropCause::Core),
+            "dropped for the rest of the match"
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three runs");
+    };
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(run.0, first.0, "the event list at {cadence} ms");
+        assert_eq!(run.1, first.1, "the hash sequence at {cadence} ms");
+    }
 }
 
 /// **`degrade_core` lowers the next think's row, at three cadences** (17b

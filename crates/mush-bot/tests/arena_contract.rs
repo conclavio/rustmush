@@ -2250,6 +2250,55 @@ fn m3_the_core_dropped_sentences_read_as_neutral_lines_and_open_no_reply() {
     assert!(!open.brief, "a VIEW BRIEF opened");
 }
 
+/// **The turret's loss with its core words reads as the bot reads it** (the
+/// game's 17b cut M3.6; doc 17 §9, D-UM-34): the shipped line tanks' and the
+/// scout's turret now lose `[remove_weapons, destroy_core]` and the heavy's
+/// `[remove_weapons, degrade_core]`, so the pilot's `SectionLost` line reads
+/// `The turret is destroyed: its weapons are gone; its core is gone.` (or
+/// `…; its core is degraded.`) through the cockpit's own `notice_line`. Each
+/// reads `Line::SectionLost` for the turret with its cost, raises the weapons
+/// doubt as the bare turret line does (the reader's `contains("its weapons
+/// are gone")` still matches), and the core clause is read as nothing: no
+/// immobility, no reply opened. The bot's reader needed no change.
+#[test]
+fn m3_the_turret_lost_with_its_core_words_raises_the_weapons_doubt_and_nothing_else() {
+    let frame = frame();
+    let rows = cockpit::frame_contacts(&frame);
+    for (word, sentence) in [
+        (
+            "destroy_core",
+            "The turret is destroyed: its weapons are gone; its core is gone.",
+        ),
+        (
+            "degrade_core",
+            "The turret is destroyed: its weapons are gone; its core is degraded.",
+        ),
+    ] {
+        let notice = FrameNotice::SectionLost {
+            section: "turret".into(),
+            consequences: vec!["remove_weapons".into(), word.into()],
+        };
+        let said = cockpit::notice_line(&frame, &notice, &rows);
+        assert_eq!(said, sentence, "the game's words for {word}");
+        let mut reader = Reader::new();
+        let read = reader.one(&said);
+        assert!(
+            matches!(&read, Line::SectionLost { section, cost: Some(cost) }
+                if section == "turret" && cost.contains("its core")),
+            "{said:?} read as {read:?}"
+        );
+        assert!(
+            reader.picture.weapons_doubt.is_some(),
+            "{said:?}: the weapons doubt is raised as for the bare turret line"
+        );
+        assert!(!reader.picture.own.immobile, "{said:?}: no immobility read");
+        let open = &reader.picture.open;
+        assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+        assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+        assert!(open.status.is_none(), "a STATUS reply opened");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 17b cut M1b.4: the arming, its line and its two sentences
 // ---------------------------------------------------------------------------

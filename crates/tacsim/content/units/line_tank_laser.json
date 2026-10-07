@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.line_tank_laser",
-    "version": 3,
+    "version": 4,
     "kind": "rules_definition",
-    "digest": "e4f008666f33da22ab4c3a66fec6fb3c9e0bf4da72438dcee3f1de30ac54affa",
+    "digest": "2d337792301e533d99317cb7898bfc43d1a4ff6be367128497aabc2bd8536293",
     "requires": [
       {
         "id": "tacsim.pack.laser_mk1",
@@ -50,7 +50,10 @@
               { "id": "rear", "armor": 140 }
             ],
             "internals": 150,
-            "consequences": [{ "kind": "remove_weapons", "section": "turret" }]
+            "consequences": [
+              { "kind": "remove_weapons", "section": "turret" },
+              { "kind": "destroy_core" }
+            ]
           },
           {
             "id": "left_track",
@@ -185,7 +188,7 @@
         "sensor_height_cm": 150,
         "heat_max": 60,
         "heat_dissipation_per_s": 3,
-        "note": "The line tank with the 105 swapped for the Mk1 laser, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same coaxial and the same sight, so a match between the two is a match between the weapons. The two numbers cut X.1 adds are the ones the swap needs. 60 is three pulses of the laser's 20, which is what makes the third shot the one that locks the turret out rather than the first. 3 a second empties that ceiling in twenty seconds, so a tank that fires its three and waits is firing about one pulse every seven seconds sustained, against the cannon's six-second cycle. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns. Version 3 (17b cut M3.1): a line core in the turret."
+        "note": "The line tank with the 105 swapped for the Mk1 laser, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same coaxial and the same sight, so a match between the two is a match between the weapons. The two numbers cut X.1 adds are the ones the swap needs. 60 is three pulses of the laser's 20, which is what makes the third shot the one that locks the turret out rather than the first. 3 a second empties that ceiling in twenty seconds, so a tank that fires its three and waits is firing about one pulse every seven seconds sustained, against the cannon's six-second cycle. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns. Version 3 (17b cut M3.1): a line core in the turret. Version 4 (17b cut M3.6): losing the turret destroys its core."
       }
     }
   }

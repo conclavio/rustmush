@@ -288,12 +288,22 @@ fn line_tank_profile() -> UnitProfile {
                 &["front", "left", "right", "rear", "top"],
                 vec![Consequence::DestroyUnit],
             ),
+            // 17b cut M3.6 (D-UM-34): the turret's `destroy_core`, as the
+            // version-4 pack authors it. This hand-built hull carries no core
+            // component, so the word revokes nothing here: it rides the hit
+            // and `section_destroyed` lines (the authored list) and the
+            // pilot's sentence leaves it out (`fired_consequences` tells a
+            // core gone only on a hull fitted with one) — the coreless case,
+            // pinned in `a_section_is_destroyed_once_however_many_rounds_find_it_afterwards`.
             section(
                 "turret",
                 &["front", "left", "right", "rear"],
-                vec![Consequence::RemoveWeapons {
-                    section: SmolStr::new("turret"),
-                }],
+                vec![
+                    Consequence::RemoveWeapons {
+                        section: SmolStr::new("turret"),
+                    },
+                    Consequence::DestroyCore,
+                ],
             ),
             // 16b cut M.4 (`B-47`): the pair rule, as the version-2 pack
             // authors it on both tracks.
@@ -2727,6 +2737,13 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
         .collect();
     assert_eq!(
         lost,
+        // 17b cut M3.6: this turret authors `destroy_core` after
+        // `remove_weapons`, as the shipped one does, but the hull carries no
+        // core, so the pilot is not told one is gone — the coreless case of
+        // `fired_consequences`' core question. The fitted case's sentence
+        // ("…; its core is gone.") is pinned on the shipped tank by mushd's
+        // `arena_story` (`TURRET_LOST`), `sim_rematch` and the gateway's
+        // `arena_story_split`.
         vec![&"The turret is destroyed: its weapons are gone.".to_owned()],
         "{heard:?}"
     );

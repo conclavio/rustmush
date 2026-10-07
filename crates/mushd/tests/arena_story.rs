@@ -188,8 +188,9 @@ const HULL_LOST: &str = "The hull is destroyed: the tank is finished.";
 /// **16b cut AP.2**: the loser's own line when its turret goes
 /// (`FrameNotice::SectionLost` with the turret's `remove_weapons`, in
 /// `consequence_words`' words) — which, Bo's side having no other gun, ends the
-/// match at that hit.
-const TURRET_LOST: &str = "The turret is destroyed: its weapons are gone.";
+/// match at that hit. **17b cut M3.6**: and the turret's `destroy_core`, the
+/// line core it carries (was "The turret is destroyed: its weapons are gone.").
+const TURRET_LOST: &str = "The turret is destroyed: its weapons are gone; its core is gone.";
 /// What `CONTACTS` says when the platform holds nothing.
 const NO_CONTACTS: &str = "No contacts.";
 /// The parser's refusal, which is the sentinel's answer.
@@ -1416,6 +1417,85 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         );
         previous = at;
     }
+    // **17b cut M3.6** (doc 17 §13): the real rig's tape opens with the
+    // sorties — one `mind_sealed` per tank, in unit-id order, right after
+    // `match_started`, at 0 under the opening hash, each naming its pilot as
+    // the warrant principal — and closes them: the beaten tank's at its
+    // destruction (`destroyed`, right after `unit_destroyed`) when its hull
+    // went, every sortie still open (`match_end`, in unit-id order) right
+    // before `match_ended`, which is the tape's last line.
+    let kind_at = |at: usize| {
+        events
+            .get(at)
+            .and_then(|event| event.get("kind"))
+            .and_then(Value::as_str)
+    };
+    let (low, high) = (red.min(blue), red.max(blue));
+    assert_eq!(kind_at(0), Some("match_started"), "{:?}", kinds(&events));
+    for (at, unit) in [(1_usize, low), (2, high)] {
+        let sealed = &events[at];
+        assert_eq!(kind_at(at), Some("mind_sealed"), "{:?}", kinds(&events));
+        assert_eq!(
+            sealed.get("unit").and_then(Value::as_u64),
+            Some(u64::from(unit)),
+            "{sealed}"
+        );
+        assert_eq!(sealed.get("t_ms").and_then(Value::as_i64), Some(0));
+        assert_eq!(sealed.get("hash"), events[0].get("hash"), "{sealed}");
+        assert_eq!(
+            sealed.get("mind").and_then(Value::as_str),
+            Some("Standard Doctrine")
+        );
+        assert_eq!(
+            sealed.pointer("/principal/kind").and_then(Value::as_str),
+            Some("character"),
+            "a seated pilot is the warrant principal: {sealed}"
+        );
+    }
+    assert_eq!(
+        kinds(&events)
+            .iter()
+            .filter(|kind| **kind == "mind_sealed")
+            .count(),
+        2,
+        "one seal line per tank"
+    );
+    let last = events.len() - 1;
+    assert_eq!(
+        kind_at(last),
+        Some("match_ended"),
+        "the end is the last line"
+    );
+    let closes: Vec<&Value> = events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("sortie_closed"))
+        .collect();
+    assert_eq!(closes.len(), 2, "one close per sortie: {closes:?}");
+    let at_end: Vec<u32> = if hull_went {
+        let gone = first(&events, "unit_destroyed");
+        let close = &events[gone + 1];
+        assert_eq!(kind_at(gone + 1), Some("sortie_closed"), "{close}");
+        assert_eq!(close.get("word").and_then(Value::as_str), Some("destroyed"));
+        assert_eq!(
+            close.get("unit").and_then(Value::as_u64),
+            Some(u64::from(blue))
+        );
+        vec![red]
+    } else {
+        vec![low, high]
+    };
+    for (k, unit) in at_end.iter().enumerate() {
+        let at = last - at_end.len() + k;
+        let close = &events[at];
+        assert_eq!(kind_at(at), Some("sortie_closed"), "{:?}", kinds(&events));
+        assert_eq!(close.get("word").and_then(Value::as_str), Some("match_end"));
+        assert_eq!(
+            close.get("unit").and_then(Value::as_u64),
+            Some(u64::from(*unit))
+        );
+        assert_eq!(close.get("hash"), events[last].get("hash"), "{close}");
+        assert_eq!(close.get("t_ms"), events[last].get("t_ms"), "{close}");
+    }
     let ended = events
         .iter()
         .find(|event| event.get("kind").and_then(Value::as_str) == Some("match_ended"))
@@ -1444,6 +1524,15 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         Some(u64::from(blue)),
         "and which tank lost it: {lost}"
     );
+    // 17b cut M3.6 (D-UM-34): a lost turret carries the line core with it, so
+    // its line names the shipped `destroy_core` after `remove_weapons`.
+    if !hull_went {
+        assert_eq!(
+            lost.get("consequences"),
+            Some(&serde_json::json!(["remove_weapons", "destroy_core"])),
+            "{lost}"
+        );
+    }
     let destroyed = events
         .iter()
         .find(|event| event.get("kind").and_then(Value::as_str) == Some("unit_destroyed"));

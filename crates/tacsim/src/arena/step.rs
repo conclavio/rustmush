@@ -58,6 +58,7 @@ use crate::arena::intents::{
     apply_intent, drain_pending, resolve_emcon, resolve_startup,
 };
 use crate::arena::ledger::{EventKind, LedgerChunk};
+use crate::arena::mind::SORTIE_MATCH_END;
 use crate::arena::motion::integrate;
 use crate::arena::perception::{
     Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, FrameOrder, Named, Notice,
@@ -1165,7 +1166,11 @@ impl Arena {
         if settled.is_none() {
             settled = self.settle_spent();
         }
+        // **17b cut M3.6**: each backstop end below closes every open sortie
+        // first, at the end's millisecond under the end's hash
+        // (`Arena::journal_sortie_closes`), so the end stays the last line.
         if let Some(end) = settled {
+            ledger_full |= !self.journal_sortie_closes(self.now_ms, hash);
             ledger_full |= !self.journal(
                 self.now_ms,
                 EventKind::MatchEnded { reason: end.reason },
@@ -1181,6 +1186,7 @@ impl Arena {
         // due loop already settled, `ended` is set and this is skipped.
         if self.ended.is_none() && self.now_ms >= i64::from(self.match_cfg.max_duration_ms) {
             let reason = EndReason::Timeout;
+            ledger_full |= !self.journal_sortie_closes(self.now_ms, hash);
             ledger_full |= !self.journal(self.now_ms, EventKind::MatchEnded { reason }, hash);
             self.ended = Some(MatchEnd {
                 reason,
@@ -1190,7 +1196,9 @@ impl Arena {
         // Doc 16 §4: at 100% of `ledger.max_bytes` the match is stopped with
         // `Timeout`. There is no event to append — the ledger is exactly what has
         // run out of room — so the end is recorded in the result and not in the
-        // black box.
+        // black box. **17b cut M3.6**: and no sortie closes on the tape here
+        // either (declared): there is no room for its line, and the end has
+        // none for the closes to precede.
         if self.ended.is_none() && ledger_full {
             self.ended = Some(MatchEnd {
                 reason: EndReason::Timeout,
@@ -1208,6 +1216,8 @@ impl Arena {
         // the review of cut A.2, so the arena tolerates the documented depth and no
         // more.
         if self.ended.is_none() && self.ledger.overflowed() {
+            // 17b cut M3.6: a void closes every open sortie too, first.
+            let _ = self.journal_sortie_closes(self.now_ms, hash);
             let _ = self.journal(self.now_ms, EventKind::Void, hash);
             self.ended = Some(MatchEnd {
                 reason: EndReason::LedgerOverflow,
@@ -1904,9 +1914,16 @@ impl Arena {
         // the ended match — elimination is *settled second*, the owner's default
         // — and so does the deadline's timeout arm, which is why a hold at the
         // deadline's own millisecond is a hold.
+        //
+        // **17b cut M3.6** (doc 17 §13): at each of the three, every sortie
+        // still open closes FIRST — `sortie_closed { match_end }` per unit, in
+        // unit-id order, at the end's own millisecond — pushed into the
+        // substep's notices ahead of `match_ended`, so they carry the end's
+        // hash (the substep's) and the end stays the tape's last line (W.2).
         self.settle_hold_presence();
         if let Some((winner, t_ms)) = hold_won {
             let reason = EndReason::Hold { winner };
+            notices.extend(self.close_open_sorties(t_ms, SORTIE_MATCH_END));
             notices.push((t_ms, EventKind::MatchEnded { reason }, Vec::new()));
             self.ended = Some(MatchEnd { reason, t_ms });
         }
@@ -1915,6 +1932,7 @@ impl Arena {
             settled = self.settle_spent();
         }
         if let Some(end) = settled {
+            notices.extend(self.close_open_sorties(self.now_ms, SORTIE_MATCH_END));
             notices.push((
                 self.now_ms,
                 EventKind::MatchEnded { reason: end.reason },
@@ -1930,6 +1948,7 @@ impl Arena {
             && let Some(t_ms) = deadline_hit
         {
             let reason = EndReason::Timeout;
+            notices.extend(self.close_open_sorties(t_ms, SORTIE_MATCH_END));
             notices.push((t_ms, EventKind::MatchEnded { reason }, Vec::new()));
             self.ended = Some(MatchEnd { reason, t_ms });
         }
@@ -2119,6 +2138,10 @@ impl Arena {
                 EndReason::Unattended,
             ),
         };
+        // **17b cut M3.6** (doc 17 §13): every open sortie closes before the
+        // stop's own line, under the stop pulse's one hash — after any
+        // `place_refused`, so the stop's line is still the last.
+        let _ = self.journal_sortie_closes(self.now_ms, hash);
         let _ = self.journal(self.now_ms, kind, hash);
         let ended = MatchEnd {
             reason,
@@ -2150,6 +2173,19 @@ impl Arena {
     /// black box out of tape is not a reason to lose the pulse in progress.
     fn journal(&mut self, t_ms: i64, kind: EventKind, hash: u64) -> bool {
         self.ledger.append(t_ms, kind, Vec::new(), hash).is_ok()
+    }
+
+    /// **Journal every open sortie's close at an end journalled outside a
+    /// substep** (17b cut M3.6): [`Arena::close_open_sorties`] with
+    /// [`SORTIE_MATCH_END`] at `t_ms`, each line under `hash` — the end's own
+    /// — answering whether every line was recorded (the ledger's byte bound,
+    /// as [`Arena::journal`] answers it).
+    fn journal_sortie_closes(&mut self, t_ms: i64, hash: u64) -> bool {
+        let mut recorded = true;
+        for (at, kind, draws) in self.close_open_sorties(t_ms, SORTIE_MATCH_END) {
+            recorded &= self.journal_drawn(at, kind, draws, hash);
+        }
+        recorded
     }
 
     /// The same, with the draws doc 16 §4 asks an event to carry *where they
@@ -4111,11 +4147,20 @@ mod tests {
         let mut journal = Log::default();
         journal.absorb(&out);
         let log = journal.events(&mut arena);
+        // 17b cut M3.6: and the opening's one `mind_sealed` per unit (was
+        // `["match_started"]`).
         assert_eq!(
             log.iter()
                 .map(|event| event.kind.as_str())
+                .filter(|kind| *kind != "mind_sealed")
                 .collect::<Vec<_>>(),
             vec!["match_started"]
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|event| event.kind.as_str() == "mind_sealed")
+                .count(),
+            arena.units.len()
         );
     }
 
@@ -6734,12 +6779,15 @@ mod tests {
         assert!(refusals(&out).is_empty());
         assert!(told(&out).is_empty());
         let log = journal.events(&mut arena);
+        // 17b cut M3.6: the two sorties close between the places and the stop
+        // (was the last three lines: the two places, then the stop).
         let tail: Vec<(String, i64, u64)> = log
             .iter()
-            .skip(log.len().saturating_sub(3))
+            .skip(log.len().saturating_sub(5))
             .map(|event| {
                 let word = match &event.kind {
                     EventKind::PlaceRefused { unit, reason, .. } => format!("{unit}:{reason}"),
+                    EventKind::SortieClosed { unit, word, .. } => format!("{unit}:{word}"),
                     other => other.as_str().to_owned(),
                 };
                 (word, event.t_ms, event.hash)
@@ -6752,9 +6800,11 @@ mod tests {
             vec![
                 (format!("{A}:stopped"), at, hash),
                 (format!("{I3_B}:stopped"), at, hash),
+                (format!("{A}:match_end"), at, hash),
+                (format!("{I3_B}:match_end"), at, hash),
                 ("aborted".to_owned(), at, hash),
             ],
-            "the two places, then the stop, one moment and one hash"
+            "the two places, the two closes, then the stop, one moment and one hash"
         );
         assert_eq!(i3_place_lines(&log).len(), 2, "and nothing else of a place");
         assert_eq!(arena.unit(A).map(|unit| unit.pose.x_cm), Some(3_500));

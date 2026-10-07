@@ -56,6 +56,7 @@ use mush_core::{CmdError, Ctx, ObjId, StoreReadCompletion, StoreReadResult};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::arena::core::{CoreClass, fitted_with_core, read_core};
 use crate::arena::damage::DESTROYED;
 use crate::arena::ledger::{EventKind, LedgerEvent};
 use crate::arena::resolution::{Consequence, UnitProfile};
@@ -257,6 +258,14 @@ pub struct ReportRules {
 /// ([`OwnTank::from_custody`]); a fold with none (a fixture's) can prove no
 /// group complete, so it never says a tank cannot move on that consequence's
 /// word.
+///
+/// **17b cut M3.6**: and the core's two words, which `fired_consequences`
+/// puts through a question of its own (a `destroy_core` on a hull never
+/// fitted with a core, a `degrade_core` that left the core no lower than it
+/// was sealed at, say nothing): the fold keeps the core as [`OwnCore`],
+/// read off the custody at check-out and moved by its own
+/// `section_destroyed` lines the way `Arena::core_ops` moves the cell. A
+/// fold that does not know its tank's core never says a core word.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnTank {
@@ -265,6 +274,30 @@ pub struct OwnTank {
     motion_groups: BTreeMap<SmolStr, Vec<Vec<SmolStr>>>,
     /// Its sections destroyed so far.
     destroyed: BTreeSet<SmolStr>,
+    /// Its core (17b cut M3.6): `None` for a tank checked out with no core
+    /// fitted, or a fold that does not know.
+    #[serde(default)]
+    core: Option<OwnCore>,
+}
+
+/// **The pilot's own core, as the core words need it** (17b cut M3.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnCore {
+    /// The class it was sealed at (`MindSeal.core_class`).
+    sealed: CoreClass,
+    /// The class its cell reads now.
+    now: CoreClass,
+    /// Whether the capability is still held (`destroy_core` takes it).
+    held: bool,
+}
+
+impl OwnCore {
+    /// **A core sealed at `sealed`, reading `now`, held or not.**
+    #[must_use]
+    pub const fn new(sealed: CoreClass, now: CoreClass, held: bool) -> OwnCore {
+        OwnCore { sealed, now, held }
+    }
 }
 
 impl OwnTank {
@@ -289,36 +322,83 @@ impl OwnTank {
         OwnTank {
             motion_groups,
             destroyed: destroyed.into_iter().collect(),
+            core: None,
         }
+    }
+
+    /// **The same tank with its core** (17b cut M3.6).
+    #[must_use]
+    pub fn with_core(mut self, core: OwnCore) -> OwnTank {
+        self.core = Some(core);
+        self
     }
 
     /// **The tank as it is handed over at check-out**: its profile, and every
     /// section its M32 truth already reads `destroyed` — the condition
     /// `fired_consequences`' own `all_destroyed` reads.
+    ///
+    /// **17b cut M3.6**: and its core — fitted ([`fitted_with_core`]), sealed
+    /// at the seal's `core_class`, reading [`read_core`]'s class now and held
+    /// while the capability is.
     #[must_use]
     pub fn from_custody(unit: &CustodyUnit) -> OwnTank {
-        OwnTank::new(
+        let own = OwnTank::new(
             &unit.profile,
             unit.unit
                 .sections()
                 .filter(|(_, state)| state.condition.as_str() == DESTROYED)
                 .map(|(id, _)| SmolStr::new(id.as_str())),
-        )
+        );
+        if !fitted_with_core(&unit.unit) {
+            return own;
+        }
+        let live = read_core(&unit.unit);
+        own.with_core(OwnCore::new(
+            unit.seal.core_class,
+            live.as_ref().map_or(CoreClass::Zero, |core| core.class),
+            live.is_some(),
+        ))
     }
 
     /// **`section` is destroyed: the consequences that fired**, from the ledger
     /// line's authored list — every one but a `disable_motion_when_all_of`
     /// whose sections are not all destroyed yet (or whose group this tank does
     /// not know).
+    ///
+    /// **17b cut M3.6**: the core words move the core first, every one in
+    /// authored order as `Arena::core_ops` builds its ops off the core held
+    /// BEFORE the plan (each `degrade_core` one class while held and above
+    /// Class 0, a `destroy_core` taking it), and are then told off the core
+    /// as it now stands, as `fired_consequences` tells them: `destroy_core`
+    /// for a fitted core no longer held, `degrade_core` for a held core below
+    /// its sealed class.
     fn fired(&mut self, section: &SmolStr, consequences: &[SmolStr]) -> Vec<SmolStr> {
         self.destroyed.insert(section.clone());
+        if let Some(core) = &mut self.core {
+            let held = core.held;
+            for label in consequences {
+                match label.as_str() {
+                    DEGRADE_CORE if held && core.now > CoreClass::Zero => {
+                        core.now = core.now.lower();
+                    }
+                    DESTROY_CORE => core.held = false,
+                    _ => {}
+                }
+            }
+        }
+        let core = self.core;
         let groups = self.motion_groups.get(section);
         let mut nth = 0_usize;
         consequences
             .iter()
             .filter(|label| {
-                if label.as_str() != MOTION_GROUP {
-                    return true;
+                match label.as_str() {
+                    DESTROY_CORE => return core.is_some_and(|core| !core.held),
+                    DEGRADE_CORE => {
+                        return core.is_some_and(|core| core.held && core.now < core.sealed);
+                    }
+                    MOTION_GROUP => {}
+                    _ => return true,
                 }
                 let group = groups.and_then(|groups| groups.get(nth));
                 nth = nth.saturating_add(1);
@@ -333,6 +413,12 @@ impl OwnTank {
 
 /// The ledger word of `Consequence::DisableMotionWhenAllOf`.
 const MOTION_GROUP: &str = "disable_motion_when_all_of";
+
+/// The ledger word of `Consequence::DestroyCore` (17b cut M3.6).
+const DESTROY_CORE: &str = "destroy_core";
+
+/// The ledger word of `Consequence::DegradeCore` (17b cut M3.6).
+const DEGRADE_CORE: &str = "degrade_core";
 
 /// **The one page of the tape a staff header describes** (16b cut V.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3549,6 +3635,78 @@ mod tests {
         for line in read(OwnTank::default()) {
             assert!(!line.contains("cannot move"), "{line}");
         }
+    }
+
+    /// **17b cut M3.6**: a lost turret of the pilot's own tank says the
+    /// core words as the cockpit's `fired_consequences` does — `its core is
+    /// gone` only for a tank fitted with a core, `its core is degraded` only
+    /// while the held core reads below its sealed class (never at the floor
+    /// of a core sealed at Class 0, never once the same list took it) — and a
+    /// fold that does not know its tank's core says neither.
+    #[test]
+    fn m3_a_lost_turret_says_the_core_words_only_where_they_are_true() {
+        let turret = |words: &[&str], t_ms: i64| {
+            event(
+                t_ms,
+                EventKind::SectionDestroyed {
+                    unit: ME,
+                    section: SmolStr::new("turret"),
+                    by: Some(THEM),
+                    consequences: words.iter().map(|word| SmolStr::new(*word)).collect(),
+                },
+            )
+        };
+        let read = |own: OwnTank, words: &[&str]| {
+            let tape = renumbered(vec![turret(words, 125_000)]);
+            let mut fold =
+                Fold::new(roster(), Reader::Pilot { unit: ME }, RULES).with_own_tank(own);
+            for held in &tape {
+                fold.absorb(held);
+            }
+            fold.finish().lines
+        };
+        let tank = || OwnTank::new(&line_tank(), Vec::new());
+        let destroy = ["remove_weapons", DESTROY_CORE];
+        let degrade = ["remove_weapons", DEGRADE_CORE];
+        let line = |cost: &str| vec![format!("  2:05  your turret destroyed: {cost}.")];
+        // A fitted core, destroyed.
+        assert_eq!(
+            read(
+                tank().with_core(OwnCore::new(CoreClass::II, CoreClass::II, true)),
+                &destroy
+            ),
+            line("its weapons are gone; its core is gone")
+        );
+        // No core fitted, or a fold that does not know: weapons alone.
+        assert_eq!(read(tank(), &destroy), line("its weapons are gone"));
+        assert_eq!(
+            read(OwnTank::default(), &degrade),
+            line("its weapons are gone")
+        );
+        // The heavy's Class III core, one class down.
+        assert_eq!(
+            read(
+                tank().with_core(OwnCore::new(CoreClass::III, CoreClass::III, true)),
+                &degrade
+            ),
+            line("its weapons are gone; its core is degraded")
+        );
+        // At the floor of a core sealed there: nothing degraded.
+        assert_eq!(
+            read(
+                tank().with_core(OwnCore::new(CoreClass::Zero, CoreClass::Zero, true)),
+                &degrade
+            ),
+            line("its weapons are gone")
+        );
+        // Destroyed and degraded in one list: gone, and only that.
+        assert_eq!(
+            read(
+                tank().with_core(OwnCore::new(CoreClass::II, CoreClass::II, true)),
+                &[DESTROY_CORE, DEGRADE_CORE]
+            ),
+            line("its core is gone")
+        );
     }
 
     /// One chunk document of `match.12` holding one entry of `events` tape

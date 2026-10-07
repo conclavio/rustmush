@@ -4346,7 +4346,12 @@ impl Arena {
         // below carries its unit's controller and id unchanged, in this order.
         let squad_input = CustodyUnit::squad_input(&units);
         let mut states: Vec<UnitState> = Vec::with_capacity(units.len());
+        // **17b cut M3.6** (doc 17 §13): each unit's `mind_sealed` line, off
+        // the custody's own seal before the custody is consumed; journalled
+        // below, in unit-id order, right after `match_started`.
+        let mut sealed: Vec<(ObjId, EventKind)> = Vec::with_capacity(units.len());
         for mut unit in units {
+            sealed.push((unit.id, unit.seal.sealed_line()));
             // **16b cut AF.1**: the heading and the window, in one function the
             // snapshot's decode calls too (`check_poses`), in the order they
             // always ran.
@@ -4800,6 +4805,16 @@ impl Arena {
         let _ = arena
             .ledger
             .append(0, EventKind::MatchStarted, Vec::new(), opening);
+        // **17b cut M3.6** (doc 17 §13 "The seal", D-UM-45, D-UM-46): every
+        // sortie opens on the tape — one `mind_sealed` per unit, in unit-id
+        // order, at `t_ms` 0 under the opening hash, from the record the
+        // check-out sealed (never from a view of the arena). These lines shift
+        // the ledger's sequence, which `state_hash` folds, so every match's
+        // hash sequence moved here once (17b cut M3.6's declared re-bless).
+        sealed.sort_by_key(|(id, _)| *id);
+        for (_, line) in sealed {
+            let _ = arena.ledger.append(0, line, Vec::new(), opening);
+        }
         Ok(arena)
     }
 
@@ -5320,8 +5335,13 @@ mod tests {
             vec![(i64::from(MatchConfig::default().max_duration_ms), 2)],
             "one deadline, at the bound, second in the schedule"
         );
-        // And one ledger event: `match_started`, sequence 1.
-        assert_eq!(arena.ledger.seq(), 1);
+        // And the opening lines: `match_started`, sequence 1, and since 17b
+        // cut M3.6 one `mind_sealed` per unit after it (was `seq() == 1`).
+        assert_eq!(
+            arena.ledger.seq(),
+            1 + u64::try_from(arena.units.len()).unwrap_or(0),
+            "`match_started` and one `mind_sealed` per unit"
+        );
         assert!(arena.ledger.bytes_total() > 0);
     }
 

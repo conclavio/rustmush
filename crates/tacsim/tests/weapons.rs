@@ -1386,6 +1386,16 @@ type PinnedLine = (i64, &'static str, &'static [(&'static str, u64)], u64);
 /// reflex shots are `tests/reflex.rs`' half, and that no trigger opens the
 /// action hash for a hull with no slot is asserted where a trigger is built
 /// (17b cut M1b.1).
+///
+/// **The cut's one declared re-bless** (17b cut M3.6: `mind_sealed` and
+/// `sortie_closed` shift the folded ledger sequence (`hash.rs:897`) of every
+/// match; the mind row's fold gains D-UM-23's answer, `dropped` and the seal
+/// digest; the chassis' core consequence words ride the hit lines and the
+/// pilot's sentence; every other byte's encoding is unchanged). Re-recorded
+/// here from 28 lines to 30: two `mind_sealed` lines after `match_started` (the
+/// script runs to 40 s and does not end, so no close; no turret dies), every
+/// line's hash re-blessed with them and every other field byte-equal (the diff,
+/// ignoring the hash, is the two inserted lines alone).
 const M1B0_SEAT_LINES: &[PinnedLine] = &[
     (
         0,
@@ -1395,165 +1405,177 @@ const M1B0_SEAT_LINES: &[PinnedLine] = &[
     ),
     (
         0,
+        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"8b3ec78c9d957865","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine"}"#,
+        &[],
+        13_187_143_247_813_120_811,
+    ),
+    (
+        0,
+        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"8b3ec78c9d957865","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine"}"#,
+        &[],
+        13_187_143_247_813_120_811,
+    ),
+    (
+        0,
         r#"{"kind":"startup","unit":4}"#,
         &[],
-        9_421_132_749_189_711_985,
+        12_972_856_603_268_140_291,
     ),
     (
         189,
         r#"{"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4}"#,
         &[],
-        1_120_236_634_336_847_779,
+        4_671_960_488_415_276_085,
     ),
     (
         482,
         r#"{"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9}"#,
         &[],
-        13_951_167_005_940_871_208,
+        6_159_594_494_466_604_510,
     ),
     (
-        3_189,
+        3189,
         r#"{"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red"}"#,
         &[("classify:9:4:4", 3_682_179_631_169_270_960)],
-        9_578_419_035_786_442_381,
+        13_130_142_889_864_870_687,
     ),
     (
-        3_482,
+        3482,
         r#"{"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue"}"#,
         &[("classify:4:9:4", 2_838_647_583_109_313_249)],
-        4_000_117_842_695_015_267,
+        448_393_988_616_586_961,
     ),
     (
-        5_000,
+        5000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        4_530_019_823_590_085_706,
+        12_321_592_335_064_352_404,
     ),
     (
         10_000,
         r#"{"kind":"power_online","unit":4}"#,
         &[],
-        2_389_771_367_893_553_161,
+        8_805_094_272_732_999_687,
     ),
     (
         10_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        2_389_771_367_893_553_161,
+        8_805_094_272_732_999_687,
     ),
     (
         10_000,
         r#"{"kind":"locked","unit":4,"contact":5852833454602713067,"target":9}"#,
         &[],
-        5_053_043_039_620_432_000,
+        8_604_766_893_698_860_306,
     ),
     (
         10_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        5_053_043_039_620_432_000,
+        8_604_766_893_698_860_306,
     ),
     (
         10_027,
         r#"{"kind":"impact","shot_seq":1,"unit":4,"target":9}"#,
         &[],
-        2_814_364_460_158_647_790,
+        10_605_936_971_632_914_488,
     ),
     (
         10_027,
         r#"{"kind":"miss","shot_seq":1,"reason":"dispersion"}"#,
         &[("hit:1", 12_072_725_193_963_834_385)],
-        2_814_364_460_158_647_790,
+        10_605_936_971_632_914_488,
     ),
     (
         15_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        4_695_984_158_796_170_123,
+        1_144_260_304_717_741_817,
     ),
     (
         15_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        5_567_432_317_986_208_439,
+        7_631_806_727_938_438_697,
     ),
     (
         15_027,
         r#"{"kind":"impact","shot_seq":2,"unit":4,"target":9}"#,
         &[],
-        3_258_042_911_444_715_627,
+        11_049_615_422_918_982_325,
     ),
     (
         15_027,
         r#"{"kind":"miss","shot_seq":2,"reason":"dispersion"}"#,
         &[("hit:2", 11_307_540_289_106_727_687)],
-        3_258_042_911_444_715_627,
+        11_049_615_422_918_982_325,
     ),
     (
         20_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        10_109_085_921_640_641_787,
+        6_557_362_067_562_213_481,
     ),
     (
         20_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        2_259_678_685_730_992_349,
+        17_154_698_905_362_115_659,
     ),
     (
         20_027,
         r#"{"kind":"impact","shot_seq":3,"unit":4,"target":9}"#,
         &[],
-        905_611_160_077_707_618,
+        4_457_335_014_156_135_924,
     ),
     (
         20_027,
         r#"{"kind":"miss","shot_seq":3,"reason":"dispersion"}"#,
         &[("hit:3", 17_241_375_169_118_599_602)],
-        905_611_160_077_707_618,
+        4_457_335_014_156_135_924,
     ),
     (
         25_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        1_395_924_699_094_264_059,
+        16_290_944_918_725_387_369,
     ),
     (
         25_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        1_957_714_771_597_279_659,
+        1_269_589_968_279_869_573,
     ),
     (
         25_027,
         r#"{"kind":"impact","shot_seq":4,"unit":4,"target":9}"#,
         &[],
-        1_274_254_185_663_404_761,
+        7_689_577_090_502_851_287,
     ),
     (
         25_027,
         r#"{"kind":"miss","shot_seq":4,"reason":"dispersion"}"#,
         &[("hit:4", 9_783_297_951_381_390_390)],
-        1_274_254_185_663_404_761,
+        7_689_577_090_502_851_287,
     ),
     (
         30_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        674_905_491_140_883_993,
+        4_226_629_345_219_312_299,
     ),
     (
         35_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        1_594_837_166_001_894_441,
+        12_250_008_728_237_179_359,
     ),
     (
         40_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        10_322_775_387_432_936_772,
+        6_771_051_533_354_508_466,
     ),
 ];
 
@@ -2509,6 +2531,75 @@ fn o3_a_range_ends_when_the_last_target_is_out_of_action_at_three_cadences() {
         "and it is its engine that went"
     );
     assert_eq!(first.path_queries, 0, "a target searches for nothing");
+    // **17b cut M3.6** (doc 17 §13; D-UM-45, D-UM-46): the sortie lines on a
+    // REAL damage path. Each `unit_destroyed` — a round's wreck, through
+    // `apply_hit`, `apply_consequence` and `destroy_unit` — is followed at
+    // once by that unit's `sortie_closed { destroyed }` at the destruction's
+    // millisecond under its hash, and the wreck closes once; every other unit
+    // closes `match_end` immediately before the end's line, under the end's
+    // millisecond and hash, and the end stays the tape's last line. The event
+    // lists are one list at the three cadences (below), so this holds at each.
+    let unit_of = |encoded: &str| -> Option<u64> {
+        serde_json::from_str::<serde_json::Value>(encoded)
+            .ok()?
+            .get("unit")?
+            .as_u64()
+    };
+    let is = |line: &Line, kind: &str| line.1.contains(&format!("\"kind\":\"{kind}\""));
+    let units = lines("mind_sealed").len();
+    assert_eq!(units, 4, "one seal per unit at the opening");
+    let mut wrecked: Vec<u64> = Vec::new();
+    for (at, line) in first.events.iter().enumerate() {
+        if !is(line, "unit_destroyed") {
+            continue;
+        }
+        let unit = unit_of(&line.1).unwrap_or_else(|| panic!("a unit on {line:?}"));
+        let Some(close) = first.events.get(at + 1) else {
+            panic!("a line after the destruction of #{unit}");
+        };
+        assert!(
+            is(close, "sortie_closed")
+                && close.1.contains("\"word\":\"destroyed\"")
+                && unit_of(&close.1) == Some(unit),
+            "#{unit}'s destruction is followed by its own close: {close:?}"
+        );
+        assert_eq!(
+            (close.0, close.3),
+            (line.0, line.3),
+            "#{unit}'s close at the destruction's millisecond under its hash"
+        );
+        wrecked.push(unit);
+    }
+    assert!(
+        wrecked.contains(&u64::from(TARGET_FRONT.0)),
+        "the target shot head on closed at its wreck: {wrecked:?}"
+    );
+    let closes = lines("sortie_closed");
+    assert_eq!(closes.len(), units, "one close per sortie: {closes:?}");
+    for unit in &wrecked {
+        assert_eq!(
+            closes
+                .iter()
+                .filter(|close| unit_of(&close.1) == Some(*unit))
+                .count(),
+            1,
+            "#{unit} is not closed again at the end"
+        );
+    }
+    let at_end = units - wrecked.len();
+    let Some(end) = first.events.last() else {
+        panic!("a tape");
+    };
+    assert!(is(end, "match_ended"), "the end is the last line: {end:?}");
+    let tail: Vec<&Line> = first.events.iter().rev().skip(1).take(at_end).collect();
+    assert_eq!(tail.len(), at_end);
+    assert!(
+        tail.iter().all(|close| is(close, "sortie_closed")
+            && close.1.contains("\"word\":\"match_end\"")
+            && (close.0, close.3) == (end.0, end.3)),
+        "the open sorties close right before the end, at its millisecond under its hash: \
+         {tail:?}"
+    );
 
     for (cadence, run) in runs.iter().skip(1) {
         assert_eq!(

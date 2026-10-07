@@ -8465,7 +8465,9 @@ async fn ah1_a_hint_waits_for_a_live_connection() {
 /// `match_::reset_stock_tanks`: the schema is not the loaded binding's, so the
 /// tank is refitted (`ResetReport::refitted`), and afterwards it points at the
 /// version-3 definition and carries the line core (Class II, governed), read
-/// live off the unit. A second reset changes nothing.
+/// live off the unit. A second reset changes nothing. (**17b cut M3.6**: the
+/// loaded definition is version 4 now — the turret's `destroy_core` — and the
+/// refit is to it; was "the version-3 definition".)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m3_a_roster_tank_without_a_core_is_refitted_with_one_at_the_reset() {
     use tacsim::arena::core::{CoreClass, CoreHardware, read_core};
@@ -8483,8 +8485,8 @@ async fn m3_a_roster_tank_without_a_core_is_refitted_with_one_at_the_reset() {
         .clone();
     assert_eq!(
         binding.spec.definition.version(),
-        3,
-        "the loaded line tank is the version-3 definition"
+        4,
+        "the loaded line tank is the version-4 definition"
     );
 
     // The version-2 tank: no core component, no core capability.

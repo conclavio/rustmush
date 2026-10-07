@@ -12,9 +12,9 @@
 //!   memory's bytes, its notice buffer, its range memory, the standing order a
 //!   squad gave it, its strikes, its drop (`dropped`) and its seal's digest.
 //!   Hashed (`crate::arena::hash`, item 3c) and carried by a snapshot, because
-//!   every one of them decides a later intent — except that, from 17b cut
-//!   M3.2 until 17b cut M3.6, the pending think's answer, `dropped` and
-//!   `seal_digest` are carried and **not yet folded** (`hash.rs`' item 3c).
+//!   every one of them decides a later intent (the pending think's answer,
+//!   `dropped` and `seal_digest` carried since 17b cut M3.2 and folded since
+//!   17b cut M3.6, `hash.rs`' item 3c).
 //! * **The view** ([`Arena::mind_view`], [`MindView`]): the hull's keyframe and
 //!   nothing finer (D-UM-4). It is built by the one builder a pilot's frame is
 //!   built by (`Arena::frame_for`) and projected through the one row formatter
@@ -146,9 +146,11 @@ pub const STOCK_CONTACT_ROWS: usize = 12;
 /// **Carried, never recomputed**: a snapshot between the think and its
 /// landing writes the answer, and the resumed landing lands it at the
 /// recorded epochs, so a resume between a think at `N` and its landing at
-/// `N + 1` reproduces the hash sequence. **Folded, from 17b cut M3.6**: until
-/// then `crate::arena::hash`'s item 3c folds the presence, `think_seq` and
-/// `t_ms` alone, M2's bytes (the head of `hash.rs` says so).
+/// `N + 1` reproduces the hash sequence. **Folded whole since 17b cut
+/// M3.6** (`crate::arena::hash`'s item 3c): the presence, `think_seq`, `t_ms`,
+/// then the three epochs, the intents' count and each intent's canonical
+/// bytes, the memory's length and digest — 17b cuts M3.2 to M3.5 folded the
+/// first three alone, M2's bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingThink {
@@ -464,6 +466,28 @@ impl MindSeal {
         }
     }
 
+    /// **The sortie's opening line** (17b cut M3.6; doc 17 §13, D-UM-45):
+    /// [`EventKind::MindSealed`]
+    /// off this record — never off a view of the arena — with the source as
+    /// the first sixteen base-16 characters of its SHA-256 and the card's
+    /// digest whole. [`crate::arena::state::Arena::new`] journals one per
+    /// unit, in unit-id order, right after `match_started`.
+    #[must_use]
+    pub fn sealed_line(&self) -> crate::arena::ledger::EventKind {
+        let source = crate::arena::snapshot::digest_text(&self.source_sha256);
+        crate::arena::ledger::EventKind::MindSealed {
+            unit: self.unit,
+            sortie: self.sortie,
+            mind: self.mind.clone(),
+            source: SmolStr::new(source.get(..16).unwrap_or(source.as_str())),
+            card_digest: SmolStr::new(crate::arena::snapshot::digest_text(&self.card_digest)),
+            class: self.class,
+            governed: self.governed,
+            licence: self.licence.clone(),
+            principal: self.principal.clone(),
+        }
+    }
+
     /// **A value no seal computes**, for a custody literal built before its
     /// seal: object 0, no sortie, empty words, zero digests. Every literal in
     /// the tree replaces it at once (`crate::arena::state::CustodyUnit`'s
@@ -496,6 +520,80 @@ impl MindSeal {
     }
 }
 
+/// **The word a sortie closes with at the match's end** (17b cut M3.6; doc 17
+/// §12, §13): every sortie still open when the match ends, at any of its six
+/// end sites.
+pub const SORTIE_MATCH_END: &str = "match_end";
+
+/// **The word a sortie closes with at its hull's destruction** (17b cut M3.6):
+/// `Arena::destroy_unit` closes the wreck's sortie then, not at the end.
+pub const SORTIE_DESTROYED: &str = "destroyed";
+
+impl Arena {
+    /// **Close one hull's sortie** (17b cut M3.6; doc 17 §13): the
+    /// [`EventKind::SortieClosed`] line for `unit` with `word`, at `t_ms`, and
+    /// [`SealRef::closed`] set — or `None` when the hull is not on the field or
+    /// its sortie is already closed, so a sortie closes once (a resumed match
+    /// carries `closed` and does not re-close). The line is the caller's to
+    /// journal, under the hash of the moment it belongs to.
+    pub(crate) fn close_sortie(
+        &mut self,
+        unit: ObjId,
+        t_ms: i64,
+        word: &'static str,
+    ) -> Option<crate::arena::perception::Notice> {
+        let state = self.unit_mut(unit)?;
+        if state.seal.closed {
+            return None;
+        }
+        state.seal.closed = true;
+        Some((
+            t_ms,
+            EventKind::SortieClosed {
+                unit,
+                sortie: state.seal.sortie,
+                word: SmolStr::new_static(word),
+            },
+            Vec::new(),
+        ))
+    }
+
+    /// **Close every sortie still open** (17b cut M3.6; doc 17 §12, §13;
+    /// D-UM-45, D-UM-46): one [`EventKind::SortieClosed`] per unit whose
+    /// [`SealRef::closed`] is false, in unit-id order, at `t_ms`, each sortie
+    /// marked closed.
+    ///
+    /// **Called at every one of the match's six end sites, immediately BEFORE
+    /// the end's own line, at the end's millisecond and under the end's hash**
+    /// with [`SORTIE_MATCH_END`] — the three in-substep ends (a hold won, an
+    /// elimination or a `Spent`, the deadline: the closes pushed into the
+    /// substep's notices ahead of `match_ended`), the pulse's backstop
+    /// (elimination or `Spent`, and the duration), the egress overflow's
+    /// `void`, and `Arena::stopped` (the world's `Abort`, `Timeout`, `Void`,
+    /// `Concede`, `Unattended`) — so the end stays the tape's LAST line (16b
+    /// cut W.2). A `void` closes too. Two ends close nothing, declared: the
+    /// ledger-full end (the ledger is what ran out; it journals no end line
+    /// either), and a match voided at boot
+    /// (`crate::match_::resume::void_at_boot`, which writes no tape line). A
+    /// wreck's sortie closed at its destruction ([`SORTIE_DESTROYED`]) is not
+    /// closed again.
+    pub fn close_open_sorties(
+        &mut self,
+        t_ms: i64,
+        word: &'static str,
+    ) -> Vec<crate::arena::perception::Notice> {
+        let open: Vec<ObjId> = self
+            .units
+            .iter()
+            .filter(|state| !state.seal.closed)
+            .map(|state| state.id)
+            .collect();
+        open.into_iter()
+            .filter_map(|unit| self.close_sortie(unit, t_ms, word))
+            .collect()
+    }
+}
+
 /// **What one unit mind holds between thinks** (17b cut M1a.5; doc 17 §3, §6,
 /// §8), one row per [`Controller::Mind`] hull on [`Arena::minds`] — and,
 /// **since 17b cut M3.5** (doc 17 §12 "Release and possess"; D-UM-2, D-UM-30),
@@ -508,11 +606,11 @@ impl MindSeal {
 ///
 /// Every field decides a later intent, so every field is hashed
 /// (`crate::arena::hash`, item 3c) and carried by a snapshot — the argument
-/// the reflex machine's own row was folded on (16b cut N.1) — except that,
-/// from 17b cut M3.2 until 17b cut M3.6, the pending think's answer
-/// ([`PendingThink`]'s `epochs`, `intents` and `memory`), [`MindState::dropped`]
-/// and [`MindState::seal_digest`] are carried and **not yet folded**
-/// (`hash.rs`' item 3c; 17b cut M3.6 folds them, the cut's one re-bless).
+/// the reflex machine's own row was folded on (16b cut N.1). The pending
+/// think's answer ([`PendingThink`]'s `epochs`, `intents` and `memory`),
+/// [`MindState::dropped`] and [`MindState::seal_digest`], carried since 17b
+/// cut M3.2, are folded since 17b cut M3.6 (`hash.rs`' item 3c, the cut's one
+/// re-bless).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindState {
@@ -563,15 +661,16 @@ pub struct MindState {
     /// and released stays dropped — the ROM thinks, and no second
     /// `mind_dropped` line is journalled. Only the `Mind → Reflex` transition
     /// (`Arena::release_mind`, a fixture's alone) still removes the row.
-    /// Carried by the snapshot; **NOT folded into `state_hash` until 17b cut
-    /// M3.6** (on strikes it is a function of `strikes`, which is folded).
+    /// Carried by the snapshot; **folded into `state_hash` since 17b cut
+    /// M3.6** (its presence, then the cause's byte: strikes 1, core 2, abi 3;
+    /// after `strikes`, before the card).
     pub dropped: Option<DropCause>,
     /// **The digest of the seal the mind was checked out under** (17b cut
     /// M3.2; doc 17 §13, D-UM-45): since 17b cut M3.3 the custody seal's
     /// [`MindSeal::digest`], read off [`crate::arena::state::UnitState::seal`]
     /// when the row is laid down (`Arena::adopt_mind`).
-    /// Carried by the snapshot; **NOT folded into `state_hash` until 17b cut
-    /// M3.6** (§13's fold list; the one re-bless).
+    /// Carried by the snapshot; **folded into `state_hash` since 17b cut
+    /// M3.6** (§13's fold list: its 32 bytes, after the drop).
     pub seal_digest: [u8; 32],
     /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11,
     /// D-UM-43): Standard Doctrine's stock card, laid down as the Line preset
@@ -1886,16 +1985,16 @@ mod tests {
     /// length), the notices (one more, and two `Miss`es that differ only in
     /// their reason), the range memory (an id and a figure), the order (its
     /// presence, each objective's payload, `hold_fire`, the band, the deadline
-    /// and the squad) and `strikes`. (17b cut M3.2: the pending ANSWER,
-    /// `dropped` and `seal_digest` are carried and not yet folded —
-    /// `crate::arena::hash`'s
-    /// `m3_the_carried_answer_drop_seal_and_classes_are_not_yet_folded` pins
-    /// that; 17b cut M3.6 folds them and adds them here.)
+    /// and the squad) and `strikes` — and, **since 17b cut M3.6** (D-UM-23 as
+    /// amended), the pending ANSWER part by part (each epoch, the intents'
+    /// count and an intent's bytes, the memory's length and its bytes),
+    /// `dropped` (its presence and its cause) and `seal_digest` (its bytes);
+    /// 17b cut M3.2 carried them unfolded.
     /// One change to a mind row.
     type Probe = Box<dyn Fn(&mut MindState)>;
 
-    /// A pending think with an empty answer — what the hash folds of it
-    /// until 17b cut M3.6 is its presence, `think_seq` and `t_ms`.
+    /// A pending think with an empty answer — its presence, `think_seq` and
+    /// `t_ms`, and (folded since 17b cut M3.6) no epoch, intent or memory.
     fn pending_at(think_seq: u64, t_ms: i64) -> PendingThink {
         PendingThink {
             think_seq,
@@ -1949,6 +2048,13 @@ mod tests {
                 Box::new(move |s| s.order = Some(order.clone()))
             }),
             ("strikes", Box::new(|s| s.strikes = 1)),
+            // 17b cut M3.6 (D-UM-23 as amended; doc 17 §13's list): the drop
+            // and the seal's digest, folded after `strikes`.
+            (
+                "dropped",
+                Box::new(|s| s.dropped = Some(DropCause::Strikes)),
+            ),
+            ("seal_digest", Box::new(|s| s.seal_digest = [0xa5; 32])),
         ];
         let mut seen = vec![before];
         for (field, probe) in &probes {
@@ -1991,6 +2097,104 @@ mod tests {
                 "memory bytes",
                 with(&|s| s.memory = vec![1]),
                 with(&|s| s.memory = vec![2]),
+            ),
+            // 17b cut M3.6: every part of the pending answer, not only the
+            // presence of a think.
+            (
+                "pending.epochs (helm)",
+                with(&|s| s.pending = Some(pending_at(0, 0))),
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        epochs: [1, 0, 0],
+                        ..pending_at(0, 0)
+                    });
+                }),
+            ),
+            (
+                "pending.epochs (sensors)",
+                with(&|s| s.pending = Some(pending_at(0, 0))),
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        epochs: [0, 1, 0],
+                        ..pending_at(0, 0)
+                    });
+                }),
+            ),
+            (
+                "pending.epochs (fire)",
+                with(&|s| s.pending = Some(pending_at(0, 0))),
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        epochs: [0, 0, 1],
+                        ..pending_at(0, 0)
+                    });
+                }),
+            ),
+            (
+                "pending.intents (count)",
+                with(&|s| s.pending = Some(pending_at(0, 0))),
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        intents: vec![IntentKind::Lock {
+                            contact: ContactId(7),
+                        }],
+                        ..pending_at(0, 0)
+                    });
+                }),
+            ),
+            (
+                "pending.intents (an intent's bytes)",
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        intents: vec![IntentKind::Lock {
+                            contact: ContactId(7),
+                        }],
+                        ..pending_at(0, 0)
+                    });
+                }),
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        intents: vec![IntentKind::Lock {
+                            contact: ContactId(8),
+                        }],
+                        ..pending_at(0, 0)
+                    });
+                }),
+            ),
+            (
+                "pending.memory (length)",
+                with(&|s| s.pending = Some(pending_at(0, 0))),
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        memory: vec![1],
+                        ..pending_at(0, 0)
+                    });
+                }),
+            ),
+            (
+                "pending.memory (bytes)",
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        memory: vec![1],
+                        ..pending_at(0, 0)
+                    });
+                }),
+                with(&|s| {
+                    s.pending = Some(PendingThink {
+                        memory: vec![2],
+                        ..pending_at(0, 0)
+                    });
+                }),
+            ),
+            (
+                "dropped (its cause)",
+                with(&|s| s.dropped = Some(DropCause::Strikes)),
+                with(&|s| s.dropped = Some(DropCause::Core)),
+            ),
+            (
+                "seal_digest (its bytes)",
+                with(&|s| s.seal_digest = [0xa5; 32]),
+                with(&|s| s.seal_digest = [0x5a; 32]),
             ),
             (
                 "a miss's reason",

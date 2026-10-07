@@ -1368,6 +1368,13 @@ pub struct TwinThought {
     /// present) — an ordered think, the basis of every order arm Gate A
     /// compares.
     pub ordered: bool,
+    /// **17b cut M3.6** (plan §2(v); the review's R11): the job was a
+    /// DROPPED one (`ThinkJob::dropped`) — the hull is on the ROM, so the Rhai
+    /// runner answered with its native stand-in and recorded no `ThinkStat`,
+    /// and Gate A compared native with native on this think. A turret kill on
+    /// a shipped line tank (`destroy_core`) drops its mind for the rest of the
+    /// match; the lanes count these thinks so the coverage shrink is named.
+    pub dropped: bool,
 }
 
 /// **Gate A's runner** (17b cut M2.5; doc 17 §17 "Gate A: T1 ≡ T2 exactly";
@@ -1597,6 +1604,7 @@ impl MindRunner for TwinRunner {
                 rallied: after.rallied,
                 dwelling: after.stand_until_ms.is_some(),
                 ordered: job.view.order.is_some(),
+                dropped: job.dropped,
             });
         }
         native

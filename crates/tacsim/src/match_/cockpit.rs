@@ -1331,6 +1331,15 @@ pub(crate) fn consequence_words(consequences: &[SmolStr]) -> String {
             "slow" => "the tank is slowed",
             "no_turn_toward" => "it will not turn that way",
             "disable_motion" | "disable_motion_when_all_of" => "the tank cannot move",
+            // **17b cut M3.6** (doc 17 §9, D-UM-34): the core's two words, now
+            // that the shipped turrets carry them — a raw internal word never
+            // reaches a pilot. Each is joined only where it is true of the
+            // tank now: `fired_consequences` (and the debrief's `OwnTank`)
+            // drop a `destroy_core` on a hull never fitted with a core and a
+            // `degrade_core` that left the core no lower than its sealed
+            // class (a degrade at the floor).
+            "destroy_core" => "its core is gone",
+            "degrade_core" => "its core is degraded",
             other => other,
         })
         .collect::<Vec<&str>>()

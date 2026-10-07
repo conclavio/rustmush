@@ -171,7 +171,8 @@ thread_local! {
 ///    after item 3b: every row of [`Arena::minds`], in unit-id order and with
 ///    **no count prefix** (so an arena with no mind — every match that exists
 ///    — adds no byte): the unit's `u32`; `think_seq` as `u64`; `pending` as
-///    `[0]`, or `[1]` then its `think_seq` `u64` and its `t_ms` `i64`; the
+///    `[0]`, or `[1]` then its `think_seq` `u64` and its `t_ms` `i64` (and,
+///    since 17b cut M3.6, its answer: below); the
 ///    memory's length as `u64` then its FNV-1a 64 digest as `u64`; the
 ///    notices' count as `u64`, then per notice its **canonical
 ///    `serde_json::to_vec` bytes** — every field, so two buffers that would
@@ -195,26 +196,27 @@ thread_local! {
 ///    byte, an integer little-endian, no separator — because the card is what
 ///    a mind thinks under and a later sub-cut's runner reads it.
 ///
-///    **Carried from 17b cut M3.2, folded from 17b cut M3.6** (the cut's one
-///    re-bless, which moves `M2_CROSS_PLATFORM_PINS`): the pending think's
-///    ANSWER (`PendingThink`'s `epochs`, `intents` and `memory`, D-UM-23 as
-///    amended), the row's `dropped` (`DropCause`) and its `seal_digest` are
-///    carried by the snapshot and **not yet folded** — `pending` still folds
-///    `[1]`, `think_seq`, `t_ms` (or `[0]`), M2's bytes exactly, and two
-///    arenas differing only in one of them hash equal (the in-source probe
-///    `m3_the_carried_answer_drop_seal_and_classes_are_not_yet_folded` pins
-///    it; 17b cut M3.6 inverts it with the per-field probes). This is a
-///    **declared gap**, not a covered one: the answer is NOT a function of
-///    the folded state — the think read notices staged and drained inside
-///    one substep, which no substep hash ever folds (doc 17 §6; 17b cut
-///    M3.2's gate fixture
+///    **Since 17b cut M3.6** (D-UM-23 as amended, "hashed whole"; doc 17
+///    §13's list; the cut's one re-bless, which moved
+///    `M2_CROSS_PLATFORM_PINS`), carried since 17b cut M3.2 and folded here:
+///    `pending`, when present, folds after its `[1]`, `think_seq` and `t_ms`
+///    its ANSWER — the three epochs ([`crate::arena::mind::PendingThink`]'s
+///    `epochs`, `Channel::ALL`'s order) as `u64` each, the intents' count as
+///    `u64` then each intent's canonical `serde_json::to_vec` bytes, the new
+///    memory's length as `u64` then its FNV-1a 64 digest as `u64`; and after
+///    `strikes`, before the card, the row's `dropped` as `[0]`, or `[1]` then
+///    the cause's byte (strikes `1`, core `2`, abi `3`), then `seal_digest`'s
+///    32 bytes. The answer had to be hashed whole because it is NOT a
+///    function of the rest of the folded state: the think read notices
+///    staged and drained inside one substep, which no substep hash folds (doc
+///    17 §6; 17b cut M3.2's gate fixture
 ///    `m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_cadences`
-///    turns on exactly that) — so until 17b cut M3.6 two runs differing only
-///    in a pending answer hash equal at every substep until its landing
-///    writes the memory or lands an intent, and D-UM-23's "hashed whole"
-///    closes the gap there. A drop on strikes IS a function of the folded
-///    `strikes` (the third strike writes both, and a clean think resets
-///    `strikes` only on a row not dropped).
+///    turns on exactly that), so before this cut two runs differing only in a
+///    pending answer hashed equal until its landing — the declared gap 17b
+///    cuts M3.2 to M3.5 carried, closed here. A dormant row (17b cut M3.5, a
+///    possessed hull's) folds the same bytes as any row; the in-source probe
+///    `m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash`
+///    moves each part.
 ///
 ///    **Never folded**: [`crate::arena::state::UnitState::seal`] (17b cut
 ///    M3.2's `SealRef` — a per-match constant, the floor's argument below,
@@ -960,14 +962,30 @@ fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::M
     use crate::deliberation::order::RangeBand;
     hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
     hash = fnv1a64_update(hash, &mind.think_seq.to_le_bytes());
-    // 17b cut M3.2: the answer the pending row carries (`epochs`, `intents`,
-    // `memory`), `dropped` and `seal_digest` are NOT folded here until 17b cut
-    // M3.6 — this head's item 3c says why.
+    // **17b cut M3.6** (D-UM-23 as amended, "hashed whole"): the pending
+    // think's presence, `think_seq` and `t_ms` (M2's bytes), then its ANSWER —
+    // the three epochs in `Channel::ALL` order, the intents' count and each
+    // intent's canonical bytes, the new memory's length and its FNV-1a 64
+    // digest. This head's item 3c has the list.
     match mind.pending.as_ref() {
         Some(pending) => {
             hash = fnv1a64_update(hash, &[1_u8]);
             hash = fnv1a64_update(hash, &pending.think_seq.to_le_bytes());
             hash = fnv1a64_update(hash, &pending.t_ms.to_le_bytes());
+            for epoch in pending.epochs {
+                hash = fnv1a64_update(hash, &epoch.to_le_bytes());
+            }
+            hash = fnv1a64_update(hash, &(pending.intents.len() as u64).to_le_bytes());
+            for intent in &pending.intents {
+                // Canonical bytes, as a notice's are below: a derive over plain
+                // data, the same intent the same bytes on every run.
+                hash = fnv1a64_update(hash, &serde_json::to_vec(intent).unwrap_or_default());
+            }
+            hash = fnv1a64_update(hash, &(pending.memory.len() as u64).to_le_bytes());
+            hash = fnv1a64_update(
+                hash,
+                &fnv1a64_update(FNV_OFFSET_BASIS, &pending.memory).to_le_bytes(),
+            );
         }
         None => hash = fnv1a64_update(hash, &[0_u8]),
     }
@@ -1021,13 +1039,33 @@ fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::M
         None => hash = fnv1a64_update(hash, &[0_u8]),
     }
     hash = fnv1a64_update(hash, &[mind.strikes]);
+    // **17b cut M3.6** (doc 17 §13's list): the drop — its presence, then the
+    // cause's byte (strikes 1, core 2, abi 3) — and the seal's digest, after
+    // `strikes` and before the card.
+    hash = match mind.dropped {
+        None => fnv1a64_update(hash, &[0_u8]),
+        Some(cause) => fnv1a64_update(hash, &[1_u8, drop_cause_code(cause)]),
+    };
+    hash = fnv1a64_update(hash, &mind.seal_digest);
     // **17b cut M1b.1**: the card, its fields in declaration order — an enum as
     // its code byte, a bool as one byte, an integer little-endian.
     fold_card(hash, &mind.card)
 }
 
+/// **A drop's cause as its one hash byte** (17b cut M3.6; item 3c): strikes
+/// `1`, core `2`, abi `3` — `0` is the absent drop's presence byte, never a
+/// cause.
+const fn drop_cause_code(cause: crate::arena::mind::DropCause) -> u8 {
+    use crate::arena::mind::DropCause;
+    match cause {
+        DropCause::Strikes => 1,
+        DropCause::Core => 2,
+        DropCause::Abi => 3,
+    }
+}
+
 /// **One mind's card** (17b cut M1b.1; inside item 3c of [`state_hash`], after
-/// `strikes`).
+/// `strikes`, the drop and the seal's digest).
 fn fold_card(mut hash: u64, card: &crate::arena::card::StockCard) -> u64 {
     hash = fnv1a64_update(hash, &[card.stance.code()]);
     hash = fnv1a64_update(hash, &card.engage_band_permille.to_le_bytes());
@@ -2124,17 +2162,22 @@ mod tests {
         }
     }
 
-    /// **17b cut M3.2: carried, not yet folded** (this file's head, item 3c).
-    /// Two arenas differing ONLY in a pending think's answer — its `intents`,
-    /// its `memory`, any one of its three `epochs` — or in a mind row's
-    /// `dropped` or `seal_digest`, hash EQUAL: M2's fold stands byte for byte
-    /// until 17b cut M3.6 folds them with the per-field probes (and inverts
-    /// this test). And two differing only in a unit's `seal` (every field of
-    /// the `SealRef`) or in the arena's class table hash equal for good: per-
-    /// match constants, never folded. The presence, `think_seq` and `t_ms` of
-    /// the pending think still move it, as they did.
+    /// **17b cut M3.6: every part folded** (this file's head, item 3c; D-UM-23
+    /// as amended, doc 17 §13's list) — 17b cut M3.2's "carried, not yet
+    /// folded" probe inverted. Two arenas differing ONLY in one PART of a
+    /// pending think's answer — an intent's presence, an intent's own bytes,
+    /// the memory's length, the memory's bytes at one length, any one of the
+    /// three `epochs` — or in a mind row's `dropped` (its presence and its
+    /// cause) or `seal_digest` hash DIFFERENTLY, each from the base and every
+    /// probe from every other (`reflex.rs`'
+    /// `each_new_row_field_moves_the_state_hash` pattern). And two differing
+    /// only in a unit's `seal` (every field of the `SealRef`) or in the
+    /// arena's class table still hash equal: per-match constants, never
+    /// folded. The presence, `think_seq` and `t_ms` of the pending think move
+    /// it, as they did.
     #[test]
-    fn m3_the_carried_answer_drop_seal_and_classes_are_not_yet_folded() {
+    #[allow(clippy::too_many_lines)]
+    fn m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash() {
         use crate::arena::core::{ClassTable, CoreClass};
         use crate::arena::intents::IntentKind;
         use crate::arena::mind::{
@@ -2175,43 +2218,80 @@ mod tests {
                 }
             })
         };
-        // Carried, not yet folded (17b cut M3.6 folds them).
-        for (field, hash) in [
+        // Folded since 17b cut M3.6, part by part: each probe moves the hash
+        // off the base and off every other probe.
+        let probes = [
             (
-                "pending.intents",
+                "pending.intents (one)",
                 pending(&|p| {
                     p.intents = vec![IntentKind::Lock {
                         contact: ContactId(7),
                     }];
                 }),
             ),
-            ("pending.memory", pending(&|p| p.memory = vec![1, 2, 3])),
+            (
+                "pending.intents (its bytes)",
+                pending(&|p| {
+                    p.intents = vec![IntentKind::Lock {
+                        contact: ContactId(8),
+                    }];
+                }),
+            ),
+            (
+                "pending.intents (two)",
+                pending(&|p| {
+                    p.intents = vec![
+                        IntentKind::Lock {
+                            contact: ContactId(7),
+                        },
+                        IntentKind::Lock {
+                            contact: ContactId(7),
+                        },
+                    ];
+                }),
+            ),
+            (
+                "pending.memory (length)",
+                pending(&|p| p.memory = vec![1, 2, 3]),
+            ),
+            (
+                "pending.memory (bytes)",
+                pending(&|p| p.memory = vec![1, 2, 4]),
+            ),
             ("pending.epochs (helm)", pending(&|p| p.epochs = [1, 0, 0])),
             (
                 "pending.epochs (sensors)",
                 pending(&|p| p.epochs = [0, 1, 0]),
             ),
             ("pending.epochs (fire)", pending(&|p| p.epochs = [0, 0, 1])),
+            ("pending.t_ms", pending(&|p| p.t_ms = 2_250)),
+            ("pending.think_seq", pending(&|p| p.think_seq = 3)),
+            ("pending's presence", with_mind(&|s| s.pending = None)),
             (
-                "dropped",
+                "dropped (strikes)",
                 with_mind(&|s| s.dropped = Some(DropCause::Strikes)),
             ),
             (
                 "dropped (core)",
                 with_mind(&|s| s.dropped = Some(DropCause::Core)),
             ),
+            (
+                "dropped (abi)",
+                with_mind(&|s| s.dropped = Some(DropCause::Abi)),
+            ),
             ("seal_digest", with_mind(&|s| s.seal_digest = [7; 32])),
-        ] {
-            assert_eq!(hash, before, "`{field}` is folded before 17b cut M3.6");
+            (
+                "seal_digest (one byte)",
+                with_mind(&|s| s.seal_digest[31] = 1),
+            ),
+        ];
+        let mut seen: Vec<(&str, u64)> = vec![("base", before)];
+        for (field, hash) in probes {
+            for (other, had) in &seen {
+                assert_ne!(hash, *had, "`{field}` folds as `{other}` does");
+            }
+            seen.push((field, hash));
         }
-        // What M2 folds still moves it.
-        assert_ne!(pending(&|p| p.t_ms = 2_250), before, "pending.t_ms");
-        assert_ne!(pending(&|p| p.think_seq = 3), before, "pending.think_seq");
-        assert_ne!(
-            with_mind(&|s| s.pending = None),
-            before,
-            "pending's presence"
-        );
 
         // Never folded: the seal reference, every field of it. Since 17b cut
         // M3.3 the fixture hull carries its check-out seal (sortie, digest,

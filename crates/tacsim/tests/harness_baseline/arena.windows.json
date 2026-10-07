@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "b446b9180125a1ec5936b5bdf9cf8a8b08350c2d",
-    "date": "2026-10-03T18:08:16Z",
+    "commit": "fbc5124a158f3fccd242609eb51b730ed521d681",
+    "date": "2026-10-07T10:27:47Z",
     "host": {
       "cpus": 32,
       "hostname": "ALIEN18",
@@ -51,8 +51,8 @@
     "frames_per_pulse_mean": 18.875,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 3511534,
-    "ledger_chunks": 218,
+    "ledger_bytes_streamed": 3599478,
+    "ledger_chunks": 223,
     "moving_at_end": 141
   },
   "loop": {
@@ -66,8 +66,8 @@
   },
   "memory": {
     "horizon_bytes": 26112,
-    "rss_end_kib": 48124,
-    "rss_start_kib": 24816,
+    "rss_end_kib": 37716,
+    "rss_start_kib": 23776,
     "vmrss_end_kib": null,
     "vmrss_start_kib": null
   },
@@ -164,15 +164,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 1.891,
-    "boot": 32.542,
-    "generate": 4.205,
+    "arena_open": 3.536,
+    "boot": 36.402,
+    "generate": 4.532,
     "killed_warming": 0,
-    "pack_apply": 23.078,
-    "terrain_convert": 1.395,
+    "pack_apply": 24.268,
+    "terrain_convert": 1.535,
     "warm_pulses": 47,
-    "warm_up": 65.868,
-    "window_open": 12.588
+    "warm_up": 69.386,
+    "window_open": 13.086
   },
   "slope": {
     "refusals": 975,
@@ -189,19 +189,19 @@
       35000,
       40000
     ],
-    "bytes_max": 3912914,
-    "bytes_mean": 3866378,
+    "bytes_max": 4224665,
+    "bytes_mean": 4174705,
     "count": 7,
-    "decode_ms_max": 24.573,
+    "decode_ms_max": 30.647,
     "encode_ms": {
-      "max": 12.965,
-      "p50": 11.786,
-      "p99": 12.08
+      "max": 10.698,
+      "p50": 9.179,
+      "p99": 9.732
     },
     "every_ms": 5000,
     "hash_ok": true,
     "max_snapshot_bytes": 7340032,
-    "wake_plus_encode_ms_max": 15.795
+    "wake_plus_encode_ms_max": 12.772
   },
   "substeps": {
     "per_wake_max": 1,
@@ -211,11 +211,11 @@
   },
   "tempos": [
     {
-      "max_ms": 9.021,
+      "max_ms": 9.343,
       "name": "arena_engaged",
-      "p50_ms": 2.739,
-      "p95_ms": 5.521,
-      "p99_ms": 6.904,
+      "p50_ms": 2.236,
+      "p95_ms": 5.683,
+      "p99_ms": 6.465,
       "period_ms": 500,
       "pulses": 120
     }
@@ -257,10 +257,10 @@
     "cell_probes_peak": 4881,
     "horizon_probes_peak": 4928,
     "jam_checks_peak": 668,
-    "ms_max": 11.692,
-    "ms_p50": 5.885,
-    "ms_p95": 9.889,
-    "ms_p99": 10.925,
+    "ms_max": 11.532,
+    "ms_p50": 4.712,
+    "ms_p95": 9.12,
+    "ms_p99": 10.663,
     "share_ops_peak": 108,
     "traces_peak": 952,
     "window_ms": 500,

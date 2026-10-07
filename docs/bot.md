@@ -543,8 +543,9 @@ passed. It does not reverse to turn.
 A gun the tank no longer carries is struck from the fire schedule for the rest
 of the match at the first `That unit carries no weapon called …`, and an empty
 one at `FIRE … refused. Empty: …` (until a `WEAPONSTATUS` row counts rounds
-into it again). When a lost section's line ends `its weapons are gone`, every
-gun is held and a `WEAPONSTATUS` goes at once; nothing is fired until it
+into it again). When a lost section's line says `its weapons are gone`
+(anywhere in it: the shipped turret's line goes on `; its core is gone`, or
+`; its core is degraded` on the heavy), every gun is held and a `WEAPONSTATUS` goes at once; nothing is fired until it
 answers. Each is said in an `arena` event: `No cannon aboard any more: struck
 from the fire schedule.`, `The turret's weapons are gone: no FIRE until
 WEAPONSTATUS says what is left.`, `The machine_gun is empty: struck from the

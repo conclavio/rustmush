@@ -403,6 +403,20 @@ pub fn read_core(unit: &TacticalUnit) -> Option<CoreHardware> {
     })
 }
 
+/// **Whether a unit was fitted with a core at all** (17b cut M3.6): a
+/// component carrying a [`CORE_CLASS_CELL`]. Unlike [`read_core`] this stays
+/// true once `destroy_core` has revoked the capability — the component and
+/// its cell are not taken off the unit — so it tells a hull whose core is
+/// GONE from a hull that never had one, which is what the pilot's `its core
+/// is gone` needs (`crate::arena::damage::Arena::fired_consequences`,
+/// `crate::match_::report::OwnTank`).
+#[must_use]
+pub fn fitted_with_core(unit: &TacticalUnit) -> bool {
+    unit.cells().any(|(addr, _)| {
+        matches!(addr, CellAddr::Component { cell, .. } if cell.as_str() == CORE_CLASS_CELL)
+    })
+}
+
 impl Arena {
     /// **The hull's core** ([`read_core`] over `UnitState.unit`), live; `None`
     /// for a unit this arena does not hold or one with no core.

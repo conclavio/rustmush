@@ -559,11 +559,33 @@ impl fmt::Display for DefinitionRef {
 }
 
 /// Rules-owned data with the exact schema identity required to interpret it.
+///
+/// **The payload is shared, never deep-copied on a clone** (17b cut M3.6, the
+/// lead's arena-cost ruling): a `RulesValue` is immutable once built — there is
+/// no `&mut` accessor, and a plan replaces a capability's value whole — so its
+/// `data` sits behind an [`std::sync::Arc`] and a clone is a reference count.
+/// The arena clones a whole `TacticalUnit` for every plan it applies (each
+/// impact, each substep's cooling of every hot hull: `mush_tactics::apply`
+/// folds a plan on a scratch clone), and every capability's payload and the
+/// unit's own rules came along as a fresh JSON tree each time; 17b cut M3.1's
+/// core capability on every shipped hull added one more such tree per clone,
+/// which is what made the arena slower on a cohort fielding no mind. The wire
+/// shape, `Debug`, equality and every digest are unchanged: the value
+/// serialises as the `Value` it holds.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(try_from = "RulesValueWire", deny_unknown_fields)]
 pub struct RulesValue {
     schema: DefinitionRef,
-    data: Value,
+    #[serde(serialize_with = "serialize_shared")]
+    data: std::sync::Arc<Value>,
+}
+
+/// `RulesValue::data`'s serializer: the shared `Value` as itself.
+fn serialize_shared<S: serde::Serializer>(
+    data: &std::sync::Arc<Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(&**data, serializer)
 }
 
 #[derive(Deserialize)]
@@ -594,7 +616,10 @@ impl RulesValue {
         let max_bytes = max_bytes.min(MAX_RULES_VALUE_BYTES);
         canonical_json_bytes_with_limit(&data, max_bytes)
             .map_err(|_| RulesValueError::TooLarge { max: max_bytes })?;
-        Ok(Self { schema, data })
+        Ok(Self {
+            schema,
+            data: std::sync::Arc::new(data),
+        })
     }
 
     #[must_use]
@@ -603,13 +628,15 @@ impl RulesValue {
     }
 
     #[must_use]
-    pub const fn data(&self) -> &Value {
+    pub fn data(&self) -> &Value {
         &self.data
     }
 
+    /// The payload, moved out when this is its last holder and copied
+    /// otherwise.
     #[must_use]
     pub fn into_data(self) -> Value {
-        self.data
+        std::sync::Arc::try_unwrap(self.data).unwrap_or_else(|shared| (*shared).clone())
     }
 }
 
@@ -2944,6 +2971,35 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// **17b cut M3.6**: a clone shares the payload rather than copying it, and
+    /// the wire shape is the `Value` itself — the same bytes, the same
+    /// equality, the same round trip as before the payload was shared.
+    #[test]
+    fn rules_value_clones_share_the_payload_and_serialise_as_before() {
+        let reference = DefinitionRef::new(
+            DefinitionKey::new(owner("core"), kind("schema"), id("unit")),
+            1,
+            DefinitionDigest::from_bytes([1; 32]),
+        )
+        .unwrap();
+        let data = json!({"class": "II", "slots": 4, "governed": true});
+        let value = RulesValue::new(reference.clone(), data.clone()).unwrap();
+        let twin = value.clone();
+        assert!(std::sync::Arc::ptr_eq(&value.data, &twin.data), "shared");
+        assert_eq!(value, twin);
+        assert_eq!(value.data(), &data);
+        let encoded = serde_json::to_value(&value).unwrap();
+        assert_eq!(
+            encoded,
+            json!({ "schema": serde_json::to_value(&reference).unwrap(), "data": data }),
+            "the wire shape is unchanged"
+        );
+        let back: RulesValue = serde_json::from_value(encoded).unwrap();
+        assert_eq!(back, value);
+        assert_eq!(twin.into_data(), data, "a shared payload is copied out");
+        assert_eq!(back.into_data(), data, "a last holder moves it out");
     }
 
     #[test]

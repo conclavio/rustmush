@@ -113,6 +113,8 @@ const UNSIGNED: &str = "00000000000000000000000000000000000000000000000000000000
 ///
 /// **17b cut M3.1** moved `tacsim.pack.line_tank_laser` (version 3): a core
 /// component, the line core in the turret. Was `558a1cef…` at version 2.
+/// **17b cut M3.6** moved it again (version 4): the core consequence words,
+/// `destroy_core` on the turret. Was `e4f00866…` at version 3.
 const DIGESTS: [(&str, &str); 3] = [
     (
         "tacsim.pack.laser_charge",
@@ -124,7 +126,7 @@ const DIGESTS: [(&str, &str); 3] = [
     ),
     (
         "tacsim.pack.line_tank_laser",
-        "e4f008666f33da22ab4c3a66fec6fb3c9e0bf4da72438dcee3f1de30ac54affa",
+        "2d337792301e533d99317cb7898bfc43d1a4ff6be367128497aabc2bd8536293",
     ),
 ];
 
@@ -151,7 +153,10 @@ const PACK_FILES_BIPED: [&str; 1] = ["units/biped_mk1.json"];
 /// laser's: the sight, then the tank that mounts it.
 ///
 /// **17b cut M3.1** moved the tank's (version 3): a core component, the line
-/// core in the turret. Was `cecaa090…` at version 2.
+/// core in the turret. Was `cecaa090…` at version 2. **17b cut M3.6** moved
+/// it again (version 4): the core consequence words, `destroy_core` on the
+/// turret (and its note's M.4 sentence shortened to fit the 1,024-byte bound).
+/// Was `b9f0ce77…` at version 3.
 const DIGESTS_THERMAL: [(&str, &str); 2] = [
     (
         "tacsim.pack.thermal_mk1",
@@ -159,7 +164,7 @@ const DIGESTS_THERMAL: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_thermal",
-        "b9f0ce77fb0f82228341b17846ab16b0eba8d2234fa19355d8b2706f2940bdc3",
+        "45d2d86aba3418652cc2e7e71153b24586810b799d24ae64fa883671f48304e7",
     ),
 ];
 
@@ -170,7 +175,10 @@ const PACK_FILES_THERMAL: [&str; 2] = ["sensors/thermal_mk1.json", "units/line_t
 /// the pod's row, then the tank that carries it.
 ///
 /// **17b cut M3.1** moved the tank's (version 3): a core component, the line
-/// core in the turret. Was `227d8de5…` at version 2.
+/// core in the turret. Was `227d8de5…` at version 2. **17b cut M3.6** moved
+/// it again (version 4): the core consequence words, `destroy_core` on the
+/// turret (and its note's M.4 sentence shortened to fit the 1,024-byte bound).
+/// Was `77b9fcd2…` at version 3.
 const DIGESTS_ECM: [(&str, &str); 2] = [
     (
         "tacsim.pack.ecm_mk1",
@@ -178,7 +186,7 @@ const DIGESTS_ECM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_ecm",
-        "77b9fcd26cb97c97498fd13f62533ee98247cf76d8eb96d7b826d62049efee61",
+        "b65d68d1ab50270bda1913623f9173fccae770e3e754adcf3437d497a37e94e8",
     ),
 ];
 
@@ -190,7 +198,10 @@ const PACK_FILES_ECM: [&str; 2] = ["sensors/ecm_mk1.json", "units/line_tank_ecm.
 ///
 /// **17b cut M3.1** moved the tank's (version 3): a core component, the line
 /// core in the turret (and its note's M.4 sentence shortened to fit the
-/// 1,024-byte bound). Was `ba7bc418…` at version 2.
+/// 1,024-byte bound). Was `ba7bc418…` at version 2. **17b cut M3.6** moved
+/// it again (version 4): the core consequence words, `destroy_core` on the
+/// turret (and its note's condition-cell clause shortened to fit the bound).
+/// Was `b4be914c…` at version 3.
 const DIGESTS_ECCM: [(&str, &str); 2] = [
     (
         "tacsim.pack.eccm_mk1",
@@ -198,7 +209,7 @@ const DIGESTS_ECCM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_eccm",
-        "b4be914cec9033367a800c250cd222675f2e661fa3aae412193bd85391564215",
+        "b88da749f826d85c11e3951fc96e56a3e43ec8d0b5e0ed847e998c9eda163fc8",
     ),
 ];
 
@@ -261,7 +272,13 @@ const VISUAL_MK1_SIGNATURE: &str = concat!(
 /// the cut, the line core's minted definition is referenced by the tank's
 /// `core` component, so the cores pack's note wording — reworded to placement
 /// alone before it was ever committed — is part of this digest.)
-const LINE_TANK_DIGEST: &str = "b8fa366613da1a39345a0a74eacc662aba00f954213972bc4ff135aaa9ef74dc";
+///
+/// **17b cut M3.6 moved it a third time, with the content** (doc 17 §9,
+/// D-UM-34): `tacsim.pack.line_tank` version 4 authors the turret's
+/// `destroy_core` beside its `remove_weapons`, so the unit definition is a new
+/// one by content; the same refit rule takes a persisted `line_tank` to it.
+/// Was `b8fa366613da1a39345a0a74eacc662aba00f954213972bc4ff135aaa9ef74dc`.
+const LINE_TANK_DIGEST: &str = "6bfa9bdbb4f75724e77228ade042700d4bdce398d4facf98f92c746e30200714";
 
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
@@ -8622,14 +8639,20 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
 /// fit the 1,024-byte bound), the heavy to 3 (the command core in its hull),
 /// the Mk2 to 2 (the line core in its torso). Were `8c76e3b2…`, `86b6fbfb…`
 /// and `0a7346e0…`.
+///
+/// **17b cut M3.6** moved the first two again for the core consequence words:
+/// the scout to version 4 (`destroy_core` on its turret; two clauses of its
+/// note shortened to fit the bound), the heavy to 4 (`degrade_core` on its
+/// turret; its tracks sentence shortened). Were `294b4874…` and `6f08cfc9…`;
+/// the Mk2 carries no core word (its torso is `destroy_unit`) and is unmoved.
 const DIGESTS_CHASSIS: [(&str, &str); 3] = [
     (
         "tacsim.pack.scout_mk1",
-        "294b48743c9fd1e34ff01cfcab5240afdebcf714a3d40d72f6aa1f520724834d",
+        "b0d865e5e4b774f678a74fb81eeac115bb2a9b328540960a94bd0be700d6a36a",
     ),
     (
         "tacsim.pack.heavy_mk1",
-        "6f08cfc9129a9ebabecf4af0d826b9e6c37d16b9106e285f39249ba65679e590",
+        "162bed78096b89b4b77ec9f6ca19d11306b433ba9dc5cb59338d02ef1d7d6c04",
     ),
     (
         "tacsim.pack.biped_mk2",
@@ -8687,8 +8710,9 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
         );
         // 16b cut AE.2 moved the scout car and the heavy to version 2 (their
         // guns); 17b cut M3.1 moved all three one more for their cores — the
-        // scout and the heavy to 3, the Mk2 to 2 (was "1 else 2").
-        let version = if id == "tacsim.pack.biped_mk2" { 2 } else { 3 };
+        // scout and the heavy to 3, the Mk2 to 2 (was "1 else 2"); 17b cut
+        // M3.6 the scout and the heavy to 4 for the core words (was "2 else 3").
+        let version = if id == "tacsim.pack.biped_mk2" { 2 } else { 4 };
         assert_eq!(pack.manifest().version(), version, "{id}'s version");
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_CHASSIS.len());
@@ -10225,13 +10249,13 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
         (
             content::SCOUT_MK1_JSON,
             "tacsim.pack.scout_mk1",
-            3,
+            4,
             Some("tacsim.pack.autocannon_30"),
         ),
         (
             content::HEAVY_MK1_JSON,
             "tacsim.pack.heavy_mk1",
-            3,
+            4,
             Some("tacsim.pack.missile_lr"),
         ),
         (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2, None),

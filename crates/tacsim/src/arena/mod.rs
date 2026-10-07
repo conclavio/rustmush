@@ -331,7 +331,10 @@ pub use conditions::{
     STOCK_CONDITION_SLOTS, SlotTarget, aspect_in, aspect_mask, condition_is_lawful,
 };
 // 17b cut M3.1: the hardware under every mind.
-pub use core::{ClassTable, CoreClass, CoreHardware, CoreProfile, MAX_CONDITION_SLOTS, read_core};
+pub use core::{
+    ClassTable, CoreClass, CoreHardware, CoreProfile, MAX_CONDITION_SLOTS, fitted_with_core,
+    read_core,
+};
 pub use damage::{
     BLOCKED, COVER, DISPERSION, HULL_SECTION, MISS_REASONS, MOVED, REFUSED, TARGET_GONE, WRECK,
     WRECK_CONDITION, is_wreck,

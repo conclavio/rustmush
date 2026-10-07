@@ -1003,7 +1003,8 @@ impl Arena {
     ///   none held, no op.
     ///
     /// A unit with no core, or a list naming neither word (every shipped
-    /// chassis before 17b cut M3.6), builds nothing.
+    /// section but the line tanks', the scout's and the heavy's turrets, which
+    /// author them since 17b cut M3.6), builds nothing.
     fn core_ops(&self, target: ObjId, consequences: &[Consequence]) -> Vec<UnitMutationOp> {
         let mut ops: Vec<UnitMutationOp> = Vec::new();
         if !consequences.iter().any(|consequence| {
@@ -1068,8 +1069,26 @@ impl Arena {
     /// `The left_leg is destroyed: the tank is slowed; the tank cannot move.` is
     /// a contradiction whose second half the pilot would act on. So the notice's
     /// list is put through the same question [`Arena::apply_consequence`] asked.
-    /// The core's two words (17b cut M3.4) have no pair rule and read as fired;
-    /// the pilot's sentence words them from 17b cut M3.6.
+    ///
+    /// **17b cut M3.6** (doc 17 §9, D-UM-34): the core's two words, which the
+    /// pilot's sentence words from this cut (`its core is gone`, `its core is
+    /// degraded`), are put through the same question, asked of the tank as it
+    /// now stands — this is read after the impact's one plan is applied:
+    ///
+    /// * `destroy_core` fired iff the hull was fitted with a core
+    ///   ([`crate::arena::core::fitted_with_core`]) and holds none now — a
+    ///   hand-built or future coreless hull authoring the word is never told
+    ///   a core it never had is gone;
+    /// * `degrade_core` fired iff the hull still holds its core and it reads
+    ///   below the class it was sealed at (`UnitState.seal.core_class`) — a
+    ///   degrade at the floor (`Arena::core_ops` builds no op at Class 0) on
+    ///   a core sealed at Class 0 says nothing, and a degrade on a core the
+    ///   same list destroyed says only that it is gone.
+    ///
+    /// The debrief's fold asks the same two questions off the tape
+    /// (`crate::match_::report::OwnTank`). On the shipped content both always
+    /// fire the first time a turret goes: every chassis carrying the words is
+    /// fitted, and the heavy's Class III core is above the floor.
     #[must_use]
     pub fn fired_consequences(&self, target: ObjId, section: &str) -> Vec<SmolStr> {
         let Some(state) = self.unit(target) else {
@@ -1085,6 +1104,12 @@ impl Arena {
                 Consequence::DisableMotionWhenAllOf { sections } => {
                     self.all_destroyed(target, sections)
                 }
+                Consequence::DestroyCore => {
+                    crate::arena::core::fitted_with_core(&state.unit)
+                        && crate::arena::core::read_core(&state.unit).is_none()
+                }
+                Consequence::DegradeCore => crate::arena::core::read_core(&state.unit)
+                    .is_some_and(|core| core.class < state.seal.core_class),
                 _ => true,
             })
             .map(|consequence| SmolStr::new_static(consequence.label()))
@@ -1327,6 +1352,15 @@ impl Arena {
             EventKind::UnitDestroyed { unit: target, by },
             Vec::new(),
         ));
+        // **17b cut M3.6** (doc 17 §12, §13): the wreck's sortie closes now —
+        // `sortie_closed { destroyed }` at the destruction's millisecond, into
+        // the journal its `destroyed` line went to and right after it — and
+        // not at the match's end. When this destruction ends the match in the
+        // same substep, every other open sortie closes `match_end` before the
+        // end's line (`Arena::close_open_sorties`).
+        if let Some(close) = self.close_sortie(target, t_ms, crate::arena::mind::SORTIE_DESTROYED) {
+            journal.push(close);
+        }
     }
 
     /// **A unit with no weapons and no motion is disabled** (doc 16 §3.8; doc 10
@@ -2507,6 +2541,97 @@ mod tests {
         );
     }
 
+    /// **17b cut M3.6: the core's two words are told only where they are
+    /// true of the tank now** (doc 17 §9, D-UM-34; M3.4's hand-off): the
+    /// list `fired_consequences` hands the pilot's `SectionLost` notice, read
+    /// after the impact's one plan is applied —
+    ///
+    /// * a fitted line core destroyed: `[remove_weapons, destroy_core]`;
+    /// * the same authored list on a hull never fitted with a core:
+    ///   `[remove_weapons]` (no core is gone that was never there);
+    /// * `degrade_core` on the Class II core sealed at II, now I: told;
+    /// * `degrade_core` at the floor on a core sealed at Class 0 (no op
+    ///   built): not told;
+    /// * `[destroy_core, degrade_core]`: the core is gone, and only that is
+    ///   told (a gone core is not also degraded).
+    #[test]
+    fn m3_the_core_words_are_told_only_where_they_are_true_of_the_tank_now() {
+        use crate::arena::core::CoreClass;
+        let remove = || Consequence::RemoveWeapons {
+            section: SmolStr::new("turret"),
+        };
+        let words = |labels: &[&str]| -> Vec<SmolStr> {
+            labels.iter().map(|label| SmolStr::new(*label)).collect()
+        };
+
+        // Fitted and destroyed.
+        let mut arena = doctored(vec![remove(), Consequence::DestroyCore]);
+        kill_turret(&mut arena);
+        assert_eq!(
+            arena.fired_consequences(BLUE, "turret"),
+            words(&["remove_weapons", "destroy_core"])
+        );
+
+        // Never fitted: the same authored list, on a hull with no core
+        // component at all.
+        let mut arena = doctored(vec![remove(), Consequence::DestroyCore]);
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.unit = crate::arena::test_support::tactical_unit(BLUE);
+        }
+        assert_eq!(
+            arena.fired_consequences(BLUE, "turret"),
+            words(&["remove_weapons"]),
+            "a coreless hull is never told its core is gone"
+        );
+
+        // Degraded below its sealed class.
+        let mut arena = doctored(vec![remove(), Consequence::DegradeCore]);
+        kill_turret(&mut arena);
+        assert_eq!(
+            arena.core_of(BLUE).map(|core| core.class),
+            Some(CoreClass::I)
+        );
+        assert_eq!(
+            arena.fired_consequences(BLUE, "turret"),
+            words(&["remove_weapons", "degrade_core"])
+        );
+
+        // At the floor, sealed there: no op, no word.
+        let mut arena = doctored(vec![remove(), Consequence::DegradeCore]);
+        let addr = CellAddr::Component {
+            component: mush_tactics::ComponentId::new("core").expect("a component"),
+            cell: mush_tactics::CellId::new(crate::definitions::unit::CORE_CLASS_CELL)
+                .expect("a cell"),
+        };
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.unit = apply_ops(
+                &state.unit,
+                vec![UnitMutationOp::SetCell { addr, value: 0 }],
+            );
+            state.seal.core_class = CoreClass::Zero;
+        }
+        let ops = kill_turret(&mut arena);
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op, UnitMutationOp::AdjustCell { .. })),
+            "{ops:?}"
+        );
+        assert_eq!(
+            arena.fired_consequences(BLUE, "turret"),
+            words(&["remove_weapons"]),
+            "a degrade at the floor degraded nothing"
+        );
+
+        // Destroyed and degraded in one list: gone, and only that.
+        let mut arena = doctored(vec![Consequence::DestroyCore, Consequence::DegradeCore]);
+        kill_turret(&mut arena);
+        assert_eq!(arena.core_of(BLUE), None);
+        assert_eq!(
+            arena.fired_consequences(BLUE, "turret"),
+            words(&["destroy_core"])
+        );
+    }
+
     #[test]
     fn a_unit_enters_with_the_rounds_its_own_record_carries() {
         let fixture = line_tank_unit(BLUE);
@@ -2700,7 +2825,13 @@ mod tests {
         assert!(state.weapons.is_empty() && state.lock.is_none());
         assert_eq!(arena.contacts.of(BLUE).count(), 0, "a wreck holds nothing");
         assert!(arena.due.len() < before, "its scheduled work went");
-        assert_eq!(journal.len(), 1);
+        // `unit_destroyed`, and since 17b cut M3.6 the wreck's own
+        // `sortie_closed { destroyed }` right after it (was `1`).
+        assert_eq!(journal.len(), 2);
+        assert_eq!(
+            journal.get(1).map(|(t_ms, kind, _)| (*t_ms, kind.as_str())),
+            Some((500, "sortie_closed"))
+        );
         // `destroy_unit` is the arena's half; the M32 mark is the impact plan's, so a
         // wreck made this way carries the arena's flag and not yet the condition —
         // which is what `is_wreck` reads, and why the two are tested apart.

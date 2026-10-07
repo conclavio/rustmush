@@ -3185,6 +3185,16 @@ fn m1b3_an_order_hint_re_keys_only_to_a_classified_row() {
 /// minute ([`support::shipped_arena`]). No unit of either is a mind, so the
 /// fold's new section, the three new carried variants and the due loop's mind
 /// rule add nothing — and they add nothing.
+///
+/// **The cut's one declared re-bless** (17b cut M3.6: `mind_sealed` and
+/// `sortie_closed` shift the folded ledger sequence (`hash.rs:897`) of every
+/// match; the mind row's fold gains D-UM-23's answer, `dropped` and the seal
+/// digest; the chassis' core consequence words ride the hit lines and the
+/// pilot's sentence; every other byte's encoding is unchanged). Its three
+/// constants re-blessed here with `tests/reflex.rs`' and `tests/motor.rs`' (the
+/// same field and the same duel): `0x9da6_3882_e319_aec9` to
+/// `0x18df_dd94_73aa_5a36`, `0xdb4f_9096_c79f_b530` to `0x5689_35a8_5830_609d`,
+/// `0xd3e7_ee71_474b_6738` to `0xd25d_39ba_9b04_7064`.
 #[test]
 fn m1a5_the_production_hash_does_not_move() {
     let mut arena = arena_of(
@@ -3215,8 +3225,8 @@ fn m1a5_the_production_hash_does_not_move() {
     );
     let run = run(&mut arena, Drive::Every(1_000), 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
-    assert_eq!(run.hashes.first().copied(), Some(0x9da6_3882_e319_aec9));
-    assert_eq!(run.hashes.last().copied(), Some(0xdb4f_9096_c79f_b530));
+    assert_eq!(run.hashes.first().copied(), Some(0x18df_dd94_73aa_5a36));
+    assert_eq!(run.hashes.last().copied(), Some(0x5689_35a8_5830_609d));
     assert_eq!(run.counters.thinks, 0, "no mind thought");
 
     let world = support::booted_world();
@@ -3236,7 +3246,7 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(
         tacsim::arena::hash::state_hash(&duel),
-        0xd3e7_ee71_474b_6738,
+        0xd25d_39ba_9b04_7064,
         "the shipped duel's hash moved"
     );
     assert!(duel.minds.is_empty());
@@ -6477,8 +6487,29 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
 /// through `StockCard::as_reflex`: every ledger line `(t_ms, kind as JSON)`.
 /// (Its line hashes and substep hashes were recorded beside it and are
 /// retired: [`m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged`].)
+///
+/// **The cut's one declared re-bless** (17b cut M3.6: `mind_sealed` and
+/// `sortie_closed` shift the folded ledger sequence (`hash.rs:897`) of every
+/// match; the mind row's fold gains D-UM-23's answer, `dropped` and the seal
+/// digest; the chassis' core consequence words ride the hit lines and the
+/// pilot's sentence; every other byte's encoding is unchanged). Re-recorded
+/// here from 47 lines to 50: three `mind_sealed` lines after `match_started`
+/// (the record carries no hash; the run does not end and no turret dies), every
+/// other line byte-equal.
 const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
+    (
+        0,
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"8b3ec78c9d957865\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+    ),
+    (
+        0,
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"8b3ec78c9d957865\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+    ),
+    (
+        0,
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"8b3ec78c9d957865\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+    ),
     (
         4,
         "{\"kind\":\"detected\",\"viewer\":6,\"contact\":7330038967278110817,\"target\":4}",
@@ -6572,83 +6603,83 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
         "{\"kind\":\"hit\",\"shot_seq\":2,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:2\"}",
     ),
     (
-        10000,
+        10_000,
         "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]]}",
     ),
     (
-        11732,
+        11_732,
         "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":3,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
     ),
     (
-        11765,
+        11_765,
         "{\"kind\":\"impact\",\"shot_seq\":3,\"unit\":4,\"target\":9}",
     ),
     (
-        11765,
+        11_765,
         "{\"kind\":\"hit\",\"shot_seq\":3,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:3\"}",
     ),
     (
-        15000,
+        15_000,
         "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]]}",
     ),
     (
-        15732,
+        15_732,
         "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":4,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
     ),
     (
-        15765,
+        15_765,
         "{\"kind\":\"impact\",\"shot_seq\":4,\"unit\":4,\"target\":9}",
     ),
     (
-        15765,
+        15_765,
         "{\"kind\":\"hit\",\"shot_seq\":4,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:4\"}",
     ),
     (
-        19732,
+        19_732,
         "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":5,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
     ),
     (
-        19765,
+        19_765,
         "{\"kind\":\"impact\",\"shot_seq\":5,\"unit\":4,\"target\":9}",
     ),
     (
-        19765,
+        19_765,
         "{\"kind\":\"hit\",\"shot_seq\":5,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:5\"}",
     ),
     (
-        20000,
+        20_000,
         "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]]}",
     ),
     (
-        23732,
+        23_732,
         "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":6,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
     ),
     (
-        23765,
+        23_765,
         "{\"kind\":\"impact\",\"shot_seq\":6,\"unit\":4,\"target\":9}",
     ),
     (
-        23765,
+        23_765,
         "{\"kind\":\"hit\",\"shot_seq\":6,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:6\"}",
     ),
     (
-        25000,
+        25_000,
         "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]]}",
     ),
     (
-        27732,
+        27_732,
         "{\"kind\":\"fired\",\"unit\":4,\"weapon\":\"cannon\",\"shot_seq\":7,\"target\":9,\"range_cm\":4849,\"rounds\":1,\"by\":\"cond\",\"slot\":1}",
     ),
     (
-        27765,
+        27_765,
         "{\"kind\":\"impact\",\"shot_seq\":7,\"unit\":4,\"target\":9}",
     ),
     (
-        27765,
+        27_765,
         "{\"kind\":\"hit\",\"shot_seq\":7,\"unit\":4,\"target\":9,\"section\":\"hull\",\"facet\":\"front\",\"armor_section\":\"hull\",\"rounds\":1,\"damage\":120,\"armor_left\":0,\"internals_left\":0,\"cause\":\"shot:7\"}",
     ),
     (
-        30000,
+        30_000,
         "{\"kind\":\"position_summary\",\"units\":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]]}",
     ),
 ];

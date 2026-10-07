@@ -73,7 +73,8 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// [`EventKind::MindDropped`] (thirty-five) — defined in 17b cut M3.3 so the
 /// kind vocabulary is one reviewed diff; `mind_fault` and `mind_dropped`
 /// journalled since 17b cut M3.4 (`Arena::mind_think`, `Arena::mind_land`),
-/// `mind_sealed` and `sortie_closed` from M3.6.
+/// `mind_sealed` and `sortie_closed` since 17b cut M3.6 (`Arena::new`,
+/// `Arena::close_open_sorties` at the six end sites and `Arena::destroy_unit`).
 /// The rest are the
 /// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
 /// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
@@ -560,9 +561,10 @@ pub enum EventKind {
     },
     /// **A sortie opened under its seal** (17b cut M3.3 defines it; doc 17
     /// §13, §19; D-UM-45, D-UM-46): one line per unit at the match's opening,
-    /// so the ledger's digest attests which minds flew. **Journalled from 17b
-    /// cut M3.6** — the line shifts the folded ledger sequence of every match,
-    /// and that cut is the one that re-blesses.
+    /// so the ledger's digest attests which minds flew. **Journalled since 17b
+    /// cut M3.6** (`Arena::new`, in unit-id order right after `match_started`,
+    /// at 0 under the opening hash) — the line shifts the folded ledger
+    /// sequence of every match, and that cut is the one that re-blessed.
     MindSealed {
         /// The hull.
         unit: ObjId,
@@ -588,7 +590,9 @@ pub enum EventKind {
     /// **A sortie closed** (17b cut M3.3 defines it; doc 17 §12, §13): at the
     /// match's end (`match_end`, every open sortie, immediately before the
     /// end's own line) or at the hull's destruction (`destroyed`). Journalled
-    /// from 17b cut M3.6.
+    /// since 17b cut M3.6 (`Arena::close_open_sorties`, `Arena::destroy_unit`),
+    /// once per sortie (`SealRef::closed`); a ledger-full end and a void at
+    /// boot close nothing on the tape.
     SortieClosed {
         /// The hull.
         unit: ObjId,
@@ -1420,7 +1424,8 @@ mod tests {
                 unit: ObjId(9),
                 reason: SmolStr::new_static("not_mind"),
             },
-            // 17b cut M3.3: the four mind kinds, defined (none journalled yet).
+            // 17b cut M3.3: the four mind kinds (journalled since 17b cuts M3.4
+            // and M3.6).
             EventKind::MindSealed {
                 unit: ObjId(4),
                 sortie: SortieId::in_match(7, ObjId(4)),

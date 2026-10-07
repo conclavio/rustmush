@@ -854,7 +854,9 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     } else {
         assert!(first.contains("You flew BA: intact;"), "{first}");
         assert!(
-            first.contains("your turret destroyed: its weapons are gone."),
+            // 17b cut M3.6: and the line core the turret carried (was
+            // "your turret destroyed: its weapons are gone.").
+            first.contains("your turret destroyed: its weapons are gone; its core is gone."),
             "{first}"
         );
         assert!(!first.contains("your tank destroyed."), "{first}");

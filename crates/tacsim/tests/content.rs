@@ -93,7 +93,10 @@ const PACK_FILES: [&str; 9] = [
 ///
 /// **17b cut M3.1** added the cores pack and moved the line tank's, for a core
 /// component (the line core in the turret; version 3). Was `607a1d6c…` at
-/// version 2.
+/// version 2. **17b cut M3.6** moved the line tank's again for the core
+/// consequence words (`destroy_core` on the turret, and its note's M.4
+/// sentence shortened to fit the 1,024-byte bound; version 4). Was
+/// `2cdf945e…` at version 3.
 const DIGESTS: [(&str, &str); 10] = [
     (
         "tacsim.pack.he_105",
@@ -121,7 +124,7 @@ const DIGESTS: [(&str, &str); 10] = [
     ),
     (
         "tacsim.pack.line_tank",
-        "2cdf945e7b6422a3810b4726ec4bc257eae3493b05a260c62f83c494241b3b06",
+        "2d80e63eecf5167fc8d803746d507ae861db25c4d6d76dcdbe2fd5c1c4bff2b8",
     ),
     (
         "tacsim.pack.resolution",
@@ -1223,29 +1226,37 @@ fn m4_every_fielded_tanks_two_tracks_carry_the_pair_rule() {
 /// had to. The range's target fits no core (Class 0, the ROM alone) and is
 /// not moved. (Was `m4_the_five_tank_packs_are_version_two_and_the_biped_is_not_moved`:
 /// the five at 2 and the biped at 1.)
+///
+/// **17b cut M3.6** moved the seven that carry a core consequence word one
+/// version more (16b cut M.4's rule applied a second time in cut M3): the
+/// five line tanks and the scout 3 → 4 (`destroy_core` on the turret, where
+/// their core sits), the heavy 3 → 4 (`degrade_core` on the turret; its core
+/// sits in the hull). The bipeds and the drone carry no core word — their
+/// core's section is `destroy_unit` — and stay at 2. (Was
+/// `m4_the_tank_packs_are_version_three_and_every_chassis_but_the_target_moved`.)
 #[test]
-fn m4_the_tank_packs_are_version_three_and_every_chassis_but_the_target_moved() {
+fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
     let cores = mush_core::CanonicalId::new(content::CORES).expect("a canonical id");
     for (json, id, version) in [
-        (content::LINE_TANK_JSON, "tacsim.pack.line_tank", 3),
+        (content::LINE_TANK_JSON, "tacsim.pack.line_tank", 4),
         (
             content::LINE_TANK_LASER_JSON,
             "tacsim.pack.line_tank_laser",
-            3,
+            4,
         ),
         (
             content::LINE_TANK_THERMAL_JSON,
             "tacsim.pack.line_tank_thermal",
-            3,
+            4,
         ),
-        (content::LINE_TANK_ECM_JSON, "tacsim.pack.line_tank_ecm", 3),
+        (content::LINE_TANK_ECM_JSON, "tacsim.pack.line_tank_ecm", 4),
         (
             content::LINE_TANK_ECCM_JSON,
             "tacsim.pack.line_tank_eccm",
-            3,
+            4,
         ),
-        (content::HEAVY_MK1_JSON, "tacsim.pack.heavy_mk1", 3),
-        (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 3),
+        (content::HEAVY_MK1_JSON, "tacsim.pack.heavy_mk1", 4),
+        (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 4),
         (content::BIPED_MK1_JSON, "tacsim.pack.biped_mk1", 2),
         (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2),
         (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 2),

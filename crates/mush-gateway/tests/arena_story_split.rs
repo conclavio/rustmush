@@ -828,7 +828,10 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // match is over at the first — and that section is the certain one.
     let loser = strip_ansi(&bo.seen);
     let hull_went = loser.contains("The hull is destroyed: the tank is finished.");
-    let turret_went = loser.contains("The turret is destroyed: its weapons are gone.");
+    // 17b cut M3.6: the turret's line now ends with its core's words (was
+    // "The turret is destroyed: its weapons are gone.").
+    let turret_went =
+        loser.contains("The turret is destroyed: its weapons are gone; its core is gone.");
     assert!(
         hull_went != turret_went,
         "exactly one of the hull and the turret went (hull {hull_went}, turret {turret_went}):\n{loser}"
