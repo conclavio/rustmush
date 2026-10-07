@@ -21,13 +21,21 @@
 //!
 //! # One think
 //!
-//! 1. **A dropped job** (D-UM-32: three faults running,
-//!    `crate::arena::mind::MindState::dropped`; since 17b cut M3.1 also a
-//!    hull whose mind class is `Zero` — no core, or a core at Class 0 — from
-//!    its first think) is answered by the runner's
-//!    native stand-in — `NativeStockMind` on the match's doctrine, Standard
-//!    Doctrine's native body — with [`DROPPED_LINE`] as the whole trace. 17b
-//!    cut M3 replaces the stand-in with the ROM and a `MindDropped` line.
+//! 1. **A dropped job** (D-UM-32: three faults running, or a sealed core
+//!    gone, `crate::arena::mind::MindState::dropped`; since 17b cut M3.1 also
+//!    a hull whose mind class is `Zero` — no core, or a core at Class 0 — from
+//!    its first think) is answered by **the ROM** — the runner's native
+//!    stand-in, `NativeStockMind` on the match's doctrine (Standard
+//!    Doctrine's native body), at the job's own card and Class 0's row, which
+//!    is what the arena hands a dropped job — with [`DROPPED_LINE`] as the
+//!    whole trace, and charged no budget: no [`ThinkStat`] is recorded. **The
+//!    ROM is native by construction** (17b cut M3.4, the lead's ruling on
+//!    17b cut M2's stop): the scripted Standard Doctrine cannot run inside
+//!    Class 0's 400 operations, Gate A proved the native and the scripted
+//!    stock minds identical, D-UM-32 says the ROM cannot fault and D-UM-33
+//!    that a hull with no core runs only the ROM — so D-UM-32's "ceiling at
+//!    twice its measured worst case" is met vacuously. The arena journals
+//!    the drop (`mind_dropped`); the runner only answers.
 //! 2. Otherwise the think's context is opened ([`context::set`]) from the job —
 //!    the view and the map behind the job's own `Arc`s (cloned, never
 //!    copied), the seed, the hull, the sequence and the two clocks, the
@@ -39,10 +47,13 @@
 //!    and the per-think fee ([`FEE_THINK`]); the context is taken back
 //!    ([`context::take`]).
 //! 3. **The label rule** (D-UM-31), on BOTH ends of the call — a clean return
-//!    and a fault: the context's refusal word is read first (`type`,
-//!    `unknown`, `intents`, `limit`: the station's or the kernel's own word),
-//!    then its overflow flag (`intents`), then the sandbox's own fault's cause
-//!    word (`ops`, `limit`, `type`, `memory`, `panic`). Every refusal is
+//!    and a fault: since 17b cut M3.4 (`mush-mind`'s own order, M2's residual
+//!    settled) a sandbox [`Fault::Panic`] is read FIRST (`panic`: a native
+//!    function that panicked ends the think whatever the context latched
+//!    before it), then the context's refusal word (`type`, `unknown`,
+//!    `intents`, `limit`: the station's or the kernel's own word), then its
+//!    overflow flag (`intents`), then the sandbox's own fault's cause word
+//!    (`ops`, `limit`, `type`, `memory`). Every refusal is
 //!    raised through `mush_mind::system_error`, uncatchable by `try` and
 //!    latched for the think, so a refused think already ends a sandbox
 //!    `type` fault; reading the flags on the `Ok` end too is the second wall
@@ -86,8 +97,10 @@ use crate::arena::stock_mind::NativeStockMind;
 use crate::config::ArenaConfig;
 
 /// **The trace a dropped think answers** (D-UM-32; doc 17 §14): the whole of
-/// it, one line, in place of anything the script would have printed.
-pub const DROPPED_LINE: &str = "on doctrine: three faults running; Standard Doctrine's native stand-in thinks (M3 replaces it with the ROM)";
+/// it, one line, in place of anything the script would have printed — since
+/// 17b cut M3.4 the ROM's own words, whatever dropped the hull (three faults,
+/// a destroyed core, or no core at all).
+pub const DROPPED_LINE: &str = "on the ROM: Standard Doctrine, native, at Class 0";
 
 /// **One Rhai think's figures** (17b cut M2.7 reads them): which think, what
 /// it spent, whether it faulted and how long it took.
@@ -122,8 +135,9 @@ pub struct RhaiRunner {
     sandbox: Arc<Sandbox>,
     /// The script, compiled once on that sandbox under [`MIND_ABI`].
     compiled: Arc<Compiled>,
-    /// **What answers a dropped job** (D-UM-32): Standard Doctrine's native
-    /// body on the match's doctrine. 17b cut M3's ROM replaces it.
+    /// **What answers a dropped job — the ROM** (D-UM-32; 17b cut M3.4):
+    /// Standard Doctrine's native body on the match's doctrine, thinking at
+    /// the job's card and its Class 0 row.
     stand_in: NativeStockMind,
     /// The doctrine's think cadence, ms (`decide_ms()` in a script).
     decide_ms: u32,
@@ -227,10 +241,16 @@ impl RhaiRunner {
     }
 }
 
-/// **The label rule** (the file head's step 3; D-UM-31): the context's
-/// refusal word first, then its overflow, then the sandbox's own fault's
-/// cause word — or `None` for a clean think.
+/// **The label rule** (the file head's step 3; D-UM-31): a sandbox
+/// [`Fault::Panic`] first (17b cut M3.4), then the context's refusal word,
+/// then its overflow, then the sandbox's own fault's cause word — or `None`
+/// for a clean think.
 fn label(ctx: &ThinkContext, fault: Option<&Fault>) -> Option<&'static str> {
+    // 17b cut M3.4: a panic is the think's end whatever was latched before it
+    // — the refusal it latched never ended the think, the panic did.
+    if let Some(panicked @ Fault::Panic) = fault {
+        return Some(panicked.cause());
+    }
     if let Some(word) = ctx.refused {
         // `type`, `unknown`, `intents` or `limit` — each its own cause word.
         return Some(word);
@@ -317,19 +337,25 @@ mod tests {
 
     /// **The label rule on both ends** — a clean return with the refusal
     /// flag set still answers the flag's word (the second wall), an overflow
-    /// flag `intents`, a sandbox fault its own word; on every fault no
-    /// intents and the job's memory.
+    /// flag `intents`, a sandbox fault its own word — and, since 17b cut
+    /// M3.4, a sandbox `panic` before either flag; on every fault no intents
+    /// and the job's memory.
     #[test]
     fn the_label_rule_reads_the_flags_first_on_both_ends() {
         let mut ctx = context_on(view());
         assert_eq!(label(&ctx, None), None);
         assert_eq!(label(&ctx, Some(&Fault::Ops)), Some("ops"));
+        assert_eq!(label(&ctx, Some(&Fault::Panic)), Some("panic"));
         ctx.overflowed = true;
         assert_eq!(label(&ctx, None), Some("intents"));
-        assert_eq!(label(&ctx, Some(&Fault::Panic)), Some("intents"));
+        // 17b cut M3.4: the panic first (it was `intents` under M2's order).
+        assert_eq!(label(&ctx, Some(&Fault::Panic)), Some("panic"));
+        assert_eq!(label(&ctx, Some(&Fault::Ops)), Some("intents"));
         ctx.refused = Some(context::REFUSED_UNKNOWN);
         assert_eq!(label(&ctx, None), Some("unknown"));
         assert_eq!(label(&ctx, Some(&Fault::Limit)), Some("unknown"));
+        // 17b cut M3.4: and before a latched refusal.
+        assert_eq!(label(&ctx, Some(&Fault::Panic)), Some("panic"));
 
         // Through the runner: a refusal ends a fault, the memory handed back.
         let source = "fn think(v, c) { helm(5); this.k = 1; lock(999); }";
@@ -364,13 +390,21 @@ mod tests {
         assert!(stats.iter().all(|stat| stat.faulted && stat.think_seq == 3));
         assert!(runner.take_stats().is_empty(), "taken");
 
-        // A dropped job: the stand-in, one trace line, no stat.
+        // A dropped job: the stand-in, one trace line, no stat — the ROM at
+        // Class 0's row, as the arena hands a dropped job (17b cut M3.4).
+        let rom = crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::Zero);
         let dropped = ThinkJob {
             dropped: true,
+            profile: &rom,
             ..job
         };
         let result = runner.think(&dropped);
+        assert_eq!(
+            DROPPED_LINE, "on the ROM: Standard Doctrine, native, at Class 0",
+            "17b cut M3.4's words"
+        );
         assert_eq!(result.trace, vec![DROPPED_LINE.to_owned()]);
+        assert_eq!(result.fault, None, "the ROM cannot fault");
         let mut native = NativeStockMind::with(&ArenaConfig::default().reflex).think(&dropped);
         native.trace = vec![DROPPED_LINE.to_owned()];
         assert_eq!(result, native);
@@ -475,5 +509,86 @@ mod tests {
             assert_eq!(stats.len(), 1);
             assert!(stats.iter().all(|stat| stat.faulted), "{word}");
         }
+    }
+
+    /// **A panic is labelled before a latched refusal** (17b cut M3.4, the
+    /// label order settled as `mush-mind`'s own): a test-only native
+    /// `refuse_then_boom()` on a second sandbox latches exactly what
+    /// `lock(999)` latches — the `unknown` refusal, through the station's own
+    /// `context::refuse` — and then panics. The sandbox answers
+    /// `Fault::Panic`; under M2's order the latched `unknown` won, and under
+    /// this cut's the think is `panic`: no intents, the job's memory, a
+    /// faulted stat. The refusal alone, with no panic (`lock(999)`), is still
+    /// `unknown`.
+    #[test]
+    fn a_panic_is_labelled_before_a_latched_lock_refusal() {
+        use super::super::STOCK_OPS_PER_THINK;
+        use super::super::register_api;
+        use mush_mind::EngineLimits;
+
+        let sandbox = Arc::new(Sandbox::new(
+            &EngineLimits {
+                max_ops_backstop: STOCK_OPS_PER_THINK,
+            },
+            |engine| {
+                register_api(engine);
+                engine.register_fn("refuse_then_boom", || -> mush_mind::rhai::INT {
+                    let _ = context::with(|ctx| {
+                        let _ = context::refuse(ctx, context::REFUSED_UNKNOWN, "No such contact.");
+                    });
+                    panic!("boom")
+                });
+            },
+        ));
+        let seen = Arc::new(view());
+        let defined = Arc::new(map());
+        let held = card();
+        let job = ThinkJob {
+            unit: fixture::UNIT,
+            think_seq: 3,
+            t_ms: 5_000,
+            lands_ms: 5_100,
+            seed: 42,
+            dropped: false,
+            profile: &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
+            view: &seen,
+            memory: b"{\"k\":0}",
+            map: &defined,
+            card: &held,
+        };
+        let source = "fn think(v, c) { helm(5); this.k = 1; refuse_then_boom(); }";
+        let runner = RhaiRunner::on(
+            Arc::clone(&sandbox),
+            &ArenaConfig::default(),
+            source,
+            fixture::digest(source),
+        )
+        .expect("compiles")
+        .recording();
+        let result = runner.think(&job);
+        assert_eq!(
+            result.fault.map(|fault| fault.cause),
+            Some("panic".into()),
+            "the panic over the latched refusal"
+        );
+        assert!(result.intents.is_empty(), "nothing lands");
+        assert_eq!(result.memory, b"{\"k\":0}".to_vec(), "the memory kept");
+        let stats = runner.take_stats();
+        assert_eq!(stats.len(), 1);
+        assert!(stats.iter().all(|stat| stat.faulted));
+
+        // The refusal alone is still its own word.
+        let refusal = "fn think(v, c) { lock(999); }";
+        let alone = RhaiRunner::on(
+            sandbox,
+            &ArenaConfig::default(),
+            refusal,
+            fixture::digest(refusal),
+        )
+        .expect("compiles");
+        assert_eq!(
+            alone.think(&job).fault.map(|fault| fault.cause),
+            Some("unknown".into())
+        );
     }
 }

@@ -340,6 +340,17 @@ pub enum Consequence {
         /// section table.
         sections: Vec<CanonicalId>,
     },
+    /// **The hull's core loses one class** (17b cut M3.4; doc 17 §9,
+    /// D-UM-34): `{"kind": "degrade_core"}`. The engine lowers the core
+    /// component's `core_class` cell by one, never under its floor; the
+    /// shipped chassis author it from 17b cut M3.6 (the heavy's turret).
+    DegradeCore,
+    /// **The hull's core is destroyed** (17b cut M3.4; doc 17 §9, D-UM-34):
+    /// `{"kind": "destroy_core"}`. The engine revokes the `tacsim.core`
+    /// capability and a mind on the hull drops to the ROM; the shipped
+    /// chassis author it from 17b cut M3.6 (the line tanks' and the scout's
+    /// turret).
+    DestroyCore,
 }
 
 impl Consequence {
@@ -353,6 +364,8 @@ impl Consequence {
             Consequence::NoTurnToward { .. } => "no_turn_toward",
             Consequence::DisableMotion => "disable_motion",
             Consequence::DisableMotionWhenAllOf { .. } => "disable_motion_when_all_of",
+            Consequence::DegradeCore => "degrade_core",
+            Consequence::DestroyCore => "destroy_core",
         }
     }
 }

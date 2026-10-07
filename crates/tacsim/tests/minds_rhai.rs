@@ -4086,3 +4086,1409 @@ fn m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_ca
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 17b cut M3.4 — the faults, the ROM and the consequences (doc 17 §8, §9;
+// D-UM-31, D-UM-32, D-UM-33, D-UM-34)
+// ---------------------------------------------------------------------------
+
+/// The second gun the strikes gate's red carries: the cannon under another
+/// id, so its Class I core's two slots can both be armed.
+fn second_gun() -> WeaponSummary {
+    WeaponSummary {
+        id: SmolStr::new("gun2"),
+        ..cannon()
+    }
+}
+
+/// **The strikes gate's field**: the (j) field with the armed red carrying a
+/// second gun.
+fn two_gun_field() -> Arena {
+    let seeing = |mut unit: CustodyUnit| {
+        unit.sensor = Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        });
+        unit
+    };
+    arena_on(
+        vec![
+            seeing(tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon(), second_gun()],
+                Controller::Mind,
+            )),
+            seeing(tank(
+                RED2,
+                Team::Red,
+                centre(6, 10),
+                Vec::new(),
+                Controller::Mind,
+            )),
+            presenting(seeing(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ))),
+        ],
+        &[BLUE],
+        reflex_cfg(),
+    )
+}
+
+/// One `arm(...)` call that never fires: the lock, odds of 100%, every
+/// aspect, no reserve, no range bound.
+fn arm_never(weapon: &str) -> String {
+    format!("arm(\"{weapon}\", \"lock\", 1000, {ASPECTS_ANY}, 0, 0, 4294967295);")
+}
+
+/// **The strikes gate's mind** (M2.4's fault fixtures, three running): red's
+/// think 0 arms both guns (S1 the cannon, S2 the second gun) and writes
+/// `n`; think 1 locks a contact the view does not hold (`unknown`), think 2
+/// helms by a float (`type`), think 3 loops (`ops`, over Class I's 1,500).
+fn strikes_mind() -> String {
+    strikes_mind_arming("cannon", "gun2", false)
+}
+
+/// [`strikes_mind`] arming `first` in S1 and `second` in S2 at think 0 —
+/// and, with `boot`, starting the hull there too, so it is online when the
+/// ROM takes it.
+fn strikes_mind_arming(first: &str, second: &str, boot: bool) -> String {
+    let boot = if boot { "startup(); " } else { "" };
+    format!(
+        "fn think(v, c) {{
+    if v.unit != {red} {{ return; }}
+    if !(\"n\" in this) {{ this.n = 1; {boot}{first} {second} return; }}
+    let t = t_ms();
+    if t == {one} {{ lock(999); }}
+    if t == {two} {{ helm(1.5); }}
+    if t == {three} {{ loop {{ }} }}
+}}",
+        red = RED.0,
+        first = arm_never(first),
+        second = arm_never(second),
+        one = think_at(RED, 1),
+        two = think_at(RED, 2),
+        three = think_at(RED, 3),
+    )
+}
+
+/// A journalled line's JSON with its `mind_fault` cause and `mind_dropped`
+/// fault word blanked — what the strikes run and its overflow baseline share.
+fn without_words(json: &str) -> String {
+    let mut value: Json = serde_json::from_str(json).unwrap_or_default();
+    match value.get("kind").and_then(Json::as_str) {
+        Some("mind_fault") => value["cause"] = Json::from("-"),
+        Some("mind_dropped") => value["fault"] = Json::from("-"),
+        _ => {}
+    }
+    value.to_string()
+}
+
+/// **THE GATE FIXTURE: three injected faults drop a unit to the ROM** (17b
+/// cut M3.4; doc 17 §8, D-UM-31, D-UM-32; 17b §22's M3 gate). On the (j) rig
+/// with red carrying two guns, through `Arena::mind_think`:
+///
+/// * three `mind_fault` lines at the thinks' milliseconds with the cause
+///   words in order (`unknown`, `type`, `ops`) and ONE `mind_dropped {
+///   strikes, fault: ops, ops: 1500 }` at the third, under the third's hash;
+///   `dropped` is `Some(Strikes)` and the condition row, two slots armed
+///   before, is cut to one (the second gun's S2 gone);
+/// * the fourth and every later think is answered by the stand-in — equal
+///   to `NativeStockMind::think` on the same job at the Class 0 row, no
+///   fault, no `ThinkStat`, [`DROPPED_LINE`] the whole trace, the view at
+///   most 8 rows with odds on the lock's row only, `slots` 1 — and a clean
+///   think never un-drops (every later row still `Some(Strikes)`, the row
+///   never wider than one);
+/// * the substep hashes equal, pulse by pulse, the seventeen-intent
+///   overflow baseline — which journals the same four lines with the word
+///   `intents` through the same think arm — and every line of the two tapes
+///   is equal but the four lines' words: the fault's cause is the only
+///   thing the two paths differ in. (That a think's lines open no action
+///   hash and fill no lazy slot — so no LATER line's hash moves — is pinned
+///   where it can be seen, under each slot state, by `arena::mind`'s
+///   `m3_a_think_s_lines_fill_no_lazy_slot_and_share_a_taken_one`; both
+///   tapes here would move together.)
+/// * one event list and one hash sequence at 5,000, 1,000 and 500 ms.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m3_three_injected_faults_drop_a_unit_to_the_rom() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let source = strikes_mind();
+    let last = 7_i64;
+    let mut arena = two_gun_field();
+    let runner = rhai(&arena, &source);
+    let recorded = Recorded::on(runner.clone());
+    arena.mind_runner = recorded.clone();
+    let mut rig = Rig::new(arena);
+    let mut rows = Vec::new();
+    let mut widths = Vec::new();
+    while rig.arena.now_ms < think_at(RED, last) + SUBSTEP {
+        let _ = rig.pulse();
+        rows.push(rig.arena.minds.get(&RED).cloned().expect("red's row"));
+        widths.push((
+            rig.arena.now_ms,
+            rig.arena.conditions.slots(RED).len(),
+            rig.arena.conditions.slot_of(RED, "gun2"),
+        ));
+    }
+    let journal = rig.journal();
+    let lines: Vec<(i64, String, u64)> = journal
+        .iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let minded: Vec<&(i64, String, u64)> = lines
+        .iter()
+        .filter(|(_, json, _)| {
+            let (kind, _) = kind_and_unit(json);
+            kind == "mind_fault" || kind == "mind_dropped"
+        })
+        .collect();
+    let as_json = |json: &str| serde_json::from_str::<Json>(json).unwrap_or_default();
+    assert_eq!(
+        minded
+            .iter()
+            .map(|(t_ms, json, _)| (*t_ms, as_json(json)))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                think_at(RED, 1),
+                serde_json::json!({"kind": "mind_fault", "unit": RED.0, "think_seq": 1, "cause": "unknown"})
+            ),
+            (
+                think_at(RED, 2),
+                serde_json::json!({"kind": "mind_fault", "unit": RED.0, "think_seq": 2, "cause": "type"})
+            ),
+            (
+                think_at(RED, 3),
+                serde_json::json!({"kind": "mind_fault", "unit": RED.0, "think_seq": 3, "cause": "ops"})
+            ),
+            (
+                think_at(RED, 3),
+                serde_json::json!({"kind": "mind_dropped", "unit": RED.0, "cause": "strikes", "fault": "ops", "ops": 1500})
+            ),
+        ],
+        "the four lines"
+    );
+    assert_eq!(
+        minded.get(2).map(|line| line.2),
+        minded.get(3).map(|line| line.2),
+        "the drop rides the third fault's hash"
+    );
+    // The row: two slots armed before the drop, one after; dropped for good.
+    let drop_pulse = pulse_of_think(3);
+    let before = widths
+        .get(drop_pulse.saturating_sub(1))
+        .copied()
+        .expect("the pulse before the drop");
+    assert_eq!(
+        (before.1, before.2),
+        (2, Some(2)),
+        "two slots armed before the drop"
+    );
+    for (now_ms, width, gun2) in widths.iter().skip(drop_pulse) {
+        assert!(*width <= 1, "the ROM's one slot at {now_ms}: {width}");
+        assert_eq!(*gun2, None, "the second gun's slot cut at {now_ms}");
+    }
+    for (at, row) in rows.iter().enumerate().skip(drop_pulse) {
+        assert_eq!(
+            row.dropped,
+            Some(tacsim::arena::mind::DropCause::Strikes),
+            "a clean think never un-drops (pulse {at})"
+        );
+    }
+    // The stand-in, from think 4.
+    let rom = ClassTable::STOCK.row(CoreClass::Zero);
+    for n in 0..=3_u64 {
+        assert!(!recorded.think(RED, n).dropped, "think {n} is the script's");
+    }
+    for n in 4..=u64::try_from(last).unwrap_or(0) {
+        let think = recorded.think(RED, n);
+        assert!(think.dropped, "think {n} is the ROM's");
+        assert_eq!(think.profile, rom, "think {n} at Class 0's row");
+        assert_eq!(
+            (
+                think.profile.rows,
+                think.profile.odds_rows,
+                think.profile.slots
+            ),
+            (8, 0, 1)
+        );
+        assert!(think.view.contacts.len() <= 8, "think {n}: eight rows");
+        assert!(
+            think
+                .view
+                .contacts
+                .iter()
+                .all(|row| row.odds.is_empty() || Some(row.id) == think.view.lock),
+            "think {n}: the lock's odds only"
+        );
+        assert_eq!(think.result.fault, None, "the ROM cannot fault");
+        assert_eq!(think.result.trace, vec![DROPPED_LINE.to_owned()]);
+        let mut native = NativeStockMind::with(&rig.arena.arena_cfg.reflex).think(&think.job());
+        native.trace = vec![DROPPED_LINE.to_owned()];
+        assert_eq!(think.result, native, "the stand-in's think {n}");
+    }
+    assert!(
+        runner
+            .take_stats()
+            .iter()
+            .filter(|stat| stat.unit == RED)
+            .all(|stat| stat.think_seq <= 3),
+        "a dropped think records no ThinkStat"
+    );
+
+    // The baseline: M2.2's overflow path, answering the faulted thinks with
+    // seventeen intents and every other think as the Rhai run answered it.
+    let kept = recorded.kept();
+    let speed = IntentKind::Speed { cms: 300 };
+    let baseline = replay(&kept, |kept| ThinkResult {
+        intents: vec![speed.clone(); MIND_INTENTS_MAX + 1],
+        memory: kept.memory.clone(),
+        fault: None,
+        trace: Vec::new(),
+    });
+    let mut arena = two_gun_field();
+    arena.mind_runner = baseline;
+    let mut flow = Rig::new(arena);
+    for _ in 0..rows.len() {
+        let _ = flow.pulse();
+    }
+    assert_eq!(flow.hashes.len(), rig.hashes.len());
+    for (pulse, (rhai, overflow)) in rig.hashes.iter().zip(&flow.hashes).enumerate() {
+        assert_eq!(rhai, overflow, "the substep hashes of pulse {pulse}");
+    }
+    let flow_lines: Vec<(i64, String, u64)> = flow
+        .journal()
+        .iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    assert_eq!(
+        flow_lines
+            .iter()
+            .filter(|(_, json, _)| kind_and_unit(json).0 == "mind_fault")
+            .map(|(_, json, _)| as_json(json)["cause"].clone())
+            .collect::<Vec<_>>(),
+        vec![Json::from("intents"); 3],
+        "the overflow's word"
+    );
+    let blank = |lines: &[(i64, String, u64)]| {
+        lines
+            .iter()
+            .map(|(t_ms, json, hash)| (*t_ms, without_words(json), *hash))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        blank(&lines),
+        blank(&flow_lines),
+        "every other line, and every hash, as the baseline's"
+    );
+
+    // One event list and one hash sequence at three cadences.
+    let tempo = |cadence_ms: i64| {
+        let mut arena = two_gun_field();
+        arena.mind_runner = rhai(&arena, &source);
+        run(&mut arena, Drive::Every(cadence_ms), 10_000)
+    };
+    let slow = tempo(5_000);
+    assert_eq!(
+        slow.events
+            .iter()
+            .filter(|(_, json, _)| kind_and_unit(json).0 == "mind_dropped")
+            .count(),
+        1
+    );
+    for cadence in [1_000, 500] {
+        let other = tempo(cadence);
+        assert_eq!(other.events, slow.events, "the event list at {cadence} ms");
+        assert_eq!(
+            other.hashes, slow.hashes,
+            "the hash sequence at {cadence} ms"
+        );
+        assert_ne!(other.pulses, slow.pulses);
+    }
+}
+
+/// **The ROM arms its own gun in the slot the failed mind left on another**
+/// (17b cut M3.4; D-UM-32: the ROM at the fallback preset). The strikes
+/// gate's run with the arming order reversed — the failed mind's think 0
+/// arms the SECOND gun in S1 and the cannon (the hull's first weapon) in
+/// S2, and starts the hull, so the ROM's first think (4) is engaged and
+/// arms at once rather than disarming an offline hull — so the drop's cut
+/// to Class 0's one slot keeps S1 on the second gun, on the failed mind's
+/// terms, when the ROM first arms:
+///
+/// * before the drop S1 is the second gun and S2 the cannon; at the drop
+///   the row is one slot, the second gun's;
+/// * a ROM think arms the cannon (the hull's first weapon, `arming_for`),
+///   and from its landing on S1 is the cannon's on the ROM's own terms
+///   (the card's odds, not the failed mind's 100%) and the second gun holds
+///   no slot — where the arming alone would be refused `NoSlot` at every
+///   ROM think, the second gun firing on terms the ROM never set;
+/// * no ROM think's view carries a `NoSlot` refusal;
+/// * one event list and one hash sequence at 5,000, 1,000 and 500 ms.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m3_the_rom_arms_its_first_gun_where_the_failed_mind_left_another() {
+    let source = strikes_mind_arming("gun2", "cannon", true);
+    let last = 7_i64;
+    let mut arena = two_gun_field();
+    let recorded = Recorded::on(rhai(&arena, &source));
+    arena.mind_runner = recorded.clone();
+    let mut rig = Rig::new(arena);
+    let mut rows: Vec<(i64, Vec<Option<FireCondition>>)> = Vec::new();
+    while rig.arena.now_ms < think_at(RED, last) + SUBSTEP {
+        let _ = rig.pulse();
+        rows.push((rig.arena.now_ms, rig.arena.conditions.slots(RED).to_vec()));
+    }
+    assert_eq!(
+        rig.arena.minds.get(&RED).and_then(|state| state.dropped),
+        Some(tacsim::arena::mind::DropCause::Strikes)
+    );
+    let weapons = |row: &[Option<FireCondition>]| -> Vec<Option<String>> {
+        row.iter()
+            .map(|slot| slot.as_ref().map(|cond| cond.weapon.to_string()))
+            .collect()
+    };
+    let drop_pulse = pulse_of_think(3);
+    let before = rows
+        .get(drop_pulse.saturating_sub(1))
+        .map(|(_, row)| weapons(row))
+        .expect("the pulse before the drop");
+    assert_eq!(
+        before,
+        vec![Some("gun2".to_owned()), Some("cannon".to_owned())],
+        "the failed mind's two slots"
+    );
+    let at_drop = rows
+        .get(drop_pulse)
+        .map(|(_, row)| weapons(row))
+        .expect("the drop's pulse");
+    assert_eq!(at_drop, vec![Some("gun2".to_owned())], "S1 kept at the cut");
+    // The ROM's arming of the cannon, and its landing.
+    let arms_cannon = |kept: &Kept| {
+        kept.result.intents.iter().any(|intent| {
+            matches!(
+                intent,
+                IntentKind::Condition(Arming::Arm(cond)) if cond.weapon == "cannon"
+            )
+        })
+    };
+    let first_rom_arming = (4..=u64::try_from(last).unwrap_or(0))
+        .map(|n| recorded.think(RED, n))
+        .find(|kept| kept.dropped && arms_cannon(kept))
+        .expect("a ROM think arms the hull's first gun");
+    let landed = rows
+        .iter()
+        .filter(|(now_ms, _)| *now_ms > first_rom_arming.lands_ms)
+        .collect::<Vec<_>>();
+    assert!(!landed.is_empty(), "the run reaches past the landing");
+    for (now_ms, row) in landed {
+        assert_eq!(
+            weapons(row),
+            vec![Some("cannon".to_owned())],
+            "S1 the ROM's cannon at {now_ms}"
+        );
+        assert!(
+            row.iter().flatten().all(|cond| cond.min_permille < 1_000),
+            "on the ROM's terms at {now_ms}"
+        );
+    }
+    for n in 4..=u64::try_from(last).unwrap_or(0) {
+        let kept = recorded.think(RED, n);
+        assert!(
+            !kept.view.notices.iter().any(|notice| matches!(
+                notice,
+                FrameNotice::Refused {
+                    refusal: Refusal::NoSlot,
+                    ..
+                }
+            )),
+            "think {n} read a NoSlot refusal"
+        );
+    }
+
+    // One event list and one hash sequence at three cadences.
+    let tempo = |cadence_ms: i64| {
+        let mut arena = two_gun_field();
+        arena.mind_runner = rhai(&arena, &source);
+        run(&mut arena, Drive::Every(cadence_ms), 10_000)
+    };
+    let slow = tempo(5_000);
+    assert_eq!(
+        slow.events
+            .iter()
+            .filter(|(_, json, _)| kind_and_unit(json).0 == "mind_dropped")
+            .count(),
+        1
+    );
+    for cadence in [1_000, 500] {
+        let other = tempo(cadence);
+        assert_eq!(other.events, slow.events, "the event list at {cadence} ms");
+        assert_eq!(
+            other.hashes, slow.hashes,
+            "the hash sequence at {cadence} ms"
+        );
+    }
+}
+
+// --- the core's two consequences, on doctored hulls ------------------------
+
+/// A canonical id.
+fn canonical(id: &str) -> mush_core::CanonicalId {
+    mush_core::CanonicalId::new(id).expect("a canonical id")
+}
+
+/// **The fielded catalog with `chassis`' turret list doctored to `turret`**
+/// (17b cut M3.4): the shipped content's authored unit, its turret section's
+/// consequences replaced — the words no shipped chassis carries before 17b
+/// cut M3.6 — so `unit_profile` decodes them through `consequence_of`.
+fn doctored_catalog(
+    chassis: &str,
+    turret: Vec<tacsim::definitions::unit::Consequence>,
+) -> tacsim::definitions::Catalog {
+    let mut catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let spec = catalog
+        .specs
+        .get_mut(&canonical(chassis))
+        .expect("the chassis' entry");
+    let section = spec
+        .sections
+        .iter_mut()
+        .find(|section| section.id.as_str() == "turret")
+        .expect("a turret");
+    section.consequences = turret;
+    catalog
+}
+
+/// **A doctored hull** (`tests/match_lifecycle.rs`' shape): the chassis'
+/// binding instantiated as `id` and checked out through
+/// `tacsim::match_::custody_unit` on the doctored catalog, at (2, 8) — then
+/// every band's table sent to the turret alone (so the shooter's one round
+/// finds it), every gun the turret carried remounted on the hull, and
+/// `extra` hull guns added (each a copy of the cannon under its own id),
+/// sealed again as it now stands.
+fn doctored_hull(
+    catalog: &tacsim::definitions::Catalog,
+    chassis: &str,
+    id: ObjId,
+    controller: Controller,
+    keep_turret_guns: &[&str],
+    extra: &[&str],
+) -> CustodyUnit {
+    let key = canonical(chassis);
+    let spec = catalog.specs.get(&key).expect("the chassis' spec");
+    let binding = catalog.bindings.get(&key).expect("the chassis' binding");
+    let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("a unit");
+    let mut unit = tacsim::match_::custody_unit(
+        catalog,
+        cells,
+        id,
+        Team::Red,
+        centre(2, 8),
+        0,
+        controller,
+        0,
+        &tacsim::match_::SealTerms::fixture(),
+    )
+    .expect("the fixture terms seal");
+    for band in &mut unit.profile.bands {
+        band.sections = vec![(SmolStr::new("turret"), 1)];
+    }
+    let template = unit.weapons.first().cloned().expect("a gun");
+    for weapon in &mut unit.weapons {
+        if !keep_turret_guns.contains(&weapon.id.as_str()) {
+            weapon.mount_section = SmolStr::new("hull");
+        }
+    }
+    for gun in extra {
+        unit.weapons.push(WeaponSummary {
+            id: SmolStr::new(*gun),
+            mount_section: SmolStr::new("hull"),
+            ..template.clone()
+        });
+    }
+    unit.reseal(&tacsim::match_::SealTerms::fixture())
+        .expect("the fixture terms seal");
+    unit
+}
+
+/// The seated blue's beam, heavy enough to take a turret through its plate
+/// and internals in one round.
+fn heavy_beam() -> WeaponSummary {
+    WeaponSummary {
+        damage: 1_000,
+        ..beam()
+    }
+}
+
+/// **The consequence field**: the doctored `victim` and the seated blue at
+/// (9, 8) with the heavy beam and the (j) field's ten-cell sight; `seated`
+/// pilots the victim too.
+fn consequence_field(victim: CustodyUnit, seated: bool) -> Arena {
+    let id = victim.id;
+    let blue = CustodyUnit {
+        sensor: Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        }),
+        ..tank(
+            BLUE,
+            Team::Blue,
+            centre(9, 8),
+            vec![heavy_beam()],
+            Controller::Pilot,
+        )
+    }
+    .sealed();
+    let pilots: Vec<ObjId> = if seated { vec![id, BLUE] } else { vec![BLUE] };
+    arena_on(vec![victim, blue], &pilots, reflex_cfg())
+}
+
+/// One order at epoch 1.
+fn order(unit: ObjId, kind: IntentKind, seq: u64) -> tacsim::arena::intents::Intent {
+    tacsim::arena::intents::Intent {
+        unit,
+        channel: kind.channel_required(),
+        epoch: 1,
+        kind,
+        seq,
+    }
+}
+
+/// The seated blue's orders against `victim`: its startup at 0, and at
+/// [`GATE_END`] a lock and the beam, resolved AT 5,000 at every cadence (in
+/// [`beats`]' pulse of no wall time) — the beam's impact a due event at
+/// 5,000, applied in the substep after.
+fn shooter_orders(victim: ObjId, wall: i64) -> Vec<tacsim::arena::intents::Intent> {
+    match wall {
+        0 => vec![order(BLUE, IntentKind::Startup, 1)],
+        GATE_END => vec![
+            order(
+                BLUE,
+                IntentKind::Lock {
+                    contact: tacsim::arena::rng::draw_contact_id(SEED, BLUE, victim),
+                },
+                2,
+            ),
+            order(
+                BLUE,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("laser"),
+                    slot: None,
+                },
+                3,
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// What one beat run produced: every line as `(t_ms, json, hash)` and every
+/// substep hash.
+type BeatRun = (Vec<(i64, String, u64)>, Vec<u64>);
+
+/// Step `arena` on the walls `0, cadence, …` through `until`, the tempo
+/// pinned; `after` sees the arena after every pulse.
+///
+/// **Each wall's `orders` go in a pulse of no wall time of their own**, after
+/// the pulse that brought the arena to that wall — `tests/weapons.rs`'
+/// `replay`'s rule, and for its reason: an order handed to an advancing
+/// pulse is queued at that pulse's head, so it sits in the state the
+/// pulse's earlier substeps hash, and a 5,000 ms pulse would hash it where
+/// a 500 ms one does not. Delivered at `dt = 0`, phase 4 resolves it at
+/// exactly the wall's millisecond at every cadence and every substep hash
+/// before it is the cadence's own; what it schedules (a beam's impact at
+/// that millisecond) is a due event, applied in the next substep.
+fn beats(
+    arena: &mut Arena,
+    cadence: i64,
+    until: i64,
+    orders: &dyn Fn(i64) -> Vec<tacsim::arena::intents::Intent>,
+    after: &mut dyn FnMut(&Arena, &StepOutput),
+) -> BeatRun {
+    let (mut bytes, mut hashes) = (Vec::new(), Vec::new());
+    let mut wall = 0;
+    while wall <= until {
+        for (at, due) in [Vec::new(), orders(wall)].into_iter().enumerate() {
+            if at == 1 && due.is_empty() {
+                continue;
+            }
+            arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+            let out = arena.step(wall, &[], &due);
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            hashes.extend(arena.substep_hashes.iter().copied());
+            after(arena, &out);
+        }
+        wall += cadence;
+    }
+    let lines = events(arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    (lines, hashes)
+}
+
+/// The lines of one kind, as `(t_ms, json, hash)`.
+fn of_kind<'a>(lines: &'a [(i64, String, u64)], kind: &str) -> Vec<&'a (i64, String, u64)> {
+    lines
+        .iter()
+        .filter(|(_, json, _)| kind_and_unit(json).0 == kind)
+        .collect()
+}
+
+/// **The consequence fixtures' mind**, for `unit`: its first think starts
+/// the hull; its first think online drives it toward (2, 14) and arms the
+/// coax (S1), the cannon (S2) and the bow gun (S3) on terms that never fire;
+/// its first think after 4,000 locks the first contact it holds — so for a
+/// hull whose think falls in `(4_750, 5_000)` that lock is the think IN
+/// FLIGHT when the turret dies at 5,000.
+fn core_mind(unit: ObjId) -> String {
+    format!(
+        "fn think(v, c) {{
+    if v.unit != {unit} {{ return; }}
+    if !(\"on\" in this) {{ this.on = t_ms(); startup(); return; }}
+    if v.power != \"online\" {{ return; }}
+    if !(\"sent\" in this) {{ this.sent = t_ms(); goto([2, 14]); {coax} {cannon} {bow} return; }}
+    if t_ms() > 4000 && !(\"locked\" in this) {{
+        for k in v.contacts {{ if !(\"locked\" in this) {{ this.locked = t_ms(); lock(k.id); }} }}
+    }}
+}}",
+        unit = unit.0,
+        coax = arm_never("machine_gun"),
+        cannon = arm_never("cannon"),
+        bow = arm_never("bow"),
+    )
+}
+
+/// **A doctored line tank** for `id`: the turret list `turret`, the cannon
+/// kept in the turret, the coax remounted on the hull and a `bow` gun added
+/// on it.
+fn doctored_line_tank(
+    id: ObjId,
+    controller: Controller,
+    turret: Vec<tacsim::definitions::unit::Consequence>,
+) -> CustodyUnit {
+    let catalog = doctored_catalog("tacsim.unit.line_tank", turret);
+    doctored_hull(
+        &catalog,
+        "tacsim.unit.line_tank",
+        id,
+        controller,
+        &["cannon"],
+        &["bow"],
+    )
+}
+
+/// The authored `[remove_weapons, destroy_core]`.
+fn destroy_words() -> Vec<tacsim::definitions::unit::Consequence> {
+    use tacsim::definitions::unit::Consequence as Authored;
+    vec![
+        Authored::RemoveWeapons {
+            section: canonical("turret"),
+        },
+        Authored::DestroyCore,
+    ]
+}
+
+/// A consequence field with `victim` flown by [`core_mind`], recorded.
+fn core_mind_field(victim: CustodyUnit) -> (Arena, Arc<Recorded>) {
+    let id = victim.id;
+    let mut arena = consequence_field(victim, false);
+    let recorded = Recorded::on(rhai(&arena, &core_mind(id)));
+    arena.mind_runner = recorded.clone();
+    (arena, recorded)
+}
+
+/// One run of a [`core_mind_field`] at `cadence` to `until`.
+fn core_run(victim: CustodyUnit, cadence: i64, until: i64) -> BeatRun {
+    let id = victim.id;
+    let (mut arena, _) = core_mind_field(victim);
+    beats(
+        &mut arena,
+        cadence,
+        until,
+        &|wall| shooter_orders(id, wall),
+        &mut |_, _| {},
+    )
+}
+
+/// **THE GATE FIXTURE: `destroy_core` drops one at its next landing, at
+/// three cadences** (17b cut M3.4; doc 17 §8, §9; D-UM-9, D-UM-32,
+/// D-UM-34). A scripted mind ([`core_mind`]) on a DOCTORED line tank whose
+/// turret list carries `[remove_weapons, destroy_core]` ([`doctored_hull`]:
+/// every band strikes the turret; the coax and a bow gun on the hull), the
+/// seated blue's heavy beam killing the turret at 5,000:
+///
+/// 1. **A think in flight.** The hull is unit 17, its think at 4,945
+///    locking blue — in flight when the round lands at 5,000 — and landing
+///    at 5,195:
+///    * the `hit` at 5,000 carries `remove_weapons` and `destroy_core`, and
+///      after it the hull holds no core;
+///    * the think in flight LANDS as thought: its `locked` line at 5,195;
+///    * ONE `mind_dropped { core }` on the whole tape, at 5,195, under the
+///      landing's own hash (the `locked` line's), with no fault and no
+///      budget;
+///    * the row, S1 the coax, S2 the cannon and S3 the bow before, is cut
+///      to the ROM's one: the cannon's slot gone with the turret
+///      (`remove_weapons` first), the bow's cut, the coax kept;
+///    * the next think (5,945) is the ROM's — dropped, at Class 0's row,
+///      [`DROPPED_LINE`] its trace — and the think at 4,945 was not;
+///    * the hull's `DRIVE` goal and desired speed survive the drop: equal,
+///      at 5,250, to a control whose turret carries `remove_weapons` alone
+///      (which never drops);
+///    * one event list and one hash sequence at 5,000, 1,000 and 500 ms.
+/// 2. **No think in flight.** A hull whose think falls in `(4_100, 4_700)`
+///    of its second (its lock landed before the round): the drop is at its
+///    NEXT think's millisecond, that think already the ROM's; one line; one
+///    event list and one hash sequence at three cadences.
+/// 3. **A pilot's hull.** The doctored line tank seated, its turret killed:
+///    the `hit` carries `destroy_core` and the core is gone, but no mind row
+///    and no `mind_dropped` line, ever; and at 10,000 the pilot's verbs are
+///    answered — a speed taken, the cannon's `FIRE` refused by name, an
+///    arming of the coax laid in S1 (Class 0's one slot).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m3_destroy_core_drops_one_at_its_next_landing_at_three_cadences() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    use tacsim::definitions::unit::Consequence as Authored;
+    // (1) A think in flight.
+    let victim = GATE_UNIT;
+    let stagger = stagger_ms(SEED, victim, STOCK_THINK_MS);
+    let think = GATE_END - STOCK_THINK_MS + stagger;
+    assert!(
+        GATE_END - SUBSTEP < think && think < GATE_END,
+        "unit 17's think is in flight at 5,000: {think}"
+    );
+    let lands = think + SUBSTEP;
+    let (mut arena, recorded) = core_mind_field(doctored_line_tank(
+        victim,
+        Controller::Mind,
+        destroy_words(),
+    ));
+    assert_eq!(
+        arena.unit(victim).map(|state| state.seal.core_class),
+        Some(CoreClass::II),
+        "the line core, sealed"
+    );
+    // The hull's row, its motor goal and its desired speed.
+    type Seen = (Vec<Option<String>>, Option<(u16, u16)>, i32);
+    let mut before: Option<Seen> = None;
+    let mut after: Option<Seen> = None;
+    let mut snap = |arena: &Arena, _: &StepOutput| {
+        let seen = (
+            arena
+                .conditions
+                .slots(victim)
+                .iter()
+                .map(|slot| slot.as_ref().map(|cond| cond.weapon.to_string()))
+                .collect(),
+            arena.motors.row(victim).and_then(|row| row.goal),
+            arena
+                .unit(victim)
+                .map_or(0, |state| state.desired_speed_cms),
+        );
+        // The round is resolved by the phase 4 of the pulse ENDING at 5,000,
+        // so the last picture before it is the pulse ending at 4,750.
+        if arena.now_ms == GATE_END - SUBSTEP {
+            before = Some(seen);
+        } else if arena.now_ms == GATE_END + SUBSTEP {
+            after = Some(seen);
+        }
+    };
+    let (lines, _) = beats(
+        &mut arena,
+        SUBSTEP,
+        7_000,
+        &|wall| shooter_orders(victim, wall),
+        &mut snap,
+    );
+    let hits = of_kind(&lines, "hit");
+    assert_eq!(hits.len(), 1, "one round: {hits:?}");
+    let hit: Json = serde_json::from_str(&hits[0].1).unwrap_or_default();
+    assert_eq!(hits[0].0, GATE_END);
+    assert_eq!(
+        hit["consequences"],
+        serde_json::json!(["remove_weapons", "destroy_core"]),
+        "the hit carries the word: {hit}"
+    );
+    assert_eq!(arena.core_of(victim), None, "the capability is gone");
+    let locked: Vec<_> = of_kind(&lines, "locked")
+        .into_iter()
+        .filter(|(_, json, _)| kind_and_unit(json).1 == Some(victim.0))
+        .collect();
+    assert_eq!(
+        locked.iter().map(|line| line.0).collect::<Vec<_>>(),
+        vec![lands],
+        "the think in flight landed as thought"
+    );
+    let dropped = of_kind(&lines, "mind_dropped");
+    assert_eq!(dropped.len(), 1, "one drop on the whole tape: {dropped:?}");
+    assert_eq!(dropped[0].0, lands, "at the landing's millisecond");
+    assert_eq!(
+        serde_json::from_str::<Json>(&dropped[0].1).unwrap_or_default(),
+        serde_json::json!({"kind": "mind_dropped", "unit": victim.0, "cause": "core"})
+    );
+    assert_eq!(dropped[0].2, locked[0].2, "under the landing's hash");
+    assert_eq!(
+        arena.minds.get(&victim).and_then(|state| state.dropped),
+        Some(tacsim::arena::mind::DropCause::Core)
+    );
+    let (slots_before, goal_before, _) = before.clone().expect("the pulse ending at 4,750");
+    assert_eq!(
+        slots_before,
+        vec![
+            Some("machine_gun".to_owned()),
+            Some("cannon".to_owned()),
+            Some("bow".to_owned()),
+            None
+        ],
+        "three slots armed before the kill, in a row the line core's four wide"
+    );
+    assert_eq!(goal_before, Some((2, 14)), "the hull is driving");
+    let (slots_after, goal_after, speed_after) = after.clone().expect("the pulse ending at 5,250");
+    assert_eq!(
+        slots_after,
+        vec![Some("machine_gun".to_owned())],
+        "the row cut to the ROM's one"
+    );
+    let first_rom = recorded.think(victim, 5);
+    assert_eq!(first_rom.t_ms, think + STOCK_THINK_MS);
+    assert!(first_rom.dropped, "the next think is the ROM's");
+    assert_eq!(first_rom.profile, ClassTable::STOCK.row(CoreClass::Zero));
+    assert_eq!(first_rom.result.trace, vec![DROPPED_LINE.to_owned()]);
+    let in_flight = recorded.think(victim, 4);
+    assert_eq!(in_flight.t_ms, think);
+    assert!(!in_flight.dropped, "the think in flight was the script's");
+    // The control: the same field, the turret carrying `remove_weapons`
+    // alone — no drop — has the same goal and desired speed at 5,250.
+    let (mut control, _) = core_mind_field(doctored_line_tank(
+        victim,
+        Controller::Mind,
+        vec![Authored::RemoveWeapons {
+            section: canonical("turret"),
+        }],
+    ));
+    let mut held: Option<(Option<(u16, u16)>, i32)> = None;
+    let (control_lines, _) = beats(
+        &mut control,
+        SUBSTEP,
+        GATE_END + SUBSTEP,
+        &|wall| shooter_orders(victim, wall),
+        &mut |arena: &Arena, _: &StepOutput| {
+            if arena.now_ms == GATE_END + SUBSTEP {
+                held = Some((
+                    arena.motors.row(victim).and_then(|row| row.goal),
+                    arena
+                        .unit(victim)
+                        .map_or(0, |state| state.desired_speed_cms),
+                ));
+            }
+        },
+    );
+    assert!(of_kind(&control_lines, "mind_dropped").is_empty());
+    assert_eq!(
+        held,
+        Some((goal_after, speed_after)),
+        "the DRIVE goal and desired speed survive the drop"
+    );
+    assert_eq!(goal_after, Some((2, 14)));
+    // Three cadences.
+    let slow = core_run(
+        doctored_line_tank(victim, Controller::Mind, destroy_words()),
+        5_000,
+        10_000,
+    );
+    assert_eq!(of_kind(&slow.0, "mind_dropped").len(), 1);
+    for cadence in [1_000, 500] {
+        let other = core_run(
+            doctored_line_tank(victim, Controller::Mind, destroy_words()),
+            cadence,
+            10_000,
+        );
+        assert_eq!(other.0, slow.0, "the event list at {cadence} ms");
+        assert_eq!(other.1, slow.1, "the hash sequence at {cadence} ms");
+    }
+
+    // (2) No think in flight: a hull whose think lands before the round.
+    let quiet = (18_u32..400)
+        .map(ObjId)
+        .find(|id| (100..=700).contains(&stagger_ms(SEED, *id, STOCK_THINK_MS)))
+        .expect("a hull whose think is not in flight at 5,000");
+    let next = GATE_END + stagger_ms(SEED, quiet, STOCK_THINK_MS);
+    let (mut arena, recorded) =
+        core_mind_field(doctored_line_tank(quiet, Controller::Mind, destroy_words()));
+    let (lines, _) = beats(
+        &mut arena,
+        SUBSTEP,
+        7_000,
+        &|wall| shooter_orders(quiet, wall),
+        &mut |_, _| {},
+    );
+    assert_eq!(of_kind(&lines, "hit").len(), 1);
+    let dropped = of_kind(&lines, "mind_dropped");
+    assert_eq!(
+        dropped.iter().map(|line| line.0).collect::<Vec<_>>(),
+        vec![next],
+        "at the next think's millisecond"
+    );
+    let at_next = recorded
+        .kept()
+        .into_iter()
+        .find(|kept| kept.unit == quiet && kept.t_ms == next)
+        .expect("the next think");
+    assert!(at_next.dropped, "the dropping think is the ROM's");
+    assert_eq!(at_next.result.trace, vec![DROPPED_LINE.to_owned()]);
+    let slow = core_run(
+        doctored_line_tank(quiet, Controller::Mind, destroy_words()),
+        5_000,
+        10_000,
+    );
+    assert_eq!(of_kind(&slow.0, "mind_dropped").len(), 1);
+    for cadence in [1_000, 500] {
+        let other = core_run(
+            doctored_line_tank(quiet, Controller::Mind, destroy_words()),
+            cadence,
+            10_000,
+        );
+        assert_eq!(
+            other.0, slow.0,
+            "no think in flight: the event list at {cadence} ms"
+        );
+        assert_eq!(
+            other.1, slow.1,
+            "no think in flight: the hashes at {cadence} ms"
+        );
+    }
+
+    // (3) A pilot's hull.
+    let pilot = ObjId(1_000);
+    let mut arena = consequence_field(
+        doctored_line_tank(victim, Controller::Pilot, destroy_words()),
+        true,
+    );
+    let verbs = |wall: i64| {
+        let mut orders = shooter_orders(victim, wall);
+        match wall {
+            0 => orders.push(order(victim, IntentKind::Startup, 11)),
+            10_000 => orders.extend([
+                order(victim, IntentKind::Speed { cms: 300 }, 12),
+                order(
+                    victim,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                        slot: None,
+                    },
+                    13,
+                ),
+                order(
+                    victim,
+                    IntentKind::Condition(Arming::Arm(FireCondition {
+                        weapon: SmolStr::new("machine_gun"),
+                        target: SlotTarget::Lock,
+                        min_permille: 1_000,
+                        aspects: ASPECTS_ANY,
+                        min_rounds_left: 0,
+                        min_range_m: 0,
+                        max_range_m: u32::MAX,
+                    })),
+                    14,
+                ),
+            ]),
+            _ => {}
+        }
+        orders
+    };
+    let mut refused: Vec<(SmolStr, Option<SmolStr>)> = Vec::new();
+    let (lines, _) = beats(
+        &mut arena,
+        SUBSTEP,
+        10_500,
+        &verbs,
+        &mut |arena: &Arena, out: &StepOutput| {
+            if arena.now_ms < 10_000 {
+                return;
+            }
+            for (to, frame) in &out.frames {
+                if *to != pilot {
+                    continue;
+                }
+                for notice in &frame.notices {
+                    if let FrameNotice::Refused { order, weapon, .. } = notice {
+                        refused.push((order.clone(), weapon.clone()));
+                    }
+                }
+            }
+        },
+    );
+    let hits = of_kind(&lines, "hit");
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].1.contains("destroy_core"), "{}", hits[0].1);
+    assert_eq!(arena.core_of(victim), None);
+    assert!(
+        !arena.minds.contains_key(&victim),
+        "a pilot's hull has no row"
+    );
+    assert!(of_kind(&lines, "mind_dropped").is_empty(), "and no line");
+    assert_eq!(
+        arena.unit(victim).map(|state| state.desired_speed_cms),
+        Some(300),
+        "the speed was taken"
+    );
+    assert!(
+        refused
+            .iter()
+            .any(|(order, weapon)| order == "fire" && weapon.as_deref() == Some("cannon")),
+        "the cannon's FIRE is refused by name: {refused:?}"
+    );
+    assert_eq!(
+        arena.conditions.slot_of(victim, "machine_gun"),
+        Some(1),
+        "the coax armed in Class 0's one slot"
+    );
+    assert_eq!(arena.slot_capacity(victim), 1);
+}
+
+/// **`degrade_core` lowers the next think's row, at three cadences** (17b
+/// cut M3.4; doc 17 §9, D-UM-34, D-UM-30). A rated-III mind
+/// (`Arena::set_rated_class_for_tests`) on a DOCTORED heavy — its command
+/// core (Class III) in the hull, its turret list `[remove_weapons,
+/// degrade_core]`, its three guns remounted on the hull and three more added
+/// — whose first think writes a hundred memory keys (under III's 128) and
+/// arms six slots (III's six); the seated blue's beam kills the turret at
+/// 5,000:
+///
+/// * the `hit` carries `degrade_core`; the core's cell reads 2 (III → II);
+/// * the next think after the round is handed Class II's row (and every
+///   think before it III's); the row is cut to II's four — S5 and S6 gone,
+///   S1 to S4 kept;
+/// * the hundred keys are kept whole by the thinks under II's 64 that
+///   write no new key, and the one think that swaps a key in (between
+///   6,000 and 6,500) faults `memory` — a `mind_fault` line — keeping the
+///   hundred;
+/// * no drop: the core stands, one class down;
+/// * one event list and one hash sequence at 5,000, 1,000 and 500 ms.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m3_degrade_core_lowers_the_next_think_s_row_at_three_cadences() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    use tacsim::definitions::unit::Consequence as Authored;
+    let heavy = GATE_UNIT;
+    let words = || {
+        vec![
+            Authored::RemoveWeapons {
+                section: canonical("turret"),
+            },
+            Authored::DegradeCore,
+        ]
+    };
+    let source = format!(
+        "fn think(v, c) {{
+    if v.unit != {unit} {{ return; }}
+    if !(\"k0\" in this) {{
+        for i in 0..100 {{ this[\"k\" + i.to_string()] = i; }}
+        {cannon} {coax} {missiles} {w1} {w2} {w3}
+        return;
+    }}
+    let t = t_ms();
+    if t >= 6000 && t < 6500 {{ this.remove(\"k0\"); this.fresh = 1; }} else {{ this.k1 = t; }}
+}}",
+        unit = heavy.0,
+        cannon = arm_never("cannon"),
+        coax = arm_never("machine_gun"),
+        missiles = arm_never("missiles"),
+        w1 = arm_never("w1"),
+        w2 = arm_never("w2"),
+        w3 = arm_never("w3"),
+    );
+    let field = || {
+        let catalog = doctored_catalog("tacsim.unit.heavy_mk1", words());
+        let hull = doctored_hull(
+            &catalog,
+            "tacsim.unit.heavy_mk1",
+            heavy,
+            Controller::Mind,
+            &[],
+            &["w1", "w2", "w3"],
+        );
+        let mut arena = consequence_field(hull, false);
+        arena.set_rated_class_for_tests(CoreClass::III);
+        let recorded = Recorded::on(rhai(&arena, &source));
+        arena.mind_runner = recorded.clone();
+        (arena, recorded)
+    };
+    let (mut arena, recorded) = field();
+    assert_eq!(
+        arena.core_of(heavy).map(|core| core.class),
+        Some(CoreClass::III),
+        "the command core"
+    );
+    let mut rows: Vec<(i64, Vec<Option<String>>)> = Vec::new();
+    let (lines, _) = beats(
+        &mut arena,
+        SUBSTEP,
+        8_000,
+        &|wall| shooter_orders(heavy, wall),
+        &mut |arena: &Arena, _: &StepOutput| {
+            rows.push((
+                arena.now_ms,
+                arena
+                    .conditions
+                    .slots(heavy)
+                    .iter()
+                    .map(|slot| slot.as_ref().map(|cond| cond.weapon.to_string()))
+                    .collect(),
+            ));
+        },
+    );
+    let hits = of_kind(&lines, "hit");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Json>(&hits[0].1).unwrap_or_default()["consequences"],
+        serde_json::json!(["remove_weapons", "degrade_core"])
+    );
+    assert_eq!(
+        arena.core_of(heavy).map(|core| core.class),
+        Some(CoreClass::II),
+        "the cell 3 → 2"
+    );
+    let armed = |at: i64| {
+        rows.iter()
+            .find(|(now, _)| *now == at)
+            .map(|(_, row)| row.clone())
+            .expect("a pulse")
+    };
+    let six: Vec<Option<String>> = ["cannon", "machine_gun", "missiles", "w1", "w2", "w3"]
+        .into_iter()
+        .map(|gun| Some(gun.to_owned()))
+        .collect();
+    assert_eq!(armed(GATE_END - SUBSTEP), six, "six slots before the round");
+    assert_eq!(
+        armed(GATE_END + SUBSTEP),
+        six[..4].to_vec(),
+        "the row cut to II's four"
+    );
+    let kept = recorded.kept();
+    let thinks: Vec<&Kept> = kept.iter().filter(|kept| kept.unit == heavy).collect();
+    let next = thinks
+        .iter()
+        .find(|kept| kept.t_ms > GATE_END)
+        .expect("a think after the round");
+    assert_eq!(
+        next.profile,
+        ClassTable::STOCK.row(CoreClass::II),
+        "the next think at II"
+    );
+    assert!(
+        thinks
+            .iter()
+            .filter(|kept| kept.t_ms <= GATE_END)
+            .all(|kept| kept.profile == ClassTable::STOCK.row(CoreClass::III)),
+        "every think before at III"
+    );
+    // The hundred keys, kept whole under II's 64; the swap refused.
+    for kept in thinks.iter().filter(|kept| kept.t_ms > GATE_END) {
+        let swap = (6_000..6_500).contains(&kept.t_ms);
+        let memory = kept.memory_out();
+        if swap {
+            assert_eq!(
+                kept.result.fault.as_ref().map(|fault| fault.cause.as_str()),
+                Some("memory"),
+                "the swap at {} is refused",
+                kept.t_ms
+            );
+        } else {
+            assert_eq!(kept.result.fault, None, "think at {}", kept.t_ms);
+            assert_eq!(memory.len(), 100, "kept whole at {}", kept.t_ms);
+        }
+    }
+    let faults = of_kind(&lines, "mind_fault");
+    assert_eq!(faults.len(), 1, "{faults:?}");
+    assert!(
+        faults[0].1.contains("\"cause\":\"memory\""),
+        "{}",
+        faults[0].1
+    );
+    assert!(
+        arena
+            .minds
+            .get(&heavy)
+            .is_some_and(|state| decode_memory(&state.memory).len() == 100),
+        "the hundred kept"
+    );
+    assert!(of_kind(&lines, "mind_dropped").is_empty(), "no drop");
+    // Three cadences.
+    let run_at = |cadence: i64| {
+        let (mut arena, _) = field();
+        beats(
+            &mut arena,
+            cadence,
+            10_000,
+            &|wall| shooter_orders(heavy, wall),
+            &mut |_, _| {},
+        )
+    };
+    let slow = run_at(5_000);
+    // What the compared runs carry: the round's `degrade_core`, the swap's
+    // `memory` fault and no drop — and, to 8,000, the very lines of the
+    // quarter-second run above.
+    let slow_hits = of_kind(&slow.0, "hit");
+    assert_eq!(slow_hits.len(), 1, "the round lands at 5,000 ms too");
+    assert_eq!(
+        serde_json::from_str::<Json>(&slow_hits[0].1).unwrap_or_default()["consequences"],
+        serde_json::json!(["remove_weapons", "degrade_core"])
+    );
+    let slow_faults = of_kind(&slow.0, "mind_fault");
+    assert_eq!(slow_faults.len(), 1, "{slow_faults:?}");
+    assert!(
+        slow_faults[0].1.contains("\"cause\":\"memory\""),
+        "{}",
+        slow_faults[0].1
+    );
+    assert!(of_kind(&slow.0, "mind_dropped").is_empty(), "no drop");
+    let to_eight = |lines: &[(i64, String, u64)]| {
+        lines
+            .iter()
+            .filter(|(t_ms, _, _)| *t_ms <= 8_000)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        to_eight(&slow.0),
+        to_eight(&lines),
+        "the 5,000 ms run's lines are the quarter-second run's"
+    );
+    for cadence in [1_000, 500] {
+        let other = run_at(cadence);
+        assert_eq!(other.0, slow.0, "the event list at {cadence} ms");
+        assert_eq!(other.1, slow.1, "the hash sequence at {cadence} ms");
+    }
+}
+
+/// `tests/reflex.rs`' tank with NO core: the (j) rig's `tactical_unit`
+/// without its core component and capability.
+fn coreless_unit(id: ObjId) -> TacticalUnit {
+    let spec = UnitSpec {
+        definition: dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets: vec![FacetSpec {
+                id: FacetId::new("front").expect("a canonical facet"),
+                cells: vec![CellSpec {
+                    id: mush_tactics::CellId::new("armor").expect("a cell"),
+                    min: 0,
+                    max: 10,
+                    init: 10,
+                }],
+            }],
+            slots: Vec::new(),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("internals").expect("a cell"),
+                min: 0,
+                max: 8,
+                init: 8,
+            }],
+        }],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: None,
+        rules: rules(),
+    };
+    TacticalUnit::from_spec(&spec, id).expect("a coreless unit")
+}
+
+/// **A never-cored mind hull runs the ROM from its first think, and no
+/// `mind_dropped` line is ever written** (17b cut M3.4; doc 17 §9, D-UM-33):
+/// red fielded with no core is sealed `core_class` 0 with the fallback "no
+/// core: the ROM"; flown by a scripted runner for ten seconds, every think
+/// is handed dropped at Class 0's row and answered by the ROM (its trace
+/// [`DROPPED_LINE`], no fault, no `ThinkStat`), and the tape carries no
+/// `mind_dropped` and no `mind_fault`.
+#[test]
+fn m3_a_never_cored_mind_runs_the_rom_from_its_first_think_with_no_drop_line() {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let red = CustodyUnit {
+        unit: coreless_unit(RED),
+        sensor: Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        }),
+        ..tank(
+            RED,
+            Team::Red,
+            centre(6, 8),
+            vec![cannon()],
+            Controller::Mind,
+        )
+    }
+    .sealed();
+    assert_eq!(red.seal.core_class, CoreClass::Zero);
+    assert_eq!(red.seal.fallback.as_deref(), Some("no core: the ROM"));
+    let mut arena = arena_on(
+        vec![
+            red,
+            presenting(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+        ],
+        &[BLUE],
+        reflex_cfg(),
+    );
+    let source = "fn think(v, c) { trace(\"scripted\"); this.n = 1; }";
+    let runner = rhai(&arena, source);
+    let recorded = Recorded::on(runner.clone());
+    arena.mind_runner = recorded.clone();
+    let run = run(&mut arena, Drive::Every(1_000), 10_000);
+    let thinks: Vec<Kept> = recorded
+        .kept()
+        .into_iter()
+        .filter(|kept| kept.unit == RED)
+        .collect();
+    assert!(thinks.len() >= 9, "red thought: {}", thinks.len());
+    for think in &thinks {
+        assert!(think.dropped, "think {} is the ROM's", think.think_seq);
+        assert_eq!(think.profile, ClassTable::STOCK.row(CoreClass::Zero));
+        assert_eq!(think.result.trace, vec![DROPPED_LINE.to_owned()]);
+        assert_eq!(think.result.fault, None);
+    }
+    assert!(runner.take_stats().is_empty(), "no Rhai think ran");
+    assert!(
+        run.events.iter().all(|(_, json, _)| {
+            let kind = kind_and_unit(json).0;
+            kind != "mind_dropped" && kind != "mind_fault"
+        }),
+        "no drop line, ever"
+    );
+    assert_eq!(arena.minds.get(&RED).and_then(|state| state.dropped), None);
+}

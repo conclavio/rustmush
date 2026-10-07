@@ -7242,7 +7242,9 @@ fn strikes_run(script: Vec<Says>, last: u64, reset: Option<&[u8]>) -> StrikesRun
 ///   at every substep to the faulting run: the new fault path is M1a's
 ///   overflow path plus `strikes` and nothing else. The overflow run counts
 ///   `mind_overflows` 3 AND `mind_faults` 3;
-/// * one event list and one hash sequence at 5,000, 1,000 and 500 ms;
+/// * one event list and one hash sequence at 5,000, 1,000 and 500 ms — the
+///   list carrying, since 17b cut M3.4, the three `mind_fault` lines (`ops`)
+///   and the one `mind_dropped { strikes, fault: ops, ops: 1500 }`;
 /// * a runner faulting at think 2 and clean at 3 reads `strikes` 0 at think
 ///   4 (D-UM-31's reset), its think 4 not dropped.
 #[test]
@@ -7363,6 +7365,35 @@ fn m2_a_faulting_runner_lands_nothing_counts_a_strike_and_three_drop_the_hull() 
     let (slow, strikes) = tempo(5_000);
     assert_eq!(strikes, Some(MIND_STRIKES_TO_DROP));
     assert_eq!(slow.counters.mind_faults, 3);
+    // 17b cut M3.4 (D-UM-31, D-UM-32): the event list carries the four lines
+    // — a `mind_fault` per faulted think with its word, and the drop beside
+    // the third with that word and the row's budget. (Until this cut the
+    // list held none of them.)
+    let mind_lines: Vec<(i64, String)> = slow
+        .events
+        .iter()
+        .filter(|(_, json, _)| json.contains("\"mind_fault\"") || json.contains("\"mind_dropped\""))
+        .map(|(t_ms, json, _)| (*t_ms, json.clone()))
+        .collect();
+    let fault = |n: i64| {
+        (
+            think_at(RED, n),
+            format!(r#"{{"kind":"mind_fault","unit":4,"think_seq":{n},"cause":"ops"}}"#),
+        )
+    };
+    assert_eq!(
+        mind_lines,
+        vec![
+            fault(2),
+            fault(3),
+            fault(4),
+            (
+                think_at(RED, 4),
+                r#"{"kind":"mind_dropped","unit":4,"cause":"strikes","fault":"ops","ops":1500}"#
+                    .to_owned()
+            ),
+        ]
+    );
     for cadence in [1_000, 500] {
         let (other, other_strikes) = tempo(cadence);
         assert_eq!(other.events, slow.events, "the event list at {cadence} ms");

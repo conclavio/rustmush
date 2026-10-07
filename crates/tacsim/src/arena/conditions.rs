@@ -335,9 +335,10 @@ impl ConditionTable {
     /// narrowed to it, answering the numbers of the ARMED slots cleared, in
     /// order, so their held-shot rows go with them (`Arena::forget_held_said`).
     /// The key goes when nothing armed is left; a hull with no row, or one
-    /// already that narrow, answers nothing. 17b cut M3.4's
-    /// `Arena::truncate_slots` calls it when a core loses a class and at every
-    /// drop to the ROM.
+    /// already that narrow, answers nothing. Since 17b cut M3.4
+    /// [`Arena::truncate_slots_to`] calls it — through
+    /// [`Arena::truncate_slots`] when a core loses a class or is destroyed,
+    /// and with Class 0's one slot at every drop to the ROM.
     pub fn truncate(&mut self, unit: ObjId, capacity: usize) -> Vec<u8> {
         let holds = capacity.min(crate::arena::core::MAX_CONDITION_SLOTS);
         let Some(row) = self.rows.get_mut(&unit) else {
@@ -706,7 +707,10 @@ impl Arena {
     /// ([`Refusal::Wreck`]), carries the weapon ([`Refusal::NoWeapon`]); the
     /// condition is lawful against the arena's own captured floor
     /// ([`condition_is_lawful`], [`Refusal::Unlawful`] — the law before the
-    /// count); then [`ConditionTable::arm`] ([`Refusal::NoSlot`]) answers
+    /// count); then [`ConditionTable::arm`] ([`Refusal::NoSlot`]; since 17b
+    /// cut M3.4 at `Arena::arming_capacity`, and on a hull the ROM thinks for
+    /// a `NoSlot` the ROM's own gun answers by taking back a slot the failed
+    /// mind left on another, `Arena::rom_takes_slot`) answers
     /// `Some(n)` and the slot's [`Arena::held_said`] rows are dropped, so a
     /// re-armed slot's first held sentence under new terms is not suppressed
     /// by the old terms' stamp. [`Arming::Disarm`]: the named weapon's slot, or
@@ -739,9 +743,18 @@ impl Arena {
                     return Err(Refusal::NoWeapon);
                 }
                 condition_is_lawful(cond, self.odds_floor_permille)?;
-                // 17b cut M3.1 (D-UM-35): the hull's own capacity, its core's.
-                let capacity = self.slot_capacity(unit);
-                let n = self.conditions.arm(unit, cond.clone(), capacity)?;
+                // 17b cut M3.1 (D-UM-35): the hull's own capacity, its core's —
+                // and, since 17b cut M3.4, Class 0's one on a mind's hull
+                // dropped to the ROM (`Arena::arming_capacity`).
+                let capacity = self.arming_capacity(unit);
+                let n = match self.conditions.arm(unit, cond.clone(), capacity) {
+                    // 17b cut M3.4 (D-UM-32): the ROM owns its one slot — it
+                    // takes back a slot the failed mind left on another gun.
+                    Err(Refusal::NoSlot) if self.thinks_on_rom(unit) => {
+                        self.rom_takes_slot(unit, cond, capacity)?
+                    }
+                    armed => armed?,
+                };
                 self.forget_held_said(unit, &[n]);
                 Ok(Some(n))
             }
@@ -867,6 +880,116 @@ impl Arena {
                 why: why.clone(),
             },
         );
+    }
+
+    /// **`unit`'s condition row cut to `capacity` slots** (17b cut M3.4; doc 17
+    /// §5, §9; D-UM-16, D-UM-32, D-UM-34): [`ConditionTable::truncate`], and
+    /// the held-shot rows of every armed slot it cleared dropped with them
+    /// (`Arena::forget_held_said`), so a slot armed past the cut leaves no
+    /// stamp behind. Called with Class 0's `slots` (one) at every drop to the
+    /// ROM (`Arena::mind_think`, `Arena::mind_land`) — the ROM's one slot,
+    /// whatever the hardware still holds — and through
+    /// [`Arena::truncate_slots`] by the core's two consequences. A hull with no
+    /// row, or one already that narrow, is untouched. Nothing is journalled:
+    /// the slots are state, folded by the hash (item 3d).
+    pub fn truncate_slots_to(&mut self, unit: ObjId, capacity: usize) {
+        let cleared = self.conditions.truncate(unit, capacity);
+        self.forget_held_said(unit, &cleared);
+    }
+
+    /// **`unit`'s condition row cut to its core's slots NOW** (17b cut M3.4;
+    /// D-UM-34): [`Arena::truncate_slots_to`] at [`Arena::slot_capacity`] —
+    /// what `degrade_core` (the lowered class's slots) and `destroy_core`
+    /// (Class 0's one) leave the hull.
+    pub fn truncate_slots(&mut self, unit: ObjId) {
+        let capacity = self.slot_capacity(unit);
+        self.truncate_slots_to(unit, capacity);
+    }
+
+    /// **Whether `unit` is a mind's hull the ROM thinks for** (17b cut M3.4;
+    /// D-UM-32, D-UM-33): `Controller::Mind`, a mind row, and a mind class of
+    /// `Zero` ([`Arena::mind_class`]: the row dropped, no core, or a core at
+    /// Class 0) — the hull whose every think is the native stock mind at
+    /// Class 0's row.
+    fn thinks_on_rom(&self, unit: ObjId) -> bool {
+        self.unit(unit)
+            .is_some_and(|state| state.controller == crate::arena::state::Controller::Mind)
+            && self.minds.contains_key(&unit)
+            && self.mind_class(unit) == crate::arena::core::CoreClass::Zero
+    }
+
+    /// **The slots an arming on `unit` may lay down** (17b cut M3.4): the
+    /// hull's own ([`Arena::slot_capacity`]) — except on a mind's hull the
+    /// ROM thinks for ([`Arena::thinks_on_rom`]), where it is at most Class
+    /// 0's `slots`: the ROM thinks at Class 0's row and holds its one slot
+    /// whatever the hardware still holds, and [`ConditionTable::arm`] would
+    /// otherwise widen the row a drop cut back to the hardware's width (on a
+    /// hull with no core, or a core at Class 0, the hardware's slots are Class
+    /// 0's already). A seated pilot (a possessed hull, 17b cut M3.5) arms on
+    /// the hardware's slots.
+    fn arming_capacity(&self, unit: ObjId) -> usize {
+        let hardware = self.slot_capacity(unit);
+        if self.thinks_on_rom(unit) {
+            hardware.min(self.classes.row(crate::arena::core::CoreClass::Zero).slots)
+        } else {
+            hardware
+        }
+    }
+
+    /// **The ROM takes back a slot the failed mind left** (17b cut M3.4;
+    /// D-UM-32: the ROM at the fallback preset), for an arming of `cond` that
+    /// [`ConditionTable::arm`] refused [`Refusal::NoSlot`] on a hull the ROM
+    /// thinks for. A drop keeps the row's first slots (cut to Class 0's
+    /// `slots`, `Arena::truncate_slots_to`) armed on the failed mind's own
+    /// terms, and a core lowered to Class 0 keeps them on the higher class's;
+    /// the ROM arms the hull's FIRST `capacity` weapons in their order
+    /// (`stock_mind::arming_for`), so a kept slot on another gun would refuse
+    /// every one of its armings `NoSlot` and keep firing on terms the ROM
+    /// never set. So: when `cond`'s weapon is one of the hull's first
+    /// `capacity`, the first slot within the capacity armed with a weapon that
+    /// is NOT is disarmed (its held-shot rows with it) and the arming laid
+    /// there. Anything else stays `NoSlot` — a weapon the ROM does not arm
+    /// takes no slot from it, and a row full of the ROM's own guns gives none
+    /// up.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::NoSlot`], as the refused arming was.
+    fn rom_takes_slot(
+        &mut self,
+        unit: ObjId,
+        cond: &FireCondition,
+        capacity: usize,
+    ) -> Result<u8, Refusal> {
+        let own: Vec<SmolStr> = self
+            .unit(unit)
+            .map(|state| {
+                state
+                    .weapons
+                    .iter()
+                    .take(capacity)
+                    .map(|weapon| weapon.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !own.contains(&cond.weapon) {
+            return Err(Refusal::NoSlot);
+        }
+        let holds = capacity.min(crate::arena::core::MAX_CONDITION_SLOTS);
+        let Some(foreign) = self
+            .conditions
+            .slots(unit)
+            .iter()
+            .take(holds)
+            .flatten()
+            .find(|had| !own.contains(&had.weapon))
+            .map(|had| had.weapon.clone())
+        else {
+            return Err(Refusal::NoSlot);
+        };
+        let freed = self.conditions.disarm(unit, Some(foreign.as_str()));
+        self.forget_held_said(unit, &freed);
+        self.conditions.arm(unit, cond.clone(), capacity)
     }
 
     /// **The held-shot rows of `unit`'s `slots` gone** (17b cut M1b.1).

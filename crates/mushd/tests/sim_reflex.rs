@@ -110,6 +110,9 @@ struct Server {
     addr: SocketAddr,
     dir: PathBuf,
     store: Arc<dyn ObjectStore>,
+    /// **17b cut M3.4**: the arena tasks' shared table, taken before the
+    /// engine moves, so a test can hand the world's egress a chunk of its own.
+    tasks: Option<tacsim::arena_bridge::ArenaTasks>,
     _listener: SshListener,
     _handles: PersistHandles,
 }
@@ -228,6 +231,11 @@ async fn boot(tag: &str, grace: Duration, ai_fill: bool) -> Server {
     if let Some(slot) = engine.world.module_state_mut::<mush_sim::AccountOracle>() {
         *slot = mush_sim::AccountOracle::new(identity);
     }
+    // 17b cut M3.4: the arena tasks' shared table, before the engine moves.
+    let tasks = engine
+        .world
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone());
 
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
         linkdead_grace: grace,
@@ -267,6 +275,7 @@ async fn boot(tag: &str, grace: Duration, ai_fill: bool) -> Server {
         addr,
         dir,
         store,
+        tasks,
         _listener: listener,
         _handles: handles,
     }
@@ -681,4 +690,90 @@ async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
         "the two machines should have started themselves up: {} startups",
         count(&events, "startup")
     );
+}
+
+// ---------------------------------------------------------------------------
+// (3) 17b cut M3.4: a hull dropped to the ROM is told to its principal alone
+// ---------------------------------------------------------------------------
+
+/// **The tripped sentence reaches the warrant principal alone, over SSH**
+/// (17b cut M3.4; doc 17 §8, D-UM-32; the observer rule, doc 16 §1).
+///
+/// With `ai_fill` on, Ada claims red slot 1 and Bo blue slot 1 and `SIM AI
+/// 2` fields one machine a side: red's `RB` is the fill, its seal's warrant
+/// principal Ada (the side's lead at check-out, 17b cut M3.3). No production
+/// hull is a mind before 17b cut M4, so the arena itself never journals a
+/// drop here: the test hands the world's own egress ONE hand-built chunk —
+/// a `mind_dropped { strikes, fault: ops, ops: 1500 }` line naming `RB` —
+/// exactly as a match task's ledger chunk arrives, and the world tells it
+/// through `arena_bridge::on_chunk`:
+///
+/// * Ada reads `RB's core tripped: over its 1,500-op budget three thinks
+///   running. …` — her side's hull by its callsign, no object number;
+/// * staff read `Arena match 1: RB dropped to the ROM: …`;
+/// * Bo, the other side's pilot, reads nothing of it.
+///
+/// The chunk is numbered 0, below every chunk the arena hands out (they
+/// count from 1), so its acknowledgement moves nothing of the arena's own
+/// egress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff() {
+    let server = boot("sim-reflex-dropped", Duration::from_secs(120), true).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    // The fill's object, read while it is still an ordinary world object: a
+    // tank the arena holds is not listed (the observer rule).
+    let listing = ask(&mut god, "@find Red Tank 2", "END OF LIST").await;
+    let fill = dbref_of(&listing, "Red Tank 2");
+    take_off_sized(&mut ada, &mut bo, Some(2)).await;
+    support::wait_arena_seconds(&mut god, 1).await;
+
+    let line = tacsim::arena::ledger::LedgerEvent {
+        seq: 1,
+        t_ms: 1_000,
+        kind: tacsim::arena::ledger::EventKind::MindDropped {
+            unit: ObjId(fill),
+            cause: "strikes".into(),
+            fault: Some("ops".into()),
+            ops: Some(1_500),
+        },
+        draws: Vec::new(),
+        hash: 0,
+    };
+    let mut bytes = serde_json::to_vec(&line).expect("the line encodes");
+    bytes.push(b'\n');
+    let (ada_mark, god_mark, bo_mark) = (ada.mark(), god.mark(), bo.mark());
+    let egress = server
+        .tasks
+        .as_ref()
+        .and_then(tacsim::arena_bridge::ArenaTasks::egress_sender)
+        .expect("the world's egress");
+    egress
+        .send(tacsim::arena_task::ArenaOut::Ledger {
+            match_id: tacsim::arena_task::MatchId(1),
+            chunk: tacsim::arena::ledger::LedgerChunk { seq: 0, bytes },
+        })
+        .await
+        .expect("the world takes the chunk");
+
+    ada.expect_after(ada_mark, "RB's core tripped: over its 1,500-op budget")
+        .await;
+    let told = strip_ansi(&ada.seen[ada_mark..]);
+    assert!(
+        !told.contains(&format!("#{fill}")) && !told.contains(&fill.to_string()),
+        "no object number reaches the lead: {told}"
+    );
+    god.expect_after(god_mark, "RB dropped to the ROM").await;
+    // Bo hears nothing of it: a whole answer to a line of his own closes
+    // the window, by which time the world had told the other two.
+    let heard = ask_whole(&mut bo, "SIM STATUS").await;
+    let since = strip_ansi(&bo.seen[bo_mark..]);
+    assert!(
+        !since.contains("core tripped") && !since.contains("dropped to the ROM"),
+        "the other side's pilot heard the drop: {since}"
+    );
+    assert!(heard.contains("running"), "{heard}");
+    say(&mut ada, "SIM ABORT", "aborts match").await;
 }

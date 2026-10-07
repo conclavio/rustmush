@@ -56,6 +56,16 @@
 //! weapon table, which is where A.2's motion and W.1's acceptance already read
 //! them.
 //!
+//! **17b cut M3.4** (doc 17 §9, D-UM-34) adds the core's two words, and both
+//! are **M32 facts**, ops in the same plan: `degrade_core` lowers the core
+//! component's `core_class` cell by one (`AdjustCell`, only while the cell
+//! stands above its floor) and `destroy_core` revokes the `tacsim.core`
+//! capability — the very cell and capability `bind` lays down and
+//! [`crate::arena::core::read_core`] reads live. Their arena half is the
+//! condition row cut to the hull's new slots (`Arena::truncate_slots`) and, for
+//! `destroy_core`, a mind's drop to the ROM at its next landing
+//! (`Arena::mind_land`).
+//!
 //! # A wreck stops being an observer, and stops being observed
 //!
 //! Doc 16 §3.3: *a wreck is an obstacle and a contact, never a target.* So
@@ -249,6 +259,13 @@ pub fn entry_consequences(
                     }
                 }
                 Consequence::RemoveWeapons { section } => entry.disarmed.push(section.clone()),
+                // **17b cut M3.4** (D-UM-34): nothing to add. Both words are
+                // M32 facts the record already carries — a degraded core's
+                // `core_class` cell stands lowered and a destroyed core's
+                // capability stands revoked — and both are read live off the
+                // unit (`crate::arena::core::read_core`), so the class, the
+                // slots and the seal at check-out already say so.
+                Consequence::DegradeCore | Consequence::DestroyCore => {}
             }
         }
     }
@@ -908,6 +925,9 @@ impl Arena {
             {
                 ops.extend(self.wreck_ops(target, section));
             }
+            // **17b cut M3.4** (doc 17 §9, D-UM-34): the core's two words, as
+            // ops of this one plan and in authored order.
+            ops.extend(self.core_ops(target, &consequences));
         }
         Some((
             Struck {
@@ -969,6 +989,73 @@ impl Arena {
         ops
     }
 
+    /// **The ops of a destroyed section's core words** (17b cut M3.4; doc 17
+    /// §9, D-UM-34), in authored order, off the core the unit carries NOW
+    /// ([`crate::arena::core::read_core`]):
+    ///
+    /// * `degrade_core` → `AdjustCell { <core>.core_class, −1 }` while the
+    ///   cell stands above its floor — each word one class, never under the
+    ///   floor, so a list naming it twice lowers two classes at most down to
+    ///   Class 0 and never builds an op M32 would refuse; at the floor (Class
+    ///   0) the word does nothing (declared);
+    /// * `destroy_core` → `RevokeCapability` of the `tacsim.core` key the unit
+    ///   holds (an id AND its source component, so it is taken off the unit);
+    ///   none held, no op.
+    ///
+    /// A unit with no core, or a list naming neither word (every shipped
+    /// chassis before 17b cut M3.6), builds nothing.
+    fn core_ops(&self, target: ObjId, consequences: &[Consequence]) -> Vec<UnitMutationOp> {
+        let mut ops: Vec<UnitMutationOp> = Vec::new();
+        if !consequences.iter().any(|consequence| {
+            matches!(
+                consequence,
+                Consequence::DegradeCore | Consequence::DestroyCore
+            )
+        }) {
+            return ops;
+        }
+        let Some(state) = self.unit(target) else {
+            return ops;
+        };
+        let cell = crate::arena::core::read_core(&state.unit).and_then(|core| {
+            let addr = CellAddr::Component {
+                component: mush_tactics::ComponentId::new(core.component.as_str()).ok()?,
+                cell: mush_tactics::CellId::new(crate::definitions::unit::CORE_CLASS_CELL).ok()?,
+            };
+            let held = state.unit.cell(&addr)?;
+            Some((addr, held.current, held.min))
+        });
+        let mut lowered = 0_i64;
+        for consequence in consequences {
+            match consequence {
+                Consequence::DegradeCore => {
+                    if let Some((addr, current, min)) = &cell
+                        && current.saturating_sub(lowered) > *min
+                    {
+                        ops.push(UnitMutationOp::AdjustCell {
+                            addr: addr.clone(),
+                            delta: -1,
+                        });
+                        lowered = lowered.saturating_add(1);
+                    }
+                }
+                Consequence::DestroyCore => {
+                    let held: Vec<CapabilityKey> = state
+                        .unit
+                        .capabilities()
+                        .filter(|key| key.id.as_str() == crate::definitions::unit::CORE_CAPABILITY)
+                        .cloned()
+                        .collect();
+                    for key in held {
+                        ops.push(UnitMutationOp::RevokeCapability { key });
+                    }
+                }
+                _ => {}
+            }
+        }
+        ops
+    }
+
     /// **Which of a destroyed section's authored consequences actually took
     /// effect** (16b cut F.2), in authored order and by their ledger words.
     ///
@@ -981,6 +1068,8 @@ impl Arena {
     /// `The left_leg is destroyed: the tank is slowed; the tank cannot move.` is
     /// a contradiction whose second half the pilot would act on. So the notice's
     /// list is put through the same question [`Arena::apply_consequence`] asked.
+    /// The core's two words (17b cut M3.4) have no pair rule and read as fired;
+    /// the pilot's sentence words them from 17b cut M3.6.
     #[must_use]
     pub fn fired_consequences(&self, target: ObjId, section: &str) -> Vec<SmolStr> {
         let Some(state) = self.unit(target) else {
@@ -1006,7 +1095,9 @@ impl Arena {
     ///
     /// `destroy_unit` is [`Arena::destroy_unit`]; the other four are the
     /// [`MotionLimits`](crate::arena::state::MotionLimits) A.2's motion reads and
-    /// the weapon table W.1's acceptance reads. Each is idempotent: a second
+    /// the weapon table W.1's acceptance reads; since 17b cut M3.4 the core's
+    /// two words cut the hull's condition row to its core's slots
+    /// (`Arena::truncate_slots`). Each is idempotent: a second
     /// `slow(50)` on an already-slowed tank leaves it at 50 rather than at 25,
     /// because the consequence names the surviving percentage and not a factor to
     /// compound.
@@ -1081,6 +1172,17 @@ impl Arena {
                     self.forget_held_said(target, &freed);
                 }
             }
+            // **17b cut M3.4** (doc 17 §9, D-UM-34): the impact's plan has
+            // already lowered the cell or revoked the capability, so the
+            // hull's slots are its core's NOW (`Arena::slot_capacity`, Class
+            // 0's one once the core is gone): every slot past them is cleared
+            // with its held-shot rows. Applied in the section's authored order
+            // like every consequence, so on a turret authored `[remove_weapons,
+            // destroy_core]` the turret's guns leave their slots first and the
+            // cut takes what is left. A mind's drop to the ROM is not here: it
+            // is taken at its next landing (`Arena::mind_land`), so the think
+            // in flight lands as thought (D-UM-9).
+            Consequence::DegradeCore | Consequence::DestroyCore => self.truncate_slots(target),
         }
     }
 
@@ -2141,6 +2243,267 @@ mod tests {
         assert!(
             state.disabled,
             "no weapons and no motion is doc 16 §3.8's disabled"
+        );
+    }
+
+    /// A gun named `id`, mounted on the hull (a doctored row: the stock tank
+    /// carries every gun in its turret).
+    fn hull_gun(id: &str) -> crate::arena::state::WeaponSummary {
+        crate::arena::state::WeaponSummary {
+            id: SmolStr::new(id),
+            mount_section: SmolStr::new(HULL_SECTION),
+            ..crate::arena::test_support::cannon()
+        }
+    }
+
+    /// A slot on `weapon` that never fires (odds of 100%).
+    fn never(weapon: &str) -> crate::arena::conditions::FireCondition {
+        crate::arena::conditions::FireCondition {
+            weapon: SmolStr::new(weapon),
+            target: crate::arena::conditions::SlotTarget::Lock,
+            min_permille: 1_000,
+            aspects: crate::arena::conditions::ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: u32::MAX,
+        }
+    }
+
+    /// One turret hit through its internals, as `Arena::apply_hit` lands it:
+    /// the plan built, applied through the one writer, and the section's
+    /// consequences applied in authored order. Answers the plan's ops.
+    fn kill_turret(arena: &mut Arena) -> Vec<UnitMutationOp> {
+        let (struck, ops) = arena
+            .plan_hit(BLUE, "turret", "front", 600)
+            .unwrap_or_else(|| panic!("a turret hit plans"));
+        assert!(struck.fresh, "the turret goes");
+        let plan = UnitMutationPlan::new(ops.clone(), None, Some(SmolStr::new_static("shot:1")))
+            .unwrap_or_else(|_| panic!("the plan fits"));
+        let unit = arena
+            .unit(BLUE)
+            .map(|state| state.unit.clone())
+            .unwrap_or_else(|| panic!("blue"));
+        let (post, _) = mush_tactics::apply(&unit, &plan, 0)
+            .unwrap_or_else(|error| panic!("the plan applies (refuse-not-clamp): {error}"));
+        let touched = Arena::plan_touches_bands(&plan);
+        arena.set_unit(BLUE, post, touched);
+        let mut journal: Vec<Notice> = Vec::new();
+        for consequence in &struck.consequences {
+            arena.apply_consequence(BLUE, consequence, 0, Some(RED), &mut journal);
+        }
+        ops
+    }
+
+    /// Blue with its turret list doctored to `turret`, its cannon in the
+    /// turret and two hull guns, `coax` armed in S1, the cannon in S2 and
+    /// `bow` in S3 (the line core's Class II holds four), each slot with a
+    /// held-shot stamp.
+    fn doctored(turret: Vec<Consequence>) -> Arena {
+        let mut arena = duel();
+        if let Some(state) = arena.unit_mut(BLUE) {
+            if let Some(section) = state
+                .profile
+                .sections
+                .iter_mut()
+                .find(|section| section.id == "turret")
+            {
+                section.consequences = turret;
+            }
+            state.weapons.push(hull_gun("coax"));
+            state.weapons.push(hull_gun("bow"));
+        }
+        for (n, weapon) in [(1_u8, "coax"), (2, "cannon"), (3, "bow")] {
+            let capacity = arena.slot_capacity(BLUE);
+            assert_eq!(arena.conditions.arm(BLUE, never(weapon), capacity), Ok(n));
+            arena
+                .held_said
+                .insert((BLUE, n, crate::arena::state::ContactId(3)), 10);
+        }
+        arena
+    }
+
+    /// **17b cut M3.4: the core's two words are ops of the impact's one plan,
+    /// cut the slots, and add nothing at check-out** (doc 17 §9, D-UM-34):
+    ///
+    /// * `[remove_weapons, destroy_core]` on the turret: the plan carries ONE
+    ///   `RevokeCapability` of the `tacsim.core` key the unit holds; applied,
+    ///   the core is gone (`core_of` `None`), the hull holds Class 0's one
+    ///   slot, and — `remove_weapons` FIRST, in authored order — the cannon's
+    ///   S2 is freed by the weapon clear and `bow`'s S3 by the cut, each with
+    ///   its held-shot stamp, while `coax` keeps S1; the hit's word list
+    ///   reads `destroy_core` and `fired_consequences` reports it fired;
+    /// * `[remove_weapons, degrade_core]`: ONE `AdjustCell { core_class, −1 }`;
+    ///   applied, the line core reads Class I, the row is cut to I's two
+    ///   (`bow`'s S3 gone, S1 and the freed S2 kept);
+    /// * `degrade_core` named three times on a Class II core builds two ops
+    ///   (to the floor, never past it) and the plan applies; at Class 0 it
+    ///   builds none (declared: a no-op);
+    /// * `entry_consequences` of a record whose turret is destroyed reads the
+    ///   same with or without the core words.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn m3_the_core_words_are_ops_of_the_one_plan_cut_the_slots_and_add_nothing_at_entry() {
+        use crate::arena::core::CoreClass;
+        let remove = || Consequence::RemoveWeapons {
+            section: SmolStr::new("turret"),
+        };
+        let core_key = |arena: &Arena| {
+            arena.unit(BLUE).and_then(|state| {
+                state
+                    .unit
+                    .capabilities()
+                    .find(|key| key.id.as_str() == crate::definitions::unit::CORE_CAPABILITY)
+                    .cloned()
+            })
+        };
+
+        // destroy_core.
+        let mut arena = doctored(vec![remove(), Consequence::DestroyCore]);
+        assert_eq!(
+            arena.core_of(BLUE).map(|core| core.class),
+            Some(CoreClass::II)
+        );
+        let key = core_key(&arena).unwrap_or_else(|| panic!("the line core"));
+        let ops = kill_turret(&mut arena);
+        let revokes: Vec<&UnitMutationOp> = ops
+            .iter()
+            .filter(|op| matches!(op, UnitMutationOp::RevokeCapability { key: revoked } if *revoked == key))
+            .collect();
+        assert_eq!(revokes.len(), 1, "one revoke of the core: {ops:?}");
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, UnitMutationOp::AdjustCell { .. })),
+            "{ops:?}"
+        );
+        assert_eq!(arena.core_of(BLUE), None, "the core is gone");
+        assert_eq!(core_key(&arena), None);
+        assert_eq!(arena.slot_capacity(BLUE), 1, "Class 0's one slot");
+        assert_eq!(
+            arena.conditions.slots(BLUE).len(),
+            1,
+            "the row cut to one: {:?}",
+            arena.conditions.slots(BLUE)
+        );
+        assert_eq!(arena.conditions.slot_of(BLUE, "coax"), Some(1));
+        assert_eq!(arena.conditions.slot_of(BLUE, "cannon"), None);
+        assert_eq!(arena.conditions.slot_of(BLUE, "bow"), None, "cut");
+        assert_eq!(
+            arena
+                .held_said
+                .keys()
+                .map(|(_, slot, _)| *slot)
+                .collect::<Vec<u8>>(),
+            vec![1],
+            "S2 and S3 left no stamp"
+        );
+        assert_eq!(
+            arena.fired_consequences(BLUE, "turret"),
+            vec![SmolStr::new("remove_weapons"), SmolStr::new("destroy_core")],
+            "both words fired"
+        );
+
+        // degrade_core.
+        let mut arena = doctored(vec![remove(), Consequence::DegradeCore]);
+        let ops = kill_turret(&mut arena);
+        let adjusts: Vec<&UnitMutationOp> = ops
+            .iter()
+            .filter(|op| {
+                matches!(op, UnitMutationOp::AdjustCell { addr: CellAddr::Component { cell, .. }, delta: -1 }
+                    if cell.as_str() == crate::definitions::unit::CORE_CLASS_CELL)
+            })
+            .collect();
+        assert_eq!(adjusts.len(), 1, "one class down: {ops:?}");
+        assert_eq!(
+            arena.core_of(BLUE).map(|core| core.class),
+            Some(CoreClass::I)
+        );
+        assert_eq!(arena.slot_capacity(BLUE), 2);
+        assert_eq!(
+            arena.conditions.slots(BLUE).len(),
+            2,
+            "the row cut to I's two"
+        );
+        assert_eq!(arena.conditions.slot_of(BLUE, "coax"), Some(1));
+        assert_eq!(arena.conditions.slot_of(BLUE, "bow"), None, "S3 cut");
+        assert!(
+            core_key(&arena).is_some(),
+            "a degraded core is still a core"
+        );
+
+        // Three degrades on a Class II core: two ops, to the floor and no
+        // further — the plan applies.
+        let mut arena = doctored(vec![
+            Consequence::DegradeCore,
+            Consequence::DegradeCore,
+            Consequence::DegradeCore,
+        ]);
+        let ops = kill_turret(&mut arena);
+        assert_eq!(
+            ops.iter()
+                .filter(|op| matches!(op, UnitMutationOp::AdjustCell { .. }))
+                .count(),
+            2,
+            "{ops:?}"
+        );
+        assert_eq!(
+            arena.core_of(BLUE).map(|core| core.class),
+            Some(CoreClass::Zero)
+        );
+        assert_eq!(arena.conditions.slots(BLUE).len(), 1);
+        // And at the floor a degrade builds nothing.
+        let (_, ops) = doctored(vec![Consequence::DegradeCore])
+            .plan_hit(BLUE, "hull", "front", 1)
+            .unwrap_or_else(|| panic!("a hull hit plans"));
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op, UnitMutationOp::AdjustCell { .. }))
+        );
+        let floored = {
+            let mut arena = doctored(vec![remove(), Consequence::DegradeCore]);
+            let addr = CellAddr::Component {
+                component: mush_tactics::ComponentId::new("core").expect("a component"),
+                cell: mush_tactics::CellId::new(crate::definitions::unit::CORE_CLASS_CELL)
+                    .expect("a cell"),
+            };
+            if let Some(state) = arena.unit_mut(BLUE) {
+                state.unit = apply_ops(
+                    &state.unit,
+                    vec![UnitMutationOp::SetCell { addr, value: 0 }],
+                );
+            }
+            arena
+        };
+        let (_, ops) = floored
+            .plan_hit(BLUE, "turret", "front", 600)
+            .unwrap_or_else(|| panic!("a turret hit plans"));
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op, UnitMutationOp::AdjustCell { .. })),
+            "a degrade at Class 0 is a no-op: {ops:?}"
+        );
+
+        // Nothing at entry.
+        let gone = apply_ops(
+            &line_tank_unit(BLUE),
+            vec![UnitMutationOp::SetSectionCondition {
+                section: SectionId::new("turret").expect("a section"),
+                condition: ConditionId::new(DESTROYED).expect("a condition"),
+            }],
+        );
+        let stock = crate::arena::test_support::line_tank_profile();
+        let mut worded = stock.clone();
+        if let Some(section) = worded
+            .sections
+            .iter_mut()
+            .find(|section| section.id == "turret")
+        {
+            section.consequences.push(Consequence::DestroyCore);
+            section.consequences.push(Consequence::DegradeCore);
+        }
+        assert_eq!(
+            entry_consequences(&gone, &worded),
+            entry_consequences(&gone, &stock),
+            "the core words add nothing at check-out"
         );
     }
 

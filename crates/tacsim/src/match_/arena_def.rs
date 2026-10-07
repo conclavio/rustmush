@@ -649,6 +649,10 @@ fn consequence_of(authored: &crate::definitions::unit::Consequence) -> Consequen
                 .map(|section| SmolStr::new(section.as_str()))
                 .collect(),
         },
+        // 17b cut M3.4 (D-UM-34): the two core words, carried across as they
+        // are; the plan ops are `crate::arena::damage`'s.
+        Authored::DegradeCore => Consequence::DegradeCore,
+        Authored::DestroyCore => Consequence::DestroyCore,
     }
 }
 

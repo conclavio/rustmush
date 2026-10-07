@@ -72,7 +72,8 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// [`EventKind::SortieClosed`], [`EventKind::MindFault`] and
 /// [`EventKind::MindDropped`] (thirty-five) — defined in 17b cut M3.3 so the
 /// kind vocabulary is one reviewed diff; `mind_fault` and `mind_dropped`
-/// journalled from M3.4, `mind_sealed` and `sortie_closed` from M3.6.
+/// journalled since 17b cut M3.4 (`Arena::mind_think`, `Arena::mind_land`),
+/// `mind_sealed` and `sortie_closed` from M3.6.
 /// The rest are the
 /// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
 /// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
@@ -598,7 +599,12 @@ pub enum EventKind {
     },
     /// **A mind's think faulted** (17b cut M3.3 defines it; doc 17 §8;
     /// D-UM-31): the think landed nothing and kept its old memory. Journalled
-    /// from 17b cut M3.4.
+    /// since 17b cut M3.4 by the think arm (`Arena::mind_think`) at the
+    /// think's millisecond. A think opens no action hash and fills none: the
+    /// line carries the substep's hash when an earlier line of the substep
+    /// has taken it, else a fresh state hash that stores nothing — even under
+    /// a lazy slot a landing or a reflex tick opened and has not yet filled
+    /// (`Arena::think_line_hash`), so no later line's hash moves.
     MindFault {
         /// The hull.
         unit: ObjId,
@@ -610,8 +616,12 @@ pub enum EventKind {
     /// **A hull dropped to the ROM** (17b cut M3.3 defines it; doc 17 §8,
     /// §13; D-UM-31, D-UM-32): once per sortie. It carries what the
     /// principal's sentence needs, so the world tells it from the tape and
-    /// reads no live config (16b cut V.3's rule). Journalled from 17b cut
-    /// M3.4.
+    /// reads no live config (16b cut V.3's rule). Journalled since 17b cut
+    /// M3.4: on `strikes` by the think arm beside the third `mind_fault`,
+    /// under its hash; on `core` by the landing arm under the landing's hash,
+    /// or by the think arm when no landing is pending (under the think's, as
+    /// `mind_fault`'s); on `abi` by nothing in the arena (a resume refuses by
+    /// name).
     MindDropped {
         /// The hull.
         unit: ObjId,

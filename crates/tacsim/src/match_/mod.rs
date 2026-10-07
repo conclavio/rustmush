@@ -483,6 +483,15 @@ impl MatchBook {
         self.matches.get_mut(&match_id)
     }
 
+    /// **Track a hand-built record** — the crate's own unit tests' seam (17b
+    /// cut M3.4: `crate::arena_bridge`'s tripped-sentence fixtures hand the
+    /// bridge a record whose `minds` names a principal without running a
+    /// lobby). Production inserts only in [`start`].
+    #[cfg(test)]
+    pub(crate) fn insert_for_tests(&mut self, record: MatchRecord) {
+        self.matches.insert(record.id, record);
+    }
+
     /// Every tracked match, in id order.
     pub fn iter(&self) -> impl Iterator<Item = (MatchId, &MatchRecord)> {
         self.matches.iter().map(|(id, record)| (*id, record))

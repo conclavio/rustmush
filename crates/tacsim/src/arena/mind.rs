@@ -124,6 +124,12 @@ pub const MIND_INTENTS_MAX: usize = 16;
 /// the sortie. `MindState.strikes` stops here ([`MindState::dropped`]).
 pub const MIND_STRIKES_TO_DROP: u8 = 3;
 
+/// **The cause word of D-UM-9's overflow** (17b cut M3.4; doc 17 §8): a think
+/// answering more than [`MIND_INTENTS_MAX`] intents with no fault of its own
+/// is journalled `mind_fault` with this word — the word the scripted
+/// runner's own overflow flag answers (`intents`).
+pub const OVERFLOW_CAUSE: &str = "intents";
+
 /// **How many contacts a view carries** (doc 17 §3; D-UM-35's class I
 /// `contact_rows`): the nearest twelve by the held range, then by
 /// [`ContactId`]. **The Class I row of `ClassTable::STOCK`; production reads
@@ -181,8 +187,22 @@ impl PendingThink {
 /// **Why a hull was dropped to the ROM** (17b cut M3.2; doc 17 §8, §13;
 /// D-UM-31, D-UM-32): three faulted thinks running, a core the seal recorded
 /// that is gone, or a mind this engine cannot run. Written to
-/// [`MindState::dropped`] — by the think arm on strikes from this cut, and on
-/// the other two causes from 17b cut M3.4, which journals every drop.
+/// [`MindState::dropped`] once a sortie and never cleared by a think (a
+/// released row is M3.5's: [`MindState::dropped`]), and journalled as
+/// one [`EventKind::MindDropped`] line carrying [`DropCause::as_str`] (17b cut
+/// M3.4):
+///
+/// * [`DropCause::Strikes`] by the think arm (`Arena::mind_think`) the think
+///   the strikes reach [`MIND_STRIKES_TO_DROP`];
+/// * [`DropCause::Core`] by the landing arm (`Arena::mind_land`), or the think
+///   arm when no landing is pending, on a hull whose seal recorded a core
+///   (`SealRef::core_class` above Class 0) that is gone;
+/// * [`DropCause::Abi`] by NOTHING in the arena: a resume across a changed
+///   `MIND_ABI` is refused by name before the arena exists
+///   (`crate::match_::resume`'s `ResumeRefusal::MindAbi`, 17b cut M3.3). It is
+///   carried, and the world's sentence words it
+///   (`crate::arena_bridge::dropped_line`), for the region map that will run a
+///   sortie across an engine change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DropCause {
@@ -190,7 +210,8 @@ pub enum DropCause {
     Strikes,
     /// The core the seal recorded is destroyed (D-UM-34).
     Core,
-    /// The mind's ABI is not this engine's (D-UM-46).
+    /// The mind's ABI is not this engine's (D-UM-46). Written by nothing in
+    /// the arena (the enum's head).
     Abi,
 }
 
@@ -203,6 +224,16 @@ impl DropCause {
             DropCause::Core => "core",
             DropCause::Abi => "abi",
         }
+    }
+
+    /// **The cause a `mind_dropped` line's word names** (17b cut M3.4): the
+    /// inverse of [`DropCause::as_str`], `None` for any other word — what the
+    /// world reads the tape's line back with (`crate::arena_bridge`).
+    #[must_use]
+    pub fn parse(word: &str) -> Option<DropCause> {
+        [DropCause::Strikes, DropCause::Core, DropCause::Abi]
+            .into_iter()
+            .find(|cause| cause.as_str() == word)
     }
 }
 
@@ -511,9 +542,19 @@ pub struct MindState {
     pub strikes: u8,
     /// **The drop to the ROM, and why** (17b cut M3.2; D-UM-31, D-UM-32, doc
     /// 17 §13): `None` while the mind flies, `Some(cause)` for the rest of the
-    /// sortie once dropped. Written by the think arm on the third strike
-    /// (`Some(DropCause::Strikes)`) so nothing regresses before 17b cut M3.4
-    /// journals every drop (`MindDropped`) and writes the other two causes.
+    /// sortie once dropped — never cleared by a think, clean or faulted.
+    /// Written by the think arm on the third strike (`Some(DropCause::Strikes)`)
+    /// and, since 17b cut M3.4, by the landing arm (or the think arm with no
+    /// landing pending) for a sealed core that is gone (`Some(DropCause::Core)`),
+    /// each with one `mind_dropped` line ([`DropCause`]'s head).
+    /// **Declared gap, M3.5's to close** (as `strikes`' is): a controller
+    /// transition away from the mind (`Arena::release_mind`) removes the row,
+    /// and a later adoption lays a fresh one with `dropped: None` — the
+    /// scripted mind flies again after a strikes drop, and a hull whose sealed
+    /// core is gone drops a second time (a second `mind_dropped { core }`
+    /// line, a second telling). No production path hands a hull back to a
+    /// mind before 17b cut M4; M3.5's dormant row keeps the row across a
+    /// possess and asserts the drop survives it.
     /// Carried by the snapshot; **NOT folded into `state_hash` until 17b cut
     /// M3.6** (on strikes it is a function of `strikes`, which is folded).
     pub dropped: Option<DropCause>,
@@ -635,7 +676,8 @@ pub struct ThinkJob<'a> {
     /// a hull with no core, or one whose core reads Class 0, is handed to the
     /// ROM from its first think, with no drop line (17b cut M3.4 writes one
     /// only on strikes and on a sealed core that is gone). A scripted runner
-    /// answers a dropped job with its native stand-in; the native stock mind
+    /// answers a dropped job with its native stand-in — the ROM, Standard
+    /// Doctrine's native body at this job's Class 0 row; the native stock mind
     /// ignores it (it is the stand-in).
     pub dropped: bool,
     /// **The row the mind thinks at** (17b cut M3.1; doc 17 §9, D-UM-35,
@@ -668,8 +710,10 @@ pub struct ThinkJob<'a> {
 /// a kernel's per-think cap), `type` (a value of the wrong type, a refused
 /// symbol), `memory` (a memory past its class's shape), `intents` (more than
 /// [`MIND_INTENTS_MAX`] intents), `unknown` (an id the view does not hold)
-/// or `panic` (the runner caught a panic). The arena reads only that there
-/// IS a fault: it lands nothing and counts a strike ([`Arena`]'s think arm).
+/// or `panic` (the runner caught a panic). The arena reads that there IS a
+/// fault — it lands nothing and counts a strike ([`Arena`]'s think arm) — and,
+/// since 17b cut M3.4, journals the word on the think's `mind_fault` line (and
+/// on the `mind_dropped` line of the third running).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThinkFault {
     /// The cause word.
@@ -1089,7 +1133,10 @@ impl Arena {
     ///
     /// In order: nothing after the match ended; nothing for a unit that is
     /// gone, a wreck or not a mind's, or for a stale `think_seq` — and none of
-    /// those reschedules (an adoption schedules its own); the view
+    /// those reschedules (an adoption schedules its own); with no landing
+    /// pending, the drop for a sealed core that is gone (17b cut M3.4,
+    /// `Arena::core_lost`, `Arena::drop_for_core`, its line under
+    /// `Arena::think_line_hash`), so this think is the ROM's; the view
     /// ([`Arena::mind_view`]); the three epochs recorded; the runner called
     /// synchronously; `think_seq` advanced. Then **D-UM-9, atomic**: a FAULT —
     /// since 17b cut M2.2 a runner's [`ThinkResult::fault`] or, as before,
@@ -1097,12 +1144,15 @@ impl Arena {
     /// memory, puts back what the view drained and settled (the notices in
     /// front of the buffer, oldest dropped past [`MIND_NOTICES`]; the range
     /// memory as it was), clears `pending` (counted `mind_faults`, and
-    /// `mind_overflows` when the length tripped; 17b cut M3 journals the
-    /// fault), writes a strike (`strikes = min(strikes + 1,`
-    /// [`MIND_STRIKES_TO_DROP`]`)`, D-UM-31 — the third running writes the
-    /// drop, [`MindState::dropped`] `= Some(DropCause::Strikes)`, 17b cut
-    /// M3.2; 17b cut M3.4 journals it) and schedules **no** landing, because
-    /// there is nothing to land; otherwise the strikes are cleared unless the
+    /// `mind_overflows` when the length tripped), writes a strike (`strikes =
+    /// min(strikes + 1,` [`MIND_STRIKES_TO_DROP`]`)`, D-UM-31 — the third
+    /// running writes the drop, [`MindState::dropped`] `= Some(DropCause::Strikes)`,
+    /// 17b cut M3.2), schedules **no** landing, because there is nothing to
+    /// land, and — **17b cut M3.4** — journals one `mind_fault` line (the
+    /// runner's cause word, or [`OVERFLOW_CAUSE`]) and, on the dropping
+    /// strike, one `mind_dropped` line (`strikes`, that word, the row's `ops`)
+    /// under one hash, and cuts the condition row to the ROM's one slot;
+    /// otherwise the strikes are cleared unless the
     /// hull is dropped, `pending` is set to the think AND its answer (17b cut
     /// M3.2, D-UM-23 as amended: the epochs, the intents, the memory — a
     /// [`PendingThink`], carried by the snapshot), and a
@@ -1131,6 +1181,20 @@ impl Arena {
         {
             return;
         }
+        // 17b cut M3.4 (D-UM-32, D-UM-34): a core the seal recorded that is
+        // gone drops the hull to the ROM at its next LANDING — and here, at its
+        // next think, when no landing is pending (the core died with no think
+        // in flight), before the view is taken, so this think is the ROM's.
+        // The line takes `Arena::think_line_hash`: a think fills no lazy slot.
+        if self
+            .minds
+            .get(&unit)
+            .is_some_and(|state| state.pending.is_none())
+            && self.core_lost(unit)
+        {
+            let hash = self.think_line_hash();
+            self.drop_for_core(unit, t_ms, hash);
+        }
         // D-UM-9: the two writes `mind_view` makes — the range memory settled
         // and the notice buffer drained — are undone if the think faults, so the
         // range memory as it stood is kept to put back.
@@ -1157,16 +1221,10 @@ impl Arena {
         // 17b cut M3.1 (doc 17 §9, D-UM-35): the row this think is held to,
         // read now — the view above was cut to it, and the next think is
         // scheduled at its `think_ms` below. A mind class of `Zero` (no core,
-        // a core at Class 0, or the drop) hands the job to the ROM.
-        //
-        // Declared interim (until 17b cut M3.4 truncates the condition row at
-        // every drop): a hull dropped by strikes keeps its HARDWARE's slots
-        // (`Arena::slot_capacity`, its core's), but the ROM thinks at Class
-        // 0's one and re-arms only its first — a second slot the mind armed
-        // before the drop keeps the terms it was armed on. Reachable only
-        // through a scripted runner's strikes, which no production hull has
-        // before 17b cut M4; a never-cored hull or a core at Class 0 holds one
-        // slot already.
+        // a core at Class 0, or the drop) hands the job to the ROM. 17b cut
+        // M3.4 cuts the condition row to Class 0's one slot at every drop
+        // (`Arena::truncate_slots_to`) and holds a dropped hull's arming to it
+        // (`Arena::arming_capacity`), so the ROM's one slot is the hull's.
         let class = self.mind_class(unit);
         let profile = self.classes.row(class);
         let Some(state) = self.minds.get(&unit) else {
@@ -1185,16 +1243,25 @@ impl Arena {
             map: &self.definition,
             card: &state.card,
         });
+        // 17b cut M2.2 (D-UM-31): a runner's fault and D-UM-9's overflow are
+        // one path. `result.trace` is dropped here: never hashed, never
+        // journalled. 17b cut M3.4: the fault's cause word — the runner's
+        // own, or `intents` for an overflow with no fault — is what the
+        // `mind_fault` line carries.
+        let overflowed = result.intents.len() > MIND_INTENTS_MAX;
+        let cause: Option<SmolStr> = result
+            .fault
+            .as_ref()
+            .map(|fault| fault.cause.clone())
+            .or_else(|| overflowed.then(|| SmolStr::new_static(OVERFLOW_CAUSE)));
         let Some(state) = self.minds.get_mut(&unit) else {
             return;
         };
         state.think_seq = think_seq.saturating_add(1);
-        // 17b cut M2.2 (D-UM-31): a runner's fault and D-UM-9's overflow are
-        // one path. `result.trace` is dropped here: never hashed, never
-        // journalled.
-        let overflowed = result.intents.len() > MIND_INTENTS_MAX;
-        let faulted = result.fault.is_some() || overflowed;
-        if faulted {
+        // The fault's lines, written once the row is (below): its cause word,
+        // and whether this think's strike was the drop.
+        let mut faulted_with: Option<(SmolStr, bool)> = None;
+        if let Some(cause) = cause {
             // D-UM-9: a fault lands nothing — not a prefix — and the memory the
             // last landed think left is the memory the next think is handed.
             // The think is atomic for the mind's own row too: what the view
@@ -1209,9 +1276,10 @@ impl Arena {
             // 17b cut M2.2 (D-UM-31, D-UM-32): a strike, held at three.
             state.strikes = state.strikes.saturating_add(1).min(MIND_STRIKES_TO_DROP);
             // 17b cut M3.2: the third running writes the drop on its own
-            // field, so nothing regresses before 17b cut M3.4 journals it
-            // (`MindDropped`) — once, a drop is never re-caused.
-            if state.strikes >= MIND_STRIKES_TO_DROP && state.dropped.is_none() {
+            // field — once, a drop is never re-caused (17b cut M3.4 journals
+            // it below).
+            let dropped_now = state.strikes >= MIND_STRIKES_TO_DROP && state.dropped.is_none();
+            if dropped_now {
                 state.dropped = Some(DropCause::Strikes);
             }
             state.pending = None;
@@ -1221,6 +1289,7 @@ impl Arena {
             let excess = notices.len().saturating_sub(MIND_NOTICES);
             notices.drain(..excess);
             state.notices = notices;
+            faulted_with = Some((cause, dropped_now));
         } else {
             // D-UM-31's reset: a clean think clears the strikes — but never a
             // drop, which is for the rest of the sortie (D-UM-32).
@@ -1238,6 +1307,48 @@ impl Arena {
             });
             self.due
                 .schedule(land_at, DueKind::MindLand { unit, think_seq });
+        }
+        // **17b cut M3.4** (doc 17 §8, §19; D-UM-31, D-UM-32): the fault is
+        // journalled — one `mind_fault` line with its cause word at the think's
+        // millisecond — and, on the strike that drops the hull, ONE
+        // `mind_dropped` line beside it carrying what the principal's sentence
+        // needs (the last fault's word and the op budget the faulting thinks
+        // ran under, this think's row's), so the world tells it from the tape.
+        // Both under ONE hash, `Arena::think_line_hash` taken once the row is
+        // written (the state the fault left). **No action hash is opened for a
+        // think** (`Arena::run_mind_thinks`), and the think's lines fill no
+        // lazy slot a landing or a reflex tick earlier in the substep opened:
+        // a fresh state hash that stores nothing — or, once an earlier line
+        // of the substep has TAKEN the substep's hash, that one, as every line
+        // of the substep shares it — so a think, clean or faulted, moves no
+        // later line's hash in its substep. At the drop the condition row is
+        // cut to Class 0's one slot: the ROM's.
+        if let Some((cause, dropped_now)) = faulted_with {
+            let hash = self.think_line_hash();
+            let _ = self.ledger.append(
+                t_ms,
+                EventKind::MindFault {
+                    unit,
+                    think_seq,
+                    cause: cause.clone(),
+                },
+                Vec::new(),
+                hash,
+            );
+            if dropped_now {
+                let _ = self.ledger.append(
+                    t_ms,
+                    EventKind::MindDropped {
+                        unit,
+                        cause: SmolStr::new_static(DropCause::Strikes.as_str()),
+                        fault: Some(cause),
+                        ops: Some(profile.ops),
+                    },
+                    Vec::new(),
+                    hash,
+                );
+                self.truncate_slots_to(unit, self.rom_slots());
+            }
         }
         // 17b cut M3.1: the cadence read at the moment of scheduling — after
         // this think's strike, so a hull that has just dropped is on Class
@@ -1276,7 +1387,14 @@ impl Arena {
     ///    and every refusal is appended to the notice buffer as a
     ///    [`FrameNotice::Refused`] in `stage_refusal`'s shape, with no
     ///    `phase_two_tells` filter: *a refusal is never silent* (D-UM-8);
-    /// 6. **17b cut M1b.1**: the hull's condition slots are evaluated ONCE, at
+    /// 6. **17b cut M3.4**: a core the hull's seal recorded
+    ///    (`SealRef::core_class` above Class 0) that is gone drops the hull to
+    ///    the ROM — `dropped = Some(DropCause::Core)`, one `mind_dropped` line
+    ///    (`core`, no fault, no budget) at `t_ms` under the landing's hash, the
+    ///    condition row cut to Class 0's one slot (`Arena::core_lost`,
+    ///    `Arena::drop_for_core`) — the think in flight having landed as
+    ///    thought;
+    /// 7. **17b cut M1b.1**: the hull's condition slots are evaluated ONCE, at
     ///    `t_ms`, after every intent has landed (`ConditionTrigger::Landing`),
     ///    so an arming and a lock of one think are both in force when the
     ///    slots are read.
@@ -1342,13 +1460,96 @@ impl Arena {
                 state.push_notice(notice);
             }
         }
-        // 6. **17b cut M1b.1** (doc 17 §5, D-UM-16): the hull's condition slots,
+        // 6. **17b cut M3.4** (doc 17 §8, §9; D-UM-32, D-UM-34): a core the
+        // seal recorded that is gone drops the hull to the ROM HERE — after the
+        // think in flight has landed as thought (D-UM-9: a think is atomic, and
+        // it was taken while the core stood) and before the slots are read, so
+        // the slots are read on the ROM's one. Under the landing's own hash:
+        // `run_mind_landings` opened the lazy slot, and the drop's line takes
+        // it (`Arena::event_hash`) as every line of the landing does.
+        if self.core_lost(unit) {
+            let hash = self.event_hash();
+            self.drop_for_core(unit, t_ms, hash);
+        }
+        // 7. **17b cut M1b.1** (doc 17 §5, D-UM-16): the hull's condition slots,
         // ONCE, after every intent of the landing has landed — never after each
         // landed `Arm` inside it: a mind lands its `Condition` BEFORE its `Lock`
         // in emission order, so a per-arming evaluation would read the old lock
         // and fire at a target the think had just dropped (17b's adversarial
         // F5). A hull with no slot returns at once.
         let _ = self.evaluate_conditions(unit, t_ms, ConditionTrigger::Landing, None, counters);
+    }
+
+    /// **The ROM's slots** (17b cut M3.4; D-UM-32): Class 0's row's `slots`
+    /// off the arena's own class table — one at the stock figures — what the
+    /// condition row is cut to at every drop.
+    fn rom_slots(&self) -> usize {
+        self.classes.row(crate::arena::core::CoreClass::Zero).slots
+    }
+
+    /// **The hash a think's own line carries** (17b cut M3.4; doc 16 §4's
+    /// one hash per moment): the substep's hash when an earlier line of the
+    /// substep has already TAKEN it ([`crate::arena::state::ActionHash::Taken`]),
+    /// else a fresh state hash that stores nothing — under `Outside` AND under
+    /// `Pending`. [`Arena::event_hash`] would fill a `Pending` slot (one a
+    /// landing or a reflex tick earlier in the substep opened and journalled
+    /// nothing under), and every later line of the substep would then carry
+    /// the think's moment where it carried its own: a think opens no action
+    /// hash ([`Arena::run_mind_thinks`]) and fills none either.
+    fn think_line_hash(&self) -> u64 {
+        match self.action_hash {
+            crate::arena::state::ActionHash::Taken(hash) => hash,
+            crate::arena::state::ActionHash::Pending | crate::arena::state::ActionHash::Outside => {
+                crate::arena::hash::state_hash(self)
+            }
+        }
+    }
+
+    /// **Whether `unit`'s sealed core is gone** (17b cut M3.4; doc 17 §8, §9,
+    /// §13; D-UM-32, D-UM-33, D-UM-34): the hull's seal recorded a core
+    /// (`UnitState::seal`'s `core_class` above Class 0), the unit carries
+    /// none now ([`Arena::core_of`]: the capability revoked by a
+    /// `destroy_core`), and its mind row stands and is not already dropped.
+    ///
+    /// **The seal's `core_class` is the gate**: a hull sealed WITHOUT a core —
+    /// the target, a coreless chassis, a never-cored fixture hull — runs the
+    /// ROM from its first think as a dropped job (its mind class is `Zero`)
+    /// and journals no drop, ever: its seal's `fallback` already says so. So
+    /// does a core `degrade_core` lowered to Class 0 (it is present, and its
+    /// class is `Zero`; declared).
+    fn core_lost(&self, unit: ObjId) -> bool {
+        self.unit(unit)
+            .is_some_and(|state| state.seal.core_class > crate::arena::core::CoreClass::Zero)
+            && self.core_of(unit).is_none()
+            && self.minds.get(&unit).is_some_and(|state| !state.dropped())
+    }
+
+    /// **Drop a hull whose sealed core is gone** ([`Arena::core_lost`]; 17b
+    /// cut M3.4; D-UM-32, D-UM-34), at `t_ms` under `hash` —
+    /// `dropped = Some(DropCause::Core)`, ONE `mind_dropped` line (`core`, no
+    /// fault word, no budget), and the condition row cut to the ROM's one
+    /// slot. The landing arm hands it the landing's hash
+    /// ([`Arena::event_hash`] under the lazy slot `run_mind_landings`
+    /// opened), the think arm [`Arena::think_line_hash`]. Continuous orders
+    /// hold — the motor's goal and the desired heading and speed are not
+    /// touched — and a seated pilot's hull has no row, so nothing here
+    /// reaches it.
+    fn drop_for_core(&mut self, unit: ObjId, t_ms: i64, hash: u64) {
+        if let Some(state) = self.minds.get_mut(&unit) {
+            state.dropped = Some(DropCause::Core);
+        }
+        let _ = self.ledger.append(
+            t_ms,
+            EventKind::MindDropped {
+                unit,
+                cause: SmolStr::new_static(DropCause::Core.as_str()),
+                fault: None,
+                ops: None,
+            },
+            Vec::new(),
+            hash,
+        );
+        self.truncate_slots_to(unit, self.rom_slots());
     }
 
     /// **A mind's standing order that has run out** (17b cut M1a.5; D-UM-15):
@@ -2740,6 +2941,546 @@ mod tests {
         assert_eq!(
             back.unit(BLUE).map(|unit| unit.seal),
             arena.unit(BLUE).map(|unit| unit.seal)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M3.4 — the faults and the drop, journalled
+    // -----------------------------------------------------------------------
+
+    /// **A runner that faults every think** with the word its row names for
+    /// the think's `think_seq` (the last word for any later one) — and thinks
+    /// clean, answering nothing, with no words — recording whether each job
+    /// was handed as dropped and at which class.
+    #[derive(Debug)]
+    struct Faulting {
+        words: Vec<&'static str>,
+        seen: std::sync::Mutex<Vec<(u64, bool, crate::arena::core::CoreClass)>>,
+    }
+
+    impl MindRunner for Faulting {
+        fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+            if let Ok(mut seen) = self.seen.lock() {
+                seen.push((job.think_seq, job.dropped, job.profile.class));
+            }
+            let at = usize::try_from(job.think_seq).unwrap_or(usize::MAX);
+            let word = self.words.get(at).or_else(|| self.words.last()).copied();
+            ThinkResult {
+                intents: Vec::new(),
+                memory: job.memory.to_vec(),
+                fault: word.map(|word| ThinkFault {
+                    cause: SmolStr::new_static(word),
+                }),
+                trace: Vec::new(),
+            }
+        }
+    }
+
+    /// A slot on `weapon` that never fires.
+    fn never(weapon: &str) -> FireCondition {
+        FireCondition {
+            weapon: SmolStr::new(weapon),
+            target: SlotTarget::Lock,
+            min_permille: 1_000,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: u32::MAX,
+        }
+    }
+
+    /// Every line the arena has journalled, flushed.
+    fn journal(arena: &mut Arena) -> Vec<crate::arena::ledger::LedgerEvent> {
+        arena.ledger.flush();
+        arena
+            .ledger
+            .take_chunks()
+            .into_iter()
+            .flat_map(|chunk| {
+                String::from_utf8(chunk.bytes)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect::<Vec<crate::arena::ledger::LedgerEvent>>()
+            })
+            .collect()
+    }
+
+    /// **17b cut M3.4: a faulted think journals its word, opens no action
+    /// hash, and the third running drops the hull once** (doc 17 §8; D-UM-31,
+    /// D-UM-32): red — a Class I core, two guns armed in S1 and S2, a
+    /// held-shot stamp on S2 — faults `unknown`, `type`, `ops` through
+    /// `Arena::mind_think`:
+    ///
+    /// * after every think the arena's action hash is still `Outside` (no
+    ///   action hash was opened for a think);
+    /// * three `mind_fault` lines at the thinks' milliseconds with their
+    ///   `think_seq` and words in order, and ONE `mind_dropped { strikes,
+    ///   fault: ops, ops: 1500 }` beside the third, under the third's hash;
+    /// * `dropped` is `Some(Strikes)` and the condition row is cut to Class
+    ///   0's one slot, S2's stamp gone; the next job is handed dropped at
+    ///   Class 0;
+    /// * a fourth fault is journalled and writes no second drop; a clean
+    ///   think after it never un-drops the hull (nor clears the strikes), and
+    ///   an arming of the second gun is refused `NoSlot` (the ROM's one);
+    /// * an overflow with no fault is `intents`.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn m3_a_faulted_think_journals_its_word_opens_no_hash_and_the_third_drops() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::state::ActionHash;
+        let mut arena = minded();
+        if let Some(state) = arena.unit_mut(RED) {
+            state.weapons = vec![
+                crate::arena::test_support::cannon(),
+                crate::arena::state::WeaponSummary {
+                    id: SmolStr::new("gun2"),
+                    ..crate::arena::test_support::cannon()
+                },
+            ];
+        }
+        for (n, weapon) in [(1_u8, "cannon"), (2, "gun2")] {
+            assert_eq!(arena.conditions.arm(RED, never(weapon), 2), Ok(n));
+        }
+        arena.held_said.insert((RED, 2, ContactId(3)), 10);
+        let runner = Arc::new(Faulting {
+            words: vec!["unknown", "type", "ops"],
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        arena.mind_runner = runner.clone();
+        let mut counters = ReflexCounters::default();
+        for n in 0..3_u64 {
+            let t_ms = 1_000 * (i64::try_from(n).unwrap_or(0) + 1);
+            arena.mind_think(RED, n, t_ms, &mut counters);
+            assert_eq!(
+                arena.action_hash,
+                ActionHash::Outside,
+                "think {n} opened a hash"
+            );
+        }
+        let lines: Vec<(i64, EventKind, u64)> = journal(&mut arena)
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    EventKind::MindFault { .. } | EventKind::MindDropped { .. }
+                )
+            })
+            .map(|event| (event.t_ms, event.kind, event.hash))
+            .collect();
+        let fault = |think_seq: u64, cause: &'static str| EventKind::MindFault {
+            unit: RED,
+            think_seq,
+            cause: SmolStr::new_static(cause),
+        };
+        assert_eq!(
+            lines
+                .iter()
+                .map(|(t_ms, kind, _)| (*t_ms, kind.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1_000, fault(0, "unknown")),
+                (2_000, fault(1, "type")),
+                (3_000, fault(2, "ops")),
+                (
+                    3_000,
+                    EventKind::MindDropped {
+                        unit: RED,
+                        cause: SmolStr::new_static("strikes"),
+                        fault: Some(SmolStr::new_static("ops")),
+                        ops: Some(1_500),
+                    }
+                ),
+            ]
+        );
+        assert_eq!(
+            lines.get(2).map(|line| line.2),
+            lines.get(3).map(|line| line.2),
+            "the drop rides the third fault's hash"
+        );
+        let row = arena.minds.get(&RED).cloned().unwrap_or_default();
+        assert_eq!(row.dropped, Some(DropCause::Strikes));
+        assert_eq!(arena.conditions.slots(RED).len(), 1, "the ROM's one slot");
+        assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(1));
+        assert_eq!(arena.conditions.slot_of(RED, "gun2"), None, "cut");
+        assert!(arena.held_said.is_empty(), "S2's stamp went with it");
+        assert_eq!(arena.slot_capacity(RED), 2, "the hardware still holds two");
+        assert_eq!(arena.mind_class(RED), CoreClass::Zero);
+        assert_eq!(counters.mind_faults, 3);
+
+        // A fourth fault: its line, and no second drop.
+        arena.mind_think(RED, 3, 4_000, &mut counters);
+        assert_eq!(
+            runner
+                .seen
+                .lock()
+                .map(|seen| seen.last().copied())
+                .ok()
+                .flatten(),
+            Some((3, true, CoreClass::Zero)),
+            "the next job is the ROM's, at Class 0"
+        );
+        let more: Vec<EventKind> = journal(&mut arena)
+            .into_iter()
+            .map(|event| event.kind)
+            .filter(|kind| {
+                matches!(
+                    kind,
+                    EventKind::MindFault { .. } | EventKind::MindDropped { .. }
+                )
+            })
+            .collect();
+        assert_eq!(more, vec![fault(3, "ops")], "dropped once");
+        // A clean think never un-drops.
+        arena.mind_runner = Arc::new(NoMind);
+        arena.mind_think(RED, 4, 5_000, &mut counters);
+        let row = arena.minds.get(&RED).cloned().unwrap_or_default();
+        assert_eq!(row.dropped, Some(DropCause::Strikes));
+        assert_eq!(row.strikes, MIND_STRIKES_TO_DROP);
+        // And the ROM's arming holds to its one slot: an arming of the second
+        // gun is refused `NoSlot`, never widening the row the drop cut.
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &crate::arena::conditions::Arming::Arm(never("gun2")),
+                5_000
+            ),
+            Err(crate::arena::intents::Refusal::NoSlot)
+        );
+        assert_eq!(arena.conditions.slots(RED).len(), 1);
+
+        // An overflow with no fault is `intents`.
+        #[derive(Debug)]
+        struct Overflowing;
+        impl MindRunner for Overflowing {
+            fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+                ThinkResult {
+                    intents: vec![IntentKind::Startup; MIND_INTENTS_MAX + 1],
+                    memory: job.memory.to_vec(),
+                    fault: None,
+                    trace: Vec::new(),
+                }
+            }
+        }
+        let mut arena = minded();
+        arena.mind_runner = Arc::new(Overflowing);
+        arena.mind_think(RED, 0, 1_000, &mut counters);
+        assert_eq!(
+            journal(&mut arena)
+                .into_iter()
+                .map(|event| event.kind)
+                .filter(|kind| matches!(kind, EventKind::MindFault { .. }))
+                .collect::<Vec<_>>(),
+            vec![EventKind::MindFault {
+                unit: RED,
+                think_seq: 0,
+                cause: SmolStr::new_static(OVERFLOW_CAUSE),
+            }]
+        );
+    }
+
+    /// **17b cut M3.4: a sealed core that is gone drops the hull at its next
+    /// think when no landing is pending; a hull sealed without a core never**
+    /// (doc 17 §9; D-UM-32, D-UM-33, D-UM-34): red's core capability revoked
+    /// (what `destroy_core`'s plan does) — its next think journals ONE
+    /// `mind_dropped { core }` at the think's millisecond with no fault and no
+    /// budget, opens no action hash, and is handed to the runner dropped at
+    /// Class 0; a later think journals nothing. A red fielded with NO core is
+    /// sealed `core_class` Zero: every think dropped at Class 0 from the
+    /// first, and no drop line, ever.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn m3_a_sealed_core_gone_drops_at_the_next_think_and_a_coreless_seal_never() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::state::ActionHash;
+        let recording = || {
+            Arc::new(Faulting {
+                words: Vec::new(),
+                seen: std::sync::Mutex::new(Vec::new()),
+            })
+        };
+        let mut arena = minded();
+        assert!(
+            arena
+                .unit(RED)
+                .is_some_and(|state| state.seal.core_class == CoreClass::I)
+        );
+        let key = arena.unit(RED).and_then(|state| {
+            state
+                .unit
+                .capabilities()
+                .find(|key| key.id.as_str() == crate::definitions::unit::CORE_CAPABILITY)
+                .cloned()
+        });
+        let Some(key) = key else {
+            panic!("red's core");
+        };
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::RevokeCapability { key }],
+            None,
+            None,
+        )
+        .expect("a plan");
+        if let Some(state) = arena.unit_mut(RED) {
+            state.unit = mush_tactics::apply(&state.unit, &plan, 0)
+                .expect("the revoke applies")
+                .0;
+        }
+        assert_eq!(arena.core_of(RED), None);
+        let runner = recording();
+        arena.mind_runner = runner.clone();
+        let mut counters = ReflexCounters::default();
+        arena.mind_think(RED, 0, 1_000, &mut counters);
+        assert_eq!(arena.action_hash, ActionHash::Outside);
+        arena.mind_think(RED, 1, 2_000, &mut counters);
+        let drops: Vec<(i64, EventKind)> = journal(&mut arena)
+            .into_iter()
+            .filter(|event| matches!(event.kind, EventKind::MindDropped { .. }))
+            .map(|event| (event.t_ms, event.kind))
+            .collect();
+        assert_eq!(
+            drops,
+            vec![(
+                1_000,
+                EventKind::MindDropped {
+                    unit: RED,
+                    cause: SmolStr::new_static("core"),
+                    fault: None,
+                    ops: None,
+                }
+            )]
+        );
+        assert_eq!(
+            arena.minds.get(&RED).and_then(|state| state.dropped),
+            Some(DropCause::Core)
+        );
+        assert_eq!(
+            runner
+                .seen
+                .lock()
+                .map(|seen| seen.clone())
+                .unwrap_or_default(),
+            vec![(0, true, CoreClass::Zero), (1, true, CoreClass::Zero)],
+            "the dropping think is already the ROM's"
+        );
+
+        // Sealed without a core: the ROM from the first think, no line.
+        let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+        red.controller = Controller::Mind;
+        red.unit = crate::arena::test_support::tactical_unit(RED);
+        let red = red.sealed();
+        assert_eq!(red.seal.core_class, CoreClass::Zero);
+        assert!(red.seal.fallback.is_some(), "its seal says so");
+        let mut arena = arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))]);
+        let runner = recording();
+        arena.mind_runner = runner.clone();
+        for n in 0..3_u64 {
+            let t_ms = 1_000 * (i64::try_from(n).unwrap_or(0) + 1);
+            arena.mind_think(RED, n, t_ms, &mut counters);
+        }
+        assert!(
+            journal(&mut arena)
+                .iter()
+                .all(|event| !matches!(event.kind, EventKind::MindDropped { .. })),
+            "a hull sealed without a core never drops"
+        );
+        assert!(
+            runner
+                .seen
+                .lock()
+                .map(|seen| seen
+                    .iter()
+                    .all(|(_, dropped, class)| *dropped && *class == CoreClass::Zero))
+                .unwrap_or(false),
+            "every think the ROM's, at Class 0"
+        );
+        assert_eq!(arena.minds.get(&RED).and_then(|state| state.dropped), None);
+    }
+
+    /// `unit`'s core capability revoked — what `destroy_core`'s plan does.
+    fn revoke_core(arena: &mut Arena, unit: ObjId) {
+        let key = arena.unit(unit).and_then(|state| {
+            state
+                .unit
+                .capabilities()
+                .find(|key| key.id.as_str() == crate::definitions::unit::CORE_CAPABILITY)
+                .cloned()
+        });
+        let Some(key) = key else {
+            panic!("the hull's core");
+        };
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::RevokeCapability { key }],
+            None,
+            None,
+        )
+        .expect("a plan");
+        if let Some(state) = arena.unit_mut(unit) {
+            state.unit = mush_tactics::apply(&state.unit, &plan, 0)
+                .expect("the revoke applies")
+                .0;
+        }
+        assert_eq!(arena.core_of(unit), None);
+    }
+
+    /// **17b cut M3.4: a think's lines fill no lazy slot** (doc 16 §4's one
+    /// hash per moment): `Arena::mind_think` under a `Pending` slot — what a
+    /// landing or a reflex tick earlier in the substep leaves when it
+    /// journalled nothing — journals its `mind_fault` (and, for a sealed
+    /// core gone, its `mind_dropped`) under a fresh state hash, the one an
+    /// `Outside` twin's line carries, and leaves the slot `Pending`, so the
+    /// substep's next line takes its own moment; under a `Taken` slot the
+    /// line carries the substep's hash and the slot is untouched.
+    /// (`Arena::event_hash` would have filled the `Pending` slot with the
+    /// think's moment, and every later line of the substep would carry it.)
+    #[test]
+    fn m3_a_think_s_lines_fill_no_lazy_slot_and_share_a_taken_one() {
+        use crate::arena::state::ActionHash;
+        let faulting = || {
+            Arc::new(Faulting {
+                words: vec!["ops"],
+                seen: std::sync::Mutex::new(Vec::new()),
+            })
+        };
+        let line_hashes = |arena: &mut Arena| -> Vec<(String, u64)> {
+            journal(arena)
+                .into_iter()
+                .filter(|event| {
+                    matches!(
+                        event.kind,
+                        EventKind::MindFault { .. } | EventKind::MindDropped { .. }
+                    )
+                })
+                .map(|event| (event.kind.as_str().to_owned(), event.hash))
+                .collect()
+        };
+        let mut counters = ReflexCounters::default();
+        // The twin under `Outside`: the fresh hash the line takes.
+        let mut outside = minded();
+        outside.mind_runner = faulting();
+        outside.mind_think(RED, 0, 1_000, &mut counters);
+        assert_eq!(outside.action_hash, ActionHash::Outside);
+        let fresh = line_hashes(&mut outside);
+        assert_eq!(fresh.len(), 1);
+        // Under `Pending`: the same hash, and the slot left `Pending`.
+        let mut pending = minded();
+        pending.mind_runner = faulting();
+        pending.action_hash = ActionHash::Pending;
+        pending.mind_think(RED, 0, 1_000, &mut counters);
+        assert_eq!(
+            pending.action_hash,
+            ActionHash::Pending,
+            "a faulted think filled the lazy slot"
+        );
+        assert_eq!(line_hashes(&mut pending), fresh);
+        // Under `Taken`: the substep's hash, the slot untouched.
+        let mut taken = minded();
+        taken.mind_runner = faulting();
+        taken.action_hash = ActionHash::Taken(0xA5A5);
+        taken.mind_think(RED, 0, 1_000, &mut counters);
+        assert_eq!(taken.action_hash, ActionHash::Taken(0xA5A5));
+        assert_eq!(
+            line_hashes(&mut taken),
+            vec![("mind_fault".to_owned(), 0xA5A5)]
+        );
+        // The core drop at a think's head, under `Pending`: its line, the
+        // slot left `Pending`, the hash an `Outside` twin's line carries.
+        let core_drop = |slot: ActionHash| {
+            let mut arena = minded();
+            revoke_core(&mut arena, RED);
+            arena.mind_runner = Arc::new(NoMind);
+            arena.action_hash = slot;
+            arena.mind_think(RED, 0, 1_000, &mut ReflexCounters::default());
+            let slot = arena.action_hash;
+            (slot, line_hashes(&mut arena))
+        };
+        let (slot, dropped) = core_drop(ActionHash::Pending);
+        assert_eq!(
+            slot,
+            ActionHash::Pending,
+            "a core drop at a think filled the lazy slot"
+        );
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped, core_drop(ActionHash::Outside).1);
+    }
+
+    /// **17b cut M3.4: the ROM takes back its one slot** (D-UM-32): red —
+    /// Class I, the cannon its FIRST weapon and a second gun — has the
+    /// failed mind's second gun in S1 and the cannon in S2 when three faults
+    /// drop it, and the drop keeps S1 (the second gun, on the failed mind's
+    /// terms). The ROM arms the hull's first weapon; its arming of the
+    /// cannon takes S1 back — the second gun's slot and its held-shot stamp
+    /// gone — where `ConditionTable::arm` alone would refuse `NoSlot` at
+    /// every ROM think. An arming of the second gun (not a ROM gun) is still
+    /// refused `NoSlot`, and a seated pilot's hull is never the ROM's (its
+    /// `NoSlot` stands).
+    #[test]
+    fn m3_the_rom_takes_back_a_slot_the_failed_mind_left_on_another_gun() {
+        use crate::arena::conditions::Arming;
+        use crate::arena::intents::Refusal;
+        let gun = |id: &str| crate::arena::state::WeaponSummary {
+            id: SmolStr::new(id),
+            ..crate::arena::test_support::cannon()
+        };
+        let mut arena = minded();
+        if let Some(state) = arena.unit_mut(RED) {
+            state.weapons = vec![crate::arena::test_support::cannon(), gun("gun2")];
+        }
+        for (n, weapon) in [(1_u8, "gun2"), (2, "cannon")] {
+            assert_eq!(arena.conditions.arm(RED, never(weapon), 2), Ok(n));
+        }
+        arena.held_said.insert((RED, 1, ContactId(3)), 10);
+        arena.mind_runner = Arc::new(Faulting {
+            words: vec!["ops"],
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut counters = ReflexCounters::default();
+        for n in 0..3_u64 {
+            let t_ms = 1_000 * (i64::try_from(n).unwrap_or(0) + 1);
+            arena.mind_think(RED, n, t_ms, &mut counters);
+        }
+        assert_eq!(
+            arena.minds.get(&RED).and_then(|state| state.dropped),
+            Some(DropCause::Strikes)
+        );
+        assert_eq!(arena.conditions.slot_of(RED, "gun2"), Some(1), "kept");
+        assert_eq!(arena.conditions.slot_of(RED, "cannon"), None, "cut");
+        // The ROM's arming of its first weapon takes S1 back.
+        let rom = FireCondition {
+            min_permille: 600,
+            ..never("cannon")
+        };
+        assert_eq!(
+            arena.resolve_arming(RED, &Arming::Arm(rom.clone()), 4_000),
+            Ok(Some(1))
+        );
+        assert_eq!(arena.conditions.slots(RED), &[Some(rom)][..]);
+        assert!(arena.held_said.is_empty(), "the second gun's stamp went");
+        // The second gun is not the ROM's: it takes no slot from it.
+        assert_eq!(
+            arena.resolve_arming(RED, &Arming::Arm(never("gun2")), 4_000),
+            Err(Refusal::NoSlot)
+        );
+        // A seated pilot's hull is not the ROM's: a full row refuses.
+        let mut piloted = minded();
+        if let Some(state) = piloted.unit_mut(RED) {
+            state.controller = Controller::Pilot;
+            state.weapons = vec![
+                crate::arena::test_support::cannon(),
+                gun("gun2"),
+                gun("gun3"),
+            ];
+        }
+        for weapon in ["gun2", "gun3"] {
+            assert!(
+                piloted
+                    .resolve_arming(RED, &Arming::Arm(never(weapon)), 0)
+                    .is_ok()
+            );
+        }
+        assert_eq!(
+            piloted.resolve_arming(RED, &Arming::Arm(never("cannon")), 0),
+            Err(Refusal::NoSlot)
         );
     }
 }

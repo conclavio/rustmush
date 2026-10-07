@@ -3130,6 +3130,10 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
     // not older than (the offer it answers changed nothing, so the world no
     // longer knows the card: the read-back then says to read the tape).
     note_cards_from_tape(ctx, match_id, &events);
+    // **17b cut M3.4** (doc 17 §8; D-UM-32): a hull dropped to the ROM is told
+    // to its warrant principal alone, in words read off the tape's own
+    // `mind_dropped` line — never off the live config (16b cut V.3's rule).
+    say_mind_dropped(ctx, match_id, &events);
     // 16b cut T.3: the black box is also where a check-in's final pose comes
     // from when nobody is in the cockpit. `position_summary` names every unit
     // every `ledger.summary_ms`, so a match with no pilot at all still hands the
@@ -4759,12 +4763,191 @@ fn say_expired_orders(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// The cause word of a think that ran out of its op budget (`mush_mind`'s
+/// `Fault::Ops`), the one strikes shape whose sentence names the budget.
+const OPS_FAULT: &str = "ops";
+
+/// Every tripped sentence's second half (17b cut M3.4; D-UM-32).
+const ROM_TAIL: &str = "The hull is on the ROM; MIND is off for the match.";
+
+/// **`n` with a comma every three digits** (`1,500`, `18,000`): how a
+/// player line writes an op budget.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && digits.len().saturating_sub(at) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// **The tripped sentence** (17b cut M3.4; doc 17 §8, D-UM-32): what the
+/// warrant principal of a hull dropped to the ROM reads, in the words of the
+/// tape's `mind_dropped` line — its cause, its last fault's word and the op
+/// budget the faulting thinks ran under, never a config read (16b cut V.3's
+/// rule: a reload cannot change how a match is told). `whose` is `Your` where
+/// the principal is the hull's own seated pilot (reachable from 17b cut M5)
+/// and `{callsign}'s` otherwise (`RB's`: the fill, told to its side's lead):
+///
+/// * strikes, the last fault `ops`: `Your core tripped: over its 1,500-op
+///   budget three thinks running. The hull is on the ROM; MIND is off for the
+///   match.`;
+/// * strikes, any other last fault: `Your core tripped: three faults running,
+///   the last {word}. The hull is on the ROM; MIND is off for the match.`
+///   (`unknown` where the line carries no word, which the arena never
+///   writes);
+/// * core: `Your core is destroyed. The hull is on the ROM; MIND is off for
+///   the match.`;
+/// * abi: `Your core cannot run its mind on this engine. The hull is on the
+///   ROM; MIND is off for the match.` (written by nothing in the arena: a
+///   resume across a changed engine is refused by name).
+///
+/// At most 117 columns at the largest class budget and a two-letter callsign
+/// (pinned in this file's tests).
+#[must_use]
+pub fn dropped_line(
+    whose: &str,
+    cause: crate::arena::mind::DropCause,
+    fault: Option<&str>,
+    ops: Option<u64>,
+) -> String {
+    use crate::arena::mind::DropCause;
+    let what = match cause {
+        DropCause::Strikes => match (fault, ops) {
+            (Some(OPS_FAULT), Some(ops)) => format!(
+                "{whose} core tripped: over its {}-op budget three thinks running.",
+                thousands(ops)
+            ),
+            (fault, _) => format!(
+                "{whose} core tripped: three faults running, the last {}.",
+                fault.unwrap_or("unknown")
+            ),
+        },
+        DropCause::Core => format!("{whose} core is destroyed."),
+        DropCause::Abi => format!("{whose} core cannot run its mind on this engine."),
+    };
+    format!("{what} {ROM_TAIL}")
+}
+
+/// **The staff form of the tripped sentence** (17b cut M3.4; D-UM-32): the
+/// hull by its callsign and the cause in the same words, shortened under the
+/// 120-column floor — `{callsign} dropped to the ROM: over its 1,500-op
+/// budget three thinks running.` / `…: three faults running, the last
+/// {word}.` / `…: its core is destroyed.` / `…: its core cannot run its mind
+/// on this engine.` — which the bridge's staff fan-out (`notify_staff`) is
+/// handed behind `Arena match {id}: `, as the lapse line is.
+#[must_use]
+pub fn staff_line(
+    callsign: &str,
+    cause: crate::arena::mind::DropCause,
+    fault: Option<&str>,
+    ops: Option<u64>,
+) -> String {
+    use crate::arena::mind::DropCause;
+    let why = match cause {
+        DropCause::Strikes => match (fault, ops) {
+            (Some(OPS_FAULT), Some(ops)) => {
+                format!("over its {}-op budget three thinks running", thousands(ops))
+            }
+            (fault, _) => format!(
+                "three faults running, the last {}",
+                fault.unwrap_or("unknown")
+            ),
+        },
+        DropCause::Core => "its core is destroyed".to_owned(),
+        DropCause::Abi => "its core cannot run its mind on this engine".to_owned(),
+    };
+    format!("{callsign} dropped to the ROM: {why}.")
+}
+
+/// **The one line a drop to the ROM is told in** (17b cut M3.4; doc 17 §8,
+/// D-UM-32), for every `mind_dropped` line of one chunk, in line order:
+///
+/// - **the warrant principal alone** — `MatchRecord::minds[unit]`'s seal's
+///   `principal` (17b cut M3.3): a `CharacterRef::Character` whose object
+///   still exists is told [`dropped_line`] (`Your` when it is the hull's own
+///   seated pilot, `{callsign}'s` otherwise — the side lead, for the fill); a
+///   lance-leader persona, or nobody (a staff `@arena/start` match, a side
+///   with no lead), is told nothing;
+/// - **staff**, always, through [`notify_staff`] with [`staff_line`].
+///
+/// Nobody else: the other side reads nothing, and no line names an object
+/// number (the observer rule — the principal's own side's hull, by its
+/// callsign). The words are the LINE's: its cause, its `fault` and its `ops`,
+/// never a config read. A line whose cause word is none of the three, or a
+/// match the book no longer holds, is told to nobody. Per chunk, never per
+/// pulse.
+fn say_mind_dropped(ctx: &mut Ctx<'_>, match_id: MatchId, events: &[LedgerEvent]) {
+    use crate::arena::mind::DropCause;
+    let drops: Vec<(ObjId, DropCause, Option<SmolStr>, Option<u64>)> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::MindDropped {
+                unit,
+                cause,
+                fault,
+                ops,
+            } => Some((*unit, DropCause::parse(cause)?, fault.clone(), *ops)),
+            _ => None,
+        })
+        .collect();
+    for (unit, cause, fault, ops) in drops {
+        let Some((callsign, principal, own)) = ctx
+            .w
+            .module_state::<crate::match_::MatchBook>()
+            .and_then(|book| book.get(match_id))
+            .map(|record| {
+                let principal = record
+                    .minds
+                    .get(&unit)
+                    .and_then(|sealed| sealed.seal.principal.clone());
+                let own = matches!(
+                    &principal,
+                    Some(CharacterRef::Character { id })
+                        if record
+                            .teams
+                            .iter()
+                            .any(|roster| roster.pilots.contains(&(*id, unit)))
+                );
+                (record.callsign_word(unit), principal, own)
+            })
+        else {
+            continue;
+        };
+        if let Some(CharacterRef::Character { id }) = principal
+            && ctx.w.get(id).is_some()
+        {
+            let whose = if own {
+                "Your".to_owned()
+            } else {
+                format!("{callsign}'s")
+            };
+            ctx.out.sys_to_actor(
+                id,
+                NOTICE_CATEGORY,
+                dropped_line(&whose, cause, fault.as_deref(), ops),
+            );
+        }
+        notify_staff(
+            ctx,
+            format!(
+                "Arena match {match_id}: {}",
+                staff_line(&callsign, cause, fault.as_deref(), ops)
+            ),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use mush_core::{GOD, ObjId};
     use smol_str::SmolStr;
 
-    use super::{ArenaRegistry, lapse_line, open_match};
+    use super::{ArenaRegistry, dropped_line, lapse_line, open_match, staff_line, thousands};
+    use crate::arena::mind::DropCause;
     use crate::arena::state::{Pilot, Team};
     use crate::arena::test_support::{custody, pose, tank};
     use crate::arena_task::MatchId;
@@ -4790,6 +4973,456 @@ mod tests {
             "Squad red-1: red lance leader 1's hold order has run out; back on doctrine."
         );
         assert!(!persona.contains("link dropped"));
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M3.4 — the tripped sentence, worded from the tape
+    // -----------------------------------------------------------------------
+
+    /// One player shape: `(whose, cause, fault, ops, sentence)`.
+    type Shape = (
+        &'static str,
+        DropCause,
+        Option<&'static str>,
+        Option<u64>,
+        &'static str,
+    );
+
+    /// The eight player shapes.
+    fn the_eight() -> Vec<Shape> {
+        vec![
+            (
+                "Your",
+                DropCause::Strikes,
+                Some("ops"),
+                Some(1_500),
+                "Your core tripped: over its 1,500-op budget three thinks running. The hull is on the ROM; MIND is off for the match.",
+            ),
+            (
+                "Your",
+                DropCause::Strikes,
+                Some("limit"),
+                Some(1_500),
+                "Your core tripped: three faults running, the last limit. The hull is on the ROM; MIND is off for the match.",
+            ),
+            (
+                "Your",
+                DropCause::Core,
+                None,
+                None,
+                "Your core is destroyed. The hull is on the ROM; MIND is off for the match.",
+            ),
+            (
+                "Your",
+                DropCause::Abi,
+                None,
+                None,
+                "Your core cannot run its mind on this engine. The hull is on the ROM; MIND is off for the match.",
+            ),
+            (
+                "RB's",
+                DropCause::Strikes,
+                Some("ops"),
+                Some(1_500),
+                "RB's core tripped: over its 1,500-op budget three thinks running. The hull is on the ROM; MIND is off for the match.",
+            ),
+            (
+                "RB's",
+                DropCause::Strikes,
+                Some("limit"),
+                Some(1_500),
+                "RB's core tripped: three faults running, the last limit. The hull is on the ROM; MIND is off for the match.",
+            ),
+            (
+                "RB's",
+                DropCause::Core,
+                None,
+                None,
+                "RB's core is destroyed. The hull is on the ROM; MIND is off for the match.",
+            ),
+            (
+                "RB's",
+                DropCause::Abi,
+                None,
+                None,
+                "RB's core cannot run its mind on this engine. The hull is on the ROM; MIND is off for the match.",
+            ),
+        ]
+    }
+
+    /// **17b cut M3.4: the tripped sentences, byte for byte, with their
+    /// lengths** (doc 17 §8, D-UM-32): the eight player shapes — `Your` and
+    /// the fill's `RB's`, each on an `ops` strike (the budget, with a
+    /// thousands separator), any other strike (the last word), a destroyed
+    /// core and an engine that cannot run the mind — and the four staff
+    /// lines behind `Arena match {id}: ` with a five-digit id. Every player
+    /// line at most 117 columns (the longest is the Class III budget's,
+    /// `18,000`); every staff line under 100. Every other last word (`limit`,
+    /// `type`, `memory`, `intents`, `unknown`, `panic`) takes the second
+    /// shape; a strike line with no word reads `unknown`.
+    #[test]
+    fn m3_the_tripped_sentences_are_pinned_byte_for_byte_with_their_lengths() {
+        let lengths = [116_usize, 107, 74, 96, 116, 107, 74, 96];
+        for ((whose, cause, fault, ops, sentence), length) in the_eight().into_iter().zip(lengths) {
+            assert_eq!(dropped_line(whose, cause, fault, ops), sentence);
+            assert_eq!(sentence.chars().count(), length, "{sentence}");
+        }
+        let longest = dropped_line("RB's", DropCause::Strikes, Some("ops"), Some(18_000));
+        assert_eq!(
+            longest,
+            "RB's core tripped: over its 18,000-op budget three thinks running. The hull is on the ROM; MIND is off for the match."
+        );
+        assert_eq!(longest.chars().count(), 117, "the longest player line");
+        for word in ["limit", "type", "memory", "intents", "unknown", "panic"] {
+            let line = dropped_line("RB's", DropCause::Strikes, Some(word), Some(1_500));
+            assert_eq!(
+                line,
+                format!(
+                    "RB's core tripped: three faults running, the last {word}. The hull is on the ROM; MIND is off for the match."
+                )
+            );
+            assert!(line.chars().count() <= 117, "{line}");
+        }
+        assert_eq!(
+            dropped_line("RB's", DropCause::Strikes, None, Some(1_500)),
+            "RB's core tripped: three faults running, the last unknown. The hull is on the ROM; MIND is off for the match."
+        );
+        // The thousands separator.
+        for (n, written) in [
+            (0_u64, "0"),
+            (400, "400"),
+            (1_500, "1,500"),
+            (6_000, "6,000"),
+            (18_000, "18,000"),
+            (1_234_567, "1,234,567"),
+        ] {
+            assert_eq!(thousands(n), written);
+        }
+        // The four staff lines, with a five-digit match id.
+        let id = MatchId(12_345);
+        let staff = [
+            (
+                staff_line("RB", DropCause::Strikes, Some("ops"), Some(1_500)),
+                "Arena match 12345: RB dropped to the ROM: over its 1,500-op budget three thinks running.",
+                88_usize,
+            ),
+            (
+                staff_line("RB", DropCause::Strikes, Some("limit"), Some(1_500)),
+                "Arena match 12345: RB dropped to the ROM: three faults running, the last limit.",
+                79,
+            ),
+            (
+                staff_line("RB", DropCause::Core, None, None),
+                "Arena match 12345: RB dropped to the ROM: its core is destroyed.",
+                64,
+            ),
+            (
+                staff_line("RB", DropCause::Abi, None, None),
+                "Arena match 12345: RB dropped to the ROM: its core cannot run its mind on this engine.",
+                86,
+            ),
+        ];
+        for (line, want, length) in staff {
+            let line = format!("Arena match {id}: {line}");
+            assert_eq!(line, want);
+            assert_eq!(line.chars().count(), length, "{line}");
+            assert!(length < 100);
+        }
+        let widest = format!(
+            "Arena match {id}: {}",
+            staff_line("RB", DropCause::Strikes, Some("ops"), Some(18_000))
+        );
+        assert_eq!(widest.chars().count(), 89);
+        assert_eq!(
+            DropCause::parse("strikes"),
+            Some(DropCause::Strikes),
+            "the tape's word reads back"
+        );
+        assert_eq!(DropCause::parse("core"), Some(DropCause::Core));
+        assert_eq!(DropCause::parse("abi"), Some(DropCause::Abi));
+        assert_eq!(DropCause::parse("ROM"), None);
+    }
+
+    /// Red's pilot, red's fill, blue's pilot, blue's fill, and a staff-run
+    /// hull nobody leads.
+    const RA: ObjId = ObjId(9_301);
+    const RB: ObjId = ObjId(9_302);
+    const BA: ObjId = ObjId(9_401);
+    const BB: ObjId = ObjId(9_402);
+    const XA: ObjId = ObjId(9_403);
+    const DROP_MATCH: MatchId = MatchId(81);
+
+    /// A running record of `DROP_MATCH`: red's `RA` piloted by `ada` and its
+    /// fill `RB` led by her; blue's `BA` piloted by `bo`, its fill `BB` under
+    /// a lance-leader persona and `BC` (`XA`) sealed with no principal.
+    fn dropped_record(ada: ObjId, bo: ObjId) -> crate::match_::MatchRecord {
+        use crate::arena::state::Designator;
+        let slot = |team: Team, slot: u16| Designator::Slot { team, slot };
+        let sealed = |unit: ObjId, principal: Option<CharacterRef>| {
+            (
+                unit,
+                crate::match_::MindSealRecord {
+                    sortie: crate::arena::mind::SortieId::in_match(DROP_MATCH.0, unit),
+                    seal: crate::arena::mind::MindSeal {
+                        unit,
+                        principal,
+                        ..crate::arena::mind::MindSeal::placeholder()
+                    },
+                },
+            )
+        };
+        crate::match_::MatchRecord {
+            id: DROP_MATCH,
+            state: crate::match_::MatchState::Running,
+            arena: SmolStr::new("tacsim.arena.proving_ground"),
+            arena_definition_digest: "ab".to_owned(),
+            teams: vec![
+                crate::match_::TeamRoster {
+                    team: Team::Red,
+                    units: vec![RA, RB],
+                    pilots: vec![(ada, RA)],
+                },
+                crate::match_::TeamRoster {
+                    team: Team::Blue,
+                    units: vec![BA, BB, XA],
+                    pilots: vec![(bo, BA)],
+                },
+            ],
+            started_ms: 1_000,
+            ended: None,
+            ledger_log_id: format!("match.{}", DROP_MATCH.0),
+            ledger_digest: String::new(),
+            seed: 2_350,
+            last_pose: std::collections::BTreeMap::new(),
+            squads: Vec::new(),
+            leaders: Vec::new(),
+            callsigns: std::collections::BTreeMap::from([
+                (RA, slot(Team::Red, 1)),
+                (RB, slot(Team::Red, 2)),
+                (BA, slot(Team::Blue, 1)),
+                (BB, slot(Team::Blue, 2)),
+                (XA, slot(Team::Blue, 3)),
+            ]),
+            folds: std::collections::BTreeMap::new(),
+            unparsed: 0,
+            replay: None,
+            mode: crate::arena::MatchMode::Skirmish,
+            minds: std::collections::BTreeMap::from([
+                sealed(RA, Some(CharacterRef::Character { id: ada })),
+                sealed(RB, Some(CharacterRef::Character { id: ada })),
+                sealed(BA, Some(CharacterRef::Character { id: bo })),
+                sealed(
+                    BB,
+                    Some(CharacterRef::Persona {
+                        squad: SquadId {
+                            team: Team::Blue,
+                            index: 1,
+                        },
+                    }),
+                ),
+                sealed(XA, None),
+            ]),
+        }
+    }
+
+    /// One `mind_dropped` line.
+    fn drop_line(
+        seq: u64,
+        unit: ObjId,
+        cause: &str,
+        fault: Option<&str>,
+        ops: Option<u64>,
+    ) -> crate::arena::ledger::LedgerEvent {
+        crate::arena::ledger::LedgerEvent {
+            seq,
+            t_ms: 4_945,
+            kind: crate::arena::ledger::EventKind::MindDropped {
+                unit,
+                cause: SmolStr::new(cause),
+                fault: fault.map(SmolStr::new),
+                ops,
+            },
+            draws: Vec::new(),
+            hash: 7,
+        }
+    }
+
+    /// Every `(audience, text)` an outbox holds.
+    fn told(out: &mush_core::Outbox) -> Vec<(ObjId, String)> {
+        out.events()
+            .iter()
+            .filter_map(|(audience, event)| match audience {
+                mush_core::Audience::Actor(actor) => Some((*actor, mush_testkit::text_of(event))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A world with the tacsim layer on `cfg`, `ada` and `bo` spawned, staff
+    /// connected, and [`dropped_record`] tracked.
+    fn dropped_world(cfg: crate::TacsimConfig) -> (mush_testkit::TestWorld, ObjId, ObjId) {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(cfg),
+        )]);
+        let ada = tw.spawn_player("Ada");
+        let bo = tw.spawn_player("Bo");
+        let _ = tw.connect(GOD);
+        let _ = tw.connect(ada);
+        let _ = tw.connect(bo);
+        if let Some(book) = tw
+            .world_mut()
+            .module_state_mut::<crate::match_::MatchBook>()
+        {
+            book.insert_for_tests(dropped_record(ada, bo));
+        }
+        (tw, ada, bo)
+    }
+
+    /// **17b cut M3.4: the warrant principal alone is told, and staff**
+    /// (doc 17 §8, D-UM-32; the observer rule): over one hand-built chunk
+    /// of five `mind_dropped` lines —
+    ///
+    /// * the fill `RB`'s strikes, led by Ada: Ada reads `RB's core tripped:
+    ///   over its 1,500-op budget …` and nobody else of either side;
+    /// * Ada's own `RA` (the principal is its own seated pilot: `Your`, the
+    ///   shape 17b cut M5 reaches) on a destroyed core;
+    /// * blue's `BB` under a lance-leader persona and `XA` with no principal:
+    ///   told to nobody — Bo, blue's own pilot, reads neither;
+    ///
+    /// and staff read one line each, `Arena match 81: … dropped to the ROM:
+    /// …`. No line names an object number. Then the same chunk through
+    /// `on_chunk`, on a world whose class table puts Class I at 2,000 ops: the
+    /// sentence still says the LINE's 1,500 — the figures are the tape's,
+    /// never the config's.
+    #[test]
+    fn m3_say_mind_dropped_tells_the_principal_alone_and_staff() {
+        let events = vec![
+            drop_line(1, RB, "strikes", Some("ops"), Some(1_500)),
+            drop_line(2, RA, "core", None, None),
+            drop_line(3, BB, "strikes", Some("limit"), Some(1_500)),
+            drop_line(4, XA, "abi", None, None),
+            // A word that is none of the three is told to nobody.
+            drop_line(5, BA, "rom", None, None),
+        ];
+        let (mut tw, ada, bo) = dropped_world(crate::TacsimConfig::default());
+        let mut out = mush_core::Outbox::new();
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(SmolStr::new(crate::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            super::say_mind_dropped(&mut ctx, DROP_MATCH, &events);
+        }
+        let heard = told(&out);
+        let of = |who: ObjId| -> Vec<String> {
+            heard
+                .iter()
+                .filter(|(actor, _)| *actor == who)
+                .map(|(_, text)| text.clone())
+                .collect()
+        };
+        assert_eq!(
+            of(ada),
+            vec![
+                "RB's core tripped: over its 1,500-op budget three thinks running. The hull is on the ROM; MIND is off for the match.".to_owned(),
+                "Your core is destroyed. The hull is on the ROM; MIND is off for the match.".to_owned(),
+            ],
+            "the lead reads her fill's line and her own hull's"
+        );
+        assert!(
+            of(bo).is_empty(),
+            "blue's pilot reads nothing: {:?}",
+            of(bo)
+        );
+        // Staff read a warning notice (`text_of` renders its frame).
+        assert_eq!(
+            of(GOD),
+            [
+                "Arena match 81: RB dropped to the ROM: over its 1,500-op budget three thinks running.",
+                "Arena match 81: RA dropped to the ROM: its core is destroyed.",
+                "Arena match 81: BB dropped to the ROM: three faults running, the last limit.",
+                "Arena match 81: BC dropped to the ROM: its core cannot run its mind on this engine.",
+            ]
+            .map(|line| format!("[notice arena Warn {line}]"))
+            .to_vec(),
+            "staff read every line"
+        );
+        for (_, text) in &heard {
+            for unit in [RA, RB, BA, BB, XA] {
+                assert!(
+                    !text.contains(&unit.0.to_string()),
+                    "an object number in {text:?}"
+                );
+            }
+        }
+
+        // Through `on_chunk`, on a class table the line does not match.
+        let classes: crate::arena::core::ClassTable =
+            serde_json::from_value(serde_json::json!({"I": {"ops": 2_000}}))
+                .expect("a class table");
+        let (mut tw, ada, bo) = dropped_world(crate::TacsimConfig {
+            minds: crate::config::MindsConfig {
+                classes,
+                ..crate::config::MindsConfig::default()
+            },
+            ..crate::TacsimConfig::default()
+        });
+        assert_eq!(
+            crate::match_::lobby::minds_config(tw.world())
+                .map(|minds| minds.classes.row(crate::arena::core::CoreClass::I).ops),
+            Some(2_000),
+            "the world's config is not the line's"
+        );
+        let mut bytes = Vec::new();
+        for event in &events {
+            bytes.extend_from_slice(
+                serde_json::to_string(event)
+                    .expect("a line encodes")
+                    .as_bytes(),
+            );
+            bytes.push(b'\n');
+        }
+        let mut out = mush_core::Outbox::new();
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(SmolStr::new(crate::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            super::on_chunk(&mut ctx, DROP_MATCH, 1, &bytes);
+        }
+        let heard = told(&out);
+        let ada_heard: Vec<&String> = heard
+            .iter()
+            .filter(|(actor, _)| *actor == ada)
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(ada_heard.len(), 2, "{heard:?}");
+        assert!(
+            ada_heard.first().is_some_and(
+                |line| line.contains("over its 1,500-op budget") && !line.contains("2,000")
+            ),
+            "the line's figure, never the config's: {ada_heard:?}"
+        );
+        assert!(heard.iter().all(|(actor, _)| *actor != bo));
+        assert_eq!(
+            heard.iter().filter(|(actor, _)| *actor == GOD).count(),
+            4,
+            "{heard:?}"
+        );
     }
 
     /// **16b cut I.4**: `open_match` keeps ONE defensive unbind per pilot it

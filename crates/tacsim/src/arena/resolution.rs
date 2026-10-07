@@ -176,6 +176,20 @@ pub enum Consequence {
         /// The sections that must all be destroyed, in authored order.
         sections: Vec<SmolStr>,
     },
+    /// **The core loses one class** (17b cut M3.4; doc 17 §9, D-UM-34): the
+    /// impact's plan lowers the core component's `core_class` cell by one
+    /// while it stands above its floor (`crate::arena::damage`'s `plan_hit`),
+    /// and the hull's condition row is cut to the lowered class's slots
+    /// (`Arena::truncate_slots`). At Class 0 it does nothing (declared). No
+    /// shipped chassis authors it before 17b cut M3.6.
+    DegradeCore,
+    /// **The core is destroyed** (17b cut M3.4; doc 17 §9, D-UM-34): the
+    /// impact's plan revokes the hull's `tacsim.core` capability, the
+    /// condition row is cut to Class 0's one slot, and a mind on the hull is
+    /// dropped to the ROM at its next landing (or its next think when none is
+    /// in flight) with one `mind_dropped` line (`Arena::mind_land`). No
+    /// shipped chassis authors it before 17b cut M3.6.
+    DestroyCore,
 }
 
 impl Consequence {
@@ -190,6 +204,8 @@ impl Consequence {
             Consequence::NoTurnToward { .. } => "no_turn_toward",
             Consequence::DisableMotion => "disable_motion",
             Consequence::DisableMotionWhenAllOf { .. } => "disable_motion_when_all_of",
+            Consequence::DegradeCore => "degrade_core",
+            Consequence::DestroyCore => "destroy_core",
         }
     }
 }

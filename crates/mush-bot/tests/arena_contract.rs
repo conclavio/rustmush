@@ -2153,6 +2153,104 @@ fn the_order_lapse_sentences_read_as_neutral_lines_and_open_no_reply() {
 }
 
 // ---------------------------------------------------------------------------
+// 17b cut M3.4: the tripped sentence, a hull dropped to the ROM
+// ---------------------------------------------------------------------------
+
+/// **The core-dropped sentences read as nothing the reader parses** (the
+/// game's 17b cut M3.4; doc 17 §8, D-UM-32): the eight player shapes the
+/// world says when a hull drops to the ROM — `Your` and the fill's `RB's`,
+/// each on an `ops` strike (the budget), any other strike (the last word), a
+/// destroyed core and an engine that cannot run the mind — byte for byte as
+/// `tacsim::arena_bridge::dropped_line` prints them (and as its own pin
+/// does), through the server's line renderer and the bot's own pipeline,
+/// read `Line::Other` and open no `CONTACTS`, `WEAPONSTATUS` or `STATUS`
+/// reply, no lock line and no brief. Every one fits the 120-column line
+/// whole. The bot does not act on them; its reader needed no change.
+#[test]
+fn m3_the_core_dropped_sentences_read_as_neutral_lines_and_open_no_reply() {
+    use tacsim::arena::mind::DropCause;
+    use tacsim::arena_bridge::dropped_line;
+    // `(whose, cause, fault, ops, sentence)`.
+    type Shape<'a> = (&'a str, DropCause, Option<&'a str>, Option<u64>, &'a str);
+    let shapes: [Shape<'_>; 8] = [
+        (
+            "Your",
+            DropCause::Strikes,
+            Some("ops"),
+            Some(1_500),
+            "Your core tripped: over its 1,500-op budget three thinks running. The hull is on the ROM; MIND is off for the match.",
+        ),
+        (
+            "Your",
+            DropCause::Strikes,
+            Some("limit"),
+            Some(1_500),
+            "Your core tripped: three faults running, the last limit. The hull is on the ROM; MIND is off for the match.",
+        ),
+        (
+            "Your",
+            DropCause::Core,
+            None,
+            None,
+            "Your core is destroyed. The hull is on the ROM; MIND is off for the match.",
+        ),
+        (
+            "Your",
+            DropCause::Abi,
+            None,
+            None,
+            "Your core cannot run its mind on this engine. The hull is on the ROM; MIND is off for the match.",
+        ),
+        (
+            "RB's",
+            DropCause::Strikes,
+            Some("ops"),
+            Some(1_500),
+            "RB's core tripped: over its 1,500-op budget three thinks running. The hull is on the ROM; MIND is off for the match.",
+        ),
+        (
+            "RB's",
+            DropCause::Strikes,
+            Some("limit"),
+            Some(1_500),
+            "RB's core tripped: three faults running, the last limit. The hull is on the ROM; MIND is off for the match.",
+        ),
+        (
+            "RB's",
+            DropCause::Core,
+            None,
+            None,
+            "RB's core is destroyed. The hull is on the ROM; MIND is off for the match.",
+        ),
+        (
+            "RB's",
+            DropCause::Abi,
+            None,
+            None,
+            "RB's core cannot run its mind on this engine. The hull is on the ROM; MIND is off for the match.",
+        ),
+    ];
+    let mut reader = Reader::new();
+    for (whose, cause, fault, ops, line) in shapes {
+        assert_eq!(
+            dropped_line(whose, cause, fault, ops),
+            line,
+            "the game's words"
+        );
+        assert_eq!(reader.one(line), Line::Other(line.to_owned()), "{line}");
+    }
+    // The widest budget a class carries (III's 18,000) still fits one line.
+    let widest = dropped_line("RB's", DropCause::Strikes, Some("ops"), Some(18_000));
+    assert_eq!(reader.say(&widest), vec![Line::Other(widest.clone())]);
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+}
+
+// ---------------------------------------------------------------------------
 // 17b cut M1b.4: the arming, its line and its two sentences
 // ---------------------------------------------------------------------------
 

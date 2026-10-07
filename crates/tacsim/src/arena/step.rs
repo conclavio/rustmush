@@ -3320,8 +3320,17 @@ impl Arena {
     /// reached only when no landing is held and the heap's head has left the
     /// millisecond, so every landing of the millisecond and everything those
     /// landings scheduled at it has been applied, and each think's view is the
-    /// state then ([`Arena::run_mind_landings`] has the order). A think
-    /// journals nothing, so no action hash is opened for it.
+    /// state then ([`Arena::run_mind_landings`] has the order). **No action
+    /// hash is opened for a think** — kept so by 17b cut M3.4, whose
+    /// `mind_fault` and `mind_dropped` lines (`Arena::mind_think`) fill no
+    /// lazy slot either: they carry the substep's hash once an earlier line
+    /// has TAKEN it, else a fresh state hash that stores nothing — under
+    /// `Outside`, and under a `Pending` slot a landing or a reflex tick earlier
+    /// in the substep opened and journalled nothing under
+    /// (`Arena::think_line_hash`; [`Arena::event_hash`] would fill that slot
+    /// with the think's moment). So a think, clean or faulted, moves no later
+    /// line's hash in its substep (opening one before every think would make
+    /// the substep's later lines share one hash where each had its own).
     fn run_mind_thinks(&mut self, held: &mut Vec<DueEvent>, reflex: &mut ReflexCounters) {
         let mut thinks: Vec<(ObjId, u64, i64)> = held
             .drain(..)
