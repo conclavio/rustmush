@@ -30,8 +30,11 @@
 //!    survival sliders does not hold is [`SealError::Card`], one whose
 //!    `min_odds` is under the floor [`SealError::Unlawful`].
 //!
-//! The class the mind thinks at is `min(STOCK_RATED_CLASS, core_class)` (17b
-//! cut M3's ruling, the plan's F4); the engine is the reflex's for a reflex
+//! The class the mind thinks at is `min(rated, core_class, class_cap)` under
+//! the terms' [`SealTerms::rated`] (Standard Doctrine's `STOCK_RATED_CLASS`)
+//! and [`SealTerms::class_cap`] (17b cut M3's ruling, the plan's F4; 17b cut
+//! M4.1 put the rating and the cap on the terms and the think side reads the
+//! seal, `Arena::mind_class`); the engine is the reflex's for a reflex
 //! hull AND a piloted one (what a release hands a piloted hull to today; 17b
 //! cut M4 moves the fill), the native stock mind's for a mind's hull.
 
@@ -86,13 +89,27 @@ pub struct SealTerms {
     /// `Muster::scripted`), whose runner `crate::minds::install_sealed_runners`
     /// then installs from the source the seal's digest names. A reflex or a
     /// piloted hull is sealed `reflex` whatever this says.
+    /// A reflex or a
+    /// piloted hull is sealed `reflex` whatever this says.
     pub engine_for_minds: SealEngine,
+    /// **The class the mind is rated at** (17b cut M4.1; doc 17 §9, D-UM-35;
+    /// the M4 row's finding (9)): Standard Doctrine's
+    /// [`STOCK_RATED_CLASS`] (I) everywhere in production before 17b cut M5,
+    /// Class III for a fixture's load mind. The seal's `class` is
+    /// `min(rated, core, class_cap)`, and the think side reads it off the
+    /// seal (`Arena::mind_class`) — the arena-wide `rated_class` this
+    /// replaces is gone.
+    pub rated: CoreClass,
+    /// **The class the hull is capped at** (17b cut M4.1; doc 17 §9, D-UM-37:
+    /// the lead's or the operator's cap): Class III — no cap — everywhere
+    /// before 17b cut M4.3 seals the fill at `[tacsim.minds].fill_class`.
+    pub class_cap: CoreClass,
 }
 
 impl SealTerms {
     /// **The terms every fixture seals under**: match 0, no principal, the
-    /// Line preset over the default doctrine, the seed floor of 100, and a
-    /// mind's hull sealed native.
+    /// Line preset over the default doctrine, the seed floor of 100, a
+    /// mind's hull sealed native, rated at the stock class and uncapped.
     #[must_use]
     pub fn fixture() -> SealTerms {
         SealTerms {
@@ -101,6 +118,18 @@ impl SealTerms {
             card: crate::arena::card::line(&ReflexConfig::default()),
             odds_floor_permille: 100,
             engine_for_minds: SealEngine::Native,
+            rated: STOCK_RATED_CLASS,
+            class_cap: CoreClass::III,
+        }
+    }
+
+    /// **These terms with the mind rated at `class`** (17b cut M4.1) — a
+    /// rig's lever for a hull that thinks above the stock rating.
+    #[must_use]
+    pub fn rated(self, class: CoreClass) -> SealTerms {
+        SealTerms {
+            rated: class,
+            ..self
         }
     }
 }
@@ -175,7 +204,9 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         sortie: SortieId::in_match(terms.match_id.0, unit.id),
         core,
         core_class,
-        class: STOCK_RATED_CLASS.min(core_class),
+        // 17b cut M4.1: `min(rated, core, cap)` — the terms' rating and cap,
+        // where it was `min(STOCK_RATED_CLASS, core)`.
+        class: terms.rated.min(core_class).min(terms.class_cap),
         governed,
         // (4) The revision.
         mind: SmolStr::new_static(SEALED_MIND),
@@ -571,5 +602,58 @@ mod tests {
             assert_eq!(hand.seal, unit.seal, "{entry} {controller:?}");
             assert_eq!(hand.seal.sortie, SortieId::in_match(0, ObjId(4)));
         }
+    }
+}
+
+#[cfg(test)]
+mod m4_tests {
+    use mush_core::ObjId;
+
+    use super::*;
+    use crate::arena::state::Team;
+    use crate::arena::test_support::{line_tank, pose, scout, tactical_unit};
+
+    /// **17b cut M4.1: the seal's class is `min(rated, core, cap)`** (the M4
+    /// row's finding (9); doc 17 §9, D-UM-35, D-UM-37): on a Class II line
+    /// core, rated I and uncapped seals I (the stock terms); rated III seals
+    /// II (the core caps it); rated III capped at I seals I; rated I capped
+    /// at Zero seals Zero; a hull with no core seals Zero whatever the terms
+    /// say, its `fallback` named. The fixture terms rate at
+    /// [`STOCK_RATED_CLASS`] and cap at III.
+    #[test]
+    fn m4_the_seal_s_class_is_the_least_of_the_rating_the_core_and_the_cap() {
+        let fixture = SealTerms::fixture();
+        assert_eq!(fixture.rated, STOCK_RATED_CLASS);
+        assert_eq!(fixture.class_cap, CoreClass::III);
+        let mut red = line_tank(ObjId(4), Team::Red, pose(1_500, 4_500));
+        red.controller = Controller::Mind;
+        assert_eq!(
+            read_core(&red.unit).map(|core| core.class),
+            Some(CoreClass::II),
+            "the line tank carries the line core"
+        );
+        for (rated, cap, class) in [
+            (CoreClass::I, CoreClass::III, CoreClass::I),
+            (CoreClass::III, CoreClass::III, CoreClass::II),
+            (CoreClass::III, CoreClass::I, CoreClass::I),
+            (CoreClass::I, CoreClass::Zero, CoreClass::Zero),
+            (CoreClass::II, CoreClass::II, CoreClass::II),
+        ] {
+            let terms = SealTerms {
+                class_cap: cap,
+                ..SealTerms::fixture().rated(rated)
+            };
+            let seal = seal_for(&red, &terms).expect("the terms seal");
+            assert_eq!(seal.class, class, "rated {rated:?} capped {cap:?}");
+            assert_eq!(seal.core_class, CoreClass::II, "the core as fitted");
+        }
+        let bare = crate::arena::state::CustodyUnit {
+            unit: tactical_unit(ObjId(9)),
+            controller: Controller::Mind,
+            ..scout(ObjId(9), Team::Blue, pose(6_500, 4_500))
+        };
+        let seal = seal_for(&bare, &SealTerms::fixture().rated(CoreClass::III)).expect("seals");
+        assert_eq!(seal.class, CoreClass::Zero, "no core: the ROM");
+        assert_eq!(seal.fallback.as_deref(), Some(NO_CORE_FALLBACK));
     }
 }

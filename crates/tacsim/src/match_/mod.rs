@@ -1081,8 +1081,12 @@ pub fn start(
                 odds_floor_permille: floor,
                 // 17b cut M3.5: the lab knob's mind fill is the native stock
                 // mind; nothing in production seals a scripted mind before
-                // 17b cut M4.
+                // 17b cut M4.3's flip.
                 engine_for_minds: crate::arena::mind::SealEngine::Native,
+                // 17b cut M4.1: Standard Doctrine's rating, uncapped — 17b cut
+                // M4.3 caps the fill at `[tacsim.minds].fill_class`.
+                rated: crate::arena::mind::STOCK_RATED_CLASS,
+                class_cap: crate::arena::core::CoreClass::III,
             };
             let custody = arena_def::custody_unit(
                 &catalog,

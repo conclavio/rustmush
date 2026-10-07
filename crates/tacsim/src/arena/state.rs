@@ -3963,14 +3963,33 @@ pub struct Arena {
     /// nothing — the gap 17b cut M3.1 declared (an operator's table re-derived
     /// stock at the decode) is closed.
     pub classes: crate::arena::core::ClassTable,
-    /// **The class every mind in this match is rated at** (17b cut M3.1):
-    /// [`crate::arena::mind::STOCK_RATED_CLASS`] — Standard Doctrine's — from
-    /// [`Arena::new`] and from the snapshot's decode; moved only by
-    /// [`Arena::set_rated_class_for_tests`], which no production path calls.
-    /// (17b cut M3.3's seal records each hull's class beside it,
-    /// `MindSeal::class`; nothing of the think side moved onto the seal.)
-    /// Neither hashed nor carried.
-    pub(crate) rated_class: crate::arena::core::CoreClass,
+    /// **The hulls whose think awaits its write** (17b cut M4.1; doc 17 §6
+    /// "Execution policy", D-UM-22, D-UM-23): named by `Arena::collect_think`
+    /// when it writes the think's facts on the row with an empty answer, and
+    /// taken off by `Arena::settle_collected` when the answer (or the fault)
+    /// is written — or by whatever ends the row's wait first (a wreck, a
+    /// possess, a release), which drops the answer. The "answered" fact
+    /// beside the row, because an EMPTY memory is a legal clean answer from
+    /// every test runner and `NoMind`, so [`crate::arena::mind::PendingThink`]
+    /// cannot say it itself. Scratch: **never hashed** (the facts it stands
+    /// beside are, item 3c), **never carried** and **re-derived empty** by the
+    /// decode — `Snapshot::encode` REFUSES an arena that holds any, by name
+    /// (the sim task awaits every outstanding batch before it encodes).
+    pub awaiting: BTreeSet<ObjId>,
+    /// **The thinks collected in the substep being run** (17b cut M4.1), in
+    /// collection order, each with no substep hash yet: moved to
+    /// [`Arena::unsettled`] with the substep's end hash stamped on them at
+    /// the substep's record (`Arena::stamp_collected`). Scratch, empty
+    /// between two pulses and never carried.
+    pub(crate) collected: Vec<crate::arena::mind::CollectedThink>,
+    /// **The thinks collected and not yet written** (17b cut M4.1), stamped,
+    /// in collection order: what `crate::arena::step::StepOutput::thinks`
+    /// clones out to the sim task for its pool, what
+    /// `Arena::deliver_answers` writes from the pool's answers, and what the
+    /// next substep's head (or the next `Arena::step`'s) settles inline when
+    /// nothing delivered it. Scratch: never hashed, never carried, re-derived
+    /// empty by the decode (an encode refuses while any think awaits).
+    pub(crate) unsettled: Vec<crate::arena::mind::CollectedThink>,
     /// **The card changes waiting for the next pulse** (17b cut M1b.5; doc 17
     /// §11, §22's M1b): per hull, in arrival order, what staff's `@mind/set`
     /// offered — handed in by the task BEFORE the step
@@ -4734,10 +4753,14 @@ impl Arena {
             conditions: crate::arena::conditions::ConditionTable::default(),
             held_said: BTreeMap::new(),
             odds_floor_permille: crate::config::MindsConfig::default().odds_floor_permille,
-            // 17b cut M3.1: the stock table and Standard Doctrine's rating —
-            // `spawn_arena` writes the configured table before the move.
+            // 17b cut M3.1: the stock table — `spawn_arena` writes the
+            // configured table before the move. (Standard Doctrine's rating
+            // is each hull's seal's since 17b cut M4.1, `UnitState::seal`.)
             classes: crate::arena::core::ClassTable::STOCK,
-            rated_class: crate::arena::mind::STOCK_RATED_CLASS,
+            // 17b cut M4.1: no think awaits, none is collected.
+            awaiting: BTreeSet::new(),
+            collected: Vec::new(),
+            unsettled: Vec::new(),
             // 17b cut M1b.5: no card change offered yet.
             pending_cards: BTreeMap::new(),
             mind_runner: crate::arena::mind::default_mind_runner(arena_cfg),

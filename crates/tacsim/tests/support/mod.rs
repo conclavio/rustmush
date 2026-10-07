@@ -1144,7 +1144,9 @@ pub fn run_until(
     let mut bytes: Vec<u8> = Vec::new();
     let mut wall = arena.now_ms;
     while arena.now_ms < until_ms {
-        let out = arena.step(wall, &[], &[]);
+        // 17b cut M4.1: settled between pulses, so `each_pulse` reads a mind
+        // row with its answer written, as the task's own pulse would leave it.
+        let out = arena.step_settled(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
@@ -1666,7 +1668,9 @@ pub fn play(
     let mut substeps = 0_usize;
     let mut wall = arena.now_ms;
     let ended = loop {
-        let out = arena.step(wall, &[], &[]);
+        // 17b cut M4.1: settled between pulses, as the task's pool settles —
+        // the final `state_hash` below reads every answer written.
+        let out = arena.step_settled(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }

@@ -328,6 +328,10 @@ orders_per_minute = 12             # ORDERs one commander may give in sixty seco
 # (17b cut M1b.5) a LAB knob: who flies the unseated hulls, "reflex" (today's
 # machine) or "mind" (the native stock mind on Line); production leaves it unset.
 # fill_controller = "reflex"
+# (17b cut M4.1, doc 17 section 6) the think pool's worker threads: the process-wide
+# pool every running match sends a pulse's unit-mind thinks to, sized once per
+# process by the first match that opens. 1..32.
+# workers = 2
 
 [tacsim.sensors]                   # (16b cut G) the sensor pass
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id

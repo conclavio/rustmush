@@ -587,7 +587,8 @@ fn run(arena: &mut Arena, drive: Drive, until_ms: i64) -> Run {
     let mut wall = arena.now_ms;
     let mut pulses = 0_u32;
     loop {
-        let out = arena.step(wall, &[], &[]);
+        // 17b cut M4.1: settled between pulses, as the task's pool settles.
+        let out = arena.step_settled(wall, &[], &[]);
         pulses = pulses.saturating_add(1);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
@@ -660,7 +661,8 @@ impl Rig {
     fn pulse(&mut self, controls: &[Control], intents: &[Intent]) -> StepOutput {
         let wall = self.wall.map_or(0, |wall| wall + SUBSTEP);
         self.wall = Some(wall);
-        let out = self.arena.step(wall, controls, intents);
+        // 17b cut M4.1: settled between pulses, as the task's pool settles.
+        let out = self.arena.step_settled(wall, controls, intents);
         for chunk in &out.ledger_chunks {
             self.bytes.extend_from_slice(&chunk.bytes);
         }
@@ -8234,6 +8236,20 @@ fn m3_the_view_is_cut_to_the_minds_class() {
 
 /// **The shipped heavy as red** (the command core, Class III, in its hull),
 /// at (2, 8) under `controller`, off the fielded catalog (17b cut M3.1).
+/// **Rate a hull's mind at `rated`** (17b cut M4.1): the rating is the
+/// seal's (`SealTerms::rated`, read off `UnitState::seal.class` by
+/// `Arena::mind_class` against the core's class now), so a rig that rates a
+/// hull above the stock rating writes the class the seal would have recorded
+/// — `min(rated, core)` — where it moved the arena-wide lever before.
+fn rate(arena: &mut Arena, unit: ObjId, rated: tacsim::arena::core::CoreClass) {
+    let core = arena
+        .core_of(unit)
+        .map_or(tacsim::arena::core::CoreClass::Zero, |core| core.class);
+    if let Some(state) = arena.unit_mut(unit) {
+        state.seal.class = rated.min(core);
+    }
+}
+
 fn shipped_heavy(controller: Controller) -> CustodyUnit {
     let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     let key = CanonicalId::new(content::HEAVY_MK1).expect("a canonical id");
@@ -8260,7 +8276,7 @@ fn shipped_heavy(controller: Controller) -> CustodyUnit {
 /// **A Class III mind on the heavy thinks every 250 ms** (17b cut M3.1;
 /// D-UM-35's `think_ms`, read at each scheduling): the shipped heavy (the
 /// command core, Class III) flown by a mind rated III
-/// (`Arena::set_rated_class_for_tests`) is handed Class III's row and thinks
+/// ([`rate`], the seal's class since 17b cut M4.1) is handed Class III's row and thinks
 /// a quarter-second apart — its first think on the grid the check-out laid
 /// at Standard Doctrine's rating, every one after it at its own row's period.
 #[test]
@@ -8284,7 +8300,7 @@ fn m3_a_class_iii_mind_on_the_heavy_thinks_every_250_ms() {
         CoreClass::I,
         "Standard Doctrine is rated I"
     );
-    arena.set_rated_class_for_tests(CoreClass::III);
+    rate(&mut arena, RED, CoreClass::III);
     assert_eq!(
         arena.mind_profile(RED),
         ClassTable::STOCK.row(CoreClass::III)
@@ -8490,7 +8506,7 @@ fn m3_a_class_iii_and_a_class_0_mind_at_three_cadences_are_one_event_list_and_on
             Controller::Pilot,
         )));
         let mut arena = arena_of(vec![red, red2, blue], &[BLUE]);
-        arena.set_rated_class_for_tests(CoreClass::III);
+        rate(&mut arena, RED, CoreClass::III);
         assert_eq!(arena.mind_class(RED), CoreClass::III);
         assert_eq!(arena.mind_class(RED2), CoreClass::Zero);
         assert!(format!("{:?}", arena.mind_runner).starts_with("NativeStockMind"));
@@ -8590,7 +8606,7 @@ fn m3_a_mind_adopted_at_class_iii_thinks_on_its_own_grid() {
     );
     let mut arena = arena_of(vec![shipped_heavy(Controller::Pilot), blue], &[BLUE]);
     assert!(!arena.minds.contains_key(&RED), "no mind at the check-out");
-    arena.set_rated_class_for_tests(CoreClass::III);
+    rate(&mut arena, RED, CoreClass::III);
     let now = arena.now_ms;
     let (at_iii, at_i) = (grid(now, 250), grid(now, STOCK_THINK_MS));
     assert_ne!(at_iii, at_i, "the two grids part on this seed");

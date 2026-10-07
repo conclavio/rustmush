@@ -725,7 +725,25 @@ pub struct MindsConfig {
     /// 120,000. At least 1, and at most `pool_base_ops_s`.
     #[serde(default = "default_pool_floor_ops_s")]
     pub pool_floor_ops_s: u64,
+    /// **The think pool's worker threads** (17b cut M4.1; doc 17 §6
+    /// "Execution policy", D-UM-22): the process-wide
+    /// [`crate::minds::MindPool`] every sim task sends its collected thinks
+    /// to, sized ONCE per process from the first task's read
+    /// (`MindPool::shared`). Stock 2; 1 to 32 ([`MindsConfig::validate`]).
+    /// Never carried: a resumed match thinks on the process's pool.
+    #[serde(default = "default_workers")]
+    pub workers: u32,
 }
+
+/// `workers`' default: doc 17 §6's two.
+const fn default_workers() -> u32 {
+    2
+}
+
+/// **The most worker threads `[tacsim.minds].workers` may name** (17b cut
+/// M4.1): a figure past any host the engine targets, held so a typo cannot
+/// spawn a thousand threads.
+pub const MAX_MIND_WORKERS: u32 = 32;
 
 /// `fill_controller`'s default: today's machine.
 fn default_fill_controller() -> String {
@@ -760,6 +778,8 @@ impl Default for MindsConfig {
             pool_base_ops_s: default_pool_base_ops_s(),
             pool_per_unit_ops_s: default_pool_per_unit_ops_s(),
             pool_floor_ops_s: default_pool_floor_ops_s(),
+            // 17b cut M4.1: doc 17 §6's two workers.
+            workers: default_workers(),
         }
     }
 }
@@ -796,6 +816,13 @@ impl MindsConfig {
             ));
         }
         self.validate_pool()?;
+        // 17b cut M4.1: the think pool's workers, 1 to `MAX_MIND_WORKERS`.
+        if !(1..=MAX_MIND_WORKERS).contains(&self.workers) {
+            return Err(format!(
+                "[tacsim.minds].workers must be 1 to {MAX_MIND_WORKERS} (it is {})",
+                self.workers
+            ));
+        }
         self.validate_classes()
     }
 
@@ -2101,6 +2128,49 @@ mod tests {
             even.validate(),
             Ok(()),
             "a floor equal to the base is lawful"
+        );
+    }
+}
+
+#[cfg(test)]
+mod m4_tests {
+    use super::*;
+
+    /// **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22):
+    /// `[tacsim.minds].workers` reads 2 when absent, 1 to
+    /// [`MAX_MIND_WORKERS`] by name, and is never carried (the snapshot
+    /// carries `match_cfg`, not this block).
+    #[test]
+    fn m4_the_think_pool_s_workers_read_two_and_are_held_one_to_thirty_two() {
+        assert_eq!(MindsConfig::default().workers, 2);
+        let absent: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100}"#).expect("the block decodes");
+        assert_eq!(absent.workers, 2, "absent reads the stock two");
+        let four: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100, "workers": 4}"#)
+                .expect("the block decodes");
+        assert_eq!(four.workers, 4);
+        assert_eq!(four.validate(), Ok(()));
+        for (workers, sentence) in [
+            (0, "[tacsim.minds].workers must be 1 to 32 (it is 0)"),
+            (33, "[tacsim.minds].workers must be 1 to 32 (it is 33)"),
+        ] {
+            assert_eq!(
+                MindsConfig {
+                    workers,
+                    ..MindsConfig::default()
+                }
+                .validate(),
+                Err(sentence.to_owned())
+            );
+        }
+        assert_eq!(
+            MindsConfig {
+                workers: MAX_MIND_WORKERS,
+                ..MindsConfig::default()
+            }
+            .validate(),
+            Ok(())
         );
     }
 }

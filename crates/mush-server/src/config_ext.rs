@@ -380,6 +380,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             pool_base_ops_s: cfg.minds.pool_base_ops_s,
             pool_per_unit_ops_s: cfg.minds.pool_per_unit_ops_s,
             pool_floor_ops_s: cfg.minds.pool_floor_ops_s,
+            // 17b cut M4.1 (doc 17 §6, D-UM-22): the think pool's workers,
+            // mapped straight across and held 1 to 32 by `validate` below.
+            workers: cfg.minds.workers,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,

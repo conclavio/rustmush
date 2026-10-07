@@ -542,7 +542,11 @@ fn play_on(
     // and its length held to the substeps played.
     let (mut hashes, mut substeps): (Vec<u64>, usize) = (Vec::new(), 0);
     let ended = loop {
-        let out = arena.step(wall, &[], &[]);
+        // 17b cut M4.1: settled between pulses, so the thoughts drained
+        // below are this pulse's — their runner ran right after its one
+        // substep — and `shadow` reads the arena at the end of the think's
+        // substep, as the probes' head says.
+        let out = arena.step_settled(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
@@ -1724,7 +1728,8 @@ fn m1b2_the_probes_law_counters_count_on_a_field_that_presents_nothing() {
     let mut bytes: Vec<u8> = Vec::new();
     let mut wall = arena.now_ms;
     while arena.now_ms < UNTIL_MS {
-        let out = arena.step(wall, &[], &[]);
+        // 17b cut M4.1: settled between pulses (see `play_on`).
+        let out = arena.step_settled(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
@@ -1877,11 +1882,25 @@ impl Coverage {
 /// are deterministic, so the shrink Gate A takes to native-against-native
 /// thinks is pinned, not only printed. In the pooled lane 17 of the 30
 /// matches carry a stand-in think ([`POOLED_MATCHES_WITH_STAND_IN`]).
+///
+/// **17b cut M4.1's re-bless** (the M4 row's finding (1)): a think is
+/// collected at its millisecond and its runner runs at the write, the head
+/// of the next substep — so a think collected in the substep that ENDS the
+/// match is never run (nothing is written after the end), where the twin
+/// ran it at its millisecond and the end discarded its answer. The counts
+/// are runner calls and shrink by exactly those thinks: pooled 10,271 / 295
+/// → 10,269 / 293, mixed 12,443 / 321 → 12,442 / 321, twin-twin 10,098 /
+/// 256 → 10,098 / 254, lance 5,880 / 156 → 5,878 / 156 (the lance lane's
+/// fights that reach the 120 s cap hand their last pulse's thinks out, and
+/// [`fly_lance`] now settles them, so only an ending substep's are
+/// unrun). Every match's end, its hashes and its tape are unmoved (Gate A's
+/// equalities hold as they stood); the gate's thinks are the thinks that
+/// decide anything.
 const COVERAGE: [(&str, (usize, usize)); 4] = [
-    ("pooled", (10_271, 295)),
-    ("mixed", (12_443, 321)),
-    ("twin_twin", (10_098, 256)),
-    ("lance", (5_880, 156)),
+    ("pooled", (10_269, 293)),
+    ("mixed", (12_442, 321)),
+    ("twin_twin", (10_098, 254)),
+    ("lance", (5_878, 156)),
 ];
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
@@ -2080,6 +2099,14 @@ fn m2_gate_a_on_a_mixed_pool() {
 /// the same 67 lines). Gate A's first lane flies the twin where the lane
 /// flies T1, and the twin answers T1's answer: its record IS this one, line
 /// for line, or the twin is not T1.
+///
+/// **17b cut M4.1 moved TWO lines of it** (the M4 row's finding (1); the
+/// reason at [`COVERAGE`]): the `twin_divergences` line's `landing` 10,566
+/// → 10,562 and `range_round` 24 → 23, and the `twin_divergence_basis`
+/// line's `thinks` 10,566 → 10,562 — the four thinks collected in the
+/// substep that ended their match are no longer run (nothing is written
+/// after the end), and one of them had counted a `range_round`. Every match
+/// line, every end and every count read off the tape are as they were.
 const M1B5_POOLED_RECORD: [&str; 67] = [
     "twin_match: seed=2350 t1=blue end=elimination_red t_ms=189000",
     "twin_match: seed=2350 t1=red end=elimination_red t_ms=200250",
@@ -2142,8 +2169,8 @@ const M1B5_POOLED_RECORD: [&str; 67] = [
     "twin_control_match: seed=2364 run=0 end=elimination_red t_ms=183500",
     "twin_control_match: seed=2364 run=1 end=elimination_red t_ms=183500",
     "twin_pooled: n=30 t1_wins=15 t0_wins=15 draws=0 interval=[0.332, 0.668] decisive_interval=[0.332, 0.668] control_draws=2 control_red_wins=26 control_blue_wins=2",
-    "twin_divergences: tiebreak=80 line=0 support=0 reads_dead=0 landing=10566 no_line=0 fan=11 order_hint=0 order_end=0 range_round=24 plot_cell=16 deg_round=0 fallback=2 cond_fire=2811 cond_stale=9 unwarranted=0 unlawful=0 floor_held=0 slot_starved=0 slot_parallel=449 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=10566 ordered_thinks=0 (support, order_hint, order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_divergences: tiebreak=80 line=0 support=0 reads_dead=0 landing=10562 no_line=0 fan=11 order_hint=0 order_end=0 range_round=23 plot_cell=16 deg_round=0 fallback=2 cond_fire=2811 cond_stale=9 unwarranted=0 unlawful=0 floor_held=0 slot_starved=0 slot_parallel=449 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=10562 ordered_thinks=0 (support, order_hint, order_end and deg_round read only under an order; the pool orders nothing)",
     "twin_gate_b: side=t1 shots=2898 shots_per_min=30.491 time_to_first_shot_ms=113627 first_shots=30 states_at_end=[startup=0,patrol=3,approach=0,engage=26,withdraw=0,disabled=31] wrecked=31 cond_shots=2811 parallel=449",
     "twin_gate_b: side=t0 shots=2374 shots_per_min=24.977 time_to_first_shot_ms=113377 first_shots=30 states_at_end=[startup=0,patrol=0,approach=0,engage=26,withdraw=10,disabled=24] wrecked=24 cond_shots=0 parallel=0",
     "twin_gate_b: side=control shots=4750 shots_per_min=25.217 time_to_first_shot_ms=112377 first_shots=60 states_at_end=[startup=0,patrol=0,approach=0,engage=60,withdraw=8,disabled=52] wrecked=46 cond_shots=0 parallel=0",
@@ -2506,7 +2533,8 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
             intents.extend(released);
             next_release += 1;
         }
-        let out = arena.step(wall, &[], &intents);
+        // 17b cut M4.1: settled between pulses (see `play_on`).
+        let out = arena.step_settled(wall, &[], &intents);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }

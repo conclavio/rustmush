@@ -383,6 +383,24 @@ pub enum SnapshotError {
     /// The decoded state breaks a refusal [`Arena::new`] makes of a check-out.
     #[error("the decoded state is not a match: {0}")]
     Refused(#[from] ArenaError),
+    /// **A think awaits its write** (17b cut M4.1; doc 17 §6, D-UM-22): the
+    /// arena holds a collected think whose answer nothing has delivered or
+    /// settled yet, so a snapshot would carry its facts and no answer. The
+    /// hulls, in id order.
+    #[error("a think awaits its answer on {}: the batch was not delivered before the encode", awaiting_text(.units))]
+    Awaiting {
+        /// The hulls whose think is unwritten ([`Arena::awaiting`]).
+        units: Vec<ObjId>,
+    },
+}
+
+/// The hulls of [`SnapshotError::Awaiting`] as `#1, #2`.
+fn awaiting_text(units: &[ObjId]) -> String {
+    units
+        .iter()
+        .map(|unit| format!("#{}", unit.0))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// **A 32-byte digest as the tree renders every digest**: 64 lowercase base-16
@@ -511,6 +529,18 @@ impl Snapshot {
             || !arena.pending_notices.is_empty()
         {
             return Err(SnapshotError::Malformed("taken inside a pulse".to_owned()));
+        }
+        // **17b cut M4.1** (doc 17 §6 "Snapshot and resume"; D-UM-22,
+        // D-UM-23): a think collected and not yet written would be carried
+        // as its facts with an EMPTY answer and land as nothing on the
+        // resumed arena — refused by name instead. The sim task awaits every
+        // outstanding batch before it encodes (`arena_task`'s
+        // `snapshot_if_due`), so production never reaches this arm; a rig
+        // that steps and encodes settles first (`Arena::step_settled`).
+        if !arena.awaiting.is_empty() {
+            return Err(SnapshotError::Awaiting {
+                units: arena.awaiting.iter().copied().collect(),
+            });
         }
         let state = serde_json::to_string(&ArenaStateRef::from(arena))
             .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
@@ -818,9 +848,13 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             odds_floor_permille,
             // Carried (17b cut M3.2): the class table captured at check-out.
             classes,
-            // Re-derived (17b cut M3.1): Standard Doctrine's rating — M3.3's
-            // seal replaces it.
-            rated_class: _rated_class,
+            // Reset (17b cut M4.1): the "answered" fact beside each row, and
+            // the thinks collected and not yet written — `encode` refuses an
+            // arena that holds any (`awaiting`, below), and the decode lays
+            // all three down empty.
+            awaiting: _awaiting,
+            collected: _collected,
+            unsettled: _unsettled,
             // Reset (17b cut M1b.5): the card changes waiting for the next
             // pulse are scratch, emptied at its start.
             pending_cards: _pending_cards,
@@ -1032,8 +1066,11 @@ impl ArenaState {
             // 17b cut M3.2: carried — the table the match was checked out
             // under.
             classes,
-            // 17b cut M3.1: re-derived, as `Arena::new` sets it.
-            rated_class: crate::arena::mind::STOCK_RATED_CLASS,
+            // 17b cut M4.1: re-derived empty — no think awaits across a
+            // snapshot (`encode` refused while one did).
+            awaiting: BTreeSet::new(),
+            collected: Vec::new(),
+            unsettled: Vec::new(),
             pending_cards: BTreeMap::new(),
             mind_runner,
             // 17b cut M3.5: re-derived empty, as `Arena::new` lays it; the

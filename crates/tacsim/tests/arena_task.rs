@@ -362,6 +362,13 @@ fn fast_arena() -> ArenaConfig {
     cfg
 }
 
+/// **The think pool every task here runs on** (17b cut M4.1): the process's
+/// one, at the stock two workers — the gate fixtures that run tasks at one,
+/// two and four workers build their own (`MindPool::new`).
+fn pool() -> std::sync::Arc<tacsim::minds::MindPool> {
+    tacsim::minds::MindPool::shared(2)
+}
+
 /// **`cfg` with the snapshot rule off** (16b cut AF.2): `snapshot_ms = 0`.
 ///
 /// Every proof in this file that predates cut AF.2 counts, indexes or orders
@@ -415,6 +422,7 @@ fn start_with_egress(
         &SensorsConfig::default(),
         &tacsim::config::MindsConfig::default(),
         &std::collections::BTreeMap::new(),
+        pool(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -997,6 +1005,7 @@ fn start_unseated(
         sensors_cfg,
         &tacsim::config::MindsConfig::default(),
         &std::collections::BTreeMap::new(),
+        pool(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -2038,6 +2047,7 @@ async fn m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone() 
             &SensorsConfig::default(),
             &tacsim::config::MindsConfig::default(),
             &std::collections::BTreeMap::new(),
+            pool(),
             tasks.egress_sender().expect("the egress sender"),
         )
         .expect("the test check-out is accepted")
@@ -2748,6 +2758,7 @@ async fn af3_a_resumed_task_pulses_on_the_lattice_and_skips_the_snapshot_s_own_p
         arena,
         &arena_cfg,
         &std::collections::BTreeMap::new(),
+        pool(),
         egress_tx,
     )
     .expect("the resumed arena installs its sealed runners");
@@ -2831,6 +2842,7 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
                 ..tacsim::config::MindsConfig::default()
             },
             &std::collections::BTreeMap::new(),
+            pool(),
             egress_tx,
         )
         .expect("the test check-out is accepted");
@@ -2882,6 +2894,7 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
         arena,
         &arena_cfg,
         &std::collections::BTreeMap::new(),
+        pool(),
         egress_tx,
     )
     .expect("the resumed arena installs its sealed runners");
@@ -2986,6 +2999,7 @@ async fn m1b5_two_card_changes_land_in_arrival_order() {
         &SensorsConfig::default(),
         &tacsim::config::MindsConfig::default(),
         &std::collections::BTreeMap::new(),
+        pool(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -3062,6 +3076,7 @@ async fn mind_match_to_five_seconds(
             ..tacsim::config::MindsConfig::default()
         },
         &std::collections::BTreeMap::new(),
+        pool(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -3178,6 +3193,7 @@ async fn m3_spawn_and_resume_install_each_scripted_seal_s_runner_or_refuse() {
             &SensorsConfig::default(),
             &tacsim::config::MindsConfig::default(),
             sources,
+            pool(),
             egress_tx,
         )
         .map(|(handle, _join, _callsigns)| handle)
@@ -3217,6 +3233,7 @@ async fn m3_spawn_and_resume_install_each_scripted_seal_s_runner_or_refuse() {
             decoded(),
             &arena_cfg,
             sources,
+            pool(),
             egress_tx,
         )
         .map(|(handle, _join)| handle)

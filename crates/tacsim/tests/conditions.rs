@@ -3307,7 +3307,10 @@ fn mind_run(
             next_beat += 1;
         }
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
-        let out = arena.step(wall, &[], &intents);
+        // 17b cut M4.1: settled between pulses — the pooled path, done
+        // synchronously; at 5,000 ms most thinks settle inline at the next
+        // substep's head, at 500 ms every other one crosses a pulse.
+        let out = arena.step_settled(wall, &[], &intents);
         absorb(&out, &mut bytes, &mut Vec::new());
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;

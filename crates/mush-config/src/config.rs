@@ -1417,6 +1417,11 @@ pub struct TacsimMindsCfg {
     pub pool_per_unit_ops_s: u64,
     /// The pool's floor, ops a sim second. At least 1, at most the base.
     pub pool_floor_ops_s: u64,
+    /// **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22): the think
+    /// pool's worker threads — the process-wide pool every sim task sends a
+    /// pulse's collected thinks to, sized once per process from the first
+    /// task's read. `1` to `32`; stock `2`. Never carried by a snapshot.
+    pub workers: u32,
 }
 
 impl Default for TacsimMindsCfg {
@@ -1428,6 +1433,7 @@ impl Default for TacsimMindsCfg {
             pool_base_ops_s: 500_000,
             pool_per_unit_ops_s: 1_000,
             pool_floor_ops_s: 120_000,
+            workers: 2,
         }
     }
 }

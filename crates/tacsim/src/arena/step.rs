@@ -566,6 +566,18 @@ pub struct StepOutput {
     /// of [`StepOutput::frames`]: it names every unit, and a pilot's frame names
     /// only what their platform holds (doc 16 §1).
     pub observer: Option<crate::arena::observer::Observer>,
+    /// **The thinks this pulse collected and has not written** (17b cut
+    /// M4.1; doc 17 §6 "Execution policy", D-UM-22): those of its last
+    /// substep, frozen ([`crate::arena::mind::CollectedThink`]) and stamped
+    /// with their substep's hash — clones of the arena's own list. The sim
+    /// task hands them to the process's mind pool after `publish` and
+    /// delivers the answers back (`Arena::deliver_answers`) before its next
+    /// step and before it encodes a snapshot; a caller with no pool runs them
+    /// itself (`crate::arena::mind::run_batch_inline`) or leaves them, and
+    /// the next `Arena::step` writes them inline at its head. Empty on a
+    /// pulse that collected none, on the ended early return and on a stopped
+    /// pulse; always empty from [`Arena::step_settled`].
+    pub thinks: Vec<crate::arena::mind::CollectedThink>,
 }
 
 // ---------------------------------------------------------------------------
@@ -681,11 +693,21 @@ impl Arena {
                 reflex: ReflexCounters::default(),
                 deliberation: Vec::new(),
                 observer: None,
+                thinks: Vec::new(),
             };
         }
         self.substep_hashes.clear();
         let mut perception = PerceptionCounters::default();
         let mut reflex = ReflexCounters::default();
+        // **17b cut M4.1**: the thinks the last pulse's last substep
+        // collected, when nothing delivered their answers before this step
+        // (`Arena::deliver_answers` — the sim task's pool, or
+        // `Arena::step_settled`), are written NOW, before phase 1: the one
+        // sim-time moment the pooled path writes them at too — after
+        // everything the last pulse journalled, before anything of this one.
+        let settled = self.settle_inline();
+        reflex.mind_faults = reflex.mind_faults.saturating_add(settled.faults);
+        reflex.mind_overflows = reflex.mind_overflows.saturating_add(settled.overflows);
         // **16b cut N.1**: what the pulse fired, wherever it fired it. Cut W.1 read
         // this off phase 4's own return, which stopped being the whole answer the
         // moment the reflex controller began accepting shots inside a substep. The
@@ -1268,7 +1290,41 @@ impl Arena {
                 self.take_deliberation_signals()
             },
             observer,
+            // **17b cut M4.1**: the last substep's thinks, for the task's
+            // pool. A match that ended this pulse hands out none: nothing is
+            // written after the end.
+            thinks: if ended.is_some() {
+                Vec::new()
+            } else {
+                self.unsettled.clone()
+            },
         }
+    }
+
+    /// **One pulse, with its thinks settled** (17b cut M4.1; doc 17 §6
+    /// "Execution policy"): [`Arena::step`], then every think the pulse left
+    /// outstanding run inline on this thread
+    /// ([`crate::arena::mind::run_batch_inline`]) and written
+    /// ([`Arena::deliver_answers`]) — the pooled path done synchronously,
+    /// writing at the same sim-time moment the sim task's delivery writes
+    /// (before anything of the next pulse) and that the next `step`'s head
+    /// would. The faults are folded into the output's counters, and
+    /// [`StepOutput::thinks`] is empty: nothing is left for a pool. What
+    /// every rig that hashes, encodes or reads a mind row BETWEEN two pulses
+    /// drives, so the arena between two of its pulses is the arena between
+    /// two of the task's.
+    pub fn step_settled(
+        &mut self,
+        wall_now_ms: i64,
+        controls: &[Control],
+        intents: &[Intent],
+    ) -> StepOutput {
+        let mut out = self.step(wall_now_ms, controls, intents);
+        let thinks = std::mem::take(&mut out.thinks);
+        let settled = self.deliver_answers(crate::arena::mind::run_batch_inline(&thinks));
+        out.reflex.mind_faults = out.reflex.mind_faults.saturating_add(settled.faults);
+        out.reflex.mind_overflows = out.reflex.mind_overflows.saturating_add(settled.overflows);
+        out
     }
 
     /// **One substep** of doc 16 §3.1 phase 3, answering whether the ledger
@@ -1319,6 +1375,17 @@ impl Arena {
         // the next real substep's re-collision with the same bank a second line;
         // the line now fires on `held`'s edge, which only a refusal raises, and
         // the guard stands because there is still nothing to move.)
+        // **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22): the head
+        // of the substep is where the thinks of the LAST substep are written —
+        // their runners called now, inline, when the sim task did not deliver
+        // their answers before this step (it delivers only between pulses, so
+        // inside a pulse of several substeps this is the path, counted in the
+        // wake). Before motion: the write is a function of the think's frozen
+        // inputs and the row, and the landing one substep on reads it.
+        let settled = self.settle_inline();
+        reflex.mind_faults = reflex.mind_faults.saturating_add(settled.faults);
+        reflex.mind_overflows = reflex.mind_overflows.saturating_add(settled.overflows);
+
         if dt_ms > 0 {
             self.hold_routeless(reflex);
         }
@@ -1956,6 +2023,10 @@ impl Arena {
         // ---- the substep's record ----
         let hash = state_hash(self);
         self.substep_hashes.push(hash);
+        // **17b cut M4.1**: every think this substep collected carries this
+        // hash — the one its fault's lines take wherever and whenever its
+        // answer is written — and waits for the next settle point.
+        self.stamp_collected(hash);
         let mut refused = false;
         // **16b cut F.2, narrowed by 16b cut D.4 (`T-08`)**: which impact is being
         // resolved, and it now serves `EventKind::Miss` **alone**.
@@ -2164,6 +2235,9 @@ impl Arena {
             // watcher a picture either; the world's `finish` clears every
             // watcher when the check-in lands.
             observer: None,
+            // 17b cut M4.1: the head of this step settled every think the
+            // last pulse left, and a stopped pulse collects none.
+            thinks: Vec::new(),
         }
     }
 
@@ -3377,7 +3451,9 @@ impl Arena {
             .collect();
         thinks.sort_unstable();
         for (unit, think_seq, t_ms) in thinks {
-            self.mind_think(unit, think_seq, t_ms, reflex);
+            // 17b cut M4.1: collected here, written at the next substep's
+            // head (`Arena::settle_inline`) or by the task's delivery.
+            self.collect_think(unit, think_seq, t_ms, reflex);
         }
     }
 

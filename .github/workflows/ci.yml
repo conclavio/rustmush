@@ -55,6 +55,15 @@ jobs:
       # so the test is #[ignore]d and run here, on both hosts, by name.
       - name: Whole-match mind hashes (17b cut M2.7; Gate A)
         run: cargo test -p tacsim --test twin m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -- --ignored --exact --nocapture
+      # 17b cut M4.1 (doc 17 §6 "Execution policy", D-UM-22; the M4 row's
+      # gate): the pooled lane's thirty matches through the real arena task on
+      # a private think pool of one, two and four workers, each held to the
+      # library driven on the task's own wake rule — the tape, the end, the
+      # ledger digest and every snapshot's state hash. A hundred and twenty
+      # debug match-runs pass the thirty seconds a lane may spend in the
+      # workspace run, so the test is #[ignore]d and run here, by name.
+      - name: Pooled think seam over the twin's thirty (17b cut M4.1)
+        run: cargo test -p tacsim --test minds_pool m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture
       # The bot crate is excluded from the workspace test run and tested on its own:
       # its serde_json `arbitrary_precision` feature would otherwise unify into every
       # engine test binary and break untagged number decoding (the worldgen proposal

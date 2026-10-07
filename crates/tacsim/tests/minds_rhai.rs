@@ -566,7 +566,8 @@ impl Rig {
     fn pulse(&mut self) -> StepOutput {
         let wall = self.wall.map_or(0, |wall| wall + SUBSTEP);
         self.wall = Some(wall);
-        let out = self.arena.step(wall, &[], &[]);
+        // 17b cut M4.1: settled between pulses, as the task's pool settles.
+        let out = self.arena.step_settled(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
             self.bytes.extend_from_slice(&chunk.bytes);
         }
@@ -3224,34 +3225,49 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// / `b9725b92…` / `a4a3e658…`, `15_956_944_004_013_285_482` / `fade7344…` /
 /// `0f7ca61c…`, `13_222_333_907_623_429_933` / `37eb2f9d…` / `c7c50fcc…`,
 /// `5_294_377_710_264_198_459` / `1d0d07a9…` / `e6c5f0eb…`.
+///
+/// **17b cut M4.1's one re-bless of the mind-fixture pins** (the M4 row's
+/// finding (1); blessed on the Linux build host, the Windows run CI's): a
+/// think is collected at its millisecond and its answer written at the head
+/// of the next substep, so the think's substep's `state_hash` folds the
+/// pending think's facts and an EMPTY answer where it folded the answer, and
+/// a faulted think's `mind_fault` and `mind_dropped` lines carry that
+/// substep's hash where they carried a fresh one. Each row's stop
+/// millisecond AND its final `state_hash` are unmoved (every answer is
+/// written and landed by the end; no byte of the state moved); its substep
+/// digest and ledger digest moved. The tapes, diffed against HEAD
+/// `5d155e32`'s ignoring `seq` and `hash`, are equal line for line: no line
+/// was added, removed or reordered on the stock corpus (no think faults on
+/// it). Were, by row: `fc108aa2…` / `7e8b75aa…`, `b1ad9530…` / `bc8c8f22…`,
+/// `3f81543e…` / `b4fa5044…`, `0450d808…` / `0b9152d3…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2_350,
         172_250,
         4_504_819_013_333_549_817,
-        "fc108aa27e072f681270e4bfe29bf9d8e47d18e9b9bb0fba5534c6e0190c1f63",
-        "7e8b75aa3b52c861257f9388b6d51e4b7ca205cda3c771c527fb4467f6fd7c44",
+        "3935703e992fbb1951249a593289a9dcd552417e4d1f20f8f86f423ed7868056",
+        "f0af53b0f5febeef62dec826c0fe1e6917ed4e158a56caa09d999a8b173044bc",
     ),
     (
         2_351,
         193_500,
         4_318_432_734_286_313_969,
-        "b1ad9530c7874e936e2252f30c467bf7b5c35acafe3088360fbfaa99f89b7253",
-        "bc8c8f22b280362346bfe65cede5eb6fa13d982127da75f05c0dfdbf8db41c77",
+        "653a8201ce04dee988a98afae29095a73476f8fb2ce4321ec9183562b6029d65",
+        "47bba202a59c11a2bfb729b79150cb7f9a3a2e7f5b3d42d1a5da49856a7b2ad3",
     ),
     (
         2_352,
         166_500,
         8_770_348_364_664_704_415,
-        "3f81543e15c78b306fe9e40f71414ad657ccacba02958f4de72ac9eefec6e26b",
-        "b4fa504408357104ba61ab8c130157b127f56b4d49453478f4daac5eff18e971",
+        "01a0ee5e1516150b0078f9a31a28e149e1c13111f49c3d9bfef6578d4a761944",
+        "3663ed2795c226b4285e6979abcfd77045786ea60175c3493bf3fbe15b7b6e0b",
     ),
     (
         2_350,
         900_000,
         2_386_810_340_480_880_612,
-        "0450d808a3b98be6b60de4a288bf928aa3e1dfc9cd30d9210dd77388a250fdc1",
-        "0b9152d3ba02de9c097f73cc57ebcbbd707309980e6982c324d47b42f4750fa0",
+        "f85eea28a247b62e4feb9b021120f8a6c02ea3a5031e8fc316969d8c7811c9b1",
+        "34da2eeff261a7960d975a3e1c307bb10f45380e9f1e3d9af22e4cd254f6f14a",
     ),
 ];
 
@@ -3456,6 +3472,20 @@ fn m2_the_twin_corpus_hashes_the_same_on_every_host() {
 /// `rated`**, red holding blue classified and locked — the hull's own
 /// `core_class` cell set by one plan (the cell is the live class
 /// `read_core` reads), so its `tactical_unit` core needs no second shape.
+/// **Rate a hull's mind at `rated`** (17b cut M4.1): the rating is the
+/// seal's (`SealTerms::rated`, read off `UnitState::seal.class` by
+/// `Arena::mind_class` against the core's class now), so a rig that rates a
+/// hull above the stock rating writes the class the seal would have recorded
+/// — `min(rated, core)` — where it moved the arena-wide lever before.
+fn rate(arena: &mut Arena, unit: ObjId, rated: tacsim::arena::core::CoreClass) {
+    let core = arena
+        .core_of(unit)
+        .map_or(tacsim::arena::core::CoreClass::Zero, |core| core.class);
+    if let Some(state) = arena.unit_mut(unit) {
+        state.seal.class = rated.min(core);
+    }
+}
+
 fn classed_field(
     class: tacsim::arena::core::CoreClass,
     rated: tacsim::arena::core::CoreClass,
@@ -3481,7 +3511,7 @@ fn classed_field(
         state.unit = unit;
         state.power = Power::Online;
     }
-    arena.set_rated_class_for_tests(rated);
+    rate(&mut arena, RED, rated);
     let plot = arena.unit(BLUE).map(SeenPose::of).expect("blue");
     let contact = tacsim::arena::rng::draw_contact_id(SEED, RED, BLUE);
     arena.contacts.insert(
@@ -5278,7 +5308,7 @@ fn m3_the_shipped_line_tanks_turret_drops_its_mind_at_three_cadences() {
 
 /// **`degrade_core` lowers the next think's row, at three cadences** (17b
 /// cut M3.4; doc 17 §9, D-UM-34, D-UM-30). A rated-III mind
-/// (`Arena::set_rated_class_for_tests`) on a DOCTORED heavy — its command
+/// ([`rate`], the seal's class since 17b cut M4.1) on a DOCTORED heavy — its command
 /// core (Class III) in the hull, its turret list `[remove_weapons,
 /// degrade_core]`, its three guns remounted on the hull and three more added
 /// — whose first think writes a hundred memory keys (under III's 128) and
@@ -5339,7 +5369,7 @@ fn m3_degrade_core_lowers_the_next_think_s_row_at_three_cadences() {
             &["w1", "w2", "w3"],
         );
         let mut arena = consequence_field(hull, false);
-        arena.set_rated_class_for_tests(CoreClass::III);
+        rate(&mut arena, heavy, CoreClass::III);
         let recorded = Recorded::on(rhai(&arena, &source));
         arena.mind_runner = recorded.clone();
         (arena, recorded)

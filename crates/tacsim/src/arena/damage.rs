@@ -1347,6 +1347,10 @@ impl Arena {
         if let Some(state) = self.minds.get_mut(&target) {
             state.pending = None;
         }
+        // **17b cut M4.1**: and a think collected in this substep and not yet
+        // written is dropped at its write (`Arena::settle_collected`): a
+        // wreck's fault is journalled no more than its answer is landed.
+        self.awaiting.remove(&target);
         journal.push((
             t_ms,
             EventKind::UnitDestroyed { unit: target, by },

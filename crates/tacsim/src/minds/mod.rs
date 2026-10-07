@@ -42,6 +42,14 @@
 //!   `MindRunner` that runs a compiled script synchronously at the think
 //!   point, reads the label rule on both ends of the call, and answers a
 //!   dropped hull (three faults running) with the native stand-in.
+//! * **The think pool** (`pool.rs`, 17b cut M4.1; doc 17 §6 "Execution
+//!   policy", D-UM-22): [`MindPool`](crate::minds::MindPool), the
+//!   process-wide pure-`std` pool of `[tacsim.minds].workers` threads every
+//!   sim task sends a pulse's collected thinks to as one batch, served
+//!   first-in first-out per batch and answered in job order
+//!   ([`BatchHandle`](crate::minds::BatchHandle)); a worker's runner panic
+//!   answers [`BatchFailed`](crate::minds::BatchFailed) and the task voids
+//!   the match.
 //! * **The sealed runners** (`sealed.rs`, 17b cut M3.5):
 //!   [`install_sealed_runners`](crate::minds::install_sealed_runners), the
 //!   one place a scripted seal becomes a hull's own runner on
@@ -130,6 +138,7 @@ pub mod content;
 pub mod context;
 pub mod fees;
 pub mod kernels;
+pub mod pool;
 pub mod runner;
 pub mod sealed;
 pub mod stations;
@@ -138,6 +147,7 @@ pub use content::{
     MindManifest, STANDARD_MANIFEST_JSON, STANDARD_RHAI, STANDARD_SHA256, standard_digest,
     standard_manifest, standard_runner,
 };
+pub use pool::{BatchFailed, BatchHandle, MindPool};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
 pub use sealed::{InstallError, install_sealed_runners};
 

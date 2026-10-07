@@ -24,8 +24,25 @@
 //!   every [`STOCK_THINK_MS`] of arena time, resolved in the substep its
 //!   timestamp falls in **after that millisecond's other due items** (D-UM-20;
 //!   `Arena::substep`'s due loop holds the mind kinds back), against the state
-//!   then. The runner is called **synchronously** here; a think of more than
-//!   [`MIND_INTENTS_MAX`] intents is a fault and lands nothing (D-UM-9).
+//!   then. **Since 17b cut M4.1 the think is COLLECTED at its millisecond and
+//!   ANSWERED at the head of the next substep** (doc 17 §6 "Execution policy",
+//!   D-UM-22; 17b §3's M4 row, finding (1)): `Arena::collect_think` freezes
+//!   the job ([`CollectedThink`] — the view, the memory, the card, the row's
+//!   profile, the runner), writes the think's FACTS on the row (`pending`'s
+//!   `think_seq`, `t_ms` and epochs with an empty answer, the hull named in
+//!   the scratch set [`Arena::awaiting`]), advances `think_seq` and schedules
+//!   the landing and the next think; the runner runs anywhere between that
+//!   millisecond and the write — on the sim task's pool, or inline — and
+//!   `Arena::settle_collected` writes its answer at ONE sim-time moment
+//!   both paths share: before anything of the next substep, which is before
+//!   the next pulse's phases on the pooled path ([`Arena::deliver_answers`])
+//!   and the next substep's head inside `Arena::step` on the inline path
+//!   ([`Arena::settle_inline`]). A think of more than [`MIND_INTENTS_MAX`]
+//!   intents is a fault and lands nothing (D-UM-9); a fault's consequences
+//!   and its lines follow the answer to that write, the lines carrying the
+//!   think's OWN substep's end hash ([`CollectedThink::substep_hash`]) at the
+//!   think's own `t_ms`, so the tape is no longer `t_ms`-monotonic across
+//!   them (declared, doc 17 §24).
 //! * **The landing** ([`DueKind::MindLand`]): one substep later, the think's
 //!   intents go through the pilot's own door (`Arena::apply_machine_intents`,
 //!   D-UM-12) at the epochs the think recorded (D-UM-13) under
@@ -41,7 +58,13 @@
 //!   notices drained, its ranges settled), and a second think on the resumed
 //!   view is another answer. The scratch table `Arena::mind_landings` that
 //!   held the answer until 17b cut M3.2 — and lost it across a resume — is
-//!   retired.
+//!   retired. **17b cut M4.1**: between the think's millisecond and its
+//!   write the row carries the think's facts and NO answer, the hull stands
+//!   in [`Arena::awaiting`], and `Snapshot::encode` refuses the arena by
+//!   name — the sim task awaits every outstanding batch before it encodes
+//!   (doc 17 §6 "Snapshot and resume"), so a snapshot always carries a
+//!   written answer; the fold (`hash.rs`' item 3c) is unchanged, so the
+//!   think's substep hash folds the facts and an empty answer.
 //!
 //! # What runs a think
 //!
@@ -100,14 +123,16 @@ use crate::config::{ArenaConfig, ReflexConfig};
 /// they schedule.
 pub const STOCK_THINK_MS: i64 = 1_000;
 
-/// **The class every mind is rated at** (17b cut M3.1; doc 17 §9, D-UM-35):
-/// Standard Doctrine's, Class I — the one mind there is. **17b cut M3.3's
-/// seal records** `min(STOCK_RATED_CLASS, core)` as [`MindSeal::class`]; the
-/// think side still reads the arena's `rated_class` (this constant, or a
-/// test's lever). A mind thinks at `min(rated, core)` ([`Arena::mind_class`]), so
-/// on every shipped chassis (cores I to III) it thinks at Class I's row,
-/// today's figures. `tests/content.rs` pins it equal to the Standard Doctrine
-/// manifest's own `rated_class`.
+/// **The class the stock mind is rated at** (17b cut M3.1; doc 17 §9,
+/// D-UM-35): Standard Doctrine's, Class I — the one mind there is. **17b cut
+/// M3.3's seal records** `min(rated, core, cap)` as [`MindSeal::class`] under
+/// `crate::match_::SealTerms::rated`, this constant on every production and
+/// fixture seal; **since 17b cut M4.1 the think side reads the seal**
+/// ([`Arena::mind_class`] off `UnitState::seal.class` against the core's
+/// class now — the arena-wide `rated_class` and its test lever are gone). So
+/// on every shipped chassis (cores I to III) a stock mind thinks at Class
+/// I's row, today's figures. `tests/content.rs` pins it equal to the Standard
+/// Doctrine manifest's own `rated_class`.
 pub const STOCK_RATED_CLASS: crate::arena::core::CoreClass = crate::arena::core::CoreClass::I;
 
 /// **How many notices a mind's buffer holds** (D-UM-8): the newest
@@ -879,6 +904,152 @@ pub fn default_mind_runner(cfg: &ArenaConfig) -> Arc<dyn MindRunner> {
 }
 
 // ---------------------------------------------------------------------------
+// The collected think and the settle (17b cut M4.1; doc 17 §6, D-UM-22)
+// ---------------------------------------------------------------------------
+
+/// **One think, collected at its millisecond and not yet written** (17b cut
+/// M4.1; doc 17 §6 "Execution policy", D-UM-22): the job's FROZEN inputs —
+/// everything [`ThinkJob`] borrows, owned — beside what the write needs that
+/// the job does not: the think's own substep's end hash for a fault's lines,
+/// and the range memory a fault puts back. A pure function of these answers
+/// the think wherever it runs (the sim task's pool, or inline at the next
+/// substep's head), and `Arena::settle_collected` writes the answer.
+///
+/// `Clone` so the arena keeps its own copy on [`Arena`]'s scratch while the
+/// task hands clones to the pool (`crate::arena::step::StepOutput::thinks`):
+/// the `Arc`s are shared and the owned parts are small (a memory of at most a
+/// few hundred bytes, a range memory of at most the row's contacts).
+#[derive(Clone, Debug)]
+pub struct CollectedThink {
+    /// The hull thinking ([`ThinkJob::unit`]).
+    pub unit: ObjId,
+    /// The think's sequence number ([`ThinkJob::think_seq`]).
+    pub think_seq: u64,
+    /// The think's lattice millisecond ([`ThinkJob::t_ms`]).
+    pub t_ms: i64,
+    /// The landing millisecond ([`ThinkJob::lands_ms`]).
+    pub lands_ms: i64,
+    /// The match seed ([`ThinkJob::seed`]).
+    pub seed: u64,
+    /// Whether the job is the ROM's ([`ThinkJob::dropped`]).
+    pub dropped: bool,
+    /// The row the think is held to ([`ThinkJob::profile`]), by value.
+    pub profile: crate::arena::core::CoreProfile,
+    /// The view, behind the `Arc` the arena wrapped it in ([`ThinkJob::view`]).
+    pub view: Arc<MindView>,
+    /// The memory the last landed think left ([`ThinkJob::memory`]), by value.
+    pub memory: Vec<u8>,
+    /// The map ([`ThinkJob::map`]).
+    pub map: Arc<ArenaDefinition>,
+    /// The card the mind thinks under ([`ThinkJob::card`]), by value.
+    pub card: StockCard,
+    /// **The runner the hull thinks on** ([`Arena::runner_for`] at
+    /// collection): its own by its seal, else the arena-wide fallback.
+    pub runner: Arc<dyn MindRunner>,
+    /// **The think's own substep's end hash** — the `state_hash` the substep
+    /// the think fell in recorded (`Arena::substep_hashes`), stamped by
+    /// `Arena::stamp_collected` at that record; `None` only between the
+    /// collection and the record. What a faulted think's `mind_fault` and
+    /// `mind_dropped` lines carry (17b §3's M4 row, finding (1)): a fresh hash
+    /// at the write would differ between the inline head and the step's end
+    /// (notices are staged after the push, the drain records a hash and phase
+    /// 5 folds the tempo), where this one is one function of sim time.
+    pub substep_hash: Option<u64>,
+    /// **The range memory as it stood before the view settled it** — what a
+    /// fault puts back (D-UM-9: a think is atomic; the view's drained notices
+    /// are the view's own `notices`).
+    pub ranges_before: BTreeMap<ContactId, u64>,
+}
+
+impl CollectedThink {
+    /// **The job, borrowed off the frozen inputs** — what the runner is
+    /// handed, on whichever thread runs it.
+    #[must_use]
+    pub fn job(&self) -> ThinkJob<'_> {
+        ThinkJob {
+            unit: self.unit,
+            think_seq: self.think_seq,
+            t_ms: self.t_ms,
+            lands_ms: self.lands_ms,
+            seed: self.seed,
+            dropped: self.dropped,
+            profile: &self.profile,
+            view: &self.view,
+            memory: &self.memory,
+            map: &self.map,
+            card: &self.card,
+        }
+    }
+
+    /// **Run the think on its own runner, now, on this thread** — one
+    /// [`ThinkAnswer`] addressed to the row. The pool's worker and
+    /// [`run_batch_inline`] call exactly this; the result is a pure function
+    /// of the frozen job (D-UM-22), so where it ran cannot change it.
+    #[must_use]
+    pub fn think(&self) -> ThinkAnswer {
+        ThinkAnswer {
+            unit: self.unit,
+            think_seq: self.think_seq,
+            result: self.runner.think(&self.job()),
+        }
+    }
+}
+
+/// **One think's answer, addressed** (17b cut M4.1): the row it is for and
+/// the runner's [`ThinkResult`]. What a batch answers in job order, and what
+/// [`Arena::deliver_answers`] writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThinkAnswer {
+    /// The hull.
+    pub unit: ObjId,
+    /// The think's sequence number — matched against the row's `pending`.
+    pub think_seq: u64,
+    /// The runner's answer.
+    pub result: ThinkResult,
+}
+
+/// **What one settle wrote** (17b cut M4.1): the thinks written, the faults
+/// among them, the overflows among the faults, and the answers dropped
+/// because their row no longer awaited them (a hull wrecked, possessed or
+/// released since the collection; a match since ended). The faults are what
+/// `crate::arena::reflex::ReflexCounters::mind_faults` counts: a caller that
+/// settles between two pulses (the sim task, [`Arena::step_settled`]) folds
+/// them into the counters it reports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// Thinks whose answer or fault was written.
+    pub written: u32,
+    /// Faulted thinks among them (`ReflexCounters::mind_faults`).
+    pub faults: u32,
+    /// Overflows among the faults (`ReflexCounters::mind_overflows`).
+    pub overflows: u32,
+    /// Answers dropped unwritten.
+    pub dropped: u32,
+}
+
+impl Settled {
+    /// Fold `other` into this one, saturating.
+    fn absorb(&mut self, other: Settled) {
+        self.written = self.written.saturating_add(other.written);
+        self.faults = self.faults.saturating_add(other.faults);
+        self.overflows = self.overflows.saturating_add(other.overflows);
+        self.dropped = self.dropped.saturating_add(other.dropped);
+    }
+}
+
+/// **Run a batch of collected thinks inline, in order, on this thread**
+/// (17b cut M4.1): each on its own runner ([`CollectedThink::think`]), the
+/// answers in job order — what the sim task's pool does on its workers, done
+/// synchronously by a caller with no pool ([`Arena::step_settled`], every
+/// fixture). A runner that panics unwinds through the caller: on the sim
+/// task that is `Arena::step`'s unwind boundary and the match is void, as a
+/// pool worker's panic voids it (doc 17 §24; never a fault).
+#[must_use]
+pub fn run_batch_inline(thinks: &[CollectedThink]) -> Vec<ThinkAnswer> {
+    thinks.iter().map(CollectedThink::think).collect()
+}
+
+// ---------------------------------------------------------------------------
 // Memory (17b cut M1a.6; doc 17 §8, D-UM-30 as amended; 17b cut M2.2)
 // ---------------------------------------------------------------------------
 
@@ -1154,6 +1325,9 @@ impl Arena {
         if let Some(state) = self.minds.get_mut(&unit) {
             state.pending = None;
         }
+        // 17b cut M4.1: a think collected and not yet written is dropped at
+        // its write (`Arena::settle_collected` reads this set).
+        self.awaiting.remove(&unit);
         self.forget_mind_events(unit);
     }
 
@@ -1166,6 +1340,7 @@ impl Arena {
     /// possess is [`Arena::suspend_mind`], which keeps the row.
     pub(crate) fn release_mind(&mut self, unit: ObjId) {
         self.minds.remove(&unit);
+        self.awaiting.remove(&unit);
         self.forget_mind_events(unit);
     }
 
@@ -1286,9 +1461,11 @@ impl Arena {
         })
     }
 
-    /// **The think arm** (17b cut M1a.5; doc 17 §6, D-UM-20, D-UM-9): one
-    /// [`DueKind::MindThink`], at its lattice millisecond `t_ms`, with every
-    /// other kind due at that millisecond already applied.
+    /// **The think arm's first half: collect** (17b cut M4.1; doc 17 §6
+    /// "Execution policy", D-UM-22 — until this cut the whole arm,
+    /// `mind_think`, ran the runner here): one [`DueKind::MindThink`], at its
+    /// lattice millisecond `t_ms`, with every other kind due at that
+    /// millisecond already applied.
     ///
     /// In order: nothing after the match ended; nothing for a unit that is
     /// gone, a wreck or not a mind's, or for a stale `think_seq` — and none of
@@ -1296,33 +1473,22 @@ impl Arena {
     /// pending, the drop for a sealed core that is gone (17b cut M3.4,
     /// `Arena::core_lost`, `Arena::drop_for_core`, its line under
     /// `Arena::think_line_hash`), so this think is the ROM's; the view
-    /// ([`Arena::mind_view`]); the three epochs recorded; the runner called
-    /// synchronously; `think_seq` advanced. Then **D-UM-9, atomic**: a FAULT —
-    /// since 17b cut M2.2 a runner's [`ThinkResult::fault`] or, as before,
-    /// more than [`MIND_INTENTS_MAX`] intents — lands nothing, keeps the old
-    /// memory, puts back what the view drained and settled (the notices in
-    /// front of the buffer, oldest dropped past [`MIND_NOTICES`]; the range
-    /// memory as it was), clears `pending` (counted `mind_faults`, and
-    /// `mind_overflows` when the length tripped), writes a strike (`strikes =
-    /// min(strikes + 1,` [`MIND_STRIKES_TO_DROP`]`)`, D-UM-31 — the third
-    /// running writes the drop, [`MindState::dropped`] `= Some(DropCause::Strikes)`,
-    /// 17b cut M3.2), schedules **no** landing, because there is nothing to
-    /// land, and — **17b cut M3.4** — journals one `mind_fault` line (the
-    /// runner's cause word, or [`OVERFLOW_CAUSE`]) and, on the dropping
-    /// strike, one `mind_dropped` line (`strikes`, that word, the row's `ops`)
-    /// under one hash, and cuts the condition row to the ROM's one slot;
-    /// otherwise the strikes are cleared unless the
-    /// hull is dropped, `pending` is set to the think AND its answer (17b cut
-    /// M3.2, D-UM-23 as amended: the epochs, the intents, the memory — a
-    /// [`PendingThink`], carried by the snapshot), and a
-    /// [`DueKind::MindLand`] scheduled one substep later. Either way the next
-    /// think is scheduled the mind's `think_ms` after this one's own
-    /// millisecond (17b cut M3.1: [`Arena::mind_profile`] read at the
-    /// scheduling; Class I's [`STOCK_THINK_MS`] on every shipped chassis).
-    /// The job carries the row the think is held to ([`ThinkJob::profile`])
-    /// and `dropped` for a drop or a mind class of `Zero`.
-    /// The runner's trace is dropped: never hashed, never journalled.
-    pub(crate) fn mind_think(
+    /// ([`Arena::mind_view`]); the three epochs recorded; `think_seq`
+    /// advanced; **the think's FACTS written on the row** — `pending` as a
+    /// [`PendingThink`] of this `think_seq`, `t_ms` and the epochs with an
+    /// EMPTY answer, and the hull named in [`Arena::awaiting`] — so the
+    /// substep's hash folds the facts and no answer (`hash.rs`' item 3c,
+    /// unchanged); the landing ([`DueKind::MindLand`], one substep on) and
+    /// the next think (the mind's `think_ms` after this one's own
+    /// millisecond, [`Arena::mind_profile`] read now — Class I's
+    /// [`STOCK_THINK_MS`] on every shipped chassis) scheduled, so phase 5's
+    /// `next_due_ms` wakes the task for them; and the job frozen on
+    /// [`Arena`]'s scratch as a [`CollectedThink`] — the row the think is held
+    /// to ([`ThinkJob::profile`]), `dropped` for a drop or a mind class of
+    /// `Zero`, the hull's own runner ([`Arena::runner_for`]) — for
+    /// `Arena::settle_collected` to write at the head of the next substep.
+    /// The runner is NOT called here.
+    pub(crate) fn collect_think(
         &mut self,
         unit: ObjId,
         think_seq: u64,
@@ -1356,8 +1522,9 @@ impl Arena {
         }
         // D-UM-9: the two writes `mind_view` makes — the range memory settled
         // and the notice buffer drained — are undone if the think faults, so the
-        // range memory as it stood is kept to put back.
-        let ranges = self
+        // range memory as it stood is kept to put back (the drained notices are
+        // the view's own).
+        let ranges_before = self
             .minds
             .get(&unit)
             .map(|state| state.ranges.clone())
@@ -1375,7 +1542,7 @@ impl Arena {
         // D-UM-21: the landing millisecond, read at collection — scheduled
         // below and handed to the runner (17b cut M1a.6), which plans its
         // shots for the millisecond they are resolved at.
-        let land_at = t_ms.saturating_add(self.substep_len_ms());
+        let lands_ms = t_ms.saturating_add(self.substep_len_ms());
         // 17b cut M3.5 (doc 17 §13): the hull's own runner, by its seal, else
         // the arena-wide fallback.
         let runner = Arc::clone(self.runner_for(unit));
@@ -1388,22 +1555,155 @@ impl Arena {
         // (`Arena::arming_capacity`), so the ROM's one slot is the hull's.
         let class = self.mind_class(unit);
         let profile = self.classes.row(class);
-        let Some(state) = self.minds.get(&unit) else {
+        let period = profile.think_ms;
+        let seed = self.seed;
+        let map = Arc::clone(&self.definition);
+        let Some(state) = self.minds.get_mut(&unit) else {
             return;
         };
-        let result = runner.think(&ThinkJob {
+        let dropped = state.dropped() || class == crate::arena::core::CoreClass::Zero;
+        let memory = state.memory.clone();
+        let card = state.card.clone();
+        state.think_seq = think_seq.saturating_add(1);
+        // **17b cut M4.1**: the facts, and no answer — written at the settle
+        // (`Arena::settle_collected`); a fault clears them there.
+        state.pending = Some(PendingThink {
+            think_seq,
+            t_ms,
+            epochs,
+            intents: Vec::new(),
+            memory: Vec::new(),
+        });
+        self.awaiting.insert(unit);
+        // The landing and the next think, scheduled NOW so phase 5's
+        // `next_due_ms` wakes the task for them (a think in a pulse's last
+        // substep is settled at the next step's head, after phase 5 ran): the
+        // settle retracts the landing on a fault, and moves the next think to
+        // Class 0's period on the strike that drops the hull (17b cut M3.1:
+        // the cadence of a hull that has just dropped is Class 0's from its
+        // next think).
+        self.due
+            .schedule(lands_ms, DueKind::MindLand { unit, think_seq });
+        self.due.schedule(
+            t_ms.saturating_add(period),
+            DueKind::MindThink {
+                unit,
+                think_seq: think_seq.saturating_add(1),
+            },
+        );
+        self.collected.push(CollectedThink {
             unit,
             think_seq,
             t_ms,
-            lands_ms: land_at,
-            seed: self.seed,
-            dropped: state.dropped() || class == crate::arena::core::CoreClass::Zero,
-            profile: &profile,
-            view: &view,
-            memory: &state.memory,
-            map: &self.definition,
-            card: &state.card,
+            lands_ms,
+            seed,
+            dropped,
+            profile,
+            view,
+            memory,
+            map,
+            card,
+            runner,
+            substep_hash: None,
+            ranges_before,
         });
+    }
+
+    /// **Stamp this substep's collected thinks with its end hash** (17b cut
+    /// M4.1): called by `Arena::substep` right after it pushed the substep's
+    /// `state_hash`, so every think collected in the substep carries THE
+    /// SUBSTEP'S OWN hash ([`CollectedThink::substep_hash`]) and moves to the
+    /// unsettled list the next settle point writes.
+    pub(crate) fn stamp_collected(&mut self, hash: u64) {
+        for mut think in self.collected.drain(..) {
+            think.substep_hash = Some(hash);
+            self.unsettled.push(think);
+        }
+    }
+
+    /// **The thinks collected and not yet written** (17b cut M4.1): what
+    /// `crate::arena::step::StepOutput::thinks` carries out to the sim task,
+    /// and what the next `Arena::step` settles inline at its head if nothing
+    /// delivered them.
+    #[must_use]
+    pub fn thinks_outstanding(&self) -> &[CollectedThink] {
+        &self.unsettled
+    }
+
+    /// **Discard every think not yet written** (17b cut M4.1): what the sim
+    /// task does before the stopping pulse that voids a match, so that
+    /// pulse's head runs no runner (the one that just panicked on the pool
+    /// among them). The rows keep their facts; a voided match is never
+    /// encoded.
+    pub fn discard_outstanding(&mut self) {
+        self.unsettled.clear();
+        self.collected.clear();
+    }
+
+    /// **The think arm's second half: settle** (17b cut M4.1; doc 17 §6,
+    /// D-UM-9, D-UM-22, D-UM-23 as amended, D-UM-31, D-UM-32): write ONE
+    /// collected think's answer on its row — at the head of the substep after
+    /// the think's, which is before anything of the next substep (the inline
+    /// path, [`Arena::settle_inline`]) and before the next pulse's phases on
+    /// the pooled path ([`Arena::deliver_answers`]): one sim-time moment,
+    /// whichever thread ran the runner.
+    ///
+    /// Nothing is written — the answer DROPPED, counted — when the match has
+    /// ended, when the hull no longer awaits a think (wrecked, possessed or
+    /// released since the collection: `destroy_unit`, [`Arena::suspend_mind`]
+    /// and [`Arena::release_mind`] clear [`Arena::awaiting`]), or when the
+    /// row's `pending` no longer names THIS think. Otherwise **D-UM-9,
+    /// atomic**: a FAULT — since 17b cut M2.2 a runner's
+    /// [`ThinkResult::fault`] or, as before, more than [`MIND_INTENTS_MAX`]
+    /// intents — lands nothing, keeps the old memory, puts back what the view
+    /// drained and settled (the notices in front of the buffer, oldest
+    /// dropped past [`MIND_NOTICES`]; the range memory as it was), clears
+    /// `pending` (counted `faults`, and `overflows` when the length tripped),
+    /// writes a strike (`strikes = min(strikes + 1,` [`MIND_STRIKES_TO_DROP`]`)`,
+    /// D-UM-31 — the third running writes the drop, [`MindState::dropped`]
+    /// `= Some(DropCause::Strikes)`, 17b cut M3.2), **retracts the landing**
+    /// the collection scheduled, because there is nothing to land, and —
+    /// **17b cut M3.4** — journals one `mind_fault` line (the runner's cause
+    /// word, or [`OVERFLOW_CAUSE`]) and, on the dropping strike, one
+    /// `mind_dropped` line (`strikes`, that word, the row's `ops`) **under the
+    /// think's own substep's end hash** ([`CollectedThink::substep_hash`]) at
+    /// the think's own `t_ms`, cuts the condition row to the ROM's one slot
+    /// and moves the next think to Class 0's period; otherwise the strikes
+    /// are cleared unless the hull is dropped and the answer — the intents,
+    /// the memory — is written into the row's [`PendingThink`] (17b cut M3.2,
+    /// D-UM-23 as amended: carried by the snapshot from here to the landing).
+    /// The runner's trace is dropped: never hashed, never journalled. No
+    /// action hash is opened or filled: the lines take the stamped hash.
+    pub(crate) fn settle_collected(
+        &mut self,
+        think: &CollectedThink,
+        result: ThinkResult,
+    ) -> Settled {
+        let unit = think.unit;
+        let dropped = Settled {
+            dropped: 1,
+            ..Settled::default()
+        };
+        if self.ended.is_some() || !self.awaiting.contains(&unit) {
+            return dropped;
+        }
+        let Some(state) = self.minds.get_mut(&unit) else {
+            return dropped;
+        };
+        if !state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.think_seq == think.think_seq)
+        {
+            return dropped;
+        }
+        self.awaiting.remove(&unit);
+        // Stamped at the think's substep's record on every path through
+        // `Arena::step`; the fallback is for a think settled by a test rig
+        // before any substep recorded it.
+        let hash = think
+            .substep_hash
+            .unwrap_or_else(|| crate::arena::hash::state_hash(self));
         // 17b cut M2.2 (D-UM-31): a runner's fault and D-UM-9's overflow are
         // one path. `result.trace` is dropped here: never hashed, never
         // journalled. 17b cut M3.4: the fault's cause word — the runner's
@@ -1416,42 +1716,9 @@ impl Arena {
             .map(|fault| fault.cause.clone())
             .or_else(|| overflowed.then(|| SmolStr::new_static(OVERFLOW_CAUSE)));
         let Some(state) = self.minds.get_mut(&unit) else {
-            return;
+            return dropped;
         };
-        state.think_seq = think_seq.saturating_add(1);
-        // The fault's lines, written once the row is (below): its cause word,
-        // and whether this think's strike was the drop.
-        let mut faulted_with: Option<(SmolStr, bool)> = None;
-        if let Some(cause) = cause {
-            // D-UM-9: a fault lands nothing — not a prefix — and the memory the
-            // last landed think left is the memory the next think is handed.
-            // The think is atomic for the mind's own row too: what the view
-            // drained goes back in front of the buffer and the range memory is
-            // the one it was, so the notices the faulted think was handed —
-            // its own refusals among them (D-UM-8, *a refusal is never
-            // silent*) — reach the next think, whose memory never saw them.
-            counters.mind_faults = counters.mind_faults.saturating_add(1);
-            if overflowed {
-                counters.mind_overflows = counters.mind_overflows.saturating_add(1);
-            }
-            // 17b cut M2.2 (D-UM-31, D-UM-32): a strike, held at three.
-            state.strikes = state.strikes.saturating_add(1).min(MIND_STRIKES_TO_DROP);
-            // 17b cut M3.2: the third running writes the drop on its own
-            // field — once, a drop is never re-caused (17b cut M3.4 journals
-            // it below).
-            let dropped_now = state.strikes >= MIND_STRIKES_TO_DROP && state.dropped.is_none();
-            if dropped_now {
-                state.dropped = Some(DropCause::Strikes);
-            }
-            state.pending = None;
-            state.ranges = ranges;
-            let mut notices = view.notices.clone();
-            notices.append(&mut state.notices);
-            let excess = notices.len().saturating_sub(MIND_NOTICES);
-            notices.drain(..excess);
-            state.notices = notices;
-            faulted_with = Some((cause, dropped_now));
-        } else {
+        let Some(cause) = cause else {
             // D-UM-31's reset: a clean think clears the strikes — but never a
             // drop, which is for the rest of the sortie (D-UM-32).
             if !state.dropped() {
@@ -1459,69 +1726,183 @@ impl Arena {
             }
             // D-UM-23 as amended (17b cut M3.2): the answer rides the row to
             // its landing, so a snapshot between the two carries it.
-            state.pending = Some(PendingThink {
-                think_seq,
-                t_ms,
-                epochs,
-                intents: result.intents,
-                memory: result.memory,
-            });
-            self.due
-                .schedule(land_at, DueKind::MindLand { unit, think_seq });
+            if let Some(pending) = state.pending.as_mut() {
+                pending.intents = result.intents;
+                pending.memory = result.memory;
+            }
+            return Settled {
+                written: 1,
+                ..Settled::default()
+            };
+        };
+        // D-UM-9: a fault lands nothing — not a prefix — and the memory the
+        // last landed think left is the memory the next think is handed.
+        // The think is atomic for the mind's own row too: what the view
+        // drained goes back in front of the buffer and the range memory is
+        // the one it was, so the notices the faulted think was handed —
+        // its own refusals among them (D-UM-8, *a refusal is never
+        // silent*) — reach the next think, whose memory never saw them.
+        // 17b cut M2.2 (D-UM-31, D-UM-32): a strike, held at three.
+        state.strikes = state.strikes.saturating_add(1).min(MIND_STRIKES_TO_DROP);
+        // 17b cut M3.2: the third running writes the drop on its own
+        // field — once, a drop is never re-caused (17b cut M3.4 journals
+        // it below).
+        let dropped_now = state.strikes >= MIND_STRIKES_TO_DROP && state.dropped.is_none();
+        if dropped_now {
+            state.dropped = Some(DropCause::Strikes);
         }
+        state.pending = None;
+        state.ranges = think.ranges_before.clone();
+        let mut notices = think.view.notices.clone();
+        notices.append(&mut state.notices);
+        let excess = notices.len().saturating_sub(MIND_NOTICES);
+        notices.drain(..excess);
+        state.notices = notices;
+        // The landing the collection scheduled: nothing lands.
+        let think_seq = think.think_seq;
+        self.due.retain(|kind| {
+            !matches!(kind, DueKind::MindLand { unit: on, think_seq: seq } if *on == unit && *seq == think_seq)
+        });
         // **17b cut M3.4** (doc 17 §8, §19; D-UM-31, D-UM-32): the fault is
         // journalled — one `mind_fault` line with its cause word at the think's
         // millisecond — and, on the strike that drops the hull, ONE
         // `mind_dropped` line beside it carrying what the principal's sentence
         // needs (the last fault's word and the op budget the faulting thinks
         // ran under, this think's row's), so the world tells it from the tape.
-        // Both under ONE hash, `Arena::think_line_hash` taken once the row is
-        // written (the state the fault left). **No action hash is opened for a
-        // think** (`Arena::run_mind_thinks`), and the think's lines fill no
-        // lazy slot a landing or a reflex tick earlier in the substep opened:
-        // a fresh state hash that stores nothing — or, once an earlier line
-        // of the substep has TAKEN the substep's hash, that one, as every line
-        // of the substep shares it — so a think, clean or faulted, moves no
-        // later line's hash in its substep. At the drop the condition row is
-        // cut to Class 0's one slot: the ROM's.
-        if let Some((cause, dropped_now)) = faulted_with {
-            let hash = self.think_line_hash();
+        // Both under ONE hash — since 17b cut M4.1 the think's own substep's
+        // end hash, at the think's own `t_ms`, written here at the next
+        // substep's head: the tape is not `t_ms`-monotonic across these lines
+        // (declared). No action hash is opened for a think, and the lines fill
+        // none. At the drop the condition row is cut to Class 0's one slot:
+        // the ROM's.
+        let _ = self.ledger.append(
+            think.t_ms,
+            EventKind::MindFault {
+                unit,
+                think_seq,
+                cause: cause.clone(),
+            },
+            Vec::new(),
+            hash,
+        );
+        if dropped_now {
             let _ = self.ledger.append(
-                t_ms,
-                EventKind::MindFault {
+                think.t_ms,
+                EventKind::MindDropped {
                     unit,
-                    think_seq,
-                    cause: cause.clone(),
+                    cause: SmolStr::new_static(DropCause::Strikes.as_str()),
+                    fault: Some(cause),
+                    ops: Some(think.profile.ops),
                 },
                 Vec::new(),
                 hash,
             );
-            if dropped_now {
-                let _ = self.ledger.append(
-                    t_ms,
-                    EventKind::MindDropped {
-                        unit,
-                        cause: SmolStr::new_static(DropCause::Strikes.as_str()),
-                        fault: Some(cause),
-                        ops: Some(profile.ops),
-                    },
-                    Vec::new(),
-                    hash,
-                );
-                self.truncate_slots_to(unit, self.rom_slots());
-            }
+            self.truncate_slots_to(unit, self.rom_slots());
+            // 17b cut M3.1: a hull that has just dropped is on Class 0's
+            // period from its next think — the one the collection scheduled
+            // on the class it then had is moved when the period differs.
+            self.reschedule_next_think(unit, think_seq.saturating_add(1), think.t_ms);
         }
-        // 17b cut M3.1: the cadence read at the moment of scheduling — after
-        // this think's strike, so a hull that has just dropped is on Class
-        // 0's period from its next think.
-        let period = self.mind_profile(unit).think_ms;
-        self.due.schedule(
-            t_ms.saturating_add(period),
+        Settled {
+            written: 1,
+            faults: 1,
+            overflows: u32::from(overflowed),
+            dropped: 0,
+        }
+    }
+
+    /// **Move `unit`'s next think to its row's period now** (17b cut M4.1,
+    /// for the settle's drop): the scheduled [`DueKind::MindThink`] of
+    /// `think_seq`, if its millisecond is not `t_ms` plus the period
+    /// [`Arena::mind_profile`] reads now, is retracted and scheduled there —
+    /// always later (a drop lowers the class, and no class's period is under
+    /// Class III's one substep), so never before the settle's own moment.
+    fn reschedule_next_think(&mut self, unit: ObjId, think_seq: u64, t_ms: i64) {
+        let at = t_ms.saturating_add(self.mind_profile(unit).think_ms);
+        let scheduled = self.due.iter().find_map(|event| match event.kind {
             DueKind::MindThink {
-                unit,
-                think_seq: think_seq.saturating_add(1),
-            },
-        );
+                unit: on,
+                think_seq: seq,
+            } if on == unit && seq == think_seq => Some(event.t_ms),
+            _ => None,
+        });
+        if scheduled.is_none_or(|was| was == at) {
+            return;
+        }
+        self.due.retain(|kind| {
+            !matches!(kind, DueKind::MindThink { unit: on, think_seq: seq } if *on == unit && *seq == think_seq)
+        });
+        self.due
+            .schedule(at, DueKind::MindThink { unit, think_seq });
+    }
+
+    /// **Settle every outstanding think inline, now, on this thread** (17b
+    /// cut M4.1; doc 17 §6 "Execution policy": *when a landing's substep
+    /// falls inside the same wake as its think … `Arena::step` calls the
+    /// runner synchronously*): each unsettled think's runner called
+    /// ([`CollectedThink::think`]) and its answer written
+    /// (`Arena::settle_collected`), in collection order. Called at the head
+    /// of every substep and at the head of `Arena::step` — so a caller that
+    /// never delivers a batch (every fixture driving `step` alone) still has
+    /// every think answered at the one sim-time moment, with the runner's
+    /// wall time inside the step. The faults are answered in the [`Settled`]
+    /// for the caller's counters.
+    pub fn settle_inline(&mut self) -> Settled {
+        let thinks = std::mem::take(&mut self.unsettled);
+        let mut settled = Settled::default();
+        for think in &thinks {
+            let answer = think.think();
+            settled.absorb(self.settle_collected(think, answer.result));
+        }
+        settled
+    }
+
+    /// **Write a batch's answers** (17b cut M4.1; doc 17 §6 "Execution
+    /// policy", D-UM-22): what the sim task calls with the pool's answers
+    /// before its next `Arena::step` and before it encodes a snapshot — each
+    /// answer matched to the outstanding think of its `(unit, think_seq)`
+    /// and written (`Arena::settle_collected`), in the order given (the
+    /// batch's job order); an answer no outstanding think matches is dropped
+    /// and counted. A think the batch did not answer stays outstanding and
+    /// the next step settles it inline ([`Arena::settle_inline`]). A caller
+    /// with no pool runs the batch itself: [`run_batch_inline`] over
+    /// `StepOutput::thinks`, or simply [`Arena::step_settled`].
+    pub fn deliver_answers(&mut self, answers: Vec<ThinkAnswer>) -> Settled {
+        let mut settled = Settled::default();
+        for answer in answers {
+            let Some(at) = self
+                .unsettled
+                .iter()
+                .position(|think| think.unit == answer.unit && think.think_seq == answer.think_seq)
+            else {
+                settled.dropped = settled.dropped.saturating_add(1);
+                continue;
+            };
+            let think = self.unsettled.remove(at);
+            settled.absorb(self.settle_collected(&think, answer.result));
+        }
+        settled
+    }
+
+    /// **The think arm as it stood before 17b cut M4.1 — collect, stamp and
+    /// settle in one call** — kept for this file's own tests, which drive a
+    /// think outside any substep: the stamp is [`Arena::think_line_hash`]
+    /// (the substep's hash under a `Taken` slot, else a fresh one), the
+    /// hash the arm's lines took until this cut.
+    #[cfg(test)]
+    pub(crate) fn mind_think(
+        &mut self,
+        unit: ObjId,
+        think_seq: u64,
+        t_ms: i64,
+        counters: &mut ReflexCounters,
+    ) {
+        self.collect_think(unit, think_seq, t_ms, counters);
+        let hash = self.think_line_hash();
+        self.stamp_collected(hash);
+        let settled = self.settle_inline();
+        counters.mind_faults = counters.mind_faults.saturating_add(settled.faults);
+        counters.mind_overflows = counters.mind_overflows.saturating_add(settled.overflows);
     }
 
     /// **The landing arm** (17b cut M1a.5; doc 17 §6, D-UM-21, D-UM-13): one
@@ -1574,6 +1955,14 @@ impl Arena {
                 .as_ref()
                 .is_some_and(|pending| pending.think_seq == think_seq)
         }) {
+            return;
+        }
+        // **17b cut M4.1**: a landing never lands an UNWRITTEN answer. By
+        // construction it cannot meet one — the think is settled at the head
+        // of the substep after its own, and its landing is due one substep
+        // on, in that substep or later — so this gate is the invariant made
+        // explicit, not a path.
+        if self.awaiting.contains(&unit) {
             return;
         }
         if self.ended.is_some()

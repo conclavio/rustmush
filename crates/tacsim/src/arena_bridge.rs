@@ -1655,6 +1655,10 @@ pub fn open_match(
     // **17b cut M3.5** (doc 17 §13): the sources the custody's scripted seals
     // name, off the store — none before 17b cut M4.
     let sources = sealed_sources(ctx.w, custody.units.iter().map(|unit| &unit.seal));
+    // **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22): the process's
+    // one think pool, sized once from `[tacsim.minds].workers` by whichever
+    // match opens first.
+    let pool = crate::minds::MindPool::shared(minds_cfg.workers);
     let (handle, join, callsigns) = crate::arena_task::spawn_arena(
         &runtime,
         match_id,
@@ -1664,6 +1668,7 @@ pub fn open_match(
         sensors_cfg,
         &minds_cfg,
         &sources,
+        pool,
         egress,
     )?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
@@ -1815,9 +1820,16 @@ pub fn resume_match(
     // record's seals name, keyed by each seal's digest — the decoded
     // `UnitState::seal` must be the record's for a source to be found.
     let sources = sealed_sources(ctx.w, live.record.minds.values().map(|row| &row.seal));
-    let (handle, join) =
-        crate::arena_task::resume_arena(&runtime, match_id, arena, &arena_cfg, &sources, egress)
-            .map_err(|error| OpenMatchError::Mind(error.to_string()))?;
+    // 17b cut M4.1: a resumed match thinks on the process's one pool, sized
+    // by the server's `[tacsim.minds].workers` when it is the first to open.
+    let workers = crate::match_::lobby::minds_config(ctx.w)
+        .unwrap_or_default()
+        .workers;
+    let pool = crate::minds::MindPool::shared(workers);
+    let (handle, join) = crate::arena_task::resume_arena(
+        &runtime, match_id, arena, &arena_cfg, &sources, pool, egress,
+    )
+    .map_err(|error| OpenMatchError::Mind(error.to_string()))?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
         // Cannot happen (the id was checked above); stopped rather than leaked.
         old.signal_stop();

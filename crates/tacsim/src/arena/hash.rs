@@ -218,6 +218,20 @@ thread_local! {
 ///    `m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash`
 ///    moves each part.
 ///
+///    **Since 17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22; the
+///    fold code unchanged) a think is collected at its millisecond and its
+///    answer written at the head of the next substep, so the substep a
+///    think falls in folds its `pending` as the FACTS — `[1]`, `think_seq`,
+///    `t_ms`, the three epochs — with an EMPTY answer (`0` intents, a
+///    `0`-length memory and the empty digest), and the answer is folded
+///    from the next substep on, until the landing takes it off the row.
+///    Whether a row's pending answer is written is the scratch set
+///    [`Arena::awaiting`], never folded and never carried (an empty memory
+///    is a legal clean answer); `Snapshot::encode` refuses an arena that
+///    holds any such row by name. The mind-fixture pins over matches that
+///    carry a mind (`M2_CROSS_PLATFORM_PINS`, the twin lanes' coverage and
+///    record) moved once for this; no production pin did.
+///
 ///    **Never folded**: [`crate::arena::state::UnitState::seal`] (17b cut
 ///    M3.2's `SealRef` — a per-match constant, the floor's argument below,
 ///    whose `closed` moves only with a ledger line, 17b cut M3.6's

@@ -150,6 +150,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::minds::{BatchHandle, MindPool};
+
 use crate::arena::card::CardChange;
 use crate::arena::damage::UnitReturn;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind, MotorGoal};
@@ -589,6 +591,7 @@ pub fn spawn_arena(
     sensors_cfg: &SensorsConfig,
     minds_cfg: &MindsConfig,
     sources: &BTreeMap<[u8; 32], String>,
+    pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
 ) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), SpawnError> {
     let mut arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
@@ -603,7 +606,7 @@ pub fn spawn_arena(
     install_runners(&mut arena, sources)?;
     // 16b cut V.2: read before `arena` is moved into the task below.
     let callsigns = arena.callsigns();
-    let (handle, join) = spawn(runtime, match_id, arena, arena_cfg, egress, false);
+    let (handle, join) = spawn(runtime, match_id, arena, arena_cfg, pool, egress, false);
     Ok((handle, join, callsigns))
 }
 
@@ -642,10 +645,13 @@ pub fn resume_arena(
     mut arena: Arena,
     arena_cfg: &ArenaConfig,
     sources: &BTreeMap<[u8; 32], String>,
+    pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
 ) -> Result<(ArenaHandle, JoinHandle<()>), crate::minds::InstallError> {
     install_runners(&mut arena, sources)?;
-    Ok(spawn(runtime, match_id, arena, arena_cfg, egress, true))
+    Ok(spawn(
+        runtime, match_id, arena, arena_cfg, pool, egress, true,
+    ))
 }
 
 /// **Why [`spawn_arena`] could not start a match** (17b cut M3.5 split it
@@ -680,6 +686,7 @@ fn spawn(
     match_id: MatchId,
     arena: Arena,
     arena_cfg: &ArenaConfig,
+    pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
     resumed: bool,
 ) -> (ArenaHandle, JoinHandle<()>) {
@@ -733,6 +740,10 @@ fn spawn(
         snapshot_ms: arena_cfg.snapshot_ms,
         last_snapshot_period,
         resumed,
+        // 17b cut M4.1: the pool, and no batch in flight yet.
+        pool,
+        outstanding: None,
+        pool_wait_us: 0,
     }));
     (
         ArenaHandle {
@@ -830,6 +841,19 @@ struct Task {
     /// [`resume_arena`]): its first pulse is due on the lattice from its own
     /// base, never at once ([`arena_loop`]).
     resumed: bool,
+    /// **The think pool this task sends its batches to** (17b cut M4.1; doc
+    /// 17 §6 "Execution policy", D-UM-22): the process's one
+    /// ([`MindPool::shared`]) in production, a private one in a test.
+    pool: Arc<MindPool>,
+    /// **The batch in flight** (17b cut M4.1): the last pulse's collected
+    /// thinks, submitted after that pulse's publication and awaited at the
+    /// head of the next pulse — or past a snapshot's due check, before the
+    /// encode — through [`Task::await_thinks`]; `None` between.
+    outstanding: Option<BatchHandle>,
+    /// **The wall time spent waiting on batches**, microseconds, summed
+    /// (17b cut M4.1: `pool_wait_us`, logged per wait; a saturated pool is
+    /// seen here and as late wakes, never as a different result).
+    pool_wait_us: u64,
 }
 
 /// **One entry of the task's retry queue** (16b cut AF.2): a closed chunk, or
@@ -1456,6 +1480,17 @@ impl Task {
     /// **One pulse**: the unwind boundary, the watchdog, and the publication of
     /// whatever the pulse produced.
     async fn pulse(&mut self, wall_now_ms: i64, controls: &[Control], intents: &[Intent]) -> Pulse {
+        // **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22): the
+        // batch the last pulse sent to the pool is awaited HERE, at the
+        // pulse's head — never right after the submit, which would serialise
+        // every batch behind its own pulse — and its answers written before
+        // the step, at the one sim-time moment the inline path writes at.
+        // The wait is off the watchdog's clock below (`took` times the step
+        // alone) and logged as `pool_wait_us`. A worker's panic voids the
+        // match, as a panic inside `step` does.
+        if let Err(reason) = self.await_thinks().await {
+            return self.void_now(wall_now_ms, &reason).await;
+        }
         // First, whatever the world could not take last time — in order, ahead
         // of anything this pulse closes.
         self.drain_backlog();
@@ -1466,31 +1501,45 @@ impl Task {
         }));
         let took = started.elapsed();
 
-        let Ok(out) = stepped else {
-            // Doc 16 §3.1 "Failure". The `StepOutput` does not exist, and the
-            // arena's own chunk egress is deliberately left untouched: nothing
-            // the faulted pulse produced leaves. The digest describes the black
-            // box as it stood, which commits nothing — a voided match returns no
-            // cell to the world at all (T.3's check-in restores the snapshots).
-            tracing::error!(
-                match_id = %self.match_id,
-                arena_ms = self.arena.now_ms,
-                "ARENA STEP PANIC caught at the task's unwind boundary; the match is void"
-            );
-            self.end(MatchEnd {
-                reason: EndReason::Void,
-                t_ms: self.arena.now_ms,
-            })
-            .await;
-            return Pulse::Done;
+        let mut out = match stepped {
+            Ok(out) => out,
+            Err(_) => {
+                // Doc 16 §3.1 "Failure". The `StepOutput` does not exist, and
+                // the arena's own chunk egress is deliberately left untouched:
+                // nothing the faulted pulse produced leaves. The digest
+                // describes the black box as it stood, which commits nothing —
+                // a voided match returns no cell to the world at all (T.3's
+                // check-in restores the snapshots). **17b cut M4.1**: a mind
+                // runner that panics inline — at a substep's head inside
+                // `step` — ends here too, as doc 17 §24 declares.
+                tracing::error!(
+                    match_id = %self.match_id,
+                    arena_ms = self.arena.now_ms,
+                    "ARENA STEP PANIC caught at the task's unwind boundary; the match is void"
+                );
+                self.end(MatchEnd {
+                    reason: EndReason::Void,
+                    t_ms: self.arena.now_ms,
+                })
+                .await;
+                return Pulse::Done;
+            }
         };
-
         let ended = out.ended;
         // Read out of the `StepOutput` before `publish` consumes it: it is the
         // pulse's own answer to "when again", in the same wall milliseconds
         // `wall_now_ms` was given in (doc 16 §3.1 phase 5).
         let next_due_ms = out.next_due_ms;
+        // **17b cut M4.1**: and the pulse's collected thinks, submitted to
+        // the pool right after the publication below — think time off the
+        // wake's critical path — and awaited at the next pulse's head (or
+        // before this pulse's snapshot, below). A pulse that collected none
+        // submits nothing; a pulse that ended the match hands out none.
+        let thinks = std::mem::take(&mut out.thinks);
         self.publish(out).await;
+        if !thinks.is_empty() {
+            self.outstanding = Some(self.pool.submit(thinks));
+        }
 
         // **16b cut AA.3 (16c `B-79`)**: the watchdog is read BEFORE the end is
         // honoured. A pulse that overran `tempo.stall_ms` and also ended the match
@@ -1512,6 +1561,17 @@ impl Task {
         // on a pulse that ended the match (its result deletes the documents) and
         // never on a stalled one (the watchdog voids the match).
         if ended.is_none() && !stalled {
+            // **17b cut M4.1** (doc 17 §6 "Snapshot and resume"; D-UM-22,
+            // D-UM-23): past the due check and before the encode, the batch
+            // in flight is awaited and written, so the snapshot carries every
+            // answer (`Snapshot::encode` refuses an arena with a think
+            // awaiting one). Never before the check: that would serialise
+            // every batch behind its own pulse.
+            if self.snapshot_period_due()
+                && let Err(reason) = self.await_thinks().await
+            {
+                return self.void_now(wall_now_ms, &reason).await;
+            }
             let _ = self.snapshot_if_due();
         }
         if let Some(end) = ended {
@@ -1546,33 +1606,101 @@ impl Task {
         // so the `void` event and the ledger's tail are recorded the same way an
         // aborted match records them.
         if stalled {
-            tracing::error!(
-                match_id = %self.match_id,
-                took_ms = took.as_millis(),
-                stall_ms = self.stall.as_millis(),
-                "arena pulse exceeded tempo.stall_ms; the match is void"
+            let reason = format!(
+                "arena pulse exceeded tempo.stall_ms (took {} ms against {} ms)",
+                took.as_millis(),
+                self.stall.as_millis()
             );
-            self.arena.stop(StopReason::Void);
-            let stopping = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.arena.step(wall_now_ms, &[], &[])
-            }));
-            let end = match stopping {
-                Ok(out) => {
-                    let end = out.ended;
-                    self.publish(out).await;
-                    end
-                }
-                Err(_) => None,
-            };
-            self.end(end.unwrap_or(MatchEnd {
-                reason: EndReason::Void,
-                t_ms: self.arena.now_ms,
-            }))
-            .await;
-            return Pulse::Done;
+            return self.void_now(wall_now_ms, &reason).await;
         }
 
         Pulse::Again(next_due_ms)
+    }
+
+    /// **Void the match now, through the library's own `Stop` path** (16b
+    /// cut AA.3's watchdog arm, lifted out by 17b cut M4.1 so a failed think
+    /// batch ends the same way): the `void` event and the ledger's tail are
+    /// recorded as an aborted match records them, the stopping pulse is
+    /// published, and the result says `void`. The batch in flight, if any,
+    /// is dropped unawaited, and the thinks the arena still holds unwritten
+    /// are discarded before the stopping pulse (its head would otherwise
+    /// run their runners inline — the one that just panicked among them).
+    async fn void_now(&mut self, wall_now_ms: i64, reason: &str) -> Pulse {
+        tracing::error!(
+            match_id = %self.match_id,
+            arena_ms = self.arena.now_ms,
+            reason,
+            "the match is void"
+        );
+        self.outstanding = None;
+        self.arena.discard_outstanding();
+        self.arena.stop(StopReason::Void);
+        let stopping = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.arena.step(wall_now_ms, &[], &[])
+        }));
+        let end = match stopping {
+            Ok(out) => {
+                let end = out.ended;
+                self.publish(out).await;
+                end
+            }
+            Err(_) => None,
+        };
+        self.end(end.unwrap_or(MatchEnd {
+            reason: EndReason::Void,
+            t_ms: self.arena.now_ms,
+        }))
+        .await;
+        Pulse::Done
+    }
+
+    /// **Await the batch in flight and write its answers** (17b cut M4.1;
+    /// doc 17 §6 "Execution policy", D-UM-22): nothing when none is in
+    /// flight; else the handle is waited on through
+    /// `tokio::task::spawn_blocking` — a std thread the runtime does not
+    /// auto-advance a paused clock across, so the task tests on tokio's
+    /// virtual clock wait for the real workers — the wait logged as
+    /// `pool_wait_us` and summed, and the answers written
+    /// (`Arena::deliver_answers`) before the caller steps or encodes.
+    ///
+    /// # Errors
+    ///
+    /// The reason, for the void: a worker's runner panicked
+    /// (`BatchFailed`), or the blocking wait itself did not complete.
+    async fn await_thinks(&mut self) -> Result<(), String> {
+        let Some(handle) = self.outstanding.take() else {
+            return Ok(());
+        };
+        let jobs = handle.len();
+        let started = std::time::Instant::now();
+        let waited = tokio::task::spawn_blocking(move || handle.wait()).await;
+        let wait_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.pool_wait_us = self.pool_wait_us.saturating_add(wait_us);
+        let answers = match waited {
+            Ok(Ok(answers)) => answers,
+            Ok(Err(failed)) => return Err(failed.to_string()),
+            Err(join) => return Err(format!("the think batch's wait did not complete: {join}")),
+        };
+        let settled = self.arena.deliver_answers(answers);
+        tracing::trace!(
+            match_id = %self.match_id,
+            jobs,
+            pool_wait_us = wait_us,
+            written = settled.written,
+            faults = settled.faults,
+            dropped = settled.dropped,
+            "a think batch was delivered"
+        );
+        Ok(())
+    }
+
+    /// **Whether [`Task::snapshot_if_due`] would take a snapshot now**
+    /// (17b cut M4.1) — [`snapshot_due`]'s rule read without recording the
+    /// period, so the batch can be awaited past the check and before the
+    /// encode.
+    fn snapshot_period_due(&self) -> bool {
+        let mut peek = self.last_snapshot_period;
+        snapshot_due(&mut peek, self.arena.now_ms, self.snapshot_ms)
     }
 
     /// Publish one pulse's output: its chunks in order, then its frames, then
@@ -2808,6 +2936,9 @@ mod tests {
             snapshot_ms: 0,
             last_snapshot_period: None,
             resumed: false,
+            pool: MindPool::new(1),
+            outstanding: None,
+            pool_wait_us: 0,
         };
         let picture = |now_ms: i64| {
             let mut observer = task_picture();
@@ -2826,6 +2957,7 @@ mod tests {
             reflex: crate::arena::reflex::ReflexCounters::default(),
             deliberation: Vec::new(),
             observer,
+            thinks: Vec::new(),
         };
         // The first message (the clock of second 0) fills the egress.
         task.publish(pulse(None)).await;
@@ -2964,6 +3096,9 @@ mod tests {
             snapshot_ms,
             last_snapshot_period: None,
             resumed: false,
+            pool: MindPool::new(1),
+            outstanding: None,
+            pool_wait_us: 0,
         };
         (task, world)
     }
@@ -3127,5 +3262,350 @@ mod tests {
         // And a future event is the base plus it, exactly.
         let at = deadline(base, 60_000);
         assert_eq!(at, base + Duration::from_millis(60_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M4.1 — the pooled path's three facts
+    // -----------------------------------------------------------------------
+
+    /// A runner that blocks every think until the gate opens, counting its
+    /// calls — the pool's worker blocks on it, never the task's thread.
+    #[derive(Debug)]
+    struct Gated {
+        open: std::sync::Mutex<bool>,
+        opened: std::sync::Condvar,
+        calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl Gated {
+        fn closed() -> Arc<Gated> {
+            Arc::new(Gated {
+                open: std::sync::Mutex::new(false),
+                opened: std::sync::Condvar::new(),
+                calls: std::sync::atomic::AtomicU32::new(0),
+            })
+        }
+
+        fn set(&self, open: bool) {
+            if let Ok(mut gate) = self.open.lock() {
+                *gate = open;
+            }
+            self.opened.notify_all();
+        }
+
+        fn calls(&self) -> u32 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl crate::arena::mind::MindRunner for Gated {
+        fn think(&self, job: &crate::arena::mind::ThinkJob<'_>) -> crate::arena::mind::ThinkResult {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut gate) = self.open.lock() {
+                while !*gate {
+                    gate = self
+                        .opened
+                        .wait(gate)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+            crate::arena::mind::ThinkResult {
+                intents: Vec::new(),
+                memory: job.memory.to_vec(),
+                fault: None,
+                trace: Vec::new(),
+            }
+        }
+    }
+
+    /// A runner that panics on every think — or, with `inline_only`, on
+    /// every think run OFF the pool's threads (named `tacsim-mind-N`): the
+    /// inline path inside `Arena::step`, answering the pool's thinks cleanly.
+    #[derive(Debug)]
+    struct Panicking {
+        inline_only: bool,
+    }
+
+    impl crate::arena::mind::MindRunner for Panicking {
+        fn think(&self, job: &crate::arena::mind::ThinkJob<'_>) -> crate::arena::mind::ThinkResult {
+            let on_the_pool = std::thread::current()
+                .name()
+                .is_some_and(|name| name.starts_with("tacsim-mind-"));
+            if !(self.inline_only && on_the_pool) {
+                std::panic::resume_unwind(Box::new("a mind runner panicked (test)"));
+            }
+            crate::arena::mind::ThinkResult {
+                intents: Vec::new(),
+                memory: job.memory.to_vec(),
+                fault: None,
+                trace: Vec::new(),
+            }
+        }
+    }
+
+    /// **A task over red flown by a mind on `runner`**, blue a machine, on a
+    /// private pool of one worker, with `snapshot_ms` — the arena at epoch
+    /// one, the rest as `af2_task` builds it.
+    fn minded_task(
+        runner: Arc<dyn crate::arena::mind::MindRunner>,
+        snapshot_ms: u32,
+    ) -> (
+        Task,
+        mpsc::Receiver<ArenaOut>,
+        (mpsc::Sender<ArenaMsg>, watch::Sender<bool>),
+    ) {
+        use crate::arena::state::Controller;
+        let mut red = tank(RED, Team::Red, pose(1_500, 1_500));
+        red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
+        let mut arena = arena_at_epoch(vec![red, tank(BLUE, Team::Blue, pose(6_500, 6_500))], 1);
+        arena.mind_runner = runner;
+        let (egress, world) = mpsc::channel(256);
+        let (inbox_tx, inbox) = mpsc::channel(4);
+        let (stop_tx, stop) = watch::channel(false);
+        let task = Task {
+            match_id: MatchId(41),
+            arena,
+            inbox,
+            egress,
+            stop,
+            backlog: VecDeque::new(),
+            backlog_bound: 64,
+            per_unit_bound: 4,
+            stall: Duration::from_secs(60),
+            last_clock_s: None,
+            held_frames: None,
+            held_observer: None,
+            held_notice_drops: 0,
+            reported: Arc::new(AtomicBool::new(false)),
+            snapshot_ms,
+            last_snapshot_period: None,
+            resumed: false,
+            pool: MindPool::new(1),
+            outstanding: None,
+            pool_wait_us: 0,
+        };
+        // The senders ride along: `Task::end` reads the stop signal, and a
+        // dropped sender reads as a stopped task.
+        (task, world, (inbox_tx, stop_tx))
+    }
+
+    /// Wait (real time, at most two seconds) until the gated runner has
+    /// been called `n` times — the pool's worker takes a submitted job on
+    /// its own thread, after the submitting pulse returned.
+    fn called(gate: &Gated, n: u32) {
+        let started = std::time::Instant::now();
+        while gate.calls() < n {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "the worker never called the runner {n} times"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Everything the egress holds right now.
+    fn drained(world: &mut mpsc::Receiver<ArenaOut>) -> Vec<ArenaOut> {
+        let mut out = Vec::new();
+        while let Ok(message) = world.try_recv() {
+            out.push(message);
+        }
+        out
+    }
+
+    /// Pulse `task` one substep at a time from `wall` until a batch is in
+    /// flight; answers the wall of that pulse.
+    async fn pulse_until_a_batch(task: &mut Task, mut wall: i64) -> i64 {
+        loop {
+            assert!(wall < 20_000, "a think within the first seconds");
+            assert!(matches!(task.pulse(wall, &[], &[]).await, Pulse::Again(_)));
+            if task.outstanding.is_some() {
+                return wall;
+            }
+            wall += task.arena.substep_len_ms();
+        }
+    }
+
+    /// **17b cut M4.1: a pulse with no snapshot due leaves its batch
+    /// outstanding, and the next pulse awaits it at its head; a pulse whose
+    /// snapshot is due awaits it past the due check, before the encode**
+    /// (doc 17 §6 "Execution policy", "Snapshot and resume"; D-UM-22,
+    /// D-UM-23; the M4 row's finding (10)): red's runner is gated shut on a
+    /// one-worker pool, so a think the task submits is never answered until
+    /// the gate opens —
+    ///
+    /// 1. the pulse that collects red's think RETURNS with the batch in
+    ///    flight (`outstanding`), the runner called once and still blocked,
+    ///    the row awaiting (`Arena::awaiting`): nothing awaited it inside its
+    ///    own pulse;
+    /// 2. the gate opened, the next pulse awaits the batch at its head and
+    ///    delivers it: nothing in flight, nothing awaiting, the wait counted
+    ///    in `pool_wait_us`;
+    /// 3. the gate shut again and the next snapshot period made due, the
+    ///    pulse that collects red's next think blocks past the due check
+    ///    until a thread opens the gate, then encodes: the `Snapshot` on the
+    ///    egress carries the state with the answer written — its
+    ///    `state_hash` is the arena's after the pulse — and nothing is in
+    ///    flight or awaiting.
+    #[tokio::test(flavor = "current_thread")]
+    async fn m4_a_batch_is_awaited_at_the_next_pulse_s_head_and_before_a_due_snapshot() {
+        let gate = Gated::closed();
+        let (mut task, mut world, _senders) = minded_task(gate.clone(), 5_000);
+        // The opening pulse took the period-0 snapshot (`snapshot_if_due`
+        // on the first pulse); nothing is due again before 5,000 ms.
+        let first = pulse_until_a_batch(&mut task, 0).await;
+        assert!(first < 5_000, "the first think is inside the first period");
+        called(&gate, 1);
+        assert_eq!(gate.calls(), 1, "the worker called the runner once");
+        assert!(task.outstanding.is_some(), "the batch is in flight");
+        assert!(task.arena.awaiting.contains(&RED), "the row awaits");
+        assert_eq!(task.pool_wait_us, 0, "nothing was awaited yet");
+        // 2. The gate opens; the next pulse awaits and delivers.
+        gate.set(true);
+        let next = first + task.arena.substep_len_ms();
+        assert!(matches!(task.pulse(next, &[], &[]).await, Pulse::Again(_)));
+        assert!(task.outstanding.is_none(), "awaited at the pulse's head");
+        assert!(task.arena.awaiting.is_empty(), "and delivered");
+        // 3. The gate shuts; the next think's pulse has a snapshot due.
+        gate.set(false);
+        let mut wall = next;
+        let second_think = loop {
+            wall += task.arena.substep_len_ms();
+            // Make the period due before the pulse that will collect the
+            // second think (one `think_ms` after the first, 1,000 ms).
+            if wall >= first + 1_000 {
+                break wall;
+            }
+            assert!(matches!(task.pulse(wall, &[], &[]).await, Pulse::Again(_)));
+        };
+        task.last_snapshot_period = None;
+        let opener = {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                gate.set(true);
+            })
+        };
+        let _ = drained(&mut world);
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            task.pulse(second_think, &[], &[]).await,
+            Pulse::Again(_)
+        ));
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "the pulse waited for the gate past its snapshot's due check"
+        );
+        opener.join().expect("the opener thread");
+        called(&gate, 2);
+        assert_eq!(gate.calls(), 2, "the second think was run");
+        assert!(task.outstanding.is_none());
+        assert!(task.arena.awaiting.is_empty());
+        let snapshots: Vec<u64> = drained(&mut world)
+            .iter()
+            .filter_map(|message| match message {
+                ArenaOut::Snapshot { snapshot, .. } => Some(snapshot.state_hash),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            snapshots,
+            vec![crate::arena::hash::state_hash(&task.arena)],
+            "one snapshot, carrying the state with the answer written"
+        );
+        assert!(task.pool_wait_us > 0);
+    }
+
+    /// **17b cut M4.1: a runner's panic voids the match on both paths,
+    /// never a fault** (the M4 row's finding (11); doc 16 §3.1 "Failure"):
+    /// on the pool, the batch answers `BatchFailed` and the pulse that awaits
+    /// it ends the match `Void` through the library's own stop — the tape's
+    /// last line is `void` and the egress reports the end; inline — a pulse
+    /// of two substeps, the think of the first written at the second's head
+    /// inside `step` — the panic unwinds to the task's boundary and the
+    /// match is void with nothing of that pulse published.
+    #[tokio::test(flavor = "current_thread")]
+    async fn m4_a_runner_panic_voids_the_match_on_the_pool_and_inline() {
+        // On the pool.
+        let (mut task, mut world, _senders) =
+            minded_task(Arc::new(Panicking { inline_only: false }), 0);
+        let wall = pulse_until_a_batch(&mut task, 0).await;
+        assert!(matches!(
+            task.pulse(wall + task.arena.substep_len_ms(), &[], &[])
+                .await,
+            Pulse::Done
+        ));
+        let messages = drained(&mut world);
+        let ended = messages.iter().rev().find_map(|message| match message {
+            ArenaOut::Ended { end, .. } => Some(end.reason),
+            _ => None,
+        });
+        assert_eq!(ended, Some(EndReason::Void));
+        let mut bytes: Vec<u8> = Vec::new();
+        for message in &messages {
+            if let ArenaOut::Ledger { chunk, .. } = message {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+        }
+        let last = String::from_utf8(bytes)
+            .unwrap_or_default()
+            .lines()
+            .last()
+            .map(str::to_owned)
+            .unwrap_or_default();
+        assert!(
+            last.contains("\"kind\":\"void\""),
+            "the tape ends void: {last}"
+        );
+        assert!(
+            task.arena.thinks_outstanding().is_empty(),
+            "discarded before the stop"
+        );
+
+        // Inline: the runner answers the pool's thinks and panics on a think
+        // run inside `step` — the think of a pulse's first substep, written
+        // at its second's head. Pulses of two, two and one substeps, cycling,
+        // so the think's grid millisecond falls in a pulse's first substep
+        // within a few pulses whatever its stagger; a think of a pulse's
+        // last substep is the pool's and answered cleanly.
+        let (mut task, mut world, _senders) =
+            minded_task(Arc::new(Panicking { inline_only: true }), 0);
+        let substep = task.arena.substep_len_ms();
+        let mut wall = 0;
+        let mut n = 0_usize;
+        let done = loop {
+            assert!(wall < 20_000, "no think settled inline in twenty seconds");
+            if matches!(task.pulse(wall, &[], &[]).await, Pulse::Done) {
+                break true;
+            }
+            wall += [2, 2, 1][n % 3] * substep;
+            n += 1;
+        };
+        assert!(done);
+        let messages = drained(&mut world);
+        let ended = messages.iter().rev().find_map(|message| match message {
+            ArenaOut::Ended { end, .. } => Some(end.reason),
+            _ => None,
+        });
+        assert_eq!(
+            ended,
+            Some(EndReason::Void),
+            "the unwind boundary voided it"
+        );
+        // The panic arm: no stopping pulse, so no `void` line reaches the tape
+        // (the faulted pulse's chunk never leaves), unlike the pool's path.
+        let mut bytes: Vec<u8> = Vec::new();
+        for message in &messages {
+            if let ArenaOut::Ledger { chunk, .. } = message {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+        }
+        assert!(
+            !String::from_utf8(bytes)
+                .unwrap_or_default()
+                .contains("\"kind\":\"void\""),
+            "the unwind boundary journals no void line"
+        );
     }
 }

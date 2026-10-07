@@ -426,11 +426,17 @@ impl Arena {
     }
 
     /// **The class a mind on `unit` thinks at** (D-UM-35; 17b cut M3's
-    /// ruling, the plan's F4): `min(rated, core)` — the rated class
-    /// [`crate::arena::mind::STOCK_RATED_CLASS`] (Standard Doctrine's, until
-    /// 17b cut M3.3's seal names one per hull) against the core's class now;
-    /// `Zero` for a hull with no core, a core whose cell reads 0, and a row
+    /// ruling, the plan's F4; **17b cut M4.1: off the seal**): the class the
+    /// hull's seal records ([`crate::arena::mind::SealRef::class`] —
+    /// `min(rated, core at the seal, cap)`, `crate::match_::seal::seal_for`
+    /// under `SealTerms::{rated, class_cap}`) against the core's class NOW
+    /// (a `degrade_core` since the seal lowers it); `Zero` for a hull with
+    /// no core, a core whose cell reads 0, a hull no seal reached, and a row
     /// that is dropped to doctrine ([`crate::arena::mind::MindState::dropped`]).
+    /// Until this cut the rating was the arena-wide `rated_class` (Standard
+    /// Doctrine's [`crate::arena::mind::STOCK_RATED_CLASS`], a test's lever
+    /// beside it); a rig that rates a hull above the stock rating seals it
+    /// so, or writes its `UnitState::seal.class`.
     #[must_use]
     pub fn mind_class(&self, unit: ObjId) -> CoreClass {
         if self
@@ -440,8 +446,10 @@ impl Arena {
         {
             return CoreClass::Zero;
         }
-        self.core_of(unit)
-            .map_or(CoreClass::Zero, |core| core.class.min(self.rated_class))
+        let Some(state) = self.unit(unit) else {
+            return CoreClass::Zero;
+        };
+        read_core(&state.unit).map_or(CoreClass::Zero, |core| core.class.min(state.seal.class))
     }
 
     /// **The row a mind on `unit` thinks at**: [`Arena::classes`]' row of
@@ -462,14 +470,6 @@ impl Arena {
             .core_of(unit)
             .map_or(CoreClass::Zero, |core| core.class);
         self.classes.row(class).slots
-    }
-
-    /// **Rate every mind in this arena at `class`** — a test's lever, with no
-    /// production caller. (17b cut M3.3's seal records each hull's class,
-    /// `MindSeal::class`; the think side keeps reading this lever.) Neither hashed nor carried.
-    #[doc(hidden)]
-    pub fn set_rated_class_for_tests(&mut self, class: CoreClass) {
-        self.rated_class = class;
     }
 }
 
@@ -636,9 +636,24 @@ mod tests {
         assert_eq!(arena.core_of(BLUE), None);
         assert_eq!(arena.mind_class(BLUE), CoreClass::Zero, "no core");
         assert_eq!(arena.slot_capacity(BLUE), 1);
-        arena.set_rated_class_for_tests(CoreClass::III);
+        // 17b cut M4.1: the rating is the seal's (`SealTerms::rated`), read
+        // off `UnitState::seal.class` — `min(rated, core, cap)` at the seal.
+        let rated_iii = line_tank(RED, Team::Red, pose(1_500, 4_500));
+        let mut rated_iii = crate::arena::state::CustodyUnit {
+            controller: Controller::Mind,
+            ..rated_iii
+        };
+        rated_iii
+            .reseal(&crate::match_::SealTerms::fixture().rated(CoreClass::III))
+            .expect("the fixture terms seal");
+        assert_eq!(rated_iii.seal.class, CoreClass::II, "the core caps it");
+        if let Some(state) = arena.unit_mut(RED) {
+            state.seal.class = rated_iii.seal.class;
+        }
         assert_eq!(arena.mind_class(RED), CoreClass::II, "the core caps it");
-        arena.set_rated_class_for_tests(CoreClass::I);
+        if let Some(state) = arena.unit_mut(RED) {
+            state.seal.class = CoreClass::I;
+        }
         // 17b cut M3.2: the drop is the row's own field, not its strikes.
         if let Some(row) = arena.minds.get_mut(&RED) {
             row.dropped = Some(crate::arena::mind::DropCause::Strikes);
