@@ -20,7 +20,7 @@
 mod support;
 
 use mush_core::ObjId;
-use support::{CELL_CM, Muster, booted_world, cell_of, run_until, shipped_arena, tank};
+use support::{CELL_CM, Muster, booted_world, cell_of, rig, run_until, shipped_arena, tank};
 use tacsim::arena::CostRow;
 use tacsim::arena::motion::BlockedCause;
 use tacsim::arena::motor::{MotorRow, Refusal};
@@ -1228,4 +1228,3617 @@ fn m1a4_an_engine_killed_under_a_drive_lets_go_and_says_so() {
     assert_eq!(told, ["drive_no_route"], "said once");
     assert_eq!(arena.motors.row(red).and_then(|motor| motor.goal), None);
     assert_eq!(motor_ticks(&arena), 0, "the cadence ended with the goal");
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M4.4 — motor family A (bands, wreck, follower, bluff)
+// ---------------------------------------------------------------------------
+//
+// The reflex fixtures of `tests/reflex.rs` whose every edge was the motor's
+// (`Arena::follow`, `Arena::note_blocked`, `MotorRow::age_avoid`,
+// `Arena::refresh_held_avoid`, `MotorTable::may_search`, the routeless steer
+// and `Arena::hold_routeless`), moved here by 17b cut M4.4 onto the
+// sixteen-cell rig (`support::rig`) with the hull a `Controller::Mind`'s,
+// flown by a scripted mind (`support::scripted::ScriptedMind`) whose goals
+// land at the reflex's own milliseconds: think `n` at `think_at(unit, n)`
+// (`stagger_ms(SEED, unit, 1_000) + n × 1_000`, `RED`'s at 482), its answer
+// landing one substep (250 ms) on and driven there (`Arena::motor_step` at
+// the landing, D-UM-10), then the hull's own `MotorTick` every `decide_ms`
+// (500) on the stagger grid — the reflex tick's own slots. The reflex machine
+// set its first goal at its tick 982 ms in, online; the scripted mind's first
+// goal lands at 1,732 (think 1, the first online think: think 0's `Startup`
+// lands at 732 and completes at 1,232), so each window below is the reflex
+// fixture's own, grown by that three quarters of a second only where a claim
+// needed it, and the edges — the stop, the learned cell, the re-search within
+// one tick, the other gap taken, the deferred search, the hold at the bluff,
+// the stamp a held hull keeps — do not depend on the millisecond. What the
+// reflex fixtures read off the controller (`state == Patrol`,
+// `reflex.unit(RED).is_some()`) becomes "the goal is still held" where the
+// claim needs it and is dropped where the claim was the motor's alone.
+
+/// One scripted goal cell.
+fn m44a_goal(x: u16, y: u16) -> tacsim::arena::intents::IntentKind {
+    tacsim::arena::intents::IntentKind::Goal(tacsim::arena::intents::MotorGoal::Cell { x, y })
+}
+
+/// **The family's script on `unit`**: `Startup` at think 0 and one intent
+/// list at each think `lines` names.
+fn m44a_script(
+    unit: ObjId,
+    lines: &[(u64, Vec<tacsim::arena::intents::IntentKind>)],
+) -> std::sync::Arc<support::scripted::ScriptedMind> {
+    let mut script = vec![support::scripted::says(
+        0,
+        vec![tacsim::arena::intents::IntentKind::Startup],
+    )];
+    for (think, intents) in lines {
+        script.push(support::scripted::says(*think, intents.clone()));
+    }
+    support::scripted::ScriptedMind::new(&[(unit, script)])
+}
+
+/// The millisecond `unit`'s think `n` lands at — its answer driven there.
+fn m44a_lands_at(arena: &Arena, unit: ObjId, n: u64) -> i64 {
+    support::scripted::think_at(unit, i64::try_from(n).unwrap_or(0)) + arena.substep_len_ms()
+}
+
+/// Step `arena` to `until_ms` in pulses of `pulse_ms`, settled between pulses
+/// as the task's pool settles (M4.1's gate), absorbing the ledger and the
+/// counters, and answer the west-most centimetre `RED` reached — which is
+/// "did it get past", for a hull that may be driving back east at the end.
+fn m44a_drive(
+    arena: &mut Arena,
+    until_ms: i64,
+    pulse_ms: i64,
+    bytes: &mut Vec<u8>,
+    counters: &mut ReflexCounters,
+) -> i64 {
+    let mut wall = arena.now_ms;
+    let mut west_most = i64::MAX;
+    while arena.now_ms < until_ms {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, bytes);
+        counters.absorb(&out.reflex);
+        west_most = west_most.min(arena.unit(rig::RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        if out.ended.is_some() {
+            break;
+        }
+        wall += pulse_ms;
+    }
+    west_most
+}
+
+/// The think whose `Goal(Cell (14, 8))` is the band fixture's turnaround:
+/// the first think after the hull let go of `west` on arrival (a mind's goal
+/// is dropped at arrival under `Fallback::Notice`, and the motor's
+/// `drive_arrived` is drained into exactly the next think's view) — measured
+/// on this run (the arrival falls between 19,732 and 20,000; think 20 is at
+/// 20,482, its goal landing at 20,732) and asserted by the test, so the
+/// second goal is the reflex's `Patrol` turnaround and never a redirect of a
+/// hull still on its way.
+const M44A_TURNAROUND_THINK: u64 = 20;
+
+/// **A hull held against a band keeps or re-plans its route and never gives
+/// up** — 16b cut N.1's (f) as 16b cut AI.1 left it (`tests/reflex.rs`'
+/// `a_tank_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_up`,
+/// moved here by 17b cut M4.4). An impassable band down column 4 with one
+/// gap at row 0: `Goal(Cell (1, 8))` — the graph's `west` node — lands at the
+/// first online think (1,732) and the hull finds its way round the band
+/// rather than sitting against it: searches spent, west of column 4, and
+/// never stopped on the way (the gap's corner is stepped through its open
+/// shoulder). The reflex machine turned round at `west` for `east` at about
+/// 19 s (its `Patrol` walk); here the turnaround is the script's,
+/// `Goal(Cell (14, 8))` at [`M44A_TURNAROUND_THINK`], the first think landing
+/// after the hull let the first goal go on arrival, so at 30 s it is back
+/// east of the band, under way on a route to a goal it still holds, every
+/// cell of it passable — the reflex's "still patrolling toward a goal it has
+/// a route to" (`state == Patrol`, `reflex.unit(RED).is_some()`) read as the
+/// held goal. Everything else is `Arena::follow`'s and read as it was.
+#[test]
+fn m44a_a_hull_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_up() {
+    use tacsim::arena::perception::{DriveOutcome, FrameNotice};
+    use tacsim::arena::state::{Controller, TerrainCell};
+
+    let band: Vec<(u16, u16, TerrainCell)> =
+        (1..rig::SIDE).map(|y| (4_u16, y, rig::wall())).collect();
+    let mut arena = rig::arena_of(
+        vec![rig::tank(
+            rig::RED,
+            Team::Red,
+            rig::centre(6, 8),
+            Vec::new(),
+            Controller::Mind,
+        )],
+        &band,
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[],
+    );
+    let mind = m44a_script(
+        rig::RED,
+        &[
+            (1, vec![m44a_goal(1, 8)]),
+            (M44A_TURNAROUND_THINK, vec![m44a_goal(14, 8)]),
+        ],
+    );
+    arena.mind_runner = mind.clone();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    // Where it got to is read pulse by pulse, not only at the end (16b cut
+    // AI.1): through the gap, the hull reaches `west` and is back east of the
+    // band by 30 s, so a reading at the end alone would miss the crossing.
+    let west_most = m44a_drive(&mut arena, 30_000, 500, &mut bytes, &mut counters);
+    assert!(counters.path_queries > 0, "{counters:?}");
+    let log = rig::events(&mut arena, &mut bytes);
+    let blocked = rig::count(&log, "blocked");
+    assert!(
+        west_most < 4_000,
+        "it never got past the band: west-most {west_most} cm, {blocked} stops"
+    );
+    assert_eq!(
+        blocked, 0,
+        "it was stopped on its way through the gap: {blocked} stops"
+    );
+    // The arrival at `west`: the motor tells the mind `drive_arrived` once,
+    // drained into the view of the next think — and that think is the
+    // turnaround's, so the second goal was thought, let alone landed, only
+    // after the hull had reached `west` and let the first go.
+    let told_arrived: Vec<u64> = mind
+        .seen()
+        .iter()
+        .filter(|job| {
+            job.unit == rig::RED
+                && job.view.notices.iter().any(|notice| {
+                    matches!(
+                        notice,
+                        FrameNotice::Drive {
+                            outcome: DriveOutcome::Arrived
+                        }
+                    )
+                })
+        })
+        .map(|job| job.think_seq)
+        .collect();
+    assert_eq!(
+        told_arrived,
+        vec![M44A_TURNAROUND_THINK],
+        "the think handed the arrival at `west` is the turnaround's"
+    );
+    // At the end of the run it is not sitting against the band: under way on
+    // a route, bound for the goal it holds.
+    assert!(
+        arena
+            .unit(rig::RED)
+            .is_some_and(|unit| unit.speed_cms > 0 && unit.desired_speed_cms > 0),
+        "the run ended with the hull standing: {:?}",
+        arena
+            .unit(rig::RED)
+            .map(|unit| (unit.pose.x_cm, unit.pose.y_cm, unit.speed_cms))
+    );
+    let drive = rig::motor(&arena, rig::RED);
+    assert!(
+        !drive.route.is_empty(),
+        "the run ended with the hull routeless"
+    );
+    assert_eq!(drive.goal, Some((14, 8)), "the goal is still held");
+    for (x, y) in &drive.route {
+        assert!(
+            arena
+                .definition
+                .terrain
+                .get(*x, *y)
+                .is_some_and(TerrainCell::passable),
+            "the route crosses the band at ({x}, {y})"
+        );
+    }
+}
+
+/// A hull of the path-budget field: id, side, start cell and goal cell.
+type M44Hull = (ObjId, Team, (u16, u16), (u16, u16));
+
+/// **The path budget is a bound the arena applies per window of arena time**
+/// — 16b cut N.1's (i) (`tests/reflex.rs`'
+/// `the_path_budget_is_a_bound_the_arena_applies_per_window_of_arena_time`,
+/// moved here by 17b cut M4.4). Four hulls, two a side, each a mind's, each
+/// handed a far goal at its first online think, on a budget of one search a
+/// `decide_ms` (500) window: `MotorTable::may_search` is spent by
+/// `Arena::follow` alone and nothing reads the controller, so the bound is
+/// the pulse's count — never more than one search in a 500 ms pulse — and it
+/// bites: three of the four goals land inside one window (ids 4, 5 and 7
+/// land at 1,732, 1,638 and 1,844; id 6 at 1,254), so the landings after the
+/// first are deferred, and their own ticks retry them a window on. Every
+/// hull still holds its goal and a route at the end: a drive the budget
+/// refused keeps the path it has and carries on — the reflex's "still
+/// patrolling" read as the held goal and route.
+#[test]
+fn m44a_the_path_budget_is_a_bound_the_arena_applies_per_window_of_arena_time() {
+    use support::scripted::{Says, ScriptedMind, says};
+    use tacsim::arena::intents::IntentKind;
+    use tacsim::arena::state::Controller;
+
+    let cfg = rig::arena_cfg(tacsim::config::ReflexConfig {
+        max_path_queries: 1,
+        ..rig::reflex_cfg()
+    });
+    // Each in its own column, driving nine cells south: nobody arrives inside
+    // the six seconds and nobody is in anybody's way.
+    let hulls: [M44Hull; 4] = [
+        (ObjId(4), Team::Red, (6, 6), (6, 15)),
+        (ObjId(5), Team::Red, (7, 6), (7, 15)),
+        (ObjId(6), Team::Blue, (8, 6), (8, 15)),
+        (ObjId(7), Team::Blue, (9, 6), (9, 15)),
+    ];
+    let mut arena = rig::arena_of(
+        hulls
+            .iter()
+            .map(|(id, team, at, _)| {
+                rig::tank(
+                    *id,
+                    *team,
+                    rig::centre(at.0, at.1),
+                    Vec::new(),
+                    Controller::Mind,
+                )
+            })
+            .collect(),
+        &[],
+        &cfg,
+        &[],
+    );
+    let script: Vec<(ObjId, Vec<Says>)> = hulls
+        .iter()
+        .map(|(id, _, _, to)| {
+            (
+                *id,
+                vec![
+                    says(0, vec![IntentKind::Startup]),
+                    says(1, vec![m44a_goal(to.0, to.1)]),
+                ],
+            )
+        })
+        .collect();
+    arena.mind_runner = ScriptedMind::new(&script);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut worst = 0_u32;
+    let mut deferred = 0_u32;
+    while arena.now_ms < 6_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        // The window is `decide_ms` (500) and the pulse is 500, so one pulse
+        // holds at most one window and the per-pulse count is the per-window
+        // bound.
+        assert!(
+            out.reflex.path_queries <= 1,
+            "{} searches in one pulse at a budget of 1",
+            out.reflex.path_queries
+        );
+        worst = worst.max(out.reflex.path_queries);
+        deferred = deferred.saturating_add(out.reflex.path_deferred);
+        wall += 500;
+    }
+    assert!(worst > 0, "no search ran at all, so nothing was bounded");
+    assert!(
+        deferred > 0,
+        "nobody was ever refused, so the bound was never reached"
+    );
+    // Every hull is still driving: one the budget refused keeps its path and
+    // carries on rather than stopping.
+    for (id, _, _, to) in &hulls {
+        let drive = rig::motor(&arena, *id);
+        assert_eq!(drive.goal, Some(*to), "{id} holds its goal");
+        assert!(!drive.route.is_empty(), "{id} holds a route");
+    }
+}
+
+/// **A hull stopped by a parked one learns the cell and goes round it** (16b
+/// cut Q.7's blocked edge learned at the event; `tests/reflex.rs`'
+/// `a_reflex_tank_stopped_by_a_parked_one_learns_the_cell_and_goes_round_it`,
+/// moved here by 17b cut M4.4). Doc 16 §3.4 step 5: one unit per cell. The
+/// blue tank is parked in the red one's way and nobody is driving it; the
+/// landing's search (the search reads the ground and the avoid list, never
+/// the index) routes through (5, 8), motion refuses the crossing `Occupied`,
+/// the hold matures into one `blocked` line, `Arena::note_blocked` remembers
+/// the cell and clears the route and the search stamp, and the next
+/// `MotorTick` (the reflex's own stagger slot, within `decide_ms`) searches
+/// round it: one stop at (5, 8), a second search, and on to `west` at (1, 8)
+/// — cell 2, under `ARRIVE_CELLS`. The reflex's `state == Patrol` is dropped:
+/// the goal is the script's.
+#[test]
+fn m44a_a_hull_stopped_by_a_parked_one_learns_the_cell_and_goes_round_it() {
+    use tacsim::arena::state::Controller;
+
+    let mut arena = rig::arena_of(
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::BLUE,
+                Team::Blue,
+                rig::centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[rig::BLUE],
+    );
+    arena.mind_runner = m44a_script(rig::RED, &[(1, vec![m44a_goal(1, 8)])]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let west_most = m44a_drive(&mut arena, 30_000, 500, &mut bytes, &mut counters);
+    let log = rig::events(&mut arena, &mut bytes);
+    assert!(
+        rig::blocked_at(&log, rig::RED, (5, 8)) <= 2,
+        "one obstacle is one stop, not a stop every pulse: {} stops at (5, 8)",
+        rig::blocked_at(&log, rig::RED, (5, 8))
+    );
+    assert!(
+        counters.path_queries >= 2,
+        "it searched again after the stop: {counters:?}"
+    );
+    assert!(
+        west_most < 3_000,
+        "it went round the parked tank and on to `west` at (1, 8), which `ARRIVE_CELLS` \
+         makes cell 2: west-most {west_most} cm"
+    );
+}
+
+/// **A stop and a shove are both re-planned within one decide tick** at the
+/// *shipped* `repath_ms` (16b cut Q.7; `tests/reflex.rs`'
+/// `a_stop_and_a_shove_are_both_re_planned_within_one_decide_tick`, moved
+/// here by 17b cut M4.4), which is the clearing of `searched_ms` and nothing
+/// else. Every other test of the family runs at `repath_ms` 0, where a
+/// route-empty drive searches whether or not anything cleared the stamp, so
+/// none of them can see the clearing; this one runs at the shipped four
+/// seconds, where the damper is real. Both clearing sites are the motor's:
+/// (a) the stop, through `Arena::note_blocked`'s `Occupied` arm; (b) the
+/// shove, through `Arena::follow`'s wandered-off branch — a hull moved four
+/// cells off its route holds a route whose next cell is not a neighbour and
+/// says so at once. The `MotorTick` cadence is `decide_ms` on the stagger
+/// grid, so "within one decide tick" is the same bound it was.
+#[test]
+fn m44a_a_stop_and_a_shove_are_both_re_planned_within_one_decide_tick() {
+    use tacsim::arena::state::Controller;
+
+    const DECIDE_MS: i64 = 500;
+    let cfg = rig::arena_cfg(tacsim::config::ReflexConfig {
+        decide_ms: 500,
+        repath_ms: 4_000,
+        ..tacsim::config::ReflexConfig::default()
+    });
+    let mut arena = rig::arena_of(
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::BLUE,
+                Team::Blue,
+                rig::centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &cfg,
+        &[rig::BLUE],
+    );
+    arena.mind_runner = m44a_script(rig::RED, &[(1, vec![m44a_goal(1, 8)])]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let searched = |arena: &Arena| arena.motors.row(rig::RED).and_then(|row| row.searched_ms);
+
+    // (a) the stop. The stamp the stop threw away is read from the pulse
+    // before it, because `Arena::note_blocked` is applied ahead of the due
+    // loop and the very substep that stopped the hull may already carry the
+    // tick that re-plans it.
+    let mut wall_ms = 0_i64;
+    let mut held = searched(&arena);
+    let mut learned_at: Option<i64> = None;
+    let mut spent: Option<i64> = None;
+    let mut replanned: Option<i64> = None;
+    while arena.now_ms < 30_000 {
+        let before = held;
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        wall_ms += 100;
+        held = searched(&arena);
+        if learned_at.is_none() && !rig::avoided(&arena, rig::RED).is_empty() {
+            learned_at = Some(arena.now_ms);
+            spent = before;
+        }
+        if learned_at.is_some() && held.is_some() && held != spent {
+            replanned = held;
+            break;
+        }
+    }
+    let learned = learned_at.expect("the parked tank stopped it");
+    assert!(
+        spent.is_some(),
+        "it was following a route it had searched for"
+    );
+    let replanned = replanned.expect("it never searched again");
+    assert!(
+        replanned - learned <= DECIDE_MS,
+        "the re-plan is the next tick and not the next `repath_ms` ({} ms): \
+         stopped at {learned} ms, searched at {replanned} ms",
+        cfg.reflex.repath_ms
+    );
+
+    // (b) the shove. It holds a fresh route now; four cells north of it is a
+    // route whose next cell is nobody's neighbour.
+    let stamp = searched(&arena);
+    assert_eq!(
+        stamp,
+        Some(replanned),
+        "it holds the search it just paid for"
+    );
+    assert!(
+        arena
+            .motors
+            .row(rig::RED)
+            .is_some_and(|row| !row.route.is_empty()),
+        "and the route that came out of it"
+    );
+    if let Some(state) = arena.unit_mut(rig::RED) {
+        state.pose = rig::centre(6, 12);
+    }
+    let shoved_at = arena.now_ms;
+    let mut re_searched: Option<i64> = None;
+    while arena.now_ms < shoved_at + 3_000 {
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        wall_ms += 100;
+        if searched(&arena) != stamp && searched(&arena).is_some() {
+            re_searched = Some(arena.now_ms);
+            break;
+        }
+    }
+    let re_searched = re_searched.expect("a shoved tank never asked for a new route");
+    assert!(
+        re_searched - shoved_at <= DECIDE_MS,
+        "a tank pushed off its route re-plans on its next tick and not in \
+         {}: shoved at {shoved_at} ms, searched at {re_searched} ms",
+        cfg.reflex.repath_ms
+    );
+}
+
+/// **The band with two gaps and a wreck in the nearer one**, a mind's hull
+/// scripted to `west` (`tests/reflex.rs`' `wreck_detour`, moved here by 17b
+/// cut M4.4): a band down column 4 with gaps at rows 8 and 2, the red hull on
+/// row 8 and a wreck — a pilot's hull, wrecked by hand — standing in the gap
+/// in front of it; `Goal(Cell (1, 8))` at the first online think, the tempo
+/// pinned `Quiet` so replays of it differ in cadence and in nothing else.
+fn m44a_wreck_detour() -> Arena {
+    use tacsim::arena::state::{Controller, TerrainCell};
+
+    let band: Vec<(u16, u16, TerrainCell)> = (0..rig::SIDE)
+        .filter(|y| *y != 8 && *y != 2)
+        .map(|y| (4_u16, y, rig::wall()))
+        .collect();
+    let mut arena = rig::arena_of(
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::RED2,
+                Team::Red,
+                rig::centre(4, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &band,
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[],
+    );
+    rig::wreck_it(&mut arena, rig::RED2);
+    arena.mind_runner = m44a_script(rig::RED, &[(1, vec![m44a_goal(1, 8)])]);
+    arena
+        .clock
+        .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+    arena
+}
+
+/// **A wreck in the causeway is learned and the other gap is taken** (16b cut
+/// Q.7; `tests/reflex.rs`'
+/// `a_wreck_in_the_causeway_is_learned_and_the_other_gap_is_taken`, moved
+/// here by 17b cut M4.4). The shorter way is through the gap in front of the
+/// hull, which a wreck is standing in: the first route goes through (4, 8),
+/// one `Occupied` refusal matures into one stop, `Arena::note_blocked`
+/// learns the cell, and the re-search avoids it and plans via (4, 2) — one
+/// stop at (4, 8), and through the other gap before arrival drops the goal.
+#[test]
+fn m44a_a_wreck_in_the_causeway_is_learned_and_the_other_gap_is_taken() {
+    let mut arena = m44a_wreck_detour();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let west_most = m44a_drive(&mut arena, 60_000, 500, &mut bytes, &mut counters);
+    let log = rig::events(&mut arena, &mut bytes);
+    assert!(
+        rig::blocked_at(&log, rig::RED, (4, 8)) <= 2,
+        "one wreck is one stop: {} stops at (4, 8)",
+        rig::blocked_at(&log, rig::RED, (4, 8))
+    );
+    assert!(
+        west_most < 4_000,
+        "it is through the other gap: west-most {west_most} cm"
+    );
+}
+
+/// **The avoided cells survive a goal that moves every think** (16b cut Q.7's
+/// "entries age, never cleared on goal change", `MotorRow::avoid`;
+/// `tests/reflex.rs`'
+/// `the_avoided_cells_survive_an_approach_whose_goal_moves_every_tick`, moved
+/// here by 17b cut M4.4). The case the owner hit: the reflex's `Approach`
+/// recomputed its goal from the contact's plot at every tick, so a list
+/// cleared on a goal change would be empty again about once a second and the
+/// hull would drive back into the wreck it had just learned about, for ever.
+/// Here the goal moves every think — the script alternates `Goal(Cell (12,
+/// 8))` and `Goal(Cell (13, 8))`, two cells beyond the wreck at (7, 8) on the
+/// hull's own row — and each landing clears the route and the remembered
+/// stop (`land_goal`) and re-searches (`repath_ms` 0) with the avoid list
+/// kept: the wreck's cell is remembered, and the hull gets past it rather
+/// than queueing behind it. The reflex's `Approach` assertion is dropped —
+/// the goal is the script's, the hull is unarmed.
+#[test]
+fn m44a_the_avoided_cells_survive_a_goal_that_moves_every_think() {
+    use tacsim::arena::state::Controller;
+
+    let mut arena = rig::arena_of(
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::RED2,
+                Team::Red,
+                rig::centre(7, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[],
+    );
+    rig::wreck_it(&mut arena, rig::RED2);
+    let lines: Vec<(u64, Vec<tacsim::arena::intents::IntentKind>)> = (1..=24)
+        .map(|think| {
+            (
+                think,
+                vec![m44a_goal(if think % 2 == 1 { 12 } else { 13 }, 8)],
+            )
+        })
+        .collect();
+    arena.mind_runner = m44a_script(rig::RED, &lines);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut ever_avoided = false;
+    while arena.now_ms < 25_000 {
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        ever_avoided |= !rig::avoided(&arena, rig::RED).is_empty();
+        wall_ms += 500;
+    }
+    assert!(
+        ever_avoided,
+        "the wreck's cell was never remembered at all, so nothing was proved"
+    );
+    assert!(
+        arena
+            .unit(rig::RED)
+            .is_some_and(|unit| unit.pose.x_cm > 7_999),
+        "it got past the wreck rather than queueing behind it: {:?}",
+        arena.unit(rig::RED).map(|unit| unit.pose.x_cm)
+    );
+}
+
+/// **A remembered stop ages out and the cell is planned through again** (16b
+/// cut Q.7; `tests/reflex.rs`'
+/// `a_remembered_stop_ages_out_and_the_cell_is_planned_through_again`, moved
+/// here by 17b cut M4.4). The real stop against the parked tank learns (5,
+/// 8); the blocker leaves, and `REFLEX_AVOID_TTL_MS` plus two seconds of
+/// arena time pass: the entry has aged out (`MotorRow::age_avoid`, run at
+/// every `MotorTick` and at every landing's drive), so the search may use the
+/// cell again — what stops a wreck that has been cleared from being a
+/// permanent hole in the map. The script keeps a goal STANDING across the
+/// thirty seconds — `Goal(Cell (1, 8))` through think 8, then `Goal(Cell (14,
+/// 8))` and `Goal(Cell (1, 8))` alternately every think — because under
+/// `Fallback::Notice` arrival drops a mind's goal and the `MotorTick` cadence
+/// with it, and only the drive's sweep ages the list; the reflex's `Patrol`
+/// walk kept a goal of its own.
+#[test]
+fn m44a_a_remembered_stop_ages_out_and_the_cell_is_planned_through_again() {
+    use tacsim::arena::motor::REFLEX_AVOID_TTL_MS;
+    use tacsim::arena::state::Controller;
+
+    let mut arena = rig::arena_of(
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::BLUE,
+                Team::Blue,
+                rig::centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[rig::BLUE],
+    );
+    let lines: Vec<(u64, Vec<tacsim::arena::intents::IntentKind>)> = (1..=45)
+        .map(|think| {
+            let x = if think <= 8 || think % 2 == 1 { 1 } else { 14 };
+            (think, vec![m44a_goal(x, 8)])
+        })
+        .collect();
+    arena.mind_runner = m44a_script(rig::RED, &lines);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut learned: Option<(u16, u16)> = None;
+    // The reflex fixture's sixteen pulses, and two for the 750 ms by which the
+    // goal's landing (1,732) is later than the reflex's first tick (982).
+    for _ in 0..18 {
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        if let Some(cell) = rig::avoided(&arena, rig::RED).first().copied() {
+            learned = Some(cell);
+            break;
+        }
+        wall_ms += 500;
+    }
+    assert_eq!(learned, Some((5, 8)), "the cell it could not enter");
+    // The blocker leaves, and thirty seconds of arena time pass.
+    if let Some(state) = arena.unit_mut(rig::BLUE) {
+        state.pose = rig::centre(15, 15);
+    }
+    let at = arena.now_ms;
+    let mut counters = ReflexCounters::default();
+    let _ = m44a_drive(
+        &mut arena,
+        at + REFLEX_AVOID_TTL_MS + 2_000,
+        500,
+        &mut bytes,
+        &mut counters,
+    );
+    assert!(
+        rig::avoided(&arena, rig::RED).is_empty(),
+        "the entry should have aged out at {REFLEX_AVOID_TTL_MS} ms: {:?}",
+        rig::avoided(&arena, rig::RED)
+    );
+}
+
+/// **A hull still held against a wreck past the TTL still avoids its cell**
+/// (16b cut M.3, 16c `T-04`, `B-43`'s guarantee under the one-edge rule;
+/// `tests/reflex.rs`'
+/// `m3_a_machine_held_against_a_wreck_past_the_ttl_still_avoids_its_cell`,
+/// moved here by 17b cut M4.4). The `blocked` line and `Arena::note_blocked`
+/// fire once per edge, so the stamp refresh a pinned hull used to get from
+/// every re-collision is gone; the drive refreshes the stamp off
+/// `UnitState::held` instead (`Arena::refresh_held_avoid`, step 1 of
+/// `Arena::motor_step`), before its TTL sweep (step 2). The two halves differ
+/// in nothing but `held`, set by hand to the value motion leaves a unit
+/// pinned against an occupied cell with, and the drive runs at its own
+/// arena millisecond past the TTL.
+///
+/// The drive is a mind hull's today and reached through `Arena::step`: the
+/// stop is planted on the row at nought as the reflex fixture planted it
+/// (`MotorTable::ensure`, the door a controller takes a hull over through,
+/// then `Arena::note_blocked`); think 29's orders (landing at 29,732) push
+/// the hull west at the wreck, so motion's parked clause — which clears
+/// `held` of a hull ordered nowhere, every substep — leaves the hand-set
+/// condition as it finds it (a push toward the held cell inside its own cell
+/// is no clear, `motion::moved_away`), and think 30's `Goal(Cell (1, 8))`
+/// lands at 30,732, `REFLEX_AVOID_TTL_MS` + 732 after the stop, where the
+/// landing runs the drive (D-UM-10) whose step 1 reads `held` and whose step
+/// 2 sweeps. The held hull's stamp is the landing's own millisecond; the
+/// other's entry is gone. The goal held afterwards is the kernel's
+/// precondition met and the drive run (its route is the search's, which the
+/// stamp read before the sweep).
+#[test]
+fn m44a_a_hull_held_against_a_wreck_past_the_ttl_still_avoids_its_cell() {
+    use tacsim::arena::intents::IntentKind;
+    use tacsim::arena::motion::Held;
+    use tacsim::arena::motor::REFLEX_AVOID_TTL_MS;
+    use tacsim::arena::state::Controller;
+
+    let wreck_cell = (5_u16, 8_u16);
+    for still_held in [true, false] {
+        let mut arena = rig::arena_of(
+            vec![
+                rig::tank(
+                    rig::RED,
+                    Team::Red,
+                    rig::centre(6, 8),
+                    Vec::new(),
+                    Controller::Mind,
+                ),
+                // A same-side pilot's hull, wrecked by hand (the reflex
+                // fixture wrecked the blue one, and never stepped the arena:
+                // stepped, a side with no hull left ends the match).
+                rig::tank(
+                    rig::RED2,
+                    Team::Red,
+                    rig::centre(wreck_cell.0, wreck_cell.1),
+                    Vec::new(),
+                    Controller::Pilot,
+                ),
+            ],
+            &[],
+            &rig::arena_cfg(rig::reflex_cfg()),
+            &[],
+        );
+        rig::wreck_it(&mut arena, rig::RED2);
+        let push = vec![
+            IntentKind::Heading { mdeg: 270_000 },
+            IntentKind::Speed { cms: 1_000 },
+        ];
+        arena.mind_runner = m44a_script(rig::RED, &[(29, push), (30, vec![m44a_goal(1, 8)])]);
+        let stopped_at = arena.now_ms;
+        arena.motors.ensure(rig::RED);
+        arena.note_blocked(rig::RED, wreck_cell, BlockedCause::Occupied, stopped_at);
+        assert_eq!(
+            rig::avoided(&arena, rig::RED),
+            vec![wreck_cell],
+            "the stop's own edge"
+        );
+        let tick_at = m44a_lands_at(&arena, rig::RED, 30);
+        assert!(
+            tick_at > stopped_at + REFLEX_AVOID_TTL_MS,
+            "the drive at {tick_at} ms is past the TTL"
+        );
+        let substep = arena.substep_len_ms();
+        let before = tick_at - tick_at.rem_euclid(substep);
+        let mut wall = 0_i64;
+        while arena.now_ms < before {
+            let out = arena.step_settled(wall, &[], &[]);
+            assert!(out.ended.is_none(), "the match ended at {}", arena.now_ms);
+            wall += 500;
+        }
+        assert_eq!(arena.now_ms, before, "the substep before the drive's");
+        let unit = arena.unit(rig::RED).expect("the hull");
+        assert_eq!(
+            arena.definition.terrain.cell_of(&unit.pose),
+            Some((6, 8)),
+            "pushing at the wreck from its own cell"
+        );
+        assert!(unit.desired_speed_cms > 0, "ordered on, so not parked");
+        assert_eq!(unit.held, None, "no condition of its own yet");
+        if let Some(unit) = arena.unit_mut(rig::RED) {
+            unit.held = still_held.then_some(Held {
+                x: wreck_cell.0,
+                y: wreck_cell.1,
+                cause: BlockedCause::Occupied,
+            });
+        }
+        let _ = arena.step_settled(before + substep, &[], &[]);
+        assert_eq!(arena.now_ms, before + substep, "the drive's substep");
+        assert_eq!(
+            rig::motor(&arena, rig::RED).goal,
+            Some((1, 8)),
+            "the goal landed and the drive ran under it"
+        );
+        let stamps: Vec<((u16, u16), i64)> = arena
+            .motors
+            .row(rig::RED)
+            .map(|row| row.avoid.clone())
+            .unwrap_or_default();
+        if still_held {
+            assert_eq!(
+                stamps,
+                vec![(wreck_cell, tick_at)],
+                "a hull still pushing at the wreck forgot it"
+            );
+        } else {
+            assert!(
+                stamps.is_empty(),
+                "a hull no longer held against the wreck kept it past the TTL: {stamps:?}"
+            );
+        }
+    }
+}
+
+/// **The follower holds rather than drive at a bluff** (16b cut Q.7, closing
+/// 16b cut X.6's deviation 13; `tests/reflex.rs`'
+/// `the_follower_holds_rather_than_drive_at_a_bluff`'s motor half, moved
+/// here by 17b cut M4.4 — its controller half, "a tank with nothing to fire
+/// withdraws", is `tests/reflex.rs`'
+/// `t1_a_dry_hull_withdraws_to_its_entry_zone`). With no route and no search
+/// this drive, the follower used to aim at the **goal**, which on relief is
+/// a direction and not a way: the hull drove at the bluff, motion refused the
+/// edge, and the whole thing happened again at the next tick. The window has
+/// no waypoint graph and the goal — `Goal(Cell (0, 8))`, the entry zone the
+/// dry reflex machine withdrew to — is the far side of a bluff down column 4;
+/// the search is held DEFERRED (`max_path_queries` 0: `MotorTable::may_search`
+/// refuses every drive, `path_deferred` counts it) so the routeless steer
+/// (`Arena::follow` step 5) and the one-cell test every substep
+/// (`Arena::hold_routeless`) are the only thing between the hull and the
+/// cliff — where the reflex's fallback kept a goal a failed search could not
+/// reach, a mind's goal would be dropped by `Fallback::Notice` and the hull
+/// stopped where it stood. It walks up to the last cell it can enter, (5, 8),
+/// and waits there for a route rather than pushing: no `blocked` line, speed
+/// nought ordered, the goal still held.
+#[test]
+fn m44a_the_follower_holds_rather_than_drive_at_a_bluff() {
+    use tacsim::arena::state::{Controller, TerrainCell, Waypoints};
+
+    let bluff_wall: Vec<(u16, u16, TerrainCell)> =
+        (0..rig::SIDE).map(|y| (4_u16, y, rig::bluff())).collect();
+    let cfg = rig::arena_cfg(tacsim::config::ReflexConfig {
+        max_path_queries: 0,
+        ..rig::reflex_cfg()
+    });
+    let mut arena = rig::arena_on(
+        rig::definition_with(&bluff_wall, Waypoints::new(Vec::new(), &[])),
+        vec![rig::tank(
+            rig::RED,
+            Team::Red,
+            rig::centre(6, 8),
+            Vec::new(),
+            Controller::Mind,
+        )],
+        &cfg,
+        &[],
+    );
+    if let Some(state) = arena.unit_mut(rig::RED) {
+        // The stock locomotion's own limit; the rig's hand-made unit declares
+        // no mobility, so it is written on here rather than read off a spec.
+        state.slope_limit_pct = Some(30);
+    }
+    arena.mind_runner = m44a_script(rig::RED, &[(1, vec![m44a_goal(0, 8)])]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let _ = m44a_drive(&mut arena, 30_000, 500, &mut bytes, &mut counters);
+    assert_eq!(
+        counters.path_queries, 0,
+        "no search was ever spent: {counters:?}"
+    );
+    assert!(
+        counters.path_deferred > 0,
+        "every drive asked and was deferred: {counters:?}"
+    );
+    assert_eq!(
+        rig::motor(&arena, rig::RED).goal,
+        Some((0, 8)),
+        "the goal stands: nothing failed a search for it"
+    );
+    let log = rig::events(&mut arena, &mut bytes);
+    assert_eq!(
+        rig::count(&log, "blocked"),
+        0,
+        "it never drove at the bluff, so motion never refused it an edge"
+    );
+    let cell = arena
+        .unit(rig::RED)
+        .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose));
+    assert_eq!(
+        cell,
+        Some((5, 8)),
+        "it walked up to the last cell it could enter and stopped there"
+    );
+    assert_eq!(
+        arena.unit(rig::RED).map(|unit| unit.desired_speed_cms),
+        Some(0),
+        "and it is waiting for a route rather than pushing"
+    );
+}
+
+/// What one replay of [`m44a_wreck_detour`] produced: the event list, the
+/// per-substep hash sequence, the finals — where each hull is, how fast, and
+/// the goal its motor holds; the reflex's state column dropped, the goal
+/// being the script's — and how many pulses it took (three cadences really
+/// are three different numbers of pulses, so an equality of the three is a
+/// property and not three copies of one run).
+struct M44aReplay {
+    events: Vec<(i64, String, u64)>,
+    hashes: Vec<u64>,
+    finals: Vec<M44aFinal>,
+    pulses: u32,
+}
+
+/// A hull's end in an [`M44aReplay`]: id, pose, heading, speed and goal.
+type M44aFinal = (ObjId, i64, i64, u32, i32, Option<(u16, u16)>);
+
+/// [`m44a_wreck_detour`] replayed at `cadence_ms` until `until_ms`, settled
+/// between pulses.
+fn m44a_replay(cadence_ms: i64, until_ms: i64) -> M44aReplay {
+    let mut arena = m44a_wreck_detour();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut pulses = 0_u32;
+    loop {
+        let out = arena.step_settled(wall, &[], &[]);
+        pulses = pulses.saturating_add(1);
+        rig::absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = rig::events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let finals = arena
+        .units
+        .iter()
+        .map(|unit| {
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                rig::motor(&arena, unit.id).goal,
+            )
+        })
+        .collect();
+    M44aReplay {
+        events,
+        hashes,
+        finals,
+        pulses,
+    }
+}
+
+/// **The wreck detour is one event list and one hash sequence at three
+/// cadences** (16b cut Q.7's cross-tempo property, 16b §11 mandatory;
+/// `tests/reflex.rs`'
+/// `the_wreck_detour_is_one_event_list_and_one_hash_sequence_at_three_cadences`,
+/// moved here by 17b cut M4.4 in
+/// [`m1a4_a_piloted_drive_drives_to_the_cell_at_three_cadences`]' shape).
+/// From ONE scripted goal, `Arena::note_blocked` and the hull's own
+/// `MotorTick` re-search reproduce the stop, the learned cell and the other
+/// gap, and the replay at 5,000, 1,000 and 500 ms is one event list (with a
+/// `blocked` line in it), one per-substep hash sequence and one set of finals.
+#[test]
+fn m44a_the_wreck_detour_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let runs: Vec<M44aReplay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| m44a_replay(cadence, 40_000))
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    assert!(
+        kinds.iter().any(|kind| kind.contains("blocked")),
+        "the replay never hit the wreck, so nothing was compared: {kinds:?}"
+    );
+    assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+    assert!(
+        runs.windows(2).all(|pair| pair[0].pulses < pair[1].pulses),
+        "three cadences, three pulse counts"
+    );
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+/// **What one run of [`m44a_wreck_detour`] did** (16b cut E.3 gave it a third
+/// field): every cell the hull remembered being stopped at, sorted; the
+/// west-most centimetre it reached; and the arena millisecond the hold
+/// against the wreck opened at and the one the stop it matured into was
+/// journalled at.
+struct M44aDetour {
+    avoided: Vec<(u16, u16)>,
+    west_most: i64,
+    matured: Option<(i64, i64)>,
+}
+
+/// The hold is read at each pulse boundary, which is coarser than the substep
+/// it opens on; that is enough, because a hold lives two seconds and every
+/// pulse here is under six hundred milliseconds, so the reading taken before
+/// the stop is the hold that matured into it.
+fn m44a_avoided_and_arrival(cadence_ms: i64) -> M44aDetour {
+    let mut arena = m44a_wreck_detour();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut seen: Vec<(u16, u16)> = Vec::new();
+    let mut west_most = i64::MAX;
+    let mut holds: Vec<(i64, i64)> = Vec::new();
+    while arena.now_ms < 40_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        for cell in rig::avoided(&arena, rig::RED) {
+            if !seen.contains(&cell) {
+                seen.push(cell);
+            }
+        }
+        if let Some(hold) = arena.unit(rig::RED).and_then(|unit| unit.occupied_hold) {
+            holds.push((arena.now_ms, hold.since_ms));
+        }
+        west_most = west_most.min(arena.unit(rig::RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        wall += cadence_ms;
+    }
+    let log = rig::events(&mut arena, &mut bytes);
+    let stopped_at = log
+        .iter()
+        .find(|event| {
+            matches!(
+                event.kind,
+                tacsim::arena::ledger::EventKind::Blocked { unit, .. } if unit == rig::RED
+            )
+        })
+        .map(|event| event.t_ms);
+    let matured = stopped_at.and_then(|at| {
+        holds
+            .iter()
+            .rfind(|(read_at, _)| *read_at <= at)
+            .map(|(_, since_ms)| (*since_ms, at))
+    });
+    seen.sort_unstable();
+    M44aDetour {
+        avoided: seen,
+        west_most,
+        matured,
+    }
+}
+
+/// **A ragged partition reaches the same place with the same avoided cells**
+/// (16b cut Q.6 and Q.7, 16b cut E.3's hold maturity; `tests/reflex.rs`'
+/// `a_ragged_partition_reaches_the_same_place_with_the_same_avoided_cells`,
+/// moved here by 17b cut M4.4). 370 ms is not a whole multiple of the 250 ms
+/// substep, so the substep boundaries fall elsewhere and every event
+/// timestamp moves with them: the event list, the hash sequence and the
+/// exact pose are NOT the same (16b cut Q.6 says why). What the model does
+/// promise is the OUTCOME — the hull learns the same cell, goes round the
+/// same wreck and gets through the same causeway — and that a traffic hold's
+/// stop is not early and is inside one substep of its due time: the hold
+/// opens at a substep boundary and matures at the first boundary at or after
+/// `since_ms + occupied_stop_ms`, so under a 370 ms pulse the stamp moves with
+/// the partition exactly as every other timestamp does. The scripted thinks
+/// sit on the absolute lattice; their landing moves with the partition as
+/// the hold's stamp does, and every read here is the motor's and motion's.
+#[test]
+fn m44a_a_ragged_partition_reaches_the_same_place_with_the_same_avoided_cells() {
+    let regular = m44a_avoided_and_arrival(500);
+    let ragged = m44a_avoided_and_arrival(370);
+    assert!(
+        !regular.avoided.is_empty(),
+        "nothing was avoided, so nothing was compared"
+    );
+    assert_eq!(
+        regular.avoided, ragged.avoided,
+        "the set of avoided cells moved with the partition"
+    );
+    assert!(
+        regular.west_most < 4_000 && ragged.west_most < 4_000,
+        "both runs are through the causeway: {} cm regular, {} cm ragged",
+        regular.west_most,
+        ragged.west_most
+    );
+    for (what, run) in [("regular", regular.matured), ("ragged", ragged.matured)] {
+        let (since_ms, stopped_at) =
+            run.unwrap_or_else(|| panic!("the {what} run never matured a hold into a stop"));
+        let due = since_ms + 2_000;
+        assert!(
+            stopped_at >= due,
+            "the {what} run stopped at {stopped_at} ms, before the hold opened at {since_ms} ms \
+             was due at {due} ms"
+        );
+        assert!(
+            stopped_at - due < 250,
+            "the {what} run stopped {} ms past its due time, which is more than one substep",
+            stopped_at - due
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M4.4 — motor family B (ford, column, brake, routeless)
+// ---------------------------------------------------------------------------
+//
+// The reflex fixtures of `tests/reflex.rs`' 16b cut E.3 driving family and
+// the endgame's one-cell hold, every edge of which is the motor's or
+// motion's — the traffic hold and its maturity (`motion.rs`'
+// `occupied_hold`), the `blocked` line (`step.rs`), `Arena::note_blocked`,
+// `Arena::hold_routeless` and `Arena::first_step_is_open`,
+// `MotorRow::age_avoid`, `braking_speed_cms` and `Arena::follow` — moved
+// here by 17b cut M4.4 onto the sixteen-cell rig (`support::rig`) with
+// every hull a `Controller::Mind`'s, flown by a scripted mind
+// (`support::scripted::ScriptedMind`) whose goals land at the reflex's own
+// milliseconds: think `n` at `think_at(unit, n)` (`stagger_ms(SEED, unit,
+// 1_000) + n × 1_000`), its answer landing one substep (250 ms) on and
+// driven there (`Arena::motor_step` at the landing, D-UM-10), then the
+// hull's own `MotorTick` every `decide_ms` on the stagger grid — the reflex
+// tick's own slots. Every script is `Startup` at think 0 and the goal at
+// think 1, the first online think (`RED`'s `Startup` lands at 732, the hull
+// is online at 1,232 and the goal lands at 1,732; the reflex machine on the
+// same hull set its first goal at its tick 982 ms in). Each window below is
+// the reflex fixture's own; the constants that moved with the cadence are
+// named in the test that moved them, and none of the claims did.
+
+/// A hull's later thinks: `(think, intents)` lines after the family's two.
+type M44bLater = Vec<(u64, Vec<tacsim::arena::intents::IntentKind>)>;
+
+/// One scripted goal cell.
+fn m44b_goal(x: u16, y: u16) -> tacsim::arena::intents::IntentKind {
+    tacsim::arena::intents::IntentKind::Goal(tacsim::arena::intents::MotorGoal::Cell { x, y })
+}
+
+/// **The family's script**: on every hull `units` names, `Startup` at think
+/// 0 and `Goal(Cell (1, 8))` — the `west` node, the reflex machine's first
+/// `Patrol` goal on every window of the family — at think 1, then the hull's
+/// own later thinks.
+fn m44b_west_script(
+    units: &[(ObjId, M44bLater)],
+) -> std::sync::Arc<support::scripted::ScriptedMind> {
+    use support::scripted::{Says, says};
+    use tacsim::arena::intents::IntentKind;
+
+    let script: Vec<(ObjId, Vec<Says>)> = units
+        .iter()
+        .map(|(unit, later)| {
+            let mut lines = vec![
+                says(0, vec![IntentKind::Startup]),
+                says(1, vec![m44b_goal(1, 8)]),
+            ];
+            for (think, intents) in later {
+                lines.push(says(*think, intents.clone()));
+            }
+            (*unit, lines)
+        })
+        .collect();
+    support::scripted::ScriptedMind::new(&script)
+}
+
+/// The millisecond `unit`'s think `n` lands at — its answer driven there.
+fn m44b_lands_at(arena: &Arena, unit: ObjId, n: u64) -> i64 {
+    support::scripted::think_at(unit, i64::try_from(n).unwrap_or(0)) + arena.substep_len_ms()
+}
+
+/// **The script, with Standard Doctrine's one rule for the `unreachable`
+/// edge over it**: a think whose view carries the motor's `drive_no_route`
+/// notice answers `Goal(Cell (1, 8))` again — `stock_mind.rs`' departure
+/// (i): a mind's goal is dropped with the notice (`Fallback::Notice`), the
+/// stock mind reads `held = None` off it and pushes the fallback waypoint as
+/// the next goal at that think, where the reflex machine's `Patrol` fell
+/// back inside the tick (`Fallback::Waypoint`) and re-derived the same node
+/// at its next. The column fixtures need it: a stop in the one-cell-wide
+/// corridor puts the cell ahead on the hull's list, the re-search finds no
+/// way round it until the entry ages off, and a hull whose goal was dropped
+/// for good would stand in the ford for the rest of the run where the reflex
+/// machine (and Standard Doctrine) asked again every tick and drove on at
+/// the TTL. A think the script answers is answered as scripted.
+#[derive(Debug)]
+struct M44bPersistent {
+    inner: std::sync::Arc<support::scripted::ScriptedMind>,
+}
+
+impl tacsim::arena::mind::MindRunner for M44bPersistent {
+    fn think(&self, job: &tacsim::arena::mind::ThinkJob<'_>) -> tacsim::arena::mind::ThinkResult {
+        use tacsim::arena::perception::{DriveOutcome, FrameNotice};
+
+        let mut result = self.inner.think(job);
+        let no_route = job.view.notices.iter().any(|notice| {
+            matches!(
+                notice,
+                FrameNotice::Drive {
+                    outcome: DriveOutcome::NoRoute
+                }
+            )
+        });
+        if no_route && result.intents.is_empty() {
+            result.intents.push(m44b_goal(1, 8));
+        }
+        result
+    }
+}
+
+/// **A one-cell-wide causeway** (`tests/reflex.rs`' `causeway`): walls over
+/// columns 6 to 9 on every row but 8, so the only way west is a four-cell
+/// corridor a column has to file through — the ford of the shipped proving
+/// ground in fixture form, the one place every solo match crosses, and the
+/// one `B-46` is about.
+fn m44b_causeway() -> Vec<(u16, u16, tacsim::arena::state::TerrainCell)> {
+    (0..rig::SIDE)
+        .flat_map(|y| (6..10_u16).map(move |x| (x, y, rig::wall())))
+        .filter(|(_, y, _)| *y != 8)
+        .collect()
+}
+
+/// A window whose patrol graph is **one node** (`tests/reflex.rs`'
+/// `one_way_west`): the reflex machines on it all drove the same way rather
+/// than splitting at the nearest waypoint; the scripted minds here are
+/// handed that one node, and the window is kept as the fixture's.
+fn m44b_one_way_west(
+    paint: &[(u16, u16, tacsim::arena::state::TerrainCell)],
+) -> tacsim::arena::state::ArenaDefinition {
+    use tacsim::arena::state::{Waypoint, Waypoints};
+
+    rig::definition_with(
+        paint,
+        Waypoints::new(
+            vec![Waypoint {
+                id: smol_str::SmolStr::new("west"),
+                x: 1,
+                y: 8,
+            }],
+            &[],
+        ),
+    )
+}
+
+/// The machine `n` places behind the head of a [`m44b_column_of`].
+fn m44b_in_column(n: u16) -> ObjId {
+    ObjId(200 - u32::from(n))
+}
+
+/// **A column of `count` minds nose to tail on row 8, east of the causeway,
+/// with the lowest id at the REAR** (`tests/reflex.rs`' `column_of`) — the
+/// worst case for the release (16b cut E.3): units integrate in unit-id
+/// order, so a follower whose id sorts below its leader's integrates before
+/// the leader has moved and reaches a cell the leader is still standing in.
+/// Every hull is flown by [`m44b_west_script`] under [`M44bPersistent`];
+/// `head_later` is the head's own later thinks.
+fn m44b_column_of(
+    count: u16,
+    head_later: &[(u64, Vec<tacsim::arena::intents::IntentKind>)],
+) -> Arena {
+    use tacsim::arena::state::{Controller, CustodyUnit};
+
+    let units: Vec<CustodyUnit> = (0..count)
+        .map(|n| {
+            // `n` is the place in the column from the head: head at (10, 8),
+            // rear furthest east, and the id falls as the place rises.
+            rig::tank(
+                m44b_in_column(n),
+                Team::Red,
+                rig::centre(10 + n, 8),
+                Vec::new(),
+                Controller::Mind,
+            )
+        })
+        .collect();
+    let mut arena = rig::arena_on(
+        m44b_one_way_west(&m44b_causeway()),
+        units,
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[],
+    );
+    let script: Vec<(ObjId, M44bLater)> = (0..count)
+        .map(|n| {
+            (
+                m44b_in_column(n),
+                if n == 0 {
+                    head_later.to_vec()
+                } else {
+                    Vec::new()
+                },
+            )
+        })
+        .collect();
+    arena.mind_runner = std::sync::Arc::new(M44bPersistent {
+        inner: m44b_west_script(&script),
+    });
+    arena
+}
+
+/// **`B-46`: a follower at the ford is held and never stopped** (16b cut
+/// E.3; `tests/reflex.rs`'
+/// `a_follower_at_the_ford_is_held_and_journals_nothing`, moved here by 17b
+/// cut M4.4). Two minds nose to tail on the causeway, the follower with the
+/// lower id so that it integrates first and meets the cell its leader has
+/// not vacated. Before E.3 it was stopped dead at every cell of the
+/// corridor, journalled a `blocked` line for each, was told `Held: something
+/// is in the way.` and taught its own motor to avoid the cell its leader was
+/// about to leave. The hold (`motion.rs`' `occupied_hold`), the `blocked`
+/// line and `remember_avoid` read no controller: the same 500 ms loop and
+/// the same four claims — never stalled while the head was moving, no
+/// `blocked` line before the head arrived, nothing learned, and through the
+/// causeway at the end. The two goals land at the hulls' own think
+/// staggers (the head's at 1,656, the follower's at 2,170) where the reflex
+/// machines' first ticks spread them by their 500 ms stagger; the `rolling`
+/// latch tolerates either.
+#[test]
+fn m44b_a_follower_at_the_ford_is_held_and_journals_nothing() {
+    let mut arena = m44b_column_of(2, &[]);
+    let (head, follower) = (m44b_in_column(0), m44b_in_column(1));
+    assert!(follower.0 < head.0, "the follower must integrate first");
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut stalled: Vec<i64> = Vec::new();
+    let mut rolling = false;
+    let mut learned: Vec<(u16, u16)> = Vec::new();
+    // **The window is the crossing, and it ends when the head arrives**: once
+    // the head has stopped on the node they are both driving at, the follower
+    // is standing behind a machine that is not going to move again, and doc
+    // 16 §3.4 step 4's stop is exactly what it is owed. What the cut is about
+    // is the ford, not the destination.
+    let mut arrived_at: Option<i64> = None;
+    while arena.now_ms < 30_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        let head_speed = arena.unit(head).map_or(0, |unit| unit.speed_cms);
+        let follower_speed = arena.unit(follower).map_or(0, |unit| unit.speed_cms);
+        rolling |= follower_speed > 0;
+        if arrived_at.is_none() && arena.unit(head).is_some_and(|unit| unit.pose.x_cm < 3_000) {
+            arrived_at = Some(arena.now_ms);
+        }
+        if arrived_at.is_none() {
+            for cell in rig::avoided(&arena, follower) {
+                if !learned.contains(&cell) {
+                    learned.push(cell);
+                }
+            }
+            if rolling && head_speed > 0 && follower_speed == 0 {
+                stalled.push(arena.now_ms);
+            }
+        }
+        wall += 500;
+    }
+    let arrived_at = arrived_at.expect("the head crossed the causeway and reached its node");
+    let log = rig::events(&mut arena, &mut bytes);
+    assert!(
+        stalled.is_empty(),
+        "the follower lost its way while the leader was still moving, at {stalled:?} ms"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| event.kind.as_str() == "blocked" && event.t_ms <= arrived_at)
+            .count(),
+        0,
+        "a column that never stopped journalled a stop before the head arrived"
+    );
+    assert!(
+        learned.is_empty(),
+        "the follower learned to avoid a cell its own leader was standing in: {learned:?}"
+    );
+    assert!(
+        arena
+            .unit(follower)
+            .is_some_and(|unit| unit.pose.x_cm < 6_000),
+        "the follower never got through the causeway: {:?}",
+        arena.unit(follower).map(|unit| unit.pose.x_cm)
+    );
+}
+
+/// **The long column** (16b cut E.3, review E-04; `tests/reflex.rs`'
+/// `a_six_machine_column_files_through_the_ford_learning_nothing`, moved
+/// here by 17b cut M4.4): six minds nose to tail on the causeway, the lowest
+/// id at the rear, the head free to move. Two seconds of hold covers a
+/// release that travels rearward one substep per unit (motion's), and six is
+/// inside the shipped roster's twelve either way. Nothing is stopped,
+/// nothing is journalled and nobody learns a teammate's transient cell: the
+/// same loop and the same three claims, the six goals landing inside the
+/// half-second their think staggers span (1,656 to 2,170) where the reflex
+/// ticks spread them inside theirs.
+#[test]
+fn m44b_a_six_machine_column_files_through_the_ford_learning_nothing() {
+    let mut arena = m44b_column_of(6, &[]);
+    let ids: Vec<ObjId> = (0..6).map(m44b_in_column).collect();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut rolling = false;
+    let mut stalled: Vec<(i64, usize)> = Vec::new();
+    let mut arrived_at: Option<i64> = None;
+    while arena.now_ms < 60_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        let speeds: Vec<i32> = ids
+            .iter()
+            .map(|id| arena.unit(*id).map_or(0, |unit| unit.speed_cms))
+            .collect();
+        rolling |= speeds.iter().all(|speed| *speed > 0);
+        if arrived_at.is_none()
+            && arena
+                .unit(ids[0])
+                .is_some_and(|unit| unit.pose.x_cm < 3_000)
+        {
+            arrived_at = Some(arena.now_ms);
+        }
+        if rolling && arrived_at.is_none() {
+            for (place, speed) in speeds.iter().enumerate() {
+                if *speed == 0 {
+                    stalled.push((arena.now_ms, place));
+                }
+            }
+        }
+        wall += 500;
+    }
+    let arrived_at = arrived_at.expect("the head crossed the causeway and reached its node");
+    let log = rig::events(&mut arena, &mut bytes);
+    assert!(
+        stalled.is_empty(),
+        "machines in the column lost their way before the head arrived: {stalled:?}"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| event.kind.as_str() == "blocked" && event.t_ms <= arrived_at)
+            .count(),
+        0,
+        "the column journalled a stop before the head arrived"
+    );
+    // The corridor is (6, 8) to (9, 8) and the column's own cells are (10, 8)
+    // east: no machine ever learned one of them.
+    for id in &ids {
+        let learned = rig::avoided(&arena, *id);
+        assert!(
+            learned
+                .iter()
+                .all(|(x, y)| !(*y == 8 && (6..rig::SIDE).contains(x))),
+            "#{} learned a cell a teammate was standing in: {learned:?}",
+            id.0
+        );
+    }
+}
+
+/// The head's think nearest 8,000 — the column's head is `#200`, its thinks
+/// at 406 + n × 1,000, so think 8 at 8,406 — at which it answers
+/// `Goal(Hold)`: the goal dropped and a standstill ordered at the landing,
+/// 8,656.
+const M44B_PARK_THINK: u64 = 8;
+
+/// The head's think nearest 13,000 (13,406), at which it answers
+/// `Goal(Cell (1, 8))` again: the release, driven at the landing, 13,656.
+const M44B_RELEASE_THINK: u64 = 13;
+
+/// **The parked head, MEASURED and not asserted** (16b cut E.3, review
+/// E-04; `tests/reflex.rs`' `e3_a_parked_head_is_measured_and_reported`,
+/// moved here by 17b cut M4.4). The same six, with the head held where it
+/// stands for five seconds of arena time and then released. Two seconds of
+/// hold is clean for a column of up to eight being released; a column whose
+/// head is itself stopped for longer than that matures its tail into stops,
+/// and each of those teaches a teammate's transient cell for
+/// `REFLEX_AVOID_TTL_MS`. That is HEAD's behaviour delayed and made rare,
+/// not removed, and the three numbers this prints are the evidence for or
+/// against the second-stop rule 16b cut E.3 deliberately did not build.
+/// What moved: the reflex fixture parked the head by seating a pilot on it
+/// at 8,000 (`set_controller`, which 17b cut M4.6 retires) and ordering it
+/// `desired_speed 0` every pulse, then handed it back at 13,000; here the
+/// head's own mind answers `Goal(Hold)` at its think nearest 8,000 — a hold
+/// drops the goal and orders the standstill (`land_goal`) — and
+/// `Goal(Cell (1, 8))` at its think nearest 13,000, so the park and the
+/// release are the two landings ([`M44B_PARK_THINK`],
+/// [`M44B_RELEASE_THINK`]: 8,656 and 13,656), the head's think stagger plus
+/// a substep past the reflex fixture's round seconds. The printed numbers
+/// may shift with them — declared measured, not asserted.
+#[test]
+fn m44b_e3_a_parked_head_is_measured_and_reported() {
+    use tacsim::arena::intents::{IntentKind, MotorGoal};
+
+    let mut arena = m44b_column_of(
+        6,
+        &[
+            (M44B_PARK_THINK, vec![IntentKind::Goal(MotorGoal::Hold)]),
+            (M44B_RELEASE_THINK, vec![m44b_goal(1, 8)]),
+        ],
+    );
+    let ids: Vec<ObjId> = (0..6).map(m44b_in_column).collect();
+    let head = ids[0];
+    let parked_from = m44b_lands_at(&arena, head, M44B_PARK_THINK);
+    let released_at = m44b_lands_at(&arena, head, M44B_RELEASE_THINK);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    // The fixture's own guard: the hold landed — the head held no goal and
+    // was ordered a standstill between the park and the release.
+    let mut parked = false;
+    let mut through: Option<i64> = None;
+    // Every teammate's cell any of the six ever remembered, over the whole
+    // episode: the entries age out after `REFLEX_AVOID_TTL_MS`, so a reading
+    // taken at the end would under-count.
+    let mut taught: Vec<(ObjId, (u16, u16))> = Vec::new();
+    // (1) the column gets under way and files into the corridor; (2) the head
+    // stops where it stands for five seconds — a tank parked in the ford,
+    // which is longer than the hold and so compresses the column into real
+    // stops; (3) the release.
+    while arena.now_ms < released_at + 60_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        if arena.now_ms > parked_from && arena.now_ms <= released_at {
+            parked |= rig::motor(&arena, head).goal.is_none()
+                && arena
+                    .unit(head)
+                    .is_some_and(|unit| unit.desired_speed_cms == 0);
+        }
+        if arena.now_ms > released_at {
+            // Only while the release is still travelling down the column:
+            // past that the six converge on one node and queue at the
+            // destination, which is doc 16 §3.4 step 4 doing its job and not
+            // what this measures.
+            if arena.now_ms <= released_at + 10_000 {
+                for id in &ids {
+                    for cell in rig::avoided(&arena, *id) {
+                        if !taught.contains(&(*id, cell)) {
+                            taught.push((*id, cell));
+                        }
+                    }
+                }
+            }
+            if through.is_none()
+                && ids
+                    .iter()
+                    .all(|id| arena.unit(*id).is_some_and(|unit| unit.pose.x_cm < 6_000))
+            {
+                through = Some(arena.now_ms);
+            }
+        }
+        wall += 500;
+    }
+    let log = rig::events(&mut arena, &mut bytes);
+    let matured = log
+        .iter()
+        .filter(|event| {
+            event.kind.as_str() == "blocked"
+                && (parked_from..=released_at + 10_000).contains(&event.t_ms)
+        })
+        .count();
+    let learners: usize = ids
+        .iter()
+        .filter(|id| taught.iter().any(|(who, _)| who == *id))
+        .count();
+    println!(
+        "m44b_e3_parked_head: parked at {parked_from} ms, released at {released_at} ms; \
+         {matured} stops matured between the park and ten seconds past the release, \
+         {learners} of 6 machines learned a cell in that window ({taught:?}), the last was \
+         through {} ms after the release",
+        through.map_or(-1, |at| at - released_at)
+    );
+    assert!(
+        parked,
+        "the head's hold never landed, so nothing was measured"
+    );
+    assert!(
+        through.is_some(),
+        "the column never cleared the causeway after the release"
+    );
+}
+
+/// The think at which the ford fixture's mind turns the hull round for the
+/// `east` node, `Goal(Cell (14, 8))`: the first think after the hull let go
+/// of `west` on arrival (a mind's goal is dropped at arrival under
+/// `Fallback::Notice`, on the `MotorTick` that reads it) — measured on this
+/// run (the arrival is read at 20,500, on the tick at 20,482; think 20 is at
+/// 20,482, after the tick, its goal landing at 20,732) and guarded by the
+/// test. The reflex machine's `Patrol` turned round on the arriving tick
+/// itself; a mind's turnaround is the next landing.
+const M44B_FORD_EAST_THINK: u64 = 20;
+
+/// The think at which it turns back for `west`, `Goal(Cell (1, 8))`: the
+/// first think after the arrival at `east` — measured on this run (the
+/// arrival is read at 38,000, on the tick at 37,982; think 38 is at 38,482,
+/// landing 38,732) and guarded by the test. Its return pass through column
+/// 4 falls after the (4, 8) entry, stamped at the first stop (6,250), has
+/// aged off the list at 36,250: the second stop is at 50,250, where the
+/// reflex fixture measured 5,500 and 47,250.
+const M44B_FORD_WEST_THINK: u64 = 38;
+
+/// **`B-46` at a wreck**: the hull learns the cell two seconds later and
+/// takes the other gap, which is
+/// [`m44a_a_wreck_in_the_causeway_is_learned_and_the_other_gap_is_taken`]
+/// with the hold in front of it (16b cut E.3; `tests/reflex.rs`'
+/// `a_wreck_in_the_ford_is_held_against_for_two_seconds_and_then_learned`,
+/// moved here by 17b cut M4.4). The reflex machine's `Patrol` walked `west`,
+/// `east`, `west` inside the minute; the scripted mind lands the same three
+/// legs as goals — `west` at think 1, `east` at [`M44B_FORD_EAST_THINK`] and
+/// `west` at [`M44B_FORD_WEST_THINK`], each turnaround the first think after
+/// the arrival let the last goal go, which the test reads off the motor row
+/// before each landing — so the hold, the `blocked` line,
+/// `Arena::note_blocked`, the no-orbit detour (16b cut AI.1, `B-84`) and
+/// the stop count are read as they were: two stops in the minute, the second
+/// no sooner than the memory of the first has lapsed, the first no sooner
+/// than the hold, one remembered cell and through the other gap.
+#[test]
+fn m44b_a_wreck_in_the_ford_is_held_against_for_two_seconds_and_then_learned() {
+    use tacsim::arena::state::{Controller, TerrainCell};
+
+    let band: Vec<(u16, u16, TerrainCell)> = (0..rig::SIDE)
+        .filter(|y| *y != 8 && *y != 2)
+        .map(|y| (4_u16, y, rig::wall()))
+        .collect();
+    let mut arena = rig::arena_of(
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::RED2,
+                Team::Red,
+                rig::centre(4, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &band,
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[],
+    );
+    rig::wreck_it(&mut arena, rig::RED2);
+    arena.mind_runner = m44b_west_script(&[(
+        rig::RED,
+        vec![
+            (M44B_FORD_EAST_THINK, vec![m44b_goal(14, 8)]),
+            (M44B_FORD_WEST_THINK, vec![m44b_goal(1, 8)]),
+        ],
+    )]);
+    let turnarounds = [
+        m44b_lands_at(&arena, rig::RED, M44B_FORD_EAST_THINK),
+        m44b_lands_at(&arena, rig::RED, M44B_FORD_WEST_THINK),
+    ];
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut met_at: Option<i64> = None;
+    let mut west_most = i64::MAX;
+    // The entries age out after `REFLEX_AVOID_TTL_MS`, so what the hull
+    // learned is the union over the run and not a reading taken at the end.
+    let mut learned: Vec<(u16, u16)> = Vec::new();
+    // The motor's goal after every pulse: each turnaround is a turnaround
+    // only if the goal before it had already been let go on arrival.
+    let mut goals: Vec<(i64, Option<(u16, u16)>)> = Vec::new();
+    // Searches that failed: none, so every goal let go is an arrival and
+    // never a no-route's drop.
+    let mut path_failures = 0_u32;
+    while arena.now_ms < 60_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        path_failures += out.reflex.path_failures;
+        // The first pulse that ended with the hull standing against a cell.
+        if met_at.is_none()
+            && arena
+                .unit(rig::RED)
+                .is_some_and(|unit| unit.occupied_hold.is_some())
+        {
+            met_at = Some(arena.now_ms);
+        }
+        for cell in rig::avoided(&arena, rig::RED) {
+            if !learned.contains(&cell) {
+                learned.push(cell);
+            }
+        }
+        west_most = west_most.min(arena.unit(rig::RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        goals.push((arena.now_ms, rig::motor(&arena, rig::RED).goal));
+        wall += 500;
+    }
+    let met_at = met_at.expect("the hull never met the wreck");
+    // The pulses at which a goal was read let go (an arrival): where the
+    // turnaround thinks above were measured from.
+    let arrivals: Vec<i64> = goals
+        .windows(2)
+        .filter(|pair| pair[0].1.is_some() && pair[1].1.is_none())
+        .map(|pair| pair[1].0)
+        .collect();
+    assert_eq!(
+        path_failures, 0,
+        "a goal let go by a failed search is not an arrival"
+    );
+    let mut since = 0_i64;
+    for landing in turnarounds {
+        let before = goals
+            .iter()
+            .rfind(|(at, _)| *at < landing)
+            .map(|(_, goal)| *goal);
+        assert_eq!(
+            before,
+            Some(None),
+            "the turnaround landing at {landing} ms redirected a hull still on its way: the \
+             legs are the arrivals' ({goals:?})"
+        );
+        assert!(
+            arrivals.iter().any(|at| (since..landing).contains(at)),
+            "no arrival between {since} and the turnaround landing at {landing} ms: \
+             {arrivals:?}"
+        );
+        since = landing;
+    }
+    let log = rig::events(&mut arena, &mut bytes);
+    let stops: Vec<i64> = log
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                tacsim::arena::ledger::EventKind::Blocked { unit, x, y, .. }
+                    if unit == rig::RED && (x, y) == (4, 8)
+            )
+        })
+        .map(|event| event.t_ms)
+        .collect();
+    println!(
+        "m44b_ford: met the wreck at {met_at} ms, arrivals read at {arrivals:?} ms, stops at \
+         (4, 8) at {stops:?} ms, west-most {west_most} cm"
+    );
+    // **16b cut AI.1** (16c `B-84`): one wreck is one stop **per remembered
+    // stop**. The hull no longer circles the gap's corners, so it finishes
+    // its leg inside the minute, and back at the wreck after the cell has
+    // aged off its list (`REFLEX_AVOID_TTL_MS`) it is stopped once more — by
+    // design, a remembered stop is thirty seconds and not for ever. What
+    // stays pinned is exact: **two** stops in the minute, the second no
+    // sooner than the memory of the first has lapsed — so exactly one inside
+    // the memory's lifetime, and the hold adds none. A third stop, or a
+    // return inside the thirty seconds, fails here.
+    assert_eq!(
+        stops.len(),
+        2,
+        "one wreck is one stop per remembered stop, and the minute holds two: {stops:?}"
+    );
+    assert!(
+        stops.windows(2).all(|pair| match pair {
+            [a, b] => b - a >= tacsim::arena::motor::REFLEX_AVOID_TTL_MS,
+            _ => true,
+        }),
+        "one wreck is one stop, and the hold does not add another: {stops:?}"
+    );
+    assert!(
+        stops[0] >= met_at + 1_500,
+        "the stop arrived {} ms after the hull was first read standing against the wreck, \
+         which is inside the two-second hold (the hold is read at the end of the pulse it opened \
+         in, so the margin a 500 ms pulse can promise is a pulse short of 2,000)",
+        stops[0] - met_at
+    );
+    assert_eq!(
+        learned,
+        vec![(4, 8)],
+        "one remembered cell, and it is the wreck's"
+    );
+    assert!(
+        west_most < 4_000,
+        "it is through the other gap: west-most {west_most} cm"
+    );
+}
+
+/// A long east-west road, `len` cells by eight, with one patrol node at
+/// `node` (`tests/reflex.rs`' `road`, which stays there under its
+/// `road_home`).
+fn m44b_road(len: u16, node: (u16, u16)) -> tacsim::arena::state::ArenaDefinition {
+    use tacsim::arena::state::{ArenaDefinition, ArenaTerrain, EntryZone, Waypoint, Waypoints};
+
+    let cells = vec![rig::ground(); usize::from(len) * 8];
+    ArenaDefinition {
+        id: smol_str::SmolStr::new("tacsim.arena.motor.road"),
+        terrain: ArenaTerrain::new(len, 8, rig::CELL_CM, cells).expect("the road window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 7,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: len - 2,
+                y0: 0,
+                x1: len - 1,
+                y1: 7,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: Waypoints::new(
+            vec![Waypoint {
+                id: smol_str::SmolStr::new("goal"),
+                x: node.0,
+                y: node.1,
+            }],
+            &[],
+        ),
+        modes: Vec::new(),
+    }
+}
+
+/// **`B-42`: a machine brakes for its goal instead of driving through it**
+/// (16b cut E.3; `tests/reflex.rs`'
+/// `a_machine_brakes_into_its_goal_and_does_not_overshoot_it`, moved here by
+/// 17b cut M4.4). Forty cells of road and a tank with the shipped ratio —
+/// fifteen metres a second, two metres a second squared of brake, which is
+/// fifty-six metres and seven and a half seconds to stop. Before E.3 the
+/// controller ordered `max_speed_cms` flat until the unit was inside the
+/// one-cell arrive window and then ordered zero, so the machine coasted five
+/// cells past everywhere it meant to be. The brake is `braking_speed_cms`,
+/// asked by `Arena::follow` on the hull's `MotorTick` every `decide_ms` —
+/// `arena_cfg.reflex.decide_ms`, the reflex's own 500 — so the measured
+/// figure holds. What moved: the goal is the script's `Goal(Cell (4, 4))`,
+/// landing at think 1, and the reflex fixture's `hunt_after_ms 0` is gone
+/// with the hunt — a mind's goal is let go at arrival and the tick is not
+/// rescheduled, so the 180 s run holds no second arrival. The heavy is
+/// re-sealed over its mobility.
+#[test]
+fn m44b_a_machine_brakes_into_its_goal_and_does_not_overshoot_it() {
+    use support::scripted::{ScriptedMind, says};
+    use tacsim::arena::intents::IntentKind;
+    use tacsim::arena::state::{Controller, CustodyUnit, TrackedRules};
+
+    let heavy = CustodyUnit {
+        mobility: TrackedRules {
+            max_speed_cms: 1_500,
+            accel_cms2: 100,
+            brake_cms2: 200,
+            turn_rate_mdeg_s: 30_000,
+            reverse_factor_pct: 40,
+        },
+        ..rig::tank(
+            rig::RED,
+            Team::Red,
+            rig::centre(44, 4),
+            Vec::new(),
+            Controller::Mind,
+        )
+    }
+    .sealed();
+    let mut arena = rig::arena_on(
+        m44b_road(48, (4, 4)),
+        vec![heavy],
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[],
+    );
+    arena.mind_runner = ScriptedMind::new(&[(
+        rig::RED,
+        vec![
+            says(0, vec![IntentKind::Startup]),
+            says(1, vec![m44b_goal(4, 4)]),
+        ],
+    )]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut at_arrival: Option<i32> = None;
+    let mut west_most = u16::MAX;
+    let mut top = 0_i32;
+    while arena.now_ms < 180_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        let Some(unit) = arena.unit(rig::RED) else {
+            break;
+        };
+        top = top.max(unit.speed_cms);
+        if let Some((x, y)) = arena.definition.terrain.cell_of(&unit.pose) {
+            west_most = west_most.min(x);
+            // The pulse it first reads arrived: inside `ARRIVE_CELLS` of (4, 4).
+            if at_arrival.is_none() && x.abs_diff(4).max(y.abs_diff(4)) <= 1 {
+                at_arrival = Some(unit.speed_cms);
+            }
+        }
+        wall += 500;
+    }
+    let at_arrival = at_arrival.expect("the machine never reached its goal");
+    println!(
+        "m44b_e3_braking: top {top} cm/s, {at_arrival} cm/s on the pulse it first read arrived, \
+         west-most cell {west_most}"
+    );
+    assert!(
+        top >= 1_400,
+        "the machine never got up to speed, so nothing was measured: {top} cm/s"
+    );
+    // **The measured figure is 415 cm/s**, and the number is worth being
+    // exact about rather than rounding to a slogan. The profile is the
+    // maximum-braking curve, `v = isqrt(2 × brake × d)`, and a tank on it
+    // sheds exactly `brake_cms2` a second — which is all the tank has. The
+    // motor decides twice a second, so the last tick before the arrive window
+    // still carries up to a tick of the curve it cannot have shed yet. A
+    // quarter of `max_speed` at the window, against the whole of it before
+    // E.3, is the claim; the tank is standing still a second and a half
+    // later, which the last assertion is.
+    assert!(
+        at_arrival <= 500,
+        "it arrived at {at_arrival} cm/s, which is not braking for the goal"
+    );
+    assert!(
+        west_most >= 3,
+        "it overshot its goal at (4, 4) to cell {west_most}, past the arrive window"
+    );
+    assert_eq!(
+        arena.unit(rig::RED).map(|unit| unit.speed_cms),
+        Some(0),
+        "and it is standing on it at the end"
+    );
+}
+
+/// **The convoy and the wreck** (16b cut E.3; `tests/reflex.rs`'
+/// `convoy_and_wreck`): a band down column 4 with gaps at rows 8 and 2, a
+/// leader at (6, 8) and a follower at (7, 8) that sorts below it and so
+/// integrates first, both minds on [`m44b_west_script`] (the follower's goal
+/// lands at 1,732, the leader's at 1,254), the tempo pinned `Quiet` (D-16-2:
+/// the tempo decides only how often the arena steps).
+fn m44b_convoy_and_wreck() -> Arena {
+    use tacsim::arena::state::{Controller, TerrainCell};
+
+    let band: Vec<(u16, u16, TerrainCell)> = (0..rig::SIDE)
+        .filter(|y| *y != 8 && *y != 2)
+        .map(|y| (4_u16, y, rig::wall()))
+        .collect();
+    let mut arena = rig::arena_on(
+        m44b_one_way_west(&band),
+        vec![
+            // The follower sorts below the leader, so it integrates first.
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::centre(7, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::RED2,
+                Team::Red,
+                rig::centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
+        ],
+        &rig::arena_cfg(rig::reflex_cfg()),
+        &[],
+    );
+    arena.mind_runner = m44b_west_script(&[(rig::RED, Vec::new()), (rig::RED2, Vec::new())]);
+    arena
+        .clock
+        .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+    arena
+}
+
+/// The arena millisecond the convoy's leader is wrecked where it stands — a
+/// multiple of all three cadences, so it is one fact of arena time in all
+/// three logs (`tests/reflex.rs`' `SCRIPT_AT_MS`).
+const M44B_WRECK_AT_MS: i64 = 20_000;
+
+/// What one replay of [`m44b_convoy_and_wreck`] produced: the event list,
+/// the per-substep hash sequence, the finals — where each hull is, its
+/// heading, how fast, and the goal its motor holds; the reflex's state
+/// column dropped, the goals being the script's — and how many pulses it
+/// took (three cadences really are three different numbers of pulses, so an
+/// equality of the three is a property and not three copies of one run).
+struct M44bReplay {
+    events: Vec<(i64, String, u64)>,
+    hashes: Vec<u64>,
+    finals: Vec<M44bFinal>,
+    pulses: u32,
+}
+
+/// One hull's final: id, pose, heading, speed and motor goal.
+type M44bFinal = (ObjId, i64, i64, u32, i32, Option<(u16, u16)>);
+
+/// [`m44b_convoy_and_wreck`] replayed at `cadence_ms` until `until_ms`,
+/// settled between pulses, the leader wrecked after the pulse that closes at
+/// [`M44B_WRECK_AT_MS`].
+fn m44b_replay(cadence_ms: i64, until_ms: i64) -> M44bReplay {
+    let mut arena = m44b_convoy_and_wreck();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut pulses = 0_u32;
+    loop {
+        let out = arena.step_settled(wall, &[], &[]);
+        pulses = pulses.saturating_add(1);
+        rig::absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms == M44B_WRECK_AT_MS {
+            rig::wreck_it(&mut arena, rig::RED2);
+        }
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = rig::events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let finals = arena
+        .units
+        .iter()
+        .map(|unit| {
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                rig::motor(&arena, unit.id).goal,
+            )
+        })
+        .collect();
+    M44bReplay {
+        events,
+        hashes,
+        finals,
+        pulses,
+    }
+}
+
+/// **The convoy and the wreck, at three cadences** (16b cut E.3; 16b §11's
+/// mandatory cross-tempo test; `tests/reflex.rs`'
+/// `the_convoy_and_the_wreck_are_one_event_list_and_one_hash_sequence_at_three_cadences`,
+/// moved here by 17b cut M4.4 in
+/// [`m44a_the_wreck_detour_is_one_event_list_and_one_hash_sequence_at_three_cadences`]'
+/// shape). One scripted log in which a follower holds behind its leader
+/// through the gap, the leader stops on the node and the follower's hold
+/// against it matures into a stop, learns the cell and detours round it to
+/// its own arrival; the leader is then wrecked where it stands. One event
+/// list — a `blocked` line in it — and one per-substep hash sequence at
+/// 5,000, 1,000 and 500 ms, which is the whole of the rate-independence
+/// claim for the hold, because all three cadences are whole multiples of
+/// the 250 ms substep and therefore share one partition. Every edge is the
+/// motor's (`Arena::follow`, `Arena::first_step_is_open`,
+/// `Arena::hold_routeless`, `Arena::note_blocked`) or motion's; the finals
+/// are pose, heading, speed and motor goal.
+#[test]
+fn m44b_the_convoy_and_the_wreck_are_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let runs: Vec<M44bReplay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| m44b_replay(cadence, 60_000))
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    assert!(
+        kinds.iter().any(|kind| kind.contains("blocked")),
+        "the follower never matured a stop, so nothing was compared: {kinds:?}"
+    );
+    assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+    assert!(
+        runs.windows(2).all(|pair| pair[0].pulses < pair[1].pulses),
+        "three cadences, three pulse counts"
+    );
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+/// **`B-44`: a routeless machine is checked every substep, not every tick**
+/// (16b cut E.3; `tests/reflex.rs`'
+/// `a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop`,
+/// moved here by 17b cut M4.4). The case `Arena::follow` cannot see,
+/// because it happens between two of its ticks. A stop throws the hull's
+/// route away and puts the refused cell on its remembered list, both at the
+/// substep the stop happened on — and the hull is then routeless, with a
+/// goal, with a standing speed order and pointed straight at a cell it has
+/// just learned to avoid. Until E.3 it re-accelerated and pushed at that
+/// cell for the rest of the decide tick; now the pre-pass at the top of the
+/// next substep (`Arena::hold_routeless`, for every routeless row with a
+/// goal whatever steers it) orders `Speed 0` through the same door a pilot's
+/// own order goes through, and the hull stands until its next tick can plan.
+/// The measure is the arena time between the `blocked` line and the speed
+/// order coming off: one substep, not one `decide_ms`. The decide grid is
+/// printed and asserted with it, so that the reading cannot be a tick that
+/// happened to fall inside the substep: the hull's `MotorTick` is scheduled
+/// at `grid_at(unit, reflex.decide_ms)` (`Arena::engage_motor`), the stagger
+/// grid the reflex tick ran on, so the grid is read as it was.
+/// `arena::motor`'s own
+/// `e3_the_pre_pass_holds_a_routeless_machine_and_skips_everyone_else` is
+/// what holds the pass's five guards. What moved: the hull starts half a
+/// cell east of (6, 8)'s centre, on its seam with (7, 8)
+/// (`pose(7_000, 8_500)`). The reflex machine's goal was at its tick 1,482;
+/// from the centre its hull reached the parked tank's seam in the substep
+/// ending 3,000, the hold matured into the stop in the substep ending
+/// 5,000, and the 5,250 read caught the pre-pass's standstill a substep
+/// before the 5,482 tick. A mind's goal lands at 1,732 and its drive starts
+/// in the substep after; from the centre the hull reaches the seam in the
+/// substep ending 3,250, the stop falls in the substep ending 5,250, and the
+/// 5,482 tick runs in the substep after — after that substep's pre-pass has
+/// ordered the standstill — re-planning round the parked tank and ordering
+/// a speed again before the pulse's end can read it (the standstill is in
+/// that pulse's intent count, not on the hull at its end); a quarter of a
+/// cell further east puts the stop in the tick's own substep, where motion
+/// stops the hull and the tick re-plans before the next pre-pass asks. A
+/// think and its hull's motor tick share one stagger, so on this seed no
+/// cell-centred start of the rig's tanks keeps the stop and the substep
+/// after it clear of a tick; half a cell does: the seam is reached in the
+/// substep ending 3,750, the stop falls in the one ending 5,750, and
+/// neither it nor the substep after holds a tick (5,482 before, 6,482
+/// after).
+#[test]
+fn m44b_a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop() {
+    use tacsim::arena::rng::stagger_ms;
+    use tacsim::arena::state::Controller;
+    use tacsim::config::ReflexConfig;
+
+    // A whole second between decisions, so "the next tick" and "the next
+    // substep" are four substeps apart and the difference is visible.
+    let cfg = rig::arena_cfg(ReflexConfig {
+        decide_ms: 1_000,
+        repath_ms: 4_000,
+        ..ReflexConfig::default()
+    });
+    let mut arena = rig::arena_of(
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::pose(7_000, 8_500),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::BLUE,
+                Team::Blue,
+                rig::centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &cfg,
+        &[rig::BLUE],
+    );
+    arena.mind_runner = m44b_west_script(&[(rig::RED, Vec::new())]);
+    let hull = rig::RED;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    // Pulses of 250 ms, so every pulse is exactly one substep and the reading
+    // is at the granularity the pre-pass runs at.
+    let mut stopped_at: Option<i64> = None;
+    let mut ordered_off_at: Option<i64> = None;
+    let mut intents_on_the_order = 0_u32;
+    while arena.now_ms < 30_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        // The stop is read off the unit's own per-substep flag rather than off
+        // the ledger, because a 250 ms pulse is one substep and the ledger's
+        // chunks are flushed on their own cadence.
+        if stopped_at.is_none() {
+            if arena.unit(hull).is_some_and(|unit| unit.blocked) {
+                stopped_at = Some(arena.now_ms);
+            }
+        } else if ordered_off_at.is_none()
+            && arena
+                .unit(hull)
+                .is_some_and(|unit| unit.desired_speed_cms == 0)
+        {
+            ordered_off_at = Some(arena.now_ms);
+            intents_on_the_order = out.reflex.intents;
+        }
+        if ordered_off_at.is_some() {
+            break;
+        }
+        wall += 250;
+    }
+    let stopped_at = stopped_at.expect("the parked tank stopped the machine");
+    let ordered_off_at = ordered_off_at.expect("the machine was never ordered to stand");
+    // **The decide grid, so that the 250 ms reading cannot be a coincidence.**
+    // A hull's motor ticks are at its stagger — `stagger_ms(seed, id,
+    // decide_ms)` — and every `decide_ms` after it (`Arena::grid_at`), so
+    // this is exactly the arena time at which `follow` could have ordered the
+    // same speed on its own.
+    let grid = |at: i64| (at - stagger_ms(rig::SEED, hull, 1_000)).rem_euclid(1_000);
+    println!(
+        "m44b_e3_b44: stopped at {stopped_at} ms, ordered off at {ordered_off_at} ms, \
+         {} ms past that pulse's decide tick, {intents_on_the_order} intents on the pulse",
+        grid(ordered_off_at)
+    );
+    assert!(
+        ordered_off_at - stopped_at <= 250,
+        "the machine kept its speed order for {} ms after it was stopped, which is the decide \
+         tick and not the substep: stopped at {stopped_at} ms, ordered off at {ordered_off_at} ms",
+        ordered_off_at - stopped_at
+    );
+    assert_ne!(
+        grid(ordered_off_at),
+        0,
+        "the order came off on a decide tick, where `follow` would have ordered it too: this \
+         fixture is not measuring the pre-pass"
+    );
+    assert!(
+        intents_on_the_order > 0,
+        "the pulse the order came off on counted no intent, so nothing went through `apply_intent`"
+    );
+    // And the order came through the pilot's own door: the motor counted it.
+    assert!(
+        arena
+            .motors
+            .row(hull)
+            .is_some_and(|row| row.route.is_empty() && row.goal.is_some()),
+        "the machine was not routeless with a goal, so this is not `B-44`'s case"
+    );
+}
+
+/// The pulse the one-cell hold's note is made at: the first pulse after the
+/// goal landed (1,732), the hull a quarter-second into its acceleration and
+/// still in its own cell. See the test for why it is not the reflex
+/// fixture's 4,000.
+const M44B_NOTE_AT_MS: i64 = 2_000;
+
+/// **The `avoid` clause of `first_step_is_open`** (16c `T-42`;
+/// `tests/reflex.rs`'
+/// `e4_t42_a_routeless_machine_holds_at_a_cell_it_was_stopped_at`, moved
+/// here by 17b cut M4.4): a routeless hull holds rather than drive into a
+/// cell it was stopped at, and drives again when the entry ages out. The
+/// path budget is nought, so the hull never has a route and every step it
+/// takes is a step on a bearing nobody has checked — which is the whole case
+/// the one-cell test exists for. The cell in front of it is then written
+/// into `MotorRow::avoid` through `Arena::note_blocked`, the public door the
+/// `Blocked` ledger event uses; `Arena::hold_routeless` asks
+/// `Arena::first_step_is_open` of every steered row at every substep and
+/// `Arena::follow`'s routeless steer asks it on every `MotorTick`, and
+/// `MotorRow::age_avoid` runs on the tick for any row. The same four
+/// claims: no route and driving at the goal before the note, ordered a
+/// standstill three seconds after it, driving again three seconds after the
+/// entry's `REFLEX_AVOID_TTL_MS` — with one guard added, that the goal is
+/// still held at the standstill, so the hold read is the avoid list's and
+/// never an arrival's. What moved: the goal is the script's `Goal(Cell (1,
+/// 8))`, the `west` node the reflex's `Patrol` picked, landing at 1,732; and
+/// the note is made at [`M44B_NOTE_AT_MS`], 2,000, not the reflex fixture's
+/// 4,000. The reflex hull, under way since 982, was at full speed a few
+/// hundred centimetres short of the cell at 4,000, and a hull at 1,000 cm/s
+/// with 500 cm/s² of brake needs a whole cell to stop: it crossed into the
+/// cell it had been told to avoid, drove on from inside it, arrived at
+/// `west`, and what held it at 7,000 was its `Patrol` turnaround for `east`
+/// against the same remembered cell from the other side — a walk a scripted
+/// goal does not make (a mind's goal is let go at arrival). At 2,000 the
+/// hull is one substep into its acceleration (125 cm/s, a few centimetres
+/// from where it started) in its own cell, stops short of the cell it is
+/// told to avoid, and the hold the claim names is the one read; at the TTL
+/// it drives the leg it was given.
+#[test]
+fn m44b_e4_t42_a_routeless_machine_holds_at_a_cell_it_was_stopped_at() {
+    use tacsim::arena::state::Controller;
+    use tacsim::config::ReflexConfig;
+
+    let mut arena = rig::arena_of(
+        vec![rig::tank(
+            rig::RED,
+            Team::Red,
+            rig::centre(6, 8),
+            Vec::new(),
+            Controller::Mind,
+        )],
+        &[],
+        &rig::arena_cfg(ReflexConfig {
+            // No search at all: a hull that never routes is the subject.
+            max_path_queries: 0,
+            ..rig::reflex_cfg()
+        }),
+        &[],
+    );
+    arena.mind_runner = m44b_west_script(&[(rig::RED, Vec::new())]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut counters = ReflexCounters::default();
+    let _ = m44b_drive_to(&mut arena, M44B_NOTE_AT_MS, &mut bytes, &mut counters);
+    let here = arena
+        .unit(rig::RED)
+        .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+        .expect("the hull is on the window");
+    assert!(
+        arena
+            .motors
+            .row(rig::RED)
+            .is_some_and(|row| row.route.is_empty()),
+        "with no path budget the hull has no route, which is what makes this the one-cell case"
+    );
+    assert!(
+        arena
+            .unit(rig::RED)
+            .is_some_and(|unit| unit.desired_speed_cms > 0),
+        "and it is driving at its goal"
+    );
+
+    // The cell in front of it — the one step on the bearing to its goal,
+    // which is the `west` node and therefore the cell to the **west**. Taking
+    // `here.0 + 1` on faith would write a cell behind the hull into the list
+    // and assert nothing at all.
+    let goal = rig::motor(&arena, rig::RED)
+        .goal
+        .expect("the script's goal is held");
+    assert_eq!(goal.1, here.1, "the drive is along the hull's own row");
+    let ahead = if goal.0 < here.0 {
+        (here.0.saturating_sub(1), here.1)
+    } else {
+        (here.0.saturating_add(1), here.1)
+    };
+    let at_ms = arena.now_ms;
+    arena.note_blocked(rig::RED, ahead, BlockedCause::Occupied, at_ms);
+    let _ = m44b_drive_to(&mut arena, at_ms + 3_000, &mut bytes, &mut counters);
+    let held = arena
+        .unit(rig::RED)
+        .map_or(-1, |unit| unit.desired_speed_cms);
+    assert_eq!(
+        held, 0,
+        "a routeless hull whose next cell is one it was stopped at should hold, and it was \
+         ordered {held} cm/s at {ahead:?}"
+    );
+    assert_eq!(
+        rig::motor(&arena, rig::RED).goal,
+        Some(goal),
+        "the standstill is the avoid list's and not an arrival's: the goal is still held"
+    );
+
+    // And it goes again when the entry ages out — the list ages, it is not
+    // cleared on a goal change.
+    let _ = m44b_drive_to(
+        &mut arena,
+        at_ms + tacsim::arena::motor::REFLEX_AVOID_TTL_MS + 3_000,
+        &mut bytes,
+        &mut counters,
+    );
+    assert!(
+        arena
+            .unit(rig::RED)
+            .is_some_and(|unit| unit.desired_speed_cms > 0),
+        "the remembered stop should have aged out and the hull driven on"
+    );
+}
+
+/// Step `arena` to `until_ms` in pulses of 500 ms, settled between pulses,
+/// absorbing the ledger and the counters.
+fn m44b_drive_to(
+    arena: &mut Arena,
+    until_ms: i64,
+    bytes: &mut Vec<u8>,
+    counters: &mut ReflexCounters,
+) -> i64 {
+    let mut wall = arena.now_ms;
+    while arena.now_ms < until_ms {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, bytes);
+        counters.absorb(&out.reflex);
+        if out.ended.is_some() {
+            break;
+        }
+        wall += 500;
+    }
+    arena.now_ms
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M4.4 — motor family C (16b cut AI.1: the orbit, the corner, the
+// pinch and the stop beside the route)
+// ---------------------------------------------------------------------------
+//
+// The reflex fixtures of `tests/reflex.rs`' 16b cut AI.1 family (16c `B-84`,
+// "the machines stop searching in circles"), every edge of which is the
+// motor's — `Arena::follow`'s circle rule (the route kept while the hull is
+// inside its turning circle, the aim at a route cell it can turn onto, the
+// slowing for one it cannot), its wander rule (the `2 r + cell_cm`
+// diameter), its bend, the unlimited hull's hold at a corner closed on both
+// shoulders with its route kept, `Arena::first_step_is_open`'s open-shoulder
+// aim and the search's shoulder reads (`corner_refusals`), A*'s refused-edge
+// detour and the follower's "follow, don't shorten" — moved here by 17b cut
+// M4.4 onto the AI.1 window with every machine hull a `Controller::Mind`'s,
+// flown by a scripted mind (`support::scripted::ScriptedMind`) whose goals
+// land at the reflex's own milliseconds: think `n` at `think_at(unit, n)`
+// (`stagger_ms(SEED, unit, 1_000) + n × 1_000`), its answer landing one
+// substep on (250 ms: the slow tank's 1,500 cm/s on 1,000 cm cells is still
+// bound by the 250 ms cap) and driven there (`Arena::motor_step` at the
+// landing, D-UM-10), then the hull's own `MotorTick` every `decide_ms` (500)
+// on the stagger grid — the reflex tick's own slots. The reflex fixtures'
+// graph of nodes joined to nothing handed each machine exactly one goal (the
+// node nearest it, its `Patrol`'s pick); the script hands the same cell, and
+// the window keeps its nodes. A hull fielded online — at speed, or at rest —
+// is handed its goal at think 0, landing one substep after the reflex's
+// first tick at the same stagger (`RED`'s think 482 lands 732 against the
+// tick at 482); a cold hull is handed `Startup` at think 0 and its goal at
+// think 1, the first online think (a `Goal` is a continuous intent, refused
+// `PowerNotOnline` on a cold hull: `RED`'s `Startup` lands 732, the hull is
+// online at 1,232 and the goal lands 1,732, where the reflex machine set its
+// own at its second tick, 982). Every window below is the reflex fixture's
+// own; the one fixture constant that moved with the cadence is named in the
+// test that moved it ([`M44C_CORNER_AT_SPEED_Y`]), and none of the claims
+// did. The counters are read off `StepOutput::reflex` as the motor's
+// (`ReflexCounters`, M4.5's `MotorCounters`).
+
+/// **A tank on the shipped line tank's numbers** (16b cut AI.1;
+/// `tests/reflex.rs`' `slow_tank`): 1,500 cm/s at 30,000 mdeg/s, 100 / 200
+/// cm/s² — a turning circle of 2,865 cm at speed, so a neighbour cell can be
+/// inside it. The rig's [`rig::tank`] turns at 180 degrees a second (318 cm
+/// at speed), inside which no neighbour cell ever falls. Unarmed, a mind's.
+fn m44c_slow_tank(
+    id: ObjId,
+    team: Team,
+    pose: mush_sim::data::Pose,
+) -> tacsim::arena::state::CustodyUnit {
+    use tacsim::arena::state::{Controller, CustodyUnit, TrackedRules};
+
+    CustodyUnit {
+        mobility: TrackedRules {
+            max_speed_cms: 1_500,
+            accel_cms2: 100,
+            brake_cms2: 200,
+            turn_rate_mdeg_s: 30_000,
+            reverse_factor_pct: 40,
+        },
+        ..rig::tank(id, team, pose, Vec::new(), Controller::Mind)
+    }
+    .sealed()
+}
+
+/// **A window of `width` by `height`** (16b cut AI.1; `tests/reflex.rs`'
+/// `ai1_window`): a turning circle of 29 m needs more room than the rig's
+/// sixteen cells, and a graph of `nodes` **joined to nothing** — under the
+/// reflex each node was the goal of the machine standing nearest it; under a
+/// mind the script hands that cell, and the nodes stay for the window's
+/// identity (a mind's goal falls back to no waypoint: `Fallback::Notice`).
+fn m44c_window(
+    width: u16,
+    height: u16,
+    paint: &[(u16, u16, tacsim::arena::state::TerrainCell)],
+    nodes: &[(u16, u16)],
+) -> tacsim::arena::state::ArenaDefinition {
+    use smol_str::SmolStr;
+    use tacsim::arena::state::{ArenaDefinition, ArenaTerrain, EntryZone, Waypoint, Waypoints};
+
+    let mut cells = vec![rig::ground(); usize::from(width) * usize::from(height)];
+    for (x, y, cell) in paint {
+        if let Some(slot) = cells.get_mut(usize::from(*y) * usize::from(width) + usize::from(*x)) {
+            *slot = *cell;
+        }
+    }
+    let ids: Vec<SmolStr> = (0..nodes.len())
+        .map(|n| SmolStr::new(format!("n{n}")))
+        .collect();
+    let points = nodes
+        .iter()
+        .zip(&ids)
+        .map(|((x, y), id)| Waypoint {
+            id: id.clone(),
+            x: *x,
+            y: *y,
+        })
+        .collect();
+    let edges: Vec<(SmolStr, SmolStr)> = Vec::new();
+    ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.reflex.ai1"),
+        terrain: ArenaTerrain::new(width, height, rig::CELL_CM, cells).expect("the AI.1 window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: height - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: width - 2,
+                y0: 0,
+                x1: width - 1,
+                y1: height - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: Waypoints::new(points, &edges),
+        modes: Vec::new(),
+    }
+}
+
+/// The doctrine the AI.1 fixtures run on (`tests/reflex.rs`' `ai1_cfg`): a
+/// `MotorTick` every 500 ms and the stock `repath_ms`, so a search spent is a
+/// search counted and a route kept is a search saved.
+fn m44c_cfg() -> tacsim::config::ArenaConfig {
+    rig::arena_cfg(tacsim::config::ReflexConfig {
+        decide_ms: 500,
+        repath_ms: 4_000,
+        ..tacsim::config::ReflexConfig::default()
+    })
+}
+
+/// **Put `unit` online and at full speed on `heading_mdeg`** before the first
+/// pulse (`tests/reflex.rs`' `at_speed`) — a hull that is already driving
+/// when its goal lands, which is where the turning circle matters.
+fn m44c_at_speed(arena: &mut Arena, unit: ObjId, heading_mdeg: u32) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.power = Power::Online;
+        state.pose.heading_mdeg = heading_mdeg;
+        state.desired_heading_mdeg = heading_mdeg;
+        state.speed_cms = i32::try_from(state.mobility.max_speed_cms).unwrap_or(0);
+        state.desired_speed_cms = state.speed_cms;
+    }
+}
+
+/// Make `unit` a limited one — the stock locomotion's 45 per cent — the way
+/// every shipped chassis is (`tests/reflex.rs`' `limited`: a fixture's
+/// hand-made unit declares no mobility, so it is written on here rather than
+/// read off a spec).
+fn m44c_limited(arena: &mut Arena, unit: ObjId) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.slope_limit_pct = Some(45);
+    }
+}
+
+/// One scripted goal cell.
+fn m44c_goal(x: u16, y: u16) -> tacsim::arena::intents::IntentKind {
+    tacsim::arena::intents::IntentKind::Goal(tacsim::arena::intents::MotorGoal::Cell { x, y })
+}
+
+/// The script of a hull fielded **online**: its goal at think 0, landing one
+/// substep after the reflex's first tick at the same stagger.
+fn m44c_hot(goal: (u16, u16)) -> Vec<support::scripted::Says> {
+    vec![support::scripted::says(0, vec![m44c_goal(goal.0, goal.1)])]
+}
+
+/// The script of a **cold** hull: `Startup` at think 0 and its goal at think
+/// 1, the first online think.
+fn m44c_cold(goal: (u16, u16)) -> Vec<support::scripted::Says> {
+    vec![
+        support::scripted::says(0, vec![tacsim::arena::intents::IntentKind::Startup]),
+        support::scripted::says(1, vec![m44c_goal(goal.0, goal.1)]),
+    ]
+}
+
+/// Install `script` as the arena's mind runner — every machine hull of the
+/// field reads its answers off it.
+fn m44c_script(arena: &mut Arena, script: &[(ObjId, Vec<support::scripted::Says>)]) {
+    arena.mind_runner = support::scripted::ScriptedMind::new(script);
+}
+
+/// What one AI.1 run leaves (`tests/reflex.rs`' `Ai1Run`): the counters, the
+/// cell track pulse by pulse, the easting pulse by pulse, and the `blocked`
+/// lines.
+struct M44cRun {
+    counters: ReflexCounters,
+    track: Vec<(u16, u16)>,
+    xs: Vec<i64>,
+    blocked: usize,
+}
+
+/// Step `arena` to `until_ms` at 500 ms, settled between pulses, recording
+/// `unit`'s cell after every pulse and running `script` after each
+/// (`tests/reflex.rs`' `ai1_run`).
+fn m44c_run(
+    arena: &mut Arena,
+    unit: ObjId,
+    until_ms: i64,
+    script: &mut dyn FnMut(&mut Arena),
+) -> M44cRun {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = arena.now_ms;
+    let mut counters = ReflexCounters::default();
+    let mut track: Vec<(u16, u16)> = Vec::new();
+    let mut xs: Vec<i64> = Vec::new();
+    while arena.now_ms < until_ms {
+        let out = arena.step_settled(wall, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        if let Some(cell) = cell_of(arena, unit)
+            && track.last() != Some(&cell)
+        {
+            track.push(cell);
+        }
+        if let Some(state) = arena.unit(unit) {
+            xs.push(state.pose.x_cm);
+        }
+        script(arena);
+        wall += 500;
+    }
+    let log = rig::events(arena, &mut bytes);
+    M44cRun {
+        counters,
+        track,
+        xs,
+        blocked: rig::count(&log, "blocked"),
+    }
+}
+
+/// Whether `unit` stands within [`tacsim::arena::motor::ARRIVE_CELLS`] of
+/// `goal`.
+fn m44c_arrived_at(arena: &Arena, unit: ObjId, goal: (u16, u16)) -> bool {
+    cell_of(arena, unit).is_some_and(|(x, y)| {
+        x.abs_diff(goal.0).max(y.abs_diff(goal.1)) <= tacsim::arena::motor::ARRIVE_CELLS
+    })
+}
+
+/// Whether a cell track ever comes back to a cell it has left.
+fn m44c_revisits(track: &[(u16, u16)]) -> Option<(u16, u16)> {
+    track
+        .iter()
+        .enumerate()
+        .find(|(at, cell)| track.iter().skip(at + 1).any(|later| later == *cell))
+        .map(|(_, cell)| *cell)
+}
+
+/// How many `blocked` lines of `unit` the log holds for `cause`, or for every
+/// cause but `Occupied` with `None` (`tests/reflex.rs`' `stops_of`).
+fn m44c_stops_of(
+    events: &[tacsim::arena::ledger::LedgerEvent],
+    unit: ObjId,
+    cause: Option<BlockedCause>,
+) -> Vec<(i64, (u16, u16))> {
+    events
+        .iter()
+        .filter_map(|event| match event.kind {
+            tacsim::arena::ledger::EventKind::Blocked {
+                unit: who,
+                x,
+                y,
+                cause: why,
+            } if who == unit
+                && cause.map_or(why != BlockedCause::Occupied, |cause| why == cause) =>
+            {
+                Some((event.t_ms, (x, y)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The unit a `startup` line names.
+fn m44c_startup_unit(event: &tacsim::arena::ledger::LedgerEvent) -> Option<ObjId> {
+    match event.kind {
+        tacsim::arena::ledger::EventKind::Startup { unit, .. } => Some(unit),
+        _ => None,
+    }
+}
+
+/// **16b cut AI.1 (16c `B-84`, the orbit)** — `tests/reflex.rs`'
+/// `ai1_a_follower_inside_its_circle_keeps_its_route_and_arrives`, moved
+/// here by 17b cut M4.4: a hull at full speed whose goal is behind it. Its
+/// route's first cells are behind it, and every one it turns toward comes
+/// inside its 29 m circle on the way round: before AI.1 the follower steered
+/// at the first route cell at full speed, circled it, drifted more than a
+/// cell off it and threw the route and its search stamp away — a fresh
+/// search every tick for as long as the orbit lasted. `Arena::follow` keeps
+/// its route while it is inside the circle, aims at a route cell it can turn
+/// onto, slows for one it cannot, and arrives on its one search. What moved:
+/// the hull is a mind's, online at full speed east, and the goal is the
+/// script's `Goal(Cell (4, 16))` — the window's one node, the reflex
+/// `Patrol`'s pick — landing at 732 (think 0 at 482, one substep on) against
+/// the reflex's tick at 482: 375 cm further round a 29 m circle, which the
+/// circle rule is indifferent to. The four claims are the reflex fixture's:
+/// arrived, at most two searches, at most four deferred ticks, no `blocked`
+/// line.
+#[test]
+fn m44c_ai1_a_follower_inside_its_circle_keeps_its_route_and_arrives() {
+    let goal = (4_u16, 16_u16);
+    let mut arena = rig::arena_on(
+        m44c_window(32, 32, &[], &[goal]),
+        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(20, 16))],
+        &m44c_cfg(),
+        &[],
+    );
+    m44c_script(&mut arena, &[(rig::RED, m44c_hot(goal))]);
+    m44c_at_speed(&mut arena, rig::RED, 90_000);
+    let run = m44c_run(&mut arena, rig::RED, 40_000, &mut |_| {});
+    assert!(
+        m44c_arrived_at(&arena, rig::RED, goal),
+        "the hull never arrived: it stands at {:?} after {:?}; {:?}",
+        cell_of(&arena, rig::RED),
+        run.track,
+        run.counters
+    );
+    assert!(
+        run.counters.path_queries <= 2,
+        "the hull searched {} times for one goal: {:?}",
+        run.counters.path_queries,
+        run.counters
+    );
+    assert!(
+        run.counters.path_deferred <= 4,
+        "the hull sat routeless tick after tick: {:?}",
+        run.counters
+    );
+    assert_eq!(run.blocked, 0, "nothing stands in its way");
+}
+
+/// **16b cut AI.1, the orbit's two ordinary shapes** — `tests/reflex.rs`'
+/// `ai1_a_bend_at_speed_and_a_push_beside_the_route_never_turn_back`, moved
+/// here by 17b cut M4.4: a 90° bend round a wall taken at speed, and a hull
+/// pushed a cell off a straight route at speed. Each arrives on at most two
+/// searches, and neither turns back along its route to a cell it has passed
+/// — `Arena::follow`'s bend and wander rules. What moved: both hulls are a
+/// mind's, online at full speed, each goal the script's (the window's one
+/// node), landing at 732 against the reflex's tick at 482; the hand shove at
+/// 4 s is the fixture's own millisecond, and the claims are its own.
+#[test]
+fn m44c_ai1_a_bend_at_speed_and_a_push_beside_the_route_never_turn_back() {
+    // The bend: a wall down column 8 from row 0 to row 20, the hull at (4, 4)
+    // driving north, the goal at (20, 24) past the wall's end. Its route runs
+    // north beside the wall and turns east round its end.
+    let goal = (20_u16, 24_u16);
+    let wall_cells: Vec<(u16, u16, tacsim::arena::state::TerrainCell)> =
+        (0..=20).map(|y| (8_u16, y, rig::wall())).collect();
+    let mut arena = rig::arena_on(
+        m44c_window(32, 32, &wall_cells, &[goal]),
+        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(4, 4))],
+        &m44c_cfg(),
+        &[],
+    );
+    m44c_script(&mut arena, &[(rig::RED, m44c_hot(goal))]);
+    m44c_at_speed(&mut arena, rig::RED, 0);
+    let run = m44c_run(&mut arena, rig::RED, 40_000, &mut |_| {});
+    assert!(
+        m44c_arrived_at(&arena, rig::RED, goal),
+        "the bend: never arrived, at {:?} after {:?}; {:?}",
+        cell_of(&arena, rig::RED),
+        run.track,
+        run.counters
+    );
+    assert!(
+        run.counters.path_queries <= 2,
+        "the bend: {:?}",
+        run.counters
+    );
+    assert_eq!(
+        m44c_revisits(&run.track),
+        None,
+        "the bend: the hull came back to a cell it had left: {:?}",
+        run.track
+    );
+    assert_eq!(run.blocked, 0, "the bend: the wall stopped it");
+
+    // The push: the hull drives east along row 16 at speed to (28, 16); at
+    // 4 s it is shoved one cell north, beside its route. It carries on east.
+    let goal = (28_u16, 16_u16);
+    let mut arena = rig::arena_on(
+        m44c_window(32, 32, &[], &[goal]),
+        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(4, 16))],
+        &m44c_cfg(),
+        &[],
+    );
+    m44c_script(&mut arena, &[(rig::RED, m44c_hot(goal))]);
+    m44c_at_speed(&mut arena, rig::RED, 90_000);
+    let mut shoved = false;
+    let run = m44c_run(&mut arena, rig::RED, 40_000, &mut |arena: &mut Arena| {
+        if !shoved && arena.now_ms >= 4_000 {
+            shoved = true;
+            if let Some(state) = arena.unit_mut(rig::RED) {
+                state.pose.y_cm += i64::from(rig::CELL_CM);
+            }
+        }
+    });
+    assert!(
+        m44c_arrived_at(&arena, rig::RED, goal),
+        "the push: never arrived, at {:?} after {:?}; {:?}",
+        cell_of(&arena, rig::RED),
+        run.track,
+        run.counters
+    );
+    assert!(
+        run.counters.path_queries <= 2,
+        "the push: {:?}",
+        run.counters
+    );
+    assert!(
+        run.xs.windows(2).all(|pair| match pair {
+            [a, b] => b >= a,
+            _ => true,
+        }),
+        "the push: the hull turned back west along its route: {:?}",
+        run.xs
+    );
+}
+
+/// **The at-speed corner hull's start, one substep further back than the
+/// reflex fixture's** (`y_cm` 7,625 against 8,000) — a fixture constant
+/// re-derived for the cadence, not the pin. The reflex's tick at 482 found
+/// the hull, driving north at 1,500 cm/s from `y_cm` 8,000, 723 cm up and
+/// "still in (16, 8)"; the mind's goal lands at 732, 1,098 cm up — cell 9
+/// from 8,000. From 7,625 the landing's search still runs from (16, 8)
+/// (8,723 at 732), and the per-pulse track reads (16, 7) at the opening
+/// pulse, (16, 8) at 500 and (16, 9) at 1,000: the cell entered **from the
+/// corner** is the open shoulder, as before, one index on.
+const M44C_CORNER_AT_SPEED_Y: i64 = 7_625;
+
+/// **The corner of `B-84`** (16b cut AI.1; `tests/reflex.rs`' `ai1_corner`):
+/// the route's first step is the diagonal `(15, 9)` from `(16, 8)`, whose
+/// west shoulder `(15, 8)` is a wall and whose north shoulder `(16, 9)` is
+/// open, and the hull stands with its `x_cm` exactly on the column boundary
+/// — the shape the AE sweep found unit 100164 in, at `x_cm` 206,000. Any
+/// line from there toward the diagonal cell enters the wall first. From rest
+/// (online, facing north) or driving north up the boundary at full speed
+/// (from [`M44C_CORNER_AT_SPEED_Y`]); the goal is the script's `Goal(Cell
+/// (6, 18))` at think 0.
+fn m44c_corner(at_speed_north: bool) -> Arena {
+    let goal = (6_u16, 18_u16);
+    let pose = if at_speed_north {
+        rig::pose(16_000, M44C_CORNER_AT_SPEED_Y)
+    } else {
+        rig::pose(16_000, 8_500)
+    };
+    let mut arena = rig::arena_on(
+        m44c_window(32, 32, &[(15, 8, rig::wall())], &[goal]),
+        vec![m44c_slow_tank(rig::RED, Team::Red, pose)],
+        &m44c_cfg(),
+        &[],
+    );
+    m44c_script(&mut arena, &[(rig::RED, m44c_hot(goal))]);
+    m44c_limited(&mut arena, rig::RED);
+    if at_speed_north {
+        m44c_at_speed(&mut arena, rig::RED, 0);
+    } else if let Some(state) = arena.unit_mut(rig::RED) {
+        // At rest, online, facing north.
+        state.power = Power::Online;
+    }
+    arena
+}
+
+/// **16b cut AI.1 (16c `B-84`, the corner cut)** — `tests/reflex.rs`'
+/// `ai1_a_unit_on_a_corner_steps_through_the_open_shoulder`, moved here by
+/// 17b cut M4.4: a limited hull on a corner one of whose shoulders is a wall
+/// steps through the open shoulder. Before AI.1 the follower steered at the
+/// diagonal cell's centre, the line crossed the west boundary first, motion
+/// stopped the hull `impassable` on the wall shoulder, `note_blocked` threw
+/// the route away, and after `repath_ms` the identical route was searched
+/// and driven into the same wall. `Arena::first_step_is_open`'s aim is the
+/// open shoulder's centre: no `blocked` line, one search, the open shoulder
+/// entered first, and no cell entered twice — from rest, and driving up the
+/// boundary at full speed. What moved: the hull is a mind's, online in both
+/// shapes, its goal the script's at think 0 (landing 732 against the
+/// reflex's tick at 482), and the at-speed start is one substep further back
+/// ([`M44C_CORNER_AT_SPEED_Y`]) so the landing's search runs from the same
+/// cell the reflex's tick searched from — which puts the opening pulse's
+/// cell, (16, 7), at the head of the at-speed track, so the "first cell
+/// entered" read is the track's prefix per shape, the corner cell then the
+/// open shoulder: `[(16, 8), (16, 9)]` from rest, `[(16, 7), (16, 8), (16,
+/// 9)]` at speed. The six claims are the fixture's.
+#[test]
+fn m44c_ai1_a_unit_on_a_corner_steps_through_the_open_shoulder() {
+    for at_speed_north in [false, true] {
+        let mut arena = m44c_corner(at_speed_north);
+        let run = m44c_run(&mut arena, rig::RED, 30_000, &mut |_| {});
+        let (how, prefix): (&str, &[(u16, u16)]) = if at_speed_north {
+            ("at speed", &[(16, 7), (16, 8), (16, 9)])
+        } else {
+            ("from rest", &[(16, 8), (16, 9)])
+        };
+        assert_eq!(
+            run.blocked, 0,
+            "{how}: the hull was stopped on the corner: {:?}",
+            run.track
+        );
+        assert_eq!(
+            run.counters.path_queries, 1,
+            "{how}: {:?} after {:?}",
+            run.counters, run.track
+        );
+        assert!(
+            run.track.starts_with(prefix),
+            "{how}: the first cell it entered from the corner was not the open shoulder: {:?}",
+            run.track
+        );
+        assert!(
+            !run.track.contains(&(15, 8)),
+            "{how}: it entered the wall: {:?}",
+            run.track
+        );
+        assert_eq!(
+            m44c_revisits(&run.track),
+            None,
+            "{how}: a lap round the shoulder: {:?}",
+            run.track
+        );
+        assert!(
+            m44c_arrived_at(&arena, rig::RED, (6, 18)),
+            "{how}: never arrived: {:?}",
+            run.track
+        );
+    }
+}
+
+/// **16b cut AI.1** — `tests/reflex.rs`'
+/// `ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_an_avoided_one`,
+/// moved here by 17b cut M4.4: a corner closed on both shoulders, and an
+/// unlimited hull whose search (which reads no shoulder without a limit)
+/// plans straight across it. `Arena::follow`'s own rule refuses the step —
+/// neither shoulder is open, so motion would stop it on one — and an
+/// unlimited hull **holds**: its route kept, no search spent, nothing
+/// remembered, never past the boundary. Then the same corner closed by two
+/// **parked** tanks: the hull is stopped against one shoulder (`Occupied`,
+/// remembered), steps through the other and is stopped against that too,
+/// and holds with both remembered. When one tank drives off, the hull
+/// proceeds once its memory of that cell has aged out
+/// ([`tacsim::arena::motor::REFLEX_AVOID_TTL_MS`]) — through the shoulder
+/// that is now empty. What moved: the hull is a mind's and cold on both
+/// fields, so its `Startup` is the script's at think 0 and its goal the
+/// script's `Goal(Cell (12, 12))` at think 1, landing at 1,732 where the
+/// reflex machine set its own at its second tick, 982 — a think period and
+/// a substep later, inside the 10 s window's and the 30 s loop's slack; the
+/// reflex row's "a machine" (`reflex.unit(RED).is_some()`) is the goal still
+/// held on the motor row (the kept route raises no `NoRoute` under
+/// `Fallback::Notice`, so the one scripted goal stands across the TTL); every
+/// other claim is the fixture's.
+#[test]
+fn m44c_ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_an_avoided_one() {
+    use tacsim::arena::state::Controller;
+
+    let goal = (12_u16, 12_u16);
+    // The walls.
+    let mut arena = rig::arena_on(
+        m44c_window(16, 16, &[(6, 5, rig::wall()), (5, 6, rig::wall())], &[goal]),
+        vec![rig::tank(
+            rig::RED,
+            Team::Red,
+            rig::centre(5, 5),
+            Vec::new(),
+            Controller::Mind,
+        )],
+        &m44c_cfg(),
+        &[],
+    );
+    m44c_script(&mut arena, &[(rig::RED, m44c_cold(goal))]);
+    let run = m44c_run(&mut arena, rig::RED, 10_000, &mut |_| {});
+    assert_eq!(run.counters.path_queries, 1, "{:?}", run.counters);
+    assert_eq!(run.counters.path_refused_unchanged, 0, "{:?}", run.counters);
+    assert_eq!(run.blocked, 0);
+    assert_eq!(run.track, vec![(5, 5)], "the hull went past the boundary");
+    let drive = rig::motor(&arena, rig::RED);
+    assert_eq!(drive.goal, Some(goal), "the goal is still held");
+    assert_eq!(
+        drive.route.first().copied(),
+        Some((6, 6)),
+        "the route across the corner is kept: {:?}",
+        drive.route
+    );
+    assert!(drive.avoid.is_empty());
+    assert_eq!(drive.refused, None);
+
+    // The parked tanks. The hull is posed south-east of its cell's centre, so
+    // its line to the diagonal enters the east shoulder first. The traffic
+    // hold is off (`occupied_stop_ms` 0, the rule before 16b cut E.3): a held
+    // hull slides along the boundary and can cross the corner diagonally in
+    // one substep — motion tests the diagonal cell alone — and this fixture
+    // is about the stops.
+    let mut cfg = m44c_cfg();
+    cfg.occupied_stop_ms = 0;
+    let mut arena = rig::arena_on(
+        m44c_window(16, 16, &[], &[goal]),
+        vec![
+            rig::tank(
+                rig::RED,
+                Team::Red,
+                rig::pose(5_800, 5_200),
+                Vec::new(),
+                Controller::Mind,
+            ),
+            rig::tank(
+                rig::RED2,
+                Team::Red,
+                rig::centre(6, 5),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+            rig::tank(
+                rig::BLUE,
+                Team::Red,
+                rig::centre(5, 6),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &cfg,
+        &[],
+    );
+    m44c_script(&mut arena, &[(rig::RED, m44c_cold(goal))]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut both_learned_at: Option<i64> = None;
+    let mut held_both: Vec<(i64, (u16, u16))> = Vec::new();
+    while arena.now_ms < 30_000 {
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        let learned = rig::avoided(&arena, rig::RED);
+        if both_learned_at.is_none() && learned.contains(&(6, 5)) && learned.contains(&(5, 6)) {
+            both_learned_at = Some(arena.now_ms);
+        }
+        if both_learned_at.is_some()
+            && let Some(cell) = cell_of(&arena, rig::RED)
+        {
+            held_both.push((arena.now_ms, cell));
+        }
+        wall_ms += 500;
+    }
+    let both_learned_at = both_learned_at.expect("the hull never learned both shoulders");
+    let log = rig::events(&mut arena, &mut bytes);
+    let occupied = m44c_stops_of(&log, rig::RED, Some(BlockedCause::Occupied));
+    assert_eq!(
+        occupied.iter().map(|(_, cell)| *cell).collect::<Vec<_>>(),
+        vec![(6, 5), (5, 6)],
+        "stopped once against each parked tank: {occupied:?}"
+    );
+    assert!(
+        held_both.iter().all(|(_, cell)| *cell == (5, 5)),
+        "with both shoulders remembered it held: {held_both:?}"
+    );
+    assert_eq!(
+        arena
+            .motors
+            .row(rig::RED)
+            .and_then(|row| row.route.first().copied()),
+        Some((6, 6)),
+        "and held with its route"
+    );
+    assert_eq!(
+        rig::motor(&arena, rig::RED).goal,
+        Some(goal),
+        "and with its goal: the hold is the shoulders' and not an arrival's"
+    );
+    // One tank drives off; the hull's memory of its cell ages out and it
+    // proceeds through the empty shoulder.
+    if let Some(state) = arena.unit_mut(rig::BLUE) {
+        state.pose = rig::centre(1, 14);
+    }
+    let until = both_learned_at + tacsim::arena::motor::REFLEX_AVOID_TTL_MS + 20_000;
+    let run = m44c_run(&mut arena, rig::RED, until, &mut |_| {});
+    assert!(
+        m44c_arrived_at(&arena, rig::RED, goal),
+        "the hull never proceeded: {:?}; {:?}",
+        run.track,
+        run.counters
+    );
+}
+
+/// **16b cut AI.1 (16c `B-84`, the wander rule)** — `tests/reflex.rs`'
+/// `ai1_a_shove_inside_the_circle_keeps_the_route_and_beyond_it_re_plans`,
+/// moved here by 17b cut M4.4: a hull shoved two cells off its route at full
+/// speed is inside its turning circle's diameter of the route (`2 r +
+/// cell_cm` = 6,730 cm at 1,500 cm/s) and keeps the route: no search for
+/// `repath_ms`. Shoved nine cells it is not, and its next tick searches —
+/// `Arena::follow`'s step 3. What moved: the hull is a mind's, online at
+/// full speed east, its goal the script's `Goal(Cell (28, 8))` at think 0
+/// (landing 732 against the reflex's tick at 482: the one search before the
+/// 4 s shove); the two windows are the fixture's own — the `MotorTick`
+/// cadence is `reflex.decide_ms` on the reflex tick's own grid, so "one
+/// decide tick and the pulse that carries it" is the same bound.
+#[test]
+fn m44c_ai1_a_shove_inside_the_circle_keeps_the_route_and_beyond_it_re_plans() {
+    for (cells, searches) in [(2_i64, 0_u32), (9, 1)] {
+        let goal = (28_u16, 8_u16);
+        let mut arena = rig::arena_on(
+            m44c_window(32, 32, &[], &[goal]),
+            vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(3, 8))],
+            &m44c_cfg(),
+            &[],
+        );
+        m44c_script(&mut arena, &[(rig::RED, m44c_hot(goal))]);
+        m44c_at_speed(&mut arena, rig::RED, 90_000);
+        // To the shove: the one search of the run, and the route.
+        let before = m44c_run(&mut arena, rig::RED, 4_000, &mut |_| {});
+        assert_eq!(before.counters.path_queries, 1, "{:?}", before.counters);
+        if let Some(state) = arena.unit_mut(rig::RED) {
+            state.pose.y_cm += cells * i64::from(rig::CELL_CM);
+        }
+        let window = if searches == 0 {
+            // `repath_ms`: a search inside it would be the wander rule's.
+            4_000 + i64::from(m44c_cfg().reflex.repath_ms)
+        } else {
+            // One motor tick, and the pulse that carries it.
+            4_000 + i64::from(m44c_cfg().reflex.decide_ms) + 500
+        };
+        let after = m44c_run(&mut arena, rig::RED, window, &mut |_| {});
+        assert_eq!(
+            after.counters.path_queries, searches,
+            "shoved {cells} cells: {:?} after {:?}",
+            after.counters, after.track
+        );
+    }
+}
+
+// ---- the cross-tempo field (16b §11: mandatory) -----------------------------
+
+/// The orbiting follower of the AI.1 field.
+const M44C_ORBIT: ObjId = ObjId(21);
+/// The corner unit.
+const M44C_CORNER: ObjId = ObjId(22);
+/// The pinch unit.
+const M44C_PINCH: ObjId = ObjId(23);
+/// The unit stopped by the ground beside its route.
+const M44C_BESIDE: ObjId = ObjId(24);
+/// The seated tank they detect.
+const M44C_SEATED: ObjId = ObjId(25);
+
+/// **The AI.1 field** (16b cut AI.1; `tests/reflex.rs`' `ai1_field`): one
+/// window, four machine hulls each with a goal of its own — the node nearest
+/// it, now the script's — and a seated tank.
+///
+/// - [`M44C_ORBIT`], the follower of
+///   [`m44c_ai1_a_follower_inside_its_circle_keeps_its_route_and_arrives`]: at
+///   full speed, its goal `(28, 56)` behind it, handed at think 0.
+/// - [`M44C_CORNER`], limited, on the corner of
+///   [`m44c_ai1_a_unit_on_a_corner_steps_through_the_open_shoulder`], at rest
+///   and cold: `Startup` at think 0, `(42, 18)` at think 1.
+/// - [`M44C_PINCH`], limited, cold, at a two-wall pinch on the window's south
+///   edge: walls east and north of it and its goal `(12, 0)` two cells east,
+///   so the search refuses the corner between the walls and plans round —
+///   west, north, and back **beside its start** at the corner's far cell,
+///   across the closed corner.
+/// - [`M44C_BESIDE`], cold, a few centimetres below its cell's north
+///   boundary, heading 30° with a wall to its north and its goal `(20, 30)`
+///   to the east: its first substeps under power carry it into the wall
+///   while its heading turns toward the route (the M.2 shape), which is one
+///   `impassable` stop **beside** its route, and the route is kept.
+/// - [`M44C_SEATED`], a seated tank of the other side, parked where the
+///   orbit follower arrives, so the run detects and classifies.
+fn m44c_field() -> Arena {
+    use tacsim::arena::state::Controller;
+
+    let paint = [
+        // The corner.
+        (51_u16, 8_u16, rig::wall()),
+        // The pinch.
+        (11, 0, rig::wall()),
+        (10, 1, rig::wall()),
+        // Beside the route.
+        (10, 31, rig::wall()),
+    ];
+    let nodes = [(28_u16, 56_u16), (42, 18), (12, 0), (20, 30)];
+    let mut arena = rig::arena_on(
+        m44c_window(64, 64, &paint, &nodes),
+        vec![
+            m44c_slow_tank(M44C_ORBIT, Team::Red, rig::centre(44, 56)),
+            m44c_slow_tank(M44C_CORNER, Team::Red, rig::pose(52_000, 8_500)),
+            m44c_slow_tank(M44C_PINCH, Team::Red, rig::centre(10, 0)),
+            m44c_slow_tank(M44C_BESIDE, Team::Red, rig::pose(10_500, 30_990)),
+            rig::tank(
+                M44C_SEATED,
+                Team::Blue,
+                rig::centre(26, 59),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &m44c_cfg(),
+        &[M44C_SEATED],
+    );
+    m44c_script(
+        &mut arena,
+        &[
+            (M44C_ORBIT, m44c_hot((28, 56))),
+            (M44C_CORNER, m44c_cold((42, 18))),
+            (M44C_PINCH, m44c_cold((12, 0))),
+            (M44C_BESIDE, m44c_cold((20, 30))),
+        ],
+    );
+    m44c_at_speed(&mut arena, M44C_ORBIT, 90_000);
+    for unit in [M44C_CORNER, M44C_PINCH] {
+        m44c_limited(&mut arena, unit);
+    }
+    if let Some(state) = arena.unit_mut(M44C_PINCH) {
+        state.pose.heading_mdeg = 315_000;
+    }
+    if let Some(state) = arena.unit_mut(M44C_BESIDE) {
+        state.pose.heading_mdeg = 30_000;
+    }
+    arena
+}
+
+/// What one replay of an AI.1 field produced (`tests/reflex.rs`' `Replay`,
+/// without the state column: the hulls are a script's, and what the script
+/// decided is the goal): every ledger line with its hash, the per-substep
+/// hash sequence, each unit's final pose, speed and goal, and how many
+/// pulses it took (three cadences really are three different numbers of
+/// pulses, so an equality of the three is a property and not three copies
+/// of one run).
+struct M44cReplay {
+    events: Vec<(i64, String, u64)>,
+    hashes: Vec<u64>,
+    finals: Vec<M44cFinal>,
+    pulses: u32,
+}
+
+/// One unit as a replay ends: where it is, how it is headed, how fast, and
+/// the goal its script's mind holds.
+type M44cFinal = (ObjId, i64, i64, u32, i32, Option<(u16, u16)>);
+
+/// `build`'s field replayed at `cadence_ms` until `until_ms`, the tempo
+/// pinned `Quiet` (D-16-2: the tempo decides only how often the arena steps)
+/// and every pulse settled.
+fn m44c_replay(cadence_ms: i64, until_ms: i64, build: fn() -> Arena) -> M44cReplay {
+    let mut arena = build();
+    arena
+        .clock
+        .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut pulses = 0_u32;
+    loop {
+        let out = arena.step_settled(wall, &[], &[]);
+        pulses = pulses.saturating_add(1);
+        rig::absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = rig::events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let finals = arena
+        .units
+        .iter()
+        .map(|unit| {
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                rig::motor(&arena, unit.id).goal,
+            )
+        })
+        .collect();
+    M44cReplay {
+        events,
+        hashes,
+        finals,
+        pulses,
+    }
+}
+
+/// The three cadences of `build`'s field to `until_ms`, held to one event
+/// list, one hash sequence, one set of finals and three pulse counts.
+fn m44c_three_cadences(until_ms: i64, build: fn() -> Arena) -> Vec<M44cReplay> {
+    let runs: Vec<M44cReplay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| m44c_replay(cadence, until_ms, build))
+        .collect();
+    let first = runs.first().expect("three replays");
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+        assert_ne!(
+            run.pulses, first.pulses,
+            "three cadences, three pulse counts"
+        );
+    }
+    runs
+}
+
+/// **16b cut AI.1's cross-tempo proof** (16b §11, mandatory; doc 16 §3.1's
+/// D-16-2) — `tests/reflex.rs`'
+/// `ai1_the_orbit_the_corner_and_a_stop_beside_the_route_are_one_log_at_three_cadences`,
+/// moved here by 17b cut M4.4: the orbit, the corner, the pinch and a stop
+/// beside the route, in one field, are one event list, one per-substep hash
+/// sequence and one set of finals at 5,000, 1,000 and 500 ms — and the run
+/// is worth comparing. Every edge is `Arena::follow`'s, the search's or
+/// motion's (the circle, the open shoulder, the pinch's refused corner, the
+/// one `impassable` stop beside the route with the route kept); the
+/// controller supplied one goal each, and here the script does: the hot
+/// orbit's at think 0, the three cold hulls' `Startup` at think 0 and goal
+/// at think 1. What moved: the finals carry no state column (a scripted
+/// mind has none to read), and the reflex's tick stamp — a `startup` line
+/// at its unit's own tick — becomes the mind's form: every `startup` line
+/// one substep after its unit's `stagger_ms(SEED, unit, 1_000)`, never on
+/// it. Every other claim is the fixture's, the counters read off the
+/// motor's.
+#[test]
+fn m44c_ai1_the_orbit_the_corner_and_a_stop_beside_the_route_are_one_log_at_three_cadences() {
+    let runs = m44c_three_cadences(40_000, m44c_field);
+    let first = runs.first().expect("three replays");
+
+    // Worth comparing. The run again at 500 ms, watched pulse by pulse: the
+    // counters, each hull's searches (a pulse at this cadence holds at most
+    // one tick of each), and where each arrived.
+    let mut arena = m44c_field();
+    arena
+        .clock
+        .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+    let mut counters = ReflexCounters::default();
+    let mut searches: std::collections::BTreeMap<ObjId, u32> = std::collections::BTreeMap::new();
+    let mut stamps: std::collections::BTreeMap<ObjId, Option<i64>> =
+        std::collections::BTreeMap::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    while arena.now_ms < 40_000 {
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        for unit in [M44C_ORBIT, M44C_CORNER, M44C_PINCH, M44C_BESIDE] {
+            let stamp = arena.motors.row(unit).and_then(|row| row.searched_ms);
+            if stamp.is_some() && stamps.get(&unit).copied().flatten() != stamp {
+                *searches.entry(unit).or_default() += 1;
+            }
+            stamps.insert(unit, stamp);
+        }
+        wall_ms += 500;
+    }
+    let log = rig::events(&mut arena, &mut bytes);
+    assert!(counters.path_queries >= 1, "{counters:?}");
+    // The counter is the field's, and it is the pinch's: the pinch's two walls
+    // are the only pair on the window diagonal to each other, so no other
+    // hull's search or one-cell test can meet a corner closed on both
+    // shoulders.
+    assert!(
+        counters.corner_refusals > 0,
+        "the pinch unit's search refused no corner: {counters:?}"
+    );
+    assert_eq!(counters.path_refused_unchanged, 0, "{counters:?}");
+    assert!(
+        m44c_arrived_at(&arena, M44C_ORBIT, (28, 56))
+            || m44c_arrived_at(&arena, M44C_BESIDE, (20, 30)),
+        "no hull arrived"
+    );
+    for unit in [M44C_ORBIT, M44C_CORNER, M44C_PINCH] {
+        assert!(
+            searches.get(&unit).copied().unwrap_or(0) <= 2,
+            "#{} searched {:?} times",
+            unit.0,
+            searches.get(&unit)
+        );
+    }
+    // The stop beside the route, and it is `M44C_BESIDE`'s: exactly one
+    // `impassable` line, on the wall to its north, at one arena millisecond
+    // at all three cadences (the event lists are equal) — and the route it
+    // was stopped beside is **kept**, so that one stop costs no second
+    // search.
+    let beside = m44c_stops_of(&log, M44C_BESIDE, Some(BlockedCause::Impassable));
+    assert_eq!(
+        beside.iter().map(|(_, cell)| *cell).collect::<Vec<_>>(),
+        vec![(10, 31)],
+        "the unit beside its route was not stopped once on the wall to its north: {beside:?}"
+    );
+    assert_eq!(
+        m44c_stops_of(&log, M44C_BESIDE, None),
+        beside,
+        "the unit beside its route was stopped by something else too"
+    );
+    assert_eq!(
+        searches.get(&M44C_BESIDE).copied(),
+        Some(1),
+        "the stop beside the route threw the route away and bought a second search: {beside:?}"
+    );
+    // The corner and the pinch are never stopped by the ground: the corner
+    // unit steps through its open shoulder and the pinch unit leaves by the
+    // open side — a stop on a wall shoulder there would be `B-84`'s corner
+    // stop, kept silent by the route-keeping rule above.
+    for unit in [M44C_CORNER, M44C_PINCH] {
+        assert!(
+            m44c_stops_of(&log, unit, None).is_empty(),
+            "#{} was stopped by the ground: {:?}",
+            unit.0,
+            m44c_stops_of(&log, unit, None)
+        );
+    }
+    for unit in [M44C_ORBIT, M44C_CORNER, M44C_PINCH, M44C_BESIDE] {
+        assert!(
+            m44c_stops_of(&log, unit, Some(BlockedCause::TooSteep)).is_empty(),
+            "#{} was stopped `too_steep`",
+            unit.0
+        );
+    }
+    // A mind's own action at its own landing: the cold hulls' `startup`
+    // lines (16b cut M.2's stamp; the heading and speed orders journal no
+    // line) — each one substep after its unit's think 0, never on it.
+    let substep = arena.substep_len_ms();
+    let startups: Vec<(ObjId, i64)> = log
+        .iter()
+        .filter(|event| event.kind.as_str() == "startup")
+        .filter_map(|event| m44c_startup_unit(event).map(|unit| (unit, event.t_ms)))
+        .collect();
+    assert!(!startups.is_empty(), "no hull's startup was journalled");
+    for (unit, t_ms) in &startups {
+        let past_think = (t_ms - support::scripted::think_at(*unit, 0))
+            .rem_euclid(tacsim::arena::mind::STOCK_THINK_MS);
+        assert_ne!(
+            past_think, 0,
+            "#{}'s startup was stamped on its think, not its landing: {t_ms}",
+            unit.0
+        );
+        assert_eq!(
+            past_think, substep,
+            "#{}'s startup was not stamped one substep after its think: {t_ms}",
+            unit.0
+        );
+    }
+    for kind in ["detected", "classified"] {
+        assert!(
+            first.events.iter().any(|(_, json, _)| json.contains(kind)),
+            "the field never journalled a {kind}"
+        );
+    }
+}
+
+/// **The two routes that come back beside their start** (16b cut AI.1;
+/// `tests/reflex.rs`' `ai1_come_back`): a limited hull at a two-wall pinch
+/// on the window's south edge (walls east and north, its goal two cells
+/// east), and a limited hull at the foot of an 800 cm plateau whose only way
+/// up is a 400 cm ramp cell to its north-west. Both cold: `Startup` at think
+/// 0 and the goal — `(12, 0)` and `(32, 11)`, the nodes — at think 1.
+fn m44c_come_back() -> Arena {
+    // The pinch, at (10, 0).
+    let mut paint = vec![(11_u16, 0_u16, rig::wall()), (10, 1, rig::wall())];
+    // The plateau: columns 29 to 36, rows 11 to 17, 800 cm up, with the ramp
+    // at (29, 11), 400 cm up. The foot is (30, 10).
+    for x in 29..=36_u16 {
+        for y in 11..=17_u16 {
+            let elev_cm = if (x, y) == (29, 11) { 400 } else { 800 };
+            paint.push((
+                x,
+                y,
+                tacsim::arena::state::TerrainCell {
+                    elev_cm,
+                    ..rig::ground()
+                },
+            ));
+        }
+    }
+    let nodes = [(12_u16, 0_u16), (32, 11)];
+    let mut arena = rig::arena_on(
+        m44c_window(48, 48, &paint, &nodes),
+        vec![
+            m44c_slow_tank(M44C_PINCH, Team::Red, rig::centre(10, 0)),
+            m44c_slow_tank(M44C_CORNER, Team::Red, rig::centre(30, 10)),
+        ],
+        &m44c_cfg(),
+        &[],
+    );
+    m44c_script(
+        &mut arena,
+        &[
+            (M44C_PINCH, m44c_cold((12, 0))),
+            (M44C_CORNER, m44c_cold((32, 11))),
+        ],
+    );
+    for unit in [M44C_PINCH, M44C_CORNER] {
+        m44c_limited(&mut arena, unit);
+    }
+    if let Some(state) = arena.unit_mut(M44C_PINCH) {
+        state.pose.heading_mdeg = 315_000;
+    }
+    arena
+}
+
+/// **16b cut AI.1: a route that comes back beside its start across an edge
+/// the search refused is followed, not shortened** — `tests/reflex.rs`'
+/// `ai1_a_limited_unit_whose_route_comes_back_beside_it_does_not_re_search`,
+/// moved here by 17b cut M4.4. A\* detours to an adjacent cell exactly when
+/// the direct edge is refused, so a follower that drained its route to any
+/// adjacent later cell would aim across the closed corner (and re-plan every
+/// tick) or up the bluff (and be stopped `too_steep` at its route's own next
+/// cell). Neither is: each hull searches once, leaves its cell by the open
+/// side, is never stopped by the ground, and arrives — at 5,000, 1,000 and
+/// 500 ms alike. What moved: both hulls are a mind's and cold, their
+/// `Startup` the script's at think 0 and their goals the script's at think 1
+/// (the nodes the reflex's `Patrol` picked); the finals carry no state
+/// column; every claim is the fixture's.
+#[test]
+fn m44c_ai1_a_limited_unit_whose_route_comes_back_beside_it_does_not_re_search() {
+    let _runs = m44c_three_cadences(30_000, m44c_come_back);
+
+    let mut arena = m44c_come_back();
+    arena
+        .clock
+        .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+    // The routes as first planned, to prove the premise: each comes back
+    // beside its start.
+    let mut planned: std::collections::BTreeMap<ObjId, Vec<(u16, u16)>> =
+        std::collections::BTreeMap::new();
+    let mut searches: std::collections::BTreeMap<ObjId, u32> = std::collections::BTreeMap::new();
+    let mut stamps: std::collections::BTreeMap<ObjId, Option<i64>> =
+        std::collections::BTreeMap::new();
+    let mut tracks: std::collections::BTreeMap<ObjId, Vec<(u16, u16)>> =
+        std::collections::BTreeMap::new();
+    let mut counters = ReflexCounters::default();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    while arena.now_ms < 30_000 {
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        rig::absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        for unit in [M44C_PINCH, M44C_CORNER] {
+            let drive = rig::motor(&arena, unit);
+            if drive.searched_ms.is_some()
+                && stamps.get(&unit).copied().flatten() != drive.searched_ms
+            {
+                *searches.entry(unit).or_default() += 1;
+                planned.entry(unit).or_insert_with(|| drive.route.clone());
+            }
+            stamps.insert(unit, drive.searched_ms);
+            if let Some(cell) = cell_of(&arena, unit) {
+                let track = tracks.entry(unit).or_default();
+                if track.last() != Some(&cell) {
+                    track.push(cell);
+                }
+            }
+        }
+        wall_ms += 500;
+    }
+    let log = rig::events(&mut arena, &mut bytes);
+    // The premises: a route cell adjacent to the start across a refused edge.
+    let pinch = planned.get(&M44C_PINCH).cloned().unwrap_or_default();
+    assert!(
+        pinch.contains(&(11, 1)),
+        "the pinch's route does not come back beside its start: {pinch:?}"
+    );
+    let plateau = planned.get(&M44C_CORNER).cloned().unwrap_or_default();
+    assert!(
+        plateau.contains(&(29, 11)) && plateau.contains(&(30, 11)),
+        "the plateau's route does not climb the ramp and come back above its start: {plateau:?}"
+    );
+    assert!(counters.corner_refusals > 0, "{counters:?}");
+    for (unit, goal, open) in [
+        (M44C_PINCH, (12, 0), (9, 0)),
+        (M44C_CORNER, (32, 11), (29, 10)),
+    ] {
+        assert_eq!(
+            searches.get(&unit).copied(),
+            Some(1),
+            "#{} searched more than once: {counters:?}",
+            unit.0
+        );
+        assert!(
+            m44c_stops_of(&log, unit, None).is_empty(),
+            "#{} was stopped by the ground: {:?}",
+            unit.0,
+            m44c_stops_of(&log, unit, None)
+        );
+        let track = tracks.get(&unit).cloned().unwrap_or_default();
+        assert_eq!(
+            track.get(1).copied(),
+            Some(open),
+            "#{} did not leave its cell by the open side: {track:?}",
+            unit.0
+        );
+        assert!(
+            m44c_arrived_at(&arena, unit, goal),
+            "#{} never arrived: {track:?}",
+            unit.0
+        );
+    }
 }

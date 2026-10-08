@@ -48,6 +48,8 @@ pub mod yard;
 /// `tests/content.rs` so the version-1 ground a shelf test boots on can be
 /// built ([`ground::atlas_pack_at`]).
 pub mod ground;
+pub mod rig;
+pub mod scripted;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
