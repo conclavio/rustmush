@@ -12,10 +12,12 @@
 #
 # It runs every ignored lane of crates/tacsim/tests/harness.rs in release —
 # the lance lane (tacsim_harness_lance, 16b cut Z.1: twelve machines a side in
-# lances of four under a scripted commander on the proving ground) among them —
-# then the delta against the committed crates/tacsim/tests/harness_baseline/
-# arena.<os>.json, and stops non-zero at the first failure. The reports land at
-# the workspace root as harness*.json.
+# lances of four under a scripted commander on the proving ground) and the
+# minds lane (tacsim_harness_arena_minds, 17b cut M4.2: the relief cohort as
+# unit minds in four variants, fill first) among them — then the delta against
+# the committed crates/tacsim/tests/harness_baseline/arena.<os>.json, and stops
+# non-zero at the first failure. The reports land at the workspace root as
+# harness*.json.
 #
 # What asserts where:
 #   * this script exports TACSIM_ASSERT=1, so every lane asserts its absolutes
@@ -40,6 +42,20 @@
 #     TACSIM_LANCE_UNITS=24, TACSIM_LANCE_ARENA_S=120, jitter 0; off them the
 #     fight decides those) — and prints its timing beside 12 ms and 20 ms,
 #     report-only;
+#   * the minds lane (17b cut M4.2) collects every check into one
+#     harness_minds_verdict line per variant and panics ONCE at the end: `held=`
+#     is exactly the plan's listed asserts (wake p99 12 ms, window p99 the
+#     cohort's lens counting inline think time, faults nought on every variant,
+#     ops nought on the stock variants, ops per window and per substep within
+#     the pool, the load mind's ops p1 at least 4,300, the computed CPU lens),
+#     `sound=` the lane's integrity (a failed batch, a refused snapshot, a cold
+#     field — a `sound=no` run is re-run, never counted). The fill variant's
+#     `held=` over THREE idle-host runs of this script is the decision
+#     `tacsim::match_::PRODUCTION_FILL_ENGINE` records before 17b cut M4.3's
+#     flip (`held=yes` three times keeps `scripted`, any `held=no` moves it to
+#     `native`); a `stock_ci` `held=no` is the owner's STOP before 17b cut M4.5.
+#     Its four harness-minds-<variant>.json reports carry a deterministic
+#     `minds` block the delta compares only once the baseline carries one;
 #   * the delta fails on any difference in the deterministic block, and on a
 #     timing figure more than 20 per cent slower on the host that blessed the
 #     file — a timing-only failure is re-run once before it is believed;

@@ -463,7 +463,9 @@ jobs:
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack
   # route, and measures the ground pulse, `Arena::step` on the fielded catalog
   # at the CI reach and at the authored reach, a long run, a 24-pilot
-  # fan-out and the 12 v 12 lance lane (`tacsim_harness_lance`, 16b cut Z.1)
+  # fan-out, the 12 v 12 lance lane (`tacsim_harness_lance`, 16b cut Z.1) and
+  # the minds lane (`tacsim_harness_arena_minds`, 17b cut M4.2: the cohort as
+  # unit minds in four variants, fill first, on a real think pool)
   # (`harness_*:` lines in the log, `harness*.json` uploaded). Every
   # test is `#[ignore]`; this job is the only CI job that runs them, on demand
   # or weekly, never on push, and no Redis is involved.
@@ -489,10 +491,12 @@ jobs:
   #
   # Size it with TACSIM_UNITS / TACSIM_ARENA_S / TACSIM_LONG_RUN_S / TACSIM_FIGHTING /
   # TACSIM_SEED / TACSIM_SENSOR_CELLS / TACSIM_SHARE_CELLS /
-  # TACSIM_WAKE_JITTER_MS (TACSIM_PULSES sizes the ground-pulse lane only). The
-  # delta reads harness-arena.json alone: an arena knob at other than its
-  # default is a different run, and its delta says so; TACSIM_LONG_RUN_S and
-  # TACSIM_PULSES size lanes the delta does not read.
+  # TACSIM_WAKE_JITTER_MS (TACSIM_PULSES sizes the ground-pulse lane only;
+  # TACSIM_MINDS_JITTER_MS and TACSIM_MINDS_JITTER_PER_MILLE the minds lane's
+  # late wakes, 17b cut M4.2). The delta reads harness-arena.json, and the four
+  # harness-minds-<variant>.json once the baseline carries a `minds` block: an
+  # arena knob at other than its default is a different run, and its delta says
+  # so; TACSIM_LONG_RUN_S and TACSIM_PULSES size lanes the delta does not read.
   tacsim-harness:
     name: 16b cut H TacSim harness
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

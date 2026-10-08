@@ -673,8 +673,9 @@ impl Default for CommandConfig {
 /// each arena at check-out** (`crate::arena_task::spawn_arena` writes it to
 /// `Arena::odds_floor_permille`, which the snapshot carries), so a reload of this
 /// block never reaches a running or a resumed match. **17b cut M1b.5** adds
-/// `fill_controller`, a lab knob; from 17b cut M3 the classes, the pool,
-/// `cpu_lens_ms` and `workers`.
+/// `fill_controller`, a lab knob; from 17b cut M3 the classes and the pool;
+/// 17b cut M4.1 `workers` and 17b cut M4.2 `cpu_lens_ms` (the minds lane's
+/// reference figure, read by no match).
 ///
 /// **This block is never carried** (the snapshot carries `match_cfg`, not
 /// this): `fill_controller` is read once, at `crate::match_::start`, and moves
@@ -733,11 +734,25 @@ pub struct MindsConfig {
     /// Never carried: a resumed match thinks on the process's pool.
     #[serde(default = "default_workers")]
     pub workers: u32,
+    /// **The mind CPU lens, milliseconds per 500 ms window** (17b cut M4.2;
+    /// doc 17 §18): the reference figure the minds lane
+    /// (`tacsim_harness_arena_minds`) PRINTS beside the lens it asserts —
+    /// which is computed, the pool's ops per window over the host's measured
+    /// ops per microsecond times five quarters (the M4 row's finding (7)) —
+    /// never a throttle the arena applies (D-16-2) and never read by a match.
+    /// Stock 5; at least 1 ([`MindsConfig::validate`]).
+    #[serde(default = "default_cpu_lens_ms")]
+    pub cpu_lens_ms: u32,
 }
 
 /// `workers`' default: doc 17 §6's two.
 const fn default_workers() -> u32 {
     2
+}
+
+/// `cpu_lens_ms`' default: doc 17 §18's five.
+const fn default_cpu_lens_ms() -> u32 {
+    5
 }
 
 /// **The most worker threads `[tacsim.minds].workers` may name** (17b cut
@@ -780,6 +795,8 @@ impl Default for MindsConfig {
             pool_floor_ops_s: default_pool_floor_ops_s(),
             // 17b cut M4.1: doc 17 §6's two workers.
             workers: default_workers(),
+            // 17b cut M4.2: doc 17 §18's five milliseconds, printed beside.
+            cpu_lens_ms: default_cpu_lens_ms(),
         }
     }
 }
@@ -821,6 +838,13 @@ impl MindsConfig {
             return Err(format!(
                 "[tacsim.minds].workers must be 1 to {MAX_MIND_WORKERS} (it is {})",
                 self.workers
+            ));
+        }
+        // 17b cut M4.2: the CPU lens's reference figure, at least one.
+        if self.cpu_lens_ms < 1 {
+            return Err(format!(
+                "[tacsim.minds].cpu_lens_ms must be at least 1 (it is {})",
+                self.cpu_lens_ms
             ));
         }
         self.validate_classes()
@@ -2171,6 +2195,38 @@ mod m4_tests {
             }
             .validate(),
             Ok(())
+        );
+    }
+
+    /// **17b cut M4.2** (doc 17 §18): `[tacsim.minds].cpu_lens_ms` reads 5
+    /// when absent, is held at least 1 by name, and is the reference figure
+    /// the minds lane prints beside its computed lens — never a throttle.
+    #[test]
+    fn m4_2_the_cpu_lens_reads_five_and_is_held_at_least_one() {
+        assert_eq!(MindsConfig::default().cpu_lens_ms, 5);
+        let absent: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100}"#).expect("the block decodes");
+        assert_eq!(absent.cpu_lens_ms, 5, "absent reads the stock five");
+        let fifty: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100, "cpu_lens_ms": 50}"#)
+                .expect("the block decodes");
+        assert_eq!(fifty.cpu_lens_ms, 50);
+        assert_eq!(fifty.validate(), Ok(()));
+        assert_eq!(
+            MindsConfig {
+                cpu_lens_ms: 1,
+                ..MindsConfig::default()
+            }
+            .validate(),
+            Ok(())
+        );
+        assert_eq!(
+            MindsConfig {
+                cpu_lens_ms: 0,
+                ..MindsConfig::default()
+            }
+            .validate(),
+            Err("[tacsim.minds].cpu_lens_ms must be at least 1 (it is 0)".to_owned())
         );
     }
 }

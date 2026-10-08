@@ -1252,8 +1252,8 @@ scripts/harness-weekly.sh
 
 It runs every ignored harness lane in release — the ground pulse, the arena at
 the CI reach and at the authored reach, the ten-minute long run, the 24-pilot
-fan-out and the lance lane — and then the **delta** against the committed
-baseline, and stops
+fan-out, the lance lane and the minds lane — and then the **delta** against the
+committed baseline, and stops
 non-zero at the first failure. The two `cargo test` lines are the CI job's,
 verbatim (a test holds them equal); only the environment differs.
 
@@ -1272,6 +1272,10 @@ verbatim (a test holds them equal); only the environment differs.
   stops the 30-second lane taking snapshots; it is for measuring what the encode
   costs the lenses (off against on), the script never sets it, and an asserting
   run refuses it.
+- **The minds lane** (`tacsim_harness_arena_minds`, 17b cut M4.2) collects every
+  check into one `harness_minds_verdict` line per variant and panics once at the
+  end: `held=` over exactly the plan's listed asserts (the decision's word) and
+  `sound=` over the lane's integrity (never a decision input); see below.
 - **The delta** (`tacsim_harness_delta_against_the_committed_baseline`) reads the
   fresh `harness-arena.json` and `crates/tacsim/tests/harness_baseline/arena.<os>.json`.
   It fails on **any** difference in the deterministic block (the world, the
@@ -1280,7 +1284,10 @@ verbatim (a test holds them equal); only the environment differs.
   per field first, and on a timing figure (the wake p50 and p99, the window p99)
   more than **20 per cent slower** — but only on the host that blessed the file
   (the same OS, core count and machine name). Faster by as much prints
-  `re-bless when this holds` and passes.
+  `re-bless when this holds` and passes. Since 17b cut M4.2 it also reads the
+  four `harness-minds-<variant>.json` reports and compares each one's `minds`
+  block — once the baseline carries a `minds` object (17b cut M4.5's bless);
+  until then it says so and skips.
 - **The CI job** sets no `TACSIM_ASSERT`: it runs on a shared runner, whose speed
   is not a threshold (D-H-8), so there the absolutes are report-only and the delta
   is the one step that fails the job. The runner is never the blessing host, so
@@ -1309,6 +1316,46 @@ per-wake p99 is printed beside 12 ms and the per-window p99 beside 20 ms, the
 authored lane's lenses, and nothing is asserted about either. It writes
 `harness-lance.json`, which the delta does not read.
 
+**The minds lane** (`tacsim_harness_arena_minds`, 17b cut M4.2; doc 17 §18 and
+§22's M4). The relief cohort — `TACSIM_UNITS` (300) units, `TACSIM_FIGHTING`
+(24) seated as frame sinks — fielded as unit minds (`Controller::Mind`) in four
+variants run **fill first**: `fill_authored` (thirty-six Class I hulls a side on
+`tacsim::match_::PRODUCTION_FILL_ENGINE`, the rest the ROM, at the authored
+reach), `stock_ci` and `stock_authored` (every hull the ROM — Class 0, the
+native stock mind — at the CI and the authored reach) and `ceiling_authored`
+(two `heavy_mk1` a side at Class III on a load mind calibrated to 4,300–4,499
+ops + fees, scattered deepest in each side's rear so a turret hit does not
+degrade their command core mid-run, the rest the ROM). Each is stepped with `Arena::step` and a private
+think pool of `[tacsim.minds].workers` threads on the arena task's own policy
+(the batch submitted after the publish, awaited at the next wake's head and
+before a due snapshot's encode), with a seeded quarter of its wakes one substep
+late (`TACSIM_MINDS_JITTER_MS` 250 on `TACSIM_MINDS_JITTER_PER_MILLE` 250) so
+the inline path is measured, every think's ops, fees and microseconds recorded.
+It prints `harness_minds_{pool,thinks,ops,cpu,window,verdict}` per variant.
+**`held=`** on the verdict line is exactly the plan's asserts — wake p99 12 ms,
+window p99 the cohort's lens (12 ms CI, 20 ms authored) counting inline think
+time over the comparable windows (the ones carrying exactly the lattice's two
+substeps: a late wake due mid-window moves a substep into the next window, so a
+jittered run also has one- and three-substep windows, printed beside and never
+asserted), faults nought on every variant, ops nought on the stock variants, ops per
+window and per substep within the pool, the load mind's ops p1 at least 4,300,
+and the CPU lens, computed as the pool's ops per window over the host's measured
+rate on Standard Doctrine times five quarters (`[tacsim.minds].cpu_lens_ms` is
+printed beside it, never asserted). **`sound=`** is the lane's integrity — a
+failed batch, a think outstanding at a step's head, a refused snapshot, a cold
+or a quiet field, the stat cross-check — and never a decision input: a
+`sound=no` run is re-run, not counted. Under `TACSIM_ASSERT` it panics once at
+the end naming every variant that did not hold or was not sound. **The
+decision**: the fill variant's `held=` word over three idle-host runs of this
+script is what 17b cut M4.3's flip reads — `held=yes` three times keeps
+`scripted`, any `held=no` moves `PRODUCTION_FILL_ENGINE` to `native`; the
+committer pastes the three `harness_minds_verdict: variant=fill_authored` lines
+into the constant's decision log and 17b §2. A `stock_ci` `held=no` is the
+owner's STOP before 17b cut M4.5 moves the CI lane onto minds. Its four
+`harness-minds-<variant>.json` reports carry a deterministic `minds` block
+(thinks, inline and pooled, landings, faults, ops, fees, the final substep
+hash) that the delta compares once the baseline carries one.
+
 **Blessing.** `TACSIM_BASELINE_BLESS=1 scripts/harness-weekly.sh` rewrites this
 platform's `arena.<os>.json` from the fresh report, with a `blessed` stanza (the
 commit, the date, the host), and then compares against what it wrote. Commit
@@ -1327,8 +1374,9 @@ different at the default knobs.
 
 The reports land at the repository root: `harness.json` (the ground pulse),
 `harness-arena.json`, `harness-arena-authored.json`, `harness-arena-long.json`,
-`harness-fan-out.json` and `harness-lance.json`. The delta reads
-`harness-arena.json` alone, so the
+`harness-fan-out.json`, `harness-lance.json` and the four
+`harness-minds-<variant>.json`. The delta reads `harness-arena.json` (and the
+four minds reports once the baseline carries a `minds` block), so the
 knobs that move it are the arena's: `TACSIM_UNITS`, `TACSIM_ARENA_S`,
 `TACSIM_FIGHTING`, `TACSIM_SEED`, `TACSIM_SENSOR_CELLS`, `TACSIM_SHARE_CELLS`
 and `TACSIM_WAKE_JITTER_MS` — expect the delta to fail on the deterministic

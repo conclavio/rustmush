@@ -178,6 +178,42 @@
 //! print a `harness_lance_goal_cost` line (report-only), which is how the two
 //! are read side by side.
 //!
+//! **The minds lane since 17b cut M4.2** (the M4 row's (ii); doc 17 §18,
+//! §22's M4). One more ignored lane on the one ignore string,
+//! `tacsim_harness_arena_minds`: the relief cohort fielded as
+//! `Controller::Mind` hulls in four variants run FILL FIRST —
+//! `fill_authored` (thirty-six Class I hulls a side on
+//! `PRODUCTION_FILL_ENGINE`, the rest the ROM), `stock_ci` and
+//! `stock_authored` (every hull the ROM, Class 0, native) and
+//! `ceiling_authored` (two `heavy_mk1` a side at Class III on the load mind
+//! `tests/support/load_iii.rhai`, calibrated to 4,300–4,499 ops + fees) —
+//! each stepped with `Arena::step` and a private `MindPool` of
+//! `[tacsim.minds].workers` threads on the arena task's own policy (the
+//! batch submitted after the publish, awaited at the next wake's head and
+//! before a due snapshot's encode), a seeded quarter of its wakes one substep
+//! late (`TACSIM_MINDS_JITTER_MS` 250 on a `TACSIM_MINDS_JITTER_PER_MILLE`
+//! 250 fraction; on the lattice, not the row's literal 60: the section head
+//! says why) so the inline path is measured, every think's ops, fees and
+//! microseconds recorded, `view_us` sampled on forty wakes, the lines
+//! `harness_minds_{pool,thinks,ops,cpu,verdict}` beside the arena lane's
+//! reprinted, and every check collected into one `harness_minds_verdict`
+//! line a variant: `held=` over exactly the plan's listed asserts (wake p99
+//! 12 ms, window p99 the cohort's lens counting inline time, faults nought on
+//! every variant, ops nought on the stock variants, ops per window and per
+//! substep within the pool, the load mind's ops p1 at least 4,300, the
+//! computed CPU lens — the pool's ops per window over the host's measured
+//! rate on Standard Doctrine by five quarters, `[tacsim.minds].cpu_lens_ms`
+//! printed beside) and `sound=` over the lane's integrity (never a decision
+//! input); one panic at the end under `TACSIM_ASSERT`. The fill variant's
+//! verdict over three idle-host weekly runs is the decision
+//! (`tacsim::match_::PRODUCTION_FILL_ENGINE`) 17b cut M4.3's flip reads; a
+//! `stock_ci` `held=no` on the blessing host is the owner's STOP before 17b
+//! cut M4.5. Its JSON, `<stem>-minds-<variant>.<ext>`, carries a
+//! deterministic `minds` block the delta compares only once the baseline
+//! carries one (blessed in 17b cut M4.5). `m4_2_the_minds_lane_runs_small`,
+//! un-ignored, runs the ceiling and the fill variants on sixteen hulls for
+//! five arena seconds with the deterministic checks asserted.
+//!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
 //! change — assert by default, or run on push. The ban on asserting by default
@@ -186,6 +222,10 @@
 //! a wrong sight is a bug on any runner; and `sight_only` is the arena's trace,
 //! built for the arena (16c N5), which the lane only checks, not an API the
 //! harness asked for.
+
+// 17b cut M4.2: the minds lane's report is one `serde_json::json!` of some two
+// hundred leaves, past the default recursion limit of the macro's expansion.
+#![recursion_limit = "256"]
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -1828,7 +1868,44 @@ fn field(
     Vec<tacsim::arena::state::CustodyUnit>,
     Vec<tacsim::arena::state::Pilot>,
 ) {
-    use tacsim::arena::state::{Controller, Pilot, Team};
+    field_with(knobs, catalog, relief, reach, |n| FieldSlot {
+        entry: COHORT
+            .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
+            .copied()
+            .unwrap_or(content::LINE_TANK),
+        controller: tacsim::arena::state::Controller::Reflex,
+        terms: tacsim::match_::SealTerms::fixture(),
+        sealed_source: None,
+    })
+}
+
+/// **What one slot of a field is** (17b cut M4.2 factored it out of
+/// [`field`]): the entry, the controller, the seal terms and — for a hull
+/// whose seal names another mind than Standard Doctrine — the mind's name and
+/// its source digest, written onto the seal after custody (`seal_for` writes
+/// Standard's digest on every seal and the terms carry no source).
+struct FieldSlot {
+    entry: &'static str,
+    controller: tacsim::arena::state::Controller,
+    terms: tacsim::match_::SealTerms,
+    sealed_source: Option<(&'static str, [u8; 32])>,
+}
+
+/// [`field`]'s body with each unit's slot answered by `slot_of(n)` — the
+/// arrangement, the seed, the ids, the teams and the seats are the same
+/// whatever the slot says, so the minds lane's field ([`field_minds`]) is the
+/// arena lane's with the controller and the terms swapped.
+fn field_with(
+    knobs: &Knobs,
+    catalog: &Catalog,
+    relief: &[(u16, u16, i16)],
+    reach: Reach,
+    slot_of: impl Fn(u32) -> FieldSlot,
+) -> (
+    Vec<tacsim::arena::state::CustodyUnit>,
+    Vec<tacsim::arena::state::Pilot>,
+) {
+    use tacsim::arena::state::{Pilot, Team};
     let mut rng = ChaCha8Rng::seed_from_u64(knobs.seed ^ 0x000a_4e17);
     let mut pool: Vec<(u16, u16, i16)> = relief.to_vec();
     let middle = i32::from(SIDE) / 2;
@@ -1868,11 +1945,8 @@ fn field(
         };
         let id = ObjId(100_000 + n);
         let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
-        let entry = COHORT
-            .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
-            .copied()
-            .unwrap_or(content::LINE_TANK);
-        let key = CanonicalId::new(entry).expect("a canonical entry id");
+        let slot = slot_of(n);
+        let key = CanonicalId::new(slot.entry).expect("a canonical entry id");
         let spec = catalog.specs.get(&key).expect("the cohort entry's spec");
         let binding = catalog
             .bindings
@@ -1903,11 +1977,18 @@ fn field(
             team,
             pose,
             1,
-            Controller::Reflex,
+            slot.controller,
             0,
-            &tacsim::match_::SealTerms::fixture(),
+            &slot.terms,
         )
-        .expect("the fixture terms seal");
+        .expect("the slot's terms seal");
+        // 17b cut M4.2: a seal on another mind than Standard Doctrine — the
+        // seal's own digest is computed on call, so the `mind_sealed` line
+        // and the installer's lookup read this with no re-digest.
+        if let Some((mind, source_sha256)) = slot.sealed_source {
+            unit.seal.mind = smol_str::SmolStr::new(mind);
+            unit.seal.source_sha256 = source_sha256;
+        }
         if reach == Reach::Ci {
             scale_to_ci(&mut unit);
         }
@@ -4827,17 +4908,15 @@ fn iso_utc(secs: i64) -> String {
 /// **Bless**: write `path` from the fresh report with a `blessed` stanza —
 /// `commit` (`git rev-parse HEAD` now), `date` (ISO, UTC) and `host`
 /// ([`this_host`]) — the panic budget's own shape: the variable rewrites the
-/// file, and the comparison that follows reads it back.
-fn bless_baseline(path: &std::path::Path, fresh: &serde_json::Value) {
-    let commit = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|commit| !commit.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
+/// file, and the comparison that follows reads it back. **17b cut M4.2**:
+/// with `minds` (the four variants' blocks, [`minds_blocks_beside`]) the
+/// document carries them under `minds`; without, it carries none and the
+/// delta's minds path skips (17b cut M4.5's bless is the one that folds them).
+fn bless_baseline(
+    path: &std::path::Path,
+    fresh: &serde_json::Value,
+    minds: Option<&serde_json::Value>,
+) {
     let now_s = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
@@ -4846,11 +4925,19 @@ fn bless_baseline(path: &std::path::Path, fresh: &serde_json::Value) {
         map.insert(
             "blessed".to_string(),
             serde_json::json!({
-                "commit": commit,
+                "commit": head_commit(),
                 "date": iso_utc(now_s),
                 "host": this_host(),
             }),
         );
+        match minds {
+            Some(minds) => {
+                map.insert("minds".to_string(), minds.clone());
+            }
+            None => {
+                map.remove("minds");
+            }
+        }
     }
     let mut text = serde_json::to_string_pretty(&doc).expect("the baseline encodes");
     text.push('\n');
@@ -4937,8 +5024,20 @@ fn tacsim_harness_delta_against_the_committed_baseline() {
     }
     let path = baseline_path();
     if bless_requested(std::env::var("TACSIM_BASELINE_BLESS").ok().as_deref()) {
-        bless_baseline(&path, &fresh);
-        println!("harness_delta: blessed {}", path.display());
+        // 17b cut M4.2: the minds lane's four blocks fold in only when all
+        // four fresh files are beside the arena report (17b cut M4.5's one
+        // bless); a partial set folds none and the delta's minds path skips.
+        let minds = minds_blocks_beside(&knobs.json);
+        bless_baseline(&path, &fresh, minds.as_ref());
+        println!(
+            "harness_delta: blessed {} ({})",
+            path.display(),
+            if minds.is_some() {
+                "with the four minds blocks"
+            } else {
+                "without a minds block: not all four minds reports are beside the arena report"
+            }
+        );
     }
     let Ok(text) = std::fs::read_to_string(&path) else {
         println!(
@@ -4966,12 +5065,18 @@ fn tacsim_harness_delta_against_the_committed_baseline() {
     for line in &found.lines {
         println!("{line}");
     }
+    // 17b cut M4.2: the minds lane's blocks, once the baseline carries them.
+    let (minds_lines, minds_differences) = minds_delta(&baseline, &knobs.json);
+    for line in &minds_lines {
+        println!("{line}");
+    }
     assert_eq!(
-        found.differences, 0,
+        found.differences + minds_differences,
+        0,
         "the deterministic block moved in {} field(s) (the `harness_delta:` lines above): \
          the arena did something different at the default knobs. Find the change, or \
          re-bless in the diff that made it with TACSIM_BASELINE_BLESS=1 and say why",
-        found.differences
+        found.differences + minds_differences
     );
     assert!(
         found.slower.is_empty(),
@@ -8272,5 +8377,3349 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         squads_per_side,
         commanders,
         ordered: counts.ordered,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M4.2: the minds lane and the decision
+// ---------------------------------------------------------------------------
+//
+// **What this is** (the M4 row's (ii); doc 17 §18, §22's M4). One more ignored
+// lane on the harness's one ignore string, `tacsim_harness_arena_minds`: the
+// 300-unit relief cohort fielded as `Controller::Mind` hulls in four variants,
+// FILL FIRST — `fill_authored`, `stock_ci`, `stock_authored`,
+// `ceiling_authored` — each stepped with `Arena::step` and a private
+// [`MindPool`] of `[tacsim.minds].workers` threads on the arena task's own
+// policy (the batch submitted after the publish and awaited at the next wake's
+// head and before a due snapshot's encode, never right after the submit), a
+// seeded quarter of its wakes one substep late so the inline path is measured
+// ([`MindsClock`]), every think's ops, fees and microseconds recorded through
+// recording Rhai runners and a timed native wrapper ([`TimedNative`]), five
+// `harness_minds_*` lines a variant, every check collected into one
+// `harness_minds_verdict` line a variant — `held=` over exactly the plan's
+// listed asserts, the decision's word; `sound=` over the lane's integrity
+// checks, never a decision input — and one panic at the end under
+// `TACSIM_ASSERT`; and `harness-minds-<variant>.json` with a deterministic
+// `minds` block the delta compares only once the baseline carries one (blessed
+// in 17b cut M4.5). `PRODUCTION_FILL_ENGINE`
+// (`tacsim::match_::PRODUCTION_FILL_ENGINE`) is what the fill variant seals
+// its thirty-six Class I hulls a side on, and its verdict over three idle-host
+// weekly runs is the decision 17b cut M4.3's flip reads.
+//
+// **The jitter is one substep, on the lattice** (a declared departure from the
+// row's literal 60 ms; the M4.2 brief's review). A wake 60 ms late cuts a
+// 60 ms remainder substep — motion, the index rebuild, the due loop and the
+// hash over 300 hulls, none of it think time — and the 190 ms wake that
+// follows, so every window such a wake lands in carries three substeps where
+// the 12 ms lens was blessed on two (window p99 10.7 ms on the blessing host):
+// the CI cohort would miss the lens by construction and the decision would
+// read `held=no` for a cost that is not a mind's. A wake one substep late cuts
+// `[substep, substep]`, two full substeps: the thinks collected at the first
+// lattice point are settled INLINE at the second substep's head, inside
+// `Wake.ms` (the inline path the plan wants counted), and 17b cut M4.1's gate
+// holds the hash sequence equal to the unjittered run's (a lattice-multiple
+// wake against one substep a pulse), so the `minds` block is one function of
+// the seed. **The windows the lens is asserted on are the COMPARABLE ones**: a
+// window is keyed by the wake that ENDS in it, so a late wake due at a window
+// boundary keeps its window at the baseline's two substeps (both inside one
+// window, the inline thinks with them), while a late wake due mid-window ends
+// one substep into the next window and leaves a one-substep window behind a
+// three-substep one — neither comparable with a lens blessed on two. The lens
+// is asserted over the windows carrying exactly the lattice's substeps with
+// no remainder (`comparable=`), the rest printed beside
+// (`window_p99_other_ms`, `other=`), and a run with no comparable window does
+// not hold (the lens was not measured). The knob takes any value, so doc 17
+// §18's literal 60 is one env away as a sizing run.
+//
+// **Attribution** is by the wake that COLLECTED a think (`attribution=by-collecting-wake`):
+// an inline think ran inside that wake's `Wake.ms`; a pooled think ran between
+// that wake's submit and the next head's wait, whose figures are drained there
+// and written back onto the collecting wake. Every stat is attributable
+// because the order is fixed: head (wait, deliver, drain the pooled figures),
+// step (the inline thinks run on this thread), drain the inline figures,
+// submit. `pool_wait_us` here is the batch's wall latency on a two-worker pool
+// with no pulse gap — the lane's wall is simulated and the next head follows
+// the submit at once — an upper bound on production's blocked time (the task
+// has most of a pulse of idle for the workers to finish in), report-only.
+
+/// **`TACSIM_MINDS_JITTER_MS`'s default**: one substep of the shipped cohort
+/// (250 ms), on the lattice — the section head says why not the row's 60.
+const DEFAULT_MINDS_JITTER_MS: u32 = 250;
+
+/// **`TACSIM_MINDS_JITTER_PER_MILLE`'s default**: a quarter of the wakes.
+const DEFAULT_MINDS_JITTER_PER_MILLE: u32 = 250;
+
+/// The salt the jitter draw is keyed under beside the seed (`"MINDS_JI"`), so
+/// it is not [`WakeClock`]'s own sequence.
+const MINDS_JITTER_SALT: u64 = 0x4d49_4e44_535f_4a49;
+
+/// **The ceiling variant's heavies a side**: the plan's two — what the
+/// 300-unit pool admits at Class III (`admitted_per_side`), and what a sizing
+/// run with more room still fields, the ceiling being the load mind's cost
+/// per hull and not the count. **Where they sit**: the two unseated hulls of
+/// each side scattered deepest in its own rear (red the farthest west of the
+/// centre column, blue the farthest east; [`MindsPlan::of`]) — never on the
+/// fighting line, and as far from it as the seeded scatter put anything,
+/// because `heavy_mk1`'s turret loss degrades its command core
+/// (`degrade_core`), which drops the seal's class to II, where the load mind's
+/// 4,4xx ops fault `ops` at the 3,000 ceiling and the variant reads `faults=`
+/// for a fight outcome (this host's first run, with the heavies at side index
+/// 12 and 13, lost one in thirty seconds). `authored_at_class_at_end=` on the
+/// verdict line says whether a run's heavy was degraded all the same.
+const MINDS_HEAVIES_PER_SIDE: u32 = 2;
+
+/// How many wakes sample `view_us` (one `Arena::mind_view` on a clone,
+/// outside the timer), evenly spaced over the measured window.
+const MINDS_VIEW_SAMPLES: usize = 40;
+
+/// **The load mind's band** (the M4 row's (ii)): its `ops + fee` per think is
+/// at least this at the first percentile — the asserted figure — and at most
+/// [`LOAD_III_OPS_MAX`], under the Class III row's 4,500.
+const LOAD_III_OPS_P1_MIN: u64 = 4_300;
+
+/// See [`LOAD_III_OPS_P1_MIN`].
+const LOAD_III_OPS_MAX: u64 = 4_499;
+
+/// **The Class III load mind** (`tests/support/load_iii.rhai`): test content,
+/// never shipped — a legal intent set with equal cost on both branches and a
+/// loop calibrated to the band; its head comment carries the arithmetic.
+const LOAD_III_RHAI: &str = include_str!("support/load_iii.rhai");
+
+/// The load mind's digest, pinned (`m4_2_the_load_mind_is_calibrated_to_the_class_iii_row`).
+const LOAD_III_SHA256_HEX: &str =
+    "e61a8153963f0f4d17c0eb94c3dec465ac4ad8e204e136c797ec4f1f566864f3";
+
+/// The seal's `mind` word for a hull sealed on the load mind.
+const LOAD_III_MIND: &str = "Load III";
+
+/// **The CPU lens's headroom over the host's own rate**: five quarters (the M4
+/// row's finding (7)).
+const CPU_LENS_HEADROOM: f64 = 1.25;
+
+/// How many Standard Doctrine thinks the host's rate is measured over.
+const CALIBRATION_THINKS: usize = 200;
+
+/// The load mind's bytes, digested.
+fn load_iii_sha256() -> [u8; 32] {
+    use sha2::{Digest as _, Sha256};
+    Sha256::digest(LOAD_III_RHAI.as_bytes()).into()
+}
+
+/// **The source a seal's `source_sha256` names**, lane-local (the harness has
+/// no `mod support;`): Standard Doctrine's or the load mind's.
+fn source_for(source_sha256: &[u8; 32]) -> Option<&'static str> {
+    if *source_sha256 == tacsim::minds::standard_digest().0 {
+        Some(tacsim::minds::STANDARD_RHAI)
+    } else if *source_sha256 == load_iii_sha256() {
+        Some(LOAD_III_RHAI)
+    } else {
+        None
+    }
+}
+
+/// The minds lane's own knobs.
+struct MindsKnobs {
+    /// `TACSIM_MINDS_JITTER_MS`: how late a jittered wake is.
+    jitter_ms: i64,
+    /// `TACSIM_MINDS_JITTER_PER_MILLE`: what fraction of wakes are late.
+    jitter_per_mille: u32,
+    /// `[tacsim.minds].workers`: the private pool's threads.
+    workers: u32,
+    /// `[tacsim.minds].cpu_lens_ms`: doc 17 §18's reference figure, printed
+    /// beside the computed lens and never asserted.
+    cpu_lens_ms: u32,
+    /// **`TACSIM_MINDS_VARIANTS`**, a sizing knob: a comma list of variant
+    /// words to run, in the lane's order — the weekly run never sets it and
+    /// runs all four, fill first; an unknown word is ignored, an empty list
+    /// is all four.
+    variants: Vec<MindsVariant>,
+}
+
+impl MindsKnobs {
+    fn from_env() -> MindsKnobs {
+        let minds = tacsim::config::MindsConfig::default();
+        let chosen = std::env::var("TACSIM_MINDS_VARIANTS").unwrap_or_default();
+        let variants: Vec<MindsVariant> = MINDS_VARIANTS
+            .iter()
+            .copied()
+            .filter(|variant| chosen.split(',').any(|word| word.trim() == variant.word()))
+            .collect();
+        MindsKnobs {
+            jitter_ms: i64::from(env_u32("TACSIM_MINDS_JITTER_MS", DEFAULT_MINDS_JITTER_MS)),
+            jitter_per_mille: env_u32(
+                "TACSIM_MINDS_JITTER_PER_MILLE",
+                DEFAULT_MINDS_JITTER_PER_MILLE,
+            )
+            .min(1_000),
+            workers: minds.workers,
+            cpu_lens_ms: minds.cpu_lens_ms,
+            variants: if variants.is_empty() {
+                MINDS_VARIANTS.to_vec()
+            } else {
+                variants
+            },
+        }
+    }
+}
+
+/// **Whether a run asserts its timings** — the weekly run does; the un-ignored
+/// smoke run ([`m4_2_the_minds_lane_runs_small`]) is a debug build on sixteen
+/// hulls, whose timings mean nothing, so its lens checks are printed and never
+/// pushed into the verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MindsLaneMode {
+    Weekly,
+    Smoke,
+}
+
+impl MindsLaneMode {
+    const fn word(self) -> &'static str {
+        match self {
+            MindsLaneMode::Weekly => "weekly",
+            MindsLaneMode::Smoke => "smoke",
+        }
+    }
+}
+
+/// **The four variants**, in the order they run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MindsVariant {
+    /// Thirty-six Class I hulls a side on `PRODUCTION_FILL_ENGINE`, the rest
+    /// the ROM, at the authored reach: the decision's variant.
+    FillAuthored,
+    /// Every hull the ROM (Class 0, native), at the CI reach: the arena
+    /// lane's field with the controller swapped.
+    StockCi,
+    /// Every hull the ROM, at the authored reach.
+    StockAuthored,
+    /// Two `heavy_mk1` a side at Class III on the load mind, the rest the
+    /// ROM, at the authored reach: the pool's ceiling.
+    CeilingAuthored,
+}
+
+/// Fill first: its verdict is the decision.
+const MINDS_VARIANTS: [MindsVariant; 4] = [
+    MindsVariant::FillAuthored,
+    MindsVariant::StockCi,
+    MindsVariant::StockAuthored,
+    MindsVariant::CeilingAuthored,
+];
+
+/// The four words, for the delta ([`minds_delta`]).
+const MINDS_VARIANT_WORDS: [&str; 4] = [
+    "fill_authored",
+    "stock_ci",
+    "stock_authored",
+    "ceiling_authored",
+];
+
+/// **The authored slots a variant fields a side**: their class, the engine
+/// they are sealed on, whether they are heavies on the load mind, and the
+/// first side index they occupy.
+#[derive(Clone, Copy, Debug)]
+struct AuthoredSlots {
+    class: tacsim::arena::core::CoreClass,
+    engine: tacsim::arena::SealEngine,
+    heavy: bool,
+}
+
+impl MindsVariant {
+    /// The word every `harness_minds_*` line and the JSON's `"variant"` carry.
+    const fn word(self) -> &'static str {
+        match self {
+            MindsVariant::FillAuthored => "fill_authored",
+            MindsVariant::StockCi => "stock_ci",
+            MindsVariant::StockAuthored => "stock_authored",
+            MindsVariant::CeilingAuthored => "ceiling_authored",
+        }
+    }
+
+    /// The reach, and so the window lens ([`window_lens_ms`]).
+    const fn reach(self) -> Reach {
+        match self {
+            MindsVariant::StockCi => Reach::Ci,
+            MindsVariant::FillAuthored
+            | MindsVariant::StockAuthored
+            | MindsVariant::CeilingAuthored => Reach::Authored,
+        }
+    }
+
+    /// The authored slots a side, or none on the stock variants.
+    fn authored(self) -> Option<AuthoredSlots> {
+        use tacsim::arena::core::CoreClass;
+        match self {
+            MindsVariant::FillAuthored => Some(AuthoredSlots {
+                class: CoreClass::I,
+                engine: tacsim::match_::PRODUCTION_FILL_ENGINE,
+                heavy: false,
+            }),
+            MindsVariant::CeilingAuthored => Some(AuthoredSlots {
+                class: CoreClass::III,
+                engine: tacsim::arena::SealEngine::Scripted,
+                heavy: true,
+            }),
+            MindsVariant::StockCi | MindsVariant::StockAuthored => None,
+        }
+    }
+
+    /// The engine word the lines print: the authored slots' seal word, `rom`
+    /// where every hull is the ROM.
+    fn engine_word(self) -> &'static str {
+        self.authored().map_or("rom", |slots| slots.engine.as_str())
+    }
+}
+
+/// **The admission arithmetic** (the M4 row's finding (8); doc 17 §9): how
+/// many hulls a side `admit_side` admits at `class` with the rest at the
+/// ROM's 400, classed first, every hull counted — the fighting line's seats
+/// included, read `admitted_class(Some(class), seated)`, which answers the
+/// class whatever the seat bit says (a fixture naming a class is the
+/// documented case; 17b cut M4.3's `fill_class` argument moves one line
+/// here). 36 at Class I and 2 at Class III at the 300-unit defaults
+/// ([`m4_2_the_harness_s_three_hundred_admit_thirty_six_at_class_i_and_two_at_class_iii_a_side`]).
+fn admitted_per_side(
+    cfg: &tacsim::config::MindsConfig,
+    units: u32,
+    class: tacsim::arena::core::CoreClass,
+    fighting: u32,
+) -> u32 {
+    use tacsim::arena::core::CoreClass;
+    use tacsim::match_::pool::{admit_side, admitted_class, load_of, pool_for};
+    let pool = pool_for(cfg, usize::try_from(units).unwrap_or(usize::MAX));
+    let per_side = units / 2;
+    let seated_per_side = fighting / 2;
+    (0..=per_side)
+        .rev()
+        .find(|&n| {
+            let loads = (0..per_side).map(|k| {
+                load_of(
+                    &cfg.classes,
+                    admitted_class(
+                        Some(if k < n { class } else { CoreClass::Zero }),
+                        k < seated_per_side,
+                    ),
+                )
+            });
+            admit_side(pool, loads).is_ok()
+        })
+        .unwrap_or(0)
+}
+
+/// **The plan of one variant's field**: the slots a side, how many the pool
+/// admits at the variant's class, how many are fielded, and which unit
+/// numbers are the authored slots.
+#[derive(Clone, Debug)]
+struct MindsPlan {
+    per_side: u32,
+    admitted_per_side: u32,
+    fielded_per_side: u32,
+    /// The authored slots' unit numbers (`n`, the `ObjId` less 100,000).
+    authored: std::collections::BTreeSet<u32>,
+}
+
+impl MindsPlan {
+    /// The plan over `placement`, every unit's number and the x of the cell
+    /// the seeded scatter gave it ([`field_minds`]' dry pass): the fill
+    /// variant's slots are the first `fielded` side indices (the fighting
+    /// line's seats included: every hull counts); the ceiling variant's are,
+    /// per team, the [`MINDS_HEAVIES_PER_SIDE`] unseated hulls deepest in its
+    /// own rear — red the farthest west of the centre column, blue the
+    /// farthest east, ties by unit number — at most the pool's admitted count.
+    fn of(
+        knobs: &Knobs,
+        cfg: &tacsim::config::MindsConfig,
+        variant: MindsVariant,
+        placement: &[(u32, i64)],
+    ) -> MindsPlan {
+        let per_side = knobs.units / 2;
+        let Some(slots) = variant.authored() else {
+            return MindsPlan {
+                per_side,
+                admitted_per_side: 0,
+                fielded_per_side: 0,
+                authored: std::collections::BTreeSet::new(),
+            };
+        };
+        let admitted = admitted_per_side(cfg, knobs.units, slots.class, knobs.fighting);
+        let mut authored = std::collections::BTreeSet::new();
+        let fielded = if slots.heavy {
+            let middle_cm = i64::from(SIDE) / 2 * i64::from(CELL_CM);
+            let mut fielded = 0_u32;
+            for team in 0..2_u32 {
+                let mut rear: Vec<(i64, u32)> = placement
+                    .iter()
+                    .filter(|(n, _)| n % 2 == team && *n >= knobs.fighting)
+                    .map(|(n, x_cm)| {
+                        // Red's rear is west of the centre, blue's east.
+                        let depth = if team == 0 {
+                            middle_cm - x_cm
+                        } else {
+                            x_cm - middle_cm
+                        };
+                        (-depth, *n)
+                    })
+                    .collect();
+                rear.sort_unstable();
+                let take = usize::try_from(admitted.min(MINDS_HEAVIES_PER_SIDE)).unwrap_or(0);
+                let chosen: Vec<u32> = rear.iter().take(take).map(|(_, n)| *n).collect();
+                fielded = fielded.max(u32::try_from(chosen.len()).unwrap_or(u32::MAX));
+                authored.extend(chosen);
+            }
+            fielded
+        } else {
+            let fielded = admitted.min(per_side);
+            authored.extend(
+                placement
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .filter(|n| n / 2 < fielded),
+            );
+            fielded
+        };
+        MindsPlan {
+            per_side,
+            admitted_per_side: admitted,
+            fielded_per_side: fielded,
+            authored,
+        }
+    }
+
+    /// Whether unit number `n` is an authored slot.
+    fn is_authored(&self, n: u32) -> bool {
+        self.authored.contains(&n)
+    }
+
+    /// Authored hulls fielded, both sides.
+    fn authored_fielded(&self) -> u32 {
+        u32::try_from(self.authored.len()).unwrap_or(u32::MAX)
+    }
+
+    /// The authored slots as a word: the unit numbers when few, else the count.
+    fn authored_words(&self) -> String {
+        if self.authored.len() <= 8 {
+            self.authored
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            format!("{}-of-{}", self.authored.len(), self.per_side * 2)
+        }
+    }
+}
+
+/// **The minds field**: [`field`]'s arrangement — the same seed, the same
+/// placement, the same ids, the same teams, the same seats as frame sinks —
+/// with every hull `Controller::Mind` and its terms the variant's. A ROM hull
+/// is sealed `class_cap: Zero` on the native engine, so `seal_for` writes
+/// class `Zero`, `Arena::mind_class` answers `Zero` and every think is handed
+/// to the ROM (`collect_think`'s `dropped`) — no Rhai, ops nought by
+/// construction, admission counting it at 400 all the same. A fill slot is
+/// the cohort chassis rated and capped at Class I on `PRODUCTION_FILL_ENGINE`;
+/// a ceiling slot is `heavy_mk1` (the one command-core hull) rated and capped
+/// at Class III on the scripted engine, its seal's `mind` and
+/// `source_sha256` written to the load mind after custody (`seal_for` writes
+/// Standard's digest on every seal and the terms carry no source; the seal's
+/// own digest is computed on call, so the `mind_sealed` line and the
+/// installer's lookup read the override with no re-digest).
+fn field_minds(
+    knobs: &Knobs,
+    catalog: &Catalog,
+    relief: &[(u16, u16, i16)],
+    variant: MindsVariant,
+    minds_cfg: &tacsim::config::MindsConfig,
+) -> (
+    Vec<tacsim::arena::state::CustodyUnit>,
+    Vec<tacsim::arena::state::Pilot>,
+    MindsPlan,
+) {
+    use tacsim::arena::SealEngine;
+    use tacsim::arena::core::CoreClass;
+    use tacsim::arena::state::Controller;
+    use tacsim::match_::SealTerms;
+    let slots = variant.authored();
+    let rom = |n: u32| FieldSlot {
+        entry: COHORT
+            .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
+            .copied()
+            .unwrap_or(content::LINE_TANK),
+        controller: Controller::Mind,
+        terms: SealTerms {
+            class_cap: CoreClass::Zero,
+            engine_for_minds: SealEngine::Native,
+            ..SealTerms::fixture()
+        },
+        sealed_source: None,
+    };
+    // The dry pass: the placement the seeded scatter gives every unit number
+    // (the pass is deterministic, so the real one below places identically),
+    // which the plan reads to put the heavies in each side's rear.
+    let (placed, _) = field_with(knobs, catalog, relief, variant.reach(), rom);
+    let placement: Vec<(u32, i64)> = placed
+        .iter()
+        .map(|unit| (unit.id.0.saturating_sub(100_000), unit.pose.x_cm))
+        .collect();
+    drop(placed);
+    let plan = MindsPlan::of(knobs, minds_cfg, variant, &placement);
+    let (units, pilots) = field_with(knobs, catalog, relief, variant.reach(), |n| {
+        let cohort_entry = COHORT
+            .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
+            .copied()
+            .unwrap_or(content::LINE_TANK);
+        match slots.filter(|_| plan.is_authored(n)) {
+            Some(slots) => FieldSlot {
+                entry: if slots.heavy {
+                    content::HEAVY_MK1
+                } else {
+                    cohort_entry
+                },
+                controller: Controller::Mind,
+                terms: SealTerms {
+                    rated: slots.class,
+                    class_cap: slots.class,
+                    engine_for_minds: slots.engine,
+                    ..SealTerms::fixture()
+                },
+                sealed_source: slots.heavy.then(|| (LOAD_III_MIND, load_iii_sha256())),
+            },
+            None => rom(n),
+        }
+    });
+    (units, pilots, plan)
+}
+
+/// **The native stock mind, timed** — the arena-wide fallback every ROM hull
+/// and every native-sealed hull thinks on, with each think's wall microseconds
+/// kept (the clock is the lane's, never the library's: doc 17 §23).
+#[derive(Debug)]
+struct TimedNative {
+    inner: tacsim::arena::stock_mind::NativeStockMind,
+    samples: std::sync::Mutex<Vec<NativeSample>>,
+}
+
+/// One native think: how long, and whether it faulted (it never does).
+#[derive(Clone, Copy, Debug)]
+struct NativeSample {
+    us: u64,
+    faulted: bool,
+}
+
+impl TimedNative {
+    fn new(cfg: &tacsim::config::ReflexConfig) -> TimedNative {
+        TimedNative {
+            inner: tacsim::arena::stock_mind::NativeStockMind::with(cfg),
+            samples: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The samples so far, emptied.
+    fn take(&self) -> Vec<NativeSample> {
+        std::mem::take(
+            &mut *self
+                .samples
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
+impl tacsim::arena::mind::MindRunner for TimedNative {
+    fn think(&self, job: &tacsim::arena::mind::ThinkJob<'_>) -> tacsim::arena::mind::ThinkResult {
+        let at = Instant::now();
+        let result = self.inner.think(job);
+        let us = u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.samples
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(NativeSample {
+                us,
+                faulted: result.fault.is_some(),
+            });
+        result
+    }
+}
+
+/// **The minds lane's wake clock**: [`WakeClock`]'s rule (`TACSIM_WAKE_JITTER_MS`,
+/// default nought) and then, on a seeded `jitter_per_mille` fraction of
+/// wakes drawn as `stagger_ms(seed ^ salt, index, 1000)`, `jitter_ms` more —
+/// a deterministic function of the seed and the wake index, recorded in the
+/// block as `jitter_ms`, `jitter_per_mille` and `jittered_wakes`.
+struct MindsClock {
+    general: WakeClock,
+    seed: u64,
+    jitter_ms: i64,
+    per_mille: u32,
+    index: u32,
+    jittered: u32,
+    /// Whether the last wall answered was a late one.
+    late: bool,
+}
+
+impl MindsClock {
+    fn new(knobs: &Knobs, minds: &MindsKnobs) -> MindsClock {
+        MindsClock {
+            general: WakeClock::new(knobs),
+            seed: knobs.seed ^ MINDS_JITTER_SALT,
+            jitter_ms: minds.jitter_ms.max(0),
+            per_mille: minds.jitter_per_mille.min(1_000),
+            index: 0,
+            jittered: 0,
+            late: false,
+        }
+    }
+
+    /// The wall the next wake happens at, after a step that answered
+    /// `next_due_ms`.
+    fn next(&mut self, next_due_ms: i64) -> i64 {
+        let wall = self.general.next(next_due_ms);
+        self.index = self.index.wrapping_add(1);
+        let draw = tacsim::arena::rng::stagger_ms(self.seed, ObjId(self.index), 1_000);
+        self.late = draw < i64::from(self.per_mille);
+        if self.late {
+            self.jittered += 1;
+            wall.saturating_add(self.jitter_ms)
+        } else {
+            wall
+        }
+    }
+}
+
+/// **What one batch's wait came to** at a wake's head, before the snapshot or
+/// at the tail: the blocked microseconds and what the delivery settled.
+#[derive(Clone, Copy, Debug, Default)]
+struct Awaited {
+    us: u64,
+    faults: u32,
+    overflows: u32,
+    dropped: u32,
+}
+
+/// **What the recorders held** since the last drain: the Rhai thinks' ops,
+/// fees, microseconds and faults, and the native thinks' microseconds and
+/// faults.
+#[derive(Clone, Debug, Default)]
+struct Drained {
+    ops: u64,
+    fees: u64,
+    rhai_us: Vec<u64>,
+    /// `ops + fee` per Rhai think, the figure the budget trips on.
+    budget: Vec<u64>,
+    rhai_faulted: u32,
+    native_us: Vec<u64>,
+    native_faulted: u32,
+}
+
+impl Drained {
+    fn rhai_thinks(&self) -> u32 {
+        u32::try_from(self.rhai_us.len()).unwrap_or(u32::MAX)
+    }
+
+    fn native_thinks(&self) -> u32 {
+        u32::try_from(self.native_us.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Every think's microseconds, Rhai and native.
+    fn us(&self) -> impl Iterator<Item = u64> + '_ {
+        self.rhai_us.iter().chain(self.native_us.iter()).copied()
+    }
+
+    fn cpu_us(&self) -> u64 {
+        self.us().fold(0_u64, u64::saturating_add)
+    }
+}
+
+/// **What the minds lane steps** — [`Stepper`]'s shape with the pool, the
+/// batch in flight, the recorders and the integrity sentences beside it.
+struct MindsStepper {
+    arena: tacsim::arena::state::Arena,
+    substep: u32,
+    counts: Counts,
+    clock: MindsClock,
+    /// The wall the next wake is at, and whether it is a late one.
+    wall: i64,
+    late: bool,
+    slope_refusals: u64,
+    pool: std::sync::Arc<tacsim::minds::MindPool>,
+    /// The batch submitted after the last step, awaited at the next head.
+    outstanding: Option<tacsim::minds::BatchHandle>,
+    snapshot_ms: Option<u32>,
+    last_snapshot_period: Option<i64>,
+    /// The lane's recording runners, one per distinct scripted source,
+    /// installed over the production installer's (`Arena::runners`).
+    recorders: Vec<std::sync::Arc<tacsim::minds::RhaiRunner>>,
+    /// The timed native stock mind on `Arena::mind_runner`.
+    native: std::sync::Arc<TimedNative>,
+    /// **The integrity sentences** — the verdict's `sound=` word: a failed
+    /// batch, a think outstanding at a step's head, a refused snapshot, a
+    /// delivery that settled fewer than it was handed. Never a decision input.
+    unsound: Vec<String>,
+    batches: u32,
+    batches_failed: u32,
+}
+
+impl MindsStepper {
+    /// **The task's `await_thinks`**: the outstanding batch waited for through
+    /// [`tacsim::minds::BatchHandle::wait`] directly (the task's
+    /// `spawn_blocking` is tokio's paused clock's concern, not this lane's),
+    /// its answers delivered (`Arena::deliver_answers`), a failed batch — a
+    /// runner panicked; the task would void — recorded as unsound with the
+    /// outstanding thinks discarded as the task discards them.
+    fn await_batch(&mut self, where_: &str) -> Option<Awaited> {
+        let handle = self.outstanding.take()?;
+        let jobs = u32::try_from(handle.len()).unwrap_or(u32::MAX);
+        let at = Instant::now();
+        let awaited = match handle.wait() {
+            Ok(answers) => {
+                let us = u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX);
+                let settled = self.arena.deliver_answers(answers);
+                if settled.written.saturating_add(settled.dropped) != jobs {
+                    self.unsound.push(format!(
+                        "a batch of {jobs} thinks delivered {} written and {} dropped at {where_}",
+                        settled.written, settled.dropped
+                    ));
+                }
+                Awaited {
+                    us,
+                    faults: settled.faults,
+                    overflows: settled.overflows,
+                    dropped: settled.dropped,
+                }
+            }
+            Err(failed) => {
+                self.batches_failed += 1;
+                self.unsound.push(format!(
+                    "the pool answered a failed batch at {where_}: {failed:?} (a runner \
+                     panicked; the task would void the match)"
+                ));
+                self.arena.discard_outstanding();
+                Awaited {
+                    us: u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX),
+                    ..Awaited::default()
+                }
+            }
+        };
+        Some(awaited)
+    }
+
+    /// **The figures recorded since the last drain**: pool workers write only
+    /// between a submit and the wait that follows it, and inline thinks run
+    /// on this thread inside `Arena::step`, so a drain after the wait reads
+    /// the batch's figures and a drain after the step the inline ones.
+    fn drain(&self) -> Drained {
+        let mut drained = Drained::default();
+        for recorder in &self.recorders {
+            for stat in recorder.take_stats() {
+                drained.ops = drained.ops.saturating_add(stat.ops);
+                drained.fees = drained.fees.saturating_add(stat.fee);
+                drained
+                    .rhai_us
+                    .push(u64::try_from(stat.rhai_us).unwrap_or(u64::MAX));
+                drained.budget.push(stat.ops.saturating_add(stat.fee));
+                drained.rhai_faulted += u32::from(stat.faulted);
+            }
+        }
+        for sample in self.native.take() {
+            drained.native_us.push(sample.us);
+            drained.native_faulted += u32::from(sample.faulted);
+        }
+        drained
+    }
+}
+
+/// **One measured wake of the minds lane**: [`Wake`]'s figures, the thinks it
+/// collected split by where they ran, the landings, the faults, and the
+/// figures of its inline thinks (inside `ms`) and its pooled ones (written
+/// back at the next head), all keyed to this wake.
+struct MindWake {
+    ms: f64,
+    now_ms: i64,
+    substeps: u32,
+    /// Substeps shorter than the lattice's this wake cut (a wake off the
+    /// lattice, or the general jitter's remainder).
+    short_substeps: u32,
+    /// Whether this wake was a jittered one ([`MindsClock`]).
+    late: bool,
+    traces: u32,
+    cell_probes: u64,
+    horizon_probes: u64,
+    jam_checks: u32,
+    share_ops: u32,
+    /// Thinks collected this wake (`ReflexCounters::thinks`).
+    thinks: u32,
+    /// Collected and run at a substep head inside this wake's `ms`.
+    inline_thinks: u32,
+    /// Collected in the last substep and handed to the pool.
+    pooled_thinks: u32,
+    /// Collected in a match-ending substep and never run.
+    unrun_thinks: u32,
+    landings: u32,
+    inline_faults: u32,
+    inline_overflows: u32,
+    pooled_faults: u32,
+    pooled_overflows: u32,
+    pooled_dropped: u32,
+    inline: Drained,
+    pooled: Drained,
+    /// The wait at the head that followed this wake, when its batch was
+    /// still running.
+    pool_wait_us: Option<u64>,
+}
+
+impl MindWake {
+    fn faults(&self) -> u32 {
+        self.inline_faults.saturating_add(self.pooled_faults)
+    }
+
+    fn ops(&self) -> u64 {
+        self.inline.ops.saturating_add(self.pooled.ops)
+    }
+
+    fn fees(&self) -> u64 {
+        self.inline.fees.saturating_add(self.pooled.fees)
+    }
+
+    fn cpu_us(&self) -> u64 {
+        self.inline.cpu_us().saturating_add(self.pooled.cpu_us())
+    }
+
+    /// The recorded thinks: Rhai and native, inline and pooled.
+    fn timed_thinks(&self) -> u32 {
+        self.inline
+            .rhai_thinks()
+            .saturating_add(self.inline.native_thinks())
+            .saturating_add(self.pooled.rhai_thinks())
+            .saturating_add(self.pooled.native_thinks())
+    }
+
+    fn rhai_thinks(&self) -> u32 {
+        self.inline
+            .rhai_thinks()
+            .saturating_add(self.pooled.rhai_thinks())
+    }
+}
+
+/// **What one measured window of the minds lane produced**: [`Run`]'s shape
+/// over [`MindWake`]s, the `view_us` samples and the last substep hash.
+struct MindsRun {
+    wakes: Vec<MindWake>,
+    substeps: Vec<u32>,
+    short_substeps: u64,
+    frames: Vec<f64>,
+    ended: Option<tacsim::arena::state::MatchEnd>,
+    lagged_pulses: u32,
+    perception_total: tacsim::arena::perception::PerceptionCounters,
+    peak: tacsim::arena::perception::PerceptionCounters,
+    reflex_total: tacsim::arena::reflex::ReflexCounters,
+    snapshots: Vec<SnapshotSample>,
+    documents: Vec<serde_json::Value>,
+    /// `Arena::mind_view` on a clone, microseconds, on about forty wakes.
+    view_us: Vec<u64>,
+    /// The last substep's hash of the last wake (`Arena::substep_hashes`).
+    final_substep_hash: Option<u64>,
+}
+
+/// **The measured wakes, on the task's policy** (the section head). Not
+/// [`run_wakes`]: that loop drops `StepOutput::thinks` (so an undelivered
+/// pulse's thinks would be settled inline at the next step's head, inside the
+/// next `Wake.ms`), and encodes the snapshot before any delivery
+/// (`Snapshot::encode` refuses an unanswered think). Nor `Arena::step_settled`,
+/// which folds pooled think time into the wake. The order of one wake is the
+/// task's: the head (wait, deliver), the step (timed alone), the chunks (the
+/// publish's stand-in), the submit, the snapshot past its due check (wait,
+/// then encode).
+#[allow(clippy::too_many_lines)]
+fn run_minds_wakes(
+    s: &mut MindsStepper,
+    until_ms: i64,
+    view_sample_every: u32,
+    flush_at_end: bool,
+) -> MindsRun {
+    use tacsim::arena::perception::PerceptionCounters;
+    let substep_ms = i64::from(s.substep);
+    let mut run = MindsRun {
+        wakes: Vec::new(),
+        substeps: Vec::new(),
+        short_substeps: 0,
+        frames: Vec::new(),
+        ended: None,
+        lagged_pulses: 0,
+        perception_total: PerceptionCounters::default(),
+        peak: PerceptionCounters::default(),
+        reflex_total: tacsim::arena::reflex::ReflexCounters::default(),
+        snapshots: Vec::new(),
+        documents: Vec::new(),
+        view_us: Vec::new(),
+        final_substep_hash: None,
+    };
+    // The previous batch's figures land on the wake that collected it.
+    let write_back = |run: &mut MindsRun, awaited: Option<Awaited>, pooled: Drained| {
+        if let Some(last) = run.wakes.last_mut() {
+            if let Some(awaited) = awaited {
+                last.pool_wait_us = Some(awaited.us);
+                last.pooled_faults = last.pooled_faults.saturating_add(awaited.faults);
+                last.pooled_overflows = last.pooled_overflows.saturating_add(awaited.overflows);
+                last.pooled_dropped = last.pooled_dropped.saturating_add(awaited.dropped);
+            }
+            last.pooled = pooled;
+        }
+    };
+    let mut wake_index = 0_u32;
+    while s.arena.now_ms < until_ms {
+        // 1. The head: the task's `await_thinks`, outside the timer; then
+        //    the batch's figures, written back onto the wake that collected
+        //    it. The first wake of a run finds the warm-up's tail already
+        //    awaited; its drain reads nothing.
+        let awaited = s.await_batch("the wake's head");
+        if awaited.is_some() {
+            s.batches += 1;
+        }
+        let pooled = s.drain();
+        write_back(&mut run, awaited, pooled);
+        // The guard the lens relies on, a plain check in every build: a think
+        // still outstanding would be settled at the step's head INSIDE the
+        // timer, and its runner's time would read as the wake's.
+        let outstanding = s.arena.thinks_outstanding().len();
+        if outstanding > 0 || !s.arena.awaiting.is_empty() {
+            s.unsound.push(format!(
+                "{outstanding} thinks were still outstanding and {} hulls awaiting at the head \
+                 of wake {wake_index}: pooled time would be inside Wake.ms",
+                s.arena.awaiting.len()
+            ));
+        }
+        // 2. The step, timed alone — `Wake.ms` is what the task's `took` is.
+        let before = s.arena.now_ms;
+        let late = s.late;
+        let at = Instant::now();
+        let mut out = s.arena.step(s.wall, &[], &[]);
+        let ms = at.elapsed().as_secs_f64() * 1_000.0;
+        // 3. The inline figures: the thinks this step collected minus the
+        //    ones it handed out ran at substep heads inside `step`. A
+        //    match-ending substep's thinks are never run (the output is
+        //    empty), so that wake counts them as unrun.
+        let inline = s.drain();
+        let pooled_thinks = u32::try_from(out.thinks.len()).unwrap_or(u32::MAX);
+        let (inline_thinks, unrun_thinks) = if out.ended.is_some() {
+            // The ending substep's collections stay in `unsettled`, handed
+            // out to nobody; an earlier substep's ran inline as ever.
+            let unrun = u32::try_from(s.arena.thinks_outstanding().len()).unwrap_or(u32::MAX);
+            (out.reflex.thinks.saturating_sub(unrun), unrun)
+        } else {
+            (out.reflex.thinks.saturating_sub(pooled_thinks), 0)
+        };
+        // 4. The chunks: the publish's stand-in, as `run_wakes` counts them.
+        for chunk in &out.ledger_chunks {
+            s.counts.absorb(&chunk.bytes);
+        }
+        s.arena
+            .ledger
+            .mark_flushed(s.arena.ledger.last_closed_seq());
+        // 5. The submit, after the publish (the task's order).
+        let thinks = std::mem::take(&mut out.thinks);
+        if !thinks.is_empty() {
+            s.outstanding = Some(s.pool.submit(thinks));
+        }
+        // 6. The snapshot, where the task takes it: past the due check, the
+        //    batch awaited (its figures are drained at the next head and
+        //    written back; its wait is this wake's), then the encode, timed
+        //    and never folded into `ms`.
+        let mut snapshot_wait = None;
+        if let Some(snapshot_ms) = s.snapshot_ms
+            && out.ended.is_none()
+            && tacsim::arena_task::snapshot_due(
+                &mut s.last_snapshot_period,
+                s.arena.now_ms,
+                snapshot_ms,
+            )
+        {
+            if let Some(awaited) = s.await_batch("before the snapshot's encode") {
+                s.batches += 1;
+                snapshot_wait = Some(awaited);
+            }
+            let at = Instant::now();
+            match tacsim::arena::Snapshot::encode(&s.arena) {
+                Ok(snapshot) => {
+                    let encode_ms = at.elapsed().as_secs_f64() * 1_000.0;
+                    run.snapshots.push(SnapshotSample {
+                        now_ms: s.arena.now_ms,
+                        bytes: snapshot.bytes().len(),
+                        encode_ms,
+                        wake_ms: ms,
+                    });
+                    run.documents.push(snapshot.document);
+                }
+                Err(error) => s.unsound.push(format!(
+                    "the snapshot at {} ms was refused: {error}",
+                    s.arena.now_ms
+                )),
+            }
+        }
+        // 7. `view_us`: on about forty wakes, evenly spaced, one hull whose
+        //    think this wake collected, on a clone, outside the timer
+        //    (`mind_view` is `&mut self`: it moves ranges and notices).
+        if wake_index.is_multiple_of(view_sample_every.max(1))
+            && run.view_us.len() < MINDS_VIEW_SAMPLES
+            && let Some(unit) = s.arena.awaiting.iter().next().copied()
+        {
+            let mut clone = s.arena.clone();
+            let at = Instant::now();
+            let _ = clone.mind_view(unit);
+            run.view_us
+                .push(u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX));
+        }
+        // 8. The record.
+        let full = u32::try_from((s.arena.now_ms - before) / substep_ms.max(1)).unwrap_or(0);
+        let short = out.substeps.saturating_sub(full);
+        run.short_substeps += u64::from(short);
+        let mut wake = MindWake {
+            ms,
+            now_ms: s.arena.now_ms,
+            substeps: out.substeps,
+            short_substeps: short,
+            late,
+            traces: out.perception.traces,
+            cell_probes: out.perception.cell_probes,
+            horizon_probes: out.perception.horizon_probes,
+            jam_checks: out.perception.jam_checks,
+            share_ops: out.perception.share_ops,
+            thinks: out.reflex.thinks,
+            inline_thinks,
+            pooled_thinks,
+            unrun_thinks,
+            landings: out.reflex.landings,
+            inline_faults: out.reflex.mind_faults,
+            inline_overflows: out.reflex.mind_overflows,
+            pooled_faults: 0,
+            pooled_overflows: 0,
+            pooled_dropped: 0,
+            inline,
+            pooled: Drained::default(),
+            pool_wait_us: None,
+        };
+        if let Some(awaited) = snapshot_wait {
+            wake.pool_wait_us = Some(awaited.us);
+            wake.pooled_faults = awaited.faults;
+            wake.pooled_overflows = awaited.overflows;
+            wake.pooled_dropped = awaited.dropped;
+        }
+        run.wakes.push(wake);
+        s.slope_refusals += u64::from(out.reflex.slope_refusals);
+        run.perception_total.absorb(&out.perception);
+        let peak = &mut run.peak;
+        peak.passes = peak.passes.max(out.perception.passes);
+        peak.candidates = peak.candidates.max(out.perception.candidates);
+        peak.traces = peak.traces.max(out.perception.traces);
+        peak.cell_probes = peak.cell_probes.max(out.perception.cell_probes);
+        peak.horizon_probes = peak.horizon_probes.max(out.perception.horizon_probes);
+        peak.share_ops = peak.share_ops.max(out.perception.share_ops);
+        peak.jam_checks = peak.jam_checks.max(out.perception.jam_checks);
+        peak.detected = peak.detected.max(out.perception.detected);
+        peak.classified = peak.classified.max(out.perception.classified);
+        peak.lost = peak.lost.max(out.perception.lost);
+        run.reflex_total.absorb(&out.reflex);
+        run.substeps.push(out.substeps);
+        #[allow(clippy::cast_precision_loss)]
+        run.frames.push(out.frames.len() as f64);
+        if out.lagged {
+            run.lagged_pulses += 1;
+        }
+        wake_index = wake_index.wrapping_add(1);
+        if let Some(end) = out.ended {
+            run.ended = Some(end);
+            break;
+        }
+        s.wall = s.clock.next(out.next_due_ms);
+        s.late = s.clock.late;
+    }
+    // The tail: the batch in flight awaited and written back, the ledger
+    // flushed where the measurement ends (not at the warm-up's end, which
+    // `warm_up` never flushes either), the last substep hash read.
+    let awaited = s.await_batch("the run's tail");
+    if awaited.is_some() {
+        s.batches += 1;
+    }
+    let pooled = s.drain();
+    write_back(&mut run, awaited, pooled);
+    if flush_at_end {
+        s.arena.ledger.flush();
+        for chunk in s.arena.ledger.take_chunks() {
+            s.counts.absorb(&chunk.bytes);
+        }
+    }
+    run.final_substep_hash = s.arena.substep_hashes.last().copied();
+    run
+}
+
+/// **One [`WINDOW_MS`] window of the minds lane's wakes, summed**: the wake
+/// milliseconds (the window lens's figure), the think microseconds of the
+/// thinks its wakes collected (the CPU lens's figure, inline and pooled), the
+/// ops, the substeps its wakes ran, whether any wake in it was off the
+/// lattice (a jittered wake with a remainder substep, or the general
+/// jitter's), and the five counters.
+#[derive(Clone, Copy, Debug, Default)]
+struct MindsWindow {
+    ms: f64,
+    cpu_us: u64,
+    ops: u64,
+    substeps: u32,
+    off_lattice: bool,
+    traces: u64,
+    cell_probes: u64,
+    horizon_probes: u64,
+    jam_checks: u64,
+    share_ops: u64,
+}
+
+/// [`windows`]' fold over [`MindWake`]s — the same key, `(now_ms − start − 1)
+/// / 500`, so a wake's inline think time is in the window the lens reads and
+/// its pooled think time is keyed to the same window.
+fn minds_windows(wakes: &[MindWake], start_ms: i64) -> Vec<MindsWindow> {
+    let mut folded: BTreeMap<i64, MindsWindow> = BTreeMap::new();
+    for wake in wakes {
+        let slot = folded
+            .entry((wake.now_ms - start_ms - 1).div_euclid(WINDOW_MS))
+            .or_default();
+        slot.ms += wake.ms;
+        slot.cpu_us = slot.cpu_us.saturating_add(wake.cpu_us());
+        slot.ops = slot.ops.saturating_add(wake.ops());
+        slot.substeps = slot.substeps.saturating_add(wake.substeps);
+        slot.off_lattice |= wake.short_substeps > 0;
+        slot.traces += u64::from(wake.traces);
+        slot.cell_probes += wake.cell_probes;
+        slot.horizon_probes += wake.horizon_probes;
+        slot.jam_checks += u64::from(wake.jam_checks);
+        slot.share_ops += u64::from(wake.share_ops);
+    }
+    folded.into_values().collect()
+}
+
+impl MindsWindow {
+    /// **Comparable with the lens's baseline**: exactly the lattice's substeps
+    /// (`WINDOW_MS / substep`, two on the shipped cohort) and none of them a
+    /// remainder — the section head says why a jittered run has others.
+    fn comparable(&self, substep_ms: u32) -> bool {
+        let lattice = u32::try_from(WINDOW_MS).unwrap_or(0) / substep_ms.max(1);
+        !self.off_lattice && self.substeps == lattice
+    }
+}
+
+/// **The CPU lens, computed** (the M4 row's finding (7)): the pool's ops per
+/// window over the host's measured budget ops per microsecond, times
+/// [`CPU_LENS_HEADROOM`], in milliseconds — 5.208 ms at 24 ops/µs on the
+/// shipped 300-unit pool, 10.417 at 12. It bounds per-window variance against
+/// the host's own rate, never interpreter speed; `[tacsim.minds].cpu_lens_ms`
+/// is printed beside it and never asserted.
+#[allow(clippy::cast_precision_loss)]
+fn cpu_lens_ms_for(pool_per_window: u64, budget_per_us: f64) -> f64 {
+    if budget_per_us <= 0.0 {
+        return 0.0;
+    }
+    pool_per_window as f64 / budget_per_us * CPU_LENS_HEADROOM / 1_000.0
+}
+
+/// `(p50, p99, max)` of `values` as `u64`s (`0`s for none).
+fn spread_u64(values: &[u64]) -> (u64, u64, u64) {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let at = |p: usize| {
+        sorted
+            .get((sorted.len() * p / 100).min(sorted.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0)
+    };
+    (at(50), at(99), sorted.last().copied().unwrap_or(0))
+}
+
+/// The first percentile of `values` (`0` for none).
+fn p1_u64(values: &[u64]) -> u64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted.get(sorted.len() / 100).copied().unwrap_or(0)
+}
+
+/// A figure in thousandths printed with three decimals (`11.912`).
+fn milli_word(milli: u64) -> String {
+    format!("{}.{:03}", milli / 1_000, milli % 1_000)
+}
+
+/// Ops per microsecond, per think, in thousandths: `budget × 1000 / µs` for
+/// every think that took at least a microsecond.
+fn rates_milli(budget: &[u64], us: &[u64]) -> Vec<u64> {
+    budget
+        .iter()
+        .zip(us)
+        .filter(|(_, us)| **us > 0)
+        .map(|(budget, us)| budget.saturating_mul(1_000) / us)
+        .collect()
+}
+
+/// **The host's rate for the CPU lens**: Standard Doctrine's own thinks over a
+/// real view, measured once per lane run — on the first variant's field after
+/// its warm-up, a Class I hull where there is one — so the four lenses share
+/// one footing (the stock variants run no Rhai). The twin's method
+/// (`twin_rhai_ops_per_us`): the whole Rhai think, the wraps, the memory's
+/// decode and encode and the script, over [`CALIBRATION_THINKS`] thinks with
+/// the memory fed forward; the budget rate (`ops + fee` per µs, the pool's
+/// unit) feeds the lens, the ops-only rate is printed beside it for 17b §2's
+/// M2.7 row (11.9 on this host, 19.5–24.1 on doc 17 §18's micro-benchmark).
+struct Calibration {
+    /// `(p50, p99, p1)`, thousandths.
+    budget_per_us_milli: (u64, u64, u64),
+    /// `(p50, p99, p1)`, thousandths.
+    ops_per_us_milli: (u64, u64, u64),
+    thinks: usize,
+    faulted: u32,
+    unit: ObjId,
+    class: tacsim::arena::core::CoreClass,
+}
+
+impl Calibration {
+    /// The budget rate the lens is computed from, ops per microsecond.
+    #[allow(clippy::cast_precision_loss)]
+    fn budget_per_us(&self) -> f64 {
+        self.budget_per_us_milli.0 as f64 / 1_000.0
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "harness_minds_calibration: budget_per_us_p50={} p99={} p1={} ops_per_us_p50={} p99={} p1={} thinks={} faulted={} unit=#{} class={:?} (Standard Doctrine over a real view of the first variant's field, the memory fed forward; the budget rate feeds the CPU lens; doc 17 section 18 measured 19.5-24.1 ops/us on the blessing host's micro-benchmark, 17b section 2's M2.7 row 11.9 on this host)",
+            milli_word(self.budget_per_us_milli.0),
+            milli_word(self.budget_per_us_milli.1),
+            milli_word(self.budget_per_us_milli.2),
+            milli_word(self.ops_per_us_milli.0),
+            milli_word(self.ops_per_us_milli.1),
+            milli_word(self.ops_per_us_milli.2),
+            self.thinks,
+            self.faulted,
+            self.unit.0,
+            self.class
+        )
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "budget_per_us": {
+                "p50": milli_word(self.budget_per_us_milli.0),
+                "p99": milli_word(self.budget_per_us_milli.1),
+                "p1": milli_word(self.budget_per_us_milli.2),
+            },
+            "ops_per_us": {
+                "p50": milli_word(self.ops_per_us_milli.0),
+                "p99": milli_word(self.ops_per_us_milli.1),
+                "p1": milli_word(self.ops_per_us_milli.2),
+            },
+            "thinks": self.thinks,
+            "faulted": self.faulted,
+            "unit": self.unit.0,
+            "class": format!("{:?}", self.class),
+            "code": "standard.rhai over a real view, the memory fed forward",
+        })
+    }
+}
+
+/// See [`Calibration`].
+fn calibrate_ops_per_us(field: &MindsField) -> Calibration {
+    use mush_mind::Digest;
+    use std::sync::Arc;
+    use tacsim::arena::core::CoreClass;
+    use tacsim::arena::mind::{MindRunner, ThinkJob};
+    use tacsim::arena::state::Controller;
+    let arena = &field.stepper.arena;
+    let minded = |class: Option<CoreClass>| {
+        arena
+            .units
+            .iter()
+            .filter(|unit| unit.controller == Controller::Mind && !unit.limits.wreck)
+            .map(|unit| unit.id)
+            .find(|unit| class.is_none_or(|class| arena.mind_class(*unit) == class))
+    };
+    let unit = minded(Some(CoreClass::I))
+        .or_else(|| minded(None))
+        .expect("the minds field carries a mind");
+    let class = arena.mind_class(unit);
+    let mut clone = arena.clone();
+    let view = Arc::new(clone.mind_view(unit).expect("the hull has a view"));
+    let profile = clone.classes.row(CoreClass::I);
+    let card = clone
+        .minds
+        .get(&unit)
+        .expect("the hull has a mind row")
+        .card
+        .clone();
+    let runner = tacsim::minds::RhaiRunner::new(
+        &field.arena_cfg,
+        tacsim::minds::STANDARD_RHAI,
+        Digest(tacsim::minds::standard_digest().0),
+    )
+    .expect("Standard Doctrine compiles")
+    .recording();
+    let substep = i64::from(field.stepper.substep);
+    let mut memory: Vec<u8> = Vec::new();
+    for n in 0..CALIBRATION_THINKS {
+        let job = ThinkJob {
+            unit,
+            think_seq: u64::try_from(n).unwrap_or(u64::MAX),
+            t_ms: view.t_ms,
+            lands_ms: view.t_ms.saturating_add(substep),
+            seed: clone.seed,
+            dropped: false,
+            profile: &profile,
+            view: &view,
+            memory: &memory,
+            map: &clone.definition,
+            card: &card,
+        };
+        memory = runner.think(&job).memory;
+    }
+    let stats = runner.take_stats();
+    let us: Vec<u64> = stats
+        .iter()
+        .map(|stat| u64::try_from(stat.rhai_us).unwrap_or(u64::MAX))
+        .collect();
+    let budget: Vec<u64> = stats
+        .iter()
+        .map(|stat| stat.ops.saturating_add(stat.fee))
+        .collect();
+    let ops: Vec<u64> = stats.iter().map(|stat| stat.ops).collect();
+    let budget_rates = rates_milli(&budget, &us);
+    let ops_rates = rates_milli(&ops, &us);
+    let (b50, b99, _) = spread_u64(&budget_rates);
+    let (o50, o99, _) = spread_u64(&ops_rates);
+    Calibration {
+        budget_per_us_milli: (b50, b99, p1_u64(&budget_rates)),
+        ops_per_us_milli: (o50, o99, p1_u64(&ops_rates)),
+        thinks: stats.len(),
+        faulted: stats
+            .iter()
+            .filter(|stat| stat.faulted)
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX),
+        unit,
+        class,
+    }
+}
+
+/// `git rev-parse HEAD` now, or `unknown`.
+fn head_commit() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|commit| !commit.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// **A minds field fielded, opened and warmed up** — [`Field`]'s shape for
+/// one variant, with the plan, the pool and the runners.
+struct MindsField {
+    variant: MindsVariant,
+    stepper: MindsStepper,
+    arena_cfg: tacsim::config::ArenaConfig,
+    sensors_cfg: tacsim::config::SensorsConfig,
+    plan: MindsPlan,
+    class_counts: BTreeMap<&'static str, u64>,
+    passable: usize,
+    placed: u32,
+    seated: u32,
+    /// Scripted seals the production installer gave a runner.
+    installed: usize,
+    ammo_at_start: BTreeMap<ObjId, u64>,
+    generate_ms: f64,
+    boot_ms: f64,
+    apply_ms: f64,
+    open_ms: f64,
+    convert_ms: f64,
+    arena_open_ms: f64,
+    warm_ms: f64,
+    warm_pulses: u32,
+    killed_warming: usize,
+    warm_end: i64,
+    /// The warm-up's sentences — the cold check, an installer refusal — into
+    /// the verdict's `sound=` (never a panic: the fill variant's `held=` word
+    /// must be printed whatever the run did).
+    unsound_at_open: Vec<String>,
+}
+
+/// **The relief, the minds field and the warm-up** ([`open_field`]'s body on
+/// [`field_minds`]): the production installer installs every scripted seal's
+/// runner from the source its seal digest names, the lane's recording runners
+/// are then installed over them (one per distinct source, so the sandbox's
+/// compile cache is shared), the timed native wrapper takes the arena-wide
+/// fallback, and the warm-up runs through [`run_minds_wakes`] itself on the
+/// task's policy until `startup_ms + 2 × Class 0's think_ms + engaged_ms`
+/// (the first think at most one period out on the stagger grid, its landing
+/// one substep later, the startup itself). The cold check is a verdict
+/// sentence, not a panic.
+#[allow(clippy::too_many_lines)]
+fn open_minds_field(
+    knobs: &Knobs,
+    minds: &MindsKnobs,
+    variant: MindsVariant,
+    mode: MindsLaneMode,
+) -> MindsField {
+    use mush_mind::Digest;
+    use std::sync::Arc;
+    use tacsim::arena::SealEngine;
+    use tacsim::arena::clock::Tempo as ArenaTempo;
+    use tacsim::arena::mind::MindRunner;
+    use tacsim::arena::state::{Arena, CustodyOut, Power};
+    use tacsim::config::{ArenaConfig, MatchConfig};
+
+    let Window {
+        tw,
+        cells: all_cells,
+        classes: class_counts,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+        ..
+    } = open_window(knobs.seed);
+    let catalog = fielded_catalog(&tw);
+    drop(tw);
+    // The ceiling variant's chassis: the one command-core hull.
+    let heavy = CanonicalId::new(content::HEAVY_MK1).expect("a canonical entry id");
+    assert!(
+        catalog.specs.contains_key(&heavy) && catalog.bindings.contains_key(&heavy),
+        "the booted catalog does not field {}: the ceiling variant has no heavy",
+        content::HEAVY_MK1
+    );
+
+    let convert_at = Instant::now();
+    let (grid, passable) = arena_ground(&all_cells);
+    let definition = arena_definition(grid);
+    let convert_ms = convert_at.elapsed().as_secs_f64() * 1_000.0;
+    assert!(
+        u32::try_from(passable.len()).unwrap_or(0) > knobs.units,
+        "only {} passable cells for {} units",
+        passable.len(),
+        knobs.units
+    );
+
+    let minds_cfg = tacsim::config::MindsConfig::default();
+    let (units, pilots, plan) = field_minds(knobs, &catalog, &passable, variant, &minds_cfg);
+    let placed = u32::try_from(units.len()).unwrap_or(0);
+    let seated = u32::try_from(pilots.len()).unwrap_or(0);
+    // The sources the installer looks up by the SEAL's digest.
+    let mut unsound_at_open = Vec::new();
+    let mut sources: BTreeMap<[u8; 32], String> = BTreeMap::new();
+    for unit in units
+        .iter()
+        .filter(|unit| unit.seal.engine == SealEngine::Scripted)
+    {
+        match source_for(&unit.seal.source_sha256) {
+            Some(text) => {
+                sources.insert(unit.seal.digest(), text.to_owned());
+            }
+            None => unsound_at_open.push(format!(
+                "#{} is sealed scripted on a source the lane does not carry",
+                unit.id.0
+            )),
+        }
+    }
+
+    let arena_cfg = ArenaConfig::default();
+    let mut match_cfg = MatchConfig::default();
+    match_cfg.max_duration_ms = match_cfg.max_duration_ms.max(
+        u32::try_from(
+            i64::from(match_cfg.startup_ms)
+                .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
+                .saturating_add(i64::from(arena_cfg.tempo.engaged_ms))
+                .saturating_add(i64::from(knobs.arena_s).saturating_mul(1_000))
+                .saturating_add(60_000),
+        )
+        .unwrap_or(u32::MAX),
+    );
+    let sensors_cfg = tacsim::config::SensorsConfig::default();
+    let open_at = Instant::now();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots,
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: knobs.seed,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &arena_cfg,
+        &match_cfg,
+        &sensors_cfg,
+    )
+    .expect("the minds arena opens");
+    let arena_open_ms = open_at.elapsed().as_secs_f64() * 1_000.0;
+    arena.clock.pin_tempo_for_tests(ArenaTempo::Engaged);
+    let substep =
+        tacsim::arena::clock::substep_ms(&arena_cfg.tempo, arena.cell_cm(), arena.max_speed_cms());
+
+    // The runners: the production installer first (the path a match takes),
+    // then the lane's recorders over its runners, then the timed fallback.
+    // Both before the first step: `CollectedThink.runner` is read at
+    // collection.
+    let installed = match tacsim::minds::install_sealed_runners(&mut arena, &arena_cfg, &|digest| {
+        sources.get(digest).cloned()
+    }) {
+        Ok(installed) => installed,
+        Err(error) => {
+            unsound_at_open.push(format!("the installer refused the field: {error}"));
+            0
+        }
+    };
+    let mut recorders: Vec<Arc<tacsim::minds::RhaiRunner>> = Vec::new();
+    let mut recorder_of: BTreeMap<[u8; 32], Arc<tacsim::minds::RhaiRunner>> = BTreeMap::new();
+    for text in sources.values() {
+        let key: [u8; 32] = {
+            use sha2::{Digest as _, Sha256};
+            Sha256::digest(text.as_bytes()).into()
+        };
+        if recorder_of.contains_key(&key) {
+            continue;
+        }
+        match tacsim::minds::RhaiRunner::new(&arena_cfg, text, Digest(key)) {
+            Ok(runner) => {
+                let recorder = Arc::new(runner.recording());
+                recorders.push(Arc::clone(&recorder));
+                recorder_of.insert(key, recorder);
+            }
+            Err(error) => {
+                unsound_at_open.push(format!("a recording runner did not compile: {error}"))
+            }
+        }
+    }
+    let seal_digests: BTreeMap<ObjId, [u8; 32]> = arena
+        .units
+        .iter()
+        .map(|unit| (unit.id, unit.seal.digest))
+        .collect();
+    for (unit, runner) in &mut arena.runners {
+        let recorder = seal_digests
+            .get(unit)
+            .and_then(|digest| sources.get(digest))
+            .map(|text| {
+                use sha2::{Digest as _, Sha256};
+                let key: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+                key
+            })
+            .and_then(|key| recorder_of.get(&key));
+        match recorder {
+            Some(recorder) => *runner = Arc::clone(recorder) as Arc<dyn MindRunner>,
+            None => unsound_at_open.push(format!(
+                "#{} has an installed runner and no recorder over it",
+                unit.0
+            )),
+        }
+    }
+    let native = Arc::new(TimedNative::new(&arena_cfg.reflex));
+    arena.mind_runner = Arc::clone(&native) as Arc<dyn MindRunner>;
+
+    let ammo_at_start: BTreeMap<ObjId, u64> = arena
+        .units
+        .iter()
+        .map(|unit| {
+            (
+                unit.id,
+                unit.ammo.values().map(|rounds| u64::from(*rounds)).sum(),
+            )
+        })
+        .collect();
+
+    let mut stepper = MindsStepper {
+        arena,
+        substep,
+        counts: Counts::default(),
+        clock: MindsClock::new(knobs, minds),
+        wall: 0,
+        late: false,
+        slope_refusals: 0,
+        pool: tacsim::minds::MindPool::new(minds.workers),
+        outstanding: None,
+        snapshot_ms: None,
+        last_snapshot_period: None,
+        recorders,
+        native,
+        unsound: Vec::new(),
+        batches: 0,
+        batches_failed: 0,
+    };
+
+    // The warm-up, on the task's policy; its figures are discarded.
+    let warm_at = Instant::now();
+    let warm_until = i64::from(match_cfg.startup_ms)
+        .saturating_add(
+            2 * stepper
+                .arena
+                .classes
+                .row(tacsim::arena::core::CoreClass::Zero)
+                .think_ms,
+        )
+        .saturating_add(i64::from(arena_cfg.tempo.engaged_ms));
+    let warm = run_minds_wakes(&mut stepper, warm_until, u32::MAX, false);
+    let warm_ms = warm_at.elapsed().as_secs_f64() * 1_000.0;
+    let warm_pulses = u32::try_from(warm.wakes.len()).unwrap_or(u32::MAX);
+    let arena = &stepper.arena;
+    let cold: Vec<(ObjId, Power)> = arena
+        .units
+        .iter()
+        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck)
+        .map(|unit| (unit.id, unit.power))
+        .collect();
+    if !cold.is_empty() {
+        unsound_at_open.push(format!(
+            "{} units never came online by {warm_until} ms: the ROM did not start the field \
+             up: {cold:?}",
+            cold.len()
+        ));
+    }
+    let killed_warming = arena.units.iter().filter(|unit| unit.limits.wreck).count();
+    if mode == MindsLaneMode::Weekly && variant == MindsVariant::StockCi && killed_warming > 0 {
+        // The arena lane's rule for its CI cohort at the default reach: a
+        // wreck in the warm-up is a regression there (`open_field`); here it
+        // is a sentence, so the variant's verdict is still printed.
+        if sensor_cells() == SENSOR_CELLS && share_cells() == SHARE_CELLS {
+            unsound_at_open.push(format!(
+                "{killed_warming} units were wrecked during the stock_ci warm-up at the \
+                 default reach"
+            ));
+        }
+    }
+    let warm_end = arena.now_ms;
+    MindsField {
+        variant,
+        stepper,
+        arena_cfg,
+        sensors_cfg,
+        plan,
+        class_counts,
+        passable: passable.len(),
+        placed,
+        seated,
+        installed,
+        ammo_at_start,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+        convert_ms,
+        arena_open_ms,
+        warm_ms,
+        warm_pulses,
+        killed_warming,
+        warm_end,
+        unsound_at_open,
+    }
+}
+
+/// **What one variant's run came to**: every line as printed, the JSON's
+/// path, the two verdict words with their sentences, and the figures the
+/// smoke test reads.
+struct MindsReport {
+    variant: MindsVariant,
+    lines: Vec<String>,
+    json: std::path::PathBuf,
+    /// The decision's word: the plan's listed asserts, all held.
+    held: bool,
+    /// The lane's integrity: no failed batch, no outstanding think at a head,
+    /// no refused snapshot, a loaded field, the stat cross-check.
+    sound: bool,
+    failures: Vec<String>,
+    unsound: Vec<String>,
+    faults: u32,
+    inline_thinks: u32,
+    pooled_thinks: u32,
+    rhai_thinks: u32,
+    budget_p1: u64,
+    budget_max: u64,
+}
+
+/// **One variant measured** (the section head): the field's measured window
+/// through [`run_minds_wakes`] with the snapshots on (unless
+/// `TACSIM_SNAPSHOT_OFF`), the decodes after the loop, the figures, the
+/// lines, the checks and the JSON.
+#[allow(clippy::too_many_lines)]
+fn measure_minds_field(
+    knobs: &Knobs,
+    minds: &MindsKnobs,
+    mut field: MindsField,
+    mode: MindsLaneMode,
+    calibration: &Calibration,
+) -> MindsReport {
+    use tacsim::arena::SealEngine;
+    use tacsim::match_::pool::pool_for;
+    let variant = field.variant;
+    let word = variant.word();
+    let cohort = variant.reach().word();
+    let rss_start_kib = resident_kib();
+    let vmrss_start_kib = vmrss_kib();
+    field.stepper.snapshot_ms = if knobs.snapshot_off {
+        None
+    } else {
+        Some(field.arena_cfg.snapshot_ms)
+    };
+    let every_ms = field.stepper.snapshot_ms;
+    let until_ms = field
+        .warm_end
+        .saturating_add(i64::from(knobs.arena_s) * 1_000);
+    // About forty `view_us` samples, evenly spaced over the wakes the
+    // warm-up's measured rate predicts for the window.
+    let expected_wakes = if field.warm_end > 0 {
+        u64::from(field.warm_pulses)
+            .saturating_mul(u64::from(knobs.arena_s))
+            .saturating_mul(1_000)
+            / u64::try_from(field.warm_end).unwrap_or(1).max(1)
+    } else {
+        0
+    };
+    let view_sample_every =
+        u32::try_from(expected_wakes / u64::try_from(MINDS_VIEW_SAMPLES).unwrap_or(40))
+            .unwrap_or(u32::MAX)
+            .max(1);
+    let mut run = run_minds_wakes(&mut field.stepper, until_ms, view_sample_every, true);
+    let documents = std::mem::take(&mut run.documents);
+    let decoded = decode_snapshots(&documents, &field.stepper.arena.definition);
+    drop(documents);
+    let rss_end_kib = resident_kib();
+    let vmrss_end_kib = vmrss_kib();
+
+    let MindsField {
+        stepper,
+        arena_cfg,
+        sensors_cfg,
+        plan,
+        class_counts,
+        passable,
+        placed,
+        seated,
+        installed,
+        ammo_at_start,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+        convert_ms,
+        arena_open_ms,
+        warm_ms,
+        warm_pulses,
+        killed_warming,
+        warm_end,
+        unsound_at_open,
+        ..
+    } = field;
+    let MindsStepper {
+        arena,
+        substep,
+        counts,
+        clock,
+        slope_refusals,
+        pool,
+        unsound: unsound_stepping,
+        batches,
+        batches_failed,
+        ..
+    } = stepper;
+    drop(pool);
+    let MindsRun {
+        wakes,
+        substeps,
+        short_substeps,
+        frames,
+        ended,
+        lagged_pulses,
+        perception_total,
+        peak,
+        reflex_total,
+        snapshots,
+        documents: _,
+        view_us,
+        final_substep_hash,
+    } = run;
+    let snapshot = SnapshotFigures::of(every_ms, &snapshots, decoded, knobs.max_snapshot_bytes);
+
+    // ---- the figures ----
+    let minds_cfg = tacsim::config::MindsConfig::default();
+    let pool_ops_s = pool_for(&minds_cfg, usize::try_from(placed).unwrap_or(usize::MAX));
+    let pool_per_window = pool_ops_s / 2;
+    let pool_per_substep = pool_ops_s.saturating_mul(u64::from(substep)) / 1_000;
+    let tempo = Tempo {
+        name: "minds_engaged",
+        period_ms: arena_cfg.tempo.engaged_ms,
+        ms: wakes.iter().map(|wake| wake.ms).collect(),
+    };
+    let (p50, p95, p99, max) = tempo.stats();
+    let folded = minds_windows(&wakes, warm_end);
+    let window_stats = |keep: &dyn Fn(&MindsWindow) -> bool| {
+        Tempo {
+            name: "minds_window",
+            period_ms: u32::try_from(WINDOW_MS).unwrap_or(0),
+            ms: folded
+                .iter()
+                .filter(|window| keep(window))
+                .map(|window| window.ms)
+                .collect(),
+        }
+        .stats()
+    };
+    let (w50, w95, w99, wmax) = window_stats(&|_| true);
+    let (_, _, w99_on, _) = window_stats(&|window| window.comparable(substep));
+    let (_, _, w99_off, _) = window_stats(&|window| !window.comparable(substep));
+    let windows_on_lattice = folded
+        .iter()
+        .filter(|window| window.comparable(substep))
+        .count();
+    let windows_off_lattice = folded.len() - windows_on_lattice;
+    let windows_remainder = folded.iter().filter(|window| window.off_lattice).count();
+    let cpu = Tempo {
+        name: "minds_cpu",
+        period_ms: u32::try_from(WINDOW_MS).unwrap_or(0),
+        #[allow(clippy::cast_precision_loss)]
+        ms: folded
+            .iter()
+            .map(|window| window.cpu_us as f64 / 1_000.0)
+            .collect(),
+    };
+    let (cpu50, _, cpu99, cpu_max) = cpu.stats();
+    let lens_ms = cpu_lens_ms_for(pool_per_window, calibration.budget_per_us());
+    let window_traces_peak = folded.iter().map(|w| w.traces).max().unwrap_or(0);
+    let window_cell_probes_peak = folded.iter().map(|w| w.cell_probes).max().unwrap_or(0);
+    let window_horizon_probes_peak = folded.iter().map(|w| w.horizon_probes).max().unwrap_or(0);
+    let window_jam_checks_peak = folded.iter().map(|w| w.jam_checks).max().unwrap_or(0);
+    let window_share_ops_peak = folded.iter().map(|w| w.share_ops).max().unwrap_or(0);
+    let ops_per_window_peak = folded.iter().map(|w| w.ops).max().unwrap_or(0);
+    let ops_per_substep_peak = wakes
+        .iter()
+        .map(|wake| wake.inline.ops.max(wake.pooled.ops))
+        .max()
+        .unwrap_or(0);
+    let sum_u32 =
+        |f: &dyn Fn(&MindWake) -> u32| wakes.iter().map(f).fold(0_u32, u32::saturating_add);
+    let sum_u64 =
+        |f: &dyn Fn(&MindWake) -> u64| wakes.iter().map(f).fold(0_u64, u64::saturating_add);
+    let thinks = sum_u32(&|w| w.thinks);
+    let inline_thinks = sum_u32(&|w| w.inline_thinks);
+    let pooled_thinks = sum_u32(&|w| w.pooled_thinks);
+    let unrun_thinks = sum_u32(&|w| w.unrun_thinks);
+    let landings = sum_u32(&|w| w.landings);
+    let faults = sum_u32(&MindWake::faults);
+    let overflows = sum_u32(&|w| w.inline_overflows.saturating_add(w.pooled_overflows));
+    let dropped = sum_u32(&|w| w.pooled_dropped);
+    let ops_total = sum_u64(&MindWake::ops);
+    let fees_total = sum_u64(&MindWake::fees);
+    let rhai_thinks = sum_u32(&MindWake::rhai_thinks);
+    let timed_thinks = sum_u32(&MindWake::timed_thinks);
+    let untimed_thinks = thinks
+        .saturating_sub(unrun_thinks)
+        .saturating_sub(timed_thinks);
+    let stat_faulted = sum_u32(&|w| {
+        w.inline
+            .rhai_faulted
+            .saturating_add(w.inline.native_faulted)
+            .saturating_add(w.pooled.rhai_faulted)
+            .saturating_add(w.pooled.native_faulted)
+    });
+    let think_us: Vec<u64> = wakes
+        .iter()
+        .flat_map(|wake| wake.inline.us().chain(wake.pooled.us()))
+        .collect();
+    let rhai_us: Vec<u64> = wakes
+        .iter()
+        .flat_map(|wake| {
+            wake.inline
+                .rhai_us
+                .iter()
+                .chain(wake.pooled.rhai_us.iter())
+                .copied()
+        })
+        .collect();
+    let native_us: Vec<u64> = wakes
+        .iter()
+        .flat_map(|wake| {
+            wake.inline
+                .native_us
+                .iter()
+                .chain(wake.pooled.native_us.iter())
+                .copied()
+        })
+        .collect();
+    let budget: Vec<u64> = wakes
+        .iter()
+        .flat_map(|wake| {
+            wake.inline
+                .budget
+                .iter()
+                .chain(wake.pooled.budget.iter())
+                .copied()
+        })
+        .collect();
+    let rates = rates_milli(&budget, &rhai_us);
+    let (think50, think99, think_max) = spread_u64(&think_us);
+    let (rhai50, rhai99, _) = spread_u64(&rhai_us);
+    let (native50, native99, _) = spread_u64(&native_us);
+    let (view50, view99, _) = spread_u64(&view_us);
+    let (budget50, budget99, budget_max) = spread_u64(&budget);
+    let budget_p1 = p1_u64(&budget);
+    let (rate50, rate99, _) = spread_u64(&rates);
+    let rate_p1 = p1_u64(&rates);
+    let waits: Vec<u64> = wakes.iter().filter_map(|wake| wake.pool_wait_us).collect();
+    let (wait50, wait99, _) = spread_u64(&waits);
+    let wait_total = waits.iter().fold(0_u64, |a, b| a.saturating_add(*b));
+    // The late wakes of the measured window (the clock's own count covers
+    // the warm-up too, and is printed as `jittered_total`).
+    let jittered_wakes = sum_u32(&|w| u32::from(w.late));
+    let jittered_total = clock.jittered;
+    let substeps_min = substeps.iter().copied().min().unwrap_or(0);
+    let substeps_max = substeps.iter().copied().max().unwrap_or(0);
+    let late_two_substeps = wakes
+        .iter()
+        .filter(|wake| wake.late && wake.substeps == 2 && wake.short_substeps == 0)
+        .count();
+    let jitter_on_lattice = substep > 0 && minds.jitter_ms.rem_euclid(i64::from(substep)) == 0;
+    let wake_count = wakes.len();
+    #[allow(clippy::cast_precision_loss)]
+    let arena_s_run = (arena.now_ms - warm_end) as f64 / 1_000.0;
+    #[allow(clippy::cast_precision_loss)]
+    let wakes_per_arena_s = if arena_s_run > 0.0 {
+        wake_count as f64 / arena_s_run
+    } else {
+        0.0
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let substeps_per_wake_mean = if substeps.is_empty() {
+        0.0
+    } else {
+        f64::from(substeps.iter().sum::<u32>()) / substeps.len() as f64
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let frames_mean = if frames.is_empty() {
+        0.0
+    } else {
+        frames.iter().sum::<f64>() / frames.len() as f64
+    };
+    let moving = arena
+        .units
+        .iter()
+        .filter(|unit| unit.speed_cms != 0)
+        .count();
+    let held_at_end = arena
+        .units
+        .iter()
+        .filter(|unit| unit.held.is_some())
+        .count();
+    let armed = arena
+        .units
+        .iter()
+        .filter(|unit| !unit.weapons.is_empty())
+        .count();
+    let rounds_left: u64 = arena
+        .units
+        .iter()
+        .flat_map(|unit| unit.ammo.values())
+        .map(|rounds| u64::from(*rounds))
+        .sum();
+    let loaded: u64 = ammo_at_start.values().sum();
+    let rounds_spent: u64 = arena
+        .units
+        .iter()
+        .filter(|unit| !unit.weapons.is_empty())
+        .map(|unit| {
+            let now: u64 = unit.ammo.values().map(|rounds| u64::from(*rounds)).sum();
+            ammo_at_start
+                .get(&unit.id)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(now)
+        })
+        .sum();
+    // The authored hulls still at their class at the end: a degraded heavy
+    // (a turret lost, the command core degraded to II) reads here.
+    let authored_class = variant.authored().map(|slots| slots.class);
+    let authored_at_class_at_end = authored_class.map_or(0, |class| {
+        arena
+            .units
+            .iter()
+            .filter(|unit| plan.is_authored(unit.id.0.saturating_sub(100_000)))
+            .filter(|unit| arena.mind_class(unit.id) == class)
+            .count()
+    });
+    let snapshot_periods = every_ms.filter(|ms| *ms > 0).map_or(0, |ms| {
+        let measured = if ended.is_some() {
+            wakes.len().saturating_sub(1)
+        } else {
+            wakes.len()
+        };
+        wakes
+            .iter()
+            .take(measured)
+            .map(|wake| wake.now_ms.div_euclid(i64::from(ms)))
+            .collect::<std::collections::BTreeSet<i64>>()
+            .len()
+    });
+
+    // ---- the verdict ----
+    // `held=`: exactly the plan's listed asserts (the M4 row's (ii)); the
+    // decision reads this word. In the smoke run the three timing checks
+    // are printed and not pushed.
+    let mut failures: Vec<String> = Vec::new();
+    let timing = mode == MindsLaneMode::Weekly;
+    let mut check = |held: bool, timed: bool, sentence: String| {
+        if !held && (!timed || timing) {
+            failures.push(sentence);
+        }
+    };
+    check(
+        p99 <= ARENA_S_P99_MS,
+        true,
+        format!("per-wake p99 {p99:.3} ms is past the {ARENA_S_P99_MS} ms lens"),
+    );
+    let window_lens = window_lens_ms(variant.reach());
+    check(
+        windows_on_lattice > 0,
+        true,
+        format!(
+            "no comparable window among {}: the window lens was not measured",
+            folded.len()
+        ),
+    );
+    check(
+        w99_on <= window_lens,
+        true,
+        format!(
+            "per-window p99 {w99_on:.3} ms over the {windows_on_lattice} comparable windows (the \
+             lattice's substeps, inline think time inside Wake.ms) is past the {window_lens} ms \
+             lens of the {cohort} cohort"
+        ),
+    );
+    check(
+        faults == 0 && overflows == 0,
+        false,
+        format!(
+            "{faults} thinks faulted and {overflows} overflowed: faults are nought on every variant"
+        ),
+    );
+    if variant.authored().is_none() {
+        check(
+            ops_total == 0 && rhai_thinks == 0,
+            false,
+            format!(
+                "the stock variant spent {ops_total} ops over {rhai_thinks} Rhai thinks: ops are \
+                 nought on the stock variants (every hull the ROM)"
+            ),
+        );
+    }
+    check(
+        ops_per_window_peak <= pool_per_window,
+        false,
+        format!("ops in one window {ops_per_window_peak} is past the pool's {pool_per_window}"),
+    );
+    check(
+        ops_per_substep_peak <= pool_per_substep,
+        false,
+        format!("ops in one substep {ops_per_substep_peak} is past the pool's {pool_per_substep}"),
+    );
+    if variant == MindsVariant::CeilingAuthored {
+        check(
+            budget_p1 >= LOAD_III_OPS_P1_MIN,
+            false,
+            format!(
+                "the load mind's ops + fee p1 {budget_p1} is under {LOAD_III_OPS_P1_MIN} over \
+                 {rhai_thinks} Rhai thinks"
+            ),
+        );
+    }
+    check(
+        cpu99 <= lens_ms,
+        true,
+        format!(
+            "CPU per window p99 {cpu99:.3} ms is past the computed lens {lens_ms:.3} ms \
+             ({pool_per_window} ops per window over {} ops/us by five quarters)",
+            milli_word(calibration.budget_per_us_milli.0)
+        ),
+    );
+    // `sound=`: the lane's integrity, never a decision input.
+    let mut unsound: Vec<String> = unsound_at_open;
+    unsound.extend(unsound_stepping);
+    let mut sound_check = |ok: bool, sentence: String| {
+        if !ok {
+            unsound.push(sentence);
+        }
+    };
+    sound_check(
+        lagged_pulses == 0,
+        format!("{lagged_pulses} pulses lagged: the measurement was taken while lagging"),
+    );
+    // The runners' faulted count is at least the arena's: a fault the arena
+    // counted was a recorded think. Not equal — a faulted answer of a hull
+    // wrecked in its own substep is dropped at the write and counted by no
+    // counter; both figures are printed.
+    sound_check(
+        stat_faulted >= faults,
+        format!(
+            "the runners recorded {stat_faulted} faulted thinks and the arena counted {faults}: \
+             the stats are not the thinks'"
+        ),
+    );
+    sound_check(
+        moving > 0 && counts.fired > 0,
+        format!(
+            "moving_at_end={moving} fired={}: the measurement was of a parked or a quiet field",
+            counts.fired
+        ),
+    );
+    sound_check(
+        pooled_thinks > 0,
+        format!("pooled_thinks={pooled_thinks}: the pool never ran"),
+    );
+    if minds.jitter_per_mille > 0 && minds.jitter_ms > 0 {
+        sound_check(
+            inline_thinks > 0,
+            format!(
+                "inline_thinks={inline_thinks} with {jittered_wakes} jittered wakes: the inline \
+                 path never ran"
+            ),
+        );
+    }
+    sound_check(
+        batches_failed == 0,
+        format!("{batches_failed} of {batches} batches failed"),
+    );
+    match variant.authored() {
+        Some(slots) if slots.engine == SealEngine::Scripted => sound_check(
+            rhai_thinks > 0 && installed > 0,
+            format!(
+                "rhai_thinks={rhai_thinks} installed={installed}: the scripted slots never \
+                 thought in Rhai"
+            ),
+        ),
+        Some(_) => sound_check(
+            rhai_thinks == 0,
+            format!("rhai_thinks={rhai_thinks} on a native-sealed variant"),
+        ),
+        None => {}
+    }
+    if variant == MindsVariant::CeilingAuthored {
+        sound_check(
+            budget_max <= LOAD_III_OPS_MAX,
+            format!(
+                "the load mind's ops + fee max {budget_max} is past {LOAD_III_OPS_MAX}: the loop \
+                 is out of its band"
+            ),
+        );
+    }
+    if every_ms.is_some() {
+        sound_check(
+            snapshot.count >= 1 && snapshot.count == snapshot_periods && snapshot.hash_ok,
+            format!(
+                "the {word} variant took {} snapshots over {snapshot_periods} periods at \
+                 every_ms={} with hash_ok={}",
+                snapshot.count,
+                snapshot.every_word(),
+                snapshot.hash_ok
+            ),
+        );
+    } else if knobs.assert {
+        sound_check(
+            false,
+            "TACSIM_SNAPSHOT_OFF=1 is for measurement only; an asserting run takes the snapshots"
+                .to_string(),
+        );
+    }
+    let held = failures.is_empty();
+    let sound = unsound.is_empty();
+
+    // ---- the lines ----
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
+        "harness_minds_world: variant={word} cohort={cohort} units={placed}/{} pilots={seated} cell_cm={CELL_CM} side={SIDE} passable_cells={passable} seed={} arena_ms={} authored_fielded={} authored_slots={} installed={installed}",
+        knobs.units,
+        knobs.seed,
+        arena.now_ms,
+        plan.authored_fielded(),
+        plan.authored_words()
+    ));
+    lines.push(format!(
+        "harness_minds_setup_ms: variant={word} cohort={cohort} generate={generate_ms:.1} boot={boot_ms:.1} pack_apply={apply_ms:.1} window_open={open_ms:.1} terrain_convert={convert_ms:.1} arena_open={arena_open_ms:.1} warm_up={warm_ms:.1} warm_pulses={warm_pulses} killed_warming={killed_warming}"
+    ));
+    lines.push(format!(
+        "harness_minds_loop: variant={word} cohort={cohort} wakes={wake_count} arena_s={arena_s_run:.3} wakes_per_arena_s={wakes_per_arena_s:.2} substep_ms={substep} jitter_ms={} substeps_per_wake_mean={substeps_per_wake_mean:.3} per_wake_min={substeps_min} per_wake_max={substeps_max} short_substeps={short_substeps} jittered_wakes={jittered_wakes} jittered_total={jittered_total} late_two_substeps={late_two_substeps} minds_jitter_ms={} minds_jitter_per_mille={} jitter_on_lattice={jitter_on_lattice}",
+        knobs.jitter_ms, minds.jitter_ms, minds.jitter_per_mille
+    ));
+    lines.push(format!(
+        "harness_minds_engaged: variant={word} cohort={cohort} period_ms={} pulses={wake_count} p50={p50:.3} p95={p95:.3} p99={p99:.3} max={max:.3}",
+        tempo.period_ms
+    ));
+    lines.push(format!(
+        "harness_minds_window: variant={word} cohort={cohort} window_ms={WINDOW_MS} windows={} ms_p50={w50:.3} ms_p95={w95:.3} ms_p99={w99:.3} ms_max={wmax:.3} comparable={windows_on_lattice} ms_p99_comparable={w99_on:.3} other={windows_off_lattice} ms_p99_other={w99_off:.3} remainder={windows_remainder} traces_peak={window_traces_peak} cell_probes_peak={window_cell_probes_peak} horizon_probes_peak={window_horizon_probes_peak} jam_checks_peak={window_jam_checks_peak} share_ops_peak={window_share_ops_peak} (the lens is asserted on the comparable windows: exactly the lattice's substeps, none a remainder; inline think time is inside Wake.ms; a late wake due mid-window moves a substep into the next window, so a jittered run has one- and three-substep windows beside the two-substep ones)",
+        folded.len()
+    ));
+    lines.push(format!(
+        "harness_minds_pool: variant={word} cohort={cohort} engine={} workers={} units={placed} per_side={} pool_ops_s={pool_ops_s} per_window={pool_per_window} per_substep={pool_per_substep} admitted_class={} admitted_per_side={} fielded_per_side={} pool_wait_us_p50={wait50} pool_wait_us_p99={wait99} pool_wait_us_total={wait_total} batches={batches} batches_failed={batches_failed} (pool_wait_us is the batch's wall latency on a {}-worker pool with no pulse gap, an upper bound on production's blocked time; report-only)",
+        variant.engine_word(),
+        minds.workers,
+        plan.per_side,
+        authored_class.map_or("0".to_string(), |class| format!("{class:?}")),
+        plan.admitted_per_side,
+        plan.fielded_per_side,
+        minds.workers
+    ));
+    lines.push(format!(
+        "harness_minds_thinks: variant={word} cohort={cohort} thinks={thinks} inline_thinks={inline_thinks} pooled_thinks={pooled_thinks} unrun_thinks={unrun_thinks} untimed_thinks={untimed_thinks} landings={landings} faults={faults} stat_faulted={stat_faulted} overflows={overflows} dropped={dropped} cond_fires={} think_us_p50={think50} think_us_p99={think99} think_us_max={think_max} rhai_us_p50={rhai50} rhai_us_p99={rhai99} native_us_p50={native50} native_us_p99={native99} view_us_p50={view50} view_us_p99={view99} view_samples={} jittered_wakes={jittered_wakes} jitter_ms={} jitter_per_mille={} (inline_thinks and pooled_thinks are derived per wake from thinks and StepOutput.thinks; landings alone is a counter; an untimed think is a dropped scripted hull's ROM think)",
+        reflex_total.cond_fires,
+        view_us.len(),
+        minds.jitter_ms,
+        minds.jitter_per_mille
+    ));
+    lines.push(format!(
+        "harness_minds_ops: variant={word} cohort={cohort} ops_total={ops_total} fees_total={fees_total} ops_per_window_peak={ops_per_window_peak} ops_per_substep_peak={ops_per_substep_peak} pool_per_window={pool_per_window} pool_per_substep={pool_per_substep} budget_p1={budget_p1} budget_p50={budget50} budget_p99={budget99} budget_max={budget_max} budget_per_us_p50={} budget_per_us_p99={} budget_per_us_p1={} rhai_thinks={rhai_thinks} attribution=by-collecting-wake (budget is ops + fee per Rhai think, the figure the budget trips on; the ceiling variant's band is {LOAD_III_OPS_P1_MIN} to {LOAD_III_OPS_MAX})",
+        milli_word(rate50),
+        milli_word(rate99),
+        milli_word(rate_p1)
+    ));
+    lines.push(format!(
+        "harness_minds_cpu: variant={word} cohort={cohort} ms_p50={cpu50:.3} ms_p99={cpu99:.3} ms_max={cpu_max:.3} lens_ms={lens_ms:.3} budget_per_us_used={} cpu_lens_ms={} (asserted: ms_p99 <= lens_ms, the pool's ops per window over the host's rate on Standard Doctrine by five quarters, bounding per-window variance and never interpreter speed; cpu_lens_ms is doc 17 section 18's reference figure, printed beside)",
+        milli_word(calibration.budget_per_us_milli.0),
+        minds.cpu_lens_ms
+    ));
+    lines.push(format!(
+        "harness_minds_counters: variant={word} cohort={cohort} blocked={} ledger_bytes={} chunks={} frames_per_pulse_mean={frames_mean:.2} moving_at_end={moving} held_at_end={held_at_end} lagged_pulses={lagged_pulses} slope_refusals={slope_refusals} ended={}",
+        counts.blocked,
+        counts.bytes,
+        counts.chunks,
+        ended.map_or("none".to_string(), |end| format!("{:?}", end.reason))
+    ));
+    lines.push(format!(
+        "harness_minds_weapons: variant={word} cohort={cohort} armed={armed} locked={} fired={} impacts={} hits={} misses={} sections_destroyed={} units_destroyed={} wrecks_at_end={} in_flight_at_end={} rounds_loaded={loaded} rounds_spent={rounds_spent} rounds_left={rounds_left}",
+        counts.locked,
+        counts.fired,
+        counts.impacts,
+        counts.hits,
+        counts.misses,
+        counts.sections,
+        counts.destroyed,
+        arena.units.iter().filter(|unit| unit.limits.wreck).count(),
+        arena.shots.len()
+    ));
+    lines.push(format!(
+        "harness_minds_perception_total: variant={word} cohort={cohort} passes={} candidates={} traces={} cell_probes={} horizon_probes={} jam_checks={} share_ops={} detected={} classified={} lost={} peak_traces={} peak_cell_probes={} peak_jam_checks={} peak_share_ops={} contacts_at_end={}",
+        perception_total.passes,
+        perception_total.candidates,
+        perception_total.traces,
+        perception_total.cell_probes,
+        perception_total.horizon_probes,
+        perception_total.jam_checks,
+        perception_total.share_ops,
+        perception_total.detected,
+        perception_total.classified,
+        perception_total.lost,
+        peak.traces,
+        peak.cell_probes,
+        peak.jam_checks,
+        peak.share_ops,
+        arena.contacts.len()
+    ));
+    lines.push(snapshot.line(cohort).replacen(
+        "harness_arena_snapshot: ",
+        &format!("harness_minds_snapshot: variant={word} "),
+        1,
+    ));
+    lines.push(format!(
+        "harness_minds_memory: variant={word} cohort={cohort} rss_start_kib={} rss_end_kib={} horizon_bytes={}{}",
+        kib_word(rss_start_kib),
+        kib_word(rss_end_kib),
+        arena.definition.terrain.horizon_bytes(),
+        vmrss_words(vmrss_start_kib, vmrss_end_kib)
+    ));
+    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    let sentences = |list: &[String]| {
+        if list.is_empty() {
+            "none".to_string()
+        } else {
+            list.join("; ")
+        }
+    };
+    lines.push(format!(
+        "harness_minds_verdict: variant={word} cohort={cohort} held={} sound={} assert={} mode={} wake_p99_ms={p99:.3} wake_lens_ms={ARENA_S_P99_MS} window_p99_ms={w99_on:.3} window_lens_ms={window_lens} window_comparable={windows_on_lattice} window_p99_other_ms={w99_off:.3} faults={faults} ops_total={ops_total} budget_p1={budget_p1} cpu_p99_ms={cpu99:.3} cpu_lens_ms={lens_ms:.3} authored_at_class_at_end={authored_at_class_at_end} failures={} | {} | unsound={} | {}",
+        yes_no(held),
+        yes_no(sound),
+        knobs.assert,
+        mode.word(),
+        failures.len(),
+        sentences(&failures),
+        unsound.len(),
+        sentences(&unsound)
+    ));
+
+    // ---- the JSON ----
+    let report = serde_json::json!({
+        "what": "17b cut M4.2: the minds lane — the relief cohort as Controller::Mind hulls, stepped with Arena::step and a private MindPool on the task's policy, a seeded quarter of wakes one substep late, every think recorded",
+        "lane": "minds",
+        "variant": word,
+        "cohort": cohort,
+        "engine": variant.engine_word(),
+        "world": {
+            "units": placed,
+            "pilots": seated,
+            "cell_cm": CELL_CM,
+            "side_cells": SIDE,
+            "passable_cells": passable,
+            "seed": knobs.seed,
+            "arena_ms": arena.now_ms,
+            "pulses": wake_count,
+            "authored_fielded": plan.authored_fielded(),
+            "authored_slots": plan.authored.iter().copied().collect::<Vec<u32>>(),
+        },
+        "classes": class_counts,
+        "setup_ms": {
+            "generate": num(generate_ms),
+            "boot": num(boot_ms),
+            "pack_apply": num(apply_ms),
+            "window_open": num(open_ms),
+            "terrain_convert": num(convert_ms),
+            "arena_open": num(arena_open_ms),
+            "warm_up": num(warm_ms),
+            "warm_pulses": warm_pulses,
+            "killed_warming": killed_warming,
+        },
+        "loop": {
+            "wakes": wake_count,
+            "arena_s": num(arena_s_run),
+            "wakes_per_arena_s": num(wakes_per_arena_s),
+            "substep_ms": substep,
+            "jitter_ms": knobs.jitter_ms,
+            "substeps_per_wake_mean": num(substeps_per_wake_mean),
+            "per_wake_min": substeps_min,
+            "per_wake_max": substeps_max,
+            "short_substeps": short_substeps,
+            "jittered_total": jittered_total,
+            "late_two_substeps": late_two_substeps,
+            "jitter_on_lattice": jitter_on_lattice,
+        },
+        "tempos": [{
+            "name": tempo.name,
+            "period_ms": tempo.period_ms,
+            "pulses": wake_count,
+            "p50_ms": num(p50),
+            "p95_ms": num(p95),
+            "p99_ms": num(p99),
+            "max_ms": num(max),
+        }],
+        "window": {
+            "window_ms": WINDOW_MS,
+            "windows": folded.len(),
+            "ms_p50": num(w50),
+            "ms_p95": num(w95),
+            "ms_p99": num(w99),
+            "ms_max": num(wmax),
+            "comparable": windows_on_lattice,
+            "ms_p99_comparable": num(w99_on),
+            "other": windows_off_lattice,
+            "ms_p99_other": num(w99_off),
+            "remainder": windows_remainder,
+            "traces_peak": window_traces_peak,
+            "cell_probes_peak": window_cell_probes_peak,
+            "horizon_probes_peak": window_horizon_probes_peak,
+            "jam_checks_peak": window_jam_checks_peak,
+            "share_ops_peak": window_share_ops_peak,
+        },
+        "pool": {
+            "workers": minds.workers,
+            "pool_ops_s": pool_ops_s,
+            "per_window": pool_per_window,
+            "per_substep": pool_per_substep,
+            "admitted_class": authored_class.map(|class| format!("{class:?}")),
+            "admitted_per_side": plan.admitted_per_side,
+            "fielded_per_side": plan.fielded_per_side,
+            "batches": batches,
+            "batches_failed": batches_failed,
+            "wait_us": { "p50": wait50, "p99": wait99, "total": wait_total },
+        },
+        // THE DETERMINISTIC BLOCK: every figure a function of the seed and the
+        // knobs, none of wall time — compared by the delta once the baseline
+        // carries one (`minds_delta`).
+        "minds": {
+            "thinks": thinks,
+            "inline_thinks": inline_thinks,
+            "pooled_thinks": pooled_thinks,
+            "unrun_thinks": unrun_thinks,
+            "landings": landings,
+            "faults": faults,
+            "overflows": overflows,
+            "dropped": dropped,
+            "cond_fires": reflex_total.cond_fires,
+            "ops_total": ops_total,
+            "fees_total": fees_total,
+            "ops_per_window_peak": ops_per_window_peak,
+            "ops_per_substep_peak": ops_per_substep_peak,
+            "rhai_thinks": rhai_thinks,
+            "final_substep_hash": final_substep_hash.map(|hash| hash.to_string()),
+            "jittered_wakes": jittered_wakes,
+            "jitter_ms": minds.jitter_ms,
+            "jitter_per_mille": minds.jitter_per_mille,
+            "admitted_per_side": plan.admitted_per_side,
+            "fielded_per_side": plan.fielded_per_side,
+            "authored_slots": plan.authored.iter().copied().collect::<Vec<u32>>(),
+            "engine": variant.engine_word(),
+            "authored_at_class_at_end": authored_at_class_at_end,
+            "wakes": wake_count,
+            "arena_ms": arena.now_ms,
+            // The knobs the block is a function of, so a run off the defaults
+            // names itself (the arena block's `world` and `loop.jitter_ms`).
+            "units": placed,
+            "fighting": seated,
+            "arena_s": knobs.arena_s,
+            "seed": knobs.seed,
+            "wake_jitter_ms": knobs.jitter_ms,
+        },
+        "timing": {
+            "think_us": { "p50": think50, "p99": think99, "max": think_max, "samples": think_us.len() },
+            "rhai_us": { "p50": rhai50, "p99": rhai99, "samples": rhai_us.len() },
+            "native_us": { "p50": native50, "p99": native99, "samples": native_us.len() },
+            "view_us": { "p50": view50, "p99": view99, "samples": view_us.len() },
+            "budget_per_us": { "p50": milli_word(rate50), "p99": milli_word(rate99), "p1": milli_word(rate_p1), "samples": rates.len() },
+            "untimed_thinks": untimed_thinks,
+        },
+        "budget": {
+            "p1": budget_p1,
+            "p50": budget50,
+            "p99": budget99,
+            "max": budget_max,
+        },
+        "cpu": {
+            "ms_p50": num(cpu50),
+            "ms_p99": num(cpu99),
+            "ms_max": num(cpu_max),
+            "lens_ms": num(lens_ms),
+            "budget_per_us_used": milli_word(calibration.budget_per_us_milli.0),
+            "cpu_lens_ms": minds.cpu_lens_ms,
+        },
+        "calibration": calibration.json(),
+        "counters": {
+            "blocked_events": counts.blocked,
+            "ledger_bytes_streamed": counts.bytes,
+            "ledger_chunks": counts.chunks,
+            "frames_per_pulse_mean": num(frames_mean),
+            "moving_at_end": moving,
+            "held_at_end": held_at_end,
+            "lagged_pulses": lagged_pulses,
+            "slope_refusals": slope_refusals,
+            "ended": ended.map(|end| format!("{:?}", end.reason)),
+        },
+        "weapons": {
+            "armed_units": armed,
+            "locked_events": counts.locked,
+            "fired_events": counts.fired,
+            "impact_events": counts.impacts,
+            "hits": counts.hits,
+            "misses": counts.misses,
+            "sections_destroyed": counts.sections,
+            "units_destroyed": counts.destroyed,
+            "wrecks_at_end": arena.units.iter().filter(|unit| unit.limits.wreck).count(),
+            "in_flight_at_end": arena.shots.len(),
+            "rounds_loaded": loaded,
+            "rounds_spent": rounds_spent,
+            "rounds_left": rounds_left,
+        },
+        "perception": {
+            "pass_ms": sensors_cfg.pass_ms,
+            "contacts_at_end": arena.contacts.len(),
+            "total": {
+                "passes": perception_total.passes,
+                "candidates": perception_total.candidates,
+                "traces": perception_total.traces,
+                "cell_probes": perception_total.cell_probes,
+                "horizon_probes": perception_total.horizon_probes,
+                "jam_checks": perception_total.jam_checks,
+                "share_ops": perception_total.share_ops,
+                "detected": perception_total.detected,
+                "classified": perception_total.classified,
+                "lost": perception_total.lost,
+            },
+            "peak_per_pulse": {
+                "traces": peak.traces,
+                "cell_probes": peak.cell_probes,
+                "jam_checks": peak.jam_checks,
+                "share_ops": peak.share_ops,
+            },
+        },
+        "snapshot": snapshot.json(),
+        "memory": {
+            "rss_start_kib": rss_start_kib,
+            "rss_end_kib": rss_end_kib,
+            "horizon_bytes": arena.definition.terrain.horizon_bytes(),
+            "vmrss_start_kib": vmrss_start_kib,
+            "vmrss_end_kib": vmrss_end_kib,
+        },
+        "verdict": {
+            "held": held,
+            "sound": sound,
+            "assert": knobs.assert,
+            "mode": mode.word(),
+            "failures": failures,
+            "unsound": unsound,
+            "host": this_host(),
+            "commit": head_commit(),
+        },
+        "thresholds": {
+            "assert": knobs.assert,
+            "wake_p99_ms": ARENA_S_P99_MS,
+            "window_p99_ms": window_lens,
+            "cpu_lens_computed_ms": num(lens_ms),
+            "cpu_lens_ms": minds.cpu_lens_ms,
+            "pool_per_window": pool_per_window,
+            "pool_per_substep": pool_per_substep,
+            "load_ops_p1_min": LOAD_III_OPS_P1_MIN,
+            "load_ops_max": LOAD_III_OPS_MAX,
+        },
+    });
+    let path = arena_report_path(&knobs.json, &format!("minds-{word}"));
+    write_report(&path, &report);
+    lines.push(format!(
+        "harness_minds_json: variant={word} cohort={cohort} {}",
+        path.display()
+    ));
+    MindsReport {
+        variant,
+        lines,
+        json: path,
+        held,
+        sound,
+        failures,
+        unsound,
+        faults,
+        inline_thinks,
+        pooled_thinks,
+        rhai_thinks,
+        budget_p1,
+        budget_max,
+    }
+}
+
+/// **The minds lane** (the section head): the variants in order, each
+/// opened, warmed up and measured, its lines printed before the next opens
+/// (so a partial run still shows what ran); the host's rate measured once on
+/// the first variant's field; and under `TACSIM_ASSERT` one panic at the end
+/// naming every variant that did not hold or was not sound. A `stock_ci`
+/// `held=no` on the blessing host is the owner's STOP before 17b cut M4.5
+/// moves the CI lane onto minds; the fill variant's `held=` word is the
+/// decision's (`PRODUCTION_FILL_ENGINE`).
+fn measure_minds(
+    knobs: &Knobs,
+    minds: &MindsKnobs,
+    mode: MindsLaneMode,
+    variants: &[MindsVariant],
+) -> Vec<MindsReport> {
+    let mut reports = Vec::new();
+    let mut calibration: Option<Calibration> = None;
+    for variant in variants {
+        let field = open_minds_field(knobs, minds, *variant, mode);
+        if calibration.is_none() {
+            let measured = calibrate_ops_per_us(&field);
+            println!("{}", measured.line());
+            calibration = Some(measured);
+        }
+        let Some(rate) = calibration.as_ref() else {
+            break;
+        };
+        let report = measure_minds_field(knobs, minds, field, mode, rate);
+        for line in &report.lines {
+            println!("{line}");
+        }
+        reports.push(report);
+    }
+    if knobs.assert {
+        let failed: Vec<&MindsReport> = reports
+            .iter()
+            .filter(|report| !report.held || !report.sound)
+            .collect();
+        let stop = failed
+            .iter()
+            .any(|report| report.variant == MindsVariant::StockCi && !report.held);
+        assert!(
+            failed.is_empty(),
+            "harness_minds_verdict: {} of {} variants held and sound; see the \
+             harness_minds_verdict lines above:\n{}{}",
+            reports.len() - failed.len(),
+            reports.len(),
+            failed
+                .iter()
+                .map(|report| format!(
+                    "  {}: held={} sound={}: {}",
+                    report.variant.word(),
+                    report.held,
+                    report.sound,
+                    report
+                        .failures
+                        .iter()
+                        .chain(report.unsound.iter())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            if stop {
+                "\n  stock_ci did not hold: the owner's STOP before 17b cut M4.5 moves the CI \
+                 lane onto minds"
+            } else {
+                ""
+            }
+        );
+    }
+    reports
+}
+
+/// **The minds lane since 17b cut M4.2** — see the file head and the section
+/// head above [`DEFAULT_MINDS_JITTER_MS`].
+#[test]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+fn tacsim_harness_arena_minds() {
+    let minds = MindsKnobs::from_env();
+    let variants = minds.variants.clone();
+    measure_minds(&Knobs::from_env(), &minds, MindsLaneMode::Weekly, &variants);
+}
+
+/// **The `minds` block of one variant's report, flattened** — every leaf of
+/// its `minds` object (the deterministic block [`measure_minds_field`]
+/// writes) with the cohort word beside it; a report with no `minds` object
+/// reads [`ABSENT`] under `minds`.
+fn minds_block(report: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+    let mut block = BTreeMap::new();
+    match report.get("minds") {
+        Some(minds) => flatten("minds", minds, &mut block),
+        None => {
+            block.insert("minds".to_string(), serde_json::json!(ABSENT));
+        }
+    }
+    block.insert(
+        "minds.cohort".to_string(),
+        report
+            .get("cohort")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(ABSENT)),
+    );
+    block
+}
+
+/// **The four variant files beside the arena report**, folded for the bless
+/// as `{ "<variant>": { ...minds, "cohort": .. } }` — `None` unless all four
+/// exist, so a bless never writes a partial `minds` block (17b cut M4.5's one
+/// bless writes it; until then the delta skips the block).
+fn minds_blocks_beside(json_knob: &str) -> Option<serde_json::Value> {
+    let mut folded = serde_json::Map::new();
+    for word in MINDS_VARIANT_WORDS {
+        let path = arena_report_path(json_knob, &format!("minds-{word}"));
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        let mut block = report.get("minds")?.as_object()?.clone();
+        block.insert("cohort".to_string(), report.get("cohort")?.clone());
+        folded.insert(word.to_string(), serde_json::Value::Object(block));
+    }
+    Some(serde_json::Value::Object(folded))
+}
+
+/// **The delta's minds path** (17b cut M4.2): compared only once the
+/// baseline carries a `minds` object — until 17b cut M4.5's bless it says so
+/// and counts nothing. With one, every variant's fresh
+/// `<stem>-minds-<variant>.<ext>` is read and its block compared leaf by
+/// leaf against `minds.<variant>` as [`block_differences`] compares the arena
+/// block, each difference a `harness_delta: minds.<variant>.<leaf>` line; a
+/// variant file that is missing or unreadable is one difference, named.
+/// Answers the lines and the count.
+fn minds_delta(baseline: &serde_json::Value, json_knob: &str) -> (Vec<String>, usize) {
+    let mut lines = Vec::new();
+    let mut differences = 0;
+    let Some(expected) = baseline.get("minds") else {
+        lines.push(
+            "harness_delta: minds block: the baseline carries none; skipped (blessed in 17b \
+             cut M4.5)"
+                .to_string(),
+        );
+        return (lines, 0);
+    };
+    for word in MINDS_VARIANT_WORDS {
+        let path = arena_report_path(json_knob, &format!("minds-{word}"));
+        let fresh: Option<serde_json::Value> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok());
+        let Some(fresh) = fresh else {
+            lines.push(format!(
+                "harness_delta: minds.{word} no fresh report at {} — run \
+                 tacsim_harness_arena_minds first",
+                path.display()
+            ));
+            differences += 1;
+            continue;
+        };
+        let mut was = BTreeMap::new();
+        match expected.get(word) {
+            Some(block) => flatten("minds", block, &mut was),
+            None => {
+                was.insert("minds".to_string(), serde_json::json!(ABSENT));
+            }
+        }
+        let found: Vec<String> = block_differences(&was, &minds_block(&fresh))
+            .into_iter()
+            .map(|line| {
+                line.replacen(
+                    "harness_delta: minds.",
+                    &format!("harness_delta: minds.{word}."),
+                    1,
+                )
+            })
+            .collect();
+        if found.is_empty() {
+            lines.push(format!(
+                "harness_delta: minds.{word} block equal ({} fields)",
+                minds_block(&fresh).len()
+            ));
+        } else {
+            differences += found.len();
+            lines.extend(found);
+        }
+    }
+    (lines, differences)
+}
+
+/// **The load mind is calibrated to the Class III row** (17b cut M4.2; the M4
+/// row's (ii)): its bytes are the compiled-in ones and its digest is pinned;
+/// one think on a `heavy_mk1` sealed at Class III on the load mind spends
+/// exactly the pinned `(ops, fee)`, inside the band, with no fault, and the
+/// same off, starting and online (equal cost on both branches, the memory
+/// fed forward); on Class I's row the same think faults `ops`; and the lane's
+/// source lookup answers Standard's text and the load mind's by digest.
+#[test]
+fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
+    use mush_mind::Digest;
+    use sha2::{Digest as _, Sha256};
+    use std::sync::Arc;
+    use tacsim::arena::SealEngine;
+    use tacsim::arena::clock::Tempo as ArenaTempo;
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    use tacsim::arena::mind::{MindRunner, ThinkJob};
+    use tacsim::arena::state::{Arena, Controller, CustodyOut, Power, Team};
+    use tacsim::config::{ArenaConfig, MatchConfig};
+
+    // 1. The bytes and the digest.
+    let on_disk = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("support")
+            .join("load_iii.rhai"),
+    )
+    .expect("the load mind is in the tree");
+    assert_eq!(
+        on_disk,
+        LOAD_III_RHAI.as_bytes(),
+        "the compiled-in bytes are the file's"
+    );
+    let digest = load_iii_sha256();
+    let lowercase: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        lowercase, LOAD_III_SHA256_HEX,
+        "load_iii.rhai moved; re-run the calibration and re-pin its digest and figures"
+    );
+    assert_eq!(source_for(&digest), Some(LOAD_III_RHAI));
+    assert_eq!(
+        source_for(&tacsim::minds::standard_digest().0),
+        Some(tacsim::minds::STANDARD_RHAI)
+    );
+    assert_eq!(source_for(&[7; 32]), None);
+
+    // 2. Two heavies on the proving ground, both minds sealed at Class III on
+    //    the scripted engine with the load mind's name and digest written
+    //    onto the seal after custody — the ceiling variant's slot.
+    let tw = TestWorld::with_modules(fan_out_roster());
+    let catalog = fielded_catalog(&tw);
+    let definition = tacsim::match_::definition_for(
+        tw.world(),
+        &smol_str::SmolStr::new(tacsim::match_::PROVING_GROUND),
+    )
+    .expect("the proving ground's ground builds")
+    .expect("the proving ground is defined");
+    drop(tw);
+    let key = CanonicalId::new(content::HEAVY_MK1).expect("a canonical entry id");
+    let spec = catalog.specs.get(&key).expect("the heavy's spec");
+    let binding = catalog.bindings.get(&key).expect("the heavy's binding");
+    let mut units = Vec::new();
+    for (n, team, column, heading) in [
+        (0_u32, Team::Red, LANCE_RED_COLUMN, 90_000_u32),
+        (1, Team::Blue, LANCE_BLUE_COLUMN, 270_000),
+    ] {
+        let id = ObjId(100_000 + n);
+        let cells = tacsim::definitions::unit::to_tactical_unit(spec, binding, id)
+            .expect("the heavy builds a unit");
+        let pose = mush_sim::data::Pose {
+            x_cm: i64::from(column) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            y_cm: LANCE_ROW * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            z_cm: 0,
+            heading_mdeg: heading,
+            posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
+                .expect("an empty posture"),
+        };
+        let mut unit = tacsim::match_::custody_unit(
+            &catalog,
+            cells,
+            id,
+            team,
+            pose,
+            1,
+            Controller::Mind,
+            0,
+            &tacsim::match_::SealTerms {
+                rated: CoreClass::III,
+                class_cap: CoreClass::III,
+                engine_for_minds: SealEngine::Scripted,
+                ..tacsim::match_::SealTerms::fixture()
+            },
+        )
+        .expect("the heavy seals at Class III");
+        assert_eq!(
+            unit.seal.class,
+            CoreClass::III,
+            "the command core is Class III"
+        );
+        unit.seal.mind = smol_str::SmolStr::new_static(LOAD_III_MIND);
+        unit.seal.source_sha256 = digest;
+        units.push(unit);
+    }
+    let red = units[0].id;
+    let arena_cfg = ArenaConfig::default();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: DEFAULT_SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &arena_cfg,
+        &MatchConfig::default(),
+        &tacsim::config::SensorsConfig::default(),
+    )
+    .expect("the two heavies open");
+    arena.clock.pin_tempo_for_tests(ArenaTempo::Engaged);
+    assert_eq!(arena.mind_class(red), CoreClass::III);
+    assert_eq!(arena.mind_profile(red).ops, 4_500);
+
+    // 3. One think per power state, the memory fed forward: the pinned
+    //    figures, equal on every arm.
+    let runner = tacsim::minds::RhaiRunner::new(&arena_cfg, LOAD_III_RHAI, Digest(digest))
+        .expect("the load mind compiles")
+        .recording();
+    let three = ClassTable::STOCK.row(CoreClass::III);
+    let one = ClassTable::STOCK.row(CoreClass::I);
+    let mut memory: Vec<u8> = Vec::new();
+    let mut figures = Vec::new();
+    for power in [Power::Off, Power::Starting, Power::Online] {
+        arena.unit_mut(red).expect("red").power = power;
+        let view = Arc::new(arena.mind_view(red).expect("red's view"));
+        assert_eq!(view.power, power);
+        let card = arena.minds.get(&red).expect("red's row").card.clone();
+        let job = |profile| ThinkJob {
+            unit: red,
+            think_seq: 0,
+            t_ms: view.t_ms,
+            lands_ms: view.t_ms + i64::from(arena_cfg.tempo.engaged_ms / 2),
+            seed: arena.seed,
+            dropped: false,
+            profile,
+            view: &view,
+            memory: &memory,
+            map: &arena.definition,
+            card: &card,
+        };
+        let result = runner.think(&job(&three));
+        assert_eq!(
+            result.fault, None,
+            "the load mind is clean on Class III at {power:?}"
+        );
+        assert_eq!(
+            result.intents.len(),
+            1,
+            "one station call either arm: {:?}",
+            result.intents
+        );
+        let stat = runner.take_stats().pop().expect("one think recorded");
+        figures.push((stat.ops, stat.fee));
+        assert!(
+            (LOAD_III_OPS_P1_MIN..=LOAD_III_OPS_MAX).contains(&(stat.ops + stat.fee)),
+            "ops + fee {} is out of the band at {power:?}",
+            stat.ops + stat.fee
+        );
+        // Class I's row: the band is above its 1,500.
+        let faulted = runner.think(&job(&one));
+        assert_eq!(
+            faulted.fault.as_ref().map(|fault| fault.cause.as_str()),
+            Some("ops"),
+            "the load mind faults `ops` on Class I's row"
+        );
+        let _ = runner.take_stats();
+        memory = result.memory;
+        assert!(!memory.is_empty(), "the memory carries `x`");
+    }
+    assert_eq!(
+        figures,
+        vec![(4_397, 20), (4_397, 20), (4_397, 20)],
+        "17 + 3 × 1,460 ops and the think fee, off, starting and online alike"
+    );
+    // The same figures through the digest the installer keys by.
+    let keyed: [u8; 32] = Sha256::digest(LOAD_III_RHAI.as_bytes()).into();
+    assert_eq!(keyed, digest);
+}
+
+/// **The admission arithmetic at the harness's three hundred** (17b cut
+/// M4.2; the M4 row's finding (8); doc 17 §9): the pool is 200,000, so a side
+/// admits thirty-six Class I hulls or two Class III heavies beside the ROM's
+/// 400 each, classed first — the exact `PoolRefusal` figures of the
+/// thirty-seventh and the third — and the plan fields the heavies at side
+/// index 12 (the last two slots on a field too small for it).
+#[test]
+fn m4_2_the_harness_s_three_hundred_admit_thirty_six_at_class_i_and_two_at_class_iii_a_side() {
+    use tacsim::arena::core::CoreClass;
+    use tacsim::config::MindsConfig;
+    use tacsim::match_::pool::{PoolRefusal, admit_side, admitted_class, pool_for};
+    let cfg = MindsConfig::default();
+    assert_eq!(pool_for(&cfg, 300), 200_000);
+    assert_eq!(admitted_per_side(&cfg, 300, CoreClass::I, 24), 36);
+    assert_eq!(admitted_per_side(&cfg, 300, CoreClass::III, 24), 2);
+    let loads = |classed: u64, n: usize, rest: usize| {
+        std::iter::repeat_n(classed, n).chain(std::iter::repeat_n(400, rest))
+    };
+    assert_eq!(admit_side(200_000, loads(1_500, 36, 114)), Ok(()));
+    assert_eq!(
+        admit_side(200_000, loads(1_500, 37, 113)),
+        Err(PoolRefusal {
+            would: 400,
+            half: 100_000,
+            spoken: 99_900,
+        }),
+        "the 149th hull: 37 Class I and 111 ROMs spoken for"
+    );
+    assert_eq!(admit_side(200_000, loads(18_000, 2, 148)), Ok(()));
+    assert_eq!(
+        admit_side(200_000, loads(18_000, 3, 147)),
+        Err(PoolRefusal {
+            would: 400,
+            half: 100_000,
+            spoken: 100_000,
+        }),
+        "the 119th hull: three heavies and 115 ROMs reach the half exactly"
+    );
+    // The seat bit is inert for an explicitly classed hull (17b cut M4.3's
+    // `fill_class` argument moves this line).
+    assert_eq!(admitted_class(Some(CoreClass::I), true), Some(CoreClass::I));
+    assert_eq!(
+        admitted_class(Some(CoreClass::Zero), false),
+        Some(CoreClass::Zero)
+    );
+    // A sizing run: at a hundred units the pool is 400,000, so every Class I
+    // hull of a side is admitted and ten heavies are.
+    assert_eq!(admitted_per_side(&cfg, 100, CoreClass::I, 8), 50);
+    assert_eq!(admitted_per_side(&cfg, 100, CoreClass::III, 8), 10);
+    // The plan over a synthetic placement (unit `n` at x = (n × 37 mod 256)
+    // cells): thirty-six fill slots a side from side index 0, the seats
+    // included; two heavies a side, the unseated hulls deepest in each rear —
+    // red's two smallest x, blue's two largest — and on sixteen hulls the
+    // same two a side out of the pool's eight.
+    let knobs = |units, fighting| Knobs {
+        units,
+        fighting,
+        ..Knobs::from_env()
+    };
+    let placement = |units: u32| -> Vec<(u32, i64)> {
+        (0..units)
+            .map(|n| (n, i64::from((n * 37) % 256) * i64::from(CELL_CM)))
+            .collect()
+    };
+    let fill = MindsPlan::of(
+        &knobs(300, 24),
+        &cfg,
+        MindsVariant::FillAuthored,
+        &placement(300),
+    );
+    assert_eq!(
+        (
+            fill.admitted_per_side,
+            fill.fielded_per_side,
+            fill.authored_fielded()
+        ),
+        (36, 36, 72)
+    );
+    assert!(fill.is_authored(0) && fill.is_authored(71) && !fill.is_authored(72));
+    assert_eq!(fill.authored_words(), "72-of-300");
+    let ceiling = MindsPlan::of(
+        &knobs(300, 24),
+        &cfg,
+        MindsVariant::CeilingAuthored,
+        &placement(300),
+    );
+    assert_eq!(
+        (
+            ceiling.admitted_per_side,
+            ceiling.fielded_per_side,
+            ceiling.authored_fielded()
+        ),
+        (2, 2, 4)
+    );
+    let deepest = |team: u32, west: bool| -> Vec<u32> {
+        let mut rear: Vec<(i64, u32)> = placement(300)
+            .into_iter()
+            .filter(|(n, _)| n % 2 == team && *n >= 24)
+            .map(|(n, x)| (if west { x } else { -x }, n))
+            .collect();
+        rear.sort_unstable();
+        rear.iter().take(2).map(|(_, n)| *n).collect()
+    };
+    let mut expected: Vec<u32> = deepest(0, true);
+    expected.extend(deepest(1, false));
+    expected.sort_unstable();
+    assert_eq!(
+        ceiling.authored.iter().copied().collect::<Vec<u32>>(),
+        expected
+    );
+    assert!(
+        ceiling.authored.iter().all(|n| *n >= 24),
+        "never on the fighting line"
+    );
+    assert_eq!(
+        ceiling.authored_words(),
+        expected
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let small = MindsPlan::of(
+        &knobs(16, 4),
+        &cfg,
+        MindsVariant::CeilingAuthored,
+        &placement(16),
+    );
+    assert_eq!(
+        (
+            small.admitted_per_side,
+            small.fielded_per_side,
+            small.authored_fielded()
+        ),
+        (8, 2, 4)
+    );
+    let stock = MindsPlan::of(
+        &knobs(300, 24),
+        &cfg,
+        MindsVariant::StockCi,
+        &placement(300),
+    );
+    assert_eq!((stock.fielded_per_side, stock.authored_fielded()), (0, 0));
+    assert!(!stock.is_authored(0));
+    assert_eq!(MindsVariant::StockCi.engine_word(), "rom");
+    assert_eq!(MindsVariant::CeilingAuthored.engine_word(), "scripted");
+    assert_eq!(
+        MindsVariant::FillAuthored.engine_word(),
+        tacsim::match_::PRODUCTION_FILL_ENGINE.as_str()
+    );
+}
+
+/// **The minds clock jitters a seeded quarter of wakes by one substep** (17b
+/// cut M4.2): over ten thousand wakes at the default knobs the late count is
+/// inside 225 to 275 per thousand, every late wake is `next_due + 250` and
+/// every other wake `next_due` exactly (the general jitter at nought is the
+/// identity), the sequence is one function of the seed, a thousandth of
+/// nought is never late and a thousand always.
+#[test]
+fn m4_2_the_minds_clock_jitters_a_quarter_of_wakes_by_one_substep() {
+    let mut knobs = Knobs::from_env();
+    knobs.seed = DEFAULT_SEED;
+    knobs.jitter_ms = 0;
+    let minds = |per_mille| MindsKnobs {
+        jitter_ms: i64::from(DEFAULT_MINDS_JITTER_MS),
+        jitter_per_mille: per_mille,
+        workers: 2,
+        cpu_lens_ms: 5,
+        variants: MINDS_VARIANTS.to_vec(),
+    };
+    let sequence = |knobs: &Knobs, per_mille| {
+        let mut clock = MindsClock::new(knobs, &minds(per_mille));
+        (1..=10_000_i64)
+            .map(|n| {
+                let due = n * 250;
+                let wall = clock.next(due);
+                assert!(
+                    wall == due || wall == due + 250,
+                    "wake {n}: {wall} is neither {due} nor {}",
+                    due + 250
+                );
+                assert_eq!(clock.late, wall != due);
+                wall - due
+            })
+            .collect::<Vec<i64>>()
+    };
+    let quarter = sequence(&knobs, DEFAULT_MINDS_JITTER_PER_MILLE);
+    let late = quarter.iter().filter(|late| **late > 0).count();
+    assert!(
+        (2_250..=2_750).contains(&late),
+        "{late} of 10,000 wakes were late"
+    );
+    assert_eq!(
+        sequence(&knobs, DEFAULT_MINDS_JITTER_PER_MILLE),
+        quarter,
+        "one function of the seed"
+    );
+    let mut other = Knobs::from_env();
+    other.seed = DEFAULT_SEED + 1;
+    other.jitter_ms = 0;
+    assert_ne!(sequence(&other, DEFAULT_MINDS_JITTER_PER_MILLE), quarter);
+    assert!(sequence(&knobs, 0).iter().all(|late| *late == 0));
+    assert!(sequence(&knobs, 1_000).iter().all(|late| *late == 250));
+    // The knob is clamped to a thousand, and the general jitter still applies.
+    assert_eq!(MindsClock::new(&knobs, &minds(5_000)).per_mille, 1_000);
+    assert_eq!(
+        DEFAULT_MINDS_JITTER_MS, 250,
+        "one substep of the shipped cohort"
+    );
+}
+
+/// **The CPU lens is the pool's window over the host's rate by five
+/// quarters** (17b cut M4.2; the M4 row's finding (7)): 5.208 ms at 24 ops/µs
+/// on the shipped 300-unit pool's 100,000 per window, 10.417 at 12; a rate
+/// of nought answers nought (never a division); and `[tacsim.minds].cpu_lens_ms`
+/// reads doc 17 §18's five, printed beside and never asserted.
+#[test]
+fn m4_2_the_cpu_lens_is_the_pool_s_window_over_the_host_s_rate_by_five_quarters() {
+    let at = |rate: f64| (cpu_lens_ms_for(100_000, rate) * 1_000.0).round() / 1_000.0;
+    assert!((at(24.0) - 5.208).abs() < 0.001, "{}", at(24.0));
+    assert!((at(12.0) - 10.417).abs() < 0.001, "{}", at(12.0));
+    assert!((at(0.0)).abs() < f64::EPSILON);
+    assert_eq!(tacsim::config::MindsConfig::default().cpu_lens_ms, 5);
+    assert_eq!(MindsKnobs::from_env().cpu_lens_ms, 5);
+    assert_eq!(
+        MindsKnobs::from_env().variants.len(),
+        4,
+        "the weekly run's four, fill first"
+    );
+    assert_eq!(milli_word(11_912), "11.912");
+    assert_eq!(milli_word(5), "0.005");
+    assert_eq!(rates_milli(&[4_417, 100], &[1_000, 0]), vec![4_417]);
+    assert_eq!(spread_u64(&[]), (0, 0, 0));
+    assert_eq!(p1_u64(&[3, 1, 2]), 1);
+}
+
+/// **The delta compares the minds block only once the baseline carries one**
+/// (17b cut M4.2): a baseline with no `minds` object skips the block and
+/// counts nothing; with one, every variant's fresh file is compared leaf by
+/// leaf — a changed leaf is one difference, named; a missing variant file is
+/// one difference, named — and the bless folds the four fresh blocks in only
+/// when all four files exist.
+#[test]
+fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() {
+    let dir = std::env::temp_dir().join(format!("tacsim-minds-delta-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let json = dir.join("harness.json").to_string_lossy().to_string();
+    let fresh = |word: &str, thinks: u32| {
+        serde_json::json!({
+            "cohort": if word == "stock_ci" { "ci" } else { "authored" },
+            "variant": word,
+            "minds": { "thinks": thinks, "faults": 0, "engine": "rom", "final_substep_hash": "7" },
+        })
+    };
+    // No files, no baseline block: skipped.
+    let bare = serde_json::json!({ "world": { "units": 300 } });
+    let (lines, differences) = minds_delta(&bare, &json);
+    assert_eq!(differences, 0);
+    assert!(
+        lines[0].starts_with("harness_delta: minds block: the baseline carries none; skipped"),
+        "{lines:?}"
+    );
+    assert_eq!(
+        minds_blocks_beside(&json),
+        None,
+        "no files, nothing to fold"
+    );
+    // Three of four files: nothing to fold yet; the delta against a baseline
+    // that carries the block names the missing one as one difference.
+    for word in &MINDS_VARIANT_WORDS[..3] {
+        write_report(
+            &arena_report_path(&json, &format!("minds-{word}")),
+            &fresh(word, 10),
+        );
+    }
+    assert_eq!(
+        minds_blocks_beside(&json),
+        None,
+        "a partial set never folds"
+    );
+    write_report(
+        &arena_report_path(&json, "minds-ceiling_authored"),
+        &fresh("ceiling_authored", 10),
+    );
+    let folded = minds_blocks_beside(&json).expect("all four fold");
+    assert_eq!(
+        folded["stock_ci"],
+        serde_json::json!({ "thinks": 10, "faults": 0, "engine": "rom", "final_substep_hash": "7", "cohort": "ci" })
+    );
+    let baseline = serde_json::json!({ "world": { "units": 300 }, "minds": folded });
+    let (lines, differences) = minds_delta(&baseline, &json);
+    assert_eq!(differences, 0, "{lines:?}");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("block equal (5 fields)"))
+            .count(),
+        4,
+        "{lines:?}"
+    );
+    // One leaf moved on one variant: one difference, named.
+    write_report(
+        &arena_report_path(&json, "minds-fill_authored"),
+        &fresh("fill_authored", 11),
+    );
+    let (lines, differences) = minds_delta(&baseline, &json);
+    assert_eq!(differences, 1, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "harness_delta: minds.fill_authored.thinks baseline=10 now=11"),
+        "{lines:?}"
+    );
+    // A variant file gone: one difference, named.
+    std::fs::remove_file(arena_report_path(&json, "minds-stock_authored")).expect("removed");
+    let (lines, differences) = minds_delta(&baseline, &json);
+    assert_eq!(differences, 2, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("harness_delta: minds.stock_authored no fresh report at")),
+        "{lines:?}"
+    );
+    assert_eq!(minds_blocks_beside(&json), None);
+    // The bless folds the blocks in beside the arena report, or not at all.
+    let blessed = dir.join("arena.testos.json");
+    bless_baseline(&blessed, &bare, Some(&folded));
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&blessed).expect("written")).expect("json");
+    assert_eq!(written["minds"]["ceiling_authored"]["thinks"], 10);
+    assert!(written.get("blessed").is_some());
+    bless_baseline(&blessed, &bare, None);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&blessed).expect("written")).expect("json");
+    assert_eq!(written.get("minds"), None, "no block, nothing folded");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The minds lane runs small** (17b cut M4.2; `z1_the_lance_lane_runs_small`'s
+/// shape): sixteen hulls, four fighting, five arena seconds, the default seed,
+/// the ceiling variant then the fill variant in a debug build — the
+/// installer, the seal override, the recording runners, the private pool, the
+/// load mind on heavies at the last two slots a side, the task's policy
+/// through [`run_minds_wakes`] — with every deterministic check asserted
+/// (`held=yes sound=yes`) and the three timing checks printed only
+/// ([`MindsLaneMode::Smoke`]: debug timings mean nothing).
+#[test]
+fn m4_2_the_minds_lane_runs_small() {
+    let mut knobs = Knobs::from_env();
+    knobs.units = 16;
+    knobs.fighting = 4;
+    knobs.arena_s = 5;
+    knobs.seed = DEFAULT_SEED;
+    knobs.jitter_ms = 0;
+    knobs.assert = true;
+    knobs.snapshot_off = false;
+    knobs.json = std::env::temp_dir()
+        .join("tacsim-minds-smoke")
+        .join("harness.json")
+        .to_string_lossy()
+        .to_string();
+    let minds = MindsKnobs {
+        jitter_ms: i64::from(DEFAULT_MINDS_JITTER_MS),
+        jitter_per_mille: DEFAULT_MINDS_JITTER_PER_MILLE,
+        workers: 2,
+        cpu_lens_ms: 5,
+        variants: MINDS_VARIANTS.to_vec(),
+    };
+    let reports = measure_minds(
+        &knobs,
+        &minds,
+        MindsLaneMode::Smoke,
+        &[MindsVariant::CeilingAuthored, MindsVariant::FillAuthored],
+    );
+    assert_eq!(reports.len(), 2);
+    for report in &reports {
+        let word = report.variant.word();
+        for prefix in [
+            "harness_minds_world:",
+            "harness_minds_pool:",
+            "harness_minds_thinks:",
+            "harness_minds_ops:",
+            "harness_minds_cpu:",
+            "harness_minds_window:",
+            "harness_minds_verdict:",
+            "harness_minds_json:",
+        ] {
+            assert!(
+                report
+                    .lines
+                    .iter()
+                    .any(|line| line.starts_with(prefix)
+                        && line.contains(&format!("variant={word} "))),
+                "no `{prefix}` line for {word}: {:#?}",
+                report.lines
+            );
+        }
+        assert!(
+            report.held && report.sound,
+            "{word}: held={} sound={}: {:?} {:?}",
+            report.held,
+            report.sound,
+            report.failures,
+            report.unsound
+        );
+        assert_eq!(report.faults, 0, "{word}");
+        assert!(
+            report.inline_thinks > 0 && report.pooled_thinks > 0,
+            "{word}: inline={} pooled={}",
+            report.inline_thinks,
+            report.pooled_thinks
+        );
+        assert!(
+            report.rhai_thinks > 0,
+            "{word}: the scripted slots thought in Rhai"
+        );
+        let stem = report
+            .json
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_default();
+        assert_eq!(stem, format!("harness-minds-{word}"));
+        assert!(report.json.exists(), "{}", report.json.display());
+    }
+    let ceiling = &reports[0];
+    assert_eq!(ceiling.variant, MindsVariant::CeilingAuthored);
+    assert!(
+        (LOAD_III_OPS_P1_MIN..=LOAD_III_OPS_MAX).contains(&ceiling.budget_p1)
+            && ceiling.budget_max <= LOAD_III_OPS_MAX,
+        "the load mind's band: p1 {} max {}",
+        ceiling.budget_p1,
+        ceiling.budget_max
+    );
+    assert!(
+        ceiling
+            .lines
+            .iter()
+            .any(|line| line.starts_with("harness_minds_pool:")
+                && line.contains(" admitted_per_side=8 fielded_per_side=2 ")),
+        "{:#?}",
+        ceiling.lines
+    );
+    // The lines' `held=` word is the report's.
+    for report in &reports {
+        assert!(
+            report
+                .lines
+                .iter()
+                .any(|line| line.starts_with("harness_minds_verdict:")
+                    && line.contains(" held=yes sound=yes ")
+                    && line.contains(" mode=smoke ")),
+            "{:#?}",
+            report.lines
+        );
     }
 }

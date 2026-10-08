@@ -1422,6 +1422,12 @@ pub struct TacsimMindsCfg {
     /// pulse's collected thinks to, sized once per process from the first
     /// task's read. `1` to `32`; stock `2`. Never carried by a snapshot.
     pub workers: u32,
+    /// **17b cut M4.2** (doc 17 §18): the mind CPU lens, milliseconds per
+    /// 500 ms window — the reference figure the minds lane prints beside the
+    /// lens it asserts (computed from the pool and the host's measured ops
+    /// per microsecond); never a throttle, never read by a match. At least
+    /// `1`; stock `5`.
+    pub cpu_lens_ms: u32,
 }
 
 impl Default for TacsimMindsCfg {
@@ -1434,6 +1440,7 @@ impl Default for TacsimMindsCfg {
             pool_per_unit_ops_s: 1_000,
             pool_floor_ops_s: 120_000,
             workers: 2,
+            cpu_lens_ms: 5,
         }
     }
 }

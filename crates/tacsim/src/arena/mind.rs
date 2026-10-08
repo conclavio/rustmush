@@ -1978,6 +1978,9 @@ impl Arena {
         let Some(mut answer) = state.pending.take() else {
             return;
         };
+        // 17b cut M4.2: the landing reached its apply — the written answer
+        // lands, clean or refused intent by intent. A counter, never hashed.
+        counters.landings = counters.landings.saturating_add(1);
         state.memory = std::mem::take(&mut answer.memory);
         let intents = std::mem::take(&mut answer.intents);
         self.expire_mind_order(unit, t_ms, counters);

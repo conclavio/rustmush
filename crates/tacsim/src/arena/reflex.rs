@@ -509,6 +509,14 @@ pub struct ReflexCounters {
     /// **Slot evaluations that held for a named reason** (17b cut M1b.1): a
     /// warrant term failed with the target there. Never hashed; not reported.
     pub cond_held: u32,
+    /// **Unit minds' answers landed** (17b cut M4.2; the M4 row's (ii)): one
+    /// per `MindLand` that reached its apply in `Arena::mind_land` — the
+    /// written answer landed, clean or refused intent by intent. A landing
+    /// retracted by a fault never reaches the apply, so this and
+    /// [`ReflexCounters::mind_faults`] are disjoint. The minds lane's
+    /// `landings`; never hashed. (17b cut M4.5 renames this struct
+    /// `MotorCounters` and keeps this field.)
+    pub landings: u32,
 }
 
 impl ReflexCounters {
@@ -535,6 +543,7 @@ impl ReflexCounters {
         self.mind_faults = self.mind_faults.saturating_add(other.mind_faults);
         self.cond_fires = self.cond_fires.saturating_add(other.cond_fires);
         self.cond_held = self.cond_held.saturating_add(other.cond_held);
+        self.landings = self.landings.saturating_add(other.landings);
         for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
             *mine = mine.saturating_add(*theirs);
         }

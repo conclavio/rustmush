@@ -134,8 +134,8 @@ pub use resume::{
     PendingResume, RESUME_LINE, ResumeRefusal, doctrine_line, resume_pending, void_at_boot,
 };
 pub use seal::{
-    NO_CORE_FALLBACK, SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE, SEALED_MIND, SealError,
-    SealTerms, seal_for,
+    NO_CORE_FALLBACK, PRODUCTION_FILL_ENGINE, SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE,
+    SEALED_MIND, SealError, SealTerms, seal_for,
 };
 pub use sim::{SIM_VERB, Selector, sim_command};
 pub use verbs::{

@@ -322,7 +322,8 @@ max_span = 4                       # (16b cut Y.2, doc 16 W8) the most squads on
 orders_per_minute = 12             # ORDERs one commander may give in sixty seconds; 1..600
 
 # (17b cut M1b.1, doc 17 section 5) the Compact floor: the least chance to hit, per mille,
-# a condition slot may name; captured into each arena at check-out. 10..100 in steps of 10.
+# a condition slot may name; captured into each arena at check-out. 10..950 in steps of 10
+# (17b cut M3.3 widened it from 100; above 100 every Line-carded check-out is refused).
 # [tacsim.minds]
 # odds_floor_permille = 100
 # (17b cut M1b.5) a LAB knob: who flies the unseated hulls, "reflex" (today's
@@ -332,6 +333,11 @@ orders_per_minute = 12             # ORDERs one commander may give in sixty seco
 # pool every running match sends a pulse's unit-mind thinks to, sized once per
 # process by the first match that opens. 1..32.
 # workers = 2
+# (17b cut M4.2, doc 17 section 18) the mind CPU lens, ms per 500 ms window, that the
+# harness's minds lane prints beside the lens it asserts (computed from the pool and the
+# host's measured ops per microsecond); a reference figure, never a throttle, read by
+# no match. At least 1.
+# cpu_lens_ms = 5
 
 [tacsim.sensors]                   # (16b cut G) the sensor pass
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id

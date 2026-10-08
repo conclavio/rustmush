@@ -383,6 +383,10 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // 17b cut M4.1 (doc 17 §6, D-UM-22): the think pool's workers,
             // mapped straight across and held 1 to 32 by `validate` below.
             workers: cfg.minds.workers,
+            // 17b cut M4.2 (doc 17 §18): the mind CPU lens's reference
+            // figure, mapped straight across and held at least 1 by
+            // `validate` below; printed by the minds lane, read by no match.
+            cpu_lens_ms: cfg.minds.cpu_lens_ms,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
@@ -1714,6 +1718,14 @@ mod tests {
                 "pool_floor_ops_s = 600000\n",
                 "[tacsim.minds].pool_floor_ops_s",
                 "600000",
+            ),
+            // 17b cut M4.2 (doc 17 §18): the CPU lens's reference figure is
+            // at least 1, by name.
+            (
+                "[tacsim.minds]",
+                "cpu_lens_ms = 0\n",
+                "[tacsim.minds].cpu_lens_ms",
+                "0",
             ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));

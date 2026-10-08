@@ -106,6 +106,29 @@ pub struct SealTerms {
     pub class_cap: CoreClass,
 }
 
+/// **The engine the AI fill is sealed on at 17b cut M4.3's flip** (the M4
+/// row's (ii) and (iii); doc 17 §22's M4): [`SealEngine::Scripted`] — Standard
+/// Doctrine interpreted — is the candidate under test; [`SealEngine::Native`]
+/// is the fast path doc 17 §18 keeps in reserve. Nothing in production reads
+/// it before M4.3 (`seal_for` writes a mind's engine from the terms); the
+/// minds lane's fill variant (`tacsim_harness_arena_minds` in
+/// `crates/tacsim/tests/harness.rs`) seals its thirty-six Class I hulls a
+/// side on it, and THE DECISION IS THAT VARIANT'S VERDICT over three
+/// idle-host weekly runs (`scripts/harness-weekly.sh` on the blessing host):
+/// `held=yes` three times keeps `Scripted`; any `held=no` moves this to
+/// `Native`, in M4.3's commit, with the three
+/// `harness_minds_verdict: variant=fill_authored` lines in its body and in
+/// 17b §2. A run whose line reads `sound=no` is a lane fault (a failed
+/// batch, a refused snapshot, a cold field), re-run and never counted.
+///
+/// DECISION LOG (the committer fills these in before the flip; each line is
+/// the run's `harness_minds_verdict` line's `held=` word with the date, the
+/// HEAD and the host from the report's `verdict` object):
+///   run 1: pending
+///   run 2: pending
+///   run 3: pending
+pub const PRODUCTION_FILL_ENGINE: SealEngine = SealEngine::Scripted;
+
 impl SealTerms {
     /// **The terms every fixture seals under**: match 0, no principal, the
     /// Line preset over the default doctrine, the seed floor of 100, a
@@ -655,5 +678,17 @@ mod m4_tests {
         let seal = seal_for(&bare, &SealTerms::fixture().rated(CoreClass::III)).expect("seals");
         assert_eq!(seal.class, CoreClass::Zero, "no core: the ROM");
         assert_eq!(seal.fallback.as_deref(), Some(NO_CORE_FALLBACK));
+    }
+
+    /// **17b cut M4.2**: the fill's candidate engine is one a mind can be
+    /// sealed on — `native` or `scripted`, never `reflex`, which is kept
+    /// decode-only for the M3 records (the M4 row's finding (6)).
+    #[test]
+    fn m4_2_the_production_fill_engine_is_native_or_scripted() {
+        assert!(matches!(
+            PRODUCTION_FILL_ENGINE,
+            SealEngine::Native | SealEngine::Scripted
+        ));
+        assert_ne!(PRODUCTION_FILL_ENGINE, SealEngine::Reflex);
     }
 }
