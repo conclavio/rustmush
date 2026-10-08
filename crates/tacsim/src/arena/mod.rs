@@ -358,7 +358,7 @@ pub use mind::{
     encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
-pub use motor::{Fallback, MotorOutcome, MotorPlan, MotorRow, MotorTable};
+pub use motor::{Fallback, MotorCounters, MotorOutcome, MotorPlan, MotorRow, MotorTable};
 pub use observer::{Observer, ObserverUnit};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
@@ -367,8 +367,8 @@ pub use perception::{
     ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
 pub use reflex::{
-    ARRIVE_CELLS, Landed, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS,
-    ReflexCounters, ReflexMemory, ReflexState, ReflexUnit,
+    ARRIVE_CELLS, Landed, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS, ReflexMemory,
+    ReflexState, ReflexUnit,
 };
 pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,

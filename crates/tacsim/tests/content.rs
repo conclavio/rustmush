@@ -449,6 +449,12 @@ fn the_band_word_the_shipped_content_can_print() {
 /// no gun, so it **sees** 600 m and fights at nothing — `(60_000, 0, 0)`,
 /// loaded and dry alike — and it has no default weapon to empty (a `None` row
 /// in the dry half, as the target's).
+///
+/// **17b cut M4.5a**: the eleven schemas are checked out `Controller::Mind` —
+/// what production fields since 17b cut M4.3's flip, the range's target and the
+/// drone included — where they were checked out on the reflex controller. The
+/// arena is never stepped, so no mind thinks: every reach read here is the
+/// hull's (`UnitState`), derived at check-out and controller-blind.
 #[test]
 fn e1_the_ranges_the_shipped_machines_fight_at() {
     use mush_core::ObjId;
@@ -498,7 +504,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 Team::Red,
                 pose,
                 0,
-                Controller::Reflex,
+                Controller::Mind,
                 0,
                 &tacsim::match_::SealTerms::fixture(),
             )

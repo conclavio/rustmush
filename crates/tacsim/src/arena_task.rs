@@ -2286,6 +2286,11 @@ mod tests {
     /// pilot's last word is what applies: `HOLD` then `RELEASE` leaves no order
     /// after the pulse (the release drops the order the machine already stood
     /// under), and `RELEASE` then `HOLD` leaves `HOLD`.
+    ///
+    /// 17b cut M4.5a: the machine is a mind, standing under the `Engage` on its
+    /// row (re-keyed as the order's Mind arm writes it); the order it is left
+    /// with is the row's, read by its objective's word (`MindObjective::as_str`
+    /// is `Objective::as_str` word for word).
     #[test]
     fn z2_an_order_and_a_release_in_one_pulse_apply_in_the_pilots_order() {
         use crate::deliberation::order::{Constraints, Objective, Order, StandingOrder};
@@ -2317,15 +2322,16 @@ mod tests {
         for (first, second, left) in [(hold(), release(), None), (release(), hold(), Some("hold"))]
         {
             let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
-            if let Some(state) = arena.unit_mut(RED) {
-                state.controller = crate::arena::state::Controller::Reflex;
-            }
-            arena.adopt_reflex(RED, crate::arena::reflex::ReflexState::Patrol);
-            // The machine already stands under the squad's `Engage`.
-            arena.reflex.set_order(
+            arena.set_controller(
                 RED,
-                StandingOrder::accepted(told(Objective::Engage { target_hint: None }), 0),
+                crate::arena::state::Controller::Mind,
+                crate::arena::reflex::ReflexState::Patrol,
             );
+            // The machine already stands under the squad's `Engage`.
+            let standing =
+                StandingOrder::accepted(told(Objective::Engage { target_hint: None }), 0);
+            let held = arena.rekey_order(RED, &standing.order, standing.expires_ms);
+            arena.minds.get_mut(&RED).expect("the mind's row").order = Some(held);
             arena.squads = vec![SquadRoster {
                 id: squad,
                 commander: RED,
@@ -2339,9 +2345,10 @@ mod tests {
             let _ = arena.step(0, &controls, &intents);
             assert_eq!(
                 arena
-                    .reflex
-                    .order(RED)
-                    .map(|standing| standing.order.objective.as_str()),
+                    .minds
+                    .get(&RED)
+                    .and_then(|mind| mind.order.as_ref())
+                    .map(|order| order.objective.as_str()),
                 left
             );
         }
@@ -2954,7 +2961,7 @@ mod tests {
             ended: None,
             substeps: 0,
             perception: crate::arena::perception::PerceptionCounters::default(),
-            reflex: crate::arena::reflex::ReflexCounters::default(),
+            motor: crate::arena::motor::MotorCounters::default(),
             deliberation: Vec::new(),
             observer,
             thinks: Vec::new(),

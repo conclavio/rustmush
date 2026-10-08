@@ -2,8 +2,8 @@
 //!
 //! The in-source tests of `match_::report` pin every line against a tape written
 //! by hand. This one folds a tape the **arena** wrote: the shipped proving
-//! ground, two stock reflex tanks posed close through the shipped-scale rig
-//! (`support::shipped_arena`, 16b §0.4), the loser checked out dry so that only
+//! ground, two stock tanks posed close through the shipped-scale rig
+//! (`support::shipped_arena_seeded` at [`FIGHT_SEED`], 16b §0.4), the loser checked out dry so that only
 //! one side shoots, run to an elimination. No server: the fold is a pure function
 //! of the event list, which is exactly what it is on the world side, where
 //! `arena_bridge::on_chunk` hands it the same events a chunk at a time.
@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 
 use mush_core::ObjId;
 use smol_str::SmolStr;
-use support::{Muster, booted_world, ledger_events, run_until, shipped_arena};
+use support::{Muster, booted_world, ledger_events, run_until, shipped_arena_seeded};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::state::{Arena, EndReason, Team};
 use tacsim::match_::HistoryRow;
@@ -107,7 +107,7 @@ fn history_row(
             { "unit": winner.0, "callsign": callsign(winner), "outcome": "intact", "shots": 1, "hits": 1 },
         ],
         "ledger": { "log": "match.1", "digest": "ab12cd34ef", "chunks": 3 },
-        "seed": support::SEED,
+        "seed": FIGHT_SEED,
         "started_ms": 1_790_258_000_000_i64,
         "ended_ms": 1_790_258_520_000_i64,
         "arena_ms": arena.now_ms,
@@ -192,15 +192,33 @@ fn names_only_what_was_told_apart(
     }
 }
 
+/// **The match seed this fight runs on** (17b cut M4.5a): re-derived from
+/// [`support::SEED`] — see the test's doc for why.
+const FIGHT_SEED: u64 = 2_352;
+
+/// **17b cut M4.5a**: both tanks are unit minds flown by Standard Doctrine on
+/// the native stock mind ([`Muster::mind`], what production fields since 17b
+/// cut M4.3), where they were the reflex controller; every claim is kept as
+/// written and the bound is unchanged. **The match seed is re-derived from
+/// [`support::SEED`] (2,350) to 2,352**: a stock mind fires its cannon and its
+/// coaxial from two slots at one millisecond where the reflex alternated them,
+/// so the `hit`/`burst`/facet draws keyed on `shot_seq` fall differently, and
+/// at 2,350 the dry tank's turret goes first (`remove_weapons`,
+/// `destroy_core` at 26,008 ms) — an elimination by disarming (16b cut AP.2)
+/// with no wreck, against which the wreck claims below cannot be asserted.
+/// 2,352 is a seed from 2,350 whose fight ends in the loser's wreck (the
+/// porter measured 8 of the 20 seeds 2,350 to 2,369 doing so); the fight, the
+/// musters and the bound are otherwise the original's.
 #[test]
 fn v3_a_real_fight_folds_to_each_pilots_own_projection() {
     let world = booted_world();
-    let mut arena = shipped_arena(
+    let mut arena = shipped_arena_seeded(
         &world,
         &[
-            &[Muster::reflex(Team::Red, 1).dry()],
-            &[Muster::reflex(Team::Blue, 1).at(BLUE_AT)],
+            &[Muster::mind(Team::Red, 1).dry()],
+            &[Muster::mind(Team::Blue, 1).at(BLUE_AT)],
         ],
+        FIGHT_SEED,
     );
     let loser = support::tank(&world, Team::Red, 1);
     let winner = support::tank(&world, Team::Blue, 1);
@@ -385,7 +403,7 @@ fn v3_a_real_fight_folds_to_each_pilots_own_projection() {
     assert!(
         staff_header
             .iter()
-            .any(|line| line.starts_with(&format!("seed {}; ", support::SEED))),
+            .any(|line| line.starts_with(&format!("seed {FIGHT_SEED}; "))),
         "{staff_header:?}"
     );
     // A pilot's header never carries it.

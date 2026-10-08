@@ -104,8 +104,9 @@ use crate::arena::conditions::{
 };
 use crate::arena::intents::{IntentKind, IntentSource};
 use crate::arena::ledger::EventKind;
+use crate::arena::motor::MotorCounters;
 use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, FrameOrder, Receiver};
-use crate::arena::reflex::{Landed, ReflexCounters};
+use crate::arena::reflex::Landed;
 use crate::arena::state::{
     Arena, ArenaDefinition, Channel, Classification, ContactId, Controller, Designator, DueKind,
     Power, Team,
@@ -1025,16 +1026,16 @@ pub struct ThinkAnswer {
 /// among them, the overflows among the faults, and the answers dropped
 /// because their row no longer awaited them (a hull wrecked, possessed or
 /// released since the collection; a match since ended). The faults are what
-/// `crate::arena::reflex::ReflexCounters::mind_faults` counts: a caller that
+/// `crate::arena::motor::MotorCounters::mind_faults` counts: a caller that
 /// settles between two pulses (the sim task, [`Arena::step_settled`]) folds
 /// them into the counters it reports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settled {
     /// Thinks whose answer or fault was written.
     pub written: u32,
-    /// Faulted thinks among them (`ReflexCounters::mind_faults`).
+    /// Faulted thinks among them (`MotorCounters::mind_faults`).
     pub faults: u32,
-    /// Overflows among the faults (`ReflexCounters::mind_overflows`).
+    /// Overflows among the faults (`MotorCounters::mind_overflows`).
     pub overflows: u32,
     /// Answers dropped unwritten.
     pub dropped: u32,
@@ -1621,7 +1622,7 @@ impl Arena {
         unit: ObjId,
         think_seq: u64,
         t_ms: i64,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) {
         if self.ended.is_some()
             || !self
@@ -2023,7 +2024,7 @@ impl Arena {
         unit: ObjId,
         think_seq: u64,
         t_ms: i64,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) {
         self.collect_think(unit, think_seq, t_ms, counters);
         let hash = self.think_line_hash();
@@ -2075,7 +2076,7 @@ impl Arena {
         unit: ObjId,
         think_seq: u64,
         t_ms: i64,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) {
         if !self.minds.get(&unit).is_some_and(|state| {
             state
@@ -2249,7 +2250,7 @@ impl Arena {
     /// substep's lazy hash, `orders_expired` counted, the squad marked
     /// (`Arena::note_order_expired`, the squad parsed back from the order's
     /// rendered word by `SquadId::parse`).
-    fn expire_mind_order(&mut self, unit: ObjId, t_ms: i64, counters: &mut ReflexCounters) {
+    fn expire_mind_order(&mut self, unit: ObjId, t_ms: i64, counters: &mut MotorCounters) {
         let Some(order) = self
             .minds
             .get(&unit)
@@ -3844,7 +3845,7 @@ mod tests {
             seen: std::sync::Mutex::new(Vec::new()),
         });
         arena.mind_runner = runner.clone();
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         for n in 0..3_u64 {
             let t_ms = 1_000 * (i64::try_from(n).unwrap_or(0) + 1);
             arena.mind_think(RED, n, t_ms, &mut counters);
@@ -4025,7 +4026,7 @@ mod tests {
         assert_eq!(arena.core_of(RED), None);
         let runner = recording();
         arena.mind_runner = runner.clone();
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         arena.mind_think(RED, 0, 1_000, &mut counters);
         assert_eq!(arena.action_hash, ActionHash::Outside);
         arena.mind_think(RED, 1, 2_000, &mut counters);
@@ -4150,7 +4151,7 @@ mod tests {
                 .map(|event| (event.kind.as_str().to_owned(), event.hash))
                 .collect()
         };
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         // The twin under `Outside`: the fresh hash the line takes.
         let mut outside = minded();
         outside.mind_runner = faulting();
@@ -4186,7 +4187,7 @@ mod tests {
             revoke_core(&mut arena, RED);
             arena.mind_runner = Arc::new(NoMind);
             arena.action_hash = slot;
-            arena.mind_think(RED, 0, 1_000, &mut ReflexCounters::default());
+            arena.mind_think(RED, 0, 1_000, &mut MotorCounters::default());
             let slot = arena.action_hash;
             (slot, line_hashes(&mut arena))
         };
@@ -4230,7 +4231,7 @@ mod tests {
             words: vec!["ops"],
             seen: std::sync::Mutex::new(Vec::new()),
         });
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         for n in 0..3_u64 {
             let t_ms = 1_000 * (i64::try_from(n).unwrap_or(0) + 1);
             arena.mind_think(RED, n, t_ms, &mut counters);

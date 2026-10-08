@@ -1168,7 +1168,7 @@ pub struct HarnessConfig {
     pub max_snapshot_bytes: u64,
     /// **The most A\* cells one wake's path searches may expand, found or
     /// failed** (16b cut AI.1; 16c `B-84`), asserted against the worst wake's
-    /// `crate::arena::reflex::ReflexCounters::path_cells` on both cohorts,
+    /// `crate::arena::motor::MotorCounters::path_cells` on both cohorts,
     /// beside [`HarnessConfig::max_path_queries_per_pulse`]. It bounds what the
     /// queries bound does not: a search's cost, which a `Budget` failure
     /// (`path_max_cells` expansions) and a `NoRoute` flood (the whole reachable

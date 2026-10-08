@@ -1855,6 +1855,10 @@ mod tests {
     /// the hash — two arenas differing only in `held_by`, or only in its `since`,
     /// or only in the mode, are two states — and so does a machine's
     /// `hold_retry_ms`.
+    ///
+    /// 17b cut M4.5a: the hold retry is the hull's motor row's (item 3b folds
+    /// it for every hull with no reflex row), laid by `MotorTable::ensure` and
+    /// not by adopting the reflex machine.
     #[test]
     fn o1_the_hash_folds_the_mode_the_hold_clock_and_the_hold_retry() {
         use crate::arena::state::{HoldState, MatchMode};
@@ -1909,9 +1913,9 @@ mod tests {
         );
         assert_ne!(wider, open, "the radius went unhashed");
 
-        // A machine's hold retry.
+        // A hull's motor row's hold retry.
         let mut machine = two_tanks();
-        machine.adopt_reflex(ObjId(4), crate::arena::reflex::ReflexState::Patrol);
+        let _ = machine.motors.ensure(ObjId(4));
         let adopted = state_hash(&machine);
         if let Some(row) = machine.motors.row_mut(ObjId(4)) {
             row.hold_retry_ms = Some(90_000);
@@ -1931,12 +1935,15 @@ mod tests {
     /// started from, and the stop it remembers, each move the hash — and every
     /// field of the stop does, so a fold that wrote only its presence would be
     /// caught — and resetting either is the same state again.
+    ///
+    /// 17b cut M4.5a: on the hull's motor row (item 3b, `fold_search`), laid
+    /// by `MotorTable::ensure` and not by adopting the reflex machine.
     #[test]
     fn ai1_the_hash_folds_the_search_start_and_the_refusal_memory() {
         use crate::arena::motion::BlockedCause;
-        use crate::arena::reflex::{ReflexState, Refusal};
+        use crate::arena::motor::Refusal;
         let mut machine = two_tanks();
-        machine.adopt_reflex(ObjId(4), ReflexState::Patrol);
+        let _ = machine.motors.ensure(ObjId(4));
         let adopted = state_hash(&machine);
 
         if let Some(row) = machine.motors.row_mut(ObjId(4)) {

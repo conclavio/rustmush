@@ -2532,13 +2532,22 @@ mod tests {
     /// it** (the issuer's contact id), the spot, the constraint and the time to
     /// live — and a refused order (here a seated tank's, `NotReflex`) journals
     /// nothing at all.
+    ///
+    /// **17b cut M4.5a**: the two hulls are minds (the controller byte alone;
+    /// the order's Mind arm lays each row). Every line field is the ORDER's,
+    /// so both lines are unchanged in every field; the order standing on each
+    /// mind row is the `FrameOrder` re-keyed at write time — the issuer #77
+    /// holds no row, so the hint resolves to `Engage { target: None }` while
+    /// the line still carries the order's own hint — and "stamped at
+    /// `now_ms`" reads through its deadline (`expires_ms = now_ms + ttl`,
+    /// `StandingOrder::accepted`'s; a `FrameOrder` carries no stamp).
     #[test]
     fn y1_an_order_journals_one_ordered_line_per_unit_and_a_refused_one_nothing() {
         let mut arena = two_tanks(1);
         arena.now_ms = 7_000;
         for unit in [RED, BLUE] {
             if let Some(state) = arena.unit_mut(unit) {
-                state.controller = Controller::Reflex;
+                state.controller = Controller::Mind;
             }
         }
         let hint = ContactId(0x2350_0000_0000_0001);
@@ -2605,14 +2614,24 @@ mod tests {
             );
         }
         assert_eq!(lines[0].kind.as_str(), "ordered");
-        // The order stands on both machines, stamped at `now_ms`.
+        // The order stands on both minds, stamped at `now_ms` (read through its
+        // deadline: 7,000 + the ttl 600,000).
         for unit in [RED, BLUE] {
+            let held = arena.minds.get(&unit).and_then(|mind| mind.order.clone());
             assert_eq!(
-                arena
-                    .reflex
-                    .order(unit)
-                    .map(|standing| standing.accepted_ms),
+                held.as_ref().map(|order| order.expires_ms - 600_000),
                 Some(7_000)
+            );
+            assert_eq!(
+                held,
+                Some(crate::arena::perception::FrameOrder {
+                    squad: SmolStr::new("red-1"),
+                    objective: crate::arena::perception::MindObjective::Engage { target: None },
+                    hold_fire: true,
+                    max_range_band: None,
+                    expires_ms: 607_000,
+                }),
+                "re-keyed at write time: the issuer holds no row for the hint"
             );
         }
 
@@ -2689,9 +2708,14 @@ mod tests {
                 Some(Controller::Pilot),
                 "order {n}: the machine kept the tank"
             );
+            // 17b cut M4.5a: since M4.3 a `Released` hands the hull to a mind,
+            // whose row a reclaim keeps dormant (17b cut M3.5) and never reads —
+            // so "no machine survived the reclaim" is that no machine reads the
+            // hull. (No order is written here; the possess's clear is
+            // `m4_3_a_possess_clears_the_dormant_order`'s.)
             assert!(
-                arena.reflex.unit(RED).is_none(),
-                "order {n}: the machine's row survived the reclaim"
+                arena.machine_state(RED).is_none(),
+                "order {n}: a machine still reads the hull after the reclaim"
             );
             for channel in Channel::ALL {
                 assert_eq!(arena.epochs.current(RED, channel), 3, "order {n}");
@@ -2740,7 +2764,9 @@ mod tests {
             Some(Controller::Pilot),
             "a stale release handed the tank back to the machine"
         );
-        assert!(arena.reflex.unit(RED).is_none());
+        // 17b cut M4.5a: no machine reads the hull (the mind's row from the
+        // first drop is dormant under the pilot).
+        assert!(arena.machine_state(RED).is_none());
         assert!(
             !arena.pending.contains_key(&RED),
             "the purge below the current epoch still ran"
@@ -2829,6 +2855,10 @@ mod tests {
 
     /// Two red machines in squad `red-1`, both under its `Hold`, and a blue tank a
     /// pilot flies.
+    ///
+    /// 17b cut M4.5a: the two machines are minds (`set_controller` from the
+    /// pilot lays each row and schedules a think no fixture here steps to),
+    /// each holding the `Hold` re-keyed as the order's Mind arm writes it.
     fn z2_arena() -> Arena {
         let mut arena = arena_at_epoch(
             vec![
@@ -2840,13 +2870,10 @@ mod tests {
         );
         arena.now_ms = 9_000;
         for unit in [RED, WING] {
-            if let Some(state) = arena.unit_mut(unit) {
-                state.controller = Controller::Reflex;
-            }
-            arena.adopt_reflex(unit, ReflexState::Patrol);
-            arena
-                .reflex
-                .set_order(unit, z2_order(crate::deliberation::order::Objective::Hold));
+            arena.set_controller(unit, Controller::Mind, ReflexState::Patrol);
+            let standing = z2_order(crate::deliberation::order::Objective::Hold);
+            let held = arena.rekey_order(unit, &standing.order, standing.expires_ms);
+            arena.minds.get_mut(&unit).expect("the mind's row").order = Some(held);
         }
         arena.squads = vec![crate::deliberation::squad::SquadRoster {
             id: z2_squad(1),
@@ -2868,6 +2895,12 @@ mod tests {
         )
     }
 
+    /// The order `unit`'s mind row holds (17b cut M4.5a: what
+    /// `ReflexMemory::order` read for the reflex machine).
+    fn z2_held(arena: &Arena, unit: ObjId) -> Option<&crate::arena::perception::FrameOrder> {
+        arena.minds.get(&unit).and_then(|mind| mind.order.as_ref())
+    }
+
     /// **16b cut Z.2 (16c Q44)**: `ReleaseOrder` is a continuous `Helm` order
     /// with the word `release`; on a machine under that squad's order it drops
     /// the order to doctrine and journals one `order_released` line carrying the
@@ -2875,6 +2908,12 @@ mod tests {
     /// nothing and journals nothing; and on a pilot's tank it is `NotReflex`.
     /// With two machines of one squad under its order, releasing one does not
     /// mark the squad for its next signal and releasing the second does.
+    ///
+    /// **17b cut M4.5a**: the two machines are minds (`z2_arena`), and every
+    /// read is the mind row's held order — the release's Mind arm drops it
+    /// (`release_machine_order`), matched by the squad's rendered word; the
+    /// line, the squad's mark and the wreck's skip are the one body both
+    /// machines share (`journal_released`).
     #[test]
     fn z2_a_release_drops_that_squads_order_and_journals_one_line() {
         let kind = IntentKind::ReleaseOrder {
@@ -2887,6 +2926,16 @@ mod tests {
         assert_eq!(kind.as_str(), "release");
 
         let mut arena = z2_arena();
+        // 17b cut M4.5a: a drive the machine was making when the order is
+        // handed back. The reflex's `drop_to_doctrine` forgot the goal and the
+        // route with the order; a mind's release leaves the motor row to the
+        // mind's next think (the release's Mind arm touches the order alone),
+        // a declared divergence pinned below.
+        {
+            let motor = arena.motors.ensure(RED);
+            motor.goal = Some((1, 1));
+            motor.route = vec![(2, 2), (1, 1)];
+        }
         let before = arena.ledger.seq();
         // Another squad's word: nothing.
         assert_eq!(
@@ -2894,7 +2943,7 @@ mod tests {
             IntentOutcome::AppliedContinuous
         );
         assert!(
-            arena.reflex.order(RED).is_some(),
+            z2_held(&arena, RED).is_some(),
             "red-2's release is not red-1's"
         );
         // The squad's own word on one machine: that one drops.
@@ -2902,9 +2951,17 @@ mod tests {
             apply_intent(&mut arena, &z2_release(RED, 1, 2), IntentSource::Seat),
             IntentOutcome::AppliedContinuous
         );
-        assert_eq!(arena.reflex.order(RED), None);
+        assert_eq!(z2_held(&arena, RED), None);
+        assert_eq!(
+            arena
+                .motors
+                .row(RED)
+                .map(|motor| (motor.goal, motor.route.len())),
+            Some((Some((1, 1)), 2)),
+            "a mind's release leaves its drive to its next think"
+        );
         assert!(
-            arena.reflex.order(WING).is_some(),
+            z2_held(&arena, WING).is_some(),
             "the other machine is untouched"
         );
         assert!(
@@ -2946,7 +3003,7 @@ mod tests {
             apply_intent(&mut arena, &z2_release(WING, 1, 5), IntentSource::Seat),
             IntentOutcome::AppliedContinuous
         );
-        assert_eq!(arena.reflex.order(WING), None);
+        assert_eq!(z2_held(&arena, WING), None);
         assert!(
             arena.squads_expired.contains(&z2_squad(1)),
             "the whole squad is off orders, so its next signal asks"
@@ -2962,10 +3019,7 @@ mod tests {
             apply_intent(&mut arena, &z2_release(WING, 1, 1), IntentSource::Seat),
             IntentOutcome::Refused(Refusal::Wreck)
         );
-        assert!(
-            arena.reflex.order(WING).is_some(),
-            "the wreck's row keeps it"
-        );
+        assert!(z2_held(&arena, WING).is_some(), "the wreck's row keeps it");
         assert_eq!(
             apply_intent(&mut arena, &z2_release(RED, 1, 2), IntentSource::Seat),
             IntentOutcome::AppliedContinuous
@@ -2974,113 +3028,6 @@ mod tests {
             arena.squads_expired.contains(&z2_squad(1)),
             "a wreck's leftover order is no order the squad is under"
         );
-    }
-
-    /// Set a machine's armour and internals to their floors but one point of
-    /// internals — a hull well under any `withdraw_permille`.
-    fn z2_hurt(arena: &mut Arena, unit: ObjId) {
-        let at = |cell: &str, facet: bool| {
-            if facet {
-                mush_tactics::CellAddr::Facet {
-                    section: mush_tactics::SectionId::new("hull").expect("a section"),
-                    facet: mush_tactics::FacetId::new("front").expect("a facet"),
-                    cell: mush_tactics::CellId::new(cell).expect("a cell"),
-                }
-            } else {
-                mush_tactics::CellAddr::Section {
-                    section: mush_tactics::SectionId::new("hull").expect("a section"),
-                    cell: mush_tactics::CellId::new(cell).expect("a cell"),
-                }
-            }
-        };
-        let hurt = {
-            let state = arena.unit(unit).expect("the fixture tank");
-            let plan = mush_tactics::UnitMutationPlan::new(
-                vec![
-                    mush_tactics::UnitMutationOp::SetCell {
-                        addr: at(crate::definitions::unit::ARMOR_CELL, true),
-                        value: 0,
-                    },
-                    mush_tactics::UnitMutationOp::SetCell {
-                        addr: at(crate::definitions::unit::INTERNALS_CELL, false),
-                        value: 1,
-                    },
-                ],
-                None,
-                Some(SmolStr::new("test:hurt")),
-            )
-            .expect("a two-op plan");
-            mush_tactics::apply(&state.unit, &plan, 0)
-                .expect("the plan applies")
-                .0
-        };
-        if let Some(state) = arena.unit_mut(unit) {
-            state.unit = hurt;
-        }
-    }
-
-    /// **16b cut Z.2**: a released `Withdraw` goes through the expiry block's own
-    /// restoration (`ReflexMemory::drop_to_doctrine`) — a healthy machine reads
-    /// `Patrol` at once and does not keep driving to its entry zone, and a hurt
-    /// one (below `withdraw_permille`) stays in `Withdraw`.
-    #[test]
-    fn z2_a_released_withdraw_reads_patrol_unless_the_hull_asks_for_one() {
-        let mut arena = z2_arena();
-        z2_hurt(&mut arena, WING);
-        assert!(
-            arena.reflex_health_permille(WING) < arena.reflex.config().withdraw_permille,
-            "the fixture is hurt"
-        );
-        for unit in [RED, WING] {
-            arena.adopt_reflex(unit, ReflexState::Withdraw);
-            arena.reflex.set_order(
-                unit,
-                z2_order(crate::deliberation::order::Objective::Withdraw),
-            );
-        }
-        // A goal, a route and a target written onto the healthy machine after
-        // `adopt` (which clears the first two on its own), so the assertion
-        // below reads what the release dropped and not what was never there.
-        // 17b cut M1a.1: the goal and the route on the motor row, the target on
-        // the machine's.
-        if let Some(motor) = arena.motors.row_mut(RED) {
-            motor.goal = Some((1, 1));
-            motor.route = vec![(2, 2), (1, 1)];
-        }
-        if let Some(row) = arena.reflex.unit_mut(RED) {
-            row.target = Some((crate::arena::state::ContactId(1), BLUE));
-        }
-        let read = |arena: &Arena| {
-            let motor = arena.motors.row(RED).cloned().unwrap_or_default();
-            arena
-                .reflex
-                .unit(RED)
-                .map(|row| (motor.goal, motor.route.len(), row.target))
-        };
-        assert_eq!(
-            read(&arena).map(|(goal, route, target)| (goal, route, target.is_some())),
-            Some((Some((1, 1)), 2, true)),
-            "the fixture's machine is going somewhere after something"
-        );
-        for (seq, unit) in [RED, WING].into_iter().enumerate() {
-            assert_eq!(
-                apply_intent(
-                    &mut arena,
-                    &z2_release(unit, 1, u64::try_from(seq).unwrap_or(0)),
-                    IntentSource::Seat
-                ),
-                IntentOutcome::AppliedContinuous
-            );
-        }
-        let state = |arena: &Arena, unit| arena.reflex.unit(unit).map(|row| row.state);
-        assert_eq!(state(&arena, RED), Some(ReflexState::Patrol));
-        assert_eq!(
-            read(&arena),
-            Some((None, 0, None)),
-            "the goal, the route and the target go with the order"
-        );
-        assert_eq!(state(&arena, WING), Some(ReflexState::Withdraw));
-        assert_eq!(arena.reflex.order(WING), None, "the order goes either way");
     }
 
     // -----------------------------------------------------------------------
@@ -3095,6 +3042,17 @@ mod tests {
     /// classification). `Support` names the hull's own row for the charge, and
     /// `None` for itself. `frame_order` is `None` on a piloted hull and the
     /// re-keyed standing order on a machine.
+    ///
+    /// **17b cut M4.5a**: RED and WING are minds (as `z2_arena`'s), and a
+    /// mind's order is re-keyed when it is WRITTEN (the order's Mind arm;
+    /// D-UM-15 as decided) and read back as written — where the reflex's was
+    /// re-keyed at frame time. The leg that tells the two apart: the pilot's
+    /// `ENGAGE BA` lands on WING through `apply_intent` while WING holds BLUE as
+    /// `WING_SEES_BA`, and after that row is removed WING's frame still names
+    /// it (a frame-time re-key would answer `None`, as `rekey_order` then
+    /// does). The dormant row of a piloted hull stands in for the reflex row's
+    /// order on it, and the release of a squad's order (its Mind arm) for
+    /// `drop_to_doctrine`.
     #[test]
     fn m1a3_rekey_order_resolves_the_hint_in_the_issuers_scope_and_re_keys_it_to_a_held_row_or_none()
      {
@@ -3121,11 +3079,10 @@ mod tests {
             1,
         );
         for unit in [RED, WING] {
-            if let Some(state) = arena.unit_mut(unit) {
-                state.controller = Controller::Reflex;
-            }
-            arena.adopt_reflex(unit, ReflexState::Patrol);
-            arena.reflex.set_order(unit, z2_order(Objective::Hold));
+            arena.set_controller(unit, Controller::Mind, ReflexState::Patrol);
+            let standing = z2_order(Objective::Hold);
+            let held = arena.rekey_order(unit, &standing.order, standing.expires_ms);
+            arena.minds.get_mut(&unit).expect("the mind's row").order = Some(held);
         }
         arena.squads = vec![crate::deliberation::squad::SquadRoster {
             id: z2_squad(1),
@@ -3224,6 +3181,25 @@ mod tests {
             MindObjective::Engage { target: None },
             "a self-charge fights on doctrine"
         );
+        // 17b cut M4.5a: the pilot's `ENGAGE BA` written onto WING (a mind)
+        // through the order's own arm, while WING still holds BLUE — re-keyed
+        // at write time to WING's own row.
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent(WING, 1, 1, IntentKind::Order(Box::new(told.clone()))),
+                IntentSource::Seat
+            ),
+            IntentOutcome::AppliedContinuous
+        );
+        let written = arena.frame_order(WING);
+        assert_eq!(
+            written.as_ref().map(|order| order.objective),
+            Some(MindObjective::Engage {
+                target: Some(WING_SEES_BA)
+            }),
+            "written re-keyed to WING's own row"
+        );
         // A hull that does NOT hold the ordered target re-keys to nothing — not
         // to the id it would mint for BLUE later.
         arena.contacts.remove(WING, WING_SEES_BA);
@@ -3231,6 +3207,13 @@ mod tests {
         assert_eq!(
             arena.rekey_order(WING, &told, 0).objective,
             MindObjective::Engage { target: None }
+        );
+        // ...and the order WING already holds keeps the row it was keyed to:
+        // a mind's order is re-keyed when written, never again at frame time.
+        assert_eq!(
+            arena.frame_order(WING),
+            written,
+            "the written target survives the removal of its row"
         );
         assert_eq!(
             arena.rekey_order(WING, &support, 0).objective,
@@ -3259,38 +3242,45 @@ mod tests {
             assert_eq!(rekeyed.objective.code(), objective.code());
         }
 
-        // `frame_order`: a machine under an order reads it re-keyed now; a
-        // piloted hull reads nothing, even with an order on its row.
-        let standing = arena
-            .reflex
-            .order(WING)
-            .cloned()
-            .unwrap_or_else(|| panic!("WING is under red-1's Hold"));
+        // `frame_order`: a machine under an order reads it re-keyed (17b cut
+        // M4.5a: a mind's, as it was written — RED's `Hold` names no contact,
+        // and WING's `Engage` still names the row it was keyed to); a piloted
+        // hull reads nothing, even with an order on its row.
+        let standing = z2_order(Objective::Hold);
         assert_eq!(
-            arena.frame_order(WING),
-            Some(arena.rekey_order(WING, &standing.order, standing.expires_ms))
+            arena.frame_order(RED),
+            Some(arena.rekey_order(RED, &standing.order, standing.expires_ms))
         );
+        assert!(written.is_some(), "WING is under the pilot's ENGAGE");
         // And `frame_for` carries exactly that — the field 17b cut M1a.5's
         // `mind_view` reads, wired, not a literal `None`.
         assert_eq!(
             arena
                 .frame_for(WING, crate::arena::clock::Tempo::Engaged)
                 .map(|frame| frame.order),
-            Some(Some(arena.rekey_order(
-                WING,
-                &standing.order,
-                standing.expires_ms
-            ))),
+            Some(written),
             "the frame's order is frame_order's"
         );
-        arena.reflex.set_order(PILOT, z2_order(Objective::Withdraw));
+        // 17b cut M4.5a: an order on a piloted hull's row is a dormant mind
+        // row's (a possess keeps it, 17b cut M3.5).
+        let dormant = z2_order(Objective::Withdraw);
+        let dormant = arena.rekey_order(PILOT, &dormant.order, dormant.expires_ms);
+        arena
+            .minds
+            .entry(PILOT)
+            .or_insert_with(|| crate::arena::mind::MindState::fresh(&arena.arena_cfg.reflex))
+            .order = Some(dormant);
         assert_eq!(
             arena.unit(PILOT).map(|unit| unit.controller),
             Some(Controller::Pilot)
         );
         assert_eq!(arena.frame_order(PILOT), None, "a pilot's frame says null");
-        // A machine with no order reads none.
-        arena.reflex.drop_to_doctrine(RED, true);
+        // A machine with no order reads none (17b cut M4.5a: RED's `Hold`
+        // released through the release's Mind arm).
+        assert_eq!(
+            apply_intent(&mut arena, &z2_release(RED, 1, 2), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
         assert_eq!(arena.frame_order(RED), None);
     }
 
@@ -3319,11 +3309,10 @@ mod tests {
     /// zeroes the ordered speed, `Off` drops it and leaves the speed. A hull with
     /// no row gains none from a `Hold`. The three continuous gates refuse a
     /// goal by name, and the phase-2 line they stage reads `DRIVE refused. …`.
-    /// A goal to a reflex machine is written and puts nothing on the motor's
-    /// cadence; a patrolling machine's next tick writes over it, and a
-    /// withdrawing machine's keeps it as its route home. A seat's goals are
-    /// counted on the per-unit window — the one past the bound is `QueueFull` —
-    /// and a machine's are not.
+    /// A seat's goals are counted on the per-unit window — the one past the
+    /// bound is `QueueFull` — and a machine's are not. (17b cut M4.5a: the two
+    /// reflex-machine legs are deleted with the reflex decision; their NOT
+    /// DONE note is re-homed in the body.)
     #[test]
     fn m1a4_a_goal_sets_the_motors_goal_and_a_seat_helm_order_clears_it() {
         use crate::arena::motor::Refusal as Stop;
@@ -3487,60 +3476,20 @@ mod tests {
             assert_eq!(m1a4_motor_ticks(&arena, RED), 0);
         }
 
-        // A goal to a reflex machine is written, and its next tick overwrites it:
-        // a machine patrolling under a squad's `HOLD` re-derives its goal — the
-        // cell it stands in — at every tick.
-        let mut machine = two_tanks(1);
-        online(&mut machine, RED);
-        if let Some(state) = machine.unit_mut(RED) {
-            state.controller = Controller::Reflex;
-        }
-        machine.adopt_reflex(RED, ReflexState::Patrol);
-        machine
-            .reflex
-            .set_order(RED, z2_order(crate::deliberation::order::Objective::Hold));
-        assert_eq!(
-            apply_intent(&mut machine, &goal(RED, cell(7, 0), 1), IntentSource::Seat),
-            IntentOutcome::AppliedContinuous
-        );
-        assert_eq!(machine.motors.row(RED).and_then(|m| m.goal), Some((7, 0)));
-        assert_eq!(
-            m1a4_motor_ticks(&machine, RED),
-            0,
-            "no motor cadence for a machine"
-        );
-        let mut counters = crate::arena::reflex::ReflexCounters::default();
-        assert!(machine.reflex_tick(RED, 1_000, &mut counters));
-        assert_eq!(
-            machine.motors.row(RED).and_then(|m| m.goal),
-            Some((1, 1)),
-            "the machine's tick re-derived its own goal: where it stands"
-        );
-        // ...but a withdrawing machine keeps a goal it finds as its route home
-        // (`decide`'s `Withdraw` arm sets one only when the row holds none), until
-        // it arrives or no route reaches it — pinned, so the day a seam can put
-        // a goal on a reflex hull meets it (the cut's NOT DONE, for the lead).
-        let mut withdrawing = two_tanks(1);
-        online(&mut withdrawing, RED);
-        if let Some(state) = withdrawing.unit_mut(RED) {
-            state.controller = Controller::Reflex;
-        }
-        withdrawing.adopt_reflex(RED, ReflexState::Withdraw);
-        assert_eq!(
-            apply_intent(
-                &mut withdrawing,
-                &goal(RED, cell(7, 0), 1),
-                IntentSource::Seat
-            ),
-            IntentOutcome::AppliedContinuous
-        );
-        let mut counters = crate::arena::reflex::ReflexCounters::default();
-        let _ = withdrawing.reflex_tick(RED, 1_000, &mut counters);
-        assert_eq!(
-            withdrawing.motors.row(RED).and_then(|m| m.goal),
-            Some((7, 0)),
-            "a withdrawing machine kept the goal it found"
-        );
+        // 17b cut M4.5a: the two reflex legs that stood here (a goal to a
+        // reflex machine written with nothing on the motor's cadence; a
+        // patrolling machine's next tick overwriting it, a withdrawing one's
+        // keeping it as its route home) are deleted: they pinned the reflex
+        // DECISION's handling of a found goal, which ceases to exist, and a
+        // seat's goal on a mind hull is a fixture-only path a pin would cement.
+        // Their note, re-homed (the cut's NOT DONE, for the lead): no seat
+        // reaches a machine hull's helm today (a mind holds no pilot's lease);
+        // the day a seam can put a goal on one, what becomes of it is the
+        // mind's — the goal lands as any other (`land_goal`, one motor tick
+        // on the heap, since `engage_motor` skips only a reflex hull) and
+        // stands until the mind's next landing names a DIFFERENT cell (the
+        // stock mind re-emits a goal only when it changes) — and that rule is
+        // decided then, not pinned now.
 
         // The seat's rate counts a seat's goal and never a machine's.
         let mut rated = two_tanks(1);

@@ -89,9 +89,9 @@
 //! arena time**, a unit refused by that budget keeping the path it has. The window
 //! is arena time and not a pulse for D-16-2's reason once more;
 //! `[tacsim.harness].max_path_queries_per_pulse` stays what its own block says it
-//! is, a threshold the harness asserts against [`ReflexCounters::path_queries`],
+//! is, a threshold the harness asserts against [`MotorCounters::path_queries`],
 //! and **16b cut AI.1**'s `[tacsim.harness].max_path_cells_per_pulse` is the
-//! same kind of threshold on [`ReflexCounters::path_cells`], which counts every
+//! same kind of threshold on [`MotorCounters::path_cells`], which counts every
 //! search's expansions, found or failed — never a throttle the arena applies.
 //!
 //! The fourth and fifth bounds are **16b cut AI.1**'s (16c `B-84`), and they
@@ -132,7 +132,7 @@ use crate::arena::intents::{
     resolve_startup,
 };
 use crate::arena::ledger::EventKind;
-use crate::arena::motor::{Fallback, MotorPlan, MotorRow, MotorTable};
+use crate::arena::motor::{Fallback, MotorCounters, MotorPlan, MotorRow, MotorTable};
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
     Arena, Channel, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
@@ -415,137 +415,6 @@ impl ReflexUnit {
         self.target = None;
         if self.state == ReflexState::Withdraw && health_ok {
             self.state = ReflexState::Patrol;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Counters
-// ---------------------------------------------------------------------------
-
-/// **What the controller cost one pulse** (16b cut N.1), the shape
-/// [`crate::arena::perception::PerceptionCounters`] has and for the same reason:
-/// the harness asserts a bound against the worst pulse of a run and the report
-/// carries the totals.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ReflexCounters {
-    /// Ticks applied.
-    pub ticks: u32,
-    /// Path searches run — what `harness.max_path_queries_per_pulse` bounds.
-    pub path_queries: u32,
-    /// Searches refused by the per-window budget or by `repath_ms`.
-    pub path_deferred: u32,
-    /// Nodes those searches expanded — **found or failed** since 16b cut AI.1
-    /// (16c `B-84`): a `Budget` failure is `path_max_cells` expansions and a
-    /// `NoRoute` the whole reachable region, the two most expensive searches
-    /// there are, and until that cut they counted nothing here. What
-    /// `harness.max_path_cells_per_pulse` bounds.
-    pub path_cells: u64,
-    /// Searches that found no route, ran out of budget or were off the ground —
-    /// the `unreachable` edge.
-    pub path_failures: u32,
-    /// Line-of-sight traces the controller took (`Approach`'s and `Engage`'s
-    /// check that a shot has a line at all).
-    pub traces: u32,
-    /// Intents staged.
-    pub intents: u32,
-    /// `FIRE`s accepted.
-    pub shots: u32,
-    /// **Standing orders a tick acted on** (16b cut N.2) — ticks that read a live
-    /// order, not orders accepted.
-    pub ordered: u32,
-    /// **Orders that ran out** (16b cut N.2), one per unit dropped to doctrine.
-    pub orders_expired: u32,
-    /// **Orders a pilot handed back** (16b cut Z.2; 16c Q44), one per unit a
-    /// `ReleaseOrder` dropped to doctrine — counted at apply, in pulse phase 2.
-    pub orders_released: u32,
-    /// Ticks that ended in each state, in [`ReflexState::ALL`] order.
-    pub in_state: [u32; 6],
-    /// **Edges refused by the slope rule** (16b cut U.1; 16c `T-35`): every edge
-    /// a search refused as too steep either way or by the shoulder rule
-    /// ([`crate::arena::path::PathScratch::slope_refusals`]), plus every time the
-    /// follower's one-cell test (`Arena::first_step_is_open`) found the cell in
-    /// front open to the class and the avoid list and refused it by the same
-    /// edge rule. What the harness asserts non-zero to prove the cohort's
-    /// locomotion met the relief; a counter, not state, so it moves no hash.
-    ///
-    /// **16b cut AI.1**: a corner refused because no shoulder is open is not a
-    /// slope refusal and is counted in [`ReflexCounters::corner_refusals`]
-    /// instead, so this figure keeps its meaning.
-    pub slope_refusals: u32,
-    /// **Searches refused by name** (16b cut AI.1; 16c `B-84`): ticks at which a
-    /// due search was not spent because [`MotorRow::refused`] said it would
-    /// return the route that had just been refused, and the machine held
-    /// instead. **Expected nought on every lane**: the memory is unreachable
-    /// through `Arena::step` at this cut's rules, and a count is a controller
-    /// defect to investigate. A counter, never hashed.
-    pub path_refused_unchanged: u32,
-    /// **Diagonals refused as a corner closed on both shoulders** (16b cut
-    /// AI.1; 16c `B-84`): every one a search refused
-    /// ([`crate::arena::path::PathScratch::corner_refusals`]), plus every time
-    /// the follower's one-cell test found the diagonal in front open to the
-    /// class and the avoid list and refused it because neither of its shoulders
-    /// is. A counter, never hashed.
-    pub corner_refusals: u32,
-    /// **Unit minds' thinks applied** (17b cut M1a.5; doc 17 §6): one per
-    /// `MindThink` that called its runner. Not reported by the harness — no
-    /// production unit is a mind — and never hashed.
-    pub thinks: u32,
-    /// **Thinks that answered more than `MIND_INTENTS_MAX` intents** (17b cut
-    /// M1a.5; D-UM-9) and so landed nothing. Not reported; 17b cut M3 journals
-    /// the fault. Never hashed.
-    pub mind_overflows: u32,
-    /// **Thinks that faulted** (17b cut M2.2; D-UM-31): a runner's
-    /// `ThinkResult::fault` or an overflow (each overflow is also one of
-    /// [`ReflexCounters::mind_overflows`]), every one landing nothing and
-    /// counting a strike. Not reported — the harness names its fields one by
-    /// one, so the deterministic block does not gain it — and never hashed.
-    pub mind_faults: u32,
-    /// **Condition slots' own shots accepted** (17b cut M1b.1; doc 17 §5,
-    /// D-UM-16): every `fired` line `by: cond`. A counter, never hashed, and
-    /// not in the harness report — which names its fields one by one, so the
-    /// deterministic block does not gain it (no production hull arms a slot).
-    pub cond_fires: u32,
-    /// **Slot evaluations that held for a named reason** (17b cut M1b.1): a
-    /// warrant term failed with the target there. Never hashed; not reported.
-    pub cond_held: u32,
-    /// **Unit minds' answers landed** (17b cut M4.2; the M4 row's (ii)): one
-    /// per `MindLand` that reached its apply in `Arena::mind_land` — the
-    /// written answer landed, clean or refused intent by intent. A landing
-    /// retracted by a fault never reaches the apply, so this and
-    /// [`ReflexCounters::mind_faults`] are disjoint. The minds lane's
-    /// `landings`; never hashed. (17b cut M4.5 renames this struct
-    /// `MotorCounters` and keeps this field.)
-    pub landings: u32,
-}
-
-impl ReflexCounters {
-    /// Add another pulse's counts — the harness's running total.
-    pub fn absorb(&mut self, other: &ReflexCounters) {
-        self.ticks = self.ticks.saturating_add(other.ticks);
-        self.path_queries = self.path_queries.saturating_add(other.path_queries);
-        self.path_deferred = self.path_deferred.saturating_add(other.path_deferred);
-        self.path_cells = self.path_cells.saturating_add(other.path_cells);
-        self.path_failures = self.path_failures.saturating_add(other.path_failures);
-        self.traces = self.traces.saturating_add(other.traces);
-        self.intents = self.intents.saturating_add(other.intents);
-        self.shots = self.shots.saturating_add(other.shots);
-        self.ordered = self.ordered.saturating_add(other.ordered);
-        self.orders_expired = self.orders_expired.saturating_add(other.orders_expired);
-        self.orders_released = self.orders_released.saturating_add(other.orders_released);
-        self.slope_refusals = self.slope_refusals.saturating_add(other.slope_refusals);
-        self.path_refused_unchanged = self
-            .path_refused_unchanged
-            .saturating_add(other.path_refused_unchanged);
-        self.corner_refusals = self.corner_refusals.saturating_add(other.corner_refusals);
-        self.thinks = self.thinks.saturating_add(other.thinks);
-        self.mind_overflows = self.mind_overflows.saturating_add(other.mind_overflows);
-        self.mind_faults = self.mind_faults.saturating_add(other.mind_faults);
-        self.cond_fires = self.cond_fires.saturating_add(other.cond_fires);
-        self.cond_held = self.cond_held.saturating_add(other.cond_held);
-        self.landings = self.landings.saturating_add(other.landings);
-        for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
-            *mine = mine.saturating_add(*theirs);
         }
     }
 }
@@ -922,7 +791,7 @@ impl Arena {
     ///
     /// Answers whether the unit is still the controller's, which is what
     /// [`crate::arena::step`] reads to decide whether to schedule the next tick.
-    pub fn reflex_tick(&mut self, unit: ObjId, t_ms: i64, counters: &mut ReflexCounters) -> bool {
+    pub fn reflex_tick(&mut self, unit: ObjId, t_ms: i64, counters: &mut MotorCounters) -> bool {
         if self.unit(unit).is_none() {
             return false;
         }
@@ -1203,7 +1072,7 @@ impl Arena {
         memory: &mut ReflexMemory,
         motors: &mut MotorTable,
         motor: &mut MotorRow,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) -> ReflexPlan {
         let mut plan = ReflexPlan::default();
         let Some(unit) = self.unit(id) else {
@@ -2207,7 +2076,7 @@ impl Arena {
                 // already turns `plan.expired` into the one
                 // `order_expired` line (this unit, its squad, the word
                 // `advance`), counts it in
-                // `ReflexCounters::orders_expired` and calls
+                // `MotorCounters::orders_expired` and calls
                 // `note_order_expired`, so the squad's next signal
                 // carries `SignalReason::OrderExpired` and the commander
                 // decides again — no sooner than `deliberate_min_ms`
@@ -2677,7 +2546,7 @@ impl Arena {
         arrived: bool,
         ranges: &Ranges,
         order: Option<&Order>,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) -> Option<(ContactId, SeenPose)> {
         let unit = self.unit(id)?;
         if is_dry(unit) || order.is_some_and(|order| order.constraints.hold_fire) {
@@ -2731,7 +2600,7 @@ impl Arena {
         ranges: &Ranges,
         sector: Option<(u32, u32)>,
         order: Option<&Order>,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) -> Option<(ContactId, SeenPose)> {
         let unit = self.unit(id)?;
         if is_dry(unit) {
@@ -2890,7 +2759,7 @@ impl Arena {
     /// removed with the reflex in M4.** `#[doc(hidden)]`: a declared surface for
     /// `crates/tacsim/tests/twin.rs` and nothing else.
     #[doc(hidden)]
-    pub fn reflex_has_line(&self, id: ObjId, target: ObjId, counters: &mut ReflexCounters) -> bool {
+    pub fn reflex_has_line(&self, id: ObjId, target: ObjId, counters: &mut MotorCounters) -> bool {
         counters.traces = counters.traces.saturating_add(1);
         let (sight, cover) = self.fire_line(id, target);
         sight.is_clear_or_partial() && cover != Cover::Full
@@ -3098,7 +2967,7 @@ impl Arena {
     /// over at the three epochs the table holds now, under
     /// [`IntentSource::Machine`]. The answer is not read: what the machine
     /// learns of a refusal it learns at its next tick, as it always has.
-    fn order(&mut self, id: ObjId, plan: &ReflexPlan, t_ms: i64, counters: &mut ReflexCounters) {
+    fn order(&mut self, id: ObjId, plan: &ReflexPlan, t_ms: i64, counters: &mut MotorCounters) {
         let mut orders: Vec<IntentKind> = Vec::new();
         if plan.startup {
             orders.push(IntentKind::Startup);
@@ -3171,7 +3040,7 @@ impl Arena {
         t_ms: i64,
         epoch_of: &dyn Fn(Channel) -> u64,
         source: IntentSource,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) -> Vec<Landed> {
         let mut landed: Vec<Landed> = Vec::with_capacity(kinds.len());
         let mut seq = 0_u64;
@@ -3412,15 +3281,6 @@ impl ReflexMemory {
     /// Every machine's state, keyed by unit, in unit-id order.
     pub(crate) fn rows(&self) -> impl Iterator<Item = (&ObjId, &ReflexUnit)> {
         self.units.iter()
-    }
-
-    /// **One machine's row, to write** — test builds only (16b cut Z.2's
-    /// review): an in-source test that must hand a machine a goal, a route and
-    /// a target before proving something drops them has no other door, and no
-    /// production reader may write a row from outside `decide`.
-    #[cfg(test)]
-    pub(crate) fn unit_mut(&mut self, unit: ObjId) -> Option<&mut ReflexUnit> {
-        self.units.get_mut(&unit)
     }
 }
 

@@ -86,13 +86,13 @@ fn run_settled(
     arena: &mut Arena,
     until_ms: i64,
     bytes: &mut Vec<u8>,
-) -> tacsim::arena::reflex::ReflexCounters {
+) -> tacsim::arena::motor::MotorCounters {
     let mut wall = arena.now_ms;
-    let mut total = tacsim::arena::reflex::ReflexCounters::default();
+    let mut total = tacsim::arena::motor::MotorCounters::default();
     while arena.now_ms < until_ms {
         let out = arena.step_settled(wall, &[], &[]);
         absorb(&out, bytes);
-        total.absorb(&out.reflex);
+        total.absorb(&out.motor);
         if out.ended.is_some() {
             break;
         }
@@ -1124,13 +1124,13 @@ fn t1_a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
     // may plant one).
     let until = arena.now_ms + 16_000;
     let mut wall_ms = arena.now_ms;
-    let mut counters = tacsim::arena::ReflexCounters::default();
+    let mut counters = tacsim::arena::MotorCounters::default();
     while arena.now_ms < until {
         let now = arena.now_ms;
         plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
         let out = arena.step_settled(wall_ms, &[], &[]);
         absorb(&out, &mut bytes);
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         wall_ms += 500;
     }
 
@@ -1553,6 +1553,13 @@ fn m3_the_j_fields_sortie_lines_are_one_list_at_three_cadences() {
 /// `Withdraw` (`seed_withdraw`), which drives it home as the reflex machine
 /// did and rallies on Q.7's clock; a reclaim keeps the row dormant (17b cut
 /// M3.5) and takes the motor row back.
+///
+/// **17b cut M4.5a** (Q24): the three reflex-table probes, vacuous on a
+/// pilot's or a mind's hull since 17b cut M4.3, read the machine instead — a
+/// pilot's tank has no machine state, the released hull has a mind row, and
+/// the reclaimed one's `None` machine state is asserted where it was — and the
+/// reclaim's heap check names only the mind's due kinds (`ReflexTick` goes
+/// with the controller).
 #[test]
 fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
     // A pilot's tank, running, out in the middle of the window. Its seat is
@@ -1590,8 +1597,9 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
         arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Pilot)
     );
-    assert!(
-        arena.reflex.unit(RED).is_none(),
+    assert_eq!(
+        machine_state_of(&arena, RED),
+        None,
         "a pilot's tank has no machine"
     );
 
@@ -1615,8 +1623,8 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
     );
     assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
     assert!(
-        arena.reflex.unit(RED).is_none(),
-        "no reflex row: the machine is a mind"
+        arena.minds.contains_key(&RED),
+        "a mind row: the machine is a mind"
     );
     assert!(
         !stock_memory_of(&arena, RED).ordered,
@@ -1672,7 +1680,6 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
         arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Pilot)
     );
-    assert!(arena.reflex.unit(RED).is_none());
     assert!(
         arena.minds.contains_key(&RED),
         "the mind's row is kept dormant (17b cut M3.5)"
@@ -1685,8 +1692,7 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
     assert!(
         !arena.due.iter().any(|event| matches!(
             event.kind,
-            tacsim::arena::state::DueKind::ReflexTick { .. }
-                | tacsim::arena::state::DueKind::MindThink { .. }
+            tacsim::arena::state::DueKind::MindThink { .. }
                 | tacsim::arena::state::DueKind::MindLand { .. }
         )),
         "the reclaimed seat took its thinks off the heap"
@@ -1853,7 +1859,7 @@ fn t1_a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
         }
         let out = arena.step_settled(wall_ms, &[], &[]);
         absorb(&out, &mut bytes);
-        queries = queries.saturating_add(out.reflex.path_queries);
+        queries = queries.saturating_add(out.motor.path_queries);
         assert_eq!(
             machine_state_of(&arena, RED),
             Some(ReflexState::Withdraw),
@@ -2495,18 +2501,18 @@ fn replay_with(
 
 /// [`replay_with`], with every pulse's reflex counters summed (17b cut M4.4):
 /// the one loop both read — the moat port reads the motor's one failed search
-/// off `ReflexCounters::path_failures` (M4.5's `MotorCounters`).
+/// off `MotorCounters::path_failures` (M4.5's `MotorCounters`).
 fn replay_counted(
     cadence_ms: i64,
     until_ms: i64,
     mut arena: Arena,
     beat: &dyn Fn(&Arena, u32) -> Vec<tacsim::arena::intents::Intent>,
     after: &mut dyn FnMut(&mut Arena),
-) -> (Replay, tacsim::arena::reflex::ReflexCounters) {
+) -> (Replay, tacsim::arena::motor::MotorCounters) {
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut total = tacsim::arena::reflex::ReflexCounters::default();
+    let mut total = tacsim::arena::motor::MotorCounters::default();
     let mut wall = 0_i64;
     let mut pulses = 0_u32;
     loop {
@@ -2516,7 +2522,7 @@ fn replay_counted(
         let out = arena.step_settled(wall, &[], &intents);
         pulses = pulses.saturating_add(1);
         absorb(&out, &mut bytes);
-        total.absorb(&out.reflex);
+        total.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         after(&mut arena);
         if arena.now_ms >= until_ms || out.ended.is_some() {
@@ -3653,11 +3659,44 @@ fn t1_a_withdrawal_stands_for_what_is_close_on_the_way_out_and_for_anything_at_h
 /// **The derived `tempo.alert_range_cm` is capped at the window's diagonal, and
 /// the `Engaged` trigger reads the band a platform fights in** (16b cut E.1; 16c
 /// `T-32`).
+///
+/// **17b cut M4.5a** (Q27; was `e1_t32_…`, a keep row of 17b cut M4.4): the
+/// machine is a unit mind, fielded by the test's own builder below — [`duel`]
+/// itself stays on the reflex for STOP B's
+/// `aa1_a_hull_authored_with_no_speed_engages_the_same_way`. Nothing is stepped,
+/// so no think runs and the controller is no input to either claim: the alert
+/// range is derived in `Arena::new`, and `hostile_in_weapons_range` walks every
+/// unit by its `fight_inner_cm` and its held contacts. The field is
+/// [`duel`]'s exactly (the cannon at [`SIGHT_CELLS`], a target tank with the
+/// default profile), every constant and claim unchanged.
 #[test]
-fn e1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
+fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
     // The sixteen-cell window of 1,000 cm cells: `isqrt(16² + 16²)` is 22, so
     // 22,000 cm — against the cannon's own 2 × 250,000 = 500,000 cm.
-    let mut arena = duel((2, 8), (14, 8), &[]);
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(2, 8),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                SIGHT_CELLS,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(14, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
     assert_eq!(arena.alert_range_cm, 22_000, "the window's own diagonal");
 
     // A configured key is used exactly as written, derived or not.
@@ -3674,7 +3713,7 @@ fn e1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
             Team::Red,
             centre(2, 8),
             vec![cannon()],
-            Controller::Reflex,
+            Controller::Mind,
         )],
         &[],
         &configured,
@@ -7240,6 +7279,22 @@ fn curtain_with_a_gap() -> Vec<(u16, u16, TerrainCell)> {
 /// calls `note_no_line`, and the next tick throws the goal away, falls out of
 /// `Engage` into `Approach` and — 16b cut E.1's rule — drives at the plot's own
 /// cell.
+///
+/// **Held on the reflex — STOP J** (17b cut M4.4's row 76, a STOP there with
+/// no letter; lettered at 17b cut M4.5a by the orchestrator's Q14, beside
+/// STOP I): **the `line` divergence**. The stock mind's `Approach` arm tests
+/// the line to the PLOT's cell (`line_between(here, row.cell)`), where the
+/// reflex traced it to the target's live cell. M4.4's probe on a mind (the
+/// same field, an eight-cell sight, a presenting target so a slot fires)
+/// had the slot's rounds resolve `Miss { blocked }` behind the wall, the next
+/// think read the notices and set `no_line`, went `Approach` — and, the line
+/// from its cell to the plot's cell being clear, went straight back to
+/// `Engage` in the same think: no goal, no intent; the `(8, 8)` goal that
+/// came later was the search's, after the contact expired. The edge needs the
+/// plot's cell behind the wall, and a mind never fires at a plot whose cell
+/// has no line. Like STOP I (a mind is taught `no_line` by any blocked miss
+/// of a held target), it is "`no line` on a mind", for 17b cut M4.6 to hold
+/// or decide; this test is untouched until then.
 #[test]
 fn e4_t42_a_round_stopped_by_the_ground_re_plans_the_machine() {
     // The curtain is a wall down column 9, painted from the start (the terrain
@@ -10785,7 +10840,7 @@ fn o1_a_holder_fights_from_inside_the_square() {
                     .unit(RED)
                     .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
             );
-            if out.reflex.shots > 0 {
+            if out.motor.shots > 0 {
                 fired_at = Some(arena.now_ms);
             }
             wall += 500;
@@ -10886,7 +10941,7 @@ fn o1_an_advance_into_the_square_ends_on_arrival() {
     while arena.now_ms < 30_000 && ended_inside.is_none() {
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes);
-        if out.reflex.orders_expired > 0 {
+        if out.motor.orders_expired > 0 {
             ended_inside = Some(o1_inside(&arena, RED));
         }
         wall += 500;
@@ -11009,10 +11064,10 @@ fn o1_a_sealed_spot_is_given_up_after_one_search_and_tried_again() {
         let opened = arena.now_ms;
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes);
-        failures += out.reflex.path_failures;
+        failures += out.motor.path_failures;
         assert!(arena.reflex.unit(RED).is_some(), "a machine");
         let drive = motor(&arena, RED);
-        if out.reflex.path_failures > 0 {
+        if out.motor.path_failures > 0 {
             // The failure fell in this pulse, `(opened, now]`; its retry is
             // `repath_ms` after it.
             let failed_at = drive.hold_retry_ms.map(|until| until - 4_000);
@@ -11095,7 +11150,7 @@ fn o1_a_holder_with_no_line_waits_on_the_spot() {
             plant_contact(arena, RED, BLUE, Team::Blue, now);
             let out = arena.step(wall, &[], &[]);
             absorb(&out, &mut bytes);
-            shots += out.reflex.shots;
+            shots += out.motor.shots;
             cells.push(
                 arena
                     .unit(RED)
@@ -11184,7 +11239,7 @@ fn o1_an_advance_to_the_squares_edge_hands_over_where_it_stops() {
     while arena.now_ms < 30_000 && ended_at.is_none() {
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes);
-        if out.reflex.orders_expired > 0 {
+        if out.motor.orders_expired > 0 {
             ended_at = arena
                 .unit(RED)
                 .and_then(|state| arena.definition.terrain.cell_of(&state.pose));

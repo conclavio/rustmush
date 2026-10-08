@@ -3511,7 +3511,24 @@ fn arena_over(
     .expect("the relief arena")
 }
 
-/// The same unit under the reflex controller (16b cut X.6).
+/// **The same unit flown by a unit mind** (17b cut M4.5a; was
+/// [`under_reflex`]): `Controller::Mind`, sealed on the fixture terms (the
+/// seal does not read the controller), so `Arena::new` lays its mind row down
+/// and schedules its first think, and it thinks on the arena's fallback
+/// runner — the native stock mind, Standard Doctrine — unless the test hands
+/// the arena another. Every machine of this file's X.6, AE.1 and AE.2 fixtures
+/// is one, but the STOP I residue's.
+fn under_mind(unit: CustodyUnit) -> CustodyUnit {
+    CustodyUnit {
+        controller: tacsim::arena::state::Controller::Mind,
+        ..unit
+    }
+    .sealed()
+}
+
+/// The same unit under the reflex controller (16b cut X.6). **17b cut
+/// M4.5a**: fielded by the STOP I residue alone
+/// ([`ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i`]).
 fn under_reflex(unit: CustodyUnit) -> CustodyUnit {
     CustodyUnit {
         controller: tacsim::arena::state::Controller::Reflex,
@@ -3574,14 +3591,14 @@ fn run_logged(
     period: i64,
     pulses: usize,
     bytes: &mut Vec<u8>,
-) -> tacsim::arena::reflex::ReflexCounters {
-    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+) -> tacsim::arena::motor::MotorCounters {
+    let mut counters = tacsim::arena::motor::MotorCounters::default();
     if *wall == 0 {
         let out = arena.step(0, &[], &[]);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
     }
     for _ in 0..pulses {
         *wall += period;
@@ -3589,7 +3606,7 @@ fn run_logged(
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
     }
     counters
 }
@@ -4530,7 +4547,7 @@ fn plateau(ramp: bool) -> ArenaDefinition {
 /// that cliff and re-planning at it every `repath_ms` until the match ends. With
 /// the limit in force the search takes the ramp — every consecutive pair of the
 /// route is inside the limit, and so is every shoulder of every diagonal on it —
-/// and a reflex tank told to go there arrives having been blocked by nothing.
+/// and a machine told to go there arrives having been blocked by nothing.
 /// Without a limit the same search goes straight over, which is what the
 /// unlimited `path` has always done and still does.
 ///
@@ -4551,6 +4568,22 @@ fn plateau(ramp: bool) -> ArenaDefinition {
 /// seven stops. Test 9 measures what that costs, with the numbers printed for
 /// the ledger. What *this* test is about is whether the route is one motion
 /// accepts, so it asks for a route that is never stale.
+///
+/// **17b cut M4.5a — the two end-to-end legs on the unit mind.** The machine
+/// is a `Controller::Mind` flown by Standard Doctrine ([`under_mind`]) where it
+/// was the reflex controller's; every claim is kept. (a) The sealed plateau's
+/// failure is the motor's under `Fallback::Notice`: the mind's walk hands the
+/// one node as its goal, the search fails, the goal is dropped and the hull
+/// stopped, and the `drive_no_route` notice hands the next think the fallback
+/// — each failure counted (measured: five in the 30 s). (b) The fixture's
+/// `decide_ms` 250 and `repath_ms` 0 now pace the motor's own `MotorTick` and
+/// re-plan, not the mind: a mind thinks once a second (its class's 1,000 ms,
+/// 17b cut M3.1) and its goal lands a substep later, and the route the motor
+/// follows between thinks is the one it searched for that goal, so the
+/// fixture still asks for a route that is never stale. The mind's walk reaches
+/// `far` over the ramp and, quiet since, hunts on across the plateau
+/// (measured: at 130 s at (26, 4), 800 cm up, under way to the far zone's
+/// (46, 4)) — on the plateau, never refused an edge, no failed search.
 #[test]
 fn x6_the_route_goes_round_what_motion_refuses() {
     let limit = tracked_limit();
@@ -4657,14 +4690,15 @@ fn x6_the_route_goes_round_what_motion_refuses() {
     assert!(tacsim::arena::path::path(&sealed, &mut scratch, start, goal, 65_536, scale).is_ok());
 
     // And the controller counts that failure rather than swallowing it: the same
-    // sealed window under the **stock** doctrine, driven long enough for one
-    // search, answers a failure the ledger can read.
+    // sealed window under the **stock** doctrine (17b cut M4.5a: a stock
+    // mind's), driven long enough for one search, answers a failure the ledger
+    // can read.
     let catalog = catalog();
     let mut definition = plateau(false);
     definition.waypoints = relief_waypoint(goal);
     let mut arena = arena_over(
         &catalog,
-        vec![under_reflex(blind(unit_of(
+        vec![under_mind(blind(unit_of(
             &catalog,
             content::LINE_TANK,
             RED,
@@ -4683,8 +4717,9 @@ fn x6_the_route_goes_round_what_motion_refuses() {
         sealed_counters.path_queries
     );
 
-    // And the controller, end to end: a reflex tank whose patrol node is on the
-    // plateau gets there over the ramp, blocked by nothing on the way.
+    // And the controller, end to end: a machine (17b cut M4.5a: a stock mind)
+    // whose patrol node is on the plateau gets there over the ramp, blocked by
+    // nothing on the way.
     let mut definition = plateau(true);
     definition.waypoints = relief_waypoints(start, goal);
     // The doctrine `tests/reflex.rs` runs its own edges on: think every 250 ms
@@ -4695,7 +4730,9 @@ fn x6_the_route_goes_round_what_motion_refuses() {
     // now spends its search, and a follower with no route tests the cell the
     // crossing would enter) and this window still records stops at the stock
     // cadence. See this test's head. What it is about is whether the *route* is
-    // one motion accepts, so the fixture asks for a fresh one.
+    // one motion accepts, so the fixture asks for a fresh one. (17b cut M4.5a:
+    // over a mind the 250 ms is the motor's `MotorTick` and the 0 its re-plan;
+    // the mind itself thinks once a second whatever `decide_ms` says.)
     let cfg = ArenaConfig {
         reflex: tacsim::config::ReflexConfig {
             decide_ms: 250,
@@ -4706,7 +4743,7 @@ fn x6_the_route_goes_round_what_motion_refuses() {
     };
     let mut arena = arena_over(
         &catalog,
-        vec![nimble(under_reflex(blind(unit_of(
+        vec![nimble(under_mind(blind(unit_of(
             &catalog,
             content::LINE_TANK,
             RED,
@@ -4722,14 +4759,14 @@ fn x6_the_route_goes_round_what_motion_refuses() {
     let events = ledger_of(&mut arena, &mut bytes);
     assert!(
         blocked_cells(&events, RED).is_empty(),
-        "the reflex tank drove at something the route promised: {:?}",
+        "the machine drove at something the route promised: {:?}",
         blocked_cells(&events, RED)
     );
     assert_eq!(counters.path_failures, 0);
     let (cell, z, _) = standing(&arena, RED);
     assert!(
         cell.0 >= 20 && z == 800,
-        "the reflex tank never reached the plateau: {cell:?} at {z} cm"
+        "the machine never reached the plateau: {cell:?} at {z} cm"
     );
 }
 
@@ -5009,10 +5046,12 @@ struct ReliefReplay {
     /// The mover's speed at the last sample of the northward leg: the sustained
     /// ceiling on the ramp, once the acceleration has finished with it.
     ramp_speed: i32,
-    /// What the reflex controller did over the replay — the evidence that the
+    /// What the motor did over the replay — the evidence that the
     /// slope-limited A\* was inside the property and not merely seated beside it.
-    /// A per-run counter, never compared across cadences.
-    reflex: tacsim::arena::reflex::ReflexCounters,
+    /// A per-run counter, never compared across cadences. (17b cut M4.5a: the
+    /// field was `reflex`, the reflex controller's counters; the machine is a
+    /// mind's now and the counters the motor's, `StepOutput::motor`.)
+    motor: tacsim::arena::motor::MotorCounters,
 }
 
 /// One order on the channel its kind travels on.
@@ -5044,7 +5083,7 @@ fn relief_replay(
     let mut hashes: Vec<u64> = Vec::new();
     let mut climbed: Vec<i32> = Vec::new();
     let mut ramp_speed = 0_i32;
-    let mut reflex = tacsim::arena::reflex::ReflexCounters::default();
+    let mut motor = tacsim::arena::motor::MotorCounters::default();
     let mut wall = 0_i64;
     let mut next = 0_usize;
     loop {
@@ -5059,11 +5098,13 @@ fn relief_replay(
             intents.extend(beat.intents.iter().cloned());
             next += 1;
         }
-        let out = arena.step(wall, &[], &intents);
+        // 17b cut M4.5a: settled between pulses, as every three-cadence
+        // replay over minds is (17b cut M4.1's gate).
+        let out = arena.step_settled(wall, &[], &intents);
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        reflex.absorb(&out.reflex);
+        motor.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         if let Some(unit) = arena.unit(mover) {
             if climbed.last() != Some(&unit.pose.z_cm) {
@@ -5119,7 +5160,7 @@ fn relief_replay(
             .collect(),
         climbed,
         ramp_speed,
-        reflex,
+        motor,
     }
 }
 
@@ -5169,9 +5210,11 @@ fn scripted_climb(mover: mush_core::ObjId) -> Vec<ReliefBeat> {
     ]
 }
 
-/// The two units the script drives: a pilot's tank on the ramp and a reflex tank
+/// The two units the script drives: a pilot's tank on the ramp and a machine
 /// patrolling the same relief, so the A\* with a slope limit is inside the
-/// property and not beside it (16b cut X.6).
+/// property and not beside it (16b cut X.6). **17b cut M4.5a**: the machine is
+/// a stock mind's hull ([`under_mind`]) where it was the reflex controller's —
+/// its walk's goal is searched by the motor, under the same limit.
 fn scripted_climb_arena(catalog: &Catalog, cfg: &ArenaConfig) -> Arena {
     const MOVER: mush_core::ObjId = mush_core::ObjId(4);
     const WALKER: mush_core::ObjId = mush_core::ObjId(9);
@@ -5185,7 +5228,7 @@ fn scripted_climb_arena(catalog: &Catalog, cfg: &ArenaConfig) -> Arena {
                 Team::Red,
                 (5, 5),
             )),
-            under_reflex(blind(unit_of(
+            under_mind(blind(unit_of(
                 catalog,
                 content::LINE_TANK,
                 WALKER,
@@ -5207,8 +5250,15 @@ fn scripted_climb_arena(catalog: &Catalog, cfg: &ArenaConfig) -> Arena {
 /// which its next ceiling is measured against, and the elevation it stands at.
 /// Both are folded into the substep hash, so a replay that took the ramp one
 /// substep early diverges at that substep rather than at the end of the match.
-/// The reflex tank in the same replay puts the slope-limited A\* inside the
+/// The machine in the same replay puts the slope-limited A\* inside the
 /// property too.
+///
+/// **17b cut M4.5a**: the machine is a stock mind ([`under_mind`]), the replay
+/// settled between pulses (`Arena::step_settled`, 17b cut M4.1's gate), every
+/// claim kept and no pin moved: the walker searches (measured: two searches,
+/// none failed, sixty thinks, off its opening cell up the ramp toward `far`)
+/// and the mover's three pins — 23,999, 1,153 and one `blocked` line — are
+/// the pilot's script's and never met the walker.
 #[test]
 fn x6_one_scripted_climb_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
     const MOVER: mush_core::ObjId = mush_core::ObjId(4);
@@ -5227,10 +5277,10 @@ fn x6_one_scripted_climb_at_three_cadences_is_one_event_list_and_one_hash_sequen
         // history is trivially equal to an empty history, and the A\* would be
         // seated beside the property rather than inside it.
         assert!(
-            run.reflex.path_queries > 0,
+            run.motor.path_queries > 0,
             "the walker asked for no route at {cadence} ms"
         );
-        assert_eq!(run.reflex.path_failures, 0, "at {cadence} ms");
+        assert_eq!(run.motor.path_failures, 0, "at {cadence} ms");
         assert_ne!(
             arena
                 .definition
@@ -5326,6 +5376,10 @@ fn x6_one_scripted_climb_at_three_cadences_is_one_event_list_and_one_hash_sequen
 /// share one edge, and the cliff is **one** `blocked` line at either substep
 /// length (`arena::motion`'s `one_obstacle_is_one_stop_at_every_partition` is
 /// the same property over four partitions).
+///
+/// **17b cut M4.5a**: the same arena, its walker a stock mind's hull
+/// ([`scripted_climb_arena`]); every claim and pin is the mover's and none
+/// moved.
 #[test]
 fn x6_the_climb_does_not_depend_on_the_substep_length() {
     const MOVER: mush_core::ObjId = mush_core::ObjId(4);
@@ -5393,13 +5447,23 @@ fn x6_the_climb_does_not_depend_on_the_substep_length() {
 /// **A route the ground refuses is bounded work** (16b cut X.6; doc 16 §1 A2,
 /// §6's path budget).
 ///
-/// The failure mode X.6 could have introduced: a reflex unit whose goal is behind
+/// The failure mode X.6 could have introduced: a machine whose goal is behind
 /// a cliff it cannot climb, re-planning at the cliff for the rest of the match.
 /// The two bounds that stop it are the controller's own and predate this cut —
 /// one search per unit per `repath_ms`, and `max_path_queries` per `decide_ms`
 /// window — and this is the measurement that they still hold when the search can
 /// fail on a slope rather than on a wall. The numbers are printed for the ledger;
 /// whatever they are, they are the answer.
+///
+/// **17b cut M4.5a**: the limited tank (and in (b) the first of the two) is a
+/// stock mind's hull ([`under_mind`]) where it was the reflex controller's;
+/// both bounds kept as written. The motor's own bound holds for a mind's
+/// goal: a failed search under `Fallback::Notice` drops the goal and stops
+/// the hull, the next think re-hands the fallback node, and the motor's
+/// `repath_ms` is counted from the row's last search, which `land_goal` keeps
+/// across a landed goal — so a mind re-asking every second still searches at
+/// most once a `repath_ms` (measured: (a) 12 searches, all failed, against
+/// the bound of 16, the tank short of the cliff; (b) 3 searches against 32).
 #[test]
 fn x6_a_refused_route_is_bounded_work() {
     let catalog = catalog();
@@ -5408,14 +5472,14 @@ fn x6_a_refused_route_is_bounded_work() {
     let pulses = usize::try_from(span_ms / 500).unwrap_or(0);
     let bound = u32::try_from(span_ms / i64::from(cfg.reflex.repath_ms) + 1).unwrap_or(u32::MAX);
 
-    // (a) a limited reflex tank whose goal is behind an unbroken cliff line, and
+    // (a) a limited machine whose goal is behind an unbroken cliff line, and
     // whose graph offers it nowhere else to be: the worst case, a unit that will
     // keep asking for a route to a cell no route reaches for the whole match.
     let mut definition = plateau(false);
     definition.waypoints = relief_waypoint((40, 2));
     let mut arena = arena_over(
         &catalog,
-        vec![under_reflex(blind(unit_of(
+        vec![under_mind(blind(unit_of(
             &catalog,
             content::LINE_TANK,
             RED,
@@ -5459,7 +5523,7 @@ fn x6_a_refused_route_is_bounded_work() {
     let mut arena = arena_over(
         &catalog,
         vec![
-            under_reflex(blind(unit_of(
+            under_mind(blind(unit_of(
                 &catalog,
                 content::LINE_TANK,
                 RED,
@@ -7355,126 +7419,24 @@ fn d2_a_zero_heat_weapon_fires_from_a_cooked_platform_at_three_cadences() {
     }
 }
 
-/// [`duel`]'s laser tank **under the reflex controller** (16b cut D.2, `B-16`),
-/// with no lock pre-taken: the machine stages its own, which is the whole of what
-/// is being watched here.
-fn reflex_duel() -> Arena {
-    let catalog = catalog();
-    let mut arena = arena_of(
-        &catalog,
-        vec![
-            under_reflex(unit_of(
-                &catalog,
-                content::LINE_TANK_LASER,
-                RED,
-                Team::Red,
-                RED_CELL,
-            )),
-            unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
-        ],
-        &[],
-    );
-    for id in [RED, BLUE] {
-        if let Some(state) = arena.unit_mut(id) {
-            state.power = Power::Online;
-        }
-    }
-    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
-    arena.contacts.insert(
-        RED,
-        contact,
-        ShadowContact::sighted(
-            BLUE,
-            Classification::Classified { team: Team::Blue },
-            0,
-            plot_of(&arena, BLUE),
-        ),
-    );
-    arena
-}
-
-/// **The zero-heat exemption in the machine's half** (16b cut D.2, `B-16`):
-/// `would_overheat` is the controller's copy of the engine's question, so a
-/// cooked platform's cold gun must be as available to the machine as it is to a
-/// pilot — otherwise the two halves of one platform disagree about whether the
-/// gun works.
-///
-/// The controller is **driven**, not asked: `would_overheat` is private to
-/// `arena::reflex` and its only production caller is `engage_orders`, so the
-/// claim is made over the ledger a cooked reflex-held laser tank writes. Every
-/// `fired` line names the coaxial and none names the laser.
-///
-/// **16b cut E.2 (16c `T-55`) made the platform's heat have to be held there.**
-/// The machine's question is now the engine's exactly — refuse AT the ceiling,
-/// accept and clamp below it — so a tank one point below its ceiling is a tank
-/// whose laser is legally available again, and a window over a hull that sheds
-/// three a second was quietly becoming a test of dissipation and of which
-/// substep the decide tick lands in. The fixture is held at the ceiling by
-/// **being a fixture that cannot cool** (`heat.per_s` of nought), and the last
-/// assertion is that it never left it — so "cooked" is a property of the tank
-/// under test and not of the arithmetic of a 500 ms pulse.
-#[test]
-fn d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform() {
-    // The engine's own answer, which is what the controller has to agree with.
-    let mut engine = duel(&[]);
-    at_the_ceiling(&mut engine, RED);
-    assert_eq!(
-        engine.resolve_fire(RED, "laser", engine.now_ms),
-        Err(tacsim::arena::intents::Refusal::Overheated),
-        "the hot gun is still refused at the ceiling"
-    );
-    engine
-        .resolve_fire(RED, "machine_gun", engine.now_ms)
-        .expect("the cold gun fires from a cooked platform");
-
-    // And the machine's, over five seconds of arena time.
-    let mut arena = reflex_duel();
-    // A hull that cannot shed: `line_tank_laser` carries a `heat_sink` of three
-    // a second, and three a second is one whole point part-way through every
-    // 500 ms pulse — which under `T-55` is the difference between a laser the
-    // machine may not fire and one it may. `HeatState` is read once, by
-    // `Arena::new`, so this holds for the run.
-    if let Some(heat) = arena.unit_mut(RED).and_then(|state| state.heat.as_mut()) {
-        heat.per_s = 0;
-    }
-    at_the_ceiling(&mut arena, RED);
-    let mut bytes: Vec<u8> = Vec::new();
-    let mut wall = 0_i64;
-    let _ = run_logged(&mut arena, &mut wall, 500, 10, &mut bytes);
-    arena.ledger.flush();
-    for chunk in arena.ledger.take_chunks() {
-        bytes.extend_from_slice(&chunk.bytes);
-    }
-    let log = String::from_utf8(bytes).unwrap_or_default();
-    let fired: Vec<&str> = log
-        .lines()
-        .filter(|line| line.contains("\"fired\""))
-        .collect();
-    assert!(
-        !fired.is_empty(),
-        "the machine never pulled a trigger at all: {log}"
-    );
-    assert!(
-        fired.iter().all(|line| line.contains("machine_gun")),
-        "the machine reached for a gun that is not the coaxial: {fired:?}"
-    );
-    assert!(
-        !fired.iter().any(|line| line.contains("laser")),
-        "the machine fired the laser from a cooked platform: {fired:?}"
-    );
-    // And the platform was cooked for every one of them — it opened on its
-    // ceiling, it cannot cool and the coaxial adds nothing, so the laser was
-    // refused at the engine's own number at every decide tick in the window and
-    // not merely at the one this fixture happened to start on. Without this the
-    // three assertions above would pass over a tank that had quietly dropped a
-    // point and simply never cycled its laser.
-    assert_eq!(
-        arena.unit(RED).and_then(UnitState::heat_now),
-        arena.unit(RED).and_then(UnitState::heat_max),
-        "the platform left its ceiling, so the run stopped being about a cooked one"
-    );
-    assert!(fired.len() >= 2, "one shot is not a habit: {fired:?}");
-}
+// **17b cut M4.5a**: `d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform`
+// (the reflex's private `would_overheat` copy, driven over a cooked laser tank:
+// every `fired` the coaxial, two or more, the platform never off its ceiling)
+// and its `reflex_duel` were deleted against their mirror on the unit mind,
+// `tests/conditions.rs`'
+// `m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_arena_does`:
+// the same `line_tank_laser` with its sink stopped, past the ceiling the
+// resolver's `Overheated` holding the laser's slot silently while the machine
+// gun fires, and the engine's `Overheated` at the ceiling probed beside it.
+// The mirror pins the edge — on a cooked platform the cold machine gun stays
+// a mind's while the hot laser is held — with AT LEAST ONE machine-gun S2
+// shot between the ceiling and its `COOLS_AT`, and the platform at its
+// ceiling once, at `COOLS_AT` (its probe's precondition). The deleted test's
+// count, "two or more" coaxial shots ("one shot is not a habit"), and its
+// platform still at its ceiling at the window's end are NOT carried over:
+// no test pins them now. The reflex's copy of the question dies with `reflex.rs` (17b cut
+// M4.6); the engine's half of D.2 is
+// `d2_a_zero_heat_weapon_fires_from_a_cooked_platform_at_three_cadences` above.
 
 // ---------------------------------------------------------------------------
 // 16b cut D.4 — a platform knows its own receiver is degraded (`B-22`)
@@ -7991,159 +7953,21 @@ fn d4_one_scripted_drive_through_a_bubble_journals_the_receiver_at_three_cadence
 // ---------------------------------------------------------------------------
 // 16b cut E.3 (16c `B-44`) — a routeless machine is checked every substep
 // ---------------------------------------------------------------------------
-
-/// **A routeless machine no longer drives at a bluff between its decide ticks**
-/// (16b cut E.3; 16c `B-44`).
-///
-/// 16b cut Q.7 put the crossing's own question into `follow`: a machine steering
-/// at a goal with no route is steering at a *direction* nobody has checked the
-/// ground along, so the one cell it would cross first is tested and a machine
-/// that would be refused it is ordered to stop. But `follow` runs at the decide
-/// tick — once a second of arena time under the shipped doctrine — and motion
-/// runs four times in that second at the substep ceiling, so for up to a whole
-/// tick the machine drove at the cliff with nothing between it and the refusal.
-/// 16c's `B-44` row counted five `blocked` lines on exactly this window.
-///
-/// The fixture is `x6_a_refused_route_is_bounded_work`'s worst case: the sealed
-/// plateau, one node behind the cliff, a limited tank with nowhere else to be, so
-/// the machine's goal is a cell no route reaches and it steers at the seam for
-/// the whole run. Over thirty seconds of arena time it is refused nothing at all,
-/// against the five `blocked` lines 16c's row counted.
-///
-/// **What this window really measured, corrected by 16b cut M.2.** E.3 wrote
-/// here that the pre-pass fired zero times because `follow`'s tick-time check
-/// and E.3's braking profile caught every approach. Neither did: the goal is past
-/// the cliff, so the braking profile never slows the tank for the seam, and a
-/// one-cell check cannot stop a tank whose stopping distance is five and a half
-/// cells. The window simply closed five hundred milliseconds before the first
-/// approach arrived at the seam at fifteen metres a second. M.2's machine
-/// `STARTUP` at its own tick moved that approach one decide tick earlier and
-/// this test went red — with one `blocked` line at `(20, 3)` — which is what
-/// exposed it. The pre-pass now looks as far ahead as the tank needs to stop
-/// ([`Arena::hold_routeless`]), and it is the pre-pass that holds this tank:
-/// deleting it turns this test red again. The whole approach, to a standstill,
-/// is `m2_a_routeless_machine_stops_short_of_the_seam_it_is_steering_at`.
-#[test]
-fn e3_a_routeless_machine_is_held_off_the_cliff_every_substep() {
-    let catalog = catalog();
-    let cfg = ArenaConfig::default();
-    let pulses = usize::try_from(30_000_i64 / 500).unwrap_or(0);
-    let mut definition = plateau(false);
-    definition.waypoints = relief_waypoint((40, 2));
-    let mut arena = arena_over(
-        &catalog,
-        vec![under_reflex(blind(unit_of(
-            &catalog,
-            content::LINE_TANK,
-            RED,
-            Team::Red,
-            (2, 4),
-        )))],
-        definition,
-        &cfg,
-    );
-    let mut wall = 0_i64;
-    let mut bytes: Vec<u8> = Vec::new();
-    let counters = run_logged(&mut arena, &mut wall, 500, pulses, &mut bytes);
-    let events = ledger_of(&mut arena, &mut bytes);
-    let stops = blocked_cells(&events, RED);
-    println!(
-        "e3_routeless: blocked={} intents={} ticks={} path_failures={}",
-        stops.len(),
-        counters.intents,
-        counters.ticks,
-        counters.path_failures
-    );
-    assert!(
-        stops.is_empty(),
-        "a routeless machine was refused a cell it should never have driven at: {stops:?}"
-    );
-    // The tank never got up onto the plateau either, which is the other half of
-    // the claim: it was held off the seam, not carried over it.
-    let (cell, z, _) = standing(&arena, RED);
-    assert!(
-        cell.0 < 20 && z == 0,
-        "the tank got onto a plateau nothing can climb: {cell:?} at {z} cm"
-    );
-    // What is asserted is that the controller ran at all, so that
-    // `stops.is_empty()` is a fact about a machine that was being driven and not
-    // about one that never moved. (E.3 left out "`ReflexCounters::intents` shows
-    // the holds" because it measured none; the holds are real — see the header —
-    // and the standstill they end in is asserted by the M.2 test below.)
-    assert!(
-        counters.ticks > 0,
-        "the controller never ran, so nothing was measured"
-    );
-}
-
-/// **A routeless machine at full speed stops short of the seam it steers at**
-/// (16b cut M.2, reopening E.3's `B-44`; the M.2 review's finding).
-///
-/// The E.3 fixture run on past its first approach, to a standstill. The tank
-/// reaches fifteen metres a second on open ground steering at a goal behind the
-/// cliff; braking from there at two metres a second squared takes fifty-six
-/// metres, five and a half cells, so a pre-pass that asked only the cell in front
-/// ordered the stop with the seam already inside the stopping distance and the
-/// tank was refused at `(20, 3)` anyway. Looking as far ahead as it needs to
-/// stop, it is held early, brakes on its own profile, and comes to rest in the
-/// last cell before the cliff with no `blocked` line — and stays there, because
-/// the next decide tick orders it on only while the cell in front is open.
-///
-/// Without the look-ahead this is red: the refusal at `(20, 3)` at 29,500.
-#[test]
-fn m2_a_routeless_machine_stops_short_of_the_seam_it_is_steering_at() {
-    let catalog = catalog();
-    let cfg = ArenaConfig::default();
-    let mut definition = plateau(false);
-    definition.waypoints = relief_waypoint((40, 2));
-    let mut arena = arena_over(
-        &catalog,
-        vec![under_reflex(blind(unit_of(
-            &catalog,
-            content::LINE_TANK,
-            RED,
-            Team::Red,
-            (2, 4),
-        )))],
-        definition,
-        &cfg,
-    );
-    let mut wall = 0_i64;
-    let mut bytes: Vec<u8> = Vec::new();
-    // Forty-five seconds: the tank is on the move from ten, flat out by
-    // twenty-five, and at rest by thirty-four.
-    let pulses = usize::try_from(45_000_i64 / 500).unwrap_or(0);
-    let mut fastest = 0_i32;
-    for _ in 0..pulses {
-        run_logged(&mut arena, &mut wall, 500, 1, &mut bytes);
-        fastest = fastest.max(arena.unit(RED).map_or(0, |unit| unit.speed_cms));
-    }
-    let top = arena
-        .unit(RED)
-        .map_or(0, |unit| unit.mobility.max_speed_cms);
-    assert_eq!(
-        u32::try_from(fastest).unwrap_or(0),
-        top,
-        "the fixture needs the tank at full speed on the approach"
-    );
-    let events = ledger_of(&mut arena, &mut bytes);
-    let stops = blocked_cells(&events, RED);
-    assert!(
-        stops.is_empty(),
-        "the tank outran its brakes into the seam: {stops:?}"
-    );
-    let (cell, z, _) = standing(&arena, RED);
-    assert_eq!(
-        (cell.0, z),
-        (19, 0),
-        "the tank stopped in the last cell before the cliff: {cell:?} at {z} cm"
-    );
-    assert_eq!(
-        arena.unit(RED).map(|unit| unit.speed_cms),
-        Some(0),
-        "and it is standing there"
-    );
-}
+//
+// **17b cut M4.5a** (the owner's ruling Q13 on STOP H): E.3's
+// `e3_a_routeless_machine_is_held_off_the_cliff_every_substep` and M.2's
+// `m2_a_routeless_machine_stops_short_of_the_seam_it_is_steering_at` steered a
+// reflex machine at a goal its search had FAILED to reach — the reflex's
+// `Fallback::Waypoint` steer-on, which a mind's `Fallback::Notice` (the goal
+// dropped and the hull stopped at every failed search) has no path to. Every
+// claim of both is the motor's (the routeless steer, the one-cell test and
+// `Arena::hold_routeless`'s look-ahead), and both are rebuilt in
+// `tests/motor.rs` under a scripted mind on the same sealed plateau, line tank
+// and match terms, the search held DEFERRED (`max_path_queries` 0) instead:
+// `m45a_e3_a_routeless_machine_is_held_off_the_cliff_every_substep` (its
+// window grown by the landing lattice's 1,250 ms so it covers the same
+// approach; `ticks > 0` read as thinks and landings) and
+// `m45a_m2_a_routeless_machine_stops_short_of_the_seam_it_is_steering_at`.
 
 // ---------------------------------------------------------------------------
 // 16b cut M.2 (16c `B-51`) — a pilot's beam lands in the pulse that fired it
@@ -8419,6 +8243,12 @@ fn m4_a_pod_at_condition_nought_reads_as_no_pod_and_at_one_still_jams() {
 /// composition, `custody_unit` and `Arena::new` on the stand-in window, and the
 /// check-in — so the lobby's refit at `SIM START` and the arena's elimination
 /// rule have nothing to discover about it.
+///
+/// **17b cut M4.5a**: both hulls check out `Controller::Mind`, as
+/// `match_::start` checks out every unseated hull since 17b cut M4.3, where
+/// they checked out the reflex controller's. The arena is opened and never
+/// stepped, and nothing asserted reads the controller (the seal is the fixture
+/// terms' whatever the controller, `SealEngine::Reflex` being decode-only).
 #[test]
 fn o3_the_target_binds_creates_refits_and_checks_out() {
     if writing() {
@@ -8566,7 +8396,7 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
             team,
             pose(cell),
             0,
-            tacsim::arena::state::Controller::Reflex,
+            tacsim::arena::state::Controller::Mind,
             1,
             &tacsim::match_::SealTerms::fixture(),
         )
@@ -9571,12 +9401,17 @@ fn shoulder_refused(terrain: &ArenaTerrain, limit: u32, from: (u16, u16), to: (u
 ///   shoulder is a 70 per cent rim, so a tracked `path_with` goes round and a
 ///   legged one (70) takes the one diagonal step; the corner (147, 118) →
 ///   (148, 119) rises 800 (56.6 per cent), past a tank's own limit and not a
-///   walker's;
-/// * and a **routeless** reflex tank steered at the face is held by
-///   `first_step_is_open`, which is 16b cut Q.7's cliff test: slope refusals
-///   counted, no `blocked` line, and an empty avoid list — `note_blocked`
-///   records nothing for a slope, so the openness test is the whole of the
-///   machine's cliff memory.
+///   walker's.
+///
+/// **17b cut M4.5a**: every leg here is a pilot's hull or a search, and none
+/// moved. The last leg — a **routeless** reflex tank steered at the face, held
+/// by `first_step_is_open` (16b cut Q.7's cliff test: slope refusals counted,
+/// no `blocked` line, an empty avoid list) — steered on past a FAILED search,
+/// the reflex's `Fallback::Waypoint`, which a mind's `Fallback::Notice` has no
+/// path to (STOP H); the owner's ruling Q13 rebuilt it in `tests/motor.rs`
+/// under a scripted mind with the search deferred,
+/// `m45a_ae1_a_routeless_machine_is_held_at_the_bluff_by_the_one_cell_test`,
+/// every claim kept but `path_failures > 0`, re-pinned as `path_deferred > 0`.
 #[test]
 fn ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_ground() {
     use tacsim::arena::CostRow;
@@ -9844,63 +9679,15 @@ fn ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_gro
         "and one for a walker"
     );
 
-    // The routeless machine, held at the face by the one-cell test.
-    let mut definition = shipped.clone();
-    definition.waypoints = relief_waypoint(goal);
-    let cfg = ArenaConfig {
-        reflex: tacsim::config::ReflexConfig {
-            // A search that cannot finish, so the machine steers straight at
-            // the node on the top with no route at all.
-            path_max_cells: 1,
-            ..tacsim::config::ReflexConfig::default()
-        },
-        ..ArenaConfig::default()
-    };
-    let mut arena = arena_over(
-        &catalog,
-        vec![under_reflex(blind(unit_of(
-            &catalog,
-            content::LINE_TANK,
-            RED,
-            Team::Red,
-            (130, 111),
-        )))],
-        definition,
-        &cfg,
-    );
-    let mut wall = 0_i64;
-    let mut bytes: Vec<u8> = Vec::new();
-    let counters = run_logged(&mut arena, &mut wall, 500, 120, &mut bytes);
-    let events = ledger_of(&mut arena, &mut bytes);
-    assert!(
-        counters.path_failures > 0,
-        "the search never failed, so the machine was never routeless"
-    );
-    assert!(
-        counters.slope_refusals > 0,
-        "the one-cell test never refused the face"
-    );
-    assert!(
-        blocked_with_cause(&events, RED).is_empty(),
-        "the routeless machine was refused at the face: {:?}",
-        blocked_with_cause(&events, RED)
-    );
-    let (cell, z, _) = standing(&arena, RED);
-    assert!(
-        cell.0 <= 140 && z < 500,
-        "the machine got onto the top: {cell:?} at {z} cm"
-    );
-    assert_eq!(
-        // 17b cut M1a.1: the avoid list is the hull's motor row's.
-        arena.motors.row(RED).map(|motor| motor.avoid.is_empty()),
-        Some(true),
-        "a slope teaches the avoid list nothing"
-    );
+    // 17b cut M4.5a: the routeless machine held at the face by the one-cell
+    // test (the reflex's failed-search steer-on, STOP H) is rebuilt in
+    // `tests/motor.rs` as
+    // `m45a_ae1_a_routeless_machine_is_held_at_the_bluff_by_the_one_cell_test`.
 }
 
-/// **The reflex steers each machine on its own row, at every cadence** (16b cut
-/// AE.1; 16c `B-58`; 16b §11's cross-tempo property for the machine's half of
-/// the cut).
+/// **Each machine is steered on its own row, at every cadence** (16b cut AE.1;
+/// 16c `B-58`; 16b §11's cross-tempo property for the machine's half of the
+/// cut; written for the reflex, flown by a mind since 17b cut M4.5a — below).
 ///
 /// Every earlier AE.1 test that drives a machine drives a tank, so this one is
 /// the controller's own proof that it reads the unit's row — in the search, in
@@ -9916,18 +9703,30 @@ fn ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_gro
 ///   7): rubble is no ground of its row, so its route never enters a cell
 ///   motion would refuse it. Neither search fails and neither machine is
 ///   stopped;
-/// * **routeless** (`path_max_cells` 1, so every search fails on its budget and
-///   the machine steers straight at the node): the walker's one-cell test lets
-///   it into the woods and it walks through them; the car's refuses it the
-///   rubble wall across the window, so it is held short of it — no `blocked`
-///   line, and an empty avoid list;
 /// * and the car's first search expands exactly what `path_with` expands at
 ///   the **wheeled** row's own scale (80, the road), which is not what it
 ///   expands at the tracked 100 — the reflex scales its heuristic on the unit's
 ///   row.
 ///
-/// Each of the four scenes is replayed at 5,000, 1,000 and 500 ms, and the
+/// Each of the routed scenes is replayed at 5,000, 1,000 and 500 ms, and the
 /// three replays are one event list, one hash sequence and one set of finals.
+///
+/// **17b cut M4.5a.** Each machine is a stock mind's hull ([`under_mind`])
+/// where it was the reflex controller's, and the row it is steered on is the
+/// motor's for the mind's walk goal; every routed claim and the scale's are
+/// kept and no constant moved. The fixture's `decide_ms` 250 and `repath_ms`
+/// 0 now pace the motor's `MotorTick` and re-plan, the mind thinking once a
+/// second, its goal landing a substep later; the replays are settled between
+/// pulses. The scale's first search is the motor's at the landing of the
+/// mind's first online think, from the opening cell, one search in that
+/// pulse. The two **routeless** scenes (`path_max_cells` 1: every search
+/// failed on its budget and the reflex's fallback steered on at the node — the
+/// walker's one-cell test let it into the woods and through them, never held
+/// on the way; the car's refused it a rubble wall, held short of it with no
+/// `blocked` line and an empty avoid list) had no mind path under
+/// `Fallback::Notice` (STOP H): the owner's ruling Q13 rebuilt them in
+/// `tests/motor.rs` under a scripted mind with the search deferred,
+/// `m45a_ae1_a_routeless_walker_and_a_routeless_car_steer_on_their_own_rows_at_every_cadence`.
 #[test]
 fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_cadence() {
     use tacsim::arena::CostRow;
@@ -9942,19 +9741,11 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
         },
         ..ArenaConfig::default()
     };
-    let routeless = ArenaConfig {
-        reflex: tacsim::config::ReflexConfig {
-            path_max_cells: 1,
-            ..tacsim::config::ReflexConfig::default()
-        },
-        ..ArenaConfig::default()
-    };
     let woods: &[PricedBox] = &[((20, 27, 0, 7), TerrainClass::WoodsHeavy)];
     let rubble_box: &[PricedBox] = &[
         ((20, 27, 0, 5), TerrainClass::Rubble),
         ((0, 47, 7, 7), TerrainClass::Road),
     ];
-    let rubble_wall: &[PricedBox] = &[((20, 27, 0, 7), TerrainClass::Rubble)];
     let start = (2_u16, 3_u16);
     let node = (40_u16, 3_u16);
     let open = |entry: &str, paint: &[PricedBox], cfg: &ArenaConfig| {
@@ -9962,7 +9753,7 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
         definition.waypoints = relief_waypoint(node);
         arena_over(
             &catalog,
-            vec![nimble(under_reflex(blind(unit_of(
+            vec![nimble(under_mind(blind(unit_of(
                 &catalog,
                 entry,
                 RED,
@@ -10015,8 +9806,8 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
             .filter(|(_, kind, _, _)| kind.starts_with("{\"kind\":\"blocked\""))
             .count();
         (
-            first.reflex.path_queries,
-            first.reflex.path_failures,
+            first.motor.path_queries,
+            first.motor.path_failures,
             stops,
             *cell,
             *avoid_empty,
@@ -10048,55 +9839,10 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
     assert_eq!(stops, 0, "the car's route took it into the rubble");
     assert!(cell.0 >= 28, "the car never got past the rubble: {cell:?}");
 
-    // Routeless: the walker's one-cell test lets it into the woods.
-    let (_, failures, stops, cell, _) =
-        three(content::BIPED_MK1, woods, &routeless, CostRow::Legged);
-    assert!(failures > 0, "the walker was never routeless");
-    assert_eq!(stops, 0, "the routeless walker was stopped");
-    assert!(
-        cell.0 >= 28,
-        "the routeless walker was held at the woods: {cell:?}"
-    );
-    // And it is never held on the way: the look-ahead (`way_ahead_is_open`)
-    // asks every cell within the walker's stopping distance on the walker's
-    // row, so it slows for the woods once, on the ground's own price, and walks
-    // through them at `1,000 × 100 / 200`. Asked on a tank's row, the woods two
-    // cells ahead hold it, it brakes, is let go, speeds up and is held again.
-    let mut arena = open(content::BIPED_MK1, woods, &routeless);
-    let mut wall = 0_i64;
-    let mut bytes: Vec<u8> = Vec::new();
-    let near = speeds_in(&mut arena, &mut wall, 120, RED, 14..=19, &mut bytes);
-    let mut arena = open(content::BIPED_MK1, woods, &routeless);
-    let mut wall = 0_i64;
-    let deep = speeds_in(&mut arena, &mut wall, 120, RED, 22..=26, &mut bytes);
-    assert!(
-        !near.is_empty() && !deep.is_empty(),
-        "the routeless walker never came up to the woods and through them"
-    );
-    assert!(
-        near.windows(2)
-            .all(|pair| pair.get(1).copied() <= pair.first().copied()),
-        "the routeless walker was held short of the woods and let go: {near:?}"
-    );
-    assert!(
-        deep.iter().all(|speed| *speed == 1_000 * 100 / 200),
-        "the routeless walker was held in the woods: {deep:?}"
-    );
-
-    // Routeless: the car's refuses it the rubble, and it is held short of it.
-    let (_, failures, stops, cell, avoid_empty) = three(
-        content::SCOUT_MK1,
-        rubble_wall,
-        &routeless,
-        CostRow::Wheeled,
-    );
-    assert!(failures > 0, "the car was never routeless");
-    assert_eq!(stops, 0, "the routeless car drove into the rubble");
-    assert!(
-        cell.0 > start.0 && cell.0 < 20,
-        "the routeless car is not held short of the rubble: {cell:?}"
-    );
-    assert!(avoid_empty, "a held car learnt a stop it never had");
+    // 17b cut M4.5a: the two routeless scenes — the walker into the woods and
+    // the car held short of the rubble wall, each steering on past a FAILED
+    // search (STOP H) — are rebuilt in `tests/motor.rs` as
+    // `m45a_ae1_a_routeless_walker_and_a_routeless_car_steer_on_their_own_rows_at_every_cadence`.
 
     // The heuristic's scale: the car's first search, from its opening cell,
     // expands what the wheeled row's own scale expands and not what the
@@ -10156,7 +9902,7 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
     assert_eq!(first.path_queries, 1, "one search in the pulse");
     assert_eq!(
         first.path_cells, own,
-        "the reflex scaled the car's search on another row's cheapest cell"
+        "the motor scaled the car's search on another row's cheapest cell"
     );
 }
 
@@ -10424,16 +10170,25 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
 /// on the tank through a contact planted by hand** (16b cut AE.2) — the shape
 /// `damage.rs`'s own tests take, because what is under test is the shot and not
 /// how the platform came to hold its target (at 1.5 km no sight would).
+///
+/// **17b cut M4.5a**: `controller` says who flies the shooter — a pilot's seat
+/// (was `reflex: false`), a stock mind ([`under_mind`]) or, for the STOP I
+/// residue alone, the reflex controller (was `reflex: true`).
 fn ae2_duel(
     catalog: &Catalog,
     shooter: &str,
     shooter_cell: (u16, u16),
     target_cell: (u16, u16),
     definition: ArenaDefinition,
-    reflex: bool,
+    controller: tacsim::arena::state::Controller,
 ) -> Arena {
+    use tacsim::arena::state::Controller;
     let red = unit_of(catalog, shooter, RED, Team::Red, shooter_cell);
-    let red = if reflex { under_reflex(red) } else { red };
+    let red = match controller {
+        Controller::Pilot => red,
+        Controller::Mind => under_mind(red),
+        Controller::Reflex => under_reflex(red),
+    };
     let mut arena = arena_over(
         catalog,
         vec![
@@ -10519,7 +10274,7 @@ fn ae2_the_autocannon_is_a_burst_of_three_and_each_round_is_its_own_draw() {
         RED_CELL,
         BLUE_CELL,
         definition(&[]),
-        false,
+        tacsim::arena::state::Controller::Pilot,
     );
     let at = arena.now_ms;
     let seq = arena
@@ -10639,7 +10394,7 @@ fn ae2_the_missile_lands_where_the_target_was() {
             AE2_LAUNCH,
             AE2_MARK,
             q6_window(16, 160),
-            false,
+            tacsim::arena::state::Controller::Pilot,
         )
     };
 
@@ -10766,6 +10521,50 @@ fn ae2_the_missile_lands_where_the_target_was() {
     }
 }
 
+/// The ridged window of [`ae2_the_round_is_traced_from_where_it_left`] and its
+/// STOP I residue: a 400 cm ridge across row 7 of a 16 by 16 window and an
+/// 800 cm crest at [`AE2_CREST`] south of it.
+fn ae2_ridged() -> ArenaDefinition {
+    relief(16, 16, &|x, y| {
+        if y == 7 {
+            400
+        } else if (x, y) == AE2_CREST {
+            800
+        } else {
+            0
+        }
+    })
+}
+
+/// The crest the trace fixtures fire from: from here the heavy's 170 cm eye
+/// sees over the ridge to [`AE2_TRACE_MARK`].
+const AE2_CREST: (u16, u16) = (8, 3);
+
+/// The flat cell behind the crest, from which the ridge blocks the line.
+const AE2_BEHIND: (u16, u16) = (8, 2);
+
+/// The tank the trace fixtures fire at, north of the ridge.
+const AE2_TRACE_MARK: (u16, u16) = (8, 11);
+
+/// **A `blocked` or `cover` miss of the shooter's own round is in its mind's
+/// notice buffer** (17b cut M4.5a) — the lesson a mind is taught: the next
+/// think drains the buffer into its view and the stock mind sets its `no_line`
+/// off exactly that notice (`stock_mind.rs`' `no line` edge, the divergence
+/// `no_line`), the reflex's `note_no_line` flag in the mind's hands. `false`
+/// with no mind row.
+fn ae2_taught(arena: &Arena, unit: mush_core::ObjId) -> bool {
+    arena.minds.get(&unit).is_some_and(|row| {
+        row.notices.iter().any(|notice| {
+            matches!(
+                notice,
+                FrameNotice::Miss { reason, .. }
+                    if reason.as_str() == tacsim::arena::damage::BLOCKED
+                        || reason.as_str() == tacsim::arena::damage::COVER
+            )
+        })
+    })
+}
+
 /// **The round is traced from where it left** (16b cut AE.2; doc 16 §3.5
 /// "Scheduled impact", §6's `no line` edge), on a 16 by 16 window with a 400 cm
 /// ridge across row 7 and an 800 cm crest at (8, 3) south of it.
@@ -10780,38 +10579,57 @@ fn ae2_the_missile_lands_where_the_target_was() {
 /// 2. a machine that fires from behind the ridge and stays there reads
 ///    `blocked`, and **is** taught (the guard is not a switch that turned the
 ///    edge off);
-/// 3. a machine that fires from behind the ridge and then climbs the crest
-///    still reads `blocked` — the round never left the crest — and is not
-///    taught;
+/// 3. *(held on the reflex: STOP I, below)*;
 /// 4. a shooter removed from the match mid-flight (a test's case only;
 ///    production never removes a unit from a running arena) resolves its round
 ///    through the stored eye: a hit from the crest, `blocked` from behind;
 /// 5. on flat ground the facet struck is the one the target presented to the
 ///    launch point (its rear, to a shooter due south), not the one it presents
 ///    to where the shooter ended (its right, due east).
+///
+/// **17b cut M4.5a — on the unit mind, case (3) held on the reflex (the
+/// owner's ruling Q14, STOP I).** The machine of (1) and (2) is a stock mind's
+/// hull ([`under_mind`]) and the impact is STEPPED (`Arena::step_settled` to
+/// the impact's millisecond) where the reflex fixture called
+/// `Arena::resolve_impact` by hand: a mind is taught off the `Miss` notice the
+/// step's journal pass stages for a shooter that still holds its target
+/// (`step.rs`; `damage.rs` stages none), so the lesson exists only through a
+/// step. "Taught" is read as that notice in the mind's buffer
+/// ([`ae2_taught`]) — the reflex's `no_line` flag, pending for the next
+/// decide, is the buffer pending for the next think, which drains it into its
+/// view and sets `no_line` off it — and "starts with no lesson" as none
+/// there; the impact (321 ms from the crest, 360 from behind) falls before the
+/// mind's first think (482), so nothing of the mind moves the hull or fires
+/// between the shot and the read, and the outcome is read off the ledger's
+/// `hit`/`miss` line for the shot. (4) and (5) assert the outcome alone and
+/// fire from a pilot's seat (no controller decides them), (4) by the hand
+/// call as before. **Case (3)** — fired from behind the ridge, then up on the
+/// crest: still `blocked`, and NOT taught — is unreachable on a mind: a mind
+/// is taught by any `blocked` miss of a held target, and the AE.2 `stood`
+/// guard (`damage.rs`, `note_no_line` only for a shooter still where it
+/// fired) is the reflex's alone. It stays on the reflex controller, with
+/// case (2) beside it there as its control, in
+/// [`ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i`] until 17b
+/// cut M4.6 decides the `no_line` divergence.
 #[test]
 fn ae2_the_round_is_traced_from_where_it_left() {
-    const CREST: (u16, u16) = (8, 3);
-    const BEHIND: (u16, u16) = (8, 2);
-    const MARK: (u16, u16) = (8, 11);
+    use tacsim::arena::ledger::EventKind;
+    use tacsim::arena::state::{Controller, DueKind};
     let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
-    let ridged = || {
-        relief(16, 16, &|x, y| {
-            if y == 7 {
-                400
-            } else if (x, y) == CREST {
-                800
-            } else {
-                0
-            }
-        })
-    };
     // Fire the rack from `from`, then (optionally) put the machine at `to`,
-    // and land the round: the outcome and whether the edge was fed.
-    let fly = |from: (u16, u16), to: Option<(u16, u16)>, remove: bool| {
-        let mut arena = ae2_duel(&catalog, content::HEAVY_MK1, from, MARK, ridged(), true);
+    // and step the arena to the impact: the outcome and whether the mind was
+    // taught.
+    let fly = |from: (u16, u16), to: Option<(u16, u16)>| {
+        let mut arena = ae2_duel(
+            &catalog,
+            content::HEAVY_MK1,
+            from,
+            AE2_TRACE_MARK,
+            ae2_ridged(),
+            Controller::Mind,
+        );
         assert!(
-            arena.reflex.unit(RED).is_some_and(|row| !row.no_line),
+            arena.minds.contains_key(&RED) && !ae2_taught(&arena, RED),
             "the machine starts with no lesson"
         );
         let seq = arena
@@ -10823,23 +10641,71 @@ fn ae2_the_round_is_traced_from_where_it_left() {
         {
             state.pose = pose(cell);
         }
-        if remove {
-            arena.units.retain(|unit| unit.id != RED);
+        let present = arena
+            .unit(RED)
+            .map(|_| arena.fire_line(RED, BLUE).0.is_clear_or_partial());
+        let impact = arena.shot(seq).map(|shot| shot.impact_at_ms).unwrap_or(0);
+        let first_think = arena
+            .due
+            .iter()
+            .filter_map(|event| match event.kind {
+                DueKind::MindThink { unit, .. } if unit == RED => Some(event.t_ms),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(0);
+        assert!(
+            impact > 0 && impact < first_think,
+            "the premise: the round lands ({impact}) before the mind first thinks ({first_think})"
+        );
+        let mut bytes: Vec<u8> = Vec::new();
+        for wall in [0, impact] {
+            let out = arena.step_settled(wall, &[], &[]);
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
         }
+        assert_eq!(arena.now_ms, impact, "stepped to the impact");
+        let outcome = ledger_of(&mut arena, &mut bytes)
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::Hit { shot_seq, .. } if *shot_seq == seq => Some(Ok(())),
+                EventKind::Miss { shot_seq, reason } if *shot_seq == seq => {
+                    Some(Err(reason.to_string()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| Err(format!("no outcome for shot {seq}")));
+        (outcome, present, ae2_taught(&arena, RED))
+    };
+    // A shooter removed from the match mid-flight, its round resolved by hand.
+    let fly_removed = |from: (u16, u16)| {
+        let mut arena = ae2_duel(
+            &catalog,
+            content::HEAVY_MK1,
+            from,
+            AE2_TRACE_MARK,
+            ae2_ridged(),
+            Controller::Pilot,
+        );
+        let seq = arena
+            .resolve_fire(RED, "missiles", arena.now_ms)
+            .expect("a shot is accepted whatever the line: no free probe");
+        ae2_certain(&mut arena, seq);
+        arena.units.retain(|unit| unit.id != RED);
         let present = arena
             .unit(RED)
             .map(|_| arena.fire_line(RED, BLUE).0.is_clear_or_partial());
         let impact = arena.shot(seq).map(|shot| shot.impact_at_ms).unwrap_or(0);
         let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
         arena.resolve_impact(seq, impact, &mut journal);
-        let taught = arena.reflex.unit(RED).is_some_and(|row| row.no_line);
-        (ae2_outcome(&journal), present, taught)
+        (ae2_outcome(&journal), present)
     };
     let blocked = Some(tacsim::arena::damage::BLOCKED);
 
     // (1) From the crest, then behind it: the round hits, though the line from
     // where the machine now stands is blocked, and nothing is learnt.
-    let (outcome, present, taught) = fly(CREST, Some(BEHIND), false);
+    let (outcome, present, taught) = fly(AE2_CREST, Some(AE2_BEHIND));
     assert!(
         outcome.is_ok(),
         "the round that cleared the crest: {outcome:?}"
@@ -10852,7 +10718,7 @@ fn ae2_the_round_is_traced_from_where_it_left() {
     assert!(!taught, "a machine that has moved on is taught nothing");
 
     // (2) From behind the ridge, staying: blocked, and taught.
-    let (outcome, present, taught) = fly(BEHIND, None, false);
+    let (outcome, present, taught) = fly(AE2_BEHIND, None);
     assert_eq!(outcome.err().as_deref(), blocked);
     assert_eq!(present, Some(false));
     assert!(
@@ -10860,18 +10726,13 @@ fn ae2_the_round_is_traced_from_where_it_left() {
         "a machine still where it fired from learns the line it had"
     );
 
-    // (3) From behind the ridge, then up on the crest: still blocked — the
-    // round never left the crest — and not taught.
-    let (outcome, present, taught) = fly(BEHIND, Some(CREST), false);
-    assert_eq!(outcome.err().as_deref(), blocked);
-    assert_eq!(present, Some(true), "the crest sees the tank now");
-    assert!(!taught);
+    // (3) STOP I: see `ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i`.
 
     // (4) A shooter removed mid-flight: through the stored eye either way.
-    let (outcome, present, _) = fly(CREST, None, true);
+    let (outcome, present) = fly_removed(AE2_CREST);
     assert_eq!(present, None, "the shooter is gone");
     assert!(outcome.is_ok(), "the crest's round lands: {outcome:?}");
-    let (outcome, _, _) = fly(BEHIND, None, true);
+    let (outcome, _) = fly_removed(AE2_BEHIND);
     assert_eq!(outcome.err().as_deref(), blocked);
 
     // (5) The face turned to the launch point. The tank faces north; the
@@ -10881,9 +10742,9 @@ fn ae2_the_round_is_traced_from_where_it_left() {
         &catalog,
         content::HEAVY_MK1,
         (8, 3),
-        MARK,
+        AE2_TRACE_MARK,
         relief(16, 16, &|_x, _y| 0),
-        false,
+        Controller::Pilot,
     );
     let seq = arena
         .resolve_fire(RED, "missiles", arena.now_ms)
@@ -10914,6 +10775,98 @@ fn ae2_the_round_is_traced_from_where_it_left() {
         ("rear", 350),
         "the round struck the face turned to where it left"
     );
+}
+
+/// **The round is traced from where it left — case (3), STOP I, held on the
+/// reflex controller** (16b cut AE.2; doc 16 §3.5 "Scheduled impact", §6's
+/// `no line` edge; the residue of
+/// [`ae2_the_round_is_traced_from_where_it_left`], split out by 17b cut M4.5a
+/// under the owner's ruling Q14).
+///
+/// 3. a machine that fires from behind the ridge and then climbs the crest
+///    still reads `blocked` — the round never left the crest — and is not
+///    taught;
+///
+/// beside its control, the original's case (2) on the same reflex fixture:
+///
+/// 2. a machine that fires from behind the ridge and stays there reads
+///    `blocked`, and **is** taught (the guard is not a switch that turned the
+///    edge off) — so (3)'s "not taught" is the guard's doing and discriminates
+///    on its own here.
+///
+/// **STOP I** (no AE.2 `stood` guard on a mind): the reflex learns `no line`
+/// from its impact only while the shooter still stands where it fired
+/// (`damage.rs`, `note_no_line` under `Controller::Reflex`); a mind is taught
+/// by ANY `blocked`/`cover` `Miss` notice of a target it holds
+/// (`stock_mind.rs`' `no line` edge; the notice staged by `Arena::step`'s
+/// journal pass whatever the shooter did since) — the twin's declared
+/// `no_line` divergence — so a mind that climbs the crest after firing IS
+/// taught and this claim is unreachable on one. The fixture is the
+/// original's cases (2) and (3) on the reflex, verbatim, the closure
+/// untouched but for `ae2_duel`'s controller argument (was `true`) and the
+/// shared window's names (case (2) also stays on the mind in the parent
+/// test, where it is the mind's own claim), until 17b
+/// cut M4.6 decides the divergence (hold it, put the guard on the mind's
+/// notice, or delete this with the reason recorded).
+#[test]
+fn ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i() {
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    // Fire the rack from `from`, then (optionally) put the machine at `to`,
+    // and land the round: the outcome and whether the edge was fed.
+    let fly = |from: (u16, u16), to: Option<(u16, u16)>, remove: bool| {
+        let mut arena = ae2_duel(
+            &catalog,
+            content::HEAVY_MK1,
+            from,
+            AE2_TRACE_MARK,
+            ae2_ridged(),
+            tacsim::arena::state::Controller::Reflex,
+        );
+        assert!(
+            arena.reflex.unit(RED).is_some_and(|row| !row.no_line),
+            "the machine starts with no lesson"
+        );
+        let seq = arena
+            .resolve_fire(RED, "missiles", arena.now_ms)
+            .expect("a shot is accepted whatever the line: no free probe");
+        ae2_certain(&mut arena, seq);
+        if let Some(cell) = to
+            && let Some(state) = arena.unit_mut(RED)
+        {
+            state.pose = pose(cell);
+        }
+        if remove {
+            arena.units.retain(|unit| unit.id != RED);
+        }
+        let present = arena
+            .unit(RED)
+            .map(|_| arena.fire_line(RED, BLUE).0.is_clear_or_partial());
+        let impact = arena.shot(seq).map(|shot| shot.impact_at_ms).unwrap_or(0);
+        let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+        arena.resolve_impact(seq, impact, &mut journal);
+        let taught = arena.reflex.unit(RED).is_some_and(|row| row.no_line);
+        (ae2_outcome(&journal), present, taught)
+    };
+    let blocked = Some(tacsim::arena::damage::BLOCKED);
+
+    // (2) From behind the ridge, staying: blocked, and taught. The original's
+    // case (2) kept here on the reflex as (3)'s control: the same fixture
+    // teaches a shooter that stayed, so (3)'s `!taught` is the `stood` guard
+    // at work and not an edge that never fires.
+    let (outcome, present, taught) = fly(AE2_BEHIND, None, false);
+    assert_eq!(outcome.err().as_deref(), blocked);
+    assert_eq!(present, Some(false));
+    assert!(
+        taught,
+        "a machine still where it fired from learns the line it had"
+    );
+
+    // (3) From behind the ridge, then up on the crest: still blocked — the
+    // round never left the crest — and not taught.
+    let (outcome, present, taught) = fly(AE2_BEHIND, Some(AE2_CREST), false);
+    assert_eq!(outcome.err().as_deref(), blocked);
+    assert_eq!(present, Some(true), "the crest sees the tank now");
+    assert!(!taught);
 }
 
 // ---------------------------------------------------------------------------

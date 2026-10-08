@@ -514,13 +514,13 @@ pub fn run(
     arena: &mut Arena,
     until_ms: i64,
     bytes: &mut Vec<u8>,
-) -> tacsim::arena::reflex::ReflexCounters {
+) -> tacsim::arena::motor::MotorCounters {
     let mut wall = arena.now_ms;
-    let mut total = tacsim::arena::reflex::ReflexCounters::default();
+    let mut total = tacsim::arena::motor::MotorCounters::default();
     while arena.now_ms < until_ms {
         let out = arena.step(wall, &[], &[]);
         absorb(&out, bytes);
-        total.absorb(&out.reflex);
+        total.absorb(&out.motor);
         if out.ended.is_some() {
             break;
         }

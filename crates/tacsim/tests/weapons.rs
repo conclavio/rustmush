@@ -1217,7 +1217,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
             let out = arena.step(wall, &[] as &[Control], &beat.intents);
             absorb(&out, &mut bytes);
             red_refusals(&out, arena.now_ms, &mut refusals);
-            path_queries = path_queries.saturating_add(out.reflex.path_queries);
+            path_queries = path_queries.saturating_add(out.motor.path_queries);
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses += 1;
             ended = out.ended.is_some();
@@ -1229,7 +1229,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
         let out = arena.step(wall, &[] as &[Control], &[]);
         absorb(&out, &mut bytes);
         red_refusals(&out, arena.now_ms, &mut refusals);
-        path_queries = path_queries.saturating_add(out.reflex.path_queries);
+        path_queries = path_queries.saturating_add(out.motor.path_queries);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         if out.ended.is_some() || arena.now_ms >= until_ms {
@@ -2334,13 +2334,29 @@ fn facing(x: u16, y: u16, heading_mdeg: u32) -> Pose {
 /// checked out at [`tacsim::arena::MatchMode::Range`]. Red 1 stands four cells
 /// in front of the first target, which faces it; red 2 stands four cells behind
 /// the second, which faces away — the rear band, hull 40, engine 30, turret 30.
+///
+/// **17b cut M4.5a — held on the reflex for STOP B.** Its one user,
+/// [`o3_a_range_ends_when_the_last_target_is_out_of_action_at_three_cadences`],
+/// stays on the reflex controller untouched: on a unit mind an authored zero
+/// speed is not `immobile` on the view, so a target's mind starts up, searches
+/// the graph and turns in place (30,000 mdeg/s), and the rear target can turn
+/// its front to its shooter. Since 17b cut M4.3 production checks every
+/// unseated hull out `Controller::Mind` (`match_::start`), range targets
+/// included, so this field no longer describes production's range — the
+/// owner's STOP B decides it. [`o3_a_range_whose_shooters_run_dry_is_not_spent`]
+/// fields the targets as minds through [`range_field`].
 fn range_arena() -> Arena {
-    range_field(tacsim::definitions::content::TARGET_MK1)
+    range_field(
+        tacsim::definitions::content::TARGET_MK1,
+        tacsim::arena::state::Controller::Reflex,
+    )
 }
 
 /// [`range_arena`]'s field with `blue` standing on the targets' two pods — the
-/// target itself, or (for the `spent` contrast) an armed stock tank.
-fn range_field(blue: &str) -> Arena {
+/// target itself, or (for the `spent` contrast) an armed stock tank — checked
+/// out under `controller` (17b cut M4.5a: the reflex for STOP B's
+/// [`range_arena`], a unit mind for every other user).
+fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Arena {
     use tacsim::arena::state::Controller;
     let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
         .expect("the fielded content binds");
@@ -2371,7 +2387,7 @@ fn range_field(blue: &str) -> Arena {
             TARGET_FRONT,
             Team::Blue,
             facing(10, 4, 270_000),
-            Controller::Reflex,
+            controller,
             1,
         ),
         fielded_unit(
@@ -2380,7 +2396,7 @@ fn range_field(blue: &str) -> Arena {
             TARGET_REAR,
             Team::Blue,
             facing(10, 10, 90_000),
-            Controller::Reflex,
+            controller,
             2,
         ),
     ];
@@ -2631,6 +2647,13 @@ fn o3_a_range_ends_when_the_last_target_is_out_of_action_at_three_cadences() {
 /// targets' pods, every weapon on both sides emptied — ends `spent` at once,
 /// so the first half is a claim about the targets and not about a field that
 /// was never dry.
+///
+/// **17b cut M4.5a**: the targets — and the contrast's two stock tanks — are
+/// checked out `Controller::Mind`, as `match_::start` checks out every
+/// unseated hull since 17b cut M4.3, where they were the reflex controller's.
+/// Every claim is the same: `spent` and the elimination read the field's arms
+/// and condition, not its controller, so a target's mind starting up and
+/// turning in place changes nothing asserted.
 #[test]
 fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
     let startup = vec![Beat {
@@ -2649,7 +2672,10 @@ fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
     };
 
     // The range: red dry, the targets never armed.
-    let mut arena = range_arena();
+    let mut arena = range_field(
+        tacsim::definitions::content::TARGET_MK1,
+        tacsim::arena::state::Controller::Mind,
+    );
     empty(&mut arena);
     assert!(
         arena
@@ -2675,7 +2701,10 @@ fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
     }
 
     // The contrast: armed tanks on the targets' pods, and every weapon dry.
-    let mut arena = range_field(tacsim::definitions::content::LINE_TANK);
+    let mut arena = range_field(
+        tacsim::definitions::content::LINE_TANK,
+        tacsim::arena::state::Controller::Mind,
+    );
     empty(&mut arena);
     assert!(arena.spent(), "two dry armed sides are a dry field");
     let _ = replay(&mut arena, 1_000, 60_000, &startup);

@@ -10,13 +10,32 @@
 //! measures is what a pilot meets.
 //!
 //! 16b cut E.3 and E.4 add to it.
+//!
+//! **17b cut M4.5** flies the machines here as production has since 17b cut
+//! M4.3: a unit mind ([`Muster::mind`], the native stock mind on Standard
+//! Doctrine), which thinks every `STOCK_THINK_MS` at its stagger and acts at
+//! its landing one substep later. A machine's state is the doctrine word
+//! [`Arena::machine_state`] reads (the state its last landing wrote) and its
+//! target the object its mind row's `StockMemory` settled on ([`target_of`]).
+//! One residue stays on the reflex controller, **STOP K**, its claims
+//! untouched (its two hulls mustered through `Muster`'s own fields since
+//! `Muster::reflex` is gone):
+//! `e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other`
+//! — two minds of one side cross the ford without a stop, but a mind's hunt
+//! cell is never fanned in its own memory (the `fan` divergence: the motor
+//! fans the goal it lands, `Arena::fan_goal`), so the second hunter judges
+//! its arrival at the first's cell, resumes its waypoint walk and meets the
+//! first head-on at the far zone inside the four minutes; held for the cut
+//! that decides where a side's hunt cells are known.
 
 mod support;
 
 use support::{Muster, Timeline, booted_world, ledger_events, run_until, shipped_arena};
 use tacsim::arena::clock::Tempo;
+use tacsim::arena::mind::{STOCK_THINK_MS, decode_memory};
 use tacsim::arena::reflex::ReflexState;
-use tacsim::arena::state::{Arena, EndReason, Team};
+use tacsim::arena::state::{Arena, EndReason, ShadowContact, Team};
+use tacsim::arena::stock_mind::StockMemory;
 
 /// One cell of the shipped window, centimetres.
 const CELL_CM: i64 = 1_000;
@@ -67,12 +86,24 @@ fn centre_of(cell: (u16, u16)) -> (i64, i64) {
     )
 }
 
+/// **The contact a machine's mind settled on** (17b cut M4.5): the target its
+/// mind row's memory names, resolved through the hull's own contact table —
+/// the hold whose `seen_at` is its plot — or `None` when it holds none.
+fn target_of(arena: &Arena, unit: mush_core::ObjId) -> Option<&ShadowContact> {
+    arena
+        .minds
+        .get(&unit)
+        .and_then(|row| StockMemory::from(&decode_memory(&row.memory)).target)
+        .and_then(|contact| arena.contacts.resolve(unit, contact))
+}
+
 /// **Two stock machines on the proving ground close to their real reach and
 /// fight there** (16b cut E.1; 16c `B-05`, `T-47`, `T-32`).
 ///
 /// Red Tank 1 and Blue Tank 1, at their authored musters on the ford road,
-/// both on the reflex controller, shipped doctrine, ten minutes of arena time at
-/// a one-second cadence. Four claims, three of them sampled at every pulse:
+/// both machines (unit minds since 17b cut M4.5), shipped doctrine, ten minutes
+/// of arena time at a one-second cadence. Four claims, three of them sampled at
+/// every pulse:
 ///
 /// * **(a) `B-05`.** Whenever a machine is in `Approach` with a goal and holds
 ///   its target's plot, the goal is **not further from the plot than the machine
@@ -116,14 +147,30 @@ fn centre_of(cell: (u16, u16)) -> (i64, i64) {
 /// * **(d) `T-32`**: the match spends time in more than one tempo, which it
 ///   could not before the `Engaged` trigger was re-based on the band a platform
 ///   fights in.
+///
+/// **17b cut M4.5** flies both as unit minds (the module head): every claim and
+/// every bound is the original's, read per pulse off each machine hull's
+/// doctrine state and its mind's target. (a)'s goal is the motor row's, landed
+/// one substep after the think that chose it and read at the pulse's end; the
+/// slack above covers it as it covered the decide tick. (b): `Approach →
+/// Engage` and `engage_orders` are now one THINK, landed together — the stop
+/// (`Goal(Hold)`), the lock and the mind's cited `Fire` — so the first shot
+/// leaves at that landing, still rolling: measured at 142,844 ms by Blue
+/// Tank 1 (`by: "mind"`, the cannon, 41,249 cm, the coaxial slot firing beside
+/// it), read at its pulse (143,000 ms) as `Engage` at 41,558 cm to the plot,
+/// ordered 0 and rolling 1,177 cm/s against the pulse before's 1,377 — below
+/// the 1,500 cm/s ceiling and braking — with its first zero read at 149,000
+/// ms, 6,000 ms after the pulse (6,156 ms after the shot), inside the
+/// unchanged seven seconds. (c) reads 41,558 cm at the widest; (d) 137,000 ms
+/// quiet, 3,000 alert and 40,250 engaged of a match Red ends at 180,250 ms.
 #[test]
 fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
     let world = booted_world();
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::reflex(Team::Red, 1)],
-            &[Muster::reflex(Team::Blue, 1)],
+            &[Muster::mind(Team::Red, 1)],
+            &[Muster::mind(Team::Blue, 1)],
         ],
     );
     // Each machine's own forward ceiling, off its decoded profile, read before
@@ -157,27 +204,31 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
     let mut seen: Vec<Seen> = Vec::new();
 
     let mut bytes = run_until(&mut arena, 600_000, 1_000, |arena, out| {
-        let failed = out.reflex.path_failures > 0;
+        let failed = out.motor.path_failures > 0;
         let skipping = skip_next || failed;
         skip_next = failed;
-        for (unit, row) in arena.reflex.all() {
-            let Some(state) = arena.unit(unit) else {
+        // 17b cut M4.5: every hull a machine flies, its state and its target
+        // off its mind (the module head).
+        for state in arena
+            .units
+            .iter()
+            .filter(|unit| unit.controller.is_machine())
+        {
+            let unit = state.id;
+            let Some(machine) = arena.machine_state(unit) else {
                 continue;
             };
             let here = (state.pose.x_cm, state.pose.y_cm);
-            let plot = row
-                .target
-                .and_then(|(contact, _)| arena.contacts.resolve(unit, contact))
-                .map(|held| (held.seen_at.x_cm, held.seen_at.y_cm));
+            let plot = target_of(arena, unit).map(|held| (held.seen_at.x_cm, held.seen_at.y_cm));
             seen.push(Seen {
                 unit,
                 at_ms: arena.now_ms,
-                state: row.state,
+                state: machine,
                 speed_cms: state.speed_cms,
                 desired_speed_cms: state.desired_speed_cms,
                 plot_cm: plot.map(|plot| range_cm(here, plot)),
             });
-            match row.state {
+            match machine {
                 ReflexState::Approach => {
                     // 17b cut M1a.1: the goal is the hull's motor row's.
                     let goal = arena.motors.row(unit).and_then(|motor| motor.goal);
@@ -460,8 +511,8 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
     let arena: Arena = shipped_arena(
         &world,
         &[
-            &[Muster::reflex(Team::Red, 1), Muster::reflex(Team::Red, 2)],
-            &[Muster::reflex(Team::Blue, 1)],
+            &[Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)],
+            &[Muster::mind(Team::Blue, 1)],
         ],
     );
     assert_eq!(arena.units.len(), 3);
@@ -494,10 +545,10 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
         &world,
         &[
             &[
-                Muster::reflex(Team::Red, 1),
-                Muster::reflex(Team::Red, 2).at(taken),
+                Muster::mind(Team::Red, 1),
+                Muster::mind(Team::Red, 2).at(taken),
             ],
-            &[Muster::reflex(Team::Blue, 1)],
+            &[Muster::mind(Team::Blue, 1)],
         ],
     );
     let mut cells: Vec<(u16, u16)> = crowded
@@ -579,7 +630,19 @@ fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
     let world = booted_world();
     let mut arena = shipped_arena(
         &world,
-        &[&[Muster::reflex(Team::Red, 1), Muster::reflex(Team::Red, 2)]],
+        // 17b cut M4.5a: `Muster::reflex` is gone; the STOP K residue keeps
+        // its reflex hulls through the struct's own fields (a mechanical
+        // stand-in, no claim moved).
+        &[&[
+            Muster {
+                controller: tacsim::arena::state::Controller::Reflex,
+                ..Muster::mind(Team::Red, 1)
+            },
+            Muster {
+                controller: tacsim::arena::state::Controller::Reflex,
+                ..Muster::mind(Team::Red, 2)
+            },
+        ]],
     );
     let one = support::tank(&world, Team::Red, 1);
     let two = support::tank(&world, Team::Red, 2);
@@ -668,7 +731,7 @@ fn play_to_the_end(
     let opened = std::time::Instant::now();
     let mut timeline = Timeline::new();
     run_until(arena, ENDGAME_MS, 1_000, |arena, out| {
-        timeline.sample(arena, out.reflex.path_failures);
+        timeline.sample(arena, out.motor.path_failures);
         watch(arena);
     });
     let wall = opened.elapsed();
@@ -708,14 +771,20 @@ fn ended_by_elimination(
 /// never withdrew has not run: the health it opens at is under
 /// `withdraw_permille` and at or above `stand_min_permille`, and the machine is
 /// in `Withdraw` within five decide ticks of its power coming online.
+///
+/// **17b cut M4.5**: all three are unit minds, so "five decide ticks" is five
+/// of the mind's own thinks (`STOCK_THINK_MS`, the same 1,000 ms) and the
+/// state read is the one its landing wrote (`Arena::machine_state`); measured
+/// online at 11,000 ms and `Withdraw` read at 12,000 ms, Blue ending it at
+/// 140,000 ms.
 #[test]
 fn e4_a_hurt_machine_against_two_ends_by_elimination() {
     let world = booted_world();
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::reflex(Team::Red, 1).hurt()],
-            &[Muster::reflex(Team::Blue, 1), Muster::reflex(Team::Blue, 2)],
+            &[Muster::mind(Team::Red, 1).hurt()],
+            &[Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)],
         ],
     );
     let hurt = support::tank(&world, Team::Red, 1);
@@ -750,12 +819,8 @@ fn e4_a_hurt_machine_against_two_ends_by_elimination() {
         {
             online_ms = Some(arena.now_ms);
         }
-        if withdrew_ms.is_none()
-            && arena
-                .reflex
-                .unit(hurt)
-                .is_some_and(|row| row.state == ReflexState::Withdraw)
-        {
+        // 17b cut M4.5: the state the mind's last landing wrote.
+        if withdrew_ms.is_none() && arena.machine_state(hurt) == Some(ReflexState::Withdraw) {
             withdrew_ms = Some(arena.now_ms);
         }
     });
@@ -771,12 +836,14 @@ fn e4_a_hurt_machine_against_two_ends_by_elimination() {
             timeline.render()
         )
     });
-    let grace = 5 * i64::from(doctrine.decide_ms);
+    // 17b cut M4.5: five of the mind's own thinks (`STOCK_THINK_MS`, the
+    // retired reflex's 1,000 ms `decide_ms` on the shipped doctrine).
+    let grace = 5 * STOCK_THINK_MS;
     println!("e4_hurt_one_v_two: online at {online} ms, withdrew at {withdrew} ms");
     assert!(
         withdrew <= online.saturating_add(grace),
         "the hurt machine came online at {online} ms and did not withdraw until {withdrew} ms, \
-         which is more than five decide ticks:\n{}",
+         which is more than five thinks:\n{}",
         timeline.render()
     );
     ended_by_elimination("e4_hurt_one_v_two", reason, at_ms, &timeline, wall);
@@ -790,8 +857,8 @@ fn e4_a_healthy_one_against_one_ends_by_elimination() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::reflex(Team::Red, 1)],
-            &[Muster::reflex(Team::Blue, 1)],
+            &[Muster::mind(Team::Red, 1)],
+            &[Muster::mind(Team::Blue, 1)],
         ],
     );
     let (reason, at_ms, timeline, wall) = play_to_the_end(&mut arena, |_| {});
@@ -811,8 +878,8 @@ fn e4_a_dry_loser_is_found_and_finished() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::reflex(Team::Red, 1).dry()],
-            &[Muster::reflex(Team::Blue, 1)],
+            &[Muster::mind(Team::Red, 1).dry()],
+            &[Muster::mind(Team::Blue, 1)],
         ],
     );
     let dry = support::tank(&world, Team::Red, 1);
@@ -856,16 +923,22 @@ const ENGINE_OUT_BLUE: (u16, u16) = (56, 97);
 /// from between the two edges inside two arena minutes, without moving. An
 /// elimination is not required (two 105 mm guns at 500 m against front plate may
 /// take longer than the bound); if the match ends it is printed.
+///
+/// **17b cut M4.5**: both are unit minds. A mind's view carries `immobile` for
+/// a hull whose motion is disabled, so its `Approach` closes on `release_cm`
+/// rather than `engage_cm` and it is handed no helm intent at all; each first
+/// shot's plot is read off the mind's target. The 50,000 cm reads 500 m on the
+/// view, clear of its rounding: measured, Red Tank 1 first fired at 11,671 ms
+/// and Blue Tank 1 at 11,844 ms, both from 50,000 cm, neither moved, and Blue
+/// ended it at 66,500 ms.
 #[test]
 fn aa1_two_machines_with_their_engines_gone_still_fight_out_to_their_reach() {
     let world = booted_world();
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::reflex(Team::Red, 1).engine_out()],
-            &[Muster::reflex(Team::Blue, 1)
-                .engine_out()
-                .at(ENGINE_OUT_BLUE)],
+            &[Muster::mind(Team::Red, 1).engine_out()],
+            &[Muster::mind(Team::Blue, 1).engine_out().at(ENGINE_OUT_BLUE)],
         ],
     );
     let red = support::tank(&world, Team::Red, 1);
@@ -923,20 +996,20 @@ fn aa1_two_machines_with_their_engines_gone_still_fight_out_to_their_reach() {
     let mut timeline = Timeline::new();
     let mut seen: Vec<(mush_core::ObjId, i64, Option<i64>)> = Vec::new();
     let mut bytes = run_until(&mut arena, 120_000, 1_000, |arena, out| {
-        timeline.sample(arena, out.reflex.path_failures);
-        for (unit, row) in arena.reflex.all() {
-            let Some(state) = arena.unit(unit) else {
-                continue;
-            };
-            let plot = row
-                .target
-                .and_then(|(contact, _)| arena.contacts.resolve(unit, contact))
-                .map(|held| {
-                    range_cm(
-                        (state.pose.x_cm, state.pose.y_cm),
-                        (held.seen_at.x_cm, held.seen_at.y_cm),
-                    )
-                });
+        timeline.sample(arena, out.motor.path_failures);
+        // 17b cut M4.5: every hull a machine flies, its target off its mind.
+        for state in arena
+            .units
+            .iter()
+            .filter(|unit| unit.controller.is_machine())
+        {
+            let unit = state.id;
+            let plot = target_of(arena, unit).map(|held| {
+                range_cm(
+                    (state.pose.x_cm, state.pose.y_cm),
+                    (held.seen_at.x_cm, held.seen_at.y_cm),
+                )
+            });
             seen.push((unit, arena.now_ms, plot));
         }
     });
@@ -1099,22 +1172,32 @@ fn m4_on_the_proving_ground_a_sees_b_exactly_when_b_sees_a() {
 /// one pair of ledger digests. The only arena-level proof that a `Shot`'s
 /// unhashed fields and its impact's due time ride a resume: the state hash
 /// folds only how many shots and due events there are.
+///
+/// **17b cut M4.5**: the twelve are unit minds, and every pulse here — the run
+/// to the encode and both arms of [`run_on`] — is `Arena::step_settled`, so
+/// no think is left unanswered when the snapshot is taken (an unanswered one
+/// is refused) and both arms write each answer at the same moment. The bound
+/// is unchanged; the mind rows are in the state (measured 225,261 bytes at
+/// 115,000 ms).
 #[test]
 fn af1_the_shipped_centre_encodes_under_the_expectation() {
     const CADENCE_MS: i64 = 1_000;
     let world = booted_world();
     let pods = tacsim::match_::PODS_PER_SIDE;
     let red: Vec<Muster> = (1..=pods)
-        .map(|slot| Muster::reflex(Team::Red, slot))
+        .map(|slot| Muster::mind(Team::Red, slot))
         .collect();
     let blue: Vec<Muster> = (1..=pods)
-        .map(|slot| Muster::reflex(Team::Blue, slot))
+        .map(|slot| Muster::mind(Team::Blue, slot))
         .collect();
     let mut arena = shipped_arena(&world, &[&red, &blue]);
     assert_eq!(arena.units.len(), 12, "twelve stock tanks");
     let mut wall = 0_i64;
     loop {
-        let out = arena.step(wall, &[], &[]);
+        // 17b cut M4.5: settled between pulses — `Snapshot::encode` refuses a
+        // think left unanswered, and twelve world-assigned ids' staggers are
+        // whatever they are.
+        let out = arena.step_settled(wall, &[], &[]);
         assert!(
             out.ended.is_none(),
             "the match ended at {} ms with no round in flight at a pulse boundary",
@@ -1201,7 +1284,8 @@ fn run_on(
     let mut wall = wall;
     while arena.now_ms < until_ms {
         wall += cadence_ms;
-        let out = arena.step(wall, &[], &[]);
+        // 17b cut M4.5: settled between pulses, both arms alike.
+        let out = arena.step_settled(wall, &[], &[]);
         for chunk in &out.ledger_chunks {
             tape.extend_from_slice(&chunk.bytes);
         }

@@ -61,7 +61,6 @@ use crate::arena::path::{
     PathScratch, Shoulder, ShoulderVerdict, path_with, shoulder_refuses, shoulder_state,
 };
 use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
-use crate::arena::reflex::ReflexCounters;
 use crate::arena::slope;
 use crate::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Controller, CostRow, DueKind, HoldState, Power,
@@ -262,7 +261,7 @@ pub struct MotorRow {
     /// reads it where a search would be spent and, while the machine still
     /// stands at `at`, still makes for `goal` and it is still before
     /// `until_ms`, refuses the search by name, counts it in
-    /// [`ReflexCounters::path_refused_unchanged`] and holds the machine.
+    /// [`MotorCounters::path_refused_unchanged`] and holds the machine.
     ///
     /// **Narrow and bounded, on purpose.** It is keyed on the exact loop 16c
     /// `B-84` measured — the same route from the same cell to the same goal —
@@ -548,6 +547,142 @@ pub enum Fallback {
 }
 
 // ---------------------------------------------------------------------------
+// Counters
+// ---------------------------------------------------------------------------
+
+/// **What the machines cost one pulse** — the motor's searches and refusals,
+/// the intents and shots machines put through the pilot's door, and the minds'
+/// thinks, landings and faults (17b cut M4.5: the reflex's counters of 16b cut
+/// N.1, renamed and moved here so they outlive the reflex). The shape
+/// [`crate::arena::perception::PerceptionCounters`] has and for the same
+/// reason: the harness asserts a bound against the worst pulse of a run and
+/// the report carries the totals; never hashed. `ticks`, `ordered` and
+/// `in_state` are the reflex's own and retire with the harness's move onto
+/// minds (17b cut M4.5's second commit).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MotorCounters {
+    /// Reflex ticks applied.
+    pub ticks: u32,
+    /// Path searches run — what `harness.max_path_queries_per_pulse` bounds.
+    pub path_queries: u32,
+    /// Searches refused by the per-window budget or by `repath_ms`.
+    pub path_deferred: u32,
+    /// Nodes those searches expanded — **found or failed** since 16b cut AI.1
+    /// (16c `B-84`): a `Budget` failure is `path_max_cells` expansions and a
+    /// `NoRoute` the whole reachable region, the two most expensive searches
+    /// there are, and until that cut they counted nothing here. What
+    /// `harness.max_path_cells_per_pulse` bounds.
+    pub path_cells: u64,
+    /// Searches that found no route, ran out of budget or were off the ground —
+    /// the `unreachable` edge.
+    pub path_failures: u32,
+    /// Line-of-sight traces the controller took (`Approach`'s and `Engage`'s
+    /// check that a shot has a line at all).
+    pub traces: u32,
+    /// Intents staged.
+    pub intents: u32,
+    /// `FIRE`s accepted.
+    pub shots: u32,
+    /// **Standing orders a tick acted on** (16b cut N.2) — ticks that read a live
+    /// order, not orders accepted.
+    pub ordered: u32,
+    /// **Orders that ran out** (16b cut N.2), one per unit dropped to doctrine.
+    pub orders_expired: u32,
+    /// **Orders a pilot handed back** (16b cut Z.2; 16c Q44), one per unit a
+    /// `ReleaseOrder` dropped to doctrine — counted at apply, in pulse phase 2.
+    pub orders_released: u32,
+    /// Reflex ticks that ended in each state, in
+    /// [`crate::arena::reflex::ReflexState::ALL`] order.
+    pub in_state: [u32; 6],
+    /// **Edges refused by the slope rule** (16b cut U.1; 16c `T-35`): every edge
+    /// a search refused as too steep either way or by the shoulder rule
+    /// ([`crate::arena::path::PathScratch::slope_refusals`]), plus every time the
+    /// follower's one-cell test (`Arena::first_step_is_open`) found the cell in
+    /// front open to the class and the avoid list and refused it by the same
+    /// edge rule. What the harness asserts non-zero to prove the cohort's
+    /// locomotion met the relief; a counter, not state, so it moves no hash.
+    ///
+    /// **16b cut AI.1**: a corner refused because no shoulder is open is not a
+    /// slope refusal and is counted in [`MotorCounters::corner_refusals`]
+    /// instead, so this figure keeps its meaning.
+    pub slope_refusals: u32,
+    /// **Searches refused by name** (16b cut AI.1; 16c `B-84`): ticks at which a
+    /// due search was not spent because [`MotorRow::refused`] said it would
+    /// return the route that had just been refused, and the machine held
+    /// instead. **Expected nought on every lane**: the memory is unreachable
+    /// through `Arena::step` at this cut's rules, and a count is a controller
+    /// defect to investigate. A counter, never hashed.
+    pub path_refused_unchanged: u32,
+    /// **Diagonals refused as a corner closed on both shoulders** (16b cut
+    /// AI.1; 16c `B-84`): every one a search refused
+    /// ([`crate::arena::path::PathScratch::corner_refusals`]), plus every time
+    /// the follower's one-cell test found the diagonal in front open to the
+    /// class and the avoid list and refused it because neither of its shoulders
+    /// is. A counter, never hashed.
+    pub corner_refusals: u32,
+    /// **Unit minds' thinks applied** (17b cut M1a.5; doc 17 §6): one per
+    /// `MindThink` that called its runner. Not reported by the harness — no
+    /// production unit is a mind — and never hashed.
+    pub thinks: u32,
+    /// **Thinks that answered more than `MIND_INTENTS_MAX` intents** (17b cut
+    /// M1a.5; D-UM-9) and so landed nothing. Not reported; 17b cut M3 journals
+    /// the fault. Never hashed.
+    pub mind_overflows: u32,
+    /// **Thinks that faulted** (17b cut M2.2; D-UM-31): a runner's
+    /// `ThinkResult::fault` or an overflow (each overflow is also one of
+    /// [`MotorCounters::mind_overflows`]), every one landing nothing and
+    /// counting a strike. Not reported — the harness names its fields one by
+    /// one, so the deterministic block does not gain it — and never hashed.
+    pub mind_faults: u32,
+    /// **Condition slots' own shots accepted** (17b cut M1b.1; doc 17 §5,
+    /// D-UM-16): every `fired` line `by: cond`. A counter, never hashed, and
+    /// not in the harness report — which names its fields one by one, so the
+    /// deterministic block does not gain it (no production hull arms a slot).
+    pub cond_fires: u32,
+    /// **Slot evaluations that held for a named reason** (17b cut M1b.1): a
+    /// warrant term failed with the target there. Never hashed; not reported.
+    pub cond_held: u32,
+    /// **Unit minds' answers landed** (17b cut M4.2; the M4 row's (ii)): one
+    /// per `MindLand` that reached its apply in `Arena::mind_land` — the
+    /// written answer landed, clean or refused intent by intent. A landing
+    /// retracted by a fault never reaches the apply, so this and
+    /// [`MotorCounters::mind_faults`] are disjoint. The minds lane's
+    /// `landings`; never hashed.
+    pub landings: u32,
+}
+
+impl MotorCounters {
+    /// Add another pulse's counts — the harness's running total.
+    pub fn absorb(&mut self, other: &MotorCounters) {
+        self.ticks = self.ticks.saturating_add(other.ticks);
+        self.path_queries = self.path_queries.saturating_add(other.path_queries);
+        self.path_deferred = self.path_deferred.saturating_add(other.path_deferred);
+        self.path_cells = self.path_cells.saturating_add(other.path_cells);
+        self.path_failures = self.path_failures.saturating_add(other.path_failures);
+        self.traces = self.traces.saturating_add(other.traces);
+        self.intents = self.intents.saturating_add(other.intents);
+        self.shots = self.shots.saturating_add(other.shots);
+        self.ordered = self.ordered.saturating_add(other.ordered);
+        self.orders_expired = self.orders_expired.saturating_add(other.orders_expired);
+        self.orders_released = self.orders_released.saturating_add(other.orders_released);
+        self.slope_refusals = self.slope_refusals.saturating_add(other.slope_refusals);
+        self.path_refused_unchanged = self
+            .path_refused_unchanged
+            .saturating_add(other.path_refused_unchanged);
+        self.corner_refusals = self.corner_refusals.saturating_add(other.corner_refusals);
+        self.thinks = self.thinks.saturating_add(other.thinks);
+        self.mind_overflows = self.mind_overflows.saturating_add(other.mind_overflows);
+        self.mind_faults = self.mind_faults.saturating_add(other.mind_faults);
+        self.cond_fires = self.cond_fires.saturating_add(other.cond_fires);
+        self.cond_held = self.cond_held.saturating_add(other.cond_held);
+        self.landings = self.landings.saturating_add(other.landings);
+        for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
+            *mine = mine.saturating_add(*theirs);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Driving
 // ---------------------------------------------------------------------------
 
@@ -606,7 +741,7 @@ impl Arena {
     /// **with one change of 16b cut AI.1's**: both questions ask the search's
     /// edge rule as that cut left it, so under a slope limit a diagonal neither
     /// of whose shoulders is open is refused (`EdgeVerdict::Corner`, counted
-    /// in [`ReflexCounters::corner_refusals`]) where one passed before, and a
+    /// in [`MotorCounters::corner_refusals`]) where one passed before, and a
     /// shoulder on the machine's own avoid list is no shoulder. A limited
     /// routeless machine therefore holds at a corner pinched by two walls, or by
     /// a wall and a cell it was stopped at, until its search answers; an
@@ -632,7 +767,7 @@ impl Arena {
     /// pinned on the production path by `tests/reflex.rs`' reclaim (a `Live`
     /// helm step), `catchup.rs`' `apply_control` reclaim and this module's E.3
     /// test, each asserting the row is gone.
-    pub fn hold_routeless(&mut self, counters: &mut ReflexCounters) {
+    pub fn hold_routeless(&mut self, counters: &mut MotorCounters) {
         // The full substep, which is what the unit travels before the next
         // pre-pass: the same length `Arena::step` cuts the pulse into, read off
         // the one method both use (16b cut U.1).
@@ -902,7 +1037,7 @@ impl Arena {
         row: &mut MotorRow,
         here: Option<(u16, u16)>,
         policy: Fallback,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
         plan: &mut MotorPlan,
     ) -> MotorOutcome {
         let mut outcome = MotorOutcome::default();
@@ -1228,7 +1363,7 @@ impl Arena {
         goal: (u16, u16),
         avoid: &[(u16, u16)],
         decide_ms: i64,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
         plan: &mut MotorPlan,
     ) {
         let cell_cm = i64::from(self.definition.terrain.cell_cm().max(1));
@@ -1537,10 +1672,10 @@ impl Arena {
     ///
     /// **16b cut U.1**: a refusal by the edge rule — the slope either way or the
     /// shoulders, after the class and the avoid list let the cell through — is
-    /// counted in [`ReflexCounters::slope_refusals`]. **16b cut AI.1**: by
+    /// counted in [`MotorCounters::slope_refusals`]. **16b cut AI.1**: by
     /// `edge_verdict`, so a slope refusal (`EdgeVerdict::TooSteep`) is
     /// counted there and a corner closed on both shoulders
-    /// (`EdgeVerdict::Corner`) in [`ReflexCounters::corner_refusals`] — the
+    /// (`EdgeVerdict::Corner`) in [`MotorCounters::corner_refusals`] — the
     /// harness's proof that the cohort met the relief keeps its meaning. It takes
     /// the plain cell list the tick built once.
     ///
@@ -1555,7 +1690,7 @@ impl Arena {
         here: (u16, u16),
         heading_mdeg: u32,
         avoid: &[(u16, u16)],
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) -> bool {
         let terrain = &self.definition.terrain;
         let (dx, dy) = octant_step(heading_mdeg);
@@ -2458,7 +2593,7 @@ impl Arena {
         &mut self,
         unit: ObjId,
         t_ms: i64,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) -> MotorOutcome {
         let Some(state) = self.unit(unit) else {
             return MotorOutcome::default();
@@ -2542,7 +2677,7 @@ impl Arena {
         &mut self,
         unit: ObjId,
         plan: &MotorPlan,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) {
         let mut orders: Vec<IntentKind> = Vec::new();
         if let Some(mdeg) = plan.heading_mdeg {
@@ -3040,12 +3175,13 @@ mod tests {
     // Moved from reflex.rs by 17b cut M1a.1; proves what it proved.
     fn the_avoided_cells_are_bounded_and_a_repeat_refreshes_its_stamp() {
         let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
-        if let Some(state) = arena.unit_mut(ObjId(4)) {
-            state.controller = Controller::Reflex;
-        }
-        arena.adopt_reflex(ObjId(4), ReflexState::Patrol);
+        // 17b cut M4.5a: a mind's hull, with the motor row a controller that
+        // takes a hull over steers it through (`set_controller` lays none for a
+        // mind: its first landing's would).
+        arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
+        let _ = arena.motors.ensure(ObjId(4));
         // A search this tick already paid for, so the clearing below is a fact
-        // about `note_blocked` and not about how `adopt` leaves a fresh row.
+        // about `note_blocked` and not about how a fresh row is laid.
         if let Some(row) = arena.motors.row_mut(ObjId(4)) {
             row.searched_ms = Some(0);
         }
@@ -3163,8 +3299,9 @@ mod tests {
         // And a unit nothing is steering learns nothing at all. **17b cut
         // M1a.1**: the gate is the hull's motor row and no longer the
         // controller — a seat handed back to its pilot takes the row with it
-        // (`set_controller`'s `Pilot` arm, through `Arena::release_reflex`),
-        // and a hull with no row grows none here.
+        // (`set_controller` releases the motor row on every transition; 17b
+        // cut M4.5a: from the mind as it did from the reflex), and a hull with
+        // no row grows none here.
         arena.set_controller(ObjId(4), Controller::Pilot, ReflexState::Withdraw);
         assert!(
             arena.motors.row(ObjId(4)).is_none(),
@@ -3208,18 +3345,20 @@ mod tests {
             // `octant_step(0)` makes the step onto (3, 4).
             let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
             if let Some(state) = arena.unit_mut(ObjId(4)) {
-                state.controller = Controller::Reflex;
                 state.power = Power::Online;
                 state.desired_speed_cms = 800;
             }
-            arena.adopt_reflex(ObjId(4), ReflexState::Patrol);
+            // 17b cut M4.5a: a mind's hull and the motor row it is steered
+            // through (`set_controller` lays none for a mind).
+            arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
+            let _ = arena.motors.ensure(ObjId(4));
             if let Some(row) = arena.motors.row_mut(ObjId(4)) {
                 row.goal = Some((3, 7));
                 row.route.clear();
                 row.avoid = vec![((3, 4), 0)];
             }
             edit(&mut arena);
-            let mut counters = ReflexCounters::default();
+            let mut counters = MotorCounters::default();
             arena.hold_routeless(&mut counters);
             (
                 arena
@@ -3261,9 +3400,10 @@ mod tests {
         // **A seated pilot's tank is theirs.** The controller does nothing a pilot
         // cannot, and it does nothing to a unit it is not flying. **17b cut
         // M1a.1**: what keeps the pass off it is that a seat handed back takes
-        // its motor row with it (`set_controller`'s `Pilot` arm, through
-        // `Arena::release_reflex`) — the pass reads the rows and no longer the
-        // controller, so the seat is handed back the way a reclaim hands it.
+        // its motor row with it (`set_controller` releases it on every
+        // transition; 17b cut M4.5a: from the mind as it did from the reflex)
+        // — the pass reads the rows and no longer the controller, so the seat
+        // is handed back the way a reclaim hands it.
         assert_eq!(
             asked(|arena| {
                 arena.set_controller(ObjId(4), Controller::Pilot, ReflexState::Withdraw);
@@ -3306,7 +3446,7 @@ mod tests {
     }
 
     /// **16b cut U.1**: the follower's one-cell test counts a refusal by the
-    /// **edge rule** in [`ReflexCounters::slope_refusals`] — here an 8 m bluff
+    /// **edge rule** in [`MotorCounters::slope_refusals`] — here an 8 m bluff
     /// in front of a unit with a 45 per cent limit, an 80 per cent edge — and a
     /// refusal by the machine's own remembered stop counts none: that cell is
     /// shut by the avoid list, not by the slope.
@@ -3329,12 +3469,13 @@ mod tests {
                     ArenaTerrain::new(8, 8, 1_000, cells).expect("the bluff window");
             }
             if let Some(state) = arena.unit_mut(ObjId(4)) {
-                state.controller = Controller::Reflex;
                 state.power = Power::Online;
                 state.desired_speed_cms = 800;
                 state.slope_limit_pct = Some(45);
             }
-            arena.adopt_reflex(ObjId(4), ReflexState::Patrol);
+            // 17b cut M4.5a: a mind's hull and its motor row, as in E.3.
+            arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
+            let _ = arena.motors.ensure(ObjId(4));
             if let Some(row) = arena.motors.row_mut(ObjId(4)) {
                 row.goal = Some((3, 7));
                 row.route.clear();
@@ -3344,7 +3485,7 @@ mod tests {
                     Vec::new()
                 };
             }
-            let mut counters = ReflexCounters::default();
+            let mut counters = MotorCounters::default();
             arena.hold_routeless(&mut counters);
             (
                 arena
@@ -3394,46 +3535,64 @@ mod tests {
     /// **16b cut I.3**: a placed machine forgets where it was going and not why
     /// — the goal, the route and the search stamp go; the state, the standing
     /// order, the waypoints, the target and the avoid list stay.
+    ///
+    /// **17b cut M4.5a**: the machine is a mind. Its decision is its mind row —
+    /// the stock memory's `state` (`Approach`) and `target` (its own row's
+    /// `ContactId`), the cached doctrine state, and the order it holds
+    /// (`Advance (6, 6)`, re-keyed as the order's Mind arm writes it) — and
+    /// the whole row is unchanged by `forget_route`, which stages nothing to a
+    /// mind (the positive form of STOP F's premise: a placed mind is told
+    /// nothing today). The path half is the hull's motor row, as it was.
     #[test]
     // Moved from reflex.rs by 17b cut M1a.1; proves what it proved.
     fn i3_forget_route_keeps_the_decision_and_drops_the_path() {
+        use crate::arena::mind::{Memory, decode_memory, doctrine_state_of, encode_memory};
+        use crate::arena::stock_mind::StockMemory;
         use crate::deliberation::order::{Constraints, Objective, Order, StandingOrder};
         let unit = ObjId(4);
         let mut arena = arena_of(vec![tank(unit, Team::Red, pose(1_500, 1_500))]);
-        arena.adopt_reflex(unit, ReflexState::Approach);
-        arena.reflex.set_order(
-            unit,
-            StandingOrder::accepted(
-                Order {
+        arena.set_controller(unit, Controller::Mind, ReflexState::Patrol);
+        let standing = StandingOrder::accepted(
+            Order {
+                squad: crate::deliberation::squad::SquadId {
+                    team: Team::Red,
+                    index: 1,
+                },
+                objective: Objective::Advance { to: (6, 6) },
+                target: None,
+                horizon_ms: 600_000,
+                constraints: Constraints::default(),
+                ttl_ms: 600_000,
+                issued_ms: 0,
+                issuer: None,
+                by: crate::deliberation::order::CharacterRef::Persona {
                     squad: crate::deliberation::squad::SquadId {
-                        team: Team::Red,
+                        team: crate::arena::state::Team::Red,
                         index: 1,
                     },
-                    objective: Objective::Advance { to: (6, 6) },
-                    target: None,
-                    horizon_ms: 600_000,
-                    constraints: Constraints::default(),
-                    ttl_ms: 600_000,
-                    issued_ms: 0,
-                    issuer: None,
-                    by: crate::deliberation::order::CharacterRef::Persona {
-                        squad: crate::deliberation::squad::SquadId {
-                            team: crate::arena::state::Team::Red,
-                            index: 1,
-                        },
-                    },
-                    spot: None,
                 },
-                0,
-            ),
+                spot: None,
+            },
+            0,
         );
-        let target = (
-            crate::arena::state::ContactId(0x0123_4567_89ab_cdef),
-            ObjId(9),
-        );
-        // 17b cut M1a.1: the path half on the motor row, the target on the
-        // machine's.
-        if let Some(row) = arena.motors.row_mut(unit) {
+        let held = arena.rekey_order(unit, &standing.order, standing.expires_ms);
+        let target = crate::arena::state::ContactId(0x0123_4567_89ab_cdef);
+        // The decision on the mind row: the memory a think in `Approach` on
+        // that target leaves, its cached state, and the order it holds.
+        {
+            let mind = arena.minds.get_mut(&unit).expect("the mind's row");
+            mind.memory = encode_memory(&Memory::from(StockMemory {
+                state: ReflexState::Approach,
+                target: Some(target),
+                ..StockMemory::default()
+            }));
+            mind.doctrine_state = doctrine_state_of(&mind.memory);
+            mind.order = Some(held);
+        }
+        // The path half on the hull's motor row (a mind's is its landings';
+        // laid here for the fixture).
+        {
+            let row = arena.motors.ensure(unit);
             row.goal = Some((6, 6));
             row.route = vec![(2, 2), (3, 3)];
             row.searched_ms = Some(4_000);
@@ -3441,21 +3600,23 @@ mod tests {
             row.from_waypoint = Some(0);
             row.avoid = vec![((2, 1), 3_000)];
         }
-        if let Some(row) = arena.reflex.unit_mut(unit) {
-            row.target = Some(target);
-        }
-        let order_before = arena.reflex.order(unit).cloned();
+        let mind_before = arena.minds.get(&unit).cloned().expect("the mind's row");
         arena.motors.forget_route(unit);
         let motor = arena.motors.row(unit).expect("the motor row");
-        let row = arena.reflex.unit(unit).expect("the machine");
+        let mind = arena.minds.get(&unit).expect("the mind's row");
         assert_eq!(motor.goal, None);
         assert!(motor.route.is_empty());
         assert_eq!(motor.searched_ms, None, "the next tick searches at once");
-        assert_eq!(row.state, ReflexState::Approach);
-        assert_eq!(arena.reflex.order(unit).cloned(), order_before);
-        assert!(order_before.is_some());
+        assert_eq!(mind, &mind_before, "the mind's row is untouched");
+        assert_eq!(mind.doctrine_state, ReflexState::Approach);
+        assert_eq!(
+            mind.order.as_ref().map(|order| order.objective),
+            Some(crate::arena::perception::MindObjective::Advance { to: (6, 6) })
+        );
+        let memory = StockMemory::from(&decode_memory(&mind.memory));
+        assert_eq!(memory.state, ReflexState::Approach);
         assert_eq!((motor.waypoint, motor.from_waypoint), (Some(1), Some(0)));
-        assert_eq!(row.target, Some(target));
+        assert_eq!(memory.target, Some(target));
         assert_eq!(motor.avoid, vec![((2, 1), 3_000)]);
         // A unit with no machine is left alone.
         arena.motors.forget_route(ObjId(99));
@@ -3578,16 +3739,25 @@ mod tests {
 
     /// **A machine at cell (3, 3), online, in `Patrol` toward the west node**,
     /// on the controller's cadence — the fixture of the refusal memory's tests.
+    ///
+    /// 17b cut M4.5a: the machine is a mind on [`crate::arena::mind::NoMind`]
+    /// (a stock mind's first landing would re-name its goal and drop the
+    /// planted refusal memory with the route — `land_goal`), its goal the west
+    /// node on the hull's motor row (laid here: `set_controller` lays none for
+    /// a mind), and the hull on the motor's cadence (`Arena::engage_motor`,
+    /// one `MotorTick` on the `decide_ms` grid) — the drive the refusal memory
+    /// is the follower's of, under either policy.
     fn ai1_machine() -> Arena {
         let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
-        arena.set_controller(ObjId(4), Controller::Reflex, ReflexState::Patrol);
+        arena.mind_runner = std::sync::Arc::new(crate::arena::mind::NoMind);
+        arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
         if let Some(state) = arena.unit_mut(ObjId(4)) {
             state.power = crate::arena::state::Power::Online;
         }
-        if let Some(row) = arena.motors.row_mut(ObjId(4)) {
-            row.goal = Some(AI1_WEST);
-            row.waypoint = Some(0);
-        }
+        let row = arena.motors.ensure(ObjId(4));
+        row.goal = Some(AI1_WEST);
+        row.waypoint = Some(0);
+        arena.engage_motor(ObjId(4));
         arena
     }
 
@@ -3603,10 +3773,12 @@ mod tests {
         }
     }
 
-    /// One tick of machine #4 at `t_ms`, and what it counted.
-    fn ai1_tick(arena: &mut Arena, t_ms: i64) -> ReflexCounters {
-        let mut counters = ReflexCounters::default();
-        arena.reflex_tick(ObjId(4), t_ms, &mut counters);
+    /// One tick of machine #4 at `t_ms`, and what it counted (17b cut M4.5a:
+    /// the motor's own step, `Arena::motor_step` — the refusal by name and the
+    /// TTL sweep are the follower's and the row's, not the decision's).
+    fn ai1_tick(arena: &mut Arena, t_ms: i64) -> MotorCounters {
+        let mut counters = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(4), t_ms, &mut counters);
         counters
     }
 
@@ -3826,7 +3998,7 @@ mod tests {
                     Some(0)
                 );
             }
-            let mut later = ReflexCounters::default();
+            let mut later = MotorCounters::default();
             for n in 0..10_i64 {
                 later.absorb(&ai1_tick(&mut arena, 11_000 + n * 500));
             }
@@ -3844,6 +4016,14 @@ mod tests {
     /// 500 ms past its lapse and two `repath_ms` more, is one per-substep hash
     /// sequence, one count of refusals and one search spent at one arena
     /// millisecond.
+    ///
+    /// 17b cut M4.5a: the machine is a mind on `NoMind` (`ai1_machine`),
+    /// stepped with `step_settled`, driven by the motor's `MotorTick` on the
+    /// `decide_ms` grid where the reflex ticked on its own stagger — the claim
+    /// (the first search at the first tick at or after the lapse) is relative
+    /// to the tick grid and keeps. Under `Fallback::Notice` the arrival after
+    /// that search drops the goal (the reflex walked on to its next node); no
+    /// claim reads past the first search but the cross-cadence equality.
     #[test]
     // Moved from reflex.rs by 17b cut M1a.1; proves what it proved.
     fn ai1_the_refusal_memory_is_one_log_at_three_cadences() {
@@ -3872,9 +4052,10 @@ mod tests {
             let mut stamps: BTreeMap<i64, Option<i64>> = BTreeMap::new();
             let mut wall = 0_i64;
             loop {
-                let out = arena.step(wall, &[], &[]);
+                // 17b cut M4.5a: a mind's hull, so its thinks settled.
+                let out = arena.step_settled(wall, &[], &[]);
                 hashes.extend(arena.substep_hashes.iter().copied());
-                refused = refused.saturating_add(out.reflex.path_refused_unchanged);
+                refused = refused.saturating_add(out.motor.path_refused_unchanged);
                 stamps.insert(
                     arena.now_ms,
                     arena.motors.row(ObjId(4)).and_then(|row| row.searched_ms),
@@ -4121,12 +4302,12 @@ mod tests {
         arena: &mut Arena,
         mut row: MotorRow,
         policy: Fallback,
-    ) -> (MotorRow, MotorOutcome, MotorPlan, ReflexCounters) {
+    ) -> (MotorRow, MotorOutcome, MotorPlan, MotorCounters) {
         let here = arena
             .unit(ObjId(4))
             .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
         let mut motors = std::mem::take(&mut arena.motors);
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         let mut plan = MotorPlan::default();
         let outcome = arena.follow(
             ObjId(4),

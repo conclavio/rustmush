@@ -86,8 +86,8 @@ pub struct Muster {
     pub team: Team,
     /// The slot, 1 to 4.
     pub slot: u8,
-    /// Who flies it. The rig's default is the machine, because that is what a
-    /// pod nobody claimed gets.
+    /// Who flies it. The rig's default is a unit mind ([`Muster::mind`]),
+    /// because that is what a pod nobody claimed gets (17b cut M4.3's fill).
     pub controller: Controller,
     /// Open somewhere other than the authored muster, as a cell.
     ///
@@ -141,13 +141,16 @@ pub enum Wear {
 }
 
 impl Muster {
-    /// A machine in slot `slot` of `team`, at its authored muster.
-    #[must_use]
-    pub fn reflex(team: Team, slot: u8) -> Muster {
+    /// **The one base every constructor is built on** (17b cut M4.5): slot
+    /// `slot` of `team` flown by `controller`, at its authored muster, unworn,
+    /// armed, sealed under the fixture terms — the defaults every fixture's
+    /// seal digest was taken with, so re-basing a constructor on it moves no
+    /// digest.
+    fn base(team: Team, slot: u8, controller: Controller) -> Muster {
         Muster {
             team,
             slot,
-            controller: Controller::Reflex,
+            controller,
             at: None,
             wear: None,
             unarmed: false,
@@ -166,20 +169,16 @@ impl Muster {
     #[must_use]
     pub fn fill(team: Team, slot: u8) -> Muster {
         Muster {
-            controller: Controller::Mind,
             production: true,
-            ..Muster::reflex(team, slot)
+            ..Muster::base(team, slot, Controller::Mind)
         }
     }
 
-    /// The same tank with a pilot in it — the arena schedules it no reflex tick
-    /// and the test drives it with intents.
+    /// The same tank with a pilot in it — no machine thinks for it (the arena
+    /// schedules it no think) and the test drives it with intents.
     #[must_use]
     pub fn piloted(team: Team, slot: u8) -> Muster {
-        Muster {
-            controller: Controller::Pilot,
-            ..Muster::reflex(team, slot)
-        }
+        Muster::base(team, slot, Controller::Pilot)
     }
 
     /// **The same tank flown by a unit mind** (17b cut M1a.5; doc 17 §2,
@@ -189,10 +188,7 @@ impl Muster {
     /// (17b cut M1a.6), until it does.
     #[must_use]
     pub fn mind(team: Team, slot: u8) -> Muster {
-        Muster {
-            controller: Controller::Mind,
-            ..Muster::reflex(team, slot)
-        }
+        Muster::base(team, slot, Controller::Mind)
     }
 
     /// **A [`Muster::mind`] with no weapons station** (17b cut M2.5; D-UM-48,
@@ -1216,8 +1212,14 @@ pub const TIMELINE_EVERY_MS: i64 = 10_000;
 /// machines were *doing* at 300 s, 600 s and 900 s.
 ///
 /// The `path_failures` it carries is the run's **field-wide** running total, not
-/// one unit's: [`tacsim::arena::reflex::ReflexCounters`] is per pulse and per
+/// one unit's: [`tacsim::arena::motor::MotorCounters`] is per pulse and per
 /// field, and there is no per-unit failure count in the tree to read.
+///
+/// **17b cut M4.5** reads the machines off the minds: every hull a machine
+/// flies (`Controller::is_machine`; a pilot's hull, and the dormant row under
+/// it, print nothing), in `arena.units`' id order as the reflex table was
+/// walked, its state the doctrine word [`Arena::machine_state`] reads and its
+/// target the object its mind row's [`StockMemory`] settled on.
 #[derive(Clone, Debug, Default)]
 pub struct Timeline {
     next_ms: i64,
@@ -1244,18 +1246,31 @@ impl Timeline {
             .now_ms
             .saturating_sub(arena.now_ms.rem_euclid(TIMELINE_EVERY_MS))
             .saturating_add(TIMELINE_EVERY_MS);
-        for (id, row) in arena.reflex.all() {
+        for unit in arena
+            .units
+            .iter()
+            .filter(|unit| unit.controller.is_machine())
+        {
+            let id = unit.id;
             let cell = cell_of(arena, id);
+            // 17b cut M4.5: the target the mind settled on, by the object its
+            // own contact row names.
+            let target = arena
+                .minds
+                .get(&id)
+                .and_then(|row| StockMemory::from(&decode_memory(&row.memory)).target)
+                .and_then(|contact| arena.contacts.resolve(id, contact))
+                .map(|held| held.target.0);
             self.lines.push(format!(
                 "  {:>7} ms #{:<4} {:<9} at {:?} goal {:?} target {:?} health {} ‰ (field \
                  path_failures {})",
                 arena.now_ms,
                 id.0,
-                row.state.as_str(),
+                arena.machine_state(id).map_or("-", |state| state.as_str()),
                 cell,
                 // 17b cut M1a.1: the goal is the hull's motor row's.
                 arena.motors.row(id).and_then(|motor| motor.goal),
-                row.target.map(|(_, target)| target.0),
+                target,
                 arena.reflex_health_permille(id),
                 self.failures
             ));
@@ -1324,8 +1339,8 @@ pub fn authored_pose_of(slot: &str) -> (i64, i64, u32) {
 /// **The 95 per cent Wilson score interval** (17b cut M1a.6; doc 17 §17's
 /// Gate B): `(low, high)` for `successes` out of `n`, `z = 1.96`, clamped to
 /// `[0, 1]`; `(0, 1)` for `n = 0`, which says nothing. Named for 17b cut M6's
-/// library lift; until then the twin lane is its one caller, and
-/// `tests/twin.rs` holds it to four hand-worked values.
+/// library lift; the twin lane's Gate B called it until 17b cut M4.5 retired
+/// the T0 column, and `tests/twin.rs` holds it to four hand-worked values.
 #[must_use]
 pub fn wilson_95(successes: u32, n: u32) -> (f64, f64) {
     if n == 0 {

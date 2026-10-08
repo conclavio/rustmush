@@ -371,9 +371,12 @@ mod tests {
     }
 
     /// **17b cut M3.3** (doc 17 §13): every field of a shipped line tank's
-    /// seal at check-out, on a fill hull, a pilot's hull and a mind's hull —
-    /// the reflex for the first two, the native stock mind for the third —
-    /// and the shipped target's, which has no core.
+    /// seal at check-out, on a pilot's hull and a mind's hull, and the shipped
+    /// target's, which has no core.
+    ///
+    /// 17b cut M4.5a: the fill hull IS a mind's since 17b cut M4.3 (and
+    /// `seal_for` reads no controller), so its row is the mind's; the target is
+    /// fielded as the fill is, on a mind.
     #[test]
     fn m3_a_shipped_line_tank_is_sealed_field_by_field_at_check_out() {
         use crate::definitions::content::{LINE_TANK, TARGET_MK1};
@@ -386,7 +389,6 @@ mod tests {
         };
         // 17b cut M4.3: every controller seals the terms' engine.
         for (controller, engine) in [
-            (Controller::Reflex, SealEngine::Native),
             (Controller::Pilot, SealEngine::Native),
             (Controller::Mind, SealEngine::Native),
         ] {
@@ -434,7 +436,7 @@ mod tests {
         }
         // The target: no core, Class 0, governed, the ROM from the start, and
         // no weapon row — so no fire channel.
-        let target = checked_out(&catalog, TARGET_MK1, ObjId(9), Controller::Reflex, &terms)
+        let target = checked_out(&catalog, TARGET_MK1, ObjId(9), Controller::Mind, &terms)
             .expect("the target seals");
         assert_eq!(target.seal.core, None);
         assert_eq!(target.seal.core_class, CoreClass::Zero);
@@ -455,7 +457,7 @@ mod tests {
             &catalog,
             crate::definitions::content::LINE_TANK,
             ObjId(4),
-            Controller::Reflex,
+            Controller::Mind,
             &SealTerms::fixture(),
         )
         .expect("seals");
@@ -480,7 +482,7 @@ mod tests {
             &catalog,
             crate::definitions::content::LINE_TANK,
             ObjId(4),
-            Controller::Reflex,
+            Controller::Mind,
             &terms(),
         )
         .expect("seals");
@@ -581,7 +583,7 @@ mod tests {
             &catalog,
             crate::definitions::content::LINE_TANK,
             ObjId(4),
-            Controller::Reflex,
+            Controller::Mind,
             &floored,
         )
         .err();
@@ -600,7 +602,7 @@ mod tests {
             &catalog,
             crate::definitions::content::LINE_TANK,
             ObjId(4),
-            Controller::Reflex,
+            Controller::Mind,
             &unpaired,
         )
         .err();
@@ -617,15 +619,20 @@ mod tests {
     /// [`SealTerms::fixture`] — one computation — on a fill hull, a pilot's,
     /// a mind's and a hull with no core; and a hand-built literal sealed with
     /// `CustodyUnit::sealed` carries exactly that seal.
+    ///
+    /// 17b cut M4.5a: the fill hull is a mind's since 17b cut M4.3, so the
+    /// four kinds are a pilot's line tank, a mind's line tank (the fill), a
+    /// mind's heavy (a different core, the command core) and a mind's target
+    /// (no core).
     #[test]
     fn m3_the_fixture_seal_is_the_one_computation_on_four_hull_kinds() {
-        use crate::definitions::content::{LINE_TANK, TARGET_MK1};
+        use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
         let catalog = catalog();
         let hulls = [
-            (LINE_TANK, Controller::Reflex),
             (LINE_TANK, Controller::Pilot),
             (LINE_TANK, Controller::Mind),
-            (TARGET_MK1, Controller::Reflex),
+            (HEAVY_MK1, Controller::Mind),
+            (TARGET_MK1, Controller::Mind),
         ];
         for (entry, controller) in hulls {
             let unit = checked_out(&catalog, entry, ObjId(4), controller, &SealTerms::fixture())

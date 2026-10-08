@@ -92,8 +92,8 @@ use smol_str::SmolStr;
 use crate::arena::intents::{
     Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_intent,
 };
+use crate::arena::motor::MotorCounters;
 use crate::arena::perception::{Aspect, FrameNotice, Named, lock_range_step_m};
-use crate::arena::reflex::ReflexCounters;
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{ActionHash, Arena, Channel, Classification, ContactId};
 use crate::arena::view::range_m_rounded;
@@ -593,7 +593,7 @@ impl Arena {
         t_ms: i64,
         trigger: ConditionTrigger,
         weapon: Option<&str>,
-        counters: &mut ReflexCounters,
+        counters: &mut MotorCounters,
     ) -> Vec<(u8, Result<u64, Held>)> {
         if self.conditions.is_empty_for(unit) {
             return Vec::new();
@@ -1381,7 +1381,7 @@ mod tests {
     fn m1b1_a_hull_with_no_slot_takes_no_hash_at_any_trigger() {
         let mut arena = locked();
         let before = crate::arena::hash::state_hash(&arena);
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         for trigger in [
             ConditionTrigger::WeaponReady,
             ConditionTrigger::Pass,
@@ -1395,7 +1395,7 @@ mod tests {
             assert!(answers.is_empty(), "{trigger:?}");
             assert_eq!(arena.action_hash, ActionHash::Outside, "{trigger:?}");
         }
-        assert_eq!(counters, ReflexCounters::default());
+        assert_eq!(counters, MotorCounters::default());
         assert_eq!(crate::arena::hash::state_hash(&arena), before);
     }
 
@@ -1407,7 +1407,7 @@ mod tests {
     #[test]
     fn m1b1_the_evaluator_idles_a_cycling_gun_and_fires_a_warranted_slot() {
         let mut arena = locked();
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         assert_eq!(
             arena.resolve_arming(RED, &Arming::Arm(slot("cannon", 600)), 0),
             Ok(Some(1))
@@ -1458,6 +1458,10 @@ mod tests {
     /// `Empty` answer before the hold-fire term, the hold-fire term answers
     /// `Unwarranted` before the power, and a seat's and a machine's shot are
     /// never gated (a mind's is, from 17b cut M1b.2).
+    ///
+    /// 17b cut M4.5a: the hull under the hold-fire order is a mind holding it
+    /// on its row (re-keyed as the order's Mind arm writes it), which
+    /// `holds_fire` reads; every leg is the resolver's and unchanged.
     #[test]
     fn m1b1_a_slot_shot_reads_cycling_and_empty_before_the_law() {
         use crate::deliberation::order::{
@@ -1471,31 +1475,30 @@ mod tests {
         let mut arena = locked();
         arena.set_controller(
             RED,
-            Controller::Reflex,
+            Controller::Mind,
             crate::arena::reflex::ReflexState::Patrol,
         );
         let _ = arena.resolve_lock(RED, id_of(RED, BLUE), 0);
-        arena.reflex.set_order(
-            RED,
-            StandingOrder::accepted(
-                Order {
-                    squad,
-                    objective: Objective::Hold,
-                    target: None,
-                    horizon_ms: 600_000,
-                    constraints: Constraints {
-                        hold_fire: true,
-                        ..Constraints::default()
-                    },
-                    ttl_ms: 600_000,
-                    issued_ms: 0,
-                    issuer: None,
-                    by: CharacterRef::Persona { squad },
-                    spot: None,
+        let standing = StandingOrder::accepted(
+            Order {
+                squad,
+                objective: Objective::Hold,
+                target: None,
+                horizon_ms: 600_000,
+                constraints: Constraints {
+                    hold_fire: true,
+                    ..Constraints::default()
                 },
-                0,
-            ),
+                ttl_ms: 600_000,
+                issued_ms: 0,
+                issuer: None,
+                by: CharacterRef::Persona { squad },
+                spot: None,
+            },
+            0,
         );
+        let held = arena.rekey_order(RED, &standing.order, standing.expires_ms);
+        arena.minds.get_mut(&RED).expect("the mind's row").order = Some(held);
         assert!(arena.holds_fire(RED));
         assert_eq!(
             arena.clone().resolve_fire_by(RED, "cannon", 0, cond),
@@ -1705,7 +1708,7 @@ mod tests {
                 at(990)
             );
         };
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         let mut micros = Vec::with_capacity(ids.len());
         for id in &ids {
             let started = Instant::now();

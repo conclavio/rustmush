@@ -68,10 +68,10 @@ use tacsim::arena::conditions::{
 use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind, Refusal};
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{MindRunner, MindView, STOCK_THINK_MS, ThinkJob, ThinkResult};
+use tacsim::arena::motor::MotorCounters;
 use tacsim::arena::perception::{
     Aspect, FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
 };
-use tacsim::arena::reflex::ReflexCounters;
 use tacsim::arena::resolution::{BandProfile, SectionProfile, UnitProfile};
 use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::state::{
@@ -474,7 +474,7 @@ struct Run {
     /// Every substep's hash.
     hashes: Vec<u64>,
     /// The counters, summed.
-    counters: ReflexCounters,
+    counters: MotorCounters,
     /// Every notice the red pilot was sent.
     notices: Vec<FrameNotice>,
     /// **17b cut M1b.4**: every notice EVERY pilot was sent, with the arena
@@ -543,7 +543,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
     let mut notices: Vec<FrameNotice> = Vec::new();
     let mut told: Vec<(i64, ObjId, FrameNotice)> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut wall = 0_i64;
     let mut next = 0_usize;
     let mut pulses = 0_u32;
@@ -556,7 +556,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes, &mut notices);
         told_of(&out, arena.now_ms, &mut told);
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         next_due = out.next_due_ms;
@@ -571,7 +571,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
             let out = arena.step(wall, &beat.controls, &beat.intents);
             absorb(&out, &mut bytes, &mut notices);
             told_of(&out, arena.now_ms, &mut told);
-            counters.absorb(&out.reflex);
+            counters.absorb(&out.motor);
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses += 1;
             next_due = out.next_due_ms;
@@ -587,7 +587,7 @@ fn replay(arena: &mut Arena, drive: Drive, until_ms: i64, script: &[Beat]) -> Ru
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes, &mut notices);
         told_of(&out, arena.now_ms, &mut told);
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         next_due = out.next_due_ms;
@@ -952,7 +952,7 @@ fn m1b1_the_production_hash_and_line_hashes_do_not_move() {
     ];
     let mut arenas = [duel(0), duel(0)];
     arenas[1].odds_floor_permille = 50;
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut bytes: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
     let mut wall = 0_i64;
     let mut pulses = 0_u32;
@@ -968,7 +968,7 @@ fn m1b1_the_production_hash_and_line_hashes_do_not_move() {
                 bytes[at].extend_from_slice(&chunk.bytes);
             }
             if at == 0 {
-                counters.absorb(&out.reflex);
+                counters.absorb(&out.motor);
             }
             assert!(
                 arena.conditions.rows().next().is_none(),
@@ -1612,112 +1612,17 @@ fn m1b1_a_slot_is_idle_on_an_unclassified_lock_and_fires_only_on_its_lock() {
 // 8. Hold fire
 // ---------------------------------------------------------------------------
 
-/// **A standing `hold_fire` stops a slot and never a pilot** (17b cut M1b.1;
-/// doc 17 §5's precedence, D-UM-19): a Reflex-flown hull given a slot through
-/// the arena's own `resolve_arming` (the arm production cannot reach, pinned)
-/// under a persona order with `hold_fire` never fires a slot shot; once the
-/// order is dropped the slot fires at its next evaluation. A piloted hull's
-/// typed `FIRE` under no order fires. (`tests/reflex.rs`' own hold-fire test
-/// is unchanged; the mind's half is 17b cut M1b.2's.)
-#[test]
-fn m1b1_hold_fire_stops_a_slot_and_never_a_pilot() {
-    use tacsim::deliberation::order::{CharacterRef, Constraints, Objective, Order, StandingOrder};
-    let (mut arena, mut wall) = locked_duel(100);
-    let squad = tacsim::deliberation::squad::SquadId {
-        team: Team::Red,
-        index: 1,
-    };
-    arena.set_controller(
-        RED,
-        Controller::Reflex,
-        tacsim::arena::reflex::ReflexState::Patrol,
-    );
-    let order = Order {
-        squad,
-        objective: Objective::Hold,
-        target: None,
-        horizon_ms: 600_000,
-        constraints: Constraints {
-            hold_fire: true,
-            ..Constraints::default()
-        },
-        ttl_ms: 600_000,
-        issued_ms: 0,
-        issuer: None,
-        by: CharacterRef::Persona { squad },
-        spot: None,
-    };
-    arena
-        .reflex
-        .set_order(RED, StandingOrder::accepted(order, arena.now_ms));
-    // The machine keeps the lock its seat took (`set_controller` keeps it).
-    if arena.unit(RED).and_then(|state| state.lock).is_none() {
-        let _ = arena.resolve_lock(RED, contact_of(RED, BLUE), arena.now_ms);
-    }
-    assert_eq!(
-        arena.resolve_arming(
-            RED,
-            &Arming::Arm(cond("cannon", 100, ASPECTS_ANY)),
-            arena.now_ms
-        ),
-        Ok(Some(1))
-    );
-    let until = arena.now_ms + 10_000;
-    while arena.now_ms < until {
-        wall += 500;
-        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
-        let _ = arena.step(wall, &[], &[]);
-    }
-    let shots = fired_lines(&mut arena);
-    assert!(
-        shots.iter().all(|(_, _, by)| by.is_none()),
-        "no slot shot under hold_fire: {shots:?}"
-    );
-    assert!(
-        shots.is_empty(),
-        "nor a machine's under hold_fire: {shots:?}"
-    );
-    // The positive control: through the whole window the lock stood, the slot
-    // stood and its terms held — so `hold_fire` is the one reason nothing
-    // fired, and not an idle slot.
-    assert_eq!(
-        arena.unit(RED).and_then(|state| state.lock),
-        Some(contact_of(RED, BLUE)),
-        "the lock stood through the hold"
-    );
-    assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(1));
-    assert_eq!(
-        arena
-            .warrant(RED, &cond("cannon", 100, ASPECTS_ANY), arena.now_ms)
-            .map(|(contact, _, _)| contact),
-        Ok(contact_of(RED, BLUE)),
-        "the slot's terms held"
-    );
-    // The order dropped: the slot fires at its next evaluation.
-    arena.reflex.drop_to_doctrine(RED, true);
-    if arena.unit(RED).and_then(|state| state.lock).is_none() {
-        let _ = arena.resolve_lock(RED, contact_of(RED, BLUE), arena.now_ms);
-    }
-    let released = arena.now_ms;
-    let until = released + 3_000;
-    while arena.now_ms < until {
-        wall += 250;
-        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
-        let _ = arena.step(wall, &[], &[]);
-    }
-    let shots = fired_lines(&mut arena);
-    assert!(
-        shots
-            .iter()
-            .any(|(t, _, by)| *t >= released && by.as_deref() == Some("cond")),
-        "the slot fired once the order went: {shots:?}"
-    );
-
-    // A pilot's typed FIRE under no order fires.
-    let (mut arena, wall) = locked_duel(100);
-    let _ = refused_now(&mut arena, wall, vec![IntentKind::fire("cannon")]);
-    assert_eq!(fired_lines(&mut arena).len(), 1);
-}
+// **17b cut M4.5a**: `m1b1_hold_fire_stops_a_slot_and_never_a_pilot` (a
+// Reflex-flown hull's arena-armed slot under a persona `hold_fire` order never
+// fires, the lock, the slot and its warrant standing; the order dropped, the
+// slot fires; a pilot's typed `FIRE` fires) is deleted against its mirror on a
+// unit mind, `m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot`
+// (§ 13 below): a mind under a hold-fire order takes the lock and nothing
+// fires, released the slot fires `by: "cond"` at the re-arming landing (leg
+// 1); the pilot's typed `FIRE` fires (leg 2); a slot armed while the arena's
+// row holds a hold-fire order has every slot and cited shot refused at the
+// resolver until the order's deadline, then fires (leg 3). The reflex hull and
+// its `drop_to_doctrine` restoration go with the controller.
 
 // ---------------------------------------------------------------------------
 // 9. The seat window and the count
@@ -3876,14 +3781,21 @@ fn hold_fire_order(objective: tacsim::deliberation::order::Objective, ttl_ms: u3
 ///    under the order reads `unwarranted`: the law test's.)
 /// 2. a pilot's typed `FIRE` under no order fires;
 /// 3. **`hold_after_end`** (Q-M7's default, declared): a hold-fire `ADVANCE`
-///    to a walled cell no route reaches, standing 12 s. T0 ends the order at
-///    its failed search (`order_expired` journalled at once) and fires; T1
-///    only stops obeying it (`ignore_until_ms`, the order's own `expires_ms`
-///    since 17b cut M1b.5), arms while the arena's row
-///    still holds it — and every shot of its slot, and its cited one, is
-///    refused at the resolver (the ARENA's row holds the hold-fire) until
-///    `expires_ms`, when the landing that reaches the deadline clears the row
-///    (`order_expired`) and the slot fires.
+///    to a walled cell no route reaches, standing 12 s. T1 only stops obeying
+///    it (`ignore_until_ms`, the order's own `expires_ms` since 17b cut
+///    M1b.5), arms while the arena's row still holds it — and every shot of
+///    its slot, and its cited one, is refused at the resolver (the ARENA's row
+///    holds the hold-fire) until `expires_ms`, when the landing that reaches
+///    the deadline clears the row (`order_expired`) and the slot fires. No
+///    `order_expired` is journalled at the failed search (doc 16 §11's
+///    `order_end`).
+///
+/// **17b cut M4.5a**: leg 3's T0 contrast — the reflex machine on the same
+/// field ending the order at its failed search (`order_expired` at once) and
+/// firing before 12 s — is deleted with the controller (the twin's T0 column
+/// retired); the T1 half above is every claim the leg makes about a mind, and
+/// is unchanged. This test is also the named mirror of the deleted
+/// `m1b1_hold_fire_stops_a_slot_and_never_a_pilot` (§ 8).
 #[test]
 fn m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot() {
     use tacsim::deliberation::order::Objective;
@@ -3978,29 +3890,8 @@ fn m1b2_hold_fire_stops_a_mind_and_its_slot_and_never_a_pilot() {
     let _ = refused_now(&mut arena, wall, vec![IntentKind::fire("cannon")]);
     assert_eq!(fired_lines(&mut arena).len(), 1);
 
-    // 3. `hold_after_end`: T0, then T1, under a hold-fire ADVANCE to a wall.
+    // 3. `hold_after_end`: T1 under a hold-fire ADVANCE to a wall.
     let to_the_wall = || hold_fire_order(Objective::Advance { to: (13, 2) }, 12_000);
-    let t0 = || {
-        stock_field(
-            walled(),
-            Controller::Reflex,
-            &[(BLUE, (9, 8), 270_000, true)],
-        )
-    };
-    let reflex = at_three_cadences(&t0, false, 20_000, &[(0, to_the_wall())], &[], &mut |_| {});
-    let expired: Vec<i64> = reflex
-        .words("order_expired")
-        .into_iter()
-        .filter(|(_, unit)| *unit == Some(u64::from(RED.0)))
-        .map(|(t_ms, _)| t_ms)
-        .collect();
-    let first_shot = reflex.shots().first().map(|(t_ms, ..)| *t_ms);
-    assert!(
-        expired
-            .first()
-            .is_some_and(|ended| *ended < 12_000 && first_shot.is_some_and(|shot| shot > *ended)),
-        "T0 ends the order at its failed search and then fires: {expired:?} {first_shot:?}"
-    );
     let t1 = || stock_field(walled(), Controller::Mind, &[(BLUE, (9, 8), 270_000, true)]);
     let mind = at_three_cadences(&t1, true, 20_000, &[(0, to_the_wall())], &[], &mut |_| {});
     assert_twinned(&mind);
@@ -5538,7 +5429,7 @@ fn poked_replay(
     let mut notices: Vec<FrameNotice> = Vec::new();
     let mut told: Vec<(i64, ObjId, FrameNotice)> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut wall = 0_i64;
     let mut next = 0_usize;
     let mut pulses = 0_u32;
@@ -5551,7 +5442,7 @@ fn poked_replay(
         let out = arena.step(wall, controls, intents);
         absorb(&out, &mut bytes, &mut notices);
         told_of(&out, arena.now_ms, &mut told);
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         out.ended.is_some()

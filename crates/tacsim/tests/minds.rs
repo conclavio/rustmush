@@ -75,10 +75,11 @@ use tacsim::arena::mind::{
     STOCK_THINK_MS, ThinkJob, ThinkResult, decode_memory, doctrine_state_of, seed_withdraw,
     withdraw_seed,
 };
+use tacsim::arena::motor::MotorCounters;
 use tacsim::arena::perception::{
     FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
 };
-use tacsim::arena::reflex::{ReflexCounters, ReflexState};
+use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
 use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
@@ -503,7 +504,7 @@ struct Run {
     events: Vec<(i64, String, u64)>,
     hashes: Vec<u64>,
     pulses: u32,
-    counters: ReflexCounters,
+    counters: MotorCounters,
 }
 
 /// Step `arena` to `until_ms` under `drive`.
@@ -513,7 +514,7 @@ fn run(arena: &mut Arena, drive: Drive, until_ms: i64) -> Run {
     }
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut wall = arena.now_ms;
     let mut pulses = 0_u32;
     loop {
@@ -523,7 +524,7 @@ fn run(arena: &mut Arena, drive: Drive, until_ms: i64) -> Run {
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
@@ -601,11 +602,11 @@ impl Rig {
 
     /// Pulse until `done` holds after a pulse, at most to `limit_ms` of arena
     /// time; answers the counters of the pulse it held after.
-    fn until(&mut self, limit_ms: i64, mut done: impl FnMut(&Arena) -> bool) -> ReflexCounters {
+    fn until(&mut self, limit_ms: i64, mut done: impl FnMut(&Arena) -> bool) -> MotorCounters {
         while self.arena.now_ms < limit_ms {
             let out = self.pulse(&[], &[]);
             if done(&self.arena) {
-                return out.reflex;
+                return out.motor;
             }
         }
         panic!("the condition never held by {limit_ms} ms");
@@ -2901,7 +2902,7 @@ fn m1a5_an_order_to_a_mind_is_re_keyed_to_its_own_held_contact_or_none() {
     );
     let out = rig.pulse(&[], &[release]);
     assert_eq!(held(&rig.arena), None, "released");
-    assert_eq!(out.reflex.orders_released, 1);
+    assert_eq!(out.motor.orders_released, 1);
     assert_eq!(
         rig.journal()
             .iter()
@@ -3219,7 +3220,9 @@ fn m1a5_the_production_hash_does_not_move() {
 /// and `Arena::new` lays its row down and schedules its first think; it
 /// thinks once an arena second. **17b cut M1a.6**: the default runner is the
 /// native stock mind, whose first think starts the cold tank (it was `NoMind`,
-/// which ordered nothing).
+/// which ordered nothing). **17b cut M4.5a**: its `no reflex row` probe is
+/// dropped — vacuous on a mind's hull since 17b cut M4.3, and the controller
+/// and the mind row are asserted beside it.
 #[test]
 fn m1a5_a_mind_mustered_on_the_shipped_ground_thinks_on_its_grid() {
     let world = support::booted_world();
@@ -3236,10 +3239,9 @@ fn m1a5_a_mind_mustered_on_the_shipped_ground_thinks_on_its_grid() {
         Some(Controller::Mind)
     );
     assert!(arena.minds.contains_key(&red));
-    assert!(arena.reflex.unit(red).is_none(), "no reflex row");
     let mut thinks = 0_u32;
     let _ = support::run_until(&mut arena, 10_000, 1_000, |_, out| {
-        thinks = thinks.saturating_add(out.reflex.thinks);
+        thinks = thinks.saturating_add(out.motor.thinks);
     });
     assert_eq!(thinks, 10, "one think an arena second");
     assert_eq!(arena.minds.get(&red).map(|state| state.think_seq), Some(10));
@@ -3258,6 +3260,8 @@ fn m1a5_a_mind_mustered_on_the_shipped_ground_thinks_on_its_grid() {
 /// armed hull's. The expected seals are computed here by the one production
 /// computation over the same M32 record, and the arena's `UnitState.seal`
 /// and `MindState.seal_digest` are held to each, armed and unarmed.
+/// (**17b cut M4.5a**: blue, the opponent no claim reads, is a pilot's hull
+/// where it was the reflex machine.)
 #[test]
 fn m3_an_unarmed_muster_is_sealed_with_no_fire_channel() {
     let world = support::booted_world();
@@ -3266,7 +3270,7 @@ fn m3_an_unarmed_muster_is_sealed_with_no_fire_channel() {
     let fielded = |muster: support::Muster| {
         support::shipped_arena(
             &world,
-            &[&[muster], &[support::Muster::reflex(Team::Blue, 1)]],
+            &[&[muster], &[support::Muster::piloted(Team::Blue, 1)]],
         )
     };
     let armed_arena = fielded(support::Muster::mind(Team::Red, 1));
@@ -3328,17 +3332,17 @@ fn m3_an_unarmed_muster_is_sealed_with_no_fire_channel() {
 // (11) every controller transition releases the outgoing rows
 // ---------------------------------------------------------------------------
 
-/// What `unit` has left on the arena: a reflex row, a mind row, an answer
-/// pending on it (17b cut M3.2: the scratch retired), a motor row, and its
-/// controllers' due kinds.
-type Rows = (bool, bool, bool, bool, Vec<&'static str>);
+/// What `unit` has left on the arena: a mind row, an answer pending on it
+/// (17b cut M3.2: the scratch retired), a motor row, and its controllers'
+/// due kinds. (17b cut M4.5a: the reflex row and its `ReflexTick` slot are
+/// gone with the controller's fixtures.)
+type Rows = (bool, bool, bool, Vec<&'static str>);
 
 fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
     let kinds = arena
         .due
         .iter()
         .filter_map(|event| match event.kind {
-            DueKind::ReflexTick { unit: on, .. } if on == unit => Some("reflex_tick"),
             DueKind::MindThink { unit: on, .. } if on == unit => Some("mind_think"),
             DueKind::MindLand { unit: on, .. } if on == unit => Some("mind_land"),
             DueKind::MotorTick { unit: on } if on == unit => Some("motor_tick"),
@@ -3346,7 +3350,6 @@ fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
         })
         .collect();
     (
-        arena.reflex.unit(unit).is_some(),
         arena.minds.contains_key(&unit),
         in_flight(arena, unit),
         arena.motors.row(unit).is_some(),
@@ -3355,13 +3358,11 @@ fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
 }
 
 /// **Every controller transition releases the outgoing rows** (17b cut M1a.5;
-/// `Arena::set_controller`). Reflex → Mind by `set_controller`; Mind → Reflex
-/// by `set_controller` with a think in flight; Reflex → Pilot by a `Live`
-/// control; Pilot → Mind by `set_controller` with a pilot's `DRIVE` standing;
-/// Mind → Pilot by a `Live` control with a think in flight. After each,
-/// nothing of the outgoing controller is left — no reflex row or tick, no mind
-/// row, pending answer, think or landing, no motor row or motor tick — and the
-/// incoming controller's first event is on the heap.
+/// `Arena::set_controller`). Pilot → Mind by `set_controller` with a pilot's
+/// `DRIVE` standing; Mind → Pilot by a `Live` control with a think in flight.
+/// After each, nothing of the outgoing controller is left — no mind think,
+/// pending answer or landing, no motor row or motor tick — and the incoming
+/// controller's first event is on the heap.
 ///
 /// **17b cut M3.5** (doc 17 §12 "Release and possess") moved two steps: the
 /// Mind → Reflex step was a `Released` control, which now hands a hull with a
@@ -3369,11 +3370,18 @@ fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
 /// itself — the fixture's own transition, the only one that still removes the
 /// row; and Mind → Pilot keeps the mind's row, dormant, with its pending
 /// answer, its thinks and its landing gone (it asserted no row until then).
+///
+/// **17b cut M4.5a**: the three reflex legs — Reflex → Mind, Mind → Reflex
+/// with a think in flight, Reflex → Pilot by a `Live` control — are deleted:
+/// with the reflex controller's fixtures gone those transitions cease to
+/// exist (M4.6 deletes the controller). Red opens a seated pilot's hull (the
+/// state the deleted Reflex → Pilot leg left it in: nothing of a machine on
+/// the arena), and the two legs that remain are the original's, unchanged.
 #[test]
 fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
     let mut rig = Rig::new(arena_of(
         vec![
-            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Pilot),
             tank(
                 BLUE,
                 Team::Blue,
@@ -3382,44 +3390,14 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
                 Controller::Pilot,
             ),
         ],
-        &[],
+        &[RED],
     ));
     rig.arena.mind_runner = ScriptedMind::new(&[]);
     let _ = rig.until(3_000, |arena| arena.now_ms >= 2_000);
-    assert!(rows_of(&rig.arena, RED).0, "the reflex machine flies it");
-
-    // Reflex -> Mind.
-    rig.arena
-        .set_controller(RED, Controller::Mind, ReflexState::Withdraw);
     assert_eq!(
         rows_of(&rig.arena, RED),
-        (false, true, false, false, vec!["mind_think"])
-    );
-
-    // Mind -> Reflex, with a think in flight (17b cut M3.5: by
-    // `set_controller` — a `Released` hands a hull with a row to its mind).
-    let _ = rig.until(6_000, |arena| in_flight(arena, RED));
-    let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
-    rig.arena
-        .set_controller(RED, Controller::Reflex, ReflexState::Withdraw);
-    assert_eq!(
-        rows_of(&rig.arena, RED),
-        (true, false, false, true, vec!["reflex_tick"])
-    );
-
-    // Reflex -> Pilot.
-    let _ = rig.pulse(
-        &[control(
-            Channel::Helm,
-            epoch + 1,
-            ControlState::Live,
-            Some(ObjId(2_000)),
-        )],
-        &[],
-    );
-    assert_eq!(
-        rows_of(&rig.arena, RED),
-        (false, false, false, false, vec![])
+        (false, false, false, vec![]),
+        "a seated pilot flies it: nothing of a machine"
     );
 
     // Pilot -> Mind, with a pilot's `DRIVE` standing.
@@ -3433,31 +3411,29 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
         1,
     );
     let _ = rig.pulse(&[], &[drive]);
-    let (_, _, _, motor, kinds) = rows_of(&rig.arena, RED);
+    let (_, _, motor, kinds) = rows_of(&rig.arena, RED);
     assert!(motor && kinds == vec!["motor_tick"], "the pilot is driving");
     rig.arena
         .set_controller(RED, Controller::Mind, ReflexState::Withdraw);
     assert_eq!(
         rows_of(&rig.arena, RED),
-        (false, true, false, false, vec!["mind_think"])
+        (true, false, false, vec!["mind_think"])
     );
 
     // Mind -> Pilot, with a think in flight.
     let _ = rig.until(20_000, |arena| in_flight(arena, RED));
+    let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
     let _ = rig.pulse(
         &[control(
             Channel::Helm,
-            epoch + 2,
+            epoch,
             ControlState::Live,
             Some(ObjId(2_000)),
         )],
         &[],
     );
     // 17b cut M3.5: the mind's row stays, dormant — nothing else of it.
-    assert_eq!(
-        rows_of(&rig.arena, RED),
-        (false, true, false, false, vec![])
-    );
+    assert_eq!(rows_of(&rig.arena, RED), (true, false, false, vec![]));
     assert_eq!(
         rig.arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Pilot)
@@ -3590,14 +3566,14 @@ fn m1a5_a_wreck_cancels_its_minds_thinks_and_landing() {
     let _ = rig.until(10_000, |arena| pending(arena, RED, 2));
     assert!(in_flight(&rig.arena, RED), "the precondition");
     assert!(
-        rows_of(&rig.arena, RED).4.contains(&"mind_land")
-            && rows_of(&rig.arena, RED).4.contains(&"motor_tick"),
+        rows_of(&rig.arena, RED).3.contains(&"mind_land")
+            && rows_of(&rig.arena, RED).3.contains(&"motor_tick"),
         "the precondition: a landing and a motor tick on the heap"
     );
     let now = rig.arena.now_ms;
     let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
     rig.arena.destroy_unit(RED, now, None, &mut journal);
-    let (_, row, scratch, _, kinds) = rows_of(&rig.arena, RED);
+    let (row, scratch, _, kinds) = rows_of(&rig.arena, RED);
     assert!(kinds.is_empty(), "the wreck's due kinds: {kinds:?}");
     assert!(!scratch, "the pending answer went with the landing");
     assert!(row, "the row stays");
@@ -3612,7 +3588,7 @@ fn m1a5_a_wreck_cancels_its_minds_thinks_and_landing() {
     let asked = mind.seen().len();
     let mut thinks = 0_u32;
     while rig.arena.now_ms < now + 3_000 {
-        thinks += rig.pulse(&[], &[]).reflex.thinks;
+        thinks += rig.pulse(&[], &[]).motor.thinks;
     }
     assert_eq!(thinks, 0, "a wreck thinks nothing");
     assert_eq!(mind.seen().len(), asked, "the runner was not called");
@@ -3662,7 +3638,7 @@ fn m1a5_a_minds_own_heading_lets_go_of_its_goal() {
     );
     let _ = rig.until(land + 2_000, |arena| arena.now_ms >= land + 1_000);
     assert!(
-        !rows_of(&rig.arena, RED).4.contains(&"motor_tick"),
+        !rows_of(&rig.arena, RED).3.contains(&"motor_tick"),
         "the motor's tick ended with its goal"
     );
     assert_eq!(
@@ -3805,7 +3781,7 @@ fn seat_run(cadence_ms: i64, until_ms: i64, beats: &[(i64, Beat)]) -> (Run, Aren
     );
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut pulses = 0_u32;
     let mut next = 0_usize;
     let mut seq = 0_u64;
@@ -3836,7 +3812,7 @@ fn seat_run(cadence_ms: i64, until_ms: i64, beats: &[(i64, Beat)]) -> (Run, Aren
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
@@ -3895,7 +3871,7 @@ fn m1a5_a_pilots_drive_dies_with_the_released_seat() {
         "the precondition: the pilot drives, from a search: {motor:?}"
     );
     assert!(
-        rows_of(&arena, RED).4.contains(&"motor_tick"),
+        rows_of(&arena, RED).3.contains(&"motor_tick"),
         "the precondition: its tick is on the heap"
     );
     let release = control(
@@ -3909,7 +3885,7 @@ fn m1a5_a_pilots_drive_dies_with_the_released_seat() {
     // landing's, so none stands at the release.
     assert_eq!(
         rows_of(&arena, RED),
-        (false, true, false, false, vec!["mind_think"]),
+        (true, false, false, vec!["mind_think"]),
         "the mind's row and think, and nothing of the pilot's drive"
     );
     assert_eq!(
@@ -4503,7 +4479,7 @@ fn unarmed_run_on(cadence_ms: i64, runner: Option<Arc<dyn MindRunner>>) -> (Run,
     let mut seq = 0_u64;
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut pulses = 0_u32;
     let mut wall = 0_i64;
     loop {
@@ -4526,7 +4502,7 @@ fn unarmed_run_on(cadence_ms: i64, runner: Option<Arc<dyn MindRunner>>) -> (Run,
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= 40_000 || out.ended.is_some() {
             break;
@@ -4717,6 +4693,73 @@ fn m2_the_unarmed_stock_mind_in_rhai_is_the_native_one_at_three_cadences() {
     assert!(max <= 1_200, "a think of {max} ops: past 1,200 is a STOP");
 }
 
+/// **T0's first decide window on the (j) field, recorded** (17b cut M4.5a;
+/// Q16(a)): the `startup`, `locked` and `fired` lines of the two reds, `(t_ms,
+/// word, unit)`, that [`m1a6_the_stock_mind_is_t0_on_the_first_decide_window`]
+/// read off `the_j_field(Controller::Reflex)` stepped one substep a pulse to
+/// 5,000 ms — recorded at the cut that retired T0, where the test had run it.
+/// Its one shot (3,482) was unattributed: no `by`, no slot.
+const M1A6_T0_ACTIONS: [(i64, &str, u32); 4] = [
+    (4, "startup", 6),
+    (482, "startup", 4),
+    (3_482, "locked", 4),
+    (3_482, "fired", 4),
+];
+
+/// **T0's helm after every pulse of that window, recorded** (17b cut M4.5a;
+/// Q16(a)): each red's `(t_ms, unit, desired heading, desired speed, cell,
+/// pose)` after each one-substep pulse from 0 to 5,000 ms — the [`Helm`] rows
+/// of the same reflex run, the same at every pass (native, under the twin,
+/// under the Rhai runner). T0 first drives #6 at 750 and #4 at 1,000.
+const M1A6_T0_HELM: [HelmRow; 42] = [
+    (0, 4, 0, 0, (6, 8), (6_500, 8_500)),
+    (0, 6, 0, 0, (6, 10), (6_500, 10_500)),
+    (250, 4, 0, 0, (6, 8), (6_500, 8_500)),
+    (250, 6, 0, 0, (6, 10), (6_500, 10_500)),
+    (500, 4, 0, 0, (6, 8), (6_500, 8_500)),
+    (500, 6, 0, 0, (6, 10), (6_500, 10_500)),
+    (750, 4, 0, 0, (6, 8), (6_500, 8_500)),
+    (750, 6, 225_000, 1_000, (6, 10), (6_500, 10_500)),
+    (1_000, 4, 270_000, 1_000, (6, 8), (6_500, 8_500)),
+    (1_000, 6, 225_000, 1_000, (6, 10), (6_477, 10_522)),
+    (1_250, 4, 270_000, 1_000, (6, 8), (6_477, 8_522)),
+    (1_250, 6, 221_838, 1_000, (6, 10), (6_415, 10_522)),
+    (1_500, 4, 268_623, 1_000, (6, 8), (6_415, 8_522)),
+    (1_500, 6, 221_838, 1_000, (6, 10), (6_349, 10_455)),
+    (1_750, 4, 268_623, 1_000, (6, 8), (6_321, 8_519)),
+    (1_750, 6, 221_588, 1_000, (6, 10), (6_265, 10_362)),
+    (2_000, 4, 268_683, 1_000, (6, 8), (6_196, 8_516)),
+    (2_000, 6, 221_588, 1_000, (6, 10), (6_162, 10_245)),
+    (2_250, 4, 268_683, 1_000, (6, 8), (6_040, 8_513)),
+    (2_250, 6, 221_592, 1_000, (6, 10), (6_037, 10_105)),
+    (2_500, 4, 269_661, 1_000, (5, 8), (5_853, 8_508)),
+    (2_500, 6, 221_592, 1_000, (5, 9), (5_892, 9_941)),
+    (2_750, 4, 269_661, 1_000, (5, 8), (5_634, 8_507)),
+    (2_750, 6, 224_330, 1_000, (5, 9), (5_726, 9_755)),
+    (3_000, 4, 269_611, 1_000, (5, 8), (5_384, 8_506)),
+    (3_000, 6, 224_330, 1_000, (5, 9), (5_551, 9_576)),
+    (3_250, 4, 269_611, 1_000, (5, 8), (5_134, 8_504)),
+    (3_250, 6, 224_354, 1_000, (5, 9), (5_377, 9_397)),
+    (3_500, 4, 269_611, 0, (4, 8), (4_884, 8_502)),
+    (3_500, 6, 224_354, 1_000, (5, 9), (5_202, 9_218)),
+    (3_750, 4, 269_611, 0, (4, 8), (4_665, 8_501)),
+    (3_750, 6, 224_355, 1_000, (5, 9), (5_027, 9_039)),
+    (4_000, 4, 90_000, 0, (4, 8), (4_478, 8_500)),
+    (4_000, 6, 224_355, 1_000, (5, 9), (5_000, 9_000)),
+    (4_250, 4, 90_000, 0, (4, 8), (4_368, 8_388)),
+    (4_250, 6, 225_000, 1_000, (5, 9), (5_000, 9_000)),
+    (4_500, 4, 87_355, 0, (4, 8), (4_369, 8_263)),
+    (4_500, 6, 225_000, 1_000, (5, 9), (5_000, 9_000)),
+    (4_750, 4, 87_355, 0, (4, 8), (4_435, 8_197)),
+    (4_750, 6, 225_000, 1_000, (5, 9), (5_000, 9_000)),
+    (5_000, 4, 86_545, 0, (4, 8), (4_498, 8_198)),
+    (5_000, 6, 225_000, 1_000, (5, 9), (5_000, 9_000)),
+];
+
+/// One recorded [`Helm`]: `(t_ms, unit, heading_mdeg, speed_cms, cell,
+/// pose)`.
+type HelmRow = (i64, u32, u32, i32, (u16, u16), (i64, i64));
+
 /// One red's helm after one pulse of the first-window check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Helm {
@@ -4745,6 +4788,18 @@ struct Helm {
 /// stand faces the view's whole degrees (`deg_round`'s facing half). The
 /// first millisecond, the lags and the end helms are printed
 /// (`stock_window: …`, `stock_window_helm: …`) for the ledger.
+///
+/// **17b cut M4.5a** (the twin's T0 column retired; Q16(a)): T0's side of
+/// the comparison is no longer run. Its window — the four actions and the
+/// forty-two helm rows `the_j_field(Controller::Reflex)` produced, natively
+/// and under the twin and the Rhai runner alike (T0 flew no mind) — was
+/// recorded once at this cut, while `Controller::Reflex` still compiled and
+/// with every assertion below passing against the live run, as
+/// [`M1A6_T0_ACTIONS`] and [`M1A6_T0_HELM`]; T1 is held to the record
+/// exactly as it was held to the run, every claim kept (the startups on T0's
+/// staggered tick are now checked on the record). The record is the (j)
+/// field's first window action for action, the one pin of it Gate B never
+/// carried.
 #[test]
 fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
     // One substep a pulse, so the helm is read after every landing.
@@ -4820,18 +4875,29 @@ fn m1a6_the_stock_mind_is_t0_on_the_first_decide_window() {
             .collect();
         (actions, helm, shots)
     };
-    let (t0, t0_helm, t0_shots) = lines(Controller::Reflex);
+    // 17b cut M4.5a: T0 is its recorded window ([`M1A6_T0_ACTIONS`],
+    // [`M1A6_T0_HELM`]); only T1 is run.
     let (t1, t1_helm, t1_shots) = lines(Controller::Mind);
-    // T0's shots are a machine's: never attributed (`FiredBy::Machine`, never
-    // gated). T1's are each cited: a fresh lock's shot `by: "mind"` at the
+    let t0: Vec<(i64, String, u32)> = M1A6_T0_ACTIONS
+        .iter()
+        .map(|&(t_ms, word, unit)| (t_ms, word.to_owned(), unit))
+        .collect();
+    let t0_helm: Vec<Helm> = M1A6_T0_HELM
+        .iter()
+        .map(|&(t_ms, unit, heading_mdeg, speed_cms, cell, pose)| Helm {
+            t_ms,
+            unit,
+            heading_mdeg,
+            speed_cms,
+            cell: Some(cell),
+            pose,
+        })
+        .collect();
+    // T1's shots are each cited: a fresh lock's shot `by: "mind"` at the
     // landing one substep after a lattice think, or the slot's own `by:
     // "cond"` — at a `WeaponReady`, a pass or a landing — both naming S1.
-    assert!(
-        t0_shots
-            .iter()
-            .all(|(_, by, slot)| by.is_none() && slot.is_none()),
-        "{t0_shots:?}"
-    );
+    // (T0's one shot, at 3,482, was a machine's: unattributed,
+    // `FiredBy::Machine`, never gated — asserted when it was recorded.)
     for (t_ms, by, slot) in &t1_shots {
         assert_eq!(*slot, Some(1), "an uncited T1 shot at {t_ms}");
         match by.as_deref() {
@@ -5090,7 +5156,7 @@ fn lance_run(cadence_ms: i64) -> LanceRun {
     };
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut pulses = 0_u32;
     let mut wall = 0_i64;
     let mut signals: Vec<SquadSignal> = Vec::new();
@@ -5138,7 +5204,7 @@ fn lance_run(cadence_ms: i64) -> LanceRun {
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         signals.extend(out.deliberation);
         if arena.now_ms >= 30_000 || out.ended.is_some() {
@@ -5704,7 +5770,7 @@ fn card_run(
     let mut next = 0_usize;
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut pulses = 0_u32;
     let mut wall = 0_i64;
     loop {
@@ -5725,7 +5791,7 @@ fn card_run(
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
@@ -5910,7 +5976,8 @@ fn preset_on_field(name: &str) -> tacsim::arena::StockCard {
 ///   Line (35) stood (`m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged`'s
 ///   last run) — the overlay is read;
 ///
-/// and at one cadence: a change staged for a reflex hull journals
+/// and at one cadence: a change staged for a hull that is not a mind (a
+/// pilot's, since 17b cut M4.5a; a reflex hull before it) journals
 /// `mind_card_refused` `not_mind` and changes nothing; a `band_pct 72` the
 /// arena refuses journals the `CardError`'s own sentence and keeps the card;
 /// **an arena whose `odds_floor_permille` stands ABOVE the card's
@@ -5967,9 +6034,12 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         assert_eq!(other_kept, kept, "a think diverged at {cadence}");
     }
 
-    // A reflex hull: refused `not_mind`, nothing changed.
+    // A hull that is not a mind: refused `not_mind`, nothing changed. (17b
+    // cut M4.5a: a pilot's hull nobody sits in, where it was a reflex hull —
+    // the refusal reads `controller == Mind` and a mind row, so any other
+    // controller is the same case.)
     let (run, _, arena) = card_run(
-        the_j_field(Controller::Reflex),
+        the_j_field(Controller::Pilot),
         5_000,
         10_000,
         &[(
@@ -7124,7 +7194,7 @@ struct StrikesRun {
     hashes: Vec<Vec<u64>>,
     strikes: Vec<u8>,
     rows: Vec<(MindState, MindState)>,
-    counters: ReflexCounters,
+    counters: MotorCounters,
     landings_after: Vec<bool>,
     speed: Option<i32>,
 }
@@ -7138,13 +7208,13 @@ fn strikes_run(script: Vec<Says>, last: u64, reset: Option<&[u8]>) -> StrikesRun
         hashes: Vec::new(),
         strikes: Vec::new(),
         rows: Vec::new(),
-        counters: ReflexCounters::default(),
+        counters: MotorCounters::default(),
         landings_after: Vec::new(),
         speed: None,
     };
     let pulse = |rig: &mut Rig, out: &mut StrikesRun| {
         let step = rig.pulse(&[], &[]);
-        out.counters.absorb(&step.reflex);
+        out.counters.absorb(&step.motor);
         if let Some(state) = rig.arena.minds.get_mut(&RED) {
             if let Some(figure) = reset.and_then(|figures| figures.get(out.strikes.len())) {
                 // The baseline's hand — and the overflow already counts the
@@ -8885,10 +8955,14 @@ fn m3_a_dropped_hull_possessed_and_released_stays_dropped() {
 /// `apply_control`; doc 17 §12; 16b cut N.1): EVERY hull goes to a mind — a
 /// hull seated from its check-out has no row and is laid a fresh one carrying
 /// the Withdraw seed (`withdraw_seed`: the stock keys in `Withdraw` under no
-/// order, the cache reading the same), no reflex row anywhere; a hull handed
-/// to the reflex machine straight from its mind (`set_controller(Mind →
-/// Reflex)`, a fixture's transition alone until 17b cut M4.6 deletes it)
-/// loses its row.
+/// order, the cache reading the same).
+///
+/// **17b cut M4.5a**: two reflex halves are gone. The `no reflex row` probe
+/// on the released hull is dropped (vacuous: the hull is asserted a mind with
+/// its seeded row beside it), and the Mind → Reflex leg (`set_controller`, a
+/// fixture's transition alone, removing the mind row) is deleted — with the
+/// reflex controller's fixtures gone the transition ceases to exist, and
+/// 17b cut M4.6 deletes the controller.
 #[test]
 fn m4_3_released_hands_every_hull_to_a_mind_seeded_withdraw() {
     let (mut rig, _) = possess_field(Vec::new());
@@ -8913,7 +8987,6 @@ fn m4_3_released_hands_every_hull_to_a_mind_seeded_withdraw() {
         Some(Controller::Mind),
         "a released hull with no row is handed to a fresh mind"
     );
-    assert!(rig.arena.reflex.unit(BLUE).is_none(), "no reflex row");
     let laid = rig.arena.minds.get(&BLUE).expect("a mind row laid");
     assert_eq!(laid.doctrine_state, ReflexState::Withdraw, "seeded");
     assert_eq!(doctrine_state_of(&laid.memory), ReflexState::Withdraw);
@@ -8924,15 +8997,6 @@ fn m4_3_released_hands_every_hull_to_a_mind_seeded_withdraw() {
     assert_eq!(laid.memory, withdraw_seed(), "a fresh row carries the seed");
     assert_eq!(laid.order, None);
     assert_eq!(rig.arena.machine_state(BLUE), Some(ReflexState::Withdraw));
-
-    assert!(rig.arena.minds.contains_key(&RED));
-    rig.arena
-        .set_controller(RED, Controller::Reflex, ReflexState::Withdraw);
-    assert!(
-        !rig.arena.minds.contains_key(&RED),
-        "Mind → Reflex removes the row"
-    );
-    assert!(!mind_events_of(&rig.arena, RED));
 }
 
 /// **The possess-and-release run** — [`seat_run`]'s shape over red flown by
@@ -8962,7 +9026,7 @@ fn possess_run(cadence_ms: i64, until_ms: i64, beats: &[(i64, Beat)]) -> (Run, A
     );
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut pulses = 0_u32;
     let mut next = 0_usize;
     let mut seq = 0_u64;
@@ -8993,7 +9057,7 @@ fn possess_run(cadence_ms: i64, until_ms: i64, beats: &[(i64, Beat)]) -> (Run, A
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;

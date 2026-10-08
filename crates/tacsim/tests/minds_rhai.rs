@@ -70,11 +70,11 @@ use tacsim::arena::mind::{
     ThinkJob, ThinkResult, decode_memory,
 };
 use tacsim::arena::motor;
+use tacsim::arena::motor::MotorCounters;
 use tacsim::arena::perception::{
     FrameNotice, FrameOrder, Jammer, MindObjective, Named, Receiver, SensorProfile,
     SignatureFactor, bearing_of,
 };
-use tacsim::arena::reflex::ReflexCounters;
 use tacsim::arena::resolution::{BandProfile, SectionProfile, UnitProfile};
 use tacsim::arena::rng::{DrawLabel, draw, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
@@ -486,7 +486,7 @@ struct Run {
     draws: Vec<(i64, Vec<(String, u64)>)>,
     hashes: Vec<u64>,
     pulses: u32,
-    counters: ReflexCounters,
+    counters: MotorCounters,
 }
 
 /// Step `arena` to `until_ms` under `drive`.
@@ -496,7 +496,7 @@ fn run(arena: &mut Arena, drive: Drive, until_ms: i64) -> Run {
     }
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut counters = ReflexCounters::default();
+    let mut counters = MotorCounters::default();
     let mut wall = arena.now_ms;
     let mut pulses = 0_u32;
     loop {
@@ -505,7 +505,7 @@ fn run(arena: &mut Arena, drive: Drive, until_ms: i64) -> Run {
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
-        counters.absorb(&out.reflex);
+        counters.absorb(&out.motor);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
             break;
@@ -548,7 +548,7 @@ struct Rig {
     wall: Option<i64>,
     bytes: Vec<u8>,
     hashes: Vec<Vec<u64>>,
-    counters: ReflexCounters,
+    counters: MotorCounters,
 }
 
 impl Rig {
@@ -558,7 +558,7 @@ impl Rig {
             wall: None,
             bytes: Vec::new(),
             hashes: Vec::new(),
-            counters: ReflexCounters::default(),
+            counters: MotorCounters::default(),
         }
     }
 
@@ -572,7 +572,7 @@ impl Rig {
             self.bytes.extend_from_slice(&chunk.bytes);
         }
         self.hashes.push(self.arena.substep_hashes.clone());
-        self.counters.absorb(&out.reflex);
+        self.counters.absorb(&out.motor);
         out
     }
 

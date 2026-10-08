@@ -350,7 +350,7 @@ mod tests {
 
     use super::*;
     use crate::arena::mind::{MindRunner, ThinkJob, ThinkResult, run_batch_inline};
-    use crate::arena::reflex::ReflexCounters;
+    use crate::arena::motor::MotorCounters;
     use crate::arena::state::{Arena, Controller, Team};
     use crate::arena::test_support::{arena_of, pose, tank};
 
@@ -372,7 +372,7 @@ mod tests {
     fn jobs(runner: Arc<dyn MindRunner>, n: u64) -> Vec<CollectedThink> {
         let mut arena = minded();
         arena.mind_runner = runner;
-        let mut counters = ReflexCounters::default();
+        let mut counters = MotorCounters::default();
         arena.collect_think(RED, 0, 1_000, &mut counters);
         let first = arena
             .collected

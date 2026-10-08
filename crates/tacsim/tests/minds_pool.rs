@@ -30,8 +30,9 @@
 //! * [`m4_a_fault_s_lines_carry_the_think_s_own_substep_hash_at_three_cadences`] —
 //!   the `mind_fault` and `mind_dropped` lines under the think's substep's
 //!   end hash, one tape at three cadences.
-//! * The twin's thirty through real tasks ([`m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library`])
-//!   is `#[ignore]`d — the gate run, five times by hand in release.
+//! * The twin's pooled lane through real tasks ([`m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library`],
+//!   fifteen matches since 17b cut M4.5a) is `#[ignore]`d — the gate run, five
+//!   times by hand in release.
 
 mod support;
 
@@ -197,7 +198,7 @@ fn run(
             Settle::Inline | Settle::Pooled(_) => arena.step(wall, &[], &[]),
         };
         pulses += 1;
-        thinks += out.reflex.thinks;
+        thinks += out.motor.thinks;
         if out.substeps > 1 {
             pulses_of_many += 1;
         }
@@ -537,65 +538,66 @@ async fn m4_real_tasks_at_one_two_and_four_workers_hash_as_the_library() {
     }
 }
 
-/// **The twin's thirty through real tasks at one, two and four workers**
-/// (the M4 row's gate, item (i): *real tasks at workers 1, 2 and 4 equal to
-/// the library driven on the task's own wake rule over … the twin's thirty
-/// (run five times)*): the pooled lane's composition — two stock tanks a
-/// side, the reflex machine (T0) against the native stock mind (T1), the
-/// fifteen seeds from [`SEED`] with the sides swapped — to the 900 s cap,
-/// each match through the task at each worker count and held to the
-/// library as the fixture above holds it. `#[ignore]`d: the gate run is
+/// **The twin's pooled lane through real tasks at one, two and four
+/// workers** (the M4 row's gate, item (i): *real tasks at workers 1, 2 and 4
+/// equal to the library driven on the task's own wake rule over … the twin's
+/// thirty (run five times)*): the pooled lane's composition — two stock
+/// tanks a side, the native stock mind (T1) on both, the fifteen seeds from
+/// [`SEED`] — to the 900 s cap, each match through the task at each worker
+/// count and held to the library as the fixture above holds it. `#[ignore]`d:
+/// the gate run is
 /// `cargo test --release -p tacsim --test minds_pool m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture`,
 /// five times.
+///
+/// **17b cut M4.5a** (the twin's T0 column retired): the reflex machine (T0)
+/// that faced T1 here is gone with the column, so both sides muster
+/// [`Muster::mind`] — T1 against T1, the twin's own pooled lane since the
+/// cut — and the sides are no longer swapped: with one custody on both
+/// sides a swapped match is the same match, so the lane plays the fifteen
+/// seeds once each (the "thirty" of the name is the M4.1 lane's, kept so
+/// the gated-test inventory and `ci.yml` name the same test).
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-#[ignore = "17b cut M4.1's gate lane over the twin's thirty: run by hand in release, five times"]
+#[ignore = "17b cut M4.1's gate lane over the twin's fifteen pooled matches: run by hand in release, five times"]
 async fn m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library() {
     let world = booted_world();
     let match_cfg = rules(900_000);
-    let t0 = |team| [Muster::reflex(team, 1), Muster::reflex(team, 2)];
     let t1 = |team| [Muster::mind(team, 1), Muster::mind(team, 2)];
     let started = std::time::Instant::now();
     let mut matches = 0_u32;
     for k in 0..15_u64 {
         let seed = SEED + k;
-        for swapped in [false, true] {
-            let field = |world: &mush_testkit::TestWorld| {
-                if swapped {
-                    shipped_custody_seeded(world, &[&t1(Team::Red), &t0(Team::Blue)], seed)
-                } else {
-                    shipped_custody_seeded(world, &[&t0(Team::Red), &t1(Team::Blue)], seed)
-                }
-            };
-            let library = run(
-                open(field(&world), &match_cfg),
-                Settle::Settled,
-                task_rule(),
-            );
-            for workers in [1, 2, 4] {
-                let (lines, ended, digest, snapshots) = through_the_task(
-                    field(&world),
-                    &match_cfg,
-                    MindPool::new(workers),
-                    Duration::from_secs(3_600),
-                )
-                .await;
-                let name = format!("seed {seed} swapped {swapped} at {workers} workers");
-                assert_eq!(lines, library.lines, "{name}: the tape");
-                assert_eq!(ended, library.ended, "{name}: the end");
-                assert_eq!(digest, library.ledger_digest, "{name}: the ledger digest");
-                for (at_ms, hash) in &snapshots {
-                    assert_eq!(
-                        library.after_pulse.get(at_ms),
-                        Some(hash),
-                        "{name}: the snapshot at {at_ms}"
-                    );
-                }
-                matches += 1;
+        let field = |world: &mush_testkit::TestWorld| {
+            shipped_custody_seeded(world, &[&t1(Team::Red), &t1(Team::Blue)], seed)
+        };
+        let library = run(
+            open(field(&world), &match_cfg),
+            Settle::Settled,
+            task_rule(),
+        );
+        for workers in [1, 2, 4] {
+            let (lines, ended, digest, snapshots) = through_the_task(
+                field(&world),
+                &match_cfg,
+                MindPool::new(workers),
+                Duration::from_secs(3_600),
+            )
+            .await;
+            let name = format!("seed {seed} at {workers} workers");
+            assert_eq!(lines, library.lines, "{name}: the tape");
+            assert_eq!(ended, library.ended, "{name}: the end");
+            assert_eq!(digest, library.ledger_digest, "{name}: the ledger digest");
+            for (at_ms, hash) in &snapshots {
+                assert_eq!(
+                    library.after_pulse.get(at_ms),
+                    Some(hash),
+                    "{name}: the snapshot at {at_ms}"
+                );
             }
+            matches += 1;
         }
     }
     println!(
-        "m4_task_seam_thirty: matches={matches} wall_s={}",
+        "m4_task_seam_fifteen: matches={matches} wall_s={}",
         started.elapsed().as_secs()
     );
 }
@@ -677,7 +679,7 @@ impl MindRunner for Faulting {
 /// **17b cut M4.1 — a fault's lines carry the think's own substep's end
 /// hash, at three cadences** (the M4 row's finding (1); doc 17 §8, D-UM-31,
 /// D-UM-32): red's native mind on a runner that faults every think `ops`,
-/// blue a machine, at 5,000, 1,000 and 500 ms (settled between pulses) —
+/// blue a pilot's idle hull, at 5,000, 1,000 and 500 ms (settled between pulses) —
 /// one tape, one substep hash sequence; every `mind_fault` line at the
 /// think's own `t_ms` carries the hash of the substep that millisecond fell
 /// in (the substep ending at the first lattice point at or after it), and
@@ -686,6 +688,14 @@ impl MindRunner for Faulting {
 /// think's substep journalled at later milliseconds, so the tape is not
 /// `t_ms`-monotonic across them — declared in doc 17 §24, and not asserted
 /// here: a quiet substep journals nothing after the think.)
+///
+/// **17b cut M4.5a**: blue was the reflex machine; it is now a pilot's
+/// hull nobody drives ([`Muster::piloted`]) — NOT a [`Muster::mind`]: the
+/// faulting runner is installed as the arena-wide fallback
+/// (`Arena::mind_runner`), which every Native-sealed mind on the field thinks
+/// on, so a blue mind would fault too and the tape would carry two drops
+/// against the one this pins. Red's faults, drop and hashes are the claims,
+/// unchanged.
 #[test]
 fn m4_a_fault_s_lines_carry_the_think_s_own_substep_hash_at_three_cadences() {
     let world = booted_world();
@@ -694,7 +704,7 @@ fn m4_a_fault_s_lines_carry_the_think_s_own_substep_hash_at_three_cadences() {
             world,
             &[
                 &[Muster::mind(Team::Red, 1)],
-                &[Muster::reflex(Team::Blue, 1)],
+                &[Muster::piloted(Team::Blue, 1)],
             ],
             SEED,
         )

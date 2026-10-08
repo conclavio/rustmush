@@ -187,7 +187,8 @@ mod tests {
     fn i4_the_picture_carries_every_key_and_a_row_per_unit() {
         let mut red = row(301, Team::Red, 1, Some((120, 97)));
         red.power = Power::Online;
-        red.controller = Controller::Reflex;
+        // 17b cut M4.5a: the machine is a mind (one machine flag, `m`).
+        red.controller = Controller::Mind;
         let mut blue = row(302, Team::Blue, 1, None);
         blue.heading_mdeg = 270_000;
         blue.wreck = true;
@@ -223,23 +224,21 @@ mod tests {
     }
 
     /// **16b cut I.4**: the flags are `w p s m h`, in that order, and `""` when
-    /// none apply; power online and starting never both. **17b cut M1a.5**:
-    /// `n` for a mind, where `m` would be.
+    /// none apply; power online and starting never both. **17b cut M4.3**: a
+    /// mind is `m` — one machine flag (17b cut M4.5a: the machine here is the
+    /// mind, where it was the reflex controller).
     #[test]
     fn i4_the_flags_are_in_their_fixed_order() {
         let mut unit = row(1, Team::Red, 1, Some((0, 0)));
         assert_eq!(unit_flags(&unit), "");
         unit.held = true;
         assert_eq!(unit_flags(&unit), "h");
-        unit.controller = Controller::Reflex;
+        unit.controller = Controller::Mind;
         assert_eq!(unit_flags(&unit), "mh");
         unit.power = Power::Starting;
         assert_eq!(unit_flags(&unit), "smh");
         unit.power = Power::Online;
         unit.wreck = true;
-        assert_eq!(unit_flags(&unit), "wpmh");
-        // 17b cut M4.3: a mind is `m` too — one machine flag.
-        unit.controller = Controller::Mind;
         assert_eq!(unit_flags(&unit), "wpmh");
     }
 
@@ -274,7 +273,7 @@ mod tests {
                 unit.heading_mdeg = 359_999;
                 unit.wreck = true;
                 unit.power = Power::Online;
-                unit.controller = Controller::Reflex;
+                unit.controller = Controller::Mind;
                 unit.held = true;
                 unit
             })

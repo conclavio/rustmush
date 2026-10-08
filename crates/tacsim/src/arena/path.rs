@@ -259,7 +259,7 @@ impl PathScratch {
     /// search meets it, so an edge met from two expansions is two; reset at the
     /// start of every search, and nought for a search with no limit, which reads
     /// no slope. It is a cost figure for the harness's report and the reflex
-    /// controller's [`crate::arena::reflex::ReflexCounters::slope_refusals`], not
+    /// controller's [`crate::arena::motor::MotorCounters::slope_refusals`], not
     /// state: [`PathScratch`]'s equality ignores it with the rest of the buffers.
     ///
     /// **16b cut AI.1**: a diagonal refused because **no** shoulder is open —
@@ -277,7 +277,7 @@ impl PathScratch {
     /// under a limit, counted once per refusal as the search meets it; reset at
     /// the start of every search, and nought for a search with no limit, which
     /// reads no shoulder. A cost figure for the report and
-    /// `crate::arena::reflex::ReflexCounters::corner_refusals`, not state.
+    /// `crate::arena::motor::MotorCounters::corner_refusals`, not state.
     #[must_use]
     pub fn corner_refusals(&self) -> u32 {
         self.corner_refused
@@ -292,7 +292,7 @@ impl PathScratch {
     /// nothing. A failed search is the most expensive search there is, and a
     /// bound on what one wake's searches cost that could not see it would bound
     /// nothing: the reflex follower adds this to
-    /// `crate::arena::reflex::ReflexCounters::path_cells` after every search.
+    /// `crate::arena::motor::MotorCounters::path_cells` after every search.
     ///
     /// **Plus the goal-side probe's cells, when one ran** (16b cut AI.1's
     /// repair; [`POCKET_PROBE_CELLS`]): a limited search past that many

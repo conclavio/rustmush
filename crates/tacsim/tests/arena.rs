@@ -512,6 +512,14 @@ fn replay_on(
 /// whole tape is under one chunk, so that buffer is exactly the state a resume
 /// has to carry. [`Replay::tape`] and [`Replay::events`] are the bytes the
 /// pulses handed out so far; [`finish_replay`] adds the rest.
+///
+/// **17b cut M4.5a**: each pulse is [`Arena::step_settled`] — the step, then
+/// the thinks it handed out answered and written at the sim-time moment the
+/// next step's head would write them — so a mind row read, hashed or encoded
+/// between two pulses (every resume here encodes after this) is the row the
+/// arena task leaves between two of its own. On a field with no mind it is
+/// [`Arena::step`] exactly; on one with minds the tape and the hashes are the
+/// unsettled step's.
 fn replay_on_from(
     arena: &mut Arena,
     walls: &mut dyn Iterator<Item = i64>,
@@ -561,7 +569,7 @@ fn replay_on_from(
             next += 1;
         }
         let started = arena.now_ms;
-        let out = arena.step(wall, &controls, &intents);
+        let out = arena.step_settled(wall, &controls, &intents);
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
@@ -3670,51 +3678,56 @@ fn the_hash_folds_the_issuer_and_not_the_spot() {
 /// for a `Support`'s charge `of` — the arc a screen watches and the unit a
 /// support keeps station on steer the machine, so a replay that lost either
 /// must not compare equal. The two roles are two states of their own too.
+///
+/// **17b cut M4.5a**: the machine is a unit mind, and the order stands on its
+/// mind row as the `FrameOrder` it reads (hash item 3b folds the mind row,
+/// its order included), where it was a `StandingOrder` on a reflex row. The
+/// order is written on the row directly, not through `apply_intent`: the
+/// arena re-keys a `Support`'s charge to the hull's own row for it and to
+/// `None` for a charge the hull does not hold classified, so two charges the
+/// mover has never seen would both read `None` and the "two charges" claim
+/// would be vacuous. The row's own scope is the mind's, so the charges are
+/// two contact ids of it (`301`, `302`), as the reflex row's were two units.
 #[test]
 fn the_hash_folds_a_screens_facing_and_a_supports_charge() {
-    let told = |objective: tacsim::deliberation::Objective| tacsim::deliberation::Order {
-        squad: tacsim::deliberation::SquadId {
-            team: Team::Red,
-            index: 1,
-        },
-        objective,
-        target: None,
-        horizon_ms: 600_000,
-        constraints: tacsim::deliberation::Constraints::default(),
-        ttl_ms: 600_000,
-        issued_ms: 0,
-        issuer: Some(ObjId(77)),
-        // 17b cut L.1: a pilot's character, never folded.
-        by: tacsim::deliberation::CharacterRef::Character { id: ObjId(9_001) },
-        spot: None,
-    };
-    let under = |objective: tacsim::deliberation::Objective| {
+    use tacsim::arena::perception::{FrameOrder, MindObjective};
+    use tacsim::arena::state::{ContactId, Controller};
+    let under = |objective: MindObjective| {
+        let mut mover = tank(MOVER, Team::Red, centre(10, 10));
+        mover.controller = Controller::Mind;
         let mut arena = arena_of(
-            vec![
-                tank(MOVER, Team::Red, centre(10, 10)),
-                tank(PARKED, Team::Blue, centre(30, 30)),
-            ],
+            vec![mover, tank(PARKED, Team::Blue, centre(30, 30))],
             &MatchConfig::default(),
         );
-        arena.reflex.set_order(
-            MOVER,
-            tacsim::deliberation::StandingOrder::accepted(told(objective), 0),
-        );
+        let Some(row) = arena.minds.get_mut(&MOVER) else {
+            panic!("the mover is a mind with a row");
+        };
+        row.order = Some(FrameOrder {
+            squad: SmolStr::new("red-1"),
+            objective,
+            hold_fire: false,
+            max_range_band: None,
+            expires_ms: 600_000,
+        });
         tacsim::arena::hash::state_hash(&arena)
     };
-    let east = under(tacsim::deliberation::Objective::Screen {
+    let east = under(MindObjective::Screen {
         facing_mdeg: 90_000,
     });
-    let west = under(tacsim::deliberation::Objective::Screen {
+    let west = under(MindObjective::Screen {
         facing_mdeg: 270_000,
     });
     assert_ne!(east, west, "the facing is folded");
-    let on_one = under(tacsim::deliberation::Objective::Support { of: ObjId(301) });
-    let on_two = under(tacsim::deliberation::Objective::Support { of: ObjId(302) });
+    let on_one = under(MindObjective::Support {
+        of: Some(ContactId(301)),
+    });
+    let on_two = under(MindObjective::Support {
+        of: Some(ContactId(302)),
+    });
     assert_ne!(on_one, on_two, "the charge is folded");
     assert_ne!(east, on_one, "and the two roles are two states");
     assert_eq!(
-        under(tacsim::deliberation::Objective::Screen {
+        under(MindObjective::Screen {
             facing_mdeg: 90_000,
         }),
         east,
@@ -5324,6 +5337,11 @@ fn integer_only(value: &serde_json::Value, path: &str) -> usize {
 /// the string's determinism. **The string is not key-sorted** and nothing here
 /// says it is: a struct writes its fields in declaration order and an
 /// enum-keyed map in the enum's order (`snapshot.rs`' module head).
+///
+/// **17b cut M4.5a**: the squadded arena is [`af1_mind_squad_arena`] — its
+/// four tanks unit minds where they were the reflex controller's — so the
+/// mind rows (memory bytes, buffered notices, cards, seals) are under both
+/// equalities and the integer walk; the claims are unchanged.
 #[test]
 fn af1_the_encoding_is_deterministic_and_integer() {
     // **The `preserve_order` canary**: `serde_json`'s object sorts whatever
@@ -5345,7 +5363,9 @@ fn af1_the_encoding_is_deterministic_and_integer() {
         0,
         &quiet,
     );
-    let mut squadded = af1_squad_arena();
+    // 17b cut M4.5a: the squad flown by minds (its rows, memory bytes and
+    // pending answers are then under both equalities).
+    let mut squadded = af1_mind_squad_arena();
     let _ = replay_on_from(
         &mut squadded,
         &mut (0..=5).map(|pulse| pulse * 5_000),
@@ -5386,9 +5406,33 @@ const SQUAD_BLUE_B: ObjId = ObjId(10);
 /// reflex controller and no pilot — red's pair in the south, blue's ten cells
 /// north facing it — so `Arena::new` deals each side into one squad under its
 /// lowest id, two squads, and the first pulse fills the squad watch.
+///
+/// **17b cut M4.5a — held on the reflex for the shape pin alone** (Q12(c)):
+/// [`af1_the_snapshot_shape_is_pinned`] walks this builder's unstepped arena,
+/// whose four reflex rows and check-out motor rows are under
+/// [`AF1_SHAPE_DIGEST`]; the pin moves only with a `SNAPSHOT_FORMAT` bump, so
+/// it moves with 17b cut M4.6's format 9 (the reflex rows' deletion) and not
+/// here. Every stepped user fields the same four tanks as minds
+/// ([`af1_mind_squad_arena`]).
 fn af1_squad_arena() -> Arena {
+    af1_squad_arena_on(tacsim::arena::state::Controller::Reflex)
+}
+
+/// **[`af1_squad_arena`]'s four tanks flown by unit minds** (17b cut M4.5a):
+/// the same field checked out `Controller::Mind` — the seal is the
+/// controller's to ignore (`seal_for` writes the fixture terms' engine), and
+/// `Arena::new` lays a mind row and schedules a think for each — on the native
+/// stock mind. The default profile presents no band, so a mind's slot never
+/// fires at a tank here (17b cut M4.3's `rig.rs` note); no user reads a shot.
+fn af1_mind_squad_arena() -> Arena {
+    af1_squad_arena_on(tacsim::arena::state::Controller::Mind)
+}
+
+/// The squadded field under `controller` ([`af1_squad_arena`],
+/// [`af1_mind_squad_arena`]).
+fn af1_squad_arena_on(controller: tacsim::arena::state::Controller) -> Arena {
     let machine = |mut unit: CustodyUnit| {
-        unit.controller = tacsim::arena::state::Controller::Reflex;
+        unit.controller = controller;
         unit
     };
     let facing_south = |mut unit: CustodyUnit| {
@@ -5426,7 +5470,11 @@ fn af1_squad_arena() -> Arena {
 /// and fire on each other from about 20 s; the order runs out at 20,000 ms, the
 /// next tick of each red unit notes it, and the squad sits in `squads_expired`
 /// until the 30,000 ms floor lets the arena report it — so the snapshot after
-/// the pulse at 25,000 ms carries both tables.
+/// the pulse at 25,000 ms carries both tables. **17b cut M4.5a**: on
+/// [`af1_mind_squad_arena`]'s minds the order runs out at the first landing at
+/// or after its 20,000 ms deadline (`expire_mind_order`: the `order_expired`
+/// line and the squad's note), and the four do not fire (no presenting
+/// profile); nothing here reads a shot.
 fn af1_squad_script() -> Vec<Beat> {
     let order = tacsim::deliberation::Order {
         squad: tacsim::deliberation::SquadId {
@@ -5476,10 +5524,19 @@ fn af1_squad_script() -> Vec<Beat> {
 /// running digests, and at least one resume point carries both the watch
 /// and a squad whose order ran out unreported, the watch as `[squad, watch]`
 /// pairs naming the squad's team and index.
+///
+/// **17b cut M4.5a**: the squad is flown by unit minds
+/// ([`af1_mind_squad_arena`]), as every AI-filled squad has been since 17b
+/// cut M4.3, where it was the reflex controller; every claim is kept. A
+/// mind's order runs out at the first landing at or after its deadline and
+/// journals `order_expired` and the squad's note there (`expire_mind_order`),
+/// so the two `ordered` and two `order_expired` lines, the reported expiry
+/// and the carried tables are reached as written; every pulse is settled
+/// ([`replay_on_from`]), so no resume point holds a think awaiting its answer.
 #[test]
 fn af1_a_squadded_arena_snapshots_after_its_first_pulse() {
     let quiet = |_: i64| Tempo::Quiet;
-    let mut reference_arena = af1_squad_arena();
+    let mut reference_arena = af1_mind_squad_arena();
     assert_eq!(reference_arena.squads.len(), 2, "one squad a side");
     let reference = replay(
         &mut reference_arena,
@@ -5512,7 +5569,7 @@ fn af1_a_squadded_arena_snapshots_after_its_first_pulse() {
     let mut open_chunks = 0_u32;
     for k in 0..=12_i64 {
         let resumed = resume_at_pulse(
-            af1_squad_arena(),
+            af1_mind_squad_arena(),
             definition(),
             5_000,
             k,
@@ -5744,10 +5801,26 @@ fn af1_the_snapshot_shape_is_pinned() {
 /// `ResumeRefusal::Snapshot` arm `crates/mushd/tests/arena_custody.rs`'
 /// `a_restart_mid_match_voids_a_match_whose_snapshot_is_wrong` pins for a
 /// refused decode.
+///
+/// **17b cut M4.5a**: the squad's four tanks are unit minds
+/// ([`af1_mind_squad_arena`]), where they were the reflex controller's. A
+/// mind's motor row is laid at its first goal's landing, not at check-out, so
+/// the mover's row is the one ITS goal laid by 20,000 ms (asserted to exist
+/// before it is written by hand); and the table's keys, which were the four
+/// machines the reflex
+/// adopted at check-out, are re-derived to the rows the minds' goals laid by
+/// 20,000 ms — one per machine a goal drove: red's pair, which the Advance
+/// sent for (6, 12), held to the minds whose memory holds a goal (the blue
+/// pair patrols with nothing held and nowhere to go, and lays none). The
+/// reflex rows the original held free of the
+/// nine driving fields are none on minds, so that claim is made of what
+/// stands in their place: each of the four MIND rows `state.minds` carries
+/// holds none of the nine — a mind steers only through its goal, which the
+/// motor table carries.
 #[test]
 fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     let quiet = |_: i64| Tempo::Quiet;
-    let mut arena = af1_squad_arena();
+    let mut arena = af1_mind_squad_arena();
     let _ = replay_on_from(
         &mut arena,
         &mut (0..=4).map(|pulse| pulse * 5_000),
@@ -5758,12 +5831,12 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     );
     // A row driving somewhere, all nine of its fields written (the remembered
     // stop too), so the round trip below is a round trip of something: the
-    // squad's machines hold their ground on this window, so the drive is
-    // written by hand, exactly as the reflex controller's own fields are by
-    // its unit tests.
-    let Some(motor) = arena.motors.row_mut(MOVER) else {
-        panic!("the mover's motor row, laid down at check-out");
-    };
+    // drive is written by hand, exactly as the reflex controller's own fields
+    // are by its unit tests.
+    let motor = arena
+        .motors
+        .row_mut(MOVER)
+        .expect("the mover's motor row, laid by its own goal's landing");
     motor.goal = Some((9, 9));
     motor.route = vec![(6, 6), (7, 7)];
     motor.searched_ms = Some(19_000);
@@ -5788,13 +5861,34 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         .and_then(serde_json::Value::as_object)
         .expect("the state carries the motor rows");
     let keys: Vec<&str> = rows.keys().map(String::as_str).collect();
-    assert_eq!(keys, ["10", "4", "5", "9"], "one row per machine, by unit");
-    let reflex_rows = state
-        .get("reflex")
-        .and_then(|reflex| reflex.get("units"))
+    // 17b cut M4.5a: one row per machine that a goal has put on the motor —
+    // red's pair, which the Advance sent for (6, 12); the blue pair patrols
+    // with nothing held and nowhere to go on this window and lays none.
+    let mut goals: Vec<String> = arena
+        .minds
+        .iter()
+        .filter(|(_, row)| {
+            tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
+                &row.memory,
+            ))
+            .goal
+            .is_some()
+        })
+        .map(|(unit, _)| unit.0.to_string())
+        .collect();
+    goals.sort();
+    assert_eq!(goals, ["4", "5"], "the minds that hold a goal");
+    assert_eq!(keys, goals, "one row per machine a goal drove, by unit");
+    let mind_rows = state
+        .get("minds")
         .and_then(serde_json::Value::as_object)
-        .expect("the reflex rows");
-    for (unit, row) in reflex_rows {
+        .expect("the mind rows");
+    assert_eq!(
+        mind_rows.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["10", "4", "5", "9"],
+        "one mind row per machine"
+    );
+    for (unit, row) in mind_rows {
         for moved in [
             "goal",
             "route",
@@ -5808,7 +5902,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         ] {
             assert!(
                 row.get(moved).is_none(),
-                "reflex row {unit} still carries `{moved}`"
+                "mind row {unit} carries `{moved}`"
             );
         }
     }
@@ -5869,7 +5963,9 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     if let Some(unit) = arena.unit_mut(MOVER) {
         unit.power = Power::Online;
     }
-    assert!(arena.reflex.unit(MOVER).is_none(), "a pilot's tank");
+    // 17b cut M4.5a: the probe reads the machine state (none: no machine
+    // flies a pilot's tank), not the reflex table.
+    assert_eq!(arena.machine_state(MOVER), None, "a pilot's tank");
     let _ = arena.step(
         0,
         &[],
@@ -6078,10 +6174,24 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
 /// The same document stamped `"format": 5` — what every snapshot written
 /// between 17b cuts M1a.5 and L.1 says — is refused as `Format { found: 5,
 /// expected: 6 }` by both the head read and the decode.
+///
+/// **17b cut M4.5a** (ported by 17b cut M4.3's precedent, `tests/cockpit.rs`'
+/// `l1_a_typed_order_carries_the_seats_character`; the orchestrator's Q3): the
+/// squad's machines are unit minds ([`af1_mind_squad_arena`]), as every
+/// AI-filled squad has been since 17b cut M4.3, and a mind's order names no
+/// author — D-UM-52's `by` is the world's watch's (`order_author`) and the
+/// tape's, never mind-row state, so the snapshot carries none to round-trip.
+/// What the snapshot carries of the order is the `FrameOrder` each mind reads
+/// — the squad (`red-1`), the objective (`Advance` to `(6, 12)`), the fire
+/// constraints and the deadline (20,000 ms) — and that is pinned here field
+/// for field: on both mind rows at 10,000 ms, in the encoded `state.minds`,
+/// and back from the decode with the same hash. The author half is declared
+/// the world's, not re-pinned; the format-5 refusal is unchanged.
 #[test]
 fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() {
+    use tacsim::arena::perception::{FrameOrder, MindObjective};
     let quiet = |_: i64| Tempo::Quiet;
-    let mut arena = af1_squad_arena();
+    let mut arena = af1_mind_squad_arena();
     let _ = replay_on_from(
         &mut arena,
         &mut (0..=2).map(|pulse| pulse * 5_000),
@@ -6090,44 +6200,42 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
         0,
         &quiet,
     );
-    let persona = tacsim::deliberation::CharacterRef::Persona {
-        squad: tacsim::deliberation::SquadId {
-            team: Team::Red,
-            index: 1,
-        },
+    let standing = FrameOrder {
+        squad: SmolStr::new("red-1"),
+        objective: MindObjective::Advance { to: (6, 12) },
+        hold_fire: false,
+        max_range_band: None,
+        expires_ms: 20_000,
     };
     for unit in [MOVER, SQUAD_RED_B] {
         assert_eq!(
-            arena
-                .reflex
-                .order(unit)
-                .map(|standing| standing.order.by.clone()),
-            Some(persona.clone()),
-            "the order stands on {unit:?} with its author"
+            arena.minds.get(&unit).and_then(|row| row.order.clone()),
+            Some(standing.clone()),
+            "the order stands on {unit:?}'s mind row"
         );
     }
     let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
     let state = state_of(&snapshot);
-    let carried = state
-        .get("reflex")
-        .and_then(|reflex| reflex.get("units"))
-        .and_then(|units| units.get(MOVER.0.to_string()))
-        .and_then(|row| row.get("order"))
-        .and_then(|standing| standing.get("order"))
-        .and_then(|order| order.get("by"))
-        .cloned();
-    assert_eq!(
-        carried,
-        Some(serde_json::json!({"kind": "persona", "squad": {"team": "red", "index": 1}})),
-        "the reflex row carries the order's author"
-    );
+    for unit in [MOVER, SQUAD_RED_B] {
+        let carried = state
+            .get("minds")
+            .and_then(|minds| minds.get(unit.0.to_string()))
+            .and_then(|row| row.get("order"))
+            .cloned()
+            .and_then(|order| serde_json::from_value::<FrameOrder>(order).ok());
+        assert_eq!(
+            carried,
+            Some(standing.clone()),
+            "the mind row of {unit:?} carries the order"
+        );
+    }
     let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
         .expect("the document decodes");
     for unit in [MOVER, SQUAD_RED_B] {
         assert_eq!(
-            decoded.reflex.order(unit),
-            arena.reflex.order(unit),
-            "the standing order came back, `by` included"
+            decoded.minds.get(&unit).map(|row| &row.order),
+            arena.minds.get(&unit).map(|row| &row.order),
+            "the standing order came back"
         );
     }
     assert_eq!(

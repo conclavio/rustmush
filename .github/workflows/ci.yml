@@ -49,19 +49,22 @@ jobs:
       - name: Cross-platform mind hashes (17b cut M2.7; D-UM-28)
         run: cargo test -p tacsim --test minds_rhai m2_the_twin_corpus_hashes_the_same_on_every_host -- --ignored --exact --nocapture
       # 17b cut M2.7 (doc 17 §22's M2 gate, "Gate A on whole-match hashes"):
-      # the pooled lane's thirty matches flown by T1 and by the Rhai Standard
-      # Doctrine alone, every substep hash equal. Sixty debug matches pass the
-      # thirty seconds a lane may spend in the workspace run (17b §1 (iii)),
-      # so the test is #[ignore]d and run here, on both hosts, by name.
+      # the pooled lane's matches flown by T1 and by the Rhai Standard
+      # Doctrine alone, every substep hash equal (fifteen T1-v-T1 matches since
+      # 17b cut M4.5 retired the twin's T0 column; thirty before). Thirty debug
+      # match plays pass the thirty seconds a lane may spend in the workspace
+      # run (17b §1 (iii)), so the test is #[ignore]d and run here, on both
+      # hosts, by name.
       - name: Whole-match mind hashes (17b cut M2.7; Gate A)
         run: cargo test -p tacsim --test twin m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -- --ignored --exact --nocapture
       # 17b cut M4.1 (doc 17 §6 "Execution policy", D-UM-22; the M4 row's
-      # gate): the pooled lane's thirty matches through the real arena task on
-      # a private think pool of one, two and four workers, each held to the
+      # gate): the pooled lane's matches through the real arena task on a
+      # private think pool of one, two and four workers, each held to the
       # library driven on the task's own wake rule — the tape, the end, the
-      # ledger digest and every snapshot's state hash. A hundred and twenty
-      # debug match-runs pass the thirty seconds a lane may spend in the
-      # workspace run, so the test is #[ignore]d and run here, by name.
+      # ledger digest and every snapshot's state hash. Fifteen T1-v-T1 matches
+      # since 17b cut M4.5 (the test keeps its name): forty-five debug
+      # match-runs pass the thirty seconds a lane may spend in the workspace
+      # run, so the test is #[ignore]d and run here, by name.
       - name: Pooled think seam over the twin's thirty (17b cut M4.1)
         run: cargo test -p tacsim --test minds_pool m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture
       # The bot crate is excluded from the workspace test run and tested on its own:

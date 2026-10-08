@@ -338,9 +338,12 @@ orders_per_minute = 12
 # choose a card (17b cut M5).
 # [tacsim.minds]
 # odds_floor_permille = 100
-# (17b cut M1b.5) a LAB knob: who flies the unseated hulls, "reflex" (today's
-# machine) or "mind" (the native stock mind on Line); production leaves it unset.
-# fill_controller = "reflex"
+# (17b cut M4.3, doc 17 section 9) the class the AI fill (and every seated hull) is
+# sealed and admitted at: "0" (the drive ROM), "I", "II" or "III". The seal's class is
+# the least of the stock rating (I), the core and this, so above "I" it caps nothing
+# until M5 rates minds. The lab knob fill_controller (17b cut M1b.5) is retired: the
+# fill IS a mind, and a config still naming it refuses the boot.
+# fill_class = "I"
 # (17b cut M3.5, doc 17 section 9) the centre's compute pool, ops a sim second:
 # a match's allotment is max(floor, base - per_unit x units), split evenly between
 # the sides; SIM UNIT and the check-out refuse a side whose minds' class ceilings

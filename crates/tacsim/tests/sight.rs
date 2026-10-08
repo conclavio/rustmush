@@ -276,11 +276,17 @@ fn fight(mut arena: Arena, until_ms: i64) -> Fight {
 /// terrain made [`ArenaTerrain::without_horizon`]. Every ledger byte, every
 /// per-substep hash and the final poses, limits and speeds are equal; the index
 /// read blocks and fewer cells; and the replay carried fire.
+///
+/// **17b cut M4.5a**: the stock machine a side is a unit mind flown by
+/// Standard Doctrine on the native stock mind ([`Muster::mind`], what
+/// production fields since 17b cut M4.3), where it was the reflex controller;
+/// every claim is kept as written. A mind's think reads the same perception the
+/// index serves, so the replay still carries it through fire.
 #[test]
 fn j2_a_shipped_fight_is_one_replay_with_and_without_the_index() {
     const BLUE_AT: (u16, u16) = (20, 97);
     let world = booted_world();
-    let terrain = shipped_arena(&world, &[&[Muster::reflex(Team::Blue, 1)]])
+    let terrain = shipped_arena(&world, &[&[Muster::mind(Team::Blue, 1)]])
         .definition
         .terrain
         .clone();
@@ -300,8 +306,8 @@ fn j2_a_shipped_fight_is_one_replay_with_and_without_the_index() {
         shipped_arena(
             &world,
             &[
-                &[Muster::reflex(Team::Red, 1).at(red_at)],
-                &[Muster::reflex(Team::Blue, 1).at(BLUE_AT)],
+                &[Muster::mind(Team::Red, 1).at(red_at)],
+                &[Muster::mind(Team::Blue, 1).at(BLUE_AT)],
             ],
         )
     };

@@ -2956,7 +2956,7 @@ fn warm_up(stepper: &mut Stepper, warm_until: i64) -> u32 {
     let mut warm_pulses = 1_u32;
     while arena.now_ms < warm_until {
         let out = arena.step(stepper.wall, &[], &[]);
-        stepper.slope_refusals += u64::from(out.reflex.slope_refusals);
+        stepper.slope_refusals += u64::from(out.motor.slope_refusals);
         for chunk in &out.ledger_chunks {
             stepper.counts.absorb(&chunk.bytes);
         }
@@ -2979,8 +2979,8 @@ struct Run {
     lagged_pulses: u32,
     perception_total: tacsim::arena::perception::PerceptionCounters,
     peak: tacsim::arena::perception::PerceptionCounters,
-    reflex_total: tacsim::arena::reflex::ReflexCounters,
-    reflex_peak: tacsim::arena::reflex::ReflexCounters,
+    reflex_total: tacsim::arena::motor::MotorCounters,
+    reflex_peak: tacsim::arena::motor::MotorCounters,
     /// **One sample per snapshot taken** (16b cut AF.2), empty unless the
     /// stepper opted in ([`Stepper::snapshot_ms`]).
     snapshots: Vec<SnapshotSample>,
@@ -3047,8 +3047,8 @@ fn run_wakes(
         peak: PerceptionCounters::default(),
         // 16b cut N.1: the controller's cost, as a running total and as the worst
         // wake. `harness.max_path_queries_per_pulse` is asserted against the peak.
-        reflex_total: tacsim::arena::reflex::ReflexCounters::default(),
-        reflex_peak: tacsim::arena::reflex::ReflexCounters::default(),
+        reflex_total: tacsim::arena::motor::MotorCounters::default(),
+        reflex_peak: tacsim::arena::motor::MotorCounters::default(),
         snapshots: Vec::new(),
         documents: Vec::new(),
     };
@@ -3100,7 +3100,7 @@ fn run_wakes(
         // lattice cuts, and a phase-4 drain's zero-length one.
         let full = u32::try_from((arena.now_ms - before) / substep_ms.max(1)).unwrap_or(0);
         run.short_substeps += u64::from(out.substeps.saturating_sub(full));
-        stepper.slope_refusals += u64::from(out.reflex.slope_refusals);
+        stepper.slope_refusals += u64::from(out.motor.slope_refusals);
         run.perception_total.absorb(&out.perception);
         let peak = &mut run.peak;
         peak.passes = peak.passes.max(out.perception.passes);
@@ -3113,22 +3113,22 @@ fn run_wakes(
         peak.detected = peak.detected.max(out.perception.detected);
         peak.classified = peak.classified.max(out.perception.classified);
         peak.lost = peak.lost.max(out.perception.lost);
-        run.reflex_total.absorb(&out.reflex);
+        run.reflex_total.absorb(&out.motor);
         let reflex_peak = &mut run.reflex_peak;
-        reflex_peak.ticks = reflex_peak.ticks.max(out.reflex.ticks);
-        reflex_peak.path_queries = reflex_peak.path_queries.max(out.reflex.path_queries);
-        reflex_peak.path_deferred = reflex_peak.path_deferred.max(out.reflex.path_deferred);
-        reflex_peak.path_cells = reflex_peak.path_cells.max(out.reflex.path_cells);
-        reflex_peak.path_failures = reflex_peak.path_failures.max(out.reflex.path_failures);
-        reflex_peak.traces = reflex_peak.traces.max(out.reflex.traces);
-        reflex_peak.intents = reflex_peak.intents.max(out.reflex.intents);
-        reflex_peak.shots = reflex_peak.shots.max(out.reflex.shots);
-        reflex_peak.slope_refusals = reflex_peak.slope_refusals.max(out.reflex.slope_refusals);
+        reflex_peak.ticks = reflex_peak.ticks.max(out.motor.ticks);
+        reflex_peak.path_queries = reflex_peak.path_queries.max(out.motor.path_queries);
+        reflex_peak.path_deferred = reflex_peak.path_deferred.max(out.motor.path_deferred);
+        reflex_peak.path_cells = reflex_peak.path_cells.max(out.motor.path_cells);
+        reflex_peak.path_failures = reflex_peak.path_failures.max(out.motor.path_failures);
+        reflex_peak.traces = reflex_peak.traces.max(out.motor.traces);
+        reflex_peak.intents = reflex_peak.intents.max(out.motor.intents);
+        reflex_peak.shots = reflex_peak.shots.max(out.motor.shots);
+        reflex_peak.slope_refusals = reflex_peak.slope_refusals.max(out.motor.slope_refusals);
         // 16b cut AI.1 (16c `B-84`): the two new counters, each wake's worst.
         reflex_peak.path_refused_unchanged = reflex_peak
             .path_refused_unchanged
-            .max(out.reflex.path_refused_unchanged);
-        reflex_peak.corner_refusals = reflex_peak.corner_refusals.max(out.reflex.corner_refusals);
+            .max(out.motor.path_refused_unchanged);
+        reflex_peak.corner_refusals = reflex_peak.corner_refusals.max(out.motor.corner_refusals);
         run.substeps.push(out.substeps);
         #[allow(clippy::cast_precision_loss)]
         run.frames.push(out.frames.len() as f64);
@@ -5994,7 +5994,7 @@ fn tacsim_harness_llm_cost_run() {
             tape.absorb(&chunk.bytes);
         }
         arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
-        expired = expired.saturating_add(u64::from(out.reflex.orders_expired));
+        expired = expired.saturating_add(u64::from(out.motor.orders_expired));
         if out.ended.is_some() {
             break;
         }
@@ -9144,7 +9144,7 @@ struct MindWake {
     horizon_probes: u64,
     jam_checks: u32,
     share_ops: u32,
-    /// Thinks collected this wake (`ReflexCounters::thinks`).
+    /// Thinks collected this wake (`MotorCounters::thinks`).
     thinks: u32,
     /// Collected and run at a substep head inside this wake's `ms`.
     inline_thinks: u32,
@@ -9209,7 +9209,7 @@ struct MindsRun {
     lagged_pulses: u32,
     perception_total: tacsim::arena::perception::PerceptionCounters,
     peak: tacsim::arena::perception::PerceptionCounters,
-    reflex_total: tacsim::arena::reflex::ReflexCounters,
+    reflex_total: tacsim::arena::motor::MotorCounters,
     snapshots: Vec<SnapshotSample>,
     documents: Vec<serde_json::Value>,
     /// `Arena::mind_view` on a clone, microseconds, on about forty wakes.
@@ -9245,7 +9245,7 @@ fn run_minds_wakes(
         lagged_pulses: 0,
         perception_total: PerceptionCounters::default(),
         peak: PerceptionCounters::default(),
-        reflex_total: tacsim::arena::reflex::ReflexCounters::default(),
+        reflex_total: tacsim::arena::motor::MotorCounters::default(),
         snapshots: Vec::new(),
         documents: Vec::new(),
         view_us: Vec::new(),
@@ -9302,9 +9302,9 @@ fn run_minds_wakes(
             // The ending substep's collections stay in `unsettled`, handed
             // out to nobody; an earlier substep's ran inline as ever.
             let unrun = u32::try_from(s.arena.thinks_outstanding().len()).unwrap_or(u32::MAX);
-            (out.reflex.thinks.saturating_sub(unrun), unrun)
+            (out.motor.thinks.saturating_sub(unrun), unrun)
         } else {
-            (out.reflex.thinks.saturating_sub(pooled_thinks), 0)
+            (out.motor.thinks.saturating_sub(pooled_thinks), 0)
         };
         // 4. The chunks: the publish's stand-in, as `run_wakes` counts them.
         for chunk in &out.ledger_chunks {
@@ -9381,13 +9381,13 @@ fn run_minds_wakes(
             horizon_probes: out.perception.horizon_probes,
             jam_checks: out.perception.jam_checks,
             share_ops: out.perception.share_ops,
-            thinks: out.reflex.thinks,
+            thinks: out.motor.thinks,
             inline_thinks,
             pooled_thinks,
             unrun_thinks,
-            landings: out.reflex.landings,
-            inline_faults: out.reflex.mind_faults,
-            inline_overflows: out.reflex.mind_overflows,
+            landings: out.motor.landings,
+            inline_faults: out.motor.mind_faults,
+            inline_overflows: out.motor.mind_overflows,
             pooled_faults: 0,
             pooled_overflows: 0,
             pooled_dropped: 0,
@@ -9402,7 +9402,7 @@ fn run_minds_wakes(
             wake.pooled_dropped = awaited.dropped;
         }
         run.wakes.push(wake);
-        s.slope_refusals += u64::from(out.reflex.slope_refusals);
+        s.slope_refusals += u64::from(out.motor.slope_refusals);
         run.perception_total.absorb(&out.perception);
         let peak = &mut run.peak;
         peak.passes = peak.passes.max(out.perception.passes);
@@ -9415,7 +9415,7 @@ fn run_minds_wakes(
         peak.detected = peak.detected.max(out.perception.detected);
         peak.classified = peak.classified.max(out.perception.classified);
         peak.lost = peak.lost.max(out.perception.lost);
-        run.reflex_total.absorb(&out.reflex);
+        run.reflex_total.absorb(&out.motor);
         run.substeps.push(out.substeps);
         #[allow(clippy::cast_precision_loss)]
         run.frames.push(out.frames.len() as f64);

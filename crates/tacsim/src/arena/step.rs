@@ -60,11 +60,11 @@ use crate::arena::intents::{
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::mind::SORTIE_MATCH_END;
 use crate::arena::motion::integrate;
+use crate::arena::motor::MotorCounters;
 use crate::arena::perception::{
     Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, FrameOrder, Named, Notice,
     NoticeKind, PerceptionCounters, RefusalDetail,
 };
-use crate::arena::reflex::ReflexCounters;
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
     ActionHash, Arena, Classification, ContactId, Controller, DueEvent, DueKind, EndReason,
@@ -541,11 +541,12 @@ pub struct StepOutput {
     /// harness asserts `harness.max_traces_per_pulse` and
     /// `harness.max_share_ops_per_pulse` against it.
     pub perception: PerceptionCounters,
-    /// **What the reflex controller cost this pulse** (16b cut N.1; doc 16 §1 A2:
-    /// *path queries per pulse under their bound*). The harness asserts
-    /// `harness.max_path_queries_per_pulse` against
-    /// [`ReflexCounters::path_queries`] and reports the state distribution.
-    pub reflex: ReflexCounters,
+    /// **What the machines cost this pulse** (16b cut N.1; doc 16 §1 A2: *path
+    /// queries per pulse under their bound*; 17b cut M4.5: was `reflex`). The
+    /// harness asserts `harness.max_path_queries_per_pulse` against
+    /// [`MotorCounters::path_queries`] and `max_path_cells_per_pulse` against
+    /// [`MotorCounters::path_cells`].
+    pub motor: MotorCounters,
     /// **The squads with something new to decide about** (16b cut N.2; doc 16 §6
     /// "Deliberation"), already floored by `[tacsim.arena].deliberate_min_ms` in
     /// arena time.
@@ -690,7 +691,7 @@ impl Arena {
                 ended: Some(ended),
                 substeps: 0,
                 perception: PerceptionCounters::default(),
-                reflex: ReflexCounters::default(),
+                motor: MotorCounters::default(),
                 deliberation: Vec::new(),
                 observer: None,
                 thinks: Vec::new(),
@@ -698,7 +699,7 @@ impl Arena {
         }
         self.substep_hashes.clear();
         let mut perception = PerceptionCounters::default();
-        let mut reflex = ReflexCounters::default();
+        let mut reflex = MotorCounters::default();
         // **17b cut M4.1**: the thinks the last pulse's last substep
         // collected, when nothing delivered their answers before this step
         // (`Arena::deliver_answers` — the sim task's pool, or
@@ -1281,7 +1282,7 @@ impl Arena {
             ended,
             substeps: ran,
             perception,
-            reflex,
+            motor: reflex,
             // **16b cut N.2** (doc 16 §6): the last thing the pulse does, after the
             // frames, so a signal describes the world the pilots were just shown.
             // A match that ended this pulse asks for nothing: an order for a match
@@ -1324,8 +1325,8 @@ impl Arena {
         let mut out = self.step(wall_now_ms, controls, intents);
         let thinks = std::mem::take(&mut out.thinks);
         let settled = self.deliver_answers(crate::arena::mind::run_batch_inline(&thinks));
-        out.reflex.mind_faults = out.reflex.mind_faults.saturating_add(settled.faults);
-        out.reflex.mind_overflows = out.reflex.mind_overflows.saturating_add(settled.overflows);
+        out.motor.mind_faults = out.motor.mind_faults.saturating_add(settled.faults);
+        out.motor.mind_overflows = out.motor.mind_overflows.saturating_add(settled.overflows);
         out
     }
 
@@ -1341,7 +1342,7 @@ impl Arena {
         &mut self,
         dt_ms: u32,
         perception: &mut PerceptionCounters,
-        reflex: &mut ReflexCounters,
+        reflex: &mut MotorCounters,
     ) -> bool {
         let mut notices: Vec<Notice> = Vec::new();
         // **16b cut F.2**: the stops this substep's motion produced, in unit-id
@@ -2231,7 +2232,7 @@ impl Arena {
             ended: Some(ended),
             substeps: 0,
             perception: PerceptionCounters::default(),
-            reflex: ReflexCounters::default(),
+            motor: MotorCounters::default(),
             deliberation: Vec::new(),
             // 16b cut I.4: a stopped pulse sends no pilot a frame and no
             // watcher a picture either; the world's `finish` clears every
@@ -3408,7 +3409,7 @@ impl Arena {
     ///
     /// The lazy action hash is opened as `ReflexTick`'s arm opens it, so a
     /// landing's lines share the substep's one hash.
-    fn run_mind_landings(&mut self, held: &mut Vec<DueEvent>, reflex: &mut ReflexCounters) {
+    fn run_mind_landings(&mut self, held: &mut Vec<DueEvent>, reflex: &mut MotorCounters) {
         let mut landings: Vec<(ObjId, u64, i64)> = Vec::new();
         held.retain(|event| match event.kind {
             DueKind::MindLand { unit, think_seq } => {
@@ -3443,7 +3444,7 @@ impl Arena {
     /// with the think's moment). So a think, clean or faulted, moves no later
     /// line's hash in its substep (opening one before every think would make
     /// the substep's later lines share one hash where each had its own).
-    fn run_mind_thinks(&mut self, held: &mut Vec<DueEvent>, reflex: &mut ReflexCounters) {
+    fn run_mind_thinks(&mut self, held: &mut Vec<DueEvent>, reflex: &mut MotorCounters) {
         let mut thinks: Vec<(ObjId, u64, i64)> = held
             .drain(..)
             .filter_map(|event| match event.kind {
@@ -4634,12 +4635,13 @@ mod tests {
             );
         }
 
-        // A seat's order to a tank the reflex controller drives is still a seat's:
-        // a gunner left on a machine-driven hull is bounded like anybody.
+        // A seat's order to a tank a machine drives is still a seat's: a gunner
+        // left on a machine-driven hull is bounded like anybody. (17b cut
+        // M4.5a: the machine is a mind, handed the hull as a release hands it.)
         let mut arena = fresh();
         arena.set_controller(
             A,
-            crate::arena::state::Controller::Reflex,
+            crate::arena::state::Controller::Mind,
             crate::arena::reflex::ReflexState::Withdraw,
         );
         let outcomes: Vec<IntentOutcome> = (0..9_u64)
@@ -4661,7 +4663,7 @@ mod tests {
         assert_eq!(
             outcomes.last(),
             Some(&IntentOutcome::Refused(Refusal::QueueFull)),
-            "the ninth seat order on a reflex-driven unit is refused"
+            "the ninth seat order on a mind-driven unit is refused"
         );
     }
 
@@ -6061,8 +6063,14 @@ mod tests {
     /// again after the phase.
     ///
     /// The two scouts are handed to the machine by the controller byte alone,
-    /// with no reflex tick scheduled, so nothing inside the substeps can open a
+    /// with no think scheduled, so nothing inside the substeps can open a
     /// slot of its own and the count is phase 2's.
+    ///
+    /// 17b cut M4.5a: the machine is a mind, by the byte alone (no
+    /// `set_controller`, whose think would take a hash of its own inside the
+    /// substeps): the order's Mind arm lays each row with no think due, and a
+    /// row with no due think folds bytes but opens no slot. The release reads
+    /// the mind row's held order.
     #[test]
     fn y1_phase_two_takes_one_hash_for_every_ordered_line_of_a_pulse() {
         const B: ObjId = ObjId(9);
@@ -6074,7 +6082,7 @@ mod tests {
         }
         for unit in [A, B] {
             if let Some(state) = arena.unit_mut(unit) {
-                state.controller = crate::arena::state::Controller::Reflex;
+                state.controller = crate::arena::state::Controller::Mind;
             }
         }
         let taken = || crate::arena::hash::STATE_HASHES_TAKEN.with(std::cell::Cell::get);
@@ -6174,8 +6182,15 @@ mod tests {
             u64::from(mixed.substeps) + 2,
             "the release and the order shared phase 2's one hash"
         );
-        assert_eq!(mixed.reflex.orders_released, 1, "one machine dropped");
-        assert_eq!(arena.reflex.order(A), None, "the release landed");
+        assert_eq!(mixed.motor.orders_released, 1, "one machine dropped");
+        assert!(
+            arena
+                .minds
+                .get(&A)
+                .and_then(|mind| mind.order.as_ref())
+                .is_none(),
+            "the release landed"
+        );
         let log = journal.events(&mut arena);
         let phase_two: Vec<&LedgerEvent> = log
             .iter()
