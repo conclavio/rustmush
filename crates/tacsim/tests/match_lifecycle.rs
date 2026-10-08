@@ -8035,14 +8035,15 @@ async fn af3_a_seat_the_world_saw_leave_or_reclaim_after_the_snapshot_is_reconci
             .last_observer(m.match_id)
             .filter(|picture| picture.now_ms > m.head.at_ms)
         {
+            // 17b cut M4.3: a released seat is a mind's.
             reflex = picture
                 .units
                 .iter()
-                .all(|unit| unit.controller == tacsim::arena::state::Controller::Reflex);
+                .all(|unit| unit.controller == tacsim::arena::state::Controller::Mind);
             break;
         }
     }
-    assert!(reflex, "every seat the snapshot held is the machine's");
+    assert!(reflex, "every seat the snapshot held is a mind's");
     m.rig.tick_to(30);
     let said = m.rig.say(0, "board");
     assert!(
@@ -8565,7 +8566,7 @@ const FOREIGN_ABI: &str = "rhai=1.25.0;api=1;stock=1";
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m3_start_writes_one_seal_per_unit_and_the_live_record_carries_them() {
     use tacsim::arena::state::Channel;
-    use tacsim::arena::{CoreClass, SealEngine, SortieId};
+    use tacsim::arena::{CoreClass, SortieId};
     use tacsim::deliberation::CharacterRef;
     let mut rig = fill_rig(1);
     rig.tick_to(1);
@@ -8604,7 +8605,13 @@ async fn m3_start_writes_one_seal_per_unit_and_the_live_record_carries_them() {
             assert_eq!(sealed.sortie, seal.sortie);
             assert_eq!(seal.sortie, SortieId::in_match(match_id.0, *unit));
             assert_eq!(seal.unit, *unit);
-            assert_eq!(seal.engine, SealEngine::Reflex, "#{}", unit.0);
+            // 17b cut M4.3: every hull on the production fill's engine.
+            assert_eq!(
+                seal.engine,
+                tacsim::match_::PRODUCTION_FILL_ENGINE,
+                "#{}",
+                unit.0
+            );
             assert_eq!(seal.abi.as_str(), tacsim::minds::MIND_ABI);
             assert_eq!(
                 tacsim::arena::digest_text(&seal.source_sha256),
@@ -8749,18 +8756,22 @@ async fn m3_a_second_pilots_hull_names_its_own_pilot_and_the_fill_names_the_lead
     assert!(said.contains("is stopping"), "{said}");
 }
 
-/// **A live record written before 17b cut M3.3 decodes, and resumes, with no
-/// seals** (`#[serde(default)]` under `LIVE_FORMAT` 1, the `leaders`
-/// precedent): the running match's live record with its `minds` key taken out
-/// of the state reads back an empty map, and the boot resumes the match from
-/// it — the seal checks have nothing to refuse.
+/// **A live record written before 17b cut M3.3 decodes with no seals, and
+/// the boot voids it by name** (`#[serde(default)]` under `LIVE_FORMAT` 1,
+/// the `leaders` precedent; 17b cut M4.3): the running match's live record
+/// with its `minds` key taken out of the state reads back an empty map. The
+/// seal checks have nothing to refuse, but the snapshot's units carry the
+/// seal references the check-out wrote — `scripted` on the production
+/// engine — and a record that names no seal names no source for them, so the
+/// installer refuses the first unit by name and the match is voided
+/// `aborted(restart)` with that sentence. (Before the flip every production
+/// seal was `reflex` and such a record resumed; a snapshot older than M3.2's
+/// format 8 is refused at its head either way.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn m3_a_pre_m3_live_record_decodes_with_no_seals_and_resumes() {
-    let mut rig = af3_rig(2);
-    let match_id = af3_running(&mut rig);
-    let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
-    let key = match_::live_key(match_id).to_string();
-    let mut document = rig.image_doc(&key).expect("the live record");
+async fn m4_3_a_pre_m3_live_record_decodes_with_no_seals_and_is_voided_by_name() {
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    let mut document = m.rig.image_doc(&key).expect("the live record");
     af3_state_edit(&mut document, |state| {
         let removed = state["record"]
             .as_object_mut()
@@ -8770,15 +8781,14 @@ async fn m3_a_pre_m3_live_record_decodes_with_no_seals_and_resumes() {
     let live = match_::LiveRecord::from_document(&document).expect("a pre-M3 record decodes");
     assert!(live.record.minds.is_empty());
     let older = document.clone();
-    let writes = rig
-        .reboot_mid_match_editing(|image| {
+    af3_void(
+        &mut m,
+        |image| {
             tacsim_docs(image).insert(smol_str::SmolStr::new(&key), older);
-        })
-        .await;
-    assert!(rig.registry().tasks().is_live(match_id), "it resumed");
-    assert!(set_of(&writes, &match_::result_key(match_id)).is_none());
-    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
-    assert!(said.contains("is stopping"), "{said}");
+        },
+        Reason::Prefix("the arena could not be opened: a sealed mind cannot be run: #"),
+    )
+    .await;
 }
 
 /// **A floor the Line card sits under refuses the check-out by name, before
@@ -8995,12 +9005,13 @@ async fn m3_the_stock_source_is_stored_once_and_never_rewritten() {
 
 /// **A resume across another `MIND_ABI` is refused by name and voided — on a
 /// reflex seal too** (17b cut M3.3; doc 17 §13, D-UM-23's R-B clause, D-16-3):
-/// a lobby match of two pilots (both hulls `reflex`-sealed), its live record's
-/// seals rewritten to [`FOREIGN_ABI`], is voided by the boot with
-/// `ResumeRefusal::MindAbi`'s sentence naming the first unit — the void of
-/// every other reason, with no tape line written for it.
+/// a lobby match of two pilots (both hulls sealed on the production fill's
+/// engine, 17b cut M4.3), its live record's seals rewritten to
+/// [`FOREIGN_ABI`], is voided by the boot with `ResumeRefusal::MindAbi`'s
+/// sentence naming the first unit — the void of every other reason, with no
+/// tape line written for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn m3_a_resume_across_another_abi_is_refused_by_name_on_a_reflex_seal() {
+async fn m3_a_resume_across_another_abi_is_refused_by_name_on_a_production_seal() {
     let mut m = af3_match(0, true).await;
     let key = match_::live_key(m.match_id).to_string();
     let record = m
@@ -9014,8 +9025,8 @@ async fn m3_a_resume_across_another_abi_is_refused_by_name_on_a_reflex_seal() {
         record
             .minds
             .values()
-            .all(|sealed| sealed.seal.engine == tacsim::arena::SealEngine::Reflex),
-        "every hull of a two-pilot match is reflex-sealed"
+            .all(|sealed| sealed.seal.engine == tacsim::match_::PRODUCTION_FILL_ENGINE),
+        "every hull of a two-pilot match is sealed on the production engine"
     );
     af3_void(
         &mut m,
@@ -9068,45 +9079,107 @@ async fn m3_a_scripted_seal_whose_source_is_missing_is_refused_by_name() {
                 });
             }
         },
+        // 17b cut M4.3: the stock source is compiled in, so the refusal
+        // names both places a source may be.
         Reason::Exact(format!(
-            "#{}'s mind source {missing} is not in this server's store",
+            "#{}'s mind source {missing} is neither this server's Standard Doctrine nor in its \
+             store",
             first.0
         )),
     )
     .await;
 }
 
-/// **Only a scripted seal needs its source in the store** (17b cut M3.3; doc
-/// 17 §13): every seal of the live record rewritten to a digest no
-/// `tacsim:mindsrc:` document holds, with each engine left `reflex` as the
-/// check-out sealed it — the boot resumes the match. The reflex and native
-/// engines run compiled code and never read a source, so a store that lost
-/// (or never had) a document voids no match that does not run one.
+/// **Only a scripted seal needs its source; the production seal is one**
+/// (17b cut M3.3 as 17b cut M4.3 re-points it; doc 17 §13): every seal of
+/// the live record rewritten to a digest neither Standard Doctrine's nor any
+/// `tacsim:mindsrc:` document's, with each engine left as the check-out
+/// sealed it (`PRODUCTION_FILL_ENGINE`, `scripted`) — the boot voids the match
+/// by name on the first unit, before any tape line. The same record with
+/// every engine rewritten `native` resumes: the native and reflex engines
+/// run compiled code and never read a source, so a store that lost (or never
+/// had) a document voids no match that does not run one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn m3_a_reflex_seal_whose_source_is_missing_still_resumes() {
-    let mut rig = af3_rig(2);
-    let match_id = af3_running(&mut rig);
-    let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
-    let record = rig.book().get(match_id).cloned().expect("the record");
+async fn m4_3_a_production_seal_whose_source_is_missing_is_refused_and_a_native_one_resumes() {
+    assert_eq!(
+        tacsim::match_::PRODUCTION_FILL_ENGINE,
+        tacsim::arena::SealEngine::Scripted,
+        "the production fill runs a source (M4.2's decision); re-read this test if it moves"
+    );
+    let missing = "0".repeat(64);
+
+    // Scripted, source missing: voided by name.
+    let mut m = af3_match(0, true).await;
+    let key = match_::live_key(m.match_id).to_string();
+    let record = m
+        .rig
+        .book()
+        .get(m.match_id)
+        .cloned()
+        .expect("the running record");
     assert!(!record.minds.is_empty());
     assert!(
         record
             .minds
             .values()
-            .all(|sealed| sealed.seal.engine == tacsim::arena::SealEngine::Reflex),
-        "every hull of a lobby match is sealed to the reflex engine"
+            .all(|sealed| sealed.seal.engine == tacsim::arena::SealEngine::Scripted),
+        "every hull of a lobby match is sealed on the production engine"
     );
-    let key = match_::live_key(match_id).to_string();
     let units: Vec<ObjId> = record.minds.keys().copied().collect();
-    let missing = "0".repeat(64);
+    let first = *units.first().expect("a seal");
+    let written = missing.clone();
+    let rewritten = units.clone();
+    af3_void(
+        &mut m,
+        |image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    for unit in &rewritten {
+                        let sealed = &mut state["record"]["minds"][unit.0.to_string()]["seal"];
+                        assert_eq!(sealed["engine"], serde_json::json!("scripted"));
+                        sealed["source_sha256"] = serde_json::json!(written);
+                    }
+                });
+            }
+        },
+        Reason::Exact(format!(
+            "#{}'s mind source {missing} is neither this server's Standard Doctrine nor in its \
+             store",
+            first.0
+        )),
+    )
+    .await;
+
+    // Native, source missing: resumes. The engine is rewritten in BOTH places
+    // it is carried — the record's seal (what the resume's refusal reads) and
+    // the snapshot's seal reference on each unit (what the installer reads:
+    // the arena keeps the seal it was checked out under, never re-derived
+    // from the record) — as a native check-out would have written them.
+    let mut rig = af3_rig(2);
+    let match_id = af3_running(&mut rig);
+    let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
+    let record = rig.book().get(match_id).cloned().expect("the record");
+    let key = match_::live_key(match_id).to_string();
+    let snapshot_key = match_::snapshot_key(match_id).to_string();
+    let units: Vec<ObjId> = record.minds.keys().copied().collect();
     let writes = rig
         .reboot_mid_match_editing(|image| {
             if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
                 af3_state_edit(document, |state| {
                     for unit in &units {
                         let sealed = &mut state["record"]["minds"][unit.0.to_string()]["seal"];
-                        assert_eq!(sealed["engine"], serde_json::json!("reflex"));
+                        sealed["engine"] = serde_json::json!("native");
                         sealed["source_sha256"] = serde_json::json!(missing);
+                    }
+                });
+            }
+            if let Some(document) = tacsim_docs(image).get_mut(snapshot_key.as_str()) {
+                af3_state_edit(document, |state| {
+                    let rows = state["units"].as_array_mut().expect("the snapshot's units");
+                    assert_eq!(rows.len(), units.len());
+                    for row in rows {
+                        assert_eq!(row["seal"]["engine"], serde_json::json!("scripted"));
+                        row["seal"]["engine"] = serde_json::json!("native");
                     }
                 });
             }
@@ -9279,7 +9352,7 @@ fn twelve_a_side(
 }
 
 /// `match_::start` as staff's `@arena/start` calls it — the proving ground,
-/// a skirmish, the reflex fill — under `cfg`'s blocks.
+/// a skirmish, the mind fill (17b cut M4.3) — under `cfg`'s blocks.
 fn start_as_staff(
     rig: &mut Rig,
     cfg: &TacsimConfig,
@@ -9307,7 +9380,6 @@ fn start_as_staff(
         &cfg.match_,
         &cfg.sensors,
         tacsim::arena::MatchMode::Skirmish,
-        tacsim::arena::state::Controller::Reflex,
     )
 }
 
@@ -9327,10 +9399,10 @@ fn start_as_staff(
 ///   `spoken 126,000` (seven Class III before it), said in doc 17 §9's
 ///   sentence behind the side — before any write: no unit deployed, no
 ///   record in the book;
-/// * seven Class III (and five fill hulls at Class 0's 400): admitted, and
-///   the match opens;
+/// * seven Class III (and five fill hulls at Class I's 1,500 — 17b cut
+///   M4.3's `fill_class`: 133,500 a side): admitted, and the match opens;
 /// * on a fresh world under the same pool, twelve a side by the fill rule
-///   (4,800 a side): admitted;
+///   (18,000 a side): admitted;
 /// * and at the STOCK pool, on a fresh world, twelve Class III a side —
 ///   216,000 a side: admitted (the declared fact).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -9438,14 +9510,15 @@ fn seat_beside(rig: &mut Rig, n: usize, unit: ObjId) {
 }
 
 /// **The fill rule decides the pool, and the pool is the LAST gate** (17b cut
-/// M3.5; doc 17 §9, D-UM-36), under a pool small enough that Class 0's 400 is
-/// what tips a side: `[tacsim.minds]` at base 9,000, per unit 1, floor 1 —
-/// 8,976 at 24 units, a half of 4,488, so eleven fill hulls (4,400) fit and a
-/// twelfth (4,800) does not.
+/// M3.5; doc 17 §9, D-UM-36), under a pool small enough that the fill's
+/// class is what tips a side — **17b cut M4.3**: `[tacsim.minds].fill_class`,
+/// Class I's 1,500 — `[tacsim.minds]` at base 33,024, per unit 1, floor 1 —
+/// 33,000 at 24 units, a half of 16,500, so eleven fill hulls (16,500) fit
+/// and a twelfth (18,000) does not.
 ///
 /// * twelve a side, nobody seated, every hull by the fill rule: red is
-///   refused on its TWELFTH hull — `would 400`, `spoken 4,400` — so an
-///   unseated hull loads the fill's Class 0;
+///   refused on its TWELFTH hull — `would 1,500`, `spoken 16,500` — so an
+///   unseated hull loads the fill's Class I;
 /// * a pilot stationed on red's seventh hull, a spare (the two writes
 ///   `BOARD` makes): red is admitted with that hull loading nothing, and
 ///   blue — all fill — is refused the same way: a seated hull loads 0;
@@ -9460,17 +9533,17 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
     use tacsim::arena::core::CoreClass;
     use tacsim::match_::pool::PoolRefusal;
     let mut tiny = config();
-    tiny.minds.pool_base_ops_s = 9_000;
+    tiny.minds.pool_base_ops_s = 33_024;
     tiny.minds.pool_per_unit_ops_s = 1;
     tiny.minds.pool_floor_ops_s = 1;
-    assert_eq!(tacsim::match_::pool::pool_for(&tiny.minds, 24), 8_976);
+    assert_eq!(tacsim::match_::pool::pool_for(&tiny.minds, 24), 33_000);
     let fill_refused = |team: &'static str| {
         Err(match_::StartError::Pool {
             team,
             refusal: PoolRefusal {
-                would: 400,
-                half: 4_488,
-                spoken: 4_400,
+                would: 1_500,
+                half: 16_500,
+                spoken: 16_500,
             },
         })
     };
@@ -9484,7 +9557,7 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
     assert_eq!(
         start_as_staff(&mut rig, &tiny, 95, &sides),
         fill_refused("red"),
-        "twelve unseated hulls load the fill's Class 0 each"
+        "twelve unseated hulls load the fill's Class I each"
     );
 
     // Red's first spare (its seventh hull): a seat on it loads nothing.

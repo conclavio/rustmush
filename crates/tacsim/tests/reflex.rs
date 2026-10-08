@@ -374,6 +374,93 @@ fn tank(
     .sealed()
 }
 
+/// **The same custody sealed as the production fill is** (17b cut M4.3):
+/// `SealTerms::production_fixture()` over the custody as it stands, for the
+/// (j) field's production pin.
+fn as_fill(mut unit: CustodyUnit) -> CustodyUnit {
+    unit.reseal(&tacsim::match_::SealTerms::production_fixture())
+        .expect("the production terms seal");
+    unit
+}
+
+/// **The production installer over Standard Doctrine** (17b cut M4.3): every
+/// scripted seal's runner installed from the compiled-in stock source, as a
+/// production match installs it; a no-op when the fill engine is `Native`.
+fn install_standard(arena: &mut Arena) -> usize {
+    let cfg = arena.arena_cfg.clone();
+    tacsim::minds::install_sealed_runners(arena, &cfg, &|_| {
+        Some(tacsim::minds::STANDARD_RHAI.to_owned())
+    })
+    .expect("Standard Doctrine installs")
+}
+
+/// **A profile that presents every band** (17b cut M4.3; `tests/minds.rs`'
+/// `every_band_profile`): four bands of one hull section and no
+/// consequence, so a mind's slot has odds to clear its floor with — a
+/// `UnitProfile::default()` target presents no band, and a slot never fires
+/// at it, where the reflex machine fired regardless.
+fn presenting_profile() -> tacsim::arena::resolution::UnitProfile {
+    tacsim::arena::resolution::UnitProfile {
+        bands: ["front", "left", "right", "rear"]
+            .into_iter()
+            .map(|band| tacsim::arena::resolution::BandProfile {
+                band: SmolStr::new(band),
+                width_cm: 300,
+                height_cm: 200,
+                sections: vec![(SmolStr::new("hull"), 1)],
+            })
+            .collect(),
+        sections: vec![tacsim::arena::resolution::SectionProfile {
+            id: SmolStr::new("hull"),
+            facets: vec![SmolStr::new("front")],
+            consequences: Vec::new(),
+            struck_through: None,
+        }],
+    }
+}
+
+/// The same custody presenting every band ([`presenting_profile`]), sealed
+/// again as it stands.
+fn presenting(unit: CustodyUnit) -> CustodyUnit {
+    CustodyUnit {
+        profile: presenting_profile(),
+        ..unit
+    }
+    .sealed()
+}
+
+/// The same custody seeing `cells` (its sensor's range), sealed again.
+fn seeing(unit: CustodyUnit, cells: u16) -> CustodyUnit {
+    with_sight(unit, cells).sealed()
+}
+
+/// **The (j) field's substep length** (17b cut M4.3): what a mind's landing
+/// stands off its think by, read off a fresh field.
+fn first_arena_substep_ms() -> i64 {
+    j_field().substep_len_ms()
+}
+
+/// **What the machine flying `unit` is doing** (17b cut M4.3): either
+/// machine's doctrine state through `Arena::machine_state` — the mind's off
+/// its cached state, the reflex's off its row — `None` for a pilot's hull.
+fn machine_state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
+    arena.machine_state(unit)
+}
+
+/// **The stock memory a mind's row holds** (17b cut M4.3): Standard
+/// Doctrine's keys as the native mind reads them off the row's bytes.
+fn stock_memory_of(arena: &Arena, unit: ObjId) -> tacsim::arena::stock_mind::StockMemory {
+    arena
+        .minds
+        .get(&unit)
+        .map(|row| {
+            tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
+                &row.memory,
+            ))
+        })
+        .unwrap_or_default()
+}
+
 /// The same tank with a longer sight, so a hostile stays held while the machine
 /// drives the other way — which is what an `Approach` on a sixteen-cell window
 /// needs.
@@ -1477,40 +1564,52 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
     replay_driven(Drive::Every(cadence_ms), until_ms).0
 }
 
-/// **The (j) field**: two reflex machines, `RED` armed with the cannon and
-/// `RED2` with nothing, and the seated `BLUE` they detect, classify, lock and
-/// shoot — the tempo pinned at `Quiet` (D-16-2: the tempo decides only how
-/// often the arena steps, so the replays of it differ in **cadence** and in
-/// nothing else).
+/// **The (j) field**: two machines, `RED` armed with the cannon and `RED2`
+/// with nothing, and the seated `BLUE` they detect, classify, lock and shoot
+/// — the tempo pinned at `Quiet` (D-16-2: the tempo decides only how often
+/// the arena steps, so the replays of it differ in **cadence** and in nothing
+/// else). **17b cut M4.3**: the machines are minds sealed as the production
+/// fill is ([`as_fill`]) with their runner installed as production installs
+/// it ([`install_standard`]) — the production shape, which is what the pins
+/// over this field hold — and, as `tests/minds.rs`' two-T1 (j) field has
+/// been since 17b cut M1b.2, every hull sees ten cells and the seated tank
+/// presents every band ([`presenting`]): a mind's slot fires at odds, and a
+/// default profile presents none, so the reflex-era field (five cells, no
+/// bands) held a mind in `Approach` with no shot where the reflex machine
+/// fired seven times. Declared in the cut's record with the one re-bless.
 fn j_field() -> Arena {
     let mut arena = arena_of(
         vec![
-            tank(
-                RED,
-                Team::Red,
-                centre(6, 8),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                RED2,
-                Team::Red,
-                centre(6, 10),
-                Vec::new(),
-                Controller::Reflex,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(9, 8),
-                Vec::new(),
-                Controller::Pilot,
-            ),
+            as_fill(seeing(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(6, 8),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                10,
+            )),
+            as_fill(seeing(
+                tank(RED2, Team::Red, centre(6, 10), Vec::new(), Controller::Mind),
+                10,
+            )),
+            as_fill(presenting(seeing(
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(9, 8),
+                    Vec::new(),
+                    Controller::Pilot,
+                ),
+                10,
+            ))),
         ],
         &[],
         &arena_cfg(reflex_cfg()),
         &[BLUE],
     );
+    let _ = install_standard(&mut arena);
     // D-16-2: the tempo decides only how often the arena steps. It is pinned so
     // that the three replays differ in **cadence** and in nothing else.
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
@@ -1573,14 +1672,14 @@ fn replay_driven(drive: Drive, until_ms: i64) -> (Replay, Vec<i64>, i64) {
         .units
         .iter()
         .map(|unit| {
-            let row = arena.reflex.unit(unit.id);
             (
                 unit.id,
                 unit.pose.x_cm,
                 unit.pose.y_cm,
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
-                row.map_or(ReflexState::Startup, |row| row.state),
+                // 17b cut M4.3: either machine's state (the mind's cached).
+                machine_state_of(&arena, unit.id).unwrap_or(ReflexState::Startup),
                 motor(&arena, unit.id).goal,
             )
         })
@@ -1688,18 +1787,27 @@ fn u1_two_reflex_units_on_the_task_s_own_wakes_are_the_fixed_cadence_replay() {
 /// `0xdb4f_9096_c79f_b530` became `0x5689_35a8_5830_609d` (the field's three
 /// `mind_sealed` lines shift the ledger sequence every substep folds; its
 /// tape's diff is `M1B0_J_LINES`').
+///
+/// **17b cut M4.3 — the flip's one production re-bless** (declared with
+/// `tests/minds.rs`' `m1a5_the_production_hash_does_not_move`, the same
+/// constants): the field's two machines are minds sealed as the production
+/// fill is, on the two-T1 (j) shape ([`j_field`]), so the controller byte,
+/// the mind rows, the production engine's seal digests and the script's
+/// digest fold where the reflex rows did: `0x18df_dd94_73aa_5a36` became
+/// `0x692d_5b0e_3c04_93a6` and `0x5689_35a8_5830_609d` became
+/// `0xd243_f6a1_30c0_00c7`.
 #[test]
 fn m1a1_the_moved_motor_folds_the_same_bytes() {
     let run = replay(1_000, 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
     assert_eq!(
         run.hashes.first().copied(),
-        Some(0x18df_dd94_73aa_5a36),
+        Some(0x692d_5b0e_3c04_93a6),
         "the first substep's hash moved"
     );
     assert_eq!(
         run.hashes.last().copied(),
-        Some(0x5689_35a8_5830_609d),
+        Some(0xd243_f6a1_30c0_00c7),
         "the last substep's hash moved"
     );
 }
@@ -1723,68 +1831,66 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
 /// (the field runs to 30 s and does not end, so no close), every line's `seq`
 /// and `hash` re-blessed with them and every other key byte-equal (the diff,
 /// ignoring `seq` and `hash`, is the three inserted lines alone).
+///
+/// **17b cut M4.3 — re-recorded with the flip's one production re-bless**
+/// (61 lines to 50): the field's machines are minds on the production
+/// fill's seal, on the two-T1 (j) shape — every `fired` line now carries the
+/// mind's `by` and slot (the first a fresh-lock citation at a landing, the
+/// rest the slot's own at the cannon's `WeaponReady`), the one `locked` is a
+/// mind's, `impact` lines land as `hit` on the presenting tank, and every
+/// `mind_sealed` line's `source` is the script's new digest; every `hash` is
+/// re-blessed under the one reason.
 const M1B0_J_LINES: &[&str] = &[
-    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":10208702509912831189}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"8b3ec78c9d957865","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":10208702509912831189}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"8b3ec78c9d957865","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":10208702509912831189}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"8b3ec78c9d957865","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":10208702509912831189}"#,
-    r#"{"seq":5,"t_ms":4,"kind":"startup","unit":6,"hash":2996873795002722943}"#,
-    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":1792394806382189110}"#,
-    r#"{"seq":7,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":1792394806382189110}"#,
-    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":1792394806382189110}"#,
-    r#"{"seq":9,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":1792394806382189110}"#,
-    r#"{"seq":10,"t_ms":482,"kind":"startup","unit":4,"hash":13810290946845364247}"#,
-    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":11054153229993072861}"#,
-    r#"{"seq":12,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":11054153229993072861}"#,
-    r#"{"seq":13,"t_ms":504,"kind":"power_online","unit":6,"hash":365503047977354636}"#,
-    r#"{"seq":14,"t_ms":982,"kind":"power_online","unit":4,"hash":1692742163940048422}"#,
-    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":6318265858641098014}"#,
-    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":6318265858641098014}"#,
-    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":6318265858641098014}"#,
-    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":6318265858641098014}"#,
-    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":1561949766072869701}"#,
-    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":1561949766072869701}"#,
-    r#"{"seq":21,"t_ms":5000,"kind":"position_summary","units":[[4,5595,8102,0,66225],[6,4096,8644,0,256398],[9,9500,8500,0,0]],"hash":13543320779817662293}"#,
-    r#"{"seq":22,"t_ms":5482,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":7633545711714812349}"#,
-    r#"{"seq":23,"t_ms":5482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":3452,"rounds":1,"hash":7633545711714812349}"#,
-    r#"{"seq":24,"t_ms":5505,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":14950976175792257247}"#,
-    r#"{"seq":25,"t_ms":5505,"kind":"miss","shot_seq":1,"reason":"dispersion","draws":[["hit:1",12072725193963834385]],"hash":14950976175792257247}"#,
-    r#"{"seq":26,"t_ms":7004,"kind":"lost","viewer":6,"contact":10007312734772483259,"target":9,"hash":4760911751521090113}"#,
-    r#"{"seq":27,"t_ms":7189,"kind":"lost","viewer":9,"contact":14127509583146488135,"target":6,"hash":4760911751521090113}"#,
-    r#"{"seq":28,"t_ms":9004,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":12650621266585428641}"#,
-    r#"{"seq":29,"t_ms":9189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":12650621266585428641}"#,
-    r#"{"seq":30,"t_ms":9482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":2606,"rounds":1,"hash":2153365778250645452}"#,
-    r#"{"seq":31,"t_ms":9499,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":14618851027853278202}"#,
-    r#"{"seq":32,"t_ms":9499,"kind":"miss","shot_seq":2,"reason":"dispersion","draws":[["hit:2",11307540289106727687]],"hash":14618851027853278202}"#,
-    r#"{"seq":33,"t_ms":10000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,5295,8469,0,88504],[9,9500,8500,0,0]],"hash":12706432005413163661}"#,
-    r#"{"seq":34,"t_ms":12004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:13",15933459801938948417]],"hash":2363237014592649030}"#,
-    r#"{"seq":35,"t_ms":12189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:13",1274589620402242772]],"hash":2363237014592649030}"#,
-    r#"{"seq":36,"t_ms":12750,"kind":"blocked","unit":6,"x":6,"y":8,"cause":"occupied","hash":13016818562467187295}"#,
-    r#"{"seq":37,"t_ms":13482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":2606,"rounds":1,"hash":623319411892107775}"#,
-    r#"{"seq":38,"t_ms":13499,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":15485776176745391050}"#,
-    r#"{"seq":39,"t_ms":13499,"kind":"miss","shot_seq":3,"reason":"dispersion","draws":[["hit:3",17241375169118599602]],"hash":15485776176745391050}"#,
-    r#"{"seq":40,"t_ms":15000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,6259,7574,0,93416],[9,9500,8500,0,0]],"hash":2091229581232602735}"#,
-    r#"{"seq":41,"t_ms":17482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":2606,"rounds":1,"hash":14570106260550643457}"#,
-    r#"{"seq":42,"t_ms":17499,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":1153146724210216547}"#,
-    r#"{"seq":43,"t_ms":17499,"kind":"miss","shot_seq":4,"reason":"dispersion","draws":[["hit:4",9783297951381390390]],"hash":1153146724210216547}"#,
-    r#"{"seq":44,"t_ms":20000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,11257,7500,0,90038],[9,9500,8500,0,0]],"hash":17256091987076173927}"#,
-    r#"{"seq":45,"t_ms":21482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":2606,"rounds":1,"hash":15658218364695728569}"#,
-    r#"{"seq":46,"t_ms":21499,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":3944827584050718812}"#,
-    r#"{"seq":47,"t_ms":21499,"kind":"miss","shot_seq":5,"reason":"dispersion","draws":[["hit:5",3759784274594068254]],"hash":3944827584050718812}"#,
-    r#"{"seq":48,"t_ms":23004,"kind":"lost","viewer":6,"contact":7330038967278110817,"target":4,"hash":878488097393092135}"#,
-    r#"{"seq":49,"t_ms":23482,"kind":"lost","viewer":4,"contact":527481421542167805,"target":6,"hash":3800485194892091894}"#,
-    r#"{"seq":50,"t_ms":25000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,11335,7476,0,271637],[9,9500,8500,0,0]],"hash":6795796013870350488}"#,
-    r#"{"seq":51,"t_ms":25004,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":12002791566879948353}"#,
-    r#"{"seq":52,"t_ms":25482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":2606,"rounds":1,"hash":15098324840057801635}"#,
-    r#"{"seq":53,"t_ms":25482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":1926121020804487366}"#,
-    r#"{"seq":54,"t_ms":25499,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":1926121020804487366}"#,
-    r#"{"seq":55,"t_ms":25499,"kind":"miss","shot_seq":6,"reason":"dispersion","draws":[["hit:6",12808839036685962400]],"hash":1926121020804487366}"#,
-    r#"{"seq":56,"t_ms":28004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:29",8154326526551528345]],"hash":5100881416550395521}"#,
-    r#"{"seq":57,"t_ms":28482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:29",685397595897884630]],"hash":14277313074170903711}"#,
-    r#"{"seq":58,"t_ms":29482,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":2606,"rounds":1,"hash":1583073276663384982}"#,
-    r#"{"seq":59,"t_ms":29499,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":9840298904212512718}"#,
-    r#"{"seq":60,"t_ms":29499,"kind":"miss","shot_seq":7,"reason":"dispersion","draws":[["hit:7",9819418404979189944]],"hash":9840298904212512718}"#,
-    r#"{"seq":61,"t_ms":30000,"kind":"position_summary","units":[[4,6894,8472,0,89384],[6,6335,7500,0,270000],[9,9500,8500,0,0]],"hash":6235574156221505693}"#,
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":10980918811089946553}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"102cc7d27eb411c4","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":10980918811089946553}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"102cc7d27eb411c4","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":10980918811089946553}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"102cc7d27eb411c4","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":10980918811089946553}"#,
+    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":7578813864629015462}"#,
+    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":7578813864629015462}"#,
+    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":7578813864629015462}"#,
+    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":7578813864629015462}"#,
+    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":5179312435552177570}"#,
+    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":7970699729493532521}"#,
+    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":7970699729493532521}"#,
+    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":4900940672225841189}"#,
+    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":6395946434604614421}"#,
+    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":18098397147677821846}"#,
+    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":10054437663422801006}"#,
+    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":10054437663422801006}"#,
+    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":10054437663422801006}"#,
+    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":10054437663422801006}"#,
+    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":4874462736596767727}"#,
+    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":4874462736596767727}"#,
+    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":766012433915896846}"#,
+    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":766012433915896846}"#,
+    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":17229407221696171552}"#,
+    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":17229407221696171552}"#,
+    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":17229407221696171552}"#,
+    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":4736239471108925871}"#,
+    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":17572842584584320094}"#,
+    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":9891171119632133357}"#,
+    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":7631077653560229717}"#,
+    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":7631077653560229717}"#,
+    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":16835372029422742501}"#,
+    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":13135967724537277579}"#,
+    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":2700608292917161819}"#,
+    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":2700608292917161819}"#,
+    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":10970212606581728184}"#,
+    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":16471317422612888285}"#,
+    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":5480085504209736883}"#,
+    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":5480085504209736883}"#,
+    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":4566621025185127329}"#,
+    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":6186415617633450081}"#,
+    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":6186415617633450081}"#,
+    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":6186415617633450081}"#,
+    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":6243572993241446898}"#,
+    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":10807025175528672174}"#,
+    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":10807025175528672174}"#,
+    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":17620619325620895905}"#,
+    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":16302594430661111253}"#,
+    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":11038020404745418100}"#,
+    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":11038020404745418100}"#,
+    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":15151224743572537543}"#,
 ];
 
 /// **17b cut M1b.0: the production line-hash pin, the reflex shots.** The (j)
@@ -1961,13 +2067,18 @@ fn two_reflex_units_at_three_cadences_are_one_event_list_and_one_hash_sequence()
     // decide_ms)` since 16b cut U.1, `RED`'s at 482 and `RED2`'s at 4 at seed
     // 2,350 (they were 4 and 6, `id % decide_ms`), neither of them a substep
     // boundary. Before M.2 these lines carried the end of the substep the tick
-    // ran in, a multiple of 250.
-    let decide = i64::from(reflex_cfg().decide_ms);
+    // ran in, a multiple of 250. **17b cut M4.3**: the machines are minds,
+    // which think on the stagger grid of `STOCK_THINK_MS` and act at the
+    // LANDING one substep on (`RED`'s thinks at 482, `RED2`'s at 4; their
+    // actions at 732 and 254), and a slot's own shot at the cannon's
+    // `WeaponReady` keeps the residue (4,000 is a multiple of 1,000).
+    let think = tacsim::arena::mind::STOCK_THINK_MS;
+    let substep = first_arena_substep_ms();
     for machine in [RED, RED2] {
         assert_ne!(
-            stagger_ms(SEED, machine, decide) % 250,
+            (stagger_ms(SEED, machine, think) + substep) % 250,
             0,
-            "the precondition: #{}'s tick is not a substep boundary",
+            "the precondition: #{}'s landing is not a substep boundary",
             machine.0
         );
     }
@@ -1988,9 +2099,9 @@ fn two_reflex_units_at_three_cadences_are_one_event_list_and_one_hash_sequence()
         }
         let id = ObjId(u32::try_from(unit).unwrap_or(0));
         assert_eq!(
-            t_ms.rem_euclid(decide),
-            stagger_ms(SEED, id, decide),
-            "a {kind:?} line of #{unit} off its tick: {t_ms}"
+            t_ms.rem_euclid(think),
+            (stagger_ms(SEED, id, think) + substep).rem_euclid(think),
+            "a {kind:?} line of #{unit} off its landing: {t_ms}"
         );
         stamped += 1;
     }
@@ -2017,11 +2128,16 @@ fn two_reflex_units_at_three_cadences_are_one_event_list_and_one_hash_sequence()
 // (k) doc 16 section 3.8's released seat
 // ---------------------------------------------------------------------------
 
+/// **17b cut M4.3 — ported onto the mind** (the plan's first of three
+/// released-tank fixtures): a `Released` hands the hull to its mind seeded
+/// `Withdraw` (`seed_withdraw`), which drives it home as the reflex machine
+/// did and rallies on Q.7's clock; a reclaim keeps the row dormant (17b cut
+/// M3.5) and takes the motor row back.
 #[test]
-fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
+fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
     // A pilot's tank, running, out in the middle of the window. Its seat is
     // released past the linkdead grace — doc 16 §3.8's `Control { Released }` —
-    // and the reflex controller takes it home.
+    // and its mind, seeded `Withdraw`, takes it home.
     let mut arena = arena_of(
         vec![tank(
             RED,
@@ -2075,21 +2191,30 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
     absorb(&out, &mut bytes);
     assert_eq!(
         arena.unit(RED).map(|unit| unit.controller),
-        Some(Controller::Reflex)
+        Some(Controller::Mind)
     );
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert!(
+        arena.reflex.unit(RED).is_none(),
+        "no reflex row: the machine is a mind"
+    );
+    assert!(
+        !stock_memory_of(&arena, RED).ordered,
+        "a release's Withdraw is nobody's order"
+    );
 
     // And it drives itself home, on the epoch the world published — not on one of
     // its own.
     let start = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
     run(&mut arena, 16_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
-    assert!(arena.reflex.unit(RED).is_some(), "a machine");
-    let drive = motor(&arena, RED);
+    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert!(arena.minds.contains_key(&RED), "a mind");
+    // The mind's goal is in its memory (the motor row forgets a goal it has
+    // reached; the reflex row kept it).
+    let goal = stock_memory_of(&arena, RED).goal;
     assert!(
-        drive.goal.is_some_and(|(x, _)| x <= 1),
-        "the goal is the red entry zone: {:?}",
-        drive.goal
+        goal.is_some_and(|(x, _)| x <= 1),
+        "the goal is the red entry zone: {goal:?}"
     );
     assert!(
         arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < start),
@@ -2099,18 +2224,16 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
     // grace used to leave a tank parked in the entry zone for the rest of the
     // match; after `arena.reflex.rally_ms` of quiet it is an AI teammate again.
     run(&mut arena, 60_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
-    assert!(
-        arena.reflex.unit(RED).is_some_and(|row| row.rallied),
-        "it rallied once"
-    );
+    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert!(stock_memory_of(&arena, RED).rallied, "it rallied once");
 
-    // A reclaimed seat takes it back, and the machine is forgotten — its motor
-    // row with it (17b cut M1a.1: the row is what the motor's readers gate on,
-    // so a stale one would hold, or remember stops for, the pilot's tank).
+    // A reclaimed seat takes it back; the mind's row is kept dormant (17b cut
+    // M3.5) and its motor row goes with the seat (17b cut M1a.1: the row is
+    // what the motor's readers gate on, so a stale one would hold, or
+    // remember stops for, the pilot's tank).
     assert!(
         arena.motors.row(RED).is_some(),
-        "the machine drove from a motor row"
+        "the mind drove from a motor row"
     );
     let now = arena.now_ms;
     let out = arena.step(
@@ -2131,15 +2254,22 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
     );
     assert!(arena.reflex.unit(RED).is_none());
     assert!(
+        arena.minds.contains_key(&RED),
+        "the mind's row is kept dormant (17b cut M3.5)"
+    );
+    assert_eq!(machine_state_of(&arena, RED), None, "a pilot's hull");
+    assert!(
         arena.motors.row(RED).is_none(),
         "the reclaimed seat took the motor row back"
     );
     assert!(
-        !arena
-            .due
-            .iter()
-            .any(|event| matches!(event.kind, tacsim::arena::state::DueKind::ReflexTick { .. })),
-        "the reclaimed seat took its ticks off the heap"
+        !arena.due.iter().any(|event| matches!(
+            event.kind,
+            tacsim::arena::state::DueKind::ReflexTick { .. }
+                | tacsim::arena::state::DueKind::MindThink { .. }
+                | tacsim::arena::state::DueKind::MindLand { .. }
+        )),
+        "the reclaimed seat took its thinks off the heap"
     );
 }
 
@@ -3325,14 +3455,14 @@ fn replay_with(
         .units
         .iter()
         .map(|unit| {
-            let row = arena.reflex.unit(unit.id);
             (
                 unit.id,
                 unit.pose.x_cm,
                 unit.pose.y_cm,
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
-                row.map_or(ReflexState::Startup, |row| row.state),
+                // 17b cut M4.3: either machine's state (the mind's cached).
+                machine_state_of(&arena, unit.id).unwrap_or(ReflexState::Startup),
                 motor(&arena, unit.id).goal,
             )
         })
@@ -3684,14 +3814,14 @@ fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
         .units
         .iter()
         .map(|unit| {
-            let row = arena.reflex.unit(unit.id);
             (
                 unit.id,
                 unit.pose.x_cm,
                 unit.pose.y_cm,
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
-                row.map_or(ReflexState::Startup, |row| row.state),
+                // 17b cut M4.3: either machine's state (the mind's cached).
+                machine_state_of(&arena, unit.id).unwrap_or(ReflexState::Startup),
                 motor(&arena, unit.id).goal,
             )
         })
@@ -3721,8 +3851,14 @@ fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
 /// the way through — the `Online` arm re-enters `Patrol` from `Startup` and
 /// `Disabled` alone — so it drives to its own entry zone and does not go looking
 /// for a fight it has already left.
+///
+/// **17b cut M4.3 — ported onto the mind** (the plan's second released-tank
+/// fixture): the release hands the cold tank to its mind seeded `Withdraw`;
+/// the mind's FIRST think (on the stagger grid, landing a substep on) orders
+/// the startup, and the doctrine's `Online` arm re-enters `Patrol` from
+/// `Startup` and `Disabled` alone, so it stays in `Withdraw` all the way.
 #[test]
-fn a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
+fn t1_a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
     let mut arena = cold_pilot_tank();
     let mut bytes: Vec<u8> = Vec::new();
     run(&mut arena, 1_000, &mut bytes);
@@ -3748,47 +3884,51 @@ fn a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
     absorb(&out, &mut bytes);
     assert_eq!(
         arena.unit(RED).map(|unit| unit.controller),
-        Some(Controller::Reflex)
+        Some(Controller::Mind)
     );
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
     assert_eq!(
         arena.unit(RED).map(|unit| unit.power),
         Some(Power::Off),
         "the release itself starts nothing"
     );
 
-    // Its first tick orders the startup, `match.startup_ms` carries it to
+    // Its first think orders the startup, `match.startup_ms` carries it to
     // `Online`, and it is in `Withdraw` the whole way — a machine that had gone
     // through `Startup` would be in `Patrol` by the end of this block, because
-    // that is the only state the `Online` arm re-enters `Patrol` from.
+    // that is the only state the `Online` arm re-enters `Patrol` from. The
+    // first think is at most a think period away on the grid and lands a
+    // substep on (17b cut M4.3).
     let released_at = arena.now_ms;
     let start = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
-    let until =
-        released_at + i64::from(reflex_cfg().decide_ms) + i64::from(match_cfg().startup_ms) + 1_000;
+    let until = released_at
+        + tacsim::arena::mind::STOCK_THINK_MS
+        + arena.substep_len_ms()
+        + i64::from(match_cfg().startup_ms)
+        + 1_000;
     run(&mut arena, until, &mut bytes);
     assert_eq!(
         arena.unit(RED).map(|unit| unit.power),
         Some(Power::Online),
-        "the machine never ordered a startup"
+        "the mind never ordered a startup"
     );
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
 
     // And it drives home rather than standing where its pilot left it. The
     // horizon stops short of `arena.reflex.rally_ms`, which is a later edge of
     // its own (16b cut Q.7) and not this row's.
     let until = arena.now_ms + 8_000;
     run(&mut arena, until, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
     assert!(
         arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < start),
         "it came up and stood still"
     );
-    assert!(arena.reflex.unit(RED).is_some(), "a machine");
-    let drive = motor(&arena, RED);
+    assert!(arena.minds.contains_key(&RED), "a mind");
+    let goal = stock_memory_of(&arena, RED).goal;
     assert!(
-        drive.goal.is_some_and(|(x, _)| x <= 1),
-        "the goal is the red entry zone: {:?}",
-        drive.goal
+        goal.is_some_and(|(x, _)| x <= 1),
+        "the goal is the red entry zone: {goal:?}"
     );
     // The black box, tick by tick: the startup is the machine's own — after the
     // release, not the pilot's — and the power comes online exactly
@@ -3815,8 +3955,12 @@ fn a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
 /// **Cross-tempo (16b §11, mandatory): the released cold tank's whole arc is one
 /// event list and one hash sequence at 5,000 / 1,000 / 500 ms** (16b cut D.3,
 /// `B-34`).
+///
+/// **17b cut M4.3 — ported onto the mind** (the plan's third released-tank
+/// fixture): the same arc with the released tank a mind's, its state read
+/// through `Arena::machine_state`.
 #[test]
-fn a_released_cold_tank_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
+fn t1_a_released_cold_tank_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
     let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
         .into_iter()
         .map(|cadence| replay_released_cold(cadence, 35_000))
@@ -5550,14 +5694,14 @@ fn y1_replay(cadence_ms: i64, until_ms: i64, issuer: Option<ObjId>) -> (Replay, 
         .units
         .iter()
         .map(|unit| {
-            let row = arena.reflex.unit(unit.id);
             (
                 unit.id,
                 unit.pose.x_cm,
                 unit.pose.y_cm,
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
-                row.map_or(ReflexState::Startup, |row| row.state),
+                // 17b cut M4.3: either machine's state (the mind's cached).
+                machine_state_of(&arena, unit.id).unwrap_or(ReflexState::Startup),
                 motor(&arena, unit.id).goal,
             )
         })

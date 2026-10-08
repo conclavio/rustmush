@@ -669,9 +669,10 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
     // amendment; doc 07 §1.1's fallback controller).
     //
     // `Released` is the seat *gone*: `EXIT`, a revoked lease, a deactivated
-    // station, or the linkdead grace run out. The tank goes to the reflex
-    // controller in `Withdraw` and drives itself home, which is what K4's "the
-    // tank idles" was standing in for until this cut existed. `Live` is the seat a
+    // station, or the linkdead grace run out. The tank goes to a mind in
+    // `Withdraw` (17b cut M4.3; the reflex controller's until then) and drives
+    // itself home, which is what K4's "the tank idles" was standing in for
+    // until this cut existed. `Live` is the seat a
     // pilot's again — a reclaim inside the grace, a fresh activation, or (16b cut
     // Y.3) a dropped pilot's `BOARD` past it — and takes it back, forgetting the
     // machine. `Linkdead` changes nothing.
@@ -687,19 +688,13 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             if let Some(pilot) = c.pilot {
                 arena.drop_pilot(pilot, c.unit);
             }
-            // **17b cut M3.5** (doc 17 §12 "Release and possess"): a hull a
-            // pilot possessed from its mind goes back to that mind — its row
-            // stood dormant through the seat (`Arena::suspend_mind`), and the
-            // adoption resumes it with its memory, strikes and drop intact.
-            // Every other hull goes to the reflex machine, as before: every
-            // production hull before 17b cut M4 (no production hull carries a
-            // mind row under a pilot), so the production hash is unmoved.
-            let back_to = if arena.minds.contains_key(&c.unit) {
-                Controller::Mind
-            } else {
-                Controller::Reflex
-            };
-            arena.set_controller(c.unit, back_to, ReflexState::Withdraw);
+            // **17b cut M4.3** (the M4 row's finding (5); doc 17 §12; 16b cut
+            // N.1): every hull goes to a mind — the dormant row a possess left
+            // (`Arena::suspend_mind`, resumed with its memory, strikes and
+            // drop intact and its order cleared) or a fresh one — seeded
+            // `Withdraw`, so it drives itself home and rallies on Q.7's clock
+            // as the reflex machine did. `Controller::Reflex` is a fixture's.
+            arena.set_controller(c.unit, Controller::Mind, ReflexState::Withdraw);
         }
         ControlState::Live => {
             // **16b cut Y.3**: a `Live` naming a pilot is that pilot in the seat,
@@ -2714,9 +2709,10 @@ mod tests {
         // The drop, then the reclaim in the next pulse: off the roster and back.
         arena.step(0, &y3_every_channel(2, ControlState::Released), &[]);
         assert_eq!(y3_rows(&arena), 0, "the release took the pilot off");
+        // 17b cut M4.3: a release hands the hull to a mind.
         assert_eq!(
             arena.unit(RED).map(|unit| unit.controller),
-            Some(Controller::Reflex)
+            Some(Controller::Mind)
         );
         arena.step(1_000, &y3_every_channel(3, ControlState::Live), &[]);
         assert_eq!(y3_rows(&arena), 1, "the reclaim put the pilot back");
@@ -2757,7 +2753,7 @@ mod tests {
         assert_eq!(y3_rows(&arena), 0, "a stale live re-seated the pilot");
         assert_eq!(
             arena.unit(RED).map(|unit| unit.controller),
-            Some(Controller::Reflex)
+            Some(Controller::Mind)
         );
     }
 
@@ -3690,13 +3686,15 @@ mod tests {
         );
     }
 
-    /// **A dormant row's order is not the pilot's** (17b cut M3.5; doc 17
-    /// §12 "Release and possess"): `holds_order_for` reads a mind's row only
-    /// while the hull is the mind's. Red's mind holds an order for red-1; a
-    /// possess keeps the row with its order, and the hull holds none; the
-    /// hand-back holds it again.
+    /// **A possess clears the dormant row's order** (17b cut M4.3 over
+    /// M3.5's rule; doc 17 §12 "Release and possess"): `holds_order_for`
+    /// reads a mind's row only while the hull is the mind's. Red's mind holds
+    /// an order for red-1; a possess keeps the row with its order CLEARED
+    /// (`Arena::suspend_mind`: an order given to the mind is not the pilot's
+    /// and does not outlive the seat), so the hull holds none; the hand-back
+    /// still holds none and starts under doctrine, seeded `Withdraw`.
     #[test]
-    fn m3_holds_order_for_reads_no_dormant_order() {
+    fn m4_3_a_possess_clears_the_dormant_order() {
         let squad = crate::deliberation::SquadId {
             team: Team::Red,
             index: 1,
@@ -3718,14 +3716,23 @@ mod tests {
             arena
                 .minds
                 .get(&RED)
-                .is_some_and(|state| state.order.is_some()),
-            "the dormant row keeps its order"
+                .is_some_and(|state| state.order.is_none()),
+            "the possess cleared the dormant row's order"
         );
         assert!(
             !holds_order_for(&arena, RED, squad),
-            "a dormant order is not the pilot's"
+            "a dormant row's order is nobody's"
         );
         arena.set_controller(RED, Controller::Mind, ReflexState::Withdraw);
-        assert!(holds_order_for(&arena, RED, squad), "the mind's again");
+        assert!(
+            !holds_order_for(&arena, RED, squad),
+            "the hand-back starts under doctrine, not under the old order"
+        );
+        assert_eq!(
+            arena.minds.get(&RED).map(|state| state.doctrine_state),
+            Some(ReflexState::Withdraw),
+            "seeded Withdraw"
+        );
+        assert_eq!(arena.machine_state(RED), Some(ReflexState::Withdraw));
     }
 }

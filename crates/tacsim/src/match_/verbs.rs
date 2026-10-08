@@ -164,10 +164,8 @@ pub fn start(
     // **16b cut O.1**: a staff start is always a skirmish. `@arena/start` takes
     // no mode argument — the lobby's `SIM MODE` is where a mode is chosen — and
     // that is a residual recorded for the owner, not an oversight.
-    // **17b cut M1b.5**: the unseated hulls are the fill's, as `SIM START`'s.
-    let fill = super::lobby::minds_config(ctx.w)
-        .unwrap_or_default()
-        .fill_controller();
+    // **17b cut M4.3**: the unseated hulls are minds, as `SIM START`'s; a
+    // staff match's fill minds tell nobody on a drop (no principal).
     super::start(
         ctx,
         match_id,
@@ -177,7 +175,6 @@ pub fn start(
         match_cfg,
         sensors_cfg,
         crate::arena::state::MatchMode::Skirmish,
-        fill,
     )
     .map_err(|error| CmdError::msg(error.to_string()))?;
     // It ran: the centre now says so, so `SIM STATUS` in the lobby and

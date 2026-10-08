@@ -1530,18 +1530,18 @@ pub enum OpenMatchError {
     #[error("that check-out is not a match: {0}")]
     Arena(#[from] crate::arena::state::ArenaError),
     /// **17b cut M3.5** (doc 17 §13): a scripted seal's runner could not be
-    /// installed — its source is not in this server's store, or does not
-    /// compile ([`crate::minds::InstallError`], in words). Unreachable before
-    /// 17b cut M4: no production seal is scripted.
+    /// installed — its source is neither compiled in nor in this server's
+    /// store, or does not compile. Typed since 17b cut M4.3 (the lobby's
+    /// call-off reads the hull); the words are unchanged.
     #[error("a sealed mind cannot be run: {0}")]
-    Mind(String),
+    Mind(crate::minds::InstallError),
 }
 
 impl From<crate::arena_task::SpawnError> for OpenMatchError {
     fn from(error: crate::arena_task::SpawnError) -> Self {
         match error {
             crate::arena_task::SpawnError::Arena(error) => OpenMatchError::Arena(error),
-            crate::arena_task::SpawnError::Mind(error) => OpenMatchError::Mind(error.to_string()),
+            crate::arena_task::SpawnError::Mind(error) => OpenMatchError::Mind(error),
         }
     }
 }
@@ -1559,10 +1559,9 @@ fn sealed_sources<'a>(
     w: &mush_core::World,
     seals: impl Iterator<Item = &'a crate::arena::MindSeal>,
 ) -> BTreeMap<[u8; 32], String> {
-    let Some(store) = w.module_state::<crate::store::TacsimStore>() else {
-        return BTreeMap::new();
-    };
-    sources_by_seal(seals, |sha256| store.mind_source(sha256))
+    // 17b cut M4.3: Standard Doctrine's own text with no store at all.
+    let store = w.module_state::<crate::store::TacsimStore>();
+    sources_by_seal(seals, |sha256| crate::minds::source_lookup(store, sha256))
 }
 
 /// **[`sealed_sources`]' rule over any source lookup** (17b cut M3.5): each
@@ -1686,18 +1685,18 @@ pub fn open_match(
     // `spawn_arena` was handed, and the check-out's controllers.
     if let Some(mirror) = registry.matches.get_mut(&match_id) {
         mirror.odds_floor_permille = minds_cfg.odds_floor_permille;
-        // Every mind row opens on Line of this doctrine (`MindState::fresh`).
-        for (unit, controller) in &controllers {
-            if *controller == Controller::Mind {
-                mirror.cards.insert(
-                    *unit,
-                    (
-                        crate::arena::line(&arena_cfg.reflex),
-                        0,
-                        CardSource::CheckOut,
-                    ),
-                );
-            }
+        // Every mind row opens on Line of this doctrine (`MindState::fresh`)
+        // — and from 17b cut M4.3 every hull is sealed with it, a seated one
+        // too (a released seat's mind reads the card), so every hull has one.
+        for unit in controllers.keys() {
+            mirror.cards.insert(
+                *unit,
+                (
+                    crate::arena::line(&arena_cfg.reflex),
+                    0,
+                    CardSource::CheckOut,
+                ),
+            );
         }
         // 17b cut M3.5: every hull checked out a mind's carries a row.
         mirror.minded = controllers
@@ -1829,7 +1828,7 @@ pub fn resume_match(
     let (handle, join) = crate::arena_task::resume_arena(
         &runtime, match_id, arena, &arena_cfg, &sources, pool, egress,
     )
-    .map_err(|error| OpenMatchError::Mind(error.to_string()))?;
+    .map_err(OpenMatchError::Mind)?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
         // Cannot happen (the id was checked above); stopped rather than leaked.
         old.signal_stop();
@@ -2394,16 +2393,15 @@ pub fn send_control(
         .offer(match_id, ArenaMsg::Control(control))
         .map_err(|_| ControlRefusal::Gone)?;
     // **17b cut M1b.5**: the mirror's controller moves as `apply_control`
-    // moves the arena's row — a live seat is the pilot's, a released one the
-    // reflex controller's, or (17b cut M3.5, doc 17 §12) the mind's where the
-    // arena carries a mind row for the hull (`MatchMirror::minded`): the
-    // possess kept it dormant and the release hands the hull back to it.
+    // moves the arena's row — a live seat is the pilot's, a released one a
+    // mind's (17b cut M4.3: every hull, the dormant row a possess left or a
+    // fresh one; the reflex controller's before it, `MatchMirror::minded`
+    // telling the two apart until then).
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>()
         && let Some(mirror) = registry.matches.get_mut(&match_id)
     {
         let now = match state {
-            ControlState::Released if mirror.minded.contains(&unit) => Some(Controller::Mind),
-            ControlState::Released => Some(Controller::Reflex),
+            ControlState::Released => Some(Controller::Mind),
             ControlState::Live => Some(Controller::Pilot),
             ControlState::Linkdead => None,
         };
@@ -5876,6 +5874,47 @@ mod tests {
             install_sealed_runners(&mut arena, &cfg, &|digest| sources.get(digest).cloned()),
             Ok(1),
             "the installer finds the source by the arena's seal reference"
+        );
+    }
+
+    /// **The stock source resolves with no store** (17b cut M4.3; plan
+    /// (iii)): `sealed_sources` over a world that holds no `TacsimStore` at
+    /// all answers Standard Doctrine's text for a scripted seal on the stock
+    /// digest, keyed by the seal's digest — so a world whose store is off
+    /// runs and resumes every production seal — and nothing for another.
+    #[test]
+    fn m4_3_the_stock_source_resolves_with_no_store() {
+        use crate::arena::MindSeal;
+        use crate::arena::mind::SealEngine;
+        use crate::minds::{STANDARD_RHAI, standard_digest};
+        let tw = mush_testkit::TestWorld::with_modules(vec![]);
+        assert!(
+            tw.world()
+                .module_state::<crate::store::TacsimStore>()
+                .is_none(),
+            "no store at all"
+        );
+        let stock = MindSeal {
+            unit: ObjId(1),
+            source_sha256: standard_digest().0,
+            engine: SealEngine::Scripted,
+            ..MindSeal::placeholder()
+        };
+        let other = MindSeal {
+            unit: ObjId(2),
+            source_sha256: [5; 32],
+            engine: SealEngine::Scripted,
+            ..MindSeal::placeholder()
+        };
+        let sources = super::sealed_sources(tw.world(), [&stock, &other].into_iter());
+        assert_eq!(
+            sources.keys().copied().collect::<Vec<[u8; 32]>>(),
+            vec![stock.digest()],
+            "the stock seal alone"
+        );
+        assert_eq!(
+            sources.get(&stock.digest()).map(String::as_str),
+            Some(STANDARD_RHAI)
         );
     }
 }

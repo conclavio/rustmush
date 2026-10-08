@@ -572,8 +572,9 @@ pub struct MatchConfig {
     /// Pilot slots one side may claim (doc 16 §1's 12 v 12).
     pub max_slots_per_side: u32,
     /// **Whether `SIM START` also fields the tanks of the pods nobody claimed**,
-    /// under the reflex controller (**16b cut N.1**; doc 16 §6's *the AI fill of a
-    /// later lobby*).
+    /// flown by Standard Doctrine on a unit mind sealed at
+    /// `[tacsim.minds].fill_class` (**16b cut N.1**; doc 16 §6's *the AI fill of a
+    /// later lobby*; the reflex controller's until 17b cut M4.3).
     ///
     /// Off by default, and `mush_config`'s own row says why at length: doc 16 §1's
     /// A1 is a two-tank story and a default-on fill would rewrite it from a cut
@@ -672,14 +673,16 @@ impl Default for CommandConfig {
 /// lawful condition slot may name, per mille, seed 100. It is **captured into
 /// each arena at check-out** (`crate::arena_task::spawn_arena` writes it to
 /// `Arena::odds_floor_permille`, which the snapshot carries), so a reload of this
-/// block never reaches a running or a resumed match. **17b cut M1b.5** adds
-/// `fill_controller`, a lab knob; from 17b cut M3 the classes and the pool;
-/// 17b cut M4.1 `workers` and 17b cut M4.2 `cpu_lens_ms` (the minds lane's
-/// reference figure, read by no match).
+/// block never reaches a running or a resumed match. From 17b cut M3 the
+/// classes and the pool; 17b cut M4.1 `workers`; 17b cut M4.2 `cpu_lens_ms`
+/// (the minds lane's reference figure, read by no match); **17b cut M4.3**
+/// `fill_class`, the class the AI fill and every seated hull are sealed and
+/// admitted at (the lab knob `fill_controller` of 17b cut M1b.5 is retired:
+/// the fill IS a mind, and a config still naming it refuses the boot).
 ///
 /// **This block is never carried** (the snapshot carries `match_cfg`, not
-/// this): `fill_controller` is read once, at `crate::match_::start`, and moves
-/// no snapshot format.
+/// this): `fill_class` is read once, at `crate::match_::start`, and moves no
+/// snapshot format (the seal carries the class it produced).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindsConfig {
@@ -688,19 +691,17 @@ pub struct MindsConfig {
     /// at the seal (17b cut M3.3). `10` to `950` in steps of `10`
     /// ([`MindsConfig::validate`]; widened from `100` by 17b cut M3.3).
     pub odds_floor_permille: u32,
-    /// **Who flies a match's unseated hulls** (17b cut M1b.5; doc 16 §6's AI
-    /// fill; 17b's (b)): `reflex` (the default, today's machine, T0) or `mind`
-    /// (the native stock mind, T1, on Line, arming its slots at its think).
-    ///
-    /// **A LAB KNOB** for `mush-bot`'s pooled measure of the bot against a
-    /// conditioned T1 (`crates/mush-bot/tests/arena_win_rate.rs`): production
-    /// configs do not set it, and 17b cut M4's flip of the fill to minds
-    /// retires it. Read by `crate::match_::start` alone, through
-    /// `crate::match_::lobby::minds_config` ([`MindsConfig::fill_controller`]);
-    /// a seated hull is the pilot's whatever it says. The board's `flown by
-    /// doctrine` stays true under `mind`: T1 IS Standard Doctrine.
-    #[serde(default = "default_fill_controller")]
-    pub fill_controller: String,
+    /// **The class the AI fill is sealed and admitted at** (17b cut M4.3; doc
+    /// 17 §9, D-UM-37): the `class_cap` of every production seal — the fill's
+    /// and a seated hull's alike, so a release hands a hull to a mind of the
+    /// same class and adds no unadmitted load — and the load `match_::pool`
+    /// counts for every unseated pod at `SIM UNIT` and at check-out. The
+    /// seal's class is `min(STOCK_RATED_CLASS, the core, this)`, so above `I`
+    /// it caps nothing until 17b cut M5 rates minds; `0` fields every hull on
+    /// the drive ROM. By its word, `0`, `I`, `II` or `III`. Read once, at
+    /// `crate::match_::start` and `@arena/start`; never carried.
+    #[serde(default = "default_fill_class")]
+    pub fill_class: crate::arena::core::CoreClass,
     /// **The Compact class table** (17b cut M3.1; doc 17 §9, D-UM-35): the
     /// four classes' figures, keyed by class word —
     /// `[tacsim.minds.classes.II]` / `think_ms = 500` and so on. An absent key,
@@ -760,9 +761,9 @@ const fn default_cpu_lens_ms() -> u32 {
 /// spawn a thousand threads.
 pub const MAX_MIND_WORKERS: u32 = 32;
 
-/// `fill_controller`'s default: today's machine.
-fn default_fill_controller() -> String {
-    "reflex".to_owned()
+/// `fill_class`' default: Class I, Standard Doctrine's rating.
+const fn default_fill_class() -> crate::arena::core::CoreClass {
+    crate::arena::core::CoreClass::I
 }
 
 /// `pool_base_ops_s`' default: doc 17 §9's 500,000.
@@ -786,7 +787,8 @@ impl Default for MindsConfig {
             // Doc 17 §5's seed value: one chance in ten, the Line preset's own
             // `min_odds`.
             odds_floor_permille: 100,
-            fill_controller: default_fill_controller(),
+            // 17b cut M4.3: the fill at Class I.
+            fill_class: default_fill_class(),
             // 17b cut M3.1: doc 17 §9's table.
             classes: crate::arena::core::ClassTable::STOCK,
             // 17b cut M3.5: doc 17 §9's pool (D-UM-36).
@@ -817,19 +819,11 @@ impl MindsConfig {
     /// # Errors
     ///
     /// One sentence naming the key and the value it was given.
-    ///
-    /// **17b cut M1b.5**: `fill_controller` is `reflex` or `mind`, by name.
     pub fn validate(&self) -> Result<(), String> {
         let floor = self.odds_floor_permille;
         if !(10..=950).contains(&floor) || !floor.is_multiple_of(10) {
             return Err(format!(
                 "[tacsim.minds].odds_floor_permille must be 10 to 950 in steps of 10 (it is {floor})"
-            ));
-        }
-        if !matches!(self.fill_controller.as_str(), "reflex" | "mind") {
-            return Err(format!(
-                "[tacsim.minds].fill_controller must be reflex or mind (it is \"{}\")",
-                self.fill_controller
             ));
         }
         self.validate_pool()?;
@@ -968,19 +962,6 @@ impl MindsConfig {
             below = Some(row);
         }
         Ok(())
-    }
-
-    /// **The controller a match's unseated hulls are checked out under** (17b
-    /// cut M1b.5): [`Controller::Mind`](crate::arena::state::Controller::Mind)
-    /// for `mind`, [`Controller::Reflex`](crate::arena::state::Controller::Reflex)
-    /// for anything else (`validate` refuses anything else at boot).
-    #[must_use]
-    pub fn fill_controller(&self) -> crate::arena::state::Controller {
-        if self.fill_controller == "mind" {
-            crate::arena::state::Controller::Mind
-        } else {
-            crate::arena::state::Controller::Reflex
-        }
     }
 }
 
@@ -1714,7 +1695,7 @@ pub struct TacsimConfig {
     pub harness: HarnessConfig,
     /// **17b cut M1b.1** — `[tacsim.minds]`: the Compact floor, captured into
     /// each arena at check-out. **Live** since M1b.1 (default when absent);
-    /// since 17b cut M1b.5 also the lab's `fill_controller`.
+    /// from 17b cut M4.3 the fill's class, `fill_class`.
     pub minds: MindsConfig,
 }
 
@@ -1912,32 +1893,42 @@ mod tests {
         }
     }
 
-    /// **17b cut M1b.5**: the fill controller is `reflex` (the default) or
-    /// `mind`, by name, and anything else is refused with Q.7's sentence.
+    /// **17b cut M4.3** (doc 17 §9, D-UM-37): `[tacsim.minds].fill_class`
+    /// reads Class I when absent and decodes by its word; an unknown word and
+    /// the retired lab knob `fill_controller` are both refused by serde
+    /// (`deny_unknown_fields`), so a config still naming it refuses the boot.
     #[test]
-    fn m1b5_the_fill_controller_is_reflex_or_mind_by_name() {
+    fn m4_3_the_fill_class_defaults_to_i_and_decodes_by_word() {
         use super::MindsConfig;
-        use crate::arena::state::Controller;
-        assert_eq!(MindsConfig::default().fill_controller, "reflex");
-        assert_eq!(MindsConfig::default().fill_controller(), Controller::Reflex);
-        let mind = MindsConfig {
-            fill_controller: "mind".to_owned(),
-            ..MindsConfig::default()
-        };
-        assert_eq!(mind.validate(), Ok(()));
-        assert_eq!(mind.fill_controller(), Controller::Mind);
-        for word in ["fast", "Mind", ""] {
-            assert_eq!(
-                MindsConfig {
-                    fill_controller: word.to_owned(),
-                    ..MindsConfig::default()
-                }
-                .validate(),
-                Err(format!(
-                    "[tacsim.minds].fill_controller must be reflex or mind (it is \"{word}\")"
-                ))
-            );
-        }
+        use crate::arena::core::CoreClass;
+        assert_eq!(MindsConfig::default().fill_class, CoreClass::I);
+        let absent: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100}"#).expect("the block decodes");
+        assert_eq!(absent.fill_class, CoreClass::I);
+        let three: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100, "fill_class": "III"}"#)
+                .expect("the block decodes");
+        assert_eq!(three.fill_class, CoreClass::III);
+        assert_eq!(three.validate(), Ok(()));
+        let zero: MindsConfig =
+            serde_json::from_str(r#"{"odds_floor_permille": 100, "fill_class": "0"}"#)
+                .expect("the block decodes");
+        assert_eq!(zero.fill_class, CoreClass::Zero);
+        let refused = serde_json::from_str::<MindsConfig>(
+            r#"{"odds_floor_permille": 100, "fill_class": "IV"}"#,
+        )
+        .expect_err("IV is no class")
+        .to_string();
+        assert!(refused.contains("IV"), "{refused}");
+        let retired = serde_json::from_str::<MindsConfig>(
+            r#"{"odds_floor_permille": 100, "fill_controller": "mind"}"#,
+        )
+        .expect_err("the lab knob is retired")
+        .to_string();
+        assert!(
+            retired.contains("fill_controller") && retired.contains("unknown field"),
+            "{retired}"
+        );
     }
 
     /// **17b cut M3.1** (doc 17 §9, D-UM-35): `[tacsim.minds].classes` reads

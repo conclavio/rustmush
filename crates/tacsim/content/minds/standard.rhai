@@ -40,13 +40,15 @@
 //
 //   state codes: 0 startup, 1 patrol, 2 approach, 3 engage, 4 withdraw, 5 disabled
 //
-// # The memory (D-UM-30): the fourteen keys of `StockMemory`, as T1 writes them
+// # The memory (D-UM-30): the fifteen keys of `StockMemory`, as T1 writes them
 //
 //   state INT code; target the row's ContactId as its INT (`contact_int`);
 //   goal, hunt [x, y]; waypoint, from_waypoint INT node; last_plot
 //   [x, y, t_ms]; unheld_since_ms, quiet_since_ms, stand_until_ms,
-//   hold_retry_ms, ignore_until_ms INT ms; rallied, no_line bool; `()` for
-//   every key that holds nothing.
+//   hold_retry_ms, ignore_until_ms INT ms; rallied, no_line, ordered bool
+//   (`ordered`, 17b cut M4.3: the Withdraw is an order's, restored at its
+//   end; a released seat's seeded Withdraw and a dry or hurt one are not);
+//   `()` for every key that holds nothing.
 //
 // # RANGE_NONE
 //
@@ -253,7 +255,7 @@ fn think(view, card) {
 // The memory (D-UM-30's shape)
 // ---------------------------------------------------------------------------
 
-// **All fourteen keys at their defaults** (T1's `StockMemory::default()`,
+// **All fifteen keys at their defaults** (T1's `StockMemory::default()`,
 // written as `Memory::from` writes it): the prologue's fresh sortie and the
 // `Disabled` edge's reset.
 fn fresh() {
@@ -271,6 +273,7 @@ fn fresh() {
     this.hunt = ();
     this.no_line = false;
     this.ignore_until_ms = ();
+    this.ordered = false;
 }
 
 // **The notices' reading**: `[arrived_word, no_route]` off the motor's
@@ -417,12 +420,14 @@ fn standing_order(view, card, p) {
     p.health = health_permille(view);
     p.dry = is_dry(view);
     // **The expiry's restoration** (`ReflexUnit::drop_to_doctrine`, read off
-    // the view): a `Withdraw` no live order holds and neither of its own
-    // edges would have taken goes back to `Patrol`; a hurt one keeps going
-    // home.
-    if order == () && this.state == 4 && !p.dry && p.health >= card.withdraw_permille {
+    // the view): a `Withdraw` no live order holds, that an order put the hull
+    // in (`this.ordered`, 17b cut M4.3) and neither of its own edges would
+    // have taken goes back to `Patrol`; a hurt one keeps going home, and so
+    // does a released seat's seeded Withdraw (it rallies on Q.7's clock).
+    if order == () && this.state == 4 && this.ordered && !p.dry && p.health >= card.withdraw_permille {
         this.state = 1;
         this.target = ();
+        this.ordered = false;
         p.goal = ();
     }
     p.order = obeyed(order, this.ignore_until_ms);
@@ -478,6 +483,8 @@ fn edges(view, card, p) {
                 this.target = ();
                 p.goal = ();
                 this.last_plot = ();
+                // 17b cut M4.3: an order's Withdraw, restored at its end.
+                this.ordered = true;
             }
         }
         "hold" | "advance" | "screen" => {
@@ -496,6 +503,8 @@ fn edges(view, card, p) {
         this.target = ();
         p.goal = ();
         this.last_plot = ();
+        // 17b cut M4.3: its own edge's Withdraw, never restored early.
+        this.ordered = false;
     }
     p
 }

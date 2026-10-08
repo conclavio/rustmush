@@ -1936,7 +1936,7 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
 /// cut M2.5, the helm half).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "8b3ec78c9d957865c8d6d7696fbf422ca8939d05a51370befcff621287d74996";
+    "102cc7d27eb411c493b2402b20a589e37330bc36bad6eeef0eadffd0eb6e80ec";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):

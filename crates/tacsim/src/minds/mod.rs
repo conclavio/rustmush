@@ -144,8 +144,8 @@ pub mod sealed;
 pub mod stations;
 
 pub use content::{
-    MindManifest, STANDARD_MANIFEST_JSON, STANDARD_RHAI, STANDARD_SHA256, standard_digest,
-    standard_manifest, standard_runner,
+    MindManifest, STANDARD_MANIFEST_JSON, STANDARD_RHAI, STANDARD_SHA256, source_lookup,
+    standard_digest, standard_manifest, standard_runner,
 };
 pub use pool::{BatchFailed, BatchHandle, MindPool};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};

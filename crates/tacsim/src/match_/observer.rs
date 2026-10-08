@@ -32,7 +32,8 @@
 //! One positional row per unit, in unit-id order: `[callsign, team letter, x
 //! cell or null, y cell or null, heading in whole degrees, object number,
 //! flags]`, the flags a string of `w` wreck, `p` power online, `s` starting,
-//! `m` machine (the reflex controller drives it), `h` held — in that order, `""`
+//! `m` machine (a mind flies it — or, in a fixture, the reflex controller),
+//! `h` held — in that order, `""`
 //! when none. Compact on purpose: a 300-unit picture serialises well under the
 //! 16,384-byte frame bound (`[tacsim.harness].max_frame_bytes`), pinned below.
 //! The payload declares no `shape`, so a line client prints nothing for it; the
@@ -41,7 +42,7 @@
 use serde_json::Value;
 
 use crate::arena::observer::{Observer, ObserverUnit};
-use crate::arena::state::{ArenaTerrain, Controller, Power};
+use crate::arena::state::{ArenaTerrain, Power};
 use crate::arena_task::MatchId;
 
 /// The feed's schema id — the feed's own name, as every arena payload's is.
@@ -51,9 +52,12 @@ pub const OBSERVER_SCHEMA: &str = "arena.observer";
 pub const OBSERVER_VERSION: u32 = 1;
 
 /// **One unit's flags**, in the payload's fixed order: `w` wreck, `p` power
-/// online, `s` starting, `m` machine, `n` mind, `h` held; `""` when none apply.
-/// **17b cut M1a.5** added `n`, a unit a mind flies — never beside `m`, the
-/// two controllers being one attribute. Additive, so the version stays.
+/// online, `s` starting, `m` machine, `h` held; `""` when none apply.
+/// **17b cut M4.3**: one attribute, one flag — `m` for every hull a machine
+/// flies (`Controller::is_machine`: a mind, or in a fixture the reflex
+/// controller); M1a.5's `n` is retired, which the renderers never knew
+/// (`web/src/lib/replay.ts`, the TUI's replay), so a mind read as a pilot's
+/// hull until this cut. Additive, so the version stays.
 #[must_use]
 pub fn unit_flags(unit: &ObserverUnit) -> String {
     let mut flags = String::with_capacity(5);
@@ -65,10 +69,8 @@ pub fn unit_flags(unit: &ObserverUnit) -> String {
         Power::Starting => flags.push('s'),
         Power::Off => {}
     }
-    match unit.controller {
-        Controller::Reflex => flags.push('m'),
-        Controller::Mind => flags.push('n'),
-        Controller::Pilot => {}
+    if unit.controller.is_machine() {
+        flags.push('m');
     }
     if unit.held {
         flags.push('h');
@@ -147,6 +149,7 @@ mod tests {
 
     use super::*;
     use crate::arena::clock::Tempo;
+    use crate::arena::state::Controller;
     use crate::arena::state::{Designator, Team, TerrainCell};
 
     fn ground() -> ArenaTerrain {
@@ -235,9 +238,9 @@ mod tests {
         unit.power = Power::Online;
         unit.wreck = true;
         assert_eq!(unit_flags(&unit), "wpmh");
-        // 17b cut M1a.5: a mind is `n`, in `m`'s place.
+        // 17b cut M4.3: a mind is `m` too — one machine flag.
         unit.controller = Controller::Mind;
-        assert_eq!(unit_flags(&unit), "wpnh");
+        assert_eq!(unit_flags(&unit), "wpmh");
     }
 
     /// **16b cut I.4**: nothing to watch is the schema and one key.

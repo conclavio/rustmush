@@ -303,7 +303,8 @@ board_timeout_ms = 120000          # ms Boarding waits for every claimed slot to
 max_duration_ms = 900000           # fifteen minutes: the longest a match runs before it ends as a timeout
 max_slots_per_side = 12            # ceiling 1..12; current centre clamps to its six pods a side and logs it at boot
 # (16b cut N.1, sized by Q.7) whether SIM START tops each side up to a size with
-# the tanks of the pods nobody claimed, under the reflex controller. With it ON
+# the tanks of the pods nobody claimed, flown by Standard Doctrine on a unit mind
+# (17b cut M4.3; the reflex controller's before it). With it ON
 # one pilot alone in the centre can start a match: each side fields the larger
 # side's claimed slots (never fewer than one), and SIM AI <n> is how a lead asks
 # for a bigger one -- a number it sets is a FLOOR, so a claim after it still
@@ -326,9 +327,12 @@ orders_per_minute = 12             # ORDERs one commander may give in sixty seco
 # (17b cut M3.3 widened it from 100; above 100 every Line-carded check-out is refused).
 # [tacsim.minds]
 # odds_floor_permille = 100
-# (17b cut M1b.5) a LAB knob: who flies the unseated hulls, "reflex" (today's
-# machine) or "mind" (the native stock mind on Line); production leaves it unset.
-# fill_controller = "reflex"
+# (17b cut M4.3, doc 17 section 9) the class the AI fill (and every seated hull) is
+# sealed and admitted at: "0" (the drive ROM), "I", "II" or "III". The seal's class is
+# the least of the stock rating (I), the core and this, so above "I" it caps nothing
+# until M5 rates minds. The lab knob fill_controller (17b cut M1b.5) is retired: the
+# fill IS a mind, and a config still naming it refuses the boot.
+# fill_class = "I"
 # (17b cut M4.1, doc 17 section 6) the think pool's worker threads: the process-wide
 # pool every running match sends a pulse's unit-mind thinks to, sized once per
 # process by the first match that opens. 1..32.

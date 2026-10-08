@@ -1121,7 +1121,9 @@ impl Arena {
         let signals = TempoSignals {
             fire_intent_queued,
             contact_within_alert_range: self.contact_within_alert_range(),
-            ai_approaching: self.reflex.any_approaching(),
+            // 17b cut M4.3: either machine's `Approach` — the mind's off its
+            // cached doctrine state (`Arena::any_mind_approaching`).
+            ai_approaching: self.reflex.any_approaching() || self.any_mind_approaching(),
             shot_fired,
             impact_scheduled: shot_fired,
             hostile_in_weapons_range: self.hostile_in_weapons_range(),
@@ -4202,15 +4204,16 @@ mod tests {
         assert_eq!(arena.unit(A).map(|unit| unit.power), Some(Power::Off));
         assert!(arena.pending.is_empty());
         // **16b cut N.1** amends doc 16 §3.8's *the tank idles*: a released seat
-        // hands the tank to the reflex controller in `Withdraw` (doc 07 §1.1's
-        // fallback controller), so the schedule now carries its first tick beside
-        // the position summary. Nothing else about the burst changed.
+        // hands the tank to a machine in `Withdraw` (doc 07 §1.1's fallback
+        // controller) — **17b cut M4.3**: a mind, seeded `Withdraw` — so the
+        // schedule now carries its first think beside the position summary.
+        // Nothing else about the burst changed.
         assert_eq!(
             arena.unit(A).map(|unit| unit.controller),
-            Some(crate::arena::state::Controller::Reflex)
+            Some(crate::arena::state::Controller::Mind)
         );
         assert_eq!(
-            arena.reflex.unit(A).map(|row| row.state),
+            arena.machine_state(A),
             Some(crate::arena::reflex::ReflexState::Withdraw)
         );
         // 16b cut F.3 adds the third: this platform's own sensor pass. **16b cut
@@ -4218,7 +4221,7 @@ mod tests {
         assert_eq!(
             arena.due.len(),
             4,
-            "the position summary, the duration bound, the released tank's first tick, its pass"
+            "the position summary, the duration bound, the released tank's first think, its pass"
         );
         let mut journal = Log::default();
         journal.absorb(&out);
@@ -7903,5 +7906,57 @@ mod tests {
             frame.odds.first().map(|odds| odds.weapon.clone()),
             crate::arena::view::fired_by_default(&frame.weapons).map(|weapon| weapon.id.clone())
         );
+    }
+
+    /// **A mind closing on a contact raises `Alert`** (17b cut M4.3; doc 16
+    /// §11): the tempo's `ai_approaching` reads either machine — a mind's
+    /// through its cached doctrine state, the state its last think WROTE —
+    /// so a mind hull whose row reads `Approach` raises `Tempo::Alert` on
+    /// the next pulse, one substep after the reflex machine's tick would
+    /// have; the same row dormant under a pilot raises nothing.
+    #[test]
+    fn m4_3_a_mind_in_approach_raises_alert_and_a_dormant_row_does_not() {
+        use crate::arena::mind::{doctrine_state_of, encode_memory};
+        use crate::arena::reflex::ReflexState;
+        use crate::arena::state::Controller;
+        use crate::arena::stock_mind::StockMemory;
+        let approaching = |arena: &mut Arena| {
+            if let Some(state) = arena.minds.get_mut(&A) {
+                state.memory = encode_memory(&crate::arena::mind::Memory::from(StockMemory {
+                    state: ReflexState::Approach,
+                    ..StockMemory::default()
+                }));
+                state.doctrine_state = doctrine_state_of(&state.memory);
+            }
+        };
+        let mut minded = arena();
+        minded.mind_runner = std::sync::Arc::new(crate::arena::mind::NoMind);
+        minded.step(0, &[], &[]);
+        assert_eq!(minded.clock.tempo(), Tempo::Quiet, "nothing is approaching");
+        minded.set_controller(A, Controller::Mind, ReflexState::Startup);
+        approaching(&mut minded);
+        assert!(minded.any_mind_approaching());
+        let out = minded.step(1_000, &[], &[]);
+        assert_eq!(out.tempo, Tempo::Alert, "a mind in Approach raises Alert");
+
+        let mut dormant = arena();
+        dormant.mind_runner = std::sync::Arc::new(crate::arena::mind::NoMind);
+        dormant.step(0, &[], &[]);
+        dormant.set_controller(A, Controller::Mind, ReflexState::Startup);
+        approaching(&mut dormant);
+        dormant.set_controller(A, Controller::Pilot, ReflexState::Startup);
+        assert!(
+            dormant
+                .minds
+                .get(&A)
+                .is_some_and(|state| state.doctrine_state == ReflexState::Approach),
+            "the row is dormant, its state still Approach"
+        );
+        assert!(
+            !dormant.any_mind_approaching(),
+            "a dormant row is never read"
+        );
+        let out = dormant.step(1_000, &[], &[]);
+        assert_eq!(out.tempo, Tempo::Quiet);
     }
 }

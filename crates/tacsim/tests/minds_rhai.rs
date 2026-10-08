@@ -3240,34 +3240,46 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// was added, removed or reordered on the stock corpus (no think faults on
 /// it). Were, by row: `fc108aa2…` / `7e8b75aa…`, `b1ad9530…` / `bc8c8f22…`,
 /// `3f81543e…` / `b4fa5044…`, `0450d808…` / `0b9152d3…`.
+///
+/// **17b cut M4.3's second declared move of the mind-fixture pins** (the
+/// flip; blessed on the Linux build host, the Windows run CI's): Standard
+/// Doctrine gained its fifteenth memory key, `ordered` (the release's
+/// Withdraw seed and the restoration that reads it), so every memory's bytes
+/// — folded by hash item 3c — moved, and `STANDARD_SHA256` with the script;
+/// each row's stop millisecond is unmoved; its state hash, substep digest
+/// and ledger digest moved, and the probe's bitmask (`369098751`) did not.
+/// Were, by row: `4_504_819_013_333_549_817` / `3935703e…` / `f0af53b0…`,
+/// `4_318_432_734_286_313_969` / `653a8201…` / `47bba202…`,
+/// `8_770_348_364_664_704_415` / `01a0ee5e…` / `3663ed27…`,
+/// `2_386_810_340_480_880_612` / `f85eea28…` / `34da2eef…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2_350,
         172_250,
-        4_504_819_013_333_549_817,
-        "3935703e992fbb1951249a593289a9dcd552417e4d1f20f8f86f423ed7868056",
-        "f0af53b0f5febeef62dec826c0fe1e6917ed4e158a56caa09d999a8b173044bc",
+        4_989_041_564_656_247_172,
+        "7621f99bd49a759145f925a6e7adb1e1172dae8f78c61fd959308d8f8fefda67",
+        "b381542d54b55f0c9678ef03ac36606049b9746932de1f5cb465f9044d28d6bf",
     ),
     (
         2_351,
         193_500,
-        4_318_432_734_286_313_969,
-        "653a8201ce04dee988a98afae29095a73476f8fb2ce4321ec9183562b6029d65",
-        "47bba202a59c11a2bfb729b79150cb7f9a3a2e7f5b3d42d1a5da49856a7b2ad3",
+        5_955_205_623_011_993_219,
+        "7d387d118c3627c4c20564f2dd7d2ec9efe559dea4e1ed20288f91cb87f09c3e",
+        "043a3ebc3e8931caa7d0dc18b633c56ed997680643a74411a7bbb95eb1a56f54",
     ),
     (
         2_352,
         166_500,
-        8_770_348_364_664_704_415,
-        "01a0ee5e1516150b0078f9a31a28e149e1c13111f49c3d9bfef6578d4a761944",
-        "3663ed2795c226b4285e6979abcfd77045786ea60175c3493bf3fbe15b7b6e0b",
+        18_103_261_345_343_587_786,
+        "470fbacf21f79498bdc3366a88c1790930d11121452be4bc49c872b080feab7e",
+        "419a0f5b71358239c3bca4a2d2a76436002003307c192067f4cce68766853576",
     ),
     (
         2_350,
         900_000,
-        2_386_810_340_480_880_612,
-        "f85eea28a247b62e4feb9b021120f8a6c02ea3a5031e8fc316969d8c7811c9b1",
-        "34da2eeff261a7960d975a3e1c307bb10f45380e9f1e3d9af22e4cd254f6f14a",
+        15_030_586_788_036_144_321,
+        "903896a3b90edb19365615b664c228fd880a33150ddd3dc3c60ae07f27d0fd2c",
+        "8d091c8aa0d62af958ee9f32926a753cd2b85aa47561c04fcc526e408e905c4f",
     ),
 ];
 

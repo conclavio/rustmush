@@ -879,9 +879,10 @@ live. It is asked for per squad, never per unit.
 
 - **Route.** `[llm.routes.tacsim_deliberate]` (`mushd.toml.example`). Without it
   — or with `[llm].enabled = false`, or no `[llm]` at all — every request answers
-  *unavailable* and the squad runs on the reflex controller's own doctrine:
-  patrol, close on the nearest worthwhile hostile, hold a firing band, break off
-  when hurt. **That is the shipped default and what CI runs.** Deliberation adds
+  *unavailable* and the squad runs on its machines' own doctrine (Standard
+  Doctrine on each hull's unit mind since 17b cut M4.3): patrol, close on the
+  nearest worthwhile hostile, hold a firing band, break off when hurt. **That is
+  the shipped default and what CI runs.** Deliberation adds
   a commander to units that already fight; it is never what makes them fight.
 - **When it asks.** Event-driven: the squad's commander's contact set changes
   class or count, or its order runs out unrenewed. Under that, a floor of

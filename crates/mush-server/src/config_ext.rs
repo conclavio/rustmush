@@ -367,9 +367,16 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         // by `validate` below. The arena captures it at check-out.
         minds: tacsim::config::MindsConfig {
             odds_floor_permille: cfg.minds.odds_floor_permille,
-            // 17b cut M1b.5: the lab's fill controller, by name (banded by
-            // `validate` below).
-            fill_controller: cfg.minds.fill_controller.clone(),
+            // 17b cut M4.3 (doc 17 §9, D-UM-37): the fill's class, by its
+            // word, refused by name.
+            fill_class: tacsim::arena::core::CoreClass::parse(&cfg.minds.fill_class).ok_or_else(
+                || {
+                    format!(
+                        "[tacsim.minds].fill_class must be 0, I, II or III (it is \"{}\")",
+                        cfg.minds.fill_class
+                    )
+                },
+            )?,
             // 17b cut M3.1 (doc 17 §9, D-UM-35): the class table, decoded by
             // its own wire — an absent class or figure is the stock row's —
             // and held by name by `validate` below.
@@ -1698,12 +1705,12 @@ mod tests {
                 "[tacsim.minds].odds_floor_permille",
                 "960",
             ),
-            // 17b cut M1b.5: the fill controller is reflex or mind, by name.
+            // 17b cut M4.3: the fill's class is a class word, by name.
             (
                 "[tacsim.minds]",
-                "fill_controller = \"fast\"\n",
-                "[tacsim.minds].fill_controller",
-                "fast",
+                "fill_class = \"IV\"\n",
+                "[tacsim.minds].fill_class",
+                "IV",
             ),
             // 17b cut M3.5 (doc 17 §9, D-UM-36): the pool's keys are each at
             // least 1, and the floor at most the base, by name.

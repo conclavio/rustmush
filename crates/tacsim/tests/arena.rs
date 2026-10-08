@@ -631,12 +631,15 @@ fn finish_replay(arena: &mut Arena, replay: &mut Replay) {
 }
 
 /// One [`Replay::pulses_seen`] row: the pulse's start, whether the mover's
-/// pilot was built a frame, and whether the mover is the machine's now.
+/// pilot was built a frame, and whether the mover is a machine's now (17b
+/// cut M4.3: either machine's — a release hands it to a mind).
 fn seen(arena: &Arena, started: i64, out: &StepOutput) -> (i64, bool, bool) {
     (
         started,
         out.frames.iter().any(|(pilot, _)| *pilot == MOVER_PILOT),
-        arena.reflex.unit(MOVER).is_some(),
+        arena
+            .unit(MOVER)
+            .is_some_and(|unit| unit.controller.is_machine()),
     )
 }
 
@@ -1724,7 +1727,7 @@ fn y3_a_dropped_and_reclaimed_seat_is_one_event_list_and_one_hash_sequence_at_th
             let want = (Y3_RELEASED_MS..Y3_LIVE_MS).contains(started);
             assert_eq!(
                 *machine, want,
-                "the reflex row at the pulse from {started} ms, at {cadence} ms"
+                "the machine's hull at the pulse from {started} ms, at {cadence} ms"
             );
         }
         // **16b cut Y.4**: the catch-up rides the reclaiming pulse's frame and
@@ -5998,6 +6001,9 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
         dropped: Some(DropCause::Strikes),
         seal_digest: [0x5e; 32],
         card: tacsim::arena::card::line(&arena.arena_cfg.reflex),
+        // 17b cut M4.3: a cache over the memory, never carried — the decode
+        // re-derives it (`Startup` off these bytes).
+        doctrine_state: tacsim::arena::reflex::ReflexState::Startup,
     };
     arena.minds.insert(MOVER, row.clone());
     let snapshot = Snapshot::encode(&arena).expect("the arena encodes");
@@ -6288,10 +6294,11 @@ fn af3_a_resume_with_every_seat_released_at_three_cadences_is_one_event_list_and
             // A seat the resume released after the script's own `Live` is the
             // machine's for the rest of the run: nothing seats the pilot again.
             if !releases.is_empty() && t_ms > Y3_LIVE_MS {
+                // 17b cut M4.3: the machine is a mind seeded `Withdraw`.
                 assert_eq!(
                     resumed.unit(MOVER).map(|unit| unit.controller),
-                    Some(tacsim::arena::state::Controller::Reflex),
-                    "{what}: the released tank is the machine's"
+                    Some(tacsim::arena::state::Controller::Mind),
+                    "{what}: the released tank is the mind's"
                 );
             }
             runs.push((cadence, run));

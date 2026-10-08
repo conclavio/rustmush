@@ -749,7 +749,7 @@ pub struct Fielded {
     /// **17b cut M3.5** (doc 17 §9, D-UM-36): the class the pool admits this
     /// hull's mind at — `None` for the fill rule
     /// ([`pool::admitted_class`]: nothing on a seated hull, and
-    /// [`pool::FILL_CLASS_UNTIL_M5`] on an unseated one), `Some` for a
+    /// `[tacsim.minds].fill_class` on an unseated one), `Some` for a
     /// fixture's choice and, from 17b cut M5, the lead's or `SIM MIND`'s.
     /// Read by [`start`]'s pool gate alone; it decides no seal and no class
     /// the arena thinks at.
@@ -888,6 +888,49 @@ pub enum StartError {
     },
 }
 
+impl StartError {
+    /// **The call-off's words** (17b cut M4.3; `CardUnlawful`'s precedent):
+    /// a short form for the two refusals the flip made reachable through the
+    /// lobby — the pool, and a sealed mind the server cannot run — under 120
+    /// columns inside `Match {id} could not start: {}. The pods are free
+    /// again.`, the hull named by its callsign; every other refusal its own
+    /// sentence. The long forms stay the `Display` (pinned by the lifecycle
+    /// fixtures) and the log's.
+    #[must_use]
+    pub fn call_off_words(&self, w: &mush_core::World, sides: &[Side]) -> String {
+        let callsign = |unit: ObjId| {
+            sides
+                .iter()
+                .find_map(|side| {
+                    side.units
+                        .iter()
+                        .find(|fielded| fielded.unit == unit)
+                        .map(|fielded| unsealed_callsign(w, unit, side.team, fielded.slot))
+                })
+                .unwrap_or_else(|| unit.to_string())
+        };
+        match self {
+            StartError::Pool { team, refusal } => format!(
+                "{team}'s compute ({} ops a second) is over its half ({})",
+                pool::thousands(refusal.spoken.saturating_add(refusal.would)),
+                pool::thousands(refusal.half)
+            ),
+            StartError::Open(OpenMatchError::Mind(error)) => match error {
+                crate::minds::InstallError::NoSource { unit, .. } => {
+                    format!(
+                        "{}'s sealed mind has no source on this server",
+                        callsign(*unit)
+                    )
+                }
+                crate::minds::InstallError::Compile { unit, .. } => {
+                    format!("{}'s sealed mind does not compile", callsign(*unit))
+                }
+            },
+            other => other.to_string(),
+        }
+    }
+}
+
 /// **`Boarding → Running`** (doc 16 §3.8): check every unit out and open the
 /// match, as one authoritative action.
 ///
@@ -921,15 +964,16 @@ pub enum StartError {
 /// [`StartError::ModeUnsupported`] when the ground does not declare it, and
 /// carried on the [`CustodyOut`] and the [`MatchRecord`].
 ///
-/// **17b cut M1b.5**: `fill` is the controller every hull with no seated pilot
-/// is checked out under — `[tacsim.minds].fill_controller`
-/// ([`crate::config::MindsConfig::fill_controller`], read by the callers
-/// through `lobby::minds_config`): [`Controller::Reflex`] in production,
-/// [`Controller::Mind`] on the lab's knob, when `Arena::new` schedules each
-/// mind's first think and `Controller::is_machine` deals it into a squad as a
-/// reflex hull is (17b cut L.2). A seated hull is `Pilot` whatever `fill` says.
+/// **17b cut M4.3** (the flip; doc 17 §22's M4, D-UM-37; plan finding 5): a
+/// hull with no seated pilot is checked out [`Controller::Mind`] — the AI
+/// fill IS Standard Doctrine on a unit mind, sealed on
+/// [`PRODUCTION_FILL_ENGINE`] at `[tacsim.minds].fill_class`, dealt into a
+/// squad by `Controller::is_machine` (17b cut L.2) with its first think
+/// scheduled by `Arena::new`; a seated hull is `Pilot`, sealed under the SAME
+/// terms, so a release hands it to a mind of the same class on the same
+/// engine and adds no unadmitted load. The lab knob `fill_controller` (17b cut
+/// M1b.5) is retired with the `fill` parameter it fed.
 ///
-/// [`Controller::Reflex`]: crate::arena::state::Controller::Reflex
 /// [`Controller::Mind`]: crate::arena::state::Controller::Mind
 #[allow(clippy::too_many_arguments)]
 pub fn start(
@@ -941,7 +985,6 @@ pub fn start(
     match_cfg: &MatchConfig,
     sensors_cfg: &SensorsConfig,
     mode: MatchMode,
-    fill: crate::arena::state::Controller,
 ) -> Result<MatchId, StartError> {
     // 16b cut C.2: the authored arena when a loaded pack declares one, and the
     // stand-in window of T.3 otherwise.
@@ -1057,10 +1100,10 @@ pub fn start(
             // **16b cut E.1** lifted the assembly into `arena_def::custody_unit`
             // (16b §0.4), so a shipped-scale test rig builds the same unit this
             // loop does instead of a second copy of it.
-            // 17b cut M1b.5: an unseated hull is the fill's.
+            // 17b cut M4.3: an unseated hull is a mind's.
             let seated = seated_pilots(ctx, unit);
             let controller = if seated.is_empty() {
-                fill
+                crate::arena::state::Controller::Mind
             } else {
                 crate::arena::state::Controller::Pilot
             };
@@ -1079,14 +1122,13 @@ pub fn start(
                 principal,
                 card: crate::arena::card::line(&arena_cfg.reflex),
                 odds_floor_permille: floor,
-                // 17b cut M3.5: the lab knob's mind fill is the native stock
-                // mind; nothing in production seals a scripted mind before
-                // 17b cut M4.3's flip.
-                engine_for_minds: crate::arena::mind::SealEngine::Native,
-                // 17b cut M4.1: Standard Doctrine's rating, uncapped — 17b cut
-                // M4.3 caps the fill at `[tacsim.minds].fill_class`.
+                // 17b cut M4.3: the fill's engine — M4.2's decision — on
+                // EVERY hull, so a released seat's mind runs on it too.
+                engine_for_minds: PRODUCTION_FILL_ENGINE,
+                // 17b cut M4.1: Standard Doctrine's rating; 17b cut M4.3:
+                // capped at `[tacsim.minds].fill_class`, every hull.
                 rated: crate::arena::mind::STOCK_RATED_CLASS,
-                class_cap: crate::arena::core::CoreClass::III,
+                class_cap: minds_cfg.fill_class,
             };
             let custody = arena_def::custody_unit(
                 &catalog,
@@ -1133,10 +1175,11 @@ pub fn start(
     // over every unit of the match, split evenly between the sides and
     // spoken for first-come within a side in slot order, each hull at its
     // admitted class's ceiling (`pool::admitted_class`: the fielded unit's
-    // own, else the fill rule — a seated hull nothing, an unseated one the
-    // fill's Class 0 until 17b cut M5). **At the stock pool this cannot
-    // refuse**: `TooManyUnits` above holds a side to twelve, and twelve
-    // Class III load 216,000 of a half of 238,000 (`pool`'s head).
+    // own, else the fill rule — a seated hull nothing, M5's gap, and an
+    // unseated one `[tacsim.minds].fill_class`, 17b cut M4.3). **At the
+    // stock pool this cannot refuse**: `TooManyUnits` above holds a side to
+    // twelve, and twelve Class III load 216,000 of a half of 238,000
+    // (`pool`'s head); twelve at the fill's Class I speak for 18,000.
     let fielded_units: usize = sides.iter().map(|side| side.units.len()).sum();
     let compute = pool::pool_for(&minds_cfg, fielded_units);
     for side in sides {
@@ -1147,7 +1190,7 @@ pub fn start(
                 let seated = !seated_pilots(ctx, fielded.unit).is_empty();
                 pool::load_of(
                     &minds_cfg.classes,
-                    pool::admitted_class(fielded.mind_class, seated),
+                    pool::admitted_class(fielded.mind_class, seated, minds_cfg.fill_class),
                 )
             })
             .collect();
@@ -1448,7 +1491,7 @@ fn gunnery_of(ctx: &Ctx<'_>, unit: ObjId) -> u8 {
 /// designator — the callsign 16b cut Q.1's first pass will give it, `RA` —
 /// and a staff `@arena/start` unit (slot 0, no pod) by its world name, which
 /// is what that staff console already calls it.
-fn unsealed_callsign(w: &mush_core::World, unit: ObjId, team: Team, slot: u8) -> String {
+pub(crate) fn unsealed_callsign(w: &mush_core::World, unit: ObjId, team: Team, slot: u8) -> String {
     if slot == 0 {
         return mush_core::output::display_name(w, unit);
     }
@@ -2208,5 +2251,67 @@ mod tests {
         // And the domain.
         assert!(!same_pose(Some(&current), other, &held));
         assert!(!same_pose(None, domain, &held));
+    }
+
+    /// **The two call-offs under 120 columns** (17b cut M4.3): the pool's
+    /// short form at six-digit figures and a sealed mind the server cannot
+    /// run, each inside the lobby's frame `Match {id} could not start: {}.
+    /// The pods are free again.`; every other refusal its own `Display`.
+    #[test]
+    fn m4_3_the_call_offs_fit_the_lobby_s_line() {
+        let tw = mush_testkit::TestWorld::with_modules(vec![]);
+        let frame =
+            |words: &str| format!("Match 12 could not start: {words}. The pods are free again.");
+        let pool = StartError::Pool {
+            team: "red",
+            refusal: pool::PoolRefusal {
+                would: 18_000,
+                half: 138_000,
+                spoken: 126_000,
+            },
+        };
+        let said = pool.call_off_words(tw.world(), &[]);
+        assert_eq!(
+            said,
+            "red's compute (144,000 ops a second) is over its half (138,000)"
+        );
+        assert!(frame(&said).len() <= 120, "{}", frame(&said).len());
+        assert_eq!(
+            pool.to_string(),
+            "red: This side would think 18,000 ops a second; its half of the centre's pool is \
+             138,000 and 126,000 are spoken for.",
+            "the long form is the Display's"
+        );
+        let sides = vec![Side {
+            team: Team::Red,
+            units: vec![Fielded {
+                unit: ObjId(90),
+                slot: 3,
+                opening: None,
+                mind_class: None,
+            }],
+        }];
+        let no_source =
+            StartError::Open(OpenMatchError::Mind(crate::minds::InstallError::NoSource {
+                unit: ObjId(90),
+                digest: [7; 32],
+            }));
+        let said = no_source.call_off_words(tw.world(), &sides);
+        assert_eq!(said, "RC's sealed mind has no source on this server");
+        assert!(frame(&said).len() <= 120);
+        assert_eq!(
+            no_source.call_off_words(tw.world(), &[]),
+            "#90's sealed mind has no source on this server",
+            "a unit no side fields is named by its id"
+        );
+        let unlawful = StartError::CardUnlawful {
+            unit: ObjId(90),
+            callsign: "RC".to_owned(),
+            floor: 200,
+        };
+        assert_eq!(
+            unlawful.call_off_words(tw.world(), &sides),
+            unlawful.to_string()
+        );
     }
 }

@@ -8,9 +8,10 @@
 //! seam is the whole contract); only a fixture sets it on
 //! `Arena::mind_runner`. Nothing in production does: `Arena::new` and a
 //! snapshot's decode both install `default_mind_runner`, the native stock
-//! mind, and the lab knob (`[tacsim.minds].fill_controller = "mind"`) only
-//! checks hulls out as `Controller::Mind`, flown by that native runner (no
-//! lobby, check-out or config names this runner in 17b cut M2).
+//! mind, and until 17b cut M4.3 a mind's hull was a lab knob's or a fixture's
+//! (no lobby, check-out or config names this runner in 17b cut M2; from M4.3
+//! `crate::match_::start` seals every hull on `PRODUCTION_FILL_ENGINE` and
+//! the installer gives a scripted seal this runner).
 //!
 //! **Synchronous, at the think point.** The sim task calls the runner inside
 //! the think's due event and waits for the answer, as it calls

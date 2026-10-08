@@ -59,7 +59,7 @@ use mush_tactics::{
 use smol_str::SmolStr;
 use tacsim::arena::CardChange;
 use tacsim::arena::clock::Tempo;
-use tacsim::arena::command::SquadSignal;
+use tacsim::arena::command::{SignalReason, SquadSignal};
 use tacsim::arena::condition::{Condition, Reading};
 use tacsim::arena::conditions::{
     ASPECTS_ANY, Arming, FireCondition, STOCK_CONDITION_SLOTS, SlotTarget,
@@ -71,7 +71,8 @@ use tacsim::arena::intents::{
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{
     MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MindRunner, MindState, MindView,
-    STOCK_THINK_MS, ThinkFault, ThinkJob, ThinkResult,
+    STOCK_THINK_MS, ThinkFault, ThinkJob, ThinkResult, decode_memory, doctrine_state_of,
+    seed_withdraw, withdraw_seed,
 };
 use tacsim::arena::perception::{
     FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
@@ -322,6 +323,28 @@ fn tank(
         seal: tacsim::arena::MindSeal::placeholder(),
     }
     .sealed()
+}
+
+/// **The same custody sealed as the production fill is** (17b cut M4.3):
+/// `SealTerms::production_fixture()` — `PRODUCTION_FILL_ENGINE`, rated I,
+/// capped at the default `fill_class` — over the custody as it stands, for
+/// the pins that field the production shape.
+fn as_fill(mut unit: CustodyUnit) -> CustodyUnit {
+    unit.reseal(&tacsim::match_::SealTerms::production_fixture())
+        .expect("the production terms seal");
+    unit
+}
+
+/// **The production installer over Standard Doctrine** (17b cut M4.3): every
+/// scripted seal's runner installed on `Arena::runners` from the compiled-in
+/// stock source — what `arena_bridge` does for a production match whose every
+/// seal names the stock digest; a no-op when the fill engine is `Native`.
+fn install_standard(arena: &mut Arena) -> usize {
+    let cfg = arena.arena_cfg.clone();
+    tacsim::minds::install_sealed_runners(arena, &cfg, &|_| {
+        Some(tacsim::minds::STANDARD_RHAI.to_owned())
+    })
+    .expect("Standard Doctrine installs")
 }
 
 /// `tests/reflex.rs`' doctrine: decide every 500 ms, re-plan at once.
@@ -3180,78 +3203,108 @@ fn m1b3_an_order_hint_re_keys_only_to_a_classified_row() {
 // ---------------------------------------------------------------------------
 
 /// **The production hash does not move** (the M1a plan's head; 17b cut M1a.1's
-/// two pins, re-asserted by this cut with the same constants). The first: the
-/// (j) field of `tests/reflex.rs` — two reflex machines, one armed, a seated
-/// tank — at a fixed 1,000 ms cadence for 30 s, rebuilt here from the same
-/// fixtures. The second: four stock machines on the proving ground for a
-/// minute ([`support::shipped_arena`]). No unit of either is a mind, so the
-/// fold's new section, the three new carried variants and the due loop's mind
-/// rule add nothing — and they add nothing.
+/// two pins, re-asserted by every cut since with the same constants). The
+/// first: the (j) field of `tests/reflex.rs` — two machines, one armed, a
+/// seated tank — at a fixed 1,000 ms cadence for 30 s, rebuilt here from the
+/// same fixtures (from 17b cut M4.3 the two-T1 shape of [`the_j_field`]:
+/// every hull seeing ten cells and the seated tank presenting every band, so
+/// the minds' slots have odds to fire at; a default profile presents none).
+/// The second: four stock machines on the proving ground for a minute
+/// ([`support::shipped_arena`]).
 ///
-/// **The cut's one declared re-bless** (17b cut M3.6: `mind_sealed` and
-/// `sortie_closed` shift the folded ledger sequence (`hash.rs:897`) of every
-/// match; the mind row's fold gains D-UM-23's answer, `dropped` and the seal
-/// digest; the chassis' core consequence words ride the hit lines and the
-/// pilot's sentence; every other byte's encoding is unchanged). Its three
-/// constants re-blessed here with `tests/reflex.rs`' and `tests/motor.rs`' (the
-/// same field and the same duel): `0x9da6_3882_e319_aec9` to
-/// `0x18df_dd94_73aa_5a36`, `0xdb4f_9096_c79f_b530` to `0x5689_35a8_5830_609d`,
-/// `0xd3e7_ee71_474b_6738` to `0xd25d_39ba_9b04_7064`.
+/// **17b cut M4.3 — the cut's one production re-bless, declared.** The flip
+/// made the production fill a `Controller::Mind` sealed with Standard
+/// Doctrine on `PRODUCTION_FILL_ENGINE` at `[tacsim.minds].fill_class`, so
+/// the production shape IS the mind's: both fields here are re-pointed from
+/// `Controller::Reflex` to `Controller::Mind` sealed as the fill is
+/// ([`as_fill`], [`support::Muster::fill`]) with its runner installed as a
+/// production match installs it ([`install_standard`]), and the three
+/// constants are re-blessed ONCE with `tests/reflex.rs`' and
+/// `tests/motor.rs`' (the same field and the same duel). The reasons, each a
+/// declared fact of the flip and none a change of the fold's encoding: the
+/// controller byte folds `2` (Mind) where it folded `1`; the due loop runs
+/// `MindThink`/`MindLand` where it ran `ReflexTick`; hash item 3's reflex
+/// rows are gone and item 3c's mind rows (memory, strikes, drop, seal
+/// digest) fold in their place; the seal digests are the production engine's
+/// and the script's digest (D2's fifteenth key) rides every `mind_sealed`
+/// line. Old → new: `0x18df_dd94_73aa_5a36` → `0x692d_5b0e_3c04_93a6`,
+/// `0x5689_35a8_5830_609d` → `0xd243_f6a1_30c0_00c7`, `0xd25d_39ba_9b04_7064`
+/// → `0x65eb_692a_b7a8_a72d`. (The M3.6 re-bless before it: `mind_sealed` and
+/// `sortie_closed` shifting the folded ledger sequence, the mind row's fold
+/// gaining D-UM-23's answer, `dropped` and the seal digest.)
 #[test]
 fn m1a5_the_production_hash_does_not_move() {
+    let seeing = |mut unit: CustodyUnit| {
+        unit.sensor = Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        });
+        unit
+    };
     let mut arena = arena_of(
         vec![
-            tank(
+            as_fill(seeing(tank(
                 RED,
                 Team::Red,
                 centre(6, 8),
                 vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
+                Controller::Mind,
+            ))),
+            as_fill(seeing(tank(
                 RED2,
                 Team::Red,
                 centre(6, 10),
                 Vec::new(),
-                Controller::Reflex,
-            ),
-            tank(
+                Controller::Mind,
+            ))),
+            as_fill(presenting(seeing(tank(
                 BLUE,
                 Team::Blue,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
-            ),
+            )))),
         ],
         &[BLUE],
     );
+    let _ = install_standard(&mut arena);
     let run = run(&mut arena, Drive::Every(1_000), 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
-    assert_eq!(run.hashes.first().copied(), Some(0x18df_dd94_73aa_5a36));
-    assert_eq!(run.hashes.last().copied(), Some(0x5689_35a8_5830_609d));
-    assert_eq!(run.counters.thinks, 0, "no mind thought");
+    assert_eq!(run.hashes.first().copied(), Some(0x692d_5b0e_3c04_93a6));
+    assert_eq!(run.hashes.last().copied(), Some(0xd243_f6a1_30c0_00c7));
+    assert_eq!(
+        run.counters.thinks, 60,
+        "the two minds' thinks over 30 s at Class I's second"
+    );
+    assert_eq!(run.counters.mind_faults, 0, "nothing faulted");
 
     let world = support::booted_world();
     let mut duel = support::shipped_arena(
         &world,
         &[
             &[
-                support::Muster::reflex(Team::Red, 1),
-                support::Muster::reflex(Team::Red, 2),
+                support::Muster::fill(Team::Red, 1),
+                support::Muster::fill(Team::Red, 2),
             ],
             &[
-                support::Muster::reflex(Team::Blue, 1),
-                support::Muster::reflex(Team::Blue, 2),
+                support::Muster::fill(Team::Blue, 1),
+                support::Muster::fill(Team::Blue, 2),
             ],
         ],
+    );
+    assert!(
+        duel.units
+            .iter()
+            .all(|unit| unit.seal.engine == tacsim::match_::PRODUCTION_FILL_ENGINE),
+        "every hull sealed on the production engine"
     );
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(
         tacsim::arena::hash::state_hash(&duel),
-        0xd25d_39ba_9b04_7064,
+        0x65eb_692a_b7a8_a72d,
         "the shipped duel's hash moved"
     );
-    assert!(duel.minds.is_empty());
+    assert_eq!(duel.minds.len(), 4, "four minds");
 }
 
 /// **A mind mustered on the proving ground** (17b cut M1a.5): the rig's
@@ -3920,7 +3973,6 @@ fn seat_run(cadence_ms: i64, until_ms: i64, beats: &[(i64, Beat)]) -> (Run, Aren
 /// 5,000, 1,000 and 500 ms is one event list and one hash sequence.
 #[test]
 fn m1a5_a_pilots_drive_dies_with_the_released_seat() {
-    use tacsim::arena::motor::MotorRow;
     let drive = IntentKind::Goal(MotorGoal::Cell { x: 12, y: 8 });
     let (_, mut arena) = seat_run(
         1_000,
@@ -3946,15 +3998,17 @@ fn m1a5_a_pilots_drive_dies_with_the_released_seat() {
         Some(ObjId(1_000)),
     );
     apply_control(&mut arena, &release);
+    // 17b cut M4.3: the machine is a mind; its motor row is its first
+    // landing's, so none stands at the release.
     assert_eq!(
         rows_of(&arena, RED),
-        (true, false, false, true, vec!["reflex_tick"]),
-        "the machine's row and tick, and nothing of the pilot's drive"
+        (false, true, false, false, vec!["mind_think"]),
+        "the mind's row and think, and nothing of the pilot's drive"
     );
     assert_eq!(
         arena.motors.row(RED),
-        Some(&MotorRow::default()),
-        "a fresh motor row"
+        None,
+        "no motor row until the mind's first landing"
     );
 
     let beats = [
@@ -3965,8 +4019,8 @@ fn m1a5_a_pilots_drive_dies_with_the_released_seat() {
     let (slow, after) = seat_run(5_000, 30_000, &beats);
     assert_eq!(
         after.unit(RED).map(|unit| unit.controller),
-        Some(Controller::Reflex),
-        "the machine flies it"
+        Some(Controller::Mind),
+        "the mind flies it"
     );
     for cadence in [1_000, 500] {
         let (run, _) = seat_run(cadence, 30_000, &beats);
@@ -5311,6 +5365,10 @@ fn lance_run(cadence_ms: i64) -> LanceRun {
     }
 }
 
+/// One squad signal as the l2 lens reads it (17b cut M4.3): its arena
+/// millisecond, its reason, and each member's unit and doctrine state.
+type SignalRead = (i64, SignalReason, Vec<(ObjId, ReflexState)>);
+
 /// **17b cut L.2's mandatory cross-tempo property** (16b §11; doc 16 §3.1
 /// D-16-2; doc 17 §22 L, D-UM-15, D-UM-53). Three minds of red are dealt into
 /// one squad, the lowest id commanding — the dealing `Controller::is_machine`
@@ -5409,21 +5467,50 @@ fn l2_two_minds_are_one_squad_under_a_leader_at_three_cadences() {
     assert!(!reds.is_empty(), "red-1 asks for orders");
     for signal in &reds {
         assert_eq!(signal.commander, RED);
-        let members: Vec<(ObjId, ReflexState)> = signal
-            .members
-            .iter()
-            .map(|member| (member.unit, member.state))
-            .collect();
-        assert_eq!(
-            members,
-            vec![
-                (RED, ReflexState::Startup),
-                (RED2, ReflexState::Startup),
-                (RED3, ReflexState::Startup),
-            ],
-            "a mind member reads Startup: no mind's memory is read for the brief"
-        );
     }
+    let read: Vec<SignalRead> = reds
+        .iter()
+        .map(|signal| {
+            (
+                signal.at_ms,
+                signal.reason,
+                signal
+                    .members
+                    .iter()
+                    .map(|member| (member.unit, member.state))
+                    .collect(),
+            )
+        })
+        .collect();
+    // 17b cut M4.3: a mind member reads its mind's cached doctrine state
+    // (`Arena::machine_state`) — a doctrine STATE word, never the memory
+    // (D-UM-49 kept): the opening signal, before any think has landed, reads
+    // `Startup` for every hull; the expiry's reads the leader engaged and
+    // its wingmen on patrol.
+    assert_eq!(
+        read,
+        vec![
+            (
+                0,
+                SignalReason::NoOrder,
+                vec![
+                    (RED, ReflexState::Startup),
+                    (RED2, ReflexState::Startup),
+                    (RED3, ReflexState::Startup),
+                ],
+            ),
+            (
+                30_000,
+                SignalReason::OrderExpired,
+                vec![
+                    (RED, ReflexState::Engage),
+                    (RED2, ReflexState::Patrol),
+                    (RED3, ReflexState::Patrol),
+                ],
+            ),
+        ],
+        "a mind member reads its mind's doctrine state at the signal"
+    );
     for cadence in [1_000_i64, 500] {
         let other = lance_run(cadence);
         assert_eq!(
@@ -6502,15 +6589,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"8b3ec78c9d957865\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"102cc7d27eb411c4\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"8b3ec78c9d957865\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"102cc7d27eb411c4\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"8b3ec78c9d957865\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"102cc7d27eb411c4\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         4,
@@ -6881,113 +6968,113 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 // edit the bytes are `mush_mind::memory::encode`'s, and
 // `m2_the_memory_codec_writes_the_native_bytes` holds them equal.
 const M2_TWO_T1_MEMORY_DIGESTS: &[(u32, i64, u64)] = &[
-    (6, 4, 0x0460_2376_35ff_267b),
-    (4, 482, 0x0460_2376_35ff_267b),
-    (6, 1_004, 0xaf26_3241_c01f_62e9),
-    (4, 1_482, 0x9ef0_1268_31d8_f2ef),
-    (6, 2_004, 0xaf26_3241_c01f_62e9),
-    (4, 2_482, 0x9ef0_1268_31d8_f2ef),
-    (6, 3_004, 0x0b69_c385_48be_b28d),
-    (4, 3_482, 0xd39b_f9d4_27c3_9b44),
-    (6, 4_004, 0x0b69_c385_48be_b28d),
-    (4, 4_482, 0x9742_7018_57be_fb26),
-    (6, 5_004, 0x0b69_c385_48be_b28d),
-    (4, 5_482, 0x3687_6e51_598d_d3d8),
-    (6, 6_004, 0x0b69_c385_48be_b28d),
-    (4, 6_482, 0xca0e_1edb_2df5_c8ee),
-    (6, 7_004, 0x0b69_c385_48be_b28d),
-    (4, 7_482, 0xd9bc_35ad_e7f2_ded4),
-    (6, 8_004, 0x0b69_c385_48be_b28d),
-    (4, 8_482, 0x6eec_5f4c_4d98_587e),
-    (6, 9_004, 0x0b69_c385_48be_b28d),
-    (4, 9_482, 0x771a_2b2d_afdb_1730),
-    (6, 10_004, 0xf73b_a523_e930_0ad9),
-    (4, 10_482, 0x40f1_3df3_024b_2a2e),
-    (6, 11_004, 0xf73b_a523_e930_0ad9),
-    (4, 11_482, 0x57a3_da44_7d3f_0fb6),
-    (6, 12_004, 0xf73b_a523_e930_0ad9),
-    (4, 12_482, 0x257b_249c_8632_7ea6),
-    (6, 13_004, 0xf73b_a523_e930_0ad9),
-    (4, 13_482, 0x2679_b529_0282_9426),
-    (6, 14_004, 0xf73b_a523_e930_0ad9),
-    (4, 14_482, 0x9b3c_1328_d139_344e),
-    (6, 15_004, 0xf73b_a523_e930_0ad9),
-    (4, 15_482, 0xc3a7_f046_2688_31a6),
-    (6, 16_004, 0xf73b_a523_e930_0ad9),
-    (4, 16_482, 0xc9d9_3643_f649_de46),
-    (6, 17_004, 0xf73b_a523_e930_0ad9),
-    (4, 17_482, 0x7eee_d174_3b41_7cf6),
-    (6, 18_004, 0xf73b_a523_e930_0ad9),
-    (4, 18_482, 0xbfa5_e130_736c_866e),
-    (6, 19_004, 0xf73b_a523_e930_0ad9),
-    (4, 19_482, 0x72c1_6789_6964_3aa6),
-    (6, 20_004, 0xf73b_a523_e930_0ad9),
-    (4, 20_482, 0x6d4c_7873_6dfe_653a),
-    (6, 21_004, 0xf73b_a523_e930_0ad9),
-    (4, 21_482, 0xc25d_702e_4cce_76ca),
-    (6, 22_004, 0xf73b_a523_e930_0ad9),
-    (4, 22_482, 0x7385_02d3_ccff_cd96),
-    (6, 23_004, 0xf248_9844_b8e9_16f7),
-    (4, 23_482, 0xb564_13c0_19cf_98e6),
-    (6, 24_004, 0xf248_9844_b8e9_16f7),
-    (4, 24_482, 0x4aa8_713b_9c40_cfd2),
-    (6, 25_004, 0xf248_9844_b8e9_16f7),
-    (4, 25_482, 0x2b7e_80e7_5d95_3a32),
-    (6, 26_004, 0xf248_9844_b8e9_16f7),
-    (4, 26_482, 0x0011_1673_9237_2806),
-    (6, 27_004, 0xf248_9844_b8e9_16f7),
-    (4, 27_482, 0x69a3_1ae1_d8b1_0d26),
-    (6, 28_004, 0xf248_9844_b8e9_16f7),
-    (4, 28_482, 0x76a0_42e7_889c_0d8a),
-    (6, 29_004, 0xf248_9844_b8e9_16f7),
-    (4, 29_482, 0x5930_3819_3dd5_5bfa),
+    (6, 4, 6098099545541555949),
+    (4, 482, 6098099545541555949),
+    (6, 1004, 9982644946626122887),
+    (4, 1482, 5519612912102104609),
+    (6, 2004, 9982644946626122887),
+    (4, 2482, 5519612912102104609),
+    (6, 3004, 4267685524575424567),
+    (4, 3482, 14727923680749643942),
+    (6, 4004, 4267685524575424567),
+    (4, 4482, 16951036639100933384),
+    (6, 5004, 4267685524575424567),
+    (4, 5482, 17332774373539806302),
+    (6, 6004, 4267685524575424567),
+    (4, 6482, 6632271311621113940),
+    (6, 7004, 4267685524575424567),
+    (4, 7482, 13718269286102459830),
+    (6, 8004, 4267685524575424567),
+    (4, 8482, 12618536069372510200),
+    (6, 9004, 4267685524575424567),
+    (4, 9482, 10325748119616840334),
+    (6, 10004, 1057625593564455519),
+    (4, 10482, 549518417525068336),
+    (6, 11004, 1057625593564455519),
+    (4, 11482, 2924154669566716156),
+    (6, 12004, 1057625593564455519),
+    (4, 12482, 14209113274094202884),
+    (6, 13004, 1057625593564455519),
+    (4, 13482, 3409402830633305464),
+    (6, 14004, 1057625593564455519),
+    (4, 14482, 11730236216475113288),
+    (6, 15004, 1057625593564455519),
+    (4, 15482, 10104064967216821004),
+    (6, 16004, 1057625593564455519),
+    (4, 16482, 9869136410499005524),
+    (6, 17004, 1057625593564455519),
+    (4, 17482, 1832347342605900320),
+    (6, 18004, 1057625593564455519),
+    (4, 18482, 16983423770728313920),
+    (6, 19004, 1057625593564455519),
+    (4, 19482, 5979536445247340812),
+    (6, 20004, 1057625593564455519),
+    (4, 20482, 12372907226072322348),
+    (6, 21004, 1057625593564455519),
+    (4, 21482, 15902047395897125040),
+    (6, 22004, 1057625593564455519),
+    (4, 22482, 11636299758901054172),
+    (6, 23004, 9408727930253721049),
+    (4, 23482, 1147831420516726480),
+    (6, 24004, 9408727930253721049),
+    (4, 24482, 5132644807008374204),
+    (6, 25004, 9408727930253721049),
+    (4, 25482, 4246149452316905384),
+    (6, 26004, 9408727930253721049),
+    (4, 26482, 612716631066148972),
+    (6, 27004, 9408727930253721049),
+    (4, 27482, 17440599378261693272),
+    (6, 28004, 9408727930253721049),
+    (4, 28482, 965198466461433196),
+    (6, 29004, 9408727930253721049),
+    (4, 29482, 11224957993845209904),
 ];
-const M2_TWO_T1_FIRST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":0,\"target\":null,\"unheld_since_ms\":null,\"waypoint\":null}";
-const M2_TWO_T1_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":[9,8,29482],\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":3,\"target\":5852833454602713067,\"unheld_since_ms\":29482,\"waypoint\":0}";
+const M2_TWO_T1_FIRST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"ordered\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":0,\"target\":null,\"unheld_since_ms\":null,\"waypoint\":null}";
+const M2_TWO_T1_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":[9,8,29482],\"no_line\":false,\"ordered\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":3,\"target\":5852833454602713067,\"unheld_since_ms\":29482,\"waypoint\":0}";
 const M2_UNARMED_MEMORY_DIGESTS: &[(u32, i64, u64)] = &[
-    (4, 482, 0x0460_2376_35ff_267b),
-    (4, 1_482, 0x9ef0_1268_31d8_f2ef),
-    (4, 2_482, 0x9ef0_1268_31d8_f2ef),
-    (4, 3_482, 0x0b69_c385_48be_b28d),
-    (4, 4_482, 0x0b69_c385_48be_b28d),
-    (4, 5_482, 0x0b69_c385_48be_b28d),
-    (4, 6_482, 0xf73b_a523_e930_0ad9),
-    (4, 7_482, 0x89fb_60e5_aa94_69b9),
-    (4, 8_482, 0x89fb_60e5_aa94_69b9),
-    (4, 9_482, 0x89fb_60e5_aa94_69b9),
-    (4, 10_482, 0xd30f_f24d_1871_836d),
-    (4, 11_482, 0x8c60_3cbb_ce75_9e94),
-    (4, 12_482, 0x72e1_8c26_d680_169b),
-    (4, 13_482, 0x67b2_9890_5528_6ba2),
-    (4, 14_482, 0xbad4_b209_bb9b_46b9),
-    (4, 15_482, 0x9804_10b8_e736_ee80),
-    (4, 16_482, 0x01d3_f636_b2d7_1467),
-    (4, 17_482, 0x9f69_d73a_09dd_cb8e),
-    (4, 18_482, 0x5487_7b0f_a8d3_f2a5),
-    (4, 19_482, 0x9a13_d799_f4a5_c9cc),
-    (4, 20_482, 0x4176_4b6d_a199_e777),
-    (4, 21_482, 0xe87f_a0f7_474f_ea5e),
-    (4, 22_482, 0x6d3e_9251_61cb_4849),
-    (4, 23_482, 0xf6d8_9b99_f8a4_14d0),
-    (4, 24_482, 0x99de_101f_12da_14ab),
-    (4, 25_482, 0x5ebb_984a_89f5_cf72),
-    (4, 26_482, 0xec8f_92b5_094c_04bd),
-    (4, 27_482, 0x36c4_c03f_d7a4_f324),
-    (4, 28_482, 0xd30d_566e_b90f_cc0f),
-    (4, 29_482, 0x3b6f_5ce9_8c22_f4b6),
-    (4, 30_482, 0x718d_8776_4367_8e9c),
-    (4, 31_482, 0x5b8e_1190_d5e3_4775),
-    (4, 32_482, 0xba07_f361_af5a_4d0a),
-    (4, 33_482, 0x202f_89c2_3f88_4203),
-    (4, 34_482, 0x470f_a84d_71b6_2fe8),
-    (4, 35_482, 0x981b_5a4d_a521_2f81),
-    (4, 36_482, 0x21a3_0bd8_416c_47f6),
-    (4, 37_482, 0x819b_e775_9e37_074f),
-    (4, 38_482, 0x975f_f6f9_d789_db64),
-    (4, 39_482, 0x21cf_dc30_4de1_4ffd),
+    (4, 482, 6098099545541555949),
+    (4, 1482, 5519612912102104609),
+    (4, 2482, 5519612912102104609),
+    (4, 3482, 4267685524575424567),
+    (4, 4482, 4267685524575424567),
+    (4, 5482, 4267685524575424567),
+    (4, 6482, 1057625593564455519),
+    (4, 7482, 4517132980298021411),
+    (4, 8482, 4517132980298021411),
+    (4, 9482, 4517132980298021411),
+    (4, 10482, 4937722195351905967),
+    (4, 11482, 5362147462018813910),
+    (4, 12482, 8117936653531440353),
+    (4, 13482, 12310400826759644232),
+    (4, 14482, 1693821991455957731),
+    (4, 15482, 15911883857477556330),
+    (4, 16482, 9346234582196756437),
+    (4, 17482, 5282301909377335164),
+    (4, 18482, 7268762365464231831),
+    (4, 19482, 11248367180658170110),
+    (4, 20482, 2732820247106746154),
+    (4, 21482, 14698838495418361507),
+    (4, 22482, 2131862722736019004),
+    (4, 23482, 6951781811658369941),
+    (4, 24482, 5008651699920213398),
+    (4, 25482, 3470323195052966767),
+    (4, 26482, 11858471496046690056),
+    (4, 27482, 16834059077288617633),
+    (4, 28482, 11879328287931271378),
+    (4, 29482, 14927110418657134475),
+    (4, 30482, 729294553960127493),
+    (4, 31482, 14188817823236871084),
+    (4, 32482, 1255869739264752595),
+    (4, 33482, 6074561442570174234),
+    (4, 34482, 13593159480022424209),
+    (4, 35482, 7637205705997796920),
+    (4, 36482, 16908779923569432031),
+    (4, 37482, 13003529768784768454),
+    (4, 38482, 14525396527344763981),
+    (4, 39482, 16129450518313177076),
 ];
-const M2_UNARMED_FIRST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":0,\"target\":null,\"unheld_since_ms\":null,\"waypoint\":null}";
-const M2_UNARMED_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":0,\"goal\":[1,8],\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":4,\"target\":null,\"unheld_since_ms\":39482,\"waypoint\":1}";
+const M2_UNARMED_FIRST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"ordered\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":0,\"target\":null,\"unheld_since_ms\":null,\"waypoint\":null}";
+const M2_UNARMED_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":0,\"goal\":[1,8],\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"ordered\":true,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":4,\"target\":null,\"unheld_since_ms\":39482,\"waypoint\":1}";
 
 /// A memory as `serde_json` would have written it before 17b cut M2.2: the
 /// same pairs as a sorted map of `serde_json::Value`s (`Unit` as `null`,
@@ -7089,7 +7176,10 @@ impl MemoryGen {
 ///    native stock mind writes the same bytes through `mush_mind`'s encoder —
 ///    and every one decodes, passes `memory_check` and encodes back to
 ///    itself. **The printable-ASCII rule changes nothing T1 writes**: its
-///    fourteen keys are ASCII words and it writes no string value;
+///    fifteen keys are ASCII words and it writes no string value (**17b cut
+///    M4.3**: the fifteenth, `ordered`, moved every memory's bytes — the
+///    mind pins' second declared move — and every digest, first and last
+///    memory here were re-recorded once with it);
 /// 2. ten thousand random valid memories from a seeded generator over every
 ///    value kind encode to exactly `serde_json::to_vec`'s bytes for the same
 ///    shape and decode back to themselves;
@@ -8700,16 +8790,20 @@ fn pilot_refusals(out: &StepOutput, pilot: ObjId) -> Vec<(String, Refusal)> {
 /// faults (a strike, the drained notice put back in front of the buffer); the
 /// row is then given a standing order. A `Live` control naming a pilot takes
 /// the hull: the row is byte-equal to the one the possess found — memory,
-/// strikes, `dropped`, seal digest, card, ranges, order and the NOTICE
-/// BUFFER — no think or landing is on the heap and the unit's seal reference
-/// is untouched. While the pilot flies it the pilot's own refused `LOCK` is
-/// told to the pilot and never enters the mind's buffer (`stage_notice`'s
-/// controller gate), no think is taken, and the row does not move. A
-/// `Released` hands the hull back to its MIND (`apply_control`: a row
-/// stands): the row still byte-equal, and the first think after the release
-/// is `think_seq` continued, handed the OLD memory bytes and draining the old
-/// buffer — the pilot's notices nowhere in it. The seal reference is the
-/// check-out's throughout: a re-seat never re-seals.
+/// strikes, `dropped`, seal digest, card, ranges and the NOTICE BUFFER —
+/// but for its ORDER, cleared at the suspend (17b cut M4.3: an order given
+/// to the mind is not the pilot's and does not outlive the seat); no think
+/// or landing is on the heap and the unit's seal reference is untouched.
+/// While the pilot flies it the pilot's own refused `LOCK` is told to the
+/// pilot and never enters the mind's buffer (`stage_notice`'s controller
+/// gate), no think is taken, and the row does not move. A `Released` hands
+/// the hull back to its MIND (`apply_control`: a row stands) with its memory
+/// SEEDED `Withdraw` (17b cut M4.3, `seed_withdraw`: a memory of another
+/// shape, as this scripted fixture's bytes are, becomes the stock seed), and
+/// the first think after the release is `think_seq` continued, handed the
+/// seeded bytes and draining the old buffer — the pilot's notices nowhere in
+/// it. The seal reference is the check-out's throughout: a re-seat never
+/// re-seals.
 ///
 /// A second possess with a think IN FLIGHT discards its answer: `pending`
 /// cleared, the landing off the heap, and the landing's millisecond passes
@@ -8761,6 +8855,11 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
     );
     assert_ne!(found.seal_digest, [0; 32], "laid with the seal's digest");
     let sealed = rig.arena.unit(RED).map(|unit| unit.seal);
+    // 17b cut M4.3: the possess clears the row's order and nothing else.
+    let dormant = MindState {
+        order: None,
+        ..found.clone()
+    };
 
     // The possess.
     let helm = rig.arena.epochs.current(RED, Channel::Helm) + 1;
@@ -8780,8 +8879,8 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
     );
     assert_eq!(
         rig.arena.minds.get(&RED),
-        Some(&found),
-        "the row is kept as the possess found it"
+        Some(&dormant),
+        "the row is kept as the possess found it, its order cleared"
     );
     assert!(!mind_events_of(&rig.arena, RED), "no think or landing");
 
@@ -8798,7 +8897,7 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
         let _ = rig.pulse(&[], &[]);
         assert_eq!(
             rig.arena.minds.get(&RED),
-            Some(&found),
+            Some(&dormant),
             "the dormant row never moves (at {})",
             rig.arena.now_ms
         );
@@ -8839,7 +8938,16 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
         .find(|seen| seen.unit == RED && seen.t_ms >= released_at)
         .expect("a think after the release");
     assert_eq!(first.think_seq, found.think_seq, "think_seq continued");
-    assert_eq!(first.memory, found.memory, "handed the OLD memory bytes");
+    assert_eq!(
+        first.memory,
+        seed_withdraw(&found.memory),
+        "handed the OLD memory bytes, seeded Withdraw (17b cut M4.3)"
+    );
+    assert_eq!(
+        first.memory,
+        withdraw_seed(),
+        "a scripted memory becomes the stock seed"
+    );
     assert_eq!(
         first.view.notices, found.notices,
         "the old buffer, byte for byte — the pilot's notices nowhere in it"
@@ -8967,14 +9075,16 @@ fn m3_a_dropped_hull_possessed_and_released_stays_dropped() {
     );
 }
 
-/// **Who a `Released` hands a hull to** (17b cut M3.5; `apply_control`):
-/// a hull seated from its check-out has no mind row and goes to the reflex
-/// machine, as before (pinned: every production hull before 17b cut M4), and
-/// no row is laid for it; a hull handed to the machine straight from its mind
-/// (`set_controller(Mind → Reflex)`, a fixture's transition alone) loses its
-/// row.
+/// **Who a `Released` hands a hull to** (17b cut M4.3 over M3.5's rule;
+/// `apply_control`; doc 17 §12; 16b cut N.1): EVERY hull goes to a mind — a
+/// hull seated from its check-out has no row and is laid a fresh one carrying
+/// the Withdraw seed (`withdraw_seed`: the stock keys in `Withdraw` under no
+/// order, the cache reading the same), no reflex row anywhere; a hull handed
+/// to the reflex machine straight from its mind (`set_controller(Mind →
+/// Reflex)`, a fixture's transition alone until 17b cut M4.6 deletes it)
+/// loses its row.
 #[test]
-fn m3_released_hands_a_hull_back_to_its_mind_only_where_a_row_stands() {
+fn m4_3_released_hands_every_hull_to_a_mind_seeded_withdraw() {
     let (mut rig, _) = possess_field(Vec::new());
     let _ = rig.until(3_000, |arena| arena.now_ms >= 2_000);
     assert!(
@@ -8994,10 +9104,20 @@ fn m3_released_hands_a_hull_back_to_its_mind_only_where_a_row_stands() {
     );
     assert_eq!(
         rig.arena.unit(BLUE).map(|unit| unit.controller),
-        Some(Controller::Reflex)
+        Some(Controller::Mind),
+        "a released hull with no row is handed to a fresh mind"
     );
-    assert!(rig.arena.reflex.unit(BLUE).is_some(), "the machine's row");
-    assert!(!rig.arena.minds.contains_key(&BLUE), "no mind row laid");
+    assert!(rig.arena.reflex.unit(BLUE).is_none(), "no reflex row");
+    let laid = rig.arena.minds.get(&BLUE).expect("a mind row laid");
+    assert_eq!(laid.doctrine_state, ReflexState::Withdraw, "seeded");
+    assert_eq!(doctrine_state_of(&laid.memory), ReflexState::Withdraw);
+    assert!(
+        !tacsim::arena::stock_mind::StockMemory::from(&decode_memory(&laid.memory)).ordered,
+        "a release's Withdraw is nobody's order"
+    );
+    assert_eq!(laid.memory, withdraw_seed(), "a fresh row carries the seed");
+    assert_eq!(laid.order, None);
+    assert_eq!(rig.arena.machine_state(BLUE), Some(ReflexState::Withdraw));
 
     assert!(rig.arena.minds.contains_key(&RED));
     rig.arena

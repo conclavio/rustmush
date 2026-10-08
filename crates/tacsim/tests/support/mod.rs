@@ -110,6 +110,14 @@ pub struct Muster {
     /// installer (`tacsim::minds::install_sealed_runners`) after
     /// [`Arena::new`] ([`Muster::scripted`]).
     pub scripted: bool,
+    /// **Sealed as the production fill is** (17b cut M4.3; doc 17 §9): the
+    /// rig seals this hull under `SealTerms::production_fixture()` —
+    /// `PRODUCTION_FILL_ENGINE`, rated I, capped at the default
+    /// `[tacsim.minds].fill_class` — the terms `tacsim::match_::start` seals
+    /// every hull under at the stock keys, so a pin that fields the production
+    /// shape ([`Muster::fill`]) hashes as production does; its runner is
+    /// installed through the production installer like a scripted muster's.
+    pub production: bool,
 }
 
 /// **The condition a [`Muster`] opens in** (16b cut E.4).
@@ -142,6 +150,23 @@ impl Muster {
             wear: None,
             unarmed: false,
             scripted: false,
+            production: false,
+        }
+    }
+
+    /// **The production fill** (17b cut M4.3; doc 17 §9, plan finding 5): a
+    /// [`Muster::mind`] sealed as `tacsim::match_::start` seals an unseated
+    /// hull — Standard Doctrine on `PRODUCTION_FILL_ENGINE` at the default
+    /// `fill_class`, its runner installed by the production installer — so a
+    /// pin that fields it hashes as a production match does. [`Muster::mind`]
+    /// keeps the fixture terms (`Native`, rated I, capped III) so the twin's T1
+    /// and every `.sealed()` mind fixture keep their digests.
+    #[must_use]
+    pub fn fill(team: Team, slot: u8) -> Muster {
+        Muster {
+            controller: Controller::Mind,
+            production: true,
+            ..Muster::reflex(team, slot)
         }
     }
 
@@ -1049,13 +1074,17 @@ pub fn shipped_custody_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64)
             )
             .unwrap_or_else(|| panic!("{:?} has an entry cell", muster.team));
             // **17b cut M3.5**: a scripted muster's mind is sealed `scripted`.
-            let terms = tacsim::match_::SealTerms {
-                engine_for_minds: if muster.scripted {
-                    tacsim::arena::SealEngine::Scripted
-                } else {
-                    tacsim::arena::SealEngine::Native
-                },
-                ..tacsim::match_::SealTerms::fixture()
+            // **17b cut M4.3**: a production muster under the production
+            // fill's terms; every other under the fixture's.
+            let terms = if muster.scripted {
+                tacsim::match_::SealTerms {
+                    engine_for_minds: tacsim::arena::SealEngine::Scripted,
+                    ..tacsim::match_::SealTerms::fixture()
+                }
+            } else if muster.production {
+                tacsim::match_::SealTerms::production_fixture()
+            } else {
+                tacsim::match_::SealTerms::fixture()
             };
             let mut unit = tacsim::match_::custody_unit(
                 &catalog,

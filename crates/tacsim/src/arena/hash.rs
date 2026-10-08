@@ -237,7 +237,9 @@ thread_local! {
 ///    whose `closed` moves only with a ledger line, 17b cut M3.6's
 ///    `sortie_closed`, which the ledger's sequence folds) and
 ///    [`Arena::classes`] (17b cut M3.1's class table, captured at check-out
-///    and carried from 17b cut M3.2: a per-match constant, likewise).
+///    and carried from 17b cut M3.2: a per-match constant, likewise), and
+///    [`crate::arena::mind::MindState::doctrine_state`] (17b cut M4.3: a
+///    cache over the memory bytes item 3c folds, re-derived at the decode).
 ///
 ///    **Item 3d, the condition slots** (17b cut M1b.1; doc 17 §5, D-UM-16),
 ///    right after item 3c: every row of [`Arena::conditions`], in unit-id

@@ -1528,26 +1528,38 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
     }
     // **17b cut M3.5** (doc 17 §9, D-UM-36): the pool, at the choice, after
     // the class cap — the caller's hull's load against what the side's other
-    // claimed slots speak for, under the pool of the most units this centre
-    // can field (its pods, both sides: the smallest pool any match of it
-    // runs under). Every claimed slot is a seated pilot's, whose hull loads
-    // nothing until 17b cut M5's `SIM MIND` names a mind, so this cannot
-    // refuse before then (declared); the arithmetic and the sentence are
-    // pinned on [`pool_at_the_choice`] in-source, with a class named.
+    // loads speak for, under the pool of the most units this centre can
+    // field (its pods, both sides: the smallest pool any match of it runs
+    // under). Every claimed slot is a seated pilot's, whose hull loads
+    // nothing until 17b cut M5's `SIM MIND` names a mind; **17b cut M4.3**:
+    // the side's unclaimed pods under the AI fill are spoken for at
+    // `[tacsim.minds].fill_class` (what `SIM START` fields them at), and a
+    // choice that adds nothing is never refused, so this cannot refuse
+    // before M5 (declared); the arithmetic and the sentence are pinned on
+    // [`pool_at_the_choice`] in-source, with a class named.
     if let Some(minds_cfg) = minds_config(ctx.w) {
-        let others = centre(ctx.w)
+        let (claimed, fill_pods) = centre(ctx.w)
             .map(|centre| {
-                centre
+                let claimed = centre
                     .slots
                     .iter()
-                    .filter(|slot| slot.team == held.team && slot.account != account)
-                    .count()
+                    .filter(|slot| slot.team == held.team)
+                    .count();
+                let fill_pods = configs(ctx.w)
+                    .filter(|(_, match_cfg, _)| {
+                        match_cfg.ai_fill && centre.mode != MatchMode::Range
+                    })
+                    .map_or(0, |(_, match_cfg, _)| {
+                        usize::from(ai_side_size(ctx.w, centre, &match_cfg)).saturating_sub(claimed)
+                    });
+                (claimed, fill_pods)
             })
             .unwrap_or_default();
         pool_at_the_choice(
             &minds_cfg,
             centre::fieldable_per_side(ctx.w),
-            std::iter::repeat_n(None, others),
+            std::iter::repeat_n(None, claimed.saturating_sub(1))
+                .chain(std::iter::repeat_n(Some(minds_cfg.fill_class), fill_pods)),
             None,
         )?;
     }
@@ -1578,12 +1590,15 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
 
 /// **The pool at the choice** (17b cut M3.5; doc 17 §9, D-UM-36) — what
 /// [`unit_type`] asks after the class cap: the caller's hull's load at `mine`
-/// against what the side's other claimed slots (`others`, one class each)
-/// speak for, under the pool of `per_side` pods a side, both sides
+/// against what the side's other loads speak for — its other claimed slots
+/// (one class each, `None` before 17b cut M5: a seated hull loads nothing)
+/// AND, since 17b cut M4.3, its unclaimed pods at `[tacsim.minds].fill_class`
+/// under the AI fill — under the pool of `per_side` pods a side, both sides
 /// (`centre::fieldable_per_side`: the most units the centre can field, so the
-/// smallest pool any match of it runs under). Before 17b cut M5 every class
-/// [`unit_type`] passes is `None` — a seated hull loads nothing — so it cannot
-/// refuse; the arithmetic is the same one check-out's last gate does.
+/// smallest pool any match of it runs under). **A choice that adds nothing is
+/// never refused** (`would think 0` is never said): before M5 every `mine` is
+/// `None`, so nothing is refusable at the choice yet (declared); the
+/// arithmetic is the same one check-out's last gate does.
 ///
 /// # Errors
 ///
@@ -1595,12 +1610,16 @@ fn pool_at_the_choice(
     mine: Option<crate::arena::core::CoreClass>,
 ) -> Result<(), SimError> {
     use crate::match_::pool::{admit, load_of, pool_for};
+    let would = load_of(&cfg.classes, mine);
+    if would == 0 {
+        return Ok(());
+    }
     let compute = pool_for(cfg, usize::from(per_side).saturating_mul(2));
     let spoken = others
         .into_iter()
         .map(|class| load_of(&cfg.classes, class))
         .fold(0_u64, u64::saturating_add);
-    admit(compute, spoken, load_of(&cfg.classes, mine)).map_err(SimError::Pool)
+    admit(compute, spoken, would).map_err(SimError::Pool)
 }
 
 /// Re-ask `Boarding`'s two questions after a slot moved: did a side empty, and
@@ -2435,9 +2454,7 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             return Err(error);
         }
     };
-    // **17b cut M1b.5**: who flies the unseated hulls — the lab's
-    // `[tacsim.minds].fill_controller`, `reflex` unless a lab set it.
-    let fill = minds_config(ctx.w).unwrap_or_default().fill_controller();
+    // **17b cut M4.3**: the unseated hulls are minds (`crate::match_::start`).
     match crate::match_::start(
         ctx,
         match_id,
@@ -2447,7 +2464,6 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
         &match_cfg,
         &sensors_cfg,
         mode,
-        fill,
     ) {
         Ok(_) => {
             if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
@@ -2478,7 +2494,10 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             // so the centre gives the pods and the slots back and says why.
             // **17b cut M3.3**: `CardUnlawful` is a whole sentence with its own
             // full stop, so the stop is trimmed as AE.3 trims `ready`'s.
-            let said = error.to_string();
+            // **17b cut M4.3**: the pool and a sealed mind the server cannot
+            // run — the two refusals the flip made reachable here — in their
+            // short form, under 120 columns (`StartError::call_off_words`).
+            let said = error.call_off_words(ctx.w, &sides);
             call_off(
                 ctx,
                 format!(

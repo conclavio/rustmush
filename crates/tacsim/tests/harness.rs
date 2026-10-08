@@ -8672,10 +8672,9 @@ impl MindsVariant {
 /// **The admission arithmetic** (the M4 row's finding (8); doc 17 §9): how
 /// many hulls a side `admit_side` admits at `class` with the rest at the
 /// ROM's 400, classed first, every hull counted — the fighting line's seats
-/// included, read `admitted_class(Some(class), seated)`, which answers the
-/// class whatever the seat bit says (a fixture naming a class is the
-/// documented case; 17b cut M4.3's `fill_class` argument moves one line
-/// here). 36 at Class I and 2 at Class III at the 300-unit defaults
+/// included, read `admitted_class(Some(class), seated, fill_class)`, which
+/// answers the class whatever the seat bit and the fill's class say (a
+/// fixture naming a class is the documented case). 36 at Class I and 2 at Class III at the 300-unit defaults
 /// ([`m4_2_the_harness_s_three_hundred_admit_thirty_six_at_class_i_and_two_at_class_iii_a_side`]).
 fn admitted_per_side(
     cfg: &tacsim::config::MindsConfig,
@@ -8697,6 +8696,7 @@ fn admitted_per_side(
                     admitted_class(
                         Some(if k < n { class } else { CoreClass::Zero }),
                         k < seated_per_side,
+                        cfg.fill_class,
                     ),
                 )
             });
@@ -11305,11 +11305,14 @@ fn m4_2_the_harness_s_three_hundred_admit_thirty_six_at_class_i_and_two_at_class
         }),
         "the 119th hull: three heavies and 115 ROMs reach the half exactly"
     );
-    // The seat bit is inert for an explicitly classed hull (17b cut M4.3's
-    // `fill_class` argument moves this line).
-    assert_eq!(admitted_class(Some(CoreClass::I), true), Some(CoreClass::I));
+    // The seat bit and the fill's class are inert for an explicitly classed
+    // hull.
     assert_eq!(
-        admitted_class(Some(CoreClass::Zero), false),
+        admitted_class(Some(CoreClass::I), true, CoreClass::Zero),
+        Some(CoreClass::I)
+    );
+    assert_eq!(
+        admitted_class(Some(CoreClass::Zero), false, CoreClass::I),
         Some(CoreClass::Zero)
     );
     // A sizing run: at a hundred units the pool is 400,000, so every Class I

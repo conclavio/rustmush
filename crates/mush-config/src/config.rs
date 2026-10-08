@@ -95,12 +95,12 @@
 //! | `[tacsim.match].board_timeout_ms` | `120000` | milliseconds `Boarding` waits before unseated slots are dropped (doc 16 §3.8) |
 //! | `[tacsim.match].max_duration_ms` | `900000` | the longest a match runs before it ends as a timeout; fifteen minutes since 16b cut AP.2 (16c Q47) |
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
-//! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, under the reflex controller. Off by default because doc 16 §1's A1 is a two-tank story |
+//! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, flown by Standard Doctrine on a unit mind (17b cut M4.3; the reflex controller's before it). Off by default because doc 16 §1's A1 is a two-tank story |
 //! | `[tacsim.match].unattended_ms` | `300000` | **16b cut D.3** (`B-33`): world milliseconds a running match every pilot has left runs on before the lobby ends it `unattended`; `0` is off, and anything else is at least `10000` |
 //! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from the reflex controller; `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
-//! | `[tacsim.minds].fill_controller` | `"reflex"` | **17b cut M1b.5** (doc 16 §6's AI fill; a LAB knob): who flies a match's unseated hulls — `reflex` (today's machine) or `mind` (the native stock mind on Line); production configs do not set it, `mush-bot`'s pooled measure does, and 17b cut M4's flip retires it; by name |
+//! | `[tacsim.minds].fill_class` | `"I"` | **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every seated hull are sealed and admitted at — `0`, `I`, `II` or `III` by its word; the seal's class is the least of the stock rating (`I`), the core and this, so above `I` it caps nothing until M5 rates minds; a config still naming the retired lab knob `fill_controller` (17b cut M1b.5) refuses the boot |
 //! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out until 17b cut M5) |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
@@ -1384,21 +1384,24 @@ impl Default for TacsimCommandCfg {
 /// `[tacsim.minds]` — the unit minds' block (**17b cut M1b.1**; doc 17 §5 "The
 /// law", D-UM-17 as amended 2026-10-04).
 ///
-/// One key today: the **Compact floor**, the least chance to hit (per mille) a
-/// lawful condition slot may name. The arena captures it at check-out, so a
-/// reload never reaches a running or a resumed match. Checked by
-/// `tacsim::config::MindsConfig::validate`, reached through
-/// `mush_server::config_ext::tacsim_config` whether or not the layer is on.
+/// The **Compact floor** (the least chance to hit, per mille, a lawful
+/// condition slot may name; captured at check-out, so a reload never reaches a
+/// running or a resumed match), the class table, the pool, the think pool's
+/// workers, the minds lane's CPU lens figure and (17b cut M4.3) the class the
+/// AI fill is sealed at. Checked by `tacsim::config::MindsConfig::validate`,
+/// reached through `mush_server::config_ext::tacsim_config` whether or not the
+/// layer is on.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimMindsCfg {
     /// The Compact floor, per mille. `10` to `950` in steps of `10` (17b cut
     /// M3.3; above `100` every Line-carded check-out is refused until M5).
     pub odds_floor_permille: u32,
-    /// **17b cut M1b.5**: who flies a match's unseated hulls, `reflex` or
-    /// `mind` — a lab knob for `mush-bot`'s pooled measure; production configs
-    /// leave it at `reflex`.
-    pub fill_controller: String,
+    /// **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every
+    /// seated hull are sealed and admitted at, by its word — `0`, `I`, `II`
+    /// or `III`; parsed and refused by name in
+    /// `mush_server::config_ext::tacsim_config`. Stock `I`.
+    pub fill_class: String,
     /// **17b cut M3.1** (doc 17 §9, D-UM-35): `[tacsim.minds.classes.<class>]`,
     /// the Compact class table's overrides — the class word (`0`, `I`, `II`,
     /// `III`) to any of its eight figures (`think_ms`, `ops`, `rows`,
@@ -1434,7 +1437,7 @@ impl Default for TacsimMindsCfg {
     fn default() -> Self {
         TacsimMindsCfg {
             odds_floor_permille: 100,
-            fill_controller: "reflex".to_owned(),
+            fill_class: "I".to_owned(),
             classes: serde_json::Value::Object(serde_json::Map::new()),
             pool_base_ops_s: 500_000,
             pool_per_unit_ops_s: 1_000,
@@ -3170,11 +3173,18 @@ scene_turn_dedline_secs = 30
                 ..TacsimMindsCfg::default()
             }
         );
-        // 17b cut M1b.5: the lab's fill controller, written.
-        let lab: Config = toml::from_str("[tacsim.minds]\nfill_controller = \"mind\"\n")
-            .expect("the lab block parses");
-        assert_eq!(lab.tacsim.minds.fill_controller, "mind");
-        assert_eq!(absent.tacsim.minds.fill_controller, "reflex");
+        // 17b cut M4.3: the fill's class, written and absent; the lab knob
+        // it retired refuses the boot by name.
+        let capped: Config =
+            toml::from_str("[tacsim.minds]\nfill_class = \"II\"\n").expect("the fill block parses");
+        assert_eq!(capped.tacsim.minds.fill_class, "II");
+        assert_eq!(absent.tacsim.minds.fill_class, "I");
+        let retired = "[tacsim.minds]\nfill_controller = \"mind\"\n";
+        let refused = toml::from_str::<Config>(retired)
+            .expect_err(retired)
+            .to_string();
+        assert!(refused.contains("fill_controller"), "{refused}");
+        assert!(refused.contains("unknown field"), "{refused}");
 
         let text = "[tacsim.minds]\nodds_floor = 50\n";
         let refused = toml::from_str::<Config>(text).expect_err(text).to_string();

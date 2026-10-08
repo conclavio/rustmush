@@ -117,9 +117,10 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     "You are watching match 12; @arena/watch off first."
                     No pilot is ever sent any of it.
   @mind/set <unit>[=<preset> | =<slider> <value>]
-                    The stock card of a unit flown by a mind (a match's
-                    unseated tanks are, when [tacsim.minds] fill_controller
-                    is "mind" - a lab setting). Bare, it reads the card
+                    The stock card of a unit flown by a mind: a match's
+                    unseated tanks are, and so is a seat its pilot dropped
+                    past the grace (the mind sealed on the hull at check-out
+                    takes it). Bare, it reads the card
                     back: "Mind card on #305 (Tank): Sniper (on the tape at
                     65000 ms)" - or "Line (as checked out)" before any
                     change, "(sent at 64000 ms, not yet on the
@@ -143,8 +144,8 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     pulse and records the whole card on the tape
                     (mind_card, or mind_card_refused); the read-back
                     follows the tape, a chunk behind. Refused for a tank a
-                    pilot or the reflex machine flies ("@mind/set: #305 is
-                    not flown by a mind."). No pilot is told any of it.
+                    pilot flies ("@mind/set: #305 is not flown by a
+                    mind."). No pilot is told any of it.
 
 Powers: BOOT, EXAMINE_ALL, TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY,
 COMSYS_ADMIN, BUILDER_LLM, SEE_HIDDEN, FACTION_ADMIN, SIM_ADMIN. Wizards

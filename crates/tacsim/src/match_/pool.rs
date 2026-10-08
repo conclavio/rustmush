@@ -22,7 +22,8 @@
 //! what is spoken for.
 //!
 //! **Who loads what before 17b cut M5** (the lead's instruction): the AI
-//! fill's hull at [`FILL_CLASS_UNTIL_M5`] — Class 0, 400 each — until M5 lets
+//! fill's hull at `[tacsim.minds].fill_class` — Class I, 1,500 each, from 17b
+//! cut M4.3 (Class 0's 400 before it) — until M5 lets
 //! the lead set the fill's class (D-UM-37); a seated pilot's hull nothing,
 //! until M5's `SIM MIND` names a mind for it; a fixture (or M5) may name a
 //! class on the fielded unit (`crate::match_::Fielded::mind_class`).
@@ -36,7 +37,9 @@
 //! `TooManyUnits`. The gate bites only under an operator's lowered pool
 //! (`tests/match_lifecycle.rs`' over-subscribed fixture runs at
 //! `pool_base_ops_s = 300_000`). Nor can `SIM UNIT` refuse before 17b cut M5:
-//! every hull a pilot chooses for is seated, and loads nothing.
+//! every hull a pilot chooses for is seated, and loads nothing — and since
+//! 17b cut M4.3 the side's unclaimed pods under the AI fill are spoken for at
+//! `fill_class` there too, a choice that adds nothing never refused.
 //!
 //! **Doc 17 §9's recount of the harness's 300 machines** (all at Class 0
 //! take 120,000 of a 200,000 pool) is a per-TASK sum over the hulls the
@@ -46,10 +49,6 @@
 
 use crate::arena::core::{ClassTable, CoreClass};
 use crate::config::MindsConfig;
-
-/// **The AI fill's class until 17b cut M5** (the lead's instruction; D-UM-37:
-/// M5 lets the lobby lead set it): Class 0, the ROM's 400 ops a second each.
-pub const FILL_CLASS_UNTIL_M5: CoreClass = CoreClass::Zero;
 
 /// **A task's allotment, ops a sim second** (D-UM-36):
 /// `max(floor, base − per_unit × units)`, saturating — 200,000 at 300 units,
@@ -71,14 +70,20 @@ pub fn load_of(classes: &ClassTable, mind: Option<CoreClass>) -> u64 {
 }
 
 /// **The class a fielded hull is admitted at** — `chosen` where a fixture (or
-/// 17b cut M5) named one, else the fill rule: nothing on a seated hull, and
-/// [`FILL_CLASS_UNTIL_M5`] on an unseated one, which the fill flies.
+/// 17b cut M5) named one, else the fill rule: nothing on a seated hull (M5's
+/// gap, declared: a seated hull is sealed at `fill_class` too, so a release
+/// adds no unadmitted load), and `fill_class` — `[tacsim.minds].fill_class`,
+/// 17b cut M4.3 — on an unseated one, which the fill flies.
 #[must_use]
-pub const fn admitted_class(chosen: Option<CoreClass>, seated: bool) -> Option<CoreClass> {
+pub const fn admitted_class(
+    chosen: Option<CoreClass>,
+    seated: bool,
+    fill_class: CoreClass,
+) -> Option<CoreClass> {
     match chosen {
         Some(class) => Some(class),
         None if seated => None,
-        None => Some(FILL_CLASS_UNTIL_M5),
+        None => Some(fill_class),
     }
 }
 
@@ -177,9 +182,10 @@ mod tests {
     /// **The loads are the class ceilings** (doc 17 §9): 400, 1,500, 6,000
     /// and 18,000 a second on the stock table; nothing for no mind; and the
     /// fill rule — a named class wins, a seated hull loads nothing, an
-    /// unseated one the fill's Class 0.
+    /// unseated one `[tacsim.minds].fill_class` (17b cut M4.3; Class 0 until
+    /// then).
     #[test]
-    fn m3_the_loads_are_the_class_ceilings_and_the_fill_is_class_0() {
+    fn m3_the_loads_are_the_class_ceilings_and_the_fill_is_fill_class() {
         let classes = ClassTable::STOCK;
         let loads: Vec<u64> = CoreClass::ALL
             .iter()
@@ -187,13 +193,35 @@ mod tests {
             .collect();
         assert_eq!(loads, [400, 1_500, 6_000, 18_000]);
         assert_eq!(load_of(&classes, None), 0);
-        assert_eq!(FILL_CLASS_UNTIL_M5, CoreClass::Zero);
-        assert_eq!(admitted_class(None, true), None);
-        assert_eq!(admitted_class(None, false), Some(CoreClass::Zero));
+        assert_eq!(MindsConfig::default().fill_class, CoreClass::I);
+        assert_eq!(admitted_class(None, true, CoreClass::I), None);
         assert_eq!(
-            admitted_class(Some(CoreClass::III), true),
+            admitted_class(None, false, CoreClass::I),
+            Some(CoreClass::I)
+        );
+        assert_eq!(
+            admitted_class(None, false, CoreClass::Zero),
+            Some(CoreClass::Zero)
+        );
+        assert_eq!(
+            admitted_class(Some(CoreClass::III), true, CoreClass::I),
             Some(CoreClass::III)
         );
+    }
+
+    /// **The stock fill's load** (17b cut M4.3; doc 17 §9): a 24-unit match
+    /// at the fill's Class I speaks for 36,000 of 476,000 — twelve a side at
+    /// 1,500 against a half of 238,000 — admitted with room for every class.
+    #[test]
+    fn m4_3_twenty_four_at_class_i_speak_for_36_000_of_476_000() {
+        let cfg = MindsConfig::default();
+        let pool = pool_for(&cfg, 24);
+        let load = load_of(&cfg.classes, Some(cfg.fill_class));
+        assert_eq!(pool, 476_000);
+        assert_eq!(load, 1_500);
+        assert_eq!(12 * load, 18_000);
+        assert_eq!(24 * load, 36_000);
+        assert_eq!(admit_side(pool, [load; 12]), Ok(()));
     }
 
     /// **The edge** (D-UM-36): `spoken + would == half` is admitted, one more

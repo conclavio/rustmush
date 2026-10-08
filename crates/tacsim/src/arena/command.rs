@@ -411,8 +411,9 @@ impl Arena {
             let mut health_total: u64 = 0;
             let mut health_count: u64 = 0;
             for unit in &squad.units {
-                if let Some(machine) = self.reflex.unit(*unit)
-                    && let Some(slot) = states.get_mut(usize::from(machine.state.code()))
+                // 17b cut M4.3: either machine's state (`Arena::machine_state`).
+                if let Some(state) = self.machine_state(*unit)
+                    && let Some(slot) = states.get_mut(usize::from(state.code()))
                 {
                     *slot = slot.saturating_add(1);
                 }
@@ -448,19 +449,14 @@ impl Arena {
                 members.push(SignalMember {
                     unit: *unit,
                     ordinal,
-                    // **17b cut M1a.5**: a member a mind flies has no reflex
-                    // row and reads `Startup`. Since **17b cut L.2** a mind's
-                    // hull IS dealt into a squad (`Controller::is_machine`), and
-                    // this stays the placeholder on purpose: the signal's shape
-                    // for minds is 17b cut M4's — cut L chose not to read a
-                    // mind's memory into another principal's brief (D-UM-49,
-                    // "no `mem`"). The commander guards above read the unit,
+                    // **17b cut M4.3**: either machine's state, the mind's
+                    // off its cached doctrine state (a doctrine STATE word,
+                    // never the memory: D-UM-49 is kept); a pilot's hull
+                    // reads `Startup`, as a mind's did under M1a.5's
+                    // placeholder. The commander guards above read the unit,
                     // not this row, so they apply to a mind commander as they
                     // stand.
-                    state: self
-                        .reflex
-                        .unit(*unit)
-                        .map_or(ReflexState::Startup, |machine| machine.state),
+                    state: self.machine_state(*unit).unwrap_or(ReflexState::Startup),
                     health_permille: self.reflex_health_permille(*unit),
                     range_cm,
                     bearing_mdeg,

@@ -135,7 +135,7 @@ use crate::deliberation::order::RangeBand;
 /// **The fourteen keys of the stock mind's memory** (17b cut M1a.6), in the
 /// order [`StockMemory`]'s fields are declared — and nothing else: a test
 /// pins the list.
-pub const STOCK_MEMORY_KEY_NAMES: [&str; 14] = [
+pub const STOCK_MEMORY_KEY_NAMES: [&str; 15] = [
     "state",
     "target",
     "goal",
@@ -150,6 +150,7 @@ pub const STOCK_MEMORY_KEY_NAMES: [&str; 14] = [
     "hunt",
     "no_line",
     "ignore_until_ms",
+    "ordered",
 ];
 
 /// **What the stock mind remembers between thinks** (17b cut M1a.6; doc 17
@@ -205,6 +206,15 @@ pub struct StockMemory {
     /// another `expires_ms`. An integer, so 17b cut M2's frozen memory shape
     /// carries which order ended, not merely that one did.
     pub ignore_until_ms: Option<i64>,
+    /// `ordered`: **the `Withdraw` is an order's** (17b cut M4.3; the
+    /// fifteenth key). The expiry's restoration (a healthy, not-dry `Withdraw`
+    /// under no order goes back to `Patrol`) reads it, so only a `Withdraw` an
+    /// order put the hull in is restored when the order is gone: a released
+    /// seat's seeded `Withdraw` (`Arena::withdraw_seed`, 16b cut N.1's
+    /// drives-home) and a dry or hurt one are left to Q.7's rally. Written
+    /// `true` at the order's `Withdraw` edge, `false` at the dry/hurt edge, by
+    /// the restoration and by the seed.
+    pub ordered: bool,
 }
 
 /// An integer key, or `None` when absent, unit or not an INT.
@@ -254,7 +264,7 @@ fn state_of(code: Option<i64>) -> ReflexState {
 }
 
 impl From<&Memory> for StockMemory {
-    /// Read the fourteen keys; an absent, unit or ill-shaped key is the
+    /// Read the fifteen keys; an absent, unit or ill-shaped key is the
     /// field's default (an empty memory is a fresh sortie). 17b cut M2.2:
     /// over `mush_mind`'s [`MemValue`] — an `Int` for every integer (the
     /// state's code, the two waypoints, the clocks, `ignore_until_ms` and
@@ -285,12 +295,13 @@ impl From<&Memory> for StockMemory {
             hunt: cell_at(memory, "hunt"),
             no_line: flag("no_line"),
             ignore_until_ms: int_at(memory, "ignore_until_ms"),
+            ordered: flag("ordered"),
         }
     }
 }
 
 impl From<StockMemory> for Memory {
-    /// Write all fourteen keys, a `Unit` for every field that holds nothing —
+    /// Write all fifteen keys, a `Unit` for every field that holds nothing —
     /// so one memory has one encoding, whichever think wrote it. 17b cut
     /// M2.2: as `mush_mind`'s [`MemValue`]s — `Int` for every integer,
     /// `Ints(vec![x, y])` for `goal` and `hunt`, `Ints(vec![x, y, t])` for
@@ -329,6 +340,7 @@ impl From<StockMemory> for Memory {
         put("hunt", cell_value(stock.hunt));
         put("no_line", MemValue::Bool(stock.no_line));
         put("ignore_until_ms", int_value(stock.ignore_until_ms));
+        put("ordered", MemValue::Bool(stock.ordered));
         memory
     }
 }
@@ -977,18 +989,22 @@ impl NativeStockMind {
         let health = health_permille(view);
         let dry = is_dry(view);
         // **The expiry's restoration** (`ReflexUnit::drop_to_doctrine`), read
-        // off the view: a `Withdraw` that no live order holds and that neither
-        // of its own edges would have taken — healthy and not dry — is one an
-        // order put it in, and the order is over. It goes back to `Patrol` with
-        // the target and the goal dropped, as the reflex's expiry does; a hurt
-        // one keeps going home.
+        // off the view: a `Withdraw` that no live order holds, that the memory
+        // says an order put it in (`ordered`, 17b cut M4.3), and that neither
+        // of its own edges would have taken — healthy and not dry — is one
+        // whose order is over. It goes back to `Patrol` with the target and
+        // the goal dropped, as the reflex's expiry does; a hurt one keeps
+        // going home, and so does a released seat's seeded `Withdraw`, which
+        // no order put there (it rallies on Q.7's clock).
         if view.order.is_none()
             && mem.state == ReflexState::Withdraw
+            && mem.ordered
             && !dry
             && health >= cfg.withdraw_permille
         {
             mem.state = ReflexState::Patrol;
             mem.target = None;
+            mem.ordered = false;
             goal = None;
         }
         let mut order: Option<&FrameOrder> = obeyed(view, mem);
@@ -1076,6 +1092,8 @@ impl NativeStockMind {
                     mem.target = None;
                     goal = None;
                     mem.last_plot = None;
+                    // 17b cut M4.3: an order's `Withdraw`, restored at its end.
+                    mem.ordered = true;
                 }
             }
             Some(
@@ -1098,6 +1116,8 @@ impl NativeStockMind {
             mem.target = None;
             goal = None;
             mem.last_plot = None;
+            // 17b cut M4.3: its own edge's `Withdraw`, never restored early.
+            mem.ordered = false;
         }
 
         // ---- the hostile edges, and the leash's reading (16b cut Z.2) ----
@@ -2058,7 +2078,7 @@ mod tests {
     /// == encode(m)`; the default writes the same fourteen keys, its nulls
     /// included, and an empty memory reads as the default.
     #[test]
-    fn m1a6_the_stock_memory_is_fourteen_keys_and_round_trips() {
+    fn m1a6_the_stock_memory_is_fifteen_keys_and_round_trips() {
         let full = StockMemory {
             state: ReflexState::Withdraw,
             target: Some(ContactId(0xF00D_0000_0000_0001)),
@@ -2074,6 +2094,7 @@ mod tests {
             hunt: Some((250, 128)),
             no_line: true,
             ignore_until_ms: Some(60_000),
+            ordered: true,
         };
         let mut keys: Vec<&str> = STOCK_MEMORY_KEY_NAMES.to_vec();
         keys.sort_unstable();
@@ -2088,7 +2109,7 @@ mod tests {
             let bytes = encode_memory(&memory);
             assert_eq!(encode_memory(&decode_memory(&bytes)), bytes);
         }
-        assert_eq!(STOCK_MEMORY_KEY_NAMES.len(), 14);
+        assert_eq!(STOCK_MEMORY_KEY_NAMES.len(), 15);
         assert_eq!(StockMemory::from(&Memory::new()), StockMemory::default());
         assert_eq!(
             StockMemory::from(&decode_memory(&encode_memory(&Memory::from(full.clone())))),
@@ -2881,12 +2902,23 @@ mod tests {
         let withdrawing = StockMemory {
             state: ReflexState::Withdraw,
             target: Some(ContactId(0x11)),
+            // 17b cut M4.3: the order's `Withdraw`, which the expiry restores.
+            ordered: true,
             ..StockMemory::default()
         };
         let mut expired = withdrawing.clone();
         let _ = think(&arena, &view, &mut expired, 1_000);
         assert_eq!(expired.state, ReflexState::Patrol);
         assert_eq!(expired.target, None);
+        assert!(!expired.ordered, "the restoration spends the flag");
+        // 17b cut M4.3: a `Withdraw` no order put it in — a released seat's
+        // seed — is held under no order, healthy and not dry.
+        let mut seeded = StockMemory {
+            ordered: false,
+            ..withdrawing.clone()
+        };
+        let _ = think(&arena, &view, &mut seeded, 1_000);
+        assert_eq!(seeded.state, ReflexState::Withdraw);
         let mut ordered_view = view.clone();
         ordered_view.order = Some(order_of(MindObjective::Withdraw));
         let mut ordered = withdrawing.clone();

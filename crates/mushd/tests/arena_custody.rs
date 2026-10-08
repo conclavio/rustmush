@@ -74,8 +74,6 @@ const FIELD: ObjId = ObjId(2);
 /// The two tanks.
 const RED: ObjId = ObjId(3);
 const BLUE: ObjId = ObjId(4);
-/// One arena cell, centimetres (doc 16 §3.2).
-const CELL_CM: i64 = 1_000;
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -114,6 +112,22 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     // "the unit nothing happened to comes back byte-identical" false for a reason
     // that has nothing to do with custody. So the controller's cadence is pushed
     // past this test's lifetime.
+    //
+    // **17b cut M4.3** moved the premise again: a unit with no pilot is a unit
+    // MIND's (doc 17 §9, §12), which thinks on its class row's grid
+    // (`STOCK_THINK_MS`, one second) and reads no cadence knob, so `decide_ms`
+    // idles nothing any more. The device is now the hulls' own: the custody
+    // lens below makes the idle unit immobile AND dry before the match (its
+    // engine destroyed, its magazines emptied — its guns kept, because a hull
+    // that cannot move and carries no weapon is doc 16 §3.8's *disabled with
+    // no weapons* and ends the match at 0 ms by elimination; a destroyed
+    // sensor component blinds nothing at the arena), so its mind starts it
+    // up, can drive nothing and has nothing to fire; and takes the driven
+    // unit's weapons off, so an unarmed mind patrols and never closes (doc 17
+    // §17's fourteenth divergence) and neither hull can shoot the other.
+    // Nothing but the staff's orders and the red hull's own patrol moves
+    // anything. The cadence ceiling is kept for the reflex rows no production
+    // hull lays any more.
     //
     // **16b cut U.1** moved the premise. The **first** tick lands at the unit's
     // seeded stagger inside one cadence (`stagger_ms(seed, id, decide_ms)`; it
@@ -497,9 +511,47 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     let (_handle, mut term) = staff_session(server.addr).await;
     prepare(&mut term).await;
 
+    // **17b cut M4.3**: both hulls are a mind's once checked out (the AI fill
+    // is a unit mind), so the idle unit is made immobile and dry first — its
+    // engine destroyed through the staff's own damage verb in the shape
+    // `tests/support`'s `engine_struck` writes, its magazines emptied as
+    // `shot_dry` empties them — and the driven unit is unarmed, so neither can
+    // shoot the other and the idle one cannot move. (Not inert: an immobile
+    // hull with no weapon is out of action, and the match would end at once.)
+    // The records are captured AFTER the damage: what custody must give back
+    // byte-identical is the unit as it went out.
+    let destroyed = |section: &str| {
+        format!(r#"{{"SetSectionCondition":{{"section":"{section}","condition":"destroyed"}}}}"#)
+    };
+    let dead = |component: &str| {
+        format!(
+            r#"{{"SetComponentCondition":{{"component":"{component}","condition":"destroyed"}}}}"#
+        )
+    };
+    let unarmed = [destroyed("turret"), dead("cannon"), dead("machine_gun")];
+    let parked = [
+        r#"{"SetCell":{"addr":{"Facet":{"section":"hull","facet":"rear","cell":"armor"}},"value":0}}"#
+            .to_owned(),
+        r#"{"SetCell":{"addr":{"Section":{"section":"engine","cell":"internals"}},"value":0}}"#
+            .to_owned(),
+        destroyed("engine"),
+        r#"{"SetCell":{"addr":{"Component":{"component":"cannon","cell":"ammo"}},"value":0}}"#
+            .to_owned(),
+        r#"{"SetCell":{"addr":{"Component":{"component":"machine_gun","cell":"ammo"}},"value":0}}"#
+            .to_owned(),
+    ];
+    for (unit, ops) in [(RED, unarmed.to_vec()), (BLUE, parked.to_vec())] {
+        let plan = format!("{{\"ops\":[{}]}}", ops.join(","));
+        say(
+            &mut term,
+            &format!("@unit/damage #{}={plan}", unit.0),
+            "Applied",
+        )
+        .await;
+    }
     let before_red = record(&server.store, RED).await.expect("the red record");
     let before_blue = record(&server.store, BLUE).await.expect("the blue record");
-    let start_x = pose_x_cm(&placement(&server.store, RED).await.expect("placed"));
+    let start = placement(&server.store, RED).await.expect("placed");
     let blue_placement = placement(&server.store, BLUE).await.expect("placed");
     assert!(
         before_red.get("deployed").is_none(),
@@ -567,15 +619,17 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     )
     .await;
     // Ten observed seconds of arena time. The order is above the tank's ceiling on
-    // purpose — the arena caps it at `max_speed_cms` — so what is being timed is
-    // doc 16 §3.4's acceleration and nothing else: 100 cm/s² for ten seconds is
-    // 1,000 cm/s and fifty metres, which is five cells, and the assertion below
-    // asks for three.
+    // purpose — the arena caps it at `max_speed_cms`. **17b cut M4.3**: the red
+    // hull's mind patrols the ground at the same time (a unit with no pilot is
+    // a mind's), so what is being asserted below is custody's promise alone —
+    // the pose the world gets back is the arena's own last frame, somewhere
+    // other than where the hull went out — and no longer doc 16 §3.4's
+    // acceleration on one bearing, which `tacsim`'s own motor tests hold.
     wait_arena_seconds(&mut term, 10).await;
-    // **16b cut M.1** (`T-42`): then stop, so the pose the world gets back can be
-    // compared with the arena's own record of it. Braking from at most 1,000 cm/s
-    // at the tank's own rate takes about five seconds; the seventh covers one
-    // `position_summary` cadence after the stop.
+    // **16b cut M.1** (`T-42`): then the staff's stop, as before; the mind may
+    // drive on, which is why the pose is compared with the arena's last
+    // summary — written every pulse here (`summary_ms` is the tempo's period)
+    // — and not with a standstill.
     say(
         &mut term,
         &format!("@arena/intent #{}=speed 0", RED.0),
@@ -600,7 +654,9 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     )
     .await;
 
-    // (1) The unit nothing happened to is byte-identical, record and placement.
+    // (1) The unit nothing happened to is byte-identical, record and placement
+    //     (17b cut M4.3: immobile and dry, so its mind starts it up — power is
+    //     the arena's, not the record's — and can neither drive it nor fire).
     assert_eq!(
         record(&server.store, BLUE).await,
         Some(before_blue),
@@ -612,23 +668,22 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         "and it never moved"
     );
 
-    // (2) The driven unit's world placement is where the arena left it: several
-    //     cells east of where it started, on the heading it was ordered onto.
-    //     The pose the world writes is the arena's own last frame (cut T.3's
+    // (2) The driven unit's world placement is where the arena left it. The
+    //     pose the world writes is the arena's own last frame (cut T.3's
     //     `CustodyIn` seam), so this is a statement about the arena's number,
-    //     not about the world's arithmetic.
+    //     not about the world's arithmetic. How far it went is not asserted
+    //     since 17b cut M4.3: the staff's orders and the hull's own mind drive
+    //     it by turns, and the distance is the match seed's; the equality
+    //     below is custody's whatever the distance.
     let after = placement(&server.store, RED).await.expect("still placed");
-    let travelled = pose_x_cm(&after) - start_x;
     assert!(
-        travelled >= 3 * CELL_CM,
-        "the driven unit came back {travelled} cm east of where it went out; three cells is \
-         {} cm (placement: {after})",
-        3 * CELL_CM
+        after.pointer("/parent/domain").is_some(),
+        "a direct placement names its domain: {after}"
     );
     assert_eq!(
-        pose_heading(&after),
-        90_000,
-        "and on the bearing it was ordered onto: {after}"
+        after.pointer("/parent/domain"),
+        start.pointer("/parent/domain"),
+        "the driven unit came back to the domain it went out from: {after} / {start}"
     );
     // **16b cut M.1** (`T-42`): and it is the arena's number verbatim. A chunk
     // reaches the store only at 16 KiB or at the end's flush, so the black box is
@@ -648,13 +703,9 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     )
     .await;
     let summaries = summaries_of(&ledger_events(&server.store, 1).await, RED);
-    let [.., before_last, last] = summaries.as_slice() else {
-        panic!("the black box has fewer than two summaries of the red tank: {summaries:?}");
+    let Some(last) = summaries.last() else {
+        panic!("the black box has no summary of the red tank: {summaries:?}");
     };
-    assert_eq!(
-        before_last, last,
-        "the red tank had stopped before the end: {summaries:?}"
-    );
     assert_eq!(
         (pose_x_cm(&after), pose_y_cm(&after), pose_heading(&after)),
         *last,

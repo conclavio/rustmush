@@ -7277,12 +7277,16 @@ async fn l1_send_order_refuses_an_order_nobody_entitled_gave() {
 
 /// **17b cut L.1 — a typed `ORDER` carries the seat's character** (D-UM-52):
 /// the red lead's `ORDER red-1 HOLD`, acknowledged in HEAD's exact words, lands
-/// on both of red-1's machines with `by` = the lead's character and `issuer` =
-/// the lead's tank — read off the snapshot the arena writes every second,
-/// which carries every standing order whole (`SNAPSHOT_FORMAT` 6) — the world's
-/// watch names the same author (`order_author`), and the shield stands: a
-/// signal for red-1 takes no in-flight slot, while another squad's signal in
-/// the same call takes exactly one.
+/// on both of red-1's machines with `issuer` = the lead's tank on each hull's
+/// `ordered` tape line, the world's watch names the author (`order_author`:
+/// the lead's character) and the issuer, and the shield stands: a signal for
+/// red-1 takes no in-flight slot, while another squad's signal in the same
+/// call takes exactly one. **17b cut M4.3**: red-1's machines are minds, so
+/// the snapshot the arena writes every second carries each hull's order on
+/// its mind row as the `FrameOrder` the mind reads (the squad and the
+/// objective; a mind's order names no author — D-UM-52's `by` is the
+/// world's watch's and the tape's), where the reflex row carried the
+/// `StandingOrder` whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l1_a_typed_order_carries_the_seats_character() {
     use tacsim::deliberation::CharacterRef;
@@ -7405,21 +7409,34 @@ async fn l1_a_typed_order_carries_the_seats_character() {
         .expect("the snapshot's state");
     for unit in &roster.units {
         let order = state
-            .get("reflex")
-            .and_then(|reflex| reflex.get("units"))
-            .and_then(|units| units.get(unit.0.to_string()))
+            .get("minds")
+            .and_then(|minds| minds.get(unit.0.to_string()))
             .and_then(|row| row.get("order"))
-            .and_then(|standing| standing.get("order"))
-            .unwrap_or_else(|| panic!("{unit:?} carries a standing order"));
+            .filter(|order| !order.is_null())
+            .unwrap_or_else(|| panic!("{unit:?}'s mind carries a standing order"));
         assert_eq!(
-            order.get("by"),
-            Some(&serde_json::json!({"kind": "character", "id": pilot.0})),
-            "{unit:?}: the standing order's author is the seat's character"
+            order.get("squad"),
+            Some(&serde_json::json!("red-1")),
+            "{unit:?}: the order is red-1's"
         );
+        // `MindObjective` is tagged `objective`, so the row's `objective` key
+        // holds `{"objective": "hold"}`.
         assert_eq!(
-            order.get("issuer"),
-            Some(&serde_json::json!(tank.0)),
-            "{unit:?}: and its scope the seat's tank"
+            order
+                .get("objective")
+                .and_then(|objective| objective.get("objective")),
+            Some(&serde_json::json!("hold")),
+            "{unit:?}: the objective the lead typed"
+        );
+        // The author rides the tape's `ordered` line for this hull: the
+        // issuer is the seat's tank (asserted above through `y1_ordered_by`).
+        assert!(
+            rig.tape.iter().any(|event| matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::Ordered { unit: on, issuer: Some(by), .. }
+                    if on == unit && *by == tank
+            )),
+            "{unit:?}: the tape names the seat's tank as the issuer"
         );
     }
 }
@@ -11032,7 +11049,6 @@ async fn o1_start_refuses_a_mode_the_ground_does_not_declare() {
             &tacsim::config::MatchConfig::default(),
             &tacsim::config::SensorsConfig::default(),
             tacsim::arena::MatchMode::Hold,
-            tacsim::arena::state::Controller::Reflex,
         )
     });
     let Err(error) = refused else {
@@ -16167,13 +16183,12 @@ async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
 // D-UM-17 as amended, D-UM-43, D-UM-44)
 // ---------------------------------------------------------------------------
 
-/// [`af3_config`] with the AI fill on and the lab's fill controller on `mind`
-/// (17b cut M1b.5): every unseated hull a stock mind on Line, and a snapshot
-/// an arena second.
+/// [`af3_config`] with the AI fill on (17b cut M1b.5; from 17b cut M4.3 the
+/// fill is a stock mind on Line with no knob to set): every unseated hull a
+/// mind, and a snapshot an arena second.
 fn m1b5_mind_config() -> TacsimConfig {
     let mut cfg = af3_config();
     cfg.match_.ai_fill = true;
-    cfg.minds.fill_controller = "mind".to_owned();
     cfg
 }
 
@@ -16393,14 +16408,33 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         format!("@mind/set: #{} is not flown by a mind.", tank.0)
     );
     rig.fire_conn(rig.pilot(0), mush_core::ConnTransition::Disconnected);
+    // 17b cut M4.3: a released seat is a mind's — the one sealed on the hull
+    // at check-out, whose card `@mind/set` now reads and sets.
     assert_eq!(
         m1b5_controller(&rig, tank),
-        Some(tacsim::arena::state::Controller::Reflex),
-        "a released seat is the reflex machine's"
+        Some(tacsim::arena::state::Controller::Mind),
+        "a released seat is a mind's"
     );
-    assert_eq!(
-        rig.staff(&format!("@mind/set #{}=sniper", tank.0)),
-        format!("@mind/set: #{} is not flown by a mind.", tank.0)
+    let said = rig.staff(&format!("@mind/set #{}=sniper", tank.0));
+    assert!(
+        said.starts_with(&format!(
+            "Mind card on #{}: Sniper sent; the arena takes it at its next pulse.",
+            tank.0
+        )),
+        "{said}"
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, name, .. }
+                    if *unit == tank && name == "Sniper"
+            )
+        })
+        .await;
+    assert!(
+        landed,
+        "the arena applied the preset to the released seat's mind"
     );
     assert!(
         y3_red_row(&rig).contains(", flown by doctrine"),
@@ -16467,7 +16501,6 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     if let Some(store) = rig.tw.world_mut().module_state_mut::<tacsim::TacsimStore>() {
         store.replace_minds_config_for_tests(tacsim::config::MindsConfig {
             odds_floor_permille: 50,
-            fill_controller: "mind".to_owned(),
             ..tacsim::config::MindsConfig::default()
         });
     }
@@ -16477,7 +16510,6 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     if let Some(store) = rig.tw.world_mut().module_state_mut::<tacsim::TacsimStore>() {
         store.replace_minds_config_for_tests(tacsim::config::MindsConfig {
             odds_floor_permille: 100,
-            fill_controller: "mind".to_owned(),
             ..tacsim::config::MindsConfig::default()
         });
     }
@@ -16569,102 +16601,85 @@ async fn m2_mind_set_refuses_a_preset_that_breaks_the_pair_by_name() {
     );
 }
 
-/// **The fill controller validates by name and fields minds** (17b cut
-/// M1b.5; 17b's (b); doc 16 §6's AI fill): `[tacsim.minds].fill_controller =
-/// "fast"` is refused with Q.7's sentence; on `mind` the fill hulls are
-/// [`Controller::Mind`] at check-out and dealt into squads like the reflex
-/// fill (17b cut L.2's `is_machine`), the seated hulls the pilots', and the
-/// board says what it said (`AI fill: each side fields 2; machines take the
-/// unclaimed pods.`, and `flown by doctrine` for a dropped pilot's slot: T1 IS
-/// Standard Doctrine); on `reflex` (the default) the fill is the reflex
-/// machine's, as before.
+/// **The fill is a mind sealed at `fill_class`** (17b cut M4.3; the M4
+/// row's (iii); doc 16 §6's AI fill): on the shipped config the fill hulls
+/// are [`Controller::Mind`] at check-out and dealt into squads (17b cut L.2's
+/// `is_machine`), the seated hulls the pilots', every record seal Class I on
+/// `PRODUCTION_FILL_ENGINE` (a seated hull's too, so a release hands it to a
+/// mind of the same class on the same engine), the mirror holds a card for
+/// every hull, the board says what it said (`AI fill: each side fields 2;
+/// machines take the unclaimed pods.`, and `flown by doctrine` for a dropped
+/// pilot's slot: T1 IS Standard Doctrine), and a fill hull takes a card.
 ///
 /// [`Controller::Mind`]: tacsim::arena::state::Controller::Mind
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn m1b5_the_fill_controller_validates_by_name_and_fields_minds() {
+async fn m4_3_the_fill_is_a_mind_sealed_at_fill_class() {
+    use tacsim::arena::core::CoreClass;
     use tacsim::arena::state::Controller;
-    assert_eq!(
-        tacsim::config::MindsConfig {
-            fill_controller: "fast".to_owned(),
-            ..tacsim::config::MindsConfig::default()
-        }
-        .validate(),
-        Err("[tacsim.minds].fill_controller must be reflex or mind (it is \"fast\")".to_owned())
-    );
-    let mut boards: Vec<String> = Vec::new();
-    for (word, fill_is) in [("mind", Controller::Mind), ("reflex", Controller::Reflex)] {
-        let mut cfg = y1_config();
-        cfg.minds.fill_controller = word.to_owned();
-        let mut rig = Rig::boot_with(2, cfg);
-        rig.fly_with_ai(1, 1, 2).await;
-        let fill = m1b5_fill_units(&rig);
-        assert_eq!(fill.len(), 2, "{word}: {fill:?}");
-        for unit in &fill {
-            assert_eq!(
-                m1b5_controller(&rig, *unit),
-                Some(fill_is),
-                "{word} #{}",
-                unit.0
-            );
-        }
-        for n in 0..2 {
-            assert_eq!(
-                m1b5_controller(&rig, rig.tank(n)),
-                Some(Controller::Pilot),
-                "{word}: pilot {n}'s hull"
-            );
-        }
-        // Dealt into squads, like the reflex fill.
-        let squads = rig.record().squads;
-        for unit in &fill {
-            assert!(
-                squads.iter().any(|squad| squad.units.contains(unit)),
-                "{word}: #{} in a squad: {squads:?}",
-                unit.0
-            );
-        }
-        // The board says what it said.
-        let board = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
-        assert!(
-            board.contains("AI fill: each side fields 2; machines take the unclaimed pods."),
-            "{word}: {board}"
+    let mut rig = Rig::boot_with(2, y1_config());
+    rig.fly_with_ai(1, 1, 2).await;
+    let fill = m1b5_fill_units(&rig);
+    assert_eq!(fill.len(), 2, "{fill:?}");
+    for unit in &fill {
+        assert_eq!(
+            m1b5_controller(&rig, *unit),
+            Some(Controller::Mind),
+            "#{}",
+            unit.0
         );
-        rig.fire_conn(rig.pilot(0), mush_core::ConnTransition::Disconnected);
-        let row = y3_red_row(&rig);
-        assert!(row.contains(", flown by doctrine"), "{word}: {row}");
-        boards.push(
-            tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff)
-                .into_iter()
-                .filter(|line| !line.contains("arena time") && !line.starts_with("Match "))
-                .collect::<Vec<String>>()
-                .join("\n"),
-        );
-        if fill_is == Controller::Mind {
-            // A fill hull takes a card; under `reflex` it is refused.
-            let id = fill.first().map_or(0, |unit| unit.0);
-            assert!(
-                rig.staff(&format!("@mind/set #{id}"))
-                    .contains("Line (as checked out)"),
-            );
-        } else {
-            let id = fill.first().map_or(0, |unit| unit.0);
-            assert_eq!(
-                rig.staff(&format!("@mind/set #{id}")),
-                format!("@mind/set: #{id} is not flown by a mind.")
-            );
-        }
     }
-    let rows = |board: &str| -> Vec<String> {
-        board
-            .lines()
-            .filter(|line| line.trim_start().starts_with("red:") || line.contains("AI fill"))
-            .map(str::to_owned)
-            .collect()
-    };
-    assert_eq!(
-        rows(boards.first().map_or("", String::as_str)),
-        rows(boards.get(1).map_or("", String::as_str)),
-        "the board reads the same under either fill"
+    for n in 0..2 {
+        assert_eq!(
+            m1b5_controller(&rig, rig.tank(n)),
+            Some(Controller::Pilot),
+            "pilot {n}'s hull"
+        );
+    }
+    // Every seal of the record: Class I on the fill's engine, seated or not.
+    let record = rig.record();
+    assert!(!record.minds.is_empty());
+    for (unit, sealed) in &record.minds {
+        assert_eq!(sealed.seal.class, CoreClass::I, "#{}", unit.0);
+        assert_eq!(
+            sealed.seal.engine,
+            tacsim::match_::PRODUCTION_FILL_ENGINE,
+            "#{}",
+            unit.0
+        );
+    }
+    // The mirror holds a card for every hull (a released seat reads one).
+    let match_id = rig.centre().match_id.expect("a running match");
+    let carded = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(match_id))
+        .map(|mirror| mirror.cards.len())
+        .unwrap_or_default();
+    assert_eq!(carded, record.minds.len(), "a card for every hull");
+    // Dealt into squads, like the reflex fill was.
+    let squads = record.squads;
+    for unit in &fill {
+        assert!(
+            squads.iter().any(|squad| squad.units.contains(unit)),
+            "#{} in a squad: {squads:?}",
+            unit.0
+        );
+    }
+    // The board says what it said.
+    let board = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
+    assert!(
+        board.contains("AI fill: each side fields 2; machines take the unclaimed pods."),
+        "{board}"
+    );
+    rig.fire_conn(rig.pilot(0), mush_core::ConnTransition::Disconnected);
+    let row = y3_red_row(&rig);
+    assert!(row.contains(", flown by doctrine"), "{row}");
+    // A fill hull takes a card.
+    let id = fill.first().map_or(0, |unit| unit.0);
+    assert!(
+        rig.staff(&format!("@mind/set #{id}"))
+            .contains("Line (as checked out)"),
     );
 }
 

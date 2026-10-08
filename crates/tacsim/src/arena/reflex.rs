@@ -1062,8 +1062,8 @@ impl Arena {
                 );
             }
             // 17b cut M3.5 (doc 17 §12): a possess keeps the mind's row
-            // dormant; only a hand-over to the reflex machine (a fixture's
-            // alone) removes it.
+            // dormant, with its held order cleared (17b cut M4.3); only a
+            // hand-over to the reflex machine (a fixture's alone) removes it.
             Controller::Mind if controller == Controller::Pilot => self.suspend_mind(unit),
             Controller::Mind => self.release_mind(unit),
             // A dormant row a possess left goes with a hand-over to the
@@ -1095,7 +1095,12 @@ impl Arena {
                 self.adopt_reflex(unit, state);
                 self.schedule_reflex_tick(unit);
             }
-            Controller::Mind => self.adopt_mind(unit),
+            // 17b cut M4.3: a release (`Pilot → Mind`) seeds the doctrine's
+            // state as N.1 seeds the reflex's; a fixture's `Reflex → Mind`
+            // hand-over keeps the memory as it is.
+            Controller::Mind => {
+                self.adopt_mind(unit, (was == Controller::Pilot).then_some(state));
+            }
             Controller::Pilot => {}
         }
     }

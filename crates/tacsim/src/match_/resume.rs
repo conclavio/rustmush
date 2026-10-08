@@ -233,11 +233,11 @@ pub enum ResumeRefusal {
         /// This server's `MIND_ABI`.
         running: SmolStr,
     },
-    /// **17b cut M3.3** (doc 17 §13): a scripted seal names a source the
-    /// store does not hold (`tacsim:mindsrc:<sha256>`), so the mind cannot be
-    /// run again.
+    /// **17b cut M3.3** (doc 17 §13): a scripted seal names a source neither
+    /// compiled in (Standard Doctrine's own, 17b cut M4.3) nor in the store
+    /// (`tacsim:mindsrc:<sha256>`), so the mind cannot be run again.
     #[error(
-        "{unit}'s mind source {} is not in this server's store",
+        "{unit}'s mind source {} is neither this server's Standard Doctrine nor in its store",
         crate::arena::digest_text(.digest)
     )]
     MindSource {
@@ -668,8 +668,10 @@ fn refuse_unrunnable_seals(
                 running: SmolStr::new_static(crate::minds::MIND_ABI),
             });
         }
+        // 17b cut M4.3: the compiled-in Standard Doctrine answers its own
+        // digest with no store (`crate::minds::source_lookup`).
         if seal.engine == crate::arena::mind::SealEngine::Scripted
-            && !store.is_some_and(|store| store.has_mind_source(&seal.source_sha256))
+            && crate::minds::source_lookup(store, &seal.source_sha256).is_none()
         {
             return Err(ResumeRefusal::MindSource {
                 unit: *unit,

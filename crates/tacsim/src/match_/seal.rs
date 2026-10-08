@@ -42,7 +42,7 @@ use crate::arena::card::{CardError, StockCard};
 use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget, condition_is_lawful};
 use crate::arena::core::{CoreClass, read_core};
 use crate::arena::mind::{MindSeal, STOCK_RATED_CLASS, SealEngine, SortieId};
-use crate::arena::state::{Channel, Controller, CustodyUnit};
+use crate::arena::state::{Channel, CustodyUnit};
 use crate::arena_task::MatchId;
 use crate::config::ReflexConfig;
 use crate::deliberation::order::CharacterRef;
@@ -80,17 +80,16 @@ pub struct SealTerms {
     pub card: StockCard,
     /// The Compact floor, per mille (`[tacsim.minds].odds_floor_permille`).
     pub odds_floor_permille: u32,
-    /// **The engine a mind's hull is sealed on** (17b cut M3.5; doc 17 §13):
-    /// what [`seal_for`] writes as [`MindSeal::engine`] for a
-    /// [`Controller::Mind`] hull — [`SealEngine::Native`], the native stock
-    /// mind, everywhere in production before 17b cut M4 (no lobby or
-    /// check-out sets anything else), and [`SealEngine::Scripted`] where a
-    /// fixture's rig fields a scripted mind (`tests/support`'s
-    /// `Muster::scripted`), whose runner `crate::minds::install_sealed_runners`
-    /// then installs from the source the seal's digest names. A reflex or a
-    /// piloted hull is sealed `reflex` whatever this says.
-    /// A reflex or a
-    /// piloted hull is sealed `reflex` whatever this says.
+    /// **The engine a hull's mind is sealed on** (17b cut M3.5; doc 17 §13):
+    /// what [`seal_for`] writes as [`MindSeal::engine`] — for EVERY hull from
+    /// 17b cut M4.3, a seated one included, so a release hands the hull to a
+    /// mind on the engine its seal names: [`PRODUCTION_FILL_ENGINE`] in
+    /// production (`crate::match_::start`), [`SealEngine::Native`] under the
+    /// fixture terms, and [`SealEngine::Scripted`] where a fixture's rig
+    /// fields a scripted mind (`tests/support`'s `Muster::scripted`), whose
+    /// runner `crate::minds::install_sealed_runners` then installs from the
+    /// source the seal's digest names. [`SealEngine::Reflex`] is decode-only
+    /// (the M3 records).
     pub engine_for_minds: SealEngine,
     /// **The class the mind is rated at** (17b cut M4.1; doc 17 §9, D-UM-35;
     /// the M4 row's finding (9)): Standard Doctrine's
@@ -101,8 +100,10 @@ pub struct SealTerms {
     /// replaces is gone.
     pub rated: CoreClass,
     /// **The class the hull is capped at** (17b cut M4.1; doc 17 §9, D-UM-37:
-    /// the lead's or the operator's cap): Class III — no cap — everywhere
-    /// before 17b cut M4.3 seals the fill at `[tacsim.minds].fill_class`.
+    /// the lead's or the operator's cap): `[tacsim.minds].fill_class` on
+    /// every production seal from 17b cut M4.3 (Class I stock, so it caps
+    /// nothing until 17b cut M5 rates minds); Class III — no cap — under the
+    /// fixture terms.
     pub class_cap: CoreClass,
 }
 
@@ -153,6 +154,23 @@ impl SealTerms {
         SealTerms {
             rated: class,
             ..self
+        }
+    }
+
+    /// **The production fill's terms over the fixture's** (17b cut M4.3):
+    /// what `crate::match_::start` seals every hull under at the stock keys
+    /// — [`PRODUCTION_FILL_ENGINE`], rated I, capped at the default
+    /// `[tacsim.minds].fill_class` — for the pins that field the production
+    /// shape (`tests/support`'s `Muster::fill`). Under a native fill this is
+    /// [`SealTerms::fixture`] byte for byte (`min(I, core, I)` is `min(I,
+    /// core, III)` on every shipped core); under a scripted one it is what
+    /// makes a pin the production shape.
+    #[must_use]
+    pub fn production_fixture() -> SealTerms {
+        SealTerms {
+            engine_for_minds: PRODUCTION_FILL_ENGINE,
+            class_cap: crate::config::MindsConfig::default().fill_class,
+            ..SealTerms::fixture()
         }
     }
 }
@@ -248,14 +266,13 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         channels,
         odds_floor_permille: terms.odds_floor_permille,
         fallback,
-        // What a release hands a piloted hull to today is the reflex (17b cut
-        // M4 moves the fill); a mind's hull is the terms' engine — the native
-        // stock mind's in production (17b cut M3.5: a fixture's scripted
-        // muster asks for `scripted`).
-        engine: match unit.controller {
-            Controller::Mind => terms.engine_for_minds,
-            Controller::Reflex | Controller::Pilot => SealEngine::Reflex,
-        },
+        // **17b cut M4.3**: every hull — a `Released` hands any hull to a
+        // mind, so a seated hull's seal names the engine the mind that takes
+        // it runs on; a fixture's reflex hull likewise (it is sealed, never
+        // run on a mind). `SealEngine::Reflex` is decode-only from here: every
+        // M3 record in the centre's history carries it (the M4 row's finding
+        // (6)), and nothing writes it.
+        engine: terms.engine_for_minds,
     })
 }
 
@@ -304,6 +321,7 @@ mod tests {
     use smol_str::SmolStr;
 
     use super::*;
+    use crate::arena::state::Controller;
     use crate::arena::state::Team;
     use crate::definitions::Catalog;
 
@@ -366,9 +384,10 @@ mod tests {
             use sha2::{Digest as _, Sha256};
             Sha256::digest(&card).into()
         };
+        // 17b cut M4.3: every controller seals the terms' engine.
         for (controller, engine) in [
-            (Controller::Reflex, SealEngine::Reflex),
-            (Controller::Pilot, SealEngine::Reflex),
+            (Controller::Reflex, SealEngine::Native),
+            (Controller::Pilot, SealEngine::Native),
             (Controller::Mind, SealEngine::Native),
         ] {
             let unit = checked_out(&catalog, LINE_TANK, ObjId(4), controller, &terms)
@@ -633,7 +652,7 @@ mod m4_tests {
     use mush_core::ObjId;
 
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::{Controller, Team};
     use crate::arena::test_support::{line_tank, pose, scout, tactical_unit};
 
     /// **17b cut M4.1: the seal's class is `min(rated, core, cap)`** (the M4

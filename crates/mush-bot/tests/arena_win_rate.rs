@@ -103,9 +103,10 @@
 //! **The mind lane** (17b cut M1b.5; doc 17 §22's M1b gate):
 //! `the_bot_against_a_conditioned_t1_over_thirty_pooled_matches`, also
 //! `#[ignore]` and report-only, flies fifteen matches as red and fifteen as
-//! blue, posed and capped as above, each against one fill hull flown by the
-//! native stock mind on Line (the server's lab knob `[tacsim.minds]
-//! fill_controller = "mind"`, the rig's `arena_config_with_fill`), and prints
+//! blue, posed and capped as above, each against one fill hull flown by
+//! Standard Doctrine on Line — the shipped fill, a conditioned T1 since 17b
+//! cut M4.3 (the lab knob `fill_controller` and the rig's
+//! `arena_config_with_fill` are gone with it) — and prints
 //! one line a match, then `MIND RATE: {w} of {n} for the bot against a
 //! conditioned T1 (red …, blue …, draws …, timeouts …)` and `MIND RATE
 //! INTERVAL: {w} of {n}, 95 per cent Wilson {lo} to {hi} per cent`.
@@ -888,11 +889,12 @@ const MIND_RATE_PARALLEL_ENV: &str = "MUSH_BOT_MIND_RATE_PARALLEL";
 /// (`RA` and `BA` 500 m apart, [`arena_rig::POSES`]) before the first match
 /// and after each `Match {n} is over (`, one deadline from the launch, the bot
 /// landed and its transcript and report kept under `MUSH_BOT_WIN_RATE_KEEP` —
-/// on [`arena_rig::arena_config_with_fill`]`("mind")` and for `side`. The rig's
-/// `fly_lane` flies red on the shipped fill and is not moved; this is its
-/// shape for either side on the lab's fill.
+/// on [`arena_rig::arena_config`] and for `side` (17b cut M4.3: the shipped
+/// fill IS the conditioned T1, so the lane keeps its two-sided shape on the
+/// one config). The rig's `fly_lane` flies red on the same fill and is not
+/// moved; this is its shape for either side.
 async fn fly_mind_side(side: &'static str, matches: usize, extra: &str) -> arena_rig::Posed {
-    let mut cfg = arena_rig::arena_config_with_fill("mind");
+    let mut cfg = arena_rig::arena_config();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = arena_rig::MAX_DURATION_MS;
@@ -1046,9 +1048,9 @@ fn mind_rate_lines(red: &arena_rig::Outcome, blue: &arena_rig::Outcome) -> [Stri
 /// Two flights of fifteen in this file's own shape — the rig, the poses 500 m
 /// apart before every match, 420 s a match, the knobs line, the keep
 /// directory — `--arena red --matches 15` and `--arena blue --matches 15`,
-/// each against ONE fill hull on the server's lab knob
-/// `[tacsim.minds].fill_controller = "mind"` ([`arena_rig::arena_config_with_fill`]):
-/// the native stock mind on Line, arming its two slots at its think. Never a
+/// each against ONE fill hull flown by the shipped fill — Standard Doctrine
+/// on a unit mind sealed at `[tacsim.minds].fill_class` since 17b cut M4.3,
+/// arming its two slots at its think. Never a
 /// second lane in the engine and never the bot's doctrine ported: the bot
 /// reads its opponent off its SSH session as it reads any machine. The second
 /// flight runs on a second rig, after the first (`MUSH_BOT_MIND_RATE_PARALLEL=1`

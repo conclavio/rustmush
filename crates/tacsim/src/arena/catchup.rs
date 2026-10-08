@@ -69,7 +69,7 @@ use smol_str::SmolStr;
 
 use crate::arena::motor::MotorRow;
 use crate::arena::reflex::ReflexUnit;
-use crate::arena::state::{Arena, ContactId, Designator, Power};
+use crate::arena::state::{Arena, ContactId, Controller, Designator, Power};
 
 /// **One section as its own crew reads it** (16b cut Y.4): the M32 condition
 /// word, the facets' armour summed, the internals — so a tank shot up short of
@@ -137,6 +137,24 @@ impl MachineWords {
                 .order
                 .as_ref()
                 .map(|standing| SmolStr::new_static(standing.order.objective.as_str())),
+        }
+    }
+
+    /// **The words of a mind's hull** (17b cut M4.3): its cached doctrine
+    /// state (`Arena::machine_state`), its motor row's goal and its held
+    /// order's objective word — the same three a reflex row gives, so the
+    /// sentence a reclaiming pilot reads is one sentence whichever machine
+    /// flew the tank.
+    #[must_use]
+    pub fn of_mind(
+        state: crate::arena::reflex::ReflexState,
+        order: Option<&crate::arena::perception::FrameOrder>,
+        motor: Option<&MotorRow>,
+    ) -> MachineWords {
+        MachineWords {
+            state: SmolStr::new_static(state.as_str()),
+            goal: motor.and_then(|motor| motor.goal),
+            objective: order.map(|order| SmolStr::new_static(order.objective.as_str())),
         }
     }
 }
@@ -339,13 +357,23 @@ impl Arena {
         if !reseated {
             return;
         }
-        // **17b cut M1a.5**: the words are the reflex machine's, so a hull a
-        // mind flew has none (`machine: None`) — a mind holds no reflex row,
-        // and what it was doing is not a `ReflexState` sentence.
-        let machine = self
-            .reflex
-            .unit(unit)
-            .map(|row| MachineWords::of(row, self.motors.row(unit)));
+        // **17b cut M4.3**: the words are either machine's — a mind's off
+        // its cached doctrine state, its held order and its motor row
+        // (`MachineWords::of_mind`), read before the `Live` suspends the row;
+        // the reflex's as before; a pilot's hull none.
+        let machine = match self.unit(unit).map(|state| state.controller) {
+            Some(Controller::Mind) => self.machine_state(unit).map(|state| {
+                MachineWords::of_mind(
+                    state,
+                    self.minds.get(&unit).and_then(|row| row.order.as_ref()),
+                    self.motors.row(unit),
+                )
+            }),
+            _ => self
+                .reflex
+                .unit(unit)
+                .map(|row| MachineWords::of(row, self.motors.row(unit))),
+        };
         let catchup = self.catchup_since(unit, &then, machine);
         self.pending_catchup.insert(pilot, catchup);
     }
@@ -838,8 +866,11 @@ mod tests {
 
     /// The whole life of one report through `apply_control`: the `Linkdead`
     /// takes the snapshot and the `Released` keeps it; the machine's words are
-    /// read at the `Live` before the row goes; the report is the pilot's and the
-    /// snapshot is spent.
+    /// read at the `Live` before the row goes dormant; the report is the
+    /// pilot's and the snapshot is spent. **17b cut M4.3**: the machine is a
+    /// mind seeded `Withdraw`, read through `Arena::machine_state` and
+    /// `MachineWords::of_mind`; its motor row is its first landing's, not the
+    /// adoption's, so none stands before a think lands.
     #[test]
     fn the_first_control_that_took_sight_wins_and_the_live_reads_the_machine_first() {
         let mut arena = arena(2);
@@ -863,27 +894,43 @@ mod tests {
             Some(1_000)
         );
         assert!(!arena.pilots.iter().any(|seat| seat.pilot == PILOT));
-        let machine = arena
-            .reflex
-            .unit(RED)
-            .map(|row| MachineWords::of(row, arena.motors.row(RED)));
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Mind),
+            "a released tank goes to a mind"
+        );
+        let machine = arena.machine_state(RED).map(|state| {
+            MachineWords::of_mind(
+                state,
+                arena.minds.get(&RED).and_then(|row| row.order.as_ref()),
+                arena.motors.row(RED),
+            )
+        });
         assert_eq!(
             machine.as_ref().map(|words| words.state.as_str()),
             Some("withdraw"),
-            "a released tank goes to the machine in Withdraw"
+            "a released tank goes to the mind in Withdraw"
         );
-        assert!(
-            arena.motors.row(RED).is_some(),
-            "and the machine is laid a motor row to drive from"
+        assert_eq!(
+            machine.as_ref().and_then(|words| words.goal),
+            None,
+            "no think landed, so no motor row stands yet"
         );
         arena.now_ms = 9_500;
         for control in every_channel(3, ControlState::Live) {
             apply_control(&mut arena, &control);
         }
-        assert!(arena.reflex.unit(RED).is_none(), "the row is released");
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Pilot)
+        );
+        assert!(
+            arena.minds.contains_key(&RED),
+            "the row is kept dormant (17b cut M3.5)"
+        );
         assert!(
             arena.motors.row(RED).is_none(),
-            "the motor row is released with it (17b cut M1a.1)"
+            "no motor row for the pilot's hull (17b cut M1a.1)"
         );
         assert!(arena.at_release.is_empty(), "the snapshot is spent");
         let report = arena

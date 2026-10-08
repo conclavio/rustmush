@@ -59,9 +59,13 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// read only under a leash, `stand` and `withdraw_stand` reading the think's
 /// `p.dry`, `engage_orders` reading `p.dry` and the held row's range inline),
 /// behaviour unchanged and pinned by Gate A on every lane; M2.5's helm half
-/// was `95ee741e…0802ecd`.
+/// was `95ee741e…0802ecd`. **Re-blessed by 17b cut M4.3** with the fifteenth
+/// stock key, `ordered` (the Withdraw is an order's: the expiry's restoration
+/// reads it, so a released seat's seeded Withdraw drives home and rallies on
+/// Q.7's clock instead of going Patrol on its first think), mirrored in
+/// `NativeStockMind::decide` and pinned by Gate A; M2.6's was `8b3ec78c…d74996`.
 pub const STANDARD_SHA256: &str =
-    "8b3ec78c9d957865c8d6d7696fbf422ca8939d05a51370befcff621287d74996";
+    "102cc7d27eb411c493b2402b20a589e37330bc36bad6eeef0eadffd0eb6e80ec";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the
@@ -69,7 +73,30 @@ pub const STANDARD_SHA256: &str =
 /// pin test holds the two equal.
 #[must_use]
 pub fn standard_digest() -> Digest {
-    Digest(Sha256::digest(STANDARD_RHAI.as_bytes()).into())
+    // 17b cut M4.3: computed once per process — `seal_for` asks per hull and
+    // both source lookups ask per seal.
+    static STANDARD_DIGEST: std::sync::LazyLock<Digest> =
+        std::sync::LazyLock::new(|| Digest(Sha256::digest(STANDARD_RHAI.as_bytes()).into()));
+    *STANDARD_DIGEST
+}
+
+/// **The source a seal names** (17b cut M4.3; the M4 row's (iii)): the
+/// compiled-in Standard Doctrine for its own digest — so a world whose source
+/// store is off (`TacsimStore::put_mind_source` is gated on the layer) still
+/// runs and resumes every stock seal, which from this cut is every production
+/// seal — else the store's document, else nothing. Asked at
+/// `crate::match_::resume::refuse_unrunnable_seals` first and at
+/// `crate::arena_bridge`'s `sealed_sources` second, so a seal the resume
+/// refusal passes is one the installer can run.
+#[must_use]
+pub fn source_lookup<'s>(
+    store: Option<&'s crate::store::TacsimStore>,
+    sha256: &[u8; 32],
+) -> Option<&'s str> {
+    if *sha256 == standard_digest().0 {
+        return Some(STANDARD_RHAI);
+    }
+    store.and_then(|store| store.mind_source(sha256))
 }
 
 /// **A stock mind's manifest** (doc 17 §11, §13, §22's italics):
@@ -530,6 +557,8 @@ mod tests {
         let withdrawing = StockMemory {
             state: ReflexState::Withdraw,
             target: Some(ContactId(0x11)),
+            // 17b cut M4.3: the restoration reads an order's Withdraw.
+            ordered: true,
             ..StockMemory::default()
         };
         let mut expired = withdrawing.clone();
@@ -956,6 +985,7 @@ mod tests {
             hold_retry_ms: Some(400),
             rallied: true,
             hunt: Some((40, 40)),
+            ordered: false,
             no_line: true,
             ignore_until_ms: Some(60_000),
         };

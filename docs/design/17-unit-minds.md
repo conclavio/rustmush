@@ -955,8 +955,11 @@ existing seat path: `mush_sim::request_seat_activation`, then `apply_control` ra
 channel)` epochs and calls `set_controller(Pilot)`, which refuses in-flight thoughts through
 `Refusal::Epoch`. New behaviour: `set_controller(Pilot)` does **not** delete the `MindState` row (the
 reflex's `release` deletes its row today); the mind's memory and notices stay dormant (the condition slots are cleared on every transition, M1b.1's rule; 17b cut M3.5, §24),
-and a release adopts the mind again with its memory intact. A pilot who boards a hull already out on
-a region map takes it under the seal it carries.
+and a release adopts the mind again with its memory intact but for the doctrine's state, seeded
+`Withdraw` with `ordered` false and the six keys the reflex's `adopt` cleared (17b cut M4.3, §24: the
+release is N.1's promise — the hull drives itself home and rallies on Q.7's clock — and the dormant
+row's held order is cleared at the possess, an order given to the mind being nobody's once the seat
+is taken). A pilot who boards a hull already out on a region map takes it under the seal it carries.
 
 **The `MIND` verb** (the seventeenth cockpit selector; `WATCH` is the fifteenth and `DRIVE` the sixteenth
 since 17b cut M1a.4, §24; on a future station's

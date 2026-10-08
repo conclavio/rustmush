@@ -707,6 +707,18 @@ pub struct MindState {
     /// (`@mind/set`): a change lands on this row at a pulse's start
     /// (`Arena::apply_mind_cards`), never anywhere else.
     pub card: StockCard,
+    /// **The doctrine's state, cached** (17b cut M4.3; the M4 row's finding
+    /// (4)): `StockMemory.state` as the last landed memory decodes it
+    /// ([`doctrine_state_of`]), `Startup` for an empty, absent or undecodable
+    /// `state` key. Scratch: never hashed (item 3c folds the bytes it is
+    /// derived from), never carried (`SNAPSHOT_FORMAT` stays; re-derived at
+    /// the decode), refreshed at every write of [`MindState::memory`]. Read by
+    /// the tempo's `ai_approaching`, the squad signal and the Y.4 catch-up
+    /// through [`Arena::machine_state`], each gated on [`Controller::Mind`].
+    /// 17b cut M4.6 gates it on `SealRef.doctrine` and gives any other mind
+    /// `unknown`.
+    #[serde(skip)]
+    pub doctrine_state: crate::arena::reflex::ReflexState,
 }
 
 impl Default for MindState {
@@ -735,6 +747,7 @@ impl MindState {
             dropped: None,
             seal_digest: [0; 32],
             card: crate::arena::card::line(cfg),
+            doctrine_state: crate::arena::reflex::ReflexState::Startup,
         }
     }
 
@@ -1094,6 +1107,53 @@ pub fn memory_check(memory: &Memory) -> Result<(), MemError> {
     mush_mind::memory::check(memory, &STOCK_MEMORY_LIMITS)
 }
 
+/// **The doctrine state a memory holds** (17b cut M4.3): its `state` key as
+/// `StockMemory` reads it — `Startup` for an empty, absent or ill-shaped one
+/// (the twin's read, made production).
+#[must_use]
+pub fn doctrine_state_of(memory: &[u8]) -> crate::arena::reflex::ReflexState {
+    crate::arena::stock_mind::StockMemory::from(&decode_memory(memory)).state
+}
+
+/// **The Withdraw seed** (17b cut M4.3; the M4 row's finding (5); 16b cut
+/// N.1): the bytes the ROM would write for a released hull — Standard
+/// Doctrine's fifteen keys at their defaults with `state` `Withdraw` and
+/// `ordered` false — so the mind's first think drives it home and rallies on
+/// Q.7's clock (the expiry's restoration reads `ordered`), and the row's
+/// first write changes no shape.
+#[must_use]
+pub fn withdraw_seed() -> Vec<u8> {
+    encode_memory(&Memory::from(crate::arena::stock_mind::StockMemory {
+        state: crate::arena::reflex::ReflexState::Withdraw,
+        ordered: false,
+        ..crate::arena::stock_mind::StockMemory::default()
+    }))
+}
+
+/// **A standing memory seeded `Withdraw`** (17b cut M4.3): the dormant row a
+/// possess left keeps what it saw, with the doctrine's state set `Withdraw`,
+/// `ordered` cleared, and exactly the six keys the reflex's `adopt` cleared
+/// — `stand_until_ms`, `quiet_since_ms`, `rallied`, `last_plot`,
+/// `unheld_since_ms`, `hunt` (16b cuts Q.7 and E.4: a seat released into
+/// `Withdraw` neither inherits its pilot's last contact as a place to drive
+/// to nor has used its one return). An empty memory is [`withdraw_seed`].
+#[must_use]
+pub fn seed_withdraw(memory: &[u8]) -> Vec<u8> {
+    if memory.is_empty() {
+        return withdraw_seed();
+    }
+    let mut stock = crate::arena::stock_mind::StockMemory::from(&decode_memory(memory));
+    stock.state = crate::arena::reflex::ReflexState::Withdraw;
+    stock.ordered = false;
+    stock.stand_until_ms = None;
+    stock.quiet_since_ms = None;
+    stock.rallied = false;
+    stock.last_plot = None;
+    stock.unheld_since_ms = None;
+    stock.hunt = None;
+    encode_memory(&Memory::from(stock))
+}
+
 /// **A memory's canonical bytes** (D-UM-30): `mush_mind::memory::encode` —
 /// sorted compact JSON with only `"` and `\` escaped, what the arena stores
 /// and hashes. An empty map is `{}`.
@@ -1252,7 +1312,7 @@ impl Arena {
             .map(|unit| unit.id)
             .collect();
         for id in minds {
-            self.adopt_mind(id);
+            self.adopt_mind(id, None);
         }
     }
 
@@ -1266,25 +1326,40 @@ impl Arena {
     /// D-UM-32): a row that STANDS is kept — the dormant row a possess left
     /// ([`Arena::suspend_mind`]) — so a release adopts the mind again with its
     /// memory, its strikes, its drop, its seal digest, its card, its range
-    /// memory, its order and its notice buffer as the possess found them, and
-    /// its first think after the release is `think_seq` continued (the think
-    /// the possess took off the heap, scheduled again on the grid). Only a
-    /// hull with no row is laid a fresh one.
-    pub(crate) fn adopt_mind(&mut self, unit: ObjId) {
+    /// memory and its notice buffer as the possess found them (its held
+    /// order cleared at the suspend, 17b cut M4.3), and its first think after
+    /// the release is `think_seq` continued (the think the possess took off
+    /// the heap, scheduled again on the grid). Only a hull with no row is laid
+    /// a fresh one.
+    ///
+    /// **17b cut M4.3** (the M4 row's finding (5); 16b cut N.1): `seed` is
+    /// the doctrine state a `Released` seat hands the hull over in —
+    /// `Withdraw`, the only seed there is — written into the row's memory
+    /// (fresh or dormant, [`seed_withdraw`]) and the cache, so the mind's
+    /// first think drives the tank home as the reflex machine did; `None`
+    /// at check-out, and any other state (a fixture's `set_controller` naming
+    /// the state it would have given the reflex machine), keeps the memory
+    /// as it is: a mind's state is its memory's, and only a release seeds it.
+    pub(crate) fn adopt_mind(
+        &mut self,
+        unit: ObjId,
+        seed: Option<crate::arena::reflex::ReflexState>,
+    ) {
         // **17b cut M3.3** (doc 17 §13): a row laid down here carries the
         // digest of the seal the hull was checked out under, read off the
         // unit's own seal reference — at check-out and at any later adoption
         // alike; a standing row keeps its own (17b cut M3.5: the dormant row's
         // digest is the one it was laid with — a re-seat never re-seals).
         let sealed = self.unit(unit).map_or([0; 32], |state| state.seal.digest);
-        let think_seq = self
-            .minds
-            .entry(unit)
-            .or_insert_with(|| MindState {
-                seal_digest: sealed,
-                ..MindState::fresh(&self.arena_cfg.reflex)
-            })
-            .think_seq;
+        let row = self.minds.entry(unit).or_insert_with(|| MindState {
+            seal_digest: sealed,
+            ..MindState::fresh(&self.arena_cfg.reflex)
+        });
+        if seed == Some(crate::arena::reflex::ReflexState::Withdraw) {
+            row.memory = seed_withdraw(&row.memory);
+            row.doctrine_state = doctrine_state_of(&row.memory);
+        }
+        let think_seq = row.think_seq;
         if self
             .due
             .iter()
@@ -1295,6 +1370,54 @@ impl Arena {
         let at = self.grid_at(unit, self.mind_profile(unit).think_ms);
         self.due
             .schedule(at, DueKind::MindThink { unit, think_seq });
+    }
+
+    /// **What the machine flying `unit` is doing, as a doctrine state** (17b
+    /// cut M4.3; the M4 row's finding (4)): `Disabled` for a wreck or a
+    /// disabled hull under either machine (the twin's rule: a mind stops
+    /// thinking at its wreck with its last state in memory); the mind row's
+    /// cached state ([`MindState::doctrine_state`]) under
+    /// [`Controller::Mind`]; the reflex row's under [`Controller::Reflex`];
+    /// `None` for a pilot's hull (a dormant row under a pilot is never read).
+    #[must_use]
+    pub fn machine_state(&self, unit: ObjId) -> Option<crate::arena::reflex::ReflexState> {
+        use crate::arena::reflex::ReflexState;
+        let state = self.unit(unit)?;
+        if state.limits.wreck || state.disabled {
+            return state
+                .controller
+                .is_machine()
+                .then_some(ReflexState::Disabled);
+        }
+        match state.controller {
+            Controller::Mind => Some(
+                self.minds
+                    .get(&unit)
+                    .map_or(ReflexState::Startup, |row| row.doctrine_state),
+            ),
+            Controller::Reflex => Some(
+                self.reflex
+                    .unit(unit)
+                    .map_or(ReflexState::Startup, |row| row.state),
+            ),
+            Controller::Pilot => None,
+        }
+    }
+
+    /// **A mind closing on a contact** (17b cut M4.3): any hull a mind flies
+    /// whose cached doctrine state is `Approach` — the state its last think
+    /// WROTE, so the tempo's Alert follows a mind entering `Approach` one
+    /// substep after the reflex's tick would have (the landing); declared in
+    /// doc 16 §11. A wreck reads nothing.
+    #[must_use]
+    pub(crate) fn any_mind_approaching(&self) -> bool {
+        self.units.iter().any(|unit| {
+            unit.controller == Controller::Mind
+                && !unit.limits.wreck
+                && self.minds.get(&unit.id).is_some_and(|row| {
+                    row.doctrine_state == crate::arena::reflex::ReflexState::Approach
+                })
+        })
     }
 
     /// **The runner `unit` thinks on** (17b cut M3.5; doc 17 §13, D-UM-1):
@@ -1308,9 +1431,12 @@ impl Arena {
     /// **Put a hull's mind to sleep under a pilot** (17b cut M3.5; doc 17 §12
     /// "Release and possess"; D-UM-2, D-UM-30, D-UM-32) — the `Mind → Pilot`
     /// transition of [`Arena::set_controller`]. The row STAYS, DORMANT: its
-    /// memory, strikes, drop, seal digest, card, range memory, order and
-    /// notice buffer are kept as they stand, for the release that adopts the
-    /// mind again ([`Arena::adopt_mind`]). Every think and landing of the hull
+    /// memory, strikes, drop, seal digest, card, range memory and notice
+    /// buffer are kept as they stand, for the release that adopts the mind
+    /// again ([`Arena::adopt_mind`]); **its held order is cleared** (17b cut
+    /// M4.3): an order given to the mind is not the pilot's and does not
+    /// outlive the seat — the hand-back starts under doctrine, as 16b cut
+    /// N.1's release does. Every think and landing of the hull
     /// leaves the heap, and the think waiting to land is discarded (`pending`
     /// cleared): its landing would be refused [`crate::arena::Refusal::Epoch`]
     /// at the reclaim's raised epochs anyway, so the answer is dropped here
@@ -1324,6 +1450,8 @@ impl Arena {
     pub(crate) fn suspend_mind(&mut self, unit: ObjId) {
         if let Some(state) = self.minds.get_mut(&unit) {
             state.pending = None;
+            // 17b cut M4.3: the held order goes with the seat.
+            state.order = None;
         }
         // 17b cut M4.1: a think collected and not yet written is dropped at
         // its write (`Arena::settle_collected` reads this set).
@@ -1982,6 +2110,9 @@ impl Arena {
         // lands, clean or refused intent by intent. A counter, never hashed.
         counters.landings = counters.landings.saturating_add(1);
         state.memory = std::mem::take(&mut answer.memory);
+        // 17b cut M4.3: the doctrine's state, cached off the bytes just
+        // written (never hashed; the bytes are).
+        state.doctrine_state = doctrine_state_of(&state.memory);
         let intents = std::mem::take(&mut answer.intents);
         self.expire_mind_order(unit, t_ms, counters);
         let epoch_of = |channel: Channel| answer.epoch(channel);
@@ -4146,6 +4277,151 @@ mod tests {
         assert_eq!(
             piloted.resolve_arming(RED, &Arming::Arm(never("cannon")), 0),
             Err(Refusal::NoSlot)
+        );
+    }
+
+    /// **The Withdraw seed** (17b cut M4.3): `withdraw_seed` is Standard
+    /// Doctrine's fifteen keys at their defaults with `state` `Withdraw` and
+    /// `ordered` false — the bytes the ROM would write — and `doctrine_state_of`
+    /// reads it back; an empty, absent or ill-shaped memory reads `Startup`.
+    #[test]
+    fn m4_3_the_withdraw_seed_is_the_stock_keys_in_withdraw_under_no_order() {
+        use crate::arena::reflex::ReflexState;
+        use crate::arena::stock_mind::{STOCK_MEMORY_KEY_NAMES, StockMemory};
+        let seed = withdraw_seed();
+        let stock = StockMemory::from(&decode_memory(&seed));
+        assert_eq!(stock.state, ReflexState::Withdraw);
+        assert!(!stock.ordered);
+        assert_eq!(
+            stock,
+            StockMemory {
+                state: ReflexState::Withdraw,
+                ..StockMemory::default()
+            }
+        );
+        let keys = decode_memory(&seed);
+        assert_eq!(keys.len(), STOCK_MEMORY_KEY_NAMES.len(), "fifteen keys");
+        for key in STOCK_MEMORY_KEY_NAMES {
+            assert!(keys.contains_key(key), "{key}");
+        }
+        assert_eq!(doctrine_state_of(&seed), ReflexState::Withdraw);
+        assert_eq!(doctrine_state_of(&[]), ReflexState::Startup);
+        assert_eq!(doctrine_state_of(b"{}"), ReflexState::Startup);
+        assert_eq!(doctrine_state_of(&[3, 1, 4]), ReflexState::Startup);
+        assert_eq!(
+            doctrine_state_of(&encode_memory(&Memory::from(StockMemory {
+                state: ReflexState::Engage,
+                ..StockMemory::default()
+            }))),
+            ReflexState::Engage
+        );
+    }
+
+    /// **A standing memory seeded `Withdraw`** (17b cut M4.3): `seed_withdraw`
+    /// keeps what the row saw and clears exactly the reflex's six (16b cuts
+    /// Q.7 and E.4) with the state and `ordered`; an empty memory is the seed;
+    /// a memory of another shape becomes the seed (nothing of it decodes).
+    #[test]
+    fn m4_3_seed_withdraw_keeps_the_row_but_for_the_doctrine_s_six_and_the_state() {
+        use crate::arena::reflex::ReflexState;
+        use crate::arena::stock_mind::StockMemory;
+        let standing = StockMemory {
+            state: ReflexState::Engage,
+            ordered: true,
+            target: Some(crate::arena::state::ContactId(0x11)),
+            stand_until_ms: Some(9_000),
+            quiet_since_ms: Some(8_000),
+            rallied: true,
+            last_plot: Some(((1_500, 2_500), 5_000)),
+            unheld_since_ms: Some(7_000),
+            hunt: Some((3, 4)),
+            ignore_until_ms: Some(6_000),
+            ..StockMemory::default()
+        };
+        let seeded = StockMemory::from(&decode_memory(&seed_withdraw(&encode_memory(
+            &Memory::from(standing.clone()),
+        ))));
+        assert_eq!(
+            seeded,
+            StockMemory {
+                state: ReflexState::Withdraw,
+                ordered: false,
+                stand_until_ms: None,
+                quiet_since_ms: None,
+                rallied: false,
+                last_plot: None,
+                unheld_since_ms: None,
+                hunt: None,
+                ..standing
+            },
+            "the state, `ordered` and the six cleared; the target and the ignore kept"
+        );
+        assert_eq!(seed_withdraw(&[]), withdraw_seed());
+        assert_eq!(seed_withdraw(&[3, 1, 4]), withdraw_seed());
+        assert_eq!(
+            doctrine_state_of(&seed_withdraw(&[3, 1, 4])),
+            ReflexState::Withdraw
+        );
+    }
+
+    /// **`Arena::machine_state`** (17b cut M4.3): a mind's hull reads the
+    /// row's cached doctrine state (fresh: `Startup`; whatever its last
+    /// landing wrote); a pilot's hull reads nothing, its dormant row never; a
+    /// wreck under a machine reads `Disabled`. `adopt_mind` seeds only a
+    /// release's `Withdraw`: a fixture's other state keeps the memory as it is.
+    #[test]
+    fn m4_3_machine_state_reads_the_cache_the_row_or_nothing() {
+        use crate::arena::reflex::ReflexState;
+        use crate::arena::stock_mind::StockMemory;
+        let mut arena = minded();
+        assert_eq!(arena.machine_state(RED), Some(ReflexState::Startup));
+        assert_eq!(arena.machine_state(BLUE), None, "a pilot's hull");
+        if let Some(state) = arena.minds.get_mut(&RED) {
+            state.memory = encode_memory(&Memory::from(StockMemory {
+                state: ReflexState::Engage,
+                ..StockMemory::default()
+            }));
+            state.doctrine_state = doctrine_state_of(&state.memory);
+        }
+        assert_eq!(arena.machine_state(RED), Some(ReflexState::Engage));
+        arena.set_controller(RED, Controller::Pilot, ReflexState::Patrol);
+        assert_eq!(
+            arena.machine_state(RED),
+            None,
+            "a dormant row is never read"
+        );
+        arena.set_controller(RED, Controller::Mind, ReflexState::Patrol);
+        assert_eq!(
+            arena.machine_state(RED),
+            Some(ReflexState::Engage),
+            "a fixture's hand-over seeds nothing"
+        );
+        arena.set_controller(RED, Controller::Pilot, ReflexState::Patrol);
+        arena.set_controller(RED, Controller::Mind, ReflexState::Withdraw);
+        assert_eq!(
+            arena.machine_state(RED),
+            Some(ReflexState::Withdraw),
+            "a release's Withdraw seeds the dormant row"
+        );
+        assert_eq!(
+            arena
+                .minds
+                .get(&RED)
+                .map(|state| doctrine_state_of(&state.memory)),
+            Some(ReflexState::Withdraw),
+            "the cache is the memory's"
+        );
+        if let Some(unit) = arena.unit_mut(RED) {
+            unit.limits.wreck = true;
+        }
+        assert_eq!(arena.machine_state(RED), Some(ReflexState::Disabled));
+        if let Some(unit) = arena.unit_mut(BLUE) {
+            unit.limits.wreck = true;
+        }
+        assert_eq!(
+            arena.machine_state(BLUE),
+            None,
+            "a pilot's wreck is nobody's"
         );
     }
 }

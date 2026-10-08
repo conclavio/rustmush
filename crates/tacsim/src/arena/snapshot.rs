@@ -1032,6 +1032,12 @@ impl ArenaState {
             mode,
             hold,
         } = self;
+        // 17b cut M4.3: the doctrine's cached state, re-derived from each
+        // row's memory (never carried).
+        let mut minds = minds;
+        for row in minds.values_mut() {
+            row.doctrine_state = crate::arena::mind::doctrine_state_of(&row.memory);
+        }
         let ledger = Ledger::from_state(&arena_cfg.ledger, ledger)?;
         // Re-derived exactly as `Arena::new` derives them: the index over the
         // units it now holds, and the cheapest passable cell of each row.
