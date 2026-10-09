@@ -1279,7 +1279,7 @@ object is `motor` (no `ticks`, no `traces`) and its state histogram is
   run refuses it.
 - **The minds lane** (`tacsim_harness_arena_minds`, 17b cut M4.2) collects every
   check into one `harness_minds_verdict` line per variant and panics once at the
-  end: `held=` over exactly the plan's listed asserts (the decision's word) and
+  end: `held=` over exactly the plan's listed asserts (the decision's word until 2026-10-09) and
   `sound=` over the lane's integrity (never a decision input); see below.
 - **The delta** (`tacsim_harness_delta_against_the_committed_baseline`) reads the
   fresh `harness-arena.json` and `crates/tacsim/tests/harness_baseline/arena.<os>.json`.
@@ -1358,7 +1358,8 @@ window p99 the cohort's lens (12 ms CI, 20 ms authored) counting inline think
 time over the comparable windows (the ones carrying exactly the lattice's two
 substeps: a late wake due mid-window moves a substep into the next window, so a
 jittered run also has one- and three-substep windows, printed beside and never
-asserted), faults nought on every variant, ops nought on the stock variants, ops per
+asserted), faults nought on every variant, ops nought on the stock variants (on
+every native-sealed variant since the fill decision, the fill included), ops per
 window and per substep within the pool, the load mind's ops p1 at least 4,300,
 and the CPU lens, computed as the pool's ops per window over the host's measured
 rate on Standard Doctrine times five quarters (`[tacsim.minds].cpu_lens_ms` is
@@ -1368,10 +1369,23 @@ or a quiet field, the stat cross-check — and never a decision input: a
 `sound=no` run is re-run, not counted. Under `TACSIM_ASSERT` it panics once at
 the end naming every variant that did not hold or was not sound. **The
 decision**: the fill variant's `held=` word over three idle-host runs of this
-script is what 17b cut M4.3's flip reads — `held=yes` three times keeps
-`scripted`, any `held=no` moves `PRODUCTION_FILL_ENGINE` to `native`; the
-committer pastes the three `harness_minds_verdict: variant=fill_authored` lines
-into the constant's decision log and 17b §2. A `stock_ci` `held=no` was to be
+script was the rule — `held=yes` three times keeps `scripted`, any `held=no`
+moves `PRODUCTION_FILL_ENGINE` to `native` — and it was **taken on
+2026-10-09**: the owner's three ALIEN18 runs at `f19a88fb` all read `held=no
+sound=yes` (per-wake p99 17.297, 20.750 and 17.817 ms against 12; run 2's
+window p99 20.750 against 20), so the AI fill and every seated hull are sealed
+`native` — Standard Doctrine on the native stock mind, the Rhai Standard
+Doctrine held equal to it by Gate A and the twin. The three verdict lines are
+in the constant's decision log (`crates/tacsim/src/match_/seal.rs`) and 17b §2,
+with the VPS's runs and both hosts' no-jitter diagnostics beside them as
+context, not counted. Since the decision the fill variant measures the
+production fill as it is — natively, no Rhai thinks, ops nought, its `sound=`
+holding that its Class I slots thought above the ROM — and its `held=` word is
+no longer a decision input but a capacity reading for the owner; it is still
+asserted under `TACSIM_ASSERT` as every variant's is, so a fill `held=no` on a
+run of this script fails the minds lane and blesses nothing. A match checked
+out between 17b cut M4.3 and the decision carries `scripted` seals and resumes on them (the
+stock source is compiled in). A `stock_ci` `held=no` was to be
 the owner's STOP before 17b cut M4.5 moved the CI lane onto minds; the owner
 waived that precondition on 2026-10-08, and the three runs remain the owner's.
 Its four

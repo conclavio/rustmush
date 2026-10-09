@@ -83,8 +83,10 @@ pub fn standard_digest() -> Digest {
 /// **The source a seal names** (17b cut M4.3; the M4 row's (iii)): the
 /// compiled-in Standard Doctrine for its own digest — so a world whose source
 /// store is off (`TacsimStore::put_mind_source` is gated on the layer) still
-/// runs and resumes every stock seal, which from this cut is every production
-/// seal — else the store's document, else nothing. Asked at
+/// runs and resumes every stock-scripted seal — every production seal from
+/// this cut to the fill decision (2026-10-09); since then a pre-decision
+/// match's, on its resume (a production seal is `native` since and needs
+/// no source) — else the store's document, else nothing. Asked at
 /// `crate::match_::resume::refuse_unrunnable_seals` first and at
 /// `crate::arena_bridge`'s `sealed_sources` second, so a seal the resume
 /// refusal passes is one the installer can run.
@@ -648,15 +650,17 @@ mod tests {
 
     /// **A supporter crowded by hostiles reads its charge** (17b cut M4.5c;
     /// doc 17 §3 as amended 2026-10-09 by the owner's second ruling, "keep
-    /// the charge first"). Standard Doctrine, both runners — T1 native and
-    /// T2 the Rhai script the production fill seals
-    /// (`crate::match_::PRODUCTION_FILL_ENGINE`, `scripted`) — thought on
-    /// one job and compared ([`think`]), on a Class I hull (twelve rows)
-    /// standing under `Support { of }` its charge, a friend, while it holds
-    /// twelve classified hostiles. The order is the mind's own standing
-    /// order, so the view presents it and the cut seats its charge
-    /// (`Arena::mind_view`). The leash is `SUPPORT_LEASH_CELLS` cells of the
-    /// field's 10 m, 150 m. Three fields, one think each from `Patrol`:
+    /// the charge first"). Standard Doctrine, both runners — T1 the native
+    /// stock mind the production fill seals
+    /// (`crate::match_::PRODUCTION_FILL_ENGINE`, `native` since the fill
+    /// decision of 2026-10-09) and T2 the Rhai script held equal to it —
+    /// thought on one job and compared ([`think`]), on a Class I hull
+    /// (twelve rows) standing under `Support { of }` its charge, a friend,
+    /// while it holds twelve classified hostiles. The order is the mind's
+    /// own standing order, so the view presents it and the cut seats its
+    /// charge (`Arena::mind_view`). The leash is `SUPPORT_LEASH_CELLS`
+    /// cells of the field's 10 m, 150 m. Three fields, one think each from
+    /// `Patrol`:
     ///
     /// * **Inside the leash, nearer than the hostiles**: the charge 100 m
     ///   off, the hostiles some 300 m off, a lance mustered 20 m apart. The

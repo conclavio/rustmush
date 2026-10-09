@@ -7493,6 +7493,32 @@ fn af3_state_edit(document: &mut serde_json::Value, edit: impl FnOnce(&mut serde
     });
 }
 
+/// **A snapshot document decoded on its ground, edited as an arena and
+/// encoded again** (the fill decision's review, 2026-10-09): the lawful way
+/// to rewrite what a snapshot carries, because [`tacsim::arena::Snapshot::encode`]
+/// stamps the state hash and the state digest itself, so the boot's decode
+/// reads the result as one the task wrote — a field the hash folds (a mind
+/// row's `seal_digest`) included, where [`af3_state_edit`] restamps the
+/// digest alone. The unedited arena's re-encode is asserted byte for byte
+/// first (`tests/arena.rs`' encode, decode and encode again).
+fn af3_reencode(
+    document: &mut serde_json::Value,
+    ground: tacsim::arena::state::ArenaDefinition,
+    edit: impl FnOnce(&mut tacsim::arena::state::Arena),
+) {
+    let mut arena =
+        tacsim::arena::Snapshot::decode(document, ground).expect("the snapshot decodes");
+    let again = tacsim::arena::Snapshot::encode(&arena).expect("the decoded arena encodes");
+    assert_eq!(
+        again.document, *document,
+        "the unedited arena encodes to the document it was decoded from"
+    );
+    edit(&mut arena);
+    *document = tacsim::arena::Snapshot::encode(&arena)
+        .expect("the edited arena encodes")
+        .document;
+}
+
 /// **A match the boot cannot resume is voided by name, one reason at a time**
 /// (16b cut AF.3; the brief's test 2), over the in-process reboot rig and the
 /// store image of test 1 edited once per reason — every reason the in-process
@@ -8757,20 +8783,29 @@ async fn m3_a_second_pilots_hull_names_its_own_pilot_and_the_fill_names_the_lead
 }
 
 /// **A live record written before 17b cut M3.3 decodes with no seals, and
-/// the boot voids it by name** (`#[serde(default)]` under `LIVE_FORMAT` 1,
-/// the `leaders` precedent; 17b cut M4.3): the running match's live record
-/// with its `minds` key taken out of the state reads back an empty map. The
-/// seal checks have nothing to refuse, but the snapshot's units carry the
-/// seal references the check-out wrote — `scripted` on the production
-/// engine — and a record that names no seal names no source for them, so the
-/// installer refuses the first unit by name and the match is voided
-/// `aborted(restart)` with that sentence. (Before the flip every production
-/// seal was `reflex` and such a record resumed; a snapshot older than M3.2's
-/// format 8 is refused at its head either way.)
+/// the boot voids it by name over a scripted seal** (`#[serde(default)]`
+/// under `LIVE_FORMAT` 1, the `leaders` precedent; 17b cut M4.3, re-pointed
+/// by the fill decision of 2026-10-09): the running match's live record with
+/// its `minds` key taken out of the state reads back an empty map. The seal
+/// checks have nothing to refuse, but the snapshot's units carry the seal
+/// references the check-out wrote — rewritten here to the `scripted` engine
+/// on every unit, as every production check-out wrote them from the flip to
+/// the fill decision (EXPLICITLY since the decision, whose production seal is
+/// `native`) — and a record that names no seal names no source for them, so
+/// the installer refuses the first unit by name and the match is voided
+/// `aborted(restart)` with that sentence. **The production snapshot as the
+/// check-out now writes it** — every reference on `PRODUCTION_FILL_ENGINE`,
+/// `native` — under the same seal-less record resumes: a native reference
+/// runs compiled code and names no source, so nothing is left to refuse.
+/// (Before the flip every production seal was `reflex` and such a record
+/// resumed; a snapshot older than M3.2's format 8 is refused at its head
+/// either way.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m4_3_a_pre_m3_live_record_decodes_with_no_seals_and_is_voided_by_name() {
+    // Scripted references, no record to name their source: voided by name.
     let mut m = af3_match(0, true).await;
     let key = match_::live_key(m.match_id).to_string();
+    let snapshot_key = match_::snapshot_key(m.match_id).to_string();
     let mut document = m.rig.image_doc(&key).expect("the live record");
     af3_state_edit(&mut document, |state| {
         let removed = state["record"]
@@ -8785,10 +8820,66 @@ async fn m4_3_a_pre_m3_live_record_decodes_with_no_seals_and_is_voided_by_name()
         &mut m,
         |image| {
             tacsim_docs(image).insert(smol_str::SmolStr::new(&key), older);
+            if let Some(snapshot) = tacsim_docs(image).get_mut(snapshot_key.as_str()) {
+                af3_state_edit(snapshot, |state| {
+                    let rows = state["units"].as_array_mut().expect("the snapshot's units");
+                    assert_eq!(rows.len(), 2);
+                    for row in rows {
+                        assert_eq!(
+                            row["seal"]["engine"],
+                            serde_json::json!(tacsim::match_::PRODUCTION_FILL_ENGINE.as_str()),
+                            "the check-out's own reference, before the rewrite"
+                        );
+                        row["seal"]["engine"] = serde_json::json!("scripted");
+                    }
+                });
+            }
         },
         Reason::Prefix("the arena could not be opened: a sealed mind cannot be run: #"),
     )
     .await;
+
+    // The production's own references (native), the same seal-less record:
+    // resumes.
+    let mut rig = af3_rig(2);
+    let match_id = af3_running(&mut rig);
+    let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
+    let key = match_::live_key(match_id).to_string();
+    let snapshot_key = match_::snapshot_key(match_id).to_string();
+    let state: serde_json::Value = rig
+        .image_doc(&snapshot_key)
+        .and_then(|document| document.get("state").cloned())
+        .and_then(|state| state.as_str().map(serde_json::from_str))
+        .expect("a snapshot")
+        .expect("a JSON state");
+    let rows = state["units"].as_array().expect("the snapshot's units");
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(
+            row["seal"]["engine"],
+            serde_json::json!("native"),
+            "the check-out's own reference, untouched"
+        );
+    }
+    let writes = rig
+        .reboot_mid_match_editing(|image| {
+            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
+                af3_state_edit(document, |state| {
+                    let removed = state["record"]
+                        .as_object_mut()
+                        .and_then(|record| record.remove("minds"));
+                    assert!(
+                        removed
+                            .is_some_and(|minds| minds.as_object().is_some_and(|m| m.len() == 2))
+                    );
+                });
+            }
+        })
+        .await;
+    assert!(rig.registry().tasks().is_live(match_id), "it resumed");
+    assert!(set_of(&writes, &match_::result_key(match_id)).is_none());
+    let said = rig.staff(&format!("@arena/abort {}", match_id.0));
+    assert!(said.contains("is stopping"), "{said}");
 }
 
 /// **A floor the Line card sits under refuses the check-out by name, before
@@ -9090,21 +9181,29 @@ async fn m3_a_scripted_seal_whose_source_is_missing_is_refused_by_name() {
     .await;
 }
 
-/// **Only a scripted seal needs its source; the production seal is one**
-/// (17b cut M3.3 as 17b cut M4.3 re-points it; doc 17 §13): every seal of
-/// the live record rewritten to a digest neither Standard Doctrine's nor any
-/// `tacsim:mindsrc:` document's, with each engine left as the check-out
-/// sealed it (`PRODUCTION_FILL_ENGINE`, `scripted`) — the boot voids the match
-/// by name on the first unit, before any tape line. The same record with
-/// every engine rewritten `native` resumes: the native and reflex engines
-/// run compiled code and never read a source, so a store that lost (or never
-/// had) a document voids no match that does not run one.
+/// **Only a scripted seal needs its source; since the fill decision the
+/// production seal is not one** (17b cut M3.3 as 17b cut M4.3 re-pointed it,
+/// and as the fill decision of 2026-10-09 re-points it again; doc 17 §13).
+/// Every seal of the live record rewritten to the `scripted` engine over a
+/// digest neither Standard Doctrine's nor any `tacsim:mindsrc:` document's,
+/// and each unit's snapshot reference to that rewritten seal's own (the
+/// `scripted` engine and its digest; [`af3_reencode`]) — the shape every
+/// production check-out wrote, in both places, from the flip to the
+/// decision, written EXPLICITLY since: the boot voids the match by name on
+/// the first unit, before any tape line. The record as the production check-out
+/// now writes it — every engine `native` (`PRODUCTION_FILL_ENGINE`) in the
+/// record's seals and in the snapshot's seal reference on each unit alike,
+/// untouched — with every source rewritten to that missing digest resumes:
+/// the native and reflex engines run compiled code and never read a source,
+/// so a store that lost (or never had) a document voids no match that does
+/// not run one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn m4_3_a_production_seal_whose_source_is_missing_is_refused_and_a_native_one_resumes() {
+async fn m4_3_a_scripted_seal_missing_its_source_is_refused_and_a_native_one_resumes() {
     assert_eq!(
         tacsim::match_::PRODUCTION_FILL_ENGINE,
-        tacsim::arena::SealEngine::Scripted,
-        "the production fill runs a source (M4.2's decision); re-read this test if it moves"
+        tacsim::arena::SealEngine::Native,
+        "the production fill runs no source (the fill decision, 2026-10-09); re-read this test \
+         if it moves"
     );
     let missing = "0".repeat(64);
 
@@ -9122,25 +9221,65 @@ async fn m4_3_a_production_seal_whose_source_is_missing_is_refused_and_a_native_
         record
             .minds
             .values()
-            .all(|sealed| sealed.seal.engine == tacsim::arena::SealEngine::Scripted),
+            .all(|sealed| sealed.seal.engine == tacsim::arena::SealEngine::Native),
         "every hull of a lobby match is sealed on the production engine"
     );
     let units: Vec<ObjId> = record.minds.keys().copied().collect();
     let first = *units.first().expect("a seal");
     let written = missing.clone();
     let rewritten = units.clone();
+    // The snapshot's half of the pre-decision shape: each unit's reference
+    // is the rewritten seal's own (the `scripted` engine and its digest).
+    let scripted: BTreeMap<ObjId, tacsim::arena::MindSeal> = record
+        .minds
+        .iter()
+        .map(|(unit, sealed)| {
+            (
+                *unit,
+                tacsim::arena::MindSeal {
+                    engine: tacsim::arena::SealEngine::Scripted,
+                    source_sha256: [0; 32],
+                    ..sealed.seal.clone()
+                },
+            )
+        })
+        .collect();
+    let snapshot_key = match_::snapshot_key(m.match_id).to_string();
+    let ground = match_::definition_for(m.rig.tw.world(), &m.head.arena)
+        .expect("the ground builds")
+        .expect("and is loaded");
     af3_void(
         &mut m,
         |image| {
-            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
-                af3_state_edit(document, |state| {
+            let docs = tacsim_docs(image);
+            af3_state_edit(
+                docs.get_mut(key.as_str()).expect("the live record"),
+                |state| {
                     for unit in &rewritten {
                         let sealed = &mut state["record"]["minds"][unit.0.to_string()]["seal"];
-                        assert_eq!(sealed["engine"], serde_json::json!("scripted"));
+                        assert_eq!(sealed["engine"], serde_json::json!("native"));
+                        sealed["engine"] = serde_json::json!("scripted");
                         sealed["source_sha256"] = serde_json::json!(written);
                     }
-                });
-            }
+                },
+            );
+            af3_reencode(
+                docs.get_mut(snapshot_key.as_str()).expect("the snapshot"),
+                ground,
+                |arena| {
+                    assert!(
+                        arena.minds.is_empty(),
+                        "a seated hull has no mind row until its seat is released"
+                    );
+                    for (unit, seal) in &scripted {
+                        let state = arena.unit_mut(*unit).expect("the unit");
+                        let was = record.minds.get(unit).expect("its seal");
+                        assert_eq!(state.seal, was.seal.seal_ref(), "#{}", unit.0);
+                        assert_eq!(state.seal.engine, tacsim::arena::SealEngine::Native);
+                        state.seal = seal.seal_ref();
+                    }
+                },
+            );
         },
         Reason::Exact(format!(
             "#{}'s mind source {missing} is neither this server's Standard Doctrine nor in its \
@@ -9150,11 +9289,11 @@ async fn m4_3_a_production_seal_whose_source_is_missing_is_refused_and_a_native_
     )
     .await;
 
-    // Native, source missing: resumes. The engine is rewritten in BOTH places
-    // it is carried — the record's seal (what the resume's refusal reads) and
-    // the snapshot's seal reference on each unit (what the installer reads:
-    // the arena keeps the seal it was checked out under, never re-derived
-    // from the record) — as a native check-out would have written them.
+    // Native as the check-out wrote it, source missing: resumes. The record's
+    // seals keep the engine the production check-out wrote, as does the
+    // snapshot's seal reference on each unit (what the installer reads: the
+    // arena keeps the seal it was checked out under, never re-derived from
+    // the record) — read here, never rewritten.
     let mut rig = af3_rig(2);
     let match_id = af3_running(&mut rig);
     let _ = af3_snapshot_after(&mut rig, match_id, 0).await;
@@ -9162,24 +9301,25 @@ async fn m4_3_a_production_seal_whose_source_is_missing_is_refused_and_a_native_
     let key = match_::live_key(match_id).to_string();
     let snapshot_key = match_::snapshot_key(match_id).to_string();
     let units: Vec<ObjId> = record.minds.keys().copied().collect();
+    let state: serde_json::Value = rig
+        .image_doc(&snapshot_key)
+        .and_then(|document| document.get("state").cloned())
+        .and_then(|state| state.as_str().map(serde_json::from_str))
+        .expect("a snapshot")
+        .expect("a JSON state");
+    let rows = state["units"].as_array().expect("the snapshot's units");
+    assert_eq!(rows.len(), units.len());
+    for row in rows {
+        assert_eq!(row["seal"]["engine"], serde_json::json!("native"));
+    }
     let writes = rig
         .reboot_mid_match_editing(|image| {
             if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
                 af3_state_edit(document, |state| {
                     for unit in &units {
                         let sealed = &mut state["record"]["minds"][unit.0.to_string()]["seal"];
-                        sealed["engine"] = serde_json::json!("native");
+                        assert_eq!(sealed["engine"], serde_json::json!("native"));
                         sealed["source_sha256"] = serde_json::json!(missing);
-                    }
-                });
-            }
-            if let Some(document) = tacsim_docs(image).get_mut(snapshot_key.as_str()) {
-                af3_state_edit(document, |state| {
-                    let rows = state["units"].as_array_mut().expect("the snapshot's units");
-                    assert_eq!(rows.len(), units.len());
-                    for row in rows {
-                        assert_eq!(row["seal"]["engine"], serde_json::json!("scripted"));
-                        row["seal"]["engine"] = serde_json::json!("native");
                     }
                 });
             }
@@ -9192,26 +9332,46 @@ async fn m4_3_a_production_seal_whose_source_is_missing_is_refused_and_a_native_
 }
 
 /// **An unchanged record resumes, and the arena keeps the seal it was checked
-/// out under** (17b cut M3.3; doc 17 §13): the arena's `UnitState.seal` rides
-/// the snapshot and is never re-derived from the world's record — the
-/// snapshot the boot decodes, and the first one the resumed task writes, both
-/// carry each unit's seal reference with the record's digest and sortie; and
-/// a `scripted` seal whose source the store DOES hold (the stock one) resumes
-/// too.
+/// out under** (17b cut M3.3; doc 17 §13; re-pointed by the fill decision of
+/// 2026-10-09): the arena's `UnitState.seal` rides the snapshot and is never
+/// re-derived from the world's record — the snapshot the boot decodes, and
+/// the first one the resumed task writes, both carry each unit's seal
+/// reference with the record's digest and sortie.
+///
+/// **The production upgrade path**: a match checked out between 17b cut M4.3
+/// and the fill decision sealed every hull `scripted` on the stock source, in
+/// its record and in its snapshot's references alike, and the deploy that
+/// carries the decision resumes it. Each hull of this lobby match — checked
+/// out `native` (`PRODUCTION_FILL_ENGINE`), asserted — is made that shape
+/// GENUINELY before the reboot: its record seal rewritten to the `scripted`
+/// engine on the stock `source_sha256` (compiled in, so the resume refusal
+/// and the installer both find it), and its snapshot reference to that
+/// seal's own [`tacsim::arena::MindSeal::seal_ref`] (the engine and the new
+/// digest), the snapshot decoded and encoded again ([`af3_reencode`]). The
+/// boot resumes it — live, no result — on the scripted seals: the record it
+/// puts back names them, the snapshot it decoded carries their references,
+/// and the next snapshot the resumed task writes carries the same scripted
+/// references, equal to the record's (a scripted reference whose source the
+/// installer could not find would have voided the resume), with the mind
+/// row the boot's release lays on each hull reading its scripted seal's
+/// digest. Without the snapshot's half the references stay `native`,
+/// nothing is installed and those asserts fail (the review's mutation
+/// check).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m3_an_unchanged_record_resumes_with_the_seal_it_was_checked_out_under() {
+    use tacsim::arena::{MindSeal, SealEngine, SealRef};
     let mut rig = af3_rig(2);
     let match_id = af3_running(&mut rig);
     let head = af3_snapshot_after(&mut rig, match_id, 0).await;
     let record = rig.book().get(match_id).cloned().expect("the record");
     let snapshot_key = match_::snapshot_key(match_id).to_string();
+    let ground = match_::definition_for(rig.tw.world(), &head.arena)
+        .expect("the ground builds")
+        .expect("and is loaded");
     let seals_of = |rig: &Rig| {
         let document = rig.image_doc(&snapshot_key).expect("a snapshot");
-        let ground = match_::definition_for(rig.tw.world(), &head.arena)
-            .expect("the ground builds")
-            .expect("and is loaded");
-        let arena =
-            tacsim::arena::Snapshot::decode(&document, ground).expect("the snapshot decodes");
+        let arena = tacsim::arena::Snapshot::decode(&document, ground.clone())
+            .expect("the snapshot decodes");
         (
             arena.now_ms,
             arena
@@ -9219,51 +9379,156 @@ async fn m3_an_unchanged_record_resumes_with_the_seal_it_was_checked_out_under()
                 .iter()
                 .map(|unit| (unit.id, unit.seal))
                 .collect::<Vec<_>>(),
+            arena
+                .minds
+                .iter()
+                .map(|(unit, row)| (*unit, row.seal_digest))
+                .collect::<Vec<_>>(),
         )
     };
-    let check = |seals: &[(ObjId, tacsim::arena::SealRef)]| {
+    let check = |record: &match_::MatchRecord, seals: &[(ObjId, SealRef)]| {
         assert_eq!(seals.len(), record.minds.len());
         for (unit, seal) in seals {
             let sealed = record.minds.get(unit).expect("a recorded seal");
             assert_eq!(seal.digest, sealed.seal.digest(), "#{}", unit.0);
             assert_eq!(seal.sortie, sealed.sortie, "#{}", unit.0);
-            assert_eq!(seal.engine, sealed.seal.engine);
+            assert_eq!(seal.engine, sealed.seal.engine, "#{}", unit.0);
             assert!(!seal.closed);
         }
     };
-    let (before_ms, before) = seals_of(&rig);
-    check(&before);
-    // The stock source is in the store, so a scripted seal naming it passes.
+    let (before_ms, before, rows) = seals_of(&rig);
+    check(&record, &before);
+    assert!(
+        rows.is_empty(),
+        "a seated hull has no mind row until its seat is released"
+    );
+
+    // Every hull as a check-out between 17b cut M4.3 and the fill decision
+    // sealed it: `scripted` on the stock source, in both places.
+    let scripted: BTreeMap<ObjId, MindSeal> = record
+        .minds
+        .iter()
+        .map(|(unit, sealed)| {
+            assert_eq!(
+                sealed.seal.engine,
+                tacsim::match_::PRODUCTION_FILL_ENGINE,
+                "#{} as the production check-out sealed it",
+                unit.0
+            );
+            assert_eq!(sealed.seal.engine, SealEngine::Native);
+            assert_eq!(
+                sealed.seal.source_sha256,
+                tacsim::minds::standard_digest().0,
+                "#{} names the stock source",
+                unit.0
+            );
+            let seal = MindSeal {
+                engine: SealEngine::Scripted,
+                ..sealed.seal.clone()
+            };
+            assert_ne!(
+                seal.digest(),
+                sealed.seal.digest(),
+                "the engine is folded into the seal's digest"
+            );
+            (*unit, seal)
+        })
+        .collect();
+    let expected: Vec<(ObjId, SealRef)> = before
+        .iter()
+        .map(|(unit, _)| (*unit, scripted[unit].seal_ref()))
+        .collect();
     let key = match_::live_key(match_id).to_string();
-    let first = *record.minds.keys().next().expect("a seal");
+    let at = snapshot_key.clone();
+    let checked_out = record.clone();
+    let rewritten = scripted.clone();
+    let on = ground.clone();
     let writes = rig
-        .reboot_mid_match_editing(|image| {
-            if let Some(document) = tacsim_docs(image).get_mut(key.as_str()) {
-                af3_state_edit(document, |state| {
-                    state["record"]["minds"][first.0.to_string()]["seal"]["engine"] =
-                        serde_json::json!("scripted");
-                });
-            }
+        .reboot_mid_match_editing(move |image| {
+            let docs = tacsim_docs(image);
+            af3_state_edit(
+                docs.get_mut(key.as_str()).expect("the live record"),
+                |state| {
+                    for unit in rewritten.keys() {
+                        let sealed = &mut state["record"]["minds"][unit.0.to_string()]["seal"];
+                        assert_eq!(sealed["engine"], serde_json::json!("native"));
+                        assert_eq!(
+                            sealed["source_sha256"],
+                            serde_json::json!(tacsim::minds::content::STANDARD_SHA256)
+                        );
+                        sealed["engine"] = serde_json::json!("scripted");
+                    }
+                },
+            );
+            af3_reencode(
+                docs.get_mut(at.as_str()).expect("the snapshot"),
+                on,
+                |arena| {
+                    assert_eq!(arena.now_ms, before_ms, "the snapshot the check read");
+                    for (unit, seal) in &rewritten {
+                        let state = arena.unit_mut(*unit).expect("the unit");
+                        let was = checked_out.minds.get(unit).expect("its seal");
+                        assert_eq!(state.seal, was.seal.seal_ref(), "#{}", unit.0);
+                        state.seal = seal.seal_ref();
+                    }
+                },
+            );
         })
         .await;
     assert!(rig.registry().tasks().is_live(match_id), "it resumed");
     assert!(set_of(&writes, &match_::result_key(match_id)).is_none());
+    // The record the boot put back names the scripted seals, and the snapshot
+    // it decoded carries their references.
+    let resumed = rig
+        .book()
+        .get(match_id)
+        .cloned()
+        .expect("the record is back");
+    for (unit, seal) in &scripted {
+        assert_eq!(
+            resumed.minds.get(unit).map(|sealed| &sealed.seal),
+            Some(seal),
+            "#{} resumed on its scripted seal",
+            unit.0
+        );
+    }
+    let (decoded_ms, decoded, rows) = seals_of(&rig);
+    assert_eq!(decoded_ms, before_ms);
+    check(&resumed, &decoded);
+    assert_eq!(decoded, expected);
+    assert!(rows.is_empty());
     // The first snapshot the resumed task writes carries the same seals.
-    let mut after: Option<Vec<(ObjId, tacsim::arena::SealRef)>> = None;
+    let mut after = None;
     for _ in 0..3_000 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         rig.pump();
         let _ = rig.pump_ops();
-        let (now_ms, seals) = seals_of(&rig);
+        let (now_ms, seals, rows) = seals_of(&rig);
         if now_ms > before_ms {
-            after = Some(seals);
+            after = Some((seals, rows));
             break;
         }
     }
-    let after = after.expect("the resumed task snapshots again");
-    check(&after);
+    let (after, rows) = after.expect("the resumed task snapshots again");
+    check(&resumed, &after);
+    // The boot released every seat to doctrine, and the rows the release laid
+    // read their digest off the scripted references (`Arena::adopt_mind`).
     assert_eq!(
-        after, before,
+        rows,
+        scripted
+            .iter()
+            .map(|(unit, seal)| (*unit, seal.digest()))
+            .collect::<Vec<_>>(),
+        "each released hull's mind row carries its scripted seal's digest"
+    );
+    assert!(
+        after
+            .iter()
+            .all(|(_, seal)| seal.engine == SealEngine::Scripted),
+        "every unit resumed on the scripted seal it was checked out under: {after:?}"
+    );
+    assert_eq!(
+        after, expected,
         "the arena kept the seals it was checked out under"
     );
     let said = rig.staff(&format!("@arena/abort {}", match_id.0));

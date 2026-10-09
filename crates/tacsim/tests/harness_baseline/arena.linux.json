@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "5345760533fd9b661bdcee324bf2da656e94512b",
-    "date": "2026-10-09T17:52:33Z",
+    "commit": "f19a88fb62387ea20c3bb882787a7dbefe47cde1",
+    "date": "2026-10-09T21:43:02Z",
     "host": {
       "cpus": 4,
       "hostname": "ccr-m4.5-linux-bless",
@@ -66,10 +66,10 @@
   },
   "memory": {
     "horizon_bytes": 26112,
-    "rss_end_kib": 103024,
-    "rss_start_kib": 68848,
-    "vmrss_end_kib": 103024,
-    "vmrss_start_kib": 68848
+    "rss_end_kib": 112836,
+    "rss_start_kib": 63748,
+    "vmrss_end_kib": 112836,
+    "vmrss_start_kib": 63748
   },
   "minds": {
     "ceiling_authored": {
@@ -192,23 +192,23 @@
       "cohort": "authored",
       "cond_fires": 2468,
       "dropped": 2,
-      "engine": "scripted",
+      "engine": "native",
       "faults": 0,
-      "fees_total": 110647,
+      "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "14533477979303065489",
+      "final_substep_hash": "10681623480133624222",
       "inline_thinks": 1670,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
       "jittered_wakes": 23,
       "landings": 8758,
-      "ops_per_substep_peak": 18840,
-      "ops_per_window_peak": 51626,
-      "ops_total": 1763485,
+      "ops_per_substep_peak": 0,
+      "ops_per_window_peak": 0,
+      "ops_total": 0,
       "overflows": 0,
       "pooled_thinks": 7081,
-      "rhai_thinks": 2009,
+      "rhai_thinks": 0,
       "seed": 2350,
       "thinks": 8751,
       "units": 300,
@@ -373,15 +373,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 10.574,
-    "boot": 69.855,
-    "generate": 9.156,
+    "arena_open": 11.325,
+    "boot": 95.654,
+    "generate": 13.233,
     "killed_warming": 0,
-    "pack_apply": 39.388,
-    "terrain_convert": 3.26,
+    "pack_apply": 45.161,
+    "terrain_convert": 3.08,
     "warm_pulses": 47,
-    "warm_up": 256.452,
-    "window_open": 28.408
+    "warm_up": 363.451,
+    "window_open": 33.346
   },
   "slope": {
     "refusals": 239,
@@ -401,16 +401,16 @@
     "bytes_max": 4832682,
     "bytes_mean": 4773040,
     "count": 7,
-    "decode_ms_max": 81.11,
+    "decode_ms_max": 78.687,
     "encode_ms": {
-      "max": 72.304,
-      "p50": 47.3,
-      "p99": 48.72
+      "max": 88.527,
+      "p50": 53.386,
+      "p99": 56.095
     },
     "every_ms": 5000,
     "hash_ok": true,
     "max_snapshot_bytes": 7340032,
-    "wake_plus_encode_ms_max": 83.926
+    "wake_plus_encode_ms_max": 110.679
   },
   "substeps": {
     "per_wake_max": 1,
@@ -420,11 +420,11 @@
   },
   "tempos": [
     {
-      "max_ms": 16.281,
+      "max_ms": 22.152,
       "name": "arena_engaged",
-      "p50_ms": 7.946,
-      "p95_ms": 10.747,
-      "p99_ms": 12.529,
+      "p50_ms": 9.116,
+      "p95_ms": 15.486,
+      "p99_ms": 17.763,
       "period_ms": 500,
       "pulses": 120
     }
@@ -466,10 +466,10 @@
     "cell_probes_peak": 4974,
     "horizon_probes_peak": 4951,
     "jam_checks_peak": 650,
-    "ms_max": 24.469,
-    "ms_p50": 15.498,
-    "ms_p95": 22.121,
-    "ms_p99": 23.391,
+    "ms_max": 39.566,
+    "ms_p50": 18.496,
+    "ms_p95": 28.525,
+    "ms_p99": 37.907,
     "share_ops_peak": 104,
     "traces_peak": 966,
     "window_ms": 500,

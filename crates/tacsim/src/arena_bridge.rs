@@ -1553,8 +1553,11 @@ impl From<crate::arena_task::SpawnError> for OpenMatchError {
 /// the store's text at the seal's `source_sha256`
 /// (`crate::store::TacsimStore::mind_source`). A seal whose source the store
 /// does not hold is left out, so the installer refuses it by name. `native` and
-/// `reflex` seals name nothing to run: empty on every production check-out
-/// before 17b cut M4.
+/// `reflex` seals name nothing to run, so the map is empty on a fresh
+/// production check-out — before 17b cut M4.3 (every production seal
+/// `reflex` or `native`) and again since the fill decision (2026-10-09,
+/// every one `native`); from M4.3 to the decision every one was `scripted`
+/// on the stock source, and such a match resumed since still names it.
 fn sealed_sources<'a>(
     w: &mush_core::World,
     seals: impl Iterator<Item = &'a crate::arena::MindSeal>,
@@ -1652,7 +1655,9 @@ pub fn open_match(
     // check-out reads the config's floor again.
     let minds_cfg = crate::match_::lobby::minds_config(ctx.w).unwrap_or_default();
     // **17b cut M3.5** (doc 17 §13): the sources the custody's scripted seals
-    // name, off the store — none before 17b cut M4.
+    // name, off the store — none on a fresh production check-out except from
+    // 17b cut M4.3 to the fill decision (2026-10-09), when every production
+    // seal was `scripted`.
     let sources = sealed_sources(ctx.w, custody.units.iter().map(|unit| &unit.seal));
     // **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22): the process's
     // one think pool, sized once from `[tacsim.minds].workers` by whichever
@@ -5881,7 +5886,10 @@ mod tests {
     /// (iii)): `sealed_sources` over a world that holds no `TacsimStore` at
     /// all answers Standard Doctrine's text for a scripted seal on the stock
     /// digest, keyed by the seal's digest — so a world whose store is off
-    /// runs and resumes every production seal — and nothing for another.
+    /// ran and resumed every production seal from 17b cut M4.3 to the fill
+    /// decision (2026-10-09), and resumes a pre-decision match's
+    /// stock-scripted seals since (a production seal is `native` since and
+    /// names no source) — and nothing for another.
     #[test]
     fn m4_3_the_stock_source_resolves_with_no_store() {
         use crate::arena::MindSeal;

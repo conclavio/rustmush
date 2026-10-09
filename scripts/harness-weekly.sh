@@ -62,14 +62,20 @@
 #     harness_minds_verdict line per variant and panics ONCE at the end: `held=`
 #     is exactly the plan's listed asserts (wake p99 12 ms, window p99 the
 #     cohort's lens counting inline think time, faults nought on every variant,
-#     ops nought on the stock variants, ops per window and per substep within
-#     the pool, the load mind's ops p1 at least 4,300, the computed CPU lens),
+#     ops nought on the stock variants (on every native-sealed variant since
+#     the fill decision, the fill included), ops per window and per substep
+#     within the pool, the load mind's ops p1 at least 4,300, the computed
+#     CPU lens),
 #     `sound=` the lane's integrity (a failed batch, a refused snapshot, a cold
 #     field — a `sound=no` run is re-run, never counted). The fill variant's
-#     `held=` over THREE idle-host runs of this script is the decision
-#     `tacsim::match_::PRODUCTION_FILL_ENGINE` records before 17b cut M4.3's
-#     flip (`held=yes` three times keeps `scripted`, any `held=no` moves it to
-#     `native`); a `stock_ci` `held=no` was to be the owner's STOP before 17b
+#     `held=` over THREE idle-host runs of this script was the decision
+#     `tacsim::match_::PRODUCTION_FILL_ENGINE` records (`held=yes` three times
+#     keeps `scripted`, any `held=no` moves it to `native`) — TAKEN on
+#     2026-10-09 from the owner's three ALIEN18 runs, all `held=no`: the fill
+#     is `native`, so the fill variant now measures the production fill on
+#     the native stock mind (no Rhai, ops nought) and its `held=` word is the
+#     owner's capacity reading, no longer a decision input; a `stock_ci`
+#     `held=no` was to be the owner's STOP before 17b
 #     cut M4.5 — waived by the owner on 2026-10-08, the three runs still the
 #     owner's. Its four harness-minds-<variant>.json reports carry a
 #     deterministic `minds` block the delta compares against the baseline's

@@ -18,11 +18,14 @@
 //! `crate::arena_task::resume_arena` over a decoded snapshot, whose runners
 //! are re-derived EMPTY (`crate::arena::snapshot`'s head) — so a resumed
 //! scripted hull thinks on the runner its seal names, and a native one on
-//! the fallback, with no fixture re-applying anything. Before 17b cut M4 no
-//! production seal is `scripted` (the fill is the reflex's, a piloted hull's
-//! seal is `reflex`, the lab knob's mind fill `native`), so on the production
-//! path it installs nothing; only a fixture's rig (`tests/support`'s
-//! `Muster::scripted`) seals a scripted mind.
+//! the fallback, with no fixture re-applying anything. No production seal is
+//! `scripted` since the fill decision of 2026-10-09
+//! (`crate::match_::PRODUCTION_FILL_ENGINE` is `native`: the fill and every
+//! seated hull think on the fallback), so on the production path it installs
+//! nothing for a match checked out since; from 17b cut M4.3's flip to the
+//! decision every production seal was `scripted`, and a match checked out
+//! then still resumes on the runner its seal names. A fixture's rig
+//! (`tests/support`'s `Muster::scripted`) seals a scripted mind.
 //!
 //! **What names the source.** The arena holds the seal's DIGEST
 //! ([`crate::arena::mind::SealRef::digest`], the SHA-256 of the whole

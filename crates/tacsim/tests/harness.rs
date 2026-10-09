@@ -203,14 +203,20 @@
 //! reprinted, and every check collected into one `harness_minds_verdict`
 //! line a variant: `held=` over exactly the plan's listed asserts (wake p99
 //! 12 ms, window p99 the cohort's lens counting inline time, faults nought on
-//! every variant, ops nought on the stock variants, ops per window and per
+//! every variant, ops nought on the stock variants (on every native-sealed
+//! variant since the fill decision, the fill included), ops per window and per
 //! substep within the pool, the load mind's ops p1 at least 4,300, the
 //! computed CPU lens — the pool's ops per window over the host's measured
 //! rate on Standard Doctrine by five quarters, `[tacsim.minds].cpu_lens_ms`
 //! printed beside) and `sound=` over the lane's integrity (never a decision
 //! input); one panic at the end under `TACSIM_ASSERT`. The fill variant's
-//! verdict over three idle-host weekly runs is the decision
-//! (`tacsim::match_::PRODUCTION_FILL_ENGINE`) 17b cut M4.3's flip reads; a
+//! verdict over three idle-host weekly runs was the decision
+//! (`tacsim::match_::PRODUCTION_FILL_ENGINE`), taken on 2026-10-09 from the
+//! owner's three ALIEN18 runs, all `held=no sound=yes`: the fill is native.
+//! Since then the variant fields the production fill as it is — its Class I
+//! hulls on the native stock mind, no Rhai, ops nought — and its `held=`
+//! word is the owner's capacity reading of that fill, no longer a decision
+//! input. A
 //! `stock_ci` `held=no` on ALIEN18 (the owner's host) was to be the owner's
 //! STOP before 17b cut M4.5 — a precondition the owner WAIVED on 2026-10-08
 //! (the lenses are report-only on this file's Linux bless host). Its JSON,
@@ -9223,14 +9229,27 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
 // recording Rhai runners and a timed native wrapper ([`TimedNative`]), five
 // `harness_minds_*` lines a variant, every check collected into one
 // `harness_minds_verdict` line a variant — `held=` over exactly the plan's
-// listed asserts, the decision's word; `sound=` over the lane's integrity
+// listed asserts, the decision's word until 2026-10-09; `sound=` over the lane's integrity
 // checks, never a decision input — and one panic at the end under
 // `TACSIM_ASSERT`; and `harness-minds-<variant>.json` with a deterministic
 // `minds` block the delta compares once the baseline carries one (folded by
 // 17b cut M4.5's one bless). `PRODUCTION_FILL_ENGINE`
 // (`tacsim::match_::PRODUCTION_FILL_ENGINE`) is what the fill variant seals
 // its thirty-six Class I hulls a side on, and its verdict over three idle-host
-// weekly runs is the decision 17b cut M4.3's flip reads.
+// weekly runs was the decision — taken 2026-10-09 on the owner's three
+// ALIEN18 runs, all `held=no`, so the constant is `Native`. The variant now
+// measures the production fill natively (no Rhai thinks, ops and fees
+// nought; the CPU lens still computed off the calibration's Rhai rate, a
+// footing every variant shares), and `sound=` holds that its Class I slots
+// thought on the native mind above the ROM (`native_minded_thinks`). Its
+// `held=` word is printed as before and is no longer a decision input — the
+// owner reads it as a capacity figure — but it is still asserted under
+// `TACSIM_ASSERT` as every variant's is: on a weekly run
+// (`scripts/harness-weekly.sh` exports it) a fill `held=no` fails this lane
+// and so blocks that run's bless. On a native fill the two ops-pool checks
+// are met trivially — no think runs in Rhai, which the ops-nought check (on
+// every native-sealed variant) holds, and the native stock mind returns no
+// fault — so its `held=` is driven by the timing checks alone.
 //
 // **The jitter is one substep, on the lattice** (a declared departure from the
 // row's literal 60 ms; the M4.2 brief's review). A wake 60 ms late cuts a
@@ -9411,7 +9430,8 @@ impl MindsLaneMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MindsVariant {
     /// Thirty-six Class I hulls a side on `PRODUCTION_FILL_ENGINE`, the rest
-    /// the ROM, at the authored reach: the decision's variant.
+    /// the ROM, at the authored reach: the decision's variant (taken
+    /// 2026-10-09: native), the production fill's since.
     FillAuthored,
     /// Every hull the ROM (Class 0, native), at the CI reach: the arena
     /// lane's field (since 17b cut M4.5 the arena lane's own terms), on the
@@ -9424,7 +9444,8 @@ enum MindsVariant {
     CeilingAuthored,
 }
 
-/// Fill first: its verdict is the decision.
+/// Fill first: its verdict was the decision (taken 2026-10-09: native), and
+/// is the production fill's reading since.
 const MINDS_VARIANTS: [MindsVariant; 4] = [
     MindsVariant::FillAuthored,
     MindsVariant::StockCi,
@@ -9710,11 +9731,16 @@ struct TimedNative {
     samples: std::sync::Mutex<Vec<NativeSample>>,
 }
 
-/// One native think: how long, and whether it faulted (it never does).
+/// One native think: how long, whether it faulted (it never does), and
+/// whether the arena handed it as a dropped job — the ROM's think of a
+/// Class 0 hull (or of a mind dropped by its faults or its core), against a
+/// native-sealed hull thinking at its own class (the fill's, since the fill
+/// decision of 2026-10-09).
 #[derive(Clone, Copy, Debug)]
 struct NativeSample {
     us: u64,
     faulted: bool,
+    dropped: bool,
 }
 
 impl TimedNative {
@@ -9747,6 +9773,7 @@ impl tacsim::arena::mind::MindRunner for TimedNative {
             .push(NativeSample {
                 us,
                 faulted: result.fault.is_some(),
+                dropped: job.dropped,
             });
         result
     }
@@ -9820,6 +9847,9 @@ struct Drained {
     rhai_faulted: u32,
     native_us: Vec<u64>,
     native_faulted: u32,
+    /// The native thinks handed as no dropped job: a native-sealed hull
+    /// thinking at its own class, above the ROM.
+    native_minded: u32,
 }
 
 impl Drained {
@@ -9934,6 +9964,7 @@ impl MindsStepper {
         for sample in self.native.take() {
             drained.native_us.push(sample.us);
             drained.native_faulted += u32::from(sample.faulted);
+            drained.native_minded += u32::from(!sample.dropped);
         }
         drained
     }
@@ -10008,6 +10039,13 @@ impl MindWake {
         self.inline
             .rhai_thinks()
             .saturating_add(self.pooled.rhai_thinks())
+    }
+
+    /// The native thinks above the ROM (`Drained::native_minded`).
+    fn native_minded_thinks(&self) -> u32 {
+        self.inline
+            .native_minded
+            .saturating_add(self.pooled.native_minded)
     }
 }
 
@@ -10836,7 +10874,8 @@ struct MindsReport {
     variant: MindsVariant,
     lines: Vec<String>,
     json: std::path::PathBuf,
-    /// The decision's word: the plan's listed asserts, all held.
+    /// The decision's word (taken 2026-10-09: native; a capacity reading
+    /// since): the plan's listed asserts, all held.
     held: bool,
     /// The lane's integrity: no failed batch, no outstanding think at a head,
     /// no refused snapshot, a loaded field, the stat cross-check.
@@ -10847,6 +10886,9 @@ struct MindsReport {
     inline_thinks: u32,
     pooled_thinks: u32,
     rhai_thinks: u32,
+    /// The native thinks above the ROM: a native-sealed slot's (the fill's
+    /// since the fill decision of 2026-10-09).
+    native_minded_thinks: u32,
     budget_p1: u64,
     budget_max: u64,
 }
@@ -11024,6 +11066,7 @@ fn measure_minds_field(
     let ops_total = sum_u64(&MindWake::ops);
     let fees_total = sum_u64(&MindWake::fees);
     let rhai_thinks = sum_u32(&MindWake::rhai_thinks);
+    let native_minded_thinks = sum_u32(&MindWake::native_minded_thinks);
     let timed_thinks = sum_u32(&MindWake::timed_thinks);
     let untimed_thinks = thinks
         .saturating_sub(unrun_thinks)
@@ -11175,8 +11218,9 @@ fn measure_minds_field(
 
     // ---- the verdict ----
     // `held=`: exactly the plan's listed asserts (the M4 row's (ii)); the
-    // decision reads this word. In the smoke run the three timing checks
-    // are printed and not pushed.
+    // decision read this word (taken 2026-10-09: native), and the owner reads
+    // it since as the production fill's capacity. In the smoke run the three
+    // timing checks are printed and not pushed.
     let mut failures: Vec<String> = Vec::new();
     let timing = mode == MindsLaneMode::Weekly;
     let mut check = |held: bool, timed: bool, sentence: String| {
@@ -11214,15 +11258,29 @@ fn measure_minds_field(
             "{faults} thinks faulted and {overflows} overflowed: faults are nought on every variant"
         ),
     );
-    if variant.authored().is_none() {
-        check(
+    // Ops are nought on every NATIVE-sealed variant: the stock variants (every
+    // hull the ROM) and, since the fill decision, the fill (its slots on the
+    // native stock mind). Only the ceiling's load mind thinks in Rhai.
+    match variant.authored() {
+        None => check(
             ops_total == 0 && rhai_thinks == 0,
             false,
             format!(
                 "the stock variant spent {ops_total} ops over {rhai_thinks} Rhai thinks: ops are \
                  nought on the stock variants (every hull the ROM)"
             ),
-        );
+        ),
+        Some(slots) if slots.engine == tacsim::arena::SealEngine::Native => check(
+            ops_total == 0 && rhai_thinks == 0,
+            false,
+            format!(
+                "the {} variant spent {ops_total} ops over {rhai_thinks} Rhai thinks: ops are \
+                 nought on a native-sealed variant (its slots on the native stock mind, the rest \
+                 the ROM)",
+                variant.word()
+            ),
+        ),
+        Some(_) => {}
     }
     check(
         ops_per_window_peak <= pool_per_window,
@@ -11308,9 +11366,17 @@ fn measure_minds_field(
                  thought in Rhai"
             ),
         ),
+        // The fill decision (2026-10-09): the fill variant is native-sealed,
+        // so this arm is the one that proves its Class I slots thought — on
+        // the native mind at their own class, never in Rhai and never only
+        // the ROM — as the scripted arm proves its slots thought in Rhai.
         Some(_) => sound_check(
-            rhai_thinks == 0,
-            format!("rhai_thinks={rhai_thinks} on a native-sealed variant"),
+            rhai_thinks == 0 && native_minded_thinks > 0,
+            format!(
+                "rhai_thinks={rhai_thinks} native_minded_thinks={native_minded_thinks} on a \
+                 native-sealed variant: its slots think on the native mind above the ROM and \
+                 never in Rhai"
+            ),
         ),
         None => {}
     }
@@ -11380,7 +11446,7 @@ fn measure_minds_field(
         minds.workers
     ));
     lines.push(format!(
-        "harness_minds_thinks: variant={word} cohort={cohort} thinks={thinks} inline_thinks={inline_thinks} pooled_thinks={pooled_thinks} unrun_thinks={unrun_thinks} untimed_thinks={untimed_thinks} landings={landings} faults={faults} stat_faulted={stat_faulted} overflows={overflows} dropped={dropped} cond_fires={} think_us_p50={think50} think_us_p99={think99} think_us_max={think_max} rhai_us_p50={rhai50} rhai_us_p99={rhai99} native_us_p50={native50} native_us_p99={native99} view_us_p50={view50} view_us_p99={view99} view_samples={} jittered_wakes={jittered_wakes} jitter_ms={} jitter_per_mille={} (inline_thinks and pooled_thinks are derived per wake from thinks and StepOutput.thinks; landings alone is a counter; an untimed think is a dropped scripted hull's ROM think)",
+        "harness_minds_thinks: variant={word} cohort={cohort} thinks={thinks} inline_thinks={inline_thinks} pooled_thinks={pooled_thinks} unrun_thinks={unrun_thinks} untimed_thinks={untimed_thinks} landings={landings} faults={faults} stat_faulted={stat_faulted} overflows={overflows} dropped={dropped} cond_fires={} think_us_p50={think50} think_us_p99={think99} think_us_max={think_max} rhai_us_p50={rhai50} rhai_us_p99={rhai99} native_us_p50={native50} native_us_p99={native99} native_minded_thinks={native_minded_thinks} view_us_p50={view50} view_us_p99={view99} view_samples={} jittered_wakes={jittered_wakes} jitter_ms={} jitter_per_mille={} (inline_thinks and pooled_thinks are derived per wake from thinks and StepOutput.thinks; landings alone is a counter; an untimed think is a dropped scripted hull's ROM think; native_minded_thinks are the native thinks above the ROM, a native-sealed slot's)",
         motor_total.cond_fires,
         view_us.len(),
         minds.jitter_ms,
@@ -11706,6 +11772,7 @@ fn measure_minds_field(
         inline_thinks,
         pooled_thinks,
         rhai_thinks,
+        native_minded_thinks,
         budget_p1,
         budget_max,
     }
@@ -11718,8 +11785,9 @@ fn measure_minds_field(
 /// naming every variant that did not hold or was not sound. A `stock_ci`
 /// `held=no` on ALIEN18 (the owner's host) was to be the owner's STOP before 17b cut
 /// M4.5 moved the CI lane onto minds — waived by the owner on 2026-10-08; the
-/// verdict stays the owner's to read. The fill variant's `held=` word is the
-/// decision's (`PRODUCTION_FILL_ENGINE`).
+/// verdict stays the owner's to read. The fill variant's `held=` word was
+/// the decision's (`PRODUCTION_FILL_ENGINE`, taken 2026-10-09: native) and is
+/// the production fill's capacity reading since.
 fn measure_minds(
     knobs: &Knobs,
     minds: &MindsKnobs,
@@ -12570,7 +12638,12 @@ fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() 
 /// load mind on heavies at the last two slots a side, the task's policy
 /// through [`run_minds_wakes`] — with every deterministic check asserted
 /// (`held=yes sound=yes`) and the three timing checks printed only
-/// ([`MindsLaneMode::Smoke`]: debug timings mean nothing).
+/// ([`MindsLaneMode::Smoke`]: debug timings mean nothing). Each variant's
+/// authored slots are held to think on the engine they are sealed on: the
+/// ceiling's scripted load mind in Rhai, and the fill's slots on
+/// `PRODUCTION_FILL_ENGINE` — native since the fill decision of 2026-10-09,
+/// so natively above the ROM with no Rhai think (it read the Rhai arm while
+/// the fill was scripted).
 #[test]
 fn m4_2_the_minds_lane_runs_small() {
     let mut knobs = Knobs::from_env();
@@ -12637,10 +12710,25 @@ fn m4_2_the_minds_lane_runs_small() {
             report.inline_thinks,
             report.pooled_thinks
         );
-        assert!(
-            report.rhai_thinks > 0,
-            "{word}: the scripted slots thought in Rhai"
-        );
+        let engine = report
+            .variant
+            .authored()
+            .map(|slots| slots.engine)
+            .expect("both smoke variants field authored slots");
+        match engine {
+            tacsim::arena::SealEngine::Scripted => assert!(
+                report.rhai_thinks > 0,
+                "{word}: the scripted slots thought in Rhai"
+            ),
+            tacsim::arena::SealEngine::Native => assert!(
+                report.rhai_thinks == 0 && report.native_minded_thinks > 0,
+                "{word}: the native slots thought natively above the ROM and never in Rhai \
+                 (rhai={} native_minded={})",
+                report.rhai_thinks,
+                report.native_minded_thinks
+            ),
+            tacsim::arena::SealEngine::Reflex => panic!("{word}: no slot is sealed reflex"),
+        }
         let stem = report
             .json
             .file_stem()

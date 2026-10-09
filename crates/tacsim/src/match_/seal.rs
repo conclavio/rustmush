@@ -34,9 +34,10 @@
 //! the terms' [`SealTerms::rated`] (Standard Doctrine's `STOCK_RATED_CLASS`)
 //! and [`SealTerms::class_cap`] (17b cut M3's ruling, the plan's F4; 17b cut
 //! M4.1 put the rating and the cap on the terms and the think side reads the
-//! seal, `Arena::mind_class`); the engine is the reflex's for a reflex
-//! hull AND a piloted one (what a release hands a piloted hull to today; 17b
-//! cut M4 moves the fill), the native stock mind's for a mind's hull.
+//! seal, `Arena::mind_class`); the engine is the terms'
+//! [`SealTerms::engine_for_minds`] on every hull (17b cut M4.3), which in
+//! production is [`PRODUCTION_FILL_ENGINE`] — the native stock mind since
+//! the fill decision of 2026-10-09.
 
 use crate::arena::card::{CardError, StockCard};
 use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget, condition_is_lawful};
@@ -107,30 +108,62 @@ pub struct SealTerms {
     pub class_cap: CoreClass,
 }
 
-/// **The engine the AI fill is sealed on at 17b cut M4.3's flip** (the M4
-/// row's (ii) and (iii); doc 17 §22's M4): [`SealEngine::Scripted`] — Standard
-/// Doctrine interpreted — is the candidate under test; [`SealEngine::Native`]
-/// is the fast path doc 17 §18 keeps in reserve. Nothing in production reads
-/// it before M4.3 (`seal_for` writes a mind's engine from the terms); the
-/// minds lane's fill variant (`tacsim_harness_arena_minds` in
-/// `crates/tacsim/tests/harness.rs`) seals its thirty-six Class I hulls a
-/// side on it, and THE DECISION IS THAT VARIANT'S VERDICT over three
-/// idle-host weekly runs (`scripts/harness-weekly.sh` on ALIEN18, the
-/// owner's host): `held=yes` three times keeps `Scripted`; any `held=no`
-/// moves this to `Native`, in M4.3's commit, with the three
-/// `harness_minds_verdict: variant=fill_authored` lines in its body and in
-/// 17b §2. A run whose line reads `sound=no` is a lane fault (a failed
-/// batch, a refused snapshot, a cold field), re-run and never counted.
+/// **The engine the AI fill is sealed on — the fill decision, taken
+/// 2026-10-09** (the M4 row's (ii) and (iii); doc 17 §18, §22's M4):
+/// [`SealEngine::Native`], Standard Doctrine on the native stock mind — the
+/// fast path doc 17 §18 kept in reserve, taken. `crate::match_::start` seals
+/// EVERY hull on it (17b cut M4.3), the fill's and a seated pilot's alike,
+/// so a release hands any hull to a native mind too. The Rhai Standard
+/// Doctrine (`crate::minds::STANDARD_RHAI` on [`SealEngine::Scripted`]) was
+/// the candidate under test from 17b cut M4.2 and the production fill's
+/// engine from 17b cut M4.3's flip to this decision; it stays the exact
+/// reference the native mind is held equal to (Gate A and the twin, no
+/// divergence), and a scripted seal still runs it — a fixture's
+/// (`tests/support`'s `Muster::scripted`), or a match checked out before the
+/// decision, which resumes on the runner its seal names.
 ///
-/// DECISION LOG (the committer fills these in before the flip; each line is
-/// the run's `harness_minds_verdict` line's `held=` word with the date, the
-/// HEAD and the host from the report's `verdict` object):
-///   run 1: pending
-///   run 2: pending
-///   run 3: pending
+/// THE RULE (17b cut M4.2): the decision was the verdict of the minds lane's
+/// fill variant (`tacsim_harness_arena_minds` in
+/// `crates/tacsim/tests/harness.rs`, which seals its thirty-six Class I hulls
+/// a side on this constant) over three idle-host weekly runs
+/// (`scripts/harness-weekly.sh` on ALIEN18, the owner's host): `held=yes`
+/// three times keeps `Scripted`; any `held=no` moves this to `Native`, with
+/// the three `harness_minds_verdict: variant=fill_authored` lines in its
+/// commit's body and in 17b §2. A run whose line reads `sound=no` is a lane
+/// fault (a failed batch, a refused snapshot, a cold field), re-run and
+/// never counted. THE OUTCOME: the three counted runs all read `held=no
+/// sound=yes`, so the fill is `Native`. From the decision the fill variant
+/// measures the production fill as it now is — native, no Rhai, ops nought —
+/// against the same lenses; its `held=` word is a capacity reading for the
+/// owner, no longer a decision input.
+///
+/// DECISION LOG (filled at the decision's commit; each line the run's
+/// `harness_minds_verdict` line's `held=` word, then the verdict's own
+/// failure words in full; the date, the HEAD and the host are the owner's
+/// upload's — the tree `f19a88fb` its heading names and each ALIEN18 run's
+/// own heading — rather than a report's `verdict` object):
+///   run 1: `held=no` — 2026-10-09, HEAD f19a88fb, ALIEN18 (windows):
+///          "per-wake p99 17.297 ms is past the 12 ms lens"
+///   run 2: `held=no` — 2026-10-09, HEAD f19a88fb, ALIEN18 (windows):
+///          "per-wake p99 20.750 ms is past the 12 ms lens; per-window p99
+///          20.750 ms over the 48 comparable windows (the lattice's
+///          substeps, inline think time inside Wake.ms) is past the 20 ms
+///          lens of the authored cohort"
+///   run 3: `held=no` — 2026-10-09, HEAD f19a88fb, ALIEN18 (windows):
+///          "per-wake p99 17.817 ms is past the 12 ms lens"
+///   each `sound=yes`; the CPU lens held on all three (p99 6.070, 6.395 and
+///   5.980 ms against computed lenses of 7.995, 10.026 and 9.010 ms)
+///   context, not counted: the VPS conclav.io (linux, the production host),
+///   runs 1-3 the same day, `held=no` on every lens, the CPU lens included
+///   (wake p99 35.341, 37.587 and 38.223 ms; CPU p99 15.455, 15.837 and
+///   16.735 ms against 12.564, 12.690 and 13.326); each host's no-jitter
+///   diagnostic (`TACSIM_MINDS_JITTER_PER_MILLE=0`, never a decision run):
+///   ALIEN18 `held=yes` (wake p99 9.946 ms), the VPS `held=no` (wake p99
+///   19.023 ms, window p99 35.961 ms); `ops_total=1763485` on all eight
+///   lines — the interpreted work is the same on Windows and Linux
 ///   stock_ci precondition waived by the owner, 2026-10-08 (17b cut M4.5);
 ///   the three runs remain the owner's
-pub const PRODUCTION_FILL_ENGINE: SealEngine = SealEngine::Scripted;
+pub const PRODUCTION_FILL_ENGINE: SealEngine = SealEngine::Native;
 
 impl SealTerms {
     /// **The terms every fixture seals under**: match 0, no principal, the
@@ -163,10 +196,14 @@ impl SealTerms {
     /// what `crate::match_::start` seals every hull under at the stock keys
     /// — [`PRODUCTION_FILL_ENGINE`], rated I, capped at the default
     /// `[tacsim.minds].fill_class` — for the pins that field the production
-    /// shape (`tests/support`'s `Muster::fill`). Under a native fill this is
-    /// [`SealTerms::fixture`] byte for byte (`min(I, core, I)` is `min(I,
-    /// core, III)` on every shipped core); under a scripted one it is what
-    /// makes a pin the production shape.
+    /// shape (`tests/support`'s `Muster::fill`). The fill is native since the
+    /// fill decision (2026-10-09), so the SEALS these terms make are
+    /// [`SealTerms::fixture`]'s byte for byte; the terms themselves differ in
+    /// `class_cap` alone (`I` here, `III` there), which seals no byte —
+    /// `min(I, core, I)` is `min(I, core, III)` on every shipped core, and a
+    /// seal records the class, never the cap. Under the scripted fill (17b
+    /// cut M4.3 to the decision) it was what made a pin the production shape,
+    /// and it stays the one name for that shape whatever the constant reads.
     #[must_use]
     pub fn production_fixture() -> SealTerms {
         SealTerms {
@@ -708,9 +745,10 @@ mod m4_tests {
         assert_eq!(seal.fallback.as_deref(), Some(NO_CORE_FALLBACK));
     }
 
-    /// **17b cut M4.2**: the fill's candidate engine is one a mind can be
-    /// sealed on — `native` or `scripted`, never `reflex`, which is kept
-    /// decode-only for the M3 records (the M4 row's finding (6)).
+    /// **17b cut M4.2**: the fill's engine is one a mind can be sealed on —
+    /// `native` or `scripted`, never `reflex`, which is kept decode-only for
+    /// the M3 records (the M4 row's finding (6)). The fill decision
+    /// (2026-10-09) took `native`.
     #[test]
     fn m4_2_the_production_fill_engine_is_native_or_scripted() {
         assert!(matches!(

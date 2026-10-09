@@ -11,7 +11,10 @@
 //! mind, and until 17b cut M4.3 a mind's hull was a lab knob's or a fixture's
 //! (no lobby, check-out or config names this runner in 17b cut M2; from M4.3
 //! `crate::match_::start` seals every hull on `PRODUCTION_FILL_ENGINE` and
-//! the installer gives a scripted seal this runner).
+//! the installer gives a scripted seal this runner — `scripted` from the flip
+//! to the fill decision of 2026-10-09, `native` since, so a production match
+//! checked out since runs none and this runner flies a fixture's scripted
+//! seal, or a match checked out between the flip and the decision, resumed).
 //!
 //! **Synchronous, at the think point.** The sim task calls the runner inside
 //! the think's due event and waits for the answer, as it calls

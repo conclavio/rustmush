@@ -117,8 +117,10 @@ pub struct Muster {
     /// `PRODUCTION_FILL_ENGINE`, rated I, capped at the default
     /// `[tacsim.minds].fill_class` — the terms `tacsim::match_::start` seals
     /// every hull under at the stock keys, so a pin that fields the production
-    /// shape ([`Muster::fill`]) hashes as production does; its runner is
-    /// installed through the production installer like a scripted muster's.
+    /// shape ([`Muster::fill`]) hashes as production does; the production
+    /// installer runs over it as over a scripted muster's, and since the fill
+    /// decision of 2026-10-09 (`PRODUCTION_FILL_ENGINE` is `native`) it
+    /// installs nothing for it: the hull thinks on the native fallback.
     pub production: bool,
 }
 
@@ -162,10 +164,15 @@ impl Muster {
     /// **The production fill** (17b cut M4.3; doc 17 §9, plan finding 5): a
     /// [`Muster::mind`] sealed as `tacsim::match_::start` seals an unseated
     /// hull — Standard Doctrine on `PRODUCTION_FILL_ENGINE` at the default
-    /// `fill_class`, its runner installed by the production installer — so a
-    /// pin that fields it hashes as a production match does. [`Muster::mind`]
-    /// keeps the fixture terms (`Native`, rated I, capped III) so the twin's T1
-    /// and every `.sealed()` mind fixture keep their digests.
+    /// `fill_class`, the production installer run over it — so a pin that
+    /// fields it hashes as a production match does. [`Muster::mind`] keeps the
+    /// fixture terms (`Native`, rated I, capped III) so the twin's T1 and
+    /// every `.sealed()` mind fixture keep their digests. Since the fill
+    /// decision of 2026-10-09 the constant is `Native`, so this hull's seal is
+    /// [`Muster::mind`]'s byte for byte (the cap seals no byte: `min(I, core,
+    /// I)` is `min(I, core, III)` on every shipped core) and the installer
+    /// gives it nothing; it stays the one name for the production shape
+    /// whatever the constant reads.
     #[must_use]
     pub fn fill(team: Team, slot: u8) -> Muster {
         Muster {

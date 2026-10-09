@@ -571,16 +571,19 @@ pub type Callsigns = Vec<(ObjId, Designator)>;
 /// ([`crate::arena::mind::SealRef::digest`]) — `open_match` reads it off the
 /// store — and [`crate::minds::install_sealed_runners`] installs each such
 /// hull's own runner after `Arena::new`, before the arena moves into the task.
-/// Before 17b cut M4 no production seal is scripted: the map is empty and
-/// nothing is installed.
+/// No production seal is scripted since the fill decision of 2026-10-09
+/// (`crate::match_::PRODUCTION_FILL_ENGINE` is `native`), so on a fresh
+/// production check-out the map is empty and nothing is installed (from 17b
+/// cut M4.3's flip to the decision every production seal was scripted).
 ///
 /// # Errors
 ///
 /// [`SpawnError::Arena`]: whatever [`Arena::new`] refuses — a unit off the
 /// window, two units in one cell, a duplicate id, a pilot seated on a unit
 /// that was not handed over; [`SpawnError::Mind`]: a scripted seal whose
-/// source is not in `sources` or does not compile (unreachable before 17b
-/// cut M4).
+/// source is not in `sources` or does not compile (unreachable on a fresh
+/// production check-out: none is scripted since the fill decision, and the
+/// stock source is compiled in).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_arena(
     runtime: &tokio::runtime::Handle,

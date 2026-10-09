@@ -3140,6 +3140,20 @@ fn m1b3_an_order_hint_re_keys_only_to_a_classified_row() {
 /// → `0x65eb_692a_b7a8_a72d`. (The M3.6 re-bless before it: `mind_sealed` and
 /// `sortie_closed` shifting the folded ledger sequence, the mind row's fold
 /// gaining D-UM-23's answer, `dropped` and the seal digest.)
+///
+/// **The fill decision — re-pinned, hashes only** (2026-10-09, declared with
+/// `tests/reflex.rs`' and `tests/motor.rs`' pins of the same fields).
+/// `PRODUCTION_FILL_ENGINE` is `native` (the owner's three ALIEN18 runs all
+/// `held=no`), so [`as_fill`] and [`support::Muster::fill`] seal native,
+/// [`install_standard`] installs nothing and the minds think on the native
+/// stock mind, held equal to the Rhai Standard Doctrine they ran on by Gate
+/// A. Each seal's digest folds its engine, so the three constants move and
+/// nothing else does: the thinks (60), the faults (0) and the four minds
+/// below hold unchanged, and the same fields' tapes (`M1B0_J_LINES`,
+/// `M1B0_DUEL_LINES`) are byte-equal but for their `hash` values. Old → new:
+/// `0x692d_5b0e_3c04_93a6` → `0xc734_ca3c_2cce_2a0c`, `0xd243_f6a1_30c0_00c7`
+/// → `0xbabf_b4c3_71e8_786d`, `0x65eb_692a_b7a8_a72d` →
+/// `0x999b_45cb_390f_4af8`.
 #[test]
 fn m1a5_the_production_hash_does_not_move() {
     let seeing = |mut unit: CustodyUnit| {
@@ -3178,8 +3192,8 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = install_standard(&mut arena);
     let run = run(&mut arena, Drive::Every(1_000), 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
-    assert_eq!(run.hashes.first().copied(), Some(0x692d_5b0e_3c04_93a6));
-    assert_eq!(run.hashes.last().copied(), Some(0xd243_f6a1_30c0_00c7));
+    assert_eq!(run.hashes.first().copied(), Some(0xc734_ca3c_2cce_2a0c));
+    assert_eq!(run.hashes.last().copied(), Some(0xbabf_b4c3_71e8_786d));
     assert_eq!(
         run.counters.thinks, 60,
         "the two minds' thinks over 30 s at Class I's second"
@@ -3209,7 +3223,7 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(
         tacsim::arena::hash::state_hash(&duel),
-        0x65eb_692a_b7a8_a72d,
+        0x999b_45cb_390f_4af8,
         "the shipped duel's hash moved"
     );
     assert_eq!(duel.minds.len(), 4, "four minds");

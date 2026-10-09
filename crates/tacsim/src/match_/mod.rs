@@ -1122,8 +1122,9 @@ pub fn start(
                 principal,
                 card: crate::arena::card::line(&arena_cfg.reflex),
                 odds_floor_permille: floor,
-                // 17b cut M4.3: the fill's engine — M4.2's decision — on
-                // EVERY hull, so a released seat's mind runs on it too.
+                // 17b cut M4.3: the fill's engine — the fill decision,
+                // `native` since 2026-10-09 — on EVERY hull, so a released
+                // seat's mind runs on it too.
                 engine_for_minds: PRODUCTION_FILL_ENGINE,
                 // 17b cut M4.1: Standard Doctrine's rating; 17b cut M4.3:
                 // capped at `[tacsim.minds].fill_class`, every hull.

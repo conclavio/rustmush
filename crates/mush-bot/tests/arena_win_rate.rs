@@ -104,9 +104,11 @@
 //! `the_bot_against_a_conditioned_t1_over_thirty_pooled_matches`, also
 //! `#[ignore]` and report-only, flies fifteen matches as red and fifteen as
 //! blue, posed and capped as above, each against one fill hull flown by
-//! Standard Doctrine on Line — the shipped fill, a conditioned T1 since 17b
-//! cut M4.3 (the lab knob `fill_controller` and the rig's
-//! `arena_config_with_fill` are gone with it) — and prints
+//! Standard Doctrine on Line — the shipped fill: a conditioned T1, the native
+//! stock mind, since the fill decision of 2026-10-09; Standard Doctrine in
+//! Rhai, held equal to it, from 17b cut M4.3 to then (the lab knob
+//! `fill_controller` and the rig's `arena_config_with_fill` are gone since
+//! M4.3) — and prints
 //! one line a match, then `MIND RATE: {w} of {n} for the bot against a
 //! conditioned T1 (red …, blue …, draws …, timeouts …)` and `MIND RATE
 //! INTERVAL: {w} of {n}, 95 per cent Wilson {lo} to {hi} per cent`.
