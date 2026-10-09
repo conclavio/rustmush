@@ -40,9 +40,10 @@
 //! time — for `TACSIM_ARENA_S` arena seconds (default 30) after the warm-up, plus
 //! a seeded stand-in for the timer's overshoot, `TACSIM_WAKE_JITTER_MS` (default
 //! 0). Every wake is also folded into 500 ms windows of arena time, and the lens
-//! binds both: 12 ms per wake on both cohorts, and per window 12 ms on the CI
-//! cohort and 20 ms on the authored one (17.5 ms at 16b cut J.3b, 20 since J.3c
-//! on the owner's word). Two runs: `tacsim_harness_arena_step` at the CI reach (sight
+//! binds both: 20 ms per wake on both cohorts, and per window 22 ms on the CI
+//! cohort and 32 ms on the authored one — the production VPS's figures since 16c
+//! `T-109` (below); 12, 12 and 20 on ALIEN18 before it (17.5 ms at 16b cut
+//! J.3b, 20 since J.3c on the owner's word). Two runs: `tacsim_harness_arena_step` at the CI reach (sight
 //! scaled 60 to `TACSIM_SENSOR_CELLS`, 24; mesh 30 to `TACSIM_SHARE_CELLS`, 8),
 //! and `tacsim_harness_arena_authored_reach` at the reaches as authored; both
 //! asserted under `TACSIM_ASSERT` since 16b cut J.3b, the authored one at its own
@@ -148,6 +149,23 @@
 //! [`the_lens_is_the_cohorts_own`] holds of the record only that the lens is
 //! above it (its exact pins and the ceiling check stand).
 //!
+//! **The lenses follow the production host since 16c `T-109`** (the owner,
+//! 2026-10-09: *scale the wake and window limits to the VPS, since that's where
+//! the game will run*; the figures confirmed the same day). Every figure above
+//! was measured on the owner's desktop, ALIEN18, and the conclav.io VPS that
+//! serves the game (4 vCPU AMD EPYC 7543P) is 1.75 to 2 times slower a core;
+//! with `T-87` paid it read the authored wake p99 at 12.8 to 22.6 ms and the
+//! window at 24.6 to 27.3, the CI wake at 8.8 to 10.0 and the window at 15.9 to
+//! 18.9. The lenses moved to the per-wake 20 ms ([`ARENA_S_P99_MS`], the
+//! owner's figure, still half the ceiling), the CI window 22
+//! ([`ARENA_CI_WINDOW_P99_MS`], split from the per-wake lens it shared) and the
+//! authored window 32 ([`ARENA_AUTHORED_WINDOW_P99_MS`]) — each window the
+//! harness's 16 per cent over the VPS's worst ordinary run — and
+//! `harness.engaged_p99_ms` to 40 so the authored window stays a boundary under
+//! it; [`the_lens_is_the_cohorts_own`] pins all four. The committed
+//! `arena.linux.json` is blessed on the VPS under its own host name, so the
+//! delta's timing gate is live on the production host and dormant elsewhere.
+//!
 //! **The lance lane since 16b cut Z.1** (16c N6, *lances*). One more ignored
 //! lane, `tacsim_harness_lance`: `TACSIM_LANCE_UNITS` (24) units of the fielded
 //! catalog, twelve a side on the **shipped proving ground** at the authored
@@ -166,7 +184,8 @@
 //! the span one fewer, no end inside the window, both sides' first squads
 //! released; off the defaults the fight decides those two figures); its timing
 //! is **report-only**, printed beside the
-//! authored lane's 12 ms per wake and 20 ms per window. Its JSON
+//! authored lane's per-wake and per-window lenses (20 and 32 ms since 16c
+//! `T-109`, 12 and 20 before). Its JSON
 //! (`<stem>-lance.<ext>`) is outside the delta. `z1_the_lance_lane_runs_small`,
 //! un-ignored, runs it at one lance a side for fourteen arena seconds (ten
 //! until 17b cut M4.5: the ROM closes before it fires) with the
@@ -202,7 +221,8 @@
 //! `harness_minds_{pool,thinks,ops,cpu,verdict}` beside the arena lane's
 //! reprinted, and every check collected into one `harness_minds_verdict`
 //! line a variant: `held=` over exactly the plan's listed asserts (wake p99
-//! 12 ms, window p99 the cohort's lens counting inline time, faults nought on
+//! the per-wake lens — 20 ms since 16c `T-109`, 12 before — window p99 the
+//! cohort's lens counting inline time, faults nought on
 //! every variant, ops nought on the stock variants, ops per window and per
 //! substep within the pool, the load mind's ops p1 at least 4,300, the
 //! computed CPU lens — the pool's ops per window over the host's measured
@@ -2759,8 +2779,9 @@ fn tacsim_harness_arena_step() {
 /// second run): [`measure_arena`] at [`Reach::Authored`], JSON at
 /// `<stem>-arena-authored.<ext>`. Since 16b cut J.3b (16c Q26, the owner's
 /// answer) it asserts under `TACSIM_ASSERT` like the CI lane: per wake at the
-/// 12 ms lens ([`ARENA_S_P99_MS`]), per 500 ms window at 20 ms
-/// ([`ARENA_AUTHORED_WINDOW_P99_MS`], 17.5 at J.3b), and the same per-pulse bounds of
+/// 20 ms lens ([`ARENA_S_P99_MS`]; 12 before 16c `T-109`), per 500 ms window at
+/// 32 ms ([`ARENA_AUTHORED_WINDOW_P99_MS`]; 17.5 at J.3b, 20 from J.3c to
+/// `T-109`), and the same per-pulse bounds of
 /// `[tacsim.harness]`. The delta does not read its report.
 #[test]
 #[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
@@ -3614,9 +3635,10 @@ fn machine_states_json(states: &[(&'static str, u32); MACHINE_STATE_LEAVES]) -> 
 /// the report.
 ///
 /// Every measured wake is also folded into [`WINDOW_MS`] windows of arena time
-/// ([`windows`]) and the lens binds both — 12 ms per wake, and per window the
-/// cohort's own ([`window_lens_ms`], 12 ms on the CI cohort and 20 ms on the
-/// authored since 16b cut J.3c, 17.5 at J.3b): a wake is at most one substep,
+/// ([`windows`]) and the lens binds both — 20 ms per wake, and per window the
+/// cohort's own ([`window_lens_ms`], 22 ms on the CI cohort and 32 ms on the
+/// authored since 16c `T-109`; 12, 12 and 20 on ALIEN18 before it, 17.5 at
+/// J.3b): a wake is at most one substep,
 /// a smaller unit than the 500 ms pulse the lens was calibrated on.
 ///
 /// **16b cut U.2** (16c `T-36`, `T-29`) added the two per-pulse bounds the
@@ -4467,8 +4489,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             knobs.engaged_p99_ms
         );
         // **The lens, per wake and per window** (see [`ARENA_S_P99_MS`]): per wake
-        // the 12 ms lens on both cohorts, per window the cohort's own
-        // (`window_lens_ms`; 16b cut J.3b).
+        // the per-wake lens on both cohorts, per window the cohort's own
+        // (`window_lens_ms`; 16b cut J.3b; the VPS's figures since 16c T-109).
         assert!(
             p99 <= ARENA_S_P99_MS,
             "per-wake p99 {p99:.3} ms is past the {ARENA_S_P99_MS} ms lens"
@@ -5742,14 +5764,22 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
 /// below the runs; the check is gone and the record is the worst asserted run
 /// that passed, 18.022 (cut AF's sweep). Twenty holds it by 11 per cent; the
 /// spread the lane shows on this host is what a review reads here.
-const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 18.022;
+///
+/// **16c `T-109` re-based it on the production host, 24.534** (2026-10-09):
+/// the record is the VPS's now that the lenses are, and the first asserted
+/// weekly run there under the 32 ms lens read the authored window p99 at
+/// 24.534 ms (wake p99 12.970 under the 20 ms per-wake lens) and passed.
+/// Thirty-two holds it by 30 per cent; ALIEN18's runs above are history.
+const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 24.534;
 
 /// **The lens is the cohort's own** (16b cut J.3b, moved by J.3c; 16c Q26): the
-/// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before, the
+/// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before (to its
+/// own [`ARENA_CI_WINDOW_P99_MS`] since 16c `T-109`), the
 /// authored cohort to [`ARENA_AUTHORED_WINDOW_P99_MS`], which is the looser of
-/// the two; the authored lens is the owner's figure, 20 ms, stays ABOVE the worst
-/// asserted run on record ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]) and under
-/// the 25 ms `engaged_p99_ms` ceiling doc 16 sets for the finished arena — the
+/// the two; the authored lens is the owner's figure, 20 ms (32 since 16c
+/// `T-109`), stays ABOVE the worst asserted run on record
+/// ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]) and under the 25 ms (40 since
+/// `T-109`) `engaged_p99_ms` ceiling doc 16 sets for the finished arena — the
 /// check that keeps it a boundary, as the owner asked. It pins that the lens is
 /// never quietly moved off the owner's figure, never sits at or under a run it
 /// has already read, never reaches the ceiling, and never loosens the CI
@@ -5759,25 +5789,40 @@ const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 18.022;
 /// 20 ms lens the ratio could hold only by freezing the record below the runs,
 /// so the spread is reported in the constant's doc and never asserted; headroom
 /// is the owner's call at a review, on the figures.
+///
+/// **16c `T-109`** (the owner, 2026-10-09) moved all four figures to the
+/// production host, the conclav.io VPS: per wake 20 ms, the CI window 22 (its
+/// own constant now, split from the per-wake lens), the authored window 32,
+/// and the `engaged_p99_ms` ceiling 40. The checks are the same checks.
 #[test]
 fn the_lens_is_the_cohorts_own() {
     let ci = window_lens_ms(Reach::Ci);
     let authored = window_lens_ms(Reach::Authored);
     assert_eq!(
-        ci, ARENA_S_P99_MS,
-        "the CI cohort's window lens is the lens"
+        ARENA_S_P99_MS, 20.0,
+        "the per-wake lens is the owner's 20 ms of 2026-10-09 (16c T-109); only the owner moves it"
     );
     assert_eq!(
-        ci, 12.0,
-        "the CI cohort's window lens is 12 ms (16b cut S.1); tightening it is a review's call"
+        ci, ARENA_CI_WINDOW_P99_MS,
+        "the CI cohort's window lens is its own constant"
+    );
+    assert_eq!(
+        ci, 22.0,
+        "the CI cohort's window lens is the owner's 22 ms of 2026-10-09 (16c T-109); only the \
+         owner moves it"
+    );
+    assert!(
+        ci >= ARENA_S_P99_MS,
+        "a window carries two wakes: its lens {ci} ms is not under the per-wake {ARENA_S_P99_MS}"
     );
     assert_eq!(
         authored, ARENA_AUTHORED_WINDOW_P99_MS,
         "the authored cohort's window lens is its own constant"
     );
     assert_eq!(
-        authored, 20.0,
-        "the authored lens is the owner's figure of 2026-09-25 (16c Q26); only the owner moves it"
+        authored, 32.0,
+        "the authored lens is the owner's figure of 2026-10-09 (16c T-109, after Q26's 20 of \
+         2026-09-25); only the owner moves it"
     );
     assert!(
         authored > ci,
@@ -5789,10 +5834,19 @@ fn the_lens_is_the_cohorts_own() {
          {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms: the owner's to move (16b cut J.3d)"
     );
     let ceiling = f64::from(tacsim::config::HarnessConfig::default().engaged_p99_ms);
+    assert_eq!(
+        ceiling, 40.0,
+        "doc 16's engaged_p99_ms ceiling is 40 ms since the owner's T-109 of 2026-10-09"
+    );
     assert!(
         authored < ceiling,
         "the authored lens {authored} ms reaches doc 16's {ceiling} ms engaged_p99_ms ceiling: no \
          longer a boundary"
+    );
+    assert!(
+        ARENA_S_P99_MS * 2.0 <= ceiling,
+        "the per-wake lens {ARENA_S_P99_MS} ms is over half the {ceiling} ms ceiling (16b cut S.1's \
+         rule, kept by T-109)"
     );
 }
 
@@ -6009,7 +6063,26 @@ const ARENA_P99_MS: f64 = 5.0;
 /// report as the record of what the arena cost before the passes ran. Since 16b
 /// cut J.3b the authored cohort asserts too, against
 /// [`ARENA_AUTHORED_WINDOW_P99_MS`] per window and this constant per wake.
-const ARENA_S_P99_MS: f64 = 12.0;
+///
+/// **20 ms since 16c `T-109`** (the owner, 2026-10-09: *scale the wake and
+/// window limits to the VPS, since that's where the game will run*; the
+/// figures confirmed the same day). Twelve was a measurement on the owner's
+/// desktop (ALIEN18), never a budget derived from the pulse, and the
+/// conclav.io VPS that serves the game is 1.75 to 2 times slower a core: with
+/// `T-87` paid it reads authored wake p99 12.8 to 22.6 ms (median 13.8) and CI
+/// 8.8 to 10.0. Twenty is the owner's figure and is still half the
+/// `harness.engaged_p99_ms` ceiling, which moved with it to 40. The CI
+/// cohort's window no longer rides on this constant: it is
+/// [`ARENA_CI_WINDOW_P99_MS`].
+const ARENA_S_P99_MS: f64 = 20.0;
+
+/// **The CI cohort's per-window lens** (16c `T-109`, the owner's figures of
+/// 2026-10-09): 22 ms per 500 ms window of arena time, split from the per-wake
+/// [`ARENA_S_P99_MS`] it shared since 16b cut S.1 — a window carries two wakes,
+/// and the conclav.io VPS reads the CI window p99 at 15.9 to 18.9 ms with
+/// `T-87` paid, so 22 is the harness's 16 per cent spread over the worst
+/// ordinary run (18.9 × 1.16 = 21.9) where 20 would have held it by six.
+const ARENA_CI_WINDOW_P99_MS: f64 = 22.0;
 
 /// **The authored cohort's per-window lens** (16b cut J.3b, moved by J.3c; 16c
 /// Q26, answered by the owner on 2026-09-25): 20 ms per 500 ms window of arena
@@ -6036,13 +6109,23 @@ const ARENA_S_P99_MS: f64 = 12.0;
 /// window stays on [`ARENA_S_P99_MS`]: this constant loosens nothing there, and
 /// the CI report's `thresholds.window_p99_ms` stays 12.0, so the committed
 /// baseline does not move with it.
-const ARENA_AUTHORED_WINDOW_P99_MS: f64 = 20.0;
+///
+/// **32 ms since 16c `T-109`** (the owner, 2026-10-09: the lenses follow the
+/// production host; the figures confirmed the same day). The conclav.io VPS
+/// reads the authored window p99 at 24.6 to 27.3 ms with `T-87` paid (one run
+/// of eight 43.0, the host's spread), so 32 is the harness's 16 per cent over
+/// the worst ordinary run (27.3 × 1.16 = 31.7), and it stays under the
+/// `harness.engaged_p99_ms` ceiling, moved to 40 for that, as Q26's answer
+/// requires. The CI cohort's window is now [`ARENA_CI_WINDOW_P99_MS`], and the
+/// CI report's `thresholds.window_p99_ms` reads 22.0.
+const ARENA_AUTHORED_WINDOW_P99_MS: f64 = 32.0;
 
 /// **The per-window lens a cohort is held to** (16b cut J.3b): the CI cohort
-/// [`ARENA_S_P99_MS`], the authored cohort [`ARENA_AUTHORED_WINDOW_P99_MS`].
+/// [`ARENA_CI_WINDOW_P99_MS`] (16c `T-109`; [`ARENA_S_P99_MS`] before it), the
+/// authored cohort [`ARENA_AUTHORED_WINDOW_P99_MS`].
 const fn window_lens_ms(reach: Reach) -> f64 {
     match reach {
-        Reach::Ci => ARENA_S_P99_MS,
+        Reach::Ci => ARENA_CI_WINDOW_P99_MS,
         Reach::Authored => ARENA_AUTHORED_WINDOW_P99_MS,
     }
 }
@@ -7205,8 +7288,9 @@ async fn measure_fan_out(knobs: &Knobs) {
 // defaults a lance may be wiped out, reach its crossroads or take a mark a
 // wake late, so the fight decides those figures and only the bounds bind them.
 // **Timing is report-only** (the lead's rule
-// for this cohort): the per-wake p99 is printed beside 12 ms and the per-window
-// p99 beside 20 ms, the authored lane's lenses, and nothing is asserted about
+// for this cohort): the per-wake p99 is printed beside the per-wake lens and
+// the per-window p99 beside the authored window lens (20 and 32 ms since 16c
+// T-109, 12 and 20 before), and nothing is asserted about
 // either. Its JSON (`<stem>-lance.<ext>`) is not read by the delta.
 
 /// `TACSIM_LANCE_UNITS`' default: twelve a side.

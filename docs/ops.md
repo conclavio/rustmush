@@ -1265,9 +1265,11 @@ object is `motor` (no `ticks`, no `traces`) and its state histogram is
 **What asserts where.**
 
 - **The script** exports `TACSIM_ASSERT=1`, so every lane asserts its absolutes
-  (the 12 ms lens per wake on both cohorts and per window on the CI cohort, the
-  20 ms per-window lens on the authored cohort (16b cut J.3c on the owner's word,
-  17.5 at J.3b; 16c Q26), the per-pulse bounds of `[tacsim.harness]` (share
+  (since 16c `T-109` the production VPS's lenses: 20 ms per wake on both
+  cohorts, 22 ms per window on the CI cohort and 32 ms per window on the
+  authored cohort, under the 40 ms `engaged_p99_ms` ceiling — ALIEN18's 12, 12,
+  20 and 25 before it; 16b cut J.3c on the owner's word, 17.5 at J.3b; 16c
+  Q26), the per-pulse bounds of `[tacsim.harness]` (share
   operations 768 since 16b cut J.3b), the memory growth, the frame bytes, and
   (16b cut AF.2) the largest arena snapshot the 30-second lane took against
   `max_snapshot_bytes`, printed with its encode and decode times on
@@ -1333,8 +1335,9 @@ for every machine its first squad stood, and the opening round plus one full
 minute a side on the tape. Off them a lance can be wiped out, reach its
 crossroads or take a mark a wake late, and the fight decides those figures.
 Its timing is **report-only**: the
-per-wake p99 is printed beside 12 ms and the per-window p99 beside 20 ms, the
-authored lane's lenses, and nothing is asserted about either. It writes
+per-wake p99 is printed beside the per-wake lens and the per-window p99 beside
+the authored window lens (20 and 32 ms since 16c `T-109`), and nothing is
+asserted about either. It writes
 `harness-lance.json`, which the delta does not read.
 
 **The minds lane** (`tacsim_harness_arena_minds`, 17b cut M4.2; doc 17 §18 and
@@ -1353,8 +1356,9 @@ before a due snapshot's encode), with a seeded quarter of its wakes one substep
 late (`TACSIM_MINDS_JITTER_MS` 250 on `TACSIM_MINDS_JITTER_PER_MILLE` 250) so
 the inline path is measured, every think's ops, fees and microseconds recorded.
 It prints `harness_minds_{pool,thinks,ops,cpu,window,verdict}` per variant.
-**`held=`** on the verdict line is exactly the plan's asserts — wake p99 12 ms,
-window p99 the cohort's lens (12 ms CI, 20 ms authored) counting inline think
+**`held=`** on the verdict line is exactly the plan's asserts — wake p99 the
+per-wake lens (20 ms since 16c `T-109`, 12 before), window p99 the cohort's lens
+(22 ms CI, 32 ms authored since `T-109`; 12 and 20 before) counting inline think
 time over the comparable windows (the ones carrying exactly the lattice's two
 substeps: a late wake due mid-window moves a substep into the next window, so a
 jittered run also has one- and three-substep windows, printed beside and never
@@ -1414,11 +1418,23 @@ carry the same deterministic block, and an ordinary test
 
 Since 17b cut M4.5 the committed baseline is the **Linux** one
 (`arena.linux.json`, by the owner's ruling of 2026-10-08), blessed that way
-under the host name `ccr-m4.5-linux-bless`, so its timing gate is dormant
-everywhere until the owner re-blesses on ALIEN18 (the owner's host). The stale
-Windows file was removed in the same commit, so on the owner's Windows box the
-delta says `no baseline for windows` and passes until that bless, which adds an
-agreeing `arena.windows.json`.
+under the host name `ccr-m4.5-linux-bless`, so its timing gate was dormant
+everywhere. The stale Windows file was removed in the same commit, so on the
+owner's Windows box the delta says `no baseline for windows` and passes.
+
+**The production VPS is the blessing host since 16c `T-109`** (the owner,
+2026-10-09: the lenses follow the host the game runs on). The lenses are the
+conclav.io VPS's figures, and `arena.linux.json` is blessed **on the VPS under
+its own host name** (`srv1930616`, read from `/etc/hostname`; no `HOSTNAME`
+override), so the delta's 20-per-cent timing gate is live there and dormant
+on every other host, ALIEN18 and the cloud containers included. Bless there by
+the script when every lane holds under `TACSIM_ASSERT`, else by procedure β
+above with `HOSTNAME` left unset; run it with dev1's centre idle (the warning
+below). A cloud session that has to re-bless after moving the deterministic
+block blesses by β under a name no run carries, as M4.5 did, which leaves the
+gate dormant until the next bless on the VPS. The CPU count is part of the
+host: moving the VPS to the 8-vCPU plan leaves the gate dormant until the
+next bless there.
 
 **A timing-only failure is re-run once before it is believed.** Two runs of one
 tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A

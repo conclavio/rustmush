@@ -1,10 +1,10 @@
 {
   "blessed": {
-    "commit": "5345760533fd9b661bdcee324bf2da656e94512b",
-    "date": "2026-10-09T17:52:33Z",
+    "commit": "162c6c92f18bcd7fe0621e5490309ca878470475",
+    "date": "2026-10-09T21:11:10Z",
     "host": {
       "cpus": 4,
-      "hostname": "ccr-m4.5-linux-bless",
+      "hostname": "srv1930616",
       "os": "linux"
     }
   },
@@ -66,10 +66,10 @@
   },
   "memory": {
     "horizon_bytes": 26112,
-    "rss_end_kib": 103024,
-    "rss_start_kib": 68848,
-    "vmrss_end_kib": 103024,
-    "vmrss_start_kib": 68848
+    "rss_end_kib": 101840,
+    "rss_start_kib": 53704,
+    "vmrss_end_kib": 101840,
+    "vmrss_start_kib": 53704
   },
   "minds": {
     "ceiling_authored": {
@@ -373,15 +373,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 10.574,
-    "boot": 69.855,
-    "generate": 9.156,
+    "arena_open": 5.757,
+    "boot": 48.119,
+    "generate": 6.176,
     "killed_warming": 0,
-    "pack_apply": 39.388,
-    "terrain_convert": 3.26,
+    "pack_apply": 33.327,
+    "terrain_convert": 2.026,
     "warm_pulses": 47,
-    "warm_up": 256.452,
-    "window_open": 28.408
+    "warm_up": 202.049,
+    "window_open": 21.725
   },
   "slope": {
     "refusals": 239,
@@ -401,16 +401,16 @@
     "bytes_max": 4832682,
     "bytes_mean": 4773040,
     "count": 7,
-    "decode_ms_max": 81.11,
+    "decode_ms_max": 55.751,
     "encode_ms": {
-      "max": 72.304,
-      "p50": 47.3,
-      "p99": 48.72
+      "max": 25.793,
+      "p50": 23.403,
+      "p99": 25.481
     },
     "every_ms": 5000,
     "hash_ok": true,
     "max_snapshot_bytes": 7340032,
-    "wake_plus_encode_ms_max": 83.926
+    "wake_plus_encode_ms_max": 34.085
   },
   "substeps": {
     "per_wake_max": 1,
@@ -420,11 +420,11 @@
   },
   "tempos": [
     {
-      "max_ms": 16.281,
+      "max_ms": 9.633,
       "name": "arena_engaged",
-      "p50_ms": 7.946,
-      "p95_ms": 10.747,
-      "p99_ms": 12.529,
+      "p50_ms": 6.071,
+      "p95_ms": 8.604,
+      "p99_ms": 9.069,
       "period_ms": 500,
       "pulses": 120
     }
@@ -432,8 +432,8 @@
   "thresholds": {
     "assert": false,
     "cut_a_p99_ms": 5.0,
-    "cut_s_p99_ms": 12.0,
-    "engaged_p99_ms": 25,
+    "cut_s_p99_ms": 20.0,
+    "engaged_p99_ms": 40,
     "lens": "report-only",
     "max_cell_probes_per_pulse": 32000,
     "max_jam_checks_per_pulse": 2048,
@@ -442,7 +442,7 @@
     "max_path_queries_per_pulse": 64,
     "max_share_ops_per_pulse": 768,
     "max_traces_per_pulse": 4000,
-    "window_p99_ms": 12.0
+    "window_p99_ms": 22.0
   },
   "weapons": {
     "armed_units": 282,
@@ -466,10 +466,10 @@
     "cell_probes_peak": 4974,
     "horizon_probes_peak": 4951,
     "jam_checks_peak": 650,
-    "ms_max": 24.469,
-    "ms_p50": 15.498,
-    "ms_p95": 22.121,
-    "ms_p99": 23.391,
+    "ms_max": 17.675,
+    "ms_p50": 12.295,
+    "ms_p95": 16.805,
+    "ms_p99": 17.342,
     "share_ops_peak": 104,
     "traces_peak": 966,
     "window_ms": 500,

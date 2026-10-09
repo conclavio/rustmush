@@ -1088,7 +1088,8 @@ pub struct HarnessConfig {
     pub units: u32,
     /// How many of those are fighting.
     pub fighting: u32,
-    /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo.
+    /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo (40 since
+    /// 16c `T-109`: the owner's figures follow the production VPS; 25 before).
     pub engaged_p99_ms: u32,
     /// The most line-of-sight traces one pulse may make.
     pub max_traces_per_pulse: u32,
@@ -1197,7 +1198,7 @@ impl Default for HarnessConfig {
         HarnessConfig {
             units: 300,
             fighting: 24,
-            engaged_p99_ms: 25,
+            engaged_p99_ms: 40,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,
             // 16b cut J.3b (16c Q26): the authored lane's 452 peak, three halves

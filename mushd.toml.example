@@ -381,7 +381,7 @@ paths = []                         # resolution-table files, or directories sear
 # weapons key (16b cut U.3): the harness fields the catalog armed as authored.
 units = 300                        # units the harness places and moves
 fighting = 24                      # how many of those are fighting
-engaged_p99_ms = 25                # the per-pulse p99 ceiling, ms, in Engaged tempo
+engaged_p99_ms = 40                # the per-pulse p99 ceiling, ms, in Engaged tempo (16c T-109: 25 before the lenses followed the production VPS)
 max_traces_per_pulse = 4000        # line-of-sight traces one pulse may make (perception has no cross-observer cache)
 max_path_queries_per_pulse = 64    # path queries one pulse may make
 max_path_cells_per_pulse = 48128   # (16b cut AI.1) A* cells one wake's path searches may expand, found or failed; a threshold, never a throttle; sized on the four-seed measurement with the harness's 16 per cent spread
