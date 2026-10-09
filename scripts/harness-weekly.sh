@@ -65,7 +65,10 @@
 #     lance still reads the enemy) and holds under TACSIM_ASSERT;
 #   * the minds lane (17b cut M4.2) collects every check into one
 #     harness_minds_verdict line per variant and panics ONCE at the end: `held=`
-#     is exactly the plan's listed asserts (wake p99 the per-wake lens, window p99 the
+#     is exactly the plan's listed asserts (wake p99 the per-wake lens over the
+#     unjittered wakes since 16c T-108 (a jittered wake steps two substeps; its
+#     p99 is printed beside as wake_p99_other_ms; a run with no unjittered
+#     wake does not hold), window p99 the
 #     cohort's lens counting inline think time, faults nought on every variant,
 #     ops nought on the stock variants, ops per window and per substep within
 #     the pool, the load mind's ops p1 at least 4,300, the computed CPU lens),

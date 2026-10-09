@@ -1355,9 +1355,18 @@ think pool of `[tacsim.minds].workers` threads on the arena task's own policy
 before a due snapshot's encode), with a seeded quarter of its wakes one substep
 late (`TACSIM_MINDS_JITTER_MS` 250 on `TACSIM_MINDS_JITTER_PER_MILLE` 250) so
 the inline path is measured, every think's ops, fees and microseconds recorded.
-It prints `harness_minds_{pool,thinks,ops,cpu,window,verdict}` per variant.
-**`held=`** on the verdict line is exactly the plan's asserts — wake p99 the
-per-wake lens (20 ms since 16c `T-109`, 12 before), window p99 the cohort's lens
+It prints `harness_minds_{pool,thinks,ops,cpu,engaged,window,verdict}` per
+variant. **`held=`** on the verdict line is exactly the plan's asserts — wake
+p99 the per-wake lens (20 ms since 16c `T-109`, 12 before) over the
+**unjittered** wakes since 16c `T-108` (`wake_p99_ms`, `wake_unjittered=`; a
+jittered wake is one substep late and steps two, its first lattice point's
+thinks settled inline inside it, so until `T-108` the jittered quarter owned
+the p99 and even the all-native `stock_authored` missed; the jittered wakes'
+p99 is printed beside as `wake_p99_other_ms` and `wake_jittered=`, every
+wake's on `harness_minds_engaged`, and never asserted; a run with no
+unjittered wake does not hold, the lens not measured; at
+`TACSIM_MINDS_JITTER_PER_MILLE=0` the figure is every wake's), window p99 the
+cohort's lens
 (22 ms CI, 32 ms authored since `T-109`; 12 and 20 before) counting inline think
 time over the comparable windows (the ones carrying exactly the lattice's two
 substeps: a late wake due mid-window moves a substep into the next window, so a
