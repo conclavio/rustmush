@@ -105,7 +105,9 @@ use crate::arena::conditions::{
 use crate::arena::intents::{IntentKind, IntentSource};
 use crate::arena::ledger::EventKind;
 use crate::arena::motor::MotorCounters;
-use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, FrameOrder, Receiver};
+use crate::arena::perception::{
+    Aspect, FrameCondition, FrameNotice, FrameOrder, MindObjective, Receiver,
+};
 use crate::arena::reflex::Landed;
 use crate::arena::state::{
     Arena, ArenaDefinition, Channel, Classification, ContactId, Controller, Designator, DueKind,
@@ -157,10 +159,14 @@ pub const MIND_STRIKES_TO_DROP: u8 = 3;
 pub const OVERFLOW_CAUSE: &str = "intents";
 
 /// **How many contacts a view carries** (doc 17 §3; D-UM-35's class I
-/// `contact_rows`): the nearest twelve by the held range, then by
-/// [`ContactId`]. **The Class I row of `ClassTable::STOCK`; production reads
-/// the profile, the tests' arithmetic keeps the constant** (17b cut M3.1:
-/// [`Arena::mind_view`] truncates at the mind's own `rows`).
+/// `contact_rows`): twelve — the hull's lock and its order's contact
+/// seated, then every contact not known friendly, then the friendly ones,
+/// each group nearest-first by the held range then by [`ContactId`] — read
+/// nearest-first (17b cut M4.5c; doc 17 §3 as amended 2026-10-09 by the
+/// owner's two rulings; until then the nearest twelve). **The Class I row of
+/// `ClassTable::STOCK`; production reads the profile, the tests' arithmetic
+/// keeps the constant** (17b cut M3.1: [`Arena::mind_view`] truncates at the
+/// mind's own `rows`).
 pub const STOCK_CONTACT_ROWS: usize = 12;
 
 /// **The think in flight and its answer** (D-UM-23 as amended 2026-10-04):
@@ -1240,7 +1246,12 @@ pub struct MindView {
     pub t_ms: i64,
     /// The notice buffer, drained into this view (`notices`).
     pub notices: Vec<FrameNotice>,
-    /// The nearest [`STOCK_CONTACT_ROWS`] contacts (`contacts`).
+    /// The class's `rows` of the held contacts (`contacts`;
+    /// [`STOCK_CONTACT_ROWS`] at Class I), read nearest-first by the held
+    /// range then by [`ContactId`] — cut keeping the hull's lock and its
+    /// order's contact first (the seat), then every contact not known
+    /// friendly, then the friendly ones (17b cut M4.5c; doc 17 §3 as amended
+    /// 2026-10-09 by the owner's two rulings, [`Arena::mind_view`]).
     pub contacts: Vec<ViewContact>,
     /// **The section-word tables `ViewContact.condition.table` indexes**
     /// (`scan_tables`), the keyframe's own: a per-view index, rebuilt per frame
@@ -1491,10 +1502,39 @@ impl Arena {
     /// which leaves the pilots' notices where they are — and projected through
     /// [`crate::arena::view::frame_contacts_held`] against the mind's own range
     /// memory, which it then settles ([`crate::arena::view::settle_ranges`]):
-    /// the rows nearest-first by the held `range_m` then by [`ContactId`],
-    /// the first `rows` of them. It **drains** the mind's notice buffer into
-    /// the view. Two writes, both hashed state, which is why it takes
+    /// the rows read nearest-first by the held `range_m` then by
+    /// [`ContactId`], `rows` of them. It **drains** the mind's notice buffer
+    /// into the view. Two writes, both hashed state, which is why it takes
     /// `&mut self` and why only the think arm calls it in a match.
+    ///
+    /// **The cut** (17b cut M4.5c; doc 17 §3 as amended 2026-10-09, the
+    /// owner's ruling on STOP L, and as amended 2026-10-09 again, the owner's
+    /// second ruling): first **the seat** — the held contacts the hull's own
+    /// state names, its lock ([`crate::arena::view::frame_lock`]) and its
+    /// standing order's contact (the view's own `order`, `frame.order`:
+    /// `Support { of }`'s charge or `Engage { target }`'s target; no other
+    /// objective names one) — then every contact NOT KNOWN FRIENDLY
+    /// ([`ContactRow::friendly`] false — a hostile, or a return whose side is
+    /// `unknown`), then the friendly ones, each group nearest-first by the
+    /// held `range_m` then by [`ContactId`]; the first `rows` of that; then
+    /// the kept rows re-read nearest-first by `(range_m, id)`. So a view
+    /// holding no more contacts than its rows is the plain nearest-first cut
+    /// it was, and only a view that truncates changes — in which rows it
+    /// keeps, never in their order. Only a contact the frame holds is seated
+    /// (the rows are the held contacts), at most two rows are, and every
+    /// stock class carries at least eight, so the seat never fills a stock
+    /// view (`[tacsim.minds].classes` may configure as few as one row; the
+    /// seated rows are then themselves cut by the rest of the key). The
+    /// order seated is the one the view presents, an order past its
+    /// deadline that its landing has not yet cleared included (the view and
+    /// its seat agree), and so is an order the mind has ended on its own
+    /// (its memory's `ignore_until_ms`): the seat reads the view, not the
+    /// mind's obedience. Until this cut the rows were cut nearest-first
+    /// alone, and a hull mustered among more friends than its rows saw no
+    /// enemy at all; with the not-known-friendly priority alone, a supporter
+    /// crowded by hostiles lost its charge (the seat). The pilot's frame is
+    /// not cut here (parity: a mind still reads no row the frame does not
+    /// hold).
     ///
     /// **17b cut M3.1** (doc 17 §9, D-UM-35, D-UM-4): the cut is the mind's
     /// own row ([`Arena::mind_profile`]) — `rows` contacts (Class I's 12,
@@ -1515,8 +1555,38 @@ impl Arena {
             crate::arena::view::frame_contacts_held(&frame, &state.ranges);
         state.ranges = crate::arena::view::settle_ranges(&frame, &state.ranges);
         let notices = std::mem::take(&mut state.notices);
-        rows.sort_by_key(|row| (row.range_m, row.id));
+        // 17b cut M4.5c (doc 17 §3 as amended 2026-10-09 twice, the owner's
+        // two rulings): the cut SEATS the contacts the hull's own state names
+        // — its lock and its standing order's contact, the order exactly as
+        // the view presents it (`frame.order`, an order past its deadline
+        // that the landing has not yet cleared included, so the view and its
+        // seat agree, and an order the mind has ended on its own — its
+        // memory's `ignore_until_ms` — included too: the seat reads the view,
+        // not the mind's obedience) — then keeps every contact not known
+        // friendly before any friendly one, each group nearest-first, so a
+        // hull mustered among more friends than its rows still sees the enemy
+        // and a supporter crowded by hostiles still sees its charge; the kept
+        // rows then read nearest-first as before. At most two rows are seated
+        // and every stock class carries at least eight, so the seat never
+        // fills a stock view (a configured table may carry fewer: the seated
+        // rows are then cut by the rest of the key, not known friendly first).
+        // The match names every objective: only `Engage` and `Support` name
+        // a contact.
+        let ordered = frame
+            .order
+            .as_ref()
+            .and_then(|order| match order.objective {
+                MindObjective::Engage { target } => target,
+                MindObjective::Support { of } => of,
+                MindObjective::Hold
+                | MindObjective::Advance { .. }
+                | MindObjective::Withdraw
+                | MindObjective::Screen { .. } => None,
+            });
+        let seated = |id: ContactId| Some(id) == lock || Some(id) == ordered;
+        rows.sort_by_key(|row| (!seated(row.id), row.friendly, row.range_m, row.id));
         rows.truncate(profile.rows);
+        rows.sort_by_key(|row| (row.range_m, row.id));
         // The contacts whose odds the view keeps: the frame's own odds rows,
         // in the frame's order, the first `odds_rows` of them — or the lock's
         // alone at nought.
@@ -2914,7 +2984,16 @@ mod tests {
     /// order is the reverse of nearest-first: a view that took the frame's
     /// first twelve rows, or sorted by id alone, would hold the farthest. The
     /// expected side sorts the keyframe's rows by `(range_m, id)` with the id
-    /// read back as the sixteen hex figures it is written as.
+    /// read back as the sixteen hex figures it is written as. (**Since 17b
+    /// cut M4.5c** the cut seats the lock and the order's contact — rows 0
+    /// and 3, among the nearest anyway — then keeps every row not known
+    /// friendly before any friendly one: row 12, a blue, is kept as not
+    /// known friendly, no longer by the tie-break, and rows 11 and 13 are
+    /// dropped as friends, the hull's own side. So the same twelve rows are
+    /// kept and every assertion holds unmodified, but the tie at the cut no
+    /// longer decides it; the tie-break at a cut is pinned since by
+    /// `m4_5c_the_rom_s_eight_rows_keep_every_contact_not_known_friendly_first`,
+    /// whose fifth friend is a tie.)
     ///
     /// The own fields are the keyframe's keys, `ecm`, `receiver`, `heat`,
     /// `order` and every section's keys included; each contact is at the
@@ -3154,7 +3233,8 @@ mod tests {
             serde_json::json!(view.odds_floor_permille)
         );
 
-        // The contacts: the keyframe's fourteen, nearest first, the first twelve.
+        // The contacts: the keyframe's fourteen, nearest first, the first
+        // twelve — the twelve the cut keeps here (the doc's parenthesis).
         let mut rows = key("contacts").as_array().cloned().unwrap_or_default();
         assert_eq!(rows.len(), 14, "the keyframe carries every held contact");
         let range = |row: &serde_json::Value| {
@@ -3188,8 +3268,12 @@ mod tests {
         );
         rows.truncate(STOCK_CONTACT_ROWS);
         assert_eq!(view.contacts.len(), STOCK_CONTACT_ROWS);
-        // The tie-break kept the lower id of the pair at 450 m (row 12, due
-        // east), dropped row 11 (due north) and the farthest.
+        // Of the pair at 450 m, row 12 (due east, a blue) is kept and row 11
+        // (due north, a red) dropped with the farthest, row 13 (a red). Until
+        // 17b cut M4.5c the tie-break decided it (row 12 the lower id); since
+        // then the cut keeps row 12 as not known friendly and drops rows 11
+        // and 13 as friends, and the tie-break at a cut is pinned by
+        // `m4_5c_the_rom_s_eight_rows_keep_every_contact_not_known_friendly_first`.
         let held: Vec<ContactId> = view.contacts.iter().map(|contact| contact.id).collect();
         assert!(held.contains(&view_row_id(12)), "{held:?}");
         assert!(!held.contains(&view_row_id(11)), "{held:?}");
@@ -3328,6 +3412,670 @@ mod tests {
         assert_eq!(
             again.contacts, view.contacts,
             "a live pose leaked into the view"
+        );
+    }
+
+    /// **A Class 0 mind among a held field** (17b cut M4.5c's fixture): the
+    /// line tank `RED` at (15 m, 15 m) on [`wide`], a mind sealed under the
+    /// fixture terms capped at Class 0 — the ROM's eight rows — holding one
+    /// contact per entry `(dx, dy, team, classified)`: a line tank of `team`
+    /// at that offset in centimetres, classified on its own side or
+    /// `unknown`, held under [`view_row_id`]`(k)` for the `k`th entry, so the
+    /// frame's own row order (by id) is the reverse of the entries'.
+    fn rom_among(field: &[(i64, i64, Team, bool)]) -> Arena {
+        use crate::arena::core::CoreClass;
+        use crate::arena::state::{SeenPose, ShadowContact};
+        use crate::arena::test_support::line_tank;
+        let (x0, y0) = (1_500_i64, 1_500_i64);
+        let mut red = line_tank(RED, Team::Red, pose(x0, y0));
+        red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms {
+            class_cap: CoreClass::Zero,
+            ..crate::match_::SealTerms::fixture()
+        })
+        .expect("the capped terms seal");
+        let mut units = vec![red];
+        for (k, (dx, dy, team, _)) in (0_u32..).zip(field) {
+            units.push(line_tank(ObjId(10 + k), *team, pose(x0 + dx, y0 + dy)));
+        }
+        let mut arena = wide(units);
+        for (k, (_, _, _, classified)) in (0_u16..).zip(field) {
+            let id = ObjId(10 + u32::from(k));
+            let Some(target) = arena.unit(id) else {
+                panic!("a fielded unit");
+            };
+            let class = if *classified {
+                Classification::Classified { team: target.team }
+            } else {
+                Classification::Unknown
+            };
+            let plot = SeenPose::of(target);
+            arena.contacts.insert(
+                RED,
+                view_row_id(k),
+                ShadowContact::sighted(id, class, 0, plot),
+            );
+        }
+        assert_eq!(arena.mind_class(RED), CoreClass::Zero, "the ROM");
+        assert_eq!(arena.mind_profile(RED).rows, 8, "Class 0's eight rows");
+        arena
+    }
+
+    /// **`RED`'s frame rows**, held against its mind's range memory as
+    /// [`Arena::mind_view`] holds them, in the frame's own order.
+    fn held_rows(arena: &Arena) -> Vec<ContactRow> {
+        let ranges = arena
+            .minds
+            .get(&RED)
+            .map(|state| state.ranges.clone())
+            .unwrap_or_default();
+        let Some(frame) = arena.frame_for(RED, arena.clock.tempo()) else {
+            panic!("a frame");
+        };
+        crate::arena::view::frame_contacts_held(&frame, &ranges)
+    }
+
+    /// **The cut as it stood until 17b cut M4.5c**, for the comparison: the
+    /// held `rows` nearest-first by `(range_m, id)`, the first `keep` of
+    /// them.
+    fn nearest_cut(mut rows: Vec<ContactRow>, keep: usize) -> Vec<ContactRow> {
+        rows.sort_by_key(|row| (row.range_m, row.id));
+        rows.truncate(keep);
+        rows
+    }
+
+    /// **A mind's row cut keeps every contact not known friendly first**
+    /// (17b cut M4.5c; doc 17 §3 as amended 2026-10-09, the owner's ruling on
+    /// STOP L: the lance lane's hulls, mustered among more friends than their
+    /// rows, held every hostile classified and saw none). A Class 0 mind
+    /// ([`rom_among`], eight rows) holds nine classified friends at 50 to
+    /// 400 m, the fifth and sixth tied at 250 m, then two classified hostiles
+    /// at 450 and 500 m and, farthest, a red hull whose side is `unknown` at
+    /// 550 m — every id falling as the range grows, so the frame's own order
+    /// is the reverse of nearest-first.
+    ///
+    /// * **The finding, as a precondition**: the old nearest-first cut keeps
+    ///   eight friends and nothing else.
+    /// * **The cut**: the view keeps the two hostiles, the unknown — a red
+    ///   hull, so the cut reads the row's `friendly` (false while the side is
+    ///   unresolved), never the truth — and the five nearest friends, the
+    ///   fifth of them the tie at 250 m decided by the lower [`ContactId`]
+    ///   (entry 5, due east; entry 4, due north, is cut with the three
+    ///   farthest friends).
+    /// * **The presentation**: the kept rows read nearest-first, strictly
+    ///   ascending by `(range_m, id)`, each the frame's own row.
+    /// * **No more contacts than rows**: a second field of six — a friend and
+    ///   a hostile at 100 m, a hostile and a friend at 200 m (the ids set so
+    ///   the hostile reads first at 100 m and the friend first at 200 m), an
+    ///   `unknown` at 300 m and a friend at 400 m — gives the view the old
+    ///   nearest-first list row for row: a view that does not truncate is
+    ///   unchanged, and a friend and a hostile at one range read by range
+    ///   then id, never friends last.
+    ///
+    /// `m1a5_the_view_is_the_keyframe` passes unmodified: the two rows its
+    /// Class I cut drops are the hull's own side.
+    #[test]
+    fn m4_5c_the_rom_s_eight_rows_keep_every_contact_not_known_friendly_first() {
+        // (dx, dy) in centimetres from the mind, nearest first: nine friends
+        // at 50, 100, 150, 200, 250, 250, 300, 350 and 400 m; two hostiles at
+        // 450 and 500 m; a red hull unresolved at 550 m.
+        let field: [(i64, i64, Team, bool); 12] = [
+            (0, 5_000, Team::Red, true),
+            (10_000, 0, Team::Red, true),
+            (0, 15_000, Team::Red, true),
+            (20_000, 0, Team::Red, true),
+            (0, 25_000, Team::Red, true),
+            (25_000, 0, Team::Red, true),
+            (0, 30_000, Team::Red, true),
+            (35_000, 0, Team::Red, true),
+            (0, 40_000, Team::Red, true),
+            (45_000, 0, Team::Blue, true),
+            (30_000, 40_000, Team::Blue, true),
+            (33_000, 44_000, Team::Red, false),
+        ];
+        let mut arena = rom_among(&field);
+        let held = held_rows(&arena);
+        assert_eq!(held.len(), 12, "the frame holds every contact");
+        let mut by_range: Vec<(u64, bool)> =
+            held.iter().map(|row| (row.range_m, row.friendly)).collect();
+        by_range.sort_unstable();
+        assert_eq!(
+            by_range,
+            vec![
+                (50, true),
+                (100, true),
+                (150, true),
+                (200, true),
+                (250, true),
+                (250, true),
+                (300, true),
+                (350, true),
+                (400, true),
+                (450, false),
+                (500, false),
+                (550, false),
+            ],
+            "the precondition: nine friends nearer than three rows not known friendly"
+        );
+        let old = nearest_cut(held.clone(), 8);
+        assert_eq!(
+            old.iter().map(|row| row.id).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 5, 4, 6, 7].map(view_row_id).to_vec(),
+            "the precondition: the old cut, the tie at 250 m by id"
+        );
+        assert!(
+            old.iter().all(|row| row.friendly),
+            "the finding: the nearest-first cut keeps eight friends and nothing else"
+        );
+
+        let Some(view) = arena.mind_view(RED) else {
+            panic!("a view");
+        };
+        let kept: Vec<ContactId> = view.contacts.iter().map(|contact| contact.id).collect();
+        assert_eq!(
+            kept,
+            [0, 1, 2, 3, 5, 9, 10, 11].map(view_row_id).to_vec(),
+            "the two hostiles, the unknown and the five nearest friends, nearest-first"
+        );
+        assert_eq!(
+            view.contacts
+                .iter()
+                .filter(|contact| !contact.friendly)
+                .count(),
+            3,
+            "every row not known friendly is kept"
+        );
+        assert!(
+            view.contacts
+                .iter()
+                .any(|contact| !contact.friendly && contact.class == Classification::Unknown),
+            "the unresolved red hull is not known friendly"
+        );
+        assert!(
+            view.contacts.windows(2).all(|pair| match pair {
+                [a, b] => (a.range_m, a.id) < (b.range_m, b.id),
+                _ => true,
+            }),
+            "nearest first, then by id"
+        );
+        for contact in &view.contacts {
+            let Some(row) = held.iter().find(|row| row.id == contact.id) else {
+                panic!("a kept row the frame does not hold: {}", contact.id);
+            };
+            assert_eq!(
+                (
+                    contact.designator,
+                    contact.friendly,
+                    contact.bearing_deg,
+                    contact.range_m,
+                    contact.band.as_str(),
+                    contact.cell,
+                ),
+                (
+                    row.designator,
+                    row.friendly,
+                    row.bearing_deg,
+                    row.range_m,
+                    row.band.as_str(),
+                    row.cell,
+                ),
+                "the frame's own row"
+            );
+        }
+
+        // No more contacts than rows: the old cut, row for row.
+        let field: [(i64, i64, Team, bool); 6] = [
+            (0, 10_000, Team::Red, true),
+            (10_000, 0, Team::Blue, true),
+            (0, 20_000, Team::Blue, true),
+            (20_000, 0, Team::Red, true),
+            (0, 30_000, Team::Blue, false),
+            (0, 40_000, Team::Red, true),
+        ];
+        let mut arena = rom_among(&field);
+        let old = nearest_cut(held_rows(&arena), 8);
+        let Some(view) = arena.mind_view(RED) else {
+            panic!("a view");
+        };
+        let kept: Vec<ContactId> = view.contacts.iter().map(|contact| contact.id).collect();
+        assert_eq!(
+            kept,
+            [1, 0, 3, 2, 4, 5].map(view_row_id).to_vec(),
+            "by range then id: the hostile first at 100 m, the friend first at 200 m"
+        );
+        assert_eq!(
+            view.contacts
+                .iter()
+                .map(|contact| (contact.range_m, contact.friendly))
+                .collect::<Vec<_>>(),
+            vec![
+                (100, false),
+                (100, true),
+                (200, true),
+                (200, false),
+                (300, false),
+                (400, true),
+            ],
+            "a friend and a hostile at one range, either order by id"
+        );
+        assert_eq!(
+            view.contacts
+                .iter()
+                .map(|contact| (
+                    contact.id,
+                    contact.designator,
+                    contact.friendly,
+                    contact.range_m
+                ))
+                .collect::<Vec<_>>(),
+            old.iter()
+                .map(|row| (row.id, row.designator, row.friendly, row.range_m))
+                .collect::<Vec<_>>(),
+            "a view that does not truncate is the old nearest-first list"
+        );
+    }
+
+    /// **The cut without the seat** (17b cut M4.5c's first ruling alone),
+    /// for the comparison: the held `rows` not known friendly first,
+    /// each group nearest-first by `(range_m, id)`, the first `keep` of them.
+    fn unseated_cut(mut rows: Vec<ContactRow>, keep: usize) -> Vec<ContactRow> {
+        rows.sort_by_key(|row| (row.friendly, row.range_m, row.id));
+        rows.truncate(keep);
+        rows
+    }
+
+    /// `RED`'s standing order of `objective`, held on its mind's row as a
+    /// squad's order is written (`Arena::rekey_order`'s product), so the
+    /// frame — and the view — present it.
+    fn order_on(arena: &mut Arena, objective: MindObjective) {
+        let Some(state) = arena.minds.get_mut(&RED) else {
+            panic!("the mind's row");
+        };
+        state.order = Some(FrameOrder {
+            squad: SmolStr::new("red-1"),
+            objective,
+            hold_fire: false,
+            max_range_band: None,
+            expires_ms: 30_000,
+        });
+    }
+
+    /// **The kept rows' ids** of `view`, in the view's order.
+    fn kept_ids(view: &MindView) -> Vec<ContactId> {
+        view.contacts.iter().map(|contact| contact.id).collect()
+    }
+
+    /// **The cut seats the hull's own named contacts** (17b cut M4.5c; doc
+    /// 17 §3 as amended 2026-10-09 by the owner's second ruling, "keep the
+    /// charge first": the first ruling's cut alone, reviewed, left a
+    /// supporter whose view held its rows of contacts not known friendly
+    /// without its charge, a friend, and on the leash's blind arm). A Class
+    /// 0 mind
+    /// ([`rom_among`], eight rows):
+    ///
+    /// * **The lock and the charge**: a friend at 50 m, nine classified
+    ///   hostiles at 100 to 500 m, and a friend at 550 m; the hull locks the
+    ///   hostile at 500 m (eight hostiles nearer) and stands under
+    ///   `Support { of }` the friend at 550 m (nine hostiles nearer). As a
+    ///   precondition both the old nearest-first cut and the cut without
+    ///   the seat ([`unseated_cut`]) drop both. The view keeps the lock and the charge
+    ///   and, for the rest, the six nearest hostiles; the nearest friend, not
+    ///   seated, is cut with the two farther hostiles.
+    /// * **The Engage target**, separately (no lock): a friend at 50 m, nine
+    ///   hostiles at 100 to 500 m and the ordered target, a tenth hostile, at
+    ///   550 m — kept, with the seven nearest hostiles.
+    /// * **The presentation**: each view reads nearest-first, strictly
+    ///   ascending by `(range_m, id)`, and holds what the frame holds.
+    /// * **No more contacts than rows**: five contacts with the farthest
+    ///   locked and the next ordered — the old nearest-first list row for
+    ///   row; the seat changes only which rows a view that truncates keeps.
+    #[test]
+    fn m4_5c_the_rom_seats_its_lock_and_its_order_s_contact_before_the_cut() {
+        // (a) and (b): the lock and the Support charge, in one view.
+        let field: [(i64, i64, Team, bool); 11] = [
+            (0, 5_000, Team::Red, true),
+            (10_000, 0, Team::Blue, true),
+            (0, 15_000, Team::Blue, true),
+            (20_000, 0, Team::Blue, true),
+            (0, 25_000, Team::Blue, true),
+            (30_000, 0, Team::Blue, true),
+            (0, 35_000, Team::Blue, true),
+            (40_000, 0, Team::Blue, true),
+            (0, 45_000, Team::Blue, true),
+            (30_000, 40_000, Team::Blue, true),
+            (33_000, 44_000, Team::Red, true),
+        ];
+        let mut arena = rom_among(&field);
+        let (locked, charge) = (view_row_id(9), view_row_id(10));
+        if let Some(state) = arena.unit_mut(RED) {
+            state.lock = Some(locked);
+        }
+        order_on(&mut arena, MindObjective::Support { of: Some(charge) });
+        let held = held_rows(&arena);
+        assert_eq!(held.len(), 11, "the frame holds every contact");
+        assert_eq!(
+            held.iter()
+                .filter(|row| !row.friendly && row.range_m < 500)
+                .count(),
+            8,
+            "the precondition: eight hostiles nearer than the lock"
+        );
+        let old = nearest_cut(held.clone(), 8);
+        let unseated = unseated_cut(held.clone(), 8);
+        for cut in [&old, &unseated] {
+            assert!(
+                !cut.iter().any(|row| row.id == locked || row.id == charge),
+                "the precondition: a cut without the seat drops the lock and the charge"
+            );
+        }
+        let Some(view) = arena.mind_view(RED) else {
+            panic!("a view");
+        };
+        assert_eq!(view.lock, Some(locked), "the view's lock");
+        assert_eq!(
+            view.order.as_ref().map(|order| order.objective),
+            Some(MindObjective::Support { of: Some(charge) }),
+            "the view's order"
+        );
+        assert_eq!(
+            kept_ids(&view),
+            [1, 2, 3, 4, 5, 6, 9, 10].map(view_row_id).to_vec(),
+            "the six nearest hostiles, the lock and the charge, nearest-first"
+        );
+        assert!(
+            view.contacts
+                .iter()
+                .any(|contact| contact.id == charge && contact.friendly),
+            "the charge, a friend, is seated"
+        );
+        assert!(
+            !kept_ids(&view).contains(&view_row_id(0)),
+            "the nearest friend, not seated, is cut"
+        );
+        // (c): the Engage target, separately.
+        let field: [(i64, i64, Team, bool); 11] = [
+            (0, 5_000, Team::Red, true),
+            (10_000, 0, Team::Blue, true),
+            (0, 15_000, Team::Blue, true),
+            (20_000, 0, Team::Blue, true),
+            (0, 25_000, Team::Blue, true),
+            (30_000, 0, Team::Blue, true),
+            (0, 35_000, Team::Blue, true),
+            (40_000, 0, Team::Blue, true),
+            (0, 45_000, Team::Blue, true),
+            (30_000, 40_000, Team::Blue, true),
+            (33_000, 44_000, Team::Blue, true),
+        ];
+        let mut engaged = rom_among(&field);
+        let target = view_row_id(10);
+        order_on(
+            &mut engaged,
+            MindObjective::Engage {
+                target: Some(target),
+            },
+        );
+        let engaged_held = held_rows(&engaged);
+        assert_eq!(
+            engaged_held
+                .iter()
+                .filter(|row| !row.friendly && row.id != target)
+                .count(),
+            9,
+            "the precondition: nine hostiles nearer than the target"
+        );
+        assert!(
+            !unseated_cut(engaged_held.clone(), 8)
+                .iter()
+                .any(|row| row.id == target),
+            "the precondition: the cut without the seat drops the target"
+        );
+        let Some(engaged_view) = engaged.mind_view(RED) else {
+            panic!("a view");
+        };
+        assert_eq!(engaged_view.lock, None, "no lock here");
+        assert_eq!(
+            kept_ids(&engaged_view),
+            [1, 2, 3, 4, 5, 6, 7, 10].map(view_row_id).to_vec(),
+            "the seven nearest hostiles and the ordered target, nearest-first"
+        );
+        // The presentation, both views.
+        for (view, held) in [(&view, &held), (&engaged_view, &engaged_held)] {
+            assert_eq!(view.contacts.len(), 8, "Class 0's eight rows");
+            assert!(
+                view.contacts.windows(2).all(|pair| match pair {
+                    [a, b] => (a.range_m, a.id) < (b.range_m, b.id),
+                    _ => true,
+                }),
+                "nearest first, then by id"
+            );
+            for contact in &view.contacts {
+                let Some(row) = held.iter().find(|row| row.id == contact.id) else {
+                    panic!("a kept row the frame does not hold: {}", contact.id);
+                };
+                assert_eq!(
+                    (contact.designator, contact.friendly, contact.range_m),
+                    (row.designator, row.friendly, row.range_m),
+                    "the frame's own row"
+                );
+            }
+        }
+
+        // No more contacts than rows: the old cut, row for row, whatever is
+        // seated.
+        let field: [(i64, i64, Team, bool); 5] = [
+            (0, 10_000, Team::Red, true),
+            (10_000, 0, Team::Blue, true),
+            (0, 20_000, Team::Blue, false),
+            (20_000, 0, Team::Red, true),
+            (0, 30_000, Team::Blue, true),
+        ];
+        let mut few = rom_among(&field);
+        if let Some(state) = few.unit_mut(RED) {
+            state.lock = Some(view_row_id(4));
+        }
+        order_on(
+            &mut few,
+            MindObjective::Support {
+                of: Some(view_row_id(3)),
+            },
+        );
+        let old = nearest_cut(held_rows(&few), 8);
+        let Some(view) = few.mind_view(RED) else {
+            panic!("a view");
+        };
+        assert_eq!(
+            view.contacts
+                .iter()
+                .map(|contact| (contact.id, contact.friendly, contact.range_m))
+                .collect::<Vec<_>>(),
+            old.iter()
+                .map(|row| (row.id, row.friendly, row.range_m))
+                .collect::<Vec<_>>(),
+            "a view that does not truncate is the old nearest-first list"
+        );
+    }
+
+    /// **The seat's edges** (17b cut M4.5c, the owner's second ruling): what
+    /// the seat does when the hull's own state names a contact it does not
+    /// hold, names one contact twice, or names two where the class keeps one
+    /// row. A Class 0 mind ([`rom_among`]) among a friend at 50 m and ten
+    /// classified hostiles at 100 to 550 m:
+    ///
+    /// * **An order naming a contact the hull does not hold** seats nothing:
+    ///   under `Engage { target }` and under `Support { of }` an id no row
+    ///   carries — the view presents the order, and its rows are the cut
+    ///   without the seat ([`unseated_cut`]) row for row (the eight nearest
+    ///   hostiles; the friend cut). Only a held contact is seated.
+    /// * **A lock that is the order's contact** is one seated row: the hull
+    ///   locks the 550 m hostile and is ordered to engage it — the view keeps
+    ///   it and, for the other seven rows, the seven nearest contacts not
+    ///   known friendly, exactly the cut without the seat over the rest.
+    /// * **One row** (a configured class table, `[tacsim.minds].classes`
+    ///   lawfully as low as one row; the stock table's least is eight), on a
+    ///   field of its own: a friendly `Support` charge at 50 m, three
+    ///   hostiles at 100 to 200 m and a hostile lock at 300 m — the lock is
+    ///   kept, not the nearer charge nor the nearest hostile: between seated
+    ///   rows the rest of the key decides (not known friendly first, then
+    ///   nearest). With two seated hostiles (the lock at 300 m, an `Engage`
+    ///   target at 200 m) the nearer is kept.
+    #[test]
+    fn m4_5c_the_seat_holds_only_held_contacts_once_each_and_cuts_by_the_rest_of_the_key() {
+        // A friend at 50 m, then ten hostiles at 100, 150, 200, 250, 300,
+        // 350, 400, 450, 500 and 550 m.
+        let field: [(i64, i64, Team, bool); 11] = [
+            (0, 5_000, Team::Red, true),
+            (10_000, 0, Team::Blue, true),
+            (0, 15_000, Team::Blue, true),
+            (20_000, 0, Team::Blue, true),
+            (0, 25_000, Team::Blue, true),
+            (30_000, 0, Team::Blue, true),
+            (0, 35_000, Team::Blue, true),
+            (40_000, 0, Team::Blue, true),
+            (0, 45_000, Team::Blue, true),
+            (30_000, 40_000, Team::Blue, true),
+            (33_000, 44_000, Team::Blue, true),
+        ];
+
+        // (i) An order naming a contact the hull does not hold: the id a
+        // twelfth entry would carry, which no row carries.
+        let unheld = view_row_id(11);
+        for objective in [
+            MindObjective::Engage {
+                target: Some(unheld),
+            },
+            MindObjective::Support { of: Some(unheld) },
+        ] {
+            let mut arena = rom_among(&field);
+            order_on(&mut arena, objective);
+            let held = held_rows(&arena);
+            assert!(
+                !held.iter().any(|row| row.id == unheld),
+                "the precondition: the ordered contact is not held"
+            );
+            let Some(view) = arena.mind_view(RED) else {
+                panic!("a view");
+            };
+            assert_eq!(view.lock, None, "no lock here");
+            assert_eq!(
+                view.order.as_ref().map(|order| order.objective),
+                Some(objective),
+                "the view presents the order"
+            );
+            assert_eq!(
+                kept_ids(&view),
+                unseated_cut(held, 8)
+                    .iter()
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>(),
+                "an unheld contact seats nothing: the cut without the seat"
+            );
+            assert_eq!(
+                kept_ids(&view),
+                [1, 2, 3, 4, 5, 6, 7, 8].map(view_row_id).to_vec(),
+                "the eight nearest hostiles; the friend cut"
+            );
+        }
+
+        // (ii) A lock that is the order's contact: one seated row.
+        let mut arena = rom_among(&field);
+        let named = view_row_id(10);
+        if let Some(state) = arena.unit_mut(RED) {
+            state.lock = Some(named);
+        }
+        order_on(
+            &mut arena,
+            MindObjective::Engage {
+                target: Some(named),
+            },
+        );
+        let held = held_rows(&arena);
+        let Some(view) = arena.mind_view(RED) else {
+            panic!("a view");
+        };
+        assert_eq!(view.lock, Some(named), "the view's lock");
+        assert_eq!(
+            view.contacts
+                .iter()
+                .filter(|contact| contact.id == named)
+                .count(),
+            1,
+            "the contact named twice is one seated row"
+        );
+        let rest: Vec<ContactRow> = held.into_iter().filter(|row| row.id != named).collect();
+        let mut expected: Vec<ContactId> = unseated_cut(rest, 7).iter().map(|row| row.id).collect();
+        expected.push(named);
+        assert_eq!(
+            kept_ids(&view),
+            expected,
+            "the seated row and, for the rest, the cut without the seat over seven rows"
+        );
+        assert_eq!(
+            kept_ids(&view),
+            [1, 2, 3, 4, 5, 6, 7, 10].map(view_row_id).to_vec(),
+            "the seven nearest hostiles and the named one, nearest-first"
+        );
+
+        // (iii) One row: between seated rows the rest of the key decides.
+        let field: [(i64, i64, Team, bool); 5] = [
+            (0, 5_000, Team::Red, true),
+            (10_000, 0, Team::Blue, true),
+            (0, 15_000, Team::Blue, true),
+            (20_000, 0, Team::Blue, true),
+            (0, 30_000, Team::Blue, true),
+        ];
+        let one_row = || {
+            let mut arena = rom_among(&field);
+            arena.classes = serde_json::from_value(serde_json::json!({"0": {"rows": 1}}))
+                .expect("a lawful table");
+            assert_eq!(arena.mind_profile(RED).rows, 1, "the configured row");
+            arena
+        };
+        let (charge, lock) = (view_row_id(0), view_row_id(4));
+        let mut arena = one_row();
+        if let Some(state) = arena.unit_mut(RED) {
+            state.lock = Some(lock);
+        }
+        order_on(&mut arena, MindObjective::Support { of: Some(charge) });
+        let held = held_rows(&arena);
+        assert_eq!(
+            (
+                nearest_cut(held.clone(), 1)
+                    .iter()
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>(),
+                unseated_cut(held, 1)
+                    .iter()
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>(),
+            ),
+            (vec![charge], vec![view_row_id(1)]),
+            "the precondition: nearest keeps the charge, the cut without the seat the nearest hostile"
+        );
+        let Some(view) = arena.mind_view(RED) else {
+            panic!("a view");
+        };
+        assert_eq!(
+            kept_ids(&view),
+            vec![lock],
+            "the hostile lock, not the nearer friendly charge"
+        );
+        let mut arena = one_row();
+        if let Some(state) = arena.unit_mut(RED) {
+            state.lock = Some(lock);
+        }
+        order_on(
+            &mut arena,
+            MindObjective::Engage {
+                target: Some(view_row_id(3)),
+            },
+        );
+        let Some(view) = arena.mind_view(RED) else {
+            panic!("a view");
+        };
+        assert_eq!(
+            kept_ids(&view),
+            vec![view_row_id(3)],
+            "two seated hostiles: the nearer"
         );
     }
 

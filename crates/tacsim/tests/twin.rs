@@ -1704,10 +1704,33 @@ impl Coverage {
 /// the release run that blessed [`M4_5_POOLED_RECORD`]. `mixed` and `lance`
 /// field no reflex and are unmoved: a move there is a finding, never a
 /// bless.
+///
+/// **17b cut M4.5c's re-bless of `lance`** (doc 17 §3 as amended
+/// 2026-10-09, the owner's ruling on STOP L): a mind's view now keeps every
+/// contact not known friendly (hostile or `unknown`) before any friendly
+/// one, each nearest-first, and only then cuts to its class's rows, read
+/// nearest-first as before. The lance lane's minds are Class I (twelve
+/// rows), each among eleven friends and twelve enemies, so a view that cut
+/// kept its nearest side-mates where it now keeps the enemy past them; the
+/// fights move (the three seeds' ends `elimination_blue`, cap,
+/// `elimination_blue` → `elimination_red`, `elimination_red`, cap) and with
+/// them the counts: `lance` 5,878 / 156 → 6,099 / 145. Gate A's equalities
+/// hold as they stood — no divergence, every scripted order and release
+/// reconciled against the arena's lines, the rows' and the odds rows' caps
+/// reached. `pooled` and `mixed` field no view holding more contacts than
+/// its rows, whose cut is the old one byte for byte, and are unmoved. The
+/// owner's second ruling the same day (doc 17 §3 as amended 2026-10-09
+/// again, "keep the charge first") seats the hull's lock and its standing
+/// order's contact before both groups; it moves nothing here — the lane's
+/// 120 s reach no `Support`, its `Engage` orders name no target and its
+/// locks are held hostiles the not-known-friendly priority already keeps
+/// (twelve enemies within Class I's twelve rows; the ROM's stand-in thinks,
+/// at eight rows, measured unmoved too); every figure it prints,
+/// per seed and in total, reads the same with the seat and without it.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
     ("pooled", (10_098, 254)),
     ("mixed", (12_442, 321)),
-    ("lance", (5_878, 156)),
+    ("lance", (6_099, 145)),
 ];
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the

@@ -193,7 +193,7 @@ mod tests {
     };
     use crate::arena::motor::fallback_waypoint;
     use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
-    use crate::arena::reflex::{REFLEX_STAND_TICKS, ReflexState};
+    use crate::arena::reflex::{REFLEX_STAND_TICKS, ReflexState, SUPPORT_LEASH_CELLS};
     use crate::arena::state::{
         Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
         CustodyUnit, MatchMode, Power, SeenPose, ShadowContact, Team,
@@ -644,6 +644,188 @@ mod tests {
         let mut station = patrolling(0);
         let parked = think(&close, &station_view, &mut station, 1_000);
         assert_eq!(parked, vec![IntentKind::Goal(MotorGoal::Hold)]);
+    }
+
+    /// **A supporter crowded by hostiles reads its charge** (17b cut M4.5c;
+    /// doc 17 §3 as amended 2026-10-09 by the owner's second ruling, "keep
+    /// the charge first"). Standard Doctrine, both runners — T1 native and
+    /// T2 the Rhai script the production fill seals
+    /// (`crate::match_::PRODUCTION_FILL_ENGINE`, `scripted`) — thought on
+    /// one job and compared ([`think`]), on a Class I hull (twelve rows)
+    /// standing under `Support { of }` its charge, a friend, while it holds
+    /// twelve classified hostiles. The order is the mind's own standing
+    /// order, so the view presents it and the cut seats its charge
+    /// (`Arena::mind_view`). The leash is `SUPPORT_LEASH_CELLS` cells of the
+    /// field's 10 m, 150 m. Three fields, one think each from `Patrol`:
+    ///
+    /// * **Inside the leash, nearer than the hostiles**: the charge 100 m
+    ///   off, the hostiles some 300 m off, a lance mustered 20 m apart. The
+    ///   view holds the charge and the eleven nearest hostiles, and the
+    ///   supporter pursues: a hostile targeted, `Patrol` left (for `Engage`
+    ///   here, the lance inside its band), no `Goal(Hold)`.
+    /// * **Past the leash** (the leash's arm (b)): the same lance, the
+    ///   charge 200 m off — past the leash, still nearer than every hostile.
+    ///   The view holds the charge, and the supporter goes back toward its
+    ///   station off its own row of the charge: one `Goal(Cell)`, the cell
+    ///   `SUPPORT_STATION_CELLS` back from the charge's plot toward the
+    ///   hull, and nothing else — no `Goal(Hold)`, no shot — its target
+    ///   dropped, `Patrol`.
+    /// * **Inside the leash, behind the hostiles**: twelve hostiles in
+    ///   three rows of four 25, 45 and 65 m north (none farther than 75 m, so
+    ///   each reads 50 m on the scope's 50 m step), the charge 100 m off
+    ///   straight behind them — every hostile nearer than the charge, so a
+    ///   cut ranked by range alone drops it as surely as one that keeps
+    ///   not-known-friendly rows first. The view holds the charge (seated)
+    ///   and the supporter pursues as in the first field.
+    ///
+    /// The cut without the seat — every contact not known friendly first,
+    /// the first ruling alone — let the twelve hostiles fill the view and
+    /// cut the charge in all three, and the supporter read itself blind to
+    /// it and took the leash's arm (a): held where it stood (`Goal(Hold)`,
+    /// the stand's heading, lock and shot), its target dropped, `Patrol` —
+    /// both runners alike. The old nearest-first cut does the same in the
+    /// third.
+    #[test]
+    fn m4_5c_a_supporter_crowded_by_hostiles_reads_its_charge() {
+        const CHARGE: ContactId = ContactId(0x99);
+
+        /// The supporter `RED` at (205 m, 205 m) under its own standing
+        /// `Support { of }` its charge `MATE` at `charge_at`, holding a
+        /// classified hostile at each of `hostiles` (centimetres), the `k`th
+        /// as `ContactId(0x20 + k)`.
+        fn crowded(hostiles: &[(i64, i64)], charge_at: (i64, i64)) -> Arena {
+            let mut units = vec![
+                minded(RED, Team::Red, 20_500, 20_500),
+                line_tank(MATE, Team::Red, pose(charge_at.0, charge_at.1)),
+            ];
+            for (k, (x, y)) in (0_u32..).zip(hostiles) {
+                units.push(line_tank(ObjId(20 + k), Team::Blue, pose(*x, *y)));
+            }
+            let mut arena = field(units);
+            online(&mut arena, RED);
+            hold(&mut arena, RED, MATE, CHARGE);
+            for (k, _) in (0_u32..).zip(hostiles) {
+                hold(
+                    &mut arena,
+                    RED,
+                    ObjId(20 + k),
+                    ContactId(0x20 + u64::from(k)),
+                );
+            }
+            let Some(state) = arena.minds.get_mut(&RED) else {
+                panic!("the mind's row");
+            };
+            state.order = Some(order_of(MindObjective::Support { of: Some(CHARGE) }));
+            assert_eq!(
+                arena.mind_profile(RED).rows,
+                12,
+                "the precondition: Class I's twelve rows"
+            );
+            arena
+        }
+
+        /// The view `RED` reads: twelve rows, the charge seated at
+        /// `charge_m` and the eleven nearest hostiles, the order presented.
+        fn seated(arena: &Arena, charge_m: u64) -> MindView {
+            let view = view_of(arena, RED);
+            assert_eq!(view.contacts.len(), 12);
+            assert_eq!(
+                view.contacts
+                    .iter()
+                    .filter(|contact| !contact.friendly)
+                    .count(),
+                11,
+                "the charge seated, then the eleven nearest hostiles"
+            );
+            let Some(row) = view.contacts.iter().find(|contact| contact.id == CHARGE) else {
+                panic!("the charge is in the view: {:?}", view.contacts);
+            };
+            assert!(row.friendly, "the charge, a friend");
+            assert_eq!(row.range_m, charge_m, "the charge's range");
+            assert_eq!(
+                view.order.as_ref().map(|order| order.objective),
+                Some(MindObjective::Support { of: Some(CHARGE) }),
+                "the view presents the standing order"
+            );
+            view
+        }
+
+        /// It pursues: a hostile targeted, `Patrol` left, no stand.
+        fn pursues(memory: &StockMemory, intents: &[IntentKind]) {
+            assert!(
+                memory
+                    .target
+                    .is_some_and(|target| (0x20..0x2C).contains(&target.0)),
+                "a hostile targeted: {memory:?}"
+            );
+            assert!(
+                matches!(memory.state, ReflexState::Approach | ReflexState::Engage),
+                "pursuing, not leashed blind: {:?} {intents:?}",
+                memory.state
+            );
+            assert!(
+                !intents
+                    .iter()
+                    .any(|kind| matches!(kind, IntentKind::Goal(MotorGoal::Hold))),
+                "no stand where it is: {intents:?}"
+            );
+        }
+
+        // The squared range in square metres from the supporter to a hull at
+        // `(x, y)` centimetres.
+        let far = |x: i64, y: i64| ((x - 20_500) / 100).pow(2) + ((y - 20_500) / 100).pow(2);
+        // A lance some 300 m north, mustered 20 m apart.
+        let lance: Vec<(i64, i64)> = (0_i64..12).map(|k| (9_500 + 2_000 * k, 50_500)).collect();
+
+        // Inside the leash, nearer than the hostiles: 100 m south.
+        let arena = crowded(&lance, (20_500, 10_500));
+        let leash_m =
+            u64::from(SUPPORT_LEASH_CELLS) * u64::from(arena.definition.terrain.cell_cm()) / 100;
+        assert_eq!(leash_m, 150, "the precondition: the leash");
+        let view = seated(&arena, 100);
+        let mut memory = patrolling(0);
+        let intents = think(&arena, &view, &mut memory, 1_000);
+        pursues(&memory, &intents);
+
+        // Past the leash (arm (b)): 200 m south, nearer than every hostile.
+        let arena = crowded(&lance, (20_500, 500));
+        assert!(
+            lance.iter().all(|(x, y)| far(*x, *y) > 200 * 200),
+            "the precondition: the charge nearer than every hostile"
+        );
+        let view = seated(&arena, 200);
+        let mut memory = patrolling(0);
+        let intents = think(&arena, &view, &mut memory, 1_000);
+        // The station: `SUPPORT_STATION_CELLS` (five) cells back from the
+        // charge's plot cell (20, 0) toward the hull at (20, 20).
+        assert_eq!(
+            intents,
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 20, y: 5 })],
+            "the leash's arm (b), back toward the charge's station"
+        );
+        assert_eq!(memory.state, ReflexState::Patrol, "{memory:?}");
+        assert_eq!(memory.target, None, "firing nothing until back inside");
+
+        // Inside the leash, behind the hostiles: three rows of four 25, 45
+        // and 65 m north, 20 m apart, and the charge 100 m north behind them.
+        let close: Vec<(i64, i64)> = (0_i64..12)
+            .map(|k| (17_500 + 2_000 * (k % 4), 23_000 + 2_000 * (k / 4)))
+            .collect();
+        assert!(
+            close.iter().all(|(x, y)| far(*x, *y) < 75 * 75),
+            "the precondition: every hostile reads 50 m, nearer than the charge"
+        );
+        let arena = crowded(&close, (20_500, 30_500));
+        let view = seated(&arena, 100);
+        assert!(
+            view.contacts
+                .iter()
+                .all(|contact| contact.id == CHARGE || contact.range_m == 50),
+            "the hostiles' rows read 50 m"
+        );
+        let mut memory = patrolling(0);
+        let intents = think(&arena, &view, &mut memory, 1_000);
+        pursues(&memory, &intents);
     }
 
     /// Mirror of `m1a6_a_screen_stands_on_a_row_inside_its_arc_and_not_outside`

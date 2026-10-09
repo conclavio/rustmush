@@ -334,7 +334,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     (
         "View",
         "contacts",
-        "contacts (the first STOCK_CONTACT_ROWS rows)",
+        "contacts (the class's rows of them: the lock and the order's contact seated, then not known friendly, then friends; read nearest-first)",
     ),
     ("View", "scan_tables", "scan_tables"),
     ("View", "odds_floor_permille", "odds_floor_permille"),
@@ -1003,8 +1003,10 @@ fn register_notice(api: &mut Registrar<'_>) {
         })
     });
     // The keyframe reads `friendly` off the frame's own rows; the view holds
-    // its first `STOCK_CONTACT_ROWS` of them, and a row past those reads
-    // false here.
+    // the class's `rows` of them (17b cut M4.5c: the lock and the order's
+    // contact seated, then every row not known friendly, then the friends, so
+    // the rows a full view cuts are friends first), and a row past those
+    // reads false here.
     getter!(api, "Notice", "friendly", |n: &mut Notice| {
         on(n, |notice| {
             Dynamic::from_bool(

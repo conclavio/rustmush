@@ -146,7 +146,11 @@ pub struct CoreProfile {
     pub think_ms: i64,
     /// The op ceiling of one think (D-UM-26).
     pub ops: u64,
-    /// The contact rows a view carries, nearest first.
+    /// The contact rows a view carries: the hull's lock and its order's
+    /// contact seated, then every contact not known friendly, then the
+    /// friendly ones, each group nearest-first, read nearest-first (17b cut
+    /// M4.5c; doc 17 §3 as amended 2026-10-09 by the owner's two rulings,
+    /// `Arena::mind_view`).
     pub rows: usize,
     /// How many of those carry odds — `0` is the lock's alone.
     pub odds_rows: usize,
