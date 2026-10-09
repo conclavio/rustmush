@@ -2225,7 +2225,7 @@ fn m1b1_slots_die_with_the_controller_and_with_the_turret_and_survive_a_grace() 
     arena.set_controller(
         RED,
         Controller::Mind,
-        tacsim::arena::reflex::ReflexState::Patrol,
+        tacsim::arena::doctrine::MachineState::Patrol,
     );
     let _ = arena.resolve_arming(RED, &Arming::Arm(cond("cannon", 100, ASPECTS_ANY)), 0);
     assert!(!arena.conditions.is_empty_for(RED));
@@ -2235,7 +2235,7 @@ fn m1b1_slots_die_with_the_controller_and_with_the_turret_and_survive_a_grace() 
     arena.set_controller(
         RED,
         Controller::Pilot,
-        tacsim::arena::reflex::ReflexState::Patrol,
+        tacsim::arena::doctrine::MachineState::Patrol,
     );
     assert!(
         arena.conditions.is_empty_for(RED),
@@ -2331,7 +2331,7 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     arena.set_controller(
         BLUE,
         Controller::Mind,
-        tacsim::arena::reflex::ReflexState::Patrol,
+        tacsim::arena::doctrine::MachineState::Patrol,
     );
     if let Some(state) = arena.minds.get_mut(&BLUE) {
         state.card.min_odds_permille = 300;

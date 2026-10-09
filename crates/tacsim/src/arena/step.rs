@@ -4215,7 +4215,7 @@ mod tests {
         );
         assert_eq!(
             arena.machine_state(A),
-            Some(crate::arena::reflex::ReflexState::Withdraw)
+            Some(crate::arena::doctrine::MachineState::Withdraw)
         );
         // 16b cut F.3 adds the third: this platform's own sensor pass. **16b cut
         // M.2** (16c `T-01`) the fourth: the duration bound.
@@ -4642,7 +4642,7 @@ mod tests {
         arena.set_controller(
             A,
             crate::arena::state::Controller::Mind,
-            crate::arena::reflex::ReflexState::Withdraw,
+            crate::arena::doctrine::MachineState::Withdraw,
         );
         let outcomes: Vec<IntentOutcome> = (0..9_u64)
             .map(|n| {
@@ -7931,14 +7931,14 @@ mod tests {
     /// have; the same row dormant under a pilot raises nothing.
     #[test]
     fn m4_3_a_mind_in_approach_raises_alert_and_a_dormant_row_does_not() {
+        use crate::arena::doctrine::MachineState;
         use crate::arena::mind::{doctrine_state_of, encode_memory};
-        use crate::arena::reflex::ReflexState;
         use crate::arena::state::Controller;
         use crate::arena::stock_mind::StockMemory;
         let approaching = |arena: &mut Arena| {
             if let Some(state) = arena.minds.get_mut(&A) {
                 state.memory = encode_memory(&crate::arena::mind::Memory::from(StockMemory {
-                    state: ReflexState::Approach,
+                    state: MachineState::Approach,
                     ..StockMemory::default()
                 }));
                 state.doctrine_state = doctrine_state_of(&state.memory);
@@ -7948,7 +7948,7 @@ mod tests {
         minded.mind_runner = std::sync::Arc::new(crate::arena::mind::NoMind);
         minded.step(0, &[], &[]);
         assert_eq!(minded.clock.tempo(), Tempo::Quiet, "nothing is approaching");
-        minded.set_controller(A, Controller::Mind, ReflexState::Startup);
+        minded.set_controller(A, Controller::Mind, MachineState::Startup);
         approaching(&mut minded);
         assert!(minded.any_mind_approaching());
         let out = minded.step(1_000, &[], &[]);
@@ -7957,14 +7957,14 @@ mod tests {
         let mut dormant = arena();
         dormant.mind_runner = std::sync::Arc::new(crate::arena::mind::NoMind);
         dormant.step(0, &[], &[]);
-        dormant.set_controller(A, Controller::Mind, ReflexState::Startup);
+        dormant.set_controller(A, Controller::Mind, MachineState::Startup);
         approaching(&mut dormant);
-        dormant.set_controller(A, Controller::Pilot, ReflexState::Startup);
+        dormant.set_controller(A, Controller::Pilot, MachineState::Startup);
         assert!(
             dormant
                 .minds
                 .get(&A)
-                .is_some_and(|state| state.doctrine_state == ReflexState::Approach),
+                .is_some_and(|state| state.doctrine_state == MachineState::Approach),
             "the row is dormant, its state still Approach"
         );
         assert!(

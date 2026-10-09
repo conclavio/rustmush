@@ -1476,7 +1476,7 @@ mod tests {
         arena.set_controller(
             RED,
             Controller::Mind,
-            crate::arena::reflex::ReflexState::Patrol,
+            crate::arena::doctrine::MachineState::Patrol,
         );
         let _ = arena.resolve_lock(RED, id_of(RED, BLUE), 0);
         let standing = StandingOrder::accepted(

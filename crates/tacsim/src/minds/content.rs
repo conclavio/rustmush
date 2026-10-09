@@ -189,13 +189,13 @@ mod tests {
     use crate::arena::card::{StockCard, line, preset};
     use crate::arena::conditions::Arming;
     use crate::arena::damage::BLOCKED;
+    use crate::arena::doctrine::{MachineState, STAND_TICKS, SUPPORT_LEASH_CELLS};
     use crate::arena::intents::{IntentKind, MotorGoal};
     use crate::arena::mind::{
         Memory, MindRunner, MindView, ThinkJob, ThinkResult, decode_memory, encode_memory,
     };
     use crate::arena::motor::fallback_waypoint;
     use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
-    use crate::arena::reflex::{REFLEX_STAND_TICKS, ReflexState, SUPPORT_LEASH_CELLS};
     use crate::arena::state::{
         Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
         CustodyUnit, MatchMode, Power, SeenPose, ShadowContact, Team,
@@ -284,7 +284,7 @@ mod tests {
     /// A patrolling memory with nothing seen and the hunt's clock just set.
     fn patrolling(t_ms: i64) -> StockMemory {
         StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             unheld_since_ms: Some(t_ms),
             ..StockMemory::default()
         }
@@ -380,7 +380,7 @@ mod tests {
             outcome: DriveOutcome::NoRoute,
         }];
         let start = StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             goal: Some(failed),
             waypoint: Some(1),
             last_plot: Some((failed, 9_000)),
@@ -416,7 +416,7 @@ mod tests {
         let _ = think(&arena, &view, &mut ordered, 10_000);
         assert_eq!(ordered.ignore_until_ms, Some(60_000));
         let mut quiet = StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             goal: Some((1, 4)),
             waypoint: Some(0),
             unheld_since_ms: Some(0),
@@ -435,7 +435,7 @@ mod tests {
         online(&mut arena, RED);
         let named = (50, 40);
         let start = StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             goal: Some(named),
             hunt: Some(named),
             waypoint: Some(1),
@@ -557,7 +557,7 @@ mod tests {
         online(&mut arena, RED);
         let view = view_of(&arena, RED);
         let withdrawing = StockMemory {
-            state: ReflexState::Withdraw,
+            state: MachineState::Withdraw,
             target: Some(ContactId(0x11)),
             // 17b cut M4.3: the restoration reads an order's Withdraw.
             ordered: true,
@@ -565,13 +565,13 @@ mod tests {
         };
         let mut expired = withdrawing.clone();
         let _ = think(&arena, &view, &mut expired, 1_000);
-        assert_eq!(expired.state, ReflexState::Patrol);
+        assert_eq!(expired.state, MachineState::Patrol);
         assert_eq!(expired.target, None);
         let mut ordered_view = view.clone();
         ordered_view.order = Some(order_of(MindObjective::Withdraw));
         let mut ordered = withdrawing.clone();
         let _ = think(&arena, &ordered_view, &mut ordered, 1_000);
-        assert_eq!(ordered.state, ReflexState::Withdraw);
+        assert_eq!(ordered.state, MachineState::Withdraw);
         let mut hurt_view = view;
         for section in &mut hurt_view.sections {
             if let Some((_, max)) = section.internals {
@@ -584,7 +584,7 @@ mod tests {
         assert!(health_permille(&hurt_view) < arena.arena_cfg.reflex.withdraw_permille);
         let mut hurt = withdrawing;
         let _ = think(&arena, &hurt_view, &mut hurt, 1_000);
-        assert_eq!(hurt.state, ReflexState::Withdraw);
+        assert_eq!(hurt.state, MachineState::Withdraw);
     }
 
     /// Mirror of `m1a6_a_supporter_stands_blind_rejoins_off_the_leash_and_keeps_station`
@@ -617,14 +617,14 @@ mod tests {
             "{stood:?}"
         );
         assert_eq!(blind.target, None);
-        assert_eq!(blind.state, ReflexState::Patrol);
+        assert_eq!(blind.state, MachineState::Patrol);
         hold(&mut arena, RED, MATE, ContactId(0x99));
         let mut leashed_view = view_of(&arena, RED);
         leashed_view.order = Some(order_of(MindObjective::Support {
             of: Some(ContactId(0x99)),
         }));
         let mut leashed = StockMemory {
-            state: ReflexState::Engage,
+            state: MachineState::Engage,
             target: Some(ContactId(0x11)),
             ..patrolling(0)
         };
@@ -633,7 +633,7 @@ mod tests {
             matches!(back.as_slice(), [IntentKind::Goal(MotorGoal::Cell { y, .. })] if *y > 20),
             "{back:?}"
         );
-        assert_eq!(leashed.state, ReflexState::Patrol);
+        assert_eq!(leashed.state, MachineState::Patrol);
         assert_eq!(leashed.target, None);
         let mut close = field(vec![
             minded(RED, Team::Red, 20_500, 20_500),
@@ -763,7 +763,7 @@ mod tests {
                 "a hostile targeted: {memory:?}"
             );
             assert!(
-                matches!(memory.state, ReflexState::Approach | ReflexState::Engage),
+                matches!(memory.state, MachineState::Approach | MachineState::Engage),
                 "pursuing, not leashed blind: {:?} {intents:?}",
                 memory.state
             );
@@ -807,7 +807,7 @@ mod tests {
             vec![IntentKind::Goal(MotorGoal::Cell { x: 20, y: 5 })],
             "the leash's arm (b), back toward the charge's station"
         );
-        assert_eq!(memory.state, ReflexState::Patrol, "{memory:?}");
+        assert_eq!(memory.state, MachineState::Patrol, "{memory:?}");
         assert_eq!(memory.target, None, "firing nothing until back inside");
 
         // Inside the leash, behind the hostiles: three rows of four 25, 45
@@ -855,7 +855,7 @@ mod tests {
             ]
         );
         assert_eq!(memory.target, None);
-        assert_eq!(memory.state, ReflexState::Patrol);
+        assert_eq!(memory.state, MachineState::Patrol);
         hold(&mut arena, RED, BLUE, ContactId(0x11));
         let mut view = view_of(&arena, RED);
         view.order = Some(order_of(MindObjective::Screen { facing_mdeg: 0 }));
@@ -874,7 +874,7 @@ mod tests {
             ),
             "{inside:?}"
         );
-        assert_eq!(memory.state, ReflexState::Patrol);
+        assert_eq!(memory.state, MachineState::Patrol);
         assert_eq!(memory.last_plot.map(|(cell, _)| cell), Some((20, 30)));
     }
 
@@ -936,13 +936,13 @@ mod tests {
             row.range_m = between_m;
         }
         let engaged = StockMemory {
-            state: ReflexState::Engage,
+            state: MachineState::Engage,
             target: Some(ContactId(0x77)),
             ..patrolling(0)
         };
         let mut standing = engaged.clone();
         let stand = think(&arena, &view, &mut standing, 1_000);
-        assert_eq!(standing.state, ReflexState::Engage);
+        assert_eq!(standing.state, MachineState::Engage);
         assert!(stand.contains(&IntentKind::Goal(MotorGoal::Hold)));
         view.notices = vec![FrameNotice::Miss {
             contact: None,
@@ -950,7 +950,7 @@ mod tests {
         }];
         let mut blocked = engaged;
         let closed = think(&arena, &view, &mut blocked, 1_000);
-        assert_eq!(blocked.state, ReflexState::Approach);
+        assert_eq!(blocked.state, MachineState::Approach);
         assert!(!blocked.no_line);
         assert!(
             matches!(
@@ -1013,7 +1013,7 @@ mod tests {
         let mut ended = patrolling(0);
         let first = think(&arena, &ended_view, &mut ended, 1_000);
         assert_eq!(ended.ignore_until_ms, Some(60_000), "the Support ended");
-        assert_eq!(ended.state, ReflexState::Engage, "uncapped: {first:?}");
+        assert_eq!(ended.state, MachineState::Engage, "uncapped: {first:?}");
         // (2) an Engage whose deadline the memory already ignores.
         let mut ignored_view = base.clone();
         ignored_view.order = Some(order.clone());
@@ -1022,11 +1022,11 @@ mod tests {
             ..patrolling(0)
         };
         let second = think(&arena, &ignored_view, &mut ignored, 1_000);
-        assert_eq!(ignored.state, ReflexState::Engage, "uncapped: {second:?}");
+        assert_eq!(ignored.state, MachineState::Engage, "uncapped: {second:?}");
         // (3) the same Engage obeyed: capped, still approaching.
         let mut obeyed = patrolling(0);
         let third = think(&arena, &ignored_view, &mut obeyed, 1_000);
-        assert_eq!(obeyed.state, ReflexState::Approach, "capped: {third:?}");
+        assert_eq!(obeyed.state, MachineState::Approach, "capped: {third:?}");
         assert_ne!(third, second, "the cap decides the think");
     }
 
@@ -1080,7 +1080,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("rally_s 3: {error}"));
         let never = |name: &str| preset(name, &cfg).unwrap_or_else(|| panic!("{name}"));
         let home = (20, 20);
-        let dwell = REFLEX_STAND_TICKS * i64::from(cfg.decide_ms);
+        let dwell = STAND_TICKS * i64::from(cfg.decide_ms);
         for (card, rallies) in [
             (line(&cfg), true),
             (quick, true),
@@ -1089,7 +1089,7 @@ mod tests {
         ] {
             let rally_ms = i64::from(card.rally_ms);
             let mut memory = StockMemory {
-                state: ReflexState::Withdraw,
+                state: MachineState::Withdraw,
                 goal: Some(home),
                 ..StockMemory::default()
             };
@@ -1102,7 +1102,7 @@ mod tests {
                     }),
                 "{stand:?}"
             );
-            assert_eq!(memory.state, ReflexState::Withdraw);
+            assert_eq!(memory.state, MachineState::Withdraw);
             assert_eq!(memory.stand_until_ms, Some(1_000 + dwell));
             assert_eq!(memory.quiet_since_ms, None);
             // 2. Dwelling, the row gone.
@@ -1116,7 +1116,7 @@ mod tests {
             let _ = think_on(&arena, &quiet, &mut memory, quiet_at, &card);
             assert_eq!(memory.stand_until_ms, None);
             assert_eq!(memory.quiet_since_ms, Some(quiet_at));
-            assert_eq!(memory.state, ReflexState::Withdraw);
+            assert_eq!(memory.state, MachineState::Withdraw);
             // 4. One millisecond short of the rally (the card's `rally_ms`
             //    0 is never; an hour stands for it).
             let due = if rally_ms == 0 {
@@ -1127,16 +1127,16 @@ mod tests {
             memory.goal = Some(home);
             let mut short = memory.clone();
             let _ = think_on(&arena, &quiet, &mut short, due - 1, &card);
-            assert_eq!(short.state, ReflexState::Withdraw);
+            assert_eq!(short.state, MachineState::Withdraw);
             assert!(!short.rallied);
             // 5. At it.
             let _ = think_on(&arena, &quiet, &mut memory, due, &card);
             if rallies {
-                assert_eq!(memory.state, ReflexState::Patrol, "{card:?}");
+                assert_eq!(memory.state, MachineState::Patrol, "{card:?}");
                 assert!(memory.rallied);
                 assert_eq!(memory.quiet_since_ms, None);
             } else {
-                assert_eq!(memory.state, ReflexState::Withdraw, "{card:?}");
+                assert_eq!(memory.state, MachineState::Withdraw, "{card:?}");
                 assert!(!memory.rallied);
                 assert_eq!(memory.quiet_since_ms, Some(quiet_at));
             }
@@ -1159,7 +1159,7 @@ mod tests {
         hold(&mut arena, RED, BLUE, ContactId(0x11));
         let view = view_of(&arena, RED);
         let busy = StockMemory {
-            state: ReflexState::Engage,
+            state: MachineState::Engage,
             target: Some(ContactId(0x11)),
             goal: Some((20, 25)),
             waypoint: Some(1),
@@ -1188,7 +1188,7 @@ mod tests {
             assert_eq!(
                 memory,
                 StockMemory {
-                    state: ReflexState::Disabled,
+                    state: MachineState::Disabled,
                     ..StockMemory::default()
                 }
             );
@@ -1313,14 +1313,14 @@ mod tests {
         for row in &mut far.contacts {
             row.range_m = u64::MAX;
         }
-        for state in [ReflexState::Approach, ReflexState::Engage] {
+        for state in [MachineState::Approach, MachineState::Engage] {
             let mut memory = StockMemory {
                 state,
                 target: Some(ContactId(0x77)),
                 ..patrolling(0)
             };
             let _ = think(&arena, &far, &mut memory, 1_000);
-            assert_eq!(memory.state, ReflexState::Approach);
+            assert_eq!(memory.state, MachineState::Approach);
         }
         let mut alone = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
         online(&mut alone, RED);
@@ -1333,13 +1333,13 @@ mod tests {
         let _ = think(&alone, &view, &mut plotted, 1_000);
         assert_eq!(plotted.last_plot, None, "the plot is past any search_ms");
         let mut quiet = StockMemory {
-            state: ReflexState::Withdraw,
+            state: MachineState::Withdraw,
             goal: Some((20, 20)),
             quiet_since_ms: Some(i64::MIN),
             ..StockMemory::default()
         };
         let _ = think(&alone, &hurt(&view), &mut quiet, 1_000);
-        assert_eq!(quiet.state, ReflexState::Patrol, "past any rally_ms");
+        assert_eq!(quiet.state, MachineState::Patrol, "past any rally_ms");
         assert!(quiet.rallied);
     }
 
@@ -1568,7 +1568,7 @@ mod tests {
         let release_m = u32::try_from(ranges.release_cm.min(reach) / 100).unwrap_or(u32::MAX);
         let mut fight = StockMemory::default();
         let found = think(&arena, &view, &mut fight, 1_000);
-        assert_eq!(fight.state, ReflexState::Engage);
+        assert_eq!(fight.state, MachineState::Engage);
         let [arm, lock, fire] = found.as_slice() else {
             panic!("{found:?}");
         };
@@ -1736,12 +1736,12 @@ mod tests {
             row.range_m = (ranges.stand_cm / 100).saturating_sub(10);
         }
         let mut withdrawing = StockMemory {
-            state: ReflexState::Withdraw,
+            state: MachineState::Withdraw,
             goal: Some((1, 1)),
             ..StockMemory::default()
         };
         let cornered = think(&arena, &home, &mut withdrawing, 1_000);
-        assert_eq!(withdrawing.state, ReflexState::Withdraw);
+        assert_eq!(withdrawing.state, MachineState::Withdraw);
         let Some(first) = cornered.first() else {
             panic!("the cornered hull answers: {cornered:?}");
         };

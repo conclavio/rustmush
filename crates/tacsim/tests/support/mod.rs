@@ -276,7 +276,7 @@ impl Muster {
 /// consequence, and the machine that checks out of it is a whole tank that has
 /// had its plate shot off rather than a half-wrecked one.
 ///
-/// `Arena::reflex_health_permille` sums **every** `armor` and `internals` cell,
+/// `Arena::health_permille` sums **every** `armor` and `internals` cell,
 /// each from its own floor, so on the shipped `line_tank` — eleven armoured
 /// facets totalling 2,320, and 670 of internals over five sections — the answer
 /// is (11 + 670) of 2,990, **227 per mille**: under the shipped
@@ -340,7 +340,7 @@ pub fn shot_dry(unit: &TacticalUnit) -> TacticalUnit {
 /// `limits.motion_disabled` set — the fact the case is about, arrived at the way
 /// production arrives at it for a tank that checked in that way.
 ///
-/// Conditions are not counted by `Arena::reflex_health_permille`, so on the
+/// Conditions are not counted by `Arena::health_permille`, so on the
 /// shipped `line_tank` the health is (2,990 − 150 − 120) of 2,990: 909 per mille,
 /// far above `withdraw_permille`. The turret and its gun are untouched, so the
 /// tank is armed, not `disabled`, and not out of action.
@@ -1278,7 +1278,7 @@ impl Timeline {
                 // 17b cut M1a.1: the goal is the hull's motor row's.
                 arena.motors.row(id).and_then(|motor| motor.goal),
                 target,
-                arena.reflex_health_permille(id),
+                arena.health_permille(id),
                 self.failures
             ));
         }
@@ -1412,7 +1412,7 @@ pub struct TwinThought {
     /// the intents equal once every `Condition` and `Fire` is filtered out (a
     /// counting twin's classification; since 17b cut M2.6 no lane allows it).
     pub fire_only: bool,
-    /// T1's state code after the think (`ReflexState::code`).
+    /// T1's state code after the think (`MachineState::code`).
     pub state: u8,
     /// T1's `rallied` after the think.
     pub rallied: bool,

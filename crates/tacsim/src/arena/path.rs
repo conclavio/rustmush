@@ -577,7 +577,7 @@ pub fn path_with(
             }
             // **16b cut Q.7**: a cell this caller was stopped at is not a cell it
             // may plan through. The test is a scan of at most
-            // `crate::arena::reflex::REFLEX_AVOID_MAX` pairs, taken after the
+            // `crate::arena::motor::REFLEX_AVOID_MAX` pairs, taken after the
             // class test so an ordinary window pays nothing for an empty list.
             if avoid.contains(&(nx, ny)) {
                 continue;

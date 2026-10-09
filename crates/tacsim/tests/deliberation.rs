@@ -45,10 +45,10 @@ use mush_tactics::{
 use mush_testkit::TestWorld;
 use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
+use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::intents::{Intent, IntentKind, IntentOutcome, Refusal, apply_intent};
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::perception::{SensorProfile, SignatureFactor};
-use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
@@ -563,7 +563,7 @@ fn locked_by(events: &[LedgerEvent], unit: ObjId) -> usize {
 /// **What the machine flying `unit` is doing** — 17b cut M4.5a: the mind's
 /// cached doctrine state through `Arena::machine_state` (`Startup` before its
 /// first landing, `None` for a pilot's hull), where it was the reflex row's.
-fn state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
+fn state_of(arena: &Arena, unit: ObjId) -> Option<MachineState> {
     arena.machine_state(unit)
 }
 
@@ -919,9 +919,9 @@ fn z1_a_reported_squad_carries_its_members_in_roster_order() {
     );
     arena.units.retain(|unit| unit.id != GONE);
     hurt_to_withdraw(&mut arena, EAST);
-    let hurt = arena.reflex_health_permille(EAST);
+    let hurt = arena.health_permille(EAST);
     assert!(hurt < 1_000, "the hurt member reads its own hull: {hurt}");
-    let whole = arena.reflex_health_permille(SOUTH);
+    let whole = arena.health_permille(SOUTH);
 
     // One pulse, the opening one, so the states the signal carries are the
     // states the controller holds as it is read.
@@ -953,7 +953,7 @@ fn z1_a_reported_squad_carries_its_members_in_roster_order() {
     for member in &signal.members {
         assert_eq!(
             member.state,
-            state_of(&arena, member.unit).unwrap_or(ReflexState::Startup),
+            state_of(&arena, member.unit).unwrap_or(MachineState::Startup),
             "{:?}",
             member.unit
         );
@@ -1046,7 +1046,7 @@ fn z1_a_later_signal_reads_each_members_own_state() {
             .find(|signal| signal.squad == red_one() && signal.at_ms >= settled)
         {
             // The controller's states at the pulse the signal was taken at.
-            let held: Vec<Option<ReflexState>> = signal
+            let held: Vec<Option<MachineState>> = signal
                 .members
                 .iter()
                 .map(|member| state_of(&arena, member.unit))
@@ -1060,7 +1060,7 @@ fn z1_a_later_signal_reads_each_members_own_state() {
         );
     }
     let (signal, held) = read.expect("red-1 is reported again once its commander's contacts move");
-    let states: Vec<(ObjId, ReflexState)> = signal
+    let states: Vec<(ObjId, MachineState)> = signal
         .members
         .iter()
         .map(|member| (member.unit, member.state))
@@ -1079,17 +1079,17 @@ fn z1_a_later_signal_reads_each_members_own_state() {
     );
     assert_eq!(
         states[1].1,
-        ReflexState::Withdraw,
+        MachineState::Withdraw,
         "the hurt member has withdrawn: {states:?}"
     );
     assert!(
-        states[0].1 != ReflexState::Withdraw && states[0].1 != ReflexState::Startup,
+        states[0].1 != MachineState::Withdraw && states[0].1 != MachineState::Startup,
         "the commander is whole and running, so its state is not the hurt member's: {states:?}"
     );
     assert!(
         states
             .iter()
-            .all(|(_, state)| *state != ReflexState::Startup),
+            .all(|(_, state)| *state != MachineState::Startup),
         "nobody is still starting past each member's second landing: {states:?}"
     );
     let brief = tacsim::deliberation::SquadBrief::from_signal(1, &signal, 3, persona(signal.squad));
@@ -1331,7 +1331,7 @@ fn an_advance_order_moves_the_patrol_target() {
     let mut bytes = Vec::new();
     // Online, and patrolling its own graph: the west node of row 8.
     run(&mut arena, 2_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED_A), Some(ReflexState::Patrol));
+    assert_eq!(state_of(&arena, RED_A), Some(MachineState::Patrol));
     let doctrine = named_goal(&arena, RED_A);
     assert!(
         doctrine == Some((1, 8)) || doctrine == Some((14, 8)),
@@ -1359,7 +1359,7 @@ fn an_advance_order_moves_the_patrol_target() {
     );
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "an advance is a movement order: the machine stays in Patrol"
     );
     // The squad on the other side was never ordered: whatever it is doing, it is
@@ -1396,7 +1396,7 @@ fn a_hold_order_parks_the_squad_and_a_movement_order_does_not_pursue() {
 
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "hold parks: the machine does not take the target it can see"
     );
     assert_eq!(
@@ -1484,7 +1484,7 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
     let stand = lands_at(&arena, RED_B, 3);
     run(&mut arena, first.saturating_add(1), &mut bytes);
     assert!(arena.now_ms < stand, "read before #6's second landing");
-    assert_eq!(state_of(&arena, RED_B), Some(ReflexState::Withdraw));
+    assert_eq!(state_of(&arena, RED_B), Some(MachineState::Withdraw));
     let goal = named_goal(&arena, RED_B).expect("a withdrawing tank has somewhere to be");
     assert_ne!(
         Some(goal),
@@ -1546,10 +1546,10 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
 
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "withdraw is the state a commander can reach without being shot at"
     );
-    assert_eq!(state_of(&arena, RED_B), Some(ReflexState::Withdraw));
+    assert_eq!(state_of(&arena, RED_B), Some(MachineState::Withdraw));
     // The cornered stand, on a mind: `Goal(Hold)` — stop here, face there —
     // which lets the goal go (the ruling above; the reflex's "goal untouched"
     // half is lost).
@@ -1602,7 +1602,7 @@ fn a_withdraw_under_hold_fire_keeps_driving() {
 
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "the order still puts it in `Withdraw`"
     );
     assert_eq!(
@@ -1839,7 +1839,7 @@ fn an_expired_order_drops_the_squad_to_doctrine_with_its_ledger_event() {
         driven.is_some_and(|goal| goal != (9, 3)),
         "the hull drives doctrine's node, not the ordered cell: {driven:?}"
     );
-    assert_eq!(state_of(&arena, RED_A), Some(ReflexState::Patrol));
+    assert_eq!(state_of(&arena, RED_A), Some(MachineState::Patrol));
     let log = events(&mut arena, &mut bytes);
     let expired: Vec<&LedgerEvent> = log
         .iter()
@@ -1888,15 +1888,15 @@ fn an_expired_withdraw_order_comes_back_to_patrol_when_the_hull_is_whole() {
     run(&mut arena, 2_000, &mut bytes);
     issue(&mut arena, &order(Objective::Withdraw, 2_000));
     run(&mut arena, 3_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED_A), Some(ReflexState::Withdraw));
+    assert_eq!(state_of(&arena, RED_A), Some(MachineState::Withdraw));
     run(&mut arena, 7_000, &mut bytes);
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "`Withdraw` is terminal for a hurt tank, not for one a commander sent home"
     );
     assert!(
-        arena.reflex_health_permille(RED_A) >= ReflexConfig::default().withdraw_permille,
+        arena.health_permille(RED_A) >= ReflexConfig::default().withdraw_permille,
         "and the hull is whole, which is what makes the assertion above about the order"
     );
 }
@@ -2031,10 +2031,10 @@ fn a_request_that_is_never_answered_costs_the_pulse_nothing() {
         matches!(
             state_of(&arena, RED_A),
             Some(
-                ReflexState::Patrol
-                    | ReflexState::Approach
-                    | ReflexState::Engage
-                    | ReflexState::Withdraw
+                MachineState::Patrol
+                    | MachineState::Approach
+                    | MachineState::Engage
+                    | MachineState::Withdraw
             )
         ),
         "the squad is on doctrine, not idle: {:?}",
@@ -2082,7 +2082,7 @@ type OrderedFinal = (
     i64,
     u32,
     i32,
-    ReflexState,
+    MachineState,
     Option<(u16, u16)>,
     bool,
 );
@@ -2102,7 +2102,9 @@ fn finals_of(arena: &Arena) -> Vec<OrderedFinal> {
                 unit.pose.y_cm,
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
-                arena.machine_state(unit.id).unwrap_or(ReflexState::Startup),
+                arena
+                    .machine_state(unit.id)
+                    .unwrap_or(MachineState::Startup),
                 // 17b cut M1a.1: the goal is the hull's motor row's.
                 arena.motors.row(unit.id).and_then(|motor| motor.goal),
                 order_on(arena, unit.id).is_some(),
@@ -3172,7 +3174,7 @@ fn e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close() {
     for _ in 0..40 {
         let out = arena.step_settled(wall, &[], &[]);
         absorb(&out, &mut bytes);
-        if state_of(&arena, RED_A) == Some(ReflexState::Engage) {
+        if state_of(&arena, RED_A) == Some(MachineState::Engage) {
             let range = arena
                 .unit(RED_A)
                 .map(|unit| plot_of(&arena, BLUE).range_from(&unit.pose))
@@ -3195,7 +3197,7 @@ fn e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close() {
 
     // Ruling 1: the same two edges on the figures the mind read — its target's
     // row, rounded and held, at every think after the order.
-    let read: Vec<(ReflexState, i64)> = stock
+    let read: Vec<(MachineState, i64)> = stock
         .kept()
         .iter()
         .filter(|(unit, t_ms, _, _)| *unit == RED_A && *t_ms > at)
@@ -3216,7 +3218,7 @@ fn e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close() {
     );
     let engaged: Vec<i64> = read
         .iter()
-        .filter(|(state, _)| *state == ReflexState::Engage)
+        .filter(|(state, _)| *state == MachineState::Engage)
         .map(|(_, range)| *range)
         .collect();
     assert!(
@@ -3252,7 +3254,10 @@ fn e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close() {
 /// across: `effective`'s two edges are 16,333 and 23,333 cm and `far`'s are
 /// 24,500 and 35,000, so neither midpoint is a place two tanks on it can stand.
 /// `release_cm > engage_cm` for all three bands is pinned arithmetically by
-/// `arena/reflex.rs`'s own `e1_the_stock_tanks_three_rows_of_the_range_table`.
+/// `arena/reflex.rs`'s own `e1_the_stock_tanks_three_rows_of_the_range_table`
+/// and, row for row off a mind's view since 17b cut M4.6a, by
+/// `arena/stock_mind.rs`'s
+/// `e1_the_stock_tanks_three_rows_of_the_range_table_off_the_view`.
 ///
 /// **17b cut M4.5a — STOP B, left on the reflex controller** (Q18). The first
 /// leg (the squad that closes) is ported as
@@ -3443,7 +3448,7 @@ fn run_counted_through(
 /// about. A seat with nobody in it is the cheapest way to have a field that
 /// stays where it was built.
 fn park(arena: &mut Arena, unit: ObjId) {
-    arena.set_controller(unit, Controller::Pilot, ReflexState::Withdraw);
+    arena.set_controller(unit, Controller::Pilot, MachineState::Withdraw);
 }
 
 /// The `order_expired` lines the black box holds, as `(unit, objective)`.
@@ -3834,7 +3839,7 @@ fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
     );
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "a movement order does not pursue"
     );
     assert_eq!(memory_of(&arena, RED_A).target, None);
@@ -3857,7 +3862,7 @@ fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
     let answer = kept_memory(&live.3);
     assert_eq!(
         (answer.state, answer.target),
-        (ReflexState::Patrol, None),
+        (MachineState::Patrol, None),
         "and walked past it"
     );
     run_counted(&mut arena, at + 1_750, &mut bytes);
@@ -3874,7 +3879,7 @@ fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
     run_counted(&mut arena, from + 1_250, &mut bytes);
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Approach),
+        Some(MachineState::Approach),
         "the machine is on doctrine and fighting what it meets"
     );
 }
@@ -3969,7 +3974,7 @@ fn e2_b41_a_failed_goal_that_is_not_the_ordered_cell_drops_nothing() {
     let (_, counters) = run_counted(&mut arena, at + 8_000, &mut bytes);
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "the order still puts it in `Withdraw`"
     );
     assert!(
@@ -4164,7 +4169,7 @@ fn e2_b40_a_standing_withdraw_order_is_not_rallied_out_of() {
     run_counted(&mut arena, at + 3 * rally_ms + 2_000, &mut bytes);
     assert_eq!(
         state_of(&arena, RED_A),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "three rally periods of quiet and it left the state its commander put it in"
     );
     let row = memory_of(&arena, RED_A);
@@ -4203,7 +4208,7 @@ fn e2_b40_the_rally_runs_again_once_the_withdraw_order_has_expired() {
     run_counted(&mut whole, at + 12_250, &mut bytes);
     assert_eq!(
         state_of(&whole, RED_A),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "a whole hull comes back the moment the order stops standing"
     );
 
@@ -4217,7 +4222,7 @@ fn e2_b40_the_rally_runs_again_once_the_withdraw_order_has_expired() {
     run_counted(&mut hurt, at + 12_250, &mut bytes);
     assert_eq!(
         state_of(&hurt, RED_A),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "`Withdraw` is terminal for a hurt tank until it has rallied"
     );
     let started = memory_of(&hurt, RED_A)
@@ -4229,7 +4234,7 @@ fn e2_b40_the_rally_runs_again_once_the_withdraw_order_has_expired() {
     );
     let from = hurt.now_ms;
     run_counted(&mut hurt, from + rally_ms + 2_000, &mut bytes);
-    assert_eq!(state_of(&hurt, RED_A), Some(ReflexState::Patrol));
+    assert_eq!(state_of(&hurt, RED_A), Some(MachineState::Patrol));
     assert!(
         memory_of(&hurt, RED_A).rallied,
         "and it spent its one comeback here"
@@ -4401,7 +4406,7 @@ fn aa1_an_advance_ends_for_the_machine_that_cannot_carry_it_out() {
         fired_by(&events(&mut arena, &mut bytes), RED_A) > 0,
         "off the order, the immobile machine shoots at the hostile it holds"
     );
-    assert_eq!(state_of(&arena, RED_A), Some(ReflexState::Engage));
+    assert_eq!(state_of(&arena, RED_A), Some(MachineState::Engage));
     assert_eq!(
         arena.unit(RED_A).map(|unit| unit.pose.clone()),
         stands,

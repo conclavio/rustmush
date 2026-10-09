@@ -1956,7 +1956,7 @@ const STANDARD_DOCTRINE_SHA256: &str =
 /// 3. it compiles on the process's sandbox under `MIND_ABI`, and twice on a
 ///    fresh one caches ONE compilation;
 /// 4. **the state codes are integer literals pinned against
-///    `ReflexState::ALL`**: the header's table names every state at its
+///    `MachineState::ALL`**: the header's table names every state at its
 ///    `code()` and `as_str()`, and every literal the script compares or
 ///    writes `this.state` with is one of them;
 /// 5. **the binding limits** — at most 32 functions, every body at
@@ -1967,7 +1967,7 @@ const STANDARD_DOCTRINE_SHA256: &str =
 fn m2_the_standard_doctrine_source_is_pinned() {
     use mush_mind::{EngineLimits, Sandbox};
     use sha2::{Digest as _, Sha256};
-    use tacsim::arena::reflex::ReflexState;
+    use tacsim::arena::doctrine::MachineState;
     use tacsim::minds::{
         API_VERSION, MIND_ABI, MindManifest, STANDARD_RHAI, STANDARD_SHA256, STOCK_OPS_PER_THINK,
         STOCK_VERSION, register_api, standard_digest, standard_manifest, standard_sandbox,
@@ -2055,11 +2055,11 @@ fn m2_the_standard_doctrine_source_is_pinned() {
             (code.parse().expect("an integer code"), word)
         })
         .collect();
-    let all: Vec<(u8, &str)> = ReflexState::ALL
+    let all: Vec<(u8, &str)> = MachineState::ALL
         .iter()
         .map(|state| (state.code(), state.as_str()))
         .collect();
-    assert_eq!(named, all, "the script's state codes are ReflexState's");
+    assert_eq!(named, all, "the script's state codes are MachineState's");
     let mut literals = 0;
     for line in STANDARD_RHAI.lines() {
         let code = line.split("//").next().unwrap_or_default();
@@ -2069,7 +2069,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
                 let literal: u8 = literal.parse().expect("a state literal");
                 assert!(
                     all.iter().any(|(code, _)| *code == literal),
-                    "state {literal} is no ReflexState: {line}"
+                    "state {literal} is no MachineState: {line}"
                 );
                 literals += 1;
             }

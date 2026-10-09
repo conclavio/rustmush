@@ -32,7 +32,7 @@
 //! * the integer helpers, free: `sin_m`/`cos_m` → `motion::sin_fx`/`cos_fx`,
 //!   `bearing_to` → `perception::bearing_of` from the view's pose to a cell's
 //!   centre, `range_to` → `index::range_between` likewise, `arc` →
-//!   `reflex::arc_between`, `stand_off_want` → `reflex::stand_off_want`;
+//!   `doctrine::arc_between`, `stand_off_want` → `doctrine::stand_off_want`;
 //! * `rand(k)` → `rng::draw` under `DrawLabel::Mind` (D-UM-29).
 //!
 //! **Not registered: `hold_goal` and `hold_arrived`** (17b §1's departure
@@ -60,12 +60,12 @@ use super::fees::{
     FEE_HEALTH, FEE_HOLDS_ROW, FEE_HOSTILE_BASE, FEE_HOSTILE_ROW, FEE_LINE_TO, FEE_NAV, FEE_RAND,
     FEE_RANGES, FEE_READ, charge, per_row,
 };
+use crate::arena::doctrine::{self, arc_between};
 use crate::arena::index::range_between;
 use crate::arena::mind::{MindView, ViewContact};
 use crate::arena::motion::{cos_fx, sin_fx};
 use crate::arena::motor::{self, WalkStep};
 use crate::arena::perception::bearing_of;
-use crate::arena::reflex::{self, arc_between};
 use crate::arena::rng::{DrawLabel, draw};
 use crate::arena::state::{CostRow, NO_SUCH_CONTACT};
 use crate::arena::stock_mind::{
@@ -79,11 +79,11 @@ const TURN_MDEG: INT = 360_000;
 /// The refusal a weapon id the view does not carry answers.
 const NO_SUCH_WEAPON: &str = "No such weapon on this hull.";
 
-/// **What `ranges` answers** (`Ranges`): T1's [`reflex::Ranges`] —
+/// **What `ranges` answers** (`Ranges`): T1's [`doctrine::Ranges`] —
 /// `engage_cm`, `release_cm`, `stand_cm`, `limit_cm`, centimetres, saturating
 /// at `INT::MAX`.
 #[derive(Clone, Copy, Debug)]
-pub struct Ranges(pub reflex::Ranges);
+pub struct Ranges(pub doctrine::Ranges);
 
 /// **What `patrol_step` and `fall_back_to_waypoint` answer** (`Walk`): the
 /// motor's [`WalkStep`] — `waypoint` and `from_waypoint` (`()` or an INT
@@ -364,10 +364,10 @@ fn range_to(v: &mut View, at: Array) -> Result<INT, Box<EvalAltResult>> {
 }
 
 /// **`stand_off_want(engage_cm, cell_cm, range_cm)`** —
-/// `reflex::stand_off_want`; free.
+/// `doctrine::stand_off_want`; free.
 fn stand_off_want(engage_cm: INT, cell_cm: INT, range_cm: INT) -> Result<INT, Box<EvalAltResult>> {
     const TEXT: &str = "stand_off_want takes three distances from 0";
-    let want = reflex::stand_off_want(
+    let want = doctrine::stand_off_want(
         bounded(engage_cm, TEXT)?,
         bounded(cell_cm, TEXT)?,
         bounded(range_cm, TEXT)?,
@@ -753,7 +753,7 @@ mod tests {
         assert_eq!(shown(&eval("arc(350000, 10000)").expect("arc")), "20000");
         assert_eq!(
             shown(&eval("stand_off_want(4000, 1000, 300)").expect("want")),
-            reflex::stand_off_want(4_000, 1_000, 300).to_string()
+            doctrine::stand_off_want(4_000, 1_000, 300).to_string()
         );
         let (x, y, z) = cell_point(&map, (4, 4));
         assert_eq!(

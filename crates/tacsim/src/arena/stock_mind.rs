@@ -105,6 +105,10 @@ use smol_str::SmolStr;
 use crate::arena::card::StockCard;
 use crate::arena::conditions::{Arming, FireCondition, SlotTarget};
 use crate::arena::damage::{BLOCKED, COVER};
+use crate::arena::doctrine::{
+    EXPOSURE_FLANK, EXPOSURE_FRONT, EXPOSURE_REAR, MachineState, Ranges, SCREEN_HALF_ARC_MDEG,
+    STAND_TICKS, SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS, arc_between, stand_off_want,
+};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::{
     MemValue, Memory, MindRunner, MindView, ThinkJob, ThinkResult, ViewContact, decode_memory,
@@ -115,10 +119,6 @@ use crate::arena::motor::{
     stand_off_cell,
 };
 use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
-use crate::arena::reflex::{
-    EXPOSURE_FLANK, EXPOSURE_FRONT, EXPOSURE_REAR, REFLEX_STAND_TICKS, Ranges, ReflexState,
-    SCREEN_HALF_ARC_MDEG, SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS, arc_between, stand_off_want,
-};
 use crate::arena::state::{
     ArenaDefinition, Classification, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldState, Power,
 };
@@ -168,8 +168,8 @@ pub const STOCK_MEMORY_KEY_NAMES: [&str; 15] = [
 /// Z.2 ends; the arena's own expiry still comes).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StockMemory {
-    /// `state`: where it is in the machine ([`ReflexState::code`]).
-    pub state: ReflexState,
+    /// `state`: where it is in the machine ([`MachineState::code`]).
+    pub state: MachineState,
     /// `target`: the hostile it settled on, by its own row's [`ContactId`]
     /// (stored as the id's 64 bits read as an `i64`).
     pub target: Option<ContactId>,
@@ -255,8 +255,8 @@ fn int_value(value: Option<i64>) -> MemValue {
 }
 
 /// The state a code names, `Startup` for none.
-fn state_of(code: Option<i64>) -> ReflexState {
-    ReflexState::ALL
+fn state_of(code: Option<i64>) -> MachineState {
+    MachineState::ALL
         .iter()
         .copied()
         .find(|state| Some(i64::from(state.code())) == code)
@@ -386,8 +386,9 @@ pub fn fight_limit_cm(view: &MindView) -> u64 {
     )
 }
 
-/// **Armour plus internals, per mille** (the reflex's
-/// `reflex_health_permille`, over the view's own sections): every facet's
+/// **Armour plus internals, per mille** (`Arena::health_permille`, the
+/// reflex's `reflex_health_permille` until 17b cut M4.6a, over the view's own
+/// sections): every facet's
 /// armour and every section's internals, current against maximum; a hull
 /// with none reads `1000`, a wreck `0`.
 #[must_use]
@@ -914,7 +915,7 @@ impl NativeStockMind {
         // ---- the `Disabled` edge, before anything else ----
         if view.wreck || (view.immobile && view.weapons.is_empty()) {
             *mem = StockMemory {
-                state: ReflexState::Disabled,
+                state: MachineState::Disabled,
                 ..StockMemory::default()
             };
             return Vec::new();
@@ -937,7 +938,7 @@ impl NativeStockMind {
             }
             // 16b cut Z.2's review: a supporter's station, in `Patrol`.
             if live.is_some_and(|order| matches!(order.objective, MindObjective::Support { .. }))
-                && mem.state == ReflexState::Patrol
+                && mem.state == MachineState::Patrol
             {
                 mem.ignore_until_ms = live.map(|order| order.expires_ms);
             }
@@ -997,12 +998,12 @@ impl NativeStockMind {
         // going home, and so does a released seat's seeded `Withdraw`, which
         // no order put there (it rallies on Q.7's clock).
         if view.order.is_none()
-            && mem.state == ReflexState::Withdraw
+            && mem.state == MachineState::Withdraw
             && mem.ordered
             && !dry
             && health >= cfg.withdraw_permille
         {
-            mem.state = ReflexState::Patrol;
+            mem.state = MachineState::Patrol;
             mem.target = None;
             mem.ordered = false;
             goal = None;
@@ -1045,8 +1046,8 @@ impl NativeStockMind {
             Power::Off => {
                 // 16b cut D.3 (`B-34`): a cold tank starts up, wherever it is
                 // going; a `Withdraw` stays one.
-                if mem.state != ReflexState::Withdraw {
-                    mem.state = ReflexState::Startup;
+                if mem.state != MachineState::Withdraw {
+                    mem.state = MachineState::Startup;
                 }
                 mem.goal = held;
                 // 17b cut M1b.2: a cold hull's slots are disarmed, after the
@@ -1056,15 +1057,15 @@ impl NativeStockMind {
                 return intents;
             }
             Power::Starting => {
-                if mem.state != ReflexState::Withdraw {
-                    mem.state = ReflexState::Startup;
+                if mem.state != MachineState::Withdraw {
+                    mem.state = MachineState::Startup;
                 }
                 mem.goal = held;
                 return arming_for(view, card, None, slots);
             }
             Power::Online => {
-                if matches!(mem.state, ReflexState::Startup | ReflexState::Disabled) {
-                    mem.state = ReflexState::Patrol;
+                if matches!(mem.state, MachineState::Startup | MachineState::Disabled) {
+                    mem.state = MachineState::Patrol;
                     goal = None;
                 }
             }
@@ -1078,8 +1079,8 @@ impl NativeStockMind {
             && contact(view, target).is_none_or(|row| row.reads_dead == Some(true))
         {
             mem.target = None;
-            if matches!(mem.state, ReflexState::Approach | ReflexState::Engage) {
-                mem.state = ReflexState::Patrol;
+            if matches!(mem.state, MachineState::Approach | MachineState::Engage) {
+                mem.state = MachineState::Patrol;
                 goal = None;
             }
         }
@@ -1087,8 +1088,8 @@ impl NativeStockMind {
         // ---- what the order does to the machine (16b cut N.2, Z.2) ----
         match objective {
             Some(MindObjective::Withdraw) => {
-                if mem.state != ReflexState::Withdraw {
-                    mem.state = ReflexState::Withdraw;
+                if mem.state != MachineState::Withdraw {
+                    mem.state = MachineState::Withdraw;
                     mem.target = None;
                     goal = None;
                     mem.last_plot = None;
@@ -1099,8 +1100,8 @@ impl NativeStockMind {
             Some(
                 MindObjective::Hold | MindObjective::Advance { .. } | MindObjective::Screen { .. },
             ) => {
-                if matches!(mem.state, ReflexState::Approach | ReflexState::Engage) {
-                    mem.state = ReflexState::Patrol;
+                if matches!(mem.state, MachineState::Approach | MachineState::Engage) {
+                    mem.state = MachineState::Patrol;
                     goal = None;
                 }
                 mem.target = None;
@@ -1109,10 +1110,10 @@ impl NativeStockMind {
         }
 
         // ---- the `Withdraw` edges (16b cut Q.7) ----
-        if mem.state != ReflexState::Withdraw
+        if mem.state != MachineState::Withdraw
             && (dry || (!mem.rallied && health < cfg.withdraw_permille))
         {
-            mem.state = ReflexState::Withdraw;
+            mem.state = MachineState::Withdraw;
             mem.target = None;
             goal = None;
             mem.last_plot = None;
@@ -1129,7 +1130,7 @@ impl NativeStockMind {
             Some(MindObjective::Support { of })
                 if matches!(
                     mem.state,
-                    ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
+                    MachineState::Patrol | MachineState::Approach | MachineState::Engage
                 ) =>
             {
                 Some(of.and_then(|of| contact(view, of)))
@@ -1156,7 +1157,7 @@ impl NativeStockMind {
         if may_pursue
             && matches!(
                 mem.state,
-                ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
+                MachineState::Patrol | MachineState::Approach | MachineState::Engage
             )
         {
             match best_hostile(view, &Weights::of(cfg), health, hint(order), |_| true) {
@@ -1165,14 +1166,14 @@ impl NativeStockMind {
                         mem.target = Some(found);
                         goal = None;
                     }
-                    if mem.state == ReflexState::Patrol {
-                        mem.state = ReflexState::Approach;
+                    if mem.state == MachineState::Patrol {
+                        mem.state = MachineState::Approach;
                     }
                 }
                 None => {
                     mem.target = None;
-                    if matches!(mem.state, ReflexState::Approach | ReflexState::Engage) {
-                        mem.state = ReflexState::Patrol;
+                    if matches!(mem.state, MachineState::Approach | MachineState::Engage) {
+                        mem.state = MachineState::Patrol;
                         goal = None;
                     }
                 }
@@ -1183,8 +1184,8 @@ impl NativeStockMind {
         if mem.no_line {
             mem.no_line = false;
             goal = None;
-            if mem.state == ReflexState::Engage {
-                mem.state = ReflexState::Approach;
+            if mem.state == MachineState::Engage {
+                mem.state = MachineState::Approach;
             }
         }
 
@@ -1204,8 +1205,8 @@ impl NativeStockMind {
             // hold where it stands and fight from there.
             _ if stands => {
                 leashed = true;
-                if matches!(mem.state, ReflexState::Approach | ReflexState::Engage) {
-                    mem.state = ReflexState::Patrol;
+                if matches!(mem.state, MachineState::Approach | MachineState::Engage) {
+                    mem.state = MachineState::Patrol;
                 }
                 mem.target = None;
                 goal = here;
@@ -1231,7 +1232,7 @@ impl NativeStockMind {
             // the charge, firing nothing until it is back inside.
             Some(Some(plot)) if off_leash => {
                 leashed = true;
-                mem.state = ReflexState::Patrol;
+                mem.state = MachineState::Patrol;
                 mem.target = None;
                 mem.last_plot = None;
                 mem.hunt = None;
@@ -1247,8 +1248,8 @@ impl NativeStockMind {
         let station_on = if leashed { None } else { leash.flatten() };
         if !leashed {
             match mem.state {
-                ReflexState::Startup | ReflexState::Disabled => {}
-                ReflexState::Patrol => {
+                MachineState::Startup | MachineState::Disabled => {}
+                MachineState::Patrol => {
                     let movement = matches!(
                         objective,
                         Some(
@@ -1342,7 +1343,7 @@ impl NativeStockMind {
                 }
                 // Every range, goal and heading off the hull's own row of its
                 // target — the plot, at the view's resolution.
-                ReflexState::Approach => {
+                MachineState::Approach => {
                     if let Some(target) = mem.target {
                         let row = contact(view, target);
                         let range = row.map_or(u64::MAX, row_range_cm);
@@ -1356,7 +1357,7 @@ impl NativeStockMind {
                         };
                         if ranges.limit_cm != 0 && range <= close_edge.max(1) {
                             if line_between(def, here, row.and_then(|row| row.cell)) {
-                                mem.state = ReflexState::Engage;
+                                mem.state = MachineState::Engage;
                                 goal = None;
                                 if let Some(row) = row {
                                     engage_orders(
@@ -1384,12 +1385,12 @@ impl NativeStockMind {
                         }
                     }
                 }
-                ReflexState::Engage => {
+                MachineState::Engage => {
                     if let Some(target) = mem.target {
                         let row = contact(view, target);
                         let range = row.map_or(u64::MAX, row_range_cm);
                         if ranges.limit_cm == 0 || range > ranges.release_cm {
-                            mem.state = ReflexState::Approach;
+                            mem.state = MachineState::Approach;
                             let want = stand_off_want(ranges.engage_cm, cell_cm.max(1), range);
                             goal = row
                                 .and_then(|row| stand_off_of(def, view, row, want))
@@ -1415,7 +1416,7 @@ impl NativeStockMind {
                     }
                 }
                 // 16b cut Q.7: home, the stand, the dwell, the rally.
-                ReflexState::Withdraw => {
+                MachineState::Withdraw => {
                     if goal.is_none() {
                         goal = here
                             .and_then(|cell| entry_cell(def, view.team, CostRow::Tracked, cell))
@@ -1430,9 +1431,10 @@ impl NativeStockMind {
                     let cornered = self.withdraw_stand(view, def, health, arrived, &ranges, order);
                     if let Some(row) = cornered {
                         stood_cell = row.cell;
-                        mem.stand_until_ms = Some(t_ms.saturating_add(
-                            REFLEX_STAND_TICKS.saturating_mul(i64::from(cfg.decide_ms)),
-                        ));
+                        mem.stand_until_ms =
+                            Some(t_ms.saturating_add(
+                                STAND_TICKS.saturating_mul(i64::from(cfg.decide_ms)),
+                            ));
                         mem.quiet_since_ms = None;
                         plan.stop = true;
                         plan.heading_mdeg = Some(row.bearing_deg.saturating_mul(1_000));
@@ -1455,7 +1457,7 @@ impl NativeStockMind {
                         } else {
                             let since = *mem.quiet_since_ms.get_or_insert(t_ms);
                             if t_ms.saturating_sub(since) >= i64::from(cfg.rally_ms) {
-                                mem.state = ReflexState::Patrol;
+                                mem.state = MachineState::Patrol;
                                 mem.rallied = true;
                                 goal = None;
                                 mem.quiet_since_ms = None;
@@ -1470,7 +1472,7 @@ impl NativeStockMind {
         //      E.4) ----
         if let Some(cell) = stood_cell {
             mem.last_plot = Some((cell, t_ms));
-        } else if matches!(mem.state, ReflexState::Approach | ReflexState::Engage)
+        } else if matches!(mem.state, MachineState::Approach | MachineState::Engage)
             && let Some(cell) = mem
                 .target
                 .and_then(|target| contact(view, target))
@@ -1478,7 +1480,7 @@ impl NativeStockMind {
         {
             mem.last_plot = Some((cell, t_ms));
         }
-        if mem.state != ReflexState::Patrol {
+        if mem.state != MachineState::Patrol {
             mem.hunt = None;
             mem.unheld_since_ms = Some(t_ms);
         }
@@ -2080,7 +2082,7 @@ mod tests {
     #[test]
     fn m1a6_the_stock_memory_is_fifteen_keys_and_round_trips() {
         let full = StockMemory {
-            state: ReflexState::Withdraw,
+            state: MachineState::Withdraw,
             target: Some(ContactId(0xF00D_0000_0000_0001)),
             goal: Some((12, 34)),
             waypoint: Some(3),
@@ -2282,7 +2284,7 @@ mod tests {
         let mut fight = StockMemory::default();
         let found = think(&arena, &view_of(&arena, RED), &mut fight, 1_000);
         emission_holds(&found);
-        assert_eq!(fight.state, ReflexState::Engage);
+        assert_eq!(fight.state, MachineState::Engage);
         assert!(
             matches!(
                 found.as_slice(),
@@ -2331,7 +2333,7 @@ mod tests {
             outcome: DriveOutcome::NoRoute,
         }];
         let start = StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             goal: Some(failed),
             waypoint: Some(1),
             last_plot: Some((failed, 9_000)),
@@ -2380,7 +2382,7 @@ mod tests {
         );
         // No notice, no give-up: the hull drives on to the goal it holds.
         let mut quiet = StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             goal: Some((1, 4)),
             waypoint: Some(0),
             unheld_since_ms: Some(0),
@@ -2403,7 +2405,7 @@ mod tests {
         online(&mut arena, RED);
         let named = (50, 40);
         let start = StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             goal: Some(named),
             hunt: Some(named),
             waypoint: Some(1),
@@ -2575,7 +2577,7 @@ mod tests {
     /// A patrolling memory with nothing seen and the hunt's clock just set.
     fn patrolling(t_ms: i64) -> StockMemory {
         StockMemory {
-            state: ReflexState::Patrol,
+            state: MachineState::Patrol,
             unheld_since_ms: Some(t_ms),
             ..StockMemory::default()
         }
@@ -2650,7 +2652,7 @@ mod tests {
         let stop = think_holding(&there, &view_of(&there, RED), &mut parked, &hold, 3_000);
         assert_eq!(stop, vec![IntentKind::Goal(MotorGoal::Hold)]);
         assert_eq!(parked.goal, None);
-        assert_eq!(parked.state, ReflexState::Patrol);
+        assert_eq!(parked.state, MachineState::Patrol);
     }
 
     /// **An `Advance` into the Hold square ends on arrival** (16b cut O.1's
@@ -2706,12 +2708,12 @@ mod tests {
             ranges.release_cm
         );
         let mut closing = StockMemory {
-            state: ReflexState::Approach,
+            state: MachineState::Approach,
             target: Some(ContactId(0x55)),
             ..patrolling(0)
         };
         let inside = think_holding(&arena, &view, &mut closing, &hold, 1_000);
-        assert_eq!(closing.state, ReflexState::Approach);
+        assert_eq!(closing.state, MachineState::Approach);
         assert_eq!(
             inside,
             vec![IntentKind::Goal(MotorGoal::Cell { x: 31, y: 20 })],
@@ -2759,7 +2761,7 @@ mod tests {
             "the row at 90° is outside a 60° half-arc"
         );
         assert_eq!(memory.target, None);
-        assert_eq!(memory.state, ReflexState::Patrol);
+        assert_eq!(memory.state, MachineState::Patrol);
         hold(&mut arena, RED, BLUE, ContactId(0x11));
         let mut view = view_of(&arena, RED);
         view.order = Some(order_of(MindObjective::Screen { facing_mdeg: 0 }));
@@ -2781,7 +2783,7 @@ mod tests {
         );
         assert_eq!(
             memory.state,
-            ReflexState::Patrol,
+            MachineState::Patrol,
             "a screen never gives chase"
         );
         assert_eq!(memory.last_plot.map(|(cell, _)| cell), Some((20, 30)));
@@ -2822,7 +2824,7 @@ mod tests {
             "{stood:?}"
         );
         assert_eq!(blind.target, None);
-        assert_eq!(blind.state, ReflexState::Patrol);
+        assert_eq!(blind.state, MachineState::Patrol);
         // (b) Off the leash: 30 cells from the charge's plot.
         hold(&mut arena, RED, MATE, ContactId(0x99));
         let mut leashed_view = view_of(&arena, RED);
@@ -2830,7 +2832,7 @@ mod tests {
             of: Some(ContactId(0x99)),
         }));
         let mut leashed = StockMemory {
-            state: ReflexState::Engage,
+            state: MachineState::Engage,
             target: Some(ContactId(0x11)),
             ..patrolling(0)
         };
@@ -2845,7 +2847,7 @@ mod tests {
             ),
             "toward the station, south, firing nothing — no slot armed to clear: {back:?}"
         );
-        assert_eq!(leashed.state, ReflexState::Patrol);
+        assert_eq!(leashed.state, MachineState::Patrol);
         assert_eq!(leashed.target, None);
         // (c) Inside its station: parked.
         let mut close = field(vec![
@@ -2900,7 +2902,7 @@ mod tests {
         online(&mut arena, RED);
         let view = view_of(&arena, RED);
         let withdrawing = StockMemory {
-            state: ReflexState::Withdraw,
+            state: MachineState::Withdraw,
             target: Some(ContactId(0x11)),
             // 17b cut M4.3: the order's `Withdraw`, which the expiry restores.
             ordered: true,
@@ -2908,7 +2910,7 @@ mod tests {
         };
         let mut expired = withdrawing.clone();
         let _ = think(&arena, &view, &mut expired, 1_000);
-        assert_eq!(expired.state, ReflexState::Patrol);
+        assert_eq!(expired.state, MachineState::Patrol);
         assert_eq!(expired.target, None);
         assert!(!expired.ordered, "the restoration spends the flag");
         // 17b cut M4.3: a `Withdraw` no order put it in — a released seat's
@@ -2918,12 +2920,12 @@ mod tests {
             ..withdrawing.clone()
         };
         let _ = think(&arena, &view, &mut seeded, 1_000);
-        assert_eq!(seeded.state, ReflexState::Withdraw);
+        assert_eq!(seeded.state, MachineState::Withdraw);
         let mut ordered_view = view.clone();
         ordered_view.order = Some(order_of(MindObjective::Withdraw));
         let mut ordered = withdrawing.clone();
         let _ = think(&arena, &ordered_view, &mut ordered, 1_000);
-        assert_eq!(ordered.state, ReflexState::Withdraw);
+        assert_eq!(ordered.state, MachineState::Withdraw);
         let mut hurt_view = view;
         for section in &mut hurt_view.sections {
             if let Some((_, max)) = section.internals {
@@ -2936,7 +2938,7 @@ mod tests {
         assert!(health_permille(&hurt_view) < arena.arena_cfg.reflex.withdraw_permille);
         let mut hurt = withdrawing;
         let _ = think(&arena, &hurt_view, &mut hurt, 1_000);
-        assert_eq!(hurt.state, ReflexState::Withdraw);
+        assert_eq!(hurt.state, MachineState::Withdraw);
     }
 
     /// **The `no line` edge off a miss notice** (W's `blocked`/`cover`; the
@@ -2960,13 +2962,13 @@ mod tests {
             row.range_m = between_m;
         }
         let engaged = StockMemory {
-            state: ReflexState::Engage,
+            state: MachineState::Engage,
             target: Some(ContactId(0x77)),
             ..patrolling(0)
         };
         let mut standing = engaged.clone();
         let stand = think(&arena, &view, &mut standing, 1_000);
-        assert_eq!(standing.state, ReflexState::Engage);
+        assert_eq!(standing.state, MachineState::Engage);
         assert!(
             stand.contains(&IntentKind::Goal(MotorGoal::Hold)),
             "{stand:?}"
@@ -2978,7 +2980,7 @@ mod tests {
         let mut blocked = engaged;
         let closed = think(&arena, &view, &mut blocked, 1_000);
         emission_holds(&closed);
-        assert_eq!(blocked.state, ReflexState::Approach);
+        assert_eq!(blocked.state, MachineState::Approach);
         assert!(!blocked.no_line, "spent");
         assert!(
             matches!(
@@ -3150,7 +3152,7 @@ mod tests {
         let mut fight = StockMemory::default();
         let found = think(&arena, &view, &mut fight, 1_000);
         emission_holds(&found);
-        assert_eq!(fight.state, ReflexState::Engage);
+        assert_eq!(fight.state, MachineState::Engage);
         let [arm, lock, fire] = found.as_slice() else {
             panic!("{found:?}");
         };
@@ -3288,13 +3290,13 @@ mod tests {
             row.range_m = (ranges.stand_cm / 100).saturating_sub(10);
         }
         let mut withdrawing = StockMemory {
-            state: ReflexState::Withdraw,
+            state: MachineState::Withdraw,
             goal: Some((1, 1)),
             ..StockMemory::default()
         };
         let cornered = think(&arena, &home, &mut withdrawing, 1_000);
         emission_holds(&cornered);
-        assert_eq!(withdrawing.state, ReflexState::Withdraw);
+        assert_eq!(withdrawing.state, MachineState::Withdraw);
         let Some(arm) = cornered.first() else {
             panic!("the cornered hull answers: {cornered:?}");
         };
@@ -3479,5 +3481,306 @@ mod tests {
                 .is_ok(),
             "the citation holds its warrant"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 17b cut M4.6a (the critic's D11): the reflex's two orphan pins, tried
+    // row for row on the view
+    // -----------------------------------------------------------------------
+
+    /// **The stock tank's three rows of `Ranges`' table, read off the view**
+    /// (17b cut M4.6a, D11): the reflex's
+    /// `e1_the_stock_tanks_three_rows_of_the_range_table` row for row, its
+    /// fixture flown by a mind and every distance read by [`view_ranges`] off
+    /// the mind's view instead of by the reflex's `ranges` off the live unit —
+    /// the four order bands, `release_cm > engage_cm` under each, no order as
+    /// the `far` row, the operator's one thousand, the short first band and
+    /// the dry platform. Every row is the reflex test's own, so when that test
+    /// dies with the reflex (17b cut M4.6c) this one holds the table.
+    ///
+    /// The shipped numbers, written here rather than read off the pack: a
+    /// 60-cell sight of 1,000 cm cells, a cannon whose bands are 1.5 km and 3
+    /// km, and doctrine's `engage_band_permille` of 700.
+    #[test]
+    fn e1_the_stock_tanks_three_rows_of_the_range_table_off_the_view() {
+        use crate::arena::doctrine::Ranges;
+        use crate::arena::perception::{SensorProfile, SignatureFactor};
+        use crate::arena::state::WeaponSummary;
+        use crate::arena::test_support::{arena_of, tank};
+        use crate::arena::weapons::{DEFAULT_WEAPON, WeaponBand};
+
+        let mut fixture = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+        fixture.sensor = Some(SensorProfile {
+            component: smol_str::SmolStr::new("visual_sensor"),
+            max_range_cells: 60,
+            max_attenuation: 40,
+            classify_after_ms: 3_000,
+            sees_wrecks: false,
+            share_range_cells: 30,
+            signature: vec![SignatureFactor {
+                class: mush_atlas::TerrainClass::Ground,
+                moving_permille: 1_000,
+                stopped_permille: 1_000,
+            }],
+        });
+        fixture.weapons = vec![WeaponSummary {
+            id: SmolStr::new(DEFAULT_WEAPON),
+            max_range_cm: 300_000,
+            cycle_ms: 4_000,
+            ammunition: SmolStr::new("tacsim.ammunition.he_105"),
+            burst_rounds: 1,
+            muzzle_speed_cms: 145_000,
+            bands: vec![
+                WeaponBand {
+                    max_range_cm: 150_000,
+                    dispersion_mrad: 3,
+                },
+                WeaponBand {
+                    max_range_cm: 300_000,
+                    dispersion_mrad: 6,
+                },
+            ],
+            count_per_load: 40,
+            damage: 120,
+            mount_section: SmolStr::new("turret"),
+        }];
+        fixture.controller = Controller::Mind;
+        fixture
+            .reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
+        let arena = arena_of(vec![fixture]);
+        let view = view_of(&arena, ObjId(4));
+        assert_eq!(sight_cm(&view), 60_000, "600 m of scope");
+        assert_eq!(
+            fight_inner_cm_of(
+                loaded_weapon(&view).and_then(|weapon| weapon.bands_cm.first().copied()),
+                sight_cm(&view)
+            ),
+            60_000
+        );
+        assert_eq!(fight_limit_cm(&view), 60_000);
+
+        let cfg = ReflexConfig::default();
+        let ordered = |band: Option<RangeBand>| FrameOrder {
+            max_range_band: band,
+            ..order_of(MindObjective::Engage { target: None })
+        };
+        for (band, engage_cm, release_cm, stand_cm) in [
+            (None, 42_000_u64, 60_000_u64, 20_000_u64),
+            (Some(RangeBand::Far), 42_000, 60_000, 20_000),
+            (Some(RangeBand::Effective), 28_000, 40_000, 20_000),
+            (Some(RangeBand::Close), 14_000, 20_000, 20_000),
+        ] {
+            let order = ordered(band);
+            let have = view_ranges(&view, cfg.engage_band_permille, Some(&order));
+            assert_eq!(
+                have,
+                Ranges {
+                    engage_cm,
+                    release_cm,
+                    stand_cm,
+                    limit_cm: 60_000,
+                },
+                "the stock tank under {band:?}"
+            );
+            assert!(
+                have.release_cm > have.engage_cm,
+                "the hysteresis collapsed under {band:?}: {have:?}"
+            );
+        }
+        // No order at all is the `far` row, and the `far` row caps nothing.
+        assert_eq!(
+            view_ranges(&view, cfg.engage_band_permille, None),
+            view_ranges(
+                &view,
+                cfg.engage_band_permille,
+                Some(&ordered(Some(RangeBand::Far)))
+            )
+        );
+
+        // An operator who writes one thousand has asked for one distance and
+        // gets it — which is the key's own doc, pinned.
+        let flat = ReflexConfig {
+            engage_band_permille: 1_000,
+            ..cfg.clone()
+        };
+        let have = view_ranges(&view, flat.engage_band_permille, None);
+        assert_eq!((have.engage_cm, have.release_cm), (60_000, 60_000));
+
+        // **A short first band**: the `close` band is a third of the *last* edge
+        // and `release_cm` is the *first* one, so a gun whose inner band is under
+        // a third of its outer reach would leave an en-route stand wider than the
+        // firing ceiling. The hull's own band is cut and the view read again.
+        let mut stubby = arena;
+        if let Some(state) = stubby.unit_mut(ObjId(4))
+            && let Some(weapon) = state.weapons.first_mut()
+            && let Some(band) = weapon.bands.first_mut()
+        {
+            band.max_range_cm = 10_000;
+        }
+        let view = view_of(&stubby, ObjId(4));
+        let have = view_ranges(&view, cfg.engage_band_permille, None);
+        assert_eq!(
+            have,
+            Ranges {
+                engage_cm: 7_000,
+                release_cm: 10_000,
+                stand_cm: 10_000,
+                limit_cm: 60_000,
+            },
+            "a 100 m first band on a 3 km gun: the `close` band would have been 200 m"
+        );
+        assert!(
+            have.stand_cm <= have.release_cm,
+            "an en-route stand can never be wider than the firing ceiling: {have:?}"
+        );
+
+        // And a platform with nothing loaded has no distances at all.
+        let mut dry = stubby;
+        if let Some(state) = dry.unit_mut(ObjId(4)) {
+            state.ammo.insert(SmolStr::new(DEFAULT_WEAPON), 0);
+        }
+        let view = view_of(&dry, ObjId(4));
+        assert_eq!(
+            view_ranges(&view, cfg.engage_band_permille, None),
+            Ranges::default()
+        );
+    }
+
+    /// **A weapon that makes no heat never holds the mind back, and a hot
+    /// one only at the ceiling** (17b cut M4.6a, D11): the reflex's
+    /// `d2_a_weapon_that_makes_no_heat_never_holds_the_controller_back` row for
+    /// row, its fixture flown by a mind and every answer read by
+    /// [`would_overheat`] off the mind's view instead of by the reflex's copy
+    /// off the live unit — cold, one shot short of the ceiling (16b cut E.2's
+    /// `T-55` row), at the ceiling, and no heat state at all. The hull carries
+    /// the two weapons the reflex test names, so the view has a row for each
+    /// (the reflex's copy took a name; the view's takes the row). Its last row
+    /// holds on the view by another branch: the frame writes a weapon's
+    /// per-shot heat as nought when the hull has no heat state (the cells
+    /// still read cooked), so a change that took the per-shot heat off the
+    /// weapon's definition would flip that row.
+    #[test]
+    fn d2_a_weapon_that_makes_no_heat_never_holds_the_mind_back() {
+        use crate::arena::state::{HeatState, UnitState, WeaponSummary};
+        use crate::arena::test_support::{arena_of, cannon, tank};
+
+        let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+        unit.unit = d11_hot_tactical_unit(ObjId(4));
+        unit.weapons = ["laser", "machine_gun"]
+            .into_iter()
+            .map(|id| WeaponSummary {
+                id: SmolStr::new(id),
+                ..cannon()
+            })
+            .collect();
+        unit.controller = Controller::Mind;
+        unit.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
+        let mut arena = arena_of(vec![unit]);
+        if let Some(state) = arena.unit_mut(ObjId(4)) {
+            state.heat = Some(HeatState {
+                section: SmolStr::new("hull"),
+                max: 60,
+                per_s: 3,
+                per_shot: [(SmolStr::new("laser"), 20)].into_iter().collect(),
+                carry_milli: 0,
+            });
+        }
+        let asked = |arena: &Arena| -> (bool, bool) {
+            let view = view_of(arena, ObjId(4));
+            let row = |id: &str| {
+                view.weapons
+                    .iter()
+                    .find(|weapon| weapon.id == id)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("the view's {id} row"))
+            };
+            (
+                would_overheat(&view, &row("laser")),
+                would_overheat(&view, &row("machine_gun")),
+            )
+        };
+        // Cold: neither is held back.
+        assert_eq!(asked(&arena), (false, false));
+        // One shot short of the ceiling: the engine accepts a shot that would
+        // carry a unit past the maximum and clamps it there, and refuses only
+        // AT the ceiling, so the mind takes this one too.
+        d11_set_heat(&mut arena, ObjId(4), 50);
+        assert_eq!(asked(&arena), (false, false));
+        // **At** the ceiling: the engine refuses the hot gun and takes the cold
+        // one, and so does the mind.
+        d11_set_heat(&mut arena, ObjId(4), 60);
+        assert_eq!(asked(&arena), (true, false));
+        assert_eq!(
+            arena.unit(ObjId(4)).map(UnitState::overheated),
+            Some(true),
+            "the engine's own predicate agrees the platform is cooked"
+        );
+        // And a platform with no heat state at all answers `false` for both.
+        if let Some(state) = arena.unit_mut(ObjId(4)) {
+            state.heat = None;
+        }
+        assert_eq!(asked(&arena), (false, false));
+    }
+
+    /// The fixture's one-section unit **with a heat cell on its hull** (the
+    /// reflex's d2 fixture, copied for its mirror above).
+    fn d11_hot_tactical_unit(id: ObjId) -> mush_tactics::TacticalUnit {
+        use crate::arena::test_support::{dref, rules};
+        let cell = |name: &str, max: i64, init: i64| mush_tactics::CellSpec {
+            id: mush_tactics::CellId::new(name).expect("a cell"),
+            min: 0,
+            max,
+            init,
+        };
+        let spec = mush_tactics::UnitSpec {
+            definition: dref("unit", "tacsim.unit.line_tank"),
+            sections: vec![mush_tactics::SectionSpec {
+                id: mush_tactics::SectionId::new("hull").expect("a section"),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                facets: vec![mush_tactics::FacetSpec {
+                    id: mush_tactics::FacetId::new("front").expect("a facet"),
+                    cells: vec![cell("armor", 10, 10)],
+                }],
+                slots: Vec::new(),
+                cells: vec![
+                    cell("internals", 8, 8),
+                    cell(crate::definitions::unit::HEAT_CELL, 60, 0),
+                ],
+            }],
+            unit_cells: Vec::new(),
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            mobility: None,
+            rules: rules(),
+        };
+        mush_tactics::TacticalUnit::from_spec(&spec, id).expect("a one-section unit with heat")
+    }
+
+    /// Put the heat cell at `value` through one plan (the reflex's d2 helper,
+    /// copied for its mirror above).
+    fn d11_set_heat(arena: &mut Arena, unit: ObjId, value: i64) {
+        let addr = mush_tactics::CellAddr::Section {
+            section: mush_tactics::SectionId::new("hull").expect("a section"),
+            cell: mush_tactics::CellId::new(crate::definitions::unit::HEAT_CELL).expect("a cell"),
+        };
+        let hot = {
+            let Some(state) = arena.unit(unit) else {
+                panic!("the fixture tank");
+            };
+            let plan = mush_tactics::UnitMutationPlan::new(
+                vec![mush_tactics::UnitMutationOp::SetCell { addr, value }],
+                None,
+                Some(SmolStr::new("test:heat")),
+            )
+            .expect("a one-op plan");
+            mush_tactics::apply(&state.unit, &plan, 0)
+                .expect("the plan applies")
+                .0
+        };
+        if let Some(state) = arena.unit_mut(unit) {
+            state.unit = hot;
+        }
     }
 }

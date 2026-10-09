@@ -108,9 +108,9 @@ const BLUE_TANK: &str = "Blue Tank 1";
 /// * **inside the cannon's reach**, `cannon_105`'s 300,000 cm (3 km) and its
 ///   inner band's 150,000 cm, so `FIRE` has a target the arena would shoot;
 /// * **outside the 200 m `stand_cm`** a withdrawing machine turns and fights
-///   inside (`arena/reflex.rs`' `Ranges::stand_cm`, the `close` band: a third of
+///   inside (`arena/doctrine.rs`' `Ranges::stand_cm`, the `close` band: a third of
 ///   the 3 km edge held to the 600 m sight). On `EXIT` the seat is `Released`
-///   and the tank goes to the reflex controller in `Withdraw`
+///   and the tank goes to its mind, seeded `Withdraw` (the reflex controller until 17b cut M4.3)
 ///   (`arena/intents.rs`' `Released` arm), and neither tank is near its side's
 ///   entry zone (columns 0–15 and 240–255), so the machine is not *arrived*
 ///   and fires on nothing past `stand_cm`. Any closer and the machine would fire

@@ -157,7 +157,7 @@ pub struct BriefMember {
     pub unit: u32,
     /// `1` for the commander, then roster order.
     pub ordinal: u16,
-    /// The reflex state's wire word (`ReflexState::as_str`).
+    /// The machine state's wire word (`MachineState::as_str`).
     pub state: String,
     /// Its health, per mille of its authored totals.
     pub health_permille: u32,
@@ -690,7 +690,7 @@ pub fn reason_of(brief: &SquadBrief) -> SignalReason {
 mod tests {
     use super::*;
     use crate::arena::command::{SignalContact, SignalMember, SquadDigest};
-    use crate::arena::reflex::ReflexState;
+    use crate::arena::doctrine::MachineState;
     use crate::arena::state::Team;
     use mush_core::ObjId;
 
@@ -744,7 +744,7 @@ mod tests {
                 SignalMember {
                     unit: ObjId(4),
                     ordinal: 1,
-                    state: ReflexState::Engage,
+                    state: MachineState::Engage,
                     health_permille: 850,
                     range_cm: 0,
                     bearing_mdeg: 0,
@@ -752,7 +752,7 @@ mod tests {
                 SignalMember {
                     unit: ObjId(987_654),
                     ordinal: 2,
-                    state: ReflexState::Patrol,
+                    state: MachineState::Patrol,
                     health_permille: 850,
                     range_cm: 1_000,
                     bearing_mdeg: 270_000,

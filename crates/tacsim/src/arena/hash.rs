@@ -2008,6 +2008,79 @@ mod tests {
         assert_eq!(state_hash(&machine), adopted);
     }
 
+    /// **17b cut M1a.1 (`hash.rs` item 3b): a motor row of a hull the reflex
+    /// controller is not flying is folded, field by field, and a table that
+    /// holds none adds no byte.**
+    ///
+    /// A pilot's tank with no machine is given a motor row — the shape 17b cut
+    /// M1a.4's `DRIVE` lays down — and each of the row's folded fields, set one
+    /// at a time, moves the hash to a state no earlier probe reached; taking the
+    /// row away is the first state again.
+    ///
+    /// 17b cut M4.6a: moved here from `crate::arena::reflex`'s tests with its
+    /// assertions word for word — the only pin of item 3b's `goal`, `waypoint`,
+    /// `route` and `avoid` probes, of `from_waypoint` left unfolded and of a
+    /// release leaving no byte. Its reflex half (a reflex row whose motor row
+    /// is missing folds as a fresh one, item 3) stayed there and dies with
+    /// item 3 in 17b cut M4.6c, which also takes this test's `bare.reflex`
+    /// precondition with the field.
+    #[test]
+    fn m1a1_a_motor_row_of_a_unit_with_no_reflex_row_moves_the_hash_and_an_empty_table_adds_none() {
+        use crate::arena::motion::BlockedCause;
+        use crate::arena::motor::Refusal;
+        let build = || arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let bare = build();
+        assert!(bare.reflex.unit(ObjId(4)).is_none(), "a pilot's tank");
+        assert_eq!(bare.motors.rows().count(), 0, "an empty table");
+        let base = crate::arena::hash::state_hash(&bare);
+
+        let refusal = Refusal {
+            at: (1, 1),
+            cell: (2, 1),
+            cause: BlockedCause::Impassable,
+            goal: (6, 4),
+            until_ms: 31_000,
+        };
+        let mut seen: Vec<u64> = vec![base];
+        for edit in 0_u8..=8 {
+            let mut arena = build();
+            let motor = arena.motors.ensure(ObjId(4));
+            match edit {
+                0 => {} // the row itself, every field at its default
+                1 => motor.goal = Some((3, 4)),
+                2 => motor.goal = Some((4, 3)),
+                3 => motor.waypoint = Some(2),
+                4 => motor.route = vec![(2, 2)],
+                5 => motor.avoid = vec![((3, 4), 1_000)],
+                6 => motor.hold_retry_ms = Some(9_000),
+                7 => motor.searched_from = Some((1, 1)),
+                _ => motor.refused = Some(refusal),
+            }
+            let hash = crate::arena::hash::state_hash(&arena);
+            assert!(
+                !seen.contains(&hash),
+                "probe {edit} of a machine-less motor row folded the bytes of an earlier state"
+            );
+            seen.push(hash);
+            arena.motors.release(ObjId(4));
+            assert_eq!(
+                crate::arena::hash::state_hash(&arena),
+                base,
+                "probe {edit}: the row's release left a byte behind"
+            );
+        }
+        // `from_waypoint` is deliberately not folded, as it was not on the
+        // machine (item 3): a row differing only there is one state.
+        let mut arena = build();
+        arena.motors.ensure(ObjId(4)).from_waypoint = Some(1);
+        let mut other = build();
+        let _ = other.motors.ensure(ObjId(4));
+        assert_eq!(
+            crate::arena::hash::state_hash(&arena),
+            crate::arena::hash::state_hash(&other)
+        );
+    }
+
     /// **16b cut O.2** (16c N12), item 1.19: two arenas differing only in one
     /// unit's pod switch differ, and switching it back is the same state again.
     #[test]

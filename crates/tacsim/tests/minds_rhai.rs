@@ -2463,7 +2463,7 @@ fn kernels_by_hand(view: &MindView, def: &ArenaDefinition) -> Memory {
     );
     let point = cell_point(def, plot);
     let health = health_permille(view);
-    let ints = |ranges: tacsim::arena::reflex::Ranges| {
+    let ints = |ranges: tacsim::arena::doctrine::Ranges| {
         MemValue::Ints(
             [
                 ranges.engage_cm,

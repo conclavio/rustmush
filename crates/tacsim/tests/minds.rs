@@ -65,6 +65,7 @@ use tacsim::arena::condition::{Condition, Reading};
 use tacsim::arena::conditions::{
     ASPECTS_ANY, Arming, FireCondition, STOCK_CONDITION_SLOTS, SlotTarget,
 };
+use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, Refusal,
     apply_control, apply_intent,
@@ -79,7 +80,6 @@ use tacsim::arena::motor::MotorCounters;
 use tacsim::arena::perception::{
     FrameNotice, FrameOrder, MindObjective, RefusalDetail, SensorProfile, SignatureFactor,
 };
-use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
 use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
@@ -3428,7 +3428,7 @@ fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
     let (_, _, motor, kinds) = rows_of(&rig.arena, RED);
     assert!(motor && kinds == vec!["motor_tick"], "the pilot is driving");
     rig.arena
-        .set_controller(RED, Controller::Mind, ReflexState::Withdraw);
+        .set_controller(RED, Controller::Mind, MachineState::Withdraw);
     assert_eq!(
         rows_of(&rig.arena, RED),
         (true, false, false, vec!["mind_think"])
@@ -4614,7 +4614,7 @@ fn m1a6_an_unarmed_stock_mind_drives_senses_holds_and_never_calls_fire() {
                     .as_ref()
                     .is_some_and(|order| order.objective == MindObjective::Hold)
                 && result.intents.first() == Some(&IntentKind::Goal(MotorGoal::Hold))
-                && state_of(result) == ReflexState::Patrol),
+                && state_of(result) == MachineState::Patrol),
         "it holds under HOLD"
     );
     assert!(
@@ -4623,7 +4623,7 @@ fn m1a6_an_unarmed_stock_mind_drives_senses_holds_and_never_calls_fire() {
                 .order
                 .as_ref()
                 .is_some_and(|order| order.objective == MindObjective::Withdraw)
-            && state_of(result) == ReflexState::Withdraw
+            && state_of(result) == MachineState::Withdraw
             && result.intents.iter().any(|kind| matches!(
                 kind,
                 IntentKind::Goal(MotorGoal::Cell { x, .. }) if *x <= 1
@@ -5253,7 +5253,7 @@ fn lance_run(cadence_ms: i64) -> LanceRun {
 
 /// One squad signal as the l2 lens reads it (17b cut M4.3): its arena
 /// millisecond, its reason, and each member's unit and doctrine state.
-type SignalRead = (i64, SignalReason, Vec<(ObjId, ReflexState)>);
+type SignalRead = (i64, SignalReason, Vec<(ObjId, MachineState)>);
 
 /// **17b cut L.2's mandatory cross-tempo property** (16b §11; doc 16 §3.1
 /// D-16-2; doc 17 §22 L, D-UM-15, D-UM-53). Three minds of red are dealt into
@@ -5380,18 +5380,18 @@ fn l2_two_minds_are_one_squad_under_a_leader_at_three_cadences() {
                 0,
                 SignalReason::NoOrder,
                 vec![
-                    (RED, ReflexState::Startup),
-                    (RED2, ReflexState::Startup),
-                    (RED3, ReflexState::Startup),
+                    (RED, MachineState::Startup),
+                    (RED2, MachineState::Startup),
+                    (RED3, MachineState::Startup),
                 ],
             ),
             (
                 30_000,
                 SignalReason::OrderExpired,
                 vec![
-                    (RED, ReflexState::Engage),
-                    (RED2, ReflexState::Patrol),
-                    (RED3, ReflexState::Patrol),
+                    (RED, MachineState::Engage),
+                    (RED2, MachineState::Patrol),
+                    (RED3, MachineState::Patrol),
                 ],
             ),
         ],
@@ -5577,7 +5577,7 @@ fn l2_a_self_charged_support_fights_on_doctrine() {
     );
     assert!(
         kept.iter().any(|(unit, _, _, result)| *unit == RED
-            && state_of(result) == ReflexState::Approach
+            && state_of(result) == MachineState::Approach
             && result
                 .intents
                 .iter()
@@ -5593,7 +5593,7 @@ fn l2_a_self_charged_support_fights_on_doctrine() {
     assert!(!fired.is_empty(), "and fires once in band");
     let first_approach = kept
         .iter()
-        .find(|(unit, _, _, result)| *unit == RED && state_of(result) == ReflexState::Approach)
+        .find(|(unit, _, _, result)| *unit == RED && state_of(result) == MachineState::Approach)
         .map(|(_, t_ms, ..)| *t_ms);
     assert!(
         first_approach.is_some_and(|approach| fired.iter().all(|t_ms| *t_ms > approach)),
@@ -5611,7 +5611,7 @@ fn l2_a_self_charged_support_fights_on_doctrine() {
         blind_kept
             .iter()
             .filter(|(unit, t_ms, ..)| *unit == RED && *t_ms <= until_ms)
-            .all(|(_, _, _, result)| state_of(result) != ReflexState::Approach),
+            .all(|(_, _, _, result)| state_of(result) != MachineState::Approach),
         "a blind supporter never approaches"
     );
     assert!(blind.lines("fired", RED).is_empty(), "nor fires");
@@ -5837,7 +5837,7 @@ fn card_run(
 }
 
 /// The stock state a think left `unit`'s memory in.
-fn state_after(result: &ThinkResult) -> ReflexState {
+fn state_after(result: &ThinkResult) -> MachineState {
     tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
         &result.memory,
     ))
@@ -5847,7 +5847,7 @@ fn state_after(result: &ThinkResult) -> ReflexState {
 /// The lattice milliseconds of `unit`'s thinks that left it withdrawing.
 fn withdrawn_thinks(kept: &[Kept], unit: ObjId) -> Vec<i64> {
     kept.iter()
-        .filter(|(on, _, _, result)| *on == unit && state_after(result) == ReflexState::Withdraw)
+        .filter(|(on, _, _, result)| *on == unit && state_after(result) == MachineState::Withdraw)
         .map(|(_, t_ms, ..)| *t_ms)
         .collect()
 }
@@ -6412,7 +6412,7 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
         )
     };
     let start = StockMemory {
-        state: ReflexState::Patrol,
+        state: MachineState::Patrol,
         goal: Some(failed),
         waypoint: Some(1),
         unheld_since_ms: Some(0),
@@ -8590,7 +8590,7 @@ fn m3_a_mind_adopted_at_class_iii_thinks_on_its_own_grid() {
     let now = arena.now_ms;
     let (at_iii, at_i) = (grid(now, 250), grid(now, STOCK_THINK_MS));
     assert_ne!(at_iii, at_i, "the two grids part on this seed");
-    arena.set_controller(RED, Controller::Mind, ReflexState::Startup);
+    arena.set_controller(RED, Controller::Mind, MachineState::Startup);
     let handing = Handing::new(None);
     arena.mind_runner = handing.clone();
     let _ = run(&mut arena, Drive::Every(1_000), at_i.max(at_iii) + 1_000);
@@ -9002,15 +9002,15 @@ fn m4_3_released_hands_every_hull_to_a_mind_seeded_withdraw() {
         "a released hull with no row is handed to a fresh mind"
     );
     let laid = rig.arena.minds.get(&BLUE).expect("a mind row laid");
-    assert_eq!(laid.doctrine_state, ReflexState::Withdraw, "seeded");
-    assert_eq!(doctrine_state_of(&laid.memory), ReflexState::Withdraw);
+    assert_eq!(laid.doctrine_state, MachineState::Withdraw, "seeded");
+    assert_eq!(doctrine_state_of(&laid.memory), MachineState::Withdraw);
     assert!(
         !tacsim::arena::stock_mind::StockMemory::from(&decode_memory(&laid.memory)).ordered,
         "a release's Withdraw is nobody's order"
     );
     assert_eq!(laid.memory, withdraw_seed(), "a fresh row carries the seed");
     assert_eq!(laid.order, None);
-    assert_eq!(rig.arena.machine_state(BLUE), Some(ReflexState::Withdraw));
+    assert_eq!(rig.arena.machine_state(BLUE), Some(MachineState::Withdraw));
 }
 
 /// **The possess-and-release run** — [`seat_run`]'s shape over red flown by

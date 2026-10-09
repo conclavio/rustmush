@@ -49,18 +49,11 @@ use crate::config::ReflexConfig;
 use crate::deliberation::order::CharacterRef;
 use smol_str::SmolStr;
 
-/// **The stock mind's name on a seal** (doc 17 §11).
-pub const SEALED_MIND: &str = "Standard Doctrine";
-
-/// **The charter the stock mind is filed under** (doc 17 §16).
-pub const SEALED_CHARTER: &str = "registry";
-
-/// **The stock mind's line of revisions**.
-pub const SEALED_LINE: &str = "standard";
-
-/// **The licence a sim seal records** (D-UM-49: the OOC sim reads no IC
-/// holding before 17b cut M5).
-pub const SEALED_LICENCE: &str = "doctrine";
+/// **The stock mind's identity on a seal** — its name, charter, line and the
+/// licence a sim seal records — under the paths they had here: 17b cut M4.6a
+/// moved the four into [`crate::arena::doctrine`], so the arena can recognise
+/// Standard Doctrine by identity without reaching into the match half.
+pub use crate::arena::doctrine::{SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE, SEALED_MIND};
 
 /// **Why a hull flies the ROM from its first think**: it has no core
 /// (D-UM-33).

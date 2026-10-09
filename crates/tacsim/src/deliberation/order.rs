@@ -98,7 +98,7 @@ pub enum Objective {
     /// Break off toward your own entry zone and hold fire.
     Withdraw,
     /// Hold where you stand, face `facing_mdeg`, lock and fire on a classified
-    /// hostile whose plot lies inside [`crate::arena::reflex::SCREEN_HALF_ARC_MDEG`]
+    /// hostile whose plot lies inside [`crate::arena::doctrine::SCREEN_HALF_ARC_MDEG`]
     /// of that facing and inside `release_cm`, and never move for it (16b cut
     /// Z.2; 16c N6).
     ///
@@ -109,9 +109,9 @@ pub enum Objective {
         /// The bearing to face, millidegrees clockwise from north, below 360,000.
         facing_mdeg: u32,
     },
-    /// Keep station on `of`: close to [`crate::arena::reflex::SUPPORT_STATION_CELLS`]
+    /// Keep station on `of`: close to [`crate::arena::doctrine::SUPPORT_STATION_CELLS`]
     /// of your own plot of it, never chase past
-    /// [`crate::arena::reflex::SUPPORT_LEASH_CELLS`], prefer the object `of` is
+    /// [`crate::arena::doctrine::SUPPORT_LEASH_CELLS`], prefer the object `of` is
     /// fighting, and hold and fire where you stand when you cannot see it (16b
     /// cut Z.2; 16c N6).
     ///

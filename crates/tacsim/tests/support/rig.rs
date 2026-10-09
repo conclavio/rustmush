@@ -13,10 +13,10 @@ use mush_tactics::{
     TacticalUnit, UnitMutationOp, UnitMutationPlan, UnitSpec,
 };
 use smol_str::SmolStr;
+use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::motor::MotorRow;
 use tacsim::arena::perception::{SensorProfile, SignatureFactor};
-use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, Controller, CustodyOut, CustodyUnit,
@@ -394,7 +394,7 @@ pub fn seeing(unit: CustodyUnit, cells: u16) -> CustodyUnit {
 /// **What the machine flying `unit` is doing** (17b cut M4.3): either
 /// machine's doctrine state through `Arena::machine_state` — the mind's off
 /// its cached state, the reflex's off its row — `None` for a pilot's hull.
-pub fn machine_state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
+pub fn machine_state_of(arena: &Arena, unit: ObjId) -> Option<MachineState> {
     arena.machine_state(unit)
 }
 
@@ -564,7 +564,7 @@ pub fn motor(arena: &Arena, unit: ObjId) -> MotorRow {
 }
 
 /// What the controller is doing with `unit`.
-pub fn state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
+pub fn state_of(arena: &Arena, unit: ObjId) -> Option<MachineState> {
     arena.reflex.unit(unit).map(|row| row.state)
 }
 

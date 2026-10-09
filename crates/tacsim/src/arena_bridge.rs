@@ -594,24 +594,15 @@ pub struct MatchMirror {
     /// **Who flies each unit, as far as the world knows** (17b cut M1b.5):
     /// written at check-out from the custody units' controllers (and at resume
     /// from the decoded arena's) and on every [`Control`] the world delivers —
-    /// `Live` is the pilot's, `Released` the reflex controller's — or, since
-    /// 17b cut M3.5, the mind's for a hull in [`MatchMirror::minded`] —
-    /// exactly as `apply_control` moves the arena's own row. `@mind/set`
+    /// `Live` is the pilot's, `Released` the mind's (every hull since 17b cut
+    /// M4.3; before it the reflex controller's, or since 17b cut M3.5 the
+    /// mind's for a hull whose arena carried a mind row) — exactly as
+    /// `apply_control` moves the arena's own row. `@mind/set`
     /// refuses a hull that is not [`Controller::Mind`] here first; the arena refuses it again
     /// at apply (`not_mind`). Kept here because no cheaper world-side read
     /// exists: the staff picture knows the controllers only while somebody
     /// watches.
     pub controllers: BTreeMap<ObjId, Controller>,
-    /// **The hulls whose arena carries a mind row** (17b cut M3.5; doc 17
-    /// §12 "Release and possess"): written at check-out from the custody
-    /// units checked out [`Controller::Mind`] (`Arena::new` adopts each) and at
-    /// resume from the decoded arena's own `minds` keys. A possess keeps the
-    /// row dormant and a `Released` hands the hull back to its mind
-    /// (`apply_control`), and no [`Control`] the world can deliver removes a
-    /// row — so the set only ever matters to a `Released`, which
-    /// [`send_control`] mirrors as [`Controller::Mind`] for a hull in it and
-    /// [`Controller::Reflex`] for every other, the arena's own rule.
-    pub minded: BTreeSet<ObjId>,
     /// **The hulls checked out with a weapon** (17b cut M1b.5): the read-back's
     /// fire-discipline section is shown live for these and inert (`no weapons
     /// station on this hull`, doc 17 §11) for every other. Written at check-out
@@ -1703,12 +1694,6 @@ pub fn open_match(
                 ),
             );
         }
-        // 17b cut M3.5: every hull checked out a mind's carries a row.
-        mirror.minded = controllers
-            .iter()
-            .filter(|(_, controller)| **controller == Controller::Mind)
-            .map(|(unit, _)| *unit)
-            .collect();
         mirror.controllers = controllers;
         mirror.armed = armed;
     }
@@ -1810,9 +1795,6 @@ pub fn resume_match(
         .filter(|unit| !unit.weapons.is_empty())
         .map(|unit| unit.id)
         .collect();
-    // 17b cut M3.5: the decoded arena's own mind rows, a dormant one under a
-    // pilot included — the hulls a `Released` hands back to their mind.
-    let minded: BTreeSet<ObjId> = arena.minds.keys().copied().collect();
     // 17b cut M2.2: the resumed arena's own `Arc` (`Arena.definition`), shared.
     let ground = Arc::clone(&arena.definition);
     // 16c N16: the snapshot carries no chunk bytes, and every chunk closed
@@ -1864,7 +1846,6 @@ pub fn resume_match(
         mirror.resumed_from_ms = Some(at_ms);
         mirror.odds_floor_permille = odds_floor_permille;
         mirror.controllers = controllers;
-        mirror.minded = minded;
         mirror.armed = armed;
     }
     Ok(roster)
@@ -2400,8 +2381,9 @@ pub fn send_control(
     // **17b cut M1b.5**: the mirror's controller moves as `apply_control`
     // moves the arena's row — a live seat is the pilot's, a released one a
     // mind's (17b cut M4.3: every hull, the dormant row a possess left or a
-    // fresh one; the reflex controller's before it, `MatchMirror::minded`
-    // telling the two apart until then).
+    // fresh one; the reflex controller's before it, a `minded` set on the
+    // mirror telling the two apart until then, which nothing read and 17b cut
+    // M4.6a deleted).
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>()
         && let Some(mirror) = registry.matches.get_mut(&match_id)
     {

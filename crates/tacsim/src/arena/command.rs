@@ -47,7 +47,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 
-use crate::arena::reflex::ReflexState;
+use crate::arena::doctrine::MachineState;
 use crate::arena::state::{Arena, Classification, ContactId, Team};
 use crate::deliberation::squad::{SquadId, SquadRoster};
 
@@ -107,10 +107,10 @@ pub struct SignalMember {
     pub unit: ObjId,
     /// `1` for the commander, then roster order.
     pub ordinal: u16,
-    /// The reflex controller's state, [`ReflexState::Startup`] while the
-    /// controller has no row for it yet.
-    pub state: ReflexState,
-    /// Its health, per mille of its authored totals (`reflex_health_permille`,
+    /// The machine's state (`Arena::machine_state`), [`MachineState::Startup`]
+    /// while it has no row yet.
+    pub state: MachineState,
+    /// Its health, per mille of its authored totals (`Arena::health_permille`,
     /// the number the squad's mean is taken over).
     pub health_permille: u32,
     /// Centimetres from the commander's pose to this member's own; `0` for the
@@ -224,7 +224,7 @@ pub struct SquadSignal {
     /// The squad's mean health, per mille of the authored totals.
     pub health_permille: u32,
     /// How many of the squad's machines are in each state, in
-    /// [`ReflexState::ALL`] order.
+    /// [`MachineState::ALL`] order.
     pub states: [u32; 6],
     /// The commander's cell, so an `advance` order can be written relative to
     /// somewhere.
@@ -419,7 +419,7 @@ impl Arena {
                 }
                 if self.unit(*unit).is_some() {
                     health_total =
-                        health_total.saturating_add(u64::from(self.reflex_health_permille(*unit)));
+                        health_total.saturating_add(u64::from(self.health_permille(*unit)));
                     health_count = health_count.saturating_add(1);
                 }
             }
@@ -456,8 +456,8 @@ impl Arena {
                     // placeholder. The commander guards above read the unit,
                     // not this row, so they apply to a mind commander as they
                     // stand.
-                    state: self.machine_state(*unit).unwrap_or(ReflexState::Startup),
-                    health_permille: self.reflex_health_permille(*unit),
+                    state: self.machine_state(*unit).unwrap_or(MachineState::Startup),
+                    health_permille: self.health_permille(*unit),
                     range_cm,
                     bearing_mdeg,
                 });
@@ -506,7 +506,7 @@ impl Arena {
 #[must_use]
 pub fn state_words() -> [&'static str; 6] {
     let mut out = [""; 6];
-    for (at, state) in ReflexState::ALL.iter().enumerate() {
+    for (at, state) in MachineState::ALL.iter().enumerate() {
         if let Some(slot) = out.get_mut(at) {
             *slot = state.as_str();
         }

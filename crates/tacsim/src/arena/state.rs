@@ -5111,6 +5111,104 @@ impl Arena {
             })
             .collect()
     }
+
+    /// **Any unit holds a classified hostile inside its own weapons reach** — doc
+    /// 16 §3.1's third `Engaged` trigger, which cut W.1 left `false` because
+    /// nobody had bounded a field-wide sweep.
+    ///
+    /// There is no sweep: it reads the **contacts a platform already holds**, which
+    /// the sensor pass minted and bounded, so the cost is one range test per held
+    /// classified contact and never a pass over pairs of units. A platform with no
+    /// weapon has no reach and answers `false` for every contact it holds, which is
+    /// the honest reading of *within weapons range*.
+    ///
+    /// **16b cut F.3**: the range is to the contact's **plot** — where the
+    /// platform last saw the target — for the same reason
+    /// [`Arena::contact_within_alert_range`]'s is. How often a pilot is sent a
+    /// frame is something a pilot can count, so a tempo read off a position
+    /// nobody holds would be a leak of hidden truth.
+    ///
+    /// **16b cut E.1 (16c `T-32`)**: the reach is
+    /// [`UnitState::fight_inner_cm`] — the band the platform would actually
+    /// fight in — and not the longest gun it carries. Against the 3 km cannon
+    /// this answered `true` for *any* classified hostile a sight or a mesh hop
+    /// could hold, so `Engaged` meant "somebody holds a classified hostile" and
+    /// the arena ran at 500 ms from the first classification to the end of the
+    /// match. It now means what doc 16 §3.1's table says: hostiles are within
+    /// weapons range of each other.
+    ///
+    /// **16b cut E.2 (16c `B-45`)**: and *hostile* is read off the contact,
+    /// through [`Arena::contact_reads_dead`], rather than off the target's live
+    /// wreck flag. The tempo now falls when the platforms holding the wreck
+    /// **learn** it — at the kill for whoever fired the round, at the track's
+    /// expiry for everybody else — and not at the arena millisecond the hull
+    /// burned. A contact whose unit has left the match still counts for nothing.
+    ///
+    /// **17b cut M4.6a**: here, out of the reflex controller's module — it
+    /// reads the contacts and the units, no reflex state.
+    #[must_use]
+    pub fn hostile_in_weapons_range(&self) -> bool {
+        let cell_cm = self.definition.terrain.cell_cm();
+        self.units.iter().any(|viewer| {
+            let reach = viewer.fight_inner_cm(cell_cm);
+            reach != 0
+                && self.contacts.of(viewer.id).any(|(_, held)| {
+                    held.class.team().is_some_and(|team| team != viewer.team)
+                        && self.unit(held.target).is_some()
+                        && !self.contact_reads_dead(held)
+                        // 16b cut U.1 (16c `T-24`): the squared test, no root.
+                        && held.seen_at.within_cm(&viewer.pose, reach)
+                })
+        })
+    }
+
+    /// **Armour plus internals, per mille of what the unit was authored with**
+    /// (reconciliation (c) of the cut brief), read off the M32 cells on
+    /// `UnitState::unit`.
+    ///
+    /// Every `armor` and `internals` cell on the unit, current against maximum,
+    /// each measured from its own floor: a facet whose armour is at `min` counts
+    /// zero and a section at full counts its whole span. A unit with no such cell
+    /// at all — cut A's fixtures — reads `1000`, a unit in perfect health, which is
+    /// the only answer that does not make an unmodelled hull withdraw at once.
+    ///
+    /// **17b cut M4.6a**: the reflex's `reflex_health_permille`, renamed and
+    /// moved here; the squad signal reads it, and the stock mind's
+    /// [`crate::arena::stock_mind::health_permille`] is the same reading over
+    /// the view.
+    #[must_use]
+    pub fn health_permille(&self, id: ObjId) -> u32 {
+        let Some(unit) = self.unit(id) else {
+            return 0;
+        };
+        if unit.limits.wreck {
+            return 0;
+        }
+        let mut have: i64 = 0;
+        let mut full: i64 = 0;
+        for (addr, cell) in unit.unit.cells() {
+            let name = match addr {
+                mush_tactics::CellAddr::Facet { cell, .. }
+                | mush_tactics::CellAddr::Section { cell, .. } => cell.as_str(),
+                mush_tactics::CellAddr::Unit { .. } | mush_tactics::CellAddr::Component { .. } => {
+                    continue;
+                }
+            };
+            if name != crate::definitions::unit::ARMOR_CELL
+                && name != crate::definitions::unit::INTERNALS_CELL
+            {
+                continue;
+            }
+            have = have.saturating_add(cell.current.saturating_sub(cell.min).max(0));
+            full = full.saturating_add(cell.max.saturating_sub(cell.min).max(0));
+        }
+        if full <= 0 {
+            return 1_000;
+        }
+        u32::try_from(have.saturating_mul(1_000) / full)
+            .unwrap_or(1_000)
+            .min(1_000)
+    }
 }
 
 #[cfg(test)]
@@ -5125,6 +5223,20 @@ mod tests {
         assert!(!Controller::Pilot.is_machine());
         assert!(Controller::Reflex.is_machine());
         assert!(Controller::Mind.is_machine());
+    }
+
+    /// 17b cut M4.6a: moved here from `crate::arena::reflex`'s tests with
+    /// [`Arena::health_permille`] (the reflex's `reflex_health_permille`).
+    #[test]
+    fn an_unmodelled_hull_reads_as_whole_and_a_wreck_reads_as_gone() {
+        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        // Cut A's fixture carries one armour cell and one internals cell, both full.
+        assert_eq!(arena.health_permille(ObjId(4)), 1_000);
+        assert_eq!(arena.health_permille(ObjId(9)), 0, "no such unit");
+        if let Some(state) = arena.unit_mut(ObjId(4)) {
+            state.limits.wreck = true;
+        }
+        assert_eq!(arena.health_permille(ObjId(4)), 0);
     }
 
     /// **16b cut Q.1**: the letters are the whole of what keeps a provisional

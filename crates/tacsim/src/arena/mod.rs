@@ -158,6 +158,15 @@
 //! per steered hull on [`crate::arena::state::Arena::motors`], and the reflex
 //! controller decides the goal it drives to.
 //!
+//! **17b cut M4.6a** moved what outlives the reflex out of its module:
+//! [`crate::arena::doctrine`] holds the machine's states
+//! ([`crate::arena::doctrine::MachineState`], the reflex's `ReflexState`
+//! renamed), the doctrine's constants, the shared range arithmetic and the
+//! stock mind's identity on a seal; the mind seam holds the intents' door
+//! (`Arena::apply_machine_intents`, [`crate::arena::mind::Landed`]); and
+//! [`crate::arena::state`] holds the tempo's weapons-range read and a hull's
+//! health (`Arena::hostile_in_weapons_range`, `Arena::health_permille`).
+//!
 //! # Cut X.6: elevation, and the one slope rule
 //!
 //! [`crate::arena::slope`] is doc 16 §9 item 6's second half. The heightfield itself was
@@ -285,6 +294,7 @@ pub mod condition;
 pub mod conditions;
 pub mod core;
 pub mod damage;
+pub mod doctrine;
 pub mod hash;
 pub mod heat;
 pub mod horizon;
@@ -339,6 +349,10 @@ pub use damage::{
     BLOCKED, COVER, DISPERSION, HULL_SECTION, MISS_REASONS, MOVED, REFUSED, TARGET_GONE, WRECK,
     WRECK_CONDITION, is_wreck,
 };
+// 17b cut M4.6a: the survivors of the reflex's module, under their new
+// names (`MachineState`, `STAND_TICKS`); `Landed` is the mind seam's and the
+// motor's constants are re-exported from the motor below.
+pub use doctrine::{MachineState, STAND_TICKS};
 pub use hash::state_hash;
 pub use heat::{COOL_CAUSE, MILLI, SHOT_CAUSE};
 pub use horizon::{Horizon, HorizonSight};
@@ -351,14 +365,17 @@ pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, Ledge
 // 17b cut M3.2: `Landing` retired (the answer rides `PendingThink`); the drop
 // cause and the seal reference join; 17b cut M3.3: the seal itself.
 pub use mind::{
-    DropCause, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue, Memory,
-    MindRunner, MindSeal, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS,
+    DropCause, Landed, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue,
+    Memory, MindRunner, MindSeal, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS,
     STOCK_MEMORY_LIMITS, STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SortieId,
     ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory, default_mind_runner,
     encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};
-pub use motor::{Fallback, MotorCounters, MotorOutcome, MotorPlan, MotorRow, MotorTable};
+pub use motor::{
+    ARRIVE_CELLS, Fallback, MotorCounters, MotorOutcome, MotorPlan, MotorRow, MotorTable,
+    REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS,
+};
 pub use observer::{Observer, ObserverUnit};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
@@ -366,10 +383,7 @@ pub use perception::{
     FrameOrder, MindObjective, Named, PerceptionCounters, SensorProfile, SignatureFactor,
     ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
-pub use reflex::{
-    ARRIVE_CELLS, Landed, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS, ReflexMemory,
-    ReflexState, ReflexUnit,
-};
+pub use reflex::{ReflexMemory, ReflexUnit};
 pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
 };

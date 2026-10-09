@@ -102,20 +102,22 @@ use crate::arena::card::{CardChange, PRESETS, StockCard, preset};
 use crate::arena::conditions::{
     ASPECTS_ANY, ConditionTrigger, FireCondition, SlotTarget, condition_is_lawful,
 };
-use crate::arena::intents::{IntentKind, IntentSource};
+use crate::arena::intents::{
+    Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, apply_intent, resolve_emcon,
+    resolve_startup,
+};
 use crate::arena::ledger::EventKind;
 use crate::arena::motor::MotorCounters;
 use crate::arena::perception::{
     Aspect, FrameCondition, FrameNotice, FrameOrder, MindObjective, Receiver,
 };
-use crate::arena::reflex::Landed;
 use crate::arena::state::{
     Arena, ArenaDefinition, Channel, Classification, ContactId, Controller, Designator, DueKind,
     Power, Team,
 };
 use crate::arena::step::{FrameHeat, FrameSection};
 use crate::arena::view::ContactRow;
-use crate::arena::weapons::FrameWeapon;
+use crate::arena::weapons::{FiredBy, FrameWeapon};
 use crate::config::{ArenaConfig, ReflexConfig};
 
 /// **How often a stock mind thinks**, arena milliseconds (17b cut M1a.5; doc
@@ -725,7 +727,7 @@ pub struct MindState {
     /// 17b cut M4.6 gates it on `SealRef.doctrine` and gives any other mind
     /// `unknown`.
     #[serde(skip)]
-    pub doctrine_state: crate::arena::reflex::ReflexState,
+    pub doctrine_state: crate::arena::doctrine::MachineState,
 }
 
 impl Default for MindState {
@@ -754,7 +756,7 @@ impl MindState {
             dropped: None,
             seal_digest: [0; 32],
             card: crate::arena::card::line(cfg),
-            doctrine_state: crate::arena::reflex::ReflexState::Startup,
+            doctrine_state: crate::arena::doctrine::MachineState::Startup,
         }
     }
 
@@ -1118,7 +1120,7 @@ pub fn memory_check(memory: &Memory) -> Result<(), MemError> {
 /// `StockMemory` reads it — `Startup` for an empty, absent or ill-shaped one
 /// (the twin's read, made production).
 #[must_use]
-pub fn doctrine_state_of(memory: &[u8]) -> crate::arena::reflex::ReflexState {
+pub fn doctrine_state_of(memory: &[u8]) -> crate::arena::doctrine::MachineState {
     crate::arena::stock_mind::StockMemory::from(&decode_memory(memory)).state
 }
 
@@ -1131,7 +1133,7 @@ pub fn doctrine_state_of(memory: &[u8]) -> crate::arena::reflex::ReflexState {
 #[must_use]
 pub fn withdraw_seed() -> Vec<u8> {
     encode_memory(&Memory::from(crate::arena::stock_mind::StockMemory {
-        state: crate::arena::reflex::ReflexState::Withdraw,
+        state: crate::arena::doctrine::MachineState::Withdraw,
         ordered: false,
         ..crate::arena::stock_mind::StockMemory::default()
     }))
@@ -1150,7 +1152,7 @@ pub fn seed_withdraw(memory: &[u8]) -> Vec<u8> {
         return withdraw_seed();
     }
     let mut stock = crate::arena::stock_mind::StockMemory::from(&decode_memory(memory));
-    stock.state = crate::arena::reflex::ReflexState::Withdraw;
+    stock.state = crate::arena::doctrine::MachineState::Withdraw;
     stock.ordered = false;
     stock.stand_until_ms = None;
     stock.quiet_since_ms = None;
@@ -1311,6 +1313,19 @@ pub struct ViewContact {
     pub reads_dead: Option<bool>,
 }
 
+/// **What became of one machine intent** (17b cut M1a.5; doc 17 §4, D-UM-12):
+/// `Arena::apply_machine_intents`' answer per kind, in emission order (the
+/// mind seam's since 17b cut M4.6a, with the function).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landed {
+    /// It took effect — applied, or queued and resolved.
+    Applied,
+    /// It was refused, at apply or by its resolver, for this reason. (The
+    /// arena's order refusal — not `crate::arena::motor::Refusal`, the motor's
+    /// remembered stop.)
+    Refused(crate::arena::intents::Refusal),
+}
+
 impl Arena {
     /// **The first [`DueKind::MindThink`] of every unit the check-out handed a
     /// mind** (17b cut M1a.5; doc 17 §6), in unit-id order, each with a fresh
@@ -1355,7 +1370,7 @@ impl Arena {
     pub(crate) fn adopt_mind(
         &mut self,
         unit: ObjId,
-        seed: Option<crate::arena::reflex::ReflexState>,
+        seed: Option<crate::arena::doctrine::MachineState>,
     ) {
         // **17b cut M3.3** (doc 17 §13): a row laid down here carries the
         // digest of the seal the hull was checked out under, read off the
@@ -1367,7 +1382,7 @@ impl Arena {
             seal_digest: sealed,
             ..MindState::fresh(&self.arena_cfg.reflex)
         });
-        if seed == Some(crate::arena::reflex::ReflexState::Withdraw) {
+        if seed == Some(crate::arena::doctrine::MachineState::Withdraw) {
             row.memory = seed_withdraw(&row.memory);
             row.doctrine_state = doctrine_state_of(&row.memory);
         }
@@ -1392,25 +1407,25 @@ impl Arena {
     /// [`Controller::Mind`]; the reflex row's under [`Controller::Reflex`];
     /// `None` for a pilot's hull (a dormant row under a pilot is never read).
     #[must_use]
-    pub fn machine_state(&self, unit: ObjId) -> Option<crate::arena::reflex::ReflexState> {
-        use crate::arena::reflex::ReflexState;
+    pub fn machine_state(&self, unit: ObjId) -> Option<crate::arena::doctrine::MachineState> {
+        use crate::arena::doctrine::MachineState;
         let state = self.unit(unit)?;
         if state.limits.wreck || state.disabled {
             return state
                 .controller
                 .is_machine()
-                .then_some(ReflexState::Disabled);
+                .then_some(MachineState::Disabled);
         }
         match state.controller {
             Controller::Mind => Some(
                 self.minds
                     .get(&unit)
-                    .map_or(ReflexState::Startup, |row| row.doctrine_state),
+                    .map_or(MachineState::Startup, |row| row.doctrine_state),
             ),
             Controller::Reflex => Some(
                 self.reflex
                     .unit(unit)
-                    .map_or(ReflexState::Startup, |row| row.state),
+                    .map_or(MachineState::Startup, |row| row.state),
             ),
             Controller::Pilot => None,
         }
@@ -1427,7 +1442,7 @@ impl Arena {
             unit.controller == Controller::Mind
                 && !unit.limits.wreck
                 && self.minds.get(&unit.id).is_some_and(|row| {
-                    row.doctrine_state == crate::arena::reflex::ReflexState::Approach
+                    row.doctrine_state == crate::arena::doctrine::MachineState::Approach
                 })
         })
     }
@@ -2102,6 +2117,142 @@ impl Arena {
         let settled = self.settle_inline();
         counters.mind_faults = counters.mind_faults.saturating_add(settled.faults);
         counters.mind_overflows = counters.mind_overflows.saturating_add(settled.overflows);
+    }
+
+    /// **Put a machine's intents through the pilot's own door** (17b cut M1a.5;
+    /// doc 17 §4, D-UM-12) — `Arena::order`'s body, factored out so the reflex
+    /// controller, the motor and a mind's landing are one function.
+    ///
+    /// The kinds go in emission order, `seq` ascending from `1`, each an
+    /// [`Intent`] on the channel that carries it at `epoch_of(channel)`
+    /// (`counters.intents` counted per intent), through [`apply_intent`] under
+    /// `source`. One answer per kind, in order:
+    ///
+    /// * refused at apply — [`Landed::Refused`] with `apply_intent`'s word;
+    /// * a continuous kind applied — [`Landed::Applied`]; a
+    ///   [`MotorGoal::Cell`] that applied runs the motor once here
+    ///   (`Arena::motor_step` at `t_ms`), the one follow at landing (D-UM-10);
+    /// * a discrete kind queued — popped straight back out of `pending` and
+    ///   resolved at `t_ms`: `Startup` by [`resolve_startup`], `Lock` by
+    ///   `Arena::resolve_lock`, `Fire` by `Arena::resolve_fire` (`shots`
+    ///   counted on `Ok`), and — new in this cut — `Emcon` by
+    ///   [`resolve_emcon`]. **Each resolver's `Err` is the answer**
+    ///   ([`Landed::Refused`]) and its `Ok` is [`Landed::Applied`]; until this
+    ///   cut `Arena::order` dropped them with `let _`, and since it still does
+    ///   not read the vector no byte of the reflex controller's moved (the M1a.1
+    ///   pins). `Order`, `ReleaseOrder`, `Place` and `Goal` queue nothing.
+    ///
+    /// **17b cut M1b.1**: a `Fire` resolves through `Arena::resolve_fire_by` as
+    /// [`crate::arena::weapons::FiredBy::Mind`] with the slot it cites for an
+    /// [`IntentSource::Mind`] and as `Machine` otherwise (T0 is never gated); a
+    /// mind's arming (`IntentKind::Condition`) lands through
+    /// `Arena::resolve_arming`, in emission order, with NO evaluation here —
+    /// `Arena::mind_land` evaluates the hull's slots once after every intent.
+    ///
+    /// **17b cut M4.6a**: here, beside the mind's landing that calls it, out of
+    /// the reflex controller's module — it reads and writes no reflex state.
+    pub(crate) fn apply_machine_intents(
+        &mut self,
+        unit: ObjId,
+        kinds: &[IntentKind],
+        t_ms: i64,
+        epoch_of: &dyn Fn(Channel) -> u64,
+        source: IntentSource,
+        counters: &mut MotorCounters,
+    ) -> Vec<Landed> {
+        let mut landed: Vec<Landed> = Vec::with_capacity(kinds.len());
+        let mut seq = 0_u64;
+        for kind in kinds {
+            let channel = kind.channel_required();
+            seq = seq.saturating_add(1);
+            let intent = Intent {
+                unit,
+                channel,
+                epoch: epoch_of(channel),
+                kind: kind.clone(),
+                seq,
+            };
+            counters.intents = counters.intents.saturating_add(1);
+            // **16b cut M.1** (`T-82`): the machine's own order, which the
+            // per-seat rate never counts — see `IntentSource`; a mind's
+            // (17b cut M1a.5, D-UM-14) neither.
+            match apply_intent(self, &intent, source) {
+                IntentOutcome::Refused(refusal) => {
+                    landed.push(Landed::Refused(refusal));
+                    continue;
+                }
+                IntentOutcome::AppliedContinuous => {
+                    // **17b cut M1a.4** (D-UM-10): a goal takes effect at the
+                    // landing millisecond, as phase 2's does for a seat's.
+                    if matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })) {
+                        let _ = self.motor_step(unit, t_ms, counters);
+                    }
+                    landed.push(Landed::Applied);
+                    continue;
+                }
+                IntentOutcome::Queued => {}
+            }
+            // `apply_intent` pushed exactly this order to the back of the unit's
+            // queue. It comes straight back out: leaving it there would hand it to
+            // phase 4, at the pulse's end, which is the arena millisecond a
+            // machine's intents must not land at (doc 16 §3.1's D-16-2: a
+            // machine's intent lands at its own millisecond, `DueKind::MindLand`).
+            if let Some(queue) = self.pending.get_mut(&unit) {
+                queue.pop_back();
+                if queue.is_empty() {
+                    self.pending.remove(&unit);
+                }
+            }
+            let resolved = match &intent.kind {
+                IntentKind::Startup => resolve_startup(self, unit, t_ms),
+                IntentKind::Lock { contact } => self.resolve_lock(unit, *contact, t_ms),
+                // **17b cut M1b.1** (D-UM-14, D-UM-17): who fired — a mind's
+                // shot with the slot it cites (gated from 17b cut M1b.2), a
+                // machine's never gated.
+                IntentKind::Fire { weapon, slot } => self
+                    .resolve_fire_by(
+                        unit,
+                        weapon,
+                        t_ms,
+                        match source {
+                            IntentSource::Mind => FiredBy::Mind { slot: *slot },
+                            IntentSource::Seat | IntentSource::Machine | IntentSource::Cond => {
+                                FiredBy::Machine
+                            }
+                        },
+                    )
+                    .map(|_| {
+                        counters.shots = counters.shots.saturating_add(1);
+                    }),
+                // **17b cut M1b.1** (D-UM-10): a mind's arming lands here, in
+                // emission order, through the one resolver a seat's goes
+                // through in phase 4. NO evaluation here: the landing's one
+                // evaluation is `mind_land`'s, after every intent (17b's
+                // adversarial F5).
+                IntentKind::Condition(arming) => {
+                    self.resolve_arming(unit, arming, t_ms).map(|_| ())
+                }
+                // **17b cut M1a.5** (D-UM-12): the arm `Arena::order` never
+                // had. The reflex controller still never switches its pod (16b
+                // cut O.2's residual: a machine keeps the switch where it found
+                // it), so it never reaches here; a mind's `emcon` does.
+                IntentKind::Emcon { on } => resolve_emcon(self, unit, *on, t_ms),
+                IntentKind::Heading { .. }
+                | IntentKind::Speed { .. }
+                | IntentKind::Order(_)
+                | IntentKind::ReleaseOrder { .. }
+                // 16b cut I.3: a staff act; a machine never issues one, and a
+                // mind's is refused `Channel` at apply.
+                | IntentKind::Place { .. }
+                // 17b cut M1a.4: continuous, so never queued.
+                | IntentKind::Goal(_) => Ok(()),
+            };
+            landed.push(match resolved {
+                Ok(()) => Landed::Applied,
+                Err(refusal) => Landed::Refused(refusal),
+            });
+        }
+        landed
     }
 
     /// **The landing arm** (17b cut M1a.5; doc 17 §6, D-UM-21, D-UM-13): one
@@ -5035,16 +5186,16 @@ mod tests {
     /// reads it back; an empty, absent or ill-shaped memory reads `Startup`.
     #[test]
     fn m4_3_the_withdraw_seed_is_the_stock_keys_in_withdraw_under_no_order() {
-        use crate::arena::reflex::ReflexState;
+        use crate::arena::doctrine::MachineState;
         use crate::arena::stock_mind::{STOCK_MEMORY_KEY_NAMES, StockMemory};
         let seed = withdraw_seed();
         let stock = StockMemory::from(&decode_memory(&seed));
-        assert_eq!(stock.state, ReflexState::Withdraw);
+        assert_eq!(stock.state, MachineState::Withdraw);
         assert!(!stock.ordered);
         assert_eq!(
             stock,
             StockMemory {
-                state: ReflexState::Withdraw,
+                state: MachineState::Withdraw,
                 ..StockMemory::default()
             }
         );
@@ -5053,16 +5204,16 @@ mod tests {
         for key in STOCK_MEMORY_KEY_NAMES {
             assert!(keys.contains_key(key), "{key}");
         }
-        assert_eq!(doctrine_state_of(&seed), ReflexState::Withdraw);
-        assert_eq!(doctrine_state_of(&[]), ReflexState::Startup);
-        assert_eq!(doctrine_state_of(b"{}"), ReflexState::Startup);
-        assert_eq!(doctrine_state_of(&[3, 1, 4]), ReflexState::Startup);
+        assert_eq!(doctrine_state_of(&seed), MachineState::Withdraw);
+        assert_eq!(doctrine_state_of(&[]), MachineState::Startup);
+        assert_eq!(doctrine_state_of(b"{}"), MachineState::Startup);
+        assert_eq!(doctrine_state_of(&[3, 1, 4]), MachineState::Startup);
         assert_eq!(
             doctrine_state_of(&encode_memory(&Memory::from(StockMemory {
-                state: ReflexState::Engage,
+                state: MachineState::Engage,
                 ..StockMemory::default()
             }))),
-            ReflexState::Engage
+            MachineState::Engage
         );
     }
 
@@ -5072,10 +5223,10 @@ mod tests {
     /// a memory of another shape becomes the seed (nothing of it decodes).
     #[test]
     fn m4_3_seed_withdraw_keeps_the_row_but_for_the_doctrine_s_six_and_the_state() {
-        use crate::arena::reflex::ReflexState;
+        use crate::arena::doctrine::MachineState;
         use crate::arena::stock_mind::StockMemory;
         let standing = StockMemory {
-            state: ReflexState::Engage,
+            state: MachineState::Engage,
             ordered: true,
             target: Some(crate::arena::state::ContactId(0x11)),
             stand_until_ms: Some(9_000),
@@ -5093,7 +5244,7 @@ mod tests {
         assert_eq!(
             seeded,
             StockMemory {
-                state: ReflexState::Withdraw,
+                state: MachineState::Withdraw,
                 ordered: false,
                 stand_until_ms: None,
                 quiet_since_ms: None,
@@ -5109,7 +5260,7 @@ mod tests {
         assert_eq!(seed_withdraw(&[3, 1, 4]), withdraw_seed());
         assert_eq!(
             doctrine_state_of(&seed_withdraw(&[3, 1, 4])),
-            ReflexState::Withdraw
+            MachineState::Withdraw
         );
     }
 
@@ -5120,36 +5271,36 @@ mod tests {
     /// release's `Withdraw`: a fixture's other state keeps the memory as it is.
     #[test]
     fn m4_3_machine_state_reads_the_cache_the_row_or_nothing() {
-        use crate::arena::reflex::ReflexState;
+        use crate::arena::doctrine::MachineState;
         use crate::arena::stock_mind::StockMemory;
         let mut arena = minded();
-        assert_eq!(arena.machine_state(RED), Some(ReflexState::Startup));
+        assert_eq!(arena.machine_state(RED), Some(MachineState::Startup));
         assert_eq!(arena.machine_state(BLUE), None, "a pilot's hull");
         if let Some(state) = arena.minds.get_mut(&RED) {
             state.memory = encode_memory(&Memory::from(StockMemory {
-                state: ReflexState::Engage,
+                state: MachineState::Engage,
                 ..StockMemory::default()
             }));
             state.doctrine_state = doctrine_state_of(&state.memory);
         }
-        assert_eq!(arena.machine_state(RED), Some(ReflexState::Engage));
-        arena.set_controller(RED, Controller::Pilot, ReflexState::Patrol);
+        assert_eq!(arena.machine_state(RED), Some(MachineState::Engage));
+        arena.set_controller(RED, Controller::Pilot, MachineState::Patrol);
         assert_eq!(
             arena.machine_state(RED),
             None,
             "a dormant row is never read"
         );
-        arena.set_controller(RED, Controller::Mind, ReflexState::Patrol);
+        arena.set_controller(RED, Controller::Mind, MachineState::Patrol);
         assert_eq!(
             arena.machine_state(RED),
-            Some(ReflexState::Engage),
+            Some(MachineState::Engage),
             "a fixture's hand-over seeds nothing"
         );
-        arena.set_controller(RED, Controller::Pilot, ReflexState::Patrol);
-        arena.set_controller(RED, Controller::Mind, ReflexState::Withdraw);
+        arena.set_controller(RED, Controller::Pilot, MachineState::Patrol);
+        arena.set_controller(RED, Controller::Mind, MachineState::Withdraw);
         assert_eq!(
             arena.machine_state(RED),
-            Some(ReflexState::Withdraw),
+            Some(MachineState::Withdraw),
             "a release's Withdraw seeds the dormant row"
         );
         assert_eq!(
@@ -5157,13 +5308,13 @@ mod tests {
                 .minds
                 .get(&RED)
                 .map(|state| doctrine_state_of(&state.memory)),
-            Some(ReflexState::Withdraw),
+            Some(MachineState::Withdraw),
             "the cache is the memory's"
         );
         if let Some(unit) = arena.unit_mut(RED) {
             unit.limits.wreck = true;
         }
-        assert_eq!(arena.machine_state(RED), Some(ReflexState::Disabled));
+        assert_eq!(arena.machine_state(RED), Some(MachineState::Disabled));
         if let Some(unit) = arena.unit_mut(BLUE) {
             unit.limits.wreck = true;
         }

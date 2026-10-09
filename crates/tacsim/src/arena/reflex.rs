@@ -30,9 +30,11 @@
 //!
 //! # It can do nothing a pilot cannot
 //!
-//! Every order it gives is an [`Intent`] built with the unit's own epoch and put
-//! through [`apply_intent`] — the same function pulse phase 2 puts a pilot's verbs
-//! through — and every discrete action it stages is resolved by the same
+//! Every order it gives is an [`Intent`](crate::arena::intents::Intent) built
+//! with the unit's own epoch and put through
+//! [`apply_intent`](crate::arena::intents::apply_intent) — the same function
+//! pulse phase 2 puts a pilot's verbs through — and every discrete action it
+//! stages is resolved by the same
 //! `resolve_startup`, `Arena::resolve_lock` and `Arena::resolve_fire` that phase 4
 //! calls. So the wreck gate, the channel gate, the epoch gate, the linkdead gate,
 //! the queue bound, `PowerNotOnline`, `Cycling` and `Empty` all apply to the
@@ -119,6 +121,18 @@
 //! that row and the hash folds them in the order they were folded here, so the
 //! split moved no byte of any match. The constants and the stop memory moved
 //! with them and are re-exported below under their old paths.
+//!
+//! # What outlives it (17b cut M4.6a)
+//!
+//! 17b cut M4.6 deletes this module, and its survivors moved out first with
+//! nothing hashed, carried or journaled moving with them: the state enum
+//! ([`MachineState`], this module's `ReflexState` renamed), the doctrine's
+//! constants (`REFLEX_STAND_TICKS` renamed [`STAND_TICKS`]), [`Ranges`],
+//! [`stand_off_want`] and `arc_between` to [`crate::arena::doctrine`];
+//! `Arena::apply_machine_intents` and [`crate::arena::mind::Landed`] to the
+//! mind seam; `Arena::hostile_in_weapons_range` and `Arena::health_permille`
+//! (this module's `reflex_health_permille`) to [`crate::arena::state`]. This
+//! module imports them back.
 
 use std::collections::BTreeMap;
 
@@ -127,17 +141,17 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::intents::{
-    Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, apply_intent, resolve_emcon,
-    resolve_startup,
+use crate::arena::doctrine::{
+    EXPOSURE_FLANK, EXPOSURE_FRONT, EXPOSURE_REAR, MachineState, Ranges, SCREEN_HALF_ARC_MDEG,
+    STAND_TICKS, SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS, arc_between, stand_off_want,
 };
+use crate::arena::intents::{IntentKind, IntentSource};
 use crate::arena::ledger::EventKind;
 use crate::arena::motor::{Fallback, MotorCounters, MotorPlan, MotorRow, MotorTable};
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
     Arena, Channel, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
 };
-use crate::arena::weapons::FiredBy;
 use crate::config::ReflexConfig;
 use crate::deliberation::order::{Objective, Order, RangeBand, StandingOrder};
 
@@ -148,150 +162,6 @@ pub use crate::arena::motor::{
     ARRIVE_CELLS, HUNT_FAN_ROWS, MAX_ENTRY_SCAN, MDEG_PER_RADIAN, REFLEX_AVOID_MAX,
     REFLEX_AVOID_TTL_MS, Refusal, STAND_OFF_MARGIN_CELLS, STEER_LOOKAHEAD_CELLS,
 };
-
-/// **How many decide cycles a cornered `Withdraw` stands and fights** (16b cut
-/// Q.7) before it asks again whether it still has a line.
-///
-/// Three, because the live line a `Withdraw` is refusing to turn its back on
-/// flickers: a treeline between two tanks breaks and remakes the trace several
-/// times a second of arena time, and a unit that resumed its run on the first
-/// broken tick would spend the next one turning round again.
-pub const REFLEX_STAND_TICKS: i64 = 3;
-
-/// The exposure, per mille, of each facet band a candidate may present — the
-/// `weight_facet` term of doc 16 §6's utility score.
-///
-/// Lower is a better target: a tank showing its rear is worth closing on and one
-/// showing its front is not. The numbers are doctrine and nothing reads them but
-/// the score — this module's, and since 17b cut M1a.6 the stock mind's
-/// `best_hostile`, which is the same score over the view (hence `pub(crate)`).
-pub(crate) const EXPOSURE_FRONT: u32 = 1_000;
-/// A flank.
-pub(crate) const EXPOSURE_FLANK: u32 = 600;
-/// The rear.
-pub(crate) const EXPOSURE_REAR: u32 = 200;
-
-/// **Half the arc a screen covers**, millidegrees either side of its facing (16b
-/// cut Z.2; 16c N6): `Objective::Screen` locks and fires on a classified hostile
-/// whose plot bears inside this of `facing_mdeg`, and on nothing else.
-///
-/// Sixty degrees, so a 120° sector: wide enough that a tank crossing the front
-/// is met, narrow enough that a screen has a flank — a screen that saw all
-/// round would be a `Hold` that shoots, and the order would say nothing about
-/// where the squad is looking.
-pub const SCREEN_HALF_ARC_MDEG: u32 = 60_000;
-
-/// **How far a supporter may stray from its charge**, cells (16b cut Z.2; 16c
-/// N6): past this, measured to the supporter's own plot of the charge, the leash
-/// wins over the chase and the supporter drives back toward its station.
-///
-/// Fifteen, which is 150 m on the shipped ground: inside the `close` band of the
-/// stock cannon, so a supporter fights the same target its charge fights rather
-/// than one of its own a ridge away.
-pub const SUPPORT_LEASH_CELLS: u16 = 15;
-
-/// **The station a supporter keeps on its charge**, cells (16b cut Z.2; 16c N6):
-/// near, not on top. The station cell — projected back from the plot of the
-/// charge toward the supporter — is the goal until the unit stands inside this
-/// of the plot, and then it holds.
-pub const SUPPORT_STATION_CELLS: u16 = 5;
-
-// ---------------------------------------------------------------------------
-// The machine
-// ---------------------------------------------------------------------------
-
-/// **Where one AI unit is in doc 16 §6's machine.**
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReflexState {
-    /// Cold: the only order it gives is `STARTUP`.
-    #[default]
-    Startup,
-    /// **Looking for something to fight.** Its goal is the first of these that
-    /// answers (16b cut E.4):
-    ///
-    /// 1. **a movement order** — `Advance`'s cell, or `Hold`'s "where you
-    ///    stand" (16b cut N.2);
-    /// 2. **the search** — [`ReflexUnit::last_plot`], while it is younger than
-    ///    [`crate::config::ReflexConfig::search_ms`] and the machine has not
-    ///    arrived at it: where it last saw the target it has just lost;
-    /// 3. **the hunt** — [`ReflexUnit::hunt`], the other side's entry zone,
-    ///    once [`crate::config::ReflexConfig::hunt_after_ms`] has passed with
-    ///    nothing hostile held at all;
-    /// 4. **the waypoint walk** — `Arena::patrol_step` (the motor's since 17b
-    ///    cut M1a.1), the arena pack's graph, which is what `Patrol` was and
-    ///    still is when the three above have nothing to say.
-    ///
-    /// **16b cut Z.2**: a machine under `Objective::Screen` stays here — parked,
-    /// faced onto the order's bearing — and fires from its tick's *stand*
-    /// without ever entering `Approach` or `Engage`, so a screening tick reads
-    /// `patrol` in the state distribution. So does a supporter holding its
-    /// station, or standing where it is because it cannot see its charge.
-    ///
-    /// **16b cut O.1 (16c N11; plan items 2, 16, 32, 33): in a Hold match the
-    /// key spot is doctrine's fallback goal.** The list is then 1. the movement
-    /// order, 2. the search, 3. **the Hold spot** (`Arena::hold_goal`) in place
-    /// of BOTH the hunt and the waypoint walk, and 4. the waypoint walk only
-    /// while `hold_goal` declines — a spot no route reaches, given up for
-    /// `max(hunt_after_ms, repath_ms)` ([`MotorRow::hold_retry_ms`]). A
-    /// machine arrives anywhere inside `radius − 1` of the spot and parks there
-    /// (presence is all a hold needs, and one cell cannot seat a side); it is
-    /// **not** a standing `Objective::Advance` written by the arena, because a
-    /// live `Advance` suppresses the hostile edges for its whole TTL and arrival
-    /// does not end it. A hostile sighted from the spot is fought **from inside
-    /// the square** (the `Approach` arm's inside rule), and an `Advance` a
-    /// commander sends into the square hands over to this goal on arrival
-    /// (beside AA.1's arm). Both sides' machines take it. What is NOT changed,
-    /// recorded for the owner in Q-O1: an attacking machine stops at
-    /// `engage_cm` and never contests the square.
-    Patrol,
-    /// Closing on the hostile the utility score picked.
-    Approach,
-    /// Holding the band, locked, firing when the breech is free.
-    Engage,
-    /// Below the health threshold and making for its own entry zone.
-    Withdraw,
-    /// A wreck, or disabled: it issues nothing at all.
-    Disabled,
-}
-
-impl ReflexState {
-    /// Every state, in code order — what a distribution is reported over.
-    pub const ALL: [ReflexState; 6] = [
-        ReflexState::Startup,
-        ReflexState::Patrol,
-        ReflexState::Approach,
-        ReflexState::Engage,
-        ReflexState::Withdraw,
-        ReflexState::Disabled,
-    ];
-
-    /// The wire word.
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            ReflexState::Startup => "startup",
-            ReflexState::Patrol => "patrol",
-            ReflexState::Approach => "approach",
-            ReflexState::Engage => "engage",
-            ReflexState::Withdraw => "withdraw",
-            ReflexState::Disabled => "disabled",
-        }
-    }
-
-    /// The byte [`crate::arena::hash::state_hash`] folds in.
-    #[must_use]
-    pub const fn code(&self) -> u8 {
-        match self {
-            ReflexState::Startup => 0,
-            ReflexState::Patrol => 1,
-            ReflexState::Approach => 2,
-            ReflexState::Engage => 3,
-            ReflexState::Withdraw => 4,
-            ReflexState::Disabled => 5,
-        }
-    }
-}
 
 /// **What the controller remembers about one unit.**
 ///
@@ -309,7 +179,7 @@ impl ReflexState {
 #[serde(deny_unknown_fields)]
 pub struct ReflexUnit {
     /// Where it is in the machine.
-    pub state: ReflexState,
+    pub state: MachineState,
     /// The hostile it settled on, and the contact it holds it under.
     pub target: Option<(ContactId, ObjId)>,
     /// A shot of this unit's was refused the line (W's `blocked` or `cover` miss):
@@ -317,7 +187,7 @@ pub struct ReflexUnit {
     pub no_line: bool,
     /// **While this is in the future, a cornered `Withdraw` stands** (16b cut
     /// Q.7): stopped, turned onto the hostile's plot, firing when the line is
-    /// there. Set to `t_ms + REFLEX_STAND_TICKS × decide_ms` by the tick that
+    /// there. Set to `t_ms + STAND_TICKS × decide_ms` by the tick that
     /// found the line, and cleared by the first tick past it with no line.
     pub stand_until_ms: Option<i64>,
     /// **When this `Withdraw` last had nothing hostile on its plot board** (16b
@@ -413,8 +283,8 @@ impl ReflexUnit {
     pub fn drop_to_doctrine(&mut self, health_ok: bool) {
         self.order = None;
         self.target = None;
-        if self.state == ReflexState::Withdraw && health_ok {
-            self.state = ReflexState::Patrol;
+        if self.state == MachineState::Withdraw && health_ok {
+            self.state = MachineState::Patrol;
         }
     }
 }
@@ -473,7 +343,7 @@ impl ReflexMemory {
         self.units.iter().map(|(unit, row)| (*unit, row))
     }
 
-    /// How many machines are in each state, in [`ReflexState::ALL`] order — the
+    /// How many machines are in each state, in [`MachineState::ALL`] order — the
     /// distribution the harness reports.
     #[must_use]
     pub fn distribution(&self) -> [u32; 6] {
@@ -492,7 +362,7 @@ impl ReflexMemory {
     pub fn any_approaching(&self) -> bool {
         self.units
             .values()
-            .any(|row| row.state == ReflexState::Approach)
+            .any(|row| row.state == MachineState::Approach)
     }
 
     /// **Hand a unit to the controller in a named state** — the check-out's
@@ -505,7 +375,7 @@ impl ReflexMemory {
     /// the case in which the hull's [`MotorRow`] is reset too — and resets only
     /// the decision's fields itself. Called through [`Arena::adopt_reflex`], which
     /// does both, and never alone outside this module's own tests.
-    pub fn adopt(&mut self, unit: ObjId, state: ReflexState) -> bool {
+    pub fn adopt(&mut self, unit: ObjId, state: MachineState) -> bool {
         let row = self.units.entry(unit).or_default();
         if row.state != state {
             row.state = state;
@@ -538,7 +408,7 @@ impl ReflexMemory {
     /// **Write a squad's standing order onto one unit's machine** (16b cut N.2),
     /// latest-wins.
     ///
-    /// A unit with no machine gets one, in [`ReflexState::Startup`]: an order may
+    /// A unit with no machine gets one, in [`MachineState::Startup`]: an order may
     /// arrive for a tank the controller has not ticked yet, and refusing it would
     /// make the first order of a match the one that never lands.
     pub fn set_order(&mut self, unit: ObjId, order: StandingOrder) {
@@ -553,7 +423,7 @@ impl ReflexMemory {
     /// since 17b cut M1a.1: the caller forgets them beside this
     /// ([`MotorTable::forget_goal`]).
     ///
-    /// `health_ok` is the caller's `reflex_health_permille(unit) >=
+    /// `health_ok` is the caller's `health_permille(unit) >=
     /// withdraw_permille`: the memory holds no arena and cannot read the hull. A
     /// unit with no machine is left alone.
     pub fn drop_to_doctrine(&mut self, unit: ObjId, health_ok: bool) {
@@ -611,80 +481,6 @@ pub(crate) struct ReflexPlan {
 // The three distances a tick fights at
 // ---------------------------------------------------------------------------
 
-/// **What one machine's ranges are this tick** (16b cut E.1; 16c `B-05`,
-/// `B-39`, `T-32`, `T-46`, `T-47`), all integer centimetres, computed once from
-/// the unit, the doctrine and the order.
-///
-/// Before this cut every range test the controller made was against
-/// [`UnitState::weapon_reach_cm`] — the *longest* reach the platform carries,
-/// 3 km on a stock tank — on a map where the sight is 600 m and a mesh hop adds
-/// 300 m. All of them were therefore always true: `Approach` became `Engage` at
-/// the first line anywhere, `Engage` could never fall back, and a hurt machine
-/// stood and fought at any range. The one place the doctrine band was *used*
-/// was worse: 700 per mille of 3 km is 2.1 km, and `stand_off_cell` projects
-/// that back from the plot, so the "stand-off" goal was up to 1.2 km **behind**
-/// the machine.
-///
-/// So every distance here is priced off [`UnitState::fight_inner_cm`] and
-/// [`UnitState::fight_limit_cm`] — the lesser of the platform's own sight and
-/// the band of the weapon it would fire.
-///
-/// # The doctrine band is applied after the order's cap, and not before it
-///
-/// `engage_cm` is `engage_band_permille` of the reach the **order** allows, and
-/// `release_cm` is that reach itself. Capping the two separately collapses them
-/// to one distance under two of the commander's three words (`close` gives
-/// 200 / 200 on a stock tank, `effective` 400 / 400), and a target drifting
-/// about that one distance flips the machine between stopping to shoot and
-/// driving to a stand-off cell every tick. Applied after the cap the hysteresis
-/// is the same three tenths under every order, and the machine may fire across
-/// the whole of its `Engage` region — so it never stands in `Engage` at a range
-/// it may not shoot from.
-///
-/// The stock tank, engage / release / stand-off goal:
-///
-/// | order band | `engage_cm` | `release_cm` | stand-off `want` |
-/// |---|---|---|---|
-/// | none, or `far` | 420 m | 600 m | 390 m |
-/// | `effective` | 280 m | 400 m | 250 m |
-/// | `close` | 140 m | 200 m | 110 m |
-///
-/// `stand_cm` is 200 m under all three. **16b cut AA.1**: a machine that cannot
-/// close ([`UnitState::cannot_close`]) enters `Engage` at `release_cm` and not at
-/// `engage_cm`, so its region is the whole row.
-///
-/// **Shared arithmetic, not a leaky reader** (17b cut M1a.6): `pub` because the
-/// stock mind's [`crate::arena::stock_mind::view_ranges`] answers this struct
-/// over the view, so T0 and T1 fight at the same three distances. It outlives
-/// the reflex's decision half: when 17b cut M4 deletes that, `Ranges` and
-/// [`stand_off_want`] move beside the stock mind. Only [`ranges`] — the reading
-/// off the live [`UnitState`] — is T0's and leaves with it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Ranges {
-    /// Where `Approach` stops and turns: the doctrine band of the allowed reach —
-    /// for a machine that can close (16b cut AA.1).
-    pub engage_cm: u64,
-    /// Where `Engage` gives up and closes again — **and the ceiling
-    /// `Arena::engage_orders` will fire out to**, so the two cannot disagree.
-    pub release_cm: u64,
-    /// What a `Withdraw` still on its way home will turn and fight inside: the
-    /// `close` band, capped by the order **and by `release_cm`**.
-    ///
-    /// The last cap is not redundant. The `close` band is a third of the *last*
-    /// band edge held to the sight, and `release_cm` is the *first* one held to
-    /// the same sight, so a gun whose inner band is under a third of its outer
-    /// reach — nothing the game ships, and an ordinary shape for content to
-    /// author — would otherwise let a hurt machine stop in front of a hostile
-    /// that `Arena::engage_orders`' own ceiling then refuses to fire at. That
-    /// is the parked target 16b cut Q.7 was paid to remove, arrived at by
-    /// doctrine instead of by a pilot, and `Arena::withdraw_stand`'s doc says
-    /// a unit that cannot shoot is never cornered.
-    pub stand_cm: u64,
-    /// The furthest this platform fights at at all; `0` is a platform with
-    /// nothing loaded, which has no target.
-    pub limit_cm: u64,
-}
-
 /// [`Ranges`] for one unit under one order.
 ///
 /// **T0's leaky readers, exposed for the twin lane's shadow (17b cut M1a.6) and
@@ -714,28 +510,6 @@ pub fn ranges(unit: &UnitState, cell_cm: u16, cfg: &ReflexConfig, order: Option<
     }
 }
 
-/// **How much range an `Approach` aims to keep on the plot**, centimetres (16b
-/// cut E.1; 16c `B-05`) — the argument [`Arena::stand_off_cell`] projects back
-/// from the plot toward the machine.
-///
-/// Floor first, `min` with the range **last**, and the order is the whole of the
-/// function: the literal `engage_cm − margin` underflows a `u64` for a short band
-/// or a small sight, and a floor applied *after* the `min` can exceed `range`,
-/// which projects the goal behind the machine — `B-05` written a second time. As
-/// written the answer is never above `range`, and never nought unless `range` is.
-///
-/// **Shared arithmetic, not a leaky reader** (17b cut M1a.6): `pub` because the
-/// stock mind's `Approach` and `Engage` call it over the view's held range, so
-/// it outlives the reflex's decision half and moves beside the stock mind in
-/// 17b cut M4 (see [`Ranges`]); the twin lane's shadow calls it too.
-#[must_use]
-pub fn stand_off_want(engage_cm: u64, cell_cm: u64, range_cm: u64) -> u64 {
-    engage_cm
-        .saturating_sub(u64::from(STAND_OFF_MARGIN_CELLS).saturating_mul(cell_cm))
-        .max(cell_cm)
-        .min(range_cm)
-}
-
 // ---------------------------------------------------------------------------
 // The tick
 // ---------------------------------------------------------------------------
@@ -757,7 +531,7 @@ impl Arena {
             .map(|unit| unit.id)
             .collect();
         for id in reflex {
-            self.adopt_reflex(id, ReflexState::Startup);
+            self.adopt_reflex(id, MachineState::Startup);
             self.schedule_reflex_tick(id);
         }
     }
@@ -899,7 +673,7 @@ impl Arena {
     /// A unit already under `controller` keeps everything it has: a second
     /// `Released` still points a machine at the entry zone, but schedules no
     /// second tick.
-    pub fn set_controller(&mut self, unit: ObjId, controller: Controller, state: ReflexState) {
+    pub fn set_controller(&mut self, unit: ObjId, controller: Controller, state: MachineState) {
         let was = self.unit(unit).map(|slot| slot.controller);
         let Some(was) = was else {
             return;
@@ -974,7 +748,7 @@ impl Arena {
     /// every hull the controller flies has a row from its check-out: that is
     /// what the motor's readers ([`Arena::hold_routeless`], [`Arena::note_blocked`])
     /// gate on now in place of the controller.
-    pub fn adopt_reflex(&mut self, unit: ObjId, state: ReflexState) {
+    pub fn adopt_reflex(&mut self, unit: ObjId, state: MachineState) {
         let changed = self.reflex.adopt(unit, state);
         let motor = self.motors.ensure(unit);
         if changed {
@@ -994,53 +768,6 @@ impl Arena {
     pub fn release_reflex(&mut self, unit: ObjId) {
         self.reflex.release(unit);
         self.motors.release(unit);
-    }
-
-    /// **Any unit holds a classified hostile inside its own weapons reach** — doc
-    /// 16 §3.1's third `Engaged` trigger, which cut W.1 left `false` because
-    /// nobody had bounded a field-wide sweep.
-    ///
-    /// There is no sweep: it reads the **contacts a platform already holds**, which
-    /// the sensor pass minted and bounded, so the cost is one range test per held
-    /// classified contact and never a pass over pairs of units. A platform with no
-    /// weapon has no reach and answers `false` for every contact it holds, which is
-    /// the honest reading of *within weapons range*.
-    ///
-    /// **16b cut F.3**: the range is to the contact's **plot** — where the
-    /// platform last saw the target — for the same reason
-    /// [`Arena::contact_within_alert_range`]'s is. How often a pilot is sent a
-    /// frame is something a pilot can count, so a tempo read off a position
-    /// nobody holds would be a leak of hidden truth.
-    ///
-    /// **16b cut E.1 (16c `T-32`)**: the reach is
-    /// [`UnitState::fight_inner_cm`] — the band the platform would actually
-    /// fight in — and not the longest gun it carries. Against the 3 km cannon
-    /// this answered `true` for *any* classified hostile a sight or a mesh hop
-    /// could hold, so `Engaged` meant "somebody holds a classified hostile" and
-    /// the arena ran at 500 ms from the first classification to the end of the
-    /// match. It now means what doc 16 §3.1's table says: hostiles are within
-    /// weapons range of each other.
-    ///
-    /// **16b cut E.2 (16c `B-45`)**: and *hostile* is read off the contact,
-    /// through [`Arena::contact_reads_dead`], rather than off the target's live
-    /// wreck flag. The tempo now falls when the platforms holding the wreck
-    /// **learn** it — at the kill for whoever fired the round, at the track's
-    /// expiry for everybody else — and not at the arena millisecond the hull
-    /// burned. A contact whose unit has left the match still counts for nothing.
-    #[must_use]
-    pub fn hostile_in_weapons_range(&self) -> bool {
-        let cell_cm = self.definition.terrain.cell_cm();
-        self.units.iter().any(|viewer| {
-            let reach = viewer.fight_inner_cm(cell_cm);
-            reach != 0
-                && self.contacts.of(viewer.id).any(|(_, held)| {
-                    held.class.team().is_some_and(|team| team != viewer.team)
-                        && self.unit(held.target).is_some()
-                        && !self.contact_reads_dead(held)
-                        // 16b cut U.1 (16c `T-24`): the squared test, no root.
-                        && held.seen_at.within_cm(&viewer.pose, reach)
-                })
-        })
     }
 
     // -----------------------------------------------------------------------
@@ -1080,7 +807,7 @@ impl Arena {
         // 17b cut M1a.1: the whole row was reset here, so the motor row is too.
         if unit.limits.wreck || unit.disabled {
             row = ReflexUnit {
-                state: ReflexState::Disabled,
+                state: MachineState::Disabled,
                 ..ReflexUnit::default()
             };
             *motor = MotorRow::default();
@@ -1109,7 +836,7 @@ impl Arena {
         {
             let squad = standing.order.squad;
             let objective = standing.order.objective.as_str();
-            row.drop_to_doctrine(self.reflex_health_permille(id) >= memory.cfg.withdraw_permille);
+            row.drop_to_doctrine(self.health_permille(id) >= memory.cfg.withdraw_permille);
             // 17b cut M1a.1: and the motor's half of the restoration, on the row
             // in hand — what `MotorTable::forget_goal` clears.
             motor.goal = None;
@@ -1219,7 +946,7 @@ impl Arena {
         // on a lane that fields only armed types it is false at its first term.
         let inert = unit.weapons.is_empty() && unit.mobility.max_speed_cms == 0;
         if inert && matches!(unit.power, Power::Online | Power::Starting) {
-            row.state = ReflexState::Patrol;
+            row.state = MachineState::Patrol;
             motor.goal = None;
             motor.route.clear();
             row.target = None;
@@ -1251,8 +978,8 @@ impl Arena {
                 // `Disabled` alone — so a cold `Withdraw` that passed through
                 // `Startup` would come up and go looking for a fight it had
                 // already left.
-                if row.state != ReflexState::Withdraw {
-                    row.state = ReflexState::Startup;
+                if row.state != MachineState::Withdraw {
+                    row.state = MachineState::Startup;
                 }
                 plan.startup = true;
                 memory.units.insert(id, row);
@@ -1269,15 +996,15 @@ impl Arena {
             // `Patrol` — and a tank that was released cold would come up and go
             // looking for the fight its pilot had just walked out of.
             Power::Starting => {
-                if row.state != ReflexState::Withdraw {
-                    row.state = ReflexState::Startup;
+                if row.state != MachineState::Withdraw {
+                    row.state = MachineState::Startup;
                 }
                 memory.units.insert(id, row);
                 return plan;
             }
             Power::Online => {
-                if row.state == ReflexState::Startup || row.state == ReflexState::Disabled {
-                    row.state = ReflexState::Patrol;
+                if row.state == MachineState::Startup || row.state == MachineState::Disabled {
+                    row.state = MachineState::Patrol;
                     motor.goal = None;
                     motor.route.clear();
                 }
@@ -1308,8 +1035,8 @@ impl Arena {
                 || held_target.is_some_and(|held| self.contact_reads_dead(held)))
         {
             row.target = None;
-            if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
-                row.state = ReflexState::Patrol;
+            if matches!(row.state, MachineState::Approach | MachineState::Engage) {
+                row.state = MachineState::Patrol;
                 motor.goal = None;
                 motor.route.clear();
             }
@@ -1341,8 +1068,8 @@ impl Arena {
         if let Some(order) = order.as_ref() {
             match order.objective {
                 Objective::Withdraw => {
-                    if row.state != ReflexState::Withdraw {
-                        row.state = ReflexState::Withdraw;
+                    if row.state != MachineState::Withdraw {
+                        row.state = MachineState::Withdraw;
                         row.target = None;
                         motor.goal = None;
                         motor.route.clear();
@@ -1353,8 +1080,8 @@ impl Arena {
                     }
                 }
                 Objective::Hold | Objective::Advance { .. } | Objective::Screen { .. } => {
-                    if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
-                        row.state = ReflexState::Patrol;
+                    if matches!(row.state, MachineState::Approach | MachineState::Engage) {
+                        row.state = MachineState::Patrol;
                         motor.goal = None;
                         motor.route.clear();
                     }
@@ -1377,12 +1104,12 @@ impl Arena {
         // what stops a hurt machine oscillating between the entry zone and the
         // line for the rest of the match. A commander's `Objective::Withdraw`
         // (above) overrides either way, rallied or not.
-        let health = self.reflex_health_permille(id);
+        let health = self.health_permille(id);
         let dry = is_dry(unit);
-        if row.state != ReflexState::Withdraw
+        if row.state != MachineState::Withdraw
             && (dry || (!row.rallied && health < memory.cfg.withdraw_permille))
         {
-            row.state = ReflexState::Withdraw;
+            row.state = MachineState::Withdraw;
             row.target = None;
             motor.goal = None;
             motor.route.clear();
@@ -1413,7 +1140,7 @@ impl Arena {
                 if of != id
                     && matches!(
                         row.state,
-                        ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
+                        MachineState::Patrol | MachineState::Approach | MachineState::Engage
                     ) =>
             {
                 Some(
@@ -1441,7 +1168,7 @@ impl Arena {
         if may_pursue
             && matches!(
                 row.state,
-                ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
+                MachineState::Patrol | MachineState::Approach | MachineState::Engage
             )
         {
             let prefer = self.ordered_target(id, order.as_ref(), memory);
@@ -1452,14 +1179,14 @@ impl Arena {
                         motor.goal = None;
                         motor.route.clear();
                     }
-                    if row.state == ReflexState::Patrol {
-                        row.state = ReflexState::Approach;
+                    if row.state == MachineState::Patrol {
+                        row.state = MachineState::Approach;
                     }
                 }
                 None => {
                     row.target = None;
-                    if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
-                        row.state = ReflexState::Patrol;
+                    if matches!(row.state, MachineState::Approach | MachineState::Engage) {
+                        row.state = MachineState::Patrol;
                         motor.goal = None;
                         motor.route.clear();
                     }
@@ -1483,8 +1210,8 @@ impl Arena {
             row.no_line = false;
             motor.goal = None;
             motor.route.clear();
-            if row.state == ReflexState::Engage {
-                row.state = ReflexState::Approach;
+            if row.state == MachineState::Engage {
+                row.state = MachineState::Approach;
             }
         }
 
@@ -1536,8 +1263,8 @@ impl Arena {
             // The two are one arm through `stands`, and (b) below never sees them.
             _ if stands => {
                 leashed = true;
-                if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
-                    row.state = ReflexState::Patrol;
+                if matches!(row.state, MachineState::Approach | MachineState::Engage) {
+                    row.state = MachineState::Patrol;
                 }
                 row.target = None;
                 motor.goal = here;
@@ -1563,7 +1290,7 @@ impl Arena {
             // drives is not built, as `Approach`'s is not).
             Some(Some(plot)) if off_leash => {
                 leashed = true;
-                row.state = ReflexState::Patrol;
+                row.state = MachineState::Patrol;
                 row.target = None;
                 row.last_plot = None;
                 row.hunt = None;
@@ -1584,8 +1311,8 @@ impl Arena {
         let station_on = if leashed { None } else { leash.flatten() };
         if !leashed {
             match row.state {
-                ReflexState::Startup | ReflexState::Disabled => {}
-                ReflexState::Patrol => {
+                MachineState::Startup | MachineState::Disabled => {}
+                MachineState::Patrol => {
                     // 16b cut N.2: `advance` replaces the waypoint walk with the cell
                     // the commander named; `hold` parks where the unit stands. Both
                     // leave the waypoint the machine was walking to alone, so doctrine
@@ -1714,7 +1441,7 @@ impl Arena {
                         //
                         // **16b cut O.1 (16c N11)**: in a Hold match the key spot
                         // takes the hunt's place and the walk's — see
-                        // [`ReflexState::Patrol`] and [`Arena::hold_goal`] — and
+                        // [`MachineState::Patrol`] and [`Arena::hold_goal`] — and
                         // the walk is asked only while the spot is given up.
                         _ => {
                             if !self.search_goal(t_ms, &mut row, motor, here, &memory.cfg) {
@@ -1768,7 +1495,7 @@ impl Arena {
                 //   edges re-planned a stand-off cell it could not drive to on every
                 //   tick and never fired again, and being armed it held its side up
                 //   for the rest of the match.
-                ReflexState::Approach => {
+                MachineState::Approach => {
                     if let Some((contact, target)) = row.target {
                         let plot = self.plot_of(id, contact);
                         let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
@@ -1805,7 +1532,7 @@ impl Arena {
                         };
                         if ranges.limit_cm != 0 && range <= close_edge.max(1) {
                             if self.reflex_has_line(id, target, counters) {
-                                row.state = ReflexState::Engage;
+                                row.state = MachineState::Engage;
                                 motor.goal = None;
                                 motor.route.clear();
                                 self.engage_orders(
@@ -1844,7 +1571,7 @@ impl Arena {
                         }
                     }
                 }
-                ReflexState::Engage => {
+                MachineState::Engage => {
                     if let Some((contact, _)) = row.target {
                         let plot = self.plot_of(id, contact);
                         let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
@@ -1854,7 +1581,7 @@ impl Arena {
                         // holding, under every order. Before this cut both edges read
                         // one number and neither could ever fire (16c `T-47`).
                         if ranges.limit_cm == 0 || range > ranges.release_cm {
-                            row.state = ReflexState::Approach;
+                            row.state = MachineState::Approach;
                             let want =
                                 stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
                             motor.goal = plot
@@ -1880,7 +1607,7 @@ impl Arena {
                 // **16b cut Q.7**: `Withdraw` is no longer terminal. It has two new
                 // edges inside it and one out of it, and none of them is a state flip
                 // on a live line — see [`ReflexUnit::stand_until_ms`] for why.
-                ReflexState::Withdraw => {
+                MachineState::Withdraw => {
                     if motor.goal.is_none() {
                         motor.goal = self.entry_cell(id).or(here);
                     }
@@ -1926,7 +1653,7 @@ impl Arena {
                     if let Some((contact, plot)) = cornered {
                         stood_cell = plot.cell(&self.definition.terrain);
                         row.stand_until_ms = Some(t_ms.saturating_add(
-                            REFLEX_STAND_TICKS.saturating_mul(i64::from(memory.cfg.decide_ms)),
+                            STAND_TICKS.saturating_mul(i64::from(memory.cfg.decide_ms)),
                         ));
                         row.quiet_since_ms = None;
                         plan.speed_cms = Some(0);
@@ -1966,7 +1693,7 @@ impl Arena {
                         } else {
                             let since = *row.quiet_since_ms.get_or_insert(t_ms);
                             if t_ms.saturating_sub(since) >= i64::from(memory.cfg.rally_ms) {
-                                row.state = ReflexState::Patrol;
+                                row.state = MachineState::Patrol;
                                 row.rallied = true;
                                 motor.goal = None;
                                 motor.route.clear();
@@ -1990,7 +1717,7 @@ impl Arena {
         // because there is no cell to drive to.
         if let Some(cell) = stood_cell {
             row.last_plot = Some((cell, t_ms));
-        } else if matches!(row.state, ReflexState::Approach | ReflexState::Engage)
+        } else if matches!(row.state, MachineState::Approach | MachineState::Engage)
             && let Some((contact, _)) = row.target
             && let Some(cell) = self
                 .plot_of(id, contact)
@@ -2003,13 +1730,13 @@ impl Arena {
         // and starts the wait again from here, so it is a minute and a half of
         // *nothing at all* that sends a machine over and never a minute and a
         // half measured through a battle.
-        if row.state != ReflexState::Patrol {
+        if row.state != MachineState::Patrol {
             row.hunt = None;
             row.unheld_since_ms = Some(t_ms);
         }
 
         // ---- the route, and the steer ----
-        if !matches!(row.state, ReflexState::Startup | ReflexState::Disabled)
+        if !matches!(row.state, MachineState::Startup | MachineState::Disabled)
             && plan.speed_cms.is_none()
         {
             // **17b cut M1a.1**: the drive is the motor's (`Arena::follow`, under
@@ -2122,7 +1849,7 @@ impl Arena {
                 if let Some(order) = order.as_ref()
                     && let Objective::Support { of } = order.objective
                     && of != id
-                    && row.state == ReflexState::Patrol
+                    && row.state == MachineState::Patrol
                 {
                     row.order = None;
                     plan.expired = Some((order.squad, order.objective.as_str()));
@@ -2886,57 +2613,15 @@ impl Arena {
         self.contacts.resolve(id, contact).map(|held| held.seen_at)
     }
 
-    /// **Armour plus internals, per mille of what the unit was authored with**
-    /// (reconciliation (c) of the cut brief), read off the M32 cells on
-    /// `UnitState::unit`.
-    ///
-    /// Every `armor` and `internals` cell on the unit, current against maximum,
-    /// each measured from its own floor: a facet whose armour is at `min` counts
-    /// zero and a section at full counts its whole span. A unit with no such cell
-    /// at all — cut A's fixtures — reads `1000`, a unit in perfect health, which is
-    /// the only answer that does not make an unmodelled hull withdraw at once.
-    #[must_use]
-    pub fn reflex_health_permille(&self, id: ObjId) -> u32 {
-        let Some(unit) = self.unit(id) else {
-            return 0;
-        };
-        if unit.limits.wreck {
-            return 0;
-        }
-        let mut have: i64 = 0;
-        let mut full: i64 = 0;
-        for (addr, cell) in unit.unit.cells() {
-            let name = match addr {
-                mush_tactics::CellAddr::Facet { cell, .. }
-                | mush_tactics::CellAddr::Section { cell, .. } => cell.as_str(),
-                mush_tactics::CellAddr::Unit { .. } | mush_tactics::CellAddr::Component { .. } => {
-                    continue;
-                }
-            };
-            if name != crate::definitions::unit::ARMOR_CELL
-                && name != crate::definitions::unit::INTERNALS_CELL
-            {
-                continue;
-            }
-            have = have.saturating_add(cell.current.saturating_sub(cell.min).max(0));
-            full = full.saturating_add(cell.max.saturating_sub(cell.min).max(0));
-        }
-        if full <= 0 {
-            return 1_000;
-        }
-        u32::try_from(have.saturating_mul(1_000) / full)
-            .unwrap_or(1_000)
-            .min(1_000)
-    }
-
     // -----------------------------------------------------------------------
     // Ordering
     // -----------------------------------------------------------------------
 
     /// Put the plan through the pilot's own door.
     ///
-    /// Each order is an [`Intent`] on the channel that carries it, at the unit's
-    /// **own current epoch** — the controller does not hold authority of its own,
+    /// Each order is an [`Intent`](crate::arena::intents::Intent) on the channel
+    /// that carries it, at the unit's **own current epoch** — the controller
+    /// does not hold authority of its own,
     /// it uses whatever the world last published for the seat, which is `0` for a
     /// tank nobody was ever in and the released seat's new epoch for one handed
     /// over mid-match. `apply_intent` is what accepts or refuses it; a discrete
@@ -2990,161 +2675,6 @@ impl Arena {
             counters,
         );
     }
-
-    /// **Put a machine's intents through the pilot's own door** (17b cut M1a.5;
-    /// doc 17 §4, D-UM-12) — `Arena::order`'s body, factored out so the reflex
-    /// controller, the motor and a mind's landing are one function.
-    ///
-    /// The kinds go in emission order, `seq` ascending from `1`, each an
-    /// [`Intent`] on the channel that carries it at `epoch_of(channel)`
-    /// (`counters.intents` counted per intent), through [`apply_intent`] under
-    /// `source`. One answer per kind, in order:
-    ///
-    /// * refused at apply — [`Landed::Refused`] with `apply_intent`'s word;
-    /// * a continuous kind applied — [`Landed::Applied`]; a
-    ///   [`MotorGoal::Cell`] that applied runs the motor once here
-    ///   (`Arena::motor_step` at `t_ms`), the one follow at landing (D-UM-10);
-    /// * a discrete kind queued — popped straight back out of `pending` and
-    ///   resolved at `t_ms`: `Startup` by [`resolve_startup`], `Lock` by
-    ///   `Arena::resolve_lock`, `Fire` by `Arena::resolve_fire` (`shots`
-    ///   counted on `Ok`), and — new in this cut — `Emcon` by
-    ///   [`resolve_emcon`]. **Each resolver's `Err` is the answer**
-    ///   ([`Landed::Refused`]) and its `Ok` is [`Landed::Applied`]; until this
-    ///   cut `Arena::order` dropped them with `let _`, and since it still does
-    ///   not read the vector no byte of the reflex controller's moved (the M1a.1
-    ///   pins). `Order`, `ReleaseOrder`, `Place` and `Goal` queue nothing.
-    ///
-    /// **17b cut M1b.1**: a `Fire` resolves through `Arena::resolve_fire_by` as
-    /// [`crate::arena::weapons::FiredBy::Mind`] with the slot it cites for an
-    /// [`IntentSource::Mind`] and as `Machine` otherwise (T0 is never gated); a
-    /// mind's arming (`IntentKind::Condition`) lands through
-    /// `Arena::resolve_arming`, in emission order, with NO evaluation here —
-    /// `Arena::mind_land` evaluates the hull's slots once after every intent.
-    pub(crate) fn apply_machine_intents(
-        &mut self,
-        unit: ObjId,
-        kinds: &[IntentKind],
-        t_ms: i64,
-        epoch_of: &dyn Fn(Channel) -> u64,
-        source: IntentSource,
-        counters: &mut MotorCounters,
-    ) -> Vec<Landed> {
-        let mut landed: Vec<Landed> = Vec::with_capacity(kinds.len());
-        let mut seq = 0_u64;
-        for kind in kinds {
-            let channel = kind.channel_required();
-            seq = seq.saturating_add(1);
-            let intent = Intent {
-                unit,
-                channel,
-                epoch: epoch_of(channel),
-                kind: kind.clone(),
-                seq,
-            };
-            counters.intents = counters.intents.saturating_add(1);
-            // **16b cut M.1** (`T-82`): the machine's own order, which the
-            // per-seat rate never counts — see `IntentSource`; a mind's
-            // (17b cut M1a.5, D-UM-14) neither.
-            match apply_intent(self, &intent, source) {
-                IntentOutcome::Refused(refusal) => {
-                    landed.push(Landed::Refused(refusal));
-                    continue;
-                }
-                IntentOutcome::AppliedContinuous => {
-                    // **17b cut M1a.4** (D-UM-10): a goal takes effect at the
-                    // landing millisecond, as phase 2's does for a seat's.
-                    if matches!(kind, IntentKind::Goal(MotorGoal::Cell { .. })) {
-                        let _ = self.motor_step(unit, t_ms, counters);
-                    }
-                    landed.push(Landed::Applied);
-                    continue;
-                }
-                IntentOutcome::Queued => {}
-            }
-            // `apply_intent` pushed exactly this order to the back of the unit's
-            // queue. It comes straight back out: leaving it there would hand it to
-            // phase 4, at the pulse's end, which is the arena millisecond this
-            // module exists to avoid.
-            if let Some(queue) = self.pending.get_mut(&unit) {
-                queue.pop_back();
-                if queue.is_empty() {
-                    self.pending.remove(&unit);
-                }
-            }
-            let resolved = match &intent.kind {
-                IntentKind::Startup => resolve_startup(self, unit, t_ms),
-                IntentKind::Lock { contact } => self.resolve_lock(unit, *contact, t_ms),
-                // **17b cut M1b.1** (D-UM-14, D-UM-17): who fired — a mind's
-                // shot with the slot it cites (gated from 17b cut M1b.2), a
-                // machine's never gated.
-                IntentKind::Fire { weapon, slot } => self
-                    .resolve_fire_by(
-                        unit,
-                        weapon,
-                        t_ms,
-                        match source {
-                            IntentSource::Mind => FiredBy::Mind { slot: *slot },
-                            IntentSource::Seat | IntentSource::Machine | IntentSource::Cond => {
-                                FiredBy::Machine
-                            }
-                        },
-                    )
-                    .map(|_| {
-                        counters.shots = counters.shots.saturating_add(1);
-                    }),
-                // **17b cut M1b.1** (D-UM-10): a mind's arming lands here, in
-                // emission order, through the one resolver a seat's goes
-                // through in phase 4. NO evaluation here: the landing's one
-                // evaluation is `mind_land`'s, after every intent (17b's
-                // adversarial F5).
-                IntentKind::Condition(arming) => {
-                    self.resolve_arming(unit, arming, t_ms).map(|_| ())
-                }
-                // **17b cut M1a.5** (D-UM-12): the arm `Arena::order` never
-                // had. The reflex controller still never switches its pod (16b
-                // cut O.2's residual: a machine keeps the switch where it found
-                // it), so it never reaches here; a mind's `emcon` does.
-                IntentKind::Emcon { on } => resolve_emcon(self, unit, *on, t_ms),
-                IntentKind::Heading { .. }
-                | IntentKind::Speed { .. }
-                | IntentKind::Order(_)
-                | IntentKind::ReleaseOrder { .. }
-                // 16b cut I.3: a staff act; a machine never issues one, and a
-                // mind's is refused `Channel` at apply.
-                | IntentKind::Place { .. }
-                // 17b cut M1a.4: continuous, so never queued.
-                | IntentKind::Goal(_) => Ok(()),
-            };
-            landed.push(match resolved {
-                Ok(()) => Landed::Applied,
-                Err(refusal) => Landed::Refused(refusal),
-            });
-        }
-        landed
-    }
-}
-
-/// **What became of one machine intent** (17b cut M1a.5; doc 17 §4, D-UM-12):
-/// `Arena::apply_machine_intents`' answer per kind, in emission order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Landed {
-    /// It took effect — applied, or queued and resolved.
-    Applied,
-    /// It was refused, at apply or by its resolver, for this reason. (The
-    /// arena's order refusal — this file's own `Refusal` is the motor's
-    /// remembered stop, re-exported.)
-    Refused(crate::arena::intents::Refusal),
-}
-
-/// **The angle between two bearings**, millidegrees, the short way round (16b
-/// cut Z.2): `0` to `180,000`, modulo a full turn, so a screen facing 350° sees
-/// a plot at 10° as 20° off its facing and not 340°.
-///
-/// `pub(crate)` since 17b cut M1a.6: the stock mind's screen reads the same
-/// arc, in whole degrees.
-pub(crate) fn arc_between(a_mdeg: u32, b_mdeg: u32) -> u32 {
-    let apart = (a_mdeg % 360_000).abs_diff(b_mdeg % 360_000);
-    apart.min(360_000 - apart)
 }
 
 /// **Whether a platform that *had* a gun has nothing left to fire** (16b cut
@@ -3275,8 +2805,6 @@ impl ReflexMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 17b cut M1a.1: the hunt's fan moved to the motor with its picker.
-    use crate::arena::motor::fan_rows;
     use crate::arena::state::Team;
     use crate::arena::test_support::{arena_of, pose, tank};
 
@@ -3289,6 +2817,11 @@ mod tests {
     /// **16b cut E.2** (16c `T-55`) made the same sentence true one row higher:
     /// the copy is now the engine's predicate exactly, so a **hot** gun one shot
     /// short of the ceiling is one both halves fire.
+    ///
+    /// 17b cut M4.6a (D11): every row is mirrored on the view by
+    /// `crate::arena::stock_mind`'s
+    /// `d2_a_weapon_that_makes_no_heat_never_holds_the_mind_back`, which holds
+    /// them when this test dies with the reflex's copy in 17b cut M4.6c.
     #[test]
     fn d2_a_weapon_that_makes_no_heat_never_holds_the_controller_back() {
         let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
@@ -3411,6 +2944,11 @@ mod tests {
     /// sight of 1,000 cm cells, a cannon whose bands are 1.5 km and 3 km, and
     /// doctrine's `engage_band_permille` of 700.
     /// `crates/tacsim/tests/content.rs` is what keeps them the pack's.
+    ///
+    /// 17b cut M4.6a (D11): every row is mirrored off a mind's view by
+    /// `crate::arena::stock_mind`'s
+    /// `e1_the_stock_tanks_three_rows_of_the_range_table_off_the_view`, which
+    /// holds the table when this test dies with `ranges` in 17b cut M4.6c.
     #[test]
     fn e1_the_stock_tanks_three_rows_of_the_range_table() {
         use crate::arena::perception::{SensorProfile, SignatureFactor};
@@ -3567,58 +3105,12 @@ mod tests {
         assert_eq!(ranges(state, 1_000, &cfg, None), Ranges::default());
     }
 
-    /// **[`stand_off_want`] as a table** (16b cut E.1; 16c `B-05`).
-    ///
-    /// Three claims over every row, and each of them is a way the first draft of
-    /// this arithmetic went wrong: the answer is never above `range_cm` (a want
-    /// past the range projects the goal *behind* the machine), it is never nought
-    /// unless the range is (a nought want puts the goal on the plot's own cell),
-    /// and nothing underflows a `u64` for a band shorter than the margin.
+    /// **17b cut M4.6a**: the reflex controller's two lines of
+    /// `the_states_round_trip_their_words_and_codes`, which moved to
+    /// `crate::arena::doctrine` with `MachineState`; they die with
+    /// `Controller::Reflex` in 17b cut M4.6c.
     #[test]
-    fn e1_the_stand_off_want_is_never_past_the_range_and_never_underflows() {
-        let cell = 1_000_u64;
-        for (engage_cm, range_cm, want) in [
-            // Nothing loaded: the floor of one cell, held to the range.
-            (0_u64, 0_u64, 0_u64),
-            (0, 500, 500),
-            (0, 42_000, 1_000),
-            // A band of exactly one cell, and of exactly the margin: the
-            // subtraction would underflow, and the floor answers instead.
-            (1_000, 42_000, 1_000),
-            (3_000, 42_000, 1_000),
-            (3_001, 42_000, 1_000),
-            // The stock tank's own row: 420 m less three cells is 390 m.
-            (42_000, 42_000, 39_000),
-            (42_000, 60_000, 39_000),
-            // And a range inside the want: the want comes down to it.
-            (42_000, 20_000, 20_000),
-            (42_000, 900, 900),
-            // An engagement band bigger than anything on the window.
-            (u64::MAX, 42_000, 42_000),
-        ] {
-            let have = stand_off_want(engage_cm, cell, range_cm);
-            assert_eq!(have, want, "engage {engage_cm}, range {range_cm}");
-            assert!(
-                have <= range_cm,
-                "engage {engage_cm}, range {range_cm}: {have} is past the range, so the goal \
-                 would be behind the machine"
-            );
-            assert!(
-                have > 0 || range_cm == 0,
-                "engage {engage_cm}, range {range_cm}: a nought want is the plot's own cell"
-            );
-        }
-        // And a window with a nonsense cell size does not panic either.
-        assert_eq!(stand_off_want(42_000, u64::MAX, 42_000), 42_000);
-    }
-
-    #[test]
-    fn the_states_round_trip_their_words_and_codes() {
-        for (at, state) in ReflexState::ALL.iter().enumerate() {
-            assert_eq!(usize::from(state.code()), at);
-            assert!(!state.as_str().is_empty());
-        }
-        assert_eq!(Controller::Pilot.code(), 0);
+    fn the_reflex_controller_is_code_one_and_reads_reflex() {
         assert_eq!(Controller::Reflex.code(), 1);
         assert_eq!(Controller::Reflex.as_str(), "reflex");
     }
@@ -3628,23 +3120,23 @@ mod tests {
     #[test]
     fn adopting_a_unit_twice_does_not_restart_its_machine() {
         let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
-        arena.adopt_reflex(ObjId(4), ReflexState::Startup);
+        arena.adopt_reflex(ObjId(4), MachineState::Startup);
         if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
-            row.state = ReflexState::Patrol;
+            row.state = MachineState::Patrol;
         }
         if let Some(motor) = arena.motors.row_mut(ObjId(4)) {
             motor.goal = Some((3, 3));
         }
-        arena.adopt_reflex(ObjId(4), ReflexState::Patrol);
+        arena.adopt_reflex(ObjId(4), MachineState::Patrol);
         assert_eq!(
             arena.motors.row(ObjId(4)).and_then(|motor| motor.goal),
             Some((3, 3)),
             "a second adopt into the state it is already in keeps the goal"
         );
-        arena.adopt_reflex(ObjId(4), ReflexState::Withdraw);
+        arena.adopt_reflex(ObjId(4), MachineState::Withdraw);
         assert_eq!(
             arena.reflex.unit(ObjId(4)).map(|row| row.state),
-            Some(ReflexState::Withdraw)
+            Some(MachineState::Withdraw)
         );
         assert_eq!(
             arena.motors.row(ObjId(4)).and_then(|motor| motor.goal),
@@ -3664,7 +3156,7 @@ mod tests {
     fn each_new_row_field_moves_the_state_hash() {
         let build = || {
             let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
-            arena.adopt_reflex(ObjId(4), ReflexState::Withdraw);
+            arena.adopt_reflex(ObjId(4), MachineState::Withdraw);
             arena
         };
         let base = crate::arena::hash::state_hash(&build());
@@ -3729,81 +3221,27 @@ mod tests {
         }
     }
 
-    /// **17b cut M1a.1 (`hash.rs` item 3b): a motor row of a hull the reflex
-    /// controller is not flying is folded, field by field, and a table that
-    /// holds none adds no byte.**
-    ///
-    /// A pilot's tank with no machine is given a motor row — the shape 17b cut
-    /// M1a.4's `DRIVE` lays down — and each of the row's folded fields, set one
-    /// at a time, moves the hash to a state no earlier probe reached; taking the
-    /// row away is the first state again. And a reflex row whose hull has no
+    /// **17b cut M1a.1 (`hash.rs` item 3): a reflex row whose hull has no
     /// motor row (the table emptied under it) hashes exactly as one whose row
-    /// is fresh: item 3 folds a missing row as `MotorRow::default()`, which is
+    /// is fresh**: item 3 folds a missing row as `MotorRow::default()`, which is
     /// what the fields folded while they were the machine's. That every match
     /// that exists hashes as it did is the two HEAD pins' to prove
     /// (`tests/reflex.rs`, `tests/motor.rs`).
+    ///
+    /// 17b cut M4.6a: the reflex half of
+    /// `m1a1_a_motor_row_of_a_unit_with_no_reflex_row_moves_the_hash_and_an_empty_table_adds_none`,
+    /// whose motor-row half moved to `crate::arena::hash`'s tests; this half
+    /// dies with item 3 in 17b cut M4.6c.
     #[test]
-    fn m1a1_a_motor_row_of_a_unit_with_no_reflex_row_moves_the_hash_and_an_empty_table_adds_none() {
-        use crate::arena::motion::BlockedCause;
+    fn m1a1_a_reflex_row_with_no_motor_row_hashes_as_one_whose_row_is_fresh() {
         use crate::arena::motor::MotorRow;
         let build = || arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
-        let bare = build();
-        assert!(bare.reflex.unit(ObjId(4)).is_none(), "a pilot's tank");
-        assert_eq!(bare.motors.rows().count(), 0, "an empty table");
-        let base = crate::arena::hash::state_hash(&bare);
-
-        let refusal = Refusal {
-            at: (1, 1),
-            cell: (2, 1),
-            cause: BlockedCause::Impassable,
-            goal: (6, 4),
-            until_ms: 31_000,
-        };
-        let mut seen: Vec<u64> = vec![base];
-        for edit in 0_u8..=8 {
-            let mut arena = build();
-            let motor = arena.motors.ensure(ObjId(4));
-            match edit {
-                0 => {} // the row itself, every field at its default
-                1 => motor.goal = Some((3, 4)),
-                2 => motor.goal = Some((4, 3)),
-                3 => motor.waypoint = Some(2),
-                4 => motor.route = vec![(2, 2)],
-                5 => motor.avoid = vec![((3, 4), 1_000)],
-                6 => motor.hold_retry_ms = Some(9_000),
-                7 => motor.searched_from = Some((1, 1)),
-                _ => motor.refused = Some(refusal),
-            }
-            let hash = crate::arena::hash::state_hash(&arena);
-            assert!(
-                !seen.contains(&hash),
-                "probe {edit} of a machine-less motor row folded the bytes of an earlier state"
-            );
-            seen.push(hash);
-            arena.motors.release(ObjId(4));
-            assert_eq!(
-                crate::arena::hash::state_hash(&arena),
-                base,
-                "probe {edit}: the row's release left a byte behind"
-            );
-        }
-        // `from_waypoint` is deliberately not folded, as it was not on the
-        // machine (item 3): a row differing only there is one state.
-        let mut arena = build();
-        arena.motors.ensure(ObjId(4)).from_waypoint = Some(1);
-        let mut other = build();
-        let _ = other.motors.ensure(ObjId(4));
-        assert_eq!(
-            crate::arena::hash::state_hash(&arena),
-            crate::arena::hash::state_hash(&other)
-        );
-
         // A machine whose motor row is missing hashes as one whose row is fresh.
         let mut fresh = build();
-        fresh.adopt_reflex(ObjId(4), ReflexState::Patrol);
+        fresh.adopt_reflex(ObjId(4), MachineState::Patrol);
         assert_eq!(fresh.motors.row(ObjId(4)), Some(&MotorRow::default()));
         let mut emptied = build();
-        emptied.adopt_reflex(ObjId(4), ReflexState::Patrol);
+        emptied.adopt_reflex(ObjId(4), MachineState::Patrol);
         emptied.motors.release(ObjId(4));
         assert_eq!(emptied.motors.rows().count(), 0);
         assert_eq!(
@@ -3820,7 +3258,7 @@ mod tests {
     #[test]
     fn adopt_forgets_the_search_and_the_hunt() {
         let mut memory = ReflexMemory::default();
-        memory.adopt(ObjId(4), ReflexState::Patrol);
+        memory.adopt(ObjId(4), MachineState::Patrol);
         if let Some(row) = memory.units.get_mut(&ObjId(4)) {
             row.last_plot = Some(((3, 4), 1_000));
             row.unheld_since_ms = Some(1_500);
@@ -3828,56 +3266,18 @@ mod tests {
         }
         // The same state again is idempotent: a second `Control` of the same
         // kind does not restart a machine halfway through a patrol.
-        memory.adopt(ObjId(4), ReflexState::Patrol);
+        memory.adopt(ObjId(4), MachineState::Patrol);
         assert_eq!(
             memory
                 .unit(ObjId(4))
                 .and_then(|row| row.last_plot.map(|(cell, _)| cell)),
             Some((3, 4))
         );
-        memory.adopt(ObjId(4), ReflexState::Withdraw);
+        memory.adopt(ObjId(4), MachineState::Withdraw);
         let row = memory.unit(ObjId(4)).expect("the row");
         assert_eq!(row.last_plot, None, "the plot survived the adoption");
         assert_eq!(row.unheld_since_ms, None, "the clock survived the adoption");
         assert_eq!(row.hunt, None, "the crossing survived the adoption");
-    }
-
-    #[test]
-    fn an_unmodelled_hull_reads_as_whole_and_a_wreck_reads_as_gone() {
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
-        // Cut A's fixture carries one armour cell and one internals cell, both full.
-        assert_eq!(arena.reflex_health_permille(ObjId(4)), 1_000);
-        assert_eq!(arena.reflex_health_permille(ObjId(9)), 0, "no such unit");
-        if let Some(state) = arena.unit_mut(ObjId(4)) {
-            state.limits.wreck = true;
-        }
-        assert_eq!(arena.reflex_health_permille(ObjId(4)), 0);
-    }
-
-    /// **16b cut Z.2's review**: a screen's arc is measured the short way round.
-    /// Every screen the replays and the lance lane fly faces 090° or 270°, where
-    /// a plain difference of bearings gives the same answers; a screen facing
-    /// 000° or 350° is where the wrap decides whether a tank at 10° is met.
-    #[test]
-    fn z2_the_arc_between_two_bearings_is_the_short_way_round() {
-        for (a, b, apart) in [
-            (350_000_u32, 10_000_u32, 20_000_u32),
-            (10_000, 350_000, 20_000),
-            (0, 359_000, 1_000),
-            (359_999, 0, 1),
-            (90_000, 270_000, 180_000),
-            (90_000, 30_000, 60_000),
-            (0, 0, 0),
-            // A facing written a full turn over is the same facing.
-            (360_000, 0, 0),
-            (720_000 + 5_000, 355_000, 10_000),
-        ] {
-            assert_eq!(arc_between(a, b), apart, "{a} and {b}");
-        }
-        // The half arc admits a tank at 10° to a screen facing north, and a tank
-        // at 61° off it is outside.
-        assert!(arc_between(10_000, 0) <= SCREEN_HALF_ARC_MDEG);
-        assert!(arc_between(299_000, 0) > SCREEN_HALF_ARC_MDEG);
     }
 
     // -----------------------------------------------------------------------
@@ -3888,22 +3288,17 @@ mod tests {
     /// hunters of one side are handed cells clear of each other's, wherever
     /// they stand, and the same ones at every cadence.**
     ///
-    /// On the test window (Blue's zone is columns 6 and 7, every row), three Red
-    /// tanks on row 3 all clamp to Blue's corner (6, 3). With no hunt held by
-    /// the side each is handed that corner, E.4's cell; handed one after
-    /// another, each against the cells handed before it, they get rows 3, 6 and
-    /// 0 — and from one cell exactly, since nothing here reads a pose but the
-    /// unit's own. A unit whose own row is already [`HUNT_FAN_ROWS`] from the
-    /// held cell keeps its own row (the cross-row case a fan by rank alone got
-    /// wrong); one two rows from it is fanned; a zone with no row left clear
-    /// answers E.4's cell, the named residual. [`fan_rows`] is pinned row for
-    /// row from every row of the window.
-    ///
     /// Then three of them hunt for real from their opening cells — two on row
     /// 3 and one on row 6, the lowest id on row 6, the layout in which a fan by
     /// side ordinal hands the lowest two ids one cell — no hostile anywhere,
     /// stepped at 5,000 / 1,000 / 500 ms: one hash sequence, one set of hunt
     /// cells at every shared boundary, and the three cells pairwise clear.
+    ///
+    /// 17b cut M4.6a: the answer itself — `Arena::far_entry_cell`'s fan and
+    /// `fan_rows` row for row, this test's part (a) — moved to
+    /// `crate::arena::motor`'s tests as
+    /// `ai1_the_hunters_of_one_side_are_handed_clear_cells`; this part dies
+    /// with the reflex in 17b cut M4.6c.
     #[test]
     fn ai1_the_hunters_of_one_side_are_handed_clear_cells_at_three_cadences() {
         let red = |id: u32, x: u16, y: u16| {
@@ -3914,88 +3309,6 @@ mod tests {
             )
         };
         let apart = |a: (u16, u16), b: (u16, u16)| a.0.abs_diff(b.0).max(a.1.abs_diff(b.1));
-        // (a) The answer itself.
-        let mut arena = arena_of(vec![
-            tank(ObjId(3), Team::Blue, pose(7_500, 7_500)),
-            red(4, 2, 3),
-            red(5, 3, 3),
-            red(6, 4, 3),
-        ]);
-        assert_eq!(
-            [4, 5, 6].map(|id| arena.far_entry_cell(ObjId(id), &[])),
-            [Some((6, 3)); 3],
-            "no hunt held: every machine is handed E.4's clamped corner"
-        );
-        let first = arena.far_entry_cell(ObjId(4), &[]);
-        assert_eq!(first, Some((6, 3)));
-        let second = arena.far_entry_cell(ObjId(5), &[(6, 3)]);
-        assert_eq!(second, Some((6, 6)), "the fan's first row");
-        let third = arena.far_entry_cell(ObjId(6), &[(6, 3), (6, 6)]);
-        assert_eq!(third, Some((6, 0)), "the fan's second row");
-        // From one cell exactly: the held cells, not the poses, keep them apart.
-        let one = arena.unit(ObjId(4)).map(|unit| unit.pose.clone());
-        for id in [5, 6] {
-            if let (Some(state), Some(at)) = (arena.unit_mut(ObjId(id)), one.clone()) {
-                state.pose = at;
-            }
-        }
-        assert_eq!(
-            [
-                arena.far_entry_cell(ObjId(4), &[]),
-                arena.far_entry_cell(ObjId(5), &[(6, 3)]),
-                arena.far_entry_cell(ObjId(6), &[(6, 3), (6, 6)]),
-            ],
-            [Some((6, 3)), Some((6, 6)), Some((6, 0))],
-            "three machines in one cell, three hunt cells"
-        );
-        // Across rows: a held cell three rows off leaves the unit its own row;
-        // one two rows off fans it; a zone with every fanned row's cell held
-        // answers E.4's cell after all.
-        assert_eq!(
-            arena.far_entry_cell(ObjId(4), &[(6, 6)]),
-            Some((6, 3)),
-            "three rows apart is clear"
-        );
-        assert_eq!(
-            arena.far_entry_cell(ObjId(4), &[(6, 5)]),
-            Some((6, 0)),
-            "two rows apart is not: row 6 is one from it, row 0 is clear"
-        );
-        assert_eq!(
-            arena.far_entry_cell(ObjId(4), &[(6, 0), (6, 3), (6, 6)]),
-            Some((6, 3)),
-            "the fan ran out, so E.4's cell"
-        );
-        // Another side's hunts are no business of Blue's: `taken` is the
-        // caller's, and Blue's own is empty.
-        assert_eq!(arena.far_entry_cell(ObjId(3), &[]), Some((1, 7)));
-        // The fan's rows, from every row of an eight-row zone: the clamped row
-        // first, then alternately above and below in steps of three, rows off
-        // the zone skipped and nothing repeated.
-        let expected: [&[u16]; 8] = [
-            &[0, 3, 6],
-            &[1, 4, 7],
-            &[2, 5],
-            &[3, 6, 0],
-            &[4, 7, 1],
-            &[5, 2],
-            &[6, 3, 0],
-            &[7, 4, 1],
-        ];
-        for (cy, want) in (0..=7_u16).zip(expected) {
-            let rows: Vec<u16> = fan_rows(cy, 0, 7).collect();
-            assert_eq!(rows, want, "the fan from row {cy}");
-            for (i, a) in rows.iter().enumerate() {
-                for b in rows.iter().skip(i + 1) {
-                    assert!(
-                        a.abs_diff(*b) >= HUNT_FAN_ROWS,
-                        "rows {a} and {b} from row {cy}"
-                    );
-                }
-            }
-        }
-        assert_eq!(fan_rows(4, 4, 4).collect::<Vec<_>>(), vec![4], "one row");
-
         // (b) Three machines hunting for real. Their hunt clocks are set run
         // out, so each crosses at its first tick, from the cell it opened in;
         // and they are slowed to 200 cm/s, so the crossing is still under way at
@@ -4004,7 +3317,7 @@ mod tests {
             let mut arena = arena_of(vec![red(4, 2, 6), red(5, 2, 3), red(6, 3, 3)]);
             let clock = i64::from(arena.reflex.cfg.hunt_after_ms);
             for id in [4, 5, 6] {
-                arena.set_controller(ObjId(id), Controller::Reflex, ReflexState::Patrol);
+                arena.set_controller(ObjId(id), Controller::Reflex, MachineState::Patrol);
                 if let Some(state) = arena.unit_mut(ObjId(id)) {
                     state.power = crate::arena::state::Power::Online;
                     state.mobility.max_speed_cms = 200;

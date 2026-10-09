@@ -85,11 +85,11 @@ use std::time::Instant;
 
 use mush_core::ObjId;
 use tacsim::arena::conditions::{Arming, FireCondition, Held, HeldWhy, STOCK_CONDITION_SLOTS};
+use tacsim::arena::doctrine::{MachineState, SCREEN_HALF_ARC_MDEG};
 use tacsim::arena::intents::{IntentKind, MotorGoal, Refusal};
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{MindRunner, MindView, ThinkJob, ThinkResult, decode_memory};
 use tacsim::arena::perception::{DriveOutcome, FrameNotice, MindObjective};
-use tacsim::arena::reflex::{ReflexState, SCREEN_HALF_ARC_MDEG};
 use tacsim::arena::state::{Arena, ContactId, CostRow, EndReason, Team};
 use tacsim::arena::stock_mind::{
     NativeStockMind, StockMemory, Weights, best_hostile_ranked, health_permille, line_to,
@@ -622,7 +622,7 @@ fn play_on(
             // M4.5: not `Arena::machine_state`, so the record does not lean
             // on how a later cut gates that read).
             let code = if state.limits.wreck || state.disabled {
-                ReflexState::Disabled.code()
+                MachineState::Disabled.code()
             } else {
                 arena
                     .minds
@@ -1811,7 +1811,7 @@ fn m2_gate_a_on_a_mixed_pool() {
         for thought in &thoughts {
             let is_unarmed = unarmed.contains(&thought.unit);
             let kind = usize::from(!is_unarmed);
-            at_disabled[kind] += u32::from(thought.state == ReflexState::Disabled.code());
+            at_disabled[kind] += u32::from(thought.state == MachineState::Disabled.code());
             at_rallied[kind] += u32::from(thought.rallied);
             at_dwell[kind] += u32::from(thought.dwelling);
             // Gate A on every think of every hull (17b cut M2.6).

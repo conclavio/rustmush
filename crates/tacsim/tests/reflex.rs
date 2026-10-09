@@ -66,8 +66,8 @@ use smol_str::SmolStr;
 use support::rig::*;
 use support::scripted::{Kept, Stock, think_at};
 use tacsim::arena::clock::Tempo;
+use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::intents::{Control, ControlState};
-use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
@@ -109,7 +109,7 @@ fn run_settled(
 fn t1_run_until_machine_state(
     arena: &mut Arena,
     unit: ObjId,
-    state: ReflexState,
+    state: MachineState,
     limit_ms: i64,
     bytes: &mut Vec<u8>,
 ) -> bool {
@@ -171,7 +171,7 @@ fn t1_a_cold_stock_mind_starts_itself_up_and_then_walks_the_waypoint_graph() {
         &arena_cfg(reflex_cfg()),
         &[],
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Startup));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Startup));
     assert_eq!(arena.unit(RED).map(|unit| unit.power), Some(Power::Off));
     assert!(
         arena.minds.contains_key(&RED),
@@ -191,7 +191,7 @@ fn t1_a_cold_stock_mind_starts_itself_up_and_then_walks_the_waypoint_graph() {
     absorb(&out, &mut bytes);
     assert_eq!(arena.now_ms, 1_750, "the read is 18 ms after the landing");
     assert_eq!(arena.unit(RED).map(|unit| unit.power), Some(Power::Online));
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     let log = events(&mut arena, &mut bytes);
     assert_eq!(
         count(&log, "startup"),
@@ -210,7 +210,7 @@ fn t1_a_cold_stock_mind_starts_itself_up_and_then_walks_the_waypoint_graph() {
     // it has a route and an order to drive.
     assert!(arena.minds.contains_key(&RED), "a mind");
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Patrol);
+    assert_eq!(memory.state, MachineState::Patrol);
     assert_eq!(memory.goal, Some((1, 8)));
     assert_eq!(memory.waypoint, Some(0));
     let drive = motor(&arena, RED);
@@ -240,7 +240,7 @@ fn t1_a_cold_stock_mind_starts_itself_up_and_then_walks_the_waypoint_graph() {
         "it reached `west` and set off for `east`: {memory:?}"
     );
     assert_eq!(memory.goal, Some((14, 8)), "{memory:?}");
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
 }
 
 // ---------------------------------------------------------------------------
@@ -293,9 +293,9 @@ fn t1_a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
     // Online, detected, and classified: `sensors.classify_after_ms` is 3,000 —
     // and the think after it, landed.
     run_settled(&mut arena, 6_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Approach));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Approach));
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Approach);
+    assert_eq!(memory.state, MachineState::Approach);
     assert!(memory.target.is_some(), "a target: {memory:?}");
     assert_eq!(
         memory.target,
@@ -330,7 +330,7 @@ fn t1_a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
     // live at last — read for a mind off its cached doctrine state.
     assert_eq!(
         arena.machine_state(RED),
-        Some(ReflexState::Approach),
+        Some(MachineState::Approach),
         "the tempo's `ai_approaching` reads a mind through `Arena::machine_state`"
     );
     assert!(arena.clock.tempo() >= Tempo::Alert);
@@ -401,9 +401,9 @@ fn t1_in_band_with_a_line_it_locks_and_fires_and_both_lines_are_in_the_black_box
         "the tanks are inside `engage_cm`, which is what makes this the in-band case: {} cm",
         plot_range(&arena, RED, BLUE)
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Engage);
+    assert_eq!(memory.state, MachineState::Engage);
     assert_eq!(
         memory.target,
         arena.contacts.id_of(RED, BLUE),
@@ -487,7 +487,7 @@ fn t1_under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
     arena.mind_runner = stock.clone();
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 6_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
     let kept = stock.kept();
     let last = kept.last().expect("a think before the wound");
     assert_eq!(
@@ -537,11 +537,11 @@ fn t1_under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
     // comfortably inside the rally and comfortably past the arrival, which is the
     // window this test's claims are about.
     run_settled(&mut arena, 24_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     // It is making for its **own** entry zone — the red one, columns 0 and 1 —
     // and not the blue one it was closing on.
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Withdraw);
+    assert_eq!(memory.state, MachineState::Withdraw);
     assert!(
         memory.goal.is_some_and(|(x, _)| x <= 1),
         "the goal is in the red entry zone: {:?}",
@@ -609,7 +609,7 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
     arena.mind_runner = stock.clone();
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 2_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     assert!(
         motor(&arena, RED).goal.is_some(),
         "the precondition: the walk's goal is on the motor row"
@@ -622,7 +622,7 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
     }
     let asked = stock.kept().len();
     let counters = run_settled(&mut arena, 6_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Disabled));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Disabled));
     assert_eq!(counters.thinks, 0, "a wreck thinks nothing: {counters:?}");
     assert_eq!(counters.landings, 0, "and lands nothing: {counters:?}");
     assert_eq!(stock.kept().len(), asked, "the runner was not called");
@@ -673,7 +673,7 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
     arena.mind_runner = stock.clone();
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 2_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     if let Some(state) = arena.unit_mut(RED) {
         state.limits.motion_disabled = true;
     }
@@ -684,7 +684,7 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
     assert_eq!(arena.unit(RED).map(|unit| unit.disabled), Some(true));
     let asked = stock.kept().len();
     let counters = run_settled(&mut arena, 4_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Disabled));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Disabled));
     assert_eq!(counters.intents, 0);
     let kept = stock.kept();
     let think = kept.get(asked).expect("the think after the motion died");
@@ -698,12 +698,12 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
     assert_eq!(
         kept_memory(think),
         tacsim::arena::stock_mind::StockMemory {
-            state: ReflexState::Disabled,
+            state: MachineState::Disabled,
             ..tacsim::arena::stock_mind::StockMemory::default()
         },
         "the `Disabled` edge resets every key"
     );
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Disabled);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Disabled);
 }
 
 #[test]
@@ -722,7 +722,7 @@ fn a_wreck_and_a_disabled_tank_order_nothing_at_all() {
     );
     let mut bytes: Vec<u8> = Vec::new();
     run(&mut arena, 2_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(state_of(&arena, RED), Some(MachineState::Patrol));
 
     if let Some(state) = arena.unit_mut(RED) {
         state.limits.wreck = true;
@@ -730,7 +730,7 @@ fn a_wreck_and_a_disabled_tank_order_nothing_at_all() {
         state.speed_cms = 0;
     }
     let counters = run(&mut arena, 6_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Disabled));
+    assert_eq!(state_of(&arena, RED), Some(MachineState::Disabled));
     assert_eq!(
         counters.intents, 0,
         "a wreck is not the subject of an order"
@@ -747,7 +747,7 @@ fn a_wreck_and_a_disabled_tank_order_nothing_at_all() {
         state.disabled = true;
     }
     let counters = run(&mut arena, 9_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Disabled));
+    assert_eq!(state_of(&arena, RED), Some(MachineState::Disabled));
     assert_eq!(counters.intents, 0);
 }
 
@@ -818,8 +818,8 @@ fn t1_a_contact_that_expires_drops_the_mind_back_to_patrol_and_it_searches_the_l
     arena.mind_runner = stock.clone();
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 6_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Engage);
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Engage);
 
     // The blue tank drives over the ridge: the eight-cell sight has an outside
     // on a sixteen-cell window, so the contact stops being refreshed and the
@@ -828,7 +828,7 @@ fn t1_a_contact_that_expires_drops_the_mind_back_to_patrol_and_it_searches_the_l
         state.pose = centre(15, 15);
     }
     assert!(
-        t1_run_until_machine_state(&mut arena, RED, ReflexState::Patrol, 20_000, &mut bytes),
+        t1_run_until_machine_state(&mut arena, RED, MachineState::Patrol, 20_000, &mut bytes),
         "the contact should have expired and dropped the mind back to `Patrol`"
     );
     assert!(
@@ -858,7 +858,7 @@ fn t1_a_contact_that_expires_drops_the_mind_back_to_patrol_and_it_searches_the_l
     // And when it has been there and found nothing, the walk has it back —
     // read on the walk's west leg (see the doc above for why not at 40 s).
     run_settled(&mut arena, 24_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     let memory = stock_memory_of(&arena, RED);
     assert_eq!(
         memory.last_plot, None,
@@ -963,7 +963,7 @@ fn t1_a_goal_behind_a_sealed_wall_is_told_no_route_and_falls_back_in_memory_to_t
         .iter()
         .find_map(|think| {
             let memory = kept_memory(think);
-            (memory.state == ReflexState::Approach).then_some((think.1, memory.goal))
+            (memory.state == MachineState::Approach).then_some((think.1, memory.goal))
         })
         .expect("an `Approach` think");
     let asked = asked.expect("the `Approach` handed the motor a goal");
@@ -1016,7 +1016,7 @@ fn t1_a_goal_behind_a_sealed_wall_is_told_no_route_and_falls_back_in_memory_to_t
         "the memory took the fallback's walk: {after:?}"
     );
     assert!(after.waypoint.is_some());
-    assert_eq!(after.state, ReflexState::Approach, "{after:?}");
+    assert_eq!(after.state, MachineState::Approach, "{after:?}");
     let goals: Vec<(u16, u16)> = kept[told]
         .3
         .intents
@@ -1155,7 +1155,7 @@ fn t1_a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
     // interesting number. What the fallback leaves behind is the node it
     // stepped to — in the mind's memory.
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Approach, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Approach, "{memory:?}");
     assert!(
         memory.waypoint.is_some(),
         "the fallback never took: {memory:?}"
@@ -1169,7 +1169,7 @@ fn t1_a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
 /// One unit as a replay ends: where it is, how fast, and what its machine was
 /// doing — the state the hash folds plus the two fields it deliberately does not
 /// (`speed_cms` is in the hash; the goal is what the machine *decided*).
-type Final = (ObjId, i64, i64, u32, i32, ReflexState, Option<(u16, u16)>);
+type Final = (ObjId, i64, i64, u32, i32, MachineState, Option<(u16, u16)>);
 
 /// What one replay produced (the shape `arena.rs` uses).
 struct Replay {
@@ -1283,7 +1283,7 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 // 17b cut M4.3: either machine's state (the mind's cached).
-                machine_state_of(&arena, unit.id).unwrap_or(ReflexState::Startup),
+                machine_state_of(&arena, unit.id).unwrap_or(MachineState::Startup),
                 motor(&arena, unit.id).goal,
             )
         })
@@ -1641,7 +1641,7 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
         arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Mind)
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     assert!(
         arena.minds.contains_key(&RED),
         "a mind row: the machine is a mind"
@@ -1655,7 +1655,7 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
     // its own.
     let start = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
     run(&mut arena, 16_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     assert!(arena.minds.contains_key(&RED), "a mind");
     // The mind's goal is in its memory (the motor row forgets a goal it has
     // reached; the reflex row kept it).
@@ -1672,7 +1672,7 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
     // grace used to leave a tank parked in the entry zone for the rest of the
     // match; after `arena.reflex.rally_ms` of quiet it is an AI teammate again.
     run(&mut arena, 60_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     assert!(stock_memory_of(&arena, RED).rallied, "it rallied once");
 
     // A reclaimed seat takes it back; the mind's row is kept dormant (17b cut
@@ -1766,11 +1766,11 @@ fn t1_a_dry_hull_withdraws_to_its_entry_zone() {
     run_settled(&mut arena, 30_000, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "a hull with nothing to fire withdraws"
     );
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Withdraw, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Withdraw, "{memory:?}");
     assert!(
         memory.goal.is_some_and(|(x, _)| x <= 1),
         "the goal is a cell of its own entry zone: {memory:?}"
@@ -1796,7 +1796,7 @@ fn t1_a_dry_hull_withdraws_to_its_entry_zone() {
 /// once a THINK for ten seconds. A mind that answered it with a **state**
 /// change would throw its route away and buy a path query a second; this one
 /// stands where it is (the stand's `Goal(Hold)` and its dwell of
-/// `REFLEX_STAND_TICKS × decide_ms` = 1,500 ms, which outlasts a far think,
+/// `STAND_TICKS × decide_ms` = 1,500 ms, which outlasts a far think,
 /// so the far think stops too and the motor is never handed a cell to search
 /// for), shoots when the line is there, and never leaves `Withdraw`. Every
 /// claim is the original's: `Withdraw` after every pulse of the flicker, at
@@ -1856,8 +1856,8 @@ fn t1_a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
     // Hurt it under the threshold, so the next think is a `Withdraw`.
     hurt_but_fighting(&mut arena, RED);
     run_settled(&mut arena, 8_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Withdraw);
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Withdraw);
     let last = stock.kept().last().map(|kept| kept.2.clone());
     assert_eq!(
         last.as_ref()
@@ -1882,13 +1882,13 @@ fn t1_a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
         queries = queries.saturating_add(out.motor.path_queries);
         assert_eq!(
             machine_state_of(&arena, RED),
-            Some(ReflexState::Withdraw),
+            Some(MachineState::Withdraw),
             "the flicker moved the machine out of `Withdraw` at {} ms",
             arena.now_ms
         );
         wall_ms += 500;
     }
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Withdraw);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Withdraw);
     assert!(
         queries <= 3,
         "a state flip a second would have bought a search a second: {queries}"
@@ -1929,7 +1929,7 @@ fn t1_a_withdrawn_tank_rallies_once_and_then_fights_to_the_end() {
     run_settled(&mut arena, 2_000, &mut bytes);
     hurt(&mut arena, RED);
     run_settled(&mut arena, 12_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     assert!(
         !stock_memory_of(&arena, RED).rallied,
         "it has not come back yet"
@@ -1937,9 +1937,9 @@ fn t1_a_withdrawn_tank_rallies_once_and_then_fights_to_the_end() {
 
     // Home, and quiet. The doctrine's `rally_ms` later it turns round.
     run_settled(&mut arena, 60_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Patrol, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Patrol, "{memory:?}");
     assert!(memory.rallied, "{memory:?}");
     let last = stock.kept().last().map(|kept| kept.2.clone());
     assert!(
@@ -1953,10 +1953,10 @@ fn t1_a_withdrawn_tank_rallies_once_and_then_fights_to_the_end() {
     run_settled(&mut arena, 120_000, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "a rallied tank fights to the end"
     );
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Patrol);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Patrol);
 }
 
 /// **17b cut M4.4 — a dry mind withdraws and never rallies.** With nothing to
@@ -1985,13 +1985,13 @@ fn t1_a_tank_with_nothing_to_fire_withdraws_and_never_rallies() {
     }
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 5_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     // Four times the rally lull, at full health and with nothing hostile to see:
     // every other reason to stay out is gone, and it stays out.
     run_settled(&mut arena, 90_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Withdraw, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Withdraw, "{memory:?}");
     assert!(!memory.rallied, "{memory:?}");
 }
 
@@ -2064,10 +2064,10 @@ fn withdrawing_beside_a_hostile(rounds: u32) -> (i64, usize) {
     );
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "the fixture is about what a withdrawal does, so it has to be one"
     );
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Withdraw);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Withdraw);
     let west = from - arena.unit(RED).map_or(0, |unit| unit.pose.x_cm);
     (
         west,
@@ -2255,7 +2255,7 @@ fn t1_an_overheated_machine_holds_its_fire_rather_than_feeding_a_refusal() {
     t1_heated(&mut arena, RED, 10, 10, 1);
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 8_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "fired"), 0, "the hot gun stayed quiet");
     assert!(count(&log, "locked") > 0, "it still closed and locked");
@@ -2570,7 +2570,7 @@ fn replay_counted(
                 unit.pose.y_cm,
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
-                machine_state_of(&arena, unit.id).unwrap_or(ReflexState::Startup),
+                machine_state_of(&arena, unit.id).unwrap_or(MachineState::Startup),
                 motor(&arena, unit.id).goal,
             )
         })
@@ -2691,7 +2691,7 @@ fn t1_withdraw_stand_and_rally_are_one_event_list_and_one_hash_sequence_at_three
             .finals
             .iter()
             .any(|(unit, _, _, _, _, state, _)| *unit == RED
-                && !matches!(state, ReflexState::Withdraw)),
+                && !matches!(state, MachineState::Withdraw)),
         "the machine never rallied, so the log proves only half of it: {:?}",
         first.finals
     );
@@ -2791,7 +2791,7 @@ fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
                 unit.pose.heading_mdeg,
                 unit.speed_cms,
                 // 17b cut M4.3: either machine's state (the mind's cached).
-                machine_state_of(&arena, unit.id).unwrap_or(ReflexState::Startup),
+                machine_state_of(&arena, unit.id).unwrap_or(MachineState::Startup),
                 motor(&arena, unit.id).goal,
             )
         })
@@ -2856,7 +2856,7 @@ fn t1_a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
         arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Mind)
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     assert_eq!(
         arena.unit(RED).map(|unit| unit.power),
         Some(Power::Off),
@@ -2882,14 +2882,14 @@ fn t1_a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
         Some(Power::Online),
         "the mind never ordered a startup"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
 
     // And it drives home rather than standing where its pilot left it. The
     // horizon stops short of `arena.reflex.rally_ms`, which is a later edge of
     // its own (16b cut Q.7) and not this row's.
     let until = arena.now_ms + 8_000;
     run(&mut arena, until, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     assert!(
         arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < start),
         "it came up and stood still"
@@ -2951,7 +2951,7 @@ fn t1_a_released_cold_tank_is_one_event_list_and_one_hash_sequence_at_three_cade
         first
             .finals
             .iter()
-            .any(|(unit, _, _, _, _, state, _)| *unit == RED && *state == ReflexState::Withdraw),
+            .any(|(unit, _, _, _, _, state, _)| *unit == RED && *state == MachineState::Withdraw),
         "the machine left `Withdraw` inside the horizon (the rally is a later edge          of its own): {:?}",
         first.finals
     );
@@ -3164,7 +3164,7 @@ fn t1_with_range_and_no_line_it_closes_on_the_plot() {
 
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Approach),
+        Some(MachineState::Approach),
         "the wall is between them, so there is no engagement to be had"
     );
     let range = plot_range(&arena, RED, BLUE);
@@ -3202,7 +3202,7 @@ fn t1_with_range_and_no_line_it_closes_on_the_plot() {
     run_settled(&mut arena, until, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "with a line inside the band it locks and fires"
     );
 }
@@ -3244,7 +3244,7 @@ fn t1_it_engages_at_the_band_releases_past_the_reach_and_holds_between_them() {
     run_settled(&mut arena, 5_000, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "the opening range is inside the 7,000 cm band"
     );
     let here = arena
@@ -3289,7 +3289,7 @@ fn t1_it_engages_at_the_band_releases_past_the_reach_and_holds_between_them() {
     );
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "between the edges the machine holds the state it had"
     );
     assert!(
@@ -3319,7 +3319,7 @@ fn t1_it_engages_at_the_band_releases_past_the_reach_and_holds_between_them() {
         read.first().is_some_and(|cm| *cm > RELEASE_CM),
         "the first think after the move read the target past the release edge, not {read:?}"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Approach));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Approach));
     let goal = motor(&arena, RED)
         .goal
         .expect("a closing machine has a goal");
@@ -3356,7 +3356,7 @@ fn t1_an_approach_that_arrives_is_inside_the_band_and_stays_there() {
     run_settled(&mut arena, 30_000, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "it closed the thirteen cells and engaged"
     );
     let range = plot_range(&arena, RED, BLUE);
@@ -3375,12 +3375,12 @@ fn t1_an_approach_that_arrives_is_inside_the_band_and_stays_there() {
         absorb(&out, &mut bytes);
         assert_eq!(
             machine_state_of(&arena, RED),
-            Some(ReflexState::Engage),
+            Some(MachineState::Engage),
             "it fell out of the band at {} ms, {} cm out",
             arena.now_ms,
             plot_range(&arena, RED, BLUE)
         );
-        assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Engage);
+        assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Engage);
         wall_ms += 500;
     }
     assert_eq!(
@@ -3443,7 +3443,7 @@ fn t1_t46_a_dry_cannon_closes_to_the_coaxial_and_fires_it() {
         range <= T1_COAXIAL_ENGAGE_CM,
         "it should have closed to the coaxial's own band, and it is {range} cm out"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
     // The approach was priced off the coaxial: the cell the mind handed the
     // motor is 2,600 cm short of the plot (`stand_off_want(5_600, ..)`) —
     // 8,900 cm along the row, column 8; the cannon's 4,000 would have put it
@@ -3552,11 +3552,11 @@ fn t1_a_withdrawal_beside(
     );
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "every case here is about what a withdrawal does, so it has to be one"
     );
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Withdraw, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Withdraw, "{memory:?}");
     (
         count(&events(&mut arena, &mut bytes), "fired") - before,
         from - arena.unit(RED).map_or(0, |unit| unit.pose.x_cm),
@@ -3826,11 +3826,11 @@ fn blue_breaks_contact(arena: &mut Arena) {
 ///
 /// **17b cut M4.4**: the mind's arc, each pulse's reading of the doctrine
 /// state under `step_settled`.
-fn t1_engage_release_arc(cadence_ms: i64, until_ms: i64) -> Vec<(i64, ReflexState, i64)> {
+fn t1_engage_release_arc(cadence_ms: i64, until_ms: i64) -> Vec<(i64, MachineState, i64)> {
     let mut arena = t1_close_engage_and_release();
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     let mut bytes: Vec<u8> = Vec::new();
-    let mut seen: Vec<(i64, ReflexState, i64)> = Vec::new();
+    let mut seen: Vec<(i64, MachineState, i64)> = Vec::new();
     let mut wall = 0_i64;
     loop {
         let out = arena.step_settled(wall, &[], &[]);
@@ -3868,19 +3868,19 @@ fn t1_the_band_taken_and_given_up_is_one_event_list_at_three_cadences() {
     let arc = t1_engage_release_arc(1_000, 40_000);
     assert!(
         arc.iter().any(|(at, state, range)| *at < SCRIPT_AT_MS
-            && *state == ReflexState::Engage
+            && *state == MachineState::Engage
             && *range <= T1_COAXIAL_ENGAGE_CM),
         "it never engaged inside the band before the release: {arc:?}"
     );
     assert!(
         arc.iter().any(|(at, state, range)| *at > SCRIPT_AT_MS
-            && *state == ReflexState::Approach
+            && *state == MachineState::Approach
             && *range > T1_COAXIAL_RELEASE_CM),
         "it never gave the band up when the tank opened the range past its firing ceiling: {arc:?}"
     );
     assert!(
         arc.iter().rev().any(|(at, state, range)| *at > SCRIPT_AT_MS
-            && *state == ReflexState::Engage
+            && *state == MachineState::Engage
             && *range <= T1_COAXIAL_ENGAGE_CM),
         "it released the band and never closed again: {arc:?}"
     );
@@ -4276,7 +4276,7 @@ fn t1_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
     let now = arena.now_ms;
     plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
     run_settled(&mut arena, now + 1_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Approach));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Approach));
     assert_eq!(target_of(&arena, RED), Some(BLUE));
 
     // Killed by nobody this mind could have watched: the rig's own destroy,
@@ -4291,7 +4291,7 @@ fn t1_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
         Some(BLUE),
         "the mind dropped a target on a fact no platform on the field had"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Approach));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Approach));
     let held = hold_on(&arena, RED, BLUE).expect("the hold is still there");
     assert!(!held.known_dead, "nobody told it");
     assert!(!arena.contact_reads_dead(&held));
@@ -4301,7 +4301,7 @@ fn t1_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
     run_settled(&mut arena, at + 6_000, &mut bytes);
     assert_eq!(arena.contacts.of(RED).count(), 0, "the track expired");
     assert_eq!(stock_memory_of(&arena, RED).target, None);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
 }
 
 /// **17b cut M4.4 — (d) a target that leaves the match is dropped at once,
@@ -4356,7 +4356,7 @@ fn t1_a_target_that_leaves_the_match_is_dropped_at_once() {
     arena.units.retain(|unit| unit.id != BLUE);
     run_settled(&mut arena, at + 1_000, &mut bytes);
     assert_eq!(stock_memory_of(&arena, RED).target, None);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
 }
 
 /// **17b cut M4.4 — (c) a reading that shows the body gone drops the target
@@ -4539,7 +4539,7 @@ fn t1_a_kill_starts_the_rally_clock_and_a_death_out_of_sight_does_not() {
     let now = arena.now_ms;
     plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
     run_settled(&mut arena, now + 1_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     assert_eq!(quiet(&arena), None, "it holds a live hostile");
 
     // Killed by somebody else, out of this mind's sight: the board is not
@@ -4565,7 +4565,7 @@ fn t1_a_kill_starts_the_rally_clock_and_a_death_out_of_sight_does_not() {
         quiet(&arena).is_some(),
         "a mind that watched its own round finish the tank is still waiting"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
 }
 
 /// **17b cut M4.4 — (b) the shooter knows its own kill and a teammate waits
@@ -4833,7 +4833,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
     );
     // The mind's own reading of the copy, landed by the mark.
     assert_eq!(target_of(&arena, RED2), Some(BLUE));
-    assert_eq!(machine_state_of(&arena, RED2), Some(ReflexState::Approach));
+    assert_eq!(machine_state_of(&arena, RED2), Some(MachineState::Approach));
 
     // And the passes after it take `share_pass`'s **update** arm on the very
     // same row, which is where a later tidy-up would most easily let the kill
@@ -4847,7 +4847,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
         "a share updated the copy and carried the kill with it"
     );
     assert_eq!(target_of(&arena, RED2), Some(BLUE));
-    assert_eq!(machine_state_of(&arena, RED2), Some(ReflexState::Approach));
+    assert_eq!(machine_state_of(&arena, RED2), Some(MachineState::Approach));
 
     // It lets go when the track expires, and not one millisecond sooner: the
     // sharer's own sighting is what the copy's stamp is, and a wreck is never
@@ -4855,7 +4855,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
     run_settled(&mut arena, at + 6_000, &mut bytes);
     assert_eq!(hold_on(&arena, RED2, BLUE), None, "the track expired");
     assert_eq!(stock_memory_of(&arena, RED2).target, None);
-    assert_eq!(machine_state_of(&arena, RED2), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED2), Some(MachineState::Patrol));
 }
 
 // ---------------------------------------------------------------------------
@@ -5267,7 +5267,7 @@ fn t1_an_unreachable_order_and_a_hot_gun_are_one_log_at_three_cadences() {
         think.2.notices
     );
     let memory = kept_memory(think);
-    assert_eq!(memory.state, ReflexState::Patrol, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Patrol, "{memory:?}");
     assert_eq!(memory.hunt, None, "{memory:?}");
     assert_eq!(memory.last_plot, None, "{memory:?}");
     let fallback = memory.goal.expect("the fallback waypoint is the next goal");
@@ -5459,7 +5459,7 @@ fn t1_a_withdrawn_minds_rally_clock_is_not_restarted_by_an_overshoot() {
         {
             west_most = west_most.min(x);
         }
-        let running = machine_state_of(&arena, RED) == Some(ReflexState::Withdraw);
+        let running = machine_state_of(&arena, RED) == Some(MachineState::Withdraw);
         withdrew |= running;
         // The rally is what ends the run home, and this test is about the clock
         // that leads to it: stop once the mind has come back.
@@ -5625,7 +5625,7 @@ fn waypoint_cells() -> Vec<(u16, u16)> {
 fn e4_run_until_state(
     arena: &mut Arena,
     unit: ObjId,
-    state: ReflexState,
+    state: MachineState,
     limit_ms: i64,
     bytes: &mut Vec<u8>,
 ) -> bool {
@@ -5923,7 +5923,7 @@ fn t1_a_lost_contact_is_searched_for_where_it_was_last_seen() {
     run_settled(&mut arena, 6_000, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "the plot reads 5,000 cm on the view, inside the {T1_E4_ENGAGE_CM} cm band, so the mind \
          holds it"
     );
@@ -5944,7 +5944,7 @@ fn t1_a_lost_contact_is_searched_for_where_it_was_last_seen() {
         state.pose = centre(15, 15);
     }
     assert!(
-        t1_run_until_machine_state(&mut arena, RED, ReflexState::Patrol, 20_000, &mut bytes),
+        t1_run_until_machine_state(&mut arena, RED, MachineState::Patrol, 20_000, &mut bytes),
         "the contact should have expired and dropped the mind back to `Patrol`"
     );
     assert_eq!(arena.contacts.of(RED).count(), 0, "the contact expired");
@@ -6035,12 +6035,12 @@ fn t1_a_hostile_found_while_searching_pre_empts_it() {
     let (mut arena, _stock) = t1_e4_field(T1_SEARCH_START, (6, 8), &[], &e4_cfg(20_000, 0));
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 6_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
     if let Some(state) = arena.unit_mut(BLUE) {
         state.pose = centre(15, 15);
     }
     assert!(
-        t1_run_until_machine_state(&mut arena, RED, ReflexState::Patrol, 20_000, &mut bytes),
+        t1_run_until_machine_state(&mut arena, RED, MachineState::Patrol, 20_000, &mut bytes),
         "the contact should have expired and dropped the mind back to `Patrol`"
     );
     assert_eq!(
@@ -6066,7 +6066,7 @@ fn t1_a_hostile_found_while_searching_pre_empts_it() {
     assert!(
         matches!(
             machine_state_of(&arena, RED),
-            Some(ReflexState::Approach | ReflexState::Engage)
+            Some(MachineState::Approach | MachineState::Engage)
         ),
         "a hostile found on the way outranks the search: {:?}",
         machine_state_of(&arena, RED)
@@ -6116,7 +6116,7 @@ fn t1_an_aged_plot_and_a_search_switched_off_are_both_the_old_lost_edge() {
         run_settled(&mut arena, 6_000, &mut bytes);
         assert_eq!(
             machine_state_of(&arena, RED),
-            Some(ReflexState::Engage),
+            Some(MachineState::Engage),
             "{why}"
         );
         if let Some(state) = arena.unit_mut(BLUE) {
@@ -6130,7 +6130,7 @@ fn t1_an_aged_plot_and_a_search_switched_off_are_both_the_old_lost_edge() {
             let out = arena.step_settled(wall, &[], &[]);
             absorb(&out, &mut bytes);
             if dropped_at.is_none()
-                && machine_state_of(&arena, RED) == Some(ReflexState::Patrol)
+                && machine_state_of(&arena, RED) == Some(MachineState::Patrol)
                 && stock_memory_of(&arena, RED).last_plot.is_none()
             {
                 dropped_at = cell_of_unit(&arena, RED);
@@ -6139,7 +6139,7 @@ fn t1_an_aged_plot_and_a_search_switched_off_are_both_the_old_lost_edge() {
         }
         assert_eq!(
             machine_state_of(&arena, RED),
-            Some(ReflexState::Patrol),
+            Some(MachineState::Patrol),
             "{why}"
         );
         let drove = stock
@@ -6148,7 +6148,7 @@ fn t1_an_aged_plot_and_a_search_switched_off_are_both_the_old_lost_edge() {
             .skip(from)
             .filter(|think| {
                 let memory = kept_memory(think);
-                memory.state == ReflexState::Patrol && memory.goal == Some((6, 8))
+                memory.state == MachineState::Patrol && memory.goal == Some((6, 8))
             })
             .count();
         assert_eq!(
@@ -6198,7 +6198,7 @@ fn t1_a_last_plot_behind_a_wall_costs_one_failed_search_and_is_not_re_asserted()
     let closing = run_settled(&mut arena, until, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Approach),
+        Some(MachineState::Approach),
         "the pocket reads 10,000 cm off on the view, outside the {T1_E4_ENGAGE_CM} cm band"
     );
     assert_eq!(
@@ -6300,7 +6300,7 @@ fn t1_a_mind_that_has_seen_nobody_crosses_to_look() {
         set_ms - 500 < think_ms + substep && think_ms + substep <= set_ms,
         "the think at {think_ms} ms lands a substep on, in the pulse ending {set_ms} ms"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     assert_eq!(
         cell,
         (SIDE - 2, here.1),
@@ -6507,7 +6507,7 @@ fn t1_a_hostile_held_stops_the_clock_and_a_dead_one_does_not() {
     });
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "an unarmed mind has no target and patrols whatever it sees"
     );
     assert!(
@@ -6542,7 +6542,7 @@ fn t1_a_hostile_held_stops_the_clock_and_a_dead_one_does_not() {
     );
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "a dead-reading row is never a target"
     );
     assert_eq!(
@@ -6814,7 +6814,7 @@ fn t1_a_movement_order_outranks_the_search_and_the_hunt() {
     let (mut arena, stock) = t1_e4_field((2, 8), (6, 8), &[], &e4_cfg(60_000, 3_000));
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 6_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
     let (plot, _) = stock_memory_of(&arena, RED)
         .last_plot
         .expect("the mind has something to search for");
@@ -6836,8 +6836,8 @@ fn t1_a_movement_order_outranks_the_search_and_the_hunt() {
     let ordered = t1_next_landing(&mut arena, &stock, &mut bytes);
     assert!(ordered.2.order.is_some(), "the order reached the view");
     let memory = kept_memory(&ordered);
-    assert_eq!(memory.state, ReflexState::Patrol, "{memory:?}");
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(memory.state, MachineState::Patrol, "{memory:?}");
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     assert_eq!(
         memory.last_plot, None,
         "the order's first think gives the search up"
@@ -6973,7 +6973,7 @@ fn t1_withdraw_forgets_the_search_and_a_stand_writes_one() {
     let (mut arena, _stock) = t1_e4_field((6, 8), (11, 8), &[], &e4_cfg(60_000, 0));
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 6_000, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
     assert_eq!(
         stock_memory_of(&arena, RED).last_plot.map(|(cell, _)| cell),
         Some((11, 8))
@@ -6982,7 +6982,7 @@ fn t1_withdraw_forgets_the_search_and_a_stand_writes_one() {
     // writes a plot back.
     hurt(&mut arena, RED);
     assert!(
-        t1_run_until_machine_state(&mut arena, RED, ReflexState::Withdraw, 2_000, &mut bytes),
+        t1_run_until_machine_state(&mut arena, RED, MachineState::Withdraw, 2_000, &mut bytes),
         "a mind hurt this far breaks off"
     );
     assert_eq!(
@@ -6994,7 +6994,7 @@ fn t1_withdraw_forgets_the_search_and_a_stand_writes_one() {
     // sight of the tank (nine cells off), and quiet: it rallies, and the walk
     // it rallies to is the graph's and not the plot it was hurt at.
     assert!(
-        t1_run_until_machine_state(&mut arena, RED, ReflexState::Patrol, 60_000, &mut bytes),
+        t1_run_until_machine_state(&mut arena, RED, MachineState::Patrol, 60_000, &mut bytes),
         "the mind should have rallied"
     );
     // The rally is decided inside `Withdraw`'s own arm and lets the hull hold;
@@ -7023,7 +7023,7 @@ fn t1_withdraw_forgets_the_search_and_a_stand_writes_one() {
         &mut bytes,
     );
     assert!(
-        t1_run_until_machine_state(&mut arena, RED, ReflexState::Withdraw, 2_000, &mut bytes),
+        t1_run_until_machine_state(&mut arena, RED, MachineState::Withdraw, 2_000, &mut bytes),
         "the order puts the mind in `Withdraw`"
     );
     assert_eq!(
@@ -7046,7 +7046,7 @@ fn t1_withdraw_forgets_the_search_and_a_stand_writes_one() {
         let out = arena.step_settled(wall, &[], &[]);
         absorb(&out, &mut bytes);
         let memory = stock_memory_of(&arena, RED);
-        if machine_state_of(&arena, RED) == Some(ReflexState::Withdraw)
+        if machine_state_of(&arena, RED) == Some(MachineState::Withdraw)
             && let Some((cell, _)) = memory.last_plot
         {
             stood = Some((cell, memory.target));
@@ -7097,7 +7097,7 @@ fn t1_a_fight_gives_the_hunt_up() {
     let think = t1_next_landing(&mut arena, &stock, &mut bytes);
     let memory = kept_memory(&think);
     assert!(
-        matches!(memory.state, ReflexState::Approach | ReflexState::Engage),
+        matches!(memory.state, MachineState::Approach | MachineState::Engage),
         "the mind turned on what it found: {memory:?}"
     );
     assert_eq!(machine_state_of(&arena, RED), Some(memory.state));
@@ -7153,7 +7153,7 @@ fn t1_the_arc(kept: &[Kept]) -> Arc {
     let mut arc = Arc::default();
     for think in kept {
         let memory = kept_memory(think);
-        arc.searched |= memory.state == ReflexState::Patrol
+        arc.searched |= memory.state == MachineState::Patrol
             && memory
                 .last_plot
                 .is_some_and(|(cell, _)| memory.goal == Some(cell));
@@ -7338,7 +7338,7 @@ fn e4_t42_a_round_stopped_by_the_ground_re_plans_the_machine() {
     run(&mut arena, 6_000, &mut bytes);
     assert_eq!(
         state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "it holds the band on a tank it can see"
     );
     let before = count(&events(&mut arena, &mut bytes), "fired");
@@ -7349,7 +7349,7 @@ fn e4_t42_a_round_stopped_by_the_ground_re_plans_the_machine() {
         state.pose = centre(11, 8);
     }
     assert!(
-        e4_run_until_state(&mut arena, RED, ReflexState::Approach, 3_000, &mut bytes),
+        e4_run_until_state(&mut arena, RED, MachineState::Approach, 3_000, &mut bytes),
         "the `no line` edge should have taken the machine out of `Engage` within three seconds"
     );
     let log = events(&mut arena, &mut bytes);
@@ -7729,10 +7729,10 @@ fn t1_aa1_posed(
     );
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Approach),
+        Some(MachineState::Approach),
         "the recipe: a classified hostile past `engage_cm` puts the mind in `Approach`"
     );
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Approach);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Approach);
     (arena, stock, bytes)
 }
 
@@ -7841,8 +7841,8 @@ fn t1_a_mind_that_cannot_close_engages_from_where_it_stands() {
     let pose = arena.unit(RED).map(|unit| unit.pose.clone());
     let first = t1_aa1_first_shot_range(&mut arena, &mut bytes, 6_000);
 
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Engage);
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Engage);
     let log = events(&mut arena, &mut bytes);
     assert!(count(&log, "locked") > 0, "it locked the plot it holds");
     assert!(
@@ -7892,7 +7892,7 @@ fn aa1_a_hull_authored_with_no_speed_engages_the_same_way() {
     let mut bytes: Vec<u8> = Vec::new();
     let mut wall = arena.now_ms;
     while arena.now_ms < 15_000
-        && !(state_of(&arena, RED) == Some(ReflexState::Engage)
+        && !(state_of(&arena, RED) == Some(MachineState::Engage)
             && count(&events(&mut arena, &mut bytes), "fired") > 0)
     {
         let out = arena.step(wall, &[], &[]);
@@ -7901,7 +7901,7 @@ fn aa1_a_hull_authored_with_no_speed_engages_the_same_way() {
     }
     assert_eq!(
         state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "a zero-speed hull 8,000 cm out engages"
     );
     assert!(count(&events(&mut arena, &mut bytes), "fired") > 0);
@@ -7959,10 +7959,10 @@ fn t1_the_ceiling_past_release_holds_for_an_immobile_mind() {
     );
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Approach),
+        Some(MachineState::Approach),
         "past its firing ceiling an immobile mind stays in `Approach`"
     );
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Approach);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Approach);
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "locked"), 0, "and locks nothing");
     assert_eq!(count(&log, "fired"), before, "and fires nothing");
@@ -7985,8 +7985,8 @@ fn t1_the_ceiling_past_release_holds_for_an_immobile_mind() {
         Some(5_000),
         "the mind read 50 m: inside the ceiling, past its seven tenths"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Engage);
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Engage);
     assert!(
         count(&events(&mut arena, &mut bytes), "fired") > before,
         "inside the release edge it shoots from where it stands"
@@ -8078,7 +8078,7 @@ fn t1_a_close_band_order_caps_the_immobile_edge_too() {
         run_settled(&mut arena, next, &mut bytes);
         assert_ne!(
             machine_state_of(&arena, RED),
-            Some(ReflexState::Engage),
+            Some(MachineState::Engage),
             "past the ordered ceiling it never reads `Engage` (at {} ms)",
             arena.now_ms
         );
@@ -8090,10 +8090,10 @@ fn t1_a_close_band_order_caps_the_immobile_edge_too() {
     );
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Approach),
+        Some(MachineState::Approach),
         "past the ordered ceiling it does not engage"
     );
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Approach);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Approach);
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "locked"), locked_before, "and locks nothing");
     assert_eq!(count(&log, "fired"), before, "and fires nothing");
@@ -8116,8 +8116,8 @@ fn t1_a_close_band_order_caps_the_immobile_edge_too() {
         Some(5_000),
         "the mind read 50 m: inside the ordered ceiling, past its seven tenths"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Engage);
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Engage);
     assert!(
         count(&events(&mut arena, &mut bytes), "fired") > before,
         "inside the ordered ceiling it shoots"
@@ -8157,10 +8157,10 @@ fn t1_hold_fire_still_holds_an_immobile_mind() {
     run_settled(&mut arena, until, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Engage),
+        Some(MachineState::Engage),
         "the edge still brings it into `Engage`"
     );
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Engage);
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Engage);
     assert!(
         count(&events(&mut arena, &mut bytes), "locked") > locked_before,
         "the lock is taken under the order"
@@ -8219,9 +8219,9 @@ fn t1_a_hurt_immobile_mind_stands_and_shoots_back_at_any_health() {
         Some(166),
         "the recipe, read by the first think after the wound"
     );
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Withdraw, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Withdraw, "{memory:?}");
     assert!(memory.stand_until_ms.is_some(), "it stood: {memory:?}");
     assert!(
         count(&events(&mut arena, &mut bytes), "fired") > before,
@@ -8236,9 +8236,9 @@ fn t1_a_hurt_immobile_mind_stands_and_shoots_back_at_any_health() {
     let before = count(&events(&mut twin, &mut twin_bytes), "fired");
     let until = twin.now_ms + 3_000;
     run_settled(&mut twin, until, &mut twin_bytes);
-    assert_eq!(machine_state_of(&twin, RED), Some(ReflexState::Withdraw));
+    assert_eq!(machine_state_of(&twin, RED), Some(MachineState::Withdraw));
     let memory = stock_memory_of(&twin, RED);
-    assert_eq!(memory.state, ReflexState::Withdraw, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Withdraw, "{memory:?}");
     let here = twin
         .unit(RED)
         .and_then(|unit| twin.definition.terrain.cell_of(&unit.pose))
@@ -8306,7 +8306,7 @@ fn t1_an_immobile_withdrawn_mind_rallies_once_like_one_that_is_home() {
     run_settled(&mut arena, until, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "hurt, it breaks off"
     );
     assert!(!stock_memory_of(&arena, RED).rallied);
@@ -8315,11 +8315,11 @@ fn t1_an_immobile_withdrawn_mind_rallies_once_like_one_that_is_home() {
     run_settled(&mut arena, until, &mut bytes);
     assert_eq!(
         machine_state_of(&arena, RED),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "twenty quiet seconds later it has rallied where it stands"
     );
     let memory = stock_memory_of(&arena, RED);
-    assert_eq!(memory.state, ReflexState::Patrol, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Patrol, "{memory:?}");
     assert!(memory.rallied, "{memory:?}");
 
     // Now something comes: it approaches and engages from where it stands.
@@ -8337,15 +8337,15 @@ fn t1_an_immobile_withdrawn_mind_rallies_once_like_one_that_is_home() {
     assert!(
         matches!(
             machine_state_of(&arena, RED),
-            Some(ReflexState::Approach | ReflexState::Engage)
+            Some(MachineState::Approach | MachineState::Engage)
         ),
         "a rallied mind takes the hostile: {:?}",
         machine_state_of(&arena, RED)
     );
     let until = arena.now_ms + 6_000;
     run_settled(&mut arena, until, &mut bytes);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
-    assert_eq!(stock_memory_of(&arena, RED).state, ReflexState::Engage);
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
+    assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Engage);
     assert!(
         count(&events(&mut arena, &mut bytes), "fired") > before,
         "and fights to the end"
@@ -8389,7 +8389,7 @@ fn t1_an_immobile_mind_in_the_annulus_is_one_log_at_three_cadences() {
     let mut arena = t1_immobile_in_the_annulus();
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     let mut bytes: Vec<u8> = Vec::new();
-    let mut arc: Vec<(i64, ReflexState, i64)> = Vec::new();
+    let mut arc: Vec<(i64, MachineState, i64)> = Vec::new();
     let mut wall = 0_i64;
     loop {
         let out = arena.step_settled(wall, &[], &[]);
@@ -8407,14 +8407,14 @@ fn t1_an_immobile_mind_in_the_annulus_is_one_log_at_three_cadences() {
     }
     assert!(
         arc.iter().any(|(at, state, range)| *at < SCRIPT_AT_MS
-            && *state == ReflexState::Engage
+            && *state == MachineState::Engage
             && *range > COAXIAL_ENGAGE_CM
             && *range <= COAXIAL_RELEASE_CM),
         "it never engaged from inside the annulus before the script: {arc:?}"
     );
     assert!(
         arc.iter()
-            .any(|(at, state, _)| *at > SCRIPT_AT_MS && *state == ReflexState::Patrol),
+            .any(|(at, state, _)| *at > SCRIPT_AT_MS && *state == MachineState::Patrol),
         "it never dropped to `Patrol` once the contact was gone: {arc:?}"
     );
 
@@ -8579,7 +8579,7 @@ fn t1_a_weapon_ready_between_the_view_and_the_landing_is_cited_at_the_landing() 
     run_settled(&mut arena, at, &mut bytes);
     assert_eq!(arena.now_ms, at);
     assert_eq!(arena.unit(RED).map(|unit| unit.power), Some(Power::Online));
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Patrol));
     assert_eq!(arena.unit(RED).and_then(|unit| unit.lock), None);
     // The hostile, classified, three cells east; the cannon (first in
     // component order) comes ready after the landing, the coaxial between
@@ -8644,8 +8644,8 @@ fn t1_a_weapon_ready_between_the_view_and_the_landing_is_cited_at_the_landing() 
          {:?}",
         kept.3.intents
     );
-    assert_eq!(kept_memory(kept).state, ReflexState::Engage);
-    assert_eq!(machine_state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(kept_memory(kept).state, MachineState::Engage);
+    assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
 
     // The shots: the cited coaxial at the landing, by the mind; the cannon at
     // its own `WeaponReady`, by its slot. Nothing early, nothing refused.
@@ -9258,7 +9258,7 @@ fn z2_designation_field(machine: bool) -> Arena {
 /// What one designation replay read at 5 s: the supporter's target, the
 /// charge's own target and state (a machine charge's), and the charge's plot
 /// range to the designated tank.
-type Z2Read = (Option<ObjId>, Option<ObjId>, Option<ReflexState>, i64);
+type Z2Read = (Option<ObjId>, Option<ObjId>, Option<MachineState>, i64);
 
 /// **A reflex row's target** (17b cut M4.4): what `target_of` read before the
 /// ports re-pointed it onto a mind's memory. The designation half stays on
@@ -9576,7 +9576,7 @@ fn z2_a_support_keeps_station_and_prefers_its_charges_target() {
             assert!(
                 matches!(
                     charge_state,
-                    Some(ReflexState::Approach | ReflexState::Engage)
+                    Some(MachineState::Approach | MachineState::Engage)
                 ),
                 "the charge is in the fight: {charge_state:?}"
             );
@@ -9635,7 +9635,7 @@ fn z2_a_support_keeps_station_and_prefers_its_charges_target() {
 /// [`z2_a_support_keeps_station_and_prefers_its_charges_target`], a STOP.
 #[test]
 fn t1_a_support_keeps_station_and_stands_blind() {
-    use tacsim::arena::reflex::{SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS};
+    use tacsim::arena::doctrine::{SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS};
     let replays: Vec<(Replay, Z2Station, Z2Samples, Z2Order, Vec<Kept>)> = [5_000_i64, 1_000, 500]
         .into_iter()
         .map(z2_station)
@@ -9752,7 +9752,7 @@ fn t1_a_support_keeps_station_and_stands_blind() {
             .iter()
             .find(|row| row.0 == Z2_SUPPORTER)
             .map(|row| row.5),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "it fired from a stand, never leaving `Patrol`"
     );
     assert!(
@@ -9864,7 +9864,7 @@ fn z2_a_supporter_that_cannot_close_fights_where_it_stands_past_its_leash() {
             .iter()
             .find(|row| row.0 == Z2_SUPPORTER)
             .map(|row| row.5),
-        Some(ReflexState::Patrol),
+        Some(MachineState::Patrol),
         "it fired from a stand, never leaving `Patrol`"
     );
     assert!(
@@ -10026,7 +10026,7 @@ fn t1_a_supporter_whose_station_no_route_reaches_stops_obeying_its_order() {
         Some(600_000),
         "the order's own deadline: {memory:?}"
     );
-    assert_eq!(memory.state, ReflexState::Patrol, "{memory:?}");
+    assert_eq!(memory.state, MachineState::Patrol, "{memory:?}");
     // On doctrine from then on.
     let after: Vec<&Kept> = kept.iter().filter(|think| think.1 >= gave_up.1).collect();
     assert!(after.len() > 1, "thinks after the give-up");
@@ -10084,7 +10084,7 @@ const Z2_RELEASER: ObjId = ObjId(77);
 /// One replay of the release: a ten-minute `WITHDRAW` at beat 0; red-1's
 /// `RELEASE` at 10 s; the `WITHDRAW` again at 15 s; a `RELEASE` for red-2 at
 /// 20 s. Read at 15 s, before the second order lands.
-fn z2_release(cadence_ms: i64) -> (Replay, Option<ReflexState>) {
+fn z2_release(cadence_ms: i64) -> (Replay, Option<MachineState>) {
     let arena = z2_release_field();
     let squad = z2_squad(&arena, RED);
     let other = tacsim::deliberation::SquadId {
@@ -10101,7 +10101,7 @@ fn z2_release(cadence_ms: i64) -> (Replay, Option<ReflexState>) {
         squad,
         issuer: Some(Z2_RELEASER),
     };
-    let mut read: Option<Option<ReflexState>> = None;
+    let mut read: Option<Option<MachineState>> = None;
     let run = replay_with(
         cadence_ms,
         30_000,
@@ -10147,14 +10147,14 @@ fn z2_release(cadence_ms: i64) -> (Replay, Option<ReflexState>) {
 /// at every cadence; `step_settled`.
 #[test]
 fn t1_a_release_ends_an_order_at_one_millisecond() {
-    let replays: Vec<(Replay, Option<ReflexState>)> = [5_000_i64, 1_000, 500]
+    let replays: Vec<(Replay, Option<MachineState>)> = [5_000_i64, 1_000, 500]
         .into_iter()
         .map(z2_release)
         .collect();
     for (_, read) in &replays {
         assert_eq!(
             *read,
-            Some(ReflexState::Patrol),
+            Some(MachineState::Patrol),
             "released, the machine is on doctrine"
         );
     }
@@ -10179,7 +10179,7 @@ fn t1_a_release_ends_an_order_at_one_millisecond() {
             .iter()
             .find(|row| row.0 == RED)
             .map(|row| row.5),
-        Some(ReflexState::Withdraw),
+        Some(MachineState::Withdraw),
         "red-2's release left red-1's second order standing"
     );
     assert!(
@@ -10591,7 +10591,7 @@ fn i3_a_placed_machine_re_plans() {
     run(&mut arena, until, &mut bytes);
     let (x, y) = arena.index.cell_of_unit(RED).expect("on the window");
     assert!(
-        x.abs_diff(goal.0).max(y.abs_diff(goal.1)) <= tacsim::arena::reflex::ARRIVE_CELLS,
+        x.abs_diff(goal.0).max(y.abs_diff(goal.1)) <= tacsim::arena::motor::ARRIVE_CELLS,
         "the placed machine never reached {goal:?}: it stands at ({x}, {y})"
     );
     let log = events(&mut arena, &mut bytes);
@@ -10764,7 +10764,7 @@ fn o1_hold_mode_machines_drive_to_the_spot_and_park_inside_the_radius() {
         );
         let row = arena.reflex.unit(unit).cloned().expect("a machine");
         let drive = motor(&arena, unit);
-        assert_eq!(row.state, ReflexState::Patrol);
+        assert_eq!(row.state, MachineState::Patrol);
         let here = arena
             .unit(unit)
             .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
@@ -10886,7 +10886,7 @@ fn o1_a_holder_fights_from_inside_the_square() {
         "the holder never left its cell on the spot: {cells:?}"
     );
     assert!(o1_inside(&arena, RED));
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(state_of(&arena, RED), Some(MachineState::Engage));
     // The control: at a skirmish the same machine closes, leaving the cell.
     let mut skirmish = arena_of(units(), &[], &arena_cfg(reflex_cfg()), &[BLUE]);
     let (_, cells) = fight(&mut skirmish);
@@ -11123,7 +11123,7 @@ fn o1_a_sealed_spot_is_given_up_after_one_search_and_tried_again() {
 
 /// What [`o1_a_holder_with_no_line_waits_on_the_spot`] reads of one field: every
 /// cell the machine stood in, the states it was in, and the rounds it fired.
-type O1Wait = (Vec<Option<(u16, u16)>>, Vec<ReflexState>, u32);
+type O1Wait = (Vec<Option<(u16, u16)>>, Vec<MachineState>, u32);
 
 /// **16b cut O.1 (plan item 32): a holder with no line waits on the spot.**
 /// A machine parked on the key spot holds a hostile between its `engage_cm`
@@ -11195,11 +11195,11 @@ fn o1_a_holder_with_no_line_waits_on_the_spot() {
     let (cells, states, shots) = wait(&mut arena);
     assert_eq!(shots, 0, "no line, no shot");
     assert!(
-        states.contains(&ReflexState::Approach),
+        states.contains(&MachineState::Approach),
         "the machine never took the hostile: {states:?}"
     );
     assert!(
-        !states.contains(&ReflexState::Engage),
+        !states.contains(&MachineState::Engage),
         "the wall is between them: {states:?}"
     );
     assert!(
@@ -11219,7 +11219,7 @@ fn o1_a_holder_with_no_line_waits_on_the_spot() {
 /// **16b cut O.1 (plan item 33): an `Advance` to a cell on the square's edge
 /// hands over one cell short of it.** The ordered cell is the west edge of the
 /// square; a machine driving at it from the west stops within
-/// [`tacsim::arena::reflex::ARRIVE_CELLS`] of it — which can be outside the
+/// [`tacsim::arena::motor::ARRIVE_CELLS`] of it — which can be outside the
 /// square — and an order ended only by standing inside would then stand for
 /// its whole TTL. Ended at `follow`'s own arrival instead: one
 /// `order_expired`, and doctrine's Hold goal drives it the last cells in.
@@ -11269,7 +11269,7 @@ fn o1_an_advance_to_the_squares_edge_hands_over_where_it_stops() {
     let ended_at = ended_at.expect("the order ended within thirty arena seconds");
     assert!(
         ended_at.0.abs_diff(edge.0).max(ended_at.1.abs_diff(edge.1))
-            <= tacsim::arena::reflex::ARRIVE_CELLS,
+            <= tacsim::arena::motor::ARRIVE_CELLS,
         "it ended where `follow` stops: {ended_at:?}"
     );
     assert!(
@@ -11603,7 +11603,7 @@ fn o3_an_inert_target_starts_up_and_searches_nothing() {
     );
     assert_eq!(counters.path_queries, 0, "it searches for nothing");
     assert_eq!(counters.intents, 1, "the one `STARTUP`, and no other order");
-    assert_eq!(state_of(&arena, BLUE), Some(ReflexState::Patrol));
+    assert_eq!(state_of(&arena, BLUE), Some(MachineState::Patrol));
     let row = arena.reflex.unit(BLUE).cloned().expect("a machine");
     let drive = motor(&arena, BLUE);
     assert_eq!((drive.goal, row.target, row.hunt), (None, None, None));
@@ -11732,7 +11732,7 @@ fn o3_an_inert_target_is_the_same_at_three_cadences() {
                 )
             })
             .collect();
-        assert_eq!(state_of(&arena, BLUE), Some(ReflexState::Patrol));
+        assert_eq!(state_of(&arena, BLUE), Some(MachineState::Patrol));
         match &first {
             None => first = Some((log, hashes)),
             Some((events, sequence)) => {
@@ -11819,7 +11819,7 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
     let never_fights = |arena: &Arena, unit: ObjId| {
         let state = machine_state_of(arena, unit);
         assert!(
-            !matches!(state, Some(ReflexState::Approach | ReflexState::Engage)),
+            !matches!(state, Some(MachineState::Approach | MachineState::Engage)),
             "a drone has no gun to close with: {state:?} at {} ms",
             arena.now_ms
         );
@@ -11863,7 +11863,7 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
         let out = arena.step_settled(wall, &[], &[]);
         absorb(&out, &mut bytes);
         never_fights(&arena, RED);
-        if patrolled.is_none() && machine_state_of(&arena, RED) == Some(ReflexState::Patrol) {
+        if patrolled.is_none() && machine_state_of(&arena, RED) == Some(MachineState::Patrol) {
             patrolled = goal_of(&arena, RED);
         }
         if let Some(cell) = hunt_of(&arena, RED) {
@@ -11974,7 +11974,7 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
     while arena.now_ms < until {
         let out = arena.step_settled(wall, &[], &[]);
         absorb(&out, &mut bytes);
-        if machine_state_of(&arena, RED) == Some(ReflexState::Withdraw) {
+        if machine_state_of(&arena, RED) == Some(MachineState::Withdraw) {
             withdrew = true;
             break;
         }
@@ -12007,7 +12007,7 @@ fn ae3_a_released_drone_in_a_hold_match_drives_to_the_spot_and_holds_nothing() {
     let never_fights = |arena: &Arena, unit: ObjId| {
         let state = state_of(arena, unit);
         assert!(
-            !matches!(state, Some(ReflexState::Approach | ReflexState::Engage)),
+            !matches!(state, Some(MachineState::Approach | MachineState::Engage)),
             "a drone has no gun to close with: {state:?} at {} ms",
             arena.now_ms
         );

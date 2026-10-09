@@ -1337,7 +1337,7 @@ impl Arena {
             .is_some_and(|state| state.controller == Controller::Reflex)
         {
             // 17b cut M1a.1: the machine and its motor row, as one adoption.
-            self.adopt_reflex(target, crate::arena::reflex::ReflexState::Disabled);
+            self.adopt_reflex(target, crate::arena::doctrine::MachineState::Disabled);
         }
         // **17b cut M1a.5**: the think waiting to land goes with the landing
         // the retain above took off the heap — the row's `pending`, which

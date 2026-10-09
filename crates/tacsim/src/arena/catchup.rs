@@ -116,7 +116,7 @@ pub struct ReleaseSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineWords {
-    /// [`crate::arena::reflex::ReflexState::as_str`]'s word.
+    /// [`crate::arena::doctrine::MachineState::as_str`]'s word.
     pub state: SmolStr,
     /// The cell it was making for.
     pub goal: Option<(u16, u16)>,
@@ -147,7 +147,7 @@ impl MachineWords {
     /// flew the tank.
     #[must_use]
     pub fn of_mind(
-        state: crate::arena::reflex::ReflexState,
+        state: crate::arena::doctrine::MachineState,
         order: Option<&crate::arena::perception::FrameOrder>,
         motor: Option<&MotorRow>,
     ) -> MachineWords {

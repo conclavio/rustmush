@@ -32,8 +32,8 @@ mod support;
 
 use support::{Muster, Timeline, booted_world, ledger_events, run_until, shipped_arena};
 use tacsim::arena::clock::Tempo;
+use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::mind::{STOCK_THINK_MS, decode_memory};
-use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::state::{Arena, EndReason, ShadowContact, Team};
 use tacsim::arena::stock_mind::StockMemory;
 
@@ -62,7 +62,7 @@ const RELEASE_CM: i64 = 60_000;
 struct Seen {
     unit: mush_core::ObjId,
     at_ms: i64,
-    state: ReflexState,
+    state: MachineState,
     /// What the hull is doing.
     speed_cms: i32,
     /// What the controller told it to do, which is the one the first shot is
@@ -229,7 +229,7 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
                 plot_cm: plot.map(|plot| range_cm(here, plot)),
             });
             match machine {
-                ReflexState::Approach => {
+                MachineState::Approach => {
                     // 17b cut M1a.1: the goal is the hull's motor row's.
                     let goal = arena.motors.row(unit).and_then(|motor| motor.goal);
                     let (Some(goal), Some(plot)) = (goal, plot) else {
@@ -250,7 +250,7 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
                         unit.0
                     );
                 }
-                ReflexState::Engage => {
+                MachineState::Engage => {
                     engage_pulses = engage_pulses.saturating_add(1);
                     if let Some(plot) = plot {
                         worst_engage_cm = worst_engage_cm.max(range_cm(here, plot));
@@ -308,7 +308,7 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
     );
     assert_eq!(
         at_the_shot.state,
-        ReflexState::Engage,
+        MachineState::Engage,
         "the first shot was not fired from `Engage`: {at_the_shot:?}"
     );
     assert!(
@@ -403,7 +403,7 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
         .iter()
         .filter(|row| row.at_ms >= until_ms)
         .min_by_key(|row| row.at_ms)
-        .is_some_and(|row| row.state == ReflexState::Engage);
+        .is_some_and(|row| row.state == MachineState::Engage);
     let first_zero = after
         .iter()
         .find(|row| row.speed_cms == 0)
@@ -428,7 +428,7 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
         let from = stopped.first().copied().unwrap_or(until_ms);
         let rolling: Vec<(i64, i32)> = after
             .iter()
-            .take_while(|row| row.state == ReflexState::Engage)
+            .take_while(|row| row.state == MachineState::Engage)
             .filter(|row| row.at_ms >= from && row.speed_cms > 0)
             .map(|row| (row.at_ms, row.speed_cms))
             .collect();
@@ -790,7 +790,7 @@ fn e4_a_hurt_machine_against_two_ends_by_elimination() {
     let hurt = support::tank(&world, Team::Red, 1);
 
     let doctrine = arena.arena_cfg.reflex.clone();
-    let health = arena.reflex_health_permille(hurt);
+    let health = arena.health_permille(hurt);
     println!(
         "e4_hurt_one_v_two: #{} opens at {health} per mille (withdraw under {}, stand at or above \
          {})",
@@ -820,7 +820,7 @@ fn e4_a_hurt_machine_against_two_ends_by_elimination() {
             online_ms = Some(arena.now_ms);
         }
         // 17b cut M4.5: the state the mind's last landing wrote.
-        if withdrew_ms.is_none() && arena.machine_state(hurt) == Some(ReflexState::Withdraw) {
+        if withdrew_ms.is_none() && arena.machine_state(hurt) == Some(MachineState::Withdraw) {
             withdrew_ms = Some(arena.now_ms);
         }
     });
@@ -977,7 +977,7 @@ fn aa1_two_machines_with_their_engines_gone_still_fight_out_to_their_reach() {
         );
         assert!(unit.armed_at_checkout(), "#{} carries its gun", id.0);
         assert_eq!(
-            arena.reflex_health_permille(id),
+            arena.health_permille(id),
             909,
             "#{}: (2,990 - 150 - 120) of 2,990, conditions not counted",
             id.0

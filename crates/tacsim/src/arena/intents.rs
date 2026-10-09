@@ -62,8 +62,8 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::arena::doctrine::MachineState;
 use crate::arena::ledger::EventKind;
-use crate::arena::reflex::ReflexState;
 use crate::arena::state::{Arena, Channel, Classification, ContactId, Controller, DueKind, Power};
 
 /// What a seat is (doc 16 §3.1's `Control`; doc 07 §1.2 for linkdead).
@@ -694,7 +694,7 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             // drop intact and its order cleared) or a fresh one — seeded
             // `Withdraw`, so it drives itself home and rallies on Q.7's clock
             // as the reflex machine did. `Controller::Reflex` is a fixture's.
-            arena.set_controller(c.unit, Controller::Mind, ReflexState::Withdraw);
+            arena.set_controller(c.unit, Controller::Mind, MachineState::Withdraw);
         }
         ControlState::Live => {
             // **16b cut Y.3**: a `Live` naming a pilot is that pilot in the seat,
@@ -717,7 +717,7 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
                 .unit(c.unit)
                 .is_some_and(|unit| unit.controller != Controller::Pilot)
             {
-                arena.set_controller(c.unit, Controller::Pilot, ReflexState::Withdraw);
+                arena.set_controller(c.unit, Controller::Pilot, MachineState::Withdraw);
             }
         }
         ControlState::Linkdead => {}
@@ -1058,7 +1058,7 @@ fn release_machine_order(
         journal_released(arena, unit, squad, issuer, at, hash);
         return;
     }
-    let health_ok = arena.reflex_health_permille(unit) >= arena.reflex.config().withdraw_permille;
+    let health_ok = arena.health_permille(unit) >= arena.reflex.config().withdraw_permille;
     let hash = arena.event_hash();
     arena.reflex.drop_to_doctrine(unit, health_ok);
     // 17b cut M1a.1: the goal, the route and the remembered stop are the hull's
@@ -2870,7 +2870,7 @@ mod tests {
         );
         arena.now_ms = 9_000;
         for unit in [RED, WING] {
-            arena.set_controller(unit, Controller::Mind, ReflexState::Patrol);
+            arena.set_controller(unit, Controller::Mind, MachineState::Patrol);
             let standing = z2_order(crate::deliberation::order::Objective::Hold);
             let held = arena.rekey_order(unit, &standing.order, standing.expires_ms);
             arena.minds.get_mut(&unit).expect("the mind's row").order = Some(held);
@@ -3079,7 +3079,7 @@ mod tests {
             1,
         );
         for unit in [RED, WING] {
-            arena.set_controller(unit, Controller::Mind, ReflexState::Patrol);
+            arena.set_controller(unit, Controller::Mind, MachineState::Patrol);
             let standing = z2_order(Objective::Hold);
             let held = arena.rekey_order(unit, &standing.order, standing.expires_ms);
             arena.minds.get_mut(&unit).expect("the mind's row").order = Some(held);
@@ -3649,7 +3649,7 @@ mod tests {
             index: 1,
         };
         let mut arena = two_tanks(1);
-        arena.set_controller(RED, Controller::Mind, ReflexState::Withdraw);
+        arena.set_controller(RED, Controller::Mind, MachineState::Withdraw);
         if let Some(state) = arena.minds.get_mut(&RED) {
             state.order = Some(crate::arena::perception::FrameOrder {
                 squad: SmolStr::new(squad.to_string()),
@@ -3660,7 +3660,7 @@ mod tests {
             });
         }
         assert!(holds_order_for(&arena, RED, squad), "the mind holds it");
-        arena.set_controller(RED, Controller::Pilot, ReflexState::Withdraw);
+        arena.set_controller(RED, Controller::Pilot, MachineState::Withdraw);
         assert!(
             arena
                 .minds
@@ -3672,16 +3672,16 @@ mod tests {
             !holds_order_for(&arena, RED, squad),
             "a dormant row's order is nobody's"
         );
-        arena.set_controller(RED, Controller::Mind, ReflexState::Withdraw);
+        arena.set_controller(RED, Controller::Mind, MachineState::Withdraw);
         assert!(
             !holds_order_for(&arena, RED, squad),
             "the hand-back starts under doctrine, not under the old order"
         );
         assert_eq!(
             arena.minds.get(&RED).map(|state| state.doctrine_state),
-            Some(ReflexState::Withdraw),
+            Some(MachineState::Withdraw),
             "seeded Withdraw"
         );
-        assert_eq!(arena.machine_state(RED), Some(ReflexState::Withdraw));
+        assert_eq!(arena.machine_state(RED), Some(MachineState::Withdraw));
     }
 }

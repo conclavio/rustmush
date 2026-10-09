@@ -47,13 +47,13 @@ use mush_mind::system_error;
 
 use super::Registrar;
 use crate::arena::damage::{BLOCKED, COVER};
+use crate::arena::doctrine::{
+    EXPOSURE_FLANK, EXPOSURE_FRONT, EXPOSURE_REAR, SCREEN_HALF_ARC_MDEG, STAND_TICKS,
+    SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS,
+};
 use crate::arena::intents::IntentKind;
 use crate::arena::mind::{MindView, ThinkJob};
 use crate::arena::motor::ARRIVE_CELLS;
-use crate::arena::reflex::{
-    EXPOSURE_FLANK, EXPOSURE_FRONT, EXPOSURE_REAR, REFLEX_STAND_TICKS, SCREEN_HALF_ARC_MDEG,
-    SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS,
-};
 use crate::arena::state::ArenaDefinition;
 
 /// **The cause word of a type refusal** (D-UM-31): an argument of the wrong
@@ -242,7 +242,7 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     function!(api, "screen_half_arc_mdeg", || {
         constant(INT::from(SCREEN_HALF_ARC_MDEG))
     });
-    function!(api, "stand_ticks", || { constant(REFLEX_STAND_TICKS) });
+    function!(api, "stand_ticks", || { constant(STAND_TICKS) });
     function!(api, "exposure_front", || {
         constant(INT::from(EXPOSURE_FRONT))
     });
@@ -300,7 +300,7 @@ mod tests {
             i64::from(SUPPORT_LEASH_CELLS),
             i64::from(SUPPORT_STATION_CELLS),
             i64::from(SCREEN_HALF_ARC_MDEG),
-            REFLEX_STAND_TICKS,
+            STAND_TICKS,
             i64::from(EXPOSURE_FRONT),
             i64::from(EXPOSURE_FLANK),
             i64::from(EXPOSURE_REAR),

@@ -1477,7 +1477,7 @@ pub fn notice_lines(frame: &Frame) -> Vec<String> {
 }
 
 /// **What the machine was doing, in the pilot's words** (16b cut Y.4), by
-/// [`crate::arena::reflex::ReflexState::as_str`]'s word. A word this build
+/// [`crate::arena::doctrine::MachineState::as_str`]'s word. A word this build
 /// predates reads as itself with its underscores opened out, which is the
 /// panels' own fallback for a word they do not know.
 fn machine_state_words(state: &str) -> String {
@@ -7674,7 +7674,7 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
         .module_state::<ArenaRegistry>()
         .and_then(|registry| registry.arena_of(match_id))
         .map_or(0, |ground| {
-            u32::from(crate::arena::reflex::SUPPORT_LEASH_CELLS)
+            u32::from(crate::arena::doctrine::SUPPORT_LEASH_CELLS)
                 .saturating_mul(u32::from(ground.terrain.cell_cm()))
                 / 100
         });

@@ -3544,7 +3544,7 @@ impl SnapshotFigures {
 /// state enum, which the stock mind's memory and `MindState.doctrine_state`
 /// reuse until 17b cut M4.6 moves it (`MachineState`, with `Unknown`) — one
 /// alias, so that move is one line here.
-type MachineState = tacsim::arena::reflex::ReflexState;
+type MachineState = tacsim::arena::doctrine::MachineState;
 
 /// **The leaves [`machine_states`] carries** (17b cut M4.5): seven —
 /// [`MachineState::ALL`]'s six words and `unknown`, the word 17b cut M4.6's

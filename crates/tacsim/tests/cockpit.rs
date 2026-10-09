@@ -16768,9 +16768,11 @@ async fn m3_a_reclaim_re_seals_nothing() {
 /// stock mind flies (the possess) makes the mirror read the pilot's and
 /// `@mind/set` refuse it as `not flown by a mind`; the `Released` that ends
 /// the seat hands it back — the mirror reads `Controller::Mind` again
-/// (`MatchMirror::minded`), and `@mind/set` offers a preset that the arena
-/// itself applies (a `mind_card` line naming it on the tape: the arena, too,
-/// handed the hull back to its mind and not to the reflex machine). The
+/// (M3.5's `MatchMirror::minded` rule, the set 17b cut M4.6a deleted: every
+/// released hull reads its mind's since 17b cut M4.3), and `@mind/set` offers
+/// a preset that the arena itself applies (a `mind_card` line naming it on the
+/// tape: the arena, too, handed the hull back to its mind and not to the
+/// reflex machine). The
 /// pilot's own hull, which carries no mind row, still goes to the reflex
 /// machine (`m1b5_mind_set_reads_sets_and_refuses_by_name`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

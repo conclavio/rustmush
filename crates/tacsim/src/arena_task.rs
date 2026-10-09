@@ -2328,7 +2328,7 @@ mod tests {
             arena.set_controller(
                 RED,
                 crate::arena::state::Controller::Mind,
-                crate::arena::reflex::ReflexState::Patrol,
+                crate::arena::doctrine::MachineState::Patrol,
             );
             // The machine already stands under the squad's `Engage`.
             let standing =

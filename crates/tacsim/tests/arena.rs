@@ -6057,7 +6057,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     arena.set_controller(
         MOVER,
         Controller::Mind,
-        tacsim::arena::reflex::ReflexState::Withdraw,
+        tacsim::arena::doctrine::MachineState::Withdraw,
     );
     assert!(arena.minds.contains_key(&MOVER), "the adoption laid a row");
     let answer = PendingThink {
@@ -6099,7 +6099,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
         card: tacsim::arena::card::line(&arena.arena_cfg.reflex),
         // 17b cut M4.3: a cache over the memory, never carried — the decode
         // re-derives it (`Startup` off these bytes).
-        doctrine_state: tacsim::arena::reflex::ReflexState::Startup,
+        doctrine_state: tacsim::arena::doctrine::MachineState::Startup,
     };
     arena.minds.insert(MOVER, row.clone());
     let snapshot = Snapshot::encode(&arena).expect("the arena encodes");

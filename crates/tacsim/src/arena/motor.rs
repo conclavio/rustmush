@@ -3122,7 +3122,7 @@ fn edge_is_open(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::reflex::ReflexState;
+    use crate::arena::doctrine::MachineState;
     use crate::arena::state::{Controller, Team};
     use crate::arena::test_support::{arena_of, pose, tank};
 
@@ -3176,7 +3176,7 @@ mod tests {
         // 17b cut M4.5a: a mind's hull, with the motor row a controller that
         // takes a hull over steers it through (`set_controller` lays none for a
         // mind: its first landing's would).
-        arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
+        arena.set_controller(ObjId(4), Controller::Mind, MachineState::Patrol);
         let _ = arena.motors.ensure(ObjId(4));
         // A search this tick already paid for, so the clearing below is a fact
         // about `note_blocked` and not about how a fresh row is laid.
@@ -3300,7 +3300,7 @@ mod tests {
         // (`set_controller` releases the motor row on every transition; 17b
         // cut M4.5a: from the mind as it did from the reflex), and a hull with
         // no row grows none here.
-        arena.set_controller(ObjId(4), Controller::Pilot, ReflexState::Withdraw);
+        arena.set_controller(ObjId(4), Controller::Pilot, MachineState::Withdraw);
         assert!(
             arena.motors.row(ObjId(4)).is_none(),
             "the seat handed back took its motor row with it"
@@ -3348,7 +3348,7 @@ mod tests {
             }
             // 17b cut M4.5a: a mind's hull and the motor row it is steered
             // through (`set_controller` lays none for a mind).
-            arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
+            arena.set_controller(ObjId(4), Controller::Mind, MachineState::Patrol);
             let _ = arena.motors.ensure(ObjId(4));
             if let Some(row) = arena.motors.row_mut(ObjId(4)) {
                 row.goal = Some((3, 7));
@@ -3404,7 +3404,7 @@ mod tests {
         // is handed back the way a reclaim hands it.
         assert_eq!(
             asked(|arena| {
-                arena.set_controller(ObjId(4), Controller::Pilot, ReflexState::Withdraw);
+                arena.set_controller(ObjId(4), Controller::Pilot, MachineState::Withdraw);
             }),
             (800, 0),
             "the pass ordered a seated pilot's tank to stop"
@@ -3472,7 +3472,7 @@ mod tests {
                 state.slope_limit_pct = Some(45);
             }
             // 17b cut M4.5a: a mind's hull and its motor row, as in E.3.
-            arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
+            arena.set_controller(ObjId(4), Controller::Mind, MachineState::Patrol);
             let _ = arena.motors.ensure(ObjId(4));
             if let Some(row) = arena.motors.row_mut(ObjId(4)) {
                 row.goal = Some((3, 7));
@@ -3549,7 +3549,7 @@ mod tests {
         use crate::deliberation::order::{Constraints, Objective, Order, StandingOrder};
         let unit = ObjId(4);
         let mut arena = arena_of(vec![tank(unit, Team::Red, pose(1_500, 1_500))]);
-        arena.set_controller(unit, Controller::Mind, ReflexState::Patrol);
+        arena.set_controller(unit, Controller::Mind, MachineState::Patrol);
         let standing = StandingOrder::accepted(
             Order {
                 squad: crate::deliberation::squad::SquadId {
@@ -3580,7 +3580,7 @@ mod tests {
         {
             let mind = arena.minds.get_mut(&unit).expect("the mind's row");
             mind.memory = encode_memory(&Memory::from(StockMemory {
-                state: ReflexState::Approach,
+                state: MachineState::Approach,
                 target: Some(target),
                 ..StockMemory::default()
             }));
@@ -3606,13 +3606,13 @@ mod tests {
         assert!(motor.route.is_empty());
         assert_eq!(motor.searched_ms, None, "the next tick searches at once");
         assert_eq!(mind, &mind_before, "the mind's row is untouched");
-        assert_eq!(mind.doctrine_state, ReflexState::Approach);
+        assert_eq!(mind.doctrine_state, MachineState::Approach);
         assert_eq!(
             mind.order.as_ref().map(|order| order.objective),
             Some(crate::arena::perception::MindObjective::Advance { to: (6, 6) })
         );
         let memory = StockMemory::from(&decode_memory(&mind.memory));
-        assert_eq!(memory.state, ReflexState::Approach);
+        assert_eq!(memory.state, MachineState::Approach);
         assert_eq!((motor.waypoint, motor.from_waypoint), (Some(1), Some(0)));
         assert_eq!(memory.target, Some(target));
         assert_eq!(motor.avoid, vec![((2, 1), 3_000)]);
@@ -3748,7 +3748,7 @@ mod tests {
     fn ai1_machine() -> Arena {
         let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
         arena.mind_runner = std::sync::Arc::new(crate::arena::mind::NoMind);
-        arena.set_controller(ObjId(4), Controller::Mind, ReflexState::Patrol);
+        arena.set_controller(ObjId(4), Controller::Mind, MachineState::Patrol);
         if let Some(state) = arena.unit_mut(ObjId(4)) {
             state.power = crate::arena::state::Power::Online;
         }
@@ -4530,5 +4530,117 @@ mod tests {
             vec![(1, 0), (2, 0), (2, 1), (1, 1)],
             "nothing drained (and an unlimited unit holds with it)"
         );
+    }
+
+    /// **16b cut AI.1, the programme lead's ruling on `shipped_scale` e3: the
+    /// hunters of one side are handed cells clear of each other's, wherever
+    /// they stand.**
+    ///
+    /// On the test window (Blue's zone is columns 6 and 7, every row), three Red
+    /// tanks on row 3 all clamp to Blue's corner (6, 3). With no hunt held by
+    /// the side each is handed that corner, E.4's cell; handed one after
+    /// another, each against the cells handed before it, they get rows 3, 6 and
+    /// 0 — and from one cell exactly, since nothing here reads a pose but the
+    /// unit's own. A unit whose own row is already [`HUNT_FAN_ROWS`] from the
+    /// held cell keeps its own row (the cross-row case a fan by rank alone got
+    /// wrong); one two rows from it is fanned; a zone with no row left clear
+    /// answers E.4's cell, the named residual. [`fan_rows`] is pinned row for
+    /// row from every row of the window.
+    ///
+    /// 17b cut M4.6a: part (a) of the reflex's
+    /// `ai1_the_hunters_of_one_side_are_handed_clear_cells_at_three_cadences`,
+    /// moved here with its assertions word for word — the only pin of
+    /// [`fan_rows`] row for row; its part (b), three reflex hunters at three
+    /// cadences, stayed there and dies with the reflex in 17b cut M4.6c.
+    #[test]
+    fn ai1_the_hunters_of_one_side_are_handed_clear_cells() {
+        let red = |id: u32, x: u16, y: u16| {
+            tank(
+                ObjId(id),
+                Team::Red,
+                pose(i64::from(x) * 1_000 + 500, i64::from(y) * 1_000 + 500),
+            )
+        };
+        // (a) The answer itself.
+        let mut arena = arena_of(vec![
+            tank(ObjId(3), Team::Blue, pose(7_500, 7_500)),
+            red(4, 2, 3),
+            red(5, 3, 3),
+            red(6, 4, 3),
+        ]);
+        assert_eq!(
+            [4, 5, 6].map(|id| arena.far_entry_cell(ObjId(id), &[])),
+            [Some((6, 3)); 3],
+            "no hunt held: every machine is handed E.4's clamped corner"
+        );
+        let first = arena.far_entry_cell(ObjId(4), &[]);
+        assert_eq!(first, Some((6, 3)));
+        let second = arena.far_entry_cell(ObjId(5), &[(6, 3)]);
+        assert_eq!(second, Some((6, 6)), "the fan's first row");
+        let third = arena.far_entry_cell(ObjId(6), &[(6, 3), (6, 6)]);
+        assert_eq!(third, Some((6, 0)), "the fan's second row");
+        // From one cell exactly: the held cells, not the poses, keep them apart.
+        let one = arena.unit(ObjId(4)).map(|unit| unit.pose.clone());
+        for id in [5, 6] {
+            if let (Some(state), Some(at)) = (arena.unit_mut(ObjId(id)), one.clone()) {
+                state.pose = at;
+            }
+        }
+        assert_eq!(
+            [
+                arena.far_entry_cell(ObjId(4), &[]),
+                arena.far_entry_cell(ObjId(5), &[(6, 3)]),
+                arena.far_entry_cell(ObjId(6), &[(6, 3), (6, 6)]),
+            ],
+            [Some((6, 3)), Some((6, 6)), Some((6, 0))],
+            "three machines in one cell, three hunt cells"
+        );
+        // Across rows: a held cell three rows off leaves the unit its own row;
+        // one two rows off fans it; a zone with every fanned row's cell held
+        // answers E.4's cell after all.
+        assert_eq!(
+            arena.far_entry_cell(ObjId(4), &[(6, 6)]),
+            Some((6, 3)),
+            "three rows apart is clear"
+        );
+        assert_eq!(
+            arena.far_entry_cell(ObjId(4), &[(6, 5)]),
+            Some((6, 0)),
+            "two rows apart is not: row 6 is one from it, row 0 is clear"
+        );
+        assert_eq!(
+            arena.far_entry_cell(ObjId(4), &[(6, 0), (6, 3), (6, 6)]),
+            Some((6, 3)),
+            "the fan ran out, so E.4's cell"
+        );
+        // Another side's hunts are no business of Blue's: `taken` is the
+        // caller's, and Blue's own is empty.
+        assert_eq!(arena.far_entry_cell(ObjId(3), &[]), Some((1, 7)));
+        // The fan's rows, from every row of an eight-row zone: the clamped row
+        // first, then alternately above and below in steps of three, rows off
+        // the zone skipped and nothing repeated.
+        let expected: [&[u16]; 8] = [
+            &[0, 3, 6],
+            &[1, 4, 7],
+            &[2, 5],
+            &[3, 6, 0],
+            &[4, 7, 1],
+            &[5, 2],
+            &[6, 3, 0],
+            &[7, 4, 1],
+        ];
+        for (cy, want) in (0..=7_u16).zip(expected) {
+            let rows: Vec<u16> = fan_rows(cy, 0, 7).collect();
+            assert_eq!(rows, want, "the fan from row {cy}");
+            for (i, a) in rows.iter().enumerate() {
+                for b in rows.iter().skip(i + 1) {
+                    assert!(
+                        a.abs_diff(*b) >= HUNT_FAN_ROWS,
+                        "rows {a} and {b} from row {cy}"
+                    );
+                }
+            }
+        }
+        assert_eq!(fan_rows(4, 4, 4).collect::<Vec<_>>(), vec![4], "one row");
     }
 }
