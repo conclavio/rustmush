@@ -115,9 +115,9 @@ pub struct SealTerms {
 /// minds lane's fill variant (`tacsim_harness_arena_minds` in
 /// `crates/tacsim/tests/harness.rs`) seals its thirty-six Class I hulls a
 /// side on it, and THE DECISION IS THAT VARIANT'S VERDICT over three
-/// idle-host weekly runs (`scripts/harness-weekly.sh` on the blessing host):
-/// `held=yes` three times keeps `Scripted`; any `held=no` moves this to
-/// `Native`, in M4.3's commit, with the three
+/// idle-host weekly runs (`scripts/harness-weekly.sh` on ALIEN18, the
+/// owner's host): `held=yes` three times keeps `Scripted`; any `held=no`
+/// moves this to `Native`, in M4.3's commit, with the three
 /// `harness_minds_verdict: variant=fill_authored` lines in its body and in
 /// 17b §2. A run whose line reads `sound=no` is a lane fault (a failed
 /// batch, a refused snapshot, a cold field), re-run and never counted.
@@ -128,6 +128,8 @@ pub struct SealTerms {
 ///   run 1: pending
 ///   run 2: pending
 ///   run 3: pending
+///   stock_ci precondition waived by the owner, 2026-10-08 (17b cut M4.5);
+///   the three runs remain the owner's
 pub const PRODUCTION_FILL_ENGINE: SealEngine = SealEngine::Scripted;
 
 impl SealTerms {

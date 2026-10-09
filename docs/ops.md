@@ -1256,7 +1256,11 @@ the CI reach and at the authored reach, the ten-minute long run, the 24-pilot
 fan-out, the lance lane and the minds lane — and then the **delta** against the
 committed baseline, and stops
 non-zero at the first failure. The two `cargo test` lines are the CI job's,
-verbatim (a test holds them equal); only the environment differs.
+verbatim (a test holds them equal); only the environment differs. Since 17b
+cut M4.5 every lane fields unit minds at the ROM (Class 0, the native stock
+mind) where it fielded the reflex controller; the arena report's `reflex`
+object is `motor` (no `ticks`, no `traces`) and its state histogram is
+`minds.states_at_end`, off each hull's doctrine state.
 
 **What asserts where.**
 
@@ -1280,15 +1284,19 @@ verbatim (a test holds them equal); only the environment differs.
 - **The delta** (`tacsim_harness_delta_against_the_committed_baseline`) reads the
   fresh `harness-arena.json` and `crates/tacsim/tests/harness_baseline/arena.<os>.json`.
   It fails on **any** difference in the deterministic block (the world, the
-  substeps, the counters, the weapons, the perception and controller totals and
-  peaks, the window peaks, the thresholds), printing one `harness_delta:` line
+  substeps, the counters, the weapons, the perception and motor totals and
+  peaks, the machines' states at the end, the window peaks, the thresholds),
+  printing one `harness_delta:` line
   per field first, and on a timing figure (the wake p50 and p99, the window p99)
   more than **20 per cent slower** — but only on the host that blessed the file
   (the same OS, core count and machine name). Faster by as much prints
   `re-bless when this holds` and passes. Since 17b cut M4.2 it also reads the
   four `harness-minds-<variant>.json` reports and compares each one's `minds`
-  block — once the baseline carries a `minds` object (17b cut M4.5's bless);
-  until then it says so and skips.
+  block against the baseline's `minds.<variant>`, folded in by 17b cut M4.5's
+  bless beside the arena report's own `minds.states_at_end` (a baseline with
+  no variant block says so and skips). A minds report older than the test
+  binary is refused, as the arena report is, and a bless without all four
+  fresh minds reports fails rather than writing a baseline without them.
 - **The CI job** sets no `TACSIM_ASSERT`: it runs on a shared runner, whose speed
   is not a threshold (D-H-8), so there the absolutes are report-only and the delta
   is the one step that fails the job. The runner is never the blessing host, so
@@ -1306,13 +1314,25 @@ asserts, at any knob, W8 — the span of control and the orders per commander pe
 minute — within `[tacsim.command]`, that the ledger's `ordered` lines are
 exactly the orders the script gave, that the opening round landed on every
 standing unit, that the span never exceeds what the script holds, and that the
-sides fired. **Only at the lane's defaults** (`TACSIM_SEED` 2350,
-`TACSIM_LANCE_UNITS` 24, `TACSIM_LANCE_ARENA_S` 120, `TACSIM_WAKE_JITTER_MS` 0;
-the field line prints `at_defaults`) does it also assert the span and the
-busiest commander minute **equal** to the squads a side and the opening round
-plus one full minute a side on the tape: off them a lance can be wiped out,
-reach its crossroads or take a mark a wake late, and the fight decides those
-figures. Its timing is **report-only**: the
+sides fired. Since 17b cut M4.5 its hulls are unit minds at the ROM and the
+span reads the minds' live orders joined to each unit's last `ordered` line;
+since 17b cut M4.5c's row cut (a mind's view keeps every contact not known
+friendly before a friend) the ROM's lances fight — before it Class 0's eight
+rows were all taken by the eleven others of the hull's side, nearer than the
+enemy, and nothing fired (STOP L, resolved by the owner's rulings of
+2026-10-09). **Only at the lane's
+defaults** (`TACSIM_SEED` 2350, `TACSIM_LANCE_UNITS` 24,
+`TACSIM_LANCE_ARENA_S` 120, `TACSIM_WAKE_JITTER_MS` 0; the field line prints
+`at_defaults`) does it also assert the figures the defaults' fight gives, each
+held to that fight by fact pins (its end, and each first squad's standing
+machines at its minute-one mark and at the release): the span **equal** to the
+squads a side less one (each commander's second and third squads under its
+live orders at the read, its first squad released), the busiest commander
+minute **equal** to the squads a side, each side's release on the tape once
+for every machine its first squad stood, and the opening round plus one full
+minute a side on the tape. Off them a lance can be wiped out, reach its
+crossroads or take a mark a wake late, and the fight decides those figures.
+Its timing is **report-only**: the
 per-wake p99 is printed beside 12 ms and the per-window p99 beside 20 ms, the
 authored lane's lenses, and nothing is asserted about either. It writes
 `harness-lance.json`, which the delta does not read.
@@ -1351,22 +1371,54 @@ decision**: the fill variant's `held=` word over three idle-host runs of this
 script is what 17b cut M4.3's flip reads — `held=yes` three times keeps
 `scripted`, any `held=no` moves `PRODUCTION_FILL_ENGINE` to `native`; the
 committer pastes the three `harness_minds_verdict: variant=fill_authored` lines
-into the constant's decision log and 17b §2. A `stock_ci` `held=no` is the
-owner's STOP before 17b cut M4.5 moves the CI lane onto minds. Its four
+into the constant's decision log and 17b §2. A `stock_ci` `held=no` was to be
+the owner's STOP before 17b cut M4.5 moved the CI lane onto minds; the owner
+waived that precondition on 2026-10-08, and the three runs remain the owner's.
+Its four
 `harness-minds-<variant>.json` reports carry a deterministic `minds` block
 (thinks, inline and pooled, landings, faults, ops, fees, the final substep
-hash) that the delta compares once the baseline carries one.
+hash) that the delta compares against the baseline's `minds.<variant>`.
 
 **Blessing.** `TACSIM_BASELINE_BLESS=1 scripts/harness-weekly.sh` rewrites this
-platform's `arena.<os>.json` from the fresh report, with a `blessed` stanza (the
-commit, the date, the host), and then compares against what it wrote. Commit
-the file. Re-bless when a change moves the deterministic block on purpose (in
-the same diff, saying why), or when the box has got faster and says so. The
-**Windows** baseline is committed (16b cut U.3); the **Linux** one is the
-owner's to bless on their own box — cut L measured a 14.998 ms p99 there with
-the assertions off — and until it exists the delta on Linux says
-`no baseline for linux` and passes. Every committed file must carry the same
-deterministic block; an ordinary test holds that.
+platform's `arena.<os>.json` from the fresh reports — the arena report and the
+four minds reports, all from this build — with a `blessed` stanza (the commit,
+the date, the host), and then compares against what it wrote. Commit the file.
+The script asserts, so it blesses only on a host where every lane held under
+`TACSIM_ASSERT`. Re-bless when a change moves the deterministic block on
+purpose (in the same diff, saying why), or when the box has got faster and says
+so.
+
+**The non-asserting Linux path** (procedure β, 17b cut M4.5), beside the
+script, for a host whose lenses are report-only — on one build:
+
+1. `export TACSIM_JSON=harness.json`, with `TACSIM_MINDS_VARIANTS` **unset**:
+   the bless folds all four minds variants and refuses without any of them;
+2. the lanes, **without** `TACSIM_ASSERT`:
+   `cargo test --release -p tacsim --test harness -- --ignored --test-threads=1 --nocapture --skip tacsim_harness_delta_against_the_committed_baseline`;
+3. the delta with `TACSIM_BASELINE_BLESS=1`, under a `HOSTNAME` no later run
+   carries (M4.5's:
+   `HOSTNAME=ccr-m4.5-linux-bless TACSIM_BASELINE_BLESS=1 cargo test --release -p tacsim --test harness tacsim_harness_delta_against_the_committed_baseline -- --exact --ignored --nocapture`);
+4. the lanes and the delta again without the variable, and read the delta
+   equal (`deterministic block equal` and four `minds.<variant> block equal`
+   lines).
+
+The host name is the timing gate's switch: the delta compares timing only when
+this host — its OS, its CPU count and its name (on Linux `HOSTNAME`, read
+before `/etc/hostname`) — is the one the `blessed` stanza names. The cloud
+containers all read `/etc/hostname` as `vm`, so a bless under that name would
+make the gate live on every later container, whose speed is not a threshold; a
+name no run carries keeps it dormant. A re-bless after the deterministic block
+moved must rewrite or remove **every** committed `arena.*.json`: they must all
+carry the same deterministic block, and an ordinary test
+(`every_committed_baseline_agrees_on_the_deterministic_block`) holds that.
+
+Since 17b cut M4.5 the committed baseline is the **Linux** one
+(`arena.linux.json`, by the owner's ruling of 2026-10-08), blessed that way
+under the host name `ccr-m4.5-linux-bless`, so its timing gate is dormant
+everywhere until the owner re-blesses on ALIEN18 (the owner's host). The stale
+Windows file was removed in the same commit, so on the owner's Windows box the
+delta says `no baseline for windows` and passes until that bless, which adds an
+agreeing `arena.windows.json`.
 
 **A timing-only failure is re-run once before it is believed.** Two runs of one
 tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A
@@ -1376,12 +1428,16 @@ different at the default knobs.
 The reports land at the repository root: `harness.json` (the ground pulse),
 `harness-arena.json`, `harness-arena-authored.json`, `harness-arena-long.json`,
 `harness-fan-out.json`, `harness-lance.json` and the four
-`harness-minds-<variant>.json`. The delta reads `harness-arena.json` (and the
-four minds reports once the baseline carries a `minds` block), so the
+`harness-minds-<variant>.json`. The delta reads `harness-arena.json` and the
+four minds reports, so the
 knobs that move it are the arena's: `TACSIM_UNITS`, `TACSIM_ARENA_S`,
 `TACSIM_FIGHTING`, `TACSIM_SEED`, `TACSIM_SENSOR_CELLS`, `TACSIM_SHARE_CELLS`
-and `TACSIM_WAKE_JITTER_MS` — expect the delta to fail on the deterministic
-block when you set any of them, because it is a different run.
+and `TACSIM_WAKE_JITTER_MS` — and the minds lane's: `TACSIM_MINDS_JITTER_MS`
+and `TACSIM_MINDS_JITTER_PER_MILLE` (each minds block carries its jitter
+leaves), and `TACSIM_MINDS_VARIANTS` (a subset leaves the other variants'
+reports missing, or stale from an earlier build, one difference each) — expect
+the delta to fail on the deterministic block or a `minds.<variant>` block when
+you set any of them, because it is a different run.
 `TACSIM_LONG_RUN_S` sizes the long run, `TACSIM_PULSES` the ground-pulse lane
 and `TACSIM_LANCE_UNITS` and `TACSIM_LANCE_ARENA_S` the lance lane; none of them
 reaches the file the delta reads.

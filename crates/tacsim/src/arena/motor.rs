@@ -556,13 +556,12 @@ pub enum Fallback {
 /// N.1, renamed and moved here so they outlive the reflex). The shape
 /// [`crate::arena::perception::PerceptionCounters`] has and for the same
 /// reason: the harness asserts a bound against the worst pulse of a run and
-/// the report carries the totals; never hashed. `ticks`, `ordered` and
-/// `in_state` are the reflex's own and retire with the harness's move onto
-/// minds (17b cut M4.5's second commit).
+/// the report carries the totals; never hashed. The reflex's own `ticks`,
+/// `ordered` and `in_state` retired with the harness's move onto minds (17b
+/// cut M4.5's second commit): a mind's decisions are its
+/// [`MotorCounters::thinks`] and [`MotorCounters::landings`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MotorCounters {
-    /// Reflex ticks applied.
-    pub ticks: u32,
     /// Path searches run — what `harness.max_path_queries_per_pulse` bounds.
     pub path_queries: u32,
     /// Searches refused by the per-window budget or by `repath_ms`.
@@ -576,24 +575,28 @@ pub struct MotorCounters {
     /// Searches that found no route, ran out of budget or were off the ground —
     /// the `unreachable` edge.
     pub path_failures: u32,
-    /// Line-of-sight traces the controller took (`Approach`'s and `Engage`'s
-    /// check that a shot has a line at all).
+    /// Line-of-sight traces the reflex took (`Approach`'s and `Engage`'s
+    /// check that a shot has a line at all, `Arena::reflex_has_line`). A mind
+    /// never counts one, so it reads nought on every field of minds; reported
+    /// nowhere since 17b cut M4.5, and deleted with its one writer at M4.6.
     pub traces: u32,
-    /// Intents staged.
+    /// **Every intent put through `Arena::apply_machine_intents`, refused
+    /// ones included** (counted before `apply_intent` answers): a mind's
+    /// landing, the motor's heading and speed at its follow, the reflex's
+    /// tick until M4.6 — plus `hold_routeless`'s stops. Not a count of
+    /// decisions: the motor alone moves it.
     pub intents: u32,
-    /// `FIRE`s accepted.
+    /// **`FIRE`s accepted**: a mind's cited `Fire` (the reflex's uncited one
+    /// until M4.6) and a slot's own
+    /// ([`MotorCounters::cond_fires`] ⊆ this).
     pub shots: u32,
-    /// **Standing orders a tick acted on** (16b cut N.2) — ticks that read a live
-    /// order, not orders accepted.
-    pub ordered: u32,
-    /// **Orders that ran out** (16b cut N.2), one per unit dropped to doctrine.
+    /// **Orders that ran out** (16b cut N.2), one per unit dropped to doctrine:
+    /// a mind's at the landing that reaches its deadline
+    /// (`Arena::expire_mind_order`), the reflex's at its tick until M4.6.
     pub orders_expired: u32,
     /// **Orders a pilot handed back** (16b cut Z.2; 16c Q44), one per unit a
     /// `ReleaseOrder` dropped to doctrine — counted at apply, in pulse phase 2.
     pub orders_released: u32,
-    /// Reflex ticks that ended in each state, in
-    /// [`crate::arena::reflex::ReflexState::ALL`] order.
-    pub in_state: [u32; 6],
     /// **Edges refused by the slope rule** (16b cut U.1; 16c `T-35`): every edge
     /// a search refused as too steep either way or by the shoulder rule
     /// ([`crate::arena::path::PathScratch::slope_refusals`]), plus every time the
@@ -621,23 +624,23 @@ pub struct MotorCounters {
     /// is. A counter, never hashed.
     pub corner_refusals: u32,
     /// **Unit minds' thinks applied** (17b cut M1a.5; doc 17 §6): one per
-    /// `MindThink` that called its runner. Not reported by the harness — no
-    /// production unit is a mind — and never hashed.
+    /// `MindThink` that called its runner. The minds lane's `thinks` (17b cut
+    /// M4.2), the arena lanes' liveness assert (with `landings`) and their
+    /// report-only `harness_arena_minds` line (17b cut M4.5); never hashed,
+    /// and in no compared leaf of the arena report.
     pub thinks: u32,
     /// **Thinks that answered more than `MIND_INTENTS_MAX` intents** (17b cut
-    /// M1a.5; D-UM-9) and so landed nothing. Not reported; 17b cut M3 journals
-    /// the fault. Never hashed.
+    /// M1a.5; D-UM-9) and so landed nothing; 17b cut M3 journals the fault.
+    /// The minds lane's `overflows`; never hashed.
     pub mind_overflows: u32,
     /// **Thinks that faulted** (17b cut M2.2; D-UM-31): a runner's
     /// `ThinkResult::fault` or an overflow (each overflow is also one of
     /// [`MotorCounters::mind_overflows`]), every one landing nothing and
-    /// counting a strike. Not reported — the harness names its fields one by
-    /// one, so the deterministic block does not gain it — and never hashed.
+    /// counting a strike. The minds lane's `faults`; never hashed.
     pub mind_faults: u32,
     /// **Condition slots' own shots accepted** (17b cut M1b.1; doc 17 §5,
-    /// D-UM-16): every `fired` line `by: cond`. A counter, never hashed, and
-    /// not in the harness report — which names its fields one by one, so the
-    /// deterministic block does not gain it (no production hull arms a slot).
+    /// D-UM-16): every `fired` line `by: cond`. The minds lane's `cond_fires`;
+    /// a counter, never hashed.
     pub cond_fires: u32,
     /// **Slot evaluations that held for a named reason** (17b cut M1b.1): a
     /// warrant term failed with the target there. Never hashed; not reported.
@@ -654,7 +657,6 @@ pub struct MotorCounters {
 impl MotorCounters {
     /// Add another pulse's counts — the harness's running total.
     pub fn absorb(&mut self, other: &MotorCounters) {
-        self.ticks = self.ticks.saturating_add(other.ticks);
         self.path_queries = self.path_queries.saturating_add(other.path_queries);
         self.path_deferred = self.path_deferred.saturating_add(other.path_deferred);
         self.path_cells = self.path_cells.saturating_add(other.path_cells);
@@ -662,7 +664,6 @@ impl MotorCounters {
         self.traces = self.traces.saturating_add(other.traces);
         self.intents = self.intents.saturating_add(other.intents);
         self.shots = self.shots.saturating_add(other.shots);
-        self.ordered = self.ordered.saturating_add(other.ordered);
         self.orders_expired = self.orders_expired.saturating_add(other.orders_expired);
         self.orders_released = self.orders_released.saturating_add(other.orders_released);
         self.slope_refusals = self.slope_refusals.saturating_add(other.slope_refusals);
@@ -676,9 +677,6 @@ impl MotorCounters {
         self.cond_fires = self.cond_fires.saturating_add(other.cond_fires);
         self.cond_held = self.cond_held.saturating_add(other.cond_held);
         self.landings = self.landings.saturating_add(other.landings);
-        for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
-            *mine = mine.saturating_add(*theirs);
-        }
     }
 }
 

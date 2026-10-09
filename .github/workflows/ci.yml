@@ -471,7 +471,10 @@ jobs:
   # unit minds in four variants, fill first, on a real think pool)
   # (`harness_*:` lines in the log, `harness*.json` uploaded). Every
   # test is `#[ignore]`; this job is the only CI job that runs them, on demand
-  # or weekly, never on push, and no Redis is involved.
+  # or weekly, never on push, and no Redis is involved. Since 17b cut M4.5
+  # every lane fields unit minds at the ROM (Class 0, the native stock mind)
+  # where it fielded the reflex controller — the report's `motor` and
+  # `minds.states_at_end` objects where `reflex` was.
   #
   # The absolutes are REPORT-ONLY here (D-H-8, D-16-19): this is
   # `ubuntu-latest`, a shared runner, and a shared runner's speed is not a
@@ -484,8 +487,10 @@ jobs:
   # blessed the file. (The first step fails on a correctness lane alone: the
   # sight differential, 16b cut J.1, asserts on every pair always.) The GitHub
   # runner never is that host, so here the delta gates the
-  # deterministic block alone, and with no linux file committed it passes
-  # after saying so. TACSIM_BASELINE_BLESS=1 re-blesses the file.
+  # deterministic block alone — for real since 17b cut M4.5, whose one bless
+  # was made on a Linux host (arena.linux.json, the owner's ruling of
+  # 2026-10-08), with the minds lane's four blocks folded in beside it.
+  # TACSIM_BASELINE_BLESS=1 re-blesses the file.
   #
   # scripts/harness-weekly.sh runs the same two cargo lines by hand with
   # TACSIM_ASSERT=1, which asserts the absolutes on the owner's own box
@@ -497,7 +502,8 @@ jobs:
   # TACSIM_WAKE_JITTER_MS (TACSIM_PULSES sizes the ground-pulse lane only;
   # TACSIM_MINDS_JITTER_MS and TACSIM_MINDS_JITTER_PER_MILLE the minds lane's
   # late wakes, 17b cut M4.2). The delta reads harness-arena.json, and the four
-  # harness-minds-<variant>.json once the baseline carries a `minds` block: an
+  # harness-minds-<variant>.json once the baseline's `minds` carries their
+  # blocks (17b cut M4.5's bless folds them, and refuses a stale one): an
   # arena knob at other than its default is a different run, and its delta says
   # so; TACSIM_LONG_RUN_S and TACSIM_PULSES size lanes the delta does not read.
   tacsim-harness:

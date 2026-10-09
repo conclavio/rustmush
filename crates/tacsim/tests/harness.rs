@@ -74,8 +74,8 @@
 //! `tacsim_harness_delta_against_the_committed_baseline`, reads the fresh CI-cohort
 //! report and the committed `tests/harness_baseline/arena.<os>.json` and compares
 //! them in two blocks: **the deterministic block** (the world, the substeps, the
-//! counters, the weapons, the perception and controller totals and peaks, the
-//! window peaks, the thresholds) exactly, and **the timing block** (the wake p50
+//! counters, the weapons, the perception and motor totals and peaks, the
+//! machines' states at the end, the window peaks, the thresholds) exactly, and **the timing block** (the wake p50
 //! and p99 and the window p99) only on the host that blessed the file, failing
 //! only on a fresh figure more than 20 per cent *slower*. `TACSIM_BASELINE_BLESS=1`
 //! writes the file from the fresh report instead. A report older than the test
@@ -121,8 +121,9 @@
 //! owner on 2026-09-25): the reach and the 300-unit target kept,
 //! `harness.max_share_ops_per_pulse` 768, the per-window lens 17.5 ms (20 ms
 //! since J.3c, the next paragraph) and the per-wake lens 12 ms, asserted by
-//! hand on the blessing host through `scripts/harness-weekly.sh` on every run
-//! since, and never in CI (billing-blocked, no `TACSIM_ASSERT`, no Linux
+//! hand on ALIEN18 (the owner's host) through `scripts/harness-weekly.sh` on
+//! every run since, and never in CI (billing-blocked, no `TACSIM_ASSERT`, and
+//! — until 17b cut M4.5, whose bless committed `arena.linux.json` — no Linux
 //! baseline); the first three asserted runs read per window p99 15.339, 14.057
 //! and 14.732 ms and per wake 8.099, 7.785 and 8.150 ms.
 //!
@@ -160,12 +161,15 @@
 //! opening round at any knob, **and**, at the lane's own defaults only, the span
 //! and the busiest minute pinned to the fight's own figures (the squads a side
 //! at Z.1; since 16b cut AP.2 the busiest minute one fewer and the span two
-//! fewer, the match ending at 111,250 ms before minute one's last marks; off
-//! the defaults the fight decides those two figures); its timing is
-//! **report-only**, printed beside the
+//! fewer, the match ending at 111,250 ms before minute one's last marks; since
+//! 17b cut M4.5, the fight at the ROM, the busiest minute the squads a side and
+//! the span one fewer, no end inside the window, both sides' first squads
+//! released; off the defaults the fight decides those two figures); its timing
+//! is **report-only**, printed beside the
 //! authored lane's 12 ms per wake and 20 ms per window. Its JSON
 //! (`<stem>-lance.<ext>`) is outside the delta. `z1_the_lance_lane_runs_small`,
-//! un-ignored, runs it at one lance a side for ten arena seconds with the
+//! un-ignored, runs it at one lance a side for fourteen arena seconds (ten
+//! until 17b cut M4.5: the ROM closes before it fires) with the
 //! any-knob checks asserted.
 //!
 //! **The Hold lane since 16b cut O.1** (16c N11; plan item 27). The lance
@@ -207,12 +211,44 @@
 //! input); one panic at the end under `TACSIM_ASSERT`. The fill variant's
 //! verdict over three idle-host weekly runs is the decision
 //! (`tacsim::match_::PRODUCTION_FILL_ENGINE`) 17b cut M4.3's flip reads; a
-//! `stock_ci` `held=no` on the blessing host is the owner's STOP before 17b
-//! cut M4.5. Its JSON, `<stem>-minds-<variant>.<ext>`, carries a
-//! deterministic `minds` block the delta compares only once the baseline
-//! carries one (blessed in 17b cut M4.5). `m4_2_the_minds_lane_runs_small`,
-//! un-ignored, runs the ceiling and the fill variants on sixteen hulls for
-//! five arena seconds with the deterministic checks asserted.
+//! `stock_ci` `held=no` on ALIEN18 (the owner's host) was to be the owner's
+//! STOP before 17b cut M4.5 — a precondition the owner WAIVED on 2026-10-08
+//! (the lenses are report-only on this file's Linux bless host). Its JSON,
+//! `<stem>-minds-<variant>.<ext>`, carries a deterministic `minds` block the
+//! delta compares once the baseline carries one — folded under the
+//! baseline's `minds` beside the arena report's own `minds.states_at_end`
+//! by 17b cut M4.5's one bless, which refuses to bless without all four
+//! fresh. `m4_2_the_minds_lane_runs_small`, un-ignored, runs the ceiling and
+//! the fill variants on sixteen hulls for five arena seconds with the
+//! deterministic checks asserted.
+//!
+//! **Every lane at the ROM since 17b cut M4.5** (the M4 row's (iv)). The
+//! arena lanes, the long run, the cost run and the lance lane field unit
+//! minds at the ROM ([`rom_terms`]: `Controller::Mind`, Class 0, native) where
+//! they fielded the reflex controller; the warm-up steps
+//! `Arena::step_settled`, and every measured wake's thinks are run and
+//! written inline right after the step, outside `Wake.ms` and before the
+//! snapshot ([`run_wakes`]). The report's `reflex` object is `motor` (the
+//! `ReflexConfig` facts and nine counters a block, `ticks` and `traces`
+//! gone), the state histogram is `minds.states_at_end` off
+//! `Arena::machine_state` (seven fixed leaves, `unknown` a literal nought),
+//! "the field decided something" reads the minds' thinks and landings, and
+//! the minds' own counters print on a report-only `harness_arena_minds`
+//! line. The span of control reads the minds' live orders joined to the
+//! tape ([`live_orders_by_issuer`]). The lance lane's W8 fact pins are
+//! re-pinned from its fight at the ROM ([`measure_lance`]) — a fight since 17b
+//! cut M4.5c's row cut, which keeps every contact not known friendly before a
+//! friend, so a ROM hull's eight rows hold the enemy though the eleven others
+//! of its side stand nearer (before it they were all its own side and nothing
+//! fired: STOP L, resolved by the owner's rulings of 2026-10-09). The
+//! baseline is blessed once on a Linux host (`arena.linux.json`; the owner's
+//! ruling) by the non-asserting path, procedure β (`docs/ops.md`'s
+//! *Blessing*): the lanes without `TACSIM_ASSERT`, then the delta with
+//! `TACSIM_BASELINE_BLESS=1` on the same build, under a `HOSTNAME`
+//! (`ccr-m4.5-linux-bless`) no later run carries — every cloud container reads
+//! `/etc/hostname`'s `vm`, and a blessed host a later run matches makes the
+//! timing gate live there — so the gate is dormant everywhere until the owner
+//! re-blesses on ALIEN18 (the owner's host).
 //!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
@@ -1841,14 +1877,18 @@ fn refusing_edges(grid: &[tacsim::arena::state::TerrainCell]) -> (u64, u64) {
 /// `tacsim::match_::custody_unit` over `definitions::to_tactical_unit` of its
 /// [`COHORT`] entry's spec and binding — the tracked hulls, the legged biped,
 /// the laser, the thermal sight, the jamming pod and the filter, with their
-/// modes, slope limits, silhouettes, facet tables and weapons as authored — on
-/// the reflex controller, gunnery 1. The harness-local tank, sight, weapon and
-/// profile this replaced are gone: a harness whose units had no locomotion ran
-/// the slope limit, the shoulder rule and the per-mode A\* cost in none of 300.
-/// Under [`Reach::Ci`] each sight is then scaled ([`scale_to_ci`]).
+/// modes, slope limits, silhouettes, facet tables and weapons as authored —
+/// gunnery 1, and **since 17b cut M4.5 every one a unit mind at the ROM**
+/// ([`rom_slot`]: `Controller::Mind` sealed `class_cap: Zero` on the native
+/// engine, so every think is the native stock mind at Class 0's row — what
+/// the reflex controller was before it). The harness-local tank, sight,
+/// weapon and profile this replaced are gone: a harness whose units had no
+/// locomotion ran the slope limit, the shoulder rule and the per-mode A\*
+/// cost in none of 300. Under [`Reach::Ci`] each sight is then scaled
+/// ([`scale_to_ci`]).
 ///
 /// Doc 16 §1 A2 is *300 units placed and moving, 24 of them fighting*, and with
-/// the reflex controller driving the field that has to be arranged rather than
+/// the minds driving the field that has to be arranged rather than
 /// hoped for: the fighting units stand in two lines [`LINE_GAP_CELLS`] either
 /// side of the centre, even units (red) west and odd (blue) east,
 /// [`LINE_PITCH_CELLS`] apart down each line from row `middle − 18`, each wanted
@@ -1857,8 +1897,9 @@ fn refusing_edges(grid: &[tacsim::arena::state::TerrainCell]) -> (u64, u64) {
 /// teammates in one blob is 132 operations a pass on its own. The seats are
 /// **frame sinks**, not pilots: doc 16 §1 A2 asks for connected sessions
 /// receiving output and the frame builder is a real cost, but no pilot issues
-/// an intent — a seated pilot on a `Reflex` unit is the state doc 16 §3.8's
-/// released seat leaves behind.
+/// an intent and none possesses its hull: a seat on a machine's hull is a
+/// frame sink, and the machine flies it (a released seat in production hands
+/// its hull to a mind, 17b cut M4.3; here the hull was never anyone else's).
 fn field(
     knobs: &Knobs,
     catalog: &Catalog,
@@ -1868,15 +1909,53 @@ fn field(
     Vec<tacsim::arena::state::CustodyUnit>,
     Vec<tacsim::arena::state::Pilot>,
 ) {
-    field_with(knobs, catalog, relief, reach, |n| FieldSlot {
+    field_with(knobs, catalog, relief, reach, rom_slot)
+}
+
+/// **The ROM's seal terms** (17b cut M4.5; lifted from 17b cut M4.2's minds
+/// lane): the fixture terms capped at Class 0 on the native engine, so
+/// `seal_for` writes class `Zero`, `Arena::mind_class` answers `Zero` and
+/// every think is handed to the ROM — the native stock mind at Class 0's row
+/// (8 contact rows, the lock's odds alone, one slot, 16 keys, a think every
+/// 1,000 ms; `ClassTable::STOCK`). No installer: the arena-wide fallback
+/// runner is the native stock mind. Every hull of every harness lane but the
+/// minds lane's authored slots flies on these terms.
+fn rom_terms() -> tacsim::match_::SealTerms {
+    tacsim::match_::SealTerms {
+        class_cap: tacsim::arena::core::CoreClass::Zero,
+        engine_for_minds: tacsim::arena::SealEngine::Native,
+        ..tacsim::match_::SealTerms::fixture()
+    }
+}
+
+/// **Unit number `n`'s slot at the ROM** (17b cut M4.5): its [`COHORT`] entry
+/// (`COHORT[(n / 2) % 8]`), `Controller::Mind`, [`rom_terms`], Standard
+/// Doctrine's own seal. [`field`]'s every slot and [`field_minds`]' every
+/// slot that is not authored.
+fn rom_slot(n: u32) -> FieldSlot {
+    FieldSlot {
         entry: COHORT
             .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
             .copied()
             .unwrap_or(content::LINE_TANK),
-        controller: tacsim::arena::state::Controller::Reflex,
-        terms: tacsim::match_::SealTerms::fixture(),
+        controller: tacsim::arena::state::Controller::Mind,
+        terms: rom_terms(),
         sealed_source: None,
-    })
+    }
+}
+
+/// **The ROM's think period**, milliseconds: Class 0's row of the stock class
+/// table (1,000 — the reflex's `decide_ms` it replaced in the warm-up
+/// arithmetic, so the warm-up still ends at `startup_ms + 1,000 + engaged_ms`,
+/// 11,500 ms). `Arena::new` lays down [`tacsim::arena::core::ClassTable::STOCK`],
+/// so this is the arena's own row; read here where a match's length is set
+/// before the arena exists. **The one source** the ROM lanes' warm-up
+/// arithmetic reads — [`open_field`]'s and [`measure_lance`]'s (17b cut
+/// M4.5's review: the lance lane read the arena's row beside it).
+fn rom_think_ms() -> i64 {
+    tacsim::arena::core::ClassTable::STOCK
+        .row(tacsim::arena::core::CoreClass::Zero)
+        .think_ms
 }
 
 /// **What one slot of a field is** (17b cut M4.2 factored it out of
@@ -1894,7 +1973,7 @@ struct FieldSlot {
 /// [`field`]'s body with each unit's slot answered by `slot_of(n)` — the
 /// arrangement, the seed, the ids, the teams and the seats are the same
 /// whatever the slot says, so the minds lane's field ([`field_minds`]) is the
-/// arena lane's with the controller and the terms swapped.
+/// arena lane's with the authored slots' terms swapped in.
 fn field_with(
     knobs: &Knobs,
     catalog: &Catalog,
@@ -2070,12 +2149,17 @@ fn blocked_causes_of(bytes: &[u8]) -> [u64; 4] {
 
 /// **One `ordered` line, as W8's counter reads it** (16b cut Y.2): the arena
 /// millisecond it landed at, who gave it — the pilot's own tank, `None` for the
-/// LLM seam — and the squad it names, by its word (`red-1`).
+/// LLM seam — and the squad it names, by its word (`red-1`). **Since 17b cut
+/// M4.5** also the unit it landed on and its time to live, which the span
+/// joins a mind's live order to ([`live_orders_by_issuer`]); on an
+/// `order_released` line the unit released and a time to live of nought.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OrderedLine {
     t_ms: i64,
     issuer: Option<ObjId>,
     squad: String,
+    unit: ObjId,
+    ttl_ms: u32,
 }
 
 /// **Every `ordered` line in a chunk** (16b cut Y.2), parsed whole: the line is
@@ -2096,10 +2180,18 @@ fn ordered_lines_of(bytes: &[u8]) -> Vec<OrderedLine> {
             })
         })
         .filter_map(|event| match event.kind {
-            tacsim::arena::ledger::EventKind::Ordered { issuer, squad, .. } => Some(OrderedLine {
+            tacsim::arena::ledger::EventKind::Ordered {
+                issuer,
+                squad,
+                unit,
+                ttl_ms,
+                ..
+            } => Some(OrderedLine {
                 t_ms: event.t_ms,
                 issuer,
                 squad: squad.to_string(),
+                unit,
+                ttl_ms,
             }),
             _ => None,
         })
@@ -2120,13 +2212,17 @@ fn released_lines_of(bytes: &[u8]) -> Vec<OrderedLine> {
             })
         })
         .filter_map(|event| match event.kind {
-            tacsim::arena::ledger::EventKind::OrderReleased { issuer, squad, .. } => {
-                Some(OrderedLine {
-                    t_ms: event.t_ms,
-                    issuer,
-                    squad: squad.to_string(),
-                })
-            }
+            tacsim::arena::ledger::EventKind::OrderReleased {
+                issuer,
+                squad,
+                unit,
+            } => Some(OrderedLine {
+                t_ms: event.t_ms,
+                issuer,
+                squad: squad.to_string(),
+                unit,
+                ttl_ms: 0,
+            }),
             _ => None,
         })
         .collect()
@@ -2214,9 +2310,94 @@ struct CommandFigures {
     orders: u64,
     /// The busiest issuer's orders in any sixty arena seconds.
     orders_per_commander_minute_max: u64,
-    /// The most squads under one issuer's live orders at the run's end
-    /// (`Arena::live_orders_by_issuer`, an arena-time figure).
+    /// The most squads under one issuer's live orders at the run's end, an
+    /// arena-time figure — since 17b cut M4.5 off the minds' live orders
+    /// joined to the tape ([`live_orders_by_issuer`]).
     span_max: usize,
+}
+
+/// **Whether [`live_orders_by_issuer`] reads a wreck's live order** (17b cut
+/// M4.5's review).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wrecks {
+    /// A wreck's mind row keeps the order it died under, and it is counted
+    /// until it expires: W8's span, as the reflex reader counted a wreck's row.
+    Counted,
+    /// Wrecks are passed over: the squads standing hulls hold live orders on.
+    Skipped,
+}
+
+/// **The squads under each issuer's live orders, off the minds** (17b cut
+/// M4.5; the orchestrator's ruling on STOP C): every live order a mind holds
+/// — `MindState.order` on a hull the mind flies, unexpired at the read
+/// (`expires_ms > now_ms`; wrecks INCLUDED under [`Wrecks::Counted`], as
+/// `Arena::live_orders_by_issuer` counted a wreck's reflex row: a wreck's mind
+/// row keeps the order it died under, and a wreck never lands, so its order
+/// never expires through `Arena::expire_mind_order` — hence the explicit
+/// deadline) — grouped by the
+/// issuer on that unit's LAST `ordered` line on the tape (orders are
+/// latest-wins), `None` filed under the commander of the squad the unit is
+/// in (the reflex reader's fallback, and `Arena::rekey_order`'s scope).
+///
+/// **The issuer is not mind-row state at this cut** (`FrameOrder` carries
+/// none), so it is read off the black box, and the join is ASSERTED: every
+/// live order has its line, naming the order's squad, and the line's
+/// millisecond plus its time to live is the order's deadline — so a span can
+/// never be read off a line that is not the order's. Harness-only; 17b cut
+/// M4.6's `Arena::live_orders_by_issuer` over mind rows must group exactly
+/// this way, or the lance lane's span pin moves.
+///
+/// `wrecks` [`Wrecks::Counted`] is W8's span; [`Wrecks::Skipped`] is the same
+/// join over the live orders standing hulls hold, which the lance lane's
+/// at-defaults pin reads to show its span rests on no wreck.
+fn live_orders_by_issuer(
+    arena: &tacsim::arena::state::Arena,
+    tape: &[OrderedLine],
+    wrecks: Wrecks,
+) -> BTreeMap<Option<ObjId>, std::collections::BTreeSet<String>> {
+    // The tape is in ledger order, so the last line a unit has is its latest.
+    let mut last: BTreeMap<ObjId, &OrderedLine> = BTreeMap::new();
+    for line in tape {
+        last.insert(line.unit, line);
+    }
+    let mut grouped: BTreeMap<Option<ObjId>, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for (unit, row) in &arena.minds {
+        if arena.unit(*unit).is_none_or(|state| {
+            state.controller != tacsim::arena::state::Controller::Mind
+                || (wrecks == Wrecks::Skipped && state.limits.wreck)
+        }) {
+            continue;
+        }
+        let Some(order) = row.order.as_ref() else {
+            continue;
+        };
+        if order.expires_ms <= arena.now_ms {
+            continue;
+        }
+        let line = last.get(unit).unwrap_or_else(|| {
+            panic!(
+                "W8: #{} holds a live order for {} (until {} ms) and no `ordered` line on the \
+                 tape names it",
+                unit.0, order.squad, order.expires_ms
+            )
+        });
+        assert!(
+            line.squad == order.squad.as_str()
+                && line.t_ms.saturating_add(i64::from(line.ttl_ms)) == order.expires_ms,
+            "W8: #{}'s live order ({} until {} ms) is not its last `ordered` line's: {line:?}",
+            unit.0,
+            order.squad,
+            order.expires_ms
+        );
+        let issuer = line
+            .issuer
+            .or_else(|| arena.squad_of(*unit).map(|roster| roster.commander));
+        grouped
+            .entry(issuer)
+            .or_default()
+            .insert(order.squad.to_string());
+    }
+    grouped
 }
 
 impl CommandFigures {
@@ -2235,8 +2416,7 @@ impl CommandFigures {
             "W8: every `ordered` line on the tape is read for the per-order figures"
         );
         let (orders, orders_per_commander_minute_max) = orders_on_tape(tape, &arena.squads);
-        let span_max = arena
-            .live_orders_by_issuer(arena.now_ms)
+        let span_max = live_orders_by_issuer(arena, tape, Wrecks::Counted)
             .values()
             .map(std::collections::BTreeSet::len)
             .max()
@@ -2379,10 +2559,13 @@ fn y2_the_orders_counter_counts_orders_and_not_unit_lines() {
             counts.ordered,
             lines
                 .iter()
-                .map(|(t_ms, issuer, squad)| OrderedLine {
+                .enumerate()
+                .map(|(at, (t_ms, issuer, squad))| OrderedLine {
                     t_ms: *t_ms,
                     issuer: issuer.map(ObjId),
                     squad: (*squad).to_string(),
+                    unit: ObjId(100 + u32::try_from(at).unwrap_or(0)),
+                    ttl_ms: 600_000,
                 })
                 .collect::<Vec<_>>(),
             "every line read back as written"
@@ -2698,13 +2881,17 @@ struct Field {
 /// The same generated relief as the ground-pulse baseline, converted into an
 /// `ArenaDefinition` through [`harness_move_cost`], with `TACSIM_UNITS` units of
 /// the fielded catalog ([`field`]) on it and `TACSIM_FIGHTING` of them seated,
-/// every one on the reflex controller, the tempo pinned `Engaged`.
+/// every one a unit mind at the ROM (17b cut M4.5; the reflex controller
+/// before it), the tempo pinned `Engaged`.
 ///
-/// The warm-up is the controller's own: every unit starts cold and the
-/// machine's first state brings it online, so the warm-up is over when arena
-/// time has passed `startup_ms + decide_ms` and a period, and it is asserted —
-/// a controller that started nothing would otherwise be measured driving an
-/// arena of cold tanks.
+/// The warm-up is the minds' own: every unit starts cold and its mind's first
+/// think brings it online — a ROM hull's first think falls at its stagger
+/// inside the first 1,000 ms and lands a substep later, and the startup
+/// completes `startup_ms` after the landing — so the warm-up is over when
+/// arena time has passed `startup_ms` plus the ROM's think period
+/// ([`rom_think_ms`], the reflex's `decide_ms` before it, the same 1,000) and
+/// a period, and it is asserted — a field of minds that started nothing would
+/// otherwise be measured driving an arena of cold tanks.
 ///
 /// The arena frame is the **window's own**: cell `(0, 0)` is at the origin,
 /// because `ArenaTerrain` puts the window's corner there.
@@ -2770,7 +2957,7 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     match_cfg.max_duration_ms = match_cfg.max_duration_ms.max(
         u32::try_from(
             i64::from(match_cfg.startup_ms)
-                .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
+                .saturating_add(rom_think_ms())
                 .saturating_add(i64::from(arena_cfg.tempo.engaged_ms))
                 .saturating_add(i64::from(knobs.long_run_s).saturating_mul(1_000))
                 .saturating_add(60_000),
@@ -2834,17 +3021,17 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
         clock: WakeClock::new(knobs),
         wall: 0,
         // The slope refusals over the whole run, the warm-up included: the
-        // controller plans its first routes there.
+        // minds' goals plan their first routes there.
         slope_refusals: 0,
         // 16b cut AF.2: no snapshots unless the lane opts in (`measure_arena`).
         snapshot_ms: None,
         last_snapshot_period: None,
     };
 
-    // ---- the warm-up: the controller starts them up ----
+    // ---- the warm-up: the minds start them up ----
     let warm_at = Instant::now();
     let warm_until = i64::from(match_cfg.startup_ms)
-        .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
+        .saturating_add(rom_think_ms())
         .saturating_add(period_ms);
     let warm_pulses = warm_up(&mut stepper, warm_until);
     let warm_ms = warm_at.elapsed().as_secs_f64() * 1_000.0;
@@ -2875,7 +3062,7 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     let killed_warming = arena.units.iter().filter(|unit| unit.limits.wreck).count();
     assert!(
         cold.is_empty(),
-        "{} units never came online: the reflex controller did not start the field up: {cold:?}",
+        "{} units never came online: the ROM did not start the field up: {cold:?}",
         cold.len()
     );
     if reach == Reach::Ci && sensor_cells() == SENSOR_CELLS && share_cells() == SHARE_CELLS {
@@ -2929,7 +3116,9 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
 /// 120 kept documents of a 300-unit field otherwise) and every other lane's
 /// timings are untouched in fact. Only [`measure_arena`] sets the cadence. The
 /// lance lane builds its own [`Stepper`] with `None` beside `slope_refusals`.
-/// Runs on every `cargo test`, on a sixteen-unit field.
+/// Runs on every `cargo test`, on a sixteen-unit field — since 17b cut M4.5
+/// sixteen ROM minds through [`field`], warmed up settled and asserted
+/// online by [`open_field`].
 #[test]
 fn af2_a_stepper_open_field_builds_takes_no_snapshot() {
     let mut knobs = Knobs::from_env();
@@ -2946,16 +3135,23 @@ fn af2_a_stepper_open_field_builds_takes_no_snapshot() {
 /// at wall nought, then a wake at every `next_due_ms` until arena time reaches
 /// `warm_until`, every chunk counted and acknowledged as [`run_wakes`] does.
 /// Answers how many pulses it took.
+///
+/// **Settled since 17b cut M4.5** (`Arena::step_settled`): every pulse's
+/// thinks are run and written before the next, so the warm-up ends with no
+/// think outstanding and the first measured wake settles none of the
+/// warm-up's inside its own `Wake.ms` (a bare `Arena::step` leaves the last
+/// substep's thinks to the next step's head). The warm-up's timing is
+/// discarded, so where the inline thinks fall costs nothing here.
 fn warm_up(stepper: &mut Stepper, warm_until: i64) -> u32 {
     let arena = &mut stepper.arena;
-    let out = arena.step(0, &[], &[]);
+    let out = arena.step_settled(0, &[], &[]);
     for chunk in &out.ledger_chunks {
         stepper.counts.absorb(&chunk.bytes);
     }
     stepper.wall = stepper.clock.next(out.next_due_ms);
     let mut warm_pulses = 1_u32;
     while arena.now_ms < warm_until {
-        let out = arena.step(stepper.wall, &[], &[]);
+        let out = arena.step_settled(stepper.wall, &[], &[]);
         stepper.slope_refusals += u64::from(out.motor.slope_refusals);
         for chunk in &out.ledger_chunks {
             stepper.counts.absorb(&chunk.bytes);
@@ -2968,7 +3164,7 @@ fn warm_up(stepper: &mut Stepper, warm_until: i64) -> u32 {
 }
 
 /// **What one measured window of wakes produced** (16b cut U.2): the per-wake
-/// record, the substep partition, the perception and controller counters as a
+/// record, the substep partition, the perception and motor counters as a
 /// total and as the worst wake, and whether the match ended inside it.
 struct Run {
     wakes: Vec<Wake>,
@@ -2979,8 +3175,17 @@ struct Run {
     lagged_pulses: u32,
     perception_total: tacsim::arena::perception::PerceptionCounters,
     peak: tacsim::arena::perception::PerceptionCounters,
-    reflex_total: tacsim::arena::motor::MotorCounters,
-    reflex_peak: tacsim::arena::motor::MotorCounters,
+    /// The machines' counters as a total (17b cut M4.5: `MotorCounters`, the
+    /// reflex's counters renamed, without `ticks`, `in_state` and `ordered`)
+    /// — the step's own and the delivered thinks' faults, as
+    /// `Arena::step_settled` folds them.
+    motor_total: tacsim::arena::motor::MotorCounters,
+    /// The worst wake of each motor counter the report carries.
+    motor_peak: tacsim::arena::motor::MotorCounters,
+    /// **Each wake's inline delivery, wall milliseconds** (17b cut M4.5): the
+    /// step's thinks run and written after the step and outside `Wake.ms`
+    /// ([`run_wakes`]). Report-only (`harness_arena_minds`).
+    settle_ms: Vec<f64>,
     /// **One sample per snapshot taken** (16b cut AF.2), empty unless the
     /// stepper opted in ([`Stepper::snapshot_ms`]).
     snapshots: Vec<SnapshotSample>,
@@ -3013,8 +3218,22 @@ struct SnapshotSample {
 /// (default nought), so the record can say what the overshoot's remainder
 /// substeps cost. `next_due_ms` is on the substep lattice, so a wake is at most
 /// one substep. On the relief lanes there is no scripted order and no scripted
-/// fire: what steers, closes, locks and fires is the reflex controller alone,
-/// and `script` answers nothing.
+/// fire: what steers, closes, locks and fires is the units' minds alone (the
+/// ROM, 17b cut M4.5; the reflex controller before it), and `script` answers
+/// nothing.
+///
+/// **The minds' thinks, settled outside the timer** (17b cut M4.5; the
+/// orchestrator's Q9). `Arena::step` leaves its last substep's thinks
+/// collected and unanswered (`StepOutput::thinks`), and `Snapshot::encode`
+/// refuses an arena that holds one. So after each step — timed ALONE into
+/// `Wake.ms`, the minds lane's own definition of a wake — the thinks are run
+/// inline and written (`run_batch_inline`, `Arena::deliver_answers`, exactly
+/// `Arena::step_settled`'s body, the faults folded into the wake's counters
+/// as it folds them), outside the timer and before the snapshot, the sample
+/// and the script's next read; their wall time is kept per wake
+/// ([`Run::settle_ms`], report-only). The deterministic block is
+/// `step_settled`'s (17b cut M4.1's gate: inline ≡ pooled), and the lens is
+/// not inflated by think time production spends on its pool's threads.
 ///
 /// **The script** (16b cut Z.1, the lance lane's commanders): before every wake
 /// `script` is handed the arena at the arena millisecond that wake's phase 2
@@ -3045,10 +3264,11 @@ fn run_wakes(
         // asserted against; the windows carry the per-window figure.
         perception_total: PerceptionCounters::default(),
         peak: PerceptionCounters::default(),
-        // 16b cut N.1: the controller's cost, as a running total and as the worst
+        // 16b cut N.1: the machines' cost, as a running total and as the worst
         // wake. `harness.max_path_queries_per_pulse` is asserted against the peak.
-        reflex_total: tacsim::arena::motor::MotorCounters::default(),
-        reflex_peak: tacsim::arena::motor::MotorCounters::default(),
+        motor_total: tacsim::arena::motor::MotorCounters::default(),
+        motor_peak: tacsim::arena::motor::MotorCounters::default(),
+        settle_ms: Vec::new(),
         snapshots: Vec::new(),
         documents: Vec::new(),
     };
@@ -3057,8 +3277,26 @@ fn run_wakes(
         let before = arena.now_ms;
         let intents = script(arena);
         let at = Instant::now();
-        let out = arena.step(stepper.wall, &[], &intents);
+        let mut out = arena.step(stepper.wall, &[], &intents);
         let ms = at.elapsed().as_secs_f64() * 1_000.0;
+        // 17b cut M4.5: the step's thinks, run inline and written outside the
+        // timer — `Arena::step_settled`'s body, so nothing is left unanswered
+        // for the snapshot, the sample or the script.
+        let settle_at = Instant::now();
+        let thinks = std::mem::take(&mut out.thinks);
+        let settled = arena.deliver_answers(tacsim::arena::mind::run_batch_inline(&thinks));
+        out.motor.mind_faults = out.motor.mind_faults.saturating_add(settled.faults);
+        out.motor.mind_overflows = out.motor.mind_overflows.saturating_add(settled.overflows);
+        run.settle_ms
+            .push(settle_at.elapsed().as_secs_f64() * 1_000.0);
+        // A pulse that ended the match hands out no thinks (nothing is
+        // written after the end), and the loop stops on it below.
+        assert!(
+            out.ended.is_some() || arena.awaiting.is_empty(),
+            "every think the step collected is written before the next read: {} hulls \
+             still awaiting",
+            arena.awaiting.len()
+        );
         run.wakes.push(Wake {
             ms,
             now_ms: arena.now_ms,
@@ -3113,22 +3351,23 @@ fn run_wakes(
         peak.detected = peak.detected.max(out.perception.detected);
         peak.classified = peak.classified.max(out.perception.classified);
         peak.lost = peak.lost.max(out.perception.lost);
-        run.reflex_total.absorb(&out.motor);
-        let reflex_peak = &mut run.reflex_peak;
-        reflex_peak.ticks = reflex_peak.ticks.max(out.motor.ticks);
-        reflex_peak.path_queries = reflex_peak.path_queries.max(out.motor.path_queries);
-        reflex_peak.path_deferred = reflex_peak.path_deferred.max(out.motor.path_deferred);
-        reflex_peak.path_cells = reflex_peak.path_cells.max(out.motor.path_cells);
-        reflex_peak.path_failures = reflex_peak.path_failures.max(out.motor.path_failures);
-        reflex_peak.traces = reflex_peak.traces.max(out.motor.traces);
-        reflex_peak.intents = reflex_peak.intents.max(out.motor.intents);
-        reflex_peak.shots = reflex_peak.shots.max(out.motor.shots);
-        reflex_peak.slope_refusals = reflex_peak.slope_refusals.max(out.motor.slope_refusals);
+        run.motor_total.absorb(&out.motor);
+        // The report's nine motor counters, each wake's worst (17b cut M4.5:
+        // `ticks` retired with the reflex's tick, `traces` reported nowhere —
+        // a mind takes none; the minds' own counters are the minds lane's).
+        let motor_peak = &mut run.motor_peak;
+        motor_peak.path_queries = motor_peak.path_queries.max(out.motor.path_queries);
+        motor_peak.path_deferred = motor_peak.path_deferred.max(out.motor.path_deferred);
+        motor_peak.path_cells = motor_peak.path_cells.max(out.motor.path_cells);
+        motor_peak.path_failures = motor_peak.path_failures.max(out.motor.path_failures);
+        motor_peak.intents = motor_peak.intents.max(out.motor.intents);
+        motor_peak.shots = motor_peak.shots.max(out.motor.shots);
+        motor_peak.slope_refusals = motor_peak.slope_refusals.max(out.motor.slope_refusals);
         // 16b cut AI.1 (16c `B-84`): the two new counters, each wake's worst.
-        reflex_peak.path_refused_unchanged = reflex_peak
+        motor_peak.path_refused_unchanged = motor_peak
             .path_refused_unchanged
             .max(out.motor.path_refused_unchanged);
-        reflex_peak.corner_refusals = reflex_peak.corner_refusals.max(out.motor.corner_refusals);
+        motor_peak.corner_refusals = motor_peak.corner_refusals.max(out.motor.corner_refusals);
         run.substeps.push(out.substeps);
         #[allow(clippy::cast_precision_loss)]
         run.frames.push(out.frames.len() as f64);
@@ -3295,6 +3534,81 @@ impl SnapshotFigures {
     }
 }
 
+/// **A machine's doctrine state, by its word** (17b cut M4.5): the reflex's
+/// state enum, which the stock mind's memory and `MindState.doctrine_state`
+/// reuse until 17b cut M4.6 moves it (`MachineState`, with `Unknown`) — one
+/// alias, so that move is one line here.
+type MachineState = tacsim::arena::reflex::ReflexState;
+
+/// **The leaves [`machine_states`] carries** (17b cut M4.5): seven —
+/// [`MachineState::ALL`]'s six words and `unknown`, the word 17b cut M4.6's
+/// `MachineState` appends to `ALL` (code 6) for a hull whose seal is not
+/// Standard Doctrine's. Fixed at seven across that cut, so the blessed
+/// `minds.states_at_end` neither gains nor loses a leaf there.
+const MACHINE_STATE_LEAVES: usize = 7;
+
+// `ALL` names every leaf but `unknown` until 17b cut M4.6, and every leaf
+// after it: never more leaves than the report carries.
+const _: () = assert!(MachineState::ALL.len() <= MACHINE_STATE_LEAVES);
+
+/// **The machines' states at the read, as seven fixed leaves** (17b cut
+/// M4.5; the plan's `minds.states_at_end` "off the doctrine state"): every
+/// unit's [`tacsim::arena::state::Arena::machine_state`] — the mind row's
+/// cached `doctrine_state` (`Startup` before its first landing), `Disabled`
+/// for a wreck or a disabled hull — counted into the leaf its code names,
+/// never a decode of a memory; a pilot's hull counts in none. The leaves are
+/// named off [`MachineState::ALL`] in code order, and the one `ALL` does not
+/// name yet is the literal `"unknown"`, which no hull can count in until 17b
+/// cut M4.6 (every hull of the arena lanes is the ROM): blessed now so that
+/// cut adds no leaf. Always all seven, in this order, zeros included.
+///
+/// **What 17b cut M4.6 changes here: the [`MachineState`] alias line, and
+/// nothing else.** The counts are sized by [`MACHINE_STATE_LEAVES`] and
+/// named by `ALL`, not by six and a literal: once `ALL` carries `Unknown`
+/// (code 6, its word `unknown` — any other word moves the blessed leaf) it
+/// names the seventh leaf itself, the literal is overwritten, and an
+/// `Unknown` hull counts in leaf 6 with no edit to this body.
+///
+/// The old `reflex.states_at_end` counted the reflex's ROWS (a wreck's row
+/// in `Disabled` as the reflex moved it there); this counts hulls under a
+/// machine, `disabled` being every wreck and every disabled hull.
+fn machine_states(
+    arena: &tacsim::arena::state::Arena,
+) -> [(&'static str, u32); MACHINE_STATE_LEAVES] {
+    let mut leaves = [("unknown", 0_u32); MACHINE_STATE_LEAVES];
+    for (leaf, state) in leaves.iter_mut().zip(MachineState::ALL) {
+        leaf.0 = state.as_str();
+    }
+    for unit in &arena.units {
+        if let Some(leaf) = arena
+            .machine_state(unit.id)
+            .and_then(|state| leaves.get_mut(usize::from(state.code())))
+        {
+            leaf.1 += 1;
+        }
+    }
+    leaves
+}
+
+/// [`machine_states`] as `word=count` pairs, space-separated, for a line.
+fn machine_states_words(states: &[(&'static str, u32); MACHINE_STATE_LEAVES]) -> String {
+    states
+        .iter()
+        .map(|(word, count)| format!("{word}={count}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// [`machine_states`] as the report's object (key order is the map's).
+fn machine_states_json(states: &[(&'static str, u32); MACHINE_STATE_LEAVES]) -> serde_json::Value {
+    serde_json::json!(
+        states
+            .iter()
+            .map(|(word, count)| ((*word).to_string(), *count))
+            .collect::<BTreeMap<String, u32>>()
+    )
+}
+
 /// **The arena measurement** (16b cut A.2 through 16b cut U.2): [`open_field`],
 /// then [`run_wakes`] for `TACSIM_ARENA_S` arena seconds after the warm-up, and
 /// the report.
@@ -3385,8 +3699,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         lagged_pulses,
         perception_total,
         peak,
-        reflex_total,
-        reflex_peak,
+        motor_total,
+        motor_peak,
+        settle_ms,
         snapshots,
         documents: _,
     } = run;
@@ -3520,10 +3835,10 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     // has edges steeper than both the tracked and the legged limits, the cohort
     // carried both limits onto the field, and the planner and the follower
     // refused edges by the slope rule. A motion-level `too_steep` stop is
-    // reported and not asserted: every unit is the controller's, the planner
-    // refuses steep edges and `hold_routeless` stops a routeless machine before
-    // motion reaches one, so such a stop records a controller defect and a
-    // working controller may journal none.
+    // reported and not asserted: every unit is a machine's (a mind's since
+    // 17b cut M4.5), the planner refuses steep edges and `hold_routeless`
+    // stops a routeless machine before motion reaches one, so such a stop
+    // records a motor defect and a working motor may journal none.
     assert!(
         relief_edges_45 > 0 && relief_edges_70 > 0,
         "the relief refuses nothing: {relief_edges_45} edges past 45 % and \
@@ -3722,78 +4037,93 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         arena.units.iter().filter(|unit| unit.disabled).count()
     );
     // **16b cut N.1**, the same rule the loaded-arena assertions follow: a
-    // controller that never decided, never searched and never fired would make
-    // the pulse cheaper and pass every timing bound in this file.
+    // field whose machines never decided, never searched and never fired would
+    // make the pulse cheaper and pass every timing bound in this file. **17b
+    // cut M4.5**: what decides is a mind, so "decided something" is that the
+    // minds thought and their answers landed (the reflex's `ticks` retired
+    // with it). `intents` still counts every intent a machine put through
+    // `Arena::apply_machine_intents` — a mind's landing among them, and the
+    // motor's own heading and speed — and `shots` a mind's cited `Fire` and a
+    // slot's own; both are kept, and neither alone says a mind decided.
     assert!(
-        reflex_total.ticks > 0 && reflex_total.intents > 0,
-        "the reflex controller never decided anything: {reflex_total:?}"
+        motor_total.thinks > 0 && motor_total.landings > 0,
+        "no mind ever thought and landed an answer: {motor_total:?}"
     );
     assert!(
-        reflex_total.path_queries > 0,
-        "the controller never searched for a route: {reflex_total:?}"
+        motor_total.intents > 0,
+        "no machine ever put an intent through: {motor_total:?}"
     );
     assert!(
-        reflex_total.shots > 0,
-        "no controller ever pulled a trigger: {reflex_total:?}"
+        motor_total.path_queries > 0,
+        "no machine ever searched for a route: {motor_total:?}"
     );
-    let distribution = arena.reflex.distribution();
-    let engaging = distribution
-        .get(usize::from(
-            tacsim::arena::reflex::ReflexState::Engage.code(),
-        ))
-        .copied()
-        .unwrap_or(0)
-        .saturating_add(
-            distribution
-                .get(usize::from(
-                    tacsim::arena::reflex::ReflexState::Approach.code(),
-                ))
-                .copied()
-                .unwrap_or(0),
-        );
+    assert!(
+        motor_total.shots > 0,
+        "no machine ever pulled a trigger: {motor_total:?}"
+    );
+    let states = machine_states(&arena);
+    let state_count = |word: &str| {
+        states
+            .iter()
+            .find(|(named, _)| *named == word)
+            .map_or(0, |(_, count)| *count)
+    };
+    let engaging = state_count(MachineState::Engage.as_str())
+        .saturating_add(state_count(MachineState::Approach.as_str()));
     assert!(
         engaging > 0,
-        "nobody was fighting at the end of the run: {distribution:?}"
+        "nobody was fighting at the end of the run: {states:?}"
     );
 
+    // 17b cut M4.5: the motor's facts (`[tacsim.arena.reflex]`, which keeps
+    // its name: `decide_ms` is the motor tick's period) and its counters —
+    // the report's nine, `ticks` and `traces` gone (a mind takes no trace;
+    // the counter dies with its one writer at M4.6).
     println!(
-        "harness_arena_reflex: cohort={cohort} waypoint_nodes={waypoint_nodes} decide_ms={} path_max_cells={} max_path_queries={} repath_ms={} ticks={} intents={} shots={} path_queries={} path_deferred={} path_cells={} path_failures={} traces={} slope_refusals={} path_refused_unchanged={} corner_refusals={} peak_ticks={} peak_path_queries={} peak_path_cells={} peak_traces={}",
+        "harness_arena_motor: cohort={cohort} waypoint_nodes={waypoint_nodes} decide_ms={} path_max_cells={} max_path_queries={} repath_ms={} intents={} shots={} path_queries={} path_deferred={} path_cells={} path_failures={} slope_refusals={} path_refused_unchanged={} corner_refusals={} peak_intents={} peak_shots={} peak_path_queries={} peak_path_cells={}",
         arena_cfg.reflex.decide_ms,
         arena_cfg.reflex.path_max_cells,
         arena_cfg.reflex.max_path_queries,
         arena_cfg.reflex.repath_ms,
-        reflex_total.ticks,
-        reflex_total.intents,
-        reflex_total.shots,
-        reflex_total.path_queries,
-        reflex_total.path_deferred,
-        reflex_total.path_cells,
-        reflex_total.path_failures,
-        reflex_total.traces,
-        reflex_total.slope_refusals,
-        reflex_total.path_refused_unchanged,
-        reflex_total.corner_refusals,
-        reflex_peak.ticks,
-        reflex_peak.path_queries,
-        reflex_peak.path_cells,
-        reflex_peak.traces
+        motor_total.intents,
+        motor_total.shots,
+        motor_total.path_queries,
+        motor_total.path_deferred,
+        motor_total.path_cells,
+        motor_total.path_failures,
+        motor_total.slope_refusals,
+        motor_total.path_refused_unchanged,
+        motor_total.corner_refusals,
+        motor_peak.intents,
+        motor_peak.shots,
+        motor_peak.path_queries,
+        motor_peak.path_cells
+    );
+    // 17b cut M4.5 (the orchestrator's Q6): the minds' own figures, printed
+    // and in no compared leaf — the minds lane's blocks own them (from its
+    // own runs, on the pool), so the baseline never carries one concept
+    // twice. `settle_ms` is the inline delivery `run_wakes` times outside the
+    // lens.
+    let mut settle_sorted = settle_ms;
+    settle_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    println!(
+        "harness_arena_minds: cohort={cohort} engine=rom class=0 thinks={} landings={} faults={} overflows={} cond_fires={} settle_ms_p50={:.3} settle_ms_p99={:.3} (report-only)",
+        motor_total.thinks,
+        motor_total.landings,
+        motor_total.mind_faults,
+        motor_total.mind_overflows,
+        motor_total.cond_fires,
+        quantile(&settle_sorted, 500),
+        quantile(&settle_sorted, 990)
     );
     println!(
-        "harness_arena_reflex_states: cohort={cohort} {}",
-        tacsim::arena::reflex::ReflexState::ALL
-            .iter()
-            .enumerate()
-            .map(|(at, state)| format!(
-                "{}={}",
-                state.as_str(),
-                distribution.get(at).copied().unwrap_or(0)
-            ))
-            .collect::<Vec<_>>()
-            .join(" ")
+        "harness_arena_minds_states: cohort={cohort} {}",
+        machine_states_words(&states)
     );
     // **16b cut Y.2** (doc 16 §2 W8): the span of control and the order rate,
     // at the harness's own `[tacsim.command]` (the defaults, as `arena_cfg` is),
-    // off the tape the ledger streamed and the reflex rows at the end. On a
+    // off the tape the ledger streamed and the minds' live orders at the end
+    // (17b cut M4.5: joined to the tape, `live_orders_by_issuer`). On a
     // cohort with the LLM off and no human every figure but the two bounds and
     // the squad count is nought, which is the truthful measurement; the
     // enforcement itself is `tests/cockpit.rs`'s. Read after the measured loop.
@@ -3883,7 +4213,7 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
     );
 
     let report = serde_json::json!({
-        "what": "16b cut U.2: `Arena::step` at the harness's scale, the fielded catalog on the reflex controller, woken where the task wakes it, with the cell-probe and jam-check bounds asserted",
+        "what": "17b cut M4.5: `Arena::step` at the harness's scale, the fielded catalog flown by unit minds at the ROM, woken where the task wakes it, the thinks delivered inline outside the lens, with the cell-probe and jam-check bounds asserted",
         "cohort": cohort,
         "world": {
             "units": placed,
@@ -4034,7 +4364,11 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
                 "lost": perception_total.lost,
             },
         },
-        "reflex": {
+        // 17b cut M4.5: the `reflex` object, renamed `motor` with the
+        // `ReflexConfig` facts kept (the config keeps its name) and the nine
+        // counters both blocks carry — `ticks` retired, `traces` reported
+        // nowhere (a mind takes none), no mind counter (the minds lane's).
+        "motor": {
             "waypoint_nodes": waypoint_nodes,
             "waypoint_pitch_cells": WAYPOINT_PITCH,
             "decide_ms": arena_cfg.reflex.decide_ms,
@@ -4042,41 +4376,37 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             "max_path_queries_per_window": arena_cfg.reflex.max_path_queries,
             "repath_ms": arena_cfg.reflex.repath_ms,
             "total": {
-                "ticks": reflex_total.ticks,
-                "intents": reflex_total.intents,
-                "shots": reflex_total.shots,
-                "path_queries": reflex_total.path_queries,
-                "path_deferred": reflex_total.path_deferred,
-                "path_cells": reflex_total.path_cells,
-                "path_failures": reflex_total.path_failures,
-                "traces": reflex_total.traces,
-                "slope_refusals": reflex_total.slope_refusals,
+                "intents": motor_total.intents,
+                "shots": motor_total.shots,
+                "path_queries": motor_total.path_queries,
+                "path_deferred": motor_total.path_deferred,
+                "path_cells": motor_total.path_cells,
+                "path_failures": motor_total.path_failures,
+                "slope_refusals": motor_total.slope_refusals,
                 // 16b cut AI.1 (16c `B-84`).
-                "path_refused_unchanged": reflex_total.path_refused_unchanged,
-                "corner_refusals": reflex_total.corner_refusals,
+                "path_refused_unchanged": motor_total.path_refused_unchanged,
+                "corner_refusals": motor_total.corner_refusals,
             },
             "peak_per_pulse": {
-                "ticks": reflex_peak.ticks,
-                "path_queries": reflex_peak.path_queries,
-                "path_deferred": reflex_peak.path_deferred,
-                "path_cells": reflex_peak.path_cells,
-                "path_failures": reflex_peak.path_failures,
-                "traces": reflex_peak.traces,
-                "intents": reflex_peak.intents,
-                "shots": reflex_peak.shots,
-                "slope_refusals": reflex_peak.slope_refusals,
+                "intents": motor_peak.intents,
+                "shots": motor_peak.shots,
+                "path_queries": motor_peak.path_queries,
+                "path_deferred": motor_peak.path_deferred,
+                "path_cells": motor_peak.path_cells,
+                "path_failures": motor_peak.path_failures,
+                "slope_refusals": motor_peak.slope_refusals,
                 // 16b cut AI.1 (16c `B-84`).
-                "path_refused_unchanged": reflex_peak.path_refused_unchanged,
-                "corner_refusals": reflex_peak.corner_refusals,
+                "path_refused_unchanged": motor_peak.path_refused_unchanged,
+                "corner_refusals": motor_peak.corner_refusals,
             },
-            "states_at_end": tacsim::arena::reflex::ReflexState::ALL
-                .iter()
-                .enumerate()
-                .map(|(at, state)| (
-                    state.as_str().to_string(),
-                    distribution.get(at).copied().unwrap_or(0)
-                ))
-                .collect::<BTreeMap<String, u32>>(),
+        },
+        // 17b cut M4.5: the machines' states at the end, off the doctrine
+        // state (`machine_states`, seven fixed leaves). The baseline's
+        // `minds` object also carries the minds lane's four variant blocks
+        // beside this one, merged in at the bless (`bless_baseline`); the
+        // fresh arena report never does.
+        "minds": {
+            "states_at_end": machine_states_json(&states),
         },
         // 16b cut Y.2 (doc 16 §2 W8): reported, and not in the deterministic
         // block — the committed baseline is untouched by decision.
@@ -4209,9 +4539,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         // window — so the per-wake figure the harness asserts is at most the
         // per-window figure the arena enforces.
         assert!(
-            reflex_peak.path_queries <= knobs.max_path_queries_per_pulse,
+            motor_peak.path_queries <= knobs.max_path_queries_per_pulse,
             "path queries in one wake {} is past harness.max_path_queries_per_pulse {}",
-            reflex_peak.path_queries,
+            motor_peak.path_queries,
             knobs.max_path_queries_per_pulse
         );
         // **16b cut AI.1** (16c `B-84`): and what they cost. A search counts
@@ -4220,9 +4550,9 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
         // so the queries bound alone bounds nothing about a wake's search time.
         // A threshold, never a throttle: the arena searches what it searches.
         assert!(
-            reflex_peak.path_cells <= knobs.max_path_cells_per_pulse,
+            motor_peak.path_cells <= knobs.max_path_cells_per_pulse,
             "A* cells expanded in one wake {} is past harness.max_path_cells_per_pulse {}",
-            reflex_peak.path_cells,
+            motor_peak.path_cells,
             knobs.max_path_cells_per_pulse
         );
         // **16b cut Y.2** (doc 16 §2 W8): the span of control and the orders
@@ -4590,6 +4920,14 @@ fn baseline_path() -> std::path::PathBuf {
 /// integer-generated relief (16b cut U.1), so it is the same on every host: a
 /// difference in any of them is a change in what the arena *did*, never in how
 /// fast a box did it. `world` carries the wake count as `world.pulses`.
+///
+/// **17b cut M4.5** moved the controller's three objects with the field onto
+/// minds at the ROM: `reflex.total` and `reflex.peak_per_pulse` are
+/// `motor.total` and `motor.peak_per_pulse` (nine counters each, `ticks` and
+/// `traces` gone), and `reflex.states_at_end` is `minds.states_at_end` (seven
+/// leaves, off `Arena::machine_state`). Never `minds` whole: the baseline's
+/// `minds` also carries the minds lane's four variant blocks, which the
+/// fresh arena report never does and [`minds_delta`] compares on their own.
 const DETERMINISTIC_OBJECTS: [&str; 9] = [
     "world",
     "substeps",
@@ -4597,9 +4935,9 @@ const DETERMINISTIC_OBJECTS: [&str; 9] = [
     "weapons",
     "perception.total",
     "perception.peak_per_pulse",
-    "reflex.total",
-    "reflex.peak_per_pulse",
-    "reflex.states_at_end",
+    "motor.total",
+    "motor.peak_per_pulse",
+    "minds.states_at_end",
 ];
 
 /// **The deterministic block's single fields**: the cohort's word, the wake
@@ -4911,7 +5249,14 @@ fn iso_utc(secs: i64) -> String {
 /// file, and the comparison that follows reads it back. **17b cut M4.2**:
 /// with `minds` (the four variants' blocks, [`minds_blocks_beside`]) the
 /// document carries them under `minds`; without, it carries none and the
-/// delta's minds path skips (17b cut M4.5's bless is the one that folds them).
+/// delta's minds path skips.
+///
+/// **A merge since 17b cut M4.5**: the fresh arena report carries its own
+/// `minds` object (`minds.states_at_end`, a compared object), so the bless
+/// KEEPS it and inserts — or, with `None`, removes — only the four variant
+/// words ([`MINDS_VARIANT_WORDS`]) under it; nothing else of `minds` is the
+/// bless's to write. The delta's bless refuses to write without all four
+/// fresh variant files (see the delta test), so `None` is a test's path.
 fn bless_baseline(
     path: &std::path::Path,
     fresh: &serde_json::Value,
@@ -4930,13 +5275,23 @@ fn bless_baseline(
                 "host": this_host(),
             }),
         );
-        match minds {
-            Some(minds) => {
-                map.insert("minds".to_string(), minds.clone());
+        let mut merged = map
+            .get("minds")
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for word in MINDS_VARIANT_WORDS {
+            merged.remove(word);
+        }
+        if let Some(variants) = minds.and_then(serde_json::Value::as_object) {
+            for (word, block) in variants {
+                merged.insert(word.clone(), block.clone());
             }
-            None => {
-                map.remove("minds");
-            }
+        }
+        if merged.is_empty() {
+            map.remove("minds");
+        } else {
+            map.insert("minds".to_string(), serde_json::Value::Object(merged));
         }
     }
     let mut text = serde_json::to_string_pretty(&doc).expect("the baseline encodes");
@@ -5024,19 +5379,23 @@ fn tacsim_harness_delta_against_the_committed_baseline() {
     }
     let path = baseline_path();
     if bless_requested(std::env::var("TACSIM_BASELINE_BLESS").ok().as_deref()) {
-        // 17b cut M4.2: the minds lane's four blocks fold in only when all
-        // four fresh files are beside the arena report (17b cut M4.5's one
-        // bless); a partial set folds none and the delta's minds path skips.
-        let minds = minds_blocks_beside(&knobs.json);
-        bless_baseline(&path, &fresh, minds.as_ref());
+        // 17b cut M4.5: the minds lane's four blocks fold in at every bless,
+        // or the bless FAILS — a variant file missing, unreadable or older
+        // than this binary is refused before anything is written, so a
+        // baseline is never blessed without them or off an earlier build's
+        // (17b cut M4.2 wrote a block-less file and passed).
+        let minds = minds_blocks_beside(&knobs.json, binary_built).unwrap_or_else(|refused| {
+            panic!(
+                "harness_delta: the bless needs all four fresh minds reports beside the \
+                 arena report (run tacsim_harness_arena_minds on this build first), and \
+                 refused:\n{}",
+                refused.join("\n")
+            )
+        });
+        bless_baseline(&path, &fresh, Some(&minds));
         println!(
-            "harness_delta: blessed {} ({})",
-            path.display(),
-            if minds.is_some() {
-                "with the four minds blocks"
-            } else {
-                "without a minds block: not all four minds reports are beside the arena report"
-            }
+            "harness_delta: blessed {} (with the four minds blocks)",
+            path.display()
         );
     }
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -5066,7 +5425,7 @@ fn tacsim_harness_delta_against_the_committed_baseline() {
         println!("{line}");
     }
     // 17b cut M4.2: the minds lane's blocks, once the baseline carries them.
-    let (minds_lines, minds_differences) = minds_delta(&baseline, &knobs.json);
+    let (minds_lines, minds_differences) = minds_delta(&baseline, &knobs.json, binary_built);
     for line in &minds_lines {
         println!("{line}");
     }
@@ -5244,10 +5603,11 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
                 "ms_p99": p99, "traces_peak": 3, "cell_probes_peak": 4,
                 "horizon_probes_peak": 9, "jam_checks_peak": 5, "share_ops_peak": 6,
             },
-            "reflex": {
-                "total": { "ticks": 7 }, "peak_per_pulse": { "ticks": 1 },
-                "states_at_end": { "engage": 2 },
+            // 17b cut M4.5: the motor's two objects and the machines' states.
+            "motor": {
+                "total": { "intents": 7 }, "peak_per_pulse": { "intents": 1 },
             },
+            "minds": { "states_at_end": { "engage": 2, "unknown": 0 } },
             "tempos": [{ "p50_ms": 1.0, "p99_ms": p99, "max_ms": p99 * 3.0 }],
             "setup_ms": { "warm_up": 100.0 },
             "thresholds": {
@@ -6808,11 +7168,13 @@ async fn measure_fan_out(knobs: &Knobs) {
 //
 // **The commanders.** Each side's commander is its own lowest unit id — which
 // is also its `red-1` / `blue-1` commander — and every order of that side names
-// it as `issuer`, so `Arena::live_orders_by_issuer` files the side's squads
-// under one issuer and W8's span is a real figure (an `issuer: None` order is
-// filed under each squad's own commander and reads a span of one whatever the
-// script does). The script ([`lance_schedule`]) is a table ([`LANCE_TABLE`]) so
-// cut Z.2 can extend it with `Screen`, `Support` and a release.
+// it as `issuer`, so the harness's [`live_orders_by_issuer`] (since 17b cut
+// M4.5 the minds' live orders, each joined to its unit's last `ordered` line
+// on the tape for the issuer) files the side's squads under one issuer and
+// W8's span is a real figure (an `issuer: None` order is filed under each
+// squad's own commander and reads a span of one whatever the script does).
+// The script ([`lance_schedule`]) is a table ([`LANCE_TABLE`]) so cut Z.2 can
+// extend it with `Screen`, `Support` and a release.
 //
 // **17b cut L.1** (doc 17 §4, D-UM-52): each side's orders are authored by one
 // scripted lead character in `by` ([`RED_LEAD`] / [`BLUE_LEAD`], ids no unit of
@@ -6828,19 +7190,21 @@ async fn measure_fan_out(knobs: &Knobs) {
 // on every standing unit of every squad; that the span never reads more squads
 // than the script holds under a live order; and that the sides fired. At the
 // lane's **defaults** (seed, `TACSIM_LANCE_UNITS`, `TACSIM_LANCE_ARENA_S`,
-// jitter nought — the field line's `at_defaults`) also the exact figures: the
-// span and the busiest commander minute each read the squads a side, each
-// commander's release is on the tape as `order_released` lines for its first
+// jitter nought — the field line's `at_defaults`) also the exact figures the
+// defaults' fight gives: the span and the busiest commander minute, each
+// commander's release on the tape as `order_released` lines for its first
 // squad when that squad has a standing machine at the ninetieth arena second
-// (16b cut Z.2; 16b cut AE.1 re-stated it through the wrecks: since every
-// machine pays its own row, `blue-1` is all wrecks by then at the defaults and
-// a release refuses a wreck, so at least one line, red's), and the tape carries
-// the opening round and one full minute a side at every scripted wake whose
-// squad had a standing machine (seven orders at the defaults, pinned) — two
-// fact pins hold the defaults to that fight, so the script landed and no figure
-// is vacuous. Off the defaults a lance may be wiped out,
-// reach its crossroads or take a mark a wake late, so the fight decides those
-// figures and only the bounds bind them. **Timing is report-only** (the lead's rule
+// (16b cut Z.2; 16b cut AE.1 re-stated it through the wrecks, since a release
+// refuses a wreck), and the opening round and one full minute a side on the
+// tape at every scripted wake whose squad had a standing machine — fact pins
+// (the end, the first squads' standings at the marks) hold the defaults to
+// that fight, so the script landed and no figure is vacuous. Since 17b cut
+// M4.5 the fight is the ROM's (the span the squads a side less one, the
+// busiest minute the squads a side, eight orders, both first squads
+// released: `measure_lance` has the figures and their history). Off the
+// defaults a lance may be wiped out, reach its crossroads or take a mark a
+// wake late, so the fight decides those figures and only the bounds bind them.
+// **Timing is report-only** (the lead's rule
 // for this cohort): the per-wake p99 is printed beside 12 ms and the per-window
 // p99 beside 20 ms, the authored lane's lenses, and nothing is asserted about
 // either. Its JSON (`<stem>-lance.<ext>`) is not read by the delta.
@@ -7146,41 +7510,80 @@ fn lance_intents(
         .collect()
 }
 
-/// **How many supporters' rows target their charge's target** (16b cut Z.2), as
-/// `(supporters, on_target)`: every machine under a live `Support` whose charge
-/// is another unit, and those whose own row targets the object the charge's
-/// row targets. A report figure, read once off the last wake and never
-/// asserted: whether a supporter holds its charge's target is the fight's.
-fn supporters_on_charge(arena: &tacsim::arena::state::Arena) -> (usize, usize) {
+/// **How many supporters' minds target their charge's target** (16b cut Z.2;
+/// onto minds by 17b cut M4.5), as `(supporters, on_target, charge_unheld)`:
+/// every mind under a live `Support` (`MindState.order`'s
+/// `MindObjective::Support`, unexpired at the read — a self-charge was
+/// re-keyed to `Engage` when written, 17b cut L.2, so every one names another
+/// unit), and those whose memory's target is the object the charge's memory
+/// targets — each memory's `target` row resolved in its own hull's scope.
+/// The charge is the supporter's own row for it (`of`), which is `None`
+/// while the supporter does not hold the charge classified (17b cut M1b.3):
+/// such a supporter counts, can never be on target, and is counted again as
+/// `charge_unheld`. A wreck is no supporter: its mind row keeps the order it
+/// died under and a memory nobody updates. A report figure, read once off
+/// the last wake and never asserted: whether a supporter holds its charge's
+/// target is the fight's.
+///
+/// **What `charge_unheld` means since 17b cut M4.5c**: a charge NOT HELD by
+/// the supporter's frame — the order's `of` is `None`, or the frame has lost
+/// the contact it names — and nothing else. The row cut seats the standing
+/// order's contact (`Support`'s charge) before every other row, so a charge
+/// the frame holds is always among the mind's view rows and is never counted
+/// here for a row the cut dropped (before that cut a supporter crowded by
+/// hostiles could lose its held charge from its view, and this figure could
+/// not see it). At the lane's defaults no `Support` is given in the 120
+/// seconds, so it reads nought (17b cut M4.5's fight).
+fn supporters_on_charge(arena: &tacsim::arena::state::Arena) -> (usize, usize, usize) {
+    use tacsim::arena::perception::MindObjective;
+    // The object a hull's mind targets: its memory's row, in its own scope.
+    let target_of = |unit: ObjId| -> Option<ObjId> {
+        let row = arena.minds.get(&unit)?;
+        let id = tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
+            &row.memory,
+        ))
+        .target?;
+        arena.contacts.get(unit, id).map(|held| held.target)
+    };
     let mut supporters = 0_usize;
     let mut on_target = 0_usize;
-    for (unit, row) in arena.reflex.all() {
-        let Some(standing) = row.order.as_ref() else {
+    let mut charge_unheld = 0_usize;
+    for (unit, row) in &arena.minds {
+        if arena.unit(*unit).is_none_or(|state| {
+            state.controller != tacsim::arena::state::Controller::Mind || state.limits.wreck
+        }) {
+            continue;
+        }
+        let Some(order) = row.order.as_ref() else {
             continue;
         };
-        let tacsim::deliberation::Objective::Support { of } = standing.order.objective else {
+        let MindObjective::Support { of } = order.objective else {
             continue;
         };
-        if of == unit || standing.expired_at(arena.now_ms) {
+        if order.expires_ms <= arena.now_ms {
             continue;
         }
         supporters += 1;
-        let charge = arena
-            .reflex
-            .unit(of)
-            .and_then(|charge| charge.target)
-            .map(|(_, target)| target);
-        if charge.is_some() && row.target.map(|(_, target)| target) == charge {
+        let Some(charge) = of
+            .and_then(|id| arena.contacts.get(*unit, id))
+            .map(|held| held.target)
+        else {
+            charge_unheld += 1;
+            continue;
+        };
+        let charges_target = target_of(charge);
+        if charges_target.is_some() && target_of(*unit) == charges_target {
             on_target += 1;
         }
     }
-    (supporters, on_target)
+    (supporters, on_target, charge_unheld)
 }
 
 /// **The lance lane** (16b cut Z.1): [`measure_lance`] at `TACSIM_LANCE_UNITS`
 /// (24) for `TACSIM_LANCE_ARENA_S` (120) arena seconds, JSON at
-/// `<stem>-lance.<ext>`; W8 asserted under `TACSIM_ASSERT`, and equal to the
-/// squads a side at the lane's defaults; timing report-only.
+/// `<stem>-lance.<ext>`; W8 asserted under `TACSIM_ASSERT`, and at the lane's
+/// defaults pinned to the defaults' own fight (at the ROM since 17b cut M4.5:
+/// [`measure_lance`]); timing report-only.
 #[test]
 #[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
 fn tacsim_harness_lance() {
@@ -7200,6 +7603,18 @@ fn hold_lane_requested(value: Option<&str>) -> bool {
 /// `ended=` among them) and its goal cost — the machines doctrine governs
 /// (under `Engage`, a `Support` off station, or a refused call) drive to the
 /// spot, and that search is what it costs.
+///
+/// **On minds since 17b cut M4.5, and under STOP A.** The lane fields the
+/// lance lane's ROM minds ([`rom_terms`]); but the Hold mode never reaches a
+/// production think — no view carries the spot and the stock mind has no
+/// Hold arm (STOP A, held on the reflex in `tests/reflex.rs` until the cut
+/// that decides it) — so its machines are NOT driven to the spot by the
+/// Hold objective, and its goal cost is the minds' own fight at Hold's
+/// rule, not the spot's search it was built to price. It still runs the
+/// lance lane's shape at `MatchMode::Hold` and prints every line (the
+/// `ended=` word, the goal cost, the states); it asserts what it still can
+/// — nothing, as before: no claim about the Hold objective is one a mind can
+/// make yet, and the lance lane's fact pins are the Skirmish fight's.
 ///
 /// **Not `#[ignore]`d, and flag-gated instead**: every ignored test in this file
 /// is run by `scripts/harness-weekly.sh` and the CI `tacsim-harness` job, under
@@ -7244,8 +7659,9 @@ fn the_hold_lane_is_off_unless_its_flag_says_1() {
 }
 
 /// **The lance lane, small and un-ignored** (16b cut Z.1): eight units — one
-/// lance a side — for ten arena seconds on the default seed at jitter nought,
-/// its JSON under the system temp directory. It proves the lane runs: the
+/// lance a side — for fourteen arena seconds (ten until 17b cut M4.5, below)
+/// on the default seed at jitter nought, its JSON under the system temp
+/// directory. It proves the lane runs: the
 /// lines print, the opening round landed on both squads under their own
 /// commanders, and the report is the `-lance` sibling. It asserts whatever
 /// `TACSIM_ASSERT` says, so the lane's any-knob checks — W8's bounds, the tape
@@ -7254,6 +7670,47 @@ fn the_hold_lane_is_off_unless_its_flag_says_1() {
 /// knobs are off the lane's defaults, so the exact figures do not (and timing
 /// is never asserted). It boots the production roster with the proving ground
 /// once, which is most of its cost.
+///
+/// **The window re-derived at 17b cut M4.5, the claim kept** (the M4.4
+/// ruling 1 discipline). The reflex fired at anything in its weapon's reach;
+/// the ROM's shot is gated by its one condition slot, at the lock's odds (a
+/// think's `Fire` cites the slot, which also fires on its own), so it closes
+/// first. The two lances muster 54 cells — 540 m — apart
+/// ([`LANCE_RED_COLUMN`], [`LANCE_BLUE_COLUMN`]), and on this field the
+/// slot's odds clear at about 400 m (the first shot's `range_cm` reads
+/// 40,444): the lances must close some 140 m between them, which at the
+/// ROM's approach takes them past the old window — at ten seconds (21,500 ms)
+/// all eight stood in `approach` and nothing had fired. Measured at the
+/// defaults of this smoke: the first `fired` line is at 23,529 ms, 12,029 ms
+/// after the opening round at 11,500, and every hull of both lances has fired
+/// once by 24,206 ms (12,706 ms after it). The window is whole arena seconds
+/// from the 11,500 ms start, so thirteen (to 24,500 ms) is the least that
+/// holds every hull's first shot, and fourteen (to 25,500 ms) keeps one ROM
+/// think period (1,000 ms) beyond it, so a fight that moves by one think
+/// still fires inside the window rather than failing on it. The claim — the
+/// lances fired (`fired > 0`) — is unchanged and still discriminates: at ten
+/// seconds it fails. Fourteen is still far short of the release at
+/// [`LANCE_RELEASE_MS`] (the `released=0` check below).
+///
+/// **The lattice the window and the first shots fall on.** At jitter nought
+/// every wake ends on the 250 ms substep lattice (`substep_ms=250`), so the
+/// run stops exactly at the 11,500 ms start plus whole seconds — 25,500 ms
+/// here. A ROM hull thinks on its own Class 0 grid, its stagger in
+/// `[0, 1,000)` plus whole seconds (`Arena::grid_at` at the class row's
+/// 1,000 ms), and a think's answer lands one substep (250 ms) later, where its
+/// cited `Fire` is applied: every first shot of this smoke is a landing.
+/// The first, #100001's at 23,529 ms, is its think at 23,279 (stagger 279)
+/// landed; the last hull's first, #100006's at 24,206 ms, its think at 23,956
+/// (stagger 956) — each hull's every cited shot falls at the same millisecond
+/// of its second. So a fight that moves moves each first shot by whole think
+/// periods on its hull's grid: by one, the last to at most 25,206 ms — inside
+/// fourteen seconds' 25,500 and past thirteen's 24,500, which is why the
+/// window keeps the one period beyond the least that holds. **17b cut
+/// M4.5c's row cut does not move this smoke** (measured again after it: the
+/// first shot 23,529 ms, every hull's first by 24,206): a hull here holds at
+/// most seven contacts — three friends and four enemies — never more than its
+/// eight rows, and a view that truncates nothing is the old cut byte for
+/// byte.
 #[test]
 fn z1_the_lance_lane_runs_small() {
     let mut knobs = Knobs::from_env();
@@ -7271,7 +7728,7 @@ fn z1_the_lance_lane_runs_small() {
         &knobs,
         &LanceKnobs {
             units: 8,
-            arena_s: 10,
+            arena_s: 14,
             mode: tacsim::arena::MatchMode::Skirmish,
         },
     );
@@ -7280,7 +7737,7 @@ fn z1_the_lance_lane_runs_small() {
         "harness_lance_command:",
         "harness_lance_wakes:",
         "harness_lance_window:",
-        "harness_lance_reflex_states:",
+        "harness_lance_minds_states:",
         "harness_lance_weapons:",
         "harness_lance_perception_total:",
         "harness_lance_thresholds:",
@@ -7328,7 +7785,7 @@ fn z1_the_lance_lane_runs_small() {
     assert_eq!(stem, "harness-lance");
     assert!(report.json.exists(), "{}", report.json.display());
 
-    // **16b cut Z.2**: the smoke's ten seconds reach no release — the line
+    // **16b cut Z.2**: the smoke's fourteen seconds reach no release — the line
     // says so — and the table cycles, read off the script this field would be
     // given over seven minutes: one lance a side, so its one squad is stepped
     // every minute through the five arms and back to the first, and released
@@ -7428,6 +7885,8 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
                 t_ms: order.at_ms,
                 issuer: Some(issuer_of(order.squad.team)),
                 squad: order.squad.to_string(),
+                unit: issuer_of(order.squad.team),
+                ttl_ms: LANCE_ORDER_MS,
             })
             .collect()
     };
@@ -7518,6 +7977,216 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
     assert_eq!(orders_on_tape(&tape(&paired), &two).1, 2);
 }
 
+/// **One mind's standing order, written straight onto its row** (17b cut
+/// M4.5's review), for the span's join tests: `squad`'s `Hold` until
+/// `expires_ms`, no fire restriction.
+fn standing_order(squad: &str, expires_ms: i64) -> tacsim::arena::perception::FrameOrder {
+    tacsim::arena::perception::FrameOrder {
+        squad: smol_str::SmolStr::new(squad),
+        objective: tacsim::arena::perception::MindObjective::Hold,
+        hold_fire: false,
+        max_range_band: None,
+        expires_ms,
+    }
+}
+
+/// One hand-written `ordered` line for the span's join tests.
+fn tape_line(
+    t_ms: i64,
+    issuer: Option<ObjId>,
+    squad: &str,
+    unit: ObjId,
+    ttl_ms: u32,
+) -> OrderedLine {
+    OrderedLine {
+        t_ms,
+        issuer,
+        squad: squad.to_string(),
+        unit,
+        ttl_ms,
+    }
+}
+
+/// **The span's join, branch by branch** (17b cut M4.5's review; the
+/// orchestrator's ruling on STOP C): [`live_orders_by_issuer`] over a real
+/// arena — the lance smoke's field, two lances of four opened at arena
+/// millisecond nought ([`lance_field_arena`]) — whose mind rows carry orders
+/// written by hand, against a tape written by hand. The branches, each a hull
+/// of the field:
+///
+/// * `red-1`'s second hull holds a live order whose LAST line names no
+///   issuer: filed under `red-1`'s commander (the `None` fallback), and an
+///   earlier line of its own with another issuer and another deadline is not
+///   the one joined (orders are latest-wins);
+/// * `red-1`'s third hull holds an order whose deadline is the read's own
+///   millisecond, and no line: not live, so never joined and never refused;
+/// * `red-1`'s fourth hull holds no order, and a line of its own: the tape
+///   alone is no live order;
+/// * `blue-1`'s second hull is a WRECK holding a live order, its line naming
+///   `blue-1`'s commander: counted (a wreck keeps the order it died under, as
+///   the reflex reader counted a wreck's row), and the only `blue-1` hull that
+///   holds one — so the `blue-1` group is the wreck's alone;
+/// * `blue-1`'s third hull is flown by a pilot, holding a live order and no
+///   line: not a mind's order, so never joined and never refused.
+///
+/// The figure — one squad under each commander, nothing under the hull's
+/// earlier issuer — and, with the wrecks skipped ([`Wrecks::Skipped`]),
+/// `red-1`'s group alone. The three refusals the join's assert makes are
+/// pinned by the three `#[should_panic]` tests after this one.
+#[test]
+fn m4_5_the_span_joins_each_live_order_to_its_last_ordered_line() {
+    use tacsim::arena::state::{Controller, Team};
+    let mut arena = lance_field_arena(8);
+    assert_eq!(arena.now_ms, 0, "the field is opened, never stepped");
+    let roster = |team: Team| {
+        arena
+            .squads
+            .iter()
+            .find(|roster| roster.id.team == team)
+            .cloned()
+            .expect("one lance a side")
+    };
+    let (red, blue) = (roster(Team::Red), roster(Team::Blue));
+    assert_eq!((red.units.len(), blue.units.len()), (4, 4));
+    assert_eq!(
+        (red.id.to_string(), blue.id.to_string()),
+        ("red-1".to_string(), "blue-1".to_string())
+    );
+    let (none_issuer, expired, unordered) = (red.units[1], red.units[2], red.units[3]);
+    let (wreck, piloted) = (blue.units[1], blue.units[2]);
+    for (unit, order) in [
+        (none_issuer, Some(standing_order("red-1", 90_000))),
+        (expired, Some(standing_order("red-1", 0))),
+        (unordered, None),
+        (wreck, Some(standing_order("blue-1", 30_000))),
+        (piloted, Some(standing_order("blue-1", 60_000))),
+    ] {
+        arena
+            .minds
+            .get_mut(&unit)
+            .expect("every lance hull is a mind")
+            .order = order;
+    }
+    arena.unit_mut(wreck).expect("the wreck").limits.wreck = true;
+    arena
+        .unit_mut(piloted)
+        .expect("the piloted hull")
+        .controller = Controller::Pilot;
+    let tape = vec![
+        // Another issuer and another deadline, superseded by the line after.
+        tape_line(-5_000, Some(red.units[3]), "red-1", none_issuer, 50_000),
+        tape_line(-2_000, Some(red.commander), "red-1", unordered, 10_000),
+        tape_line(0, Some(blue.commander), "blue-1", wreck, 30_000),
+        tape_line(0, None, "red-1", none_issuer, 90_000),
+    ];
+    let grouped = live_orders_by_issuer(&arena, &tape, Wrecks::Counted);
+    let expected: BTreeMap<Option<ObjId>, std::collections::BTreeSet<String>> = [
+        (Some(red.commander), ["red-1".to_string()].into()),
+        (Some(blue.commander), ["blue-1".to_string()].into()),
+    ]
+    .into();
+    assert_eq!(
+        grouped, expected,
+        "the `None` issuer filed under red-1's commander off the hull's last line, the wreck's \
+         live order counted under blue-1's, nothing else joined"
+    );
+    // The same join with the wrecks skipped: red-1's group alone, the wreck's
+    // order never read.
+    assert_eq!(
+        live_orders_by_issuer(&arena, &tape, Wrecks::Skipped),
+        [(Some(red.commander), ["red-1".to_string()].into())].into(),
+        "with the wrecks skipped blue-1's group, the wreck's alone, is gone"
+    );
+    // blue-1's group is the wreck's order alone: the same hull flown by a
+    // pilot is never read, and the group goes with it.
+    arena.unit_mut(wreck).expect("the wreck").controller = Controller::Pilot;
+    let without = live_orders_by_issuer(&arena, &tape, Wrecks::Counted);
+    assert_eq!(
+        without.get(&Some(blue.commander)),
+        None,
+        "blue-1's group was the wreck's order alone"
+    );
+}
+
+/// **The join refuses a live order with no line** (17b cut M4.5's review):
+/// a mind holds a live order and the tape names only another hull — the span
+/// can never be read off nothing.
+#[test]
+#[should_panic(expected = "and no `ordered` line on the tape names it")]
+fn m4_5_the_span_s_join_refuses_a_live_order_with_no_line() {
+    use tacsim::arena::state::Team;
+    let mut arena = lance_field_arena(8);
+    let red = arena
+        .squads
+        .iter()
+        .find(|roster| roster.id.team == Team::Red)
+        .cloned()
+        .expect("one lance a side");
+    arena.minds.get_mut(&red.units[1]).expect("a mind").order =
+        Some(standing_order("red-1", 90_000));
+    let tape = vec![tape_line(
+        0,
+        Some(red.commander),
+        "red-1",
+        red.units[2],
+        90_000,
+    )];
+    let _ = live_orders_by_issuer(&arena, &tape, Wrecks::Counted);
+}
+
+/// **The join refuses a line that is not the order's** (17b cut M4.5's
+/// review): the hull's last line names its squad but its millisecond plus its
+/// time to live is not the order's deadline — the span can never be read off
+/// a line that is not the order's.
+#[test]
+#[should_panic(expected = "is not its last `ordered` line's")]
+fn m4_5_the_span_s_join_refuses_a_line_that_is_not_the_order_s() {
+    use tacsim::arena::state::Team;
+    let mut arena = lance_field_arena(8);
+    let red = arena
+        .squads
+        .iter()
+        .find(|roster| roster.id.team == Team::Red)
+        .cloned()
+        .expect("one lance a side");
+    arena.minds.get_mut(&red.units[1]).expect("a mind").order =
+        Some(standing_order("red-1", 90_000));
+    let tape = vec![tape_line(
+        0,
+        Some(red.commander),
+        "red-1",
+        red.units[1],
+        60_000,
+    )];
+    let _ = live_orders_by_issuer(&arena, &tape, Wrecks::Counted);
+}
+
+/// **The join refuses a line of another squad** (17b cut M4.5's review): the
+/// hull's last line carries the order's deadline but names another squad —
+/// the span can never file an order under a squad its line does not name.
+#[test]
+#[should_panic(expected = "is not its last `ordered` line's")]
+fn m4_5_the_span_s_join_refuses_a_line_of_another_squad() {
+    use tacsim::arena::state::Team;
+    let mut arena = lance_field_arena(8);
+    let red = arena
+        .squads
+        .iter()
+        .find(|roster| roster.id.team == Team::Red)
+        .cloned()
+        .expect("one lance a side");
+    arena.minds.get_mut(&red.units[1]).expect("a mind").order =
+        Some(standing_order("red-1", 90_000));
+    let tape = vec![tape_line(
+        0,
+        Some(red.commander),
+        "red-2",
+        red.units[1],
+        90_000,
+    )];
+    let _ = live_orders_by_issuer(&arena, &tape, Wrecks::Counted);
+}
+
 /// What [`measure_lance`] answers, for the smoke and the lane.
 struct LanceReport {
     /// Every `harness_lance_*` line, as printed.
@@ -7534,15 +8203,117 @@ struct LanceReport {
     ordered: Vec<OrderedLine>,
 }
 
+/// **Unit `n` of the lance field** (16b cut Z.1's muster; lifted out of
+/// [`measure_lance`] by 17b cut M4.5 so [`lance_field_arena`] fields the
+/// same hull): `ObjId(100_000 + n)`, red for an even `n` and blue for an odd,
+/// the CI cohort's entry (`COHORT[(n / 2) % 8]`) built at the authored reach,
+/// mustered on [`LANCE_RED_COLUMN`] heading east or [`LANCE_BLUE_COLUMN`]
+/// heading west in the fan-out lane's row alternation, a unit mind at the ROM
+/// ([`rom_terms`]), no pilot and no seat.
+fn lance_unit(catalog: &Catalog, n: u32) -> tacsim::arena::state::CustodyUnit {
+    use tacsim::arena::state::{Controller, Team};
+    let id = ObjId(100_000 + n);
+    let team = if n.is_multiple_of(2) {
+        Team::Red
+    } else {
+        Team::Blue
+    };
+    let entry = COHORT
+        .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
+        .copied()
+        .unwrap_or(content::LINE_TANK);
+    let key = CanonicalId::new(entry).expect("a canonical entry id");
+    let spec = catalog.specs.get(&key).expect("the cohort entry's spec");
+    let binding = catalog
+        .bindings
+        .get(&key)
+        .expect("the cohort entry's binding");
+    let cells = tacsim::definitions::unit::to_tactical_unit(spec, binding, id)
+        .expect("the cohort entry builds a unit");
+    // The fan-out lane's alternation: slot one on row 97, then two rows
+    // either side of it — 95, 99, 93, 101, … — a clear row between each pair.
+    let slot = i64::from(n / 2);
+    let row = LANCE_ROW + if slot % 2 == 1 { -1 } else { 1 } * 2 * ((slot + 1) / 2);
+    let (column, heading_mdeg) = if team == Team::Red {
+        (LANCE_RED_COLUMN, 90_000)
+    } else {
+        (LANCE_BLUE_COLUMN, 270_000)
+    };
+    let pose = mush_sim::data::Pose {
+        x_cm: i64::from(column) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+        y_cm: row * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+        // `Arena::new` sets z off the cell (16b cut X.6).
+        z_cm: 0,
+        heading_mdeg,
+        posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
+            .expect("an empty posture"),
+    };
+    tacsim::match_::custody_unit(
+        catalog,
+        cells,
+        id,
+        team,
+        pose,
+        1,
+        Controller::Mind,
+        0,
+        &rom_terms(),
+    )
+    .expect("the ROM's terms seal")
+}
+
+/// **The lance field, opened and never stepped** (17b cut M4.5's review): the
+/// shipped proving ground and `units` hulls of [`lance_unit`] dealt into
+/// lances of four, at arena millisecond nought — the lance smoke's field
+/// without its run, for a test that needs a real arena's squads and mind rows
+/// and nothing the arena does. The production roster is booted once per test
+/// binary (its fielded catalog and the ground kept), so a call costs the
+/// arena's open alone.
+fn lance_field_arena(units: u32) -> tacsim::arena::state::Arena {
+    use tacsim::arena::state::{Arena, CustodyOut};
+    static BOOTED: std::sync::OnceLock<(Catalog, tacsim::arena::state::ArenaDefinition)> =
+        std::sync::OnceLock::new();
+    let (catalog, definition) = BOOTED.get_or_init(|| {
+        let tw = TestWorld::with_modules(fan_out_roster());
+        let catalog = fielded_catalog(&tw);
+        let definition = tacsim::match_::definition_for(
+            tw.world(),
+            &smol_str::SmolStr::new(tacsim::match_::PROVING_GROUND),
+        )
+        .expect("the proving ground's ground builds")
+        .expect("the proving ground is defined");
+        (catalog, definition)
+    });
+    Arena::new(
+        CustodyOut {
+            definition: definition.clone(),
+            units: (0..units).map(|n| lance_unit(catalog, n)).collect(),
+            pilots: Vec::new(),
+            resolution: tacsim::match_::resolution_for(catalog),
+            seed: DEFAULT_SEED,
+            mode: tacsim::arena::MatchMode::Skirmish,
+        },
+        &tacsim::config::ArenaConfig {
+            squad_size: 4,
+            ..tacsim::config::ArenaConfig::default()
+        },
+        &tacsim::config::MatchConfig::default(),
+        &tacsim::config::SensorsConfig::default(),
+    )
+    .expect("the lance field opens on the proving ground")
+}
+
 /// **The lance measurement** (16b cut Z.1; 16c N6).
 ///
 /// 1. The production roster ([`fan_out_roster`]) with the boot packs on, the
 ///    fielded catalog off it and the shipped proving ground through
 ///    `tacsim::match_::definition_for` — the `ArenaDefinition` the lobby opens.
-/// 2. `lance.units` units built through `tacsim::match_::custody_unit` by the
-///    CI cohort's rule (`COHORT[(n / 2) % 8]`, team `n % 2`) at the authored
-///    reach, every one on the reflex controller, no pilot and no seat, mustered
-///    on [`LANCE_RED_COLUMN`] and [`LANCE_BLUE_COLUMN`].
+/// 2. `lance.units` units of [`lance_unit`]: built through
+///    `tacsim::match_::custody_unit` by the CI cohort's rule
+///    (`COHORT[(n / 2) % 8]`, team `n % 2`) at the authored reach, every one
+///    a unit mind at the ROM (17b cut M4.5, [`rom_terms`]; the reflex
+///    controller before it), no pilot and no seat, mustered on
+///    [`LANCE_RED_COLUMN`] and [`LANCE_BLUE_COLUMN`].
 /// 3. The arena at the default `[tacsim.arena]` (`squad_size` four), the tempo
 ///    pinned `Engaged`, warmed up as the relief lanes are ([`warm_up`]).
 /// 4. [`run_wakes`] for `lance.arena_s` arena seconds with the script handing
@@ -7551,7 +8322,7 @@ struct LanceReport {
 #[allow(clippy::too_many_lines)]
 fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     use tacsim::arena::clock::Tempo as ArenaTempo;
-    use tacsim::arena::state::{Arena, Controller, CustodyOut, Power, Team};
+    use tacsim::arena::state::{Arena, CustodyOut, Power, Team};
     use tacsim::config::{ArenaConfig, MatchConfig};
 
     assert!(
@@ -7588,55 +8359,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     }
 
     // ---- (2) the units ----
-    let mut units = Vec::new();
-    for n in 0..lance.units {
-        let id = ObjId(100_000 + n);
-        let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
-        let entry = COHORT
-            .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
-            .copied()
-            .unwrap_or(content::LINE_TANK);
-        let key = CanonicalId::new(entry).expect("a canonical entry id");
-        let spec = catalog.specs.get(&key).expect("the cohort entry's spec");
-        let binding = catalog
-            .bindings
-            .get(&key)
-            .expect("the cohort entry's binding");
-        let cells = tacsim::definitions::unit::to_tactical_unit(spec, binding, id)
-            .expect("the cohort entry builds a unit");
-        // The fan-out lane's alternation: slot one on row 97, then two rows
-        // either side of it — 95, 99, 93, 101, … — a clear row between each pair.
-        let slot = i64::from(n / 2);
-        let row = LANCE_ROW + if slot % 2 == 1 { -1 } else { 1 } * 2 * ((slot + 1) / 2);
-        let (column, heading_mdeg) = if team == Team::Red {
-            (LANCE_RED_COLUMN, 90_000)
-        } else {
-            (LANCE_BLUE_COLUMN, 270_000)
-        };
-        let pose = mush_sim::data::Pose {
-            x_cm: i64::from(column) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
-            y_cm: row * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
-            // `Arena::new` sets z off the cell (16b cut X.6).
-            z_cm: 0,
-            heading_mdeg,
-            posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
-                .expect("an empty posture"),
-        };
-        units.push(
-            tacsim::match_::custody_unit(
-                &catalog,
-                cells,
-                id,
-                team,
-                pose,
-                1,
-                Controller::Reflex,
-                0,
-                &tacsim::match_::SealTerms::fixture(),
-            )
-            .expect("the fixture terms seal"),
-        );
-    }
+    let units: Vec<_> = (0..lance.units).map(|n| lance_unit(&catalog, n)).collect();
 
     // ---- (3) the arena ----
     let arena_cfg = ArenaConfig {
@@ -7696,9 +8419,13 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         snapshot_ms: None,
         last_snapshot_period: None,
     };
+    // The relief lanes' warm-up arithmetic off the one source they read
+    // (17b cut M4.5: [`rom_think_ms`], the ROM's think period, where the
+    // 1,000 ms `decide_ms` was), so the opening round is still at 11,500 ms
+    // and every mark below with it.
     let warm_at = Instant::now();
     let warm_until = i64::from(match_cfg.startup_ms)
-        .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
+        .saturating_add(rom_think_ms())
         .saturating_add(i64::from(arena_cfg.tempo.engaged_ms));
     let warm_pulses = warm_up(&mut stepper, warm_until);
     let warm_ms = warm_at.elapsed().as_secs_f64() * 1_000.0;
@@ -7759,8 +8486,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     // **What the script gave, as the tape should carry it**: one line for every
     // unit an order went to that was not already a wreck, at the millisecond
     // phase 2 applied it (`apply_intent` journals every order to a held,
-    // unwrecked reflex unit at its current epoch, and refuses a wreck before
-    // journalling). This is the script's side of the ledger, so the ledger's
+    // unwrecked machine at its current epoch — a mind's as the reflex's was —
+    // and refuses a wreck before journalling). This is the script's side of the ledger, so the ledger's
     // own tape can be held to it at any knob.
     let mut given: Vec<OrderedLine> = Vec::new();
     // **Each scripted wake as the arena held it** (16b cut AE.1; 16c B-58): the
@@ -7806,10 +8533,12 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                                     .unit(intent.unit)
                                     .is_some_and(|state| !state.limits.wreck)
                             })
-                            .map(|_| OrderedLine {
+                            .map(|intent| OrderedLine {
                                 t_ms: arena.now_ms,
                                 issuer: Some(issuer),
                                 squad: order.squad.to_string(),
+                                unit: intent.unit,
+                                ttl_ms: LANCE_ORDER_MS,
                             }),
                     );
                 }
@@ -7852,7 +8581,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     let share_ops_peak = window_peak(|w| w.share_ops);
     let command_cfg = tacsim::config::CommandConfig::default();
     let command = CommandFigures::of(&arena, &command_cfg, counts.ordered_lines, &counts.ordered);
-    let (supporters, supporters_on_target) = supporters_on_charge(&arena);
+    let (supporters, supporters_on_target, supporters_charge_unheld) = supporters_on_charge(&arena);
     let mut command_json = command.json();
     if let Some(object) = command_json.as_object_mut() {
         object.insert("released".to_string(), serde_json::json!(counts.released));
@@ -7861,13 +8590,12 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             "supporters_on_charges_target".to_string(),
             serde_json::json!(supporters_on_target),
         );
+        object.insert(
+            "supporters_charge_unheld".to_string(),
+            serde_json::json!(supporters_charge_unheld),
+        );
     }
-    let distribution = arena.reflex.distribution();
-    let states = tacsim::arena::reflex::ReflexState::ALL
-        .iter()
-        .enumerate()
-        .map(|(at, state)| (state.as_str(), distribution.get(at).copied().unwrap_or(0)))
-        .collect::<Vec<_>>();
+    let states = machine_states(&arena);
     let perception = &run.perception_total;
     let asserting = knobs.assert;
     let window_lens = window_lens_ms(Reach::Authored);
@@ -7892,7 +8620,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // target on the last wake — beside them.
         format!(
             "{} released={} supporters={supporters} \
-             supporters_on_charges_target={supporters_on_target}",
+             supporters_on_charges_target={supporters_on_target} \
+             supporters_charge_unheld={supporters_charge_unheld}",
             command.line("harness_lance_command", cohort),
             counts.released
         ),
@@ -7910,12 +8639,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             folded.len()
         ),
         format!(
-            "harness_lance_reflex_states: cohort={cohort} {}",
-            states
-                .iter()
-                .map(|(word, count)| format!("{word}={count}"))
-                .collect::<Vec<_>>()
-                .join(" ")
+            "harness_lance_minds_states: cohort={cohort} {}",
+            machine_states_words(&states)
         ),
         format!(
             "harness_lance_weapons: cohort={cohort} fired={} impacts={} sections_destroyed={} \
@@ -7924,19 +8649,21 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         ),
         // **16b cut O.1**: what the machines' goals cost — the figure the Hold
         // lane exists to report beside the lance lane's own (report-only on
-        // both).
+        // both). 17b cut M4.5: the decisions are the minds' thinks, where the
+        // reflex's ticks were.
         format!(
-            "harness_lance_goal_cost: cohort={cohort} ticks={} path_queries={} path_deferred={} \
-             path_cells={} path_failures={} peak_path_cells={} path_refused_unchanged={} \
-             corner_refusals={} (report-only)",
-            run.reflex_total.ticks,
-            run.reflex_total.path_queries,
-            run.reflex_total.path_deferred,
-            run.reflex_total.path_cells,
-            run.reflex_total.path_failures,
-            run.reflex_peak.path_cells,
-            run.reflex_total.path_refused_unchanged,
-            run.reflex_total.corner_refusals
+            "harness_lance_goal_cost: cohort={cohort} thinks={} landings={} path_queries={} \
+             path_deferred={} path_cells={} path_failures={} peak_path_cells={} \
+             path_refused_unchanged={} corner_refusals={} (report-only)",
+            run.motor_total.thinks,
+            run.motor_total.landings,
+            run.motor_total.path_queries,
+            run.motor_total.path_deferred,
+            run.motor_total.path_cells,
+            run.motor_total.path_failures,
+            run.motor_peak.path_cells,
+            run.motor_total.path_refused_unchanged,
+            run.motor_total.corner_refusals
         ),
         format!(
             "harness_lance_perception_total: cohort={cohort} passes={} candidates={} traces={} \
@@ -7972,7 +8699,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     ];
 
     let report = serde_json::json!({
-        "what": "16b cut Z.1: twelve machines a side in lances of four on the proving ground, a scripted commander a side",
+        "what": "16b cut Z.1 (at the ROM since 17b cut M4.5): twelve minds a side in lances of four on the proving ground, a scripted commander a side",
         "cohort": cohort,
         "field": {
             "units": lance.units,
@@ -8009,10 +8736,11 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             "jam_checks_peak": jam_checks_peak,
             "share_ops_peak": share_ops_peak,
         },
-        "reflex_states": states
-            .iter()
-            .map(|(word, count)| ((*word).to_string(), *count))
-            .collect::<BTreeMap<String, u32>>(),
+        // 17b cut M4.5: the machines' states at the end (`reflex_states` was
+        // the reflex's rows), as the arena report carries them.
+        "minds": {
+            "states_at_end": machine_states_json(&states),
+        },
         "weapons": {
             "fired": counts.fired,
             "impacts": counts.impacts,
@@ -8133,28 +8861,43 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
              one commander",
             command.span_max
         );
-        // **At the lane's defaults, the exact figures** (the brief's equalities):
-        // one commander holds a live order on every squad of its side, gave
-        // exactly that many in its busiest sixty seconds, and the tape carries
-        // the opening round and one full minute a side at every scripted wake
-        // whose squad had a standing machine (16b cut AE.1, below) — so neither
-        // W8 figure passes on nothing. Off the defaults the fight decides them (see
-        // `at_defaults`), and the three checks above still hold.
+        // **At the lane's defaults, the exact figures** (the brief's equalities,
+        // set from the defaults' own fight): the span, the busiest commander
+        // minute, each side's release of its first squad and the orders on the
+        // tape at every scripted wake whose squad had a standing machine (16b
+        // cut AE.1, below) — each held to that fight by fact pins (its end and
+        // the standings at the marks), so no W8 figure passes on nothing. Off
+        // the defaults the fight decides them (see `at_defaults`), and the
+        // three checks above still hold.
         //
-        // **16b cut Z.2 — what the span equality now rests on, stated.** Each
-        // side's first squad is released at `LANCE_RELEASE_MS` (90 s) and its
-        // next mark falls after the run's end, so no LIVING machine of `red-1`
-        // or `blue-1` holds an order when the span is read. The span still
-        // reads `squads_per_side` because **a wreck keeps the order it died
-        // under** — `Arena::damage` adopts it into `Disabled` with its row,
-        // `apply_intent` refuses it a release (`Refusal::Wreck`), and
-        // `Arena::live_orders_by_issuer` counts its row — and at the defaults
-        // a machine of each first squad is wrecked under its commander's order
-        // before the release. That is pre-existing engine behaviour (a wreck is
-        // no longer the subject of any order, doc 16 §3.3, and the release's own
-        // roster read already skips wrecks), not what W8 means by a span: the
-        // cut that makes a wreck drop its order moves this equality to
-        // `squads_per_side - 1` for a released side, and must say so here.
+        // **The paragraphs from here to 17b cut M4.5's are the reflex's
+        // history** (16b cuts Z.2, AE.1, AI.1 and AP.2): what the pins rested
+        // on in each of four fights on the reflex controller, each superseded
+        // by the next and all by 17b cut M4.5's fight at the ROM — the last
+        // paragraph, which the pins below hold. They are the pins' record, not
+        // statements about the lane today; the rules they set (Z.2's release
+        // on each side's own first squad from its own commander, AE.1's
+        // re-statement through the standing machines at the marks) still bind.
+        //
+        // **16b cut Z.2 — what the span equality rested on then, on the
+        // reflex.** Each side's first squad is released at `LANCE_RELEASE_MS`
+        // (90 s) and its next mark falls after the run's end, so no LIVING
+        // machine of `red-1` or `blue-1` held an order when the span was read.
+        // The span still read `squads_per_side` because **a wreck kept the
+        // order it died under** — `Arena::damage` adopted it into `Disabled`
+        // with its reflex row, `apply_intent` refused it a release
+        // (`Refusal::Wreck`), and `Arena::live_orders_by_issuer` counted its
+        // row — and at the defaults a machine of each first squad was wrecked
+        // under its commander's order before the release. That was
+        // pre-existing engine behaviour (a wreck is no longer the subject of
+        // any order, doc 16 §3.3, and the release's own roster read already
+        // skips wrecks), not what W8 means by a span: a cut that makes a wreck
+        // drop its order moves a span that rests on a wreck to one fewer for a
+        // released side, and must say so here. (At the ROM a wreck's mind row
+        // keeps its order too, and the harness's span counts it until it
+        // expires — [`live_orders_by_issuer`]; 17b cut M4.5's span rests on no
+        // wreck: every squad it counts has a standing machine holding the
+        // order, pinned below.)
         //
         // **16b cut Z.2**: and each side's release landed, **on its own first
         // squad, from its own commander, at the mark** — a count of lines alone
@@ -8224,29 +8967,97 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // a fact. That is the clause doing what doc 16 §3.8 now says, not a
         // defect: the lane's knobs and script are untouched; only the figures
         // its fight gives at the defaults moved.
+        //
+        // **17b cut M4.5 — the lane at the ROM, re-pinned from its fight**
+        // (run under `TACSIM_ASSERT=1` at the defaults, after 17b cut M4.5c's
+        // row cut). Every hull is a unit mind at the ROM (`rom_terms`, Class 0:
+        // eight contact rows, a think every 1,000 ms). Since 17b cut M4.5c a
+        // mind's view seats its lock and its order's contact and then keeps
+        // every contact not known friendly before its friends (doc 17 §3 as
+        // amended 2026-10-09), so a hull mustered among eleven nearer friends
+        // reads the enemy; before that cut the ROM's eight rows were all its
+        // own lance, no mind left `Patrol` and nothing fired in the 120
+        // seconds (STOP L, which the owner's two rulings resolved). **The
+        // fight at the defaults**: the first shot at 22,691 ms; 404 shots (54
+        // a mind's cited `Fire`, 350 a slot's own); twelve hulls wrecked —
+        // red five, blue seven — and neither side out, so **no end inside the
+        // window**: the run reaches 131,500 ms (the reflex's fight ended at
+        // 111,250 ms, red's elimination win: 16b cut AP.2's fact pin). Before
+        // the minute-one mark (71,500 ms) `red-1` lost its commander's hull
+        // #100000 (disabled at 55,638 ms and wrecked at 60,903, keeping its
+        // opening order on its mind row — where the reflex's `Disabled` edge
+        // cleared a disabled hull's, 16b cut AI.1) and `blue-1` lost #100005
+        // and #100003 (53,939 and 71,132 ms): **`red-1` stood three at its
+        // minute-one mark and at the release, `blue-1` two** (16b cut AE.1's
+        // fact pins were the reflex's fight: `blue-1` none at both, `red-1` at
+        // least one at the release). So both sides' releases land — five
+        // `order_released` lines, red's three and blue's two, where the
+        // reflex's fight wrote red's three alone — and every scripted wake has
+        // a standing machine to take it. **The span reads `squads_per_side -
+        // 1`, 2, for each commander**: its first squad holds no live order at
+        // the read (the standing machines released at 90,000 ms, the wrecks'
+        // opening orders expired at 101,500), and its second and third squads
+        // hold their 91,500 and 111,500 ms orders on standing machines (16b
+        // cut AP.2's span was `squads_per_side - 2`, 1). **The busiest minute
+        // is the script's full `squads_per_side`, 3** (71,500, 91,500 and
+        // 111,500 ms inside one minute; AP.2's `squads_per_side - 1`, 2, its
+        // end falling before the third marks), and **the tape carries the
+        // opening round and one full minute a side, `2 * (1 +
+        // squads_per_side)`, eight orders** (AP.2's five). Each figure sits
+        // inside W8's bounds — the span 2 ≤ `[tacsim.command].max_span` 4,
+        // the busiest minute 3 ≤ `orders_per_minute` 12 — and the script's (at
+        // most `squads_per_side`, 3, under one commander, in a live order and
+        // in any minute), and each is held by fact pins below (the end, the
+        // four standings, the release count read back through them), so none
+        // passes on nothing. No `Support` is given in the 120 seconds (the
+        // table's fifth arm is minute five's), so the report's `supporters`
+        // and `supporters_charge_unheld` read nought at the defaults.
         if at_defaults {
-            // **The fact pin of 16b cut AP.2**: the defaults' fight ends by the
-            // disarmed-side clause at 111,250 ms, red the winner — before
-            // minute one's third marks at 111,500 ms.
+            // **The fact pin of 16b cut AP.2, re-pinned by 17b cut M4.5**
+            // (at 4bbcbdc, the reflex's fight: `(Some(Elimination { winner:
+            // Some(Red) }), 111_250)`): at the ROM the defaults' fight has no
+            // end inside the window — red five hulls down, blue seven, neither
+            // side out — and runs to 131,500 ms, the warm-up's 11,500 plus 120
+            // seconds.
             assert_eq!(
                 (run.ended.as_ref().map(|end| end.reason), arena.now_ms),
-                (
-                    Some(tacsim::arena::state::EndReason::Elimination {
-                        winner: Some(Team::Red)
-                    }),
-                    111_250
-                ),
-                "16b cut AP.2: at the defaults the match ends at 111,250 ms as red's \
-                 elimination win, blue's last machine disarmed"
+                (None, 131_500),
+                "17b cut M4.5: at the defaults the ROM's fight has no end inside the window \
+                 (red five hulls down, blue seven) and the match runs to 131,500 ms"
             );
+            // 17b cut M4.5: `squads_per_side - 1` (16b cut AP.2's
+            // `squads_per_side - 2`, re-pinned; see above).
             assert_eq!(
                 command.span_max,
-                squads_per_side - 2,
-                "W8: the span read {} where the script holds {squads_per_side} squads under \
-                 one commander and only each side's second squad holds an order at the read \
-                 (red-1 released with no wreck under its order, the first and third squads' \
-                 opening orders expired, the third squads' minute-one marks after the end; \
-                 16b cuts AI.1 and AP.2, see above)",
+                squads_per_side - 1,
+                "W8: the span read {} where each commander holds live orders on its second and \
+                 third squads alone at the read (its first squad's standing machines released, \
+                 their wrecks' opening orders expired; 17b cut M4.5, see above)",
+                command.span_max
+            );
+            // **The span rests on no wreck** (17b cut M4.5's review): the same
+            // join over the live orders standing hulls hold, the wrecks
+            // skipped, reads the same span — every squad it counts has a
+            // standing machine holding the order (at the defaults the one
+            // wreck under a live order, `blue-2`'s #100011, stands beside
+            // #100015 under the same order).
+            // Held per commander, squad by squad, not only at the maximum.
+            let standing = live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Skipped);
+            assert_eq!(
+                standing,
+                live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Counted),
+                "W8: a squad the span counts is held only by a wreck: at the defaults every \
+                 commander's squads rest on a standing machine (17b cut M4.5)"
+            );
+            let standing_span = standing
+                .values()
+                .map(std::collections::BTreeSet::len)
+                .max()
+                .unwrap_or(0);
+            assert_eq!(
+                standing_span, command.span_max,
+                "W8: the span read {} but {standing_span} over the live orders standing hulls \
+                 hold: at the defaults the span rests on no wreck (17b cut M4.5)",
                 command.span_max
             );
             // How many of the squad's machines stood at the scripted wake at
@@ -8260,24 +9071,22 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                     })
                     .map(|(_, _, _, standing)| *standing)
             };
-            // **The two fact pins** (16b cut AE.1; 16c B-58): at the defaults
-            // `blue-1` has no standing machine at its minute-one mark or at the
-            // release, and `red-1` has at least one at the release — the fight
-            // the re-stated checks below were set from, so each of them passes
-            // on a fact.
+            // **The fact pins of 16b cut AE.1, re-pinned by 17b cut M4.5**
+            // (at 4bbcbdc, the reflex's fight: `blue-1` stood none at its
+            // minute-one mark and at the release, `red-1` at least one at the
+            // release): at the ROM `blue-1` stands two at both and `red-1`
+            // three at both — the fight the re-stated checks below were set
+            // from, so each passes on a fact.
             assert_eq!(
                 (
                     stood(71_500, "blue-1", true),
-                    stood(LANCE_RELEASE_MS, "blue-1", false)
+                    stood(LANCE_RELEASE_MS, "blue-1", false),
+                    stood(71_500, "red-1", true),
+                    stood(LANCE_RELEASE_MS, "red-1", false)
                 ),
-                (Some(0), Some(0)),
-                "16b cut AE.1: at the defaults blue-1 has no standing machine at 71,500 ms or \
+                (Some(2), Some(2), Some(3), Some(3)),
+                "17b cut M4.5: at the defaults blue-1 stands two and red-1 three at 71,500 ms and \
                  at {LANCE_RELEASE_MS} ms: {marks:?}"
-            );
-            assert!(
-                stood(LANCE_RELEASE_MS, "red-1", false).is_some_and(|standing| standing >= 1),
-                "16b cut AE.1: at the defaults red-1 has a standing machine at \
-                 {LANCE_RELEASE_MS} ms: {marks:?}"
             );
             // The sides whose first squad had a standing machine at the release.
             let stood_at_release: Vec<(ObjId, &str)> = commanders
@@ -8316,14 +9125,31 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                 "every release is its own side's commander's: {:?}",
                 counts.released_lines
             );
-            // 16b cut AP.2: one fewer than the script's minute gives, since the
-            // match ends before minute one's third marks (see above).
+            // **The release count, read back through the marks** (17b cut
+            // M4.5; the reflex's fight's three lines, red's, were held by the
+            // `>= 1` and the per-side checks above): one `order_released` line
+            // for every machine each first squad stood at the release — five
+            // at the defaults, red's three and blue's two, held by the fact
+            // pins above.
+            let standing_at_release: usize = ["red-1", "blue-1"]
+                .into_iter()
+                .filter_map(|first| stood(LANCE_RELEASE_MS, first, false))
+                .sum();
+            assert_eq!(
+                counts.released,
+                u64::try_from(standing_at_release).unwrap_or(u64::MAX),
+                "17b cut M4.5: one `order_released` line for each of the {standing_at_release} \
+                 machines the first squads stood at {LANCE_RELEASE_MS} ms: {:?}",
+                counts.released_lines
+            );
+            // 17b cut M4.5: the script's full minute, `squads_per_side` (16b
+            // cut AP.2's `squads_per_side - 1`, re-pinned) — the run reaches
+            // every minute-one mark, where AP.2's fight ended before the third.
             assert_eq!(
                 command.orders_per_commander_minute_max,
-                u64::try_from(squads_per_side - 1).unwrap_or(u64::MAX),
+                u64::try_from(squads_per_side).unwrap_or(u64::MAX),
                 "W8: the busiest commander minute read {} where the script gives \
-                 {squads_per_side} and the match ends before the minute's last mark (16b \
-                 cut AP.2)",
+                 {squads_per_side} and the run reaches every mark (17b cut M4.5)",
                 command.orders_per_commander_minute_max
             );
             // The opening round and one minute's `squads_per_side` a side —
@@ -8332,7 +9158,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // a standing machine, one order per side per wake as
             // `orders_on_tape` files them (16b cut AE.1: seven at the defaults,
             // `blue-1`'s minute-one mark landing on no machine; five since 16b
-            // cut AP.2, the match ending before the third squads' marks).
+            // cut AP.2, the match ending before the third squads' marks;
+            // eight since 17b cut M4.5, a standing machine at every mark).
             let stood_to_order: std::collections::BTreeSet<(bool, i64)> = marks
                 .iter()
                 .filter(|(_, _, is_order, standing)| *is_order && *standing > 0)
@@ -8348,25 +9175,24 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                 stood_to_order.len()
             );
             // **The count itself, pinned** (16b cut AE.1): the equality above is
-            // the tape-is-the-script check read back through the marks (the
-            // `given` lines are one per standing machine at an order's wake, and
-            // `orders_on_tape` counts their distinct commander and millisecond),
-            // so it cannot fail on its own. The defaults' fight gives the opening
-            // round and one minute's `squads_per_side` a side less `blue-1`'s
-            // minute-one mark — seven — and a fight that moves again at the
-            // defaults moves this figure and says so. **16b cut AP.2** moved it:
-            // the match ends at 111,250 ms, before `red-3`'s and `blue-3`'s
-            // 111,500 ms marks, so two more fall away — five.
+            // the tape-is-the-script check read back through the marks, so it
+            // cannot fail on its own. 16b cut AE.1's fight gave seven and 16b
+            // cut AP.2's five (`2 * (1 + squads_per_side) - 3` at 4bbcbdc);
+            // **17b cut M4.5's fight at the ROM gives the script's whole
+            // `2 * (1 + squads_per_side)`, eight** — a standing machine at
+            // every mark, and every mark inside the run.
             assert_eq!(
                 command.orders,
-                u64::try_from(2 * (1 + squads_per_side) - 3).unwrap_or(u64::MAX),
-                "16b cuts AE.1 and AP.2: at the defaults the tape carries the opening round \
-                 and one minute's {squads_per_side} a side less blue-1's minute-one mark \
-                 (71,500 ms) and both third squads' (111,500 ms, after the end), not {} \
-                 orders",
+                u64::try_from(2 * (1 + squads_per_side)).unwrap_or(u64::MAX),
+                "17b cut M4.5: at the defaults the tape carries the opening round and one \
+                 minute's {squads_per_side} a side, not {} orders",
                 command.orders
             );
         }
+        // **The lances fired**, at any knob. At the ROM before 17b cut
+        // M4.5c's row cut this failed at the defaults (STOP L: no hull's eight
+        // rows held the enemy); since that cut the defaults' fight fires 404
+        // shots, and the claim stands as it was.
         assert!(counts.fired > 0, "the lances never fired");
     }
 
@@ -8400,8 +9226,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
 // listed asserts, the decision's word; `sound=` over the lane's integrity
 // checks, never a decision input — and one panic at the end under
 // `TACSIM_ASSERT`; and `harness-minds-<variant>.json` with a deterministic
-// `minds` block the delta compares only once the baseline carries one (blessed
-// in 17b cut M4.5). `PRODUCTION_FILL_ENGINE`
+// `minds` block the delta compares once the baseline carries one (folded by
+// 17b cut M4.5's one bless). `PRODUCTION_FILL_ENGINE`
 // (`tacsim::match_::PRODUCTION_FILL_ENGINE`) is what the fill variant seals
 // its thirty-six Class I hulls a side on, and its verdict over three idle-host
 // weekly runs is the decision 17b cut M4.3's flip reads.
@@ -8588,7 +9414,8 @@ enum MindsVariant {
     /// the ROM, at the authored reach: the decision's variant.
     FillAuthored,
     /// Every hull the ROM (Class 0, native), at the CI reach: the arena
-    /// lane's field with the controller swapped.
+    /// lane's field (since 17b cut M4.5 the arena lane's own terms), on the
+    /// pool and with the jitter.
     StockCi,
     /// Every hull the ROM, at the authored reach.
     StockAuthored,
@@ -8808,9 +9635,10 @@ impl MindsPlan {
     }
 }
 
-/// **The minds field**: [`field`]'s arrangement — the same seed, the same
-/// placement, the same ids, the same teams, the same seats as frame sinks —
-/// with every hull `Controller::Mind` and its terms the variant's. A ROM hull
+/// **The minds field**: [`field`] — the same seed, the same placement, the
+/// same ids, the same teams, the same seats as frame sinks, every hull
+/// `Controller::Mind` ([`rom_slot`], since 17b cut M4.5 the arena lanes' own
+/// field) — with the variant's authored slots' terms swapped in. A ROM hull
 /// is sealed `class_cap: Zero` on the native engine, so `seal_for` writes
 /// class `Zero`, `Arena::mind_class` answers `Zero` and every think is handed
 /// to the ROM (`collect_think`'s `dropped`) — no Rhai, ops nought by
@@ -8833,28 +9661,13 @@ fn field_minds(
     Vec<tacsim::arena::state::Pilot>,
     MindsPlan,
 ) {
-    use tacsim::arena::SealEngine;
-    use tacsim::arena::core::CoreClass;
     use tacsim::arena::state::Controller;
     use tacsim::match_::SealTerms;
     let slots = variant.authored();
-    let rom = |n: u32| FieldSlot {
-        entry: COHORT
-            .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
-            .copied()
-            .unwrap_or(content::LINE_TANK),
-        controller: Controller::Mind,
-        terms: SealTerms {
-            class_cap: CoreClass::Zero,
-            engine_for_minds: SealEngine::Native,
-            ..SealTerms::fixture()
-        },
-        sealed_source: None,
-    };
     // The dry pass: the placement the seeded scatter gives every unit number
     // (the pass is deterministic, so the real one below places identically),
     // which the plan reads to put the heavies in each side's rear.
-    let (placed, _) = field_with(knobs, catalog, relief, variant.reach(), rom);
+    let (placed, _) = field_with(knobs, catalog, relief, variant.reach(), rom_slot);
     let placement: Vec<(u32, i64)> = placed
         .iter()
         .map(|unit| (unit.id.0.saturating_sub(100_000), unit.pose.x_cm))
@@ -8882,7 +9695,7 @@ fn field_minds(
                 },
                 sealed_source: slots.heavy.then(|| (LOAD_III_MIND, load_iii_sha256())),
             },
-            None => rom(n),
+            None => rom_slot(n),
         }
     });
     (units, pilots, plan)
@@ -9209,7 +10022,7 @@ struct MindsRun {
     lagged_pulses: u32,
     perception_total: tacsim::arena::perception::PerceptionCounters,
     peak: tacsim::arena::perception::PerceptionCounters,
-    reflex_total: tacsim::arena::motor::MotorCounters,
+    motor_total: tacsim::arena::motor::MotorCounters,
     snapshots: Vec<SnapshotSample>,
     documents: Vec<serde_json::Value>,
     /// `Arena::mind_view` on a clone, microseconds, on about forty wakes.
@@ -9219,14 +10032,19 @@ struct MindsRun {
 }
 
 /// **The measured wakes, on the task's policy** (the section head). Not
-/// [`run_wakes`]: that loop drops `StepOutput::thinks` (so an undelivered
-/// pulse's thinks would be settled inline at the next step's head, inside the
-/// next `Wake.ms`), and encodes the snapshot before any delivery
-/// (`Snapshot::encode` refuses an unanswered think). Nor `Arena::step_settled`,
-/// which folds pooled think time into the wake. The order of one wake is the
-/// task's: the head (wait, deliver), the step (timed alone), the chunks (the
-/// publish's stand-in), the submit, the snapshot past its due check (wait,
-/// then encode).
+/// [`run_wakes`]: since 17b cut M4.5 that loop settles each step's thinks
+/// synchronously right after the step — run inline on this thread and
+/// written, outside `Wake.ms` and before the snapshot, `Arena::step_settled`'s
+/// path — so no pool ever holds a batch across a wake. Nor
+/// `Arena::step_settled` itself, whose inline thinks would sit inside a timer
+/// around it. This loop is the task's pooled path: the step's thinks are
+/// submitted to the lane's own `MindPool` after the publish and run on its
+/// threads while this thread finishes the wake, and the batch is awaited and
+/// delivered at the next wake's head — or earlier, past the snapshot's due
+/// check, since `Snapshot::encode` refuses an unanswered think — its wait kept
+/// beside the wake, never in it. The order of one wake is the task's: the head
+/// (wait, deliver), the step (timed alone), the chunks (the publish's
+/// stand-in), the submit, the snapshot past its due check (wait, then encode).
 #[allow(clippy::too_many_lines)]
 fn run_minds_wakes(
     s: &mut MindsStepper,
@@ -9245,7 +10063,7 @@ fn run_minds_wakes(
         lagged_pulses: 0,
         perception_total: PerceptionCounters::default(),
         peak: PerceptionCounters::default(),
-        reflex_total: tacsim::arena::motor::MotorCounters::default(),
+        motor_total: tacsim::arena::motor::MotorCounters::default(),
         snapshots: Vec::new(),
         documents: Vec::new(),
         view_us: Vec::new(),
@@ -9415,7 +10233,7 @@ fn run_minds_wakes(
         peak.detected = peak.detected.max(out.perception.detected);
         peak.classified = peak.classified.max(out.perception.classified);
         peak.lost = peak.lost.max(out.perception.lost);
-        run.reflex_total.absorb(&out.motor);
+        run.motor_total.absorb(&out.motor);
         run.substeps.push(out.substeps);
         #[allow(clippy::cast_precision_loss)]
         run.frames.push(out.frames.len() as f64);
@@ -10128,7 +10946,7 @@ fn measure_minds_field(
         lagged_pulses,
         perception_total,
         peak,
-        reflex_total,
+        motor_total,
         snapshots,
         documents: _,
         view_us,
@@ -10563,7 +11381,7 @@ fn measure_minds_field(
     ));
     lines.push(format!(
         "harness_minds_thinks: variant={word} cohort={cohort} thinks={thinks} inline_thinks={inline_thinks} pooled_thinks={pooled_thinks} unrun_thinks={unrun_thinks} untimed_thinks={untimed_thinks} landings={landings} faults={faults} stat_faulted={stat_faulted} overflows={overflows} dropped={dropped} cond_fires={} think_us_p50={think50} think_us_p99={think99} think_us_max={think_max} rhai_us_p50={rhai50} rhai_us_p99={rhai99} native_us_p50={native50} native_us_p99={native99} view_us_p50={view50} view_us_p99={view99} view_samples={} jittered_wakes={jittered_wakes} jitter_ms={} jitter_per_mille={} (inline_thinks and pooled_thinks are derived per wake from thinks and StepOutput.thinks; landings alone is a counter; an untimed think is a dropped scripted hull's ROM think)",
-        reflex_total.cond_fires,
+        motor_total.cond_fires,
         view_us.len(),
         minds.jitter_ms,
         minds.jitter_per_mille
@@ -10744,7 +11562,7 @@ fn measure_minds_field(
             "faults": faults,
             "overflows": overflows,
             "dropped": dropped,
-            "cond_fires": reflex_total.cond_fires,
+            "cond_fires": motor_total.cond_fires,
             "ops_total": ops_total,
             "fees_total": fees_total,
             "ops_per_window_peak": ops_per_window_peak,
@@ -10898,8 +11716,9 @@ fn measure_minds_field(
 /// (so a partial run still shows what ran); the host's rate measured once on
 /// the first variant's field; and under `TACSIM_ASSERT` one panic at the end
 /// naming every variant that did not hold or was not sound. A `stock_ci`
-/// `held=no` on the blessing host is the owner's STOP before 17b cut M4.5
-/// moves the CI lane onto minds; the fill variant's `held=` word is the
+/// `held=no` on ALIEN18 (the owner's host) was to be the owner's STOP before 17b cut
+/// M4.5 moved the CI lane onto minds — waived by the owner on 2026-10-08; the
+/// verdict stays the owner's to read. The fill variant's `held=` word is the
 /// decision's (`PRODUCTION_FILL_ENGINE`).
 fn measure_minds(
     knobs: &Knobs,
@@ -10957,8 +11776,8 @@ fn measure_minds(
                 .collect::<Vec<_>>()
                 .join("\n"),
             if stop {
-                "\n  stock_ci did not hold: the owner's STOP before 17b cut M4.5 moves the CI \
-                 lane onto minds"
+                "\n  stock_ci did not hold: the verdict the owner waived as 17b cut M4.5's \
+                 precondition (2026-10-08) and still reads"
             } else {
                 ""
             }
@@ -10999,55 +11818,119 @@ fn minds_block(report: &serde_json::Value) -> BTreeMap<String, serde_json::Value
     block
 }
 
-/// **The four variant files beside the arena report**, folded for the bless
-/// as `{ "<variant>": { ...minds, "cohort": .. } }` — `None` unless all four
-/// exist, so a bless never writes a partial `minds` block (17b cut M4.5's one
-/// bless writes it; until then the delta skips the block).
-fn minds_blocks_beside(json_knob: &str) -> Option<serde_json::Value> {
-    let mut folded = serde_json::Map::new();
-    for word in MINDS_VARIANT_WORDS {
-        let path = arena_report_path(json_knob, &format!("minds-{word}"));
-        let report: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-        let mut block = report.get("minds")?.as_object()?.clone();
-        block.insert("cohort".to_string(), report.get("cohort")?.clone());
-        folded.insert(word.to_string(), serde_json::Value::Object(block));
+/// **One variant's fresh report beside the arena report** (17b cut M4.5),
+/// or why it is refused: missing or unreadable, or **older than the test
+/// binary** reading it ([`report_predates_the_build`] — an earlier build
+/// wrote it, so folding or comparing it would judge this tree on the run
+/// before it; the arena report has been refused so since 16b cut U.3).
+fn fresh_minds_report(
+    json_knob: &str,
+    word: &str,
+    binary_built: Option<std::time::SystemTime>,
+) -> Result<serde_json::Value, String> {
+    let path = arena_report_path(json_knob, &format!("minds-{word}"));
+    let modified = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    let report: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .ok_or_else(|| {
+            format!(
+                "harness_delta: minds.{word} no fresh report at {} — run \
+                 tacsim_harness_arena_minds first",
+                path.display()
+            )
+        })?;
+    if report_predates_the_build(modified, binary_built) {
+        return Err(format!(
+            "harness_delta: minds.{word} refused: {} is older than this test binary, so an \
+             earlier build wrote it — run tacsim_harness_arena_minds on this build",
+            path.display()
+        ));
     }
-    Some(serde_json::Value::Object(folded))
+    Ok(report)
+}
+
+/// **The four variant files beside the arena report**, folded for the bless
+/// as `{ "<variant>": { ...minds, "cohort": .. } }` — or every refusal
+/// ([`fresh_minds_report`]; a report with no `minds` object or no cohort is
+/// refused too), so a bless never writes a partial `minds` block nor one off
+/// an earlier build's files (17b cut M4.5).
+fn minds_blocks_beside(
+    json_knob: &str,
+    binary_built: Option<std::time::SystemTime>,
+) -> Result<serde_json::Value, Vec<String>> {
+    let mut folded = serde_json::Map::new();
+    let mut refused = Vec::new();
+    for word in MINDS_VARIANT_WORDS {
+        let report = match fresh_minds_report(json_knob, word, binary_built) {
+            Ok(report) => report,
+            Err(why) => {
+                refused.push(why);
+                continue;
+            }
+        };
+        match (
+            report.get("minds").and_then(serde_json::Value::as_object),
+            report.get("cohort"),
+        ) {
+            (Some(minds), Some(cohort)) => {
+                let mut block = minds.clone();
+                block.insert("cohort".to_string(), cohort.clone());
+                folded.insert(word.to_string(), serde_json::Value::Object(block));
+            }
+            _ => refused.push(format!(
+                "harness_delta: minds.{word} refused: the report carries no `minds` block \
+                 or no cohort"
+            )),
+        }
+    }
+    if refused.is_empty() {
+        Ok(serde_json::Value::Object(folded))
+    } else {
+        Err(refused)
+    }
 }
 
 /// **The delta's minds path** (17b cut M4.2): compared only once the
-/// baseline carries a `minds` object — until 17b cut M4.5's bless it says so
-/// and counts nothing. With one, every variant's fresh
+/// baseline's `minds` object carries a variant block — **since 17b cut M4.5
+/// any of [`MINDS_VARIANT_WORDS`] under it**, because the arena report's own
+/// `minds.states_at_end` lives there too and is no variant block; until then
+/// it says so and counts nothing. With one, every variant's fresh
 /// `<stem>-minds-<variant>.<ext>` is read and its block compared leaf by
 /// leaf against `minds.<variant>` as [`block_differences`] compares the arena
 /// block, each difference a `harness_delta: minds.<variant>.<leaf>` line; a
-/// variant file that is missing or unreadable is one difference, named.
-/// Answers the lines and the count.
-fn minds_delta(baseline: &serde_json::Value, json_knob: &str) -> (Vec<String>, usize) {
+/// variant file that is missing or unreadable — or, since 17b cut M4.5,
+/// older than this binary ([`fresh_minds_report`]) — is one difference,
+/// named. Answers the lines and the count.
+fn minds_delta(
+    baseline: &serde_json::Value,
+    json_knob: &str,
+    binary_built: Option<std::time::SystemTime>,
+) -> (Vec<String>, usize) {
     let mut lines = Vec::new();
     let mut differences = 0;
-    let Some(expected) = baseline.get("minds") else {
+    let Some(expected) = baseline.get("minds").filter(|minds| {
+        MINDS_VARIANT_WORDS
+            .iter()
+            .any(|word| minds.get(word).is_some())
+    }) else {
         lines.push(
-            "harness_delta: minds block: the baseline carries none; skipped (blessed in 17b \
-             cut M4.5)"
+            "harness_delta: minds block: the baseline carries none; skipped (17b cut M4.5's \
+             bless folds the four)"
                 .to_string(),
         );
         return (lines, 0);
     };
     for word in MINDS_VARIANT_WORDS {
-        let path = arena_report_path(json_knob, &format!("minds-{word}"));
-        let fresh: Option<serde_json::Value> = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok());
-        let Some(fresh) = fresh else {
-            lines.push(format!(
-                "harness_delta: minds.{word} no fresh report at {} — run \
-                 tacsim_harness_arena_minds first",
-                path.display()
-            ));
-            differences += 1;
-            continue;
+        let fresh = match fresh_minds_report(json_knob, word, binary_built) {
+            Ok(fresh) => fresh,
+            Err(why) => {
+                lines.push(why);
+                differences += 1;
+                continue;
+            }
         };
         let mut was = BTreeMap::new();
         match expected.get(word) {
@@ -11507,16 +12390,28 @@ fn m4_2_the_cpu_lens_is_the_pool_s_window_over_the_host_s_rate_by_five_quarters(
 }
 
 /// **The delta compares the minds block only once the baseline carries one**
-/// (17b cut M4.2): a baseline with no `minds` object skips the block and
-/// counts nothing; with one, every variant's fresh file is compared leaf by
-/// leaf — a changed leaf is one difference, named; a missing variant file is
-/// one difference, named — and the bless folds the four fresh blocks in only
-/// when all four files exist.
+/// (17b cut M4.2): a baseline with no variant block skips the block and
+/// counts nothing — **since 17b cut M4.5** also one whose `minds` carries the
+/// arena report's own `states_at_end` and no variant word; with one, every
+/// variant's fresh file is compared leaf by leaf — a changed leaf is one
+/// difference, named; a missing variant file is one difference, named, and
+/// so (17b cut M4.5) is one older than the binary — and the bless folds the
+/// four fresh blocks in only when all four files exist and are this build's,
+/// refusing (naming each) otherwise. The bless MERGES (17b cut M4.5): the
+/// fresh arena report's `minds.states_at_end` survives it with the variant
+/// blocks and without them.
 #[test]
 fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() {
     let dir = std::env::temp_dir().join(format!("tacsim-minds-delta-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let json = dir.join("harness.json").to_string_lossy().to_string();
+    // The test's own files are written after this binary was built, so the
+    // binary's time refuses none of them; a build time in the future (the
+    // year 2100) stands in for an earlier build's files.
+    let built = std::env::current_exe()
+        .ok()
+        .and_then(|exe| std::fs::metadata(exe).and_then(|meta| meta.modified()).ok());
+    let later_build = Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(4_102_444_800));
     let fresh = |word: &str, thinks: u32| {
         serde_json::json!({
             "cohort": if word == "stock_ci" { "ci" } else { "authored" },
@@ -11524,43 +12419,78 @@ fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() 
             "minds": { "thinks": thinks, "faults": 0, "engine": "rom", "final_substep_hash": "7" },
         })
     };
+    let states = serde_json::json!({
+        "approach": 1, "disabled": 2, "engage": 3, "patrol": 4, "startup": 0, "withdraw": 5,
+        "unknown": 0,
+    });
     // No files, no baseline block: skipped.
     let bare = serde_json::json!({ "world": { "units": 300 } });
-    let (lines, differences) = minds_delta(&bare, &json);
+    let (lines, differences) = minds_delta(&bare, &json, built);
     assert_eq!(differences, 0);
     assert!(
         lines[0].starts_with("harness_delta: minds block: the baseline carries none; skipped"),
         "{lines:?}"
     );
-    assert_eq!(
-        minds_blocks_beside(&json),
-        None,
-        "no files, nothing to fold"
+    // 17b cut M4.5: the arena report's own `minds.states_at_end` is no variant
+    // block — a baseline carrying it alone skips too, rather than reading four
+    // missing variants.
+    let arena_report = serde_json::json!({
+        "world": { "units": 300 },
+        "minds": { "states_at_end": states.clone() },
+    });
+    let (lines, differences) = minds_delta(&arena_report, &json, built);
+    assert_eq!(differences, 0, "{lines:?}");
+    assert!(
+        lines[0].starts_with("harness_delta: minds block: the baseline carries none; skipped"),
+        "{lines:?}"
     );
-    // Three of four files: nothing to fold yet; the delta against a baseline
-    // that carries the block names the missing one as one difference.
+    assert_eq!(
+        minds_blocks_beside(&json, built).map_err(|refused| refused.len()),
+        Err(4),
+        "no files, nothing to fold, and every one named"
+    );
+    // Three of four files: nothing to fold yet, the missing one named; the
+    // delta against a baseline that carries the block names it as one
+    // difference.
     for word in &MINDS_VARIANT_WORDS[..3] {
         write_report(
             &arena_report_path(&json, &format!("minds-{word}")),
             &fresh(word, 10),
         );
     }
-    assert_eq!(
-        minds_blocks_beside(&json),
-        None,
-        "a partial set never folds"
+    let refused = minds_blocks_beside(&json, built).expect_err("a partial set never folds");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].starts_with("harness_delta: minds.ceiling_authored no fresh report at"),
+        "{refused:?}"
     );
     write_report(
         &arena_report_path(&json, "minds-ceiling_authored"),
         &fresh("ceiling_authored", 10),
     );
-    let folded = minds_blocks_beside(&json).expect("all four fold");
+    let folded = minds_blocks_beside(&json, built).expect("all four fold");
     assert_eq!(
         folded["stock_ci"],
         serde_json::json!({ "thinks": 10, "faults": 0, "engine": "rom", "final_substep_hash": "7", "cohort": "ci" })
     );
-    let baseline = serde_json::json!({ "world": { "units": 300 }, "minds": folded });
-    let (lines, differences) = minds_delta(&baseline, &json);
+    // 17b cut M4.5: files an earlier build wrote are refused, every one named,
+    // by the bless's fold and by the delta alike.
+    let refused = minds_blocks_beside(&json, later_build).expect_err("stale files never fold");
+    assert_eq!(refused.len(), 4, "{refused:?}");
+    assert!(
+        refused
+            .iter()
+            .all(|why| why.contains(" refused: ") && why.contains("older than this test binary")),
+        "{refused:?}"
+    );
+    let mut baseline = arena_report.clone();
+    baseline["minds"]["fill_authored"] = folded["fill_authored"].clone();
+    baseline["minds"]["stock_ci"] = folded["stock_ci"].clone();
+    baseline["minds"]["stock_authored"] = folded["stock_authored"].clone();
+    baseline["minds"]["ceiling_authored"] = folded["ceiling_authored"].clone();
+    let (lines, differences) = minds_delta(&baseline, &json, later_build);
+    assert_eq!(differences, 4, "{lines:?}");
+    let (lines, differences) = minds_delta(&baseline, &json, built);
     assert_eq!(differences, 0, "{lines:?}");
     assert_eq!(
         lines
@@ -11575,7 +12505,7 @@ fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() 
         &arena_report_path(&json, "minds-fill_authored"),
         &fresh("fill_authored", 11),
     );
-    let (lines, differences) = minds_delta(&baseline, &json);
+    let (lines, differences) = minds_delta(&baseline, &json, built);
     assert_eq!(differences, 1, "{lines:?}");
     assert!(
         lines
@@ -11585,7 +12515,7 @@ fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() 
     );
     // A variant file gone: one difference, named.
     std::fs::remove_file(arena_report_path(&json, "minds-stock_authored")).expect("removed");
-    let (lines, differences) = minds_delta(&baseline, &json);
+    let (lines, differences) = minds_delta(&baseline, &json, built);
     assert_eq!(differences, 2, "{lines:?}");
     assert!(
         lines
@@ -11593,18 +12523,43 @@ fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() 
             .any(|line| line.starts_with("harness_delta: minds.stock_authored no fresh report at")),
         "{lines:?}"
     );
-    assert_eq!(minds_blocks_beside(&json), None);
-    // The bless folds the blocks in beside the arena report, or not at all.
+    assert!(minds_blocks_beside(&json, built).is_err());
+    // The bless merges: the fresh arena report's `minds.states_at_end` is
+    // kept beside the four variant blocks, and kept when none are folded.
     let blessed = dir.join("arena.testos.json");
-    bless_baseline(&blessed, &bare, Some(&folded));
-    let written: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&blessed).expect("written")).expect("json");
+    let read = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("written")).expect("json")
+    };
+    bless_baseline(&blessed, &arena_report, Some(&folded));
+    let written = read(&blessed);
     assert_eq!(written["minds"]["ceiling_authored"]["thinks"], 10);
+    assert_eq!(written["minds"]["states_at_end"], states);
+    assert_eq!(
+        written["minds"].as_object().map(serde_json::Map::len),
+        Some(5),
+        "the states and the four variants, nothing else"
+    );
     assert!(written.get("blessed").is_some());
+    // A fresh report that (wrongly) carried a variant word loses it to the fold.
+    let mut carrying = arena_report.clone();
+    carrying["minds"]["stock_ci"] = serde_json::json!({ "thinks": 99 });
+    bless_baseline(&blessed, &carrying, Some(&folded));
+    assert_eq!(read(&blessed)["minds"]["stock_ci"]["thinks"], 10);
+    // Without the fold: the variant words go, the states stay.
+    bless_baseline(&blessed, &carrying, None);
+    let written = read(&blessed);
+    assert_eq!(
+        written["minds"],
+        serde_json::json!({ "states_at_end": states }),
+        "no variant block, the arena's own object kept"
+    );
+    // A report with no `minds` at all blesses none.
     bless_baseline(&blessed, &bare, None);
-    let written: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&blessed).expect("written")).expect("json");
-    assert_eq!(written.get("minds"), None, "no block, nothing folded");
+    assert_eq!(
+        read(&blessed).get("minds"),
+        None,
+        "no block, nothing folded"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

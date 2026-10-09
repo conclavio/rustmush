@@ -19,6 +19,21 @@
 # non-zero at the first failure. The reports land at the workspace root as
 # harness*.json.
 #
+# Since 17b cut M4.5 every lane fields unit minds at the ROM (Class 0, the
+# native stock mind) where it fielded the reflex controller: the arena
+# report's `reflex` object is `motor` (no `ticks`, no `traces`) and its state
+# histogram is `minds.states_at_end`, the minds' thinks and landings are what
+# "the field decided something" reads, and the baseline is arena.linux.json
+# (the owner's ruling of 2026-10-08), blessed on a Linux host by the
+# non-asserting path docs/ops.md's *Blessing* gives (the lanes without
+# TACSIM_ASSERT, then the delta with TACSIM_BASELINE_BLESS=1 on the same build)
+# under a host name no later run carries, ccr-m4.5-linux-bless — the cloud
+# containers all read /etc/hostname as `vm`, and a blessed host a later run
+# matches makes the timing gate live there — so the timing gate is dormant
+# everywhere until this script blesses on ALIEN18, the owner's host
+# (`TACSIM_BASELINE_BLESS=1`, below), which adds an agreeing
+# arena.windows.json.
+#
 # What asserts where:
 #   * this script exports TACSIM_ASSERT=1, so every lane asserts its absolutes
 #     (D-16-19: assert locally — this box is not a shared runner);
@@ -26,22 +41,23 @@
 #     per wake, 20 ms per 500 ms window (17.5 at J.3b, 20 since J.3c), the same
 #     per-pulse bounds;
 #   * the lance lane (16b cut Z.1) asserts W8 alone — the span and the orders
-#     per commander per minute bounded, the tape equal to the script's orders
-#     and the opening round landed at any knob, and the busiest minute one
-#     fewer than the squads a side and the span two fewer (16b cut AP.2: the
-#     match ends at 111,250 ms, blue's last machine disarmed, before minute
-#     one's third marks; 16b cut AI.1: red-1 is released with no wreck
-#     holding its order, blue-1's has expired), and
-#     (16b cut Z.2) each side's `order_released` lines from the script's
-#     release at the ninetieth arena second where its first squad still
-#     stands (16b cut AE.1: at least one, red's — three lines since 16b cut
-#     AI.1; blue-1 is all wrecks by then), and the orders counted over the
-#     scripted wakes a machine stood to take (five since 16b cut AP.2,
-#     pinned), held to three facts of the fight, only at the lane's
-#     defaults (seed 2350,
-#     TACSIM_LANCE_UNITS=24, TACSIM_LANCE_ARENA_S=120, jitter 0; off them the
-#     fight decides those) — and prints its timing beside 12 ms and 20 ms,
-#     report-only;
+#     per commander per minute bounded, the tape equal to the script's orders,
+#     the opening round landed and the lances fired at any knob, and the
+#     busiest minute the squads a side and the span one fewer (17b cut M4.5,
+#     the fight at the ROM: no end inside the window — twelve hulls wrecked,
+#     neither side out — each first squad released, the second and third
+#     squads' orders live on standing machines), and (16b cut Z.2) each
+#     side's `order_released` lines from the script's release at the
+#     ninetieth arena second where its first squad still stands (both sides
+#     since 17b cut M4.5: red's three and blue's two, a line a standing
+#     machine), and the orders counted over the scripted wakes a machine
+#     stood to take (eight since 17b cut M4.5, pinned), held to facts of the
+#     fight, only at the lane's defaults (seed 2350, TACSIM_LANCE_UNITS=24,
+#     TACSIM_LANCE_ARENA_S=120, jitter 0; off them the fight decides those) —
+#     and prints its timing beside 12 ms and 20 ms, report-only. It fights at
+#     the ROM since 17b cut M4.5c's row cut (a mind's view keeps every
+#     contact not known friendly before a friend, so a hull among its own
+#     lance still reads the enemy) and holds under TACSIM_ASSERT;
 #   * the minds lane (17b cut M4.2) collects every check into one
 #     harness_minds_verdict line per variant and panics ONCE at the end: `held=`
 #     is exactly the plan's listed asserts (wake p99 12 ms, window p99 the
@@ -53,9 +69,12 @@
 #     `held=` over THREE idle-host runs of this script is the decision
 #     `tacsim::match_::PRODUCTION_FILL_ENGINE` records before 17b cut M4.3's
 #     flip (`held=yes` three times keeps `scripted`, any `held=no` moves it to
-#     `native`); a `stock_ci` `held=no` is the owner's STOP before 17b cut M4.5.
-#     Its four harness-minds-<variant>.json reports carry a deterministic
-#     `minds` block the delta compares only once the baseline carries one;
+#     `native`); a `stock_ci` `held=no` was to be the owner's STOP before 17b
+#     cut M4.5 — waived by the owner on 2026-10-08, the three runs still the
+#     owner's. Its four harness-minds-<variant>.json reports carry a
+#     deterministic `minds` block the delta compares against the baseline's
+#     `minds.<variant>` (folded by 17b cut M4.5's bless, which refuses to bless
+#     without all four reports fresh from this build);
 #   * the delta fails on any difference in the deterministic block, and on a
 #     timing figure more than 20 per cent slower on the host that blessed the
 #     file — a timing-only failure is re-run once before it is believed;
@@ -65,7 +84,13 @@
 #     mismatch fails the first step, here and in CI.
 #
 # TACSIM_BASELINE_BLESS=1 scripts/harness-weekly.sh re-blesses this platform's
-# baseline from the fresh report; an ordinary run never writes it.
+# baseline from the fresh reports — the arena report and the four minds
+# reports, all from this build — once every lane above has held: the delta is
+# the second cargo line and `set -e` stops the script at the first, so a lane
+# that fails under TACSIM_ASSERT on this host (a lens it misses, a minds
+# verdict `held=no`) blesses nothing, and a bless needs a run in which every
+# lane held here. Run the script again without the variable afterwards: the
+# delta then reads the blessed file equal. An ordinary run never writes it.
 #
 # NEVER run this on a host that is serving players: it competes with the game
 # server for every core, and a pulse past `stall_ms` voids a live match.

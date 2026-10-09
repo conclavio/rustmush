@@ -605,8 +605,6 @@ pub(crate) struct ReflexPlan {
     /// It rides the plan because `decide` holds `&self` and the ledger needs
     /// `&mut self`, which is the same split every other order on the plan has.
     expired: Option<(crate::deliberation::squad::SquadId, &'static str)>,
-    /// **16b cut N.2**: the tick read a live order.
-    ordered: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +803,6 @@ impl Arena {
             // reschedule, because the adoption schedules its own.
             return false;
         }
-        counters.ticks = counters.ticks.saturating_add(1);
         // **16b cut M.3** (16c `T-04`, B-43's guarantee under the one-edge rule):
         // before the decision's `REFLEX_AVOID_TTL_MS` sweep, a machine still held
         // on an occupied cell refreshes that cell's stamp to this tick.
@@ -822,15 +819,9 @@ impl Arena {
         let mut motors = std::mem::take(&mut self.motors);
         let mut motor = motors.take(unit);
         let plan = self.decide(unit, t_ms, &mut memory, &mut motors, &mut motor, counters);
-        let state = memory
-            .unit(unit)
-            .map_or(ReflexState::Startup, |row| row.state);
         self.reflex = memory;
         motors.put(unit, motor);
         self.motors = motors;
-        if let Some(slot) = counters.in_state.get_mut(usize::from(state.code())) {
-            *slot = slot.saturating_add(1);
-        }
         // **16b cut N.2** — the one `order_expired` line, and the squad the next
         // signal will say it is asking about. Journalled before the orders it
         // decided under doctrine are applied, so the black box reads in the order
@@ -849,9 +840,6 @@ impl Arena {
                 hash,
             );
             self.note_order_expired(squad);
-        }
-        if plan.ordered {
-            counters.ordered = counters.ordered.saturating_add(1);
         }
         self.order(unit, &plan, t_ms, counters);
         true
@@ -1132,7 +1120,6 @@ impl Arena {
         // The order this tick decides under, taken out of the row so the rest of
         // the function can hold it by reference while `row` is borrowed mutably.
         let order: Option<Order> = row.order.as_ref().map(|standing| standing.order.clone());
-        plan.ordered = order.is_some();
         // A unit whose squad is not the one the order was written for obeys
         // nothing: a roster that changed under an order is an order with two
         // meanings, and this is the cheap way to have only one.
