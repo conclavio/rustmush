@@ -156,6 +156,15 @@ pub fn within_cm(a: &Pose, b: &Pose, reach_cm: u64) -> bool {
     within_between(a.x_cm, a.y_cm, a.z_cm, b.x_cm, b.y_cm, b.z_cm, reach_cm)
 }
 
+/// **When [`SpatialIndex::in_range`] walks the unit table instead of the
+/// cells**: once the clamped box holds more than this many cells per unit the
+/// index holds. A cell costs one slot read and a table row a few compares, and
+/// a sensor's reach covers the whole 256 by 256 window — 65,536 slots, a
+/// megabyte of reads, for at most 300 units — so a long reach walks the table
+/// and a weapon's short one still walks the cells. Cost only: both walks
+/// produce one set.
+const UNIT_WALK_CELLS_PER_UNIT: usize = 4;
+
 /// **The uniform grid of cell buckets over unit positions** (doc 16 §3.2 "The
 /// spatial index").
 ///
@@ -304,6 +313,15 @@ impl SpatialIndex {
     /// row-major slot per cell and is bounded by the arena's own cell count either
     /// way, so it is the cheaper branch wherever it is available.
     ///
+    /// **The VPS spike of 2026-10-09** found that bound to be the cost: a sensor's
+    /// reach clamps to the whole window, so every sensor pass, share and jamming
+    /// query read all 65,536 slots — a fifth of the step on the production host.
+    /// A pose on the window now walks the unit table when the clamped box holds
+    /// more than [`UNIT_WALK_CELLS_PER_UNIT`] cells per unit, keeping a row only
+    /// when it is inside the box **and** holds its cell, which is the cell walk's
+    /// own set under any occupancy (the grid names a unit only at the cell its
+    /// row records).
+    ///
     /// Both produce the same set — the cull never decides membership,
     /// [`within_cm`] does — and they are the same set because occupancy is one unit
     /// per cell, which check-out and motion both enforce (see
@@ -311,6 +329,19 @@ impl SpatialIndex {
     /// in one cell, and no reachable state has one.
     #[must_use]
     pub fn in_range(&self, pose: &Pose, range_cm: u32, units: &[UnitState]) -> Vec<ObjId> {
+        self.in_range_by(pose, range_cm, units, None)
+    }
+
+    /// [`SpatialIndex::in_range`] with the on-window walk forced — `Some(true)`
+    /// the unit table, `Some(false)` the cells — or chosen by cost (`None`), so
+    /// the tests can hold the two walks to one set.
+    fn in_range_by(
+        &self,
+        pose: &Pose,
+        range_cm: u32,
+        units: &[UnitState],
+        by_table: Option<bool>,
+    ) -> Vec<ObjId> {
         let mut found: Vec<ObjId> = Vec::new();
         let reach = u64::from(range_cm);
         let keep = |id: ObjId, found: &mut Vec<ObjId>| {
@@ -329,10 +360,29 @@ impl SpatialIndex {
                 let y0 = cy.saturating_sub(span);
                 let x1 = cx.saturating_add(span).min(self.width.saturating_sub(1));
                 let y1 = cy.saturating_add(span).min(self.height.saturating_sub(1));
-                for y in y0..=y1 {
-                    for x in x0..=x1 {
-                        if let Some(id) = self.occupant(x, y) {
+                let box_cells = (usize::from(x1 - x0) + 1).saturating_mul(usize::from(y1 - y0) + 1);
+                if by_table.unwrap_or_else(|| {
+                    box_cells > self.of_unit.len().saturating_mul(UNIT_WALK_CELLS_PER_UNIT)
+                }) {
+                    // The unit table, kept to exactly what the cell walk reads: a
+                    // unit inside the box that HOLDS its cell. A slot names a unit
+                    // only at the cell its `of_unit` row records (`rebuild` and
+                    // `move_unit` are the grid's only writers and keep that), so
+                    // this is the cell walk's set whatever the occupancy.
+                    for &(id, (x, y)) in &self.of_unit {
+                        if (x0..=x1).contains(&x)
+                            && (y0..=y1).contains(&y)
+                            && self.occupant(x, y) == Some(id)
+                        {
                             keep(id, &mut found);
+                        }
+                    }
+                } else {
+                    for y in y0..=y1 {
+                        for x in x0..=x1 {
+                            if let Some(id) = self.occupant(x, y) {
+                                keep(id, &mut found);
+                            }
                         }
                     }
                 }
@@ -588,6 +638,53 @@ mod tests {
         );
         // A range that covers the whole window finds everything, in id order.
         assert_eq!(index.in_range(&from, 100_000, &arena.units), vec![A, B, C]);
+    }
+
+    /// **The VPS spike's unit-table walk** (2026-10-09): every pose on the
+    /// window and every reach from nothing to past the window answer one set by
+    /// the cells and by the table — in a lawful field, with two units sharing a
+    /// cell (the lower id holds it, the higher is in no slot), and after the
+    /// higher one has moved off into a held cell and on again — so the cost rule
+    /// that picks between them cannot move a candidate.
+    #[test]
+    fn the_unit_table_walk_answers_the_cell_walk_s_set() {
+        let arena = arena_of(vec![
+            tank(A, Team::Red, pose(500, 500)),
+            tank(B, Team::Blue, pose(2_500, 500)),
+            tank(C, Team::Blue, pose(7_500, 7_500)),
+        ]);
+        let terrain = &arena.definition.terrain;
+        let agree = |index: &SpatialIndex, units: &[UnitState], state: &str| {
+            for x in (0..8_000).step_by(700) {
+                for y in (0..8_000).step_by(900) {
+                    let from = pose(x, y);
+                    for reach in [0, 999, 1_000, 2_000, 3_500, 7_071, 12_000, 100_000] {
+                        let cells = index.in_range_by(&from, reach, units, Some(false));
+                        let table = index.in_range_by(&from, reach, units, Some(true));
+                        assert_eq!(cells, table, "{state}: from ({x}, {y}) at {reach} cm");
+                        assert_eq!(index.in_range(&from, reach, units), cells, "{state}");
+                    }
+                }
+            }
+        };
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, &arena.units);
+        agree(&index, &arena.units, "lawful");
+        // B into A's cell: (0, 0) held by A, B recorded there and in no slot.
+        let mut shared = arena.units.clone();
+        if let Some(unit) = shared.iter_mut().find(|unit| unit.id == B) {
+            unit.pose.x_cm = 700;
+            unit.pose.y_cm = 300;
+        }
+        index.rebuild(terrain, &shared);
+        assert_eq!(index.occupant(0, 0), Some(A));
+        assert_eq!(index.cell_of_unit(B), Some((0, 0)));
+        agree(&index, &shared, "shared");
+        // B moves into C's held cell (taking nothing), then on to a free one.
+        index.move_unit(B, (0, 0), (7, 7));
+        agree(&index, &shared, "moved into a held cell");
+        index.move_unit(B, (7, 7), (3, 4));
+        agree(&index, &shared, "moved on");
     }
 
     /// **16b cut S.2's first index fix**, pinned as the identity it rests on: the
