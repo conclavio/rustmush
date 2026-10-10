@@ -298,7 +298,8 @@ impl BlockedCause {
 /// reversing freely off the bank would keep `HELD` lit until it left the cell;
 /// and a machine still pushing at a wreck could not be told apart from one that
 /// had turned away, which is what its remembered stop is refreshed off
-/// (`Arena::reflex_tick`).
+/// (`Arena::refresh_held_avoid`, at a motor step; at the reflex's tick until
+/// 17b cut M4.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Held {

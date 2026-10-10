@@ -90,7 +90,8 @@ pub struct ObserverUnit {
     /// Whether it is held against a cell it could not enter
     /// (`UnitState::held`).
     pub held: bool,
-    /// Who drives it: a pilot or the reflex controller.
+    /// Who drives it: a pilot or a mind (the reflex controller until 17b cut
+    /// M4.3 fielded minds and 17b cut M4.6 deleted it).
     pub controller: Controller,
 }
 

@@ -15,7 +15,6 @@
 //! answer does not move when the toolchain does.
 
 use crate::arena::state::Arena;
-use crate::deliberation::order::Objective;
 
 /// FNV-1a 64's offset basis.
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -78,7 +77,9 @@ thread_local! {
 ///        bytes and its `i64`; then the same for `ammo` with its `u32`. The id's
 ///        bytes go in because a row is a `(weapon, value)` pair and folding only the
 ///        values would make two weapons that swapped cycles one state;
-///    12. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex;
+///    12. **the controller byte** (16b cut N.1): `0` pilot, `2` mind (17b cut
+///        M1a.5); `1` was the reflex controller's and is retired, never reused
+///        (17b cut M4.6 deleted it and renumbered nothing);
 ///    13. **`grade_pct`** (16b cut X.6), `u16` — the uphill slope of the edge the
 ///        unit entered its cell by;
 ///    14. **the traffic hold** (16b cut E.3): a presence byte, then the held
@@ -113,59 +114,41 @@ thread_local! {
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
-/// 3. **The reflex machines** (16b cut N.1), in unit-id order — the map's own, so
-///    there is no iteration order to diverge on: per machine the unit's `u32`, the
-///    state byte, the goal cell's two `u16` (`u16::MAX` twice for none), the
-///    waypoint index as `u16` (`u16::MAX` for none), the route's length as `u64`
-///    and the target unit's `u32` (`0` for none); then the standing order (16b
-///    cut N.2: `[0]` alone for none, else the objective's code byte, the `i64`
-///    expiry and the `hold_fire` byte, then — **16b cut Y.1** — the issuer's
-///    `u32`, `0` for none; then — **16b cut Z.2** — the objective's payload for
-///    the two squad roles, a `Screen`'s `facing_mdeg` as `u32` and a `Support`'s
-///    charge `of` as its `u32`, and nothing more for the other four arms; the
-///    order's `spot` is deliberately not folded, since
-///    it steers nothing) and, from **16b cut Q.7**, the avoided cells — their count as
-///    `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp — and
-///    `stand_until_ms`, `quiet_since_ms` (each a presence byte then an `i64`) and
-///    the `rallied` byte; then, from **16b cut E.4**, `last_plot` (a presence
-///    byte, then the cell's two `u16` and the plot's `i64` stamp),
-///    `unheld_since_ms` (a presence byte then an `i64`) and `hunt` (a presence
-///    byte then the cell's two `u16`); then, from **16b cut O.1**,
-///    `hold_retry_ms` (a presence byte then an `i64`); then, from **16b cut
-///    AI.1**, `searched_from` (a presence byte, then the cell's two `u16`) and
-///    `refused` (`[0]` alone for none; else `[1]`, the stand cell's and the
-///    refused cell's two `u16` each, the cause's code byte, the goal's two
-///    `u16` and the `i64` it lapses at) — decisions with no line of their own
-///    that gate a later search, the O.1 argument once more.
+/// 3. **The reflex machines** (16b cut N.1) — **deleted with the reflex
+///    controller in 17b cut M4.6.** Item 3 folded one row per reflex machine in
+///    unit-id order with **no count prefix** — its state byte, its target, its
+///    standing order (with **16b cut Y.1**'s issuer, `0` for none, and **16b cut
+///    Z.2**'s role payload), its endgame clocks and its search and hunt fields,
+///    with the hull's motor row folded inside it — so an arena with no reflex row,
+///    every match since 17b cut M4.3 put minds on the empty pods, folded no byte
+///    for it, and its deletion moved the hash of no such match. The number is
+///    kept, so 3b, 3c and 3d keep theirs. (A mind's order issuer, owner's STOP C
+///    ruling, is a record field and is never folded: see "Never folded" below.)
 ///
-///    **Since 17b cut M1a.1** (doc 17 §4, D-UM-3) the goal, the waypoint, the
-///    route, the avoided cells, `hold_retry_ms`, `searched_from` and `refused`
-///    are read off the hull's [`crate::arena::motor::MotorRow`] on
-///    [`Arena::motors`] — a row the table does not hold folding as
-///    `MotorRow::default()`, which is exactly what a fresh reflex row's own
-///    fields folded (`u16::MAX` twice for no goal, `u16::MAX` for no waypoint, a
-///    `0` route length and avoid count, `[0]` for each absent stamp, cell and
-///    stop) — in the order above, interleaved with the machine's own fields as
-///    they always were. So a reflex row folds the bytes it folded before the
-///    split, which two constants read at `32a1cc23` pin
-///    (`crates/tacsim/tests/reflex.rs`'
-///    `m1a1_the_moved_motor_folds_the_same_bytes`,
-///    `crates/tacsim/tests/motor.rs`' `m1a1_the_shipped_duel_hashes_as_before`).
+///    **Item 3b, the motor rows** (17b cut M1a.1; doc 17 §4, D-UM-3): every
+///    [`crate::arena::motor::MotorRow`] on [`Arena::motors`] — a pilot's `DRIVE`
+///    (17b cut M1a.4) or a mind's (M1a.5) — in unit-id order: the unit's `u32`,
+///    the goal's two `u16` (`u16::MAX` twice for none), the waypoint as `u16`
+///    (`u16::MAX` for none), the route's length as `u64`, the avoided cells
+///    (16b cut Q.7: their count as `u64`, then per entry the cell's two `u16` and
+///    the stop's `i64` stamp), `hold_retry_ms` (16b cut O.1: a presence byte then
+///    an `i64`), `searched_from` (16b cut AI.1: a presence byte, then the cell's
+///    two `u16`) and `refused` (`[0]` alone for none; else `[1]`, the stand
+///    cell's and the refused cell's two `u16` each, the cause's code byte, the
+///    goal's two `u16` and the `i64` it lapses at). Per row and with **no count
+///    prefix**, so an arena with no motor row adds no byte at all. A goal is a
+///    decision that reaches a pose only substeps later, and `searched_from` and
+///    `refused` each gate a later search with no line of their own — the reason
+///    a row is folded at all.
 ///
-///    **Item 3b, the motor rows of hulls with no machine** (17b cut M1a.1),
-///    is folded right after the last of them: after the
-///    reflex machines, every motor row whose unit has **no** reflex row — a
-///    pilot's `DRIVE` (17b cut M1a.4) or a mind's (M1a.5) — in unit-id order:
-///    the unit's `u32`, the goal's two `u16` (`u16::MAX` twice for none), the
-///    waypoint as `u16` (`u16::MAX` for none), the route's length as `u64`, the
-///    avoided cells (their count as `u64`, then per entry the cell's two `u16`
-///    and the `i64` stamp), `hold_retry_ms` (a presence byte then an `i64`),
-///    `searched_from` and `refused` — each in item 3's own encoding. Per row and
-///    with **no count prefix**, so an arena with no such row — every match this
-///    cut can field — adds no byte at all, and the hash of every existing match
-///    is unmoved. A goal is a decision that reaches a pose only substeps later,
-///    which is the whole reason item 3 folds one; a hull steered by something
-///    other than the reflex controller is folded for the same reason.
+///    Until 17b cut M4.6 item 3b skipped a hull with a reflex row, whose motor
+///    row item 3 folded interleaved with the machine's own fields; with no
+///    reflex row anywhere that guard skipped nothing, and it was deleted with
+///    item 3, the fold unchanged. `hold_retry_ms` **stays folded** (critic §6.5
+///    of 17b cut M4.5) although its only production writer — `follow`'s
+///    `Fallback::Waypoint` branch — lost its only production passer with the
+///    reflex's decision: dropping the byte would move the hash of every match
+///    with a motor row.
 ///
 ///    **Item 3c, the unit minds** (17b cut M1a.5; doc 17 §3, §6, §8), right
 ///    after item 3b: every row of [`Arena::minds`], in unit-id order and with
@@ -235,11 +218,20 @@ thread_local! {
 ///    **Never folded**: [`crate::arena::state::UnitState::seal`] (17b cut
 ///    M3.2's `SealRef` — a per-match constant, the floor's argument below,
 ///    whose `closed` moves only with a ledger line, 17b cut M3.6's
-///    `sortie_closed`, which the ledger's sequence folds) and
+///    `sortie_closed`, which the ledger's sequence folds — and, since 17b cut
+///    M4.6, its `doctrine` bit, derived from the seal whose digest item 3c
+///    folds) and
 ///    [`Arena::classes`] (17b cut M3.1's class table, captured at check-out
 ///    and carried from 17b cut M3.2: a per-match constant, likewise), and
 ///    [`crate::arena::mind::MindState::doctrine_state`] (17b cut M4.3: a
-///    cache over the memory bytes item 3c folds, re-derived at the decode).
+///    cache over the memory bytes item 3c folds, re-derived at the decode),
+///    and [`crate::arena::mind::MindState::order_issuer`] (17b cut M4.6, the
+///    owner's STOP C ruling of 2026-10-09: a record field, as `Order.by` is —
+///    the hint is re-keyed once, at write time, in the issuer's scope, so the
+///    issuer steers nothing after the order lands; carried by the snapshot,
+///    read only by `Arena::live_orders_by_issuer`. The reflex rows' issuer,
+///    item 3's 16b cut Y.1 fold, was folded because the reflex re-keyed its
+///    hint at every tick, and went with item 3).
 ///
 ///    **Item 3d, the condition slots** (17b cut M1b.1; doc 17 §5, D-UM-16),
 ///    right after item 3c: every row of [`Arena::conditions`], in unit-id
@@ -314,9 +306,9 @@ thread_local! {
 /// the sole occupant one substep earlier would win one substep earlier, and
 /// until then nothing else in here would differ. Folding it catches that at the
 /// substep it happened. The `HoldSettles` event it schedules is folded by the
-/// due count (item 9). The machines' `hold_retry_ms` (item 3) is the same
-/// argument read for a controller: a decision with no line of its own that
-/// decides a later goal.
+/// due count (item 9). The motor rows' `hold_retry_ms` (item 3b; the reflex
+/// machines', item 3, until 17b cut M4.6) is the same argument read for a
+/// controller: a decision with no line of its own that decides a later goal.
 ///
 /// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
 /// single writer for *unit poses, unit condition cells, contacts, orders,
@@ -714,133 +706,36 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, section.as_bytes());
         hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
     }
-    // 16b cut N.1: the controller's own machines, in unit-id order.
+    // (Item 3, 16b cut N.1's reflex machines — each row with its hull's motor
+    // row folded inside it — was deleted with the reflex controller in 17b cut
+    // M4.6. It folded per row with no count prefix, so an arena with no reflex
+    // row, every match since 17b cut M4.3, folded no byte there.)
     //
-    // **17b cut M1a.1**: the driving fields are the motor row's now, read back
-    // here in the order this loop always folded them; a unit the table holds no
-    // row for folds a default row, which is what its own fields folded before
-    // the split (item 3). Borrowed, not cloned: a hash is taken every substep
-    // and a route is a vector, and an empty default allocates nothing.
-    let fresh = crate::arena::motor::MotorRow::default();
-    for (unit, row) in arena.reflex.rows() {
-        let motor = arena.motors.row(*unit).unwrap_or(&fresh);
-        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &[row.state.code()]);
-        let (gx, gy) = motor.goal.unwrap_or((u16::MAX, u16::MAX));
-        hash = fnv1a64_update(hash, &gx.to_le_bytes());
-        hash = fnv1a64_update(hash, &gy.to_le_bytes());
-        hash = fnv1a64_update(hash, &motor.waypoint.unwrap_or(u16::MAX).to_le_bytes());
-        hash = fnv1a64_update(hash, &(motor.route.len() as u64).to_le_bytes());
-        hash = fnv1a64_update(
-            hash,
-            &row.target
-                .map_or(0_u32, |(_, target)| target.0)
-                .to_le_bytes(),
-        );
-        // **16b cut N.2**: the standing order — what it says and when it stops
-        // saying it. Both are functions of arena time and of nothing else, so two
-        // cadences of the same scripted match fold the same bytes; the order's
-        // `issued_ms` is a *world* millisecond and is deliberately NOT folded, for
-        // exactly that reason.
-        match &row.order {
-            Some(standing) => {
-                hash = fnv1a64_update(hash, &[standing.order.objective.code()]);
-                hash = fnv1a64_update(hash, &standing.expires_ms.to_le_bytes());
-                hash = fnv1a64_update(hash, &[u8::from(standing.order.constraints.hold_fire)]);
-                // **16b cut Y.1** (the cut's one hash move): whose scope the hint
-                // is written in, `0` for the squad's own commander. Two orders
-                // that differ only in the issuer point at different objects, so
-                // they are two states. `spot` is NOT folded: it is the
-                // commander's word for the cell, and nothing that steers reads it.
-                hash = fnv1a64_update(
-                    hash,
-                    &standing.order.issuer.map_or(0_u32, |id| id.0).to_le_bytes(),
-                );
-                // **16b cut Z.2** (the cut's one hash move): the two squad roles
-                // steer by their payload — the arc a screen faces, the unit a
-                // support keeps station on — so two orders that differ only
-                // there are two states. The other four arms fold nothing more:
-                // `Advance`'s cell and `Engage`'s hint reach the hash through the
-                // goal and the target they write, as they always have.
-                match standing.order.objective {
-                    Objective::Screen { facing_mdeg } => {
-                        hash = fnv1a64_update(hash, &facing_mdeg.to_le_bytes());
-                    }
-                    Objective::Support { of } => {
-                        hash = fnv1a64_update(hash, &of.0.to_le_bytes());
-                    }
-                    Objective::Hold
-                    | Objective::Advance { .. }
-                    | Objective::Engage { .. }
-                    | Objective::Withdraw => {}
-                }
-            }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
-        }
-        // **16b cut Q.7**: the cells it was stopped at, with the stamps that age
-        // them out, and the three fields that make `Withdraw` something other than
-        // a parking space. Every one is written from an arena timestamp and read
-        // at an arena timestamp, so two cadences of one scripted match fold the
-        // same bytes — and a replay whose tank has already rallied must not
-        // compare equal to one that has not.
-        hash = fold_avoid(hash, &motor.avoid);
-        hash = fold_stamp(hash, row.stand_until_ms);
-        hash = fold_stamp(hash, row.quiet_since_ms);
-        hash = fnv1a64_update(hash, &[u8::from(row.rallied)]);
-        // **16b cut E.4**: the three fields that make `Patrol` something other
-        // than a fixed cycle — where the machine last saw something and when,
-        // how long it has held nothing at all, and the far entry cell it is
-        // crossing to. Each is written from an arena timestamp and read at an
-        // arena timestamp, so two cadences of one scripted match fold the same
-        // bytes; each is a *decision* the controller made and would otherwise
-        // reach a pose several substeps later, which is the whole reason the
-        // machines are folded at all.
-        match row.last_plot {
-            Some(((x, y), at_ms)) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &x.to_le_bytes());
-                hash = fnv1a64_update(hash, &y.to_le_bytes());
-                hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
-            }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
-        }
-        hash = fold_stamp(hash, row.unheld_since_ms);
-        match row.hunt {
-            Some((x, y)) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &x.to_le_bytes());
-                hash = fnv1a64_update(hash, &y.to_le_bytes());
-            }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
-        }
-        // **16b cut O.1**: when a Hold spot no route reached may be tried again —
-        // a decision the controller made, written and read at arena timestamps,
-        // exactly as the hunt's clock beside it is.
-        hash = fold_stamp(hash, motor.hold_retry_ms);
-        // **16b cut AI.1** (16c `B-84`): the cell the last search started from,
-        // and the stop the machine remembers. Neither has a line of its own, and
-        // each gates a later search — `searched_from` whether a refusal is
-        // recorded, `refused` whether a search is spent — so each would reach a
-        // pose several substeps after the decision. Written at the tick's `t_ms`
-        // or the `blocked` line's own millisecond, read at a tick.
-        hash = fold_search(hash, motor);
-    }
-    // **17b cut M1a.1** (item 3b): the motor rows of hulls the controller is not
-    // flying — a pilot's `DRIVE`, a mind's — in unit-id order, each in item 3's
-    // own encoding and with no count prefix, so a table that holds none (every
-    // match before M1a.4) folds no byte here.
+    // **17b cut M1a.1** (item 3b): every motor row — a pilot's `DRIVE`, a
+    // mind's — in unit-id order and with no count prefix, so a table that holds
+    // none folds no byte here. Until 17b cut M4.6 it skipped a hull with a
+    // reflex row (item 3 folded that hull's motor row); with no reflex row
+    // anywhere the guard skipped nothing, and it went with item 3, the fold
+    // unchanged.
     for (unit, motor) in arena.motors.rows() {
-        if arena.reflex.unit(unit).is_some() {
-            continue;
-        }
         hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
         let (gx, gy) = motor.goal.unwrap_or((u16::MAX, u16::MAX));
         hash = fnv1a64_update(hash, &gx.to_le_bytes());
         hash = fnv1a64_update(hash, &gy.to_le_bytes());
         hash = fnv1a64_update(hash, &motor.waypoint.unwrap_or(u16::MAX).to_le_bytes());
         hash = fnv1a64_update(hash, &(motor.route.len() as u64).to_le_bytes());
+        // **16b cut Q.7**: the cells it was stopped at, with the stamps that
+        // age them out.
         hash = fold_avoid(hash, &motor.avoid);
+        // **16b cut O.1**: when a Hold spot no route reached may be tried
+        // again — a decision with no line of its own, written and read at
+        // arena timestamps. Kept folded after 17b cut M4.6 took its only
+        // production writer's only passer (the reflex's decision): dropping
+        // the byte would move the hash of every match with a motor row.
         hash = fold_stamp(hash, motor.hold_retry_ms);
+        // **16b cut AI.1** (16c `B-84`): the cell the last search started
+        // from, and the stop the row remembers. Neither has a line of its
+        // own, and each gates a later search.
         hash = fold_search(hash, motor);
     }
     // **17b cut M1a.5** (item 3c): the unit minds, per row with no count
@@ -1112,7 +1007,8 @@ fn fold_card(mut hash: u64, card: &crate::arena::card::StockCard) -> u64 {
 }
 
 /// **A motor row's avoided cells** (16b cut Q.7's encoding; one function since
-/// 17b cut M1a.1 so items 3 and 3b cannot fold them differently): their count as
+/// 17b cut M1a.1 so items 3 and 3b could not fold them differently, item 3b's
+/// alone since 17b cut M4.6): their count as
 /// `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp.
 fn fold_avoid(mut hash: u64, avoid: &[((u16, u16), i64)]) -> u64 {
     hash = fnv1a64_update(hash, &(avoid.len() as u64).to_le_bytes());
@@ -1125,8 +1021,9 @@ fn fold_avoid(mut hash: u64, avoid: &[((u16, u16), i64)]) -> u64 {
 }
 
 /// **A motor row's search start and remembered stop** (16b cut AI.1's encoding;
-/// one function since 17b cut M1a.1 so items 3 and 3b cannot fold them
-/// differently): `searched_from` as a presence byte then the cell's two `u16`,
+/// one function since 17b cut M1a.1 so items 3 and 3b could not fold them
+/// differently, item 3b's alone since 17b cut M4.6): `searched_from` as a
+/// presence byte then the cell's two `u16`,
 /// and `refused` as `[0]` alone for none, else `[1]`, the stand cell's and the
 /// refused cell's two `u16` each, the cause's code byte, the goal's two `u16`
 /// and the `i64` it lapses at.
@@ -1177,9 +1074,10 @@ fn fold_reading(hash: u64, reading: Option<crate::arena::condition::Reading>) ->
 /// **One optional arena timestamp** (16b cut Q.7): a presence byte, then the
 /// `i64`.
 ///
-/// `Withdraw`'s two stamps are folded by one function so they cannot fold
-/// differently, for the reason [`fold_plot`] and [`fold_reading`] are one
-/// function each.
+/// `Withdraw`'s two stamps (the reflex machines', item 3, until 17b cut M4.6)
+/// were folded by one function so they could not fold differently, for the
+/// reason [`fold_plot`] and [`fold_reading`] are one function each; item 3b's
+/// `hold_retry_ms` reads it.
 fn fold_stamp(hash: u64, at_ms: Option<i64>) -> u64 {
     match at_ms {
         Some(at_ms) => {
@@ -1857,8 +1755,8 @@ mod tests {
     /// `hold_retry_ms`.
     ///
     /// 17b cut M4.5a: the hold retry is the hull's motor row's (item 3b folds
-    /// it for every hull with no reflex row), laid by `MotorTable::ensure` and
-    /// not by adopting the reflex machine.
+    /// it for every hull — every hull with no reflex row until 17b cut M4.6),
+    /// laid by `MotorTable::ensure` and not by adopting the reflex machine.
     #[test]
     fn o1_the_hash_folds_the_mode_the_hold_clock_and_the_hold_retry() {
         use crate::arena::state::{HoldState, MatchMode};
@@ -2008,29 +1906,30 @@ mod tests {
         assert_eq!(state_hash(&machine), adopted);
     }
 
-    /// **17b cut M1a.1 (`hash.rs` item 3b): a motor row of a hull the reflex
-    /// controller is not flying is folded, field by field, and a table that
-    /// holds none adds no byte.**
+    /// **17b cut M1a.1 (`hash.rs` item 3b): a motor row is folded, field by
+    /// field, and a table that holds none adds no byte.**
     ///
-    /// A pilot's tank with no machine is given a motor row — the shape 17b cut
-    /// M1a.4's `DRIVE` lays down — and each of the row's folded fields, set one
-    /// at a time, moves the hash to a state no earlier probe reached; taking the
-    /// row away is the first state again.
+    /// A pilot's tank is given a motor row — the shape 17b cut M1a.4's `DRIVE`
+    /// lays down — and each of the row's folded fields, set one at a time,
+    /// moves the hash to a state no earlier probe reached; taking the row away
+    /// is the first state again.
     ///
     /// 17b cut M4.6a: moved here from `crate::arena::reflex`'s tests with its
     /// assertions word for word — the only pin of item 3b's `goal`, `waypoint`,
     /// `route` and `avoid` probes, of `from_waypoint` left unfolded and of a
-    /// release leaving no byte. Its reflex half (a reflex row whose motor row
-    /// is missing folds as a fresh one, item 3) stayed there and dies with
-    /// item 3 in 17b cut M4.6c, which also takes this test's `bare.reflex`
-    /// precondition with the field.
+    /// release leaving no byte. 17b cut M4.6c deleted item 3 and the reflex
+    /// controller: its reflex half (a reflex row whose motor row is missing
+    /// folded as a fresh one) died with the reflex's module, and this test
+    /// lost its precondition that the tank has no reflex row (`Arena.reflex`
+    /// is gone) and its name,
+    /// `m1a1_a_motor_row_of_a_unit_with_no_reflex_row_moves_the_hash_and_an_empty_table_adds_none`;
+    /// every other assertion is as it was.
     #[test]
-    fn m1a1_a_motor_row_of_a_unit_with_no_reflex_row_moves_the_hash_and_an_empty_table_adds_none() {
+    fn m1a1_a_motor_row_moves_the_hash_field_by_field_and_an_empty_table_adds_none() {
         use crate::arena::motion::BlockedCause;
         use crate::arena::motor::Refusal;
         let build = || arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
         let bare = build();
-        assert!(bare.reflex.unit(ObjId(4)).is_none(), "a pilot's tank");
         assert_eq!(bare.motors.rows().count(), 0, "an empty table");
         let base = crate::arena::hash::state_hash(&bare);
 
@@ -2070,7 +1969,8 @@ mod tests {
             );
         }
         // `from_waypoint` is deliberately not folded, as it was not on the
-        // machine (item 3): a row differing only there is one state.
+        // reflex machine (item 3, until 17b cut M4.6): a row differing only
+        // there is one state.
         let mut arena = build();
         arena.motors.ensure(ObjId(4)).from_waypoint = Some(1);
         let mut other = build();
@@ -2265,12 +2165,15 @@ mod tests {
     /// the memory's length, the memory's bytes at one length, any one of the
     /// three `epochs` — or in a mind row's `dropped` (its presence and its
     /// cause) or `seal_digest` hash DIFFERENTLY, each from the base and every
-    /// probe from every other (`reflex.rs`'
-    /// `each_new_row_field_moves_the_state_hash` pattern). And two differing
-    /// only in a unit's `seal` (every field of the `SealRef`) or in the
+    /// probe from every other (the pattern of the reflex's
+    /// `each_new_row_field_moves_the_state_hash`, deleted with it in 17b cut
+    /// M4.6). And two differing only in a unit's `seal` (every field of the
+    /// `SealRef`, since 17b cut M4.6 its `doctrine` bit too) or in the
     /// arena's class table still hash equal: per-match constants, never
-    /// folded. The presence, `think_seq` and `t_ms` of the pending think move
-    /// it, as they did.
+    /// folded — and (17b cut M4.6, the owner's STOP C) two differing only in a
+    /// mind row's `order_issuer` hash equal: a record field, never folded. The
+    /// presence, `think_seq` and `t_ms` of the pending think move it, as they
+    /// did.
     #[test]
     #[allow(clippy::too_many_lines)]
     fn m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash() {
@@ -2415,6 +2318,9 @@ mod tests {
             ("seal.engine", sealed(&|s| s.engine = SealEngine::Scripted)),
             ("seal.governed", sealed(&|s| s.governed = false)),
             ("seal.closed", sealed(&|s| s.closed = true)),
+            // 17b cut M4.6: the doctrine bit (the fixture's seal is Standard
+            // Doctrine's, so the base reads `true`).
+            ("seal.doctrine", sealed(&|s| s.doctrine = false)),
         ] {
             assert_eq!(hash, before, "`{field}` is folded");
         }
@@ -2426,5 +2332,36 @@ mod tests {
         classes.classes = serde_json::from_value(wire).expect("a lawful table");
         assert_ne!(classes.classes, stock, "the probe changed the table");
         assert_eq!(state_hash(&classes), before, "the class table is folded");
+        // Never folded (17b cut M4.6, the owner's STOP C ruling): the issuer
+        // beside a mind's order. Two rows holding one order, differing only in
+        // who issued it, are one state — and the order itself is folded, so
+        // the probe is not vacuous.
+        let ordered = |issuer: Option<ObjId>| {
+            let mut arena = base.clone();
+            if let Some(state) = arena.minds.get_mut(&ObjId(4)) {
+                state.order = Some(crate::arena::perception::FrameOrder {
+                    squad: "red-1".into(),
+                    objective: crate::arena::perception::MindObjective::Hold,
+                    hold_fire: false,
+                    max_range_band: None,
+                    expires_ms: 30_000,
+                });
+                state.order_issuer = issuer;
+            }
+            arena
+        };
+        let by_commander = ordered(None);
+        assert_ne!(state_hash(&by_commander), before, "the order is folded");
+        let by_pilot = ordered(Some(ObjId(9)));
+        assert_ne!(
+            by_pilot.minds.get(&ObjId(4)),
+            by_commander.minds.get(&ObjId(4)),
+            "the probe changed the row"
+        );
+        assert_eq!(
+            state_hash(&by_pilot),
+            state_hash(&by_commander),
+            "`order_issuer` is folded"
+        );
     }
 }

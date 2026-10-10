@@ -86,7 +86,9 @@ pub fn standard_digest() -> Digest {
 /// runs and resumes every stock-scripted seal — every production seal from
 /// this cut to the fill decision (2026-10-09); since then a pre-decision
 /// match's, on its resume (a production seal is `native` since and needs
-/// no source) — else the store's document, else nothing. Asked at
+/// no source), until 17b cut M4.6's format 9, which voids every older
+/// snapshot; a fixture's scripted seal always — else the store's document,
+/// else nothing. Asked at
 /// `crate::match_::resume::refuse_unrunnable_seals` first and at
 /// `crate::arena_bridge`'s `sealed_sources` second, so a seal the resume
 /// refusal passes is one the installer can run.

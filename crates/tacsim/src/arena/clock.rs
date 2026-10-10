@@ -151,8 +151,10 @@ pub struct TempoSignals {
     pub contact_within_alert_range: bool,
     /// A fire intent is queued (16b cut W.1 sets it; the queue is cut A's).
     pub fire_intent_queued: bool,
-    /// A controller has entered `Approach` (**16b cut N.1** sets it, off
-    /// `crate::arena::reflex::ReflexMemory::any_approaching`).
+    /// A controller has entered `Approach` (**16b cut N.1** set it, off the
+    /// reflex controller's rows until 17b cut M4.6 deleted them; a mind's
+    /// cached doctrine state since 17b cut M4.3, `Arena::any_mind_approaching`,
+    /// on a hull sealed on Standard Doctrine).
     pub ai_approaching: bool,
     /// A shot was fired this pulse (16b cut W.1).
     pub shot_fired: bool,

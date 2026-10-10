@@ -1119,8 +1119,8 @@ impl Arena {
     /// cells read up to the blocker, and every outcome is what it was.
     ///
     /// The fire path in `damage.rs` is the arena's other trace and stays on
-    /// `trace_cells`, because its readers — the shot, the reflex's engage check
-    /// and the cover readings — want `target_cover` and the attenuation from the
+    /// `trace_cells`, because its readers — the shot, the engage check (the
+    /// reflex's until 17b cut M4.6) and the cover readings — want `target_cover` and the attenuation from the
     /// shooter's own end, which `sight_only` does not answer.
     ///
     /// **16b cut J.2**: the trace goes through the terrain's own horizon index
@@ -1757,8 +1757,8 @@ impl Arena {
     /// the honest answer: there is nothing to shoot with.
     ///
     /// **16b cut F.3** gave it the two things its siblings
-    /// ([`Arena::hostile_in_weapons_range`], the reflex controller's target
-    /// choice) already had and it lacked:
+    /// ([`Arena::hostile_in_weapons_range`], and the reflex controller's target
+    /// choice until 17b cut M4.6) already had and it lacked:
     ///
     /// * **the wreck filter** — a contact on a burnt-out hull held the whole arena
     ///   at the `Alert` cadence, which is exactly what `sees_wrecks: false` was
@@ -1924,8 +1924,9 @@ pub fn bearing_mdeg(from: &mush_sim::data::Pose, to: &mush_sim::data::Pose) -> u
 /// N.1).
 ///
 /// [`bearing_mdeg`] is this function over two [`mush_sim::data::Pose`]s; the
-/// reflex controller steers at *cells*, which have no pose and no opaque posture
-/// blob, so it needs the arithmetic without one. One implementation, two callers,
+/// motor steers at *cells* (the reflex controller did until 17b cut M4.6), which
+/// have no pose and no opaque posture blob, so it needs the arithmetic without
+/// one. One implementation, two callers,
 /// and the quantisation lives in exactly one place.
 #[must_use]
 pub fn bearing_of(dx: i64, dy: i64) -> u32 {

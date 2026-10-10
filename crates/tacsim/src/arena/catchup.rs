@@ -45,7 +45,7 @@
 //! argument `last_frames` makes: each is a fact about what a pilot will be told,
 //! not about the match, and folding either into
 //! [`crate::arena::hash::state_hash`] would make the hash a function of who was
-//! connected. Nothing that steers reads them — no reflex tick, no sensor pass,
+//! connected. Nothing that steers reads them — no mind's think, no sensor pass,
 //! no resolver — so they cannot move an outcome either, and the cross-tempo
 //! property is untouched (16b cut Y.4's assertion is that the report is the
 //! same at every cadence, and the hash sequence is the same with it or without
@@ -68,7 +68,6 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::motor::MotorRow;
-use crate::arena::reflex::ReflexUnit;
 use crate::arena::state::{Arena, ContactId, Controller, Designator, Power};
 
 /// **One section as its own crew reads it** (16b cut Y.4): the M32 condition
@@ -112,7 +111,11 @@ pub struct ReleaseSnapshot {
 }
 
 /// **What the machine was doing when the pilot took the tank back** (16b cut
-/// Y.4) — the reflex row's own words, read before `set_controller` releases it.
+/// Y.4) — the machine's own words, read before `set_controller` suspends its
+/// row: a mind's since 17b cut M4.3 ([`MachineWords::of_mind`]; the reflex
+/// row's until 17b cut M4.6 deleted the reflex controller and
+/// `MachineWords::of` with it). Its three fields and their words are the
+/// wire's (`catchup.machine`), unchanged.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineWords {
@@ -126,25 +129,13 @@ pub struct MachineWords {
 }
 
 impl MachineWords {
-    /// The words of one reflex row, and of its hull's motor row — where the
-    /// goal has lived since 17b cut M1a.1 (`None` when the table holds none).
-    #[must_use]
-    pub fn of(row: &ReflexUnit, motor: Option<&MotorRow>) -> MachineWords {
-        MachineWords {
-            state: SmolStr::new_static(row.state.as_str()),
-            goal: motor.and_then(|motor| motor.goal),
-            objective: row
-                .order
-                .as_ref()
-                .map(|standing| SmolStr::new_static(standing.order.objective.as_str())),
-        }
-    }
-
-    /// **The words of a mind's hull** (17b cut M4.3): its cached doctrine
-    /// state (`Arena::machine_state`), its motor row's goal and its held
-    /// order's objective word — the same three a reflex row gives, so the
-    /// sentence a reclaiming pilot reads is one sentence whichever machine
-    /// flew the tank.
+    /// **The words of a mind's hull** (17b cut M4.3): its doctrine state
+    /// (`Arena::machine_state`, which reads `unknown` for a mind not sealed
+    /// on Standard Doctrine since 17b cut M4.6), its motor row's goal — where
+    /// the goal has lived since 17b cut M1a.1, `None` when the table holds
+    /// none — and its held order's objective word: the same three a reflex
+    /// row gave until 17b cut M4.6, so the sentence a reclaiming pilot reads
+    /// kept its words when the machine under it changed.
     #[must_use]
     pub fn of_mind(
         state: crate::arena::doctrine::MachineState,
@@ -200,7 +191,8 @@ pub struct Catchup {
     pub rounds_spent: Vec<(SmolStr, u32)>,
     /// How many such weapons the cap left out.
     pub rounds_more: u32,
-    /// What the machine was doing, or `None` when the tank had no reflex row.
+    /// What the machine was doing, or `None` when no mind flew the tank (no
+    /// reflex row, until 17b cut M4.6).
     pub machine: Option<MachineWords>,
 }
 
@@ -250,7 +242,7 @@ impl Arena {
     }
 
     /// **The report for `unit` against `then`** (16b cut Y.4), with the machine's
-    /// words the caller read before the reflex row was released.
+    /// words the caller read before the mind's row was suspended.
     ///
     /// Contacts are diffed by [`ContactId`] — new is held now and not then, lost
     /// is held then and not now, named as it read then — each list sorted by
@@ -357,10 +349,12 @@ impl Arena {
         if !reseated {
             return;
         }
-        // **17b cut M4.3**: the words are either machine's — a mind's off
-        // its cached doctrine state, its held order and its motor row
+        // **17b cut M4.3**: the words are a mind's — off its doctrine state
+        // (`Arena::machine_state`: `unknown` for a mind not sealed on Standard
+        // Doctrine, 17b cut M4.6), its held order and its motor row
         // (`MachineWords::of_mind`), read before the `Live` suspends the row;
-        // the reflex's as before; a pilot's hull none.
+        // a pilot's hull none (the reflex's row was read here until 17b cut
+        // M4.6 deleted it).
         let machine = match self.unit(unit).map(|state| state.controller) {
             Some(Controller::Mind) => self.machine_state(unit).map(|state| {
                 MachineWords::of_mind(
@@ -369,10 +363,7 @@ impl Arena {
                     self.motors.row(unit),
                 )
             }),
-            _ => self
-                .reflex
-                .unit(unit)
-                .map(|row| MachineWords::of(row, self.motors.row(unit))),
+            _ => None,
         };
         let catchup = self.catchup_since(unit, &then, machine);
         self.pending_catchup.insert(pilot, catchup);

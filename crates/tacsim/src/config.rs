@@ -302,15 +302,24 @@ impl Default for ArenaConfig {
 /// intents a pilot's verbs stage are what leaves the controller — so an operator
 /// who retunes this block gets different AI and the same physics.
 ///
-/// **`decide_ms` is a cadence of arena time, not of pulses.** The tick is a
-/// [`crate::arena::state::DueKind::ReflexTick`] applied at its own arena
-/// timestamp, so the controller runs the same number of times per arena second at
-/// every tempo — which is what lets the cross-tempo property hold with AI units
-/// on the field (doc 16 §3.1, D-16-2).
+/// **`decide_ms` is a cadence of arena time, not of pulses.** The reflex
+/// controller's tick was a due event applied at its own arena timestamp, so the
+/// controller ran the same number of times per arena second at every tempo —
+/// which is what let the cross-tempo property hold with AI units on the field
+/// (doc 16 §3.1, D-16-2).
+///
+/// **17b cut M4.6 deleted the reflex controller; this block keeps its name**
+/// (`[tacsim.arena.reflex]`, every key and validation sentence unchanged, the
+/// conventions' D10) because what it holds outlived it: `decide_ms` is still
+/// the motor's cadence ([`crate::arena::state::DueKind::MotorTick`], on the
+/// same stagger grid), the path budgets are the motor's, and the doctrine
+/// figures are the stock card's (`crate::arena::card::line`) — read off
+/// `ArenaConfig::reflex`, never off a copy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReflexConfig {
-    /// Arena milliseconds between one AI unit's decisions, staggered by unit id.
+    /// Arena milliseconds between one machine's motor ticks, staggered by unit id
+    /// (between the reflex controller's decisions until 17b cut M4.6).
     pub decide_ms: u32,
     /// **The A\* node budget** — the most cells one path search may expand before
     /// it gives up and the `unreachable` edge fires (16b §9: *`[atlas]
@@ -324,7 +333,7 @@ pub struct ReflexConfig {
     /// atlas's key at pulse time (D-16-1: no window, no records), so the value
     /// crosses at wiring like every other.
     pub path_max_cells: u32,
-    /// The most path searches the controller may run in one `decide_ms` window of
+    /// The most path searches the motor may run in one `decide_ms` window of
     /// arena time. A unit refused by this budget keeps the path it has.
     ///
     /// A budget per *pulse* would be a throttle whose bite depends on the tempo,

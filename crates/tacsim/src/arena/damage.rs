@@ -87,9 +87,7 @@ use crate::arena::ledger::EventKind;
 use crate::arena::perception::Notice;
 use crate::arena::resolution::{Consequence, Resolution};
 use crate::arena::rng::{DrawLabel, draw};
-use crate::arena::state::{
-    Arena, Controller, DueKind, EndReason, MatchEnd, Power, Team, UnitState,
-};
+use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, Team, UnitState};
 use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL, UnitClass};
 
 // ---------------------------------------------------------------------------
@@ -437,32 +435,18 @@ impl Arena {
             .map_or((Sight::Clear, Cover::None), |trace| {
                 (trace.sight, trace.target_cover)
             });
-        // **16b cut N.1**: doc 16 §6's `no line` edge is fed from here and from
-        // nowhere else. The reflex controller learns that a round of its own was
-        // stopped by the ground the way anybody would — by the shot missing —
-        // and re-plans from where it stood, rather than by taking a trace of its
-        // own before every shot. A pilot's unit notes nothing.
-        //
-        // **16b cut AE.2**: the edge is a fact about where the shooter stood when
-        // it fired, so it is fed only to a shooter that **still stands in the
-        // cell the round left from**. One that has moved since has no line to
-        // re-plan: teaching it a lesson about a line it no longer has would throw
-        // away a goal it may have just reached.
-        let stood = self.unit(shot.shooter).is_some_and(|state| {
-            shot.from_cell.is_some()
-                && self.definition.terrain.cell_of(&state.pose) == shot.from_cell
-        });
+        // **16b cut N.1**: a machine learns that a round of its own was stopped
+        // by the ground the way anybody would — by the shot missing: a mind
+        // reads the `blocked` or `cover` miss notice on its next view (17b cut
+        // M1a.6) and re-plans from it. The reflex controller's `no line` edge
+        // was fed from here (16b cut AE.2: only to a shooter still standing in
+        // the cell the round left from) until 17b cut M4.6 deleted the reflex
+        // and that feed with it; the miss lines are unchanged.
         if !sight.is_clear_or_partial() {
-            if stood {
-                self.note_no_line(shot.shooter);
-            }
             miss(BLOCKED, journal);
             return;
         }
         if cover == Cover::Full {
-            if stood {
-                self.note_no_line(shot.shooter);
-            }
             miss(COVER, journal);
             return;
         }
@@ -561,8 +545,8 @@ impl Arena {
     /// no reader for.
     ///
     /// It is a read of its own rather than a third element of `fire_line`'s tuple
-    /// because that tuple is destructured in the impact and in the reflex
-    /// controller, and because only a beam ever asks: a direct-fire shot pays
+    /// because that tuple is destructured in the impact (and was in the reflex
+    /// controller until 17b cut M4.6), and because only a beam ever asks: a direct-fire shot pays
     /// nothing for this existing.
     #[must_use]
     pub fn fire_attenuation(&self, shooter: ObjId, target: ObjId) -> u32 {
@@ -1306,13 +1290,7 @@ impl Arena {
             | DueKind::Share { unit }
             | DueKind::StartupComplete { unit }
             | DueKind::WeaponReady { unit, .. } => *unit != target,
-            // **16b cut N.1**: the wreck's own reflex tick goes with the rest of
-            // its scheduled work, and its machine is put into `Disabled` here
-            // rather than on a tick that is never going to come — doc 16 §6's
-            // `Disabled` state *is* a wreck, so the distribution a report prints
-            // has to agree with the field.
-            DueKind::ReflexTick { unit, .. } => *unit != target,
-            // **17b cut M1a.4**: and a pilot's `DRIVE` stops driving a wreck —
+            // **17b cut M1a.4**: a pilot's `DRIVE` stops driving a wreck —
             // the motor's tick goes with the rest (its arm would refuse a
             // wreck anyway; the heap is what the hash and `next_due_ms` read).
             DueKind::MotorTick { unit } => *unit != target,
@@ -1332,17 +1310,16 @@ impl Arena {
             // simply not there when its event comes round.
             DueKind::HoldSettles { .. } => true,
         });
-        if self
-            .unit(target)
-            .is_some_and(|state| state.controller == Controller::Reflex)
-        {
-            // 17b cut M1a.1: the machine and its motor row, as one adoption.
-            self.adopt_reflex(target, crate::arena::doctrine::MachineState::Disabled);
-        }
+        // (16b cut N.1 put a wreck's reflex machine into `Disabled` here, with
+        // its motor row's goal and route cleared, until 17b cut M4.6 deleted the
+        // reflex controller; a mind's wreck reads `Disabled` off
+        // `Arena::machine_state` and its motor row stays as its last landing
+        // left it — the owner's STOP G, carried to 17b cut M5.)
+        //
         // **17b cut M1a.5**: the think waiting to land goes with the landing
         // the retain above took off the heap — the row's `pending`, which
         // carries its answer since 17b cut M3.2. The row itself stays, as a
-        // wreck's reflex row stays: what the mind remembered is still state
+        // wreck's reflex row stayed: what the mind remembered is still state
         // the hash folds.
         if let Some(state) = self.minds.get_mut(&target) {
             state.pending = None;
@@ -1451,7 +1428,8 @@ impl Arena {
     /// Symmetric by D-16-5: the pilot's side reads the same way, so a one-tank
     /// side loses the hit that takes its turret, still able to drive (`Q57`).
     /// `out_of_action`, `settle_disabled`, `spent`, the unit's outcome and the
-    /// reflex controller's dry withdrawal are untouched: a disarmed unit that
+    /// machine's dry withdrawal (the reflex controller's at that cut) are
+    /// untouched: a disarmed unit that
     /// still drives is not `disabled`. A pure read, settled where every
     /// elimination is (inside the substep by `Arena::substep`, phase 5 the
     /// backstop), and folded into no hash.
@@ -1606,7 +1584,9 @@ impl Arena {
     /// **16b cut AE.3** (doc 16 §2 W2): and **a drone holds nothing and contests
     /// nothing** — it is skipped as a wreck is, beside O.1's reading. A machine
     /// that carries no gun and decides nothing may drive to the spot (the reflex
-    /// controller's `hold_goal` sends it there like any machine), but it can
+    /// controller's `hold_goal` sent it there like any machine until 17b cut
+    /// M4.6; no mind's think reaches the Hold arms before M5, the owner's STOP
+    /// A), but it can
     /// neither win the square for its side nor deny it to the other. Keyed on
     /// the class, so O.1's own tests, whose holders are the unarmed `Armour`
     /// fixtures, read as they did.

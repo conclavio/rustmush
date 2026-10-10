@@ -305,11 +305,21 @@ impl SortieId {
 /// are `reflex`, `native` and `scripted` — never the scripted engine's own
 /// name, which the arena library may not contain
 /// (`crates/mush-contract-tests/tests/arena_library.rs`).
+///
+/// **[`SealEngine::Reflex`] is decode-only** since 17b cut M4.3 (no seal
+/// computes it) and outlives the reflex controller 17b cut M4.6 deleted:
+/// every live record an M3.3–M4.2 build wrote for a running match carries it
+/// (`crate::match_::MatchRecord::minds`), and without the variant such a record
+/// would fail to decode before its format-8 snapshot is refused by name. Two
+/// in-memory defaults still write it, neither hashed nor read to decide
+/// anything (the conventions' D8, recorded): [`SealRef::none`] and
+/// [`MindSeal::placeholder`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SealEngine {
-    /// The reflex controller (a fill, or a pilot's hull a release hands to
-    /// it).
+    /// The reflex controller — a fill, or a pilot's hull a release handed to
+    /// it, in an M3.3–M4.2 seal. Decode-only (see the enum's doc): the
+    /// controller is gone since 17b cut M4.6.
     Reflex,
     /// The native stock mind (T1 of doc 17 §17).
     Native,
@@ -332,7 +342,8 @@ impl SealEngine {
 /// **The seal a hull was checked out under, as the arena keeps it** (17b cut
 /// M3.2; doc 17 §13, D-UM-45, D-UM-46): the sortie, the seal's digest, the
 /// core class the seal recorded, the class the mind thinks at, the engine,
-/// whether the core is governed and whether the sortie is closed.
+/// whether the core is governed, whether the sortie is closed and (17b cut
+/// M4.6) whether the mind sealed is Standard Doctrine.
 ///
 /// On [`crate::arena::state::UnitState::seal`]: laid down empty
 /// ([`SealRef::none`]) in 17b cut M3.2; **since 17b cut M3.3** [`Arena::new`]
@@ -361,11 +372,34 @@ pub struct SealRef {
     /// Whether the sortie is closed (17b cut M3.6's `sortie_closed` sets it,
     /// once).
     pub closed: bool,
+    /// **Whether the mind sealed is Standard Doctrine** (17b cut M4.6; the
+    /// conventions' D3), derived **by identity** in [`MindSeal::seal_ref`] —
+    /// the seal's `mind`, `charter` and `line` are
+    /// [`crate::arena::doctrine::SEALED_MIND`],
+    /// [`crate::arena::doctrine::SEALED_CHARTER`] and
+    /// [`crate::arena::doctrine::SEALED_LINE`] — and never off the engine
+    /// (the native stock mind and the scripted doctrine are one mind on two
+    /// engines). Not a [`MindSeal`] field: that would move every seal's digest
+    /// and so every mind hash and `mind_sealed` line. `false` on
+    /// [`SealRef::none`].
+    ///
+    /// It gates the three readers of a mind's doctrine state — the tempo's
+    /// `ai_approaching` (`Arena::any_mind_approaching`), and through
+    /// [`Arena::machine_state`] the leader's `doing:` histogram and the
+    /// catch-up sentence — because a mind sealed on anything else keeps no
+    /// doctrine state of its own in its memory's `state` key: its hull reads
+    /// [`crate::arena::doctrine::MachineState::Unknown`]. Every production
+    /// seal is Standard Doctrine before 17b cut M5 (`crate::match_::seal_for`
+    /// writes the identity on every hull), so it reads `true` on every hull a
+    /// match fields; the minds lane's Load III ceiling hulls, renamed after the
+    /// seal, read `false`.
+    pub doctrine: bool,
 }
 
 impl SealRef {
     /// **No seal**: sortie 0, a zero digest, Class 0 recorded and thought at,
-    /// the reflex, governed, open — what [`Arena::new`] laid down on every
+    /// the reflex's engine word (decode-only, unhashed: the conventions' D8),
+    /// governed, open, not doctrine — what [`Arena::new`] laid down on every
     /// unit before 17b cut M3.3 sealed them, and what a unit no seal reached
     /// reads.
     #[must_use]
@@ -378,6 +412,7 @@ impl SealRef {
             engine: SealEngine::Reflex,
             governed: true,
             closed: false,
+            doctrine: false,
         }
     }
 }
@@ -409,8 +444,9 @@ impl Default for SealRef {
 /// canonical bytes of the Line preset over the match's doctrine, `armed`
 /// empty, `licence` `doctrine`, `channels` helm and sensors plus fire on a
 /// hull that carries a weapon row, `fallback` `no core: the ROM` on a hull
-/// with no core, `engine` [`SealEngine::Reflex`] for a reflex or a piloted
-/// hull and [`SealEngine::Native`] for a mind's.
+/// with no core, `engine` the decided engine for minds on every hull since 17b
+/// cut M4.3 (`SealTerms::engine_for_minds`; [`SealEngine::Reflex`] for a
+/// reflex or a piloted hull from M3.3 to M4.2).
 ///
 /// The two 32-byte digests are written as 64 lowercase base-16 characters
 /// ([`crate::arena::snapshot::digest_serde`]), the tree's one digest form;
@@ -486,9 +522,14 @@ impl MindSeal {
     }
 
     /// **What the arena keeps of it** ([`SealRef`]): the sortie, the digest,
-    /// the core class, the class, the engine and the governor bit, open.
+    /// the core class, the class, the engine and the governor bit, open — and
+    /// (17b cut M4.6) the doctrine bit, by identity: this seal's `mind`,
+    /// `charter` and `line` are Standard Doctrine's
+    /// ([`crate::arena::doctrine::SEALED_MIND`], `SEALED_CHARTER`,
+    /// `SEALED_LINE`), whatever its engine.
     #[must_use]
     pub fn seal_ref(&self) -> SealRef {
+        use crate::arena::doctrine::{SEALED_CHARTER, SEALED_LINE, SEALED_MIND};
         SealRef {
             sortie: self.sortie,
             digest: self.digest(),
@@ -497,6 +538,9 @@ impl MindSeal {
             engine: self.engine,
             governed: self.governed,
             closed: false,
+            doctrine: self.mind == SEALED_MIND
+                && self.charter == SEALED_CHARTER
+                && self.line == SEALED_LINE,
         }
     }
 
@@ -523,8 +567,9 @@ impl MindSeal {
     }
 
     /// **A value no seal computes**, for a custody literal built before its
-    /// seal: object 0, no sortie, empty words, zero digests. Every literal in
-    /// the tree replaces it at once (`crate::arena::state::CustodyUnit`'s
+    /// seal: object 0, no sortie, empty words, zero digests, the reflex's
+    /// engine word (decode-only; the conventions' D8 keeps this default). Every
+    /// literal in the tree replaces it at once (`crate::arena::state::CustodyUnit`'s
     /// `sealed`, `crate::match_::seal`), so no arena is ever opened on it.
     #[must_use]
     pub fn placeholder() -> MindSeal {
@@ -635,12 +680,16 @@ impl Arena {
 /// the row (`Arena::suspend_mind`), nothing thinks on it, stages a notice
 /// into it or reads its order while the hull is piloted, and a release
 /// adopts it again as it stood. The hash folds a dormant row as any row
-/// (no production hull carries one before 17b cut M4: the fill is the
+/// (no production hull carried one before 17b cut M4: the fill was the
 /// reflex's, and a piloted hull has no row at check-out).
 ///
-/// Every field decides a later intent, so every field is hashed
-/// (`crate::arena::hash`, item 3c) and carried by a snapshot — the argument
-/// the reflex machine's own row was folded on (16b cut N.1). The pending
+/// Every field that decides a later intent is hashed (`crate::arena::hash`,
+/// item 3c) and every field but the cache is carried by a snapshot — the
+/// argument the reflex machine's own row was folded on (16b cut N.1). Two
+/// fields are NOT hashed: [`MindState::doctrine_state`], a cache over the
+/// memory bytes the hash folds (17b cut M4.3), and
+/// [`MindState::order_issuer`], a record field (the owner's STOP C ruling,
+/// 17b cut M4.6) that decides nothing after the order lands. The pending
 /// think's answer ([`PendingThink`]'s `epochs`, `intents` and `memory`),
 /// [`MindState::dropped`] and [`MindState::seal_digest`], carried since 17b
 /// cut M3.2, are folded since 17b cut M3.6 (`hash.rs`' item 3c, the cut's one
@@ -672,6 +721,23 @@ pub struct MindState {
     /// **The standing order** (D-UM-15 as decided): a squad's order re-keyed
     /// at write time to this hull's own HELD contacts, or `None`.
     pub order: Option<FrameOrder>,
+    /// **The issuer of the order this row holds** (the owner's ruling on STOP
+    /// C, 2026-10-09; 17b cut M4.6): `Order.issuer` as it landed — the
+    /// pilot's tank whose scope the hint was written in, `None` for the
+    /// squad's commander. Written beside [`MindState::order`] where the order
+    /// lands (`crate::arena::intents::apply_intent`'s Order arm, from the same
+    /// `Order` the `ordered` line journals) and cleared wherever the order is
+    /// (a release, an expiry, a possess, the arena's end of a `Support` whose
+    /// charge left), so `None` whenever `order` is. **A record field, as
+    /// `Order.by` is (D-UM-52)**: the hint is re-keyed once, at write time, in
+    /// the issuer's scope (D-UM-15, `Arena::rekey_order`), so the issuer
+    /// steers nothing after the landing — carried by the snapshot (format 9),
+    /// **never folded into `state_hash`** (`crate::arena::hash`'s "Never
+    /// folded"); read only by [`Arena::live_orders_by_issuer`]. It replaces
+    /// the reflex rows' issuer, which 16b cut Y.1 folded because the reflex
+    /// re-keyed its hint at every tick; that fold went with the reflex in
+    /// 17b cut M4.6.
+    pub order_issuer: Option<ObjId>,
     /// **The faults counted against the mind** (D-UM-31; 17b cut M2.2): the
     /// faulted thinks running, at most [`MIND_STRIKES_TO_DROP`]. The think arm
     /// writes it — a faulted think `min(strikes + 1, 3)`, a clean think `0`
@@ -693,8 +759,9 @@ pub struct MindState {
     /// (`Arena::suspend_mind`) and the release adopts it again
     /// (`Arena::adopt_mind` keeps a standing row), so a dropped hull possessed
     /// and released stays dropped — the ROM thinks, and no second
-    /// `mind_dropped` line is journalled. Only the `Mind → Reflex` transition
-    /// (`Arena::release_mind`, a fixture's alone) still removes the row.
+    /// `mind_dropped` line is journalled. Nothing removes the row since 17b
+    /// cut M4.6 deleted the `Mind → Reflex` transition (`Arena::release_mind`,
+    /// a fixture's alone) with the reflex controller.
     /// Carried by the snapshot; **folded into `state_hash` since 17b cut
     /// M3.6** (its presence, then the cause's byte: strikes 1, core 2, abi 3;
     /// after `strikes`, before the card).
@@ -722,10 +789,12 @@ pub struct MindState {
     /// `state` key. Scratch: never hashed (item 3c folds the bytes it is
     /// derived from), never carried (`SNAPSHOT_FORMAT` stays; re-derived at
     /// the decode), refreshed at every write of [`MindState::memory`]. Read by
-    /// the tempo's `ai_approaching`, the squad signal and the Y.4 catch-up
-    /// through [`Arena::machine_state`], each gated on [`Controller::Mind`].
-    /// 17b cut M4.6 gates it on `SealRef.doctrine` and gives any other mind
-    /// `unknown`.
+    /// the tempo's `ai_approaching` (`Arena::any_mind_approaching`), the
+    /// squad signal and the Y.4 catch-up through [`Arena::machine_state`],
+    /// each gated on [`Controller::Mind`] — and, **since 17b cut M4.6**, on
+    /// the hull's [`SealRef::doctrine`]: a mind sealed on anything but
+    /// Standard Doctrine reads
+    /// [`crate::arena::doctrine::MachineState::Unknown`], its cache unread.
     #[serde(skip)]
     pub doctrine_state: crate::arena::doctrine::MachineState,
 }
@@ -752,6 +821,7 @@ impl MindState {
             notices: Vec::new(),
             ranges: BTreeMap::new(),
             order: None,
+            order_issuer: None,
             strikes: 0,
             dropped: None,
             seal_digest: [0; 32],
@@ -1341,8 +1411,9 @@ pub enum Landed {
 impl Arena {
     /// **The first [`DueKind::MindThink`] of every unit the check-out handed a
     /// mind** (17b cut M1a.5; doc 17 §6), in unit-id order, each with a fresh
-    /// [`MindState`] — the shape `Arena::schedule_first_reflex_ticks` has. Only
-    /// a fixture fields one in this cut.
+    /// [`MindState`] — the shape `Arena::schedule_first_reflex_ticks` had
+    /// (deleted with the reflex in 17b cut M4.6). Only a fixture fielded one in
+    /// this cut; since 17b cut M4.3 every AI-filled hull is one.
     pub fn schedule_first_mind_thinks(&mut self) {
         let minds: Vec<ObjId> = self
             .units
@@ -1412,12 +1483,19 @@ impl Arena {
     }
 
     /// **What the machine flying `unit` is doing, as a doctrine state** (17b
-    /// cut M4.3; the M4 row's finding (4)): `Disabled` for a wreck or a
-    /// disabled hull under either machine (the twin's rule: a mind stops
-    /// thinking at its wreck with its last state in memory); the mind row's
-    /// cached state ([`MindState::doctrine_state`]) under
-    /// [`Controller::Mind`]; the reflex row's under [`Controller::Reflex`];
-    /// `None` for a pilot's hull (a dormant row under a pilot is never read).
+    /// cut M4.3; the M4 row's finding (4)): `Disabled` first, for a wreck or
+    /// a disabled hull a mind flies (the twin's rule: a mind stops thinking at
+    /// its wreck with its last state in memory); then, under
+    /// [`Controller::Mind`], **[`MachineState::Unknown`] for a hull whose seal
+    /// is not Standard Doctrine** ([`SealRef::doctrine`], 17b cut M4.6: such a
+    /// mind keeps no doctrine state of its own in its memory, so its cache
+    /// means nothing)
+    /// and the row's cached state ([`MindState::doctrine_state`]) for one that
+    /// is; `None` for a pilot's hull (a dormant row under a pilot is never
+    /// read). The reflex row's state was read here under the reflex
+    /// controller until 17b cut M4.6 deleted it.
+    ///
+    /// [`MachineState::Unknown`]: crate::arena::doctrine::MachineState::Unknown
     #[must_use]
     pub fn machine_state(&self, unit: ObjId) -> Option<crate::arena::doctrine::MachineState> {
         use crate::arena::doctrine::MachineState;
@@ -1429,15 +1507,11 @@ impl Arena {
                 .then_some(MachineState::Disabled);
         }
         match state.controller {
+            Controller::Mind if !state.seal.doctrine => Some(MachineState::Unknown),
             Controller::Mind => Some(
                 self.minds
                     .get(&unit)
                     .map_or(MachineState::Startup, |row| row.doctrine_state),
-            ),
-            Controller::Reflex => Some(
-                self.reflex
-                    .unit(unit)
-                    .map_or(MachineState::Startup, |row| row.state),
             ),
             Controller::Pilot => None,
         }
@@ -1447,16 +1521,81 @@ impl Arena {
     /// whose cached doctrine state is `Approach` — the state its last think
     /// WROTE, so the tempo's Alert follows a mind entering `Approach` one
     /// substep after the reflex's tick would have (the landing); declared in
-    /// doc 16 §11. A wreck reads nothing.
+    /// doc 16 §11. A wreck reads nothing, and (17b cut M4.6) neither does a
+    /// hull whose seal is not Standard Doctrine ([`SealRef::doctrine`]): it
+    /// keeps no doctrine state of its own in its memory, so the cache is not read —
+    /// the gate [`Arena::machine_state`] applies, read here off the cache
+    /// directly.
     #[must_use]
     pub(crate) fn any_mind_approaching(&self) -> bool {
         self.units.iter().any(|unit| {
             unit.controller == Controller::Mind
                 && !unit.limits.wreck
+                && unit.seal.doctrine
                 && self.minds.get(&unit.id).is_some_and(|row| {
                     row.doctrine_state == crate::arena::doctrine::MachineState::Approach
                 })
         })
+    }
+
+    /// **The squads under a live order, grouped by who gave it** (16b cut Y.2;
+    /// doc 16 §2 W8's *orders per commander bounded*; over the mind rows since
+    /// 17b cut M4.6, the owner's STOP C ruling): every hull a mind flies whose
+    /// held order has not expired at arena millisecond `now_ms`, its order's
+    /// squad filed under the order's issuer ([`MindState::order_issuer`]).
+    ///
+    /// Grouped exactly as the scale harness's own tape join
+    /// (`crates/tacsim/tests/harness.rs`' `live_orders_by_issuer`, the W8
+    /// check, which asserts the two agree): only a hull whose controller is
+    /// [`Controller::Mind`] (a dormant row under a pilot is skipped), **a
+    /// wreck counted** (a wreck never lands, so its order never expires
+    /// through the landing and only this deadline retires it), an order live
+    /// while `expires_ms > now_ms`, and an order with no issuer — the LLM
+    /// seam's — filed under **the squad commander of the unit it steers**
+    /// ([`Arena::squad_of`]), so the machines' own orders count against the
+    /// commander that asked for them; a unit in no squad files it under
+    /// `None`. The squad is the row's rendered word, parsed
+    /// ([`crate::deliberation::SquadId::parse`]; the arena writes only words
+    /// it rendered, so a word that does not parse is skipped).
+    ///
+    /// A pure read for the scale harness's W8 assertion: nothing in the arena
+    /// or the world decides anything on it, and nothing but the answer
+    /// allocates. It is an **arena-time** figure (`accepted_ms + ttl_ms`), so it
+    /// can lead the world's own span — which is counted on the world's watch in
+    /// world time ([`crate::arena_bridge::ArenaRegistry::live_orders_of`]) — by
+    /// the arena's lag. The reflex rows' version (over `Order.issuer`, folded
+    /// there) was deleted with them in 17b cut M4.6.
+    #[must_use]
+    pub fn live_orders_by_issuer(
+        &self,
+        now_ms: i64,
+    ) -> BTreeMap<Option<ObjId>, std::collections::BTreeSet<crate::deliberation::SquadId>> {
+        let mut grouped: BTreeMap<
+            Option<ObjId>,
+            std::collections::BTreeSet<crate::deliberation::SquadId>,
+        > = BTreeMap::new();
+        for (unit, row) in &self.minds {
+            if self
+                .unit(*unit)
+                .is_none_or(|state| state.controller != Controller::Mind)
+            {
+                continue;
+            }
+            let Some(order) = row.order.as_ref() else {
+                continue;
+            };
+            if order.expires_ms <= now_ms {
+                continue;
+            }
+            let Some(squad) = crate::deliberation::SquadId::parse(&order.squad) else {
+                continue;
+            };
+            let issuer = row
+                .order_issuer
+                .or_else(|| self.squad_of(*unit).map(|roster| roster.commander));
+            grouped.entry(issuer).or_default().insert(squad);
+        }
+        grouped
     }
 
     /// **The runner `unit` thinks on** (17b cut M3.5; doc 17 §13, D-UM-1):
@@ -1489,8 +1628,10 @@ impl Arena {
     pub(crate) fn suspend_mind(&mut self, unit: ObjId) {
         if let Some(state) = self.minds.get_mut(&unit) {
             state.pending = None;
-            // 17b cut M4.3: the held order goes with the seat.
+            // 17b cut M4.3: the held order goes with the seat — and (17b cut
+            // M4.6, the owner's STOP C) its issuer with it.
             state.order = None;
+            state.order_issuer = None;
         }
         // 17b cut M4.1: a think collected and not yet written is dropped at
         // its write (`Arena::settle_collected` reads this set).
@@ -1498,27 +1639,89 @@ impl Arena {
         self.forget_mind_events(unit);
     }
 
-    /// **Take a hull back from its mind for good** (17b cut M1a.5): the row —
-    /// with it the think waiting to land, whose answer the row carries (17b
-    /// cut M3.2) — and every think and landing on the heap. **Since 17b cut
-    /// M3.5** this is the `Mind → Reflex` transition alone, reachable from a
-    /// fixture and from no production path (a `Released` hands a hull with a
-    /// row back to its mind, `crate::arena::intents::apply_control`); a
-    /// possess is [`Arena::suspend_mind`], which keeps the row.
-    pub(crate) fn release_mind(&mut self, unit: ObjId) {
-        self.minds.remove(&unit);
-        self.awaiting.remove(&unit);
-        self.forget_mind_events(unit);
-    }
-
     /// Every [`DueKind::MindThink`] and [`DueKind::MindLand`] of `unit` off
-    /// the heap — the half [`Arena::suspend_mind`] and [`Arena::release_mind`]
-    /// share.
+    /// the heap — [`Arena::suspend_mind`]'s half (shared with
+    /// `Arena::release_mind`, the `Mind → Reflex` transition, until 17b cut
+    /// M4.6 deleted that with the reflex controller).
     fn forget_mind_events(&mut self, unit: ObjId) {
         self.due.retain(|kind| match kind {
             DueKind::MindThink { unit: on, .. } | DueKind::MindLand { unit: on, .. } => *on != unit,
             _ => true,
         });
+    }
+
+    /// **Hand a unit to a controller, or take it back** (doc 16 §3.8
+    /// "Disconnects"), which is the one thing that moves
+    /// [`crate::arena::state::UnitState::controller`] after check-out — since
+    /// 17b cut M4.6 between the two controllers there are, a pilot and a mind
+    /// (it lived in the reflex controller's module, with that controller's two
+    /// arms, until that cut deleted it).
+    ///
+    /// **17b cut M1a.5: the outgoing controller is released on every
+    /// transition**, read off the unit before anything is written. From
+    /// [`Controller::Mind`] (to a pilot, the only other controller): every
+    /// `MindThink` and `MindLand` of the unit and its think waiting to land,
+    /// and — **since 17b cut M3.5** (doc 17 §12 "Release and possess") — the
+    /// row STAYS, dormant (`Arena::suspend_mind`, its held order and issuer
+    /// cleared), for the release that hands the hull back. From **either**:
+    /// the hull's motor row and every `MotorTick` — a pilot's `DRIVE` dies
+    /// with the seat, and a mind's goal with the mind — and the condition
+    /// slots (17b cut M1b.1; doc 17 §12's "conditions stay dormant" is NOT
+    /// built: the slots are the outgoing principal's on every transition,
+    /// declared). Then the incoming one is installed: `Mind` keeps a standing
+    /// row or lays a fresh one down, and schedules its first think; `Pilot`
+    /// installs nothing. The row is seeded only when `state` is `Withdraw` —
+    /// the only seed `Arena::adopt_mind` honours (17b cut M4.3: a
+    /// `Released` hands the hull over in `Withdraw`, as 16b cut N.1 seeded
+    /// the reflex), written into its memory and its cache; any other `state`
+    /// keeps the row's memory as it stands (a fresh row's reads `Startup`).
+    /// Nothing here touches the unit's seal: a re-seat is a seat activation
+    /// inside the same sortie. Since 17b cut M1a.1 the motor's readers
+    /// (`Arena::hold_routeless`, `Arena::note_blocked`) gate on the motor row
+    /// and not on the controller, which is why no path that moves the
+    /// controller may leave one behind.
+    ///
+    /// `state` is the seed (the conventions' D7: kept a parameter, typed
+    /// [`crate::arena::doctrine::MachineState`], so no caller's seed is
+    /// hard-coded here); a hand-over to a pilot reads nothing of it. A unit
+    /// already under `controller` keeps everything it has.
+    pub fn set_controller(
+        &mut self,
+        unit: ObjId,
+        controller: Controller,
+        state: crate::arena::doctrine::MachineState,
+    ) {
+        let Some(was) = self.unit(unit).map(|slot| slot.controller) else {
+            return;
+        };
+        if was == controller {
+            return;
+        }
+        // The outgoing controller's rows and cadence: 17b cut M3.5 (doc 17
+        // §12), a possess keeps the mind's row dormant, with its held order
+        // cleared (17b cut M4.3).
+        if was == Controller::Mind {
+            self.suspend_mind(unit);
+        }
+        // **17b cut M1b.1** (doc 17 §5): the condition slots are the outgoing
+        // principal's decisions, so they go with the principal on EVERY
+        // transition — a pilot's slots do not fire for the mind that takes
+        // the tank over, nor a mind's for the pilot who reclaims it — and with
+        // them the held-shot rows. Beside the motor row's release, for the
+        // motor row's reason.
+        self.clear_conditions(unit);
+        self.motors.release(unit);
+        self.due
+            .retain(|kind| !matches!(kind, DueKind::MotorTick { unit: on } if *on == unit));
+        if let Some(slot) = self.unit_mut(unit) {
+            slot.controller = controller;
+        }
+        // The incoming one. 17b cut M4.3: a release (`Pilot → Mind`, the only
+        // hand-over to a mind there is) seeds the doctrine's state as N.1
+        // seeded the reflex's.
+        if controller == Controller::Mind {
+            self.adopt_mind(unit, Some(state));
+        }
     }
 
     /// **One hull's view, as its next think would read it** (17b cut M1a.5;
@@ -1902,9 +2105,10 @@ impl Arena {
     /// whichever thread ran the runner.
     ///
     /// Nothing is written — the answer DROPPED, counted — when the match has
-    /// ended, when the hull no longer awaits a think (wrecked, possessed or
-    /// released since the collection: `destroy_unit`, [`Arena::suspend_mind`]
-    /// and [`Arena::release_mind`] clear [`Arena::awaiting`]), or when the
+    /// ended, when the hull no longer awaits a think (wrecked or possessed
+    /// since the collection: `destroy_unit` and [`Arena::suspend_mind`] clear
+    /// [`Arena::awaiting`], as `Arena::release_mind` did for a hull handed to
+    /// the reflex until 17b cut M4.6), or when the
     /// row's `pending` no longer names THIS think. Otherwise **D-UM-9,
     /// atomic**: a FAULT — since 17b cut M2.2 a runner's
     /// [`ThinkResult::fault`] or, as before, more than [`MIND_INTENTS_MAX`]
@@ -2160,7 +2364,8 @@ impl Arena {
 
     /// **Put a machine's intents through the pilot's own door** (17b cut M1a.5;
     /// doc 17 §4, D-UM-12) — `Arena::order`'s body, factored out so the reflex
-    /// controller, the motor and a mind's landing are one function.
+    /// controller (until 17b cut M4.6 deleted it), the motor and a mind's
+    /// landing are one function.
     ///
     /// The kinds go in emission order, `seq` ascending from `1`, each an
     /// [`Intent`] on the channel that carries it at `epoch_of(channel)`
@@ -2272,9 +2477,9 @@ impl Arena {
                     self.resolve_arming(unit, arming, t_ms).map(|_| ())
                 }
                 // **17b cut M1a.5** (D-UM-12): the arm `Arena::order` never
-                // had. The reflex controller still never switches its pod (16b
-                // cut O.2's residual: a machine keeps the switch where it found
-                // it), so it never reaches here; a mind's `emcon` does.
+                // had. The reflex controller never switched its pod (16b cut
+                // O.2's residual: a machine kept the switch where it found it),
+                // so it never reached here; a mind's `emcon` does.
                 IntentKind::Emcon { on } => resolve_emcon(self, unit, *on, t_ms),
                 IntentKind::Heading { .. }
                 | IntentKind::Speed { .. }
@@ -2313,7 +2518,7 @@ impl Arena {
     ///    and never recomputed;
     /// 4. a standing order whose deadline has come is cleared, with one
     ///    `order_expired` line journalled by the arena and the squad marked for
-    ///    its next signal, as the reflex controller's expiry does — and
+    ///    its next signal, as the reflex controller's expiry did — and
     ///    (17b cut M4.6b, the owner's STOP E ruling) so is a `Support` whose
     ///    charge has left the match ([`Arena::end_mind_support_whose_charge_left`]),
     ///    as the reflex controller's end for a charge gone did;
@@ -2446,8 +2651,8 @@ impl Arena {
     /// substep has already TAKEN it ([`crate::arena::state::ActionHash::Taken`]),
     /// else a fresh state hash that stores nothing — under `Outside` AND under
     /// `Pending`. [`Arena::event_hash`] would fill a `Pending` slot (one a
-    /// landing or a reflex tick earlier in the substep opened and journalled
-    /// nothing under), and every later line of the substep would then carry
+    /// landing — or, until 17b cut M4.6, a reflex tick — earlier in the substep
+    /// opened and journalled nothing under), and every later line of the substep would then carry
     /// the think's moment where it carried its own: a think opens no action
     /// hash ([`Arena::run_mind_thinks`]) and fills none either.
     fn think_line_hash(&self) -> u64 {
@@ -2513,7 +2718,7 @@ impl Arena {
 
     /// **A mind's standing order that has run out** (17b cut M1a.5; D-UM-15):
     /// cleared at the landing whose millisecond reaches its deadline, with the
-    /// reflex controller's own expiry — one `order_expired` line under the
+    /// reflex controller's own expiry's shape — one `order_expired` line under the
     /// substep's lazy hash, `orders_expired` counted, the squad marked
     /// (`Arena::note_order_expired`, the squad parsed back from the order's
     /// rendered word by `SquadId::parse`).
@@ -2604,6 +2809,9 @@ impl Arena {
         let hash = self.event_hash();
         if let Some(state) = self.minds.get_mut(&unit) {
             state.order = None;
+            // 17b cut M4.6 (the owner's STOP C): the issuer goes with the
+            // order — unfolded, so the hash taken above is unmoved by it.
+            state.order_issuer = None;
         }
         counters.orders_expired = counters.orders_expired.saturating_add(1);
         let _ = self.ledger.append(
@@ -4709,13 +4917,15 @@ mod tests {
     /// (doc 17 §13, D-UM-45, D-UM-31, D-UM-32) — what 17b cut M3.3 builds the
     /// seal and the record on. [`SortieId::in_match`] puts the match in the
     /// high word and the object number in the low; [`SealRef::none`] is sortie
-    /// 0, a zero digest, Class 0 recorded and thought at, the reflex, governed
-    /// and open, and is the `Default`; every [`DropCause`] and [`SealEngine`]
-    /// serialises as its `as_str` word and reads back from it; [`Arena::new`]
-    /// lays each unit's custody seal's reference (`none()` until 17b cut M3.3);
-    /// and a FILLED seal (Class III recorded,
-    /// Class II thought at, scripted, ungoverned, closed) on a unit survives a
-    /// snapshot round trip field for field.
+    /// 0, a zero digest, Class 0 recorded and thought at, the reflex (its
+    /// engine word, decode-only: the conventions' D8), governed, open and
+    /// (17b cut M4.6) not doctrine, and is the `Default`; every [`DropCause`]
+    /// and [`SealEngine`] serialises as its `as_str` word and reads back from
+    /// it; [`Arena::new`] lays each unit's custody seal's reference (`none()`
+    /// until 17b cut M3.3), which reads doctrine on the fixture seal; and a
+    /// FILLED seal (Class III recorded, Class II thought at, scripted,
+    /// ungoverned, closed, not doctrine) on a unit survives a snapshot round
+    /// trip field for field.
     #[test]
     fn m3_the_seal_and_the_drop_carry_their_values_and_words() {
         use crate::arena::core::CoreClass;
@@ -4742,6 +4952,8 @@ mod tests {
         assert_eq!(none.engine, SealEngine::Reflex);
         assert!(none.governed, "none() is governed");
         assert!(!none.closed, "none() is open");
+        // 17b cut M4.6: no seal is no doctrine.
+        assert!(!none.doctrine, "none() is not doctrine");
         assert_eq!(SealRef::default(), none);
         for cause in [DropCause::Strikes, DropCause::Core, DropCause::Abi] {
             assert_eq!(
@@ -4788,7 +5000,11 @@ mod tests {
             arena.minds.get(&RED).map(|row| row.seal_digest),
             arena.unit(RED).map(|unit| unit.seal.digest)
         );
-        // A filled seal round-trips through a snapshot.
+        // 17b cut M4.6: the fixture seal is Standard Doctrine's identity, so
+        // every unit's reference reads doctrine.
+        assert!(arena.units.iter().all(|unit| unit.seal.doctrine));
+        // A filled seal round-trips through a snapshot — its doctrine bit the
+        // opposite of the fixture's, so the carry is what the decode reads.
         let filled = SealRef {
             sortie: SortieId::in_match(3, RED),
             digest: [0x5a; 32],
@@ -4797,6 +5013,7 @@ mod tests {
             engine: SealEngine::Scripted,
             governed: false,
             closed: true,
+            doctrine: false,
         };
         let Some(red) = arena.units.iter_mut().find(|unit| unit.id == RED) else {
             panic!("red is fielded");
@@ -4825,6 +5042,11 @@ mod tests {
         assert_eq!(
             red_seal.as_ref().and_then(|seal| seal.get("engine")),
             Some(&serde_json::json!("scripted")),
+            "{red_seal:?}"
+        );
+        assert_eq!(
+            red_seal.as_ref().and_then(|seal| seal.get("doctrine")),
+            Some(&serde_json::json!(false)),
             "{red_seal:?}"
         );
         let Ok(back) = Snapshot::decode(&snapshot.document, (*arena.definition).clone()) else {
@@ -5220,8 +5442,8 @@ mod tests {
 
     /// **17b cut M3.4: a think's lines fill no lazy slot** (doc 16 §4's one
     /// hash per moment): `Arena::mind_think` under a `Pending` slot — what a
-    /// landing or a reflex tick earlier in the substep leaves when it
-    /// journalled nothing — journals its `mind_fault` (and, for a sealed
+    /// landing (or, until 17b cut M4.6, a reflex tick) earlier in the substep
+    /// leaves when it journalled nothing — journals its `mind_fault` (and, for a sealed
     /// core gone, its `mind_dropped`) under a fresh state hash, the one an
     /// `Outside` twin's line carries, and leaves the slot `Pending`, so the
     /// substep's next line takes its own moment; under a `Taken` slot the
@@ -5522,5 +5744,109 @@ mod tests {
             None,
             "a pilot's wreck is nobody's"
         );
+    }
+
+    /// **17b cut M4.6c: the doctrine bit** (the conventions' D2 and D3). The
+    /// bit is derived by IDENTITY — the seal's `mind`, `charter` and `line`
+    /// are Standard Doctrine's — so renaming any one of the three clears it
+    /// and changing the engine alone does not. A hull a mind flies whose seal
+    /// is not Standard Doctrine's (here the fixture seal renamed `Load III`
+    /// after the seal, as the minds lane's ceiling hulls are) reads
+    /// [`crate::arena::doctrine::MachineState::Unknown`] off
+    /// `Arena::machine_state` whatever its cache says, raises no tempo
+    /// (`any_mind_approaching` ignores its cache) and is counted in the
+    /// leader's `doing:` histogram under `unknown` (slot 6); the same row on a
+    /// doctrine seal reads its cache, raises the tempo and is counted under
+    /// `approach`. A disabled hull and a wreck read `Disabled` before the
+    /// gate.
+    #[test]
+    fn m4_6c_a_mind_not_sealed_on_doctrine_reads_unknown_raises_no_tempo_and_counts_unknown() {
+        use crate::arena::doctrine::MachineState;
+        let sealed = || {
+            let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+            red.controller = Controller::Mind;
+            red.reseal(&crate::match_::SealTerms::fixture())
+                .expect("the fixture terms seal");
+            red.seal
+        };
+        // The identity, field by field; the engine is not part of it.
+        assert!(sealed().seal_ref().doctrine, "the fixture seal is doctrine");
+        let renamed = |change: &dyn Fn(&mut MindSeal)| {
+            let mut seal = sealed();
+            change(&mut seal);
+            seal.seal_ref().doctrine
+        };
+        assert!(!renamed(&|s| s.mind = SmolStr::new("Load III")));
+        assert!(!renamed(&|s| s.charter = SmolStr::new("bespoke")));
+        assert!(!renamed(&|s| s.line = SmolStr::new("custom")));
+        assert!(renamed(&|s| s.engine = SealEngine::Scripted));
+        assert!(renamed(&|s| s.engine = SealEngine::Reflex));
+        // A row whose cache reads `Approach`, on a doctrine seal: read.
+        let approaching = || {
+            let mut arena = minded();
+            if let Some(state) = arena.minds.get_mut(&RED) {
+                state.doctrine_state = MachineState::Approach;
+            }
+            arena
+        };
+        let mut doctrine = approaching();
+        assert_eq!(doctrine.machine_state(RED), Some(MachineState::Approach));
+        assert!(doctrine.any_mind_approaching());
+        let signal = doctrine
+            .take_deliberation_signals()
+            .into_iter()
+            .find(|signal| signal.commander == RED)
+            .expect("the mind's squad is reported");
+        assert_eq!(
+            signal.states,
+            [0, 0, 1, 0, 0, 0, 0],
+            "counted under approach"
+        );
+        // The same row on a seal renamed after the seal: unknown.
+        let mut other = approaching();
+        let mut seal = sealed();
+        seal.mind = SmolStr::new("Load III");
+        if let Some(unit) = other.unit_mut(RED) {
+            unit.seal = seal.seal_ref();
+        }
+        assert_eq!(other.machine_state(RED), Some(MachineState::Unknown));
+        assert!(
+            !other.any_mind_approaching(),
+            "the cache of a mind not on doctrine raises no tempo"
+        );
+        let signal = other
+            .take_deliberation_signals()
+            .into_iter()
+            .find(|signal| signal.commander == RED)
+            .expect("the mind's squad is reported");
+        assert_eq!(
+            signal.states,
+            [0, 0, 0, 0, 0, 0, 1],
+            "counted under unknown"
+        );
+        assert_eq!(
+            signal
+                .members
+                .iter()
+                .find(|member| member.unit == RED)
+                .map(|member| member.state),
+            Some(MachineState::Unknown)
+        );
+        assert_eq!(crate::arena::command::state_words()[6], "unknown");
+        // A disabled hull (not a wreck) is `Disabled` first, doctrine or not;
+        // set back, it reads `Unknown` again.
+        if let Some(unit) = other.unit_mut(RED) {
+            unit.disabled = true;
+        }
+        assert_eq!(other.machine_state(RED), Some(MachineState::Disabled));
+        if let Some(unit) = other.unit_mut(RED) {
+            unit.disabled = false;
+        }
+        assert_eq!(other.machine_state(RED), Some(MachineState::Unknown));
+        // A wreck is `Disabled` first, doctrine or not.
+        if let Some(unit) = other.unit_mut(RED) {
+            unit.limits.wreck = true;
+        }
+        assert_eq!(other.machine_state(RED), Some(MachineState::Disabled));
     }
 }

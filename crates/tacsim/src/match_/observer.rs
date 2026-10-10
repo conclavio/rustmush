@@ -32,7 +32,8 @@
 //! One positional row per unit, in unit-id order: `[callsign, team letter, x
 //! cell or null, y cell or null, heading in whole degrees, object number,
 //! flags]`, the flags a string of `w` wreck, `p` power online, `s` starting,
-//! `m` machine (a mind flies it — or, in a fixture, the reflex controller),
+//! `m` machine (a mind flies it — or, in a fixture until 17b cut M4.6 deleted
+//! it, the reflex controller),
 //! `h` held — in that order, `""`
 //! when none. Compact on purpose: a 300-unit picture serialises well under the
 //! 16,384-byte frame bound (`[tacsim.harness].max_frame_bytes`), pinned below.
@@ -54,8 +55,8 @@ pub const OBSERVER_VERSION: u32 = 1;
 /// **One unit's flags**, in the payload's fixed order: `w` wreck, `p` power
 /// online, `s` starting, `m` machine, `h` held; `""` when none apply.
 /// **17b cut M4.3**: one attribute, one flag — `m` for every hull a machine
-/// flies (`Controller::is_machine`: a mind, or in a fixture the reflex
-/// controller); M1a.5's `n` is retired, which the renderers never knew
+/// flies (`Controller::is_machine`: a mind — or, in a fixture until 17b cut
+/// M4.6 deleted it, the reflex controller); M1a.5's `n` is retired, which the renderers never knew
 /// (`web/src/lib/replay.ts`, the TUI's replay), so a mind read as a pilot's
 /// hull until this cut. Additive, so the version stays.
 #[must_use]

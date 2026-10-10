@@ -78,9 +78,9 @@
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
 //! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
 //! | `[tacsim.arena.ledger].max_unflushed_chunks` | `256` | 16 KiB chunks the egress ring may hold before the match is stopped with `Void` |
-//! | `[tacsim.arena.reflex].decide_ms` | `1000` | **16b cut N.1** (doc 16 §6): arena milliseconds between one AI unit's decisions, staggered by unit id — a cadence of arena time, not of pulses |
+//! | `[tacsim.arena.reflex].decide_ms` | `1000` | **16b cut N.1** (doc 16 §6): arena milliseconds between one driven hull's motor ticks, staggered by unit id — a cadence of arena time, not of pulses (the reflex controller's decisions until 17b cut M4.6 deleted it; the block keeps its name) |
 //! | `[tacsim.arena.reflex].path_max_cells` | `65536` | `[atlas].path_max_cells` **raised for the arena** (16b §9): cells one bounded A\* may expand before the `unreachable` edge fires |
-//! | `[tacsim.arena.reflex].max_path_queries` | `64` | path searches the controller may run in one `decide_ms` window of arena time; a unit refused keeps the path it has |
+//! | `[tacsim.arena.reflex].max_path_queries` | `64` | path searches the motor may run in one `decide_ms` window of arena time; a unit refused keeps the path it has |
 //! | `[tacsim.arena.reflex].repath_ms` | `4000` | the least arena time between two path searches by one unit |
 //! | `[tacsim.arena.reflex].withdraw_permille` | `350` | armour plus internals, per mille of the authored totals, below which a unit breaks off toward its entry zone |
 //! | `[tacsim.arena.reflex].weight_range` | `100` | the utility weight on range to a candidate hostile; lower scores win |
@@ -97,7 +97,7 @@
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
 //! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, flown by Standard Doctrine on a unit mind (17b cut M4.3; the reflex controller's before it). Off by default because doc 16 §1's A1 is a two-tank story |
 //! | `[tacsim.match].unattended_ms` | `300000` | **16b cut D.3** (`B-33`): world milliseconds a running match every pilot has left runs on before the lobby ends it `unattended`; `0` is off, and anything else is at least `10000` |
-//! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from the reflex controller; `0` to `600000` |
+//! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from its unit mind (the reflex controller until 17b cut M4.3); `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
 //! | `[tacsim.minds].fill_class` | `"I"` | **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every seated hull are sealed and admitted at — `0`, `I`, `II` or `III` by its word; the seal's class is the least of the stock rating (`I`), the core and this, so above `I` it caps nothing until M5 rates minds; a config still naming the retired lab knob `fill_controller` (17b cut M1b.5) refuses the boot |
@@ -985,7 +985,8 @@ pub struct TacsimArenaCfg {
     /// **The most machines one squad holds** (**16b cut Z.1**; 16c N6, *lances*;
     /// doc 16 §6 "Deliberation").
     ///
-    /// A side's reflex units are dealt, in unit-id order, into `ceil(n / size)`
+    /// A side's machines (unit minds since 17b cut M4.3; the reflex
+    /// controller's units before it) are dealt, in unit-id order, into `ceil(n / size)`
     /// squads whose sizes differ by at most one, so five machines at four are a
     /// three and a two and never a four and a one. Both groupings of a match —
     /// the record's and the arena's — read it, so they cannot disagree. `1` to
@@ -1021,8 +1022,9 @@ pub struct TacsimArenaCfg {
     /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
     /// hard bounds.
     pub ledger: TacsimLedgerCfg,
-    /// `[tacsim.arena.reflex]` — the reflex controller's cadence, its path
-    /// budgets and its doctrine.
+    /// `[tacsim.arena.reflex]` — the machines' cadence, the motor's path
+    /// budgets and the doctrine figures (the reflex controller's until 17b cut
+    /// M4.6 deleted it; the block keeps its name).
     pub reflex: TacsimReflexCfg,
 }
 
@@ -1044,27 +1046,34 @@ impl Default for TacsimArenaCfg {
     }
 }
 
-/// `[tacsim.arena.reflex]` — the reflex controller (**16b cut N.1**; doc 16 §6).
+/// `[tacsim.arena.reflex]` — the reflex controller's block (**16b cut N.1**;
+/// doc 16 §6), named for the deterministic state machine that flew a tank
+/// nobody is sitting in: the AI fill of a lobby that fields fewer pilots than
+/// tanks, the harness's field of 300, and the fallback a seat released past the
+/// linkdead grace hands its tank to.
 ///
-/// The deterministic state machine that flies a tank nobody is sitting in: the AI
-/// fill of a lobby that fields fewer pilots than tanks, the harness's field of
-/// 300, and the fallback a seat released past the linkdead grace hands its tank
-/// to. It submits the **same intents a pilot's verbs stage**, so nothing here can
-/// make a unit do what a player could not; what it tunes is how often the machine
-/// thinks, how far it searches for a route, and what it prefers to shoot at.
+/// **17b cut M4.6 deleted the reflex controller; the block keeps its name**
+/// (every key, default and validation sentence unchanged), because what it
+/// holds outlived it: `decide_ms` is the motor's tick cadence, the path budgets
+/// are the motor's, and the doctrine figures feed the stock card Standard
+/// Doctrine thinks under on a unit mind (which has flown those tanks since 17b
+/// cut M4.3) — `tacsim::config::ReflexConfig`'s own paragraph. A machine
+/// submits the **same intents a pilot's verbs stage**, so nothing here can make
+/// a unit do what a player could not.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimReflexCfg {
-    /// Arena milliseconds between one AI unit's decisions, staggered by unit id.
-    /// A cadence of **arena** time, so the controller runs the same number of
-    /// times per arena second at every tempo (doc 16 §3.1, D-16-2).
+    /// Arena milliseconds between one driven hull's motor ticks (one AI unit's
+    /// decisions until 17b cut M4.6 deleted the reflex controller), staggered by
+    /// unit id. A cadence of **arena** time, so the motor runs the same number
+    /// of times per arena second at every tempo (doc 16 §3.1, D-16-2).
     pub decide_ms: u32,
     /// The most cells one bounded A\* may expand before it gives up and the
     /// `unreachable` edge fires. This is `[atlas].path_max_cells` **raised for the
     /// arena** (16b §9): the atlas searches a room neighbourhood at 4,096 and the
     /// arena searches a 256 by 256 window, which is 65,536 cells.
     pub path_max_cells: u32,
-    /// The most path searches the controller may run in one `decide_ms` window of
+    /// The most path searches the motor may run in one `decide_ms` window of
     /// arena time; a unit refused by the budget keeps the path it has. A budget
     /// per *pulse* would bite differently at each tempo, which D-16-2 forbids.
     pub max_path_queries: u32,
@@ -1293,7 +1302,7 @@ pub struct TacsimMatchCfg {
     pub max_slots_per_side: u32,
     /// **Whether a match fields the tanks of the pods nobody claimed**, under the
     /// reflex controller (**16b cut N.1**; doc 16 §6's *the AI fill of a later
-    /// lobby*).
+    /// lobby*) — flown by Standard Doctrine on a unit mind since 17b cut M4.3.
     ///
     /// `false` is the default and it is not a placeholder. Doc 16 §6 and 16b §9's
     /// cut N row both put the lobby's AI fill in *a later lobby*, and doc 16 §1's
@@ -1313,7 +1322,8 @@ pub struct TacsimMatchCfg {
     /// off entirely.
     ///
     /// Doc 16 §11's N.1 amendment makes a released seat one-way: a pilot who
-    /// `EXIT`s hands their tank to the reflex controller and cannot take it back.
+    /// `EXIT`s hands their tank to the machine (a unit mind since 17b cut M4.3;
+    /// the reflex controller before it) and cannot take it back.
     /// So a match every human has walked out of has nobody left who can end it,
     /// and before this key it ran to `max_duration_ms` — a quarter-hour (an hour
     /// before AP.2) in which no second crew could claim a slot. The lobby stamps
@@ -1328,7 +1338,8 @@ pub struct TacsimMatchCfg {
     /// control"), in world milliseconds; `0` to `600000`.
     ///
     /// A drop — the linkdead grace running out, or a `QUIT` — hands the tank to
-    /// the reflex controller and the board reads `flown by doctrine`; `BOARD`
+    /// a unit mind (the reflex controller until 17b cut M4.3) and the board
+    /// reads `flown by doctrine`; `BOARD`
     /// in the running match takes it back, where it stands, at a new epoch.
     /// This floor closes flapping and gives the arena a pulse to process the
     /// release before the reclaim. `EXIT` is still one-way whatever this says.

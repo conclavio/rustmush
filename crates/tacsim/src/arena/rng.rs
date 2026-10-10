@@ -258,8 +258,10 @@ pub const fn splitmix64(state: u64) -> u64 {
 /// milliseconds. A `cadence_ms` below 1 is read as 1, so the answer is `0`.
 ///
 /// It is what `Arena::schedule_first_passes` offsets each unit's first sensor
-/// pass by and what `Arena::schedule_reflex_tick` offsets each machine's decide
-/// grid by (doc 16 §3.6 *staggered by unit id*, read as *keyed on it*). The
+/// pass by and what `Arena::grid_at` offsets each hull's motor and think grid
+/// by (`Arena::schedule_reflex_tick`'s decide grid until 17b cut M4.6 deleted
+/// the reflex controller; doc 16 §3.6 *staggered by unit id*, read as *keyed
+/// on it*). The
 /// stagger was `id % cadence`, and a match's object numbers are contiguous, so
 /// every first pass fell inside the first `units` milliseconds of each second —
 /// 300 units put all 300 passes in the first 300 ms, and the worst pulse

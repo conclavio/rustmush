@@ -1956,9 +1956,10 @@ const STANDARD_DOCTRINE_SHA256: &str =
 /// 3. it compiles on the process's sandbox under `MIND_ABI`, and twice on a
 ///    fresh one caches ONE compilation;
 /// 4. **the state codes are integer literals pinned against
-///    `MachineState::ALL`**: the header's table names every state at its
-///    `code()` and `as_str()`, and every literal the script compares or
-///    writes `this.state` with is one of them;
+///    `MachineState::DOCTRINE`** (`MachineState::ALL` until 17b cut M4.6
+///    appended `Unknown` to it): the header's table names every doctrine
+///    state at its `code()` and `as_str()`, and every literal the script
+///    compares or writes `this.state` with is one of them;
 /// 5. **the binding limits** — at most 32 functions, every body at
 ///    expression depth 24 (the smallest depth it compiles at is measured and
 ///    printed), the widest scope (parameters plus bound names) at most 64 —
@@ -2055,7 +2056,11 @@ fn m2_the_standard_doctrine_source_is_pinned() {
             (code.parse().expect("an integer code"), word)
         })
         .collect();
-    let all: Vec<(u8, &str)> = MachineState::ALL
+    // 17b cut M4.6: the six the doctrine writes (`MachineState::DOCTRINE`),
+    // not `ALL`, which carries `Unknown` since that cut — a state read off the
+    // seal, never written by the script (whose header, under the pinned
+    // digest, is not edited).
+    let all: Vec<(u8, &str)> = MachineState::DOCTRINE
         .iter()
         .map(|state| (state.code(), state.as_str()))
         .collect();

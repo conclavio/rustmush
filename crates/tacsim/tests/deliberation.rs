@@ -1701,9 +1701,10 @@ fn a_close_range_band_keeps_the_squad_from_shooting_across_the_window() {
     );
 }
 
-/// **17b cut M4.5a**: blue's tank is a mind (the reflex's before it); the
-/// pilot's refusal keeps its word, `Refusal::NotReflex` (17b cut M4.6 renames
-/// it `NotMachine`).
+/// **17b cut M4.5a**: blue's tank is a mind (the reflex's before it). **17b
+/// cut M4.6c** renamed the pilot's refusal `Refusal::NotMachine` (word
+/// `not_machine`; `NotReflex`, `not_reflex`, before it); its sentence is
+/// unchanged.
 #[test]
 fn an_order_is_refused_for_a_unit_a_pilot_is_flying() {
     let cfg = arena_cfg(30_000);
@@ -1746,7 +1747,7 @@ fn an_order_is_refused_for_a_unit_a_pilot_is_flying() {
             &intent,
             tacsim::arena::intents::IntentSource::Seat
         ),
-        IntentOutcome::Refused(Refusal::NotReflex),
+        IntentOutcome::Refused(Refusal::NotMachine),
         "an order steers a machine, and a pilot's tank has none"
     );
 }
@@ -2237,7 +2238,9 @@ fn an_order_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
 /// `FrameOrder` the mind reads — red-1's squad word, the objective, the
 /// constraints and `expires_ms` — and every one is asserted back field for
 /// field. A mind's order names no author: D-UM-52's `by` is the world's watch's
-/// and the tape's, and the issuer is not mind-row state at M4.5, so **the
+/// and the tape's, and the issuer is not mind-row state at M4.5 (since 17b cut
+/// M4.6, the owner's STOP C, it is: `MindState::order_issuer`, carried and
+/// unfolded; the author still is not), so **the
 /// author half of the round trip is LOST** (Q3), where the reflex row carried
 /// the `StandingOrder` whole. What is asserted is what the mind row carries:
 /// the order's squad and objective. The squad check is not an author check —
@@ -2287,8 +2290,8 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
                 Snapshot::head(&snapshot.document).map(|head| head.format),
                 Ok(SNAPSHOT_FORMAT)
             );
-            // 17b cut M3.2 moved the format to 8.
-            assert_eq!(SNAPSHOT_FORMAT, 8);
+            // 17b cut M3.2 moved the format to 8 and 17b cut M4.6 to 9.
+            assert_eq!(SNAPSHOT_FORMAT, 9);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -3227,10 +3230,11 @@ fn e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close() {
 /// The midpoint claim is made for `close` alone because this window is 16,000 cm
 /// across: `effective`'s two edges are 16,333 and 23,333 cm and `far`'s are
 /// 24,500 and 35,000, so neither midpoint is a place two tanks on it can stand.
-/// `release_cm > engage_cm` for all three bands is pinned arithmetically by
-/// `arena/reflex.rs`'s own `e1_the_stock_tanks_three_rows_of_the_range_table`
-/// and, row for row off a mind's view since 17b cut M4.6a, by
-/// `arena/stock_mind.rs`'s
+/// `release_cm > engage_cm` for all three bands was pinned arithmetically by
+/// the reflex's own e1 test (`arena/reflex.rs`'
+/// `e1_the_stock_tanks_three_rows_of_the_range_table`) until 17b cut M4.6c
+/// deleted it, and is pinned row for row off a mind's view by
+/// `arena/stock_mind.rs`'
 /// `e1_the_stock_tanks_three_rows_of_the_range_table_off_the_view`.
 ///
 /// **17b cut M4.6b — on the unit mind** (the owner's STOP B ruling of
@@ -4484,7 +4488,7 @@ fn y1_signal(roster: &tacsim::deliberation::SquadRoster) -> tacsim::arena::comma
         sight_cm: 0,
         default_ttl_ms: 30_000,
         health_permille: 1_000,
-        states: [0; 6],
+        states: [0; 7],
         cell: None,
         window: (16, 16),
         // 16b cut Z.1: the members ride the signal; the world never reads them.
@@ -4715,7 +4719,8 @@ fn l1_sides(
 ///
 /// **17b cut M4.5a — on the unit mind** (Q3; the M4.3 precedent,
 /// `cockpit.rs`' `l1_a_typed_order_carries_the_seats_character`): at M4.5 the
-/// author and the issuer are not mind-row state — a mind's order is the
+/// author and the issuer are not mind-row state (the issuer is since 17b cut
+/// M4.6, `MindState::order_issuer`; the author is not) — a mind's order is the
 /// `FrameOrder` it reads (the squad word, the objective, the constraints and
 /// the deadline), and D-UM-52's `by` is the world's watch's. So the author
 /// and the issuer are asserted on the `Order` value issued (as before); the

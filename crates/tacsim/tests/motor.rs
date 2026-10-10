@@ -220,18 +220,6 @@ fn m1b0_the_production_line_hashes_do_not_move() {
     );
 }
 
-/// **The doctrine the motor reads is the arena's** (17b cut M1a.1): `follow`
-/// reads `self.arena_cfg.reflex` where it read the reflex memory's copy, and the
-/// two are one value — `Arena::new` builds the memory from that block and
-/// nothing writes either afterwards. `crates/tacsim/tests/reflex.rs` asserts the
-/// same on its own rig, under a non-default doctrine.
-#[test]
-fn m1a1_the_reflex_config_is_the_arenas() {
-    let world = booted_world();
-    let arena = duel(&world);
-    assert_eq!(arena.reflex.config(), &arena.arena_cfg.reflex);
-}
-
 /// **`stand_off_cell` reads the plot and not the target** (doc 17 §4's audit;
 /// 16b cut F.3's rule). Red Tank 1 holds Blue Tank 1 as a classified contact
 /// whose plot is where Blue stands; Blue is then moved two cells by writing its

@@ -113,7 +113,8 @@ pub struct SealTerms {
 /// reference the native mind is held equal to (Gate A and the twin, no
 /// divergence), and a scripted seal still runs it — a fixture's
 /// (`tests/support`'s `Muster::scripted`), or a match checked out before the
-/// decision, which resumes on the runner its seal names.
+/// decision, which resumed on the runner its seal names until 17b cut M4.6's
+/// format 9, which voids every older snapshot.
 ///
 /// THE RULE (17b cut M4.2): the decision was the verdict of the minds lane's
 /// fill variant (`tacsim_harness_arena_minds` in
@@ -300,10 +301,12 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         fallback,
         // **17b cut M4.3**: every hull — a `Released` hands any hull to a
         // mind, so a seated hull's seal names the engine the mind that takes
-        // it runs on; a fixture's reflex hull likewise (it is sealed, never
-        // run on a mind). `SealEngine::Reflex` is decode-only from here: every
-        // M3 record in the centre's history carries it (the M4 row's finding
-        // (6)), and nothing writes it.
+        // it runs on (a fixture's reflex hull likewise, until 17b cut M4.6
+        // deleted the reflex controller). `SealEngine::Reflex` is decode-only
+        // from here: every live record an M3.3–M4.2 build wrote carries it
+        // (the M4 row's finding (6)), and no seal computes it (`SealRef::none`
+        // and `MindSeal::placeholder` still default to it, unhashed: the
+        // conventions' D8).
         engine: terms.engine_for_minds,
     })
 }

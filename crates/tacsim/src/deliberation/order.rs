@@ -36,9 +36,10 @@ use crate::deliberation::squad::SquadId;
 
 /// The shortest time to live an order may carry, milliseconds of arena time.
 ///
-/// Below a second an order would expire before the squad's next reflex tick could
-/// read it, which is an order that never happened and a `order_expired` line that
-/// says nothing.
+/// Below a second an order would expire before a squad's machine next read it —
+/// a mind's think (1,000 ms at Class I; the reflex tick until 17b cut M4.6) —
+/// which is an order that never happened and a `order_expired` line that says
+/// nothing.
 pub const MIN_TTL_MS: u32 = 1_000;
 
 /// The longest time to live an order may carry, milliseconds of arena time — ten
@@ -61,10 +62,11 @@ pub const MAX_HORIZON_MS: u32 = 600_000;
 /// **What a squad is being told to do** (doc 16 §6: *objective*).
 ///
 /// Six arms and no seventh: the machine has exactly six things it can be pointed
-/// at, and an objective the reflex controller could not carry out would be an
-/// order that reads well and does nothing. The last two (16b cut Z.2; 16c N6)
-/// are the squad roles — a screen and a support — and both are obeyed from state
-/// the reflex tick already holds.
+/// at, and an objective the machine could not carry out (the reflex controller
+/// until 17b cut M4.6, a unit mind since) would be an order that reads well and
+/// does nothing. The last two (16b cut Z.2; 16c N6) are the squad roles — a
+/// screen and a support — and both were obeyed from state the reflex tick
+/// already held; a mind obeys both off its own view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "objective")]
 pub enum Objective {
@@ -336,11 +338,17 @@ pub struct Order {
     pub issued_ms: i64,
     /// **The unit whose scope a target hint is written in** (16b cut Y.1; 16c N3):
     /// a pilot's own tank when a pilot typed `ORDER`, `None` for the squad's own
-    /// commander (the LLM seam). `ordered_target` resolves the hint there; the
-    /// receiving unit still chooses only among what it holds itself.
+    /// commander (the LLM seam). `Arena::rekey_order` resolves the hint there
+    /// (the reflex's `ordered_target` until 17b cut M4.6); the receiving unit
+    /// still chooses only among what it holds itself.
     ///
     /// Folded into `crate::arena::hash::state_hash` beside the constraint byte
-    /// (the one hash move of cut Y), because it decides which object a hint names.
+    /// (the one hash move of cut Y) on the reflex rows, because the reflex
+    /// re-keyed its hint at every tick, so it decided which object a hint
+    /// named — until 17b cut M4.6 deleted those rows and that fold (the
+    /// owner's STOP C ruling). A mind re-keys the hint once, at write time, in
+    /// this scope (D-UM-15), and keeps the issuer beside the order as a record
+    /// field, carried and never folded (`crate::arena::mind::MindState::order_issuer`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer: Option<ObjId>,
     /// **The order's author** (17b cut L.1; doc 17 §4, D-UM-52): the character

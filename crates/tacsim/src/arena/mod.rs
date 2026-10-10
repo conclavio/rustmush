@@ -134,29 +134,27 @@
 //!
 //! # Cut N.1: the reflex controller and the paths
 //!
-//! [`crate::arena::reflex`] is doc 16 §6's deterministic state machine — `Startup → Patrol →
-//! Approach → Engage → Withdraw → Disabled`, with `blocked`, `lost`, `no line`
-//! and `unreachable` as edges — and [`crate::arena::path`] is the bounded A\* over the arena's
-//! own terrain copy that `Patrol`, `Approach` and `Withdraw` route on. The
-//! machine gives its orders through [`crate::arena::intents::apply_intent`], the same door a
-//! pilot's verbs come through, so it can do nothing a player could not.
+//! 16b cut N.1's reflex controller (`crate::arena::reflex`) was doc 16 §6's
+//! deterministic state machine — `Startup → Patrol → Approach → Engage →
+//! Withdraw → Disabled`, with `blocked`, `lost`, `no line` and `unreachable` as
+//! edges — run at its own due event, and [`crate::arena::path`] is the bounded
+//! A\* over the arena's own terrain copy that `Patrol`, `Approach` and
+//! `Withdraw` route on. A machine gives its orders through
+//! [`crate::arena::intents::apply_intent`], the same door a pilot's verbs come
+//! through, so it can do nothing a player could not.
 //!
-//! It fills the `controller` attribute A.1 had no reader for
+//! It filled the `controller` attribute A.1 had no reader for
 //! ([`crate::arena::state::Controller`]), the two tempo signals W.1 left `false`
 //! ([`crate::arena::clock::TempoSignals::ai_approaching`] and
 //! [`crate::arena::clock::TempoSignals::hostile_in_weapons_range`]), and the waypoint graph and
 //! key spots C.2 authored and nothing read ([`crate::arena::state::ArenaDefinition::waypoints`],
 //! [`crate::arena::state::ArenaDefinition::key_spots`]).
 //!
-//! **Its tick is a [`crate::arena::state::DueKind::ReflexTick`] and not pulse phase 4**, which
-//! is a deviation from 16b §8's cut N row with a reason the same row gives:
-//! [`crate::arena::reflex`]'s module head has it in full.
-//!
 //! **17b cut M1a.1** split the driving half out (doc 17 §4, D-UM-3):
 //! [`crate::arena::motor`] owns the route, the search and its budget, the
 //! follower and the remembered stops, one [`crate::arena::motor::MotorRow`]
-//! per steered hull on [`crate::arena::state::Arena::motors`], and the reflex
-//! controller decides the goal it drives to.
+//! per steered hull on [`crate::arena::state::Arena::motors`], driven on
+//! [`crate::arena::state::DueKind::MotorTick`].
 //!
 //! **17b cut M4.6a** moved what outlives the reflex out of its module:
 //! [`crate::arena::doctrine`] holds the machine's states
@@ -166,6 +164,16 @@
 //! (`Arena::apply_machine_intents`, [`crate::arena::mind::Landed`]); and
 //! [`crate::arena::state`] holds the tempo's weapons-range read and a hull's
 //! health (`Arena::hostile_in_weapons_range`, `Arena::health_permille`).
+//!
+//! **17b cut M4.6c deleted the reflex controller** (17b §3's M4 row, finding
+//! (iv); the owner's rulings of 2026-10-09): its module, `Controller::Reflex`
+//! (the mind keeps its byte, `2`), `DueKind::ReflexTick`, `Arena.reflex` and
+//! every reader, hash item 3 and the snapshot's `reflex` section
+//! (`SNAPSHOT_FORMAT` 9). Since 17b cut M4.3 every machine is a unit mind
+//! ([`crate::arena::mind`]) — the AI fill and every released hull — so the
+//! deletion moved the hash of no match that fields no reflex hull.
+//! `ReflexConfig` keeps its name (`[tacsim.arena.reflex]`, now the motor's
+//! cadence and budgets and the stock card's doctrine).
 //!
 //! # Cut X.6: elevation, and the one slope rule
 //!
@@ -244,8 +252,9 @@
 //! later as two due kinds the due loop runs last at their millisecond, and the
 //! runner as a trait ([`crate::arena::mind::MindRunner`]). A mind's
 //! intents land through the reflex controller's own door
-//! (`Arena::apply_machine_intents`) under
-//! [`crate::arena::intents::IntentSource::Mind`]. No production unit is a mind.
+//! (`Arena::apply_machine_intents`, the mind seam's since 17b cut M4.6a) under
+//! [`crate::arena::intents::IntentSource::Mind`]. No production unit was a
+//! mind until 17b cut M4.3 made every machine one.
 //!
 //! **17b cut M1a.6**: the library implements the runner twice —
 //! [`crate::arena::mind::NoMind`], which thinks nothing and stays for the
@@ -307,7 +316,6 @@ pub mod motor;
 pub mod observer;
 pub mod path;
 pub mod perception;
-pub mod reflex;
 pub mod resolution;
 pub mod rng;
 pub mod slope;
@@ -383,7 +391,6 @@ pub use perception::{
     FrameOrder, MindObjective, Named, PerceptionCounters, SensorProfile, SignatureFactor,
     ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
-pub use reflex::{ReflexMemory, ReflexUnit};
 pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
 };

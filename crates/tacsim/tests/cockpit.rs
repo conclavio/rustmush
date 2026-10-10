@@ -7353,7 +7353,7 @@ async fn l1_a_typed_order_carries_the_seats_character() {
         sight_cm: 0,
         default_ttl_ms: 30_000,
         health_permille: 1_000,
-        states: [0; 6],
+        states: [0; 7],
         cell: None,
         window: (16, 16),
         members: Vec::new(),

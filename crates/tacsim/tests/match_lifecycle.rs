@@ -9341,7 +9341,10 @@ async fn m4_3_a_scripted_seal_missing_its_source_is_refused_and_a_native_one_res
 /// **The production upgrade path**: a match checked out between 17b cut M4.3
 /// and the fill decision sealed every hull `scripted` on the stock source, in
 /// its record and in its snapshot's references alike, and the deploy that
-/// carries the decision resumes it. Each hull of this lobby match — checked
+/// carries the decision resumes it — until 17b cut M4.6's format 9, which
+/// voids every older snapshot (this test writes its snapshot at this build's
+/// format, so what it pins is the scripted seal's resume path, which a
+/// fixture's scripted seal still takes). Each hull of this lobby match — checked
 /// out `native` (`PRODUCTION_FILL_ENGINE`), asserted — is made that shape
 /// GENUINELY before the reboot: its record seal rewritten to the `scripted`
 /// engine on the stock `source_sha256` (compiled in, so the resume refusal

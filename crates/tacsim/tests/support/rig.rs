@@ -391,9 +391,11 @@ pub fn seeing(unit: CustodyUnit, cells: u16) -> CustodyUnit {
     with_sight(unit, cells).sealed()
 }
 
-/// **What the machine flying `unit` is doing** (17b cut M4.3): either
-/// machine's doctrine state through `Arena::machine_state` — the mind's off
-/// its cached state, the reflex's off its row — `None` for a pilot's hull.
+/// **What the machine flying `unit` is doing** (17b cut M4.3): its doctrine
+/// state through `Arena::machine_state` — the mind's off its cached state
+/// (`unknown` for a mind not sealed on Standard Doctrine since 17b cut M4.6,
+/// which deleted the reflex and its row's arm) — `None` for a pilot's hull.
+/// (The rig's `state_of`, the reflex row's state, was deleted with it.)
 pub fn machine_state_of(arena: &Arena, unit: ObjId) -> Option<MachineState> {
     arena.machine_state(unit)
 }
@@ -508,8 +510,8 @@ pub fn arena_on(
     .expect("the test arena")
 }
 
-/// Step `until_ms` of arena time at 500 ms, absorbing the ledger and the reflex
-/// counters.
+/// Step `until_ms` of arena time at 500 ms, absorbing the ledger and the
+/// motor's counters (the reflex's, named so, until 17b cut M4.5).
 pub fn run(
     arena: &mut Arena,
     until_ms: i64,
@@ -561,11 +563,6 @@ pub fn count(events: &[LedgerEvent], kind: &str) -> usize {
 /// fields read before the split.
 pub fn motor(arena: &Arena, unit: ObjId) -> MotorRow {
     arena.motors.row(unit).cloned().unwrap_or_default()
-}
-
-/// What the controller is doing with `unit`.
-pub fn state_of(arena: &Arena, unit: ObjId) -> Option<MachineState> {
-    arena.reflex.unit(unit).map(|row| row.state)
 }
 
 /// **Where `target` actually stands, as a contact's plot** (16b cut F.3).

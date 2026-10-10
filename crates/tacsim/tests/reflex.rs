@@ -52,9 +52,16 @@
 //! O.1 fixtures and the drone in a Hold match), D (a supporter preferring its
 //! charge's target), F (a placed machine re-plans), G (a wreck's motor row
 //! forgotten) and J (a round stopped by the ground re-plans the machine). The
-//! one reflex fielding left here is STOP C's
+//! one reflex fielding left here was STOP C's
 //! `y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander`,
-//! which rides 17b cut M4.6c with the order's issuer.
+//! which rode 17b cut M4.6c with the order's issuer.
+//!
+//! **17b cut M4.6c deleted the reflex controller** (its module, its variant,
+//! its tick and its rows): STOP C's residue is ported onto minds as
+//! `t1_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander`
+//! (the order landed through `IntentKind::Order`, the issuer the landing wrote
+//! beside it), and no test here fields the reflex. The file keeps its name
+//! (the conventions' D10).
 //!
 //! Since 17b cut M1b.0 the (j) field's every ledger line is pinned with its
 //! hash as well, as it was at `e23694b0` (`m1b0_the_production_line_hashes_do_not_move`):
@@ -8490,8 +8497,22 @@ fn y2_hold(
 /// four they would be one squad, and what this test proves needs one issuer over
 /// two squads beside a commander over one of them. The seated red tank is the
 /// pilot who orders both, and is in no squad.
+///
+/// **17b cut M4.6c — the owner's STOP C ruling** (2026-10-09): ported off the
+/// reflex (it was `y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander`,
+/// four `Controller::Reflex` reds whose orders were written into their reflex
+/// rows by hand) onto four MINDS whose orders are LANDED as the world lands
+/// one — an `IntentKind::Order` through `apply_intent` on each hull's own helm
+/// epoch, at arena millisecond 0 — so the issuer is the one the Order arm writes
+/// beside the order (`MindState::order_issuer`), never one written by hand, and
+/// `Arena::live_orders_by_issuer` now reads the mind rows. The four reads are
+/// the reflex's, unchanged (`0` empty; at `100_000` the pilot over both squads
+/// and the commander over the second; the third issuer's at `29_999`; nothing
+/// at `600_000`); the arena is unstepped, as it was. Added beside them: each
+/// row's stored issuer is its order's (the commander's order stores `None`).
 #[test]
-fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander() {
+fn t1_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander() {
+    use tacsim::arena::intents::{Intent, IntentKind, IntentOutcome, IntentSource, apply_intent};
     let reds = [ObjId(20), ObjId(21), ObjId(22), ObjId(23)];
     let mut units: Vec<CustodyUnit> = reds
         .iter()
@@ -8502,7 +8523,7 @@ fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_comma
                 Team::Red,
                 centre(x, 1),
                 vec![cannon()],
-                Controller::Reflex,
+                Controller::Mind,
             )
         })
         .collect();
@@ -8525,6 +8546,7 @@ fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_comma
         ..arena_cfg(reflex_cfg())
     };
     let mut arena = arena_of(units, &[], &pairs, &[Y1_PILOT, BLUE]);
+    assert_eq!(arena.now_ms, 0, "unstepped: every order lands at 0");
     assert!(
         arena.live_orders_by_issuer(0).is_empty(),
         "no order, no commander"
@@ -8546,26 +8568,47 @@ fn y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_comma
         "a pilot's tank is in no squad"
     );
 
-    let standing = |order, at| tacsim::deliberation::StandingOrder::accepted(order, at);
+    // Each order LANDED on its hull as the world lands one: on the hull's own
+    // helm epoch, through the Order arm, which writes the issuer beside it.
+    let land = |arena: &mut Arena, unit: ObjId, order: tacsim::deliberation::Order| {
+        let kind = IntentKind::Order(Box::new(order));
+        let channel = kind.channel_required();
+        let intent = Intent {
+            unit,
+            channel,
+            epoch: arena.epochs.current(unit, channel),
+            kind,
+            seq: 1,
+        };
+        assert_eq!(
+            apply_intent(arena, &intent, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous,
+            "the order lands on {unit:?}"
+        );
+    };
     // The pilot orders both squads: one squad counts once however many of its
     // units carry the order.
-    arena.reflex.set_order(
-        reds[0],
-        standing(y2_hold(first, Some(Y1_PILOT), 600_000), 0),
-    );
-    arena.reflex.set_order(
+    land(&mut arena, reds[0], y2_hold(first, Some(Y1_PILOT), 600_000));
+    land(
+        &mut arena,
         reds[2],
-        standing(y2_hold(second, Some(Y1_PILOT), 600_000), 0),
+        y2_hold(second, Some(Y1_PILOT), 600_000),
     );
     // The machines' own order, on the second squad's wingman: filed under that
     // squad's commander.
-    arena
-        .reflex
-        .set_order(reds[3], standing(y2_hold(second, None, 600_000), 0));
+    land(&mut arena, reds[3], y2_hold(second, None, 600_000));
     // A third issuer's order that ran out at 30 s.
-    arena.reflex.set_order(
-        reds[1],
-        standing(y2_hold(first, Some(ObjId(77)), 30_000), 0),
+    land(&mut arena, reds[1], y2_hold(first, Some(ObjId(77)), 30_000));
+    // The issuer the landing wrote is the order's.
+    assert_eq!(
+        reds.map(|unit| arena.minds.get(&unit).map(|row| row.order_issuer)),
+        [
+            Some(Some(Y1_PILOT)),
+            Some(Some(ObjId(77))),
+            Some(Some(Y1_PILOT)),
+            Some(None),
+        ],
+        "each row holds its order's issuer"
     );
 
     let live = arena.live_orders_by_issuer(100_000);
@@ -9899,6 +9942,147 @@ fn t1_a_support_whose_charge_leaves_ends_at_one_millisecond() {
         },
         "{what}"
     );
+}
+
+/// **The owner's STOP C: the issuer goes wherever the order goes** (17b cut
+/// M4.6c, the review's pin). An order LANDED on a mind through
+/// `apply_intent`'s Order arm with an issuer writes `MindState::order_issuer`
+/// beside the order; each of the arena's four ends of a mind's order clears
+/// the issuer with it — a `RELEASE` (`release_machine_order`), the landing
+/// that reaches the order's `expires_ms` (`Arena::expire_mind_order`), a
+/// possess (`Arena::set_controller` to a pilot, `Arena::suspend_mind`: the
+/// row stays, dormant) and the arena's end of a `Support` whose charge has
+/// left the match (the owner's STOP E,
+/// `Arena::end_mind_support_whose_charge_left`, ended well inside its ten
+/// minutes). Each is read `Some` before and `None` after, on
+/// [`z2_charge_field`]'s supporter, stepped 500 ms at a time with every think
+/// settled; between two pulses an order that still stands still has its
+/// issuer. The issuer is [`Z2_RELEASER`], a pilot's tank outside the field: a
+/// record field, which nothing the arena decides reads back.
+#[test]
+fn m4_6c_the_issuer_goes_with_the_order_at_a_release_an_expiry_a_possess_and_a_charge_leaving() {
+    use tacsim::arena::intents::{Intent, IntentKind, IntentOutcome, IntentSource, apply_intent};
+    use tacsim::deliberation::Objective;
+    let mut arena = z2_charge_field();
+    let squad = z2_squad(&arena, Z2_SUPPORTER);
+    let issuer = |arena: &Arena| arena.minds.get(&Z2_SUPPORTER).map(|row| row.order_issuer);
+    let held = |arena: &Arena| {
+        arena
+            .minds
+            .get(&Z2_SUPPORTER)
+            .and_then(|row| row.order.clone())
+    };
+    let on_helm = |arena: &Arena, kind: IntentKind| {
+        let channel = kind.channel_required();
+        Intent {
+            unit: Z2_SUPPORTER,
+            channel,
+            epoch: arena.epochs.current(Z2_SUPPORTER, channel),
+            kind,
+            seq: 1,
+        }
+    };
+    let land = |arena: &mut Arena, objective: Objective, ttl_ms: u32| {
+        let order = tacsim::deliberation::Order {
+            ttl_ms,
+            ..z2_order(squad, objective, false, Some(Z2_RELEASER))
+        };
+        let intent = on_helm(arena, IntentKind::Order(Box::new(order)));
+        assert_eq!(
+            apply_intent(arena, &intent, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous,
+            "the order lands on the supporter"
+        );
+        assert_eq!(
+            issuer(arena),
+            Some(Some(Z2_RELEASER)),
+            "the landing wrote the order's issuer beside it"
+        );
+    };
+    // Step until the order is gone (at most `limit_ms` on), reading at every
+    // pulse that an order still standing still has its issuer; answers the
+    // arena millisecond the order was first seen gone.
+    let run_until_gone = |arena: &mut Arena, limit_ms: i64| {
+        let until_ms = arena.now_ms + limit_ms;
+        let mut wall = arena.now_ms;
+        let mut bytes = Vec::new();
+        while held(arena).is_some() && arena.now_ms < until_ms {
+            assert_eq!(
+                issuer(arena),
+                Some(Some(Z2_RELEASER)),
+                "an order standing at {} ms keeps its issuer",
+                arena.now_ms
+            );
+            let out = arena.step_settled(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            wall += 500;
+        }
+        arena.now_ms
+    };
+
+    // A release.
+    land(&mut arena, Objective::Hold, 600_000);
+    let release = on_helm(
+        &arena,
+        IntentKind::ReleaseOrder {
+            squad,
+            issuer: Some(Z2_RELEASER),
+        },
+    );
+    assert_eq!(
+        apply_intent(&mut arena, &release, IntentSource::Seat),
+        IntentOutcome::AppliedContinuous
+    );
+    assert_eq!(held(&arena), None, "the release dropped the order");
+    assert_eq!(issuer(&arena), Some(None), "a release clears the issuer");
+
+    // The landing that reaches `expires_ms`.
+    land(&mut arena, Objective::Hold, 2_000);
+    let expires_ms = held(&arena).map_or(i64::MAX, |order| order.expires_ms);
+    let gone_ms = run_until_gone(&mut arena, 20_000);
+    assert_eq!(held(&arena), None, "the order ran out by {gone_ms} ms");
+    assert!(
+        gone_ms >= expires_ms,
+        "at a landing at or past its deadline ({expires_ms} ms): {gone_ms}"
+    );
+    assert_eq!(issuer(&arena), Some(None), "an expiry clears the issuer");
+
+    // A possess: the row stays, dormant, its order and issuer cleared.
+    land(&mut arena, Objective::Hold, 600_000);
+    arena.set_controller(Z2_SUPPORTER, Controller::Pilot, MachineState::Withdraw);
+    assert_eq!(held(&arena), None, "the possess cleared the order");
+    assert_eq!(
+        issuer(&arena),
+        Some(None),
+        "a possess clears the issuer (the row stays, dormant)"
+    );
+    arena.set_controller(Z2_SUPPORTER, Controller::Mind, MachineState::Withdraw);
+    assert_eq!(issuer(&arena), Some(None), "the hand-back holds none");
+
+    // The owner's STOP E: a `Support` whose charge leaves the match.
+    let planted_ms = arena.now_ms;
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, planted_ms);
+    land(&mut arena, Objective::Support { of: Z2_CHARGE }, 600_000);
+    let support = held(&arena).expect("the support order");
+    assert!(
+        matches!(
+            support.objective,
+            tacsim::arena::perception::MindObjective::Support { of: Some(_) }
+        ),
+        "re-keyed to the supporter's own row for its charge: {support:?}"
+    );
+    arena.units.retain(|unit| unit.id != Z2_CHARGE);
+    let gone_ms = run_until_gone(&mut arena, 10_000);
+    assert_eq!(
+        held(&arena),
+        None,
+        "the arena ended the support by {gone_ms} ms"
+    );
+    assert!(
+        gone_ms < support.expires_ms,
+        "ended by its charge leaving, not run out: {gone_ms}"
+    );
+    assert_eq!(issuer(&arena), Some(None), "STOP E's end clears the issuer");
 }
 
 /// **16b cut Z.2 (d), 16c N6 (16b §11: mandatory), on the unit mind** (17b

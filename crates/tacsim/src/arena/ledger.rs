@@ -432,8 +432,9 @@ pub enum EventKind {
     /// leader's order lapsing, in the leader's name, never "the link dropped",
     /// which is M3's word for a mind's own failure).
     ///
-    /// One line per **unit**, at the arena millisecond that unit's next reflex tick
-    /// read the expiry — not at the millisecond the order nominally ran out, and
+    /// One line per **unit**, at the arena millisecond that unit's next mind
+    /// landing reads the expiry (its next reflex tick until 17b cut M4.6) — not
+    /// at the millisecond the order nominally ran out, and
     /// deliberately: the order stops steering when the machine next looks at it,
     /// and a black box that said otherwise would disagree with what the tank did.
     ///
@@ -607,7 +608,8 @@ pub enum EventKind {
     /// think's millisecond. A think opens no action hash and fills none: the
     /// line carries the substep's hash when an earlier line of the substep
     /// has taken it, else a fresh state hash that stores nothing — even under
-    /// a lazy slot a landing or a reflex tick opened and has not yet filled
+    /// a lazy slot a landing (or, until 17b cut M4.6, a reflex tick) opened and
+    /// has not yet filled
     /// (`Arena::think_line_hash`), so no later line's hash moves.
     MindFault {
         /// The hull.

@@ -282,7 +282,10 @@ summary_ms = 5000
 max_bytes = 67108864
 max_unflushed_chunks = 256
 
-# 16b cut N.1: the reflex controller's cadence, path budgets and doctrine.
+# 16b cut N.1: the machines' cadence, path budgets and doctrine figures. The
+# block keeps its name; the reflex controller was deleted in 17b cut M4.6:
+# decide_ms is the motor's tick cadence, the path budgets are the motor's, and
+# the doctrine figures feed the stock card a unit mind thinks under.
 [tacsim.arena.reflex]
 decide_ms = 1000
 path_max_cells = 65536
@@ -568,8 +571,9 @@ timeout_s = 30
 reasoning = "low"
 
 # 16b cut N.2: one squad's standing order in the combat arena. Without this route
-# every squad stays on the reflex controller's own doctrine, which is doc 16 §6's
-# fallback and what CI runs.
+# every squad stays on its own doctrine (Standard Doctrine on a unit mind since
+# 17b cut M4.3; the reflex controller, deleted in 17b cut M4.6, before it), which
+# is doc 16 §6's fallback and what CI runs.
 [llm.routes.tacsim_deliberate]
 model = "z-ai/glm-5.3-flash"
 max_tokens = 512

@@ -13,16 +13,18 @@
 //! arena*. 16b §9 raised it — `[atlas].path_max_cells` for the arena is **65,536**,
 //! one node per cell of the 256 by 256 window — so a search that fails has failed
 //! on the ground and not on the budget, and "unreachable" is an honest word. Two
-//! further bounds keep that affordable and are `crate::arena::reflex`'s, not this
-//! module's: one search per unit per `reflex.repath_ms`, and
-//! `reflex.max_path_queries` searches per `reflex.decide_ms` window of arena time.
+//! further bounds keep that affordable and are the motor's (`crate::arena::motor`,
+//! the reflex controller's until 17b cut M1a.1), not this module's: one search
+//! per unit per `reflex.repath_ms`, and `reflex.max_path_queries` searches per
+//! `reflex.decide_ms` window of arena time.
 //!
 //! # Why the scratch is borrowed and not allocated
 //!
 //! A 256 by 256 window is 65,536 nodes; a `g` score and a visit stamp for each is
 //! half a megabyte. Allocating that per query would dominate the search, so
 //! [`PathScratch`] is held for the life of the match on
-//! [`crate::arena::reflex::ReflexMemory`] and reused, and a **generation stamp**
+//! [`crate::arena::motor::MotorTable`] (the reflex controller's memory until 17b
+//! cut M1a.1) and reused, and a **generation stamp**
 //! is what makes reuse free: a node belongs to this search only when its stamp
 //! equals the current generation, so nothing is cleared between searches.
 //!
@@ -66,7 +68,7 @@
 //! such a corner is no edge (`ShoulderVerdict::Closed`, counted in
 //! [`PathScratch::corner_refusals`]); without one ([`path`]) no shoulder is read
 //! at all and every answer is what it was, because the follower's own rule
-//! (`crate::arena::reflex`, the drivable step) covers an unlimited unit at run
+//! (`crate::arena::motor`, the drivable step) covers an unlimited unit at run
 //! time. `shoulder_state` is the one rule, and the search, the follower's
 //! one-cell test and its steer are its three readers.
 //!
@@ -344,8 +346,8 @@ impl PathScratch {
 /// `scale` is the window's cheapest cell ([`min_move_cost`]), the unit the
 /// heuristic is measured in. It is an **argument** rather than a scan of its own
 /// because the terrain is immutable for the life of a match and the scan is the
-/// whole window: `crate::arena::reflex::ReflexMemory` takes it once at check-out
-/// and hands it to every search. A `scale` larger than the window's true minimum
+/// whole window: `Arena::new` takes it once at check-out (`Arena::min_cost`)
+/// and the motor hands it to every search. A `scale` larger than the window's true minimum
 /// would make the heuristic inadmissible and the route merely good rather than
 /// cheapest; a smaller one only makes the search slower, so `1` is always safe.
 ///
@@ -863,7 +865,7 @@ pub(crate) enum Shoulder {
 /// **One rule, three readers** (16b cut Q.7's reason: two implementations of
 /// the shoulder rule would be two rules with one name): the search
 /// ([`shoulder_refuses`], inside [`path_with`] under a limit); the follower's
-/// one-cell edge test (`crate::arena::reflex`'s `edge_verdict`, through
+/// one-cell edge test (`crate::arena::motor`'s `edge_verdict`, through
 /// [`shoulder_refuses`]); and the follower's steer — its drivable step (at least
 /// one shoulder [`Shoulder::Open`]), its open line (both), and its aim at the
 /// one open shoulder of a corner whose other shoulder is not.
@@ -926,7 +928,7 @@ pub(crate) enum ShoulderVerdict {
 /// follower's `edge_verdict` for an unlimited unit.
 ///
 /// **16b cut Q.7** made it `pub(crate)`: the follower's own one-cell test
-/// ([`crate::arena::reflex`]) has to ask the edge question *exactly* as the
+/// ([`crate::arena::motor`]) has to ask the edge question *exactly* as the
 /// search asks it. **16b cut AE.1** gave it the caller's `row`, and **16b cut
 /// AI.1** the caller's `avoid` list: an avoided shoulder is no shoulder, as it
 /// is no cell to the search.

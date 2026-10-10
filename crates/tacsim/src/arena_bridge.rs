@@ -2227,8 +2227,8 @@ pub(crate) fn authorise_seat(
 /// every squad order ever typed. Then the order is stamped and offered **per
 /// unit** with that unit's own `helm` epoch, exactly as [`send_order`] stamps the
 /// LLM seam's. The arena authorises each unit again at apply against its own
-/// table: a unit a pilot has since boarded refuses `NotReflex` silently, as
-/// today.
+/// table: a unit a pilot has since boarded refuses `NotMachine` silently
+/// (`NotReflex` until 17b cut M4.6), as today.
 ///
 /// Answers how many units were offered; `Ok(0)` when every offer refused (the
 /// cockpit turns that into [`IntentRefusal::Busy`]).
@@ -4599,7 +4599,8 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
 /// ([`forward_order`]), the leader's path ([`on_deliberation_reply`]) and any
 /// direct caller meet one wall — and **the unit is on a machine controller**,
 /// which is a fact only the arena holds and which it checks itself
-/// ([`crate::arena::intents::Refusal::NotReflex`]).
+/// ([`crate::arena::intents::Refusal::NotMachine`], `NotReflex` until 17b cut
+/// M4.6).
 ///
 /// The epoch is the one the world last published for the unit's `helm` channel,
 /// exactly as [`forward_intent`] stamps one, so an order written before a seat was
@@ -5869,9 +5870,10 @@ mod tests {
     /// all answers Standard Doctrine's text for a scripted seal on the stock
     /// digest, keyed by the seal's digest — so a world whose store is off
     /// ran and resumed every production seal from 17b cut M4.3 to the fill
-    /// decision (2026-10-09), and resumes a pre-decision match's
+    /// decision (2026-10-09), and resumed a pre-decision match's
     /// stock-scripted seals since (a production seal is `native` since and
-    /// names no source) — and nothing for another.
+    /// names no source) until 17b cut M4.6's format 9, which voids every
+    /// older snapshot — and nothing for another.
     #[test]
     fn m4_3_the_stock_source_resolves_with_no_store() {
         use crate::arena::MindSeal;

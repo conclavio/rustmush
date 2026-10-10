@@ -2,13 +2,15 @@
 //! (iv) "the survivors"; doc 17 §4, §11, §13): the words and the arithmetic
 //! the stock mind, the scripted doctrine's constants and the arena's readers
 //! of a machine's state share — moved here out of the reflex controller's
-//! module (`crate::arena::reflex`), which 17b cut M4.6 deletes, so they
-//! outlive it. A refactor: every item keeps its value, its words and its
+//! module (`crate::arena::reflex`), which 17b cut M4.6 deleted, so they
+//! outlive it. A refactor: every item kept its value, its words and its
 //! codes, so nothing hashed, carried, journaled or printed moved.
 //!
 //! * [`MachineState`] — where a machine is in doc 16 §6's state machine: the
-//!   reflex's `ReflexState` until this cut, renamed and nothing else (no
-//!   variant added: `Unknown` is 17b cut M4.6c's);
+//!   reflex's `ReflexState` until this cut, renamed and nothing else; 17b cut
+//!   M4.6c added [`MachineState::Unknown`] (code 6, word `unknown`) for a mind
+//!   not sealed on Standard Doctrine, and [`MachineState::DOCTRINE`], the six
+//!   states the doctrine itself writes;
 //! * the doctrine's constants — [`STAND_TICKS`] (the reflex's
 //!   `REFLEX_STAND_TICKS`; the scripted doctrine still reads it as
 //!   `stand_ticks`), the exposure weights, [`SCREEN_HALF_ARC_MDEG`] (`pub`:
@@ -88,7 +90,13 @@ pub const SUPPORT_STATION_CELLS: u16 = 5;
 /// The reflex's `ReflexState` until 17b cut M4.6a, which renamed it and moved
 /// it here with its words and codes unchanged; the stock mind's memory and
 /// `MindState::doctrine_state` carry it, and the scripted doctrine writes the
-/// same codes.
+/// same codes (the six of [`MachineState::DOCTRINE`]).
+///
+/// **17b cut M4.6** added [`MachineState::Unknown`], last, code 6 and word
+/// `unknown`: what `Arena::machine_state` answers for a hull a mind flies
+/// whose seal is not Standard Doctrine (`SealRef::doctrine`), which keeps no
+/// doctrine state of its own in its memory. No doctrine memory decodes to it, so the
+/// stock mind's own machine never enters it, and codes 0 to 5 did not move.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineState {
@@ -100,18 +108,18 @@ pub enum MachineState {
     ///
     /// 1. **a movement order** — `Advance`'s cell, or `Hold`'s "where you
     ///    stand" (16b cut N.2);
-    /// 2. **the search** —
-    ///    [`ReflexUnit::last_plot`](crate::arena::reflex::ReflexUnit::last_plot),
-    ///    while it is younger than
+    /// 2. **the search** — the last plot (the reflex row's `last_plot`, the
+    ///    stock mind's memory since 17b cut M1a.6), while it is younger than
     ///    [`crate::config::ReflexConfig::search_ms`] and the machine has not
     ///    arrived at it: where it last saw the target it has just lost;
-    /// 3. **the hunt** — [`ReflexUnit::hunt`](crate::arena::reflex::ReflexUnit::hunt),
-    ///    the other side's entry zone,
+    /// 3. **the hunt** — the reflex row's `hunt` (the stock mind's memory
+    ///    since 17b cut M1a.6), the other side's entry zone,
     ///    once [`crate::config::ReflexConfig::hunt_after_ms`] has passed with
     ///    nothing hostile held at all;
-    /// 4. **the waypoint walk** — `Arena::patrol_step` (the motor's since 17b
-    ///    cut M1a.1), the arena pack's graph, which is what `Patrol` was and
-    ///    still is when the three above have nothing to say.
+    /// 4. **the waypoint walk** — the motor's free `patrol_step` (the motor's
+    ///    `Arena::patrol_step` since 17b cut M1a.1, lifted free by 17b cut
+    ///    M1a.6; the stock mind's walk), the arena pack's graph, which is what
+    ///    `Patrol` was and still is when the three above have nothing to say.
     ///
     /// **16b cut Z.2**: a machine under `Objective::Screen` stays here — parked,
     /// faced onto the order's bearing — and fires from its tick's *stand*
@@ -145,11 +153,36 @@ pub enum MachineState {
     Withdraw,
     /// A wreck, or disabled: it issues nothing at all.
     Disabled,
+    /// **Not a doctrine state** (17b cut M4.6; the conventions' D2): a hull a
+    /// mind flies whose seal is not Standard Doctrine, whose memory says
+    /// nothing in the doctrine's words. Read off the seal, never decoded from
+    /// a memory, and unreachable in production before 17b cut M5 (every seal
+    /// is Standard Doctrine); the catch-up sentence has no phrase of its own
+    /// for it (the renderers open the word, D14).
+    Unknown,
 }
 
 impl MachineState {
-    /// Every state, in code order — what a distribution is reported over.
-    pub const ALL: [MachineState; 6] = [
+    /// Every state, in code order — what a distribution is reported over
+    /// (the leader's `doing:` histogram, the harness's `states_at_end`):
+    /// seven since 17b cut M4.6, [`MachineState::Unknown`] last.
+    pub const ALL: [MachineState; 7] = [
+        MachineState::Startup,
+        MachineState::Patrol,
+        MachineState::Approach,
+        MachineState::Engage,
+        MachineState::Withdraw,
+        MachineState::Disabled,
+        MachineState::Unknown,
+    ];
+
+    /// **The six states the doctrine writes** (17b cut M4.6), in code order —
+    /// [`MachineState::ALL`] without [`MachineState::Unknown`]: what a
+    /// doctrine memory's `state` code decodes over
+    /// (`crate::arena::stock_mind::state_of`; an unknown code reads
+    /// `Startup`, as it always did) and the table the scripted doctrine's
+    /// source header lists (`tests/content.rs`' content pin).
+    pub const DOCTRINE: [MachineState; 6] = [
         MachineState::Startup,
         MachineState::Patrol,
         MachineState::Approach,
@@ -168,6 +201,7 @@ impl MachineState {
             MachineState::Engage => "engage",
             MachineState::Withdraw => "withdraw",
             MachineState::Disabled => "disabled",
+            MachineState::Unknown => "unknown",
         }
     }
 
@@ -181,6 +215,8 @@ impl MachineState {
             MachineState::Engage => 3,
             MachineState::Withdraw => 4,
             MachineState::Disabled => 5,
+            // 17b cut M4.6: last, so codes 0 to 5 never renumber.
+            MachineState::Unknown => 6,
         }
     }
 }
@@ -240,9 +276,9 @@ impl MachineState {
 /// over the view, so T0 and T1 fight at the same three distances. It outlives
 /// the reflex's decision half: 17b cut M4.6a moved `Ranges` and
 /// [`stand_off_want`] here, out of the reflex's module, before 17b cut M4.6
-/// deletes that. Only [`ranges`](crate::arena::reflex::ranges) — the reading
-/// off the live [`UnitState`](crate::arena::state::UnitState) — is T0's and
-/// leaves with it.
+/// deleted that. Only the reflex's `ranges` — the reading off the live
+/// [`UnitState`](crate::arena::state::UnitState) — was T0's and left with it
+/// in 17b cut M4.6.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ranges {
     /// Where `Approach` stops and turns: the doctrine band of the allowed reach —
@@ -381,14 +417,33 @@ mod tests {
 
     /// The states' words and codes (17b cut M4.6a: moved here with
     /// [`MachineState`]; its two lines on the reflex controller's own code and
-    /// word stayed in `crate::arena::reflex`'s tests until 17b cut M4.6c).
+    /// word stayed in `crate::arena::reflex`'s tests and died with it in 17b
+    /// cut M4.6c).
+    ///
+    /// **17b cut M4.6c** (the conventions' D2): [`MachineState::Unknown`] is
+    /// code 6, word `unknown` — the word the harness's `states_at_end` leaf
+    /// already carried — and last in [`MachineState::ALL`], so codes 0 to 5
+    /// did not move; [`MachineState::DOCTRINE`] is `ALL` without it, in order;
+    /// and the mind's controller byte is still `2`.
     #[test]
     fn the_states_round_trip_their_words_and_codes() {
         for (at, state) in MachineState::ALL.iter().enumerate() {
             assert_eq!(usize::from(state.code()), at);
             assert!(!state.as_str().is_empty());
+            assert_eq!(
+                serde_json::to_value(state).ok(),
+                Some(serde_json::json!(state.as_str())),
+                "the serde word is the wire word"
+            );
         }
+        assert_eq!(MachineState::ALL.len(), 7);
+        assert_eq!(MachineState::ALL.last(), Some(&MachineState::Unknown));
+        assert_eq!(MachineState::Unknown.code(), 6);
+        assert_eq!(MachineState::Unknown.as_str(), "unknown");
+        assert_eq!(MachineState::DOCTRINE[..], MachineState::ALL[..6]);
+        assert!(!MachineState::DOCTRINE.contains(&MachineState::Unknown));
         assert_eq!(Controller::Pilot.code(), 0);
+        assert_eq!(Controller::Mind.code(), 2);
     }
 
     /// **16b cut Z.2's review**: a screen's arc is measured the short way round.

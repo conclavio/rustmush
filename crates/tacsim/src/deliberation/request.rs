@@ -732,7 +732,7 @@ mod tests {
             // order that names no time to live gets.
             default_ttl_ms: 30_000,
             health_permille: 900,
-            states: [0, 2, 0, 0, 0, 0],
+            states: [0, 2, 0, 0, 0, 0, 0],
             cell: Some((3, 4)),
             window: (16, 16),
             // 16b cut Z.1: the commander and one member. Neither is at 1000

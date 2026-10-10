@@ -224,8 +224,10 @@ pub struct SquadSignal {
     /// The squad's mean health, per mille of the authored totals.
     pub health_permille: u32,
     /// How many of the squad's machines are in each state, in
-    /// [`MachineState::ALL`] order.
-    pub states: [u32; 6],
+    /// [`MachineState::ALL`] order — seven since 17b cut M4.6 widened it for
+    /// [`MachineState::Unknown`] (a mind not sealed on Standard Doctrine is
+    /// counted there; zero counts are never printed, so no prompt moved).
+    pub states: [u32; 7],
     /// The commander's cell, so an `advance` order can be written relative to
     /// somewhere.
     pub cell: Option<(u16, u16)>,
@@ -271,7 +273,8 @@ impl Arena {
         self.squads.iter().find(|squad| squad.holds(unit))
     }
 
-    /// Note that a unit's standing order expired — called by the reflex tick, so
+    /// Note that a unit's standing order expired — called by a mind's order's
+    /// end (`Arena::end_mind_order`; by the reflex tick until 17b cut M4.6), so
     /// the next signal says why it is asking.
     pub(crate) fn note_order_expired(&mut self, squad: SquadId) {
         self.squads_expired.insert(squad);
@@ -325,8 +328,9 @@ impl Arena {
             }
             // **16b cut O.3** (16c N13; plan items 7, 14): nor does a commander
             // that is **inert** — no weapon and no speed, which is what a range's
-            // target is (`tacsim.unit.target_mk1`) and what the reflex controller
-            // already treats as inert (`reflex.rs`'s `decide`). A range's target
+            // target is (`tacsim.unit.target_mk1`) and what the stock mind
+            // treats as inert (`Disabled` once online, 17b cut M4.6b's STOP B; the
+            // reflex controller's `decide` until 17b cut M4.6). A range's target
             // side is dealt into squads like any reflex side — both `squads_of`
             // callers (`Arena::new` and `match_::start`'s record) are untouched and
             // still agree — and without this each target squad would ask the live
@@ -407,11 +411,13 @@ impl Arena {
             // reported in the same order (nothing here draws).
             contacts.sort_by_key(|contact| (contact.range_cm, contact.id));
             contacts.truncate(MAX_SIGNAL_CONTACTS);
-            let mut states = [0_u32; 6];
+            let mut states = [0_u32; 7];
             let mut health_total: u64 = 0;
             let mut health_count: u64 = 0;
             for unit in &squad.units {
-                // 17b cut M4.3: either machine's state (`Arena::machine_state`).
+                // 17b cut M4.3: the machine's state (`Arena::machine_state`:
+                // since 17b cut M4.6 `unknown` for a mind not sealed on
+                // Standard Doctrine, the reflex's row no longer read).
                 if let Some(state) = self.machine_state(*unit)
                     && let Some(slot) = states.get_mut(usize::from(state.code()))
                 {
@@ -449,11 +455,12 @@ impl Arena {
                 members.push(SignalMember {
                     unit: *unit,
                     ordinal,
-                    // **17b cut M4.3**: either machine's state, the mind's
+                    // **17b cut M4.3**: the machine's state, the mind's
                     // off its cached doctrine state (a doctrine STATE word,
-                    // never the memory: D-UM-49 is kept); a pilot's hull
-                    // reads `Startup`, as a mind's did under M1a.5's
-                    // placeholder. The commander guards above read the unit,
+                    // never the memory: D-UM-49 is kept) — `unknown` since
+                    // 17b cut M4.6 for a mind not sealed on Standard
+                    // Doctrine; a pilot's hull reads `Startup`, as a mind's
+                    // did under M1a.5's placeholder. The commander guards above read the unit,
                     // not this row, so they apply to a mind commander as they
                     // stand.
                     state: self.machine_state(*unit).unwrap_or(MachineState::Startup),
@@ -502,10 +509,10 @@ impl Arena {
 }
 
 /// Every machine state in one place, so a caller can render a distribution
-/// without importing the enum.
+/// without importing the enum — seven since 17b cut M4.6 (`unknown` last).
 #[must_use]
-pub fn state_words() -> [&'static str; 6] {
-    let mut out = [""; 6];
+pub fn state_words() -> [&'static str; 7] {
+    let mut out = [""; 7];
     for (at, state) in MachineState::ALL.iter().enumerate() {
         if let Some(slot) = out.get_mut(at) {
             *slot = state.as_str();

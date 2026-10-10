@@ -285,8 +285,10 @@ pub enum ArenaOut {
     /// time (16b cut U.1; see this module's head), so every wake is on the
     /// substep lattice (250 ms on the shipped content) and a match wakes at most
     /// once a substep. On the shipped config the recurring due events are the
-    /// per-unit sensor pass (`sensors.pass_ms`, 1,000 ms) and the reflex decision
-    /// (`reflex.decide_ms`, 1,000 ms), each at the unit's own seeded offset inside
+    /// per-unit sensor pass (`sensors.pass_ms`, 1,000 ms), a mind's think (its
+    /// class's `think_ms`, 1,000 ms at Class I) and a driven hull's motor tick
+    /// (`reflex.decide_ms`, 1,000 ms; the reflex decision ran on it until 17b
+    /// cut M4.6), each at the unit's own seeded offset inside
     /// the second (`crate::arena::rng::stagger_ms`): a field of many units wakes
     /// on every lattice point, and two tanks on the one to four points their
     /// offsets round up to.

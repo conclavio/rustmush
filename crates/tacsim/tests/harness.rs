@@ -2345,13 +2345,16 @@ enum Wrecks {
 /// latest-wins), `None` filed under the commander of the squad the unit is
 /// in (the reflex reader's fallback, and `Arena::rekey_order`'s scope).
 ///
-/// **The issuer is not mind-row state at this cut** (`FrameOrder` carries
-/// none), so it is read off the black box, and the join is ASSERTED: every
+/// **The issuer is read off the black box**, and the join is ASSERTED: every
 /// live order has its line, naming the order's squad, and the line's
 /// millisecond plus its time to live is the order's deadline — so a span can
-/// never be read off a line that is not the order's. Harness-only; 17b cut
-/// M4.6's `Arena::live_orders_by_issuer` over mind rows must group exactly
-/// this way, or the lance lane's span pin moves.
+/// never be read off a line that is not the order's. It was not mind-row
+/// state when this join was written (17b cut M4.5: `FrameOrder` carries none);
+/// **since 17b cut M4.6** (the owner's STOP C ruling) it is,
+/// `MindState::order_issuer`, and `Arena::live_orders_by_issuer` groups the
+/// mind rows by it exactly this way — which [`CommandFigures::of`] asserts on
+/// every lane that reads W8's figures, moving no figure. This join stays the
+/// tape's check (W8), and the lance lane's span pins are read off it.
 ///
 /// `wrecks` [`Wrecks::Counted`] is W8's span; [`Wrecks::Skipped`] is the same
 /// join over the live orders standing hulls hold, which the lance lane's
@@ -2422,7 +2425,23 @@ impl CommandFigures {
             "W8: every `ordered` line on the tape is read for the per-order figures"
         );
         let (orders, orders_per_commander_minute_max) = orders_on_tape(tape, &arena.squads);
-        let span_max = live_orders_by_issuer(arena, tape, Wrecks::Counted)
+        let joined = live_orders_by_issuer(arena, tape, Wrecks::Counted);
+        // **17b cut M4.6** (the conventions' D4; the owner's STOP C ruling):
+        // the arena's own reader, over the issuer each mind row stored where
+        // its order landed, groups exactly as this tape join — asserted here,
+        // where W8's figures are read, and moving no figure (the span below is
+        // still the join's).
+        let stored: BTreeMap<Option<ObjId>, std::collections::BTreeSet<String>> = arena
+            .live_orders_by_issuer(arena.now_ms)
+            .into_iter()
+            .map(|(issuer, squads)| (issuer, squads.iter().map(ToString::to_string).collect()))
+            .collect();
+        assert_eq!(
+            stored, joined,
+            "W8: `Arena::live_orders_by_issuer` (the mind rows' stored issuers) and the tape's \
+             join (each live order's last `ordered` line) group the live orders differently"
+        );
+        let span_max = joined
             .values()
             .map(std::collections::BTreeSet::len)
             .max()
@@ -3540,21 +3559,23 @@ impl SnapshotFigures {
     }
 }
 
-/// **A machine's doctrine state, by its word** (17b cut M4.5): the reflex's
-/// state enum, which the stock mind's memory and `MindState.doctrine_state`
-/// reuse until 17b cut M4.6 moves it (`MachineState`, with `Unknown`) — one
-/// alias, so that move is one line here.
+/// **A machine's doctrine state, by its word** (17b cut M4.5): the machine's
+/// state enum (`arena::doctrine::MachineState`, the reflex's `ReflexState`
+/// until 17b cut M4.6a; `Unknown` since M4.6c), which the stock mind's memory
+/// and `MindState.doctrine_state` carry — one alias, so each move was one line
+/// here.
 type MachineState = tacsim::arena::doctrine::MachineState;
 
 /// **The leaves [`machine_states`] carries** (17b cut M4.5): seven —
-/// [`MachineState::ALL`]'s six words and `unknown`, the word 17b cut M4.6's
-/// `MachineState` appends to `ALL` (code 6) for a hull whose seal is not
-/// Standard Doctrine's. Fixed at seven across that cut, so the blessed
-/// `minds.states_at_end` neither gains nor loses a leaf there.
+/// [`MachineState::ALL`]'s words, `unknown` the seventh: the word 17b cut
+/// M4.6 appended to `ALL` (code 6) for a hull whose seal is not Standard
+/// Doctrine's (six words and the literal before it). Fixed at seven across
+/// that cut, so the blessed `minds.states_at_end` neither gained nor lost a
+/// leaf there.
 const MACHINE_STATE_LEAVES: usize = 7;
 
-// `ALL` names every leaf but `unknown` until 17b cut M4.6, and every leaf
-// after it: never more leaves than the report carries.
+// `ALL` named every leaf but `unknown` until 17b cut M4.6, and names every
+// leaf since: never more leaves than the report carries.
 const _: () = assert!(MachineState::ALL.len() <= MACHINE_STATE_LEAVES);
 
 /// **The machines' states at the read, as seven fixed leaves** (17b cut
@@ -3563,17 +3584,19 @@ const _: () = assert!(MachineState::ALL.len() <= MACHINE_STATE_LEAVES);
 /// cached `doctrine_state` (`Startup` before its first landing), `Disabled`
 /// for a wreck or a disabled hull — counted into the leaf its code names,
 /// never a decode of a memory; a pilot's hull counts in none. The leaves are
-/// named off [`MachineState::ALL`] in code order, and the one `ALL` does not
-/// name yet is the literal `"unknown"`, which no hull can count in until 17b
-/// cut M4.6 (every hull of the arena lanes is the ROM): blessed now so that
-/// cut adds no leaf. Always all seven, in this order, zeros included.
+/// named off [`MachineState::ALL`] in code order — all seven since 17b cut
+/// M4.6, `unknown` last (before it the literal `"unknown"` named the seventh,
+/// blessed at 17b cut M4.5 so that cut added no leaf). Always all seven, in
+/// this order, zeros included. A hull counts in `unknown` when a mind flies
+/// it on a seal that is not Standard Doctrine (`SealRef::doctrine`): every
+/// hull of the arena and lance lanes is sealed on it, so the leaf reads 0
+/// there.
 ///
-/// **What 17b cut M4.6 changes here: the [`MachineState`] alias line, and
-/// nothing else.** The counts are sized by [`MACHINE_STATE_LEAVES`] and
-/// named by `ALL`, not by six and a literal: once `ALL` carries `Unknown`
-/// (code 6, its word `unknown` — any other word moves the blessed leaf) it
-/// names the seventh leaf itself, the literal is overwritten, and an
-/// `Unknown` hull counts in leaf 6 with no edit to this body.
+/// **What 17b cut M4.6 changed here: nothing in this body.** The counts are
+/// sized by [`MACHINE_STATE_LEAVES`] and named by `ALL`, not by six and a
+/// literal: `ALL` carries `Unknown` (code 6, its word `unknown` — any other
+/// word would have moved the blessed leaf), names the seventh leaf itself,
+/// the literal is overwritten, and an `Unknown` hull counts in leaf 6.
 ///
 /// The old `reflex.states_at_end` counted the reflex's ROWS (a wreck's row
 /// in `Disabled` as the reflex moved it there); this counts hulls under a

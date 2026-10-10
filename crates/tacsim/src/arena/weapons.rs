@@ -87,7 +87,10 @@ use crate::arena::state::{Arena, ContactId, Controller, DueKind, Power, UnitStat
 pub enum FiredBy {
     /// A pilot's typed `FIRE` — the human trigger W8 asks for, never gated.
     Seat,
-    /// The reflex controller's own shot (T0), never gated.
+    /// A machine's uncited shot, never gated: the reflex controller's (T0)
+    /// until 17b cut M4.6 deleted it. No production path fires one since — a
+    /// mind's `FIRE` is [`FiredBy::Mind`] and the motor fires nothing — but
+    /// the arm stays for `Arena::apply_machine_intents`' `Machine` source.
     Machine,
     /// A mind's landed `FIRE`, citing a slot or not — gated by the law (17b
     /// cut M1b.2): an uncited one is `Unwarranted`.
@@ -274,9 +277,10 @@ impl UnitState {
     /// cycle is `ready_at_ms`, and readiness is a comparison and not a flag).
     ///
     /// **16b cut M.2** (16c `T-02`): `at_ms` is whatever arena millisecond the
-    /// question is asked at — the pulse's end for phase 4 and the frame, the
-    /// tick's own timestamp for the reflex controller's planner and for the
-    /// shot it then stages — so the planner and the resolver read one clock.
+    /// question is asked at — the pulse's end for phase 4 and the frame, a
+    /// machine's own millisecond for the shot it stages (a mind's landing; the
+    /// reflex controller's tick, for its planner too, until 17b cut M4.6) —
+    /// so the planner and the resolver read one clock.
     #[must_use]
     pub fn weapon_ready(&self, id: &str, at_ms: i64) -> bool {
         self.weapon_ready_at_ms(id) <= at_ms
@@ -591,10 +595,10 @@ pub struct Shot {
     pub from_y_cm: i64,
     /// **The cell the round left from**, or `None` for a shooter off the window
     /// at acceptance — the launch eye's cell (16b cut AE.2), exactly the cell
-    /// `Arena::fire_eye` gave the acceptance's own trace. It is also what
-    /// decides whether the impact may teach the shooter's controller doc 16 §6's
-    /// `no line` edge: only a shooter still standing in it
-    /// ([`crate::arena::Arena::note_no_line`]).
+    /// `Arena::fire_eye` gave the acceptance's own trace. It also decided
+    /// whether the impact taught the reflex controller doc 16 §6's `no line`
+    /// edge (only a shooter still standing in it) until 17b cut M4.6 deleted
+    /// that feed with the reflex.
     pub from_cell: Option<(u16, u16)>,
     /// **The launch eye's height above the ground**, centimetres — the shooter's
     /// `sensor_height_cm` at acceptance, as the acceptance's own trace took it
@@ -703,8 +707,9 @@ pub struct FrameWeapon {
     /// It is on the row so that the cockpit's own `FIRE` pre-check can skip the
     /// heat refusal for a cold gun, which is the same clause
     /// [`Arena::resolve_fire`] applies a pulse later and
-    /// `crate::arena::reflex::would_overheat` applies to the machine: three
-    /// readers, one rule, no drift.
+    /// `crate::arena::stock_mind::would_overheat` applies to the mind (the
+    /// reflex's own copy until 17b cut M4.6): three readers, one rule, no
+    /// drift.
     ///
     /// It is compared in [`FrameWeapon::same_as`] because it decides what the
     /// cockpit refuses, and it costs no frame anybody would not already have been
@@ -829,7 +834,8 @@ impl Arena {
     ///
     /// **`at_ms` is the arena millisecond the lock happens at** (16b cut M.2, 16c
     /// `T-02`), and the `locked` line carries it: phase 4 passes `now_ms`, the
-    /// pulse's end, and the reflex controller passes its tick's own timestamp,
+    /// pulse's end, and a mind's landing passes its own millisecond (the
+    /// reflex controller passed its tick's own timestamp until 17b cut M4.6),
     /// which may be earlier than the substep end `now_ms` was advanced to.
     ///
     /// # Errors
@@ -903,12 +909,14 @@ impl Arena {
     /// `T-02`), and everything above is read against it — the cycle gate, the two
     /// schedules, the shot's `fired_at_ms`, the heat and the line. Phase 4 passes
     /// `now_ms`, the pulse's end, because a pilot's discrete action resolves at the
-    /// end of the pulse that accepted it (doc 16 §11's D-16-2 as amended). The
-    /// reflex controller passes its tick's own timestamp: the tick runs inside a
-    /// substep *after* `now_ms` was advanced to the substep's end, so reading
-    /// `now_ms` here stamped a tick at 1,009 ms `fired` at 1,250 and flew its
-    /// round from there. An event the tick schedules at or before the substep's
-    /// end — a beam's zero-flight impact — is popped by the same due loop, in
+    /// end of the pulse that accepted it (doc 16 §11's D-16-2 as amended). A
+    /// machine passes its own millisecond — a mind's landing (the reflex
+    /// controller's tick until 17b cut M4.6): a landing runs inside a substep
+    /// *after* `now_ms` was advanced to the substep's end, as the tick did, so
+    /// reading `now_ms` here stamped a tick at 1,009 ms `fired` at 1,250 and
+    /// flew its round from there. An event the landing schedules at or before
+    /// the substep's end — a beam's zero-flight impact — is popped by the same
+    /// due loop, in
     /// `(t_ms, seq)` order: **the same-substep property**. (A `WeaponReady` could
     /// be one only with a `cycle_ms` shorter than a substep, which W14's 1,000 ms
     /// floor rules out for shipped content.)
@@ -933,8 +941,7 @@ impl Arena {
     ///   captured floor (else [`Refusal::Unlawful`]), ahead of every
     ///   `Unwarranted` test (D-UM-17);
     /// * **(3b) hold-fire** (D-UM-19) — a [`Controller::Mind`] hull's standing
-    ///   order, a [`Controller::Reflex`] hull's (a slot on a reflex hull is
-    ///   unreachable in production; the arm exists and is pinned), a pilot's
+    ///   order (a reflex hull's too until 17b cut M4.6 deleted it), a pilot's
     ///   hull none: [`Refusal::Unwarranted`];
     /// * **(3c) the warrant** — an uncited mind shot (`Mind { slot: None }`),
     ///   or a cited one whose slot's [`Arena::warrant`] fails on the plot at
@@ -1066,9 +1073,10 @@ impl Arena {
         // the ones whose `heat_per_shot` is nought — so a laser tank that had
         // cooked itself could not fire the coaxial machine gun either, which is a
         // rule doc 16 §9 item 1 does not have: the ceiling is what a *hot* shot
-        // would add to, and a cold gun adds nothing. `reflex::would_overheat`
-        // answers the same question the same way, so the machine and the pilot
-        // agree about whether the gun works.
+        // would add to, and a cold gun adds nothing. `stock_mind::would_overheat`
+        // (the reflex's copy until 17b cut M4.6) answers the same question the
+        // same way, so the machine and the pilot agree about whether the gun
+        // works.
         if state.overheated()
             && state
                 .heat
@@ -1194,9 +1202,10 @@ impl Arena {
 
     /// **Whether a standing `hold_fire` binds `unit`'s machine-made shots**
     /// (17b cut M1b.1; doc 17 §5's precedence, D-UM-19): a
-    /// [`Controller::Mind`] hull's order on its mind row, a
-    /// [`Controller::Reflex`] hull's on its reflex row, and never a pilot's —
-    /// a seated hull holds no standing order. Read by the resolver's (3b).
+    /// [`Controller::Mind`] hull's order on its mind row, and never a pilot's
+    /// — a seated hull holds no standing order (a reflex hull's on its reflex
+    /// row too, until 17b cut M4.6 deleted the reflex controller). Read by the
+    /// resolver's (3b).
     #[must_use]
     pub fn holds_fire(&self, unit: ObjId) -> bool {
         match self.unit(unit).map(|state| state.controller) {
@@ -1205,10 +1214,6 @@ impl Arena {
                 .get(&unit)
                 .and_then(|state| state.order.as_ref())
                 .is_some_and(|order| order.hold_fire),
-            Some(Controller::Reflex) => self
-                .reflex
-                .order(unit)
-                .is_some_and(|standing| standing.order.constraints.hold_fire),
             Some(Controller::Pilot) | None => false,
         }
     }

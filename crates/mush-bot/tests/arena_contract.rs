@@ -26,8 +26,9 @@
 //!    `STATUS` head and position rows, the room headings, the order acks) and it
 //!    is the canary the later sub-cuts' end-to-end lanes stand on.
 //!
-//! Nothing of the machines' own controller (`tacsim::arena::reflex`) is
-//! imported: what the pilot does is written from the player help alone.
+//! Nothing of the machines' own controller (`tacsim::arena::reflex` until 17b
+//! cut M4.6 deleted it; the unit minds since) is imported: what the pilot does
+//! is written from the player help alone.
 use std::time::{Duration, Instant};
 
 use mush_ansi::AnsiTheme;
@@ -465,7 +466,7 @@ fn every_refusal() -> Vec<Refusal> {
         Refusal::Empty,
         Refusal::Overheated,
         Refusal::NoWeapon,
-        Refusal::NotReflex,
+        Refusal::NotMachine,
         Refusal::NoJammer,
         // 17b cut M1b.1: the law's two words and the count's.
         Refusal::Unwarranted,
@@ -488,7 +489,7 @@ fn every_refusal() -> Vec<Refusal> {
             | Refusal::Empty
             | Refusal::Overheated
             | Refusal::NoWeapon
-            | Refusal::NotReflex
+            | Refusal::NotMachine
             | Refusal::NoJammer
             | Refusal::Unwarranted
             | Refusal::NoSlot

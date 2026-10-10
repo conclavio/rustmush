@@ -14,7 +14,8 @@
 //! the installer gives a scripted seal this runner — `scripted` from the flip
 //! to the fill decision of 2026-10-09, `native` since, so a production match
 //! checked out since runs none and this runner flies a fixture's scripted
-//! seal, or a match checked out between the flip and the decision, resumed).
+//! seal, or a match checked out between the flip and the decision, resumed —
+//! until 17b cut M4.6's format 9, which voids every older snapshot).
 //!
 //! **Synchronous, at the think point.** The sim task calls the runner inside
 //! the think's due event and waits for the answer, as it calls

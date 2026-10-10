@@ -869,8 +869,9 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
 
 ### Squad deliberation (16b cut N.2): the combat arena's commander
 
-A running match's AI tanks are grouped into **squads** — a side's reflex units
-dealt, in object-id order, into squads of at most `[tacsim.arena].squad_size`
+A running match's AI tanks are grouped into **squads** — a side's machines (unit
+minds since 17b cut M4.3; the reflex controller's units before it) dealt, in
+object-id order, into squads of at most `[tacsim.arena].squad_size`
 (default 4, `1` to `16`; 16b cut Z.1) whose sizes differ by at most one, the
 lowest object id of each commanding — and one squad may hold one
 **standing order**: an objective (`hold`, `advance`, `engage`, `withdraw`), an
@@ -1384,8 +1385,8 @@ holding that its Class I slots thought above the ROM — and its `held=` word is
 no longer a decision input but a capacity reading for the owner; it is still
 asserted under `TACSIM_ASSERT` as every variant's is, so a fill `held=no` on a
 run of this script fails the minds lane and blesses nothing. A match checked
-out between 17b cut M4.3 and the decision carries `scripted` seals and resumes on them (the
-stock source is compiled in). A `stock_ci` `held=no` was to be
+out between 17b cut M4.3 and the decision carries `scripted` seals and resumed on them (the
+stock source is compiled in) until 17b cut M4.6's format 9, which voids every older snapshot. A `stock_ci` `held=no` was to be
 the owner's STOP before 17b cut M4.5 moved the CI lane onto minds; the owner
 waived that precondition on 2026-10-08, and the three runs remain the owner's.
 Its four

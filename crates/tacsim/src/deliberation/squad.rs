@@ -160,7 +160,8 @@ impl SquadRoster {
 ///
 /// `units` is `(unit, team, is_machine)` in any order — the bool is
 /// `crate::arena::state::Controller::is_machine`, the reflex controller or (17b
-/// cut L.2) a unit mind; until that cut it read "reflex" alone. Both production
+/// cut L.2) a unit mind; until that cut it read "reflex" alone, and since 17b
+/// cut M4.6 deleted the reflex it reads "mind" alone. Both production
 /// callers build it with `crate::arena::state::CustodyUnit::squad_input`, the
 /// one builder, so they cannot disagree on who is a machine. Only the machines
 /// are grouped, because a pilot's tank takes no order. Pilot-controlled units are

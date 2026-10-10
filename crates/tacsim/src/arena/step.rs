@@ -761,13 +761,14 @@ impl Arena {
             // unit under no order, or under another squad's, dropped nothing and
             // counts nothing.
             //
-            // **17b cut M1a.5**: a mind's held order counts the same way.
+            // **17b cut M1a.5**: a mind's held order counts the same way —
+            // and since 17b cut M4.6 deleted the reflex's rows, it is the only
+            // held order there is.
             let held_order = |arena: &Arena| {
-                arena.reflex.order(intent.unit).is_some()
-                    || arena
-                        .minds
-                        .get(&intent.unit)
-                        .is_some_and(|state| state.order.is_some())
+                arena
+                    .minds
+                    .get(&intent.unit)
+                    .is_some_and(|state| state.order.is_some())
             };
             let releasing =
                 matches!(intent.kind, IntentKind::ReleaseOrder { .. }) && held_order(self);
@@ -786,8 +787,7 @@ impl Arena {
             // Phase 2 runs at the pulse's start, and a world beat lands in the
             // pulse that reaches it, so the step happens at one arena
             // millisecond at every cadence. A hold or a release of the helm
-            // drives nothing; `Arena::motor_step` itself passes a reflex hull,
-            // whose drive is its own tick's.
+            // drives nothing.
             if outcome == IntentOutcome::AppliedContinuous
                 && matches!(intent.kind, IntentKind::Goal(MotorGoal::Cell { .. }))
             {
@@ -918,7 +918,8 @@ impl Arena {
         // overshoot. Everything the action
         // schedules from here is a due event and rate-independent. The resolvers
         // take the millisecond as an argument because a machine's actions resolve
-        // at its tick instead (`crate::arena::reflex`).
+        // at its own millisecond instead (a mind's landing; the reflex's tick
+        // until 17b cut M4.6).
         let at_ms = self.now_ms;
         let ids: Vec<ObjId> = if self.ended.is_some() {
             Vec::new()
@@ -1021,8 +1022,9 @@ impl Arena {
                     }
                     // Continuous orders never queue (phase 2 applies them), and
                     // neither does a squad's standing order (16b cut N.2): it is
-                    // written onto the reflex machine at apply and read by that
-                    // machine's own tick. **17b cut M1a.4**: nor does a `DRIVE`'s
+                    // written onto the machine at apply (a mind's row; the reflex
+                    // row until 17b cut M4.6) and read by its next think. **17b
+                    // cut M1a.4**: nor does a `DRIVE`'s
                     // goal, which phase 2 writes onto the motor row.
                     IntentKind::Heading { .. }
                     | IntentKind::Speed { .. }
@@ -1053,8 +1055,9 @@ impl Arena {
         // is exactly "phase 4's own zero-flight events". (A `WeaponReady` cannot
         // be one with shipped content: `cycle_ms` is floored at 1,000 by W14,
         // longer than any substep.) The opening pulse runs no substep and drains
-        // nothing: its `t = 0` events (a `SensorPass` or a `ReflexTick` for a
-        // unit whose stagger is nought — `stagger_ms`, 16b cut U.1 — and a
+        // nothing: its `t = 0` events (a `SensorPass` or — until 17b cut M4.6 —
+        // a reflex tick for a unit whose stagger is nought — `stagger_ms`, 16b
+        // cut U.1 — and a
         // `MatchDeadline` of `0`) pop in the next pulse's first substep exactly
         // as they always did, so the opening pulse's hash sequence, its
         // `substeps == 0` and phase 5's duration backstop are untouched. A
@@ -1122,9 +1125,11 @@ impl Arena {
         let signals = TempoSignals {
             fire_intent_queued,
             contact_within_alert_range: self.contact_within_alert_range(),
-            // 17b cut M4.3: either machine's `Approach` — the mind's off its
-            // cached doctrine state (`Arena::any_mind_approaching`).
-            ai_approaching: self.reflex.any_approaching() || self.any_mind_approaching(),
+            // 17b cut M4.3: a mind's `Approach` off its cached doctrine state
+            // (`Arena::any_mind_approaching`) — since 17b cut M4.6 the only
+            // machine's, and read only on a hull sealed on Standard Doctrine
+            // (`SealRef::doctrine`).
+            ai_approaching: self.any_mind_approaching(),
             shot_fired,
             impact_scheduled: shot_fired,
             hostile_in_weapons_range: self.hostile_in_weapons_range(),
@@ -1353,12 +1358,14 @@ impl Arena {
         // at the same point in the same order, which is what the scan would have
         // given.
         let mut stops: Vec<(ObjId, crate::arena::motion::BlockedCause)> = Vec::new();
-        // **16b cut Q.7**: the same stops again, with the cell, for the reflex
-        // controller's own memory — the same edge once more (16b cut M.3). They
-        // are collected here and applied below — after arena time has advanced,
-        // so the timestamp a controller remembers is the one the `blocked` ledger
-        // line carries, and before the due-event loop, so the `ReflexTick` of
-        // this very substep already knows.
+        // **16b cut Q.7**: the same stops again, with the cell, for the hull's
+        // remembered stops (the motor row's since 17b cut M1a.1, the reflex
+        // controller's memory before) — the same edge once more (16b cut M.3).
+        // They are collected here and applied below — after arena time has
+        // advanced, so the timestamp a row remembers is the one the `blocked`
+        // ledger line carries, and before the due-event loop, so a motor tick
+        // of this very substep already knows (as the reflex's tick did until
+        // 17b cut M4.6).
         let mut learned: Vec<(ObjId, (u16, u16), crate::arena::motion::BlockedCause)> = Vec::new();
 
         // **16b cut E.3** (16c `B-44`), before motion: a machine steering at a
@@ -1548,8 +1555,8 @@ impl Arena {
         //    `SensorPass` arm does. Every landing runs before any of their
         //    impacts, so two minds' beams at one millisecond are simultaneous:
         //    both fire and both impact — the second hull is no wreck yet when
-        //    it lands — exactly as two `ReflexTick`s at one millisecond are (a
-        //    tick's `Impact` takes a later `seq` than the other tick's event);
+        //    it lands — exactly as two reflex ticks at one millisecond were (a
+        //    tick's `Impact` took a later `seq` than the other tick's event);
         // 2. when the head has left the millisecond again with only thinks
         //    held, **the thinks** run (`Arena::run_mind_thinks`), by unit then
         //    `think_seq`: unit-id order by construction, whatever their `seq`
@@ -1559,14 +1566,15 @@ impl Arena {
         //    substep, the landing and the next think share a millisecond and
         //    the landing runs first, by step 1).
         //
-        // **Declared asymmetry** (doc 17 §24; 17b cut M1b.0): reflex ticks and
-        // mind landings at one millisecond are NOT mutual. A `ReflexTick` is an
-        // ordinary event, so it runs while the landings are still held and its
-        // beam's `Impact` pops before them — a reflex beam kills a mind hull
-        // before it lands — and a mind's beam cannot pre-empt a reflex tick at
-        // that millisecond either: the tick already ran. Reachable only with
-        // laser hulls on both controllers at one millisecond; 17b cut M4's flip
-        // (every unseated hull a mind's) retires it.
+        // **Declared asymmetry, retired** (doc 17 §24; 17b cut M1b.0): reflex
+        // ticks and mind landings at one millisecond were NOT mutual. A reflex
+        // tick was an ordinary event, so it ran while the landings were still
+        // held and its beam's `Impact` popped before them — a reflex beam
+        // killed a mind hull before it landed — and a mind's beam could not
+        // pre-empt a reflex tick at that millisecond either. Reachable only with
+        // laser hulls on both controllers at one millisecond; 17b cut M4.3's
+        // flip (every unseated hull a mind's) made it unreachable, and 17b cut
+        // M4.6 deleted the reflex tick.
         //
         // What moved against cut M1a.5's one pass, and what did not. Moved, and
         // for mind hulls only: whatever a landing schedules at its own
@@ -1876,64 +1884,22 @@ impl Arena {
                         );
                     }
                 }
-                // **16b cut N.1** (doc 16 §6): one AI unit's decision, applied at
-                // its own arena timestamp against the positions this substep
-                // committed — which is what makes the controller rate-independent
-                // and is why it is a due event and not pulse phase 4
-                // (`crate::arena::reflex`'s module head has the argument).
-                //
-                // A match that ended inside this substep decides nothing more: doc
-                // 16 §3.8's elimination is settled below, and an order given after
-                // `match_ended` would be a line in the black box about a match that
-                // was already over.
-                //
-                // The one hash, taken **lazily**: the discrete actions a tick
-                // resolves journal through `Arena::event_hash`, and a fresh hash per
-                // action is the 5 ms a pulse cut W.1 measured. A substep with no
-                // reflex work pays nothing for this.
-                //
-                // **16b cut M.2** (16c `T-02`): the tick's actions are resolved at
-                // `event.t_ms`, the tick's own millisecond, and not at `now_ms`,
-                // which this substep has already advanced to its end. Anything a
-                // tick schedules at or before `now_ms` — a beam's zero-flight
-                // impact — is popped by this same loop in `(t_ms, seq)` order:
-                // **the same-substep property**. (A `WeaponReady` could be one only
-                // with a `cycle_ms` shorter than a substep, which W14's 1,000 ms
-                // floor rules out for shipped content.)
-                DueKind::ReflexTick { unit, tick_seq } => {
-                    if self.ended.is_none() {
-                        // 16b cut M.3 (`T-23`): opened, not taken — the first
-                        // line a tick of this substep journals takes it.
-                        if self.action_hash == ActionHash::Outside {
-                            self.action_hash = ActionHash::Pending;
-                        }
-                        if self.reflex_tick(unit, event.t_ms, reflex) {
-                            let cadence = i64::from(self.arena_cfg.reflex.decide_ms.max(1));
-                            self.due.schedule(
-                                event.t_ms.saturating_add(cadence),
-                                DueKind::ReflexTick {
-                                    unit,
-                                    tick_seq: tick_seq.saturating_add(1),
-                                },
-                            );
-                        }
-                    }
-                }
                 // **17b cut M1a.4** (doc 17 §4 D-UM-3): the motor's own cadence
-                // for a hull no reflex tick drives — a pilot's `DRIVE` — at its
-                // own arena timestamp against the positions this substep
-                // committed, for `ReflexTick`'s reason. Nothing after the match
-                // ended; a hull that is gone, a wreck, a reflex hull or a row
-                // with no goal is driven no more and the tick is not
-                // rescheduled, so the cadence ends with the goal (arrival and no
-                // route both drop it under `Fallback::Notice`, and a hull that
-                // can no longer move drops it in `Arena::motor_step`). It journals
-                // nothing, so it opens no action hash.
+                // — a pilot's `DRIVE`, a mind's `goto` — at its own arena
+                // timestamp against the positions this substep committed, which
+                // is what makes the drive rate-independent and is why it is a
+                // due event and not pulse phase 4 (doc 16 §3.1's D-16-2; the
+                // reflex controller's tick ran on the same argument until 17b
+                // cut M4.6 deleted it, with its arm here). Nothing after the
+                // match ended; a hull that is gone, a wreck or a row with no
+                // goal is driven no more and the tick is not rescheduled, so the
+                // cadence ends with the goal (arrival and no route both drop it
+                // under `Fallback::Notice`, and a hull that can no longer move
+                // drops it in `Arena::motor_step`). It journals nothing, so it
+                // opens no action hash.
                 DueKind::MotorTick { unit } => {
                     if self.ended.is_none()
-                        && self.unit(unit).is_some_and(|state| {
-                            !state.limits.wreck && state.controller != Controller::Reflex
-                        })
+                        && self.unit(unit).is_some_and(|state| !state.limits.wreck)
                         && self
                             .motors
                             .row(unit)
@@ -3102,7 +3068,7 @@ impl Arena {
     /// The other five have nobody to tell. [`Refusal::Epoch`] is doc 16 §3.1's
     /// `FIRE` then `EXIT` burst working exactly as written: the pilot who left is
     /// told nothing about the shot they did not take. [`Refusal::Channel`],
-    /// [`Refusal::Unknown`], [`Refusal::Linkdead`] and [`Refusal::NotReflex`] are
+    /// [`Refusal::Unknown`], [`Refusal::Linkdead`] and [`Refusal::NotMachine`] are
     /// answers to something no seated pilot's cockpit can produce — a wrong
     /// channel is a routing fault, an absent unit has no pilot, a linkdead seat
     /// has nobody at it, and an `ORDER` is a squad's.
@@ -3399,16 +3365,16 @@ impl Arena {
     /// `now_ms`; a `StartupComplete` under a `startup_ms` of nought), and runs
     /// [`Arena::run_mind_thinks`] once the heap's head has left it. Every
     /// landing runs before any impact of theirs, so two minds' beams at one
-    /// millisecond both fire and both land: the simultaneity two `ReflexTick`s
-    /// at one millisecond have. (A landing on a hull already a wreck is not
+    /// millisecond both fire and both land: the simultaneity two reflex ticks
+    /// at one millisecond had. (A landing on a hull already a wreck is not
     /// refused but dropped — `Arena::mind_land` returns before applying it —
-    /// so a per-landing order would lose the second shot silently.) A reflex tick
-    /// at that millisecond is NOT mutual with them — it is an ordinary event
-    /// and ran, its beam's impact with it, before the landings: the asymmetry
-    /// the loop head declares, which 17b cut M4's flip retires.
+    /// so a per-landing order would lose the second shot silently.) A reflex
+    /// tick at that millisecond was NOT mutual with them — the asymmetry the
+    /// loop head declares, retired with the reflex controller in 17b cut M4.6.
     ///
-    /// The lazy action hash is opened as `ReflexTick`'s arm opens it, so a
-    /// landing's lines share the substep's one hash.
+    /// The lazy action hash is opened as the reflex tick's arm opened it (16b
+    /// cut M.3: opened, not taken), so a landing's lines share the substep's
+    /// one hash.
     fn run_mind_landings(&mut self, held: &mut Vec<DueEvent>, reflex: &mut MotorCounters) {
         let mut landings: Vec<(ObjId, u64, i64)> = Vec::new();
         held.retain(|event| match event.kind {
@@ -3438,8 +3404,8 @@ impl Arena {
     /// `mind_fault` and `mind_dropped` lines (`Arena::mind_think`) fill no
     /// lazy slot either: they carry the substep's hash once an earlier line
     /// has TAKEN it, else a fresh state hash that stores nothing — under
-    /// `Outside`, and under a `Pending` slot a landing or a reflex tick earlier
-    /// in the substep opened and journalled nothing under
+    /// `Outside`, and under a `Pending` slot a landing (or, until 17b cut M4.6,
+    /// a reflex tick) earlier in the substep opened and journalled nothing under
     /// (`Arena::think_line_hash`; [`Arena::event_hash`] would fill that slot
     /// with the think's moment). So a think, clean or faulted, moves no later
     /// line's hash in its substep (opening one before every think would make
@@ -4709,7 +4675,7 @@ mod tests {
         let out = arena.step(5_000, &[], &[order(A, IntentKind::Startup, 1)]);
         assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
 
-        // `NotReflex`, and every `Order` whatever it is refused for: doctrine is
+        // `NotMachine`, and every `Order` whatever it is refused for: doctrine is
         // a commander's and a tank's pilots are not its audience.
         let mut arena = fresh();
         arena.step(0, &[], &[]);

@@ -3588,86 +3588,28 @@ fn m2_a_duration_bound_mid_pulse_is_one_timeout_at_one_millisecond_at_three_cade
 }
 
 // ---------------------------------------------------------------------------
-// 16b cut Y.1 — the issuer is state; the spot is not
+// 16b cut Y.1 — the issuer was state; the spot is not (retired, 17b cut M4.6c)
 // ---------------------------------------------------------------------------
-
-/// **16b cut Y.1** (the cut's one hash move): two arenas equal but for a
-/// standing order's `issuer` hash differently — the issuer decides which object
-/// a hint names, so the two are two states and a replay that lost it must not
-/// compare equal — while an order's `spot`, the commander's word for a cell
-/// that nothing steering reads, moves nothing.
-///
-/// **17b cut L.1** (D-UM-52): nor does its author, `by` — a record field never
-/// folded, like `spot`; the hint's scope is `issuer`'s.
-#[test]
-fn the_hash_folds_the_issuer_and_not_the_spot() {
-    let told = |issuer: Option<ObjId>, spot: Option<&str>| tacsim::deliberation::Order {
-        squad: tacsim::deliberation::SquadId {
-            team: Team::Red,
-            index: 1,
-        },
-        objective: tacsim::deliberation::Objective::Advance { to: (12, 9) },
-        target: None,
-        horizon_ms: 600_000,
-        constraints: tacsim::deliberation::Constraints::default(),
-        ttl_ms: 600_000,
-        issued_ms: 0,
-        issuer,
-        by: tacsim::deliberation::CharacterRef::Persona {
-            squad: tacsim::deliberation::SquadId {
-                team: Team::Red,
-                index: 1,
-            },
-        },
-        spot: spot.map(SmolStr::new),
-    };
-    let under = |order: tacsim::deliberation::Order| {
-        let mut arena = arena_of(
-            vec![
-                tank(MOVER, Team::Red, centre(10, 10)),
-                tank(PARKED, Team::Blue, centre(30, 30)),
-            ],
-            &MatchConfig::default(),
-        );
-        arena.reflex.set_order(
-            MOVER,
-            tacsim::deliberation::StandingOrder::accepted(order, 0),
-        );
-        tacsim::arena::hash::state_hash(&arena)
-    };
-    let machines = under(told(None, None));
-    let pilots = under(told(Some(ObjId(77)), None));
-    let another = under(told(Some(ObjId(78)), None));
-    assert_ne!(machines, pilots, "the issuer is folded");
-    assert_ne!(pilots, another, "and which issuer it is");
-    assert_eq!(
-        under(told(Some(ObjId(77)), Some("The Ford"))),
-        pilots,
-        "the spot is the commander's word and steers nothing"
-    );
-    assert_eq!(under(told(None, Some("The Ford"))), machines);
-    // 17b cut L.1: the author is not state either.
-    assert_eq!(
-        under(tacsim::deliberation::Order {
-            by: tacsim::deliberation::CharacterRef::Character { id: ObjId(9_001) },
-            ..told(Some(ObjId(77)), None)
-        }),
-        pilots,
-        "the order's author is a record field and steers nothing"
-    );
-    assert_eq!(
-        under(tacsim::deliberation::Order {
-            by: tacsim::deliberation::CharacterRef::Persona {
-                squad: tacsim::deliberation::SquadId {
-                    team: Team::Blue,
-                    index: 2,
-                },
-            },
-            ..told(None, None)
-        }),
-        machines
-    );
-}
+//
+// `the_hash_folds_the_issuer_and_not_the_spot` stood here from 16b cut Y.1:
+// two arenas equal but for a reflex row's standing order's `issuer` hashed
+// differently (hash item 3 folded it, because the reflex re-keyed its hint at
+// EVERY tick, so the issuer steered later decisions), while the order's `spot`
+// and (17b cut L.1) its author `by` moved nothing. **It is retired by the
+// owner's STOP C ruling (2026-10-09), in 17b cut M4.6c**, which deleted the
+// reflex rows it wrote through and hash item 3 with them: the issuer is now a
+// RECORD field beside the mind's order (`MindState::order_issuer`) — D-UM-15
+// re-keys a mind's hint once, at write time, in the issuer's scope, so the
+// issuer steers nothing after the landing (D-UM-52's `by` is the precedent) —
+// carried by the snapshot and never folded; and on a mind row `spot` and `by`
+// are not stored at all, so the pin's other halves have no subject left. What
+// replaces it: `src/arena/hash.rs`' in-source
+// `m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash`
+// probes the issuer NOT folded (two rows holding one order, differing only in
+// who issued it, hash equal; the order itself is folded); the snapshot carry
+// is `m3_a_snapshot_carries_the_minds_with_their_pending_answers` below; and
+// the landing's write is `tests/reflex.rs`'
+// `t1_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander`.
 
 // ---------------------------------------------------------------------------
 // 16b cut Z.2 — the two squad roles' payloads are state
@@ -5402,37 +5344,26 @@ fn af1_the_encoding_is_deterministic_and_integer() {
 const SQUAD_RED_B: ObjId = ObjId(5);
 const SQUAD_BLUE_B: ObjId = ObjId(10);
 
-/// **A squadded arena** (16b cut AF.1): four armed, sighted tanks on the
-/// reflex controller and no pilot — red's pair in the south, blue's ten cells
-/// north facing it — so `Arena::new` deals each side into one squad under its
-/// lowest id, two squads, and the first pulse fills the squad watch.
+/// **A squadded arena of four unit minds** (16b cut AF.1; 17b cut M4.5a):
+/// four armed, sighted tanks checked out `Controller::Mind` and no pilot —
+/// red's pair in the south, blue's ten cells north facing it — so `Arena::new`
+/// deals each side into one squad under its lowest id, two squads, lays a mind
+/// row and schedules a think for each, and the first pulse fills the squad
+/// watch. The seal is the controller's to ignore (`seal_for` writes the fixture
+/// terms' engine): the native stock mind. The default profile presents no
+/// band, so a mind's slot never fires at a tank here (17b cut M4.3's `rig.rs`
+/// note); no user reads a shot.
 ///
-/// **17b cut M4.5a — held on the reflex for the shape pin alone** (Q12(c)):
-/// [`af1_the_snapshot_shape_is_pinned`] walks this builder's unstepped arena,
-/// whose four reflex rows and check-out motor rows are under
-/// [`AF1_SHAPE_DIGEST`]; the pin moves only with a `SNAPSHOT_FORMAT` bump, so
-/// it moves with 17b cut M4.6's format 9 (the reflex rows' deletion) and not
-/// here. Every stepped user fields the same four tanks as minds
-/// ([`af1_mind_squad_arena`]).
-fn af1_squad_arena() -> Arena {
-    af1_squad_arena_on(tacsim::arena::state::Controller::Reflex)
-}
-
-/// **[`af1_squad_arena`]'s four tanks flown by unit minds** (17b cut M4.5a):
-/// the same field checked out `Controller::Mind` — the seal is the
-/// controller's to ignore (`seal_for` writes the fixture terms' engine), and
-/// `Arena::new` lays a mind row and schedules a think for each — on the native
-/// stock mind. The default profile presents no band, so a mind's slot never
-/// fires at a tank here (17b cut M4.3's `rig.rs` note); no user reads a shot.
+/// **17b cut M4.6c**: the only squadded builder. Its reflex twin
+/// (`af1_squad_arena`, the same four tanks on the reflex controller, held for
+/// the shape pin alone since 17b cut M4.5a) and the controller-taking
+/// `af1_squad_arena_on` were deleted with the reflex controller, and
+/// [`af1_the_snapshot_shape_is_pinned`] walks this arena unstepped in their
+/// place (the conventions' D9), given one motor row and one landed, issued
+/// order on the mover first.
 fn af1_mind_squad_arena() -> Arena {
-    af1_squad_arena_on(tacsim::arena::state::Controller::Mind)
-}
-
-/// The squadded field under `controller` ([`af1_squad_arena`],
-/// [`af1_mind_squad_arena`]).
-fn af1_squad_arena_on(controller: tacsim::arena::state::Controller) -> Arena {
     let machine = |mut unit: CustodyUnit| {
-        unit.controller = controller;
+        unit.controller = tacsim::arena::state::Controller::Mind;
         unit
     };
     let facing_south = |mut unit: CustodyUnit| {
@@ -5648,7 +5579,8 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 
 /// **The structural pin**: SHA-256 of the sorted `path: kind` lines of an
 /// unstepped [`scripted_arena`]'s encoded state and an unstepped
-/// [`af1_squad_arena`]'s, one set, joined by newlines.
+/// [`af1_mind_squad_arena`]'s (the reflex squad arena's, `af1_squad_arena`,
+/// until 17b cut M4.6c), one set, joined by newlines.
 ///
 /// **Re-blessed by 16b cut AI.1 with `SNAPSHOT_FORMAT` 2**: `ReflexUnit` gained
 /// `searched_from` and `refused`, one `null` line each on the squad arena's four
@@ -5672,8 +5604,8 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// **Re-blessed by 17b cut M1a.5 with `SNAPSHOT_FORMAT` 5**: the carried
 /// `minds` section, empty on both unstepped fixtures (neither fields a mind),
 /// is the one new line `state.minds: object` — 392 lines to 393. A mind row's
-/// own fields, `Controller::Mind` and the two mind due kinds are under the pin
-/// on no fixture here (the variants' round trip was
+/// own fields, `Controller::Mind` and the two mind due kinds were under the pin
+/// on no fixture here until 17b cut M4.6c (the variants' round trip was
 /// `m1a5_a_snapshot_carries_the_minds_and_not_their_landings`, 17b cut M3.2's
 /// [`m3_a_snapshot_carries_the_minds_with_their_pending_answers`] since).
 ///
@@ -5683,8 +5615,8 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// held-shot rows through `pairs`, empty) and `state.odds_floor_permille:
 /// number` (the floor captured at check-out) — 393 lines to 396. The card
 /// inside a mind row, `IntentKind::Fire.slot`, `IntentKind::Condition`, the two
-/// slot notices and `RefusalDetail::Floor` are under the pin on no fixture
-/// here. Their round trips: the card, the two slot notices (every `HeldWhy`)
+/// slot notices and `RefusalDetail::Floor` were under the pin on no fixture
+/// here (the card inside a mind row is, since 17b cut M4.6c). Their round trips: the card, the two slot notices (every `HeldWhy`)
 /// and a refusal carrying `RefusalDetail::Floor` in a mind's notice buffer in
 /// `tests/conditions.rs`'
 /// `m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_hash_sequence`;
@@ -5706,13 +5638,44 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// arm no slot, so the mind row's new shapes (`PendingThink`'s `epochs`,
 /// `intents` and `memory`, `MindState.dropped` and `seal_digest`) and the
 /// condition row's (a vector as wide as the core's slots where it was a
-/// fixed pair) are under the pin on no fixture here: their round trips are
+/// fixed pair) were under the pin on no fixture here until 17b cut M4.6c
+/// walked a mind squad: their round trips are
 /// [`m3_a_snapshot_carries_the_minds_with_their_pending_answers`],
 /// `tests/minds.rs`' `m3_a_resumed_landing_lands_the_carried_answer` and
 /// `snapshot.rs`' `af1_every_keyed_map_in_the_tree_is_one_json_writes`.
-const AF1_SHAPE_DIGEST: &str = "5710d7c33ad33929aaa45bb7084ece66fe88a3bf397ea272301dd90abe7cfa2d";
+///
+/// **Re-blessed by 17b cut M4.6c with `SNAPSHOT_FORMAT` 9** (the deletion of
+/// the reflex controller; the conventions' D9), once, old → new
+/// `5710d7c33ad33929aaa45bb7084ece66fe88a3bf397ea272301dd90abe7cfa2d` (442
+/// lines) → `202e7d4f3a6392b65225530c1a2ee2aae2d8023224820edd13139315a9df37e7`
+/// (509 lines). The pin walks [`af1_mind_squad_arena`] in place of the reflex
+/// squad arena (deleted with the reflex): the same four armed, sighted tanks
+/// in two squads, flown by minds — given, before it is encoded, one motor row
+/// on the mover (a mind's check-out lays none, where the reflex's adoption
+/// laid one per machine) and one squad order with an issuer LANDED on the
+/// mover through `apply_intent`'s Order arm. 93 lines left — the
+/// `state.reflex` section (`state.reflex`, `state.reflex.cfg` and its
+/// thirteen figures, `state.reflex.units` and each of the four reflex rows
+/// with its ten fields: 60), the `reflex_tick` due kind with its `unit` and
+/// `tick_seq` (3), and the motor rows of the three machines but the mover
+/// (`state.motors.rows.<id>` and its nine fields each: 30; the mover's ten
+/// lines stay, its row the one laid here); 160 arrived — each of the four
+/// mind rows (`state.minds.<id>` and its eleven fields, its card's
+/// twenty-four terms and its `seal_digest.[]`: 37 each, 148), the mover's
+/// standing order in place of its `null` (`state.minds.4.order` an object
+/// with its `FrameOrder` fields — `squad`, `objective` with its tag and its
+/// `to.[]`, `hold_fire`, `max_range_band`, `expires_ms` — 9 lines for 1:
+/// +8), the `mind_think` due kind with its `unit` and `think_seq` (3), and
+/// `state.units.[].seal.doctrine: bool` (1). The owner's STOP C issuer is
+/// among the mind rows' fields, a number on the mover
+/// (`state.minds.4.order_issuer: number`) and `null` on the three rows
+/// holding no order. 442 − 93 + 160 = 509. (The cut's first re-bless, before
+/// its review restored the motor row and added the order, read
+/// `862ed2b97bcfa2b5fc9461787d19c1251742d6ea7b4516a64d15e2c779b98c8d`, 491
+/// lines; it was never committed.)
+const AF1_SHAPE_DIGEST: &str = "202e7d4f3a6392b65225530c1a2ee2aae2d8023224820edd13139315a9df37e7";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 442;
+const AF1_SHAPE_LINES: usize = 509;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5720,11 +5683,16 @@ const AF1_SHAPE_LINES: usize = 442;
 /// and never alone, and a behaviour change never moves it (the tree at pulse
 /// zero is a function of the fixture and the shape, not of motion or
 /// perception). Two fixtures are walked, so the pin sees every path either of
-/// them fills: [`scripted_arena`]'s bare tanks and [`af1_squad_arena`]'s armed,
-/// sighted machines in two squads — its weapons, sensors, reflex rows and squad
-/// rosters are under the pin.*
+/// them fills: [`scripted_arena`]'s bare tanks and [`af1_mind_squad_arena`]'s
+/// armed, sighted machines in two squads, given one motor row and one landed,
+/// issued squad order on the mover (17b cut M4.6c) — its weapons, sensors,
+/// squad rosters, the motor row's nine carried fields, mind rows (card,
+/// memory, strikes, drop, seal digest, the standing order's `FrameOrder`
+/// fields and the owner's STOP C `order_issuer` as a number), their due
+/// thinks and each unit's seal reference with its `doctrine` bit are under
+/// the pin.*
 ///
-/// *Its limit, read off the 396 lines (a collection empty or an option `None`
+/// *Its limit, read off the 509 lines (a collection empty or an option `None`
 /// at pulse zero leaves one line and none for its element): **not under it**
 /// are the contacts (`ShadowContact`, `SeenPose`, `OwnSighting`, `Reading`),
 /// the designator book's rows, the shots (`Shot`, `Resolution`), the pending
@@ -5736,19 +5704,22 @@ const AF1_SHAPE_LINES: usize = 442;
 /// `lock`, `occupied_hold` (`OccupiedHold`), `thermal`, `jammer`, `eccm`,
 /// `receiver`, `slope_limit_pct`, the profile's bands and sections
 /// (`BandProfile`, `SectionProfile`) and the opaque unit's capabilities,
-/// components and mobility; on a reflex row its hunt, target, standing order
-/// (`StandingOrder`, `Order`) and timers; on a motor row (**17b cut M1a.1**,
-/// where they moved from the reflex row) its route, `avoid`, goal, waypoints,
-/// `searched_from` and remembered stop (`refused`, a `Refusal`), all empty or
-/// `None` at pulse zero; and (**17b cut M1a.5**) every mind row
-/// (`MindState`, `PendingThink`, its buffered `FrameNotice`s, its
-/// `FrameOrder`), neither fixture fielding a mind. A field added to or dropped from one of those moves nothing here:
+/// components and mobility; on the motor row (**17b cut M1a.1**, where its
+/// fields moved from the reflex row) what its fields hold — its route's and
+/// `avoid`'s elements, the goal, the waypoints, `searched_from`,
+/// `searched_ms`, `hold_retry_ms` and the remembered stop (`refused`, a
+/// `Refusal`), all empty or `None` on the one row laid here; and on a mind row (**17b cut M1a.5**) the think in flight
+/// (`PendingThink`), its buffered `FrameNotice`s and its range memory's
+/// entries, all empty or `None` at pulse zero, and of its standing order
+/// `max_range_band` (`RangeBand`, `None` here) and every objective but the
+/// one `Advance` walked. A field added to or dropped from one of those moves
+/// nothing here:
 /// the format is then the author's to bump and the reviewer's to see, and a
 /// stale document is refused as `Malformed` — a missing field by the derive, a
 /// surplus one by `deny_unknown_fields` on the carried types — rather than by
 /// name as `Format`, and never silently resumed. The pin also moves
 /// without a shape change when a default map's keys change (a key is a path
-/// segment: `arena_cfg.max_units_by_class.drone`, `reflex.units.4`) or when
+/// segment: `arena_cfg.max_units_by_class.drone`, `minds.4`) or when
 /// `Arena::new` schedules a different set of due kinds at open. A cut that
 /// adds, renames or re-types a carried field re-blesses it and bumps the format
 /// in the same change, and a running match on a live box is voided at that
@@ -5762,8 +5733,52 @@ const AF1_SHAPE_LINES: usize = 442;
 #[test]
 fn af1_the_snapshot_shape_is_pinned() {
     use sha2::Digest as _;
+    use tacsim::arena::intents::{IntentOutcome, IntentSource, apply_intent};
+    let mut squadded = af1_mind_squad_arena();
+    // 17b cut M4.6c: a mind's check-out lays no motor row, so the walked
+    // arena is given one here — through the table's own door, as the motor
+    // fixtures lay one (`MotorTable::ensure`; a goal's landing, the lawful
+    // way in a match, refuses a cold hull) — and every carried field of a
+    // `MotorRow` stays under the pin.
+    let _ = squadded.motors.ensure(MOVER);
+    // And one squad order LANDED on the mover as the world lands one — its
+    // own helm epoch, through the Order arm, which writes the issuer beside
+    // it (the owner's STOP C) — so the mind row's `FrameOrder` and its
+    // `order_issuer` as a number are under the pin with it: the squad
+    // script's order with an issuer set (`ObjId(77)`, no tank of this
+    // fixture — the issuer is a record field nothing here reads back).
+    let order = af1_squad_script()
+        .into_iter()
+        .flat_map(|beat| beat.intents)
+        .find_map(|intent| match intent.kind {
+            IntentKind::Order(order) if intent.unit == MOVER => Some(*order),
+            _ => None,
+        })
+        .expect("the squad script orders the mover");
+    let kind = IntentKind::Order(Box::new(tacsim::deliberation::Order {
+        issuer: Some(ObjId(77)),
+        ..order
+    }));
+    let channel = kind.channel_required();
+    let issued = Intent {
+        unit: MOVER,
+        channel,
+        epoch: squadded.epochs.current(MOVER, channel),
+        kind,
+        seq: 1,
+    };
+    assert_eq!(
+        apply_intent(&mut squadded, &issued, IntentSource::Seat),
+        IntentOutcome::AppliedContinuous,
+        "the order lands on the mover"
+    );
+    assert_eq!(
+        squadded.minds.get(&MOVER).map(|row| row.order_issuer),
+        Some(Some(ObjId(77))),
+        "the landing wrote the issuer"
+    );
     let mut lines = std::collections::BTreeSet::new();
-    for arena in [scripted_arena(), af1_squad_arena()] {
+    for arena in [scripted_arena(), squadded] {
         let snapshot = Snapshot::encode(&arena).expect("an unstepped arena encodes");
         shape(&state_of(&snapshot), "state", &mut lines);
     }
@@ -5772,7 +5787,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        8,
+        9,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -5933,9 +5948,9 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
         expected: SNAPSHOT_FORMAT,
     };
     // 17b cut M1a.4 moved the format to 4, 17b cut M1a.5 to 5, 17b cut L.1
-    // to 6, 17b cut M1b.1 to 7 and 17b cut M3.2 to 8; a format-2 document is
-    // still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 8);
+    // to 6, 17b cut M1b.1 to 7, 17b cut M3.2 to 8 and 17b cut M4.6 to 9; a
+    // format-2 document is still refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 9);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -6017,9 +6032,9 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
         expected: SNAPSHOT_FORMAT,
     };
     // 17b cut M1a.5 moved the format to 5, 17b cut L.1 to 6, 17b cut M1b.1
-    // to 7 and 17b cut M3.2 to 8; a format-3 document is still refused by
-    // name.
-    assert_eq!(SNAPSHOT_FORMAT, 8);
+    // to 7, 17b cut M3.2 to 8 and 17b cut M4.6 to 9; a format-3 document is
+    // still refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 9);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -6029,7 +6044,8 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
 
 /// **17b cut M3.2: a snapshot carries the minds with their pending answers,
 /// and a format-7 and a format-4 document are refused by name** (doc 17 §3,
-/// §6, D-UM-23 as amended 2026-10-04; `snapshot.rs`' `SNAPSHOT_FORMAT` 8).
+/// §6, D-UM-23 as amended 2026-10-04; `snapshot.rs`' `SNAPSHOT_FORMAT` 8, 9
+/// since 17b cut M4.6).
 ///
 /// Was 17b cut M1a.5's `m1a5_a_snapshot_carries_the_minds_and_not_their_landings`,
 /// which put an answer in the scratch table (`Arena::mind_landings`) and
@@ -6041,13 +6057,16 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
 /// which lays its row down and schedules its first think), and its row is
 /// written by hand in every field — a think in flight WITH its answer (the
 /// three epochs, two intents, the memory it handed back), memory bytes, two
-/// notices, a range, a standing order, a drop and a seal digest. The encoded
+/// notices, a range, a standing order and (17b cut M4.6, the owner's STOP C)
+/// its issuer, a drop and a seal digest. The encoded
 /// state carries `minds` with the row — `pending` with the answer, field for
 /// field — and the `mind_think` on the heap, and no `mind_landings` key; the
 /// decode hands back the same row, the default runner and the same hash. The
 /// same document stamped `"format": 7` — what every snapshot written between
 /// 17b cuts M1b.1 and M3.2 says — and stamped `"format": 4` are refused as
-/// `Format { found, expected: 8 }` by both the head read and the decode.
+/// `Format { found, expected: 9 }` by both the head read and the decode
+/// (`expected: 8` until 17b cut M4.6's format 9, which added `"format": 8` —
+/// every snapshot written between 17b cuts M3.2 and M4.6 — to the refused).
 #[test]
 fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     use tacsim::arena::mind::{DropCause, MindState, PendingThink};
@@ -6093,6 +6112,9 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
             max_range_band: None,
             expires_ms: 40_000,
         }),
+        // 17b cut M4.6 (the owner's STOP C): the issuer beside the order,
+        // carried (and never folded) — `Some`, so the round trip pins it.
+        order_issuer: Some(ObjId(77)),
         strikes: 3,
         dropped: Some(DropCause::Strikes),
         seal_digest: [0x5e; 32],
@@ -6118,6 +6140,11 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
         "the row carries the pending answer, field for field"
     );
     assert_eq!(carried.get("dropped"), Some(&serde_json::json!("strikes")));
+    assert_eq!(
+        carried.get("order_issuer"),
+        Some(&serde_json::json!(77)),
+        "the row carries its order's issuer"
+    );
     assert!(
         state.get("mind_landings").is_none() && state.get("mind_runner").is_none(),
         "no scratch table and no runner"
@@ -6143,10 +6170,12 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
         tacsim::arena::hash::state_hash(&arena)
     );
 
-    // 17b cut M3.2 moved the format to 8: a format-7 document (17b cut
-    // M1b.1's) and a format-4 one are refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 8);
-    for old in [7_u32, 4] {
+    // 17b cut M3.2 moved the format to 8 and 17b cut M4.6 to 9: a format-8
+    // document (every snapshot from 17b cut M3.2 to M4.6 — what the first
+    // reload onto M4.6 finds and voids), a format-7 one (17b cut M1b.1's) and
+    // a format-4 one are refused by name.
+    assert_eq!(SNAPSHOT_FORMAT, 9);
+    for old in [8_u32, 7, 4] {
         let mut stale = snapshot.document.clone();
         stale["format"] = serde_json::json!(old);
         let refused = SnapshotError::Format {
@@ -6249,7 +6278,8 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
         found: 5,
         expected: SNAPSHOT_FORMAT,
     };
-    assert_eq!(SNAPSHOT_FORMAT, 8);
+    // 17b cut M3.2 moved the format to 8 and 17b cut M4.6 to 9.
+    assert_eq!(SNAPSHOT_FORMAT, 9);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),

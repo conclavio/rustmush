@@ -3512,7 +3512,8 @@ fn arena_over(
 }
 
 /// **The same unit flown by a unit mind** (17b cut M4.5a; was
-/// [`under_reflex`]): `Controller::Mind`, sealed on the fixture terms (the
+/// `under_reflex`, deleted with the reflex controller in 17b cut M4.6c):
+/// `Controller::Mind`, sealed on the fixture terms (the
 /// seal does not read the controller), so `Arena::new` lays its mind row down
 /// and schedules its first think, and it thinks on the arena's fallback
 /// runner — the native stock mind, Standard Doctrine — unless the test hands
@@ -3522,19 +3523,6 @@ fn arena_over(
 fn under_mind(unit: CustodyUnit) -> CustodyUnit {
     CustodyUnit {
         controller: tacsim::arena::state::Controller::Mind,
-        ..unit
-    }
-    .sealed()
-}
-
-/// The same unit under the reflex controller (16b cut X.6). **17b cut
-/// M4.5a**: fielded by the STOP I residue alone, which 17b cut M4.6b deleted
-/// (the owner carried STOP I to M5); since then no test fields it, and it is
-/// kept only so [`ae2_duel`]'s match over `Controller` stays total until 17b
-/// cut M4.6c deletes the variant with the reflex.
-fn under_reflex(unit: CustodyUnit) -> CustodyUnit {
-    CustodyUnit {
-        controller: tacsim::arena::state::Controller::Reflex,
         ..unit
     }
     .sealed()
@@ -10177,8 +10165,8 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
 /// **17b cut M4.5a**: `controller` says who flies the shooter — a pilot's seat
 /// (was `reflex: false`) or a stock mind ([`under_mind`]); the reflex
 /// controller (was `reflex: true`) flew it for the STOP I residue alone, which
-/// 17b cut M4.6b deleted, so no caller hands it `Controller::Reflex` (its
-/// arm stays until 17b cut M4.6c deletes the variant).
+/// 17b cut M4.6b deleted, and its arm here went with the variant in 17b cut
+/// M4.6c.
 fn ae2_duel(
     catalog: &Catalog,
     shooter: &str,
@@ -10192,7 +10180,6 @@ fn ae2_duel(
     let red = match controller {
         Controller::Pilot => red,
         Controller::Mind => under_mind(red),
-        Controller::Reflex => under_reflex(red),
     };
     let mut arena = arena_over(
         catalog,

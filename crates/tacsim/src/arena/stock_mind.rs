@@ -6,14 +6,15 @@
 //! clocks and its orders' obedience — written in Rust over a [`MindView`] and
 //! a [`Memory`] instead of over the arena, and flying the hull through the
 //! mind schedule (`DueKind::MindThink`/`MindLand`) and the motor
-//! ([`crate::arena::motor`]) instead of a `ReflexTick`. It is the oracle the
+//! ([`crate::arena::motor`]) instead of the reflex's own tick. It is the oracle the
 //! Rhai port (T2, 17b cut M2) is held to byte for byte, and the measured
 //! native fast path P3 allows. [`crate::arena::mind::default_mind_runner`]
 //! answers it.
 //!
 //! # `decide`, re-expressed arm for arm
 //!
-//! [`NativeStockMind`]'s think is `crate::arena::reflex`'s `decide`, read with
+//! [`NativeStockMind`]'s think is the reflex controller's `decide` (its module,
+//! `crate::arena::reflex`, deleted in 17b cut M4.6), read with
 //! its comments beside it and ported block by block **in the same order**:
 //! the `Disabled` edge; the standing order and its three early ends (16b cuts
 //! AA.1, O.1, Z.2); the power arms; the `lost` edge; the order's steering; the
@@ -21,7 +22,7 @@
 //! ([`best_hostile`]) and the supporter's leash; the `no line` edge; the
 //! states' bodies — `Patrol`'s list, `Approach`, `Engage`, `Withdraw` with its
 //! stand, dwell and rally — and the search's and the hunt's bookkeeping. Where
-//! `decide` wrote a [`ReflexPlan`](crate::arena::reflex) it emits intents, and
+//! `decide` wrote a `ReflexPlan` it emits intents, and
 //! where it wrote the hull's `MotorRow` it emits a goal:
 //!
 //! * **`Goal(Cell)` only when the goal CHANGED** — the memory's `goal` is the
@@ -162,7 +163,7 @@ pub const STOCK_MEMORY_KEY_NAMES: [&str; 15] = [
 /// canonical map of [`STOCK_MEMORY_KEY_NAMES`] (D-UM-30) and 17b cut M2's Rhai
 /// port can write the same bytes.
 ///
-/// The reflex's [`crate::arena::reflex::ReflexUnit`] and the driving half of
+/// The reflex's `ReflexUnit` (deleted with it in 17b cut M4.6) and the driving half of
 /// its `MotorRow` that the decision reads, field for field: the motor's own
 /// route, search stamp and stops are the motor's and are not remembered here.
 /// Two fields are new: `goal` is the goal the mind believes the motor holds
@@ -257,9 +258,12 @@ fn int_value(value: Option<i64>) -> MemValue {
     value.map_or(MemValue::Unit, MemValue::Int)
 }
 
-/// The state a code names, `Startup` for none.
+/// The state a code names, `Startup` for none — over the six the doctrine
+/// writes ([`MachineState::DOCTRINE`], 17b cut M4.6), so a memory never
+/// decodes to [`MachineState::Unknown`] (code 6 reads `Startup`, as every
+/// code outside the six always did).
 fn state_of(code: Option<i64>) -> MachineState {
-    MachineState::ALL
+    MachineState::DOCTRINE
         .iter()
         .copied()
         .find(|state| Some(i64::from(state.code())) == code)
@@ -1255,7 +1259,10 @@ impl NativeStockMind {
         let station_on = if leashed { None } else { leash.flatten() };
         if !leashed {
             match mem.state {
-                MachineState::Startup | MachineState::Disabled => {}
+                // 17b cut M4.6: `Unknown` is never a doctrine memory's state
+                // (`state_of` decodes over `MachineState::DOCTRINE`); the arm
+                // keeps the match exhaustive and does nothing, as `Startup`'s.
+                MachineState::Startup | MachineState::Disabled | MachineState::Unknown => {}
                 MachineState::Patrol => {
                     let movement = matches!(
                         objective,

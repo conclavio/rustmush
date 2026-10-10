@@ -436,7 +436,8 @@ pub enum CockpitError {
     #[error("You are already in your pod.")]
     AlreadyAboard,
     /// **`BOARD` too soon after a drop** (16b cut Y.3; 16c `N4`): the tank went
-    /// to the reflex controller less than `[tacsim.match].reclaim_min_ms` ago.
+    /// to its machine — a unit mind (the reflex controller until 17b cut M4.3)
+    /// — less than `[tacsim.match].reclaim_min_ms` ago.
     #[error("{unit} is still being handed over; try again in {secs} second(s).")]
     HandingOver {
         /// The pod's tank, by name — the pilot's own.
@@ -1401,7 +1402,7 @@ pub(crate) fn refusal_line(
         (Refusal::QueueFull, _) => "Too many orders at once; try that again.".to_owned(),
         (Refusal::MotionDisabled, _) => "Your tank cannot move.".to_owned(),
         (Refusal::Linkdead, _) => "Your seat has gone linkdead.".to_owned(),
-        (Refusal::NotReflex, _) => "That tank has a pilot in it.".to_owned(),
+        (Refusal::NotMachine, _) => "That tank has a pilot in it.".to_owned(),
         // 16b cut O.2: the cockpit refuses it locally off the frame; the arena's
         // word reaches here only when the frame was not yet there to say so.
         (Refusal::NoJammer, _) => CockpitError::NoJammer.to_string(),
@@ -2144,7 +2145,8 @@ pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
 ///    [`crate::arena_bridge::reseat`] sends `Control { Live }` on every channel
 ///    at a **new** epoch, exactly as a revival inside the grace does (doc 07
 ///    §1.3 step 2) — the arena puts them back on its frame roster and takes the
-///    tank from the reflex controller at its next pulse, where it stands;
+///    tank from its mind (the reflex controller until 17b cut M4.3) at its next
+///    pulse, where it stands;
 /// 6. **the centre**: [`lobby::slot_reclaimed`] — the slot back in its cockpit,
 ///    the unattended clock cleared, the leads resettled (the heir keeps the
 ///    lead: 16c Q42's default);
@@ -2309,7 +2311,8 @@ pub fn exit(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     }
     // **16b cut F.1**: during `Running` this is final (doc 16 §11's N.1
     // amendment: *a released seat hands the tank to the reflex controller and the
-    // pilot cannot reclaim it*), and the pilot is told so in the same breath
+    // pilot cannot reclaim it* — to a unit mind since 17b cut M4.3), and the
+    // pilot is told so in the same breath
     // rather than discovering it when `BOARD` refuses. No confirmation step: the
     // verb does what it says, and what it says is now the whole truth.
     let line = match (running, seats.first()) {
@@ -5220,7 +5223,10 @@ fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
     //
     // **16b cut D.2** (`B-16`): and neither is a weapon that makes no heat, on
     // the platform's own row, which is the same clause `Arena::resolve_fire` and
-    // `reflex::would_overheat` apply.
+    // `stock_mind::would_overheat` (the reflex's copy until 17b cut M4.6) apply
+    // — pinned for the machine by the reflex's own tests until 17b cut M4.6c;
+    // the mind's in `arena/stock_mind.rs`' d2 mirror off the view
+    // (`d2_a_weapon_that_makes_no_heat_never_holds_the_mind_back`).
     if let Some(heat) = held.as_ref().and_then(|held| held.frame.heat)
         && heat.overheated()
         && weapon.heat_per_shot > 0
@@ -8565,7 +8571,7 @@ mod tests {
             Refusal::Empty,
             Refusal::Overheated,
             Refusal::NoWeapon,
-            Refusal::NotReflex,
+            Refusal::NotMachine,
             // 16b cut O.2.
             Refusal::NoJammer,
         ] {

@@ -69,17 +69,19 @@
 //!
 //! # The three lists
 //!
-//! [`Arena`] has 52 fields, and every one is placed by name, twice: in the
+//! [`Arena`] has 54 fields (55 until 17b cut M4.6 deleted `reflex`), and
+//! every one is placed by name, twice: in the
 //! exhaustive destructuring that builds the encode's borrowed `ArenaStateRef`,
 //! and in the exhaustive literal the decode builds the arena with. A field a
 //! later cut adds is a compile error in both until it is put in one of these:
 //!
-//! - **Carried** (37): `units`, `epochs`, `contacts`, `designators`,
+//! - **Carried** (36): `units`, `epochs`, `contacts`, `designators`,
 //!   `spent_said`, `due`, `ledger` (its [`LedgerState`]: counters, open chunk,
 //!   closed queue, both SHA-256 running states), `clock` (its [`ClockState`]),
-//!   `seed`, `resolution`, `pilots`, `reflex`, `motors` (17b cut M1a.1: the
+//!   `seed`, `resolution`, `pilots`, `motors` (17b cut M1a.1: the
 //!   [`MotorTable`] whole — its rows, the path budget's window and spend — and
-//!   never its path scratch, which moved there from `reflex`), `minds` (17b
+//!   never its path scratch, which moved there from the reflex controller's
+//!   memory, `reflex`, carried until 17b cut M4.6 deleted it), `minds` (17b
 //!   cut M1a.5: every unit mind's row — its think counter, the think in
 //!   flight, its memory, its notice buffer, its range memory, its order and
 //!   its strikes, since 17b cut M1b.1 its card, and since 17b cut M3.2 the
@@ -99,22 +101,26 @@
 //!   views `squad_watch` and `squads_expired` — integers, carried so a resumed
 //!   squad's `SignalReason` stays true (`no_order` is chosen exactly when a
 //!   squad was never reported) and a resume does not re-ask every squad at once.
-//! - **Re-derived** (7), from the caller's ground — whose digest must be the
+//! - **Re-derived** (6), from the caller's ground — whose digest must be the
 //!   recorded one — and from compiled code: `definition` (and the horizon index
 //!   inside its terrain), `index` (built and rebuilt over the carried units, as
 //!   [`Arena::new`] builds it), `min_cost` (`Arena::new`'s own line),
 //!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule), `mind_runner`
 //!   (17b cut M1a.5: `crate::arena::mind::default_mind_runner`, the call
 //!   [`Arena::new`] makes, so a resumed match thinks with the runner a fresh
-//!   one would), (17b cut M3.1) `rated_class`
-//!   (`crate::arena::mind::STOCK_RATED_CLASS`, a test's lever until 17b cut
-//!   M3.3's seal), and (17b cut M3.5) `runners`, each hull's own runner by
+//!   one would), and (17b cut M3.5) `runners`, each hull's own runner by
 //!   its seal — empty at decode; `crate::minds::install_sealed_runners`
 //!   refills it from the decoded seals (`crate::arena_task::resume_arena`
 //!   calls it), so a resumed scripted hull thinks on the runner its seal
 //!   names. (`classes` was re-derived stock here in 17b cut M3.1 and is
-//!   carried from 17b cut M3.2.)
-//! - **Reset** (9), views and per-pulse scratch: `pending_cards` (17b cut
+//!   carried from 17b cut M3.2; 17b cut M3.1's `rated_class`, a test's lever
+//!   until 17b cut M3.3's seal, was re-derived here until 17b cut M4.1
+//!   deleted it.)
+//! - **Reset** (12), views and per-pulse scratch: (17b cut M4.1) `awaiting`,
+//!   `collected` and `unsettled`, the "answered" fact beside each mind row
+//!   and the thinks collected and not yet written — [`Snapshot::encode`]
+//!   refuses an arena whose `awaiting` holds a think, by name, and the decode
+//!   lays all three down empty; `pending_cards` (17b cut
 //!   M1b.5: the card changes `@mind/set` offered, applied and emptied at the next pulse's start, so
 //!   empty between two pulses; not carried, so `SNAPSHOT_FORMAT` does not
 //!   move), `lost_designators`,
@@ -188,7 +194,6 @@ use crate::arena::intents::Intent;
 use crate::arena::ledger::{Ledger, LedgerState};
 use crate::arena::mind::{MindState, default_mind_runner};
 use crate::arena::motor::MotorTable;
-use crate::arena::reflex::ReflexMemory;
 use crate::arena::state::{
     ActionHash, Arena, ArenaDefinition, ArenaError, ContactId, CostRow, Designator, DesignatorBook,
     DueHeap, EpochTable, HoldState, MatchEnd, MatchMode, Pilot, ShadowContacts, StopReason,
@@ -259,7 +264,28 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// are under the pin on no fixture there (their round trips are
 /// `tests/arena.rs`' `m3_a_snapshot_carries_the_minds_with_their_pending_answers`
 /// and `tests/minds.rs`' pending-answer resume).
-pub const SNAPSHOT_FORMAT: u32 = 8;
+///
+/// **9 since 17b cut M4.6** (the deletion of the reflex controller; 17b §3's
+/// M4 row, finding (iv); the owner's rulings of 2026-10-09): the `reflex`
+/// section (`Arena.reflex`, the reflex rows and their frozen doctrine) is
+/// gone, and with it two carried variants (`Controller::Reflex`,
+/// `DueKind::ReflexTick`); `UnitState.seal` gains `SealRef::doctrine`
+/// (whether the hull is sealed on Standard Doctrine, derived by identity at
+/// the seal); `MindState` gains `order_issuer` (the owner's STOP C: the
+/// issuer beside the mind's order, carried and never folded); and the
+/// carried `Refusal` word `not_reflex` is `not_machine`. A format-8 document
+/// is refused by name ([`SnapshotError::Format`]) before any field of it is
+/// read, so **the first reload onto this build voids every match running
+/// across it** `aborted(restart)`, "snapshot format 8 is not 9" (AF.3's
+/// boot, as every refused document is); nothing migrates. The `af1` pin
+/// walks `tests/arena.rs`' `af1_mind_squad_arena` in place of the reflex
+/// squad fixture (deleted), given one motor row and one squad order with an
+/// issuer LANDED on its mover before it is encoded (a mind's check-out lays
+/// no motor row, where the reflex's adoption laid one per machine), so it
+/// holds the mind rows, their due thinks, `seal.doctrine`, a motor row's nine
+/// carried fields, a standing order's `FrameOrder` fields and `order_issuer`
+/// as a number, and was re-blessed once.
+pub const SNAPSHOT_FORMAT: u32 = 9;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -596,8 +622,8 @@ impl Snapshot {
     /// will not combine with it — its own comment says so — and mush-sim's
     /// `Pose`, read through that crate's `PoseWire`, which is not this cut's to
     /// close — a key one of those two loses is caught by the pin or by nothing);
-    /// the arena built by an exhaustive literal, its four re-derived fields
-    /// derived and its eight reset; the pose refusals [`Arena::new`] makes of a check-out
+    /// the arena built by an exhaustive literal, its six re-derived fields
+    /// derived and its twelve reset; the pose refusals [`Arena::new`] makes of a check-out
     /// (`BadHeading`, `PoseOffWindow`, `CellOccupied`); **the state hash**, which
     /// is never optional; and last, that the head agrees with the state it
     /// carries (the time, the two sequences and the ground's id).
@@ -756,7 +782,7 @@ fn read(document: &serde_json::Value) -> Result<(SnapshotHead, Cow<'_, str>), Sn
 // The state tree: two structs, one field list
 // ---------------------------------------------------------------------------
 
-/// **What the encode serialises**: the 37 carried fields of [`Arena`], in its
+/// **What the encode serialises**: the 36 carried fields of [`Arena`], in its
 /// own order, every one a borrow but the two small mirrors ([`LedgerState`] and
 /// [`ClockState`]) — so an encode clones no contact and no shot, and of a unit
 /// only the opaque `mush_tactics::TacticalUnit`, which its own
@@ -779,7 +805,6 @@ struct ArenaStateRef<'a> {
     seed: &'a u64,
     resolution: &'a ResolutionDef,
     pilots: &'a [Pilot],
-    reflex: &'a ReflexMemory,
     motors: &'a MotorTable,
     minds: &'a BTreeMap<ObjId, MindState>,
     conditions: &'a ConditionTable,
@@ -834,9 +859,9 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             seed,
             resolution,
             pilots,
-            reflex,
             // Carried (17b cut M1a.1): the motor rows and the path budget; the
-            // table's scratch is `#[serde(skip)]`, as the reflex memory's was.
+            // table's scratch is `#[serde(skip)]`, as the reflex memory's was
+            // (that memory, `Arena.reflex`, was deleted in 17b cut M4.6).
             motors,
             // Carried (17b cut M1a.5): every unit mind's row.
             minds,
@@ -911,7 +936,6 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             seed,
             resolution,
             pilots,
-            reflex,
             motors,
             minds,
             conditions,
@@ -958,7 +982,6 @@ struct ArenaState {
     seed: u64,
     resolution: ResolutionDef,
     pilots: Vec<Pilot>,
-    reflex: ReflexMemory,
     motors: MotorTable,
     minds: BTreeMap<ObjId, MindState>,
     conditions: ConditionTable,
@@ -991,7 +1014,7 @@ struct ArenaState {
 
 impl ArenaState {
     /// **The arena, by an exhaustive literal** over every field of [`Arena`]:
-    /// the 37 carried placed, the 7 re-derived derived and the 9 reset reset.
+    /// the 36 carried placed, the 6 re-derived derived and the 12 reset reset.
     fn into_arena(self, definition: ArenaDefinition) -> Result<Arena, SnapshotError> {
         let ArenaState {
             units,
@@ -1005,7 +1028,6 @@ impl ArenaState {
             seed,
             resolution,
             pilots,
-            reflex,
             motors,
             minds,
             conditions,
@@ -1063,7 +1085,6 @@ impl ArenaState {
             seed,
             resolution,
             pilots,
-            reflex,
             motors,
             minds,
             conditions,
@@ -1072,8 +1093,8 @@ impl ArenaState {
             // 17b cut M3.2: carried — the table the match was checked out
             // under.
             classes,
-            // 17b cut M4.1: re-derived empty — no think awaits across a
-            // snapshot (`encode` refused while one did).
+            // Reset (17b cut M4.1): laid down empty — no think awaits across
+            // a snapshot (`encode` refused while one did).
             awaiting: BTreeSet::new(),
             collected: Vec::new(),
             unsettled: Vec::new(),
@@ -1205,7 +1226,6 @@ mod tests {
     use crate::arena::command::SquadWatch;
     use crate::arena::intents::{Intent, IntentKind};
     use crate::arena::motor::MotorRow;
-    use crate::arena::reflex::ReflexUnit;
     use crate::arena::resolution::Resolution;
     use crate::arena::state::{
         Channel, Classification, ContactId, Designator, Power, SeenPose, ShadowContact, Team,
@@ -1365,8 +1385,8 @@ mod tests {
 
     /// **The six tables written as pairs round-trip, and a duplicate key is
     /// refused** — the `SquadId`-keyed squad watch first, which `serde_json`
-    /// would refuse as an object key at run time and every match with a reflex
-    /// squad fills at its first pulse.
+    /// would refuse as an object key at run time and every match with a
+    /// machine squad fills at its first pulse.
     #[test]
     fn af1_the_pairs_round_trip_and_refuse_a_duplicate_key() {
         let squad = |team, index| SquadId { team, index };
@@ -1564,8 +1584,6 @@ mod tests {
                 machine: None,
             },
         )]));
-        // `ReflexMemory.units`.
-        round_trip(&BTreeMap::from([(unit, ReflexUnit::default())]));
         // `MotorTable.rows` (17b cut M1a.1): keyed by the unit, an integer key.
         round_trip(&BTreeMap::from([(unit, MotorRow::default())]));
         // `Arena.minds` (17b cut M1a.5), keyed by the unit, and inside each row

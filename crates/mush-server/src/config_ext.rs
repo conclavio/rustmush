@@ -320,8 +320,10 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 max_bytes: cfg.arena.ledger.max_bytes,
                 max_unflushed_chunks: cfg.arena.ledger.max_unflushed_chunks,
             },
-            // 16b cut N.1: the reflex controller's doctrine, including the arena's
-            // own raised copy of `[atlas].path_max_cells` (16b §9).
+            // 16b cut N.1: the reflex controller's block (deleted in 17b cut M4.6;
+            // the block keeps its name: the motor's cadence and path budgets and
+            // the stock card's doctrine figures), including the arena's own
+            // raised copy of `[atlas].path_max_cells` (16b §9).
             reflex: tacsim::config::ReflexConfig {
                 decide_ms: cfg.arena.reflex.decide_ms,
                 path_max_cells: cfg.arena.reflex.path_max_cells,
@@ -1151,7 +1153,8 @@ mod tests {
                     max_bytes: 1_048_576,
                     max_unflushed_chunks: 64,
                 },
-                // 16b cut N.1: the reflex controller's doctrine, mapped the same way.
+                // 16b cut N.1: the reflex controller's block (its name kept since
+                // 17b cut M4.6 deleted it), mapped the same way.
                 reflex: tacsim::config::ReflexConfig {
                     decide_ms: 750,
                     path_max_cells: 4_096,

@@ -275,12 +275,16 @@ summary_ms = 5000                  # arena ms between position_summary events --
 max_bytes = 67108864               # 64 MiB: at 90% summaries stop, at 100% the match is stopped with Timeout
 max_unflushed_chunks = 256         # chunks the bounded egress ring may hold before the match is stopped with Void
 
-[tacsim.arena.reflex]              # (16b cut N.1) the reflex controller: who flies a tank nobody is sitting in
-# The AI fill of the lobby, the harness's field of 300, and the fallback a seat
-# released past the linkdead grace hands its tank to. It submits the SAME intents
-# a pilot's verbs stage, so nothing here lets a machine do what a player could
-# not; what it tunes is how often it thinks and how far it looks for a route.
-decide_ms = 1000                   # arena ms between one AI unit's decisions, staggered by unit id -- a cadence of ARENA time, not of pulses
+[tacsim.arena.reflex]              # (16b cut N.1) the machines' cadence, path budgets and doctrine figures
+# The block keeps its name, but the reflex controller it was named for -- who
+# flew a tank nobody is sitting in -- was deleted in 17b cut M4.6: the AI fill of
+# the lobby, the harness's field of 300 and a seat released past the linkdead
+# grace are flown by a unit mind (17b cut M4.3). What the block holds outlived
+# it: decide_ms is the motor's tick cadence, the path budgets are the motor's,
+# and the doctrine figures below feed the stock card Standard Doctrine thinks
+# under. A machine submits the SAME intents a pilot's verbs stage, so nothing
+# here lets it do what a player could not.
+decide_ms = 1000                   # arena ms between one driven hull's motor ticks, staggered by unit id -- a cadence of ARENA time, not of pulses
 path_max_cells = 65536             # [atlas].path_max_cells RAISED for the arena: one node per cell of the 256x256 window
 max_path_queries = 64              # path searches in one decide_ms window of arena time; a unit refused keeps the path it has
 repath_ms = 4000                   # the least arena time between two searches by one unit
@@ -574,9 +578,10 @@ model = "z-ai/glm-5.3-flash"        # one forced tool whose arguments ARE the or
 max_tokens = 512
 timeout_s = 30
 reasoning = "low"
-# Without this route every squad stays on the reflex controller's own doctrine --
-# patrol, close, hold a band, break off when hurt — which is doc 16 §6's fallback
-# and what every test and CI run does.
+# Without this route every squad stays on its own doctrine -- Standard Doctrine
+# on a unit mind (17b cut M4.3; the reflex controller's, deleted in 17b cut
+# M4.6, before it): patrol, close, hold a band, break off when hurt — which is
+# doc 16 §6's fallback and what every test and CI run does.
 
 [llm.routes.npc_summarize]         # NPC memory fold (cheap, background)
 model = "z-ai/glm-5.3-flash"

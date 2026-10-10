@@ -1002,7 +1002,8 @@ pub struct ArenaDefinition {
     pub entry_zones: Vec<EntryZone>,
     /// **The named places** (16b cut N.1; doc 16 §3.2).
     pub key_spots: Vec<KeySpot>,
-    /// **The patrol graph the reflex controller walks** (16b cut N.1; doc 16 §6).
+    /// **The patrol graph a machine walks** (16b cut N.1; doc 16 §6): the stock
+    /// mind's `Patrol` walk (the reflex controller's until 17b cut M4.6).
     pub waypoints: Waypoints,
     /// **The modes this ground declares** beyond [`MatchMode::Skirmish`] (16b cut
     /// O.1; 16c N11), in authored order — `SIM MODE` lists them and
@@ -1659,23 +1660,28 @@ pub struct WeaponSummary {
 ///
 /// A unit attribute at custody rather than a property of the match, because the
 /// two coexist in one match: a lobby that fields fewer pilots than tanks puts
-/// [`Controller::Reflex`] on the empty pods, and a seat released past the
-/// linkdead grace hands one tank over mid-match while the others keep their
-/// pilots.
+/// [`Controller::Mind`] on the empty pods (the reflex controller's until 17b
+/// cut M4.3), and a seat released past the linkdead grace hands one tank over
+/// mid-match while the others keep their pilots.
+///
+/// **17b cut M4.6** deleted the reflex controller and its variant
+/// (`Controller::Reflex`, code `1`, word `reflex`): the two that are left keep
+/// their codes — [`Controller::Pilot`] `0` and [`Controller::Mind`] `2` — so
+/// every unit of every match folds the byte it always did, and code `1` is
+/// never reused. A snapshot that carried the word is format 8, refused by name
+/// (`crate::arena::snapshot::SNAPSHOT_FORMAT`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Controller {
     /// A player's verbs are the only source of this unit's orders.
     #[default]
     Pilot,
-    /// The reflex controller ([`crate::arena::reflex`]) drives it.
-    Reflex,
     /// **A unit mind flies it** (17b cut M1a.5; doc 17 §2, D-UM-2): a
     /// [`crate::arena::mind::MindRunner`] reads the hull's own view at each
     /// [`DueKind::MindThink`] and its intents land one substep later at
-    /// [`DueKind::MindLand`] (`crate::arena::mind`). A fixture's controller and
-    /// the twin lane's until 17b cut M4 flips production to it; no lobby, no
-    /// check-out and no control sets it today.
+    /// [`DueKind::MindLand`] (`crate::arena::mind`). Since 17b cut M4.3 the
+    /// fill and every released hull are minds, and since 17b cut M4.6 the
+    /// only machine there is.
     Mind,
 }
 
@@ -1685,7 +1691,6 @@ impl Controller {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Controller::Pilot => "pilot",
-            Controller::Reflex => "reflex",
             Controller::Mind => "mind",
         }
     }
@@ -1695,23 +1700,24 @@ impl Controller {
     pub const fn code(&self) -> u8 {
         match self {
             Controller::Pilot => 0,
-            Controller::Reflex => 1,
             // 17b cut M1a.5: a new byte, so every unit of every existing match
             // folds the byte it always did (the M1a plan's head, "the
-            // production hash").
+            // production hash"). 17b cut M4.6 deleted the reflex's `1` and
+            // renumbered nothing: `1` is retired, never reused.
             Controller::Mind => 2,
         }
     }
 
-    /// **Whether a machine flies it** (17b cut L.2; D-UM-2, D-UM-53): the reflex
-    /// controller or a unit mind, never a pilot. What both
-    /// [`crate::deliberation::squads_of`] callers deal squads by, so a
-    /// [`Controller::Mind`] hull rides in a squad under its lance-leader as a
-    /// reflex one does and an order reaches it through the unchanged Order path
-    /// (D-UM-15). A pilot's tank still takes no order (`Refusal::NotReflex`).
+    /// **Whether a machine flies it** (17b cut L.2; D-UM-2, D-UM-53): a unit
+    /// mind, never a pilot (the reflex controller or a unit mind until 17b cut
+    /// M4.6 deleted the reflex). What both [`crate::deliberation::squads_of`]
+    /// callers deal squads by, so a [`Controller::Mind`] hull rides in a squad
+    /// under its lance-leader and an order reaches it through the unchanged
+    /// Order path (D-UM-15). A pilot's tank still takes no order
+    /// ([`crate::arena::intents::Refusal::NotMachine`]).
     #[must_use]
     pub const fn is_machine(&self) -> bool {
-        matches!(self, Controller::Reflex | Controller::Mind)
+        matches!(self, Controller::Mind)
     }
 }
 
@@ -1743,8 +1749,9 @@ pub struct CustodyUnit {
     /// 2's `PilotProfile` seam), 1 to 5. Zero is read as
     /// [`crate::arena::resolution::STOCK_GUNNERY`] — *every stock rating is 1*.
     pub gunnery: u8,
-    /// **Who flies it** (16b cut N.1). The check-out sets [`Controller::Reflex`]
-    /// for a unit with no seated pilot and [`Controller::Pilot`] otherwise.
+    /// **Who flies it** (16b cut N.1). The check-out sets [`Controller::Mind`]
+    /// for a unit with no seated pilot (the reflex controller's until 17b cut
+    /// M4.3) and [`Controller::Pilot`] otherwise.
     pub controller: Controller,
     /// **The centre slot this unit was fielded from**, 1-based (16b cut Q.1), or
     /// `0` for a unit no lobby placed — a staff `@arena/start`, a fixture, the
@@ -1771,8 +1778,8 @@ pub struct CustodyUnit {
 impl CustodyUnit {
     /// **What the squads are dealt from** (16b cut N.2; 17b cut L.2, D-UM-2,
     /// D-UM-53): one `(unit, team, is_machine)` triple per check-out unit, in
-    /// check-out order, the bool [`Controller::is_machine`] — a reflex hull or a
-    /// mind's, never a pilot's. The ONE builder of
+    /// check-out order, the bool [`Controller::is_machine`] — a mind's hull (a
+    /// reflex hull's too until 17b cut M4.6), never a pilot's. The ONE builder of
     /// [`crate::deliberation::squads_of`]'s input: [`Arena::new`] and the match
     /// record's `match_::start` both call it over the same check-out, so the
     /// record's grouping and the arena's are one function of one data and
@@ -2084,14 +2091,17 @@ pub struct UnitState {
     /// **The seal this hull was checked out under** (17b cut M3.2; doc 17
     /// §13, D-UM-45, D-UM-46): its sortie, the seal's digest, the core class
     /// the seal recorded (what 17b cut M3.4's cause-`core` drop keys on), the
-    /// class its mind thinks at, the engine that flies it, the governor bit
-    /// and whether the sortie is closed. Laid down empty
+    /// class its mind thinks at, the engine that flies it, the governor bit,
+    /// whether the sortie is closed, and (17b cut M4.6) whether the mind
+    /// sealed is Standard Doctrine ([`crate::arena::mind::SealRef::doctrine`],
+    /// derived at the seal, unfolded). Laid down empty
     /// ([`crate::arena::mind::SealRef::none`]) in 17b cut M3.2; **since 17b cut
     /// M3.3** [`Arena::new`] writes it from the custody's own seal
     /// ([`crate::arena::mind::MindSeal::seal_ref`]), and a snapshot carries it
     /// whole — a resume never re-derives it from the world's record.
     ///
-    /// Carried by this struct's derive (`SNAPSHOT_FORMAT` 8) and **NOT
+    /// Carried by this struct's derive (`SNAPSHOT_FORMAT` 8; 9 since 17b cut
+    /// M4.6, with `doctrine`) and **NOT
     /// folded into [`crate::arena::hash::state_hash`]**: a per-match
     /// constant, [`Arena::odds_floor_permille`]'s argument — and its one
     /// moving bit, `closed`, moves only with a ledger line (17b cut M3.6's
@@ -3233,22 +3243,6 @@ pub enum DueKind {
         /// The sharing unit.
         unit: ObjId,
     },
-    /// **One AI unit's decision** (16b cut N.1; doc 16 §6), due every
-    /// `arena.reflex.decide_ms` of arena time and staggered by unit id.
-    ///
-    /// It is a due event and not a phase-4 pass for the reason every other
-    /// cadence in this engine is one: a due event is applied at **its own arena
-    /// timestamp**, inside the substep whose boundary that timestamp fell in, so
-    /// the same decisions happen at the same arena milliseconds at 5,000, 1,000
-    /// and 500 ms. A controller run once per *pulse* would run ten times as often
-    /// at the fast cadence as at the slow one, which is doc 16 §3.1's D-16-2
-    /// exactly backwards — the tempo would be deciding outcomes.
-    ReflexTick {
-        /// The unit deciding.
-        unit: ObjId,
-        /// The decision's sequence number for that unit, from `0`.
-        tick_seq: u64,
-    },
     /// Every `ledger.summary_ms` of arena time, in every tempo (doc 16 §4).
     PositionSummary,
     /// **The duration bound** (16b cut M.2, 16c `T-01`): doc 16 §3.8's `Timeout`,
@@ -3300,27 +3294,30 @@ pub enum DueKind {
         /// The contact it lost.
         contact: ContactId,
     },
-    /// **The motor's cadence for a hull no reflex tick drives** (17b cut M1a.4;
-    /// doc 17 §4 D-UM-3) — a pilot's `DRIVE` since that cut, a mind's `goto`
-    /// since 17b cut M1a.5 — due every `arena.reflex.decide_ms` of arena time
-    /// on the stagger grid [`DueKind::ReflexTick`] runs on, while the hull's
-    /// motor row holds a goal.
+    /// **The motor's cadence** (17b cut M1a.4; doc 17 §4 D-UM-3) — a pilot's
+    /// `DRIVE` since that cut, a mind's `goto` since 17b cut M1a.5 — due every
+    /// `arena.reflex.decide_ms` of arena time on the stagger grid
+    /// `Arena::grid_at` answers (the reflex controller's tick ran on it until
+    /// 17b cut M4.6 deleted that), while the hull's motor row holds a goal.
     ///
-    /// It is a due event for [`DueKind::ReflexTick`]'s own reason: the drive
-    /// is applied at its own arena timestamp, so the same route is followed at
-    /// the same milliseconds at 5,000, 1,000 and 500 ms. Scheduled once per
-    /// engagement by `Arena::engage_motor` (a goal landing finds the heap
-    /// holding one or not), applied by `Arena::motor_step`, rescheduled from
-    /// its own `t_ms` while a goal stands, and taken off the heap with the rest
-    /// of a wreck's work. A reflex hull's drive runs inside its own tick and
-    /// schedules none of these.
+    /// It is a due event and not a phase-4 pass for the reason every other
+    /// cadence in this engine is one: a due event is applied at **its own arena
+    /// timestamp**, inside the substep whose boundary that timestamp fell in, so
+    /// the same route is followed at the same arena milliseconds at 5,000,
+    /// 1,000 and 500 ms. A drive run once per *pulse* would run ten times as
+    /// often at the fast cadence as at the slow one, which is doc 16 §3.1's
+    /// D-16-2 exactly backwards — the tempo would be deciding outcomes.
+    /// Scheduled once per engagement by `Arena::engage_motor` (a goal landing
+    /// finds the heap holding one or not), applied by `Arena::motor_step`,
+    /// rescheduled from its own `t_ms` while a goal stands, and taken off the
+    /// heap with the rest of a wreck's work.
     MotorTick {
         /// The hull being driven.
         unit: ObjId,
     },
     /// **One unit mind's think** (17b cut M1a.5; doc 17 §6, D-UM-20), due
     /// every `crate::arena::mind::STOCK_THINK_MS` of arena time on the
-    /// stagger grid [`DueKind::ReflexTick`] runs on, from the lattice
+    /// stagger grid [`DueKind::MotorTick`] runs on, from the lattice
     /// millisecond `Arena::grid_at` answers.
     ///
     /// **Its place in this enum orders nothing**: [`DueEvent`]'s derived order
@@ -3752,7 +3749,8 @@ pub enum ArenaError {
 /// takes no hash at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ActionHash {
-    /// Not inside phase 2's intent loop, phase 4 or a substep's reflex ticks:
+    /// Not inside phase 2's intent loop or phase 4 (or, until 17b cut M4.6, a
+    /// substep's reflex ticks):
     /// every [`Arena::event_hash`] takes a fresh
     /// [`crate::arena::hash::state_hash`] and stores nothing. What a direct
     /// resolver call in a test sees.
@@ -3761,8 +3759,9 @@ pub(crate) enum ActionHash {
     /// Inside, and nothing has journalled yet: the first
     /// [`Arena::event_hash`] takes the hash, stores it as
     /// [`ActionHash::Taken`], and answers it. Set by phase 2 before its intent
-    /// loop (16b cut Y.1: the `ordered` lines of one pulse), by phase 4 before
-    /// its loop and by a substep's first `ReflexTick`.
+    /// loop (16b cut Y.1: the `ordered` lines of one pulse) and by phase 4
+    /// before its loop (and by a substep's first reflex tick until 17b cut
+    /// M4.6 deleted the reflex controller).
     Pending,
     /// Inside, and taken: every later line of the run carries this one hash.
     /// Phase 2's and phase 4's ends and the substep's end set
@@ -3890,15 +3889,6 @@ pub struct Arena {
     pub resolution: ResolutionDef,
     /// The seated pilots, as handed over.
     pub pilots: Vec<Pilot>,
-    /// **What the reflex controller remembers** (16b cut N.1): one row per AI
-    /// unit — its state in the machine, the hostile it settled on, the order it
-    /// is under and the clocks of its endgame — and the frozen doctrine.
-    ///
-    /// It lives on the arena rather than on [`UnitState`] because a unit under a
-    /// pilot carries no machine at all. **17b cut M1a.1**: where a machine is
-    /// going and how — the goal, the route, the search, the remembered stops —
-    /// and the A\* scratch and the path budget moved to [`Arena::motors`].
-    pub reflex: crate::arena::reflex::ReflexMemory,
     /// **The motor table** (17b cut M1a.1; doc 17 §4 "The motor", D-UM-3): the
     /// one table every controller's hull drives from — a
     /// [`crate::arena::motor::MotorRow`] per hull something is steering (its
@@ -3907,9 +3897,10 @@ pub struct Arena {
     /// something is steering; a seated pilot flying by `HEADING` and `SPEED` has
     /// none.
     ///
-    /// Folded into the state hash in the reflex rows' own order and, for a row
-    /// with no machine, as its own section (`crate::arena::hash`, items 3 and
-    /// 3b); carried whole by a snapshot but its scratch.
+    /// Folded into the state hash as its own section, every row in unit-id
+    /// order (`crate::arena::hash`, item 3b; until 17b cut M4.6 a reflex hull's
+    /// row was folded inside its reflex row, item 3); carried whole by a
+    /// snapshot but its scratch.
     pub motors: crate::arena::motor::MotorTable,
     /// **What each unit mind holds** (17b cut M1a.5; doc 17 §3, §6, §8,
     /// D-UM-8, D-UM-23): one [`crate::arena::mind::MindState`] per
@@ -4031,9 +4022,9 @@ pub struct Arena {
     /// `1`), read once at check-out because the terrain is immutable for the
     /// life of a match.
     ///
-    /// Two readers, one copy (16b cut M.4, 16c `T-15`): the reflex controller's
-    /// A\* heuristic scale (16b cut N.1, which kept it on
-    /// [`crate::arena::reflex::ReflexMemory`] until M.4) and
+    /// Two readers, one copy (16b cut M.4, 16c `T-15`): the motor's A\*
+    /// heuristic scale (16b cut N.1, which kept it on the reflex controller's
+    /// memory until M.4) and
     /// [`Arena::max_speed_cms`]'s true ceiling. **16b cut AE.1** made it one
     /// number per row (it was `min_move_cost`, the tracked row's): a search for
     /// a car scaled on the tracked 100 over an 80 road would be inadmissible,
@@ -4044,8 +4035,8 @@ pub struct Arena {
     /// cut M.1, `T-82`): a seat's `intents.max_pending_per_unit` orders a unit
     /// per arena second (counted in `apply_intent`) and the arena task's
     /// per-unit pre-pulse bound (that value plus one) limit what reaches them;
-    /// the reflex controller's own orders are not counted, and phase 4 empties
-    /// the queue every pulse.
+    /// a machine's own orders are not counted, and phase 4 empties the queue
+    /// every pulse.
     pub pending: BTreeMap<ObjId, VecDeque<Intent>>,
     /// **The shots in flight**, by shot sequence (16b cut W.1; doc 16 §4 "Arena
     /// state": *scheduled impacts*).
@@ -4062,7 +4053,8 @@ pub struct Arena {
     /// and never restarts.
     pub next_shot_seq: u64,
     /// **The hash pulse phase 4's events are recorded against** (16b cut W.1), and
-    /// a substep's reflex ticks' — [`ActionHash`] says when it is taken.
+    /// a substep's mind landings' (a substep's reflex ticks' until 17b cut M4.6)
+    /// — [`ActionHash`] says when it is taken.
     ///
     /// Doc 16 §4 asks every ledger line to carry the substep state hash, and
     /// [`crate::arena::step`]'s substep already takes **one** hash for all of its
@@ -4082,8 +4074,8 @@ pub struct Arena {
     ///
     /// **16b cut M.3** (16c `T-23`) made it lazy inside phase 4 as well: the phase
     /// used to take a whole `state_hash` every pulse, before its `ended` guard and
-    /// with nothing queued, and a pulse with no discrete action and no reflex
-    /// tick now takes none.
+    /// with nothing queued, and a pulse with no discrete action and no machine's
+    /// landing (no reflex tick, until 17b cut M4.6) now takes none.
     ///
     /// It is a **view** and is deliberately not folded into the state hash: it is
     /// scratch for one phase, and folding it would make the hash a function of
@@ -4249,7 +4241,8 @@ pub struct Arena {
     pub jam_fold: BTreeMap<ObjId, Option<crate::arena::perception::Jamming>>,
     /// **The squads this match's machine units are commanded in** (16b cut N.2;
     /// doc 16 §6 "Deliberation": *per squad or commander rather than per unit*;
-    /// reflex or, since 17b cut L.2, mind), derived at check-out by
+    /// reflex or, since 17b cut L.2, mind; a mind alone since 17b cut M4.6),
+    /// derived at check-out by
     /// [`crate::deliberation::squads_of`] — the same function, over the same
     /// [`CustodyUnit::squad_input`] triples and the same
     /// `[tacsim.arena].squad_size` (16b cut Z.1), that files them on the match
@@ -4360,7 +4353,8 @@ impl Arena {
         // 16b cut N.2: who is commanded, and by whom (see `squads` below), read
         // off the check-out before it is consumed. 17b cut L.2 (D-UM-53): a
         // machine of either controller — a mind's hull is dealt as a reflex one
-        // is, so a lance-leader's order reaches it — through the one builder
+        // was (the only machine since 17b cut M4.6), so a lance-leader's order
+        // reaches it — through the one builder
         // `match_::start` calls too ([`CustodyUnit::squad_input`]); each state
         // below carries its unit's controller and id unchanged, in this order.
         let squad_input = CustodyUnit::squad_input(&units);
@@ -4640,8 +4634,9 @@ impl Arena {
         );
         // **16b cut M.2** (16c `T-01`): the duration bound, as a due event, so the
         // timeout is settled at its own millisecond (see `DueKind::MatchDeadline`).
-        // Scheduled second, after the summary and before the passes and the reflex
-        // ticks: the order of scheduling is what hands out the sequence numbers, so
+        // Scheduled second, after the summary and before the passes and the
+        // thinks (and the reflex ticks, until 17b cut M4.6): the order of
+        // scheduling is what hands out the sequence numbers, so
         // it is fixed here once and every arena opened from one check-out numbers
         // its schedule identically — and the opening hash folds the due count,
         // which this event is now one of.
@@ -4741,7 +4736,6 @@ impl Arena {
             seed,
             resolution,
             pilots,
-            reflex: crate::arena::reflex::ReflexMemory::new(&arena_cfg.reflex),
             // 17b cut M1a.1: the motor table, empty until the check-out's
             // adoptions below lay a row down for each machine.
             motors: crate::arena::motor::MotorTable::new(),
@@ -4815,11 +4809,11 @@ impl Arena {
         // sorted unit vector, and before the opening hash because the hash folds
         // the schedule's length.
         arena.schedule_first_passes();
-        // 16b cut N.1: doc 16 §6's controller, on the same shape — one tick per AI
-        // unit per `arena.reflex.decide_ms`, staggered by unit id.
-        arena.schedule_first_reflex_ticks();
-        // 17b cut M1a.5 (doc 17 §6): one think per mind, on the same grid —
-        // a fixture's; no check-out fields one.
+        // 17b cut M1a.5 (doc 17 §6): one think per mind, on the same shape —
+        // staggered by unit id on the motor's grid (16b cut N.1's reflex ticks
+        // were scheduled here, before the thinks, until 17b cut M4.6 deleted
+        // the reflex controller; no production hull had one since 17b cut
+        // M4.3, so the opening hash's due count never held one).
         arena.schedule_first_mind_thinks();
         let opening = crate::arena::hash::state_hash(&arena);
         // A ledger that refuses its own first event is a black box that will not
@@ -5014,9 +5008,9 @@ impl Arena {
 
     /// **The hash one discrete action's ledger line carries** (16b cut W.1):
     /// the one `Arena::action_hash` holds while the pulse is inside phase 2's
-    /// intent loop (16b cut Y.1, the `ordered` lines), phase 4 or a substep's
-    /// reflex ticks, and a fresh [`crate::arena::hash::state_hash`] outside
-    /// them.
+    /// intent loop (16b cut Y.1, the `ordered` lines) or phase 4 (or, until
+    /// 17b cut M4.6, a substep's reflex ticks), and a fresh
+    /// [`crate::arena::hash::state_hash`] outside them.
     ///
     /// Every resolver of a discrete action goes through this rather than hashing for
     /// itself, so the phase's lines share one hash exactly as a substep's do, and a
@@ -5028,8 +5022,8 @@ impl Arena {
     /// `ActionHash::Outside` takes a fresh one and stores nothing. The hash of a
     /// run is therefore the state at its **first** journalled line — every
     /// resolver asks before it writes, so it is the state before that line's own
-    /// action, after any refused ones before it (which write nothing hashed) and,
-    /// in a reflex tick, after the machine's own decision — and every later line
+    /// action, after any refused ones before it (which write nothing hashed) —
+    /// and every later line
     /// of the run shares it: one moment, one hash, the rule the substep follows,
     /// and a function of the actions resolved and not of the cadence.
     pub fn event_hash(&mut self) -> u64 {
@@ -5216,12 +5210,12 @@ mod tests {
     use super::*;
     use crate::arena::test_support::{arena_of, custody, ground, pose, tank};
 
-    /// **17b cut L.2**: a machine is the reflex controller or a unit mind, and
-    /// never a pilot — what both `squads_of` callers deal squads by.
+    /// **17b cut L.2**: a machine is a unit mind, and never a pilot — what
+    /// both `squads_of` callers deal squads by. (`l2_is_machine_is_reflex_or_mind`
+    /// until 17b cut M4.6 deleted the reflex controller and its line here.)
     #[test]
-    fn l2_is_machine_is_reflex_or_mind() {
+    fn l2_is_machine_is_a_mind_and_never_a_pilot() {
         assert!(!Controller::Pilot.is_machine());
-        assert!(Controller::Reflex.is_machine());
         assert!(Controller::Mind.is_machine());
     }
 
@@ -6902,13 +6896,15 @@ mod tests {
 
     /// **17b cut M1a.5: a mind is its own controller byte** (D-UM-2) — `2`,
     /// so the two existing bytes, and every hash that folds them, are what
-    /// they were.
+    /// they were. **17b cut M4.6** deleted the reflex's `1` and renumbered
+    /// nothing: the pilot is still `0` and the mind still `2`, which every
+    /// hash of every match folds. The non-mind due kind below is the motor's
+    /// tick, where it was the reflex's until that cut.
     #[test]
     fn m1a5_a_mind_is_code_two_and_the_word_mind() {
         assert_eq!(
-            [Controller::Pilot, Controller::Reflex, Controller::Mind]
-                .map(|c| (c.as_str(), c.code())),
-            [("pilot", 0), ("reflex", 1), ("mind", 2)]
+            [Controller::Pilot, Controller::Mind].map(|c| (c.as_str(), c.code())),
+            [("pilot", 0), ("mind", 2)]
         );
         assert!(
             DueKind::MindThink {
@@ -6924,12 +6920,6 @@ mod tests {
             }
             .is_mind()
         );
-        assert!(
-            !DueKind::ReflexTick {
-                unit: ObjId(1),
-                tick_seq: 0
-            }
-            .is_mind()
-        );
+        assert!(!DueKind::MotorTick { unit: ObjId(1) }.is_mind());
     }
 }

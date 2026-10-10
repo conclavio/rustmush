@@ -1,16 +1,18 @@
 //! **The motor** (17b cut M1a.1; doc 17 §4 "The motor", D-UM-3) — what drives
 //! one hull, whatever is deciding where it should go.
 //!
-//! Until this cut [`crate::arena::reflex`] did two jobs in one row. **Deciding**
-//! — the state machine, the utility score, the goal precedence, the clocks — is
-//! the stock mind's, and it stays in that module. **Driving** — the route and
+//! Until this cut the reflex controller (`crate::arena::reflex`, deleted in 17b
+//! cut M4.6) did two jobs in one row. **Deciding** — the state machine, the
+//! utility score, the goal precedence, the clocks — stayed in that module, and is
+//! the stock mind's since 17b cut M1a.6. **Driving** — the route and
 //! the search that refreshes it, the seven-step follower (consumption, arrival,
 //! the wander, the search, the aim, the shoulder, the orders), the open-line
 //! walks, the braking speed, the remembered stops and the per-substep
 //! `hold_routeless` pre-pass — is the HELM station's, and it lives here: owned
 //! per unit as a [`MotorRow`] in one [`MotorTable`] on [`Arena::motors`], so a
-//! pilot's `DRIVE` (17b cut M1a.4), a mind's `goto` (M1a.5, M1a.6) and the
-//! reflex controller's own goals all steer one hull through one follower.
+//! pilot's `DRIVE` (17b cut M1a.4), a mind's `goto` (M1a.5, M1a.6) and (until
+//! 17b cut M4.6) the reflex controller's own goals all steer one hull through
+//! one follower.
 //!
 //! Why it stays native, which doc 17 §4 argues in full: a path search in an
 //! interpreter costs a thousand times its native price, and the motor is where
@@ -26,7 +28,8 @@
 //! - and the wander rule keeps a route while the machine is inside its turning
 //!   circle and a cell of it has an open line.
 //!
-//! The reflex module's head, "The bounds", is the history of each.
+//! The reflex module's head, "The bounds", was the history of each (the module
+//! is gone since 17b cut M4.6; `git log` keeps it).
 //!
 //! # What the motor reads (doc 17 §4: "The motor's reads need an audit in M1a")
 //!
@@ -41,13 +44,12 @@
 //!
 //! # Every controller, one table
 //!
-//! A row exists for a hull something is steering: the reflex controller adopts
-//! one with its machine ([`Arena::adopt_reflex`]) and releases it with it
-//! ([`Arena::release_reflex`]). The fields are the nine that left
-//! [`crate::arena::reflex::ReflexUnit`] — byte-identical in the state hash,
-//! which reads them back from here in the reflex row's own order
-//! ([`crate::arena::hash::state_hash`], item 3) and folds a row of a hull with
-//! no machine as its own section (item 3b).
+//! A row exists for a hull something is steering — a pilot's `DRIVE`, a mind's
+//! goal (the reflex controller adopted one with its machine and released it
+//! with it until 17b cut M4.6). The fields are the nine that left the reflex's
+//! `ReflexUnit` — byte-identical in the state hash, which read them back from
+//! here in the reflex row's own order (item 3) until 17b cut M4.6 and folds
+//! every row as its own section ([`crate::arena::hash::state_hash`], item 3b).
 
 use std::collections::BTreeMap;
 
@@ -63,8 +65,8 @@ use crate::arena::path::{
 use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::slope;
 use crate::arena::state::{
-    Arena, ArenaDefinition, ArenaTerrain, Channel, Controller, CostRow, DueKind, HoldState, Power,
-    SeenPose, Team, UnitState,
+    Arena, ArenaDefinition, ArenaTerrain, Channel, CostRow, DueKind, HoldState, Power, SeenPose,
+    Team, UnitState,
 };
 use crate::config::ReflexConfig;
 
@@ -204,8 +206,8 @@ pub const STEER_LOOKAHEAD_CELLS: usize = 8;
 /// cell it is making for, the route there and how it was searched, the cells it
 /// was stopped at, and the waypoint walk it falls back on.
 ///
-/// These are the nine fields that were [`crate::arena::reflex::ReflexUnit`]'s
-/// driving half until this cut, each with its doc moved verbatim. A row is a
+/// These are the nine fields that were the reflex's `ReflexUnit`'s driving
+/// half until this cut, each with its doc moved verbatim. A row is a
 /// fact about the hull and the ground and never about another unit: nothing
 /// here names one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,7 +231,8 @@ pub struct MotorRow {
     /// [`MotorRow::refused`]: a route broken at its own next cell is the
     /// route a search from the same cell would return again only when it was
     /// planned from the cell the machine still stands in. Folded into the state
-    /// hash (item 3), because it gates a later search.
+    /// hash (item 3b; inside the reflex row's item 3 until 17b cut M4.6),
+    /// because it gates a later search.
     pub searched_from: Option<(u16, u16)>,
     /// **The cells this unit was stopped at by something standing in them**, with
     /// the arena millisecond of the stop (16b cut Q.7; doc 16 §3.4 step 5).
@@ -268,8 +271,9 @@ pub struct MotorRow {
     /// and it is dropped by every change of any input to that search: a spent
     /// search, standing in another cell, another goal, a stop against another
     /// unit ([`BlockedCause::Occupied`], which puts a cell on the avoid list), an
-    /// avoid entry ageing out at the top of a tick, `adopt`, `forget_route` and
-    /// `drop_to_doctrine`. **Nothing can hold a machine past
+    /// avoid entry ageing out at the top of a tick, and `forget_route` (the
+    /// reflex's `adopt` and `drop_to_doctrine` too, until 17b cut M4.6 deleted
+    /// them). **Nothing can hold a machine past
     /// [`REFLEX_AVOID_TTL_MS`] from its stop, and nothing refuses a search
     /// whose inputs changed.** A void memory is dropped where it is read.
     ///
@@ -281,7 +285,8 @@ pub struct MotorRow {
     /// its counter is expected to read nought on every lane, and a count is a
     /// controller defect to investigate — the harness's own convention for a
     /// motion-level `too_steep` stop — never a sign the guard is working.
-    /// Folded into the state hash (item 3).
+    /// Folded into the state hash (item 3b; inside the reflex row's item 3
+    /// until 17b cut M4.6).
     pub refused: Option<Refusal>,
     /// The waypoint node `Patrol` is walking toward.
     pub waypoint: Option<u16>,
@@ -292,11 +297,13 @@ pub struct MotorRow {
     ///
     /// Set by `Arena::follow`'s `unreachable` edge when the goal that failed
     /// is the Hold spot — E.4's give-up, `B-41`'s lesson applied once more — to
-    /// `t_ms + max(hunt_after_ms, repath_ms)`, and read by
-    /// `Arena::hold_goal`, which declines while it is in the future (so
-    /// `Patrol` falls through to the waypoint walk and the fallback waypoint
-    /// holds) and clears it once past. Folded into the state hash beside the
-    /// machine's other clocks.
+    /// `t_ms + max(hunt_after_ms, repath_ms)`, and read by the reflex's
+    /// `Arena::hold_goal` until 17b cut M4.6 deleted it (which declined while
+    /// it was in the future, so `Patrol` fell through to the waypoint walk,
+    /// and cleared it once past); read by nothing but the hash since — the
+    /// stock mind keeps its own retry clock in its memory — and written by the
+    /// `Fallback::Waypoint` branch no production path takes. Folded into the state hash (item 3b;
+    /// beside the reflex row's other clocks in item 3 until 17b cut M4.6).
     pub hold_retry_ms: Option<i64>,
 }
 
@@ -306,7 +313,8 @@ pub struct MotorRow {
 ///
 /// See [`MotorRow::refused`] for when one is written, what it refuses and
 /// everything that drops it. (17b cut M1a.1 moved it here with the row; the
-/// reflex module re-exports it under its old path.)
+/// reflex module re-exported it under its old path until 17b cut M4.6
+/// deleted the module.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Refusal {
@@ -341,10 +349,11 @@ impl MotorRow {
     /// would find, so a remembered stop ([`MotorRow::refused`]) goes with it —
     /// nothing refuses a search whose inputs changed.
     ///
-    /// The reflex decision calls this exactly where the sweep stood, so a
-    /// machine's row ages the bytes it aged before (the two HEAD pins of 17b
-    /// cut M1a.1 prove it); 17b cut M1a.4's motor step calls it for a row no
-    /// decision runs, so a pilot's or a mind's stops age too.
+    /// The reflex decision called this exactly where the sweep stood, so a
+    /// machine's row aged the bytes it aged before (the two HEAD pins of 17b
+    /// cut M1a.1 proved it); 17b cut M1a.4's motor step calls it for a row no
+    /// decision runs, so a pilot's or a mind's stops age too — its one caller
+    /// since 17b cut M4.6 deleted the reflex decision.
     pub fn age_avoid(&mut self, t_ms: i64) -> bool {
         let listed = self.avoid.len();
         self.avoid
@@ -364,8 +373,8 @@ impl MotorRow {
 /// **Every motor row of a match, the path budget they share, and the A\*
 /// scratch** (17b cut M1a.1; doc 17 §4) — [`Arena::motors`].
 ///
-/// The budget's window and its spend moved here from
-/// [`crate::arena::reflex::ReflexMemory`] with the scratch: they bound the
+/// The budget's window and its spend moved here from the reflex controller's
+/// memory (`ReflexMemory`, deleted in 17b cut M4.6) with the scratch: they bound the
 /// searches of every hull that drives, whatever decides its goal, so they are
 /// the motor's and not one controller's. The scratch is one half-megabyte
 /// buffer for the whole match rather than one per unit, and is never carried
@@ -384,7 +393,8 @@ pub struct MotorTable {
 
 impl MotorTable {
     /// An empty table, its budget window not yet opened — what
-    /// [`Arena::new`] lays down beside the reflex memory.
+    /// [`Arena::new`] lays down (beside the reflex memory until 17b cut M4.6
+    /// deleted it).
     #[must_use]
     pub fn new() -> MotorTable {
         MotorTable {
@@ -439,9 +449,9 @@ impl MotorTable {
     ///
     /// **17b cut M1a.1**: moved from the reflex memory with the window and the
     /// spend, and handed the doctrine block it read off that memory — the same
-    /// value, since [`Arena::new`] builds the memory from
-    /// `arena_cfg.reflex` and nothing writes either afterwards. The window is
-    /// keyed on `decide_ms`, as it was.
+    /// value, since [`Arena::new`] built the memory from `arena_cfg.reflex`
+    /// (until 17b cut M4.6 deleted it) and nothing writes that block
+    /// afterwards. The window is keyed on `decide_ms`, as it was.
     pub(crate) fn may_search(&mut self, t_ms: i64, cfg: &ReflexConfig) -> bool {
         let window_ms = i64::from(cfg.decide_ms.max(1));
         let window = t_ms.div_euclid(window_ms);
@@ -465,16 +475,20 @@ impl MotorTable {
     /// against an occupied cell does ([`Arena::note_blocked`]) — and keeps
     /// everything that is a decision rather than a path: the state, the standing
     /// order, `waypoint` and `from_waypoint`, the target and the avoid list. A
-    /// placed machine therefore re-derives its goal from its state and its order
-    /// at its next tick, from where it now stands. A unit with no machine is left
-    /// alone.
+    /// placed reflex machine therefore re-derived its goal from its state and
+    /// its order at its next tick, from where it then stood (until 17b cut
+    /// M4.6; below). A unit with no machine is left alone.
     ///
     /// **16b cut AI.1**: and the remembered stop ([`MotorRow::refused`]),
     /// which was a fact about the cell the unit no longer stands in.
     ///
     /// **17b cut M1a.1** moved it here from the reflex memory with the four
     /// fields it clears, so a placed hull forgets its route whoever is
-    /// steering it; the decision half it keeps is the reflex row, untouched.
+    /// steering it; the decision half it kept was the reflex row, untouched.
+    /// **Since 17b cut M4.6** the decision half is a mind's memory, which this
+    /// does not reach and no notice tells: a placed mind keeps its goal and
+    /// stands where staff put it until that goal next changes (the owner's
+    /// STOP F, carried to M5; doc 17 §24).
     pub fn forget_route(&mut self, unit: ObjId) {
         if let Some(row) = self.rows.get_mut(&unit) {
             row.goal = None;
@@ -485,9 +499,9 @@ impl MotorTable {
     }
 
     /// **Forget the goal an order or a decision handed a hull** (17b cut M1a.1):
-    /// the goal, the route and the remembered stop, which is what
-    /// [`crate::arena::reflex::ReflexUnit::drop_to_doctrine`] cleared of the
-    /// driving fields until this cut — its callers call this beside it. The
+    /// the goal, the route and the remembered stop, which is what the reflex
+    /// row's `drop_to_doctrine` cleared of the driving fields until this cut —
+    /// its callers called this beside it until 17b cut M4.6. The
     /// search stamp, the avoid list and the waypoint walk stay, as they did. A
     /// hull with no row is left alone.
     pub fn forget_goal(&mut self, unit: ObjId) {
@@ -522,7 +536,10 @@ pub struct MotorPlan {
 /// `unreachable` is how the decision that handed the motor its goal learns what
 /// `Arena::follow` used to do to the decision's own fields on the `unreachable`
 /// edge — `B-41`'s `Advance` end, Z.2's `Support` end, E.4's two give-ups —
-/// which the reflex decision now performs from it, in the order the edge did.
+/// which the reflex decision performed from it, in the order the edge did,
+/// until 17b cut M4.6 deleted it. Since then `Arena::motor_step` reads it for
+/// the `drive_no_route` notice, and a mind gives up off that notice at its
+/// next think.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MotorOutcome {
     /// The hull stands within [`ARRIVE_CELLS`] of its goal (step 2).
@@ -575,24 +592,25 @@ pub struct MotorCounters {
     /// Searches that found no route, ran out of budget or were off the ground —
     /// the `unreachable` edge.
     pub path_failures: u32,
-    /// Line-of-sight traces the reflex took (`Approach`'s and `Engage`'s
-    /// check that a shot has a line at all, `Arena::reflex_has_line`). A mind
-    /// never counts one, so it reads nought on every field of minds; reported
-    /// nowhere since 17b cut M4.5, and deleted with its one writer at M4.6.
-    pub traces: u32,
     /// **Every intent put through `Arena::apply_machine_intents`, refused
     /// ones included** (counted before `apply_intent` answers): a mind's
-    /// landing, the motor's heading and speed at its follow, the reflex's
-    /// tick until M4.6 — plus `hold_routeless`'s stops. Not a count of
-    /// decisions: the motor alone moves it.
+    /// landing and the motor's heading and speed at its follow — plus
+    /// `hold_routeless`'s stops (and the reflex's tick until 17b cut M4.6
+    /// deleted it). Not a count of decisions: the motor alone moves it.
+    ///
+    /// (`traces`, the line-of-sight traces the reflex took through
+    /// `Arena::reflex_has_line`, reported nowhere since 17b cut M4.5, was
+    /// deleted with its one writer in 17b cut M4.6.)
     pub intents: u32,
-    /// **`FIRE`s accepted**: a mind's cited `Fire` (the reflex's uncited one
-    /// until M4.6) and a slot's own
-    /// ([`MotorCounters::cond_fires`] ⊆ this).
+    /// **`FIRE`s accepted**: a mind's cited `Fire` and a slot's own
+    /// ([`MotorCounters::cond_fires`] ⊆ this) — and the reflex's uncited one
+    /// until 17b cut M4.6.
     pub shots: u32,
     /// **Orders that ran out** (16b cut N.2), one per unit dropped to doctrine:
     /// a mind's at the landing that reaches its deadline
-    /// (`Arena::expire_mind_order`), the reflex's at its tick until M4.6.
+    /// (`Arena::expire_mind_order`) or that finds its `Support`'s charge gone
+    /// (17b cut M4.6b, the owner's STOP E) — and the reflex's at its tick
+    /// until 17b cut M4.6.
     pub orders_expired: u32,
     /// **Orders a pilot handed back** (16b cut Z.2; 16c Q44), one per unit a
     /// `ReleaseOrder` dropped to doctrine — counted at apply, in pulse phase 2.
@@ -661,7 +679,6 @@ impl MotorCounters {
         self.path_deferred = self.path_deferred.saturating_add(other.path_deferred);
         self.path_cells = self.path_cells.saturating_add(other.path_cells);
         self.path_failures = self.path_failures.saturating_add(other.path_failures);
-        self.traces = self.traces.saturating_add(other.traces);
         self.intents = self.intents.saturating_add(other.intents);
         self.shots = self.shots.saturating_add(other.shots);
         self.orders_expired = self.orders_expired.saturating_add(other.orders_expired);
@@ -754,8 +771,8 @@ impl Arena {
     ///
     /// The pre-pass reads [`Arena::motors`] and not the reflex rows, and it no
     /// longer asks who the controller is: **a motor row exists only for a hull
-    /// something is steering** ([`Arena::adopt_reflex`] lays one down with a
-    /// machine and [`Arena::release_reflex`] takes it up with one), so a row
+    /// something is steering** (the reflex's adoption laid one down with a
+    /// machine and its release took it up, until 17b cut M4.6), so a row
     /// with a goal and no route is a hull driven at a direction nobody has
     /// checked, whether a machine, a mind or a pilot's `DRIVE` named the goal. A
     /// seated pilot steering by `HEADING` and `SPEED` has no row and is never
@@ -923,8 +940,8 @@ impl Arena {
 
     /// **A machine still held on an occupied cell keeps it on its avoid list**
     /// (16b cut M.3; 16c `T-04` with `B-43`'s guarantee), run at the top of
-    /// [`Arena::reflex_tick`], before the decision's
-    /// [`REFLEX_AVOID_TTL_MS`] sweep.
+    /// `Arena::motor_step` (and of the reflex's tick until 17b cut M4.6),
+    /// before the [`REFLEX_AVOID_TTL_MS`] sweep.
     ///
     /// Until the one-edge rule, every re-collision with the wreck was a `blocked`
     /// line and a [`Arena::note_blocked`] that refreshed the cell's stamp, so a
@@ -940,8 +957,10 @@ impl Arena {
     /// `searched_ms` were the edge's to clear, once.
     ///
     /// **17b cut M1a.1**: gated on the hull's [`MotorRow`] and not on the
-    /// controller, as [`Arena::note_blocked`] is; its one caller is still the
-    /// reflex tick, so at this cut it refreshes exactly the rows it refreshed.
+    /// controller, as [`Arena::note_blocked`] is; its one caller was still the
+    /// reflex tick at that cut, so it refreshed exactly the rows it had. 17b
+    /// cut M1a.4's `Arena::motor_step` calls it too — its one caller since
+    /// 17b cut M4.6 deleted the reflex tick.
     pub(crate) fn refresh_held_avoid(&mut self, unit: ObjId, t_ms: i64) {
         let Some(held) = self.unit(unit).and_then(|state| state.held) else {
             return;
@@ -1017,8 +1036,9 @@ impl Arena {
     /// failed search for a supporter's station — with E.4's two give-ups (the
     /// search's plot, the hunt's cell) beside them. Those are the decision's
     /// fields, so the `unreachable` edge answers the goal that failed
-    /// ([`MotorOutcome::unreachable`]) and the reflex decision performs them
-    /// from it, in the order this edge did; the steer itself is unchanged.
+    /// ([`MotorOutcome::unreachable`]) and the reflex decision performed them
+    /// from it, in the order this edge did, until 17b cut M4.6 deleted it; the
+    /// steer itself is unchanged.
     ///
     /// `policy` is what the edge does to the goal: [`Fallback::Waypoint`] is the
     /// rule this function has always applied — the O.1 retry clock and the
@@ -1112,7 +1132,8 @@ impl Arena {
         //
         // **17b cut M1a.1**: answered to the caller, whatever the policy; under
         // `Notice` the goal a pilot or a mind named is spent, so it goes too.
-        // The reflex controller's goals are its decision's to drop, as before.
+        // Under `Waypoint` the goal stays: the reflex controller's goals were
+        // its decision's to drop, until 17b cut M4.6 deleted it.
         if here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS {
             row.route.clear();
             plan.speed_cms = Some(0);
@@ -1237,9 +1258,11 @@ impl Arena {
                         counters.path_failures = counters.path_failures.saturating_add(1);
                         let _ = why;
                         // **17b cut M1a.1**: the goal that failed is answered to
-                        // the caller, which is what lets the reflex decision
+                        // the caller, which is what let the reflex decision
                         // perform `B-41`'s, Z.2's and E.4's give-ups on its own
-                        // fields, in the order this edge did them; the retry
+                        // fields, in the order this edge did them (until 17b
+                        // cut M4.6; the motor step reads it for its
+                        // `drive_no_route` notice since); the retry
                         // clock and the fallback below touch none of those
                         // fields, so performing them after the drive moves no
                         // byte.
@@ -1921,7 +1944,9 @@ impl Arena {
     /// other unit — `crates/tacsim/tests/motor.rs` holds it to that.
     ///
     /// **17b cut M1a.6**: the walk is the free [`patrol_step`], which the stock
-    /// mind calls too; this is its thin wrapper over the row.
+    /// mind calls too; this is its thin wrapper over the row — a test and
+    /// oracle surface, with no production caller since 17b cut M4.6c deleted
+    /// the reflex controller, which called it.
     pub fn patrol_step(&self, id: ObjId, row: &mut MotorRow, here: Option<(u16, u16)>) {
         let step = patrol_step(
             &self.definition,
@@ -1952,12 +1977,15 @@ impl Arena {
     /// no Hold objective.
     ///
     /// **17b cut M1a.1** lifted it out of the reflex controller's `hold_goal`,
-    /// which keeps the retry clock and calls this for the arithmetic. **Public**,
+    /// which kept the retry clock and called this for the arithmetic until 17b
+    /// cut M4.6 deleted it. **Public**,
     /// as one of the motor's audited kernels (doc 17 §4): it reads the arena's
     /// Hold objective and the unit's own mobility and cell, and no other unit.
     ///
     /// **17b cut M1a.6**: the arithmetic is the free [`hold_arrived`]; this is
-    /// its wrapper over the arena's objective and the hull's mobility.
+    /// its wrapper over the arena's objective and the hull's mobility — a test
+    /// and oracle surface, with no production caller since 17b cut M4.6c (the
+    /// stock mind's `hold_goal` calls the free one).
     #[must_use]
     pub fn hold_arrived(&self, unit: ObjId, here: Option<(u16, u16)>) -> bool {
         let Some(hold) = self.hold.as_ref() else {
@@ -1981,8 +2009,9 @@ impl Arena {
     /// object: an approach is toward the last known position, and a unit that
     /// arrives there and finds nothing is a unit that has lost its contact.
     ///
-    /// **16b cut E.1**: `want_cm` comes from the reflex module's
-    /// `stand_off_want`, which is what
+    /// **16b cut E.1**: `want_cm` came from the reflex module's
+    /// `stand_off_want` (`crate::arena::doctrine::stand_off_want` since 17b
+    /// cut M4.6a), which is what
     /// guarantees `want_cm ≤ range` — and that is what guarantees the **point**
     /// this projects is never further from the plot than the unit already
     /// stands, so the goal is never behind the machine (16c `B-05`). The *cell*
@@ -2019,7 +2048,8 @@ impl Arena {
     /// it into a free function.
     ///
     /// **17b cut M1a.6**: the scan is the free [`entry_cell`]; this is its
-    /// wrapper over the hull's own team, cell and cost row.
+    /// wrapper over the hull's own team, cell and cost row — a test and oracle
+    /// surface, with no production caller since 17b cut M4.6c.
     pub fn entry_cell(&self, id: ObjId) -> Option<(u16, u16)> {
         let unit = self.unit(id)?;
         let here = self.definition.terrain.cell_of(&unit.pose)?;
@@ -2057,8 +2087,11 @@ impl Arena {
     /// corner — two tanks in column on one road row — were handed one cell, and
     /// with the orbit gone both reach it and the first there turns back into
     /// the second. `taken` is every hunt cell the rest of the unit's side holds
-    /// (`Arena::hunt_goal` reads it off the side's own reflex rows at the
-    /// tick), and a candidate is **clear** when its Chebyshev distance to every
+    /// (`Arena::hunt_goal`, the reflex's, read it off the side's own reflex
+    /// rows at the tick until 17b cut M4.6 deleted both; the stock mind's
+    /// `hunt_goal` hands the free [`far_entry_cell`] none, and the motor fans
+    /// the goal at its landing, `Arena::fan_goal`), and a candidate is
+    /// **clear** when its Chebyshev distance to every
     /// one of them is at least [`HUNT_FAN_ROWS`], so no two arrival squares
     /// overlap. A clear candidate is the answer exactly as E.4 gave it: a lone
     /// hunter, and the first of every side, crosses where E.4 sent it, and so
@@ -2076,8 +2109,8 @@ impl Arena {
     /// have room for, or ground refusing the rows between, is the zone's own
     /// limit and not the rule's. It reads the side's own goals and no unit's
     /// pose, so it adds no state: the cell it answers becomes
-    /// [`crate::arena::reflex::ReflexUnit::hunt`] and the goal, hashed as every
-    /// goal is.
+    /// the hunt (the reflex row's `hunt` until 17b cut M4.6) and the goal,
+    /// hashed as every goal is.
     ///
     /// **It never answers a cell the passability test rejected.**
     /// [`Arena::entry_cell`] ends `.or(Some(clamped))`, which can hand back the
@@ -2086,18 +2119,21 @@ impl Arena {
     /// be an unreachable cell re-asserted every `hunt_after_ms` for the rest of
     /// the match. When the budget runs out with nothing found, or no other side
     /// has a zone at all, this answers `None` and the hunt does nothing — which
-    /// is the honest answer, and `Arena::hunt_goal` restarts its clock on it so
-    /// the scan is paid once per `hunt_after_ms`.
+    /// is the honest answer, and the hunt restarts its clock on it so the scan
+    /// is paid once per `hunt_after_ms` (the stock mind's `hunt_goal`;
+    /// `Arena::hunt_goal`, the reflex's, until 17b cut M4.6).
     ///
     /// **Public since 17b cut M1a.1**, as one of the motor's audited kernels
     /// (doc 17 §4): it reads the arena definition's entry zones and ground, the
     /// unit's own team, pose and cost row, and the `taken` cells the caller
-    /// hands it — the reflex decision reads those off its own side's machines,
-    /// which is the decision's knowledge and not the motor's — and no other
-    /// unit. 17b cut M1a.6 lifts it into a free function.
+    /// hands it — the reflex decision read those off its own side's machines,
+    /// which is the decision's knowledge and not the motor's, until 17b cut
+    /// M4.6 — and no other unit. 17b cut M1a.6 lifts it into a free function.
     ///
     /// **17b cut M1a.6**: the scan and the fan are the free [`far_entry_cell`];
-    /// this is its wrapper over the hull's own team, cell and cost row.
+    /// this is its wrapper over the hull's own team, cell and cost row — a
+    /// test and oracle surface, with no production caller since 17b cut M4.6c
+    /// deleted its caller, the reflex's `Arena::hunt_goal`.
     pub fn far_entry_cell(&self, id: ObjId, taken: &[(u16, u16)]) -> Option<(u16, u16)> {
         let unit = self.unit(id)?;
         let here = self.definition.terrain.cell_of(&unit.pose)?;
@@ -2140,7 +2176,7 @@ pub struct WalkStep {
 /// arrived within [`ARRIVE_CELLS`] of it — or when `arrived` says so, which is
 /// the stock mind's reading of a `drive_arrived` notice for a goal the motor
 /// fanned off its node (the M1a plan's departure (d)); the reflex controller
-/// passes `false`. The next node is `choices[unit % choices.len()]` over the
+/// passed `false` until 17b cut M4.6 (as `Arena::patrol_step` still does). The next node is `choices[unit % choices.len()]` over the
 /// node's neighbours other than the one it came from (all of them when that
 /// leaves none), keyed on the hull's own object number (departure (e)).
 ///
@@ -2227,9 +2263,9 @@ pub fn patrol_step(
 /// (`None`) and the walk kept — a hull that cannot get there and has nowhere
 /// else to be does not drive at a wall.
 ///
-/// The reflex controller's motor calls it in-tick (`Fallback::Waypoint`); the
-/// stock mind calls it one think later, off a `drive_no_route` notice (the
-/// M1a plan's departure (i)).
+/// The reflex controller's motor called it in-tick (`Fallback::Waypoint`)
+/// until 17b cut M4.6; the stock mind calls it one think later, off a
+/// `drive_no_route` notice (the M1a plan's departure (i)).
 #[must_use]
 pub fn fallback_waypoint(
     def: &ArenaDefinition,
@@ -2281,8 +2317,8 @@ pub fn hold_arrived(hold: &HoldState, cannot_close: bool, here: Option<(u16, u16
 /// cell passable to `cost_row`; a cell off the window or impassable falls back
 /// to `at`'s own cell. `from` and `at` are `(x_cm, y_cm, z_cm)`.
 ///
-/// The reflex controller hands it the hull's pose and its plot of the target;
-/// the stock mind hands it the view's own pose and the **centre of the plot's
+/// The reflex controller handed it the hull's pose and its plot of the
+/// target, until 17b cut M4.6; the stock mind hands it the view's own pose and the **centre of the plot's
 /// cell** at the ground's height there (the view carries the cell, not the
 /// pose: the divergence `plot_cell`).
 #[must_use]
@@ -2367,9 +2403,9 @@ pub fn entry_cell(
 /// **The hunt's goal: a cell of some OTHER side's entry zone** (16b cut E.4,
 /// fanned by AI.1; `Arena::far_entry_cell`'s scan, lifted by 17b cut M1a.6) —
 /// see that method for the whole rule. `taken` is the hunt cells the rest of
-/// the side holds: the reflex controller reads them off its own machines; the
-/// stock mind passes none, and the motor fans its landing instead (the M1a
-/// plan's departure (d)).
+/// the side holds: the reflex controller read them off its own machines until
+/// 17b cut M4.6; the stock mind passes none, and the motor fans its landing
+/// instead (the M1a plan's departure (d)).
 #[must_use]
 pub fn far_entry_cell(
     def: &ArenaDefinition,
@@ -2458,8 +2494,9 @@ impl Arena {
     /// owns and a pilot's map or a mind's view does not carry — and two pilots
     /// of one side who both `DRIVE` the far zone's road corner would otherwise
     /// be handed one cell, and the first there would turn back into the second.
-    /// The reflex controller's hunt keeps its own fan in its decision half
-    /// ([`Arena::far_entry_cell`] with the side's hunt cells), untouched.
+    /// The reflex controller's hunt kept its own fan in its decision half
+    /// ([`Arena::far_entry_cell`] with the side's hunt cells), untouched, until
+    /// 17b cut M4.6 deleted it; since then this is the one fan a hunt meets.
     ///
     /// It reads the ground, the entry zones, the hull's own team and cost row,
     /// and the **goals** of its own side's motor rows — never another hull's
@@ -2515,7 +2552,8 @@ impl Arena {
 
     /// **The stagger grid's next slot for `unit` at `cadence`** (16b cut U.1's
     /// formula, lifted by 17b cut M1a.4 so the reflex tick and the motor tick
-    /// share it): the next multiple of `cadence` offset by
+    /// shared it; the motor tick and a mind's first think, `Arena::adopt_mind`,
+    /// since 17b cut M4.6 deleted the reflex tick): the next multiple of `cadence` offset by
     /// [`crate::arena::rng::stagger_ms`]`(seed, unit, cadence)` that is at or
     /// after `now_ms`. A function of arena time, the seed and the unit id
     /// alone, so a hull put on a cadence mid-match lands where one put on it
@@ -2537,16 +2575,11 @@ impl Arena {
     /// one for it — so a pilot who types `DRIVE` five times is driven by one
     /// tick, and a goal re-named while a tick is pending rides that tick.
     ///
-    /// A reflex hull is put on nothing: its drive runs inside its own
-    /// [`DueKind::ReflexTick`], and a goal written onto it is its machine's —
-    /// written over at the next tick by every state that derives its goal
-    /// afresh, and kept by `Withdraw` as its route home (`land_goal` in
-    /// `intents.rs` has the rule). A wreck is put on nothing either.
+    /// A wreck is put on nothing. (Nor was a reflex hull, whose drive ran
+    /// inside its own reflex tick, until 17b cut M4.6 deleted the reflex
+    /// controller and this guard's half for it.)
     pub(crate) fn engage_motor(&mut self, unit: ObjId) {
-        if self
-            .unit(unit)
-            .is_none_or(|state| state.limits.wreck || state.controller == Controller::Reflex)
-        {
+        if self.unit(unit).is_none_or(|state| state.limits.wreck) {
             return;
         }
         if self
@@ -2565,18 +2598,19 @@ impl Arena {
     /// that a goal's landing runs once at the landing millisecond (*a new goal
     /// takes effect at N+1 and does not wait for the next motor tick*).
     ///
-    /// For a hull that exists, is no wreck, is not the reflex controller's and
-    /// whose motor row holds a goal — and that can move: a hull that cannot
+    /// For a hull that exists, is no wreck (and, until 17b cut M4.6 deleted
+    /// it, was not the reflex controller's) and whose motor row holds a goal —
+    /// and that can move: a hull that cannot
     /// ([`UnitState::cannot_close`]) has its goal dropped and is told
     /// [`crate::arena::perception::DriveOutcome::NoRoute`], once — in the
-    /// order the reflex tick drives one:
+    /// order the reflex tick drove one:
     ///
     /// 1. `Arena::refresh_held_avoid` — a hull still held on an occupied
     ///    cell re-stamps it, before the sweep;
     /// 2. [`MotorRow::age_avoid`] — the TTL sweep a row no decision runs needs,
     ///    or a pilot's remembered stops would never expire;
     /// 3. `Arena::follow` under [`Fallback::Notice`], the row taken out of the
-    ///    table for the drive as the reflex tick takes it;
+    ///    table for the drive as the reflex tick took it;
     /// 4. [`Arena::apply_motor_plan`] — the heading and the speed it decided,
     ///    through the pilot's own door at the hull's current epochs;
     /// 5. the notice: [`crate::arena::perception::DriveOutcome::Arrived`] when
@@ -2596,7 +2630,7 @@ impl Arena {
         let Some(state) = self.unit(unit) else {
             return MotorOutcome::default();
         };
-        if state.limits.wreck || state.controller == Controller::Reflex {
+        if state.limits.wreck {
             return MotorOutcome::default();
         }
         let here = self.definition.terrain.cell_of(&state.pose);
@@ -2664,7 +2698,8 @@ impl Arena {
     /// the heading, then the speed, each one an `Intent` on the channel that
     /// carries it at the hull's **current** epoch, applied through
     /// [`apply_intent`] as [`IntentSource::Machine`] — exactly the way
-    /// `Arena::order` applies the reflex controller's two continuous kinds, so
+    /// `Arena::order` applied the reflex controller's two continuous kinds
+    /// until 17b cut M4.6 deleted both, so
     /// the motor does nothing a pilot could not and a refused order (a cold or
     /// engine-killed hull) refuses here as it would there. A machine order
     /// never counts on the seat's rate and never takes the helm back from the
@@ -4327,7 +4362,8 @@ mod tests {
     ///
     /// Machine #4 stands at (3, 3) on the test window with its goal (6, 6)
     /// walled in on all eight sides, so the one search it may spend fails.
-    /// Under [`Fallback::Waypoint`] — the reflex controller's, today's rule —
+    /// Under [`Fallback::Waypoint`] — the reflex controller's rule (no
+    /// production caller since 17b cut M4.6) —
     /// the failure is counted, the goal that failed is answered, and the goal
     /// becomes the nearest waypoint (`west`, node 0, at (1, 4)) with the
     /// waypoint pair stepped. Under [`Fallback::Notice`] the failure is counted

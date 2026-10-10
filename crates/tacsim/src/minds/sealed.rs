@@ -24,7 +24,9 @@
 //! seated hull think on the fallback), so on the production path it installs
 //! nothing for a match checked out since; from 17b cut M4.3's flip to the
 //! decision every production seal was `scripted`, and a match checked out
-//! then still resumes on the runner its seal names. A fixture's rig
+//! then resumed on the runner its seal names — until 17b cut M4.6's format 9,
+//! which voids every older snapshot, so no such match resumes on a build
+//! carrying it. A fixture's rig
 //! (`tests/support`'s `Muster::scripted`) seals a scripted mind.
 //!
 //! **What names the source.** The arena holds the seal's DIGEST
