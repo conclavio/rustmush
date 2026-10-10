@@ -242,7 +242,8 @@
 //! input. A
 //! `stock_ci` `held=no` on ALIEN18 (the owner's host) was to be the owner's
 //! STOP before 17b cut M4.5 — a precondition the owner WAIVED on 2026-10-08
-//! (the lenses are report-only on this file's Linux bless host). Its JSON,
+//! (the lenses were report-only on this file's Linux bless host then, a
+//! cloud container; the VPS asserts them since 16c T-109). Its JSON,
 //! `<stem>-minds-<variant>.<ext>`, carries a deterministic `minds` block the
 //! delta compares once the baseline carries one — folded under the
 //! baseline's `minds` beside the arena report's own `minds.states_at_end`
