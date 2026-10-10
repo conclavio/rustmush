@@ -2295,16 +2295,19 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
 /// function expression depth it compiles at and its widest scope; the
 /// lane's wall time. A think past 1,500 or a third `line_to` is a fault the
 /// asserting twin refuses, so this lane's green already bounds both; the
-/// 1,200 bound the two-tank lanes assert is NOT held here — at 17b cut M2.6
-/// this lane's costliest think is 1,274 (273 thinks past 1,200; the
-/// costliest are armed `Engage` thinks on nine- to twelve-row views, the
+/// 1,200 bound the two-tank lanes assert is NOT held here — this lane's
+/// costliest think is 1,265 with 160 thinks past 1,200 (2026-10-10, 17b
+/// cut M4.7's sweep at `dd4483dd`; the row cut of 17b cut M4.5c moved
+/// them from 1,278 / 273). History: at 17b cut M2.6 it was 1,274 with 273 past 1,200 (the
+/// costliest armed `Engage` thinks on nine- to twelve-row views, the
 /// arming alone about 190 of it), named to the lead as the plan's STOP; the
 /// bound this lane holds is the lead's ruling.
 ///
-/// **Not ignored**: its debug wall time (printed, `wall_ms`; about fifteen
-/// seconds on the blessing host) is inside the thirty seconds a lane may
-/// spend in the ordinary sweep (17b §1 (iii)), so it runs in every
-/// workspace run and needs no named `ci.yml` step.
+/// **Not ignored**: its debug wall time (printed, `wall_ms`; about 21
+/// seconds alone on the build container, 2026-10-10 at `dd4483dd`, and
+/// host-dependent) is inside the thirty seconds a lane may spend in the
+/// ordinary sweep (17b §1 (iii)), so it runs in every workspace run and
+/// needs no named `ci.yml` step.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn m2_gate_a_over_the_authored_lance_field() {
