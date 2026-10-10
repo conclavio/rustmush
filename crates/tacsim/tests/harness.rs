@@ -7612,9 +7612,12 @@ fn hold_lane_requested(value: Option<&str>) -> bool {
 ///
 /// **On minds since 17b cut M4.5, and under STOP A.** The lane fields the
 /// lance lane's ROM minds ([`rom_terms`]); but the Hold mode never reaches a
-/// production think — no view carries the spot and the stock mind has no
-/// Hold arm (STOP A, held on the reflex in `tests/reflex.rs` until the cut
-/// that decides it) — so its machines are NOT driven to the spot by the
+/// production think — no view carries the spot and no production think hands
+/// the stock mind's Hold arms the objective (STOP A: held on the reflex in
+/// `tests/reflex.rs` until 17b cut M4.6b deleted those residues, the owner
+/// carrying it to M5 — the loss recorded in doc 17 §24; the Hold arms stay
+/// pinned on hand-built holds by `stock_mind.rs`' `m1a6_*` kernels) — so its
+/// machines are NOT driven to the spot by the
 /// Hold objective, and its goal cost is the minds' own fight at Hold's
 /// rule, not the spot's search it was built to price. It still runs the
 /// lance lane's shape at `MatchMode::Hold` and prints every line (the

@@ -3517,7 +3517,8 @@ fn arena_over(
 /// and schedules its first think, and it thinks on the arena's fallback
 /// runner — the native stock mind, Standard Doctrine — unless the test hands
 /// the arena another. Every machine of this file's X.6, AE.1 and AE.2 fixtures
-/// is one, but the STOP I residue's.
+/// is one (the STOP I residue's, the last reflex machine here, was deleted in
+/// 17b cut M4.6b).
 fn under_mind(unit: CustodyUnit) -> CustodyUnit {
     CustodyUnit {
         controller: tacsim::arena::state::Controller::Mind,
@@ -3527,8 +3528,10 @@ fn under_mind(unit: CustodyUnit) -> CustodyUnit {
 }
 
 /// The same unit under the reflex controller (16b cut X.6). **17b cut
-/// M4.5a**: fielded by the STOP I residue alone
-/// ([`ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i`]).
+/// M4.5a**: fielded by the STOP I residue alone, which 17b cut M4.6b deleted
+/// (the owner carried STOP I to M5); since then no test fields it, and it is
+/// kept only so [`ae2_duel`]'s match over `Controller` stays total until 17b
+/// cut M4.6c deletes the variant with the reflex.
 fn under_reflex(unit: CustodyUnit) -> CustodyUnit {
     CustodyUnit {
         controller: tacsim::arena::state::Controller::Reflex,
@@ -10172,8 +10175,10 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
 /// how the platform came to hold its target (at 1.5 km no sight would).
 ///
 /// **17b cut M4.5a**: `controller` says who flies the shooter — a pilot's seat
-/// (was `reflex: false`), a stock mind ([`under_mind`]) or, for the STOP I
-/// residue alone, the reflex controller (was `reflex: true`).
+/// (was `reflex: false`) or a stock mind ([`under_mind`]); the reflex
+/// controller (was `reflex: true`) flew it for the STOP I residue alone, which
+/// 17b cut M4.6b deleted, so no caller hands it `Controller::Reflex` (its
+/// arm stays until 17b cut M4.6c deletes the variant).
 fn ae2_duel(
     catalog: &Catalog,
     shooter: &str,
@@ -10521,9 +10526,10 @@ fn ae2_the_missile_lands_where_the_target_was() {
     }
 }
 
-/// The ridged window of [`ae2_the_round_is_traced_from_where_it_left`] and its
-/// STOP I residue: a 400 cm ridge across row 7 of a 16 by 16 window and an
-/// 800 cm crest at [`AE2_CREST`] south of it.
+/// The ridged window of [`ae2_the_round_is_traced_from_where_it_left`] (and,
+/// until 17b cut M4.6b deleted it, of its STOP I residue): a 400 cm ridge
+/// across row 7 of a 16 by 16 window and an 800 cm crest at [`AE2_CREST`]
+/// south of it.
 fn ae2_ridged() -> ArenaDefinition {
     relief(16, 16, &|x, y| {
         if y == 7 {
@@ -10579,7 +10585,7 @@ fn ae2_taught(arena: &Arena, unit: mush_core::ObjId) -> bool {
 /// 2. a machine that fires from behind the ridge and stays there reads
 ///    `blocked`, and **is** taught (the guard is not a switch that turned the
 ///    edge off);
-/// 3. *(held on the reflex: STOP I, below)*;
+/// 3. *(lost on the mind: STOP I, below)*;
 /// 4. a shooter removed from the match mid-flight (a test's case only;
 ///    production never removes a unit from a running arena) resolves its round
 ///    through the stored eye: a hit from the crest, `blocked` from behind;
@@ -10607,10 +10613,15 @@ fn ae2_taught(arena: &Arena, unit: mush_core::ObjId) -> bool {
 /// crest: still `blocked`, and NOT taught — is unreachable on a mind: a mind
 /// is taught by any `blocked` miss of a held target, and the AE.2 `stood`
 /// guard (`damage.rs`, `note_no_line` only for a shooter still where it
-/// fired) is the reflex's alone. It stays on the reflex controller, with
+/// fired) is the reflex's alone. It stayed on the reflex controller, with
 /// case (2) beside it there as its control, in
-/// [`ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i`] until 17b
-/// cut M4.6 decides the `no_line` divergence.
+/// `ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i` until 17b
+/// cut M4.6b deleted that residue: the owner carried STOP I to M5 (a mind
+/// that fires from behind a ridge and then climbs the crest is still taught
+/// `no line` by the blocked miss), the loss recorded in doc 17 §24. Case (3)
+/// has no mirror: case (2), its control, stays here on the mind, and the
+/// twin's `no_line` counter (`tests/twin.rs`) counts every think that read a
+/// `blocked`/`cover` miss notice (nought over the pinned pool), not the climb.
 #[test]
 fn ae2_the_round_is_traced_from_where_it_left() {
     use tacsim::arena::ledger::EventKind;
@@ -10726,7 +10737,8 @@ fn ae2_the_round_is_traced_from_where_it_left() {
         "a machine still where it fired from learns the line it had"
     );
 
-    // (3) STOP I: see `ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i`.
+    // (3) STOP I: lost on the mind (17b cut M4.6b deleted the reflex residue;
+    // doc 17 §24).
 
     // (4) A shooter removed mid-flight: through the stored eye either way.
     let (outcome, present) = fly_removed(AE2_CREST);
@@ -10775,98 +10787,6 @@ fn ae2_the_round_is_traced_from_where_it_left() {
         ("rear", 350),
         "the round struck the face turned to where it left"
     );
-}
-
-/// **The round is traced from where it left — case (3), STOP I, held on the
-/// reflex controller** (16b cut AE.2; doc 16 §3.5 "Scheduled impact", §6's
-/// `no line` edge; the residue of
-/// [`ae2_the_round_is_traced_from_where_it_left`], split out by 17b cut M4.5a
-/// under the owner's ruling Q14).
-///
-/// 3. a machine that fires from behind the ridge and then climbs the crest
-///    still reads `blocked` — the round never left the crest — and is not
-///    taught;
-///
-/// beside its control, the original's case (2) on the same reflex fixture:
-///
-/// 2. a machine that fires from behind the ridge and stays there reads
-///    `blocked`, and **is** taught (the guard is not a switch that turned the
-///    edge off) — so (3)'s "not taught" is the guard's doing and discriminates
-///    on its own here.
-///
-/// **STOP I** (no AE.2 `stood` guard on a mind): the reflex learns `no line`
-/// from its impact only while the shooter still stands where it fired
-/// (`damage.rs`, `note_no_line` under `Controller::Reflex`); a mind is taught
-/// by ANY `blocked`/`cover` `Miss` notice of a target it holds
-/// (`stock_mind.rs`' `no line` edge; the notice staged by `Arena::step`'s
-/// journal pass whatever the shooter did since) — the twin's declared
-/// `no_line` divergence — so a mind that climbs the crest after firing IS
-/// taught and this claim is unreachable on one. The fixture is the
-/// original's cases (2) and (3) on the reflex, verbatim, the closure
-/// untouched but for `ae2_duel`'s controller argument (was `true`) and the
-/// shared window's names (case (2) also stays on the mind in the parent
-/// test, where it is the mind's own claim), until 17b
-/// cut M4.6 decides the divergence (hold it, put the guard on the mind's
-/// notice, or delete this with the reason recorded).
-#[test]
-fn ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i() {
-    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
-    // Fire the rack from `from`, then (optionally) put the machine at `to`,
-    // and land the round: the outcome and whether the edge was fed.
-    let fly = |from: (u16, u16), to: Option<(u16, u16)>, remove: bool| {
-        let mut arena = ae2_duel(
-            &catalog,
-            content::HEAVY_MK1,
-            from,
-            AE2_TRACE_MARK,
-            ae2_ridged(),
-            tacsim::arena::state::Controller::Reflex,
-        );
-        assert!(
-            arena.reflex.unit(RED).is_some_and(|row| !row.no_line),
-            "the machine starts with no lesson"
-        );
-        let seq = arena
-            .resolve_fire(RED, "missiles", arena.now_ms)
-            .expect("a shot is accepted whatever the line: no free probe");
-        ae2_certain(&mut arena, seq);
-        if let Some(cell) = to
-            && let Some(state) = arena.unit_mut(RED)
-        {
-            state.pose = pose(cell);
-        }
-        if remove {
-            arena.units.retain(|unit| unit.id != RED);
-        }
-        let present = arena
-            .unit(RED)
-            .map(|_| arena.fire_line(RED, BLUE).0.is_clear_or_partial());
-        let impact = arena.shot(seq).map(|shot| shot.impact_at_ms).unwrap_or(0);
-        let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
-        arena.resolve_impact(seq, impact, &mut journal);
-        let taught = arena.reflex.unit(RED).is_some_and(|row| row.no_line);
-        (ae2_outcome(&journal), present, taught)
-    };
-    let blocked = Some(tacsim::arena::damage::BLOCKED);
-
-    // (2) From behind the ridge, staying: blocked, and taught. The original's
-    // case (2) kept here on the reflex as (3)'s control: the same fixture
-    // teaches a shooter that stayed, so (3)'s `!taught` is the `stood` guard
-    // at work and not an edge that never fires.
-    let (outcome, present, taught) = fly(AE2_BEHIND, None, false);
-    assert_eq!(outcome.err().as_deref(), blocked);
-    assert_eq!(present, Some(false));
-    assert!(
-        taught,
-        "a machine still where it fired from learns the line it had"
-    );
-
-    // (3) From behind the ridge, then up on the crest: still blocked — the
-    // round never left the crest — and not taught.
-    let (outcome, present, taught) = fly(AE2_BEHIND, Some(AE2_CREST), false);
-    assert_eq!(outcome.err().as_deref(), blocked);
-    assert_eq!(present, Some(true), "the crest sees the tank now");
-    assert!(!taught);
 }
 
 // ---------------------------------------------------------------------------

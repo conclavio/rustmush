@@ -409,9 +409,10 @@ fn field_placed(
 }
 
 /// [`field_placed`] with the three tanks under `controller` — `Mind` for every
-/// ported test; `Reflex` for the STOP B residue of
-/// [`e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close`] alone (17b
-/// cut M4.5a, Q18), whose authored-zero-speed legs no mind can reach.
+/// test since 17b cut M4.6b ported the last reflex fielding (the STOP B legs
+/// of [`e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close`], which
+/// flew the reflex's default-profile tanks through a `reflex_field` from 17b
+/// cut M4.5a's Q18 until then).
 fn field_flown(
     cfg: &ArenaConfig,
     sight_cells: u16,
@@ -419,44 +420,31 @@ fn field_flown(
     cells: [(u16, u16); 3],
     controller: Controller,
 ) -> Arena {
-    // The residue's reflex tanks are the original's to the byte: the default
-    // profile the reflex fired at regardless (only a mind needs the bands).
-    let flown = |unit: CustodyUnit| {
-        if controller == Controller::Reflex {
-            CustodyUnit {
-                profile: tacsim::arena::resolution::UnitProfile::default(),
-                ..unit
-            }
-            .sealed()
-        } else {
-            unit
-        }
-    };
     let mut arena = Arena::new(
         CustodyOut {
             definition: definition_painted(paint),
             units: vec![
-                flown(tank_seeing(
+                tank_seeing(
                     RED_A,
                     Team::Red,
                     centre(cells[0].0, cells[0].1),
                     controller,
                     sight_cells,
-                )),
-                flown(tank_seeing(
+                ),
+                tank_seeing(
                     RED_B,
                     Team::Red,
                     centre(cells[1].0, cells[1].1),
                     controller,
                     sight_cells,
-                )),
-                flown(tank_seeing(
+                ),
+                tank_seeing(
                     BLUE,
                     Team::Blue,
                     centre(cells[2].0, cells[2].1),
                     controller,
                     sight_cells,
-                )),
+                ),
             ],
             pilots: Vec::new(),
             resolution: tacsim::match_::stock_resolution(),
@@ -470,21 +458,6 @@ fn field_flown(
     .expect("the test arena");
     arena.clock.pin_tempo_for_tests(Tempo::Engaged);
     arena
-}
-
-/// **The original reflex field** — [`field`]'s three tanks on the reflex
-/// controller, each to the byte as before 17b cut M4.5a (the default
-/// profile): the STOP B residue of
-/// [`e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close`] alone
-/// (Q18).
-fn reflex_field(cfg: &ArenaConfig) -> Arena {
-    field_flown(
-        cfg,
-        WIDE_SIGHT_CELLS,
-        &[],
-        [(2, 8), (2, 9), (13, 8)],
-        Controller::Reflex,
-    )
 }
 
 fn absorb(out: &StepOutput, bytes: &mut Vec<u8>) {
@@ -3129,7 +3102,8 @@ const CLOSE_ENGAGE_CM: i64 = 8_166;
 /// **An ordered `close` caps a mind's squad at the pilot's own `close`, and
 /// keeps its hysteresis** — 17b cut M4.5a, the first leg of
 /// [`e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close`] on the unit
-/// mind (its two parked-machine legs stay on the reflex there, STOP B).
+/// mind (its two parked-machine legs stayed on the reflex there, STOP B, until
+/// 17b cut M4.6b ported them under the owner's ruling).
 ///
 /// Both claims of the leg are kept as the reflex's — sampled every pulse, the
 /// first pulse `#4` spends in `Engage` reads its target's TRUE plot inside
@@ -3259,22 +3233,30 @@ fn e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close() {
 /// `arena/stock_mind.rs`'s
 /// `e1_the_stock_tanks_three_rows_of_the_range_table_off_the_view`.
 ///
-/// **17b cut M4.5a — STOP B, left on the reflex controller** (Q18). The first
-/// leg (the squad that closes) is ported as
+/// **17b cut M4.6b — on the unit mind** (the owner's STOP B ruling of
+/// 2026-10-09: the mind's view reads `immobile` for a hull with no authored
+/// speed once its power is `Online`). The first leg (the squad that closes)
+/// was ported in 17b cut M4.5a as
 /// [`e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close`]; this
-/// residue keeps the two legs that pin `#4` with `mobility.max_speed_cms = 0`
-/// — authored zero speed, which a mind's view does not read as `immobile`
-/// (the view's `immobile` is `limits.motion_disabled` alone, the residual
-/// `stock_mind.rs`' head records), so on a mind the AA.1 witness these legs
-/// carry (a machine that cannot close enters `Engage` at `release_cm`, and
-/// the band cap still holds it) is unreachable: a parked mind would hold its
-/// fire only because it never reaches `engage_cm`, which the claims would not
-/// tell apart. They stay on the reflex — its own fielding,
-/// [`reflex_field`], with the original's tanks to the byte — until the owner
-/// decides STOP B (`immobile` from `cannot_close`), beside `tests/reflex.rs`
-/// rows 80/92/104/105 and `tests/weapons.rs`' range. The shared [`run`] it
-/// steps through now steps `step_settled`, which on this field — no mind,
-/// so no think outstanding — is `Arena::step` exactly.
+/// test keeps the two legs that pin `#4` with `mobility.max_speed_cms = 0`
+/// — authored zero speed, which until this cut a mind's view did not read as
+/// `immobile` (it was `limits.motion_disabled` alone), so the AA.1 witness
+/// these legs carry (a machine that cannot close enters `Engage` at
+/// `release_cm`, and the band cap still holds it) was unreachable on a mind
+/// and the legs stayed on the reflex as a STOP (M4.5a's Q18), fielded by
+/// the reflex's own `reflex_field`. Both legs now field [`field`]'s three
+/// minds — the presenting profile the first leg's shot needs (a mind's armed
+/// slot fires at odds) — and every claim is kept: once online, `#4`'s view
+/// reads it `immobile`, so its edge into `Engage` is `release_cm`; under the
+/// `close` order that edge is the ordered ceiling, and the target parked past
+/// it (150 m on the view) is never inside it, so `#4` never locks and never
+/// fires; with no band, the same parked mind's edge is doctrine's own reach
+/// and it fires from where it stands. As on the reflex, the claims alone do
+/// not tell the two edges apart — without the immobile reading the parked
+/// mind's edge would be `engage_cm` (8,166 cm), short of the target too, and
+/// the legs pass either way (17b cut M4.6b's check with the view's STOP B
+/// reading switched off); they are kept for the witness they carry with it.
+/// The shared [`run`] steps `step_settled`.
 #[test]
 fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
     let cfg = arena_cfg(30_000);
@@ -3284,7 +3266,7 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
     // And the same field with the same order and a target parked **past** the
     // ceiling, with nowhere to close from, never fires at all: the squad holds
     // its fire rather than shooting at the distance doctrine alone would allow.
-    let mut held = reflex_field(&cfg);
+    let mut held = field(&cfg);
     let mut held_bytes = Vec::new();
     // **16b cut M.2** (16c `T-02`): pinned BEFORE the two opening seconds, not
     // after them. The machine's own `STARTUP` resolves at its tick now, so it is
@@ -3329,7 +3311,7 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
     );
     // The control: the same parked machine with no band on its order does fire,
     // because doctrine's own ceiling is the 35,000 cm sight.
-    let mut free = reflex_field(&cfg);
+    let mut free = field(&cfg);
     let mut free_bytes = Vec::new();
     // 16b cut M.2: pinned from the start too, so the control stands where the
     // held case stands.
@@ -5408,12 +5390,14 @@ fn o3_range(cfg: &ArenaConfig, targets: Controller) -> Arena {
 /// call per red signal, and not one attributed to a target.
 ///
 /// **17b cut M4.5a — on unit minds**: red's pair and the six targets are minds
-/// — the targets as production checks them out since 17b cut M4.3 (STOP B's
-/// shape: a target's mind starts up, searches and turns in place, its authored
-/// zero speed not `immobile` on its view). Every claim holds unchanged: the
-/// silence is the arena's inert-commander clause, controller-free, and red's
-/// signals equal the seated-target baseline's — the target minds' turning moves
-/// nothing a signal carries.
+/// — the targets as production checks them out since 17b cut M4.3. Every claim
+/// holds unchanged: the silence is the arena's inert-commander clause,
+/// controller-free, and red's signals equal the seated-target baseline's —
+/// what a target's mind does moves nothing a signal carries. (Until 17b cut
+/// M4.6b a target's mind started up, searched and turned in place, its
+/// authored zero speed not `immobile` on its view; since the owner's STOP B
+/// ruling it starts up and then parks on the `Disabled` edge, closer still to
+/// the seated baseline.)
 #[tokio::test]
 async fn o3_a_range_asks_the_commander_nothing_for_its_targets() {
     use tacsim::deliberation::{SquadBrief, deliberate};

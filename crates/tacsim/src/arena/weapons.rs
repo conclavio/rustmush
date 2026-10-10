@@ -419,6 +419,11 @@ impl UnitState {
     /// (`intents.rs` refuses a heading only under `motion_disabled`); it cannot
     /// close, which is the whole of what this says.
     ///
+    /// A unit mind's view reads its `immobile` off the same two facts, the
+    /// second once the hull's power is `Online` (`Arena::mind_view`; 17b cut
+    /// M4.6b, the owner's STOP B ruling) — the pilot's frame reads the first
+    /// alone.
+    ///
     /// Not folded into `state_hash` on its own: `limits.motion_disabled` already
     /// is, and `mobility.max_speed_cms` is a constant of the custody for the
     /// whole match, like the callsign.

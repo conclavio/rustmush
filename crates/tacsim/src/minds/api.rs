@@ -22,7 +22,8 @@
 //! # Parity at the field level ([`PARITY`])
 //!
 //! D-UM-4: a mind reads exactly what the hull's keyframe
-//! (`crate::match_::cockpit::status_frame_held`) carries and nothing more. The
+//! (`crate::match_::cockpit::status_frame_held`) carries and nothing more (one
+//! field excepted since 17b cut M4.6b, below). The
 //! keyframe and the view carry the same fields at the same resolution, but
 //! not always under the same key or in the same form: the miss's reason lives
 //! only in the notice's `text`, a drive's outcome is its `kind` word, the
@@ -33,6 +34,13 @@
 //! the same field (17b §5's feas F5), and 17b cut M2.4's parity test reads
 //! every row on a live field. A getter with no row fails
 //! `every_view_getter_has_a_parity_row`.
+//!
+//! One field is not the keyframe's: since 17b cut M4.6b the view also reads
+//! a hull with no authored speed as `immobile` once its power is `Online`
+//! (the owner's STOP B ruling; doc 17 §3 and D-UM-4 as amended), where the
+//! keyframe's `immobile` reads motion disabled alone. The parity field
+//! fields no such hull, so `View.immobile`'s row still names the key of the
+//! same name.
 
 use std::sync::Arc;
 
@@ -308,6 +316,10 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     ("View", "power", "power"),
     ("View", "held", "blocked"),
     ("View", "wreck", "wreck"),
+    // Since 17b cut M4.6b the view also reads a hull with no authored speed
+    // as immobile once its power is `Online` (the owner's STOP B ruling; doc
+    // 17 §3 and D-UM-4 as amended), where the keyframe reads motion disabled
+    // alone; the parity field fields no such hull.
     ("View", "immobile", "immobile"),
     ("View", "sight_m", "sight_m"),
     (

@@ -17,16 +17,18 @@
 //! its landing one substep later. A machine's state is the doctrine word
 //! [`Arena::machine_state`] reads (the state its last landing wrote) and its
 //! target the object its mind row's `StockMemory` settled on ([`target_of`]).
-//! One residue stays on the reflex controller, **STOP K**, its claims
-//! untouched (its two hulls mustered through `Muster`'s own fields since
-//! `Muster::reflex` is gone):
-//! `e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other`
-//! — two minds of one side cross the ford without a stop, but a mind's hunt
-//! cell is never fanned in its own memory (the `fan` divergence: the motor
-//! fans the goal it lands, `Arena::fan_goal`), so the second hunter judges
-//! its arrival at the first's cell, resumes its waypoint walk and meets the
-//! first head-on at the far zone inside the four minutes; held for the cut
-//! that decides where a side's hunt cells are known.
+//! One residue stayed on the reflex controller, **STOP K**, until 17b cut
+//! M4.6b deleted it (the owner carried STOP K to M5, the loss recorded in doc
+//! 17 §24): `e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other`,
+//! the hunt fan's integration proof on the shipped ground (16b cut E.3; 16c
+//! `B-46`) — two minds of one side do not keep it, because a mind's hunt cell
+//! is never fanned in its own memory (the `fan` divergence: the motor fans the
+//! goal it lands, `Arena::fan_goal`), so the second hunter judges its arrival
+//! at the first's cell, resumes its waypoint walk and meets the first head-on
+//! at the far zone inside the four minutes. The fan itself stays pinned at
+//! motor level (`tests/motor.rs`' `m1a4_the_fan_keeps_two_same_side_goals_apart_in_a_far_zone`,
+//! `arena::motor`'s `ai1_the_hunters_of_one_side_are_handed_clear_cells`) and
+//! the divergence stays counted by the twin's `fan` counter (`tests/twin.rs`).
 
 mod support;
 
@@ -590,122 +592,6 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
         assert_eq!(unit.fight_inner_cm(1_000), 60_000);
         assert_eq!(unit.fight_limit_cm(1_000), 60_000);
     }
-}
-
-/// **Two machines of one side cross the shipped ford in column and stop each
-/// other nowhere** (16b cut E.3; 16c `B-46`).
-///
-/// The proving ground has one ford on the east-west road, which is where every
-/// solo match crosses and the one place a column is forced nose to tail. Before
-/// this cut the follower was stopped dead at the cells its leader had not
-/// vacated, journalled a `blocked` line for each, and learned to avoid the cells
-/// its own leader was standing in — on the one piece of ground the whole match
-/// has to use.
-///
-/// Red slots 1 and 2 at their authored musters, both on the machine, no hostiles
-/// at all, four minutes of arena time: whatever the two of them do, neither is
-/// ever stopped by the other, and neither remembers a cell the other was in.
-///
-/// **16b cut E.4 made this bite harder without touching an assertion.** With
-/// nothing hostile ever held, both machines now cross to Blue's entry zone at
-/// `hunt_after_ms` — together, within a second of each other, which is the
-/// deliberate un-staggered hunt — so the run really is a two-machine column on
-/// the one piece of ground the match has to use, and the east-most reading moved
-/// from 130,288 cm to 238,528 cm. `far_entry_cell`'s clamp keeps each of them on
-/// its own row; the two claims below are what says the pair of rules works.
-///
-/// **16b cut AI.1 (16c `B-84`) moved what this test proves, again without
-/// touching an assertion.** Before AI.1 the pass was partly the orbit's: the two
-/// machines wandered off the road row as they circled their route cells. With
-/// the orbit gone both drive road row 97 to the far zone and the clamp hands
-/// them **one** cell, so the first there turns back into the second — four
-/// `Occupied` stops between 231,750 and 234,750 ms. By the programme lead's
-/// ruling the property stands and doctrine was corrected: `far_entry_cell`'s
-/// fan keeps a hunter's cell `HUNT_FAN_ROWS` clear of every hunt cell its side
-/// already holds, so the second machine is fanned off the first's row. This
-/// test is that fan's integration proof on the shipped ground; the clamp alone
-/// no longer passes it.
-#[test]
-fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
-    let world = booted_world();
-    let mut arena = shipped_arena(
-        &world,
-        // 17b cut M4.5a: `Muster::reflex` is gone; the STOP K residue keeps
-        // its reflex hulls through the struct's own fields (a mechanical
-        // stand-in, no claim moved).
-        &[&[
-            Muster {
-                controller: tacsim::arena::state::Controller::Reflex,
-                ..Muster::mind(Team::Red, 1)
-            },
-            Muster {
-                controller: tacsim::arena::state::Controller::Reflex,
-                ..Muster::mind(Team::Red, 2)
-            },
-        ]],
-    );
-    let one = support::tank(&world, Team::Red, 1);
-    let two = support::tank(&world, Team::Red, 2);
-    let opened = arena
-        .units
-        .iter()
-        .map(|unit| unit.pose.x_cm)
-        .collect::<Vec<i64>>();
-    // Every cell either machine ever remembered being stopped at, and the extent
-    // of the ground they covered. The remembered cells age out after
-    // `REFLEX_AVOID_TTL_MS`, so this is the union over the run.
-    let mut learned: Vec<(mush_core::ObjId, (u16, u16))> = Vec::new();
-    let mut east_most = 0_i64;
-    let mut bytes = run_until(&mut arena, 240_000, 1_000, |arena, _out| {
-        for id in [one, two] {
-            // 17b cut M1a.1: the avoid list is the hull's motor row's.
-            let Some(row) = arena.motors.row(id) else {
-                continue;
-            };
-            for (cell, _) in &row.avoid {
-                if !learned.contains(&(id, *cell)) {
-                    learned.push((id, *cell));
-                }
-            }
-        }
-        east_most = east_most.max(
-            arena
-                .units
-                .iter()
-                .map(|unit| unit.pose.x_cm)
-                .max()
-                .unwrap_or(0),
-        );
-    });
-    let log = ledger_events(&mut arena, &mut bytes);
-    let stops: Vec<(i64, Option<mush_core::ObjId>)> = log
-        .iter()
-        .filter(|event| event.kind.as_str() == "blocked")
-        .map(|event| (event.t_ms, support::unit_of_event(event)))
-        .collect();
-    println!(
-        "e3_shipped_column: opened at {opened:?} cm, east-most {east_most} cm, \
-         {} stops, remembered {learned:?}",
-        stops.len()
-    );
-    assert!(
-        stops.is_empty(),
-        "the two machines stopped each other on the shipped ground: {stops:?}"
-    );
-    assert!(
-        learned.is_empty(),
-        "a machine learned to avoid a cell on the one road the match has to use: {learned:?}"
-    );
-    // And they really did drive: a run in which nothing moved would pass the two
-    // assertions above and prove nothing.
-    assert!(
-        arena.units.iter().any(|unit| {
-            opened
-                .iter()
-                .all(|from| (unit.pose.x_cm - *from).abs() > 10_000)
-        }),
-        "neither machine went anywhere, so the ford was never crossed"
-    );
 }
 
 // ---------------------------------------------------------------------------

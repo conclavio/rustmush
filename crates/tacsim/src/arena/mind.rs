@@ -1199,6 +1199,11 @@ pub fn decode_memory(bytes: &[u8]) -> Memory {
 /// `armed` slot since the same cut.
 /// `team` is the keyframe's callsign letter read as a side. The only object
 /// number in it is the hull's own.
+///
+/// **One field is not the keyframe's** (17b cut M4.6b; doc 17 §3 and D-UM-4
+/// as amended 2026-10-09, the owner's STOP B ruling): [`MindView::immobile`]
+/// reads a hull authored with no speed as immobile once its power is
+/// `Online`, where the keyframe's `immobile` is its motion disabled alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MindView {
     /// The hull's own object number (the keyframe's `unit`).
@@ -1225,7 +1230,14 @@ pub struct MindView {
     pub held: bool,
     /// Whether it is a wreck (`wreck`).
     pub wreck: bool,
-    /// Whether its motion is disabled (`immobile`).
+    /// **Whether it cannot close** (`immobile`): its motion disabled — the
+    /// keyframe's `immobile` — or, since 17b cut M4.6b (the owner's STOP B
+    /// ruling, 2026-10-09, "power up, then park"), a hull authored with no
+    /// speed (`max_speed_cms` nought, the range's `target_mk1`) whose power
+    /// is `Online`. Cold or starting, such a hull reads as the keyframe does,
+    /// so its first thinks take the power arm. The one field where the view
+    /// is not the keyframe (doc 17 §3, D-UM-4 as amended); the pilot's frame
+    /// is untouched.
     pub immobile: bool,
     /// Its own nominal sight, whole metres (`sight_m`).
     pub sight_m: u64,
@@ -1561,9 +1573,36 @@ impl Arena {
     /// most the frame's two (D-UM-4: a tier never extends the keyframe). At
     /// `odds_rows == 0` (Class 0, the ROM) only the hull's lock row keeps its
     /// odds.
+    ///
+    /// **`immobile`** (17b cut M4.6b; doc 17 §3 and D-UM-4 as amended
+    /// 2026-10-09, the owner's STOP B ruling in its "power up, then park"
+    /// form): `frame.immobile || (no authored speed && power Online)` — the
+    /// keyframe's motion-disabled flag, or a hull whose `max_speed_cms` is
+    /// nought once its power is `Online`. A cold `target_mk1` (no weapon, no
+    /// speed, power `off` at check-out) therefore reads mobile while `Off`
+    /// and `Starting`, takes the stock mind's power arm (`STARTUP`) and comes
+    /// online; its first think after reads `immobile` with no weapon rows,
+    /// which is the `Disabled` edge, and it parks — the reflex's inert rule's
+    /// "start up, then park". An armed hull authored with no speed reads
+    /// `cannot_close` once online, so its edge into `Engage` is `release_cm`
+    /// (16b cut AA.1). The frame (`Arena::frame_for`), the keyframe and the
+    /// pilot are untouched: this is the view's one field that is not the
+    /// keyframe's, read here and nowhere else.
     pub fn mind_view(&mut self, unit: ObjId) -> Option<MindView> {
         let profile = self.mind_profile(unit);
         let frame = self.frame_for(unit, self.clock.tempo())?;
+        // 17b cut M4.6b (the owner's STOP B ruling, 2026-10-09, in its "power
+        // up, then park" form): the MIND reads `immobile` for a hull authored
+        // with no speed too — once its power is `Online`, so a cold range
+        // target's first thinks still take the power arm (`STARTUP`) and only
+        // then read it immobile (a weaponless one: `Disabled`, parked). The
+        // pilot's frame keeps `limits.motion_disabled` alone (`frame_for`);
+        // this is the one view field that is not the keyframe's.
+        let immobile = frame.immobile
+            || (frame.power == Power::Online
+                && self
+                    .unit(unit)
+                    .is_some_and(|state| state.mobility.max_speed_cms == 0));
         let lock = crate::arena::view::frame_lock(&frame);
         let state = self.minds.get_mut(&unit)?;
         let mut rows: Vec<ContactRow> =
@@ -1658,7 +1697,7 @@ impl Arena {
             power: frame.power,
             held: frame.held,
             wreck: frame.wreck,
-            immobile: frame.immobile,
+            immobile,
             sight_m: u64::from(frame.sight_cm / 100),
             ecm: frame.ecm,
             receiver: frame.receiver,
@@ -2274,7 +2313,10 @@ impl Arena {
     ///    and never recomputed;
     /// 4. a standing order whose deadline has come is cleared, with one
     ///    `order_expired` line journalled by the arena and the squad marked for
-    ///    its next signal, as the reflex controller's expiry does;
+    ///    its next signal, as the reflex controller's expiry does — and
+    ///    (17b cut M4.6b, the owner's STOP E ruling) so is a `Support` whose
+    ///    charge has left the match ([`Arena::end_mind_support_whose_charge_left`]),
+    ///    as the reflex controller's end for a charge gone did;
     /// 5. the intents go through `Arena::apply_machine_intents` under
     ///    [`IntentSource::Mind`] at the epochs the think recorded — a channel
     ///    raised since refuses its stale thoughts `Epoch` with no code here —
@@ -2337,6 +2379,10 @@ impl Arena {
         state.doctrine_state = doctrine_state_of(&state.memory);
         let intents = std::mem::take(&mut answer.intents);
         self.expire_mind_order(unit, t_ms, counters);
+        // 17b cut M4.6b (the owner's STOP E): a `Support` whose charge has
+        // left the match, ended beside the expiry — after it, so one landing
+        // journals at most one end for its one order.
+        self.end_mind_support_whose_charge_left(unit, t_ms, counters);
         let epoch_of = |channel: Channel| answer.epoch(channel);
         let landed = self.apply_machine_intents(
             unit,
@@ -2481,6 +2527,80 @@ impl Arena {
         else {
             return;
         };
+        self.end_mind_order(unit, &order, t_ms, counters);
+    }
+
+    /// **A mind's `Support` whose charge has left the match** (17b cut M4.6b;
+    /// the owner's STOP E ruling, 2026-10-09, "the arena ends it"): ended at
+    /// the supporter's landing, beside [`Arena::expire_mind_order`] and after
+    /// it, with the reflex controller's own end for a charge gone — ONE
+    /// `order_expired` line of that line's exact shape (`support`, the
+    /// order's squad) under the substep's lazy hash, `orders_expired`
+    /// counted, the squad marked.
+    ///
+    /// The order names its charge only as the supporter's own row
+    /// (`MindObjective::Support { of }`, re-keyed when the order landed), so
+    /// the charge is "gone" when that row of the supporter's contact store
+    /// still stands and the unit it holds is no longer in [`Arena::units`].
+    /// It reads only hashed state and writes only when it ends: the filter
+    /// runs FIRST and [`Arena::event_hash`] is taken only once it has passed
+    /// — taken unconditionally it would fill the landing's lazy `Pending`
+    /// slot and move every later line's hash in the substep. A charge that is
+    /// a wreck, or that the supporter's own row reads dead, ends nothing
+    /// here: a mind stops obeying that order on its own (the `order_end`
+    /// divergence, doc 17 §17), and the arena keeps it standing.
+    ///
+    /// **Two residuals** (doc 17 §24, 2026-10-10): a `Support` landed with
+    /// `of: None` — the supporter did not hold its charge classified when the
+    /// order landed — names no row, so it is not ended when its charge leaves
+    /// (it stands blind until `expires_ms`; the reflex's order named the
+    /// object and ended it); and the end needs the supporter's row for its
+    /// charge still in its store at the landing, so a supporter blind to its
+    /// charge for a contact TTL when the charge leaves is not ended and
+    /// stands blind until `expires_ms` — reachable at the stock figures (the
+    /// blind stand of `t1_a_support_keeps_station_and_stands_blind`); a class
+    /// whose think period exceeds the TTL misses it the same way; latent in
+    /// production, where no path removes a unit from the match; the remedy is
+    /// the first residual's, the charge's `ObjId` on the order (decision
+    /// state: hashed and carried), carried to M5.
+    fn end_mind_support_whose_charge_left(
+        &mut self,
+        unit: ObjId,
+        t_ms: i64,
+        counters: &mut MotorCounters,
+    ) {
+        let Some(order) = self
+            .minds
+            .get(&unit)
+            .and_then(|state| state.order.as_ref())
+            .filter(|order| match order.objective {
+                MindObjective::Support { of: Some(of) } => self
+                    .contacts
+                    .get(unit, of)
+                    .is_some_and(|held| self.unit(held.target).is_none()),
+                _ => false,
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.end_mind_order(unit, &order, t_ms, counters);
+    }
+
+    /// **The arena's end of a mind's standing order** — the half
+    /// [`Arena::expire_mind_order`] and
+    /// [`Arena::end_mind_support_whose_charge_left`] share, each calling it
+    /// only once its own filter has passed: the substep's lazy hash taken
+    /// here and not before, the row's order cleared, `orders_expired`
+    /// counted, ONE `order_expired` line at `t_ms` naming the order's squad
+    /// and objective word, and the squad marked for its next signal.
+    fn end_mind_order(
+        &mut self,
+        unit: ObjId,
+        order: &FrameOrder,
+        t_ms: i64,
+        counters: &mut MotorCounters,
+    ) {
         let hash = self.event_hash();
         if let Some(state) = self.minds.get_mut(&unit) {
             state.order = None;
@@ -3151,7 +3271,12 @@ mod tests {
     /// keyframe's resolution with its `aspect`, `odds`, `reads_dead`,
     /// `condition` and `fatal` the frame's. The view names no object but its
     /// own number, and a hidden unit's live move changes nothing in it until a
-    /// pass.
+    /// pass. (**Since 17b cut M4.6b** one own field is not the keyframe's on
+    /// a hull authored with no speed: `immobile`, once online — the owner's
+    /// STOP B ruling, pinned by
+    /// `m4_6b_a_hull_authored_with_no_speed_reads_immobile_on_the_view_once_online`.
+    /// The laser tank here is authored with speed, so its `immobile`
+    /// assertion holds unmodified.)
     #[test]
     fn m1a5_the_view_is_the_keyframe() {
         use crate::arena::condition::{Condition, ConditionBand, Reading};
@@ -3564,6 +3689,80 @@ mod tests {
             again.contacts, view.contacts,
             "a live pose leaked into the view"
         );
+    }
+
+    /// **17b cut M4.6b — the one view field that is not the keyframe's** (doc
+    /// 17 §3 and D-UM-4 as amended 2026-10-09, the owner's STOP B ruling in
+    /// its "power up, then park" form): a mind on a hull authored with no
+    /// speed (`max_speed_cms` nought, its motion NOT disabled — the range's
+    /// `target_mk1` shape) reads `immobile` on its view once its power is
+    /// `Online`, and not while it is `Off` or `Starting`, so its first thinks
+    /// take the power arm; the keyframe built off the same frame reads it
+    /// mobile at every power — the pilot's picture is untouched. A hull whose
+    /// motion is disabled reads `immobile` on both at every power, and a hull
+    /// with speed and motion reads mobile on both.
+    #[test]
+    fn m4_6b_a_hull_authored_with_no_speed_reads_immobile_on_the_view_once_online() {
+        use crate::arena::test_support::laser_tank;
+        use crate::match_::cockpit::status_frame_held;
+        let mut red = laser_tank(RED, Team::Red, pose(1_500, 1_500));
+        red.controller = Controller::Mind;
+        red.mobility.max_speed_cms = 0;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
+        let mut arena = wide(vec![red]);
+        // (the keyframe's `immobile`, the view's) at the arena as it stands.
+        let read = |arena: &mut Arena| -> (bool, bool) {
+            let ranges = arena
+                .minds
+                .get(&RED)
+                .map(|state| state.ranges.clone())
+                .unwrap_or_default();
+            let Some(frame) = arena.frame_for(RED, arena.clock.tempo()) else {
+                panic!("a frame");
+            };
+            let keyframe = status_frame_held(crate::arena_task::MatchId(1), &frame, &ranges);
+            let Some(view) = arena.mind_view(RED) else {
+                panic!("a view");
+            };
+            let Some(keyed) = keyframe
+                .get("immobile")
+                .and_then(serde_json::Value::as_bool)
+            else {
+                panic!("the keyframe's `immobile`: {keyframe:?}");
+            };
+            (keyed, view.immobile)
+        };
+        let powers = [Power::Off, Power::Starting, Power::Online];
+        for power in powers {
+            if let Some(state) = arena.unit_mut(RED) {
+                state.power = power;
+            }
+            assert_eq!(
+                read(&mut arena),
+                (false, power == Power::Online),
+                "no authored speed at {power:?}: the keyframe mobile, the view immobile once online"
+            );
+        }
+        // Motion disabled: immobile on both, at every power.
+        for power in powers {
+            if let Some(state) = arena.unit_mut(RED) {
+                state.power = power;
+                state.limits.motion_disabled = true;
+            }
+            assert_eq!(
+                read(&mut arena),
+                (true, true),
+                "motion disabled at {power:?}"
+            );
+        }
+        // Speed and motion: mobile on both, online.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.power = Power::Online;
+            state.limits.motion_disabled = false;
+            state.mobility.max_speed_cms = 1_000;
+        }
+        assert_eq!(read(&mut arena), (false, false), "a hull that can close");
     }
 
     /// **A Class 0 mind among a held field** (17b cut M4.5c's fixture): the

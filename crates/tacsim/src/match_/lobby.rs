@@ -2605,9 +2605,13 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         };
         for team in Team::ALL {
             // **16b cut O.3**: the targets' side is its pods 1 to `n`, each a
-            // `Fielded` with **no seated pilot** — which is what makes a unit the
-            // reflex controller's (`crate::match_::start`), so a target starts up
-            // and stands (the inert rule in `reflex.rs`) — and it is never empty:
+            // `Fielded` with **no seated pilot** — which is what makes a unit a
+            // machine's (`crate::match_::start`: a unit mind's since 17b cut
+            // M4.3, the reflex controller's before), so a target starts up and
+            // then parks (17b cut M4.6b, the owner's STOP B ruling: once online
+            // its mind's view reads a hull with no authored speed `immobile`,
+            // and with no weapon that is Standard Doctrine's `Disabled` edge —
+            // the reflex's inert rule's "start up, then stand") — and it is never empty:
             // a missing tank is the broken world `SimError::NoUnit` names, as for
             // a claimed slot. Neither `EmptySide` refusal below reads it.
             if let Some((targets, count)) = range

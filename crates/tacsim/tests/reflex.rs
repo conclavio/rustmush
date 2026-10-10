@@ -37,9 +37,24 @@
 //! tests, each doc saying what moved and why); the fixtures that were about the
 //! drive and not the machine — (f), the ford, the column, the brake, AI.1 —
 //! moved to `tests/motor.rs` under a scripted mind's goals; the edges a stock
-//! mind cannot reach yet stay here on the reflex, untouched, as STOPs (A to G,
-//! named in the doc of the `t1_*` port beside them or in the cut's record),
-//! until the cut that decides them.
+//! mind could not reach stayed here on the reflex, untouched, as STOPs (named
+//! in the doc of the `t1_*` port beside them or in the cut's record), until
+//! the cut that decided them.
+//!
+//! **17b cut M4.6b decided them, under the owner's rulings of 2026-10-09.**
+//! STOP B's residues (the hull authored with no speed, the supporter that
+//! cannot close, the inert target twice) and STOP E's (the charge that leaves)
+//! are ported onto minds as `t1_*` tests: the mind's view reads a hull with no
+//! authored speed `immobile` once its power is `Online`, and the arena ends a
+//! `Support` whose charge has left the match at the supporter's landing. The
+//! residues of the STOPs the owner carried to M5 are deleted, each loss and
+//! any mirror that remains recorded in doc 17 §24: A (the Hold match: the
+//! O.1 fixtures and the drone in a Hold match), D (a supporter preferring its
+//! charge's target), F (a placed machine re-plans), G (a wreck's motor row
+//! forgotten) and J (a round stopped by the ground re-plans the machine). The
+//! one reflex fielding left here is STOP C's
+//! `y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander`,
+//! which rides 17b cut M4.6c with the order's issuer.
 //!
 //! Since 17b cut M1b.0 the (j) field's every ledger line is pinned with its
 //! hash as well, as it was at `e23694b0` (`m1b0_the_production_line_hashes_do_not_move`):
@@ -70,12 +85,12 @@ use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::intents::{Control, ControlState};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
-    Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
-    CustodyUnit, EntryZone, Pilot, Power, ShadowContact, Team, TerrainCell, TrackedRules, Waypoint,
-    Waypoints, WeaponSummary,
+    Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyUnit,
+    EntryZone, Power, ShadowContact, Team, TerrainCell, TrackedRules, Waypoint, Waypoints,
+    WeaponSummary,
 };
 use tacsim::arena::weapons::WeaponBand;
-use tacsim::config::{ArenaConfig, ReflexConfig, SensorsConfig};
+use tacsim::config::{ArenaConfig, ReflexConfig};
 
 /// **Step 500 ms at a time with every think settled** (17b cut M4.4): the
 /// rig's `run` over [`Arena::step_settled`], so a think the pulse's last
@@ -102,10 +117,14 @@ fn run_settled(
 }
 
 /// **Step 500 ms at a time until the machine flying `unit` reads `state`**
-/// (17b cut M4.4: `e4_run_until_state` keyed on `Arena::machine_state` — a
-/// mind's cached doctrine state, written at its landing), answering whether
-/// it got there inside `limit_ms` of arena time. The pulses are read as they
-/// go, for the reason `e4_run_until_state` gives.
+/// (17b cut M4.4: the reflex-keyed `e4_run_until_state`, deleted with its
+/// last user in 17b cut M4.6b, keyed on `Arena::machine_state` — a mind's
+/// cached doctrine state, written at its landing), answering whether it got
+/// there inside `limit_ms` of arena time. The pulses are read as they go: a
+/// claim about *the tick after an edge* cannot be made on the state a
+/// ten-second run ends in — the machine searched, arrived and went back to
+/// its walk while the run was still going, and the run's last pulse says only
+/// the last of those — exactly as `tests/shipped_scale.rs` reads its own.
 fn t1_run_until_machine_state(
     arena: &mut Arena,
     unit: ObjId,
@@ -579,9 +598,11 @@ fn t1_under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
 /// motor row keeps what the last tick left (nothing drives it: the tick is
 /// not run for a wreck and not rescheduled) — **STOP G**: the original's
 /// `goal == None` and empty route were the reflex's own reset on its
-/// `Disabled` edge, which nothing does for a mind, so they stay on the
-/// reflex in `a_wreck_and_a_disabled_tank_order_nothing_at_all`, untouched,
-/// until 17b cut M4.6 decides where a wreck's motor row is forgotten. **(2)
+/// `Disabled` edge, which nothing does for a mind; they stayed on the reflex
+/// in `a_wreck_and_a_disabled_tank_order_nothing_at_all` until 17b cut M4.6b
+/// deleted that residue (the owner carried STOP G to M5: a mind's wreck keeps
+/// its motor goal and route as its last tick left them, recorded in doc 17
+/// §24), and this test is the claim's remaining mirror. **(2)
 /// The reflex's hand-set
 /// `disabled = true` half is unreachable as written** — `UnitState::disabled`
 /// is not on the view; the stock mind's `Disabled` edge reads
@@ -704,51 +725,6 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
         "the `Disabled` edge resets every key"
     );
     assert_eq!(stock_memory_of(&arena, RED).state, MachineState::Disabled);
-}
-
-#[test]
-fn a_wreck_and_a_disabled_tank_order_nothing_at_all() {
-    let mut arena = arena_of(
-        vec![tank(
-            RED,
-            Team::Red,
-            centre(6, 8),
-            vec![cannon()],
-            Controller::Reflex,
-        )],
-        &[],
-        &arena_cfg(reflex_cfg()),
-        &[],
-    );
-    let mut bytes: Vec<u8> = Vec::new();
-    run(&mut arena, 2_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(MachineState::Patrol));
-
-    if let Some(state) = arena.unit_mut(RED) {
-        state.limits.wreck = true;
-        state.desired_speed_cms = 0;
-        state.speed_cms = 0;
-    }
-    let counters = run(&mut arena, 6_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(MachineState::Disabled));
-    assert_eq!(
-        counters.intents, 0,
-        "a wreck is not the subject of an order"
-    );
-    assert_eq!(counters.shots, 0);
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
-    let drive = motor(&arena, RED);
-    assert_eq!((drive.goal, row.target), (None, None));
-    assert!(drive.route.is_empty());
-
-    // The same for a tank that is merely disabled.
-    if let Some(state) = arena.unit_mut(RED) {
-        state.limits.wreck = false;
-        state.disabled = true;
-    }
-    let counters = run(&mut arena, 9_000, &mut bytes);
-    assert_eq!(state_of(&arena, RED), Some(MachineState::Disabled));
-    assert_eq!(counters.intents, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -3009,45 +2985,6 @@ fn coaxial() -> WeaponSummary {
     }
 }
 
-/// A machine with the cannon and a ten-cell sight, and a target tank with
-/// nothing, on `paint`ed ground.
-fn duel(red: (u16, u16), blue: (u16, u16), paint: &[(u16, u16, TerrainCell)]) -> Arena {
-    duel_with(vec![cannon()], red, blue, paint)
-}
-
-/// The same with a named armament.
-fn duel_with(
-    weapons: Vec<WeaponSummary>,
-    red: (u16, u16),
-    blue: (u16, u16),
-    paint: &[(u16, u16, TerrainCell)],
-) -> Arena {
-    arena_of(
-        vec![
-            with_sight(
-                tank(
-                    RED,
-                    Team::Red,
-                    centre(red.0, red.1),
-                    weapons,
-                    Controller::Reflex,
-                ),
-                SIGHT_CELLS,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(blue.0, blue.1),
-                Vec::new(),
-                Controller::Pilot,
-            ),
-        ],
-        paint,
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    )
-}
-
 /// The range from `unit`'s pose to `target`'s plot, centimetres.
 fn plot_range(arena: &Arena, unit: ObjId, target: ObjId) -> i64 {
     let Some(state) = arena.unit(unit) else {
@@ -3056,8 +2993,10 @@ fn plot_range(arena: &Arena, unit: ObjId, target: ObjId) -> i64 {
     i64::try_from(plot_of(arena, target).range_from(&state.pose)).unwrap_or(i64::MAX)
 }
 
-/// **[`duel_with`] on the unit mind** (17b cut M4.4, for cut E.1's ported
-/// fixtures): the machine's tank a mind seeing `sight` cells, the target tank
+/// **A machine with a named armament and a target tank with nothing, on the
+/// unit mind** (17b cut M4.4, for cut E.1's ported fixtures; the reflex
+/// fielding beside it, `duel_with`, went with its last user in 17b cut
+/// M4.6b): the machine's tank a mind seeing `sight` cells, the target tank
 /// presenting every band ([`presenting`]) — a mind's armed slot fires at
 /// odds, and a default profile presents none — on `paint`ed ground.
 fn t1_e1_duel_with(
@@ -3093,7 +3032,8 @@ fn t1_e1_duel_with(
     )
 }
 
-/// [`duel`] on the unit mind: the cannon at [`SIGHT_CELLS`].
+/// [`t1_e1_duel_with`] with the cannon at [`SIGHT_CELLS`] (the reflex's
+/// `duel`, on the unit mind).
 fn t1_e1_duel(red: (u16, u16), blue: (u16, u16), paint: &[(u16, u16, TerrainCell)]) -> Arena {
     t1_e1_duel_with(vec![cannon()], red, blue, paint, SIGHT_CELLS)
 }
@@ -3681,14 +3621,16 @@ fn t1_a_withdrawal_stands_for_what_is_close_on_the_way_out_and_for_anything_at_h
 /// `T-32`).
 ///
 /// **17b cut M4.5a** (Q27; was `e1_t32_…`, a keep row of 17b cut M4.4): the
-/// machine is a unit mind, fielded by the test's own builder below — [`duel`]
-/// itself stays on the reflex for STOP B's
-/// `aa1_a_hull_authored_with_no_speed_engages_the_same_way`. Nothing is stepped,
+/// machine is a unit mind, fielded by the test's own builder below — the
+/// reflex's `duel` stayed on the reflex for STOP B's
+/// `aa1_a_hull_authored_with_no_speed_engages_the_same_way` until 17b cut
+/// M4.6b ported it (`t1_a_hull_authored_with_no_speed_engages_the_same_way`)
+/// and deleted `duel`. Nothing is stepped,
 /// so no think runs and the controller is no input to either claim: the alert
 /// range is derived in `Arena::new`, and `hostile_in_weapons_range` walks every
-/// unit by its `fight_inner_cm` and its held contacts. The field is
-/// [`duel`]'s exactly (the cannon at [`SIGHT_CELLS`], a target tank with the
-/// default profile), every constant and claim unchanged.
+/// unit by its `fight_inner_cm` and its held contacts. The field is the
+/// reflex `duel`'s exactly (the cannon at [`SIGHT_CELLS`], a target tank with
+/// the default profile), every constant and claim unchanged.
 #[test]
 fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
     // The sixteen-cell window of 1,000 cm cells: `isqrt(16² + 16²)` is 22, so
@@ -5520,8 +5462,9 @@ fn e4_cfg(search_ms: u32, hunt_after_ms: u32) -> ArenaConfig {
 /// What makes a pulse of these tests one decide tick is **not** this pin: a
 /// pulse's `dt` is the wall interval (`Clock::advance`, clamped only by
 /// `max_catch_up_steps` periods of the current tempo, which every tempo's
-/// period clears), and [`run`], [`e4_run_until_state`] and
-/// `e4_run_until_hunt` (retired by the T1 ports) all step the wall 500 ms at a time — which is
+/// period clears), and [`run`], `e4_run_until_state` (deleted in 17b cut
+/// M4.6b) and `e4_run_until_hunt` (retired by the T1 ports) all step the wall
+/// 500 ms at a time — which is
 /// [`reflex_cfg`]'s own `decide_ms` — so one pulse is one decision at any
 /// tempo. The pin only keeps the tempo's own transitions (and their `tempo`
 /// ledger lines) out of the fixture, so the log a test reads is the machine's
@@ -5530,30 +5473,6 @@ fn e4_cfg(search_ms: u32, hunt_after_ms: u32) -> ArenaConfig {
 fn e4_pinned(mut arena: Arena) -> Arena {
     arena.clock.pin_tempo_for_tests(Tempo::Engaged);
     arena
-}
-
-/// The same two units, so a test that needs its own [`ArenaDefinition`] fields
-/// them through [`arena_on`].
-fn e4_units(red: (u16, u16), blue: (u16, u16), weapons: Vec<WeaponSummary>) -> Vec<CustodyUnit> {
-    vec![
-        with_sight(
-            tank(
-                RED,
-                Team::Red,
-                centre(red.0, red.1),
-                weapons,
-                Controller::Reflex,
-            ),
-            E4_SIGHT_CELLS,
-        ),
-        tank(
-            BLUE,
-            Team::Blue,
-            centre(blue.0, blue.1),
-            Vec::new(),
-            Controller::Pilot,
-        ),
-    ]
 }
 
 /// The fixture window with a named set of entry zones.
@@ -5614,37 +5533,6 @@ fn waypoint_cells() -> Vec<(u16, u16)> {
     vec![(1, 8), (14, 8)]
 }
 
-/// **Step 500 ms at a time until `unit`'s machine is in `state`**, answering
-/// whether it got there inside `limit_ms` of arena time.
-///
-/// A claim about *the tick after an edge* cannot be made on the state a
-/// ten-second run ends in: the machine searched, arrived and went back to its
-/// walk while the run was still going, and the run's last pulse says only the
-/// last of those. So the pulses are read as they go, exactly as
-/// `tests/shipped_scale.rs` reads its own.
-fn e4_run_until_state(
-    arena: &mut Arena,
-    unit: ObjId,
-    state: MachineState,
-    limit_ms: i64,
-    bytes: &mut Vec<u8>,
-) -> bool {
-    let until = arena.now_ms.saturating_add(limit_ms);
-    let mut wall = arena.now_ms;
-    while arena.now_ms < until {
-        let out = arena.step(wall, &[], &[]);
-        absorb(&out, bytes);
-        if state_of(arena, unit) == Some(state) {
-            return true;
-        }
-        if out.ended.is_some() {
-            break;
-        }
-        wall += 500;
-    }
-    false
-}
-
 // ---------------------------------------------------------------------------
 // 17b cut M4.4 — the endgame on the unit mind (the e4 family's T1 rig)
 // ---------------------------------------------------------------------------
@@ -5682,7 +5570,8 @@ const T1_E4_ENGAGE_CM: i64 = 5_600;
 /// stands, and the guards stay live by the margin they were written with.
 const T1_SEARCH_START: (u16, u16) = (1, 8);
 
-/// `e4_units` on the unit mind: the red hull a `Controller::Mind` seeing
+/// The reflex's `e4_units` (deleted with its last user in 17b cut M4.6b) on
+/// the unit mind: the red hull a `Controller::Mind` seeing
 /// [`T1_E4_SIGHT_CELLS`] (`seeing` re-seals it), the blue one the parked
 /// pilot tank it was.
 fn t1_e4_units(red: (u16, u16), blue: (u16, u16), weapons: Vec<WeaponSummary>) -> Vec<CustodyUnit> {
@@ -5843,8 +5732,9 @@ fn t1_run_until_unordered(
 }
 
 /// **A squad's order delivered through the arena's step** (17b cut M4.4).
-/// `e4_order` wrote the reflex row (`ReflexMemory::set_order`, which has no
-/// mind arm); a mind's order is an `IntentKind::Order` through
+/// The reflex fixtures' `e4_order` (deleted with its last user in 17b cut
+/// M4.6b) wrote the reflex row (`ReflexMemory::set_order`, which has no mind
+/// arm); a mind's order is an `IntentKind::Order` through
 /// `apply_intent`'s Mind arm — re-keyed to the hull's own rows at the write
 /// (D-UM-15) and ended by the arena at the landing that reaches its
 /// `expires_ms`, with `order_expired` journalled — as `tests/minds.rs`'
@@ -6738,47 +6628,6 @@ fn t1_an_island_hunt_cell_costs_one_failed_search_per_clock() {
     );
 }
 
-/// Write an `Advance { to }` for `unit`'s squad onto its machine, live for
-/// `ttl_ms` from now.
-fn e4_advance(arena: &mut Arena, unit: ObjId, to: (u16, u16), ttl_ms: u32) {
-    e4_order(
-        arena,
-        unit,
-        tacsim::deliberation::Objective::Advance { to },
-        ttl_ms,
-    );
-}
-
-/// Write `objective` for `unit`'s squad onto its machine, live for `ttl_ms`
-/// from now.
-fn e4_order(
-    arena: &mut Arena,
-    unit: ObjId,
-    objective: tacsim::deliberation::Objective,
-    ttl_ms: u32,
-) {
-    let squad = arena
-        .squad_of(unit)
-        .map(|roster| roster.id)
-        .expect("one reflex machine is a squad of one");
-    let told = tacsim::deliberation::Order {
-        squad,
-        objective,
-        target: None,
-        horizon_ms: ttl_ms,
-        constraints: tacsim::deliberation::Constraints::default(),
-        ttl_ms,
-        issued_ms: arena.now_ms,
-        issuer: None,
-        by: author(squad, None),
-        spot: None,
-    };
-    arena.reflex.set_order(
-        unit,
-        tacsim::deliberation::StandingOrder::accepted(told, arena.now_ms),
-    );
-}
-
 /// **17b cut M4.4 — a movement order outranks both clocks, and neither
 /// clock's goal survives it, on the unit mind** (16b cut E.4, on 16b cut
 /// N.2's order steering).
@@ -7276,117 +7125,6 @@ fn t1_the_search_and_the_hunt_are_one_log_at_three_cadences() {
 // `T-42` — three properties the code claimed and no test held
 // ---------------------------------------------------------------------------
 
-/// **The curtain of `curtain`, with the machine's own row left open.**
-///
-/// [`curtain`] walls every row of column 9, which seals the window in two: a
-/// machine west of it could never drive at a plot east of it, and the far
-/// waypoint would be a node no route reaches. Row 0 is left open, which is a
-/// way round and **not** a way through: the line from row 8 to row 8 still
-/// crosses (9, 8), so the wall stops the sight and nothing else, which is what
-/// the edge is about.
-fn curtain_with_a_gap() -> Vec<(u16, u16, TerrainCell)> {
-    curtain().into_iter().filter(|(_, y, _)| *y != 0).collect()
-}
-
-/// **The `no line` edge** (doc 16 §6; 16c `T-42`): a round of the machine's own
-/// stopped by the ground re-plans it.
-///
-/// No test in the tree reached [`Arena::note_no_line`] before this one. The
-/// machine holds the band on a pilot tank; the pilot drives behind a wall and
-/// the contact lives another three seconds, so the machine still believes in
-/// the plot and fires at it. The round is accepted, traced, and stopped: the
-/// black box records a miss whose reason is `blocked`, `damage`'s re-validation
-/// calls `note_no_line`, and the next tick throws the goal away, falls out of
-/// `Engage` into `Approach` and — 16b cut E.1's rule — drives at the plot's own
-/// cell.
-///
-/// **Held on the reflex — STOP J** (17b cut M4.4's row 76, a STOP there with
-/// no letter; lettered at 17b cut M4.5a by the orchestrator's Q14, beside
-/// STOP I): **the `line` divergence**. The stock mind's `Approach` arm tests
-/// the line to the PLOT's cell (`line_between(here, row.cell)`), where the
-/// reflex traced it to the target's live cell. M4.4's probe on a mind (the
-/// same field, an eight-cell sight, a presenting target so a slot fires)
-/// had the slot's rounds resolve `Miss { blocked }` behind the wall, the next
-/// think read the notices and set `no_line`, went `Approach` — and, the line
-/// from its cell to the plot's cell being clear, went straight back to
-/// `Engage` in the same think: no goal, no intent; the `(8, 8)` goal that
-/// came later was the search's, after the contact expired. The edge needs the
-/// plot's cell behind the wall, and a mind never fires at a plot whose cell
-/// has no line. Like STOP I (a mind is taught `no_line` by any blocked miss
-/// of a held target), it is "`no line` on a mind", for 17b cut M4.6 to hold
-/// or decide; this test is untouched until then.
-#[test]
-fn e4_t42_a_round_stopped_by_the_ground_re_plans_the_machine() {
-    // The curtain is a wall down column 9, painted from the start (the terrain
-    // is immutable for the life of a match). Both tanks open **west** of it, so
-    // the line is clear and the band is held; the pilot then drives east through
-    // the one gap the fixture leaves and the wall is between them.
-    // A five-hundred-millisecond breech, because the contact lives only three
-    // sensor passes after the tank goes behind the wall and the stock cannon's
-    // four-second cycle would spend all of them.
-    let quick = WeaponSummary {
-        cycle_ms: 500,
-        ..cannon()
-    };
-    let mut arena = e4_pinned(arena_on(
-        definition(&curtain_with_a_gap()),
-        e4_units((6, 8), (8, 8), vec![quick]),
-        &e4_cfg(60_000, 0),
-        &[BLUE],
-    ));
-    let mut bytes: Vec<u8> = Vec::new();
-    run(&mut arena, 6_000, &mut bytes);
-    assert_eq!(
-        state_of(&arena, RED),
-        Some(MachineState::Engage),
-        "it holds the band on a tank it can see"
-    );
-    let before = count(&events(&mut arena, &mut bytes), "fired");
-
-    // Behind the wall. The contact is not refreshed but it lives another three
-    // passes, and the machine keeps firing at where it last saw it.
-    if let Some(state) = arena.unit_mut(BLUE) {
-        state.pose = centre(11, 8);
-    }
-    assert!(
-        e4_run_until_state(&mut arena, RED, MachineState::Approach, 3_000, &mut bytes),
-        "the `no line` edge should have taken the machine out of `Engage` within three seconds"
-    );
-    let log = events(&mut arena, &mut bytes);
-    assert!(
-        count(&log, "fired") > before,
-        "the machine never fired at the plot, so no round was ever stopped"
-    );
-    let blocked = log
-        .iter()
-        .filter(|event| {
-            serde_json::to_value(&event.kind)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("reason")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                })
-                .as_deref()
-                == Some(tacsim::arena::damage::BLOCKED)
-        })
-        .count();
-    assert!(
-        blocked > 0,
-        "no round resolved as a `blocked` miss, so the `no line` edge was never fed"
-    );
-    assert!(
-        arena.reflex.unit(RED).is_some_and(|row| !row.no_line),
-        "and the tick that re-planned on it cleared the flag"
-    );
-    assert_eq!(
-        goal_of(&arena, RED),
-        Some((8, 8)),
-        "and 16b cut E.1's rule puts the goal on the plot's own cell"
-    );
-}
-
 /// `dry_pair`'s shape for the three-cadence `Spent` scripts (17b cut M4.4; the
 /// one-cadence twin keeps its own [`t1_spent_pair`]): the red hull a
 /// `Controller::Mind` and the blue one `blue`'s, both seeing ten cells and
@@ -7623,10 +7361,12 @@ fn t1_the_spent_draw_is_one_log_at_three_cadences() {
 // its side up for the rest of the match. `UnitState::cannot_close` is the reading
 // the two edges it needed are now chosen off.
 //
-// 17b cut M4.4: the family runs on the unit mind (`t1_*` below), whose view
-// reads `immobile` off `limits.motion_disabled` alone; the authored-zero-speed
-// fixture stays on the reflex as M4's recorded residual (STOP B of the
-// M4.4 inventory, and `stock_mind.rs`'s head).
+// 17b cut M4.4: the family runs on the unit mind (`t1_*` below). Its view read
+// `immobile` off `limits.motion_disabled` alone, so the authored-zero-speed
+// fixture stayed on the reflex as M4's recorded residual (STOP B) until 17b
+// cut M4.6b: under the owner's STOP B ruling the view reads a hull with no
+// authored speed `immobile` once online, and the fixture is ported
+// (`t1_a_hull_authored_with_no_speed_engages_the_same_way`).
 // ---------------------------------------------------------------------------
 
 /// **Kill a unit's engine the way `damage.rs`'s `disable_motion` does**: motion
@@ -7874,17 +7614,30 @@ fn t1_a_mind_that_cannot_close_engages_from_where_it_stands() {
 
 /// **A hull authored with no speed engages the same way** (16b cut AA.1) —
 /// N13's fixed-target shape, `mobility.max_speed_cms` at nought and its motion
-/// not disabled.
+/// not disabled. **17b cut M4.6b, on the unit mind** (the owner's STOP B
+/// ruling of 2026-10-09: the mind's view reads `immobile` for a hull with no
+/// authored speed once its power is `Online`). Every claim of the reflex
+/// fixture is kept.
 ///
-/// **Position only.** A zero-speed hull that is not `motion_disabled` still
-/// turns in place (`intents.rs` refuses a heading only under `motion_disabled`),
-/// so it turns onto the plot; what it cannot do is close, which is the whole of
-/// `UnitState::cannot_close`. No re-pose is needed: it never moves, and BLUE at
-/// eight cells is inside the ten-cell sight, so the sensor pass classifies it
-/// without a plant.
+/// **Position only.** A zero-speed hull that is not `motion_disabled` could
+/// still turn in place (`intents.rs` refuses a heading only under
+/// `motion_disabled`); what it cannot do is close, which is the whole of
+/// `UnitState::cannot_close` — and, since this cut, of the view's
+/// `immobile` once online. No re-pose is needed: it never moves, and BLUE at
+/// eight cells is inside the ten-cell sight, so the sensor pass classifies
+/// it without a plant. What moved: the hull is a `Controller::Mind` on
+/// [`t1_e1_duel`] (BLUE presenting every band, which a mind's armed slot
+/// needs to clear its odds floor), stepped settled, its state the doctrine
+/// state ([`machine_state_of`]). It starts up cold (the view mobile while
+/// `Off` and `Starting`, so the power arm runs), and once online the view
+/// reads it `immobile`, so its `Approach` edge into `Engage` is
+/// `release_cm` (the `close_edge`): it locks and fires from its opening
+/// cell, the helm half of the emission withheld for an immobile hull. Until
+/// this cut the view's `immobile` was `limits.motion_disabled` alone, and
+/// this fixture stayed on the reflex as a STOP.
 #[test]
-fn aa1_a_hull_authored_with_no_speed_engages_the_same_way() {
-    let mut arena = duel((4, 8), (12, 8), &[]);
+fn t1_a_hull_authored_with_no_speed_engages_the_same_way() {
+    let mut arena = t1_e1_duel((4, 8), (12, 8), &[]);
     if let Some(state) = arena.unit_mut(RED) {
         state.mobility.max_speed_cms = 0;
     }
@@ -7892,15 +7645,15 @@ fn aa1_a_hull_authored_with_no_speed_engages_the_same_way() {
     let mut bytes: Vec<u8> = Vec::new();
     let mut wall = arena.now_ms;
     while arena.now_ms < 15_000
-        && !(state_of(&arena, RED) == Some(MachineState::Engage)
+        && !(machine_state_of(&arena, RED) == Some(MachineState::Engage)
             && count(&events(&mut arena, &mut bytes), "fired") > 0)
     {
-        let out = arena.step(wall, &[], &[]);
+        let out = arena.step_settled(wall, &[], &[]);
         absorb(&out, &mut bytes);
         wall += 500;
     }
     assert_eq!(
-        state_of(&arena, RED),
+        machine_state_of(&arena, RED),
         Some(MachineState::Engage),
         "a zero-speed hull 8,000 cm out engages"
     );
@@ -9178,171 +8931,20 @@ fn t1_a_screen_fires_on_what_enters_its_arc_and_never_moves() {
 const Z2_SUPPORTER: ObjId = RED2;
 /// Its charge.
 const Z2_CHARGE: ObjId = RED;
-/// The hostile the charge designates: farther from the supporter, and showing
-/// it its front.
-const Z2_DESIGNATED: ObjId = BLUE;
-/// The hostile the supporter's own score prefers: nearer, and showing its rear.
-const Z2_BETTER: ObjId = BLUE2;
-
-/// **The designation field.** Row 8: the supporter at column 6 with an
-/// eight-cell sight, its charge two cells east at column 8, and the designated
-/// tank at column 12 facing west — six cells from the supporter, front on. The
-/// better target sits at (3, 10) facing west, 3.6 cells from the supporter and
-/// rear on, and further than the charge's five-cell sight from the charge, so
-/// the charge never holds it. The supporter holds all three, classified; the
-/// charge holds the designated tank.
-///
-/// `machine` puts the charge under the controller (its row then targets the one
-/// hostile it holds); otherwise it is a pilot's tank nobody is flying,
-/// **locked** on the designated tank.
-fn z2_designation_field(machine: bool) -> Arena {
-    let mut designated = tank(
-        Z2_DESIGNATED,
-        Team::Blue,
-        centre(12, 8),
-        Vec::new(),
-        Controller::Pilot,
-    );
-    designated.pose.heading_mdeg = 270_000;
-    let mut better = tank(
-        Z2_BETTER,
-        Team::Blue,
-        centre(3, 10),
-        Vec::new(),
-        Controller::Pilot,
-    );
-    better.pose.heading_mdeg = 270_000;
-    let mut arena = arena_of(
-        vec![
-            tank(
-                Z2_CHARGE,
-                Team::Red,
-                centre(8, 8),
-                vec![cannon()],
-                if machine {
-                    Controller::Reflex
-                } else {
-                    Controller::Pilot
-                },
-            ),
-            with_sight(
-                tank(
-                    Z2_SUPPORTER,
-                    Team::Red,
-                    centre(6, 8),
-                    vec![cannon()],
-                    Controller::Reflex,
-                ),
-                8,
-            ),
-            designated,
-            better,
-        ],
-        &[],
-        &arena_cfg(reflex_cfg()),
-        &[],
-    );
-    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, 0);
-    plant_contact(&mut arena, Z2_SUPPORTER, Z2_DESIGNATED, Team::Blue, 0);
-    plant_contact(&mut arena, Z2_SUPPORTER, Z2_BETTER, Team::Blue, 0);
-    plant_contact(&mut arena, Z2_CHARGE, Z2_DESIGNATED, Team::Blue, 0);
-    if !machine {
-        let lock = arena.contacts.id_of(Z2_CHARGE, Z2_DESIGNATED);
-        if let Some(state) = arena.unit_mut(Z2_CHARGE) {
-            state.lock = lock;
-        }
-    }
-    arena
-}
-
-/// What one designation replay read at 5 s: the supporter's target, the
-/// charge's own target and state (a machine charge's), and the charge's plot
-/// range to the designated tank.
-type Z2Read = (Option<ObjId>, Option<ObjId>, Option<MachineState>, i64);
-
-/// **A reflex row's target** (17b cut M4.4): what `target_of` read before the
-/// ports re-pointed it onto a mind's memory. The designation half stays on
-/// the reflex controller (a STOP) and keeps reading its own rows.
-fn z2_reflex_target_of(arena: &Arena, unit: ObjId) -> Option<ObjId> {
-    arena
-        .reflex
-        .unit(unit)
-        .and_then(|row| row.target)
-        .map(|(_, target)| target)
-}
-
-/// One replay of the designation field under `objective`, fanned to the
-/// supporter's squad at beat 0 with the fire held, read at 5 s.
-fn z2_designation(
-    cadence_ms: i64,
-    machine: bool,
-    objective: tacsim::deliberation::Objective,
-) -> (Replay, Z2Read) {
-    let arena = z2_designation_field(machine);
-    let squad = z2_squad(&arena, Z2_SUPPORTER);
-    let units: Vec<ObjId> = arena
-        .squad_of(Z2_SUPPORTER)
-        .map(|roster| roster.units.clone())
-        .unwrap_or_default();
-    let issuer = if machine { None } else { Some(Z2_CHARGE) };
-    let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
-        squad, objective, true, issuer,
-    )));
-    let mut read: Option<Z2Read> = None;
-    let run = replay_with(
-        cadence_ms,
-        10_000,
-        arena,
-        &|arena, pulse| {
-            if pulse == 0 {
-                z2_fan(arena, &units, &told)
-            } else {
-                Vec::new()
-            }
-        },
-        &mut |arena: &mut Arena| {
-            if arena.now_ms == 5_000 {
-                read = Some((
-                    z2_reflex_target_of(arena, Z2_SUPPORTER),
-                    z2_reflex_target_of(arena, Z2_CHARGE),
-                    state_of(arena, Z2_CHARGE),
-                    plot_range(arena, Z2_CHARGE, Z2_DESIGNATED),
-                ));
-            }
-        },
-    );
-    (run, read.expect("a pulse ended at 5 s"))
-}
-
 /// **The station field**, on a window forty-eight cells wide: the supporter at
 /// (10, 8) with a twenty-one-cell sight, its charge — a pilot's tank nobody is
 /// flying — two cells west of it, and one unarmed blue tank parked in the far
-/// corner, out of the supporter's sight wherever the replay takes it. The
-/// supporter on the reflex controller — what the immobile-support fixture
-/// (`z2_a_supporter_that_cannot_close_fights_where_it_stands_past_its_leash`,
-/// a STOP of 17b cut M4.4) still fields.
-fn z2_station_field() -> Arena {
-    z2_station_field_on(&[], Controller::Reflex)
-}
-
-/// **The hostile a machine under `controller` can shoot at** (17b cut M4.4):
-/// presenting every band ([`presenting`]) for a mind — its armed slot fires
-/// at odds, and a `UnitProfile::default()` target presents none, where the
-/// reflex machine fired regardless — and as authored for the reflex, so the
-/// fixtures left on it (this cut's STOPs) run as they did.
-fn z2_hostile_for(controller: Controller, unit: CustodyUnit) -> CustodyUnit {
-    if controller == Controller::Mind {
-        presenting(unit)
-    } else {
-        unit
-    }
-}
-
-/// [`z2_station_field`] with `paint`ed cells over its uniform ground (16b cut
-/// Z.2's review: the unreachable station) and the supporter under
-/// `controller` — **17b cut M4.4**: a `Controller::Mind` on Standard Doctrine
-/// for the station, the blind stand and the moat.
-fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)], controller: Controller) -> Arena {
+/// corner, out of the supporter's sight wherever the replay takes it — with
+/// `paint`ed cells over its uniform ground (16b cut Z.2's review: the
+/// unreachable station). The supporter is a `Controller::Mind` on Standard
+/// Doctrine — **17b cut M4.4** for the station, the blind stand and the moat;
+/// **17b cut M4.6b** for the immobile supporter too
+/// ([`t1_a_supporter_that_cannot_close_fights_where_it_stands_past_its_leash`]),
+/// the last of its fixtures the reflex flew, so the field lost its
+/// `controller` — and the blue tank presents every band ([`presenting`]): a
+/// mind's armed slot fires at odds, and a `UnitProfile::default()` target
+/// presents none, where the reflex machine fired regardless.
+fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
     const WIDE: u16 = 48;
     let mut cells = vec![ground(); usize::from(WIDE) * usize::from(SIDE)];
     for (x, y, cell) in paint {
@@ -9389,20 +8991,17 @@ fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)], controller: Controller
                     Team::Red,
                     centre(10, 8),
                     vec![cannon()],
-                    controller,
+                    Controller::Mind,
                 ),
                 21,
             ),
-            z2_hostile_for(
-                controller,
-                tank(
-                    BLUE,
-                    Team::Blue,
-                    centre(47, 15),
-                    Vec::new(),
-                    Controller::Pilot,
-                ),
-            ),
+            presenting(tank(
+                BLUE,
+                Team::Blue,
+                centre(47, 15),
+                Vec::new(),
+                Controller::Pilot,
+            )),
         ],
         &arena_cfg(reflex_cfg()),
         &[],
@@ -9429,7 +9028,7 @@ type Z2Order = (bool, bool);
 /// supporter is a mind, its thinks kept, and what became of its order is
 /// read after every pulse ([`Z2Order`]).
 fn z2_station(cadence_ms: i64) -> (Replay, Z2Station, Z2Samples, Z2Order, Vec<Kept>) {
-    let mut arena = z2_station_field_on(&[], Controller::Mind);
+    let mut arena = z2_station_field_on(&[]);
     let stock = Stock::on(&arena);
     arena.mind_runner = stock.clone();
     let squad = z2_squad(&arena, Z2_SUPPORTER);
@@ -9505,89 +9104,6 @@ fn z2_station(cadence_ms: i64) -> (Replay, Z2Station, Z2Samples, Z2Order, Vec<Ke
     )
 }
 
-/// **16b cut Z.2 (b) part 1, 16c N6 (16b §11: mandatory)**: a support prefers
-/// what its charge is fighting; a unit whose charge is itself fights on
-/// doctrine.
-///
-/// Every replay below is one event list, one hash sequence (which now folds the
-/// charge) and one final field at 5,000, 1,000 and 500 ms.
-///
-/// **The designation, for a pilot charge and for a machine charge.** The
-/// supporter holds two classified hostiles, and its own score prefers the
-/// nearer one showing its rear (the control replay under `ENGAGE` proves
-/// it). Under `SUPPORT` its row targets the farther, front-on tank its charge
-/// is fighting: the tank a pilot's lock names, read on the pilot's own store,
-/// and the tank a machine's row targets, read off the memory the tick holds.
-/// The machine charge — whose `of` is itself — fights on doctrine: it takes
-/// that tank and closes on it as `ENGAGE` would.
-///
-/// **17b cut M4.4 — a STOP, left on the reflex controller** (the `support`
-/// divergence): a charge's designation is not on a mind's view — `hint()`
-/// answers `None` for a `Support`, so a T1 supporter takes its own score's
-/// rear-on tank, the control's answer — and `supporter == Some(Z2_DESIGNATED)`
-/// is unreachable by design for the pilot charge and the machine charge
-/// alike. Parts 2 and 3 of the fixture (the station and the blind stand) are
-/// ported as [`t1_a_support_keeps_station_and_stands_blind`]. The owner's
-/// call: delete this half against the twin's `support` counter
-/// (`tests/twin.rs` `line_divergences`) and `stock_mind.rs`'
-/// `m1a6_a_supporter_stands_blind_rejoins_off_the_leash_and_keeps_station`
-/// — the machine charge's `of == self` half against `tests/minds.rs`'
-/// `l2_a_self_charged_support_fights_on_doctrine` (held as `Engage`, it
-/// closes into the band and fires) — or put the charge's target on the view
-/// (a keyframe field: M5).
-#[test]
-fn z2_a_support_keeps_station_and_prefers_its_charges_target() {
-    use tacsim::deliberation::Objective;
-    let support = Objective::Support { of: Z2_CHARGE };
-
-    // 1. The control: on its own score the supporter takes the rear-on tank.
-    let (_, (own_choice, _, _, _)) =
-        z2_designation(1_000, false, Objective::Engage { target_hint: None });
-    assert_eq!(
-        own_choice,
-        Some(Z2_BETTER),
-        "the supporter's own score prefers the nearer, rear-on tank"
-    );
-    for machine in [false, true] {
-        let what = if machine {
-            "a machine charge"
-        } else {
-            "a pilot charge"
-        };
-        let replays: Vec<(Replay, Z2Read)> = [5_000_i64, 1_000, 500]
-            .into_iter()
-            .map(|cadence| z2_designation(cadence, machine, support))
-            .collect();
-        let (supporter, charge, charge_state, charge_range) = replays[0].1;
-        assert!(
-            replays.iter().all(|(_, read)| *read == replays[0].1),
-            "{what}: the reading diverged"
-        );
-        let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
-        z2_one_log(&runs, what);
-        assert_eq!(
-            supporter,
-            Some(Z2_DESIGNATED),
-            "{what}: the supporter fights what its charge is fighting"
-        );
-        if machine {
-            // The charge's own `of` is itself: doctrine, `ENGAGE`'s semantics.
-            assert_eq!(charge, Some(Z2_DESIGNATED), "the charge fights on doctrine");
-            assert!(
-                matches!(
-                    charge_state,
-                    Some(MachineState::Approach | MachineState::Engage)
-                ),
-                "the charge is in the fight: {charge_state:?}"
-            );
-            assert!(
-                charge_range < 4 * i64::from(CELL_CM),
-                "the charge closed on its target as ENGAGE would: {charge_range} cm"
-            );
-        }
-    }
-}
-
 /// **16b cut Z.2 (b) parts 2 and 3, 16c N6 (16b §11: mandatory), on the unit
 /// mind** (17b cut M4.4): a support keeps station on its charge and fights
 /// where it stands when it cannot see it.
@@ -9596,7 +9112,7 @@ fn z2_a_support_keeps_station_and_prefers_its_charges_target() {
 /// moved is the supporter, a `Controller::Mind` on Standard Doctrine, whose
 /// `SUPPORT` reaches it through `IntentKind::Order` (`rekey_order` →
 /// `MindObjective::Support { of }`, the charge's own classified row), and the
-/// hostile, which presents every band ([`z2_hostile_for`]). Every replay is
+/// hostile, which presents every band ([`z2_station_field_on`]). Every replay is
 /// one event list, one hash sequence (which folds the charge) and one final
 /// field at 5,000, 1,000 and 500 ms under `step_settled`.
 ///
@@ -9631,8 +9147,14 @@ fn z2_a_support_keeps_station_and_prefers_its_charges_target() {
 ///    arena still holding the order, and the mind's one way of giving an
 ///    order up (`ignore_until_ms`) never written.
 ///
-/// Part 1 of the reflex fixture (the designation) stays on the reflex as
-/// [`z2_a_support_keeps_station_and_prefers_its_charges_target`], a STOP.
+/// Part 1 of the reflex fixture (the designation: a supporter prefers what
+/// its charge is fighting) stayed on the reflex as
+/// `z2_a_support_keeps_station_and_prefers_its_charges_target`, a STOP, until
+/// 17b cut M4.6b deleted it — the owner carried STOP D to M5 (the charge's
+/// designation is not on a mind's view; `hint()` answers `None` for a
+/// `Support`), the loss recorded in doc 17 §24. Its `of == self` half stays
+/// mirrored by `tests/minds.rs`' `l2_a_self_charged_support_fights_on_doctrine`;
+/// the designation half has no mirror.
 #[test]
 fn t1_a_support_keeps_station_and_stands_blind() {
     use tacsim::arena::doctrine::{SUPPORT_LEASH_CELLS, SUPPORT_STATION_CELLS};
@@ -9766,8 +9288,12 @@ fn t1_a_support_keeps_station_and_stands_blind() {
 /// shape): `SUPPORT` the charge at beat 0; at 5 s the charge is moved twenty
 /// cells east, past the leash and still inside the supporter's sight; at 10 s
 /// the blue tank is put four cells north of the supporter, with a contact.
+/// **17b cut M4.6b**: the supporter a mind on Standard Doctrine
+/// ([`z2_station_field_on`] under `Controller::Mind`, the blue tank
+/// presenting every band) — the reflex flew it until then — and the order
+/// read off the mind row at the end.
 fn z2_immobile_support(cadence_ms: i64) -> (Replay, Z2Samples, bool) {
-    let mut arena = z2_station_field();
+    let mut arena = z2_station_field_on(&[]);
     if let Some(state) = arena.unit_mut(Z2_SUPPORTER) {
         state.mobility.max_speed_cms = 0;
     }
@@ -9808,7 +9334,10 @@ fn z2_immobile_support(cadence_ms: i64) -> (Replay, Z2Samples, bool) {
                 _ => {}
             }
             cells.push((arena.now_ms, z2_cell(arena, Z2_SUPPORTER)));
-            ordered_at_end = arena.reflex.order(Z2_SUPPORTER).is_some();
+            ordered_at_end = arena
+                .minds
+                .get(&Z2_SUPPORTER)
+                .is_some_and(|row| row.order.is_some());
         },
     );
     (run, cells, ordered_at_end)
@@ -9825,8 +9354,20 @@ fn z2_immobile_support(cadence_ms: i64) -> (Replay, Z2Samples, bool) {
 /// its cell never changes, it stays in `Patrol`, it fires on the tank put four
 /// cells from it, and the order stands — at 5,000, 1,000 and 500 ms, one event
 /// list, one hash sequence and one final field.
+///
+/// **17b cut M4.6b, on the unit mind** (the owner's STOP B ruling of
+/// 2026-10-09: the mind's view reads `immobile` for a hull with no authored
+/// speed once its power is `Online`). Every claim of the reflex fixture is
+/// kept. The supporter is a `Controller::Mind`; once online its view reads
+/// `immobile`, so the Support arm's leash takes the stand
+/// (`off_leash && view.immobile`, `stock_mind.rs`) instead of the rejoining
+/// leg, and the stand fires from `Patrol` on the blue tank its own row holds
+/// — presenting every band, which a mind's armed slot needs. Until this cut
+/// the view's `immobile` was `limits.motion_disabled` alone, so a mind read
+/// this hull as able to rejoin, and the fixture stayed on the reflex as a
+/// STOP. Stepped settled, as every three-cadence fixture here.
 #[test]
-fn z2_a_supporter_that_cannot_close_fights_where_it_stands_past_its_leash() {
+fn t1_a_supporter_that_cannot_close_fights_where_it_stands_past_its_leash() {
     let replays: Vec<(Replay, Z2Samples, bool)> = [5_000_i64, 1_000, 500]
         .into_iter()
         .map(z2_immobile_support)
@@ -9904,7 +9445,7 @@ fn z2_moat_support(cadence_ms: i64) -> (Replay, Vec<Kept>, u32, bool) {
     let moat: Vec<(u16, u16, TerrainCell)> = (19..=21_u16)
         .flat_map(|x| (0..SIDE).map(move |y| (x, y, z2_water())))
         .collect();
-    let mut arena = z2_station_field_on(&moat, Controller::Mind);
+    let mut arena = z2_station_field_on(&moat);
     let stock = Stock::on(&arena);
     arena.mind_runner = stock.clone();
     let squad = z2_squad(&arena, Z2_SUPPORTER);
@@ -10190,9 +9731,10 @@ fn t1_a_release_ends_an_order_at_one_millisecond() {
 
 // ---- (d) the charge lost ----------------------------------------------------
 
-/// A supporter under `controller` and its charge — a pilot's tank nobody
-/// flies — two cells apart.
-fn z2_charge_field(controller: Controller) -> Arena {
+/// A supporter — a mind (17b cut M4.6b: the last reflex arm, the charge
+/// that leaves, is ported) — and its charge — a pilot's tank nobody flies —
+/// two cells apart.
+fn z2_charge_field() -> Arena {
     arena_of(
         vec![
             tank(
@@ -10207,7 +9749,7 @@ fn z2_charge_field(controller: Controller) -> Arena {
                 Team::Red,
                 centre(6, 8),
                 vec![cannon()],
-                controller,
+                Controller::Mind,
             ),
             tank(
                 BLUE,
@@ -10239,24 +9781,15 @@ enum Z2Loss {
 
 /// One replay: `SUPPORT` the charge at beat 0 (the supporter's hold on it
 /// planted, so the kill has a row to mark), the charge lost at 10 s by `loss`,
-/// the supporter under `controller` — **17b cut M4.4**: a mind for the two
-/// ported arms, its thinks kept; the reflex for the `Leaves` STOP. Answers
-/// the replay, the kept thinks and whether the supporter's machine still
-/// holds the order at the end: the reflex row's standing order, or the mind
-/// row's.
-fn z2_charge_lost(
-    cadence_ms: i64,
-    loss: Z2Loss,
-    controller: Controller,
-) -> (Replay, Vec<Kept>, bool) {
-    let mut arena = z2_charge_field(controller);
+/// the supporter a mind, its thinks kept (**17b cut M4.4** for the two arms
+/// it ported; **17b cut M4.6b** for the `Leaves` STOP, which the reflex
+/// flew until then). Answers the replay, the kept thinks and whether the
+/// mind row still holds the order at the end.
+fn z2_charge_lost(cadence_ms: i64, loss: Z2Loss) -> (Replay, Vec<Kept>, bool) {
+    let mut arena = z2_charge_field();
     plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, 0);
     let stock = Stock::on(&arena);
-    // The recorder flies only a mind's field; the reflex residue's runner
-    // stays the arena's own.
-    if controller == Controller::Mind {
-        arena.mind_runner = stock.clone();
-    }
+    arena.mind_runner = stock.clone();
     let squad = z2_squad(&arena, Z2_SUPPORTER);
     let told = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
         squad,
@@ -10287,61 +9820,75 @@ fn z2_charge_lost(
                     Z2Loss::WreckedUnseen => wreck_it(arena, Z2_CHARGE),
                 }
             }
-            ordered_at_end = match controller {
-                Controller::Mind => arena
-                    .minds
-                    .get(&Z2_SUPPORTER)
-                    .is_some_and(|row| row.order.is_some()),
-                _ => arena.reflex.order(Z2_SUPPORTER).is_some(),
-            };
+            ordered_at_end = arena
+                .minds
+                .get(&Z2_SUPPORTER)
+                .is_some_and(|row| row.order.is_some());
         },
     );
     (run, stock.kept(), ordered_at_end)
 }
 
-/// **16b cut Z.2 (d), 16c N6 (16b §11: mandatory)**: a `SUPPORT` whose charge
-/// **leaves** the arena ends for the supporter through `B-41`'s route — one
-/// `order_expired` line naming `support`, at the supporter's first tick after
-/// the loss, the same arena millisecond at every cadence — and the supporter
-/// is on doctrine, holding no order.
+/// **16b cut Z.2 (d), 16c N6 (16b §11: mandatory), on the unit mind** (17b
+/// cut M4.6b, the owner's STOP E ruling of 2026-10-09, "the arena ends it"):
+/// a `SUPPORT` whose charge **leaves** the arena ends for the supporter —
+/// one `order_expired` line naming `support`, at the supporter's first
+/// LANDING after the loss, the same arena millisecond at every cadence — and
+/// the supporter is on doctrine, holding no order.
 ///
-/// **17b cut M4.4 — a STOP, left on the reflex controller.** A charge gone
-/// from `arena.units` has no row on a mind's view (`frame_scope` drops a held
-/// contact whose unit left the match), so T1's `ends` test — the charge's own
-/// row reading dead — is false, the leash reads a charge it does not hold and
-/// the supporter takes the blind stand under the standing order for the
-/// order's whole life; the arena ends a mind's order only at its
-/// `expires_ms`. The fixture's two other ways of losing a charge are ported
-/// as
-/// [`t1_a_support_whose_charge_reads_dead_stops_obeying_and_an_unseen_wreck_ends_nothing`].
-/// The owner's remedy: an arena-side end for a mind's `Support` whose charge
-/// left the match (beside the expiry; M4.6 territory), or accept the blind
-/// stand and delete this arm with the reason recorded.
+/// Every claim of the reflex fixture is kept but the moment, re-pinned under
+/// the ruling: the reflex ended the order at the supporter's first TICK
+/// after the loss (`(10,000, 10,000 + decide_ms]`); a mind's order is ended
+/// by the arena at the supporter's own landing
+/// (`Arena::end_mind_support_whose_charge_left`, beside the expiry), so the
+/// line falls exactly at the first landing after 10 s — read off the kept
+/// thinks, one substep after its think — inside
+/// `(10,000, 10,000 + STOCK_THINK_MS + substep]`. A charge gone from
+/// `arena.units` has no row on a mind's view (`frame_scope` drops it), so
+/// the mind cannot see the end; the arena reads the supporter's own contact
+/// row for the order's `of`, still in its store (a row ages out only after
+/// the contact TTL), and finds its unit gone. The line is the reflex's own
+/// shape: `OrderExpired { unit, squad, objective: support }`. Three
+/// cadences under `step_settled`: one event list, one hash sequence, one
+/// final field, one think sequence.
 #[test]
-fn z2_a_support_whose_charge_leaves_ends_at_one_millisecond() {
+fn t1_a_support_whose_charge_leaves_ends_at_one_millisecond() {
+    use tacsim::arena::mind::STOCK_THINK_MS;
     let loss = Z2Loss::Leaves;
     let what = format!("the charge lost ({loss:?})");
-    let replays: Vec<(Replay, bool)> = [5_000_i64, 1_000, 500]
+    let substep_ms = z2_charge_field().substep_len_ms();
+    let replays: Vec<(Replay, Vec<Kept>, bool)> = [5_000_i64, 1_000, 500]
         .into_iter()
-        .map(|cadence| {
-            let (run, _, ordered) = z2_charge_lost(cadence, loss, Controller::Reflex);
-            (run, ordered)
-        })
+        .map(|cadence| z2_charge_lost(cadence, loss))
         .collect();
-    for (_, ordered) in &replays {
+    let kept = replays[0].1.clone();
+    for (_, thinks, ordered) in &replays {
         assert!(
             !*ordered,
             "{what}: the supporter is on doctrine, under no order"
         );
+        assert_eq!(*thinks, kept, "{what}: the think sequence diverged");
     }
-    let runs: Vec<Replay> = replays.into_iter().map(|(run, _)| run).collect();
+    let runs: Vec<Replay> = replays.into_iter().map(|(run, _, _)| run).collect();
     z2_one_log(&runs, &what);
     let expired = z2_lines(&runs[0], "order_expired");
     assert_eq!(expired.len(), 1, "{what}: one line: {expired:?}");
     let (t_ms, line) = &expired[0];
+    // Re-pinned (STOP E): the supporter's first landing after the loss.
+    let landing = kept
+        .iter()
+        .filter(|think| think.0 == Z2_SUPPORTER)
+        .map(|think| think.1 + substep_ms)
+        .filter(|landing| *landing > 10_000)
+        .min()
+        .expect("a landing after the loss");
+    assert_eq!(
+        *t_ms, landing,
+        "{what}: at the supporter's first landing after the loss"
+    );
     assert!(
-        *t_ms > 10_000 && *t_ms <= 10_000 + i64::from(reflex_cfg().decide_ms),
-        "{what}: at the supporter's first tick after the loss: {t_ms}"
+        *t_ms > 10_000 && *t_ms <= 10_000 + STOCK_THINK_MS + substep_ms,
+        "{what}: inside a think period and a substep of the loss: {t_ms}"
     );
     assert_eq!(
         *line,
@@ -10369,17 +9916,21 @@ fn z2_a_support_whose_charge_leaves_ends_at_one_millisecond() {
 /// think period after 10 s, the same lattice millisecond at every cadence —
 /// and it writes `ignore_until_ms` at the order's deadline and obeys it no
 /// more. What the reflex journalled, the arena never does for a mind: NO
-/// `order_expired` line (a mind's order expires only at its `expires_ms`),
-/// and the mind row's order still standing at the end. And a charge wrecked
+/// `order_expired` line (a mind's order expires only at its `expires_ms`,
+/// or — since 17b cut M4.6b, the owner's STOP E ruling — when its charge
+/// LEAVES the match, which a wreck does not), and the mind row's order still
+/// standing at the end. And a charge wrecked
 /// where **nobody told the supporter** leaves the order standing for the
 /// whole replay — never a key, never a line — because what ends it is what
 /// the supporter knows (its own row's `reads_dead`) and never the charge's
 /// live wreck flag (doc 16 §1): its first think after the wreck reads the
 /// charge alive, and once the hold expires (the sight does not see wrecks)
 /// the row is gone and it stands blind under the order, as for any charge
-/// it cannot see; no think reads the charge dead. The third way of losing a charge (it
-/// **leaves** the arena) stays on the reflex as
-/// [`z2_a_support_whose_charge_leaves_ends_at_one_millisecond`], a STOP.
+/// it cannot see; no think reads the charge dead. The third way of losing a
+/// charge (it **leaves** the arena) was a STOP on the reflex until 17b cut
+/// M4.6b, and is ported as
+/// [`t1_a_support_whose_charge_leaves_ends_at_one_millisecond`] (the
+/// owner's STOP E ruling: the arena ends it).
 /// Three cadences under `step_settled`: one event list, one hash sequence,
 /// one final field, one think sequence.
 #[test]
@@ -10399,7 +9950,7 @@ fn t1_a_support_whose_charge_reads_dead_stops_obeying_and_an_unseen_wreck_ends_n
     let what = "the charge killed in sight";
     let replays: Vec<(Replay, Vec<Kept>, bool)> = [5_000_i64, 1_000, 500]
         .into_iter()
-        .map(|cadence| z2_charge_lost(cadence, Z2Loss::KilledInSight, Controller::Mind))
+        .map(|cadence| z2_charge_lost(cadence, Z2Loss::KilledInSight))
         .collect();
     let kept = replays[0].1.clone();
     for (_, thinks, ordered) in &replays {
@@ -10446,7 +9997,7 @@ fn t1_a_support_whose_charge_reads_dead_stops_obeying_and_an_unseen_wreck_ends_n
     let what = "the charge wrecked unseen";
     let replays: Vec<(Replay, Vec<Kept>, bool)> = [5_000_i64, 1_000, 500]
         .into_iter()
-        .map(|cadence| z2_charge_lost(cadence, Z2Loss::WreckedUnseen, Controller::Mind))
+        .map(|cadence| z2_charge_lost(cadence, Z2Loss::WreckedUnseen))
         .collect();
     let kept = replays[0].1.clone();
     for (_, thinks, ordered) in &replays {
@@ -10491,1030 +10042,14 @@ fn t1_a_support_whose_charge_reads_dead_stops_obeying_and_an_unseen_wreck_ends_n
 }
 
 // ---------------------------------------------------------------------------
-// 16b cut I.3 — a placed machine re-plans (16c N10)
-// ---------------------------------------------------------------------------
-
-/// **16b cut I.3**: a machine under `Advance`, placed twenty cells aside by
-/// staff, searches again at its next tick — `path_queries` moves within one
-/// `decide_ms` of the place — and still reaches its goal from where it now
-/// stands. `Arena::resolve_place` clears the machine's goal, route and search
-/// stamp and keeps its order, so the next tick re-derives the goal from the
-/// order and plans from the new cell.
-///
-/// On a window of its own, 32 cells square, because the fixture window is
-/// sixteen and twenty cells aside does not fit in it.
-#[test]
-fn i3_a_placed_machine_re_plans() {
-    const WIDE: u16 = 32;
-    let definition = ArenaDefinition {
-        id: SmolStr::new("tacsim.arena.reflex.wide"),
-        terrain: ArenaTerrain::uniform(WIDE, WIDE, CELL_CM, ground()).expect("the wide window"),
-        entry_zones: vec![
-            EntryZone {
-                team: Team::Red,
-                x0: 0,
-                y0: 0,
-                x1: 1,
-                y1: WIDE - 1,
-            },
-            EntryZone {
-                team: Team::Blue,
-                x0: WIDE - 2,
-                y0: 0,
-                x1: WIDE - 1,
-                y1: WIDE - 1,
-            },
-        ],
-        key_spots: Vec::new(),
-        waypoints: graph(),
-        modes: Vec::new(),
-    };
-    let mut arena = arena_on(
-        definition,
-        vec![tank(
-            RED,
-            Team::Red,
-            centre(2, 3),
-            Vec::new(),
-            Controller::Reflex,
-        )],
-        &arena_cfg(reflex_cfg()),
-        &[],
-    );
-    let goal = (28_u16, 3_u16);
-    e4_advance(&mut arena, RED, goal, 600_000);
-    let mut bytes: Vec<u8> = Vec::new();
-    run(&mut arena, 8_000, &mut bytes);
-    assert!(arena.reflex.unit(RED).is_some(), "the machine");
-    let drive = motor(&arena, RED);
-    assert_eq!(drive.goal, Some(goal), "under way to the ordered cell");
-    assert!(!drive.route.is_empty(), "with a route");
-    let (x, y) = arena.index.cell_of_unit(RED).expect("on the window");
-    assert!(x > 2, "it has moved off its start: {x}");
-    // Twenty cells aside, as the unit's own seat on `helm` would carry it.
-    let aside = (x, y + 20);
-    let epoch = arena.epochs.current(RED, Channel::Helm);
-    let out = arena.step(
-        arena.now_ms,
-        &[],
-        &[tacsim::arena::intents::Intent {
-            unit: RED,
-            channel: Channel::Helm,
-            epoch,
-            kind: tacsim::arena::intents::IntentKind::Place {
-                x: aside.0,
-                y: aside.1,
-            },
-            seq: 1,
-        }],
-    );
-    absorb(&out, &mut bytes);
-    assert_eq!(arena.index.cell_of_unit(RED), Some(aside), "placed");
-    let row = arena.reflex.unit(RED).expect("the machine");
-    let drive = motor(&arena, RED);
-    assert!(drive.goal.is_none() && drive.route.is_empty() && drive.searched_ms.is_none());
-    assert!(row.order.is_some(), "the order stands");
-    // Its next tick searches again.
-    let tick = arena.now_ms + 500;
-    let next = run(&mut arena, tick, &mut bytes);
-    assert!(
-        next.path_queries >= 1,
-        "no search within one decide tick of the place"
-    );
-    assert_eq!(
-        arena.motors.row(RED).and_then(|row| row.goal),
-        Some(goal),
-        "the goal is the order's again"
-    );
-    // And it gets there.
-    let until = arena.now_ms + 60_000;
-    run(&mut arena, until, &mut bytes);
-    let (x, y) = arena.index.cell_of_unit(RED).expect("on the window");
-    assert!(
-        x.abs_diff(goal.0).max(y.abs_diff(goal.1)) <= tacsim::arena::motor::ARRIVE_CELLS,
-        "the placed machine never reached {goal:?}: it stands at ({x}, {y})"
-    );
-    let log = events(&mut arena, &mut bytes);
-    assert_eq!(count(&log, "placed"), 1);
-    assert_eq!(count(&log, "place_refused"), 0);
-}
-
-// ---------------------------------------------------------------------------
-// 16b cut O.1 — the machines in a Hold match (16c N11; plan items 2, 16, 32,
-// 33, 34)
-// ---------------------------------------------------------------------------
-
-/// A third red machine, for the O.1 order test.
-const O1_RED3: ObjId = ObjId(7);
-
-/// The pilot who types the O.1 `ORDER … HOLD` and its `RELEASE`.
-const O1_PILOT: ObjId = ObjId(1_500);
-
-/// **This file's window with a Hold declared**: one key spot at `spot`,
-/// `radius_cells` round it, `hold_ms` long, over `paint`ed ground.
-fn o1_ground(
-    paint: &[(u16, u16, TerrainCell)],
-    spot: (u16, u16),
-    radius_cells: u16,
-    hold_ms: u32,
-) -> ArenaDefinition {
-    ArenaDefinition {
-        key_spots: vec![tacsim::arena::state::KeySpot {
-            name: SmolStr::new("The Spot"),
-            x: spot.0,
-            y: spot.1,
-        }],
-        modes: vec![tacsim::arena::ArenaMode::Hold(tacsim::arena::HoldRule {
-            spot: 0,
-            radius_cells,
-            hold_ms,
-        })],
-        ..definition(paint)
-    }
-}
-
-/// [`arena_on`] at `MatchMode::Hold`.
-fn o1_arena(
-    definition: ArenaDefinition,
-    units: Vec<CustodyUnit>,
-    cfg: &ArenaConfig,
-    seated: &[ObjId],
-) -> Arena {
-    let pilots = seated
-        .iter()
-        .enumerate()
-        .map(|(seat, unit)| Pilot {
-            unit: *unit,
-            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
-            station: SmolStr::new("cockpit"),
-            epoch: 1,
-        })
-        .collect();
-    Arena::new(
-        CustodyOut {
-            definition,
-            units,
-            pilots,
-            resolution: tacsim::match_::stock_resolution(),
-            seed: SEED,
-            mode: tacsim::arena::MatchMode::Hold,
-        },
-        cfg,
-        &match_cfg(),
-        &SensorsConfig::default(),
-    )
-    .expect("the hold arena")
-}
-
-/// Whether `unit` stands inside the arena's Hold square.
-fn o1_inside(arena: &Arena, unit: ObjId) -> bool {
-    arena
-        .unit(unit)
-        .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
-        .is_some_and(|cell| arena.hold.is_some_and(|hold| hold.square_contains(cell)))
-}
-
-/// **16b cut O.1 (16c N11; plan items 2, 16)**: in a Hold match the machines
-/// drive to the key spot and park anywhere inside `radius − 1`, and then stop
-/// searching; one under a pilot-shaped `ORDER … HOLD` stays where it stands
-/// until the `RELEASE`, and then drives to the spot too.
-///
-/// Red's three machines against a blue tank that stands cold and out of every
-/// red sight (so no engagement interrupts), under an hour-long `hold_ms` (so no
-/// win does): every free machine ends INSIDE the square, the searches of the
-/// second minute are a small fraction of the first's, and the ordered machine
-/// has not moved a cell until its release.
-#[test]
-fn o1_hold_mode_machines_drive_to_the_spot_and_park_inside_the_radius() {
-    let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
-    let mut arena = o1_arena(
-        ground,
-        vec![
-            tank(
-                RED,
-                Team::Red,
-                centre(1, 4),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                RED2,
-                Team::Red,
-                centre(1, 12),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                O1_RED3,
-                Team::Red,
-                centre(1, 8),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(15, 0),
-                vec![cannon()],
-                Controller::Pilot,
-            ),
-        ],
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    );
-    let squad = arena
-        .squad_of(O1_RED3)
-        .map(|roster| roster.id)
-        .expect("the machine is in a squad");
-    let hold = tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
-        squad,
-        objective: tacsim::deliberation::Objective::Hold,
-        target: None,
-        horizon_ms: 600_000,
-        constraints: tacsim::deliberation::Constraints {
-            hold_fire: false,
-            max_range_band: None,
-        },
-        ttl_ms: 600_000,
-        issued_ms: 0,
-        issuer: Some(O1_PILOT),
-        by: author(squad, Some(O1_PILOT)),
-        spot: None,
-    }));
-    let intent =
-        |arena: &Arena, kind: &tacsim::arena::intents::IntentKind| tacsim::arena::intents::Intent {
-            unit: O1_RED3,
-            channel: Channel::Helm,
-            epoch: arena.epochs.current(O1_RED3, Channel::Helm),
-            kind: kind.clone(),
-            seq: 1,
-        };
-    let mut bytes: Vec<u8> = Vec::new();
-    let order = intent(&arena, &hold);
-    absorb(&arena.step(0, &[], &[order]), &mut bytes);
-    let first = run(&mut arena, 60_000, &mut bytes);
-    let second = run(&mut arena, 120_000, &mut bytes);
-    for unit in [RED, RED2] {
-        assert!(
-            o1_inside(&arena, unit),
-            "{unit} did not park inside the square: {:?}",
-            arena
-                .unit(unit)
-                .map(|state| (state.pose.x_cm, state.pose.y_cm))
-        );
-        let row = arena.reflex.unit(unit).cloned().expect("a machine");
-        let drive = motor(&arena, unit);
-        assert_eq!(row.state, MachineState::Patrol);
-        let here = arena
-            .unit(unit)
-            .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
-        assert_eq!(
-            drive.goal, here,
-            "{unit} parked: its goal is where it stands"
-        );
-        assert!(row.hunt.is_none(), "no hunt in a Hold match");
-    }
-    assert!(first.path_queries > 0, "{first:?}");
-    assert!(
-        second.path_queries * 5 <= first.path_queries,
-        "the searches did not plateau once the side had arrived: {} then {}",
-        first.path_queries,
-        second.path_queries
-    );
-    assert_eq!(
-        arena.unit(BLUE).map(|state| state.power),
-        Some(Power::Off),
-        "blue stood cold throughout"
-    );
-    // The ordered machine stood where it was told to.
-    assert_eq!(
-        arena
-            .unit(O1_RED3)
-            .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
-        Some((1, 8)),
-        "a machine under a pilot's HOLD does not drive to the spot"
-    );
-    // The release hands it back to doctrine, and doctrine drives it there.
-    let release = tacsim::arena::intents::IntentKind::ReleaseOrder {
-        squad,
-        issuer: Some(O1_PILOT),
-    };
-    let order = intent(&arena, &release);
-    let wall = arena.now_ms;
-    absorb(&arena.step(wall, &[], &[order]), &mut bytes);
-    run(&mut arena, 180_000, &mut bytes);
-    assert!(
-        o1_inside(&arena, O1_RED3),
-        "the released machine did not drive to the spot"
-    );
-    let log = events(&mut arena, &mut bytes);
-    assert_eq!(count(&log, "match_ended"), 0, "no win inside an hour");
-}
-
-/// **16b cut O.1 (plan item 32): a holder fights from inside the square.** A
-/// machine parked on the spot, and an armed hostile it holds past its
-/// `engage_cm` and inside its `release_cm` with a line — the band in which a
-/// machine outside the square drives toward a stand-off cell. The holder takes
-/// `release_cm` as its edge instead, as a machine that cannot close does: it
-/// fires within seconds without leaving its cell. The same field at a
-/// skirmish is the control — that machine drives out of the cell to close.
-/// (This file's window is 160 m across, so the band is the file's own seven to
-/// ten cells rather than the shipped tank's 420 to 600 m.)
-#[test]
-fn o1_a_holder_fights_from_inside_the_square() {
-    let units = || {
-        vec![
-            with_sight(
-                tank(
-                    RED,
-                    Team::Red,
-                    centre(4, 8),
-                    vec![cannon()],
-                    Controller::Reflex,
-                ),
-                SIGHT_CELLS,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(13, 8),
-                vec![cannon()],
-                Controller::Pilot,
-            ),
-        ]
-    };
-    // Drive a field for up to fifteen arena seconds with the hostile held,
-    // answering when the machine first fired and every cell it stood in.
-    let fight = |arena: &mut Arena| -> (Option<i64>, Vec<Option<(u16, u16)>>) {
-        let mut bytes: Vec<u8> = Vec::new();
-        let mut fired_at: Option<i64> = None;
-        let mut cells = Vec::new();
-        let mut wall = 0_i64;
-        while arena.now_ms < 15_000 && fired_at.is_none() {
-            let now = arena.now_ms;
-            plant_contact(arena, RED, BLUE, Team::Blue, now);
-            let out = arena.step(wall, &[], &[]);
-            absorb(&out, &mut bytes);
-            cells.push(
-                arena
-                    .unit(RED)
-                    .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
-            );
-            if out.motor.shots > 0 {
-                fired_at = Some(arena.now_ms);
-            }
-            wall += 500;
-        }
-        (fired_at, cells)
-    };
-    let mut arena = o1_arena(
-        o1_ground(&[], (4, 8), 1, 3_600_000),
-        units(),
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    );
-    let range = plot_range(&arena, RED, BLUE);
-    assert!(
-        range > ENGAGE_CM && range <= RELEASE_CM,
-        "the fixture needs the hostile between the two edges: {range}"
-    );
-    let (fired_at, cells) = fight(&mut arena);
-    let fired_at = fired_at.expect("the holder fired within fifteen arena seconds");
-    assert!(fired_at <= 10_000, "it fired at {fired_at} ms");
-    assert!(
-        cells.iter().all(|cell| *cell == Some((4, 8))),
-        "the holder never left its cell on the spot: {cells:?}"
-    );
-    assert!(o1_inside(&arena, RED));
-    assert_eq!(state_of(&arena, RED), Some(MachineState::Engage));
-    // The control: at a skirmish the same machine closes, leaving the cell.
-    let mut skirmish = arena_of(units(), &[], &arena_cfg(reflex_cfg()), &[BLUE]);
-    let (_, cells) = fight(&mut skirmish);
-    assert!(
-        cells.iter().any(|cell| cell.is_some_and(|(x, _)| x > 5)),
-        "a machine with no spot to hold closes on the hostile: {cells:?}"
-    );
-}
-
-/// **16b cut O.1 (plan item 33): an `Advance` into the square ends on
-/// arrival.** A machine sent by its commander to the key spot from outside the
-/// square: the moment it stands inside the square its order ends — one
-/// `order_expired` line, the row back on doctrine — and doctrine's Hold goal
-/// takes it from there, parking it inside the square with its goal where it
-/// stands and its speed ordered to nought.
-#[test]
-fn o1_an_advance_into_the_square_ends_on_arrival() {
-    let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
-    let mut arena = o1_arena(
-        ground,
-        vec![
-            tank(
-                RED,
-                Team::Red,
-                centre(1, 8),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(15, 0),
-                vec![cannon()],
-                Controller::Pilot,
-            ),
-        ],
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    );
-    let squad = arena
-        .squad_of(RED)
-        .map(|roster| roster.id)
-        .expect("the machine is in a squad");
-    let advance =
-        tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
-            squad,
-            objective: tacsim::deliberation::Objective::Advance { to: (10, 8) },
-            target: None,
-            horizon_ms: 600_000,
-            constraints: tacsim::deliberation::Constraints {
-                hold_fire: false,
-                max_range_band: None,
-            },
-            ttl_ms: 600_000,
-            issued_ms: 0,
-            issuer: None,
-            by: author(squad, None),
-            spot: None,
-        }));
-    let order = tacsim::arena::intents::Intent {
-        unit: RED,
-        channel: Channel::Helm,
-        epoch: arena.epochs.current(RED, Channel::Helm),
-        kind: advance,
-        seq: 1,
-    };
-    let mut bytes: Vec<u8> = Vec::new();
-    absorb(&arena.step(0, &[], &[order]), &mut bytes);
-    // Drive until the order ends, reading where the machine stood when it did.
-    let mut ended_inside: Option<bool> = None;
-    let mut wall = 500_i64;
-    while arena.now_ms < 30_000 && ended_inside.is_none() {
-        let out = arena.step(wall, &[], &[]);
-        absorb(&out, &mut bytes);
-        if out.motor.orders_expired > 0 {
-            ended_inside = Some(o1_inside(&arena, RED));
-        }
-        wall += 500;
-    }
-    assert_eq!(
-        ended_inside,
-        Some(true),
-        "the order ended on arrival in the square"
-    );
-    let row = arena.reflex.unit(RED).cloned().expect("a machine");
-    assert!(row.order.is_none(), "the machine is on doctrine");
-    // Doctrine's Hold goal parks it inside the square.
-    run(&mut arena, 40_000, &mut bytes);
-    assert!(arena.reflex.unit(RED).is_some(), "a machine");
-    let drive = motor(&arena, RED);
-    let here = arena
-        .unit(RED)
-        .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
-    assert!(o1_inside(&arena, RED));
-    assert_eq!(drive.goal, here, "parked where it stands");
-    assert_eq!(
-        arena.unit(RED).map(|state| state.desired_speed_cms),
-        Some(0)
-    );
-    let log = events(&mut arena, &mut bytes);
-    assert_eq!(count(&log, "order_expired"), 1, "one order_expired line");
-}
-
-/// **16b cut O.1 (plan items 16, 34; `B-41`'s lesson): a spot no route reaches
-/// is given up after one search and tried again** — `max(hunt_after_ms,
-/// repath_ms)` later, with the fallback waypoint holding in between; and at
-/// `hunt_after_ms` 0 (the documented "off") the retry is `repath_ms` after each
-/// failure, with the fallback still holding between two of them.
-#[test]
-fn o1_a_sealed_spot_is_given_up_after_one_search_and_tried_again() {
-    // A pocket walled on every side, the spot in its middle.
-    let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
-    for x in 8..=12_u16 {
-        paint.push((x, 6, wall()));
-        paint.push((x, 10, wall()));
-    }
-    for y in 6..=10_u16 {
-        paint.push((8, y, wall()));
-        paint.push((12, y, wall()));
-    }
-    let field = |cfg: ReflexConfig| {
-        o1_arena(
-            o1_ground(&paint, (10, 8), 1, 3_600_000),
-            vec![tank(
-                RED,
-                Team::Red,
-                centre(2, 3),
-                vec![cannon()],
-                Controller::Reflex,
-            )],
-            &arena_cfg(cfg),
-            &[],
-        )
-    };
-    let nodes = |arena: &Arena| -> Vec<(u16, u16)> {
-        arena
-            .definition
-            .waypoints
-            .nodes()
-            .iter()
-            .map(|node| (node.x, node.y))
-            .collect()
-    };
-
-    // At the shipped hunt clock, ninety seconds: one failed search, the
-    // fallback holds, and one more at the retry.
-    let cfg = reflex_cfg();
-    let retry = i64::from(cfg.hunt_after_ms.max(cfg.repath_ms));
-    assert_eq!(retry, 90_000);
-    let mut arena = field(cfg);
-    let mut bytes: Vec<u8> = Vec::new();
-    let early = run(&mut arena, 60_000, &mut bytes);
-    assert_eq!(early.path_failures, 1, "one failed search: {early:?}");
-    assert!(arena.reflex.unit(RED).is_some(), "a machine");
-    let drive = motor(&arena, RED);
-    let given_up = drive
-        .hold_retry_ms
-        .expect("the spot is given up until a retry");
-    assert!(
-        drive.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
-        "the fallback waypoint holds: {:?}",
-        drive.goal
-    );
-    let failed_at = given_up - retry;
-    assert!(failed_at > 0 && failed_at < 5_000, "failed at {failed_at}");
-    let late = run(&mut arena, failed_at + retry + 2_000, &mut bytes);
-    assert_eq!(late.path_failures, 1, "one more at the retry: {late:?}");
-    assert_eq!(
-        arena.motors.row(RED).and_then(|row| row.hold_retry_ms),
-        Some(failed_at + 2 * retry),
-        "given up again for the same stretch"
-    );
-
-    // At `hunt_after_ms` 0, the "off" value: the retry is floored at
-    // `repath_ms`. The floor does not change how often the spot is searched —
-    // `repath_ms` already throttles every search (`follow`'s `fresh_enough`),
-    // so twenty seconds buy five failures either way — but what the machine
-    // does BETWEEN two failures: each failure gives the spot up until exactly
-    // `repath_ms` after it, and on every tick in between the fallback waypoint
-    // is the goal and the sealed spot is not. Unfloored, the retry would be the
-    // failure's own millisecond, `hold_goal` would re-assert the spot on the
-    // very next tick, and the machine would steer at the pocket between
-    // searches — `B-41`'s defect.
-    let off = ReflexConfig {
-        hunt_after_ms: 0,
-        repath_ms: 4_000,
-        ..reflex_cfg()
-    };
-    let mut arena = field(off);
-    let mut bytes: Vec<u8> = Vec::new();
-    let mut failures = 0_u32;
-    let mut between = 0_u32;
-    let mut wall = arena.now_ms;
-    while arena.now_ms < 20_500 {
-        let opened = arena.now_ms;
-        let out = arena.step(wall, &[], &[]);
-        absorb(&out, &mut bytes);
-        failures += out.motor.path_failures;
-        assert!(arena.reflex.unit(RED).is_some(), "a machine");
-        let drive = motor(&arena, RED);
-        if out.motor.path_failures > 0 {
-            // The failure fell in this pulse, `(opened, now]`; its retry is
-            // `repath_ms` after it.
-            let failed_at = drive.hold_retry_ms.map(|until| until - 4_000);
-            assert!(
-                failed_at.is_some_and(|at| at >= opened && at <= arena.now_ms),
-                "the retry is not the failure plus `repath_ms`: {:?} in {opened}..{}",
-                drive.hold_retry_ms,
-                arena.now_ms
-            );
-        } else if drive
-            .hold_retry_ms
-            .is_some_and(|until| arena.now_ms < until)
-        {
-            between += 1;
-            assert!(
-                drive.goal.is_some_and(|goal| nodes(&arena).contains(&goal)),
-                "between two failures the fallback waypoint holds, at {}: {:?}",
-                arena.now_ms,
-                drive.goal
-            );
-        }
-        wall += 500;
-    }
-    assert!(
-        (4..=6).contains(&failures),
-        "one failed search per `repath_ms`: {failures}"
-    );
-    assert!(
-        between >= 10,
-        "the fallback held on only {between} ticks between failures"
-    );
-}
-
-/// What [`o1_a_holder_with_no_line_waits_on_the_spot`] reads of one field: every
-/// cell the machine stood in, the states it was in, and the rounds it fired.
-type O1Wait = (Vec<Option<(u16, u16)>>, Vec<MachineState>, u32);
-
-/// **16b cut O.1 (plan item 32): a holder with no line waits on the spot.**
-/// A machine parked on the key spot holds a hostile between its `engage_cm`
-/// and its `release_cm`, with a wall cell squarely between them. Inside the
-/// square its edge is `release_cm`, so the hostile is inside it; with no line
-/// there, a machine off the spot closes on the plot's own cell (E.1's reading)
-/// — and a holder that did would walk off the square cell by cell. It stands
-/// instead, in `Approach`, for as long as the line is blocked. The same field
-/// at a skirmish is the control: that machine leaves its cell.
-#[test]
-fn o1_a_holder_with_no_line_waits_on_the_spot() {
-    let units = || {
-        vec![
-            with_sight(
-                tank(
-                    RED,
-                    Team::Red,
-                    centre(4, 8),
-                    vec![cannon()],
-                    Controller::Reflex,
-                ),
-                SIGHT_CELLS,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(12, 8),
-                vec![cannon()],
-                Controller::Pilot,
-            ),
-        ]
-    };
-    let curtain = [(8_u16, 8_u16, wall())];
-    // Fifteen arena seconds with the hostile held: every cell the machine
-    // stood in, the states it was in, and the rounds it fired.
-    let wait = |arena: &mut Arena| -> O1Wait {
-        let mut bytes: Vec<u8> = Vec::new();
-        let mut cells = Vec::new();
-        let mut states = Vec::new();
-        let mut shots = 0_u32;
-        let mut wall = 0_i64;
-        while arena.now_ms < 15_000 {
-            let now = arena.now_ms;
-            plant_contact(arena, RED, BLUE, Team::Blue, now);
-            let out = arena.step(wall, &[], &[]);
-            absorb(&out, &mut bytes);
-            shots += out.motor.shots;
-            cells.push(
-                arena
-                    .unit(RED)
-                    .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
-            );
-            states.extend(state_of(arena, RED));
-            wall += 500;
-        }
-        (cells, states, shots)
-    };
-    let mut arena = o1_arena(
-        o1_ground(&curtain, (4, 8), 1, 3_600_000),
-        units(),
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    );
-    let range = plot_range(&arena, RED, BLUE);
-    assert!(
-        range > ENGAGE_CM && range <= RELEASE_CM,
-        "the fixture needs the hostile between the two edges: {range}"
-    );
-    let (cells, states, shots) = wait(&mut arena);
-    assert_eq!(shots, 0, "no line, no shot");
-    assert!(
-        states.contains(&MachineState::Approach),
-        "the machine never took the hostile: {states:?}"
-    );
-    assert!(
-        !states.contains(&MachineState::Engage),
-        "the wall is between them: {states:?}"
-    );
-    assert!(
-        cells.iter().all(|cell| *cell == Some((4, 8))),
-        "the holder left its cell on the spot: {cells:?}"
-    );
-    assert!(o1_inside(&arena, RED));
-    // The control: at a skirmish the same machine closes on the hostile.
-    let mut skirmish = arena_of(units(), &curtain, &arena_cfg(reflex_cfg()), &[BLUE]);
-    let (cells, _, _) = wait(&mut skirmish);
-    assert!(
-        cells.iter().any(|cell| cell.is_some_and(|(x, _)| x > 5)),
-        "a machine with no spot to hold closes on the hostile: {cells:?}"
-    );
-}
-
-/// **16b cut O.1 (plan item 33): an `Advance` to a cell on the square's edge
-/// hands over one cell short of it.** The ordered cell is the west edge of the
-/// square; a machine driving at it from the west stops within
-/// [`tacsim::arena::motor::ARRIVE_CELLS`] of it — which can be outside the
-/// square — and an order ended only by standing inside would then stand for
-/// its whole TTL. Ended at `follow`'s own arrival instead: one
-/// `order_expired`, and doctrine's Hold goal drives it the last cells in.
-#[test]
-fn o1_an_advance_to_the_squares_edge_hands_over_where_it_stops() {
-    let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
-    let mut arena = o1_arena(
-        ground,
-        vec![
-            tank(
-                RED,
-                Team::Red,
-                centre(1, 8),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(15, 0),
-                vec![cannon()],
-                Controller::Pilot,
-            ),
-        ],
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    );
-    let edge = (7_u16, 8_u16);
-    assert!(arena.hold.is_some_and(
-        |hold| hold.square_contains(edge) && !hold.square_contains((edge.0 - 1, edge.1))
-    ));
-    let order = o1_advance(&arena, RED, edge);
-    let mut bytes: Vec<u8> = Vec::new();
-    absorb(&arena.step(0, &[], &[order]), &mut bytes);
-    let mut ended_at: Option<(u16, u16)> = None;
-    let mut wall = 500_i64;
-    while arena.now_ms < 30_000 && ended_at.is_none() {
-        let out = arena.step(wall, &[], &[]);
-        absorb(&out, &mut bytes);
-        if out.motor.orders_expired > 0 {
-            ended_at = arena
-                .unit(RED)
-                .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
-        }
-        wall += 500;
-    }
-    let ended_at = ended_at.expect("the order ended within thirty arena seconds");
-    assert!(
-        ended_at.0.abs_diff(edge.0).max(ended_at.1.abs_diff(edge.1))
-            <= tacsim::arena::motor::ARRIVE_CELLS,
-        "it ended where `follow` stops: {ended_at:?}"
-    );
-    assert!(
-        arena
-            .reflex
-            .unit(RED)
-            .is_some_and(|row| row.order.is_none()),
-        "the machine is on doctrine"
-    );
-    run(&mut arena, 45_000, &mut bytes);
-    assert!(o1_inside(&arena, RED), "doctrine drove it into the square");
-    assert!(arena.reflex.unit(RED).is_some(), "a machine");
-    let drive = motor(&arena, RED);
-    let here = arena
-        .unit(RED)
-        .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
-    assert_eq!(drive.goal, here, "parked where it stands");
-    let log = events(&mut arena, &mut bytes);
-    assert_eq!(count(&log, "order_expired"), 1, "one order_expired line");
-}
-
-/// A squad `Advance { to }` for `unit`, on the helm, as the commander sends it.
-fn o1_advance(arena: &Arena, unit: ObjId, to: (u16, u16)) -> tacsim::arena::intents::Intent {
-    let squad = arena
-        .squad_of(unit)
-        .map(|roster| roster.id)
-        .expect("the machine is in a squad");
-    tacsim::arena::intents::Intent {
-        unit,
-        channel: Channel::Helm,
-        epoch: arena.epochs.current(unit, Channel::Helm),
-        kind: tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
-            squad,
-            objective: tacsim::deliberation::Objective::Advance { to },
-            target: None,
-            horizon_ms: 600_000,
-            constraints: tacsim::deliberation::Constraints {
-                hold_fire: false,
-                max_range_band: None,
-            },
-            ttl_ms: 600_000,
-            issued_ms: 0,
-            issuer: None,
-            by: author(squad, None),
-            spot: None,
-        })),
-        seq: 1,
-    }
-}
-
-/// **The Hold machines' two fields for the cross-tempo property** (16b cut
-/// O.1; 16b §11): (a) a machine on doctrine driving to the spot and parking,
-/// beside one sent there by an `Advance` at pulse `0` that hands over on
-/// arrival; (b) a machine whose spot is sealed, giving it up and retrying
-/// every `max(hunt_after_ms, repath_ms)` with the fallback between.
-fn o1_drive_and_hand_over() -> Arena {
-    o1_arena(
-        o1_ground(&[], (10, 8), 3, 3_600_000),
-        vec![
-            tank(
-                RED,
-                Team::Red,
-                centre(1, 4),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                RED2,
-                Team::Red,
-                centre(1, 12),
-                vec![cannon()],
-                Controller::Reflex,
-            ),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(15, 0),
-                vec![cannon()],
-                Controller::Pilot,
-            ),
-        ],
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    )
-}
-
-fn o1_sealed_spot() -> Arena {
-    let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
-    for x in 8..=12_u16 {
-        paint.push((x, 6, wall()));
-        paint.push((x, 10, wall()));
-    }
-    for y in 6..=10_u16 {
-        paint.push((8, y, wall()));
-        paint.push((12, y, wall()));
-    }
-    o1_arena(
-        o1_ground(&paint, (10, 8), 1, 3_600_000),
-        vec![tank(
-            RED,
-            Team::Red,
-            centre(2, 3),
-            vec![cannon()],
-            Controller::Reflex,
-        )],
-        &arena_cfg(ReflexConfig {
-            hunt_after_ms: 10_000,
-            repath_ms: 4_000,
-            ..reflex_cfg()
-        }),
-        &[],
-    )
-}
-
-/// One 5,000 ms boundary of the drive: the arena millisecond, and whether each
-/// red machine stands inside the square.
-type O1Parked = (i64, bool, bool);
-
-/// One 5,000 ms boundary of the sealed spot: the millisecond, and the retry
-/// clock.
-type O1Retry = (i64, Option<i64>);
-
-/// **16b cut O.1 (16b §11: mandatory): the Hold machines are one event list and
-/// one hash sequence at 5,000, 1,000 and 500 ms.** `hold_goal`'s park, the
-/// `Advance` handed over on arrival, and the sealed spot's give-up and retry
-/// (`MotorRow::hold_retry_ms`, which the hash folds) each happen at an arena
-/// millisecond no cadence can move. Sampled at every 5,000 ms boundary — a
-/// multiple of all three — the two red machines' squares and the sealed
-/// machine's retry clock are the same too, and the arcs really happen.
-#[test]
-fn o1_the_hold_machines_are_one_event_list_and_one_hash_sequence_at_three_cadences() {
-    let cadences = [5_000_i64, 1_000, 500];
-    let advance = |arena: &Arena, pulse: u32| {
-        if pulse == 0 {
-            vec![o1_advance(arena, RED2, (10, 8))]
-        } else {
-            Vec::new()
-        }
-    };
-    let mut drives: Vec<(Replay, Vec<O1Parked>)> = Vec::new();
-    for cadence in cadences {
-        let mut seen: Vec<O1Parked> = Vec::new();
-        let replay = replay_with(
-            cadence,
-            40_000,
-            o1_drive_and_hand_over(),
-            &advance,
-            &mut |arena: &mut Arena| {
-                if arena.now_ms % 5_000 == 0 {
-                    seen.push((arena.now_ms, o1_inside(arena, RED), o1_inside(arena, RED2)));
-                }
-            },
-        );
-        drives.push((replay, seen));
-    }
-    let mut sealed: Vec<(Replay, Vec<O1Retry>)> = Vec::new();
-    for cadence in cadences {
-        let mut seen: Vec<O1Retry> = Vec::new();
-        let replay = replay_with(
-            cadence,
-            35_000,
-            o1_sealed_spot(),
-            &|_, _| Vec::new(),
-            &mut |arena: &mut Arena| {
-                if arena.now_ms % 5_000 == 0 {
-                    seen.push((
-                        arena.now_ms,
-                        arena.motors.row(RED).and_then(|row| row.hold_retry_ms),
-                    ));
-                }
-            },
-        );
-        sealed.push((replay, seen));
-    }
-    // The arcs happened: the ordered machine handed over, and both ended on the
-    // spot; the sealed machine gave the spot up more than once.
-    let (first, parked) = drives.first().expect("three replays");
-    assert!(
-        first
-            .events
-            .iter()
-            .any(|(_, kind, _)| kind.contains("order_expired")),
-        "the Advance never handed over: {:?}",
-        first.events
-    );
-    assert_eq!(
-        parked.last(),
-        Some(&(40_000, true, true)),
-        "both machines ended inside the square: {parked:?}"
-    );
-    let (_, retries) = sealed.first().expect("three replays");
-    let mut stamps: Vec<i64> = retries.iter().filter_map(|(_, until)| *until).collect();
-    stamps.dedup();
-    assert!(
-        stamps.len() >= 2,
-        "the sealed spot was given up fewer than twice: {retries:?}"
-    );
-    for (name, runs) in [
-        (
-            "drive",
-            drives.iter().map(|(run, _)| run).collect::<Vec<_>>(),
-        ),
-        (
-            "sealed",
-            sealed.iter().map(|(run, _)| run).collect::<Vec<_>>(),
-        ),
-    ] {
-        let first = runs.first().expect("three replays");
-        assert!(
-            first.hashes.len() >= 100,
-            "{name}: {} substeps",
-            first.hashes.len()
-        );
-        for (at, run) in runs.iter().enumerate().skip(1) {
-            let cadence = cadences.get(at).copied().unwrap_or(0);
-            assert_ne!(run.pulses, first.pulses, "{name}: one run, not three");
-            assert_eq!(
-                run.events, first.events,
-                "{name}: the event list diverged at {cadence} ms"
-            );
-            assert_eq!(
-                run.hashes, first.hashes,
-                "{name}: the hash sequence diverged at {cadence} ms"
-            );
-            assert_eq!(
-                run.finals, first.finals,
-                "{name}: the field ended differently at {cadence} ms"
-            );
-        }
-    }
-    for (at, (_, seen)) in drives.iter().enumerate().skip(1) {
-        assert_eq!(seen, parked, "the squares diverged at run {at}");
-    }
-    for (at, (_, seen)) in sealed.iter().enumerate().skip(1) {
-        assert_eq!(seen, retries, "the retry clock diverged at run {at}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // 16b cut O.3 — the inert rule (16c N13)
 // ---------------------------------------------------------------------------
 
 /// **A `target_mk1` off the fielded catalog**, checked out by the production
-/// functions (`match_::custody_unit`) under the reflex controller: the real
-/// five sections, the power role alone, no weapon, no sensor, zero speed.
+/// functions (`match_::custody_unit`) flown by a unit mind (17b cut M4.6b;
+/// the reflex controller until then), as `match_::start` checks out every
+/// unseated hull: the real five sections, the power role alone, no weapon, no
+/// sensor, zero speed.
 fn o3_target(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
     let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
         .expect("the fielded content binds");
@@ -11530,7 +10065,7 @@ fn o3_target(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         team,
         pose,
         0,
-        Controller::Reflex,
+        Controller::Mind,
         1,
         &tacsim::match_::SealTerms::fixture(),
     )
@@ -11579,23 +10114,41 @@ fn o3_destroy_section(arena: &mut Arena, unit: ObjId, section: &str) {
 /// **The inert rule** (16b cut O.3; 16c N13; plan items 7 and 41(d)): a unit that
 /// cannot move and carries no weapon starts up and then does nothing at all.
 ///
-/// A `target_mk1` under the reflex controller, on a window with a patrol graph —
-/// which a machine that could move would walk, spending path searches — comes
-/// online after `match.startup_ms` and then, over a minute of arena time, makes
-/// no path search and stages no order but the one `STARTUP`, and stands in
-/// `Patrol` with no goal. An armed machine beside it engages it. And it is out
-/// of action by each of doc 16 §3.8's three routes for its hull — wrecked, both
-/// tracks gone, the engine killed through the hull's rear — and by nothing less:
-/// one track, the turret (whose `remove_weapons` has nothing to remove) or a
-/// hull hit that leaves the hull standing leave it in action.
+/// A `target_mk1` on a window with a patrol graph — which a machine that could
+/// move would walk, spending path searches — comes online after
+/// `match.startup_ms` and then, over a minute of arena time, makes no path
+/// search and stages no order but the one `STARTUP`, and stands parked with no
+/// goal. An armed machine beside it engages it. And it is out of action by each
+/// of doc 16 §3.8's three routes for its hull — wrecked, both tracks gone, the
+/// engine killed through the hull's rear — and by nothing less: one track, the
+/// turret (whose `remove_weapons` has nothing to remove) or a hull hit that
+/// leaves the hull standing leave it in action.
+///
+/// **17b cut M4.6b, on the unit mind** (the owner's STOP B ruling of
+/// 2026-10-09 in its "power up, then park" form: the mind's view reads
+/// `immobile` for a hull with no authored speed once its power is `Online`).
+/// The target is a `Controller::Mind`, as production checks it out, and so is
+/// the armed machine beside it. Every claim of the reflex fixture is kept but
+/// the state it parks in, re-pinned `Patrol` → `Disabled` under the ruling
+/// ("only the range fixtures re-pin"): cold, its view reads it mobile, so its
+/// first think takes the stock mind's power arm and emits the one `STARTUP`;
+/// online, its view reads `immobile` with no weapon rows — the `Disabled` edge
+/// — and every think after resets its memory to `Disabled` and emits nothing.
+/// So it still comes online (a thermal sight reads it hot), still makes no
+/// search, still stages exactly one intent, and still stands where its pod put
+/// it; where the reflex parked it in `Patrol` with no goal, a mind parks it in
+/// `Disabled` with no goal — its motor row's goal and route and its memory's
+/// target, hunt and last plot empty (the reflex row's fields, read off the
+/// mind's memory). Stepped settled, so the reads between pulses see every
+/// think written.
 #[test]
-fn o3_an_inert_target_starts_up_and_searches_nothing() {
+fn t1_an_inert_target_starts_up_and_searches_nothing() {
     let target = || o3_target(BLUE, Team::Blue, centre(9, 8));
     // Alone: nothing to see, nothing to shoot, a graph to walk.
     let mut arena = arena_of(vec![target()], &[], &arena_cfg(reflex_cfg()), &[]);
     assert_eq!(arena.unit(BLUE).map(|unit| unit.power), Some(Power::Off));
     let mut bytes: Vec<u8> = Vec::new();
-    let counters = run(&mut arena, 60_000, &mut bytes);
+    let counters = run_settled(&mut arena, 60_000, &mut bytes);
     assert_eq!(
         arena.unit(BLUE).map(|unit| unit.power),
         Some(Power::Online),
@@ -11603,11 +10156,14 @@ fn o3_an_inert_target_starts_up_and_searches_nothing() {
     );
     assert_eq!(counters.path_queries, 0, "it searches for nothing");
     assert_eq!(counters.intents, 1, "the one `STARTUP`, and no other order");
-    assert_eq!(state_of(&arena, BLUE), Some(MachineState::Patrol));
-    let row = arena.reflex.unit(BLUE).cloned().expect("a machine");
+    // Re-pinned (STOP B): parked in `Disabled`, where the reflex parked it in
+    // `Patrol`.
+    assert_eq!(machine_state_of(&arena, BLUE), Some(MachineState::Disabled));
+    let memory = stock_memory_of(&arena, BLUE);
+    assert_eq!(memory.state, MachineState::Disabled);
     let drive = motor(&arena, BLUE);
-    assert_eq!((drive.goal, row.target, row.hunt), (None, None, None));
-    assert!(drive.route.is_empty() && row.last_plot.is_none());
+    assert_eq!((drive.goal, memory.target, memory.hunt), (None, None, None));
+    assert!(drive.route.is_empty() && memory.last_plot.is_none());
     let log = events(&mut arena, &mut bytes);
     assert_eq!(count(&log, "startup"), 1);
     assert_eq!(
@@ -11627,7 +10183,7 @@ fn o3_an_inert_target_starts_up_and_searches_nothing() {
                     Team::Red,
                     centre(5, 8),
                     vec![cannon()],
-                    Controller::Reflex,
+                    Controller::Mind,
                 ),
                 10,
             ),
@@ -11638,7 +10194,7 @@ fn o3_an_inert_target_starts_up_and_searches_nothing() {
         &[],
     );
     let mut bytes: Vec<u8> = Vec::new();
-    run(&mut arena, 30_000, &mut bytes);
+    run_settled(&mut arena, 30_000, &mut bytes);
     let log = events(&mut arena, &mut bytes);
     assert!(count(&log, "fired") > 0, "the armed machine shoots at it");
     assert!(
@@ -11696,13 +10252,20 @@ fn o3_an_inert_target_starts_up_and_searches_nothing() {
 /// patrolling machine — the machine on the waypoint graph, the target standing
 /// — is one event list and one hash sequence at 5,000, 1,000 and 500 ms, and the
 /// target's machine row is the same parked row at every one of them.
+///
+/// **17b cut M4.6b, on the unit mind** (the owner's STOP B ruling of
+/// 2026-10-09, "power up, then park"): the patrolling machine (unarmed, with
+/// speed) and the target are `Controller::Mind`s, stepped settled; every claim
+/// is kept but the parked state, re-pinned `Patrol` → `Disabled` under the
+/// ruling — the target starts up, then reads `immobile` with no weapon rows on
+/// its view and parks on the `Disabled` edge.
 #[test]
-fn o3_an_inert_target_is_the_same_at_three_cadences() {
+fn t1_an_inert_target_is_the_same_at_three_cadences() {
     let mut first: Option<(Vec<String>, Vec<u64>)> = None;
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = arena_of(
             vec![
-                tank(RED, Team::Red, centre(3, 8), Vec::new(), Controller::Reflex),
+                tank(RED, Team::Red, centre(3, 8), Vec::new(), Controller::Mind),
                 o3_target(BLUE, Team::Blue, centre(12, 3)),
             ],
             &[],
@@ -11714,7 +10277,7 @@ fn o3_an_inert_target_is_the_same_at_three_cadences() {
         let mut wall = 0_i64;
         while arena.now_ms < 30_000 {
             arena.clock.pin_tempo_for_tests(Tempo::Quiet);
-            let out = arena.step(wall, &[], &[]);
+            let out = arena.step_settled(wall, &[], &[]);
             for chunk in &out.ledger_chunks {
                 bytes.extend_from_slice(&chunk.bytes);
             }
@@ -11732,7 +10295,9 @@ fn o3_an_inert_target_is_the_same_at_three_cadences() {
                 )
             })
             .collect();
-        assert_eq!(state_of(&arena, BLUE), Some(MachineState::Patrol));
+        // Re-pinned (STOP B): `Disabled`, where the reflex parked it in
+        // `Patrol`.
+        assert_eq!(machine_state_of(&arena, BLUE), Some(MachineState::Disabled));
         match &first {
             None => first = Some((log, hashes)),
             Some((events, sequence)) => {
@@ -11753,19 +10318,18 @@ fn o3_an_inert_target_is_the_same_at_three_cadences() {
 /// **A drone** (16b cut AE.3): [`tank`] with no weapon and a rules blob that
 /// declares `"class": "drone"`, so `Arena::new` reads it as the class the end
 /// rules key on — and nothing about the machine flying it reads the class at
-/// all, which is what the tests below are about. **17b cut M4.4**: under
-/// `controller` — a `Controller::Mind` for the ported fields, the reflex for
-/// the Hold-match STOP.
-fn ae3_drone(
-    id: ObjId,
-    team: Team,
-    cell: (u16, u16),
-    sight: u16,
-    share: u16,
-    controller: Controller,
-) -> CustodyUnit {
+/// all, which is what the tests below are about. **17b cut M4.4**: flown by a
+/// `Controller::Mind` (and, until 17b cut M4.6b deleted the Hold-match STOP's
+/// residue, by the reflex there — so the builder lost its `controller`).
+fn ae3_drone(id: ObjId, team: Team, cell: (u16, u16), sight: u16, share: u16) -> CustodyUnit {
     let mut unit = with_mesh(
-        tank(id, team, centre(cell.0, cell.1), Vec::new(), controller),
+        tank(
+            id,
+            team,
+            centre(cell.0, cell.1),
+            Vec::new(),
+            Controller::Mind,
+        ),
         sight,
         share,
     );
@@ -11810,9 +10374,13 @@ fn ae3_drone(
 ///    has nothing to stand for (`withdraw_stand` answers none).
 ///
 /// The reflex fixture's fourth field — the drone in a Hold match drives to
-/// the spot and holds nothing — is a STOP (the Hold match is not on the
-/// view) and stays on the reflex as
-/// [`ae3_a_released_drone_in_a_hold_match_drives_to_the_spot_and_holds_nothing`].
+/// the spot and holds nothing — was a STOP (the Hold match is not on the
+/// view) and stayed on the reflex as
+/// `ae3_a_released_drone_in_a_hold_match_drives_to_the_spot_and_holds_nothing`
+/// until 17b cut M4.6b deleted it: the owner carried STOP A to M5, the loss
+/// recorded in doc 17 §24. Its "a drone alone on the square holds nothing"
+/// half stays pinned beside it by `arena::state`'s
+/// `ae3_a_drone_holds_nothing_and_contests_nothing`.
 #[test]
 fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
     use tacsim::definitions::UnitClass;
@@ -11833,7 +10401,7 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
     // (1) Alone: the patrol, then the hunt, then the arrival.
     let mut arena = arena_of(
         vec![
-            ae3_drone(RED, Team::Red, (6, 3), E4_SIGHT_CELLS, 0, Controller::Mind),
+            ae3_drone(RED, Team::Red, (6, 3), E4_SIGHT_CELLS, 0),
             tank(
                 BLUE,
                 Team::Blue,
@@ -11898,7 +10466,7 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
     // (2) On the mesh: the drone sees what its tank cannot, and says so.
     let mut arena = arena_of(
         vec![
-            ae3_drone(RED, Team::Red, (8, 8), E4_SIGHT_CELLS, 10, Controller::Mind),
+            ae3_drone(RED, Team::Red, (8, 8), E4_SIGHT_CELLS, 10),
             with_mesh(
                 tank(
                     RED2,
@@ -11989,84 +10557,4 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
         drive.goal
     );
     never_fights(&arena, RED);
-}
-
-/// **16b cut AE.3's fourth field, left on the reflex controller** (17b cut
-/// M4.4: a STOP — the Hold match, as the o1 fixtures above): a released drone
-/// in a Hold match drives to the spot like any machine — `hold_goal` is not
-/// gated on arms, and the pack note and the help say so — and on the square
-/// it holds nothing. O.1's field: the spot at (10, 8), three cells round it,
-/// an hour-long clock, and a blue tank standing cold out of the drone's
-/// three-cell sight at (15, 0). The match mode and the Hold rule are not on
-/// a mind's view (`NativeStockMind::think` hands `decide` `hold: None`), so
-/// a mind's drive to the spot is unreachable until the Hold rule reaches the
-/// view (a keyframe field: M5). The fixture's other three fields are ported
-/// as [`t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees`].
-#[test]
-fn ae3_a_released_drone_in_a_hold_match_drives_to_the_spot_and_holds_nothing() {
-    let never_fights = |arena: &Arena, unit: ObjId| {
-        let state = state_of(arena, unit);
-        assert!(
-            !matches!(state, Some(MachineState::Approach | MachineState::Engage)),
-            "a drone has no gun to close with: {state:?} at {} ms",
-            arena.now_ms
-        );
-        assert_eq!(
-            arena.unit(unit).and_then(|state| state.lock),
-            None,
-            "and it locks nothing"
-        );
-    };
-    let mut arena = o1_arena(
-        o1_ground(&[], (10, 8), 3, 3_600_000),
-        vec![
-            ae3_drone(RED, Team::Red, (1, 4), 3, 0, Controller::Reflex),
-            tank(
-                BLUE,
-                Team::Blue,
-                centre(15, 0),
-                vec![cannon()],
-                Controller::Pilot,
-            ),
-        ],
-        &arena_cfg(reflex_cfg()),
-        &[BLUE],
-    );
-    let mut bytes: Vec<u8> = Vec::new();
-    let mut wall = arena.now_ms;
-    let mut reached = false;
-    while arena.now_ms < 60_000 {
-        let out = arena.step(wall, &[], &[]);
-        absorb(&out, &mut bytes);
-        never_fights(&arena, RED);
-        if o1_inside(&arena, RED) {
-            reached = true;
-            break;
-        }
-        wall += 500;
-    }
-    assert!(
-        reached,
-        "the drone never drove onto the square: it stands at {:?}",
-        arena
-            .unit(RED)
-            .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
-    );
-    // On it, and on it for a while: no presence, no clock, no end.
-    let until = arena.now_ms + 20_000;
-    run(&mut arena, until, &mut bytes);
-    assert!(o1_inside(&arena, RED), "the drone left the square");
-    assert_eq!(
-        arena.hold_presence(),
-        None,
-        "a drone alone on the square holds nothing"
-    );
-    assert_eq!(
-        arena.hold.and_then(|hold| hold.held_by),
-        None,
-        "no Hold clock opened for red"
-    );
-    let log = events(&mut arena, &mut bytes);
-    assert_eq!(count(&log, "match_ended"), 0, "and nothing ended");
-    assert_eq!(count(&log, "fired"), 0, "a drone fires nothing");
 }

@@ -2330,32 +2330,35 @@ fn facing(x: u16, y: u16, heading_mdeg: u32) -> Pose {
 
 /// **A range, as `SIM RANGE 2` fields one** (16b cut O.3; 16c N13): two stock
 /// tanks, seated, on red, and two `target_mk1`s with nobody in them on blue —
-/// so the reflex controller's, as `match_::start` makes any unseated unit —
-/// checked out at [`tacsim::arena::MatchMode::Range`]. Red 1 stands four cells
-/// in front of the first target, which faces it; red 2 stands four cells behind
-/// the second, which faces away — the rear band, hull 40, engine 30, turret 30.
+/// so a unit mind's, as `match_::start` checks out any unseated unit since 17b
+/// cut M4.3 — checked out at [`tacsim::arena::MatchMode::Range`]. Red 1 stands
+/// four cells in front of the first target, which faces it; red 2 stands four
+/// cells behind the second, which faces away — the rear band, hull 40, engine
+/// 30, turret 30.
 ///
-/// **17b cut M4.5a — held on the reflex for STOP B.** Its one user,
-/// [`o3_a_range_ends_when_the_last_target_is_out_of_action_at_three_cadences`],
-/// stays on the reflex controller untouched: on a unit mind an authored zero
-/// speed is not `immobile` on the view, so a target's mind starts up, searches
-/// the graph and turns in place (30,000 mdeg/s), and the rear target can turn
-/// its front to its shooter. Since 17b cut M4.3 production checks every
-/// unseated hull out `Controller::Mind` (`match_::start`), range targets
-/// included, so this field no longer describes production's range — the
-/// owner's STOP B decides it. [`o3_a_range_whose_shooters_run_dry_is_not_spent`]
-/// fields the targets as minds through [`range_field`].
+/// **17b cut M4.6b — on the unit mind** (the owner's STOP B ruling of
+/// 2026-10-09, "power up, then park"; the reflex controller flew it from 17b
+/// cut M4.5a until then). A target's mind reads its view mobile while cold,
+/// so its first think starts it up; once online the view reads it `immobile`
+/// (no authored speed) with no weapon rows — the stock mind's `Disabled` edge
+/// — and it parks: no goal, no search, no turn, so the rear target keeps its
+/// rear to its shooter, which is this field's premise. Until this cut the
+/// view's `immobile` was `limits.motion_disabled` alone and 17b cut M4.5a held
+/// this field on the reflex, reading that a target's mind would search a
+/// graph and turn in place (30,000 mdeg/s); on this field — no waypoint graph,
+/// and a target with no sight has no contact to turn to — the claims hold
+/// with or without the view's STOP B reading (17b cut M4.6b checked both).
 fn range_arena() -> Arena {
     range_field(
         tacsim::definitions::content::TARGET_MK1,
-        tacsim::arena::state::Controller::Reflex,
+        tacsim::arena::state::Controller::Mind,
     )
 }
 
 /// [`range_arena`]'s field with `blue` standing on the targets' two pods — the
 /// target itself, or (for the `spent` contrast) an armed stock tank — checked
-/// out under `controller` (17b cut M4.5a: the reflex for STOP B's
-/// [`range_arena`], a unit mind for every other user).
+/// out under `controller` (a unit mind for every user since 17b cut M4.6b;
+/// 17b cut M4.5a held [`range_arena`] on the reflex for STOP B until then).
 fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Arena {
     use tacsim::arena::state::Controller;
     let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
@@ -2484,7 +2487,11 @@ fn range_script() -> Vec<Beat> {
 /// sequence at 5,000, 1,000 and 500 ms; exactly one `match_ended`, an
 /// elimination with red the winner; never `spent` (a target is not armed at
 /// check-out, `Arena::spent`); and no path search at all from the targets, which
-/// are the only reflex units on the field (the inert rule, `reflex.rs`).
+/// are the only machines on the field (the inert rule: on the reflex until 17b
+/// cut M4.6b, `reflex.rs`; since, a target's unit mind, which starts up and
+/// then parks on Standard Doctrine's `Disabled` edge once its view reads it
+/// `immobile` — the owner's STOP B ruling). Every claim is the reflex
+/// fixture's, unchanged; the targets are minds through [`range_arena`].
 #[test]
 fn o3_a_range_ends_when_the_last_target_is_out_of_action_at_three_cadences() {
     let mut runs: Vec<(i64, Replay)> = Vec::new();
@@ -2652,8 +2659,9 @@ fn o3_a_range_ends_when_the_last_target_is_out_of_action_at_three_cadences() {
 /// checked out `Controller::Mind`, as `match_::start` checks out every
 /// unseated hull since 17b cut M4.3, where they were the reflex controller's.
 /// Every claim is the same: `spent` and the elimination read the field's arms
-/// and condition, not its controller, so a target's mind starting up and
-/// turning in place changes nothing asserted.
+/// and condition, not its controller, so what a target's mind does — since
+/// 17b cut M4.6b (the owner's STOP B ruling) start up and then park, until
+/// then start up and turn in place — changes nothing asserted.
 #[test]
 fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
     let startup = vec![Beat {

@@ -84,14 +84,17 @@
 //! late (`fallback`). `crates/tacsim/tests/twin.rs` counts every one of them
 //! against the reflex's own readers.
 //!
-//! Three residuals, recorded for 17b cut M4: the view carries no authored
-//! speed, so a hull authored with none reads as able to close (`immobile` is
-//! the view's `cannot_close`); no cost row, so every picker is asked for
-//! [`CostRow::Tracked`] (the twin lane fields stock line tanks only); and no
-//! match mode, so a think does not know a Hold match from a skirmish and the
-//! Hold arms below run only for a caller that hands them the objective —
-//! this module's own tests do, and no production think can until the mode is
-//! on the view.
+//! Two residuals, recorded for 17b cut M4: no cost row, so every picker is
+//! asked for [`CostRow::Tracked`] (the twin lane fields stock line tanks
+//! only); and no match mode, so a think does not know a Hold match from a
+//! skirmish and the Hold arms below run only for a caller that hands them
+//! the objective — this module's own tests do, and no production think can
+//! until the mode is on the view (the owner carried it to M5: doc 17 §24,
+//! STOP A). A third, the view carrying no authored speed, is closed since
+//! 17b cut M4.6b (the owner's STOP B ruling, 2026-10-09): the view's
+//! `immobile` is motion disabled, or `cannot_close` once the power is
+//! `Online` (`Arena::mind_view`) — so the range's target starts up, then
+//! reads the `Disabled` edge and parks.
 //!
 //! # No draw, no clock
 //!
@@ -1011,8 +1014,9 @@ impl NativeStockMind {
         let mut order: Option<&FrameOrder> = obeyed(view, mem);
         let ends = match order.map(|order| order.objective) {
             // 16b cut AA.1 (`B-76`): an `Advance` a hull that cannot close can
-            // never carry out. `immobile` is the view's `cannot_close`; the
-            // hull authored with no speed is M4's residual.
+            // never carry out. `immobile` is motion disabled, or `cannot_close`
+            // once the power is online (17b cut M4.6b: a hull authored with no speed)
+            // (the owner's STOP B ruling).
             Some(MindObjective::Advance { .. }) if view.immobile => true,
             // 16b cut O.1: an `Advance` into the Hold square, arrived.
             Some(MindObjective::Advance { to })
@@ -1037,9 +1041,12 @@ impl NativeStockMind {
         //
         // A hull that cannot move and carries no weapon is inert. Over the view
         // that is `immobile` and no weapon rows — which is the `Disabled` edge's
-        // own reading above, so it never reaches here: a hull AUTHORED with no
-        // speed (the range's target) is the case the view cannot tell, M4's
-        // residual.
+        // own reading above, so it never reaches here. Since 17b cut M4.6b (the
+        // owner's STOP B ruling, "power up, then park") a hull AUTHORED with no
+        // speed (the range's target) reads `immobile` once its power is
+        // `Online`: cold or starting it reads mobile and takes the power arm
+        // below, and its first think online parks it on the `Disabled` edge —
+        // the reflex's "start up, then park".
 
         // ---- power ----
         match view.power {
@@ -1493,6 +1500,11 @@ impl NativeStockMind {
         // The helm half. A hull whose motion is disabled is not handed one:
         // every goal and heading would be refused `MotionDisabled`, as the
         // reflex's are, and the motor drops a goal it cannot drive anyway.
+        // Nor, since 17b cut M4.6b (the owner's STOP B ruling), is a hull
+        // authored with no speed once its power is `Online`: it could turn in
+        // place, but it is handed no heading, so an armed one holds its
+        // opening heading where the reflex turned it onto the plot (no
+        // shipped armed hull has zero speed; doc 17 §24).
         if view.immobile {
             held = None;
         } else if plan.stop {
