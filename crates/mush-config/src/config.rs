@@ -112,7 +112,7 @@
 //! | `[tacsim.resolution].paths` | `[]` | **16b cut G** (doc 16 §4): the resolution tables (hit curve, error terms, `p_min`, `p_max`); parsed and **inert** until cut W reads them |
 //! | `[tacsim.harness].units` | `300` | **16b cut G** (doc 16 §1 A2): units the scale harness places and moves |
 //! | `[tacsim.harness].fighting` | `24` | how many of those are fighting |
-//! | `[tacsim.harness].engaged_p99_ms` | `25` | the per-pulse p99 ceiling in `Engaged` tempo |
+//! | `[tacsim.harness].engaged_p99_ms` | `40` | the per-pulse p99 ceiling in `Engaged` tempo (16c `T-109`: 25 before the lenses followed the production VPS) |
 //! | `[tacsim.harness].max_traces_per_pulse` | `4000` | line-of-sight traces one pulse may make |
 //! | `[tacsim.harness].max_path_queries_per_pulse` | `64` | path queries one pulse may make |
 //! | `[tacsim.harness].max_share_ops_per_pulse` | `768` | **16b cut S.1** (doc 16 §2 W6): contact-share operations one pulse may make — one `(sharer, teammate)` pair each; 768 since 16b cut J.3b, on the authored lane's measured per-wake peak of 452 at 300 units and the 30-cell mesh (16c Q26, the owner's answer); 256 was S.1's figure from the CI cohort's reduced mesh |
@@ -1564,7 +1564,8 @@ pub struct TacsimHarnessCfg {
     pub units: u32,
     /// How many of those are fighting.
     pub fighting: u32,
-    /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo.
+    /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo (40 since
+    /// 16c `T-109`; 25 before).
     pub engaged_p99_ms: u32,
     /// The most line-of-sight traces one pulse may make. Perception has no
     /// cross-observer cache, so this is the bound that keeps it affordable.
@@ -1628,7 +1629,7 @@ impl Default for TacsimHarnessCfg {
         TacsimHarnessCfg {
             units: 300,
             fighting: 24,
-            engaged_p99_ms: 25,
+            engaged_p99_ms: 40,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,
             // 16b cut J.3b (16c Q26): the authored lane's 452 peak.
@@ -2818,7 +2819,7 @@ scene_turn_dedline_secs = 30
 
         let h = &cfg.tacsim.harness;
         assert_eq!((h.units, h.fighting), (300, 24));
-        assert_eq!(h.engaged_p99_ms, 25);
+        assert_eq!(h.engaged_p99_ms, 40);
         assert_eq!(
             (
                 h.max_traces_per_pulse,

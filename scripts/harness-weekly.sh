@@ -29,17 +29,22 @@
 # TACSIM_ASSERT, then the delta with TACSIM_BASELINE_BLESS=1 on the same build)
 # under a host name no later run carries, ccr-m4.5-linux-bless — the cloud
 # containers all read /etc/hostname as `vm`, and a blessed host a later run
-# matches makes the timing gate live there — so the timing gate is dormant
-# everywhere until this script blesses on ALIEN18, the owner's host
-# (`TACSIM_BASELINE_BLESS=1`, below), which adds an agreeing
-# arena.windows.json.
+# matches makes the timing gate live there — so the timing gate was dormant
+# everywhere. Since 16c T-109 (the owner, 2026-10-09) the lenses are the
+# production VPS's (conclav.io) and the baseline is blessed THERE under the
+# box's own host name, so the timing gate is live on the VPS and dormant on
+# every other host, ALIEN18 included; run this script on the VPS with dev1's
+# centre idle.
 #
 # What asserts where:
 #   * this script exports TACSIM_ASSERT=1, so every lane asserts its absolutes
 #     (D-16-19: assert locally — this box is not a shared runner);
-#   * the authored-reach lane asserts too since 16b cut J.3b (16c Q26): 12 ms
-#     per wake, 20 ms per 500 ms window (17.5 at J.3b, 20 since J.3c), the same
-#     per-pulse bounds;
+#   * the lenses since 16c T-109: 20 ms per wake on both cohorts, 22 ms per
+#     500 ms window on the CI cohort and 32 ms on the authored one, under the
+#     40 ms engaged_p99_ms ceiling (ALIEN18's 12, 12, 20 and 25 before);
+#   * the authored-reach lane asserts too since 16b cut J.3b (16c Q26): the
+#     per-wake lens, its own per-window lens (17.5 at J.3b, 20 from J.3c to
+#     T-109, 32 since), the same per-pulse bounds;
 #   * the lance lane (16b cut Z.1) asserts W8 alone — the span and the orders
 #     per commander per minute bounded, the tape equal to the script's orders,
 #     the opening round landed and the lances fired at any knob, and the
@@ -54,13 +59,16 @@
 #     stood to take (eight since 17b cut M4.5, pinned), held to facts of the
 #     fight, only at the lane's defaults (seed 2350, TACSIM_LANCE_UNITS=24,
 #     TACSIM_LANCE_ARENA_S=120, jitter 0; off them the fight decides those) —
-#     and prints its timing beside 12 ms and 20 ms, report-only. It fights at
+#     and prints its timing beside the authored lenses, report-only. It fights at
 #     the ROM since 17b cut M4.5c's row cut (a mind's view keeps every
 #     contact not known friendly before a friend, so a hull among its own
 #     lance still reads the enemy) and holds under TACSIM_ASSERT;
 #   * the minds lane (17b cut M4.2) collects every check into one
 #     harness_minds_verdict line per variant and panics ONCE at the end: `held=`
-#     is exactly the plan's listed asserts (wake p99 12 ms, window p99 the
+#     is exactly the plan's listed asserts (wake p99 the per-wake lens over the
+#     unjittered wakes since 16c T-108 (a jittered wake steps two substeps; its
+#     p99 is printed beside as wake_p99_other_ms; a run with no unjittered
+#     wake does not hold), window p99 the
 #     cohort's lens counting inline think time, faults nought on every variant,
 #     ops nought on the stock variants (on every native-sealed variant since
 #     the fill decision, the fill included), ops per window and per substep

@@ -40,9 +40,10 @@
 //! time — for `TACSIM_ARENA_S` arena seconds (default 30) after the warm-up, plus
 //! a seeded stand-in for the timer's overshoot, `TACSIM_WAKE_JITTER_MS` (default
 //! 0). Every wake is also folded into 500 ms windows of arena time, and the lens
-//! binds both: 12 ms per wake on both cohorts, and per window 12 ms on the CI
-//! cohort and 20 ms on the authored one (17.5 ms at 16b cut J.3b, 20 since J.3c
-//! on the owner's word). Two runs: `tacsim_harness_arena_step` at the CI reach (sight
+//! binds both: 20 ms per wake on both cohorts, and per window 22 ms on the CI
+//! cohort and 32 ms on the authored one — the production VPS's figures since 16c
+//! `T-109` (below); 12, 12 and 20 on ALIEN18 before it (17.5 ms at 16b cut
+//! J.3b, 20 since J.3c on the owner's word). Two runs: `tacsim_harness_arena_step` at the CI reach (sight
 //! scaled 60 to `TACSIM_SENSOR_CELLS`, 24; mesh 30 to `TACSIM_SHARE_CELLS`, 8),
 //! and `tacsim_harness_arena_authored_reach` at the reaches as authored; both
 //! asserted under `TACSIM_ASSERT` since 16b cut J.3b, the authored one at its own
@@ -148,6 +149,23 @@
 //! [`the_lens_is_the_cohorts_own`] holds of the record only that the lens is
 //! above it (its exact pins and the ceiling check stand).
 //!
+//! **The lenses follow the production host since 16c `T-109`** (the owner,
+//! 2026-10-09: *scale the wake and window limits to the VPS, since that's where
+//! the game will run*; the figures confirmed the same day). Every figure above
+//! was measured on the owner's desktop, ALIEN18, and the conclav.io VPS that
+//! serves the game (4 vCPU AMD EPYC 7543P) is 1.75 to 2 times slower a core;
+//! with `T-87` paid it read the authored wake p99 at 12.8 to 22.6 ms and the
+//! window at 24.6 to 27.3, the CI wake at 8.8 to 10.0 and the window at 15.9 to
+//! 18.9. The lenses moved to the per-wake 20 ms ([`ARENA_S_P99_MS`], the
+//! owner's figure, still half the ceiling), the CI window 22
+//! ([`ARENA_CI_WINDOW_P99_MS`], split from the per-wake lens it shared) and the
+//! authored window 32 ([`ARENA_AUTHORED_WINDOW_P99_MS`]) — each window the
+//! harness's 16 per cent over the VPS's worst ordinary run — and
+//! `harness.engaged_p99_ms` to 40 so the authored window stays a boundary under
+//! it; [`the_lens_is_the_cohorts_own`] pins all four. The committed
+//! `arena.linux.json` is blessed on the VPS under its own host name, so the
+//! delta's timing gate is live on the production host and dormant elsewhere.
+//!
 //! **The lance lane since 16b cut Z.1** (16c N6, *lances*). One more ignored
 //! lane, `tacsim_harness_lance`: `TACSIM_LANCE_UNITS` (24) units of the fielded
 //! catalog, twelve a side on the **shipped proving ground** at the authored
@@ -166,7 +184,8 @@
 //! the span one fewer, no end inside the window, both sides' first squads
 //! released; off the defaults the fight decides those two figures); its timing
 //! is **report-only**, printed beside the
-//! authored lane's 12 ms per wake and 20 ms per window. Its JSON
+//! authored lane's per-wake and per-window lenses (20 and 32 ms since 16c
+//! `T-109`, 12 and 20 before). Its JSON
 //! (`<stem>-lance.<ext>`) is outside the delta. `z1_the_lance_lane_runs_small`,
 //! un-ignored, runs it at one lance a side for fourteen arena seconds (ten
 //! until 17b cut M4.5: the ROM closes before it fires) with the
@@ -202,9 +221,13 @@
 //! `harness_minds_{pool,thinks,ops,cpu,verdict}` beside the arena lane's
 //! reprinted, and every check collected into one `harness_minds_verdict`
 //! line a variant: `held=` over exactly the plan's listed asserts (wake p99
-//! 12 ms, window p99 the cohort's lens counting inline time, faults nought on
-//! every variant, ops nought on the stock variants (on every native-sealed
-//! variant since the fill decision, the fill included), ops per window and per
+//! the per-wake lens — 20 ms since 16c `T-109`, 12 before — over the
+//! unjittered wakes since 16c `T-108` (every wake before, the jittered
+//! quarter's two substeps with it), the jittered wakes' p99 printed beside as
+//! `wake_p99_other_ms` and a run with none unjittered not held; window p99 the
+//! cohort's lens counting inline time, faults nought on every variant, ops
+//! nought on the stock variants (on every native-sealed variant since the fill
+//! decision, the fill included), ops per window and per
 //! substep within the pool, the load mind's ops p1 at least 4,300, the
 //! computed CPU lens — the pool's ops per window over the host's measured
 //! rate on Standard Doctrine by five quarters, `[tacsim.minds].cpu_lens_ms`
@@ -253,8 +276,13 @@
 //! `TACSIM_BASELINE_BLESS=1` on the same build, under a `HOSTNAME`
 //! (`ccr-m4.5-linux-bless`) no later run carries — every cloud container reads
 //! `/etc/hostname`'s `vm`, and a blessed host a later run matches makes the
-//! timing gate live there — so the gate is dormant everywhere until the owner
-//! re-blesses on ALIEN18 (the owner's host).
+//! timing gate live there — so the gate was dormant everywhere. Since 16c
+//! `T-109` the file is blessed on the production VPS under its own host name
+//! (`srv1930616`; *The lenses follow the production host*, above), so the
+//! gate is live there and dormant on every other host, ALIEN18 and the cloud
+//! containers included; the fill decision's `minds.fill_authored` block (the
+//! fill native, ops and fees nought) was carried onto that bless when
+//! `perf/vps-300` was merged, with no re-bless.
 //!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
@@ -2784,8 +2812,9 @@ fn tacsim_harness_arena_step() {
 /// second run): [`measure_arena`] at [`Reach::Authored`], JSON at
 /// `<stem>-arena-authored.<ext>`. Since 16b cut J.3b (16c Q26, the owner's
 /// answer) it asserts under `TACSIM_ASSERT` like the CI lane: per wake at the
-/// 12 ms lens ([`ARENA_S_P99_MS`]), per 500 ms window at 20 ms
-/// ([`ARENA_AUTHORED_WINDOW_P99_MS`], 17.5 at J.3b), and the same per-pulse bounds of
+/// 20 ms lens ([`ARENA_S_P99_MS`]; 12 before 16c `T-109`), per 500 ms window at
+/// 32 ms ([`ARENA_AUTHORED_WINDOW_P99_MS`]; 17.5 at J.3b, 20 from J.3c to
+/// `T-109`), and the same per-pulse bounds of
 /// `[tacsim.harness]`. The delta does not read its report.
 #[test]
 #[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
@@ -3643,9 +3672,10 @@ fn machine_states_json(states: &[(&'static str, u32); MACHINE_STATE_LEAVES]) -> 
 /// the report.
 ///
 /// Every measured wake is also folded into [`WINDOW_MS`] windows of arena time
-/// ([`windows`]) and the lens binds both — 12 ms per wake, and per window the
-/// cohort's own ([`window_lens_ms`], 12 ms on the CI cohort and 20 ms on the
-/// authored since 16b cut J.3c, 17.5 at J.3b): a wake is at most one substep,
+/// ([`windows`]) and the lens binds both — 20 ms per wake, and per window the
+/// cohort's own ([`window_lens_ms`], 22 ms on the CI cohort and 32 ms on the
+/// authored since 16c `T-109`; 12, 12 and 20 on ALIEN18 before it, 17.5 at
+/// J.3b): a wake is at most one substep,
 /// a smaller unit than the 500 ms pulse the lens was calibrated on.
 ///
 /// **16b cut U.2** (16c `T-36`, `T-29`) added the two per-pulse bounds the
@@ -4496,8 +4526,8 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
             knobs.engaged_p99_ms
         );
         // **The lens, per wake and per window** (see [`ARENA_S_P99_MS`]): per wake
-        // the 12 ms lens on both cohorts, per window the cohort's own
-        // (`window_lens_ms`; 16b cut J.3b).
+        // the per-wake lens on both cohorts, per window the cohort's own
+        // (`window_lens_ms`; 16b cut J.3b; the VPS's figures since 16c T-109).
         assert!(
             p99 <= ARENA_S_P99_MS,
             "per-wake p99 {p99:.3} ms is past the {ARENA_S_P99_MS} ms lens"
@@ -5771,14 +5801,22 @@ fn the_delta_fails_on_a_difference_and_a_slowdown_and_on_nothing_else() {
 /// below the runs; the check is gone and the record is the worst asserted run
 /// that passed, 18.022 (cut AF's sweep). Twenty holds it by 11 per cent; the
 /// spread the lane shows on this host is what a review reads here.
-const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 18.022;
+///
+/// **16c `T-109` re-based it on the production host, 24.534** (2026-10-09):
+/// the record is the VPS's now that the lenses are, and the first asserted
+/// weekly run there under the 32 ms lens read the authored window p99 at
+/// 24.534 ms (wake p99 12.970 under the 20 ms per-wake lens) and passed.
+/// Thirty-two holds it by 30 per cent; ALIEN18's runs above are history.
+const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 24.534;
 
 /// **The lens is the cohort's own** (16b cut J.3b, moved by J.3c; 16c Q26): the
-/// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before, the
+/// CI cohort is held per window to [`ARENA_S_P99_MS`] exactly as before (to its
+/// own [`ARENA_CI_WINDOW_P99_MS`] since 16c `T-109`), the
 /// authored cohort to [`ARENA_AUTHORED_WINDOW_P99_MS`], which is the looser of
-/// the two; the authored lens is the owner's figure, 20 ms, stays ABOVE the worst
-/// asserted run on record ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]) and under
-/// the 25 ms `engaged_p99_ms` ceiling doc 16 sets for the finished arena — the
+/// the two; the authored lens is the owner's figure, 20 ms (32 since 16c
+/// `T-109`), stays ABOVE the worst asserted run on record
+/// ([`AUTHORED_WINDOW_P99_WORST_RECORDED_MS`]) and under the 25 ms (40 since
+/// `T-109`) `engaged_p99_ms` ceiling doc 16 sets for the finished arena — the
 /// check that keeps it a boundary, as the owner asked. It pins that the lens is
 /// never quietly moved off the owner's figure, never sits at or under a run it
 /// has already read, never reaches the ceiling, and never loosens the CI
@@ -5788,25 +5826,40 @@ const AUTHORED_WINDOW_P99_WORST_RECORDED_MS: f64 = 18.022;
 /// 20 ms lens the ratio could hold only by freezing the record below the runs,
 /// so the spread is reported in the constant's doc and never asserted; headroom
 /// is the owner's call at a review, on the figures.
+///
+/// **16c `T-109`** (the owner, 2026-10-09) moved all four figures to the
+/// production host, the conclav.io VPS: per wake 20 ms, the CI window 22 (its
+/// own constant now, split from the per-wake lens), the authored window 32,
+/// and the `engaged_p99_ms` ceiling 40. The checks are the same checks.
 #[test]
 fn the_lens_is_the_cohorts_own() {
     let ci = window_lens_ms(Reach::Ci);
     let authored = window_lens_ms(Reach::Authored);
     assert_eq!(
-        ci, ARENA_S_P99_MS,
-        "the CI cohort's window lens is the lens"
+        ARENA_S_P99_MS, 20.0,
+        "the per-wake lens is the owner's 20 ms of 2026-10-09 (16c T-109); only the owner moves it"
     );
     assert_eq!(
-        ci, 12.0,
-        "the CI cohort's window lens is 12 ms (16b cut S.1); tightening it is a review's call"
+        ci, ARENA_CI_WINDOW_P99_MS,
+        "the CI cohort's window lens is its own constant"
+    );
+    assert_eq!(
+        ci, 22.0,
+        "the CI cohort's window lens is the owner's 22 ms of 2026-10-09 (16c T-109); only the \
+         owner moves it"
+    );
+    assert!(
+        ci >= ARENA_S_P99_MS,
+        "a window carries two wakes: its lens {ci} ms is not under the per-wake {ARENA_S_P99_MS}"
     );
     assert_eq!(
         authored, ARENA_AUTHORED_WINDOW_P99_MS,
         "the authored cohort's window lens is its own constant"
     );
     assert_eq!(
-        authored, 20.0,
-        "the authored lens is the owner's figure of 2026-09-25 (16c Q26); only the owner moves it"
+        authored, 32.0,
+        "the authored lens is the owner's figure of 2026-10-09 (16c T-109, after Q26's 20 of \
+         2026-09-25); only the owner moves it"
     );
     assert!(
         authored > ci,
@@ -5818,10 +5871,19 @@ fn the_lens_is_the_cohorts_own() {
          {AUTHORED_WINDOW_P99_WORST_RECORDED_MS} ms: the owner's to move (16b cut J.3d)"
     );
     let ceiling = f64::from(tacsim::config::HarnessConfig::default().engaged_p99_ms);
+    assert_eq!(
+        ceiling, 40.0,
+        "doc 16's engaged_p99_ms ceiling is 40 ms since the owner's T-109 of 2026-10-09"
+    );
     assert!(
         authored < ceiling,
         "the authored lens {authored} ms reaches doc 16's {ceiling} ms engaged_p99_ms ceiling: no \
          longer a boundary"
+    );
+    assert!(
+        ARENA_S_P99_MS * 2.0 <= ceiling,
+        "the per-wake lens {ARENA_S_P99_MS} ms is over half the {ceiling} ms ceiling (16b cut S.1's \
+         rule, kept by T-109)"
     );
 }
 
@@ -6038,7 +6100,26 @@ const ARENA_P99_MS: f64 = 5.0;
 /// report as the record of what the arena cost before the passes ran. Since 16b
 /// cut J.3b the authored cohort asserts too, against
 /// [`ARENA_AUTHORED_WINDOW_P99_MS`] per window and this constant per wake.
-const ARENA_S_P99_MS: f64 = 12.0;
+///
+/// **20 ms since 16c `T-109`** (the owner, 2026-10-09: *scale the wake and
+/// window limits to the VPS, since that's where the game will run*; the
+/// figures confirmed the same day). Twelve was a measurement on the owner's
+/// desktop (ALIEN18), never a budget derived from the pulse, and the
+/// conclav.io VPS that serves the game is 1.75 to 2 times slower a core: with
+/// `T-87` paid it reads authored wake p99 12.8 to 22.6 ms (median 13.8) and CI
+/// 8.8 to 10.0. Twenty is the owner's figure and is still half the
+/// `harness.engaged_p99_ms` ceiling, which moved with it to 40. The CI
+/// cohort's window no longer rides on this constant: it is
+/// [`ARENA_CI_WINDOW_P99_MS`].
+const ARENA_S_P99_MS: f64 = 20.0;
+
+/// **The CI cohort's per-window lens** (16c `T-109`, the owner's figures of
+/// 2026-10-09): 22 ms per 500 ms window of arena time, split from the per-wake
+/// [`ARENA_S_P99_MS`] it shared since 16b cut S.1 — a window carries two wakes,
+/// and the conclav.io VPS reads the CI window p99 at 15.9 to 18.9 ms with
+/// `T-87` paid, so 22 is the harness's 16 per cent spread over the worst
+/// ordinary run (18.9 × 1.16 = 21.9) where 20 would have held it by six.
+const ARENA_CI_WINDOW_P99_MS: f64 = 22.0;
 
 /// **The authored cohort's per-window lens** (16b cut J.3b, moved by J.3c; 16c
 /// Q26, answered by the owner on 2026-09-25): 20 ms per 500 ms window of arena
@@ -6065,13 +6146,23 @@ const ARENA_S_P99_MS: f64 = 12.0;
 /// window stays on [`ARENA_S_P99_MS`]: this constant loosens nothing there, and
 /// the CI report's `thresholds.window_p99_ms` stays 12.0, so the committed
 /// baseline does not move with it.
-const ARENA_AUTHORED_WINDOW_P99_MS: f64 = 20.0;
+///
+/// **32 ms since 16c `T-109`** (the owner, 2026-10-09: the lenses follow the
+/// production host; the figures confirmed the same day). The conclav.io VPS
+/// reads the authored window p99 at 24.6 to 27.3 ms with `T-87` paid (one run
+/// of eight 43.0, the host's spread), so 32 is the harness's 16 per cent over
+/// the worst ordinary run (27.3 × 1.16 = 31.7), and it stays under the
+/// `harness.engaged_p99_ms` ceiling, moved to 40 for that, as Q26's answer
+/// requires. The CI cohort's window is now [`ARENA_CI_WINDOW_P99_MS`], and the
+/// CI report's `thresholds.window_p99_ms` reads 22.0.
+const ARENA_AUTHORED_WINDOW_P99_MS: f64 = 32.0;
 
 /// **The per-window lens a cohort is held to** (16b cut J.3b): the CI cohort
-/// [`ARENA_S_P99_MS`], the authored cohort [`ARENA_AUTHORED_WINDOW_P99_MS`].
+/// [`ARENA_CI_WINDOW_P99_MS`] (16c `T-109`; [`ARENA_S_P99_MS`] before it), the
+/// authored cohort [`ARENA_AUTHORED_WINDOW_P99_MS`].
 const fn window_lens_ms(reach: Reach) -> f64 {
     match reach {
-        Reach::Ci => ARENA_S_P99_MS,
+        Reach::Ci => ARENA_CI_WINDOW_P99_MS,
         Reach::Authored => ARENA_AUTHORED_WINDOW_P99_MS,
     }
 }
@@ -7234,8 +7325,9 @@ async fn measure_fan_out(knobs: &Knobs) {
 // defaults a lance may be wiped out, reach its crossroads or take a mark a
 // wake late, so the fight decides those figures and only the bounds bind them.
 // **Timing is report-only** (the lead's rule
-// for this cohort): the per-wake p99 is printed beside 12 ms and the per-window
-// p99 beside 20 ms, the authored lane's lenses, and nothing is asserted about
+// for this cohort): the per-wake p99 is printed beside the per-wake lens and
+// the per-window p99 beside the authored window lens (20 and 32 ms since 16c
+// T-109, 12 and 20 before), and nothing is asserted about
 // either. Its JSON (`<stem>-lance.<ext>`) is not read by the delta.
 
 /// `TACSIM_LANCE_UNITS`' default: twelve a side.
@@ -9302,6 +9394,29 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
 // not hold (the lens was not measured). The knob takes any value, so doc 17
 // §18's literal 60 is one env away as a sizing run.
 //
+// **The per-wake lens is asserted on the UNJITTERED wakes** (16c `T-108`,
+// from the M4 fill-decision runs of 2026-10-09). Until then it was asserted
+// over every wake, and a late wake steps two full substeps by design — its
+// first lattice point's thinks settled inline inside its `Wake.ms` — and a
+// quarter of the wakes at twice the work owns the 99th percentile: even the
+// all-native `stock_authored` read 14.0–15.0 ms on ALIEN18 against the 12 ms
+// lens and the three authored variants 25.8–28.8 on the VPS against `T-109`'s
+// 20, while with the jitter off all four held on ALIEN18. The
+// per-wake lens is a one-substep wake's budget; the two-substep wake is the
+// window lens's to judge, and it does — a late wake due at a window boundary
+// keeps both its substeps and its inline thinks in one comparable window. So
+// [`WakeLens`] splits the wakes by the clock's `late` flag (its doc says why
+// the flag and not the wake's shape): the lens is asserted over the on-time
+// ones (`wake_p99_ms`, `wake_unjittered=` on the verdict line), the late ones'
+// p99 printed beside (`wake_p99_other_ms`, `wake_jittered=`), every wake's p99
+// still on the `harness_minds_engaged` line; and a run with no unjittered wake
+// does not hold (the lens was not measured), the window lens's rule. At
+// `TACSIM_MINDS_JITTER_PER_MILLE=0` no wake is late and the asserted figure is
+// the all-wake p99 exactly. The inline path's time stays asserted: by the
+// window lens over the comparable windows, and by the CPU lens over every
+// window (`MindWake::cpu_us` counts the inline thinks beside the pooled
+// ones); `sound=`'s `inline_thinks` check shows only that it ran.
+//
 // **Attribution** is by the wake that COLLECTED a think (`attribution=by-collecting-wake`):
 // an inline think ran inside that wake's `Wake.ms`; a pooled think ran between
 // that wake's submit and the next head's wait, whose figures are drained there
@@ -9999,7 +10114,10 @@ impl MindsStepper {
 /// **One measured wake of the minds lane**: [`Wake`]'s figures, the thinks it
 /// collected split by where they ran, the landings, the faults, and the
 /// figures of its inline thinks (inside `ms`) and its pooled ones (written
-/// back at the next head), all keyed to this wake.
+/// back at the next head), all keyed to this wake. `Default` since 16c
+/// `T-108`, for [`t108_the_minds_per_wake_lens_is_asserted_over_the_unjittered_wakes`]'s
+/// fixture wakes.
+#[derive(Default)]
 struct MindWake {
     ms: f64,
     now_ms: i64,
@@ -10007,7 +10125,10 @@ struct MindWake {
     /// Substeps shorter than the lattice's this wake cut (a wake off the
     /// lattice, or the general jitter's remainder).
     short_substeps: u32,
-    /// Whether this wake was a jittered one ([`MindsClock`]).
+    /// Whether this wake was a jittered one ([`MindsClock`]'s `late`, copied
+    /// with the wall it answered) — since 16c `T-108` the per-wake lens's
+    /// key: the lens is asserted over the wakes where this is false
+    /// ([`WakeLens`]).
     late: bool,
     traces: u32,
     cell_probes: u64,
@@ -10381,6 +10502,101 @@ impl MindsWindow {
     fn comparable(&self, substep_ms: u32) -> bool {
         let lattice = u32::try_from(WINDOW_MS).unwrap_or(0) / substep_ms.max(1);
         !self.off_lattice && self.substeps == lattice
+    }
+}
+
+/// **The per-wake lens over the minds lane's wakes, split** (16c `T-108`; the
+/// section head's *The per-wake lens is asserted on the UNJITTERED wakes*):
+/// the wakes [`MindsClock`] did not make late — the set the lens is asserted
+/// over — and the late ones, whose p99 is printed beside as
+/// `window_p99_other_ms` is the windows'. Both p99s are [`Tempo::stats`]'
+/// nearest rank, the all-wake figure's own, so with no wake late the asserted
+/// figure IS the all-wake p99, bit for bit. **The key is the clock's `late`
+/// flag, not a wake's shape** (one full substep): the flag is the lane's own
+/// perturbation as the clock drew it — the set `jittered_wakes` counts in the
+/// deterministic block, so the two counts here sum to the wakes and the
+/// jittered one is that figure — and a late wake is in the other set whatever
+/// it carried (two substeps on the lattice, a remainder off it), so none can
+/// sneak into the asserted one. A shape rule would not be the all-wake figure
+/// with the jitter off (the general `TACSIM_WAKE_JITTER_MS`'s remainders, or
+/// an on-time wake the arena's own `next_due_ms` set more than one substep
+/// out, give an on-time wake another shape) and would excuse such a wake
+/// from the lens for its shape, a wider exemption than `T-108`'s. A drawn
+/// wake at `TACSIM_MINDS_JITTER_MS=0` is on time and still set aside — the
+/// sample shrinks, no late wake enters; `TACSIM_MINDS_JITTER_PER_MILLE=0` is
+/// the jitter's off knob.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WakeLens {
+    /// The wakes the clock did not make late.
+    unjittered: usize,
+    /// Their p99, milliseconds: the asserted figure (`0.0` for none, and then
+    /// the lens was not measured — [`WakeLens::measured`]).
+    p99: f64,
+    /// The wakes the clock made late.
+    jittered: usize,
+    /// Their p99, milliseconds, report-only (`0.0` for none).
+    p99_jittered: f64,
+}
+
+impl WakeLens {
+    /// The two sets of `wakes`, keyed by [`MindWake::late`] alone.
+    fn of(wakes: &[MindWake]) -> WakeLens {
+        let set = |late: bool| {
+            let ms: Vec<f64> = wakes
+                .iter()
+                .filter(|wake| wake.late == late)
+                .map(|wake| wake.ms)
+                .collect();
+            let count = ms.len();
+            let (_, _, p99, _) = Tempo {
+                name: "minds_engaged",
+                period_ms: 0,
+                ms,
+            }
+            .stats();
+            (count, p99)
+        };
+        let (unjittered, p99) = set(false);
+        let (jittered, p99_jittered) = set(true);
+        WakeLens {
+            unjittered,
+            p99,
+            jittered,
+            p99_jittered,
+        }
+    }
+
+    /// **Whether the lens was measured at all**: at least one unjittered wake.
+    /// The empty set is the window lens's rule — a run with no comparable
+    /// window does not hold — because a p99 of no wakes reads `0.000`, and a
+    /// knob that jitters every wake (`TACSIM_MINDS_JITTER_PER_MILLE=1000`) or
+    /// a run with no wake would otherwise hold the lens by measuring nothing.
+    fn measured(&self) -> bool {
+        self.unjittered > 0
+    }
+
+    /// **The verdict's two per-wake checks**, `(held, sentence)`, both timed:
+    /// measured at all, then the unjittered p99 within `lens_ms`. The empty
+    /// set's p99 is `0.0`, so a run with no unjittered wake reads one
+    /// sentence, the first.
+    fn checks(&self, lens_ms: f64) -> [(bool, String); 2] {
+        [
+            (
+                self.measured(),
+                format!(
+                    "no unjittered wake among {}: the per-wake lens was not measured",
+                    self.unjittered + self.jittered
+                ),
+            ),
+            (
+                self.p99 <= lens_ms,
+                format!(
+                    "per-wake p99 {:.3} ms over the {} unjittered wakes is past the {lens_ms} ms \
+                     lens (the {} jittered wakes' p99 {:.3} ms beside)",
+                    self.p99, self.unjittered, self.jittered, self.p99_jittered
+                ),
+            ),
+        ]
     }
 }
 
@@ -11033,6 +11249,9 @@ fn measure_minds_field(
         ms: wakes.iter().map(|wake| wake.ms).collect(),
     };
     let (p50, p95, p99, max) = tempo.stats();
+    // The per-wake lens's set (16c `T-108`): the unjittered wakes asserted,
+    // the jittered ones' p99 beside; `p99` above stays every wake's, printed.
+    let wake_lens = WakeLens::of(&wakes);
     let folded = minds_windows(&wakes, warm_end);
     let window_stats = |keep: &dyn Fn(&MindsWindow) -> bool| {
         Tempo {
@@ -11245,8 +11464,9 @@ fn measure_minds_field(
     // ---- the verdict ----
     // `held=`: exactly the plan's listed asserts (the M4 row's (ii)); the
     // decision read this word (taken 2026-10-09: native), and the owner reads
-    // it since as the production fill's capacity. In the smoke run the three
-    // timing checks are printed and not pushed.
+    // it since as the production fill's capacity. In the smoke run the timing
+    // checks (the per-wake and the window lens, each measured at all then
+    // within, and the CPU lens) are printed and not pushed.
     let mut failures: Vec<String> = Vec::new();
     let timing = mode == MindsLaneMode::Weekly;
     let mut check = |held: bool, timed: bool, sentence: String| {
@@ -11254,11 +11474,12 @@ fn measure_minds_field(
             failures.push(sentence);
         }
     };
-    check(
-        p99 <= ARENA_S_P99_MS,
-        true,
-        format!("per-wake p99 {p99:.3} ms is past the {ARENA_S_P99_MS} ms lens"),
-    );
+    // The per-wake lens over the unjittered wakes since 16c `T-108` (every
+    // wake before, the jittered quarter's two substeps with it): measured at
+    // all, then within the lens — the window lens's two checks' shape.
+    for (held, sentence) in wake_lens.checks(ARENA_S_P99_MS) {
+        check(held, true, sentence);
+    }
     let window_lens = window_lens_ms(variant.reach());
     check(
         windows_on_lattice > 0,
@@ -11454,8 +11675,12 @@ fn measure_minds_field(
         knobs.jitter_ms, minds.jitter_ms, minds.jitter_per_mille
     ));
     lines.push(format!(
-        "harness_minds_engaged: variant={word} cohort={cohort} period_ms={} pulses={wake_count} p50={p50:.3} p95={p95:.3} p99={p99:.3} max={max:.3}",
-        tempo.period_ms
+        "harness_minds_engaged: variant={word} cohort={cohort} period_ms={} pulses={wake_count} p50={p50:.3} p95={p95:.3} p99={p99:.3} max={max:.3} unjittered={} p99_unjittered={:.3} jittered={} p99_jittered={:.3} (the per-wake lens is asserted on the unjittered wakes since 16c T-108: a jittered wake is one substep late and steps two, its first lattice point's thinks settled inline inside Wake.ms, which the window lens counts over the comparable windows)",
+        tempo.period_ms,
+        wake_lens.unjittered,
+        wake_lens.p99,
+        wake_lens.jittered,
+        wake_lens.p99_jittered
     ));
     lines.push(format!(
         "harness_minds_window: variant={word} cohort={cohort} window_ms={WINDOW_MS} windows={} ms_p50={w50:.3} ms_p95={w95:.3} ms_p99={w99:.3} ms_max={wmax:.3} comparable={windows_on_lattice} ms_p99_comparable={w99_on:.3} other={windows_off_lattice} ms_p99_other={w99_off:.3} remainder={windows_remainder} traces_peak={window_traces_peak} cell_probes_peak={window_cell_probes_peak} horizon_probes_peak={window_horizon_probes_peak} jam_checks_peak={window_jam_checks_peak} share_ops_peak={window_share_ops_peak} (the lens is asserted on the comparable windows: exactly the lattice's substeps, none a remainder; inline think time is inside Wake.ms; a late wake due mid-window moves a substep into the next window, so a jittered run has one- and three-substep windows beside the two-substep ones)",
@@ -11547,11 +11772,15 @@ fn measure_minds_field(
         }
     };
     lines.push(format!(
-        "harness_minds_verdict: variant={word} cohort={cohort} held={} sound={} assert={} mode={} wake_p99_ms={p99:.3} wake_lens_ms={ARENA_S_P99_MS} window_p99_ms={w99_on:.3} window_lens_ms={window_lens} window_comparable={windows_on_lattice} window_p99_other_ms={w99_off:.3} faults={faults} ops_total={ops_total} budget_p1={budget_p1} cpu_p99_ms={cpu99:.3} cpu_lens_ms={lens_ms:.3} authored_at_class_at_end={authored_at_class_at_end} failures={} | {} | unsound={} | {}",
+        "harness_minds_verdict: variant={word} cohort={cohort} held={} sound={} assert={} mode={} wake_p99_ms={:.3} wake_lens_ms={ARENA_S_P99_MS} wake_unjittered={} wake_p99_other_ms={:.3} wake_jittered={} window_p99_ms={w99_on:.3} window_lens_ms={window_lens} window_comparable={windows_on_lattice} window_p99_other_ms={w99_off:.3} faults={faults} ops_total={ops_total} budget_p1={budget_p1} cpu_p99_ms={cpu99:.3} cpu_lens_ms={lens_ms:.3} authored_at_class_at_end={authored_at_class_at_end} failures={} | {} | unsound={} | {}",
         yes_no(held),
         yes_no(sound),
         knobs.assert,
         mode.word(),
+        wake_lens.p99,
+        wake_lens.unjittered,
+        wake_lens.p99_jittered,
+        wake_lens.jittered,
         failures.len(),
         sentences(&failures),
         unsound.len(),
@@ -11603,6 +11832,9 @@ fn measure_minds_field(
             "late_two_substeps": late_two_substeps,
             "jitter_on_lattice": jitter_on_lattice,
         },
+        // Every wake's figures, then (16c `T-108`) the per-wake lens's split
+        // as `window` carries the comparable windows' beside every window's:
+        // the asserted p99 over the unjittered wakes, the jittered ones' beside.
         "tempos": [{
             "name": tempo.name,
             "period_ms": tempo.period_ms,
@@ -11611,6 +11843,10 @@ fn measure_minds_field(
             "p95_ms": num(p95),
             "p99_ms": num(p99),
             "max_ms": num(max),
+            "unjittered": wake_lens.unjittered,
+            "p99_ms_unjittered": num(wake_lens.p99),
+            "jittered": wake_lens.jittered,
+            "p99_ms_jittered": num(wake_lens.p99_jittered),
         }],
         "window": {
             "window_ms": WINDOW_MS,
@@ -12458,6 +12694,206 @@ fn m4_2_the_minds_clock_jitters_a_quarter_of_wakes_by_one_substep() {
     );
 }
 
+/// **The minds lane's per-wake lens is asserted over the unjittered wakes**
+/// (16c `T-108`; [`WakeLens`]): a late wake is out of the asserted set
+/// whatever it carried and an on-time wake in it whatever it carried (the
+/// key is the clock's flag, not the shape); the late wakes' p99 is the
+/// figure beside; with no wake late the asserted p99 is the all-wake one
+/// exactly; a run with no unjittered wake reads the lens as not measured and
+/// does not hold, in one sentence; and over the clock's own seeded draw the
+/// split is the clock's. The fixture's values make each rule move a figure
+/// and not only a count (a nearest-rank p99 over eight is the seventh, over
+/// four the third, so a set's slowest wake never reaches it): the late
+/// two-substep wakes sit past the lens, so every wake's p99 — the figure the
+/// verdict asserted before `T-108` — misses where the split's holds, and
+/// reverting [`WakeLens::of`] to every wake fails this test; the on-time
+/// two-substep wake is the slowest of all and the late one-substep wake
+/// under the on-time seventh, so a key on the wake's shape moves the asserted
+/// p99 itself (10 to 9.5); and with an on-time wake the slowest, the late
+/// wakes' p99 (31) is not every wake's (32), so the figure beside is pinned
+/// to the late set.
+#[test]
+fn t108_the_minds_per_wake_lens_is_asserted_over_the_unjittered_wakes() {
+    let wake = |ms: f64, late: bool, substeps: u32| MindWake {
+        ms,
+        late,
+        substeps,
+        ..MindWake::default()
+    };
+    let all_p99 = |wakes: &[MindWake]| {
+        Tempo {
+            name: "minds_engaged",
+            period_ms: 500,
+            ms: wakes.iter().map(|wake| wake.ms).collect(),
+        }
+        .stats()
+        .2
+    };
+    // Eight on-time wakes, one of them two substeps for a reason that is not
+    // the jitter and the slowest of all (it stays asserted: the one wake in
+    // eight the nearest-rank p99 lets past); three late wakes of two
+    // substeps past the lens and one late wake of one substep under the
+    // on-time seventh (a drawn wake at `TACSIM_MINDS_JITTER_MS=0`, or a
+    // remainder off the lattice) — all four set aside.
+    let on_time = [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+    let mut wakes: Vec<MindWake> = on_time.iter().map(|ms| wake(*ms, false, 1)).collect();
+    wakes.push(wake(50.0, false, 2));
+    wakes.extend([30.0, 31.0, 32.0].iter().map(|ms| wake(*ms, true, 2)));
+    wakes.push(wake(9.5, true, 1));
+    let lens = WakeLens::of(&wakes);
+    assert_eq!((lens.unjittered, lens.jittered), (8, 4));
+    assert_eq!(lens.unjittered + lens.jittered, wakes.len());
+    let unjittered: Vec<MindWake> = on_time
+        .iter()
+        .map(|ms| wake(*ms, false, 1))
+        .chain([wake(50.0, false, 2)])
+        .collect();
+    assert_eq!(lens.p99, all_p99(&unjittered), "the on-time wakes' p99");
+    assert_eq!(lens.p99, 10.0, "nearest rank over eight: the seventh");
+    let late: Vec<MindWake> = [30.0, 31.0, 32.0]
+        .iter()
+        .map(|ms| wake(*ms, true, 2))
+        .chain([wake(9.5, true, 1)])
+        .collect();
+    assert_eq!(lens.p99_jittered, all_p99(&late), "the late wakes' p99");
+    assert_eq!(lens.p99_jittered, 31.0, "nearest rank over four: the third");
+    // The fixture's guards: keyed by the wake's shape (one substep asserted,
+    // two set aside) the asserted p99 would be 9.5, not 10; and every wake's
+    // p99 is not the late wakes', so neither the key nor the figure beside
+    // can drift and leave the figures standing.
+    let by_shape: Vec<MindWake> = wakes
+        .iter()
+        .filter(|w| w.substeps == 1)
+        .map(|w| wake(w.ms, w.late, w.substeps))
+        .collect();
+    assert_eq!(
+        by_shape.len(),
+        lens.unjittered,
+        "the shape key keeps the count"
+    );
+    assert_eq!(
+        all_p99(&by_shape),
+        9.5,
+        "the shape key moves the asserted p99"
+    );
+    assert_eq!(
+        all_p99(&wakes),
+        32.0,
+        "every wake's p99 is not the late ones'"
+    );
+    // The teeth: every wake's p99 — the figure asserted before `T-108` — is
+    // past the lens, the split's is under it.
+    assert!(
+        all_p99(&wakes) > ARENA_S_P99_MS,
+        "the fixture's all-wake p99 {} ms must miss the {ARENA_S_P99_MS} ms lens",
+        all_p99(&wakes)
+    );
+    assert!(lens.measured());
+    let checks = lens.checks(ARENA_S_P99_MS);
+    assert!(
+        checks.iter().all(|(held, _)| *held),
+        "the unjittered wakes hold the lens: {checks:?}"
+    );
+    assert!(
+        checks[1]
+            .1
+            .contains("per-wake p99 10.000 ms over the 8 unjittered wakes")
+            && checks[1]
+                .1
+                .contains("the 4 jittered wakes' p99 31.000 ms beside"),
+        "{}",
+        checks[1].1
+    );
+    // A slow on-time wake still fails it: the set is not a free pass.
+    let mut slow = wakes
+        .iter()
+        .map(|w| wake(w.ms, w.late, w.substeps))
+        .collect::<Vec<MindWake>>();
+    for w in slow.iter_mut().filter(|w| !w.late) {
+        w.ms += 15.0;
+    }
+    let slow = WakeLens::of(&slow);
+    assert_eq!(slow.p99, 25.0);
+    let slow_checks = slow.checks(ARENA_S_P99_MS);
+    assert!(slow_checks[0].0 && !slow_checks[1].0, "{slow_checks:?}");
+
+    // The jitter off (`TACSIM_MINDS_JITTER_PER_MILLE=0`): no wake late, so the
+    // asserted figure is the all-wake one, bit for bit.
+    let off: Vec<MindWake> = wakes.iter().map(|w| wake(w.ms, false, 1)).collect();
+    let off_lens = WakeLens::of(&off);
+    assert_eq!((off_lens.unjittered, off_lens.jittered), (off.len(), 0));
+    assert_eq!(off_lens.p99.to_bits(), all_p99(&off).to_bits());
+    assert_eq!(off_lens.p99_jittered.to_bits(), 0.0_f64.to_bits());
+
+    // No unjittered wake (`TACSIM_MINDS_JITTER_PER_MILLE=1000`), and no wake
+    // at all: the lens was not measured, which does not hold — one sentence.
+    for empty in [
+        wakes
+            .iter()
+            .map(|w| wake(w.ms, true, 2))
+            .collect::<Vec<MindWake>>(),
+        Vec::new(),
+    ] {
+        let none = WakeLens::of(&empty);
+        assert!(!none.measured());
+        assert_eq!(none.unjittered, 0);
+        assert_eq!(none.p99.to_bits(), 0.0_f64.to_bits());
+        let checks = none.checks(ARENA_S_P99_MS);
+        let failed: Vec<&String> = checks
+            .iter()
+            .filter(|(held, _)| !*held)
+            .map(|(_, sentence)| sentence)
+            .collect();
+        assert_eq!(
+            failed,
+            [&format!(
+                "no unjittered wake among {}: the per-wake lens was not measured",
+                empty.len()
+            )],
+            "the empty set is unmeasured, in one sentence"
+        );
+    }
+
+    // Over the clock's own draw at the default knobs: the late walls are the
+    // set aside, counted as the deterministic block's `jittered_wakes` is.
+    let mut knobs = Knobs::from_env();
+    knobs.seed = DEFAULT_SEED;
+    knobs.jitter_ms = 0;
+    let mut clock = MindsClock::new(
+        &knobs,
+        &MindsKnobs {
+            jitter_ms: i64::from(DEFAULT_MINDS_JITTER_MS),
+            jitter_per_mille: DEFAULT_MINDS_JITTER_PER_MILLE,
+            workers: 2,
+            cpu_lens_ms: 5,
+            variants: MINDS_VARIANTS.to_vec(),
+        },
+    );
+    let drawn: Vec<MindWake> = (1..=1_000_i64)
+        .map(|n| {
+            let due = n * 250;
+            let wall = clock.next(due);
+            let late = wall != due;
+            assert_eq!(clock.late, late);
+            wake(
+                if late { 30.0 } else { 5.0 },
+                clock.late,
+                1 + u32::from(late),
+            )
+        })
+        .collect();
+    let drawn_lens = WakeLens::of(&drawn);
+    let late_count = drawn.iter().filter(|w| w.late).count();
+    assert!(late_count > 0 && late_count < drawn.len());
+    assert_eq!(drawn_lens.jittered, late_count);
+    assert_eq!(
+        u32::try_from(drawn_lens.jittered).ok(),
+        Some(clock.jittered),
+        "the clock's own count"
+    );
+    assert_eq!((drawn_lens.p99, drawn_lens.p99_jittered), (5.0, 30.0));
+}
+
 /// **The CPU lens is the pool's window over the host's rate by five
 /// quarters** (17b cut M4.2; the M4 row's finding (7)): 5.208 ms at 24 ops/µs
 /// on the shipped 300-unit pool's 100,000 per window, 10.417 at 12; a rate
@@ -12663,13 +13099,17 @@ fn m4_2_the_delta_compares_the_minds_block_only_once_the_baseline_carries_one() 
 /// installer, the seal override, the recording runners, the private pool, the
 /// load mind on heavies at the last two slots a side, the task's policy
 /// through [`run_minds_wakes`] — with every deterministic check asserted
-/// (`held=yes sound=yes`) and the three timing checks printed only
+/// (`held=yes sound=yes`) and the timing checks printed only
 /// ([`MindsLaneMode::Smoke`]: debug timings mean nothing). Each variant's
 /// authored slots are held to think on the engine they are sealed on: the
 /// ceiling's scripted load mind in Rhai, and the fill's slots on
 /// `PRODUCTION_FILL_ENGINE` — native since the fill decision of 2026-10-09,
 /// so natively above the ROM with no Rhai think (it read the Rhai arm while
-/// the fill was scripted).
+/// the fill was scripted). Since 16c `T-108` the per-wake lens's split is read
+/// off the engaged and verdict lines and the report's tempo, its two counts
+/// summing to the wakes and the jittered one the deterministic block's
+/// `jittered_wakes`, and each line's figures and counts the report's
+/// (`wake_p99_ms` the unjittered p99, `wake_p99_other_ms` the jittered one).
 #[test]
 fn m4_2_the_minds_lane_runs_small() {
     let mut knobs = Knobs::from_env();
@@ -12707,6 +13147,7 @@ fn m4_2_the_minds_lane_runs_small() {
             "harness_minds_thinks:",
             "harness_minds_ops:",
             "harness_minds_cpu:",
+            "harness_minds_engaged:",
             "harness_minds_window:",
             "harness_minds_verdict:",
             "harness_minds_json:",
@@ -12793,5 +13234,114 @@ fn m4_2_the_minds_lane_runs_small() {
             "{:#?}",
             report.lines
         );
+    }
+    // The per-wake lens's split (16c `T-108`): on the engaged and the verdict
+    // lines and in the report's tempo, the two counts summing to the wakes,
+    // the jittered one the deterministic block's `jittered_wakes`.
+    for report in &reports {
+        for (prefix, words) in [
+            (
+                "harness_minds_engaged:",
+                [
+                    " unjittered=",
+                    " p99_unjittered=",
+                    " jittered=",
+                    " p99_jittered=",
+                ],
+            ),
+            (
+                "harness_minds_verdict:",
+                [
+                    " wake_p99_ms=",
+                    " wake_unjittered=",
+                    " wake_p99_other_ms=",
+                    " wake_jittered=",
+                ],
+            ),
+        ] {
+            assert!(
+                report
+                    .lines
+                    .iter()
+                    .any(|line| line.starts_with(prefix)
+                        && words.iter().all(|word| line.contains(word))),
+                "{prefix} {words:?}: {:#?}",
+                report.lines
+            );
+        }
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&report.json).expect("the report is written"),
+        )
+        .expect("the report is JSON");
+        let tempo = &json["tempos"][0];
+        let count = |key: &str| tempo[key].as_u64().unwrap_or(u64::MAX);
+        assert_eq!(
+            count("unjittered").saturating_add(count("jittered")),
+            count("pulses"),
+            "{tempo}"
+        );
+        assert!(count("unjittered") > 0, "{tempo}");
+        assert_eq!(
+            Some(count("jittered")),
+            json["minds"]["jittered_wakes"].as_u64(),
+            "{}",
+            json["minds"]
+        );
+        assert!(tempo["p99_ms_unjittered"].is_number() && tempo["p99_ms_jittered"].is_number());
+        // The lines' figures are the report's, from the one run — the line
+        // printed to three decimals and the report rounded to three, so equal
+        // within one in the third, whatever debug timings read: the verdict's
+        // `wake_p99_ms` is the unjittered p99 and `wake_p99_other_ms` the
+        // jittered one (not every wake's, not swapped), the engaged line
+        // carries the same split beside every wake's `p99`, and the counts on
+        // both lines are the report's.
+        let line_of = |prefix: &str| -> String {
+            report
+                .lines
+                .iter()
+                .find(|line| line.starts_with(prefix))
+                .cloned()
+                .unwrap_or_else(|| panic!("no `{prefix}` line: {:#?}", report.lines))
+        };
+        let word_of = |line: &str, key: &str| -> String {
+            line.split_whitespace()
+                .find_map(|word| word.strip_prefix(key)?.strip_prefix('='))
+                .map(str::to_string)
+                .unwrap_or_else(|| panic!("no `{key}=` word: {line}"))
+        };
+        let verdict = line_of("harness_minds_verdict:");
+        let engaged = line_of("harness_minds_engaged:");
+        for (line, key, json_key) in [
+            (&verdict, "wake_p99_ms", "p99_ms_unjittered"),
+            (&verdict, "wake_p99_other_ms", "p99_ms_jittered"),
+            (&engaged, "p99_unjittered", "p99_ms_unjittered"),
+            (&engaged, "p99_jittered", "p99_ms_jittered"),
+            (&engaged, "p99", "p99_ms"),
+        ] {
+            let on_line: f64 = word_of(line, key)
+                .parse()
+                .unwrap_or_else(|_| panic!("`{key}=` is not a figure: {line}"));
+            let in_report = tempo[json_key].as_f64().unwrap_or(f64::NAN);
+            assert!(
+                (on_line - in_report).abs() <= 0.0011,
+                "`{key}={on_line}` on the line against the report's `{json_key}` {in_report}: {line}"
+            );
+        }
+        for (line, key, json_key) in [
+            (&verdict, "wake_unjittered", "unjittered"),
+            (&verdict, "wake_jittered", "jittered"),
+            (&engaged, "unjittered", "unjittered"),
+            (&engaged, "jittered", "jittered"),
+            (&engaged, "pulses", "pulses"),
+        ] {
+            let on_line: u64 = word_of(line, key)
+                .parse()
+                .unwrap_or_else(|_| panic!("`{key}=` is not a count: {line}"));
+            assert_eq!(
+                on_line,
+                count(json_key),
+                "`{key}=` against `{json_key}`: {line}"
+            );
+        }
     }
 }
