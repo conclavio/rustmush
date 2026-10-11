@@ -8310,6 +8310,9 @@ fn hints_in(said: &str) -> Vec<&str> {
 
 /// **16b cut AH.1**: the lobby hint is read once, on a real entry, the boarding
 /// hint once at `SIM START`, and an alt on the same account reads neither.
+///
+/// The `@tutorial` counts read `of 6` (were `of 5` at 16b cut AH.1): the table
+/// holds six since `HintPoint::Mind`, said at a match's end (17b cut M5.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ah1_the_lobby_and_boarding_hints_are_read_once_per_account_and_an_alt_reads_none() {
     let mut rig = Rig::boot_sharing(3, &[(1, 2)], roster_with(fill_config()));
@@ -8330,19 +8333,22 @@ async fn ah1_the_lobby_and_boarding_hints_are_read_once_per_account_and_an_alt_r
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "an alt: {said}");
     let said = rig.say(2, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 2 of 5."),
+        said.contains("Hints are on; you have read 2 of 6."),
         "{said}"
     );
     // Pilot 0 is somebody else, and has read nothing.
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 5."),
+        said.contains("Hints are on; you have read 0 of 6."),
         "{said}"
     );
 }
 
 /// **16b cut AH.1**: `off` silences the points not yet reached without
 /// spending them, and `on` starts them again without re-arming one read.
+///
+/// The `@tutorial` counts read `of 6` (were `of 5` at 16b cut AH.1): the table
+/// holds six since `HintPoint::Mind`, said at a match's end (17b cut M5.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ah1_off_silences_the_unreached_and_on_does_not_rearm_the_read() {
     let mut rig = Rig::boot_sharing(2, &[], roster_with(fill_config()));
@@ -8380,7 +8386,7 @@ async fn ah1_off_silences_the_unreached_and_on_does_not_rearm_the_read() {
     );
     let said = rig.say(1, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 2 of 5."),
+        said.contains("Hints are on; you have read 2 of 6."),
         "{said}"
     );
     let said = rig.say(1, "@tutorial sideways");
@@ -8390,6 +8396,9 @@ async fn ah1_off_silences_the_unreached_and_on_does_not_rearm_the_read() {
 
 /// **16b cut AH.1**: the lobby point waits for a centre that would take a
 /// claim, for an account that holds no slot, and for a live layer.
+///
+/// The `@tutorial` counts read `of 6` (were `of 5` at 16b cut AH.1): the table
+/// holds six since `HintPoint::Mind`, said at a match's end (17b cut M5.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_live_layer() {
     // (i) The centre: boarding takes no claim, a terminal centre does.
@@ -8402,7 +8411,7 @@ async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_li
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "boarding: {said}");
     let said = rig.say(2, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 5."),
+        said.contains("Hints are on; you have read 0 of 6."),
         "{said}"
     );
     rig.end_by_staff();
@@ -8418,7 +8427,7 @@ async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_li
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "holds a slot: {said}");
     let said = rig.say(1, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 5."),
+        said.contains("Hints are on; you have read 0 of 6."),
         "{said}"
     );
     let said = rig.say(1, "sim leave");
@@ -8436,7 +8445,7 @@ async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_li
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "layer off: {said}");
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 5."),
+        said.contains("Hints are on; you have read 0 of 6."),
         "{said}"
     );
 }
@@ -8459,6 +8468,9 @@ async fn ah1_an_unmapped_character_reads_no_hint() {
 /// **16b cut AH.1**: a hint waits for a live connection. A pilot with none —
 /// linkdead, still `is_connected` — is neither told nor marked, and reads the
 /// point at its next occasion with a connection back.
+///
+/// The `@tutorial` counts read `of 6` (were `of 5` at 16b cut AH.1): the table
+/// holds six since `HintPoint::Mind`, said at a match's end (17b cut M5.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ah1_a_hint_waits_for_a_live_connection() {
     let mut rig = Rig::boot(2);
@@ -8473,7 +8485,7 @@ async fn ah1_a_hint_waits_for_a_live_connection() {
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
     let said = rig.say(1, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 5."),
+        said.contains("Hints are on; you have read 0 of 6."),
         "{said}"
     );
     rig.tw.world_mut().set_live_conns(p1, 1);

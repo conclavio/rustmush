@@ -2651,7 +2651,8 @@ impl AccountIdentity for Accounts {
 /// - to every pilot of the squad's own side — two red pilots here, so "every"
 ///   is more than "the first" — each once, as a `Sys` line, byte for byte
 ///   `Squad red-1: red lance leader 1's hold order has run out; back on
-///   doctrine.`;
+///   their minds.` (`back on doctrine.` until 17b cut M5.6, D9: one word for
+///   every mind);
 /// - to no pilot of the other side — the recipients are read off the
 ///   `OutputEvent`s' audiences, not only the text;
 /// - to staff, the same sentence behind `Arena match <n>: `;
@@ -2699,7 +2700,7 @@ async fn l2_the_world_says_the_leaders_order_lapsed_once() {
     let now = tw.world().now();
     tw.set_now(now + 2);
     let said = l2_said(&mut tw, tacsim::arena_bridge::drain_egress);
-    let line = "Squad red-1: red lance leader 1's hold order has run out; back on doctrine.";
+    let line = "Squad red-1: red lance leader 1's hold order has run out; back on their minds.";
     let lapses = l2_lapses(&said);
     // The side's pilots are told in the record's roster order, which this test
     // does not pin; each of them exactly once, then staff, and nobody else.
@@ -2765,9 +2766,12 @@ async fn l2_the_world_says_the_leaders_order_lapsed_once() {
 /// and a blue one; the first red pilot's watch on red-1 runs out:
 ///
 /// - the issuer reads `Squad red-1: your hold order has run out; back on
-///   doctrine.`;
+///   their minds.`;
 /// - staff read it in the pilot's name, `Arena match <n>: Squad red-1:
-///   Pilot0's hold order has run out; back on doctrine.`;
+///   Pilot0's hold order has run out; back on their minds.`;
+///
+/// (each `… back on doctrine.` until 17b cut M5.6, D9: one word for every
+/// mind)
 /// - the side's other pilot and the other side read nothing.
 ///
 /// And a watch whose author's object is gone (blue-1's, here) is told to
@@ -2811,7 +2815,7 @@ async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
     let said = l2_said(&mut tw, tacsim::arena_bridge::drain_egress);
     let blue_line = format!(
         "Arena match {match_id}: Squad {}: its leader's withdraw order has run out; back on \
-         doctrine.",
+         their minds.",
         blue.id
     );
     assert_eq!(
@@ -2819,13 +2823,13 @@ async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
         vec![
             (
                 Audience::Actor(issuer),
-                "Squad red-1: your hold order has run out; back on doctrine.".to_owned()
+                "Squad red-1: your hold order has run out; back on their minds.".to_owned()
             ),
             (
                 Audience::Actor(GOD),
                 format!(
                     "Arena match {match_id}: Squad red-1: Pilot0's hold order has run out; back \
-                     on doctrine."
+                     on their minds."
                 )
             ),
             (Audience::Actor(GOD), blue_line),
@@ -5302,9 +5306,14 @@ async fn o1_a_hold_arenas_first_signal_tells_the_commander_the_objective() {
         ),
         "{user}"
     );
+    // `In a key-spot match: engage keeps doctrine, which drives the squad to
+    // the key spot …` until 17b cut M5.6 (OQ-6; STOP A, the text made true).
     let system = request.system.clone().unwrap_or_default();
     assert!(
-        system.contains("In a key-spot match: engage keeps doctrine"),
+        system.contains(
+            "In a key-spot match: the squad does not drive for the key spot unless it is \
+             ordered to advance on it;"
+        ),
         "{system}"
     );
 

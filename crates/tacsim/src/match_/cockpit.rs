@@ -2283,6 +2283,14 @@ fn reclaim_seat(
 // K2: `EXIT`
 // ---------------------------------------------------------------------------
 
+/// **What an `EXIT` during `Running` says of the tank, after its name** (16b
+/// cut F.1): the leave is final — `You climb out of the pod. RA is on its own
+/// for the rest of the match; you cannot take it back.` One constant, so
+/// `help minds`' gate test reads the words `EXIT` says (17b cut M5.6's review,
+/// R24: it grepped this file, and its own needle matched itself).
+pub(crate) const EXIT_FINAL: &str =
+    "is on its own for the rest of the match; you cannot take it back.";
+
 /// **`EXIT`** — climb out (doc 16 §3.7).
 ///
 /// The order is the reverse of [`board`]'s, with the authority first:
@@ -2349,8 +2357,7 @@ pub fn exit(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     // verb does what it says, and what it says is now the whole truth.
     let line = match (running, seats.first()) {
         (true, Some(unit)) => format!(
-            "You climb out of {}. {} is on its own for the rest of the match; you cannot take it \
-             back.",
+            "You climb out of {}. {} {EXIT_FINAL}",
             display_name(ctx.w, pod),
             display_name(ctx.w, *unit)
         ),
@@ -7625,7 +7632,8 @@ pub const NO_SQUAD_TO_ORDER: &str = "You have no squad to order.";
 /// stands ten minutes or until replaced; the arena's `order_expired` line is the
 /// same as for a lance-leader's, and the world's lapse sentence (17b cut L.2) is
 /// told to the pilot alone, in their own words: `Squad red-1: your hold order has
-/// run out; back on doctrine.`
+/// run out; back on their minds.` (`back on doctrine.` until 17b cut M5.6, the
+/// M5.3 close's D9 ruling: one word for every mind, as the release says it).
 pub const HUMAN_ORDER_TTL_MS: u32 = crate::deliberation::MAX_TTL_MS;
 
 /// **The squad an `ORDER` names** (16b cut Y.1).
@@ -7673,8 +7681,9 @@ pub enum ObjectiveWords {
         /// The charge's callsign, as typed.
         callsign: String,
     },
-    /// `RELEASE` (16b cut Z.2; 16c Q44): hand the squad back to doctrine.
-    /// Nothing may follow it, `HOLD FIRE` included.
+    /// `RELEASE` (16b cut Z.2; 16c Q44): hand the squad back to its hulls'
+    /// own minds (17b cut M5.3's words; "back to doctrine" here until 17b cut
+    /// M5.6). Nothing may follow it, `HOLD FIRE` included.
     Release,
 }
 
@@ -8314,8 +8323,8 @@ fn span_refusal(others: usize, named: usize, max_span: u32) -> Option<CockpitErr
 /// ```text
 /// Ordered red-1 to screen 090°: it holds where it stands, faces 090° and fires on what comes inside its arc without giving chase.
 /// Ordered red-1 to screen 090°, holding fire: it holds where it stands, faces 090° and locks what comes inside its arc but fires nothing.
-/// Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on what RA is fighting.
-/// Ordered red-1 to support RA, holding fire: it keeps within 150 m of RA and locks what RA is fighting but fires nothing.
+/// Ordered red-1 to support RA: it keeps within 150 m of RA and fights what it finds there.
+/// Ordered red-1 to support RA, holding fire: it keeps within 150 m of RA and locks what it finds but fires nothing.
 /// Released red-1 to its mind: it fights on its own until it is ordered again.
 /// Released red-1 and red-2 to their minds: they fight on their own until they are ordered again.
 /// ```
@@ -8330,6 +8339,13 @@ fn span_refusal(others: usize, named: usize, max_span: u32) -> Option<CockpitErr
 /// each of its hulls, which a lead's `SIM AI MIND` may make another than
 /// Standard Doctrine (a fixture's mind before 17b cut M6), so the sentence
 /// names none — one word for every mind.
+///
+/// **17b cut M5.6** (the owner's OQ-6: the text made true in M5, the behaviour
+/// in the residues cut after it; STOP D): the two `SUPPORT` arms said the
+/// squad `fires first on what RA is fighting` / `locks what RA is fighting`
+/// until that cut. A supporter keeps station on its charge and fights what it
+/// finds there — nothing on its own frame says what the charge is fighting
+/// (D-UM-15 dropped that read), so the sentence no longer claims it.
 #[must_use]
 pub fn order_ack(
     who: &[String],
@@ -8396,15 +8412,15 @@ pub fn order_ack(
         (ObjectiveWords::Support { callsign }, false) => {
             let charge = hint.unwrap_or(callsign);
             format!(
-                "to support {charge}: it keeps within {leash_m} m of {charge} and fires first on \
-                 what {charge} is fighting."
+                "to support {charge}: it keeps within {leash_m} m of {charge} and fights what it \
+                 finds there."
             )
         }
         (ObjectiveWords::Support { callsign }, true) => {
             let charge = hint.unwrap_or(callsign);
             format!(
                 "to support {charge}, holding fire: it keeps within {leash_m} m of {charge} and \
-                 locks what {charge} is fighting but fires nothing."
+                 locks what it finds but fires nothing."
             )
         }
         // Answered above: a release is no order and takes no tail.
@@ -8667,12 +8683,15 @@ fn cockpit_help(verb: &str) -> String {
             .to_owned(),
         // 16b cut Y.1: who may order what, in the help, because the refusal for
         // a squad a pilot may not order is deliberately one bare sentence.
-        // 16b cut Z.2: the two squad roles and the release.
+        // 16b cut Z.2: the two squad roles and the release. 17b cut M5.6 (the
+        // M5.3 close's D9 ruling): "back to their own doctrine" until then —
+        // a released squad flies each hull's sealed mind, one word for every
+        // mind, as the release acknowledgement says it.
         "order" => "ORDER <squad|ALL> <objective>  command your side's machines: HOLD, ADVANCE \
                     <spot>, ENGAGE [<contact>], WITHDRAW, SCREEN <bearing> or SUPPORT \
                     <callsign>, with HOLD FIRE at the end to forbid shooting; RELEASE hands them \
-                    back to their own doctrine. A side's lead orders any squad of the side; \
-                    anyone else their pod pair's tank."
+                    back to their own minds. A side's lead orders any squad of the side; anyone \
+                    else their pod pair's tank."
             .to_owned(),
         // 16b cut F.2 gave both of these more to say, and a help line that
         // undersells a surface is a pilot who never looks at it.
@@ -10904,15 +10923,20 @@ mod tests {
                 "Ordered red-1 to screen 090°, holding fire: it holds where it stands, faces \
                  090° and locks what comes inside its arc but fires nothing.",
             ),
+            // The two support arms were `… and fires first on what RA is
+            // fighting.` / `… and locks what RA is fighting but fires nothing.`
+            // until 17b cut M5.6: a supporter fights what it finds at its
+            // station, and nothing it reads says what its charge is fighting
+            // (OQ-6; STOP D, the text made true).
             (
                 order_ack(&one, &support, Some("RA"), None, false, 150),
-                "Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on \
-                 what RA is fighting.",
+                "Ordered red-1 to support RA: it keeps within 150 m of RA and fights what it \
+                 finds there.",
             ),
             (
                 order_ack(&one, &support, Some("RA"), None, true, 150),
                 "Ordered red-1 to support RA, holding fire: it keeps within 150 m of RA and \
-                 locks what RA is fighting but fires nothing.",
+                 locks what it finds but fires nothing.",
             ),
         ];
         for (said, want) in cases {
@@ -11066,6 +11090,10 @@ mod tests {
 
     /// **16b cut Y.1**: the thirteenth selector is registered, walked by the
     /// gate, and carries its help line.
+    ///
+    /// The help line said `RELEASE hands them back to their own doctrine.`
+    /// until 17b cut M5.6: `… to their own minds.` (the M5.3 close's D9 ruling,
+    /// one word for every mind).
     #[test]
     fn y1_order_is_the_thirteenth_selector() {
         // 16b cut O.2 put `emcon` after it, so it is the thirteenth and no
@@ -11078,9 +11106,8 @@ mod tests {
             cockpit_help("order"),
             "ORDER <squad|ALL> <objective>  command your side's machines: HOLD, ADVANCE <spot>, \
              ENGAGE [<contact>], WITHDRAW, SCREEN <bearing> or SUPPORT <callsign>, with HOLD \
-             FIRE at the end to forbid shooting; RELEASE hands them back to their own \
-             doctrine. A side's lead orders any squad of the side; anyone else their pod pair's \
-             tank."
+             FIRE at the end to forbid shooting; RELEASE hands them back to their own minds. \
+             A side's lead orders any squad of the side; anyone else their pod pair's tank."
         );
     }
 
@@ -11249,6 +11276,130 @@ mod tests {
             refusal_line(goal.as_str(), Refusal::QueueFull, None, RefusalDetail::None),
             "DRIVE refused. Too many orders at once; try that again."
         );
+    }
+
+    /// **17b cut M5.6** (the design note's item 3; doc 17:1740-1742 as
+    /// corrected; the conventions' §3): `docs/help/minds.md` opens with three
+    /// lines, exactly, each under 120 columns — and each claim in them is the
+    /// code's: `SIM MIND` CHOOSES (the lobby's `Your slot will carry …`, read
+    /// through the verb by `tests/cockpit.rs`' `m5_sniper_line` and
+    /// `m5_a_chosen_mind_is_named_in_the_pilots_block_from_the_check_out`) and
+    /// the match's start seals (the check-out's [`lobby::seal_line`], called
+    /// here, its line quoted by the page); an unchosen slot's tank flies
+    /// Standard Doctrine on Line, the Registry's own (the lobby's own bare
+    /// read, the seal's name and charter), which `MIND` reads in the cockpit
+    /// (the seventeenth selector); and it flies from an `EXIT` to the end, or
+    /// from a drop past the grace until the end or a `BOARD` (the reconnect
+    /// line and the board's drop clause) — "board again" belongs to the drop
+    /// alone (`EXIT` is final, [`EXIT_FINAL`]).
+    ///
+    /// **17b cut M5.6's review** (R19, R24): the claims are tied by the code's
+    /// own values, never by grepping a source file (the `EXIT` needle matched
+    /// this test's own literal); and the page's `MIND` example — its four lines
+    /// and the ten seconds' refusal — is [`mind_lines`] and [`profile_switch`]
+    /// through [`order_refused`] on the same frame, so neither drifts from the
+    /// verb unseen (the block's examples are `report.rs`'
+    /// `m5_help_minds_quotes_the_block_as_it_is_built`, the presets' terms
+    /// `card.rs`' `m5_help_minds_names_every_term_a_preset_flies`).
+    #[test]
+    fn m5_help_minds_opens_with_three_true_lines() {
+        const OPENING: [&str; 3] = [
+            "Your tank's core can fly it when you are not in the seat. SIM MIND chooses its mind; \
+             the match's start seals it.",
+            "With none chosen, a tank you leave flies Standard Doctrine on Line, the Registry's \
+             own; MIND reads it in the cockpit.",
+            "It flies from when you climb out to the end, or from a drop past the grace until the \
+             end or you board again.",
+        ];
+        let help = include_str!("../../../../docs/help/minds.md");
+        let body: Vec<&str> = help.lines().collect();
+        assert_eq!(body.first(), Some(&"# Minds"), "the topic's heading");
+        assert_eq!(body.get(1), Some(&""), "then a blank line");
+        assert_eq!(
+            body.get(2..5),
+            Some(&OPENING[..]),
+            "the three lines, exactly"
+        );
+        assert_eq!(
+            OPENING.map(|line| line.chars().count()),
+            [112, 117, 108],
+            "the design note's widths"
+        );
+        let quoted = |said: &str| help.lines().any(|line| line.trim_start() == said);
+        // (1) SIM MIND chooses; the match's start seals, in the check-out's
+        // own line, which the page quotes.
+        let seal = crate::arena::mind::MindSeal {
+            mind: SmolStr::new_static("Standard Doctrine"),
+            class: crate::arena::core::CoreClass::I,
+            profiles: ["Sniper", "Line"]
+                .map(|name| crate::arena::mind::SealedProfile {
+                    name: SmolStr::new_static(name),
+                    card_digest: [0; 32],
+                })
+                .to_vec(),
+            ..crate::arena::mind::MindSeal::placeholder()
+        };
+        let sealed = lobby::seal_line(&seal, false).unwrap_or_default();
+        assert_eq!(
+            sealed,
+            "Sealed for this sortie: Standard Doctrine (Sniper, Line), Class I; MIND reads it."
+        );
+        assert!(quoted(&sealed), "the page quotes the seal line: {sealed}");
+        // (2) The default, by the lobby's own words and the seal's identity;
+        // MIND, the seventeenth selector, reads it.
+        assert_eq!(
+            lobby::MIND_UNCHOSEN,
+            "Yours: none; a tank you leave flies Standard Doctrine on Line."
+        );
+        assert_eq!(crate::arena::doctrine::SEALED_MIND, "Standard Doctrine");
+        assert_eq!(crate::arena::doctrine::SEALED_CHARTER, "registry");
+        assert_eq!(crate::arena::card::PRESETS[0], "Line");
+        assert!(COCKPIT_VERBS.contains(&"mind"));
+        // (3) A drop is taken back with BOARD and reads `flown by its mind`;
+        // an EXIT is not taken back (`EXIT`'s own sentence, above).
+        assert_eq!(lobby::DROP_CLAUSE, ", flown by its mind");
+        let w = mush_core::World::new_minimal();
+        assert!(crate::match_::resume::mind_line(&w, ObjId(1)).ends_with("BOARD takes it back."));
+        assert_eq!(
+            EXIT_FINAL,
+            "is on its own for the rest of the match; you cannot take it back."
+        );
+        // The page's `MIND` example: the four lines on a hull sealed on Sniper
+        // and Line at Class I on a Class II core, and the ten seconds' refusal.
+        let sniper_line = FrameMind {
+            doctrine: true,
+            profiles: crate::arena::card::ProfileSet::of_names(&["Sniper", "Line"])
+                .unwrap_or_else(|| panic!("two presets")),
+            active: 0,
+            class: crate::arena::core::CoreClass::I,
+            core_class: crate::arena::core::CoreClass::II,
+            switch_at_ms: None,
+            off: false,
+        };
+        for line in mind_lines(&sniper_line, true, 0) {
+            assert!(quoted(&line), "the page quotes MIND's line: {line}");
+        }
+        let switched = FrameMind {
+            active: 1,
+            switch_at_ms: Some(40_000),
+            ..sniper_line
+        };
+        let refusal = profile_switch(&switched, "Sniper", 34_000).map_or_else(
+            |said| order_refused(profile_order(), None, &said),
+            |_| String::new(),
+        );
+        assert_eq!(
+            refusal,
+            "MIND refused. One switch in ten seconds; the next in 6 s."
+        );
+        assert!(
+            help.contains(&format!("`{refusal}`")),
+            "the page quotes the refusal: {refusal}"
+        );
+        // Every line of the page is under 120 columns.
+        for line in help.lines() {
+            assert!(line.chars().count() < 120, "{line}");
+        }
     }
 
     /// **17b cut M5.4** (doc 17 §12 "The `MIND` verb"): the seventeenth

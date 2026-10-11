@@ -2184,11 +2184,12 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
 
     // **16b cut AH.1 (16c N18)**: the first-time hints, over the four
     // transcripts. Ada walked in live, boarded, read her first frame with the
-    // power off, brought it up in `drive` and told Bo apart with it up: the
-    // five, in order. Bo read the lobby's and switched them off. The bystander
-    // and the staffer were teleported to the muster and never walked the
-    // lobby: none. Every one is one of the five fixed sentences and names
-    // nothing.
+    // power off, brought it up in `drive`, told Bo apart with it up and ended
+    // the match with `SIM ABORT` before reading her report: the six, in order
+    // (the five until 17b cut M5.6, whose sixth, `mind`, the check-in says).
+    // Bo read the lobby's and switched them off. The bystander and the staffer
+    // were teleported to the muster, never walked the lobby and flew nothing:
+    // none. Every one is one of the six fixed sentences and names nothing.
     let hints = tacsim::match_::tutorial::HINT_LINES;
     let ada_hints = support::hints_read(&ada.seen);
     assert_eq!(
@@ -2197,7 +2198,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
             .iter()
             .map(|line| (*line).to_owned())
             .collect::<Vec<_>>(),
-        "Ada reads the five, once each, in order"
+        "Ada reads the six, once each, in order"
     );
     let bo_hints = support::hints_read(&bo.seen);
     assert_eq!(bo_hints, vec![hints[0].to_owned()], "Bo reads the lobby's");

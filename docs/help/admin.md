@@ -145,7 +145,9 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     (mind_card, or mind_card_refused); the read-back
                     follows the tape, a chunk behind. Refused for a tank a
                     pilot flies ("@mind/set: #305 is not flown by a
-                    mind."). No pilot is told any of it.
+                    mind."). No pilot is told while the match runs; the
+                    tank's own pilot reads the card's name in the "Your
+                    mind" block of their SIM REPORT (help minds).
 
 Powers: BOOT, EXAMINE_ALL, TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY,
 COMSYS_ADMIN, BUILDER_LLM, SEE_HIDDEN, FACTION_ADMIN, SIM_ADMIN. Wizards

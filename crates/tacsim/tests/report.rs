@@ -27,7 +27,7 @@ use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::state::{Arena, EndReason, Team};
 use tacsim::match_::HistoryRow;
 use tacsim::match_::report::{
-    Page, Reader, Report, ReportRules, Roster, fold, header_lines, stamp,
+    Fold, HandOver, OwnMind, Page, Reader, Report, ReportRules, Roster, fold, header_lines, stamp,
 };
 
 /// How long the fight may take, arena milliseconds.
@@ -61,7 +61,8 @@ fn leak(line: &str) -> Option<&'static str> {
 }
 
 /// The roster the world's record would hold: the arena's own callsigns, each
-/// unit's side, no pilots (the fold never reads one).
+/// unit's side, no pilots (the fold's tally never reads one; `Fold::pilot`
+/// does, for the world's spans, which these tests tell the fold directly).
 fn roster_of(arena: &Arena) -> Roster {
     let mut roster = Roster::new();
     for (unit, designator) in arena.callsigns() {
@@ -821,4 +822,446 @@ fn af3_the_tape_reader_truncates_at_the_marker() {
     );
     assert_eq!(folded.report.lines.len(), 7, "{:?}", folded.report.lines);
     assert_eq!(folded.page.lines, 6, "the abandoned two are not folded");
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.6: the `Your mind` block over the real fight
+// ---------------------------------------------------------------------------
+
+/// **The real fight, as `v3_a_real_fight_folds_to_each_pilots_own_projection`
+/// runs it** (17b cut M5.6): the same rig, musters, seed and bound — the armed
+/// blue tank eliminates the dry red one — answering the arena, its tape, the
+/// roster, the winner and the loser.
+fn the_fight() -> (Arena, Vec<LedgerEvent>, Roster, ObjId, ObjId) {
+    let world = booted_world();
+    let mut arena = shipped_arena_seeded(
+        &world,
+        &[
+            &[Muster::mind(Team::Red, 1).dry()],
+            &[Muster::mind(Team::Blue, 1).at(BLUE_AT)],
+        ],
+        FIGHT_SEED,
+    );
+    let loser = support::tank(&world, Team::Red, 1);
+    let winner = support::tank(&world, Team::Blue, 1);
+    let mut bytes = run_until(&mut arena, BOUND_MS, 1_000, |_, _| {});
+    assert!(
+        matches!(
+            arena.ended.map(|end| end.reason),
+            Some(EndReason::Elimination {
+                winner: Some(Team::Blue)
+            })
+        ),
+        "the armed tank did not eliminate the dry one inside {BOUND_MS} ms: {:?}",
+        arena.ended
+    );
+    let events = ledger_events(&mut arena, &mut bytes);
+    let roster = roster_of(&arena);
+    (arena, events, roster, winner, loser)
+}
+
+/// One moment the world tells a fold of: a release (`Some(by)`) or a
+/// reclaim (`None`), at an arena millisecond.
+type Moment = (i64, Option<HandOver>);
+
+/// **`unit`'s pilot fold as the world feeds it** (17b cut M5.6): seeded with
+/// `own` as `match_::start` seeds it, and each of `moments` told before the
+/// first event at or after it — the world marks the slot ahead of the chunks
+/// that carry the tape after it.
+fn folded(
+    events: &[LedgerEvent],
+    roster: &Roster,
+    unit: ObjId,
+    own: OwnMind,
+    moments: &[Moment],
+) -> Report {
+    let mut fold = Fold::new(roster.clone(), Reader::Pilot { unit }, RULES).with_own_mind(own);
+    let tell = |fold: &mut Fold, (at_ms, by): Moment| match by {
+        Some(by) => fold.released(at_ms, by),
+        None => fold.reclaimed(at_ms),
+    };
+    let mut moments = moments.iter().copied().peekable();
+    for event in events {
+        while let Some(moment) = moments.next_if(|(at_ms, _)| *at_ms <= event.t_ms) {
+            tell(&mut fold, moment);
+        }
+        fold.absorb(event);
+    }
+    for moment in moments {
+        tell(&mut fold, moment);
+    }
+    fold.finish()
+}
+
+/// Standard Doctrine at `profiles` (empty is Line alone), as the check-out
+/// sealed it.
+fn doctrine(chose: bool, profiles: &[&str]) -> OwnMind {
+    OwnMind {
+        chose,
+        mind: SmolStr::new_static("Standard Doctrine"),
+        profiles: profiles.iter().map(|name| SmolStr::new(*name)).collect(),
+        substituted: false,
+    }
+}
+
+/// The block's lines, or none.
+fn block_of(report: &Report) -> Vec<String> {
+    report
+        .mind
+        .as_ref()
+        .map(|block| block.lines.clone())
+        .unwrap_or_default()
+}
+
+/// Everything a report says to its reader, the block included.
+fn whole(report: &Report) -> Vec<String> {
+    report
+        .lines
+        .iter()
+        .chain(report.tail.iter())
+        .cloned()
+        .chain(block_of(report))
+        .collect()
+}
+
+/// **17b cut M5.6** (the owner's OQ-9 (ii); the design note's §2.4 fog table:
+/// `Your mind` is the pilot's whose hull carries the mind, alone): over the
+/// arena's own tape, each pilot's report carries their own `Your mind` block
+/// and no other — the winner, who chose Sniper and Line and climbed out
+/// mid-fight, reads theirs and nothing of the loser's Hunter; the loser, who
+/// chose Hunter and was never released, reads theirs and nothing of the
+/// winner's; an unchosen pilot never released reads none; and the staff page
+/// of the same tape carries no block. Every block line is under 120 columns
+/// and passes the report's no-leak grep.
+#[test]
+fn m5_the_pilots_report_carries_their_own_mind_block_and_no_other() {
+    let (_arena, events, roster, winner, loser) = the_fight();
+    let fired_at: Vec<i64> = events
+        .iter()
+        .filter(|event| matches!(&event.kind, EventKind::Fired { unit, .. } if *unit == winner))
+        .map(|event| event.t_ms)
+        .collect();
+    assert!(fired_at.len() >= 2, "the winner fired {fired_at:?}");
+    let exit_at = fired_at[fired_at.len() / 2];
+
+    let shooter = folded(
+        &events,
+        &roster,
+        winner,
+        doctrine(true, &["Sniper", "Line"]),
+        &[(exit_at, Some(HandOver::ClimbedOut))],
+    );
+    let mine = block_of(&shooter);
+    assert_eq!(
+        mine.first().map(String::as_str),
+        Some("Your mind: Standard Doctrine (Sniper, Line).")
+    );
+    assert_eq!(
+        mine.get(1),
+        Some(&format!(
+            "  It flew your tank from {}, when you climbed out, to the end.",
+            stamp(exit_at)
+        ))
+    );
+    assert!(
+        mine.get(2)
+            .is_some_and(|line| line.starts_with("  Its shots: ")),
+        "{mine:#?}"
+    );
+
+    let target = folded(&events, &roster, loser, doctrine(true, &["Hunter"]), &[]);
+    let theirs = block_of(&target);
+    assert_eq!(
+        theirs.first().map(String::as_str),
+        Some("Your mind: Standard Doctrine (Hunter).")
+    );
+    assert_eq!(
+        theirs.get(1).map(String::as_str),
+        Some("  It never flew: you flew the tank the whole match.")
+    );
+    // Seed 2,352's tape carries no drop to the ROM on the loser's hull (it is
+    // destroyed without one), so the block is its two lines; a drop is `m5_the_drop_reads_its_cause_word_
+    // alone`'s (17b cut M5.6's review, R29: the branch pinned, not either).
+    let dropped = events.iter().find_map(|event| match &event.kind {
+        EventKind::MindDropped { unit, .. } if *unit == loser => Some(event.t_ms),
+        _ => None,
+    });
+    assert_eq!(dropped, None, "the loser drops to the ROM on seed 2,352");
+    assert_eq!(theirs.len(), 2, "{theirs:#?}");
+
+    // No other: neither reads the other's mind, an unchosen pilot never
+    // released reads none, and the staff page carries no block.
+    for line in whole(&shooter) {
+        assert!(
+            !line.contains("Hunter"),
+            "the loser's mind reached the winner: {line}"
+        );
+    }
+    for line in whole(&target) {
+        assert!(
+            !line.contains("Sniper"),
+            "the winner's mind reached the loser: {line}"
+        );
+        assert!(
+            !line.contains("Its shots"),
+            "the winner's shots reached the loser: {line}"
+        );
+    }
+    let unchosen = folded(&events, &roster, loser, doctrine(false, &[]), &[]);
+    assert_eq!(unchosen.mind, None);
+    assert_eq!(
+        unchosen,
+        fold(&events, &roster, Reader::Pilot { unit: loser }, RULES)
+    );
+    let staff = fold(&events, &roster, Reader::Staff, RULES);
+    assert_eq!(staff.mind, None);
+    assert!(staff.lines.iter().all(|line| !line.contains("Your mind")));
+
+    for line in mine.iter().chain(theirs.iter()) {
+        assert!(line.chars().count() < 120, "{line}");
+        assert_eq!(leak(line), None, "{line}");
+    }
+}
+
+/// **17b cut M5.6's review** (R1/R23; the owner's OQ-9 (ii)), on the arena's
+/// own tape: the mind flies no wreck. Seed 2,352's loser is destroyed by the
+/// winner; a release the world tells at or after that moment — an `EXIT` from
+/// the wreck the cockpit itself advises, or a drop — is no span: an unchosen
+/// pilot reads no block and the report is the one with no mind, a chosen one
+/// reads that it never flew; and so whether the world's call reaches the fold
+/// before the chunk that carries the destruction (the tape lags the world) or
+/// after it. A span running when the hull is destroyed ends at its stamp.
+#[test]
+fn m5_the_mind_flies_no_wreck_on_the_arenas_own_tape() {
+    let (_arena, events, roster, _winner, loser) = the_fight();
+    let wrecked_at = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::UnitDestroyed { unit, .. } if *unit == loser => Some(event.t_ms),
+            _ => None,
+        })
+        .expect("the winner destroys the loser");
+    let base = fold(&events, &roster, Reader::Pilot { unit: loser }, RULES);
+    for at_ms in [wrecked_at, wrecked_at + 5_000] {
+        for by in [HandOver::ClimbedOut, HandOver::Dropped] {
+            let moment = [(at_ms, Some(by))];
+            let unchosen = folded(&events, &roster, loser, doctrine(false, &[]), &moment);
+            assert_eq!(unchosen, base, "{by:?} at {at_ms} ms, in tape order");
+            let mut ahead = Fold::new(roster.clone(), Reader::Pilot { unit: loser }, RULES)
+                .with_own_mind(doctrine(false, &[]));
+            ahead.released(at_ms, by);
+            for event in &events {
+                ahead.absorb(event);
+            }
+            assert_eq!(
+                ahead.finish(),
+                base,
+                "{by:?} at {at_ms} ms, ahead of the tape"
+            );
+            let chosen = folded(
+                &events,
+                &roster,
+                loser,
+                doctrine(true, &["Hunter"]),
+                &moment,
+            );
+            assert_eq!(
+                block_of(&chosen),
+                vec![
+                    "Your mind: Standard Doctrine (Hunter).",
+                    "  It never flew: you flew the tank the whole match.",
+                ],
+                "{by:?} at {at_ms} ms"
+            );
+        }
+    }
+    let from = wrecked_at / 2;
+    let flown = folded(
+        &events,
+        &roster,
+        loser,
+        doctrine(false, &[]),
+        &[(from, Some(HandOver::ClimbedOut))],
+    );
+    assert_eq!(
+        block_of(&flown).get(1),
+        Some(&format!(
+            "  It flew your tank from {}, when you climbed out, to {}.",
+            stamp(from),
+            stamp(wrecked_at)
+        ))
+    );
+}
+
+/// **17b cut M5.6** (the design note's M5.6 item 1; the adversarial review's
+/// finding 5): the mind's shots are the hull's `fired` lines inside a span,
+/// with their hits and the kills they made — the shots and hits counted here
+/// off the arena's own tape, independently of the fold, and the kills by the
+/// fold's own rule restated (the hull's last completed shot before the
+/// `unit_destroyed` was a span's shot that hit that unit) — and **the pilot's own lines are
+/// unchanged**: the report's timeline, tail, rounds, kills and gap, and the
+/// header's `You flew …` and `You fired …` lines, are those of the same match
+/// folded with no mind at all (the code path every report took before this
+/// cut), for a span the pilot took back and for one that ran to the end.
+#[test]
+fn m5_the_minds_shots_are_counted_in_its_block_and_the_pilots_lines_are_unchanged() {
+    let (arena, events, roster, winner, loser) = the_fight();
+    let base = fold(&events, &roster, Reader::Pilot { unit: winner }, RULES);
+    // The winner's own counts on seed 2,352, as literals (17b cut M5.6's
+    // review, R5): what the fold with no mind reads on this tape. The fold's
+    // counting code is `5f505c8`'s (`report.rs` unchanged from `5f505c8` to
+    // M5.5's `354e0ae8`; M5.6 adds the mind's calls beside it), so these are
+    // the counts that commit's fold gives this tape.
+    assert_eq!(
+        base.rounds,
+        std::collections::BTreeMap::from([
+            (SmolStr::new("cannon"), 4),
+            (SmolStr::new("machine_gun"), 230)
+        ])
+    );
+    assert_eq!(base.kills, 1);
+    let row = history_row(
+        &arena,
+        winner,
+        loser,
+        [(ObjId(9_001), winner), (ObjId(9_002), loser)],
+    );
+    let header = |report: &Report| {
+        header_lines(
+            &row,
+            "The Proving Ground",
+            Reader::Pilot { unit: winner },
+            Some(report),
+            None,
+        )
+    };
+    let fired: Vec<(i64, u64, String)> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::Fired {
+                unit,
+                shot_seq,
+                weapon,
+                ..
+            } if *unit == winner => Some((event.t_ms, *shot_seq, weapon.to_string())),
+            _ => None,
+        })
+        .collect();
+    assert!(fired.len() >= 3, "the winner fired {fired:?}");
+    let from = fired[1].0;
+    let last = fired.last().map_or(from, |(t_ms, ..)| *t_ms);
+    assert!(from < last, "the winner's shots span no time: {fired:?}");
+
+    for to in [Some(last), None] {
+        let mut moments: Vec<Moment> = vec![(from, Some(HandOver::Dropped))];
+        moments.extend(to.map(|to| (to, None)));
+        let flown = folded(&events, &roster, winner, doctrine(false, &[]), &moments);
+
+        // The pilot's own lines: as the same match folded with no mind.
+        assert_eq!(
+            Report {
+                mind: None,
+                ..flown.clone()
+            },
+            base
+        );
+        assert_eq!(header(&flown), header(&base));
+
+        // The block's count, off the tape: the shots inside the span, the hits
+        // among them, and a kill whose last outcome before it was one of the
+        // span's shots hitting the unit destroyed.
+        let inside = |t_ms: i64| from <= t_ms && to.is_none_or(|to| t_ms < to);
+        let ours: Vec<&(i64, u64, String)> =
+            fired.iter().filter(|(t_ms, ..)| inside(*t_ms)).collect();
+        assert!(
+            !ours.is_empty(),
+            "the span holds none of the winner's shots"
+        );
+        let mut per_weapon: std::collections::BTreeMap<&str, u32> =
+            std::collections::BTreeMap::new();
+        for (_, _, weapon) in &ours {
+            *per_weapon.entry(weapon.as_str()).or_default() += 1;
+        }
+        let seqs: BTreeSet<u64> = ours.iter().map(|(_, seq, _)| *seq).collect();
+        let winners: BTreeSet<u64> = fired.iter().map(|(_, seq, _)| *seq).collect();
+        let hits = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::Hit { shot_seq, .. } if seqs.contains(shot_seq)
+                )
+            })
+            .count();
+        let mut last_outcome: Option<(u64, Option<ObjId>)> = None;
+        let mut kills = 0_u32;
+        for event in &events {
+            match &event.kind {
+                EventKind::Hit {
+                    shot_seq, target, ..
+                } if winners.contains(shot_seq) => last_outcome = Some((*shot_seq, Some(*target))),
+                EventKind::Miss { shot_seq, .. } if winners.contains(shot_seq) => {
+                    last_outcome = Some((*shot_seq, None));
+                }
+                EventKind::UnitDestroyed { unit, by }
+                    if *by == Some(winner)
+                        && last_outcome.is_some_and(|(seq, target)| {
+                            seqs.contains(&seq) && target == Some(*unit)
+                        }) =>
+                {
+                    kills += 1;
+                }
+                _ => {}
+            }
+        }
+        let shots: u32 = per_weapon.values().sum();
+        let each: Vec<String> = per_weapon
+            .iter()
+            .map(|(weapon, n)| format!("{weapon} {n}"))
+            .collect();
+        let weapons = match each.split_last() {
+            Some((only, [])) => only.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => unreachable!("the span holds a shot"),
+        };
+        let outcome = match (shots, hits) {
+            (1, 0) => "no hit".to_owned(),
+            (1, _) => "a hit".to_owned(),
+            (_, 0) => "none of them hits".to_owned(),
+            (_, 1) => "1 of them a hit".to_owned(),
+            (_, hits) => format!("{hits} of them hits"),
+        };
+        let destroyed = match kills {
+            0 => "nothing".to_owned(),
+            1 => "1 unit".to_owned(),
+            kills => format!("{kills} units"),
+        };
+        let span = match to {
+            Some(to) => format!(
+                "  It flew your tank from {} to {}, while your line was down.",
+                stamp(from),
+                stamp(to)
+            ),
+            None => format!(
+                "  It flew your tank from {} to the end, while your line was down.",
+                stamp(from)
+            ),
+        };
+        let said = vec![
+            "Your mind: Standard Doctrine (Line).".to_owned(),
+            span,
+            format!("  Its shots: {weapons}, {outcome}; it destroyed {destroyed}."),
+        ];
+        assert!(
+            !events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::MindDropped { unit, .. } if *unit == winner
+            )),
+            "the winner never drops to the ROM in this fight"
+        );
+        assert_eq!(block_of(&flown), said, "span to {to:?}");
+        if to.is_none() {
+            assert_eq!(kills, base.kills, "the killing shot was the mind's");
+        }
+    }
 }

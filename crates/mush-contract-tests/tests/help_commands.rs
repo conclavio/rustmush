@@ -426,9 +426,11 @@ fn every_verb_a_hint_names_is_a_registered_verb() {
             checked += 1;
         }
     }
-    // SIM and TEAM twice, @tutorial, BOARD, STARTUP, VIEW, LOCK and FIRE.
+    // SIM and TEAM twice, @tutorial, BOARD, STARTUP, VIEW, LOCK and FIRE —
+    // and, since 17b cut M5.6's sixth hint, SIM and MIND (was 10 at 16b cut
+    // AH.1; `MIND` after `SIM` is the `mind` selector, checked as a switch).
     assert_eq!(
-        checked, 10,
+        checked, 12,
         "the hints name the verbs they were written to name"
     );
 }

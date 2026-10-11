@@ -188,4 +188,17 @@ mod tests {
         assert!(found.contains("Lantern Lane"));
         assert!(!found.contains("Market Lane"));
     }
+
+    /// **The game's 17b cut M5.6**: `docs/help/minds.md` ships in the
+    /// binary like every other help page (`build.rs` bundles the directory),
+    /// so the bot reads `help minds` without a checkout.
+    #[test]
+    fn the_minds_help_is_bundled() {
+        let (_, body) = BUNDLED_HELP
+            .iter()
+            .find(|(name, _)| *name == "help minds")
+            .expect("help minds is bundled");
+        assert!(body.starts_with("# Minds\n"), "{body}");
+        assert!(body.contains("SIM MIND chooses its mind; the match's start seals it."));
+    }
 }

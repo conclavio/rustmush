@@ -1515,6 +1515,32 @@ pub fn start(
         .filter(|unit| pilots.iter().any(|seated| seated.unit == unit.id))
         .map(|unit| (unit.id, report::OwnTank::from_custody(unit)))
         .collect();
+    // **17b cut M5.6** (the owner's OQ-9 (ii); the design note's M5.6 item 1,
+    // F12): and each piloted hull's mind as this check-out sealed it — the
+    // mind and its profile names off the seal, whether the slot chose a mind
+    // and whether Q-UM-15 substituted it off `Side::minds` (an entry missing,
+    // as every hull of a staff `@arena/start` match, chose nothing) — what
+    // the pilot's `Your mind` block names and the tape cannot say
+    // (`report::OwnMind`), `own_tanks`' precedent.
+    let own_minds: BTreeMap<ObjId, report::OwnMind> = custody_units
+        .iter()
+        .filter(|unit| pilots.iter().any(|seated| seated.unit == unit.id))
+        .map(|unit| {
+            let choice = sides.iter().find_map(|side| side.minds.get(&unit.id));
+            let own = report::OwnMind {
+                chose: choice.is_some_and(|choice| choice.chose),
+                mind: unit.seal.mind.clone(),
+                profiles: unit
+                    .seal
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.name.clone())
+                    .collect(),
+                substituted: choice.is_some_and(|choice| choice.substituted),
+            };
+            (unit.id, own)
+        })
+        .collect();
 
     // **16b cut I.1 (16c N9)**: the replay's keyframe 0 — every unit's
     // check-out pose on the ground's cell grid — read off the custody before it
@@ -1573,7 +1599,8 @@ pub fn start(
         // reload cannot change how this match is told. A unit with no pilot
         // (a machine) gets none; a unit with two seated pilots gets one. Each
         // carries its own tank as checked out, so a lost section reads what
-        // the cockpit said of it.
+        // the cockpit said of it — and (17b cut M5.6) its own mind as sealed,
+        // so its `Your mind` block names it.
         let roster = report::Roster::from_record(record);
         let rules = report::ReportRules {
             designate_on_detection: sensors_cfg.designate_on_detection,
@@ -1581,8 +1608,16 @@ pub fn start(
         record.folds = roster
             .pilots()
             .map(|(_, unit)| {
-                let fold = report::Fold::new(roster.clone(), report::Reader::Pilot { unit }, rules)
-                    .with_own_tank(own_tanks.get(&unit).cloned().unwrap_or_default());
+                let mut fold =
+                    report::Fold::new(roster.clone(), report::Reader::Pilot { unit }, rules)
+                        .with_own_tank(own_tanks.get(&unit).cloned().unwrap_or_default());
+                // Seeded only with a mind this check-out sealed: a fold with
+                // none prints no block (`Fold::with_own_mind`), where a
+                // defaulted one would name an empty mind (17b cut M5.6's
+                // review, R26).
+                if let Some(own) = own_minds.get(&unit) {
+                    fold = fold.with_own_mind(own.clone());
+                }
                 (unit, fold)
             })
             .collect();
@@ -2236,6 +2271,21 @@ pub fn finish(
     // different ends map to `draw` and the board is the surface that wants to
     // tell them apart.
     lobby::on_match_finished(ctx, match_id, outcome, end.reason);
+    // **17b cut M5.6 (doc 17 §15's first hint, reworded by the M5 design note's
+    // C-12)**: the sixth hint, `HintPoint::Mind`, to each pilot of the match —
+    // the roster's `(pilot, unit)` pairs at check-out, so a machine is never
+    // told — after the outcome and the lobby's release, so it is the last line
+    // of the match. `tutorial::hint` says it once per account and only to a
+    // session with a live connection; a pilot who has gone keeps the point for
+    // their next match's end.
+    let pilots: BTreeSet<ObjId> = record
+        .teams
+        .iter()
+        .flat_map(|roster| roster.pilots.iter().map(|(pilot, _)| *pilot))
+        .collect();
+    for pilot in pilots {
+        tutorial::hint(ctx, pilot, tutorial::HintPoint::Mind);
+    }
     true
 }
 

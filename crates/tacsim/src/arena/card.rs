@@ -1991,4 +1991,102 @@ mod tests {
         assert_eq!(preset_code("rEaRgUaRd"), Some(5));
         assert_eq!(preset_code("Brawler"), None);
     }
+
+    /// **17b cut M5.6's review** (R17, R19): `help minds`' preset rows name
+    /// every term each preset flies otherwise than Line, at the card's own
+    /// reading in its own words — on the shipped doctrine, and on one whose
+    /// every mapped term differs from every preset's, so a term a preset writes
+    /// at Line's shipped value (Hunter's `search_s 60`) is named too: an
+    /// operator's doctrine moves Line's and never the preset's. The eleven
+    /// carried inert (this module's head) are not the rows' to name. And the
+    /// figures the page quotes for Line as shipped are the default doctrine's
+    /// and Line's own.
+    #[test]
+    fn m5_help_minds_names_every_term_a_preset_flies() {
+        const INERT: [Slider; 11] = [
+            Slider::Stance,
+            Slider::CloseM,
+            Slider::OrbitSense,
+            Slider::TurnIntoHits,
+            Slider::TurnS,
+            Slider::ScreenBearing,
+            Slider::ScreenArc,
+            Slider::Opening,
+            Slider::ReserveOdds,
+            Slider::SwitchM,
+            Slider::StopUnseen,
+        ];
+        let help = include_str!("../../../../docs/help/minds.md");
+        let lines: Vec<&str> = help.lines().collect();
+        // A row: its first line opens `  <Preset> `, and the lines under it
+        // indented past the name column carry on.
+        let row = |preset: &str| -> String {
+            let at = lines
+                .iter()
+                .position(|line| line.starts_with(&format!("  {preset} ")))
+                .unwrap_or_else(|| panic!("help minds has no row for {preset}"));
+            let mut text = lines.get(at).copied().unwrap_or_default().to_owned();
+            for line in lines.iter().skip(at + 1) {
+                if !line.starts_with("                ") {
+                    break;
+                }
+                text.push(' ');
+                text.push_str(line.trim());
+            }
+            text
+        };
+        // `said` as words of the row: never `min_odds 5` inside `min_odds 55`.
+        let names = |text: &str, said: &str| {
+            text.match_indices(said).any(|(at, _)| {
+                text.get(at + said.len()..)
+                    .and_then(|rest| rest.chars().next())
+                    .is_none_or(|next| !next.is_ascii_alphanumeric())
+            })
+        };
+        let shipped = ReflexConfig::default();
+        let moved = ReflexConfig {
+            engage_band_permille: 750,
+            withdraw_permille: 400,
+            stand_min_permille: 200,
+            rally_ms: 25_000,
+            search_ms: 50_000,
+            hunt_after_ms: 100_000,
+            ..ReflexConfig::default()
+        };
+        for cfg in [&shipped, &moved] {
+            let base = line(cfg);
+            for name in PRESETS.iter().skip(1) {
+                let card = preset(name, cfg).unwrap_or_else(|| panic!("{name}"));
+                let text = row(name);
+                for slider in SLIDERS {
+                    if INERT.contains(&slider) || card.reading(slider) == base.reading(slider) {
+                        continue;
+                    }
+                    let said = format!("{} {}", slider.name(), card.reading(slider));
+                    assert!(
+                        names(&text, &said),
+                        "{name}'s row does not name {said}: {text}"
+                    );
+                }
+            }
+        }
+        // Line, as the page quotes it shipped: closes to 70% of its reach,
+        // fires at 10% or better on any face, keeps no rounds back, breaks off
+        // under 35%, back after 20 quiet seconds, a minute's search, a minute
+        // and a half before it goes looking.
+        let line_card = line(&shipped);
+        for (slider, reading) in [
+            (Slider::BandPct, "70"),
+            (Slider::MinOdds, "10"),
+            (Slider::Aspect, "any"),
+            (Slider::ReservePct, "0"),
+            (Slider::BreakOffPct, "35"),
+            (Slider::RallyS, "20"),
+            (Slider::SearchS, "60"),
+            (Slider::HuntAfterS, "90"),
+        ] {
+            assert_eq!(line_card.reading(slider), reading, "{}", slider.name());
+        }
+        assert!(help.contains("Line is the Registry's doctrine as this server runs it"));
+    }
 }

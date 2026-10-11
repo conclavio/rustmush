@@ -59,6 +59,7 @@ use crate::config::{ArenaConfig, CommandConfig, MatchConfig, MindsConfig, Sensor
 use crate::match_::centre::{self, CENTRE_ARENA, CentreRoom, PODS_PER_SIDE};
 use crate::match_::holdings::{self, HeldMind, SealChoice};
 use crate::match_::net;
+use crate::match_::report::HandOver;
 use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
 
 /// The one line every out-of-place `SIM` refuses with. Until 16b cut F.4 a
@@ -3645,10 +3646,29 @@ pub fn slot_vacated(ctx: &mut Ctx<'_>, match_id: MatchId, pilot: ObjId) -> Resul
 /// A destroyed pilot who stays in their pod is **attending**: nothing here reads
 /// a wreck, only whether somebody gave their seat up.
 ///
+/// **And it is where the mind's span opens** (17b cut M5.6; the owner's OQ-9
+/// (ii); the design note's M5.6 item 1): a slot this marking moves opens a
+/// span on its pilot's debrief fold ([`crate::match_::report::Fold::released`])
+/// at the arena's own clock as the world last heard it
+/// (`crate::arena_bridge::MatchMirror::now_ms`, the orchestrator's ruling at
+/// 17b cut M5.4's close), `Dropped` when [`slot_dropped`] stamped the slot a
+/// moment before (a drop, a `QUIT`, a resume) and `ClimbedOut` otherwise (an
+/// `EXIT`) — the one fact of the `Your mind` block neither the tape nor the
+/// check-out carries. A match whose mirror the registry no longer holds
+/// opens none. A wreck's pilot who climbs out (`EXIT leaves the pod.`) or
+/// drops opens one too, since nothing here reads a wreck: the fold reads the
+/// hull's destruction off the tape and the block reads no span from it on
+/// (the mind flies no wreck; 17b cut M5.6's review).
+///
 /// Answers whether a slot moved, which is nothing anybody prints — it is here so
 /// the caller pays for no borrow it does not need.
 pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
     let now_ms = ctx.w.now().saturating_mul(1_000);
+    // `MatchMirror::now_ms`, the arena's own clock — never the mirror's
+    // `arena_ms`, the ledger's last stamp (the ruling at 17b cut M5.4's close).
+    let mirror_now_ms = centre(ctx.w)
+        .and_then(|centre| centre.match_id)
+        .and_then(|match_id| arena_now_ms(ctx.w, match_id));
     let Some(book) = ctx.w.module_state_mut::<MatchBook>() else {
         return false;
     };
@@ -3656,9 +3676,15 @@ pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
     if centre.state != MatchState::Running {
         return false;
     }
+    let mut handed = None;
     let moved = match centre.slots.iter_mut().find(|slot| slot.pilot == pilot) {
         Some(slot) if !slot.left => {
             slot.left = true;
+            handed = Some(if slot.dropped_at_ms.is_some() {
+                HandOver::Dropped
+            } else {
+                HandOver::ClimbedOut
+            });
             // **16b cut B.4** (cut AA's residual): a lead who leaves the tank
             // mid-match hands the side on at once — before this, `left` was
             // set and the lead kept, so no succession ran and the teammates
@@ -3673,6 +3699,12 @@ pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
         && centre.slots.iter().all(|slot| slot.left)
     {
         centre.unattended_since_ms = Some(now_ms);
+    }
+    let match_id = centre.match_id;
+    if let (Some(by), Some(match_id), Some(at_ms)) = (handed, match_id, mirror_now_ms)
+        && let Some(fold) = pilot_fold_mut(book, match_id, pilot)
+    {
+        fold.released(at_ms, by);
     }
     moved
 }
@@ -3755,6 +3787,10 @@ pub(crate) fn slot_exited(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
 ///   take the side back — 16c's owner question Q42 at its default; a side whose
 ///   every claimant had left had no entry, and the first to come back leads it.
 ///
+/// **17b cut M5.6**: and the mind's span the drop opened on the pilot's debrief
+/// fold closes ([`crate::match_::report::Fold::reclaimed`]), at the arena's own
+/// clock as the world last heard it — [`slot_left`]'s clock.
+///
 /// # Errors
 ///
 /// [`SimError::WrongState`] unless the centre is `Running` on `match_id` **and**
@@ -3768,6 +3804,8 @@ pub(crate) fn slot_reclaimed(
     pilot: ObjId,
     unit: ObjId,
 ) -> Result<(), SimError> {
+    // `MatchMirror::now_ms`, as `slot_left` reads it.
+    let mirror_now_ms = arena_now_ms(ctx.w, match_id);
     let book = ctx
         .w
         .module_state_mut::<MatchBook>()
@@ -3796,7 +3834,28 @@ pub(crate) fn slot_reclaimed(
     slot.released_by_resume = false;
     centre.clear_unattended();
     centre.resettle_leads();
+    // **17b cut M5.6**: the mind's span closes, on the clock `slot_left`
+    // opened it on.
+    if let Some(at_ms) = mirror_now_ms
+        && let Some(fold) = pilot_fold_mut(book, match_id, pilot)
+    {
+        fold.reclaimed(at_ms);
+    }
     Ok(())
+}
+
+/// **`pilot`'s debrief fold in match `match_id`** (17b cut M5.6): the one
+/// whose roster seats the pilot (`Fold::pilot`), where [`slot_left`] opens
+/// and [`slot_reclaimed`] closes the `Your mind` block's spans.
+fn pilot_fold_mut(
+    book: &mut MatchBook,
+    match_id: MatchId,
+    pilot: ObjId,
+) -> Option<&mut crate::match_::report::Fold> {
+    book.get_mut(match_id)?
+        .folds
+        .values_mut()
+        .find(|fold| fold.pilot() == Some(pilot))
 }
 
 /// **The resume line has been said to `pilot`** (16b cut AF.3; 16c N16,

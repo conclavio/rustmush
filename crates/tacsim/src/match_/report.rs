@@ -41,14 +41,31 @@
 //! the seed (16b cut M.3) are staff-only; no pilot line ever prints a draw, a
 //! seed, a contact id or an object number.
 //!
+//! # The pilot's own mind (17b cut M5.6)
+//!
+//! A pilot whose slot chose a mind, or whose tank the mind flew, reads a
+//! `Your mind` block ([`MindBlock`]) after the report's header and before its
+//! timeline: the mind and its profiles as sealed and the card changes on their
+//! hull by the card's own name, whether and from when it flew the tank (never a
+//! wreck: a span ends at the hull's destruction, and one the world opened after
+//! it is none), its shots, and a drop to the ROM by its cause. The check-out hands the fold what the tape cannot say
+//! ([`OwnMind`], [`Fold::with_own_mind`]), and the world opens and closes each
+//! span of its flying ([`Fold::released`], [`Fold::reclaimed`]) at the arena's
+//! own clock as it last heard it — the one fact of a report not told from the
+//! tape or the check-out (a declared departure). The block is beside the
+//! pilot's own counts, never in them: the rounds, the kills, the `You fired …`
+//! line and the timeline keep the hull's every shot. Another hull's mind is
+//! never in it, and the staff page is unchanged.
+//!
 //! # Held to the arena library's standard
 //!
 //! The fold is under `match_/` and not `arena/`, so
 //! `crates/mush-contract-tests/tests/arena_library.rs` does not scan it, but it
 //! keeps the same rules: no I/O, no world, no clock, no float, and every map it
-//! iterates to produce a line is a `BTreeMap`. The request and completion
-//! halves below the fold are the world-side code, and are the only part of the
-//! file that touches a [`Ctx`].
+//! iterates to produce a line is a `BTreeMap` (17b cut M5.6's spans are handed
+//! their moments by the world; the fold reads no clock of its own). The
+//! request and completion halves below the fold are the world-side code, and
+//! are the only part of the file that touches a [`Ctx`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -420,6 +437,368 @@ const DESTROY_CORE: &str = "destroy_core";
 /// The ledger word of `Consequence::DegradeCore` (17b cut M3.6).
 const DEGRADE_CORE: &str = "degrade_core";
 
+// ---------------------------------------------------------------------------
+// The pilot's own mind (17b cut M5.6)
+// ---------------------------------------------------------------------------
+
+/// **The pilot's own mind, as the check-out sealed it** (17b cut M5.6; the
+/// owner's OQ-9 (ii); the design note's M5.6 item 1, F12) — what the `Your
+/// mind` block names that the tape cannot say: whether the slot chose a mind
+/// at all (a chosen `SIM MIND Standard` with no `PROFILE` seals byte for byte
+/// as an unchosen slot does, so no tape line tells the two apart), the mind
+/// and its profile names as sealed (empty is Line alone), and whether
+/// Q-UM-15 substituted Standard Doctrine for the slot's choice.
+///
+/// Seeded by `crate::match_::start` beside [`Fold::with_own_tank`], through
+/// [`Fold::with_own_mind`], from `crate::match_::Side::minds` and the seal it
+/// took — [`OwnTank`]'s precedent of a check-out fact the fold is handed,
+/// not a departure from 16b cut V.3's "told from the tape".
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnMind {
+    /// Whether the slot chose a mind (`SealChoice::chose`).
+    pub chose: bool,
+    /// The mind as the seal names it (`MindSeal::mind`).
+    pub mind: SmolStr,
+    /// The profile names as the seal names them, the first the one that
+    /// flies at the release; empty is Line alone (`MindSeal::profiles`).
+    pub profiles: Vec<SmolStr>,
+    /// Whether Q-UM-15 substituted Standard Doctrine for the slot's choice
+    /// (`SealChoice::substituted`; fixture-only throughout 17b's M5, the
+    /// owner's OQ-5: no production seal is other than Standard Doctrine).
+    pub substituted: bool,
+}
+
+/// **How the mind came to fly the pilot's tank** (17b cut M5.6): what
+/// `crate::match_::lobby::slot_left` reads off the slot as it marks it out of
+/// its cockpit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandOver {
+    /// An `EXIT`: the pilot climbed out, for good.
+    ClimbedOut,
+    /// A drop — the linkdead grace running out, a `QUIT`, or the boot's
+    /// resume of the match, each of which stamps `Slot::dropped_at_ms`
+    /// before its `Released` marks the slot: the pilot's line was down, and
+    /// a `BOARD` may take the tank back.
+    Dropped,
+}
+
+/// **One stretch of the match the mind flew the pilot's tank** (17b cut
+/// M5.6), in arena milliseconds on the world's copy of the arena's own clock
+/// (`MatchMirror::now_ms`, the orchestrator's ruling at 17b cut M5.4's close):
+/// opened at the release, closed when the pilot takes the tank back, `None`
+/// while it runs to the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Span {
+    from_ms: i64,
+    to_ms: Option<i64>,
+    by: HandOver,
+}
+
+impl Span {
+    /// Whether a line stamped `t_ms` falls inside it — from its opening, up
+    /// to and not including its close.
+    fn holds(&self, t_ms: i64) -> bool {
+        self.from_ms <= t_ms && self.to_ms.is_none_or(|to_ms| t_ms < to_ms)
+    }
+
+    /// `from 0:42 to 1:10`, or `from 0:42 to the end`.
+    fn stretch(&self) -> String {
+        match self.to_ms {
+            Some(to_ms) => format!("from {} to {}", stamp(self.from_ms), stamp(to_ms)),
+            None => format!("from {} to the end", stamp(self.from_ms)),
+        }
+    }
+}
+
+/// One weapon's shots inside a span, and how many of them hit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Tally {
+    shots: u32,
+    hits: u32,
+}
+
+/// A tape line's moment and its one word — a card's name, a drop's cause.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Said {
+    t_ms: i64,
+    word: SmolStr,
+}
+
+/// **What the fold keeps of the pilot's own mind** (17b cut M5.6): the
+/// check-out's [`OwnMind`], the spans the world opened and closed, and off
+/// the tape — on the pilot's OWN hull alone — the hull's shots inside a span
+/// with their hits and kills, its card changes (`mind_card`: a seat's `MIND
+/// PROFILE`, or a staff `@mind/set`), and its drop to the ROM
+/// (`mind_dropped`). Bounded whatever the match does: one tally per weapon,
+/// the last card change and a count, one drop (the arena journals one a
+/// sortie), and one span per release — each needing `reclaim_min_ms` after
+/// the drop that opened the one before.
+///
+/// **The mind flies no wreck** (17b cut M5.6's review, R1/R23): the tape's
+/// `unit_destroyed` of the hull is kept ([`MindTrack::wrecked_ms`]), and the
+/// block reads the spans cut there ([`MindTrack::flown`]) — a destroyed pilot
+/// told to `EXIT` (or whose line drops) after it opens a span the world
+/// cannot tell from any other, and it is no span. Cut when the block is
+/// built, never at [`Fold::released`]: the tape reaches the fold after the
+/// world has marked the slot.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MindTrack {
+    own: Option<OwnMind>,
+    spans: Vec<Span>,
+    /// The hull's shots fired inside a span whose outcome is not on the tape
+    /// yet, by `shot_seq`.
+    in_flight: BTreeSet<u64>,
+    shots: BTreeMap<SmolStr, Tally>,
+    kills: u32,
+    /// The target of the hull's last completed shot, when it was one of the
+    /// mind's and hit — what a `unit_destroyed` crediting the hull is the
+    /// mind's kill by (the line follows the `hit` that did it in the same
+    /// substep, as [`Fold::append_clause`]'s rule reads it).
+    last_hit: Option<ObjId>,
+    switches: u32,
+    last_switch: Option<Said>,
+    dropped: Option<Said>,
+    /// When the hull was destroyed (its own `unit_destroyed`), if it was.
+    wrecked_ms: Option<i64>,
+}
+
+impl MindTrack {
+    /// Nothing seeded and nothing seen: what a fold built before this cut,
+    /// or one never seeded, holds — skipped on the live record, so its bytes
+    /// are the bytes it wrote before.
+    fn is_unset(&self) -> bool {
+        *self == MindTrack::default()
+    }
+
+    /// Whether the mind was flying the hull at `t_ms`.
+    fn flying_at(&self, t_ms: i64) -> bool {
+        self.spans.iter().any(|span| span.holds(t_ms))
+    }
+
+    /// The hull fired: one of the mind's shots when it flew the hull then.
+    fn fired(&mut self, t_ms: i64, shot_seq: u64, weapon: &SmolStr) {
+        if self.flying_at(t_ms) {
+            self.in_flight.insert(shot_seq);
+            let tally = self.shots.entry(weapon.clone()).or_default();
+            tally.shots = tally.shots.saturating_add(1);
+        }
+    }
+
+    /// One of the hull's shots landed, `hit` or not.
+    fn landed(&mut self, shot_seq: u64, weapon: &SmolStr, target: ObjId, hit: bool) {
+        let ours = self.in_flight.remove(&shot_seq);
+        if ours
+            && hit
+            && let Some(tally) = self.shots.get_mut(weapon)
+        {
+            tally.hits = tally.hits.saturating_add(1);
+        }
+        self.last_hit = (ours && hit).then_some(target);
+    }
+
+    /// **The spans as the block reads them** (17b cut M5.6's review): cut at
+    /// the hull's destruction — a span still open then, or closed after it,
+    /// ends there — and one the world opened at or after it dropped, since
+    /// the mind flies no wreck. Every span as the world told it, when the
+    /// hull lived to the end.
+    fn flown(&self) -> Vec<Span> {
+        self.spans
+            .iter()
+            .filter_map(|span| match self.wrecked_ms {
+                None => Some(*span),
+                Some(wrecked_ms) if span.from_ms >= wrecked_ms => None,
+                Some(wrecked_ms) => Some(Span {
+                    to_ms: Some(span.to_ms.map_or(wrecked_ms, |to_ms| to_ms.min(wrecked_ms))),
+                    ..*span
+                }),
+            })
+            .collect()
+    }
+
+    /// **The `Your mind` block**, or `None` when it is not printed: the
+    /// owner's OQ-9 (ii) prints it only for a slot that chose a mind or a
+    /// hull the mind flew ([`MindTrack::flown`]: a span opened on a wreck is
+    /// none), and a fold with no check-out facts has nothing to name.
+    fn block(&self) -> Option<MindBlock> {
+        let own = self.own.as_ref()?;
+        let spans = self.flown();
+        if !own.chose && spans.is_empty() {
+            return None;
+        }
+        let mut lines = vec![self.head(own)];
+        if self.switches > 1
+            && let Some(last) = &self.last_switch
+        {
+            lines.push(format!(
+                "  Its last switch was to {} at {}.",
+                last.word,
+                stamp(last.t_ms)
+            ));
+        }
+        if own.substituted {
+            lines.push(SUBSTITUTED_LINE.to_owned());
+        }
+        lines.push(span_line(&spans));
+        if !spans.is_empty() {
+            lines.push(self.shots_line());
+        }
+        if let Some(dropped) = &self.dropped {
+            lines.push(drop_line(dropped));
+        }
+        Some(MindBlock { lines })
+    }
+
+    /// `Your mind: Standard Doctrine (Sniper, Line); switched to Line at
+    /// 1:05.` — the mind and its profiles as sealed, and its card changes by
+    /// the card's own name: one by its name and moment, more as a count here
+    /// and the last on a line of its own under it (`  Its last switch was to
+    /// Line at 1:30.`), so no count and no edited card's name takes the head
+    /// past 120 columns.
+    fn head(&self, own: &OwnMind) -> String {
+        let mut text = format!("Your mind: {}", lobby::mind_words(&own.mind, &own.profiles));
+        match &self.last_switch {
+            Some(_) if self.switches > 1 => {
+                text.push_str(&format!("; switched {} times", self.switches));
+            }
+            Some(last) => {
+                text.push_str(&format!(
+                    "; switched to {} at {}",
+                    last.word,
+                    stamp(last.t_ms)
+                ));
+            }
+            None => {}
+        }
+        text.push('.');
+        text
+    }
+
+    /// `  Its shots: cannon 4, 2 of them hits; it destroyed nothing.` — the
+    /// hull's shots inside a span, by weapon id as authored and in
+    /// `BTreeMap` order, the hits among them and the units they destroyed;
+    /// `  It fired nothing.` when it fired none.
+    fn shots_line(&self) -> String {
+        let fired: Vec<(&SmolStr, Tally)> = self
+            .shots
+            .iter()
+            .filter(|(_, tally)| tally.shots > 0)
+            .map(|(weapon, tally)| (weapon, *tally))
+            .collect();
+        let shots = fired
+            .iter()
+            .fold(0_u32, |sum, (_, tally)| sum.saturating_add(tally.shots));
+        let hits = fired
+            .iter()
+            .fold(0_u32, |sum, (_, tally)| sum.saturating_add(tally.hits));
+        let each: Vec<String> = fired
+            .iter()
+            .map(|(weapon, tally)| format!("{weapon} {}", tally.shots))
+            .collect();
+        let weapons = match each.split_last() {
+            None => return "  It fired nothing.".to_owned(),
+            Some((only, [])) => only.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        };
+        let outcome = match (shots, hits) {
+            (1, 0) => "no hit".to_owned(),
+            (1, _) => "a hit".to_owned(),
+            (_, 0) => "none of them hits".to_owned(),
+            (_, 1) => "1 of them a hit".to_owned(),
+            (_, hits) => format!("{hits} of them hits"),
+        };
+        let destroyed = match self.kills {
+            0 => "nothing".to_owned(),
+            1 => "1 unit".to_owned(),
+            kills => format!("{kills} units"),
+        };
+        format!("  Its shots: {weapons}, {outcome}; it destroyed {destroyed}.")
+    }
+}
+
+/// The `Your mind` block's line for a slot whose choice Q-UM-15 substituted
+/// (17b cut M5.6): the seal line's own clause (`crate::match_::lobby::seal_line`).
+const SUBSTITUTED_LINE: &str = "  Sealed in place of your choice, for humans on the other side.";
+
+/// **When it flew** (17b cut M5.6; the design note's M5.6 item 1), bounded
+/// whatever the count: `  It never flew: you flew the tank the whole match.`;
+/// one span — `  It flew your tank from 0:42, when you climbed out, to the
+/// end.` (`… to 3:12.` when the hull was destroyed then, the one way an
+/// `EXIT`'s span closes), `  It flew your tank from 0:42 to 1:10, while your
+/// line was down.` (`… to the end, …` when never taken back); two — `  It flew your
+/// tank from 0:42 to 1:10 and from 2:05 to the end, while your line was
+/// down.` (the cause clause only when both were drops); three or more — `
+/// It flew your tank 5 times: first from 0:42 to 1:10, last from 12:05 to the
+/// end.`, with no cause clause, since the spans' causes may differ.
+fn span_line(spans: &[Span]) -> String {
+    const LEAD: &str = "  It flew your tank";
+    const LINE_DOWN: &str = ", while your line was down";
+    match spans {
+        [] => "  It never flew: you flew the tank the whole match.".to_owned(),
+        [only] => match (only.by, only.to_ms) {
+            (HandOver::ClimbedOut, None) => format!(
+                "{LEAD} from {}, when you climbed out, to the end.",
+                stamp(only.from_ms)
+            ),
+            (HandOver::ClimbedOut, Some(to_ms)) => format!(
+                "{LEAD} from {}, when you climbed out, to {}.",
+                stamp(only.from_ms),
+                stamp(to_ms)
+            ),
+            (HandOver::Dropped, _) => format!("{LEAD} {}{LINE_DOWN}.", only.stretch()),
+        },
+        [first, second] => {
+            let cause = if first.by == HandOver::Dropped && second.by == HandOver::Dropped {
+                LINE_DOWN
+            } else {
+                ""
+            };
+            format!(
+                "{LEAD} {} and {}{cause}.",
+                first.stretch(),
+                second.stretch()
+            )
+        }
+        [first, .., last] => format!(
+            "{LEAD} {} times: first {}, last {}.",
+            spans.len(),
+            first.stretch(),
+            last.stretch()
+        ),
+    }
+}
+
+/// `  It dropped to the ROM at 1:30: its core was destroyed.` — the drop's
+/// cause word alone (D17: `MindDropped.fault`'s ruling is still open, so the
+/// last fault's word and the op budget are staff's), put in words; a cause
+/// word this build does not know reads the moment alone.
+fn drop_line(dropped: &Said) -> String {
+    use crate::arena::mind::DropCause;
+    let why = match DropCause::parse(&dropped.word) {
+        Some(DropCause::Strikes) => ": three faults running",
+        Some(DropCause::Core) => ": its core was destroyed",
+        Some(DropCause::Abi) => ": its core could not run its mind on this engine",
+        None => "",
+    };
+    format!("  It dropped to the ROM at {}{why}.", stamp(dropped.t_ms))
+}
+
+/// **The `Your mind` block** (17b cut M5.6; the owner's OQ-9 (ii); doc 17
+/// §22's deliverable 8): the pilot's own mind and its profiles as sealed,
+/// its card changes by the card's own name, whether and from when it flew
+/// the tank, its shots, and a drop to the ROM by its cause — each line under
+/// 120 columns, said only to the pilot whose report it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MindBlock {
+    /// The block, its head first.
+    pub lines: Vec<String>,
+}
+
 /// **The one page of the tape a staff header describes** (16b cut V.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Page {
@@ -513,6 +892,16 @@ pub struct Fold {
     /// `(t_ms, squad)`, on [`Fold::last_order`]'s rule: one line per unit the
     /// release dropped, one release given.
     last_release: Option<(i64, SmolStr)>,
+    /// **The pilot's own mind** (17b cut M5.6): what the `Your mind` block
+    /// is folded from ([`MindTrack`]).
+    ///
+    /// `#[serde(default)]` under the `LIVE_FORMAT` policy
+    /// (`crate::match_::record`'s head): an added defaulted field, so no
+    /// bump — a live record written before this cut holds no mind facts,
+    /// which is true of it — and skipped while unset, so a fold that has
+    /// none writes the bytes it wrote before.
+    #[serde(default, skip_serializing_if = "MindTrack::is_unset")]
+    mind: MindTrack,
 }
 
 /// **A folded report** (16b cut V.3): what one reader is told of one match.
@@ -535,6 +924,15 @@ pub struct Report {
     /// The last event's `t_ms` folded. Not on the report document.
     #[serde(default)]
     pub last_ms: i64,
+    /// **The `Your mind` block** (17b cut M5.6; the owner's OQ-9 (ii)), or
+    /// `None` when it is not printed — a slot that chose no mind and a hull
+    /// the mind never flew. Beside the pilot's own counts, never in them:
+    /// [`Report::rounds`], [`Report::kills`], the `You fired …` line and the
+    /// timeline count the hull's every shot exactly as before this cut.
+    /// Skipped on the report document when `None`, so every report without
+    /// one is the document it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mind: Option<MindBlock>,
 }
 
 impl Fold {
@@ -564,6 +962,7 @@ impl Fold {
             last_completed: None,
             last_order: None,
             last_release: None,
+            mind: MindTrack::default(),
         }
     }
 
@@ -575,6 +974,65 @@ impl Fold {
     pub fn with_own_tank(mut self, own: OwnTank) -> Fold {
         self.own = own;
         self
+    }
+
+    /// **The pilot's own mind as the check-out sealed it** ([`OwnMind`];
+    /// 17b cut M5.6), which the `Your mind` block names. `match_::start`
+    /// hands every pilot fold its mind beside its tank; a fold without one
+    /// prints no block.
+    #[must_use]
+    pub fn with_own_mind(mut self, own: OwnMind) -> Fold {
+        self.mind.own = Some(own);
+        self
+    }
+
+    /// **The pilot this fold is for**: the roster's pilot of its unit, or
+    /// `None` for a staff fold or a unit the roster seats nobody in.
+    #[must_use]
+    pub fn pilot(&self) -> Option<ObjId> {
+        match self.reader {
+            Reader::Pilot { unit } => self.roster.get(unit).and_then(|held| held.pilot),
+            Reader::Staff => None,
+        }
+    }
+
+    /// **The mind took the pilot's tank at `at_ms`** (17b cut M5.6): a span
+    /// of the `Your mind` block opens, `by` the route the release took.
+    /// Called by `crate::match_::lobby::slot_left` — the funnel every
+    /// `Released` that names a pilot passes — with the arena's own clock as
+    /// the world last heard it (`MatchMirror::now_ms`), the one fact of the
+    /// block neither the tape nor the check-out carries (a declared
+    /// departure, the design note's §7 3): a shot in the pulse of the
+    /// hand-over may be counted on either side of it. A span already open is
+    /// left as it is. One opened on a wreck is kept here and read as none
+    /// when the block is built (`MindTrack::flown`): the hull's
+    /// `unit_destroyed` may reach the fold after this call.
+    pub fn released(&mut self, at_ms: i64, by: HandOver) {
+        if self
+            .mind
+            .spans
+            .last()
+            .is_some_and(|span| span.to_ms.is_none())
+        {
+            return;
+        }
+        self.mind.spans.push(Span {
+            from_ms: at_ms,
+            to_ms: None,
+            by,
+        });
+    }
+
+    /// **The pilot took the tank back at `at_ms`** (17b cut M5.6): the open
+    /// span closes there (never before it opened). Called by
+    /// `crate::match_::lobby::slot_reclaimed` on the same clock as
+    /// [`Fold::released`]; nothing when no span is open.
+    pub fn reclaimed(&mut self, at_ms: i64) {
+        if let Some(span) = self.mind.spans.last_mut()
+            && span.to_ms.is_none()
+        {
+            span.to_ms = Some(at_ms.max(span.from_ms));
+        }
     }
 
     /// Whose fold this is.
@@ -652,6 +1110,8 @@ impl Fold {
             rounds: self.rounds,
             kills: self.kills,
             last_ms: self.last_ms,
+            // 17b cut M5.6: a span still open runs to the end.
+            mind: self.mind.block(),
         }
     }
 
@@ -729,6 +1189,10 @@ impl Fold {
             } if *unit == me => {
                 let total = self.rounds.entry(weapon.clone()).or_insert(0);
                 *total = total.saturating_add(*rounds);
+                // 17b cut M5.6: and the `Your mind` block's count, when the
+                // mind flew the hull then — beside the pilot's own counts,
+                // which keep every shot of the hull as they always did.
+                self.mind.fired(t_ms, *shot_seq, weapon);
                 self.held.insert(
                     *shot_seq,
                     HeldShot {
@@ -754,6 +1218,7 @@ impl Fold {
                 // in-match `Hit` notice — the name through `named_target`, the
                 // section under `target_classified`.
                 if let Some(shot) = self.held.remove(shot_seq) {
+                    self.mind.landed(*shot_seq, &shot.weapon, shot.target, true);
                     let name = self.name_of(shot.target);
                     let outcome = if self.classified(shot.target) {
                         format!("hit, {section}.")
@@ -780,6 +1245,8 @@ impl Fold {
             }
             EventKind::Miss { shot_seq, reason } => {
                 if let Some(shot) = self.held.remove(shot_seq) {
+                    self.mind
+                        .landed(*shot_seq, &shot.weapon, shot.target, false);
                     let name = self.name_of(shot.target);
                     // **16b cut AE.2**: the reason under the cockpit's own gate
                     // (`step.rs` stages `FrameNotice::Miss` with no reason for a
@@ -824,6 +1291,9 @@ impl Fold {
                 if *unit == me {
                     self.tail
                         .push(stamped(t_ms, "your tank destroyed.".to_owned()));
+                    // 17b cut M5.6's review: and the mind flies no wreck —
+                    // the `Your mind` block's spans end here.
+                    self.mind.wrecked_ms.get_or_insert(t_ms);
                     // The wreck's platform forgets every contact it held, with
                     // no `lost` line (`Arena::destroy_unit` clears the viewer
                     // silently). Its rounds still in flight land on their own
@@ -833,6 +1303,10 @@ impl Fold {
                     self.known.clear();
                 } else if *by == Some(me) {
                     self.kills = self.kills.saturating_add(1);
+                    // 17b cut M5.6: the mind's, when the hit that did it was.
+                    if self.mind.last_hit == Some(*unit) {
+                        self.mind.kills = self.mind.kills.saturating_add(1);
+                    }
                     let text = format!("{} destroyed by your round.", self.name_of(*unit));
                     let _ = self.push_line(t_ms, seq, text);
                 }
@@ -892,7 +1366,9 @@ impl Fold {
             }
             // **16b cut Z.2** (16c Q44): the pilot's own release, once per
             // release, on the `ordered` line's rule — only the tank that gave it
-            // reads it.
+            // reads it. **17b cut M5.6** (the M5.3 close's D9 ruling): `to
+            // doctrine.` until that cut — a released squad flies each hull's
+            // sealed mind, one word for every mind, as the acknowledgement says.
             EventKind::OrderReleased {
                 squad,
                 issuer: Some(issuer),
@@ -903,14 +1379,38 @@ impl Fold {
                     return;
                 }
                 self.last_release = Some(moment);
-                let _ = self.push_line(t_ms, seq, format!("released {squad} to doctrine."));
+                let _ = self.push_line(t_ms, seq, format!("released {squad} to their minds."));
+            }
+            // **17b cut M5.6** (the owner's OQ-9 (ii); D14): the pilot's own
+            // hull's card changes — a seat's `MIND PROFILE`, or a staff
+            // `@mind/set` read by the card's own name (`Sniper, edited
+            // (min_odds 70)`) — and its drop to the ROM, by its cause word
+            // alone (D17), for the `Your mind` block: never a timeline line.
+            // Another hull's are not this pilot's to read.
+            EventKind::MindCard { unit, name, .. } if *unit == me => {
+                self.mind.switches = self.mind.switches.saturating_add(1);
+                self.mind.last_switch = Some(Said {
+                    t_ms,
+                    word: name.clone(),
+                });
+            }
+            // The arena journals one a sortie; the first is kept all the same.
+            EventKind::MindDropped { unit, cause, .. }
+                if *unit == me && self.mind.dropped.is_none() =>
+            {
+                self.mind.dropped = Some(Said {
+                    t_ms,
+                    word: cause.clone(),
+                });
             }
             // Everything else prints nothing: every other unit's detections,
             // classifications and losses, position summaries, tempo, blocked,
             // receiver, lag, startup, order expiry, impact, and every event of
             // any other unit — and (16b cut I.3) the staff levers' `tempo_floor`,
             // `placed` and `place_refused`, even about the pilot's own tank: a
-            // place is journalled always and announced never (16c N10).
+            // place is journalled always and announced never (16c N10) — and
+            // (17b cut M3.3) the seal, a think's fault and the sortie's close,
+            // which are staff's.
             _ => {}
         }
     }
@@ -1264,7 +1764,9 @@ impl Fold {
             } => format!("{word} unit={} ({x}, {y}): {reason}", unit(id)),
             // **17b cut M1b.5** (doc 17 §11): the staff card lever, as staff
             // read it — the card's name and the sliders it moved; the pilot's
-            // fold prints neither.
+            // timeline prints neither. (17b cut M5.6: the card's name on the
+            // pilot's own hull reaches that pilot's `Your mind` block, never
+            // the sliders — `absorb_pilot`'s `MindCard` arm.)
             EventKind::MindCard {
                 unit: id,
                 name,
@@ -1670,6 +2172,10 @@ pub fn untracked_header(match_id: MatchId, running: bool, page: &Page) -> Vec<St
 ///   "tail": [ "  4:32  the match ended: red eliminated." ], "gap": false,
 ///   "rounds": { "cannon": 14 }, "kills": 1 }
 /// ```
+///
+/// **17b cut M5.6**: and `"mind": { "lines": [ "Your mind: Standard Doctrine
+/// (Line).", … ] }` after them when the report carries its `Your mind` block
+/// ([`Report::mind`]), and no such key when it does not.
 #[must_use]
 pub fn report_document(
     match_id: MatchId,
@@ -1678,7 +2184,7 @@ pub fn report_document(
     callsign: &str,
     report: &Report,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut document = serde_json::json!({
         "record": REPORT_RECORD,
         "record_version": 1,
         "match": match_id.0,
@@ -1691,7 +2197,13 @@ pub fn report_document(
         "gap": report.gap,
         "rounds": report.rounds,
         "kills": report.kills,
-    })
+    });
+    // 17b cut M5.6: the `Your mind` block, only when it is printed, so every
+    // report without one is the document it was.
+    if let (Some(mind), Some(fields)) = (&report.mind, document.as_object_mut()) {
+        fields.insert("mind".to_owned(), serde_json::json!(mind));
+    }
+    document
 }
 
 /// **Read one report document back** (16b cut V.3): `None` unless its `record`
@@ -2216,6 +2728,12 @@ fn pilot_read(
         actor,
         header_lines(&row, label, reader, Some(&report), None),
     );
+    // **17b cut M5.6**: the `Your mind` block after the header's lines and
+    // before the gap notice and the timeline, when it is printed — to this
+    // pilot alone, whose report it is.
+    if let Some(mind) = &report.mind {
+        say_lines(ctx, actor, mind.lines.clone());
+    }
     if report.gap {
         ctx.out.sys_to_actor(
             actor,
@@ -2967,8 +3485,16 @@ mod tests {
 
     /// **17b cut M1b.5** (doc 17 §11): the staff fold spells the card lever's
     /// two lines — the card's name and the sliders it moved, or the refusal's
-    /// reason — and the pilot's fold prints neither, even of the pilot's own
-    /// tank.
+    /// reason — and the pilot's fold prints neither: the change is another
+    /// hull's, and the refusal, of the pilot's own tank, is staff's alone.
+    ///
+    /// **17b cut M5.6** (its review, R3): was "the pilot's fold prints
+    /// neither, even of the pilot's own tank" — true of the timeline still,
+    /// but a `mind_card` on the pilot's OWN hull now reaches that pilot's
+    /// `Your mind` block by the card's name (D14;
+    /// `m5_a_staff_edit_reads_by_its_card_name`). Here the fold is also seeded
+    /// as `match_::start` seeds it, a slot that chose: its block names neither
+    /// line — no switch, no slider, no refusal.
     #[test]
     fn m1b5_the_staff_read_the_card_lines_and_the_pilot_reads_nothing_of_them() {
         let mut card =
@@ -3003,15 +3529,35 @@ mod tests {
         );
         let pilot = fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES);
         assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
+        assert_eq!(pilot.mind, None);
+        let seeded = mind_report(&tape.0, Some(own_mind(true, &[])), &[]);
+        assert!(seeded.lines.is_empty(), "{:?}", seeded.lines);
+        assert_eq!(
+            block_of(&seeded),
+            vec![
+                "Your mind: Standard Doctrine (Line).",
+                "  It never flew: you flew the tank the whole match.",
+            ]
+        );
     }
 
     /// **17b cut M3.3** (doc 17 §13, §19): the staff fold spells the four mind
     /// kinds — a principal by the unit its character flies (`RA(#101)`), a
     /// persona by its name and nobody as `-`, the drop's fault and budget
-    /// only where the line carries them — and the pilot's fold prints none of
-    /// them, even of the pilot's own tank.
+    /// only where the line carries them — and the pilot's timeline prints
+    /// none of them, even of the pilot's own tank.
+    ///
+    /// **17b cut M5.6** (the owner's OQ-9 (ii); the design note's "What
+    /// moves"): inverted for the pilot's own hull. Was `the pilot reads nothing
+    /// of them` (`pilot.lines.is_empty()` on an unseeded fold, and the name
+    /// `m3_the_staff_read_the_four_mind_lines_and_the_pilot_reads_nothing_of_them`)
+    /// at 17b cut M3.3; the pilot's fold, seeded as `match_::start` seeds it,
+    /// now reads its OWN hull's drop to the ROM in its `Your mind` block, by the
+    /// cause word alone (D17) — never the last fault's word, the op budget,
+    /// the seal, the fault or the sortie, and nothing of another hull's drop.
+    /// The timeline still carries none of the four.
     #[test]
-    fn m3_the_staff_read_the_four_mind_lines_and_the_pilot_reads_nothing_of_them() {
+    fn m3_the_staff_read_the_four_mind_lines_and_the_pilot_reads_its_own_drop_alone() {
         use crate::arena::core::CoreClass;
         use crate::arena::mind::SortieId;
         use crate::deliberation::order::CharacterRef;
@@ -3097,8 +3643,687 @@ mod tests {
         for line in &staff.lines {
             assert!(!line.contains("#5)") && !line.contains("=#5"), "{line}");
         }
+        assert_eq!(staff.mind, None, "the staff page carries no block");
         let pilot = fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES);
         assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
+        // 17b cut M5.6: seeded as `match_::start` seeds it, the pilot reads
+        // their own hull's drop in the block, and nothing else of the four.
+        let mut own =
+            Fold::new(roster(), Reader::Pilot { unit: ME }, RULES).with_own_mind(OwnMind {
+                chose: true,
+                mind: SmolStr::new_static("Standard Doctrine"),
+                profiles: Vec::new(),
+                substituted: false,
+            });
+        for event in &tape.0 {
+            own.absorb(event);
+        }
+        let pilot = own.finish();
+        assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
+        assert!(pilot.tail.is_empty(), "{:?}", pilot.tail);
+        let block = pilot.mind.map(|block| block.lines).unwrap_or_default();
+        assert_eq!(
+            block,
+            vec![
+                "Your mind: Standard Doctrine (Line).",
+                "  It never flew: you flew the tank the whole match.",
+                "  It dropped to the ROM at 0:02: three faults running.",
+            ]
+        );
+        for line in &block {
+            for staff_only in ["ops", "1500", "1,500", "sortie", "principal", "core", "#"] {
+                assert!(!line.contains(staff_only), "{staff_only:?} in {line}");
+            }
+        }
+    }
+
+    // -- 17b cut M5.6: the `Your mind` block -------------------------------
+
+    /// The pilot's own mind as `match_::start` seeds it: Standard Doctrine at
+    /// `profiles` (empty is Line alone).
+    fn own_mind(chose: bool, profiles: &[&str]) -> OwnMind {
+        OwnMind {
+            chose,
+            mind: SmolStr::new_static("Standard Doctrine"),
+            profiles: profiles.iter().map(|name| SmolStr::new(*name)).collect(),
+            substituted: false,
+        }
+    }
+
+    /// One moment the world tells the fold of: a release (`Some(by)`) or a
+    /// reclaim (`None`), at an arena millisecond.
+    type Moment = (i64, Option<HandOver>);
+
+    /// **A pilot fold over `tape` as the world feeds it** (17b cut M5.6):
+    /// seeded with `own` when given, and each of `moments` told in order before
+    /// the first event at or after it — the world opens a span as it marks the
+    /// slot, ahead of the chunks that carry the tape after it — the rest after
+    /// the last event.
+    fn mind_report(tape: &[LedgerEvent], own: Option<OwnMind>, moments: &[Moment]) -> Report {
+        let mut fold = Fold::new(roster(), Reader::Pilot { unit: ME }, RULES);
+        if let Some(own) = own {
+            fold = fold.with_own_mind(own);
+        }
+        let tell = |fold: &mut Fold, (at_ms, by): Moment| match by {
+            Some(by) => fold.released(at_ms, by),
+            None => fold.reclaimed(at_ms),
+        };
+        let mut moments = moments.iter().copied().peekable();
+        for event in tape {
+            while let Some(moment) = moments.next_if(|(at_ms, _)| *at_ms <= event.t_ms) {
+                tell(&mut fold, moment);
+            }
+            fold.absorb(event);
+        }
+        for moment in moments {
+            tell(&mut fold, moment);
+        }
+        fold.finish()
+    }
+
+    /// The block's lines, or none.
+    fn block_of(report: &Report) -> Vec<String> {
+        report
+            .mind
+            .as_ref()
+            .map(|block| block.lines.clone())
+            .unwrap_or_default()
+    }
+
+    /// **17b cut M5.6** (the owner's OQ-9 (ii)): the block is printed only for
+    /// a slot that chose a mind or a hull the mind flew. A chosen `SIM MIND
+    /// Standard` with no `PROFILE`, never released, prints it — it seals byte
+    /// for byte as an unchosen slot does, so only the check-out's seed can say
+    /// so; an unchosen hull never released prints none, and its report and
+    /// its document are what they were before this cut; an unchosen hull the
+    /// mind flew prints it; and a fold with no check-out facts names nothing.
+    /// In every case the pilot's own lines are the brief tape's pinned ones.
+    #[test]
+    fn m5_the_block_is_printed_only_for_a_chosen_or_released_hull() {
+        let tape = the_tape();
+        let base = fold(&tape, &roster(), Reader::Pilot { unit: ME }, RULES);
+        assert_eq!(base.mind, None);
+
+        let chosen = mind_report(&tape, Some(own_mind(true, &[])), &[]);
+        assert_eq!(
+            block_of(&chosen),
+            vec![
+                "Your mind: Standard Doctrine (Line).",
+                "  It never flew: you flew the tank the whole match.",
+            ]
+        );
+
+        let unchosen = mind_report(&tape, Some(own_mind(false, &[])), &[]);
+        assert_eq!(
+            unchosen, base,
+            "an unchosen hull never released prints none"
+        );
+        let document = report_document(MatchId(12), ME, Some(ObjId(5)), "RA", &unchosen);
+        assert!(document.get("mind").is_none(), "{document}");
+        assert_eq!(
+            document,
+            report_document(MatchId(12), ME, Some(ObjId(5)), "RA", &base)
+        );
+
+        // `EXIT` at 0:42, before its cannon's second shot: the mind flew it
+        // from there, and the shots from there are the block's — until 3:12,
+        // where the tape destroys the hull (the mind flies no wreck: 17b cut
+        // M5.6's review, R1/R23; the span ran `to the end.` before it).
+        let released = mind_report(
+            &tape,
+            Some(own_mind(false, &[])),
+            &[(42_000, Some(HandOver::ClimbedOut))],
+        );
+        assert_eq!(
+            block_of(&released),
+            vec![
+                "Your mind: Standard Doctrine (Line).",
+                "  It flew your tank from 0:42, when you climbed out, to 3:12.",
+                "  Its shots: cannon 1 and machine_gun 1, 2 of them hits; it destroyed 1 unit.",
+            ]
+        );
+        let document = report_document(MatchId(12), ME, Some(ObjId(5)), "RA", &released);
+        assert_eq!(
+            document["mind"]["lines"][1],
+            serde_json::json!("  It flew your tank from 0:42, when you climbed out, to 3:12.")
+        );
+        assert_eq!(
+            report_from_document(&document).and_then(|report| report.mind),
+            released.mind,
+            "the block reads back off its document"
+        );
+
+        let unseeded = mind_report(&tape, None, &[(42_000, Some(HandOver::ClimbedOut))]);
+        assert_eq!(
+            unseeded, base,
+            "a fold with no check-out facts names nothing"
+        );
+
+        // The pilot's own lines are untouched by any of it.
+        for report in [&chosen, &unchosen, &released] {
+            assert_eq!(
+                Report {
+                    mind: None,
+                    ..(*report).clone()
+                },
+                base
+            );
+        }
+    }
+
+    /// **17b cut M5.6's review** (R1/R23; the owner's OQ-9 (ii): the block says
+    /// truly whether and from when the mind flew): the mind flies no wreck. A
+    /// pilot told `EXIT leaves the pod.` after their tank is destroyed, or
+    /// whose line drops then, is marked out of the cockpit like any other, and
+    /// the world opens a span it cannot tell apart — the fold, which reads the
+    /// hull's own `unit_destroyed` off the tape (after the world's call: the
+    /// tape lags it), drops it when the block is built: an unchosen pilot
+    /// reads no block, a chosen one reads that it never flew. A span the
+    /// destruction finds running ends there, whichever way it began and
+    /// whether or not it was taken back after; one before it is untouched.
+    #[test]
+    fn m5_a_span_opened_on_a_wreck_is_no_span_and_one_running_ends_there() {
+        let mut tape = Tape::new();
+        tape.at(10_000, fired(ME, "cannon", 1, THEM, 1))
+            .at(11_000, hit(1, ME, THEM, "hull", "front", "hull", 180, 200))
+            .at(
+                30_000,
+                EventKind::UnitDestroyed {
+                    unit: ME,
+                    by: Some(THEM),
+                },
+            );
+        let after = [(40_000, Some(HandOver::ClimbedOut))];
+        let unchosen = mind_report(&tape.0, Some(own_mind(false, &[])), &after);
+        assert_eq!(
+            unchosen.mind, None,
+            "an unchosen wreck's pilot reads no block"
+        );
+        assert_eq!(
+            unchosen,
+            fold(&tape.0, &roster(), Reader::Pilot { unit: ME }, RULES)
+        );
+        let chosen = mind_report(&tape.0, Some(own_mind(true, &["Sniper", "Line"])), &after);
+        assert_eq!(
+            block_of(&chosen),
+            vec![
+                "Your mind: Standard Doctrine (Sniper, Line).",
+                "  It never flew: you flew the tank the whole match.",
+            ]
+        );
+        // A drop after the wreck, and one at its very millisecond, are none.
+        for at_ms in [30_000, 45_000] {
+            let dropped = mind_report(
+                &tape.0,
+                Some(own_mind(false, &[])),
+                &[(at_ms, Some(HandOver::Dropped))],
+            );
+            assert_eq!(dropped.mind, None, "a drop at {at_ms} ms");
+        }
+        // Running when the hull is destroyed: it ends there.
+        for (moments, said) in [
+            (
+                vec![(5_000, Some(HandOver::ClimbedOut))],
+                "  It flew your tank from 0:05, when you climbed out, to 0:30.",
+            ),
+            (
+                vec![(5_000, Some(HandOver::Dropped))],
+                "  It flew your tank from 0:05 to 0:30, while your line was down.",
+            ),
+            (
+                vec![(5_000, Some(HandOver::Dropped)), (50_000, None)],
+                "  It flew your tank from 0:05 to 0:30, while your line was down.",
+            ),
+            (
+                vec![
+                    (5_000, Some(HandOver::Dropped)),
+                    (8_000, None),
+                    (20_000, Some(HandOver::Dropped)),
+                    (35_000, None),
+                    (40_000, Some(HandOver::ClimbedOut)),
+                ],
+                "  It flew your tank from 0:05 to 0:08 and from 0:20 to 0:30, while your line \
+                 was down.",
+            ),
+        ] {
+            let report = mind_report(&tape.0, Some(own_mind(false, &[])), &moments);
+            assert_eq!(block_of(&report).get(1).map(String::as_str), Some(said));
+        }
+        // The shot the mind fired before the wreck is still its own.
+        let flown = mind_report(
+            &tape.0,
+            Some(own_mind(false, &[])),
+            &[(5_000, Some(HandOver::ClimbedOut))],
+        );
+        assert_eq!(
+            block_of(&flown).get(2).map(String::as_str),
+            Some("  Its shots: cannon 1, a hit; it destroyed nothing.")
+        );
+    }
+
+    /// **17b cut M5.6** (D14; doc 17 §11): the card changes on the pilot's own
+    /// hull are read by the card's own name — a seat's `MIND PROFILE` by its
+    /// preset, a staff `@mind/set` as `StockCard::name_of` names the edited
+    /// card (`Sniper, edited (min_odds 70)`) — one by its moment, more as a
+    /// count and the last on its own line; another hull's change is not this
+    /// pilot's to read, and no change is ever a timeline line.
+    #[test]
+    fn m5_a_staff_edit_reads_by_its_card_name() {
+        let cfg = crate::config::ReflexConfig::default();
+        let mut edited = crate::arena::card::preset("sniper", &cfg).expect("sniper");
+        edited.set("min_odds", "70").expect("a lawful edit");
+        let name = edited.name_of(&cfg);
+        assert_eq!(name, "Sniper, edited (min_odds 70)");
+        let line = crate::arena::card::preset("line", &cfg).expect("line");
+        let card =
+            |unit: ObjId, name: &str, card: &crate::arena::card::StockCard| EventKind::MindCard {
+                unit,
+                name: SmolStr::new(name),
+                changed: Vec::new(),
+                card: card.clone(),
+            };
+        let sealed = own_mind(true, &["Sniper", "Line"]);
+
+        // A seat's switch, the note's own line.
+        let mut tape = Tape::new();
+        tape.at(65_000, card(ME, "Line", &line))
+            .at(66_000, card(THEM, "Hunter", &line));
+        let switched = mind_report(&tape.0, Some(sealed.clone()), &[]);
+        assert_eq!(
+            block_of(&switched).first().map(String::as_str),
+            Some("Your mind: Standard Doctrine (Sniper, Line); switched to Line at 1:05.")
+        );
+        assert!(switched.lines.is_empty(), "{:?}", switched.lines);
+
+        // A staff edit while the mind flies the hull, by the card's name.
+        let mut tape = Tape::new();
+        tape.at(65_000, card(ME, &name, &edited))
+            .at(66_000, card(THEM, "Hunter", &line));
+        let staff_edit = mind_report(
+            &tape.0,
+            Some(sealed.clone()),
+            &[(42_000, Some(HandOver::ClimbedOut))],
+        );
+        assert_eq!(
+            block_of(&staff_edit),
+            vec![
+                "Your mind: Standard Doctrine (Sniper, Line); switched to Sniper, edited \
+                 (min_odds 70) at 1:05.",
+                "  It flew your tank from 0:42, when you climbed out, to the end.",
+                "  It fired nothing.",
+            ]
+        );
+        assert!(staff_edit.lines.is_empty(), "{:?}", staff_edit.lines);
+        for line in block_of(&staff_edit) {
+            assert!(!line.contains("Hunter"), "another hull's card: {line}");
+        }
+
+        // Two changes: a count and the last.
+        let mut tape = Tape::new();
+        tape.at(65_000, card(ME, &name, &edited))
+            .at(90_000, card(ME, "Line", &line));
+        let twice = mind_report(&tape.0, Some(sealed), &[]);
+        assert_eq!(
+            block_of(&twice),
+            vec![
+                "Your mind: Standard Doctrine (Sniper, Line); switched 2 times.",
+                "  Its last switch was to Line at 1:30.",
+                "  It never flew: you flew the tank the whole match.",
+            ]
+        );
+    }
+
+    /// **17b cut M5.6** (the design note's M5.6 item 1, the adversarial
+    /// review's B20): the span line is bounded whatever the count — five
+    /// drop-and-reclaim spans are one line, `5 times: first … last …`, with no
+    /// cause clause, under 120 columns.
+    #[test]
+    fn m5_the_span_line_is_bounded_at_five_spans() {
+        let dropped = Some(HandOver::Dropped);
+        let moments: Vec<Moment> = vec![
+            (42_000, dropped),
+            (70_000, None),
+            (130_000, dropped),
+            (190_000, None),
+            (300_000, dropped),
+            (360_000, None),
+            (500_000, dropped),
+            (560_000, None),
+            (725_000, dropped),
+        ];
+        let report = mind_report(&[], Some(own_mind(false, &[])), &moments);
+        let block = block_of(&report);
+        assert_eq!(
+            block,
+            vec![
+                "Your mind: Standard Doctrine (Line).",
+                "  It flew your tank 5 times: first from 0:42 to 1:10, last from 12:05 to the end.",
+                "  It fired nothing.",
+            ]
+        );
+        assert_eq!(
+            block
+                .iter()
+                .filter(|line| line.starts_with("  It flew"))
+                .count(),
+            1
+        );
+        for line in &block {
+            assert!(line.chars().count() < 120, "{line}");
+            assert_eq!(leak(line), None, "{line}");
+        }
+    }
+
+    /// **17b cut M5.6**: one span and two read as the design note writes them
+    /// — the cause clause where every span had one cause (an `EXIT`'s span
+    /// runs to the end, so it is always the last), none where the causes
+    /// differ — and a chosen hull the mind never flew says so.
+    #[test]
+    fn m5_the_span_line_reads_one_and_two_spans_as_the_note_writes_them() {
+        let span_line_of = |moments: &[Moment]| {
+            block_of(&mind_report(&[], Some(own_mind(true, &[])), moments))
+                .get(1)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let (out, drop) = (Some(HandOver::ClimbedOut), Some(HandOver::Dropped));
+        for (moments, said) in [
+            (
+                vec![],
+                "  It never flew: you flew the tank the whole match.",
+            ),
+            (
+                vec![(42_000, out)],
+                "  It flew your tank from 0:42, when you climbed out, to the end.",
+            ),
+            (
+                vec![(42_000, drop), (70_000, None)],
+                "  It flew your tank from 0:42 to 1:10, while your line was down.",
+            ),
+            (
+                vec![(42_000, drop)],
+                "  It flew your tank from 0:42 to the end, while your line was down.",
+            ),
+            (
+                vec![(42_000, drop), (70_000, None), (125_000, drop)],
+                "  It flew your tank from 0:42 to 1:10 and from 2:05 to the end, while your \
+                 line was down.",
+            ),
+            (
+                vec![(42_000, drop), (70_000, None), (125_000, out)],
+                "  It flew your tank from 0:42 to 1:10 and from 2:05 to the end.",
+            ),
+            (
+                vec![
+                    (42_000, drop),
+                    (70_000, None),
+                    (125_000, drop),
+                    (130_000, None),
+                    (245_000, drop),
+                ],
+                "  It flew your tank 3 times: first from 0:42 to 1:10, last from 4:05 to the end.",
+            ),
+        ] {
+            assert_eq!(span_line_of(&moments), said);
+        }
+        // A second release while a span runs opens nothing, and a reclaim
+        // with none open closes nothing.
+        assert_eq!(
+            span_line_of(&[
+                (30_000, None),
+                (42_000, drop),
+                (50_000, out),
+                (70_000, None)
+            ]),
+            "  It flew your tank from 0:42 to 1:10, while your line was down."
+        );
+    }
+
+    /// **17b cut M5.6**: the drop is read by its cause word alone (D17) — the
+    /// line's `fault` and `ops` are staff's — once, from the first drop the
+    /// hull's sortie journals; another hull's drop is not this pilot's.
+    #[test]
+    fn m5_the_drop_reads_its_cause_word_alone() {
+        let dropped = |unit: ObjId, cause: &'static str| EventKind::MindDropped {
+            unit,
+            cause: SmolStr::new_static(cause),
+            fault: Some(SmolStr::new_static("ops")),
+            ops: Some(1_500),
+        };
+        for (cause, said) in [
+            (
+                "strikes",
+                "  It dropped to the ROM at 1:30: three faults running.",
+            ),
+            (
+                "core",
+                "  It dropped to the ROM at 1:30: its core was destroyed.",
+            ),
+            (
+                "abi",
+                "  It dropped to the ROM at 1:30: its core could not run its mind on this engine.",
+            ),
+            ("unheard_of", "  It dropped to the ROM at 1:30."),
+        ] {
+            let mut tape = Tape::new();
+            tape.at(90_000, dropped(ME, cause))
+                .at(95_000, dropped(ME, "core"))
+                .at(96_000, dropped(THEM, "core"));
+            let report = mind_report(&tape.0, Some(own_mind(true, &[])), &[]);
+            assert_eq!(block_of(&report).last().map(String::as_str), Some(said));
+            assert_eq!(block_of(&report).len(), 3, "{:?}", block_of(&report));
+        }
+    }
+
+    /// **17b cut M5.6** (conventions §3: every line a pilot reads): every line
+    /// the block can print, at its widest — the widest preset pair, the widest
+    /// name `StockCard::name_of` gives an edited card over every preset and
+    /// slider, three-digit counts, `59:59`, the three longest weapon ids at
+    /// four-digit counts — is under 120 columns and carries nothing the
+    /// report's no-leak grep refuses.
+    #[test]
+    fn m5_every_your_mind_line_is_under_120_columns_and_leaks_nothing() {
+        let cfg = crate::config::ReflexConfig::default();
+        let values = [
+            "359",
+            "300",
+            "180",
+            "120",
+            "100",
+            "95",
+            "79.5",
+            "17.5",
+            "best_odds",
+            "balanced",
+            "advance",
+            "nearest",
+            "screen",
+            "flank",
+            "auto",
+            "ccw",
+            "off",
+            "on",
+            "50",
+            "10",
+        ];
+        let mut widest = String::new();
+        for preset in crate::arena::card::PRESETS {
+            let base = crate::arena::card::preset(preset, &cfg).expect("a preset");
+            for slider in [
+                "stance",
+                "band_pct",
+                "close_m",
+                "orbit_sense",
+                "turn_into_hits",
+                "turn_s",
+                "screen_bearing",
+                "screen_arc",
+                "opening",
+                "min_odds",
+                "aspect",
+                "reserve_pct",
+                "reserve_odds",
+                "prefer",
+                "switch_m",
+                "break_off_pct",
+                "fight_home_pct",
+                "rally_s",
+                "search_s",
+                "hunt_after_s",
+                "stop_unseen",
+            ] {
+                for value in values {
+                    let mut card = base.clone();
+                    if card.set(slider, value).is_ok() {
+                        let name = card.name_of(&cfg);
+                        if name.chars().count() > widest.chars().count() {
+                            widest = name;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(widest.contains(", edited ("), "{widest}");
+        let late = 3_599_000_i64;
+        let spans = |count: usize, by: HandOver| -> Vec<Span> {
+            (0..count)
+                .map(|n| Span {
+                    from_ms: late - 1_000,
+                    to_ms: (n + 1 < count).then_some(late),
+                    by,
+                })
+                .collect()
+        };
+        let mut lines: Vec<String> = Vec::new();
+        for (switches, profiles) in [
+            (1, vec!["Skirmisher", "Rearguard"]),
+            (999, vec!["Skirmisher", "Rearguard"]),
+            (1, vec![]),
+        ] {
+            let track = MindTrack {
+                own: Some(OwnMind {
+                    chose: true,
+                    mind: SmolStr::new_static("Standard Doctrine"),
+                    profiles: profiles.into_iter().map(SmolStr::new_static).collect(),
+                    substituted: true,
+                }),
+                spans: spans(999, HandOver::Dropped),
+                shots: [
+                    ("machine_gun", 9_999),
+                    ("autocannon", 9_999),
+                    ("missiles", 9_999),
+                ]
+                .into_iter()
+                .map(|(weapon, n)| (SmolStr::new_static(weapon), Tally { shots: n, hits: n }))
+                .collect(),
+                kills: 99,
+                switches,
+                last_switch: Some(Said {
+                    t_ms: late,
+                    word: SmolStr::new(&widest),
+                }),
+                dropped: Some(Said {
+                    t_ms: late,
+                    word: SmolStr::new_static("abi"),
+                }),
+                ..MindTrack::default()
+            };
+            lines.extend(track.block().map(|block| block.lines).unwrap_or_default());
+        }
+        for by in [HandOver::Dropped, HandOver::ClimbedOut] {
+            for count in [1, 2] {
+                lines.push(span_line(&spans(count, by)));
+            }
+        }
+        for by in [HandOver::Dropped, HandOver::ClimbedOut] {
+            let closed: Vec<Span> = spans(1, by)
+                .into_iter()
+                .map(|span| Span {
+                    to_ms: Some(late),
+                    ..span
+                })
+                .collect();
+            lines.push(span_line(&closed));
+        }
+        for cause in ["strikes", "core", "abi"] {
+            lines.push(drop_line(&Said {
+                t_ms: late,
+                word: SmolStr::new_static(cause),
+            }));
+        }
+        assert!(lines.len() >= 20, "{lines:#?}");
+        for line in &lines {
+            assert!(
+                line.chars().count() < 120,
+                "{} columns: {line}",
+                line.chars().count()
+            );
+            assert_eq!(leak(line), None, "{line}");
+        }
+    }
+
+    /// **17b cut M5.6's review** (R19): `help minds` quotes the block as it
+    /// is built — its example head, span and shots lines (one switch to Line
+    /// at 1:05, an `EXIT` at 4:42, four cannon shots of which two hit), the
+    /// bounded five-span line and a drop with its cause — each the fold's own
+    /// output, so the page cannot drift from the block unseen.
+    #[test]
+    fn m5_help_minds_quotes_the_block_as_it_is_built() {
+        let help = include_str!("../../../../docs/help/minds.md");
+        let quoted = |said: &str| {
+            help.lines()
+                .any(|line| line.trim_start() == said.trim_start())
+        };
+        let track = MindTrack {
+            own: Some(own_mind(true, &["Sniper", "Line"])),
+            spans: vec![Span {
+                from_ms: 282_000,
+                to_ms: None,
+                by: HandOver::ClimbedOut,
+            }],
+            shots: [(SmolStr::new_static("cannon"), Tally { shots: 4, hits: 2 })]
+                .into_iter()
+                .collect(),
+            switches: 1,
+            last_switch: Some(Said {
+                t_ms: 65_000,
+                word: SmolStr::new_static("Line"),
+            }),
+            ..MindTrack::default()
+        };
+        let block = track.block().map(|block| block.lines).unwrap_or_default();
+        assert_eq!(
+            block,
+            vec![
+                "Your mind: Standard Doctrine (Sniper, Line); switched to Line at 1:05.",
+                "  It flew your tank from 4:42, when you climbed out, to the end.",
+                "  Its shots: cannon 4, 2 of them hits; it destroyed nothing.",
+            ]
+        );
+        let five: Vec<Span> = [
+            (42_000, Some(70_000)),
+            (130_000, Some(190_000)),
+            (300_000, Some(360_000)),
+            (500_000, Some(560_000)),
+            (725_000, None),
+        ]
+        .into_iter()
+        .map(|(from_ms, to_ms)| Span {
+            from_ms,
+            to_ms,
+            by: HandOver::Dropped,
+        })
+        .collect();
+        let dropped = drop_line(&Said {
+            t_ms: 90_000,
+            word: SmolStr::new_static("core"),
+        });
+        for line in block.iter().cloned().chain([span_line(&five), dropped]) {
+            assert!(
+                quoted(&line),
+                "help minds does not quote the block's {line:?}"
+            );
+        }
     }
 
     /// **16b cut V.3**: a seq that is not the last plus one is a gap, and so is
@@ -3920,9 +5145,12 @@ mod tests {
 
     /// **16b cut Z.2** (16c N6, Q44): the two squad roles print their own words
     /// on the `ordered` line (the bearing and the charge do not ride the tape),
-    /// and a release reads `released red-1 to doctrine.` to the tank that gave
+    /// and a release reads `released red-1 to their minds.` to the tank that gave
     /// it — once, though the tape carries one line per unit it dropped — nothing
     /// to the other pilot, and every field to staff, `issuer=-` for none.
+    ///
+    /// Was `released red-1 to doctrine.` until 17b cut M5.6 (D9: one word for
+    /// every mind).
     #[test]
     fn z2_the_releaser_reads_the_release_once_and_the_roles_by_their_words() {
         const WING: ObjId = ObjId(301);
@@ -3947,14 +5175,14 @@ mod tests {
             vec![
                 "  1:00  ordered red-1: screen.",
                 "  1:01  ordered red-1, holding fire: support.",
-                "  1:02  released red-1 to doctrine.",
+                "  1:02  released red-1 to their minds.",
             ]
         );
 
         let theirs = fold(&events, &roster(), Reader::Pilot { unit: THEM }, RULES);
         assert_eq!(
             theirs.lines,
-            vec!["  1:03  released red-1 to doctrine."],
+            vec!["  1:03  released red-1 to their minds."],
             "the other pilot reads none of ME's release, only their own"
         );
 

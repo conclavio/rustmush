@@ -1171,8 +1171,8 @@ impl ArenaRegistry {
         self.arenas.remove(&match_id);
         // 16b cut N.2: and the deliberation row, for the same reason. An order
         // whose time to live outlives the match it was written for would otherwise
-        // say its lapse sentence ("… order has run out; back on doctrine", 17b cut
-        // L.2) about a squad that no longer exists, and an
+        // say its lapse sentence ("… order has run out; back on their minds", 17b
+        // cut L.2, worded by 17b cut M5.6) about a squad that no longer exists, and an
         // in-flight count left behind would be a permanent debit against the *next*
         // match that took this id.
         self.deliberation.remove(&match_id);
@@ -4769,17 +4769,23 @@ fn offer_helm(
 
 /// **The lapse sentence** (17b cut L.2; D-UM-32 as amended by R-C, D-UM-53): *the
 /// leader's orders lapsing*, in the leader's name — `Squad red-1: red lance leader
-/// 1's hold order has run out; back on doctrine.`, or `your` to the pilot who gave
-/// it.
+/// 1's hold order has run out; back on their minds.`, or `your` to the pilot who
+/// gave it.
 ///
 /// The clause names the order's author and claims nothing about "the squad": a
 /// non-lead's `ORDER` reaches one wingman while the watch is per squad, so the
-/// `Squad {squad}:` prefix is the watch's key and `back on doctrine` is true of
-/// whatever the order reached. It no longer says the link dropped: that is
+/// `Squad {squad}:` prefix is the watch's key and `back on their minds` is true
+/// of whatever the order reached. It no longer says the link dropped: that is
 /// the words of a mind's own failure (doc 17 §8, M3's `MindDropped`), so the two
 /// vocabularies do not collide.
+///
+/// **17b cut M5.6** (the M5.3 close's D9 ruling): `back on doctrine.` until that
+/// cut. A lapsed order leaves each hull to the mind sealed for it, which a
+/// lead's `SIM AI MIND` may make another than Standard Doctrine (a fixture's
+/// before 17b cut M6), so the sentence names none — one word for every mind,
+/// as the release acknowledgement (`Released red-1 to its mind`) says it.
 fn lapse_line(squad: crate::deliberation::SquadId, whose: &str, objective: &str) -> String {
-    format!("Squad {squad}: {whose} {objective} order has run out; back on doctrine.")
+    format!("Squad {squad}: {whose} {objective} order has run out; back on their minds.")
 }
 
 /// **The one in-world notice doc 16 §6 asks for**, said once per squad whose order
@@ -5041,6 +5047,10 @@ mod tests {
     /// **17b cut L.2**: the lapse sentence's two shapes, byte for byte — the
     /// issuing pilot's own (`your`) and a lance-leader's in its persona's name —
     /// with no "link dropped" left in either (D-UM-32 as amended by R-C).
+    ///
+    /// Both ended `back on doctrine.` until 17b cut M5.6 (D9): `back on their
+    /// minds.`, each under 120 columns at the widest squad, persona and
+    /// objective the arena words.
     #[test]
     fn l2_the_lapse_line_has_two_shapes() {
         let red_one = SquadId {
@@ -5049,15 +5059,25 @@ mod tests {
         };
         assert_eq!(
             lapse_line(red_one, "your", "hold"),
-            "Squad red-1: your hold order has run out; back on doctrine."
+            "Squad red-1: your hold order has run out; back on their minds."
         );
         let whose = format!("{}'s", CharacterRef::persona_name(red_one));
         let persona = lapse_line(red_one, &whose, "hold");
         assert_eq!(
             persona,
-            "Squad red-1: red lance leader 1's hold order has run out; back on doctrine."
+            "Squad red-1: red lance leader 1's hold order has run out; back on their minds."
         );
         assert!(!persona.contains("link dropped"));
+        assert!(!persona.contains("doctrine"));
+        let widest = SquadId {
+            team: Team::Blue,
+            index: 6,
+        };
+        let whose = format!("{}'s", CharacterRef::persona_name(widest));
+        for objective in ["hold", "advance", "engage", "withdraw", "screen", "support"] {
+            let line = lapse_line(widest, &whose, objective);
+            assert!(line.chars().count() < 120, "{line}");
+        }
     }
 
     // -----------------------------------------------------------------------

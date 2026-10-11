@@ -46,7 +46,7 @@ else — `help simulator` is how you get there.
   ORDER <squad|ALL> <objective>
                       command your side's machines: hold, advance on a named
                       spot, engage, withdraw, screen a bearing or support a
-                      tank — or release them to their own doctrine. See
+                      tank — or release them to their own minds. See
                       "Commanding the machines".
   WATCH [ON|OFF]      push a short block of your own line, your guns and your
                       contacts whenever it would read differently; for line
@@ -449,12 +449,14 @@ it: not your side, not the target.
 Anything else is refused in one sentence:
 `FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.`
 — another word, an OR, a fifth condition or a number out of its range. The
-rest of the rule language arrives with the mind's own card.
+rest of the rule language comes in a later cut.
 
 ## Commanding the machines
 
 When the simulator fills the empty pods with machines (`SIM AI`), they fight on
-their own doctrine. `ORDER` tells them what to do instead.
+their own minds: Standard Doctrine, at the preset the side's lead (or staff)
+chose with `SIM AI MIND`, or on Line (`help minds`). `ORDER` tells them what to
+do instead.
 
 **Who may order what.** Your side's lead — the pilot who may `SIM START` and
 `SIM CONCEDE` — orders any squad of your side. Anyone else orders one tank: the
@@ -481,8 +483,7 @@ There are six orders and a release, and the answer says what each one means:
                                  stands, faces 090° and fires on what comes
                                  inside its arc without giving chase.
   ORDER 1 SUPPORT RA             Ordered red-1 to support RA: it keeps within
-                                 150 m of RA and fires first on what RA is
-                                 fighting.
+                                 150 m of RA and fights what it finds there.
   ORDER red-1 RELEASE            Released red-1 to its mind: it fights on its
                                  own until it is ordered again.
 
@@ -500,27 +501,31 @@ squad stays where it stands, faces the bearing, and turns to fire on what comes
 inside the arc and inside its range. What is behind it, or out to a flank, it
 leaves alone, however close.
 
-**A support keeps station on one tank and shoots what that tank shoots.** Name
+**A support keeps station on one tank and fights what it finds there.** Name
 any tank of your own side by its callsign — your own included. The squad keeps
 within 150 m of it, closing to about 50 m when it has nothing to fight, and
-fires first on whatever that tank is fighting; past 150 m it gives up the chase
-and drives back. A supporter that cannot see the tank it supports holds where it
-stands and fights from there. The tank named, if it is one of the squad's own,
-fights on as it would have. If the tank leaves the match or its supporters see
-it destroyed, the order ends for them there and then, and the machines go back
-to their own doctrine.
+fights what comes within its reach there; past 150 m it gives up the chase and
+drives back. It does not know what the tank it supports is shooting at: it
+picks its own targets, as every machine does. A supporter that cannot see the
+tank it supports holds where it stands and fights from there. The tank named,
+if it is one of the squad's own, fights on as it would have. If the tank is
+taken out of the match, the order ends for them there and then and the machines
+go back to their own minds — a pilot climbing out does not take it out: it
+stays, flown by its mind, and the order stands. A supporter that sees it
+destroyed fights on its own.
 
 **A release hands the squad back at once.** `ORDER red-1 RELEASE` ends your
 order on it now rather than in ten minutes, the machines go back to their own
-doctrine, and the squad no longer counts against the four you may hold. It is an
+minds, and the squad no longer counts against the four you may hold. It is an
 order in the count of twelve a minute, and nothing may follow it — not even hold
 fire.
 
 An order **stands for ten minutes or until your next order to it**, and
 every answer ends by saying so. When it runs out the machines go back to their
-own doctrine and you alone are told `Squad red-1: your hold order has run out;
-back on doctrine.` Your side hears the same of its own lance leaders' orders
-(`Squad red-1: red lance leader 1's hold order has run out; back on doctrine.`).
+own minds and you alone are told
+`Squad red-1: your hold order has run out; back on their minds.` Your side
+hears the same of its own lance leaders' orders
+(`Squad red-1: red lance leader 1's hold order has run out; back on their minds.`).
 Nobody else is told you gave an order: nothing is said on your side's radio
 unless you say it.
 
@@ -602,6 +607,27 @@ that has lost its guns still drives, and if it was the last gun on your side the
 match is over at that hit: a side that came in armed and has no gun left has
 lost.
 
+## Your tank's mind
+
+Your tank carries a mind that flies it when you are not in the seat: the one
+your slot chose with `SIM MIND` before the match, or Standard Doctrine on Line
+if it chose none (`help minds`). It takes the tank when you `EXIT`, for the
+rest of the match, or when your line has been down past the grace, until you
+`BOARD` again. While you fly it is dormant. `MIND` reads it:
+
+  Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on a Class II core.
+  Profile: Sniper, 1 of 2 (also Line); MIND PROFILE Line switches, once in ten seconds.
+  Channels: you hold helm, sensors and fire; the mind is dormant while you fly.
+  Rules: none sealed; your own armings are under WEAPONSTATUS.
+
+`MIND PROFILE Line` sets the profile it will fly to another of those sealed
+on it, once in ten seconds; `MIND RULES` says it carries no rules, and
+`MIND TRACE` that the core keeps no trace of its thinks yet. If the mind drops
+to the ROM — three faults running, or its core destroyed — you are told, and
+the first line says the hull is on the ROM for the match. After the match,
+`SIM REPORT` carries a `Your mind` block saying when it flew your tank and
+what it shot (`help minds`).
+
 ## Watching from line mode
 
 The line client has no screen that redraws itself: it prints the arena's
@@ -642,9 +668,13 @@ not told apart yet — then your callsign, power, speed, heading, heat, what you
 own scope holds and your lock; what is left of your tank section by section; your
 weapons with their cycle, rounds and chance; and your contacts with their
 bearing, band, range, plot age and the sections of any you have had a close look
-at. In the browser the map has a zoom and draws a ring around your lock, and
-clicking a contact's designator — or its `scan` button — puts `lock BA` or
-`scan BA` in the box ready to send; the browser's box sits under every screen but
+at. Under your weapons are four rows of your tank's mind, the short form of
+`MIND`: the mind and its class, its sealed profiles with the one it will fly
+marked, that it is dormant while you fly, and the channels you hold. In the
+browser the map has a zoom and draws a ring around your lock, and clicking a
+contact's designator — or its `scan` button — puts `lock BA` or `scan BA` in
+the box ready to send, and clicking a profile the mind is not flying puts
+`MIND PROFILE <name>` there; the browser's box sits under every screen but
 the channel screen, which has its own, so a prefill leaves you on the cockpit with
 the line ready to send, as a command even if the box was set to Say or Pose. On
 both clients the notices list also carries the answer to anything you type while

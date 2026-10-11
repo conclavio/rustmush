@@ -1,11 +1,11 @@
-//! **First-time hints: one line naming the next verb, at five points of a
+//! **First-time hints: one line naming the next verb, at six points of a
 //! first match, once per account** (16b cut AH.1; 16c N18; doc 16 §1, §3.7
-//! "Verbs", §3.8 "Lifecycle", §5).
+//! "Verbs", §3.8 "Lifecycle", §5; the sixth, `mind`, 17b cut M5.6).
 //!
 //! A pilot who has never typed a verb is not helped by a line that tells the
 //! truth about the match; every line the lobby and the cockpit already say
 //! does that. What the smoke's first-time pilot lacked (16c T-77) was the NEXT
-//! word. So at five points of a first match the simulator says one sentence,
+//! word. So at six points of a first match the simulator says one sentence,
 //! opening [`HINT_PREFIX`], naming the verb that works there — and never again
 //! for that account:
 //!
@@ -15,9 +15,17 @@
 //! panel     STARTUP     the pilot's first frame of the match, power off
 //! power     VIEW        the frame that says "Power online."
 //! contact   LOCK, FIRE  a frame that tells an enemy apart, with a gun and power up
+//! mind      SIM MIND    the match's end (`match_::finish`), to each of its pilots
 //! ```
 //!
-//! Each sentence is one of five string constants ([`HINT_LINES`]): no hint
+//! The sixth (17b cut M5.6; doc 17 §15's first hint, reworded by the M5 design
+//! note's C-12 to what M5 makes true — no rule is sealed before the rule
+//! language's cut) names the verb that chooses the mind which flies a tank its
+//! pilot leaves; it is said once the first match is over, when the pilot is
+//! back in the lobby's reach and `SIM MIND` is the next match's word. The
+//! second mind hint (on `@mind/save`, naming `@mind/prove`) is M6's (OQ-10 (a)).
+//!
+//! Each sentence is one of six string constants ([`HINT_LINES`]): no hint
 //! interpolates anything, so no hint can name a unit, a pilot, a designator or
 //! a place (doc 16 §1's observer rule holds by construction, and the gates
 //! below read a frame's own fields without ever reaching a sentence). A hint is
@@ -100,7 +108,7 @@ pub fn tutorial_key(account: AccountId) -> SmolStr {
     SmolStr::new(format!("{KEY_PREFIX}{}", account.canonical_hash()))
 }
 
-/// **The five points of a first match**, in the order a first match usually
+/// **The six points of a first match**, in the order a first match usually
 /// takes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -115,16 +123,21 @@ pub enum HintPoint {
     Power,
     /// The frame that first tells an enemy apart, in a unit with a gun and power up.
     Contact,
+    /// The match's end (`match_::finish`), to each of its pilots still connected:
+    /// `SIM MIND` chooses the mind that flies the tank its pilot leaves (17b cut
+    /// M5.6).
+    Mind,
 }
 
 impl HintPoint {
     /// Every point, in order.
-    pub const ALL: [HintPoint; 5] = [
+    pub const ALL: [HintPoint; 6] = [
         HintPoint::Lobby,
         HintPoint::Boarding,
         HintPoint::Panel,
         HintPoint::Power,
         HintPoint::Contact,
+        HintPoint::Mind,
     ];
 
     /// The point's word, as the document stores it.
@@ -136,6 +149,7 @@ impl HintPoint {
             HintPoint::Panel => "panel",
             HintPoint::Power => "power",
             HintPoint::Contact => "contact",
+            HintPoint::Mind => "mind",
         }
     }
 
@@ -169,22 +183,27 @@ impl HintPoint {
                 "Hint: LOCK <contact> holds the contact your panel just named; FIRE shoots your \
                  lock."
             }
+            HintPoint::Mind => {
+                "Hint: SIM MIND Standard lets your tank's core fly the Registry's doctrine your \
+                 way when you climb out."
+            }
         }
     }
 }
 
 /// [`HintPoint::ALL`]'s sentences, in order — what the contract test and the
-/// SSH suites read the five lines from.
-pub const HINT_LINES: [&str; 5] = [
+/// SSH suites read the six lines from.
+pub const HINT_LINES: [&str; 6] = [
     HintPoint::Lobby.line(),
     HintPoint::Boarding.line(),
     HintPoint::Panel.line(),
     HintPoint::Power.line(),
     HintPoint::Contact.line(),
+    HintPoint::Mind.line(),
 ];
 
 /// **One account's hints**: whether they are switched off, and which points it
-/// has read. At most one bool and five words — the whole of what B4's bound
+/// has read. At most one bool and six words — the whole of what B4's bound
 /// asks of a family with no cap and no `Del` (see `store.rs`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TutorialRec {
@@ -242,7 +261,7 @@ impl TutorialRec {
     }
 }
 
-/// **The bare `@tutorial`'s answer**: `Hints are on; you have read 2 of 5.`
+/// **The bare `@tutorial`'s answer**: `Hints are on; you have read 2 of 6.`
 /// (or `off`). A function and not a constant, because the count is a number.
 #[must_use]
 pub fn read_line(off: bool, read: usize) -> String {
@@ -472,13 +491,13 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: TUTORIAL_VERB.into(),
             shape: ArgShape::Raw,
-            help: "@tutorial [on|off]  --  The simulator says one line at five points of your \
+            help: "@tutorial [on|off]  --  The simulator says one line at six points of your \
                    first match, naming the verb to type next: walking into the lobby, when \
-                   boarding opens, when the panel wakes, when power comes up, and when your \
-                   sensors first tell an enemy apart. Each is said once per account, so an alt \
-                   does not read them again. @tutorial off stops the ones you have not reached; \
-                   @tutorial on starts them again, and the ones you have read stay read; bare \
-                   @tutorial says where you stand."
+                   boarding opens, when the panel wakes, when power comes up, when your \
+                   sensors first tell an enemy apart, and when the match is over. Each is said \
+                   once per account, so an alt does not read them again. @tutorial off stops \
+                   the ones you have not reached; @tutorial on starts them again, and the ones \
+                   you have read stay read; bare @tutorial says where you stand."
                 .into(),
             ..CommandSpec::default()
         },
@@ -506,6 +525,10 @@ mod tests {
     /// Every sentence opens with the prefix, fits the floor, and names no
     /// thing: no number, no object, no designator, no unit, and a side only
     /// inside the three phrases that name a side as a word to type or a room.
+    ///
+    /// The widths were `[91, 82, 59, 86, 84]` at 16b cut AH.1; the sixth,
+    /// `mind`'s, adds 102 (17b cut M5.6, the design note's item 2: "102
+    /// columns, no digit, no `Tank`, `#`, `X1`, `BA` or `RA`").
     #[test]
     fn ah1_every_line_opens_with_the_prefix_and_names_no_thing() {
         assert_eq!(HINT_LINES.len(), HintPoint::ALL.len());
@@ -529,7 +552,7 @@ mod tests {
         }
         assert_eq!(
             HINT_LINES.map(|line| line.chars().count()),
-            [91, 82, 59, 86, 84]
+            [91, 82, 59, 86, 84, 102]
         );
     }
 
@@ -753,9 +776,26 @@ mod tests {
         );
     }
 
+    /// Was `… 2 of 5.` / `… 5 of 5.` at 16b cut AH.1; the table holds six since
+    /// `HintPoint::Mind` (17b cut M5.6), and the count is the table's.
     #[test]
     fn ah1_read_line_counts_out_of_the_table() {
-        assert_eq!(read_line(false, 2), "Hints are on; you have read 2 of 5.");
-        assert_eq!(read_line(true, 5), "Hints are off; you have read 5 of 5.");
+        assert_eq!(read_line(false, 2), "Hints are on; you have read 2 of 6.");
+        assert_eq!(read_line(true, 6), "Hints are off; you have read 6 of 6.");
+    }
+
+    /// **17b cut M5.6**: the sixth point is the mind's — its word, its place
+    /// last in the table, and its sentence naming `SIM MIND` and nothing a
+    /// first match has not shown (no rule: the rule language is a later cut).
+    #[test]
+    fn m5_the_sixth_hint_names_sim_mind_and_is_last() {
+        assert_eq!(HintPoint::ALL.last(), Some(&HintPoint::Mind));
+        assert_eq!(HintPoint::parse("mind"), Some(HintPoint::Mind));
+        assert_eq!(
+            HINT_LINES[5],
+            "Hint: SIM MIND Standard lets your tank's core fly the Registry's doctrine your way \
+             when you climb out."
+        );
+        assert!(!HINT_LINES[5].contains("rule"), "{}", HINT_LINES[5]);
     }
 }

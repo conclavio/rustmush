@@ -58,7 +58,8 @@
 //! its hull, the squad stops asking (`crate::arena::command`'s trigger skips a
 //! wrecked commander), and the squad drops to doctrine the moment its commander
 //! dies. That is the honest reading of *the fallback when nothing arrives is the
-//! reflex doctrine* — a decapitated squad fights on its own reflexes.
+//! reflex doctrine* — a decapitated squad fights on its own doctrine (its own
+//! reflexes until 17b cut M5.6's words: the reflex controller went at M4.6).
 
 use std::fmt;
 

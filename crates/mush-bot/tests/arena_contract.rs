@@ -2150,10 +2150,18 @@ fn the_watch_digest_reads_as_neutral_lines_and_opens_no_reply() {
 /// persona's name), byte for byte as `arena_bridge`'s own pin prints them —
 /// read `Line::Other` and open no `CONTACTS`, `WEAPONSTATUS` or `STATUS`
 /// reply, no lock line and no brief. The bot does not act on them.
+///
+/// The game's 17b cut M5.6 moved both tails, `back on doctrine.` → `back on
+/// their minds.` (the orchestrator's D9 ruling at the game's M5.3 close: one
+/// word for every mind) — a declared reader change, the bot and the server
+/// deploying together. The old tails stay neutral too, so a bot reading an
+/// older server parses nothing of them either.
 #[test]
 fn the_order_lapse_sentences_read_as_neutral_lines_and_open_no_reply() {
     let mut reader = Reader::new();
     for line in [
+        "Squad red-1: your hold order has run out; back on their minds.",
+        "Squad red-1: red lance leader 1's hold order has run out; back on their minds.",
         "Squad red-1: your hold order has run out; back on doctrine.",
         "Squad red-1: red lance leader 1's hold order has run out; back on doctrine.",
     ] {
@@ -2933,6 +2941,123 @@ fn m5_3_the_release_words_read_as_the_bot_reads_them() {
         "{lines:?}"
     );
     assert!(reader.picture.aboard, "the catch-up is a reclaim");
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+}
+
+/// **The game's 17b cut M5.6: the reworded acknowledgements read as nothing
+/// the reader parses** — a declared reader change (the bot and the server
+/// deploy together):
+///
+/// * the two `SUPPORT` acknowledgements, through the cockpit's own `order_ack`
+///   — `Ordered red-1 to support RA: it keeps within 150 m of RA and fights
+///   what it finds there. …` and its `holding fire` form, which said `fires
+///   first on what RA is fighting` / `locks what RA is fighting` until that
+///   cut (the owner's OQ-6, the text made true) — read `Line::Other`, the
+///   head and the wrapped tail alike (the bot never types `ORDER`), each
+///   byte for byte the game's and narrower than the sentence it
+///   replaced (145 and 170 columns with the ten-minute tail, against 153 and
+///   176; the tail has carried every order line past 120 since 16b cut Y.1);
+/// * the sixth first-time hint, `tacsim::match_::tutorial::HINT_LINES[5]`,
+///   reads `Line::Hint` as every hint does;
+///
+/// none opening a reply. (The order lapse's two tails are
+/// `the_order_lapse_sentences_read_as_neutral_lines_and_open_no_reply`'s.)
+#[test]
+fn m5_6_the_reworded_acknowledgements_and_the_mind_hint_read_as_the_bot_reads_them() {
+    use tacsim::match_::cockpit::ObjectiveWords;
+    let mut reader = Reader::new();
+    let one = vec!["red-1".to_owned()];
+    let support = ObjectiveWords::Support {
+        callsign: "ra".to_owned(),
+    };
+    for (hold_fire, width, want) in [
+        (
+            false,
+            145,
+            "Ordered red-1 to support RA: it keeps within 150 m of RA and fights what it finds \
+             there. It stands for 10 minutes or until your next order to it.",
+        ),
+        (
+            true,
+            170,
+            "Ordered red-1 to support RA, holding fire: it keeps within 150 m of RA and locks \
+             what it finds but fires nothing. It stands for 10 minutes or until your next order \
+             to it.",
+        ),
+    ] {
+        let said = cockpit::order_ack(&one, &support, Some("RA"), None, hold_fire, 150);
+        assert_eq!(said, want, "the game's words");
+        assert_eq!(said.chars().count(), width, "{said}");
+        // Past 120 columns the sentence wraps: its head and its tail each
+        // read `Other` (`Reader::one` asserts the tail).
+        assert!(
+            matches!(reader.one(&said), Line::Other(head) if said.starts_with(&head)),
+            "{said}"
+        );
+    }
+    let hint = tacsim::match_::tutorial::HINT_LINES[5];
+    assert!(hint.chars().count() < 120, "{hint}");
+    assert!(
+        matches!(reader.one(hint), Line::Hint(_)),
+        "the mind hint reads as a hint: {hint}"
+    );
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+}
+
+/// **The game's 17b cut M5.6: `SIM REPORT`'s `Your mind` block and its
+/// reworded release line read as nothing the reader parses** — a declared
+/// reader change (17b cut M5.6's review, R10; conventions §6.6), though the
+/// bot never types `SIM REPORT` and so never reads either today: every shape
+/// of the block's lines, byte for byte as the game's own pins print them
+/// (`match_::report`'s `m5_*` tests), and the timeline's `released red-1 to
+/// their minds.` (`to doctrine.` until that cut, the M5.3 close's D9), each
+/// read `Line::Other` and open no `CONTACTS`, `WEAPONSTATUS` or `STATUS`
+/// reply, no lock line and no brief.
+#[test]
+fn m5_6_the_your_mind_block_and_the_release_line_read_as_neutral_lines() {
+    let mut reader = Reader::new();
+    for line in [
+        "Your mind: Standard Doctrine (Line).",
+        "Your mind: Standard Doctrine (Sniper, Line); switched to Line at 1:05.",
+        "Your mind: Standard Doctrine (Sniper, Line); switched to Sniper, edited (min_odds 70) at \
+         1:05.",
+        "Your mind: Standard Doctrine (Sniper, Line); switched 2 times.",
+        "  Its last switch was to Line at 1:30.",
+        "  Sealed in place of your choice, for humans on the other side.",
+        "  It never flew: you flew the tank the whole match.",
+        "  It flew your tank from 0:42, when you climbed out, to the end.",
+        "  It flew your tank from 0:42, when you climbed out, to 3:12.",
+        "  It flew your tank from 0:42 to 1:10, while your line was down.",
+        "  It flew your tank from 0:42 to the end, while your line was down.",
+        "  It flew your tank from 0:42 to 1:10 and from 2:05 to the end, while your line was down.",
+        "  It flew your tank from 0:42 to 1:10 and from 2:05 to the end.",
+        "  It flew your tank 5 times: first from 0:42 to 1:10, last from 12:05 to the end.",
+        "  Its shots: cannon 4, 2 of them hits; it destroyed nothing.",
+        "  Its shots: cannon 1 and machine_gun 1, 2 of them hits; it destroyed 1 unit.",
+        "  It fired nothing.",
+        "  It dropped to the ROM at 1:30: three faults running.",
+        "  It dropped to the ROM at 1:30: its core was destroyed.",
+        "  It dropped to the ROM at 1:30: its core could not run its mind on this engine.",
+        "  It dropped to the ROM at 1:30.",
+        "  1:02  released red-1 to their minds.",
+        "  1:02  released red-1 to doctrine.",
+    ] {
+        assert!(line.chars().count() < 120, "{line}");
+        assert!(
+            matches!(reader.one(line), Line::Other(_)),
+            "{line} read as something"
+        );
+    }
     let open = &reader.picture.open;
     assert!(open.contacts.is_none(), "a CONTACTS reply opened");
     assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");

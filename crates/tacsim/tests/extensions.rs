@@ -10603,9 +10603,11 @@ fn ae2_taught(arena: &Arena, unit: mush_core::ObjId) -> bool {
 /// fired) is the reflex's alone. It stayed on the reflex controller, with
 /// case (2) beside it there as its control, in
 /// `ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i` until 17b
-/// cut M4.6b deleted that residue: the owner carried STOP I to M5 (a mind
-/// that fires from behind a ridge and then climbs the crest is still taught
-/// `no line` by the blocked miss), the loss recorded in doc 17 §24. Case (3)
+/// cut M4.6b deleted that residue: the owner carried STOP I to the residues
+/// cut after 17b's M5 (OQ-6: M5 made the text true, the behaviour is that
+/// cut's; re-pointed by 17b cut M5.6) — a mind that fires from behind a ridge
+/// and then climbs the crest is still taught `no line` by the blocked miss,
+/// the loss recorded in doc 17 §24. Case (3)
 /// has no mirror: case (2), its control, stays here on the mind, and the
 /// twin's `no_line` counter (`tests/twin.rs`) counts every think that read a
 /// `blocked`/`cover` miss notice (nought over the pinned pool), not the climb.
@@ -10785,9 +10787,15 @@ fn ae2_the_round_is_traced_from_where_it_left() {
 ///
 /// **17b cut M3.1** moved it (version 2): a core component, the doctrine core
 /// in its body. Was `f97b0a8b…` at version 1.
+///
+/// **17b cut M5.6** moved it again (version 3; the owner's OQ-6, the text
+/// made true; STOP A): the unit's `note` said that in a Hold match the drone
+/// "drives to the spot but holds nothing", which no production think does —
+/// it now reads that it neither drives for the spot nor holds it. A note is
+/// no hashed state: nothing in a match reads it. Was `1bfeca3a…` at version 2.
 const DIGESTS_DRONE: [(&str, &str); 1] = [(
     "tacsim.pack.drone_mk1",
-    "1bfeca3a34a13eeddc48b8fca7534d8082a21225735053a08eee94624a9d7b13",
+    "8ea3796156bd19baeb9b5c7dd70151f76c2114d8d345726a93c6c841911a9689",
 )];
 
 /// The drone's pack file, by its path under `content/`.
@@ -10830,8 +10838,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
             Some(pack.manifest().digest().to_hex().as_str()),
             "{id}'s digest moved; re-review the content and re-pin it"
         );
-        // 17b cut M3.1: version 2, for its core (was 1).
-        assert_eq!(pack.manifest().version(), 2, "{id}'s version");
+        // 17b cut M3.1: version 2, for its core (was 1); 17b cut M5.6:
+        // version 3, for its note made true (was 2).
+        assert_eq!(pack.manifest().version(), 3, "{id}'s version");
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_DRONE.len());
 

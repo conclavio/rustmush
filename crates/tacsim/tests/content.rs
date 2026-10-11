@@ -1265,7 +1265,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 4),
         (content::BIPED_MK1_JSON, "tacsim.pack.biped_mk1", 2),
         (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2),
-        (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 2),
+        // 17b cut M5.6: version 3, its note made true of a Hold match (was 2).
+        (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 3),
     ] {
         let pack = tacsim::pack::load_pack(json).unwrap_or_else(|error| panic!("{id}: {error}"));
         assert_eq!(pack.manifest().id().as_str(), id);

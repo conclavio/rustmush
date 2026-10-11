@@ -303,8 +303,8 @@ pub fn order_tool() -> ToolDef {
                     "enum": ["hold", "advance", "engage", "withdraw", "screen", "support"],
                     "description": "hold parks the squad; advance moves it to a cell without \
         pursuing anything; engage fights; withdraw breaks off toward the squad's own entry zone; \
-        screen holds an arc without giving chase; support keeps station on one member and shoots \
-        what it shoots."
+        screen holds an arc without giving chase; support keeps station on one member and fights \
+        what it finds there."
                 },
                 "to_x": { "type": "integer", "description": "advance only: the column" },
                 "to_y": { "type": "integer", "description": "advance only: the row" },
@@ -535,16 +535,27 @@ fn order_of(brief: &SquadBrief, payload: &OrderPayload) -> Result<Order, String>
 /// a key-spot match: `engage` keeps doctrine (which drives to the spot and
 /// fights from it), `advance` to the spot arrives and does not fire, `hold`
 /// parks the squad where it stands.
+///
+/// **17b cut M5.6** (the owner's OQ-6: the text made true in M5, the behaviour
+/// in the residues cut after it; STOPs A and D): the turn said a squad "fights
+/// on its own reflexes", that support "shoots what it shoots" and that engage
+/// "drives the squad to the key spot and fights from it". A machine is flown
+/// by its own doctrine (the reflex controller went at 17b cut M4.6); a
+/// supporter fights what it finds at its station, since nothing it reads says
+/// what its charge is shooting (D-UM-15); and no production think is handed
+/// the key spot (no match mode reaches a mind), so a squad goes there only
+/// when ordered to advance on it. The tool's `support` description says the
+/// same. The prompt is no hashed state and no harness pins its bytes.
 #[must_use]
 pub fn system_prompt() -> String {
     format!(
-        "{FRAME}\n\nDoctrine: a squad with no order fights on its own reflexes — it patrols, closes \
+        "{FRAME}\n\nDoctrine: a squad with no order fights on its own doctrine — it patrols, closes \
 on the nearest worthwhile hostile, holds a firing band and breaks off when it is hurt. Give an \
 order only to change that. A screen holds an arc without giving chase; support keeps station on \
-one of your own members and shoots what it shoots, and the member named fights on. In a key-spot \
-match: engage keeps doctrine, which drives the squad to the key spot and fights from it; advance \
-to the spot arrives and does not fire; hold parks the squad where it stands. Prefer a short time \
-to live when the situation is moving."
+one of your own members and fights what it finds there, and the member named fights on. In a \
+key-spot match: the squad does not drive for the key spot unless it is ordered to advance on it; \
+engage keeps doctrine and fights what it finds; advance to the spot arrives and does not fire; \
+hold parks the squad where it stands. Prefer a short time to live when the situation is moving."
     )
 }
 
@@ -1266,11 +1277,14 @@ mod tests {
         let skirmish = SquadBrief::from_signal(7, &signal(), 2, leader());
         assert_eq!(skirmish.objective, None);
         assert!(!user_prompt(&skirmish).contains("objective:"));
-        // The system turn maps the vocabulary onto a key-spot match.
+        // The system turn maps the vocabulary onto a key-spot match. It said
+        // `engage keeps doctrine, which drives the squad to the key spot and
+        // fights from it;` until 17b cut M5.6 (OQ-6; STOP A, the text made
+        // true: no production think is handed the spot).
         assert!(system_prompt().contains(
-            "In a key-spot match: engage keeps doctrine, which drives the squad to the key spot \
-             and fights from it; advance to the spot arrives and does not fire; hold parks the \
-             squad where it stands."
+            "In a key-spot match: the squad does not drive for the key spot unless it is \
+             ordered to advance on it; engage keeps doctrine and fights what it finds; advance \
+             to the spot arrives and does not fire; hold parks the squad where it stands."
         ));
     }
 

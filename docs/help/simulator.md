@@ -151,6 +151,13 @@ reads nothing. `SIM AI MIND` sets what a side's machines are chosen to carry
 side's lead and to staff on `@arena/status`, and reads `red fill: a mind` for
 everybody else. Once the match has started no row names or marks a mind.
 
+The match's start seals your choice onto your tank, and if you chose one your
+seat reads a line naming it before `Good hunting.` In the cockpit `MIND` reads
+it and `MIND PROFILE` switches between the profiles sealed on it, as
+`help cockpit` says; after the match your `SIM REPORT` says when it flew your
+tank. `help minds` is the whole of it: each preset's terms, the fit, and who
+reads what.
+
 What the shipped server can field:
 
   line_tank           the stock tank: a 105 mm cannon, a coaxial machine gun
@@ -247,10 +254,12 @@ fight inside the square stops the clock — it starts again from nothing when on
 side is alone there once more. Elimination still ends a hold match, and so do a
 concede and the clock.
 
-The machines play it too: with nothing to fight they drive to the spot, stop
-anywhere inside the square, and fight from there — a machine on the spot shoots
-at anything its gun reaches rather than leaving the square to close. The board
-says the rule while a match is being set up, boarding and running:
+The machines do not play for it: they do not drive for the spot, they fight
+what they find wherever they find it, and the spot is the pilots' to take. A
+squad goes there when it is ordered to — `ORDER 1 ADVANCE B`, as
+`help cockpit` says — and a tank whose pilot has left flies its mind, which
+does not drive for the spot either. The board says the rule while a match is
+being set up, boarding and running:
 
   mode: hold — keep The Crossroads (B) uncontested for 120 s
 
@@ -352,11 +361,11 @@ their side's radio, `RedNet` or `BlueNet`, with their callsign as the alias
 (`ra hello`), until they climb out: `help cockpit`.
 
 **`EXIT` once the match is running is final.** The seat, its control lease and
-your focus are released, the tank goes to its autopilot for the rest of the
-match, and you cannot board again.
+your focus are released, your tank's mind flies it for the rest of the match
+(`help minds`), and you cannot board again.
 
 Losing your connection past the link-dead grace, or quitting, is not final. Your
-tank goes to its autopilot and the board reads `flown by its mind` beside your
+tank's mind flies it and the board reads `flown by its mind` beside your
 slot. When you come back you are told so; type `BOARD` again, from your pod,
 where you still are, or from your team room, and after a few seconds the tank is
 yours again where it stands, at a new epoch, with what happened meanwhile said
@@ -397,7 +406,7 @@ the reason `SIM CONCEDE` exists: it is a **result** and not an abort, so the
 winner is recorded and the wrecks stand as evidence like any other end.
 
 And a match every pilot has walked out of ends itself. `EXIT` during a running
-match is final — the tank goes to the machines and you cannot take it back — so
+match is final — the tank goes to its mind and you cannot take it back — so
 once the last pilot has left, nobody is in it who could abort it. The centre
 gives it a few minutes and then closes it: `Match N ends: every pilot has left
 it.`, and the board reads `ended — timeout: every pilot had left`. A pilot whose
@@ -429,6 +438,13 @@ each (`cannon at BA: hit, turret.`, `cannon at a contact: miss: the round went
 wide.`), the hits on your own tank and what they cost it, what your rounds
 destroyed, how many rounds of each weapon you fired, and how your tank and the
 match ended.
+
+If you chose a mind with `SIM MIND`, or your tank's mind flew it while you were
+out of the seat, a `Your mind` block comes after the report's opening lines and
+before its timeline: the mind and its profiles as sealed, its switches, when it
+flew your tank (never a wreck), the shots it fired and what they hit, and a
+drop to the ROM with its cause. The block is yours alone: no other pilot's
+report names your mind, and staff read it on their own pages (`help minds`).
 
 It never tells you more than the cockpit did. A shot carries no range and no
 damage figure, because the cockpit gave you neither. A target is named only as
@@ -470,14 +486,14 @@ muster and back to their own types, and opens selection again.
 
 ## Hints
 
-The first time an account plays, the simulator says one line at five points —
+The first time an account plays, the simulator says one line at six points —
 walking into the lobby, when boarding opens, when the panel wakes, when power
-comes up, and when your sensors first tell an enemy apart — naming the verb to
-type next. Each opens `Hint:` and is said once per account, so an alt does not
-read them again. `@tutorial off` stops the ones you have not reached;
-`@tutorial on` starts them again, and the ones you have read stay read; bare
-`@tutorial` says where you stand. A hint is advice about a verb and never a
-word about the other side.
+comes up, when your sensors first tell an enemy apart, and when the match is
+over — naming the verb to type next. Each opens `Hint:` and is said once per
+account, so an alt does not read them again. `@tutorial off` stops the ones you
+have not reached; `@tutorial on` starts them again, and the ones you have read
+stay read; bare `@tutorial` says where you stand. A hint is advice about a verb
+and never a word about the other side.
 
 ## When there is no simulator
 

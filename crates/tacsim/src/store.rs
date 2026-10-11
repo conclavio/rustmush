@@ -70,8 +70,8 @@ pub const PACK_PAGE: usize = 32;
 /// Unlike pins after B4, the tutorial family (`tacsim:tutorial:{account}`, 16b cut
 /// AH.1) deliberately has no cap and no `Del`, and answers B4 by construction: it is
 /// bounded one-to-one by accounts, which have no deletion path of their own, each
-/// document is one bool and at most five words, and every account can see its own from
-/// the game through `@tutorial`.
+/// document is one bool and at most six words (five until 17b cut M5.6's `mind`), and
+/// every account can see its own from the game through `@tutorial`.
 pub const MAX_PINS: usize = 128;
 
 /// `tacsim:pack:{id}@{version}`.

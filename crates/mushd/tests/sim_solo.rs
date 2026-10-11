@@ -947,12 +947,14 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
         ),
         "{seen}"
     );
+    // 17b cut M5.6 (OQ-6; STOP D, the text made true): `… and fires first on
+    // what RA is fighting.` until that cut.
     let seen = ask(&mut ada, "ORDER red-1 SUPPORT RA", "order to it.").await;
     let seen = unwrapped(&seen);
     assert!(
         seen.contains(
-            "Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on what \
-             RA is fighting. It stands for 10 minutes or until your next order to it."
+            "Ordered red-1 to support RA: it keeps within 150 m of RA and fights what it finds \
+             there. It stands for 10 minutes or until your next order to it."
         ),
         "{seen}"
     );
@@ -1127,7 +1129,7 @@ async fn i3_staff_place_the_machine_and_the_tape_records_it() {
 }
 
 // ---------------------------------------------------------------------------
-// 16b cut AH.1 (16c N18) — the five first-time hints, once per account
+// 16b cut AH.1 (16c N18) — the first-time hints (six since 17b cut M5.6), once per account
 // ---------------------------------------------------------------------------
 
 /// Connect a **two-character** account and pick `character` off the menu
@@ -1179,17 +1181,22 @@ async fn teleport_to_lobby(god: &mut Term, name: &str) {
 }
 
 /// **16b cut AH.1**: over SSH on the production composition, a first account
-/// reads the five hints once, in order, across one short match; an alt made
-/// with `@newchar` on the same account reads none; and a reboot over the same
-/// store keeps the flags — the alt's `@tutorial off` is the account's.
+/// reads the six hints once, in order, across one short match — the sixth,
+/// `mind`'s (17b cut M5.6), as the match ends; an alt made with `@newchar` on
+/// the same account reads none; and a reboot over the same store keeps the
+/// flags — the alt's `@tutorial off` is the account's.
+///
+/// Was "the five hints" and `5 of 5` at 16b cut AH.1; six and `5 of 6` before
+/// the end, `6 of 6` after it, since `HintPoint::Mind` (17b cut M5.6, the design
+/// note's item 2: "the sixth said after the first finished match").
 ///
 /// Every wait on a hint is on a prefix narrower than the test PTY's eighty
 /// columns, and the audit is over the unwrapped transcript (`hints_read`),
-/// because four of the five sentences wrap. The enemy is parked seventy cells
+/// because five of the six sentences wrap. The enemy is parked seventy cells
 /// down the road, past the stock sight, as `y1` parks it: a hostile told apart
 /// before `STARTUP` would leave the contact point unspent for the whole match.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ah1_a_first_account_reads_five_hints_once_an_alt_none_and_a_restart_keeps_the_flags() {
+async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keeps_the_flags() {
     let server = boot("sim-solo-hints-a").await;
     // Ada first, so the staff teleport below is a move a live session sees.
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
@@ -1249,14 +1256,17 @@ async fn ah1_a_first_account_reads_five_hints_once_an_alt_none_and_a_restart_kee
     ada.expect("Hint: LOCK").await;
     let seen = ask_whole(&mut ada, "@tutorial").await;
     assert!(
-        seen.contains("Hints are on; you have read 5 of 5."),
+        seen.contains("Hints are on; you have read 5 of 6."),
         "{seen}"
     );
 
     // The end, as the main test ends it: sent unwaited, then the result
     // document, so the centre is terminal before the alt walks in (a stopping
     // centre would gate the lobby point and make the alt's silence vacuous).
+    let end = ada.mark();
     ada.send_line("SIM ABORT").await;
+    // 17b cut M5.6: the sixth, said by the check-in in the result's own action.
+    ada.expect_after(end, "Hint: SIM MIND").await;
     let key = tacsim::match_::result_key(tacsim::arena_task::MatchId(1));
     wait_until(
         STEP_TIMEOUT,
@@ -1278,7 +1288,7 @@ async fn ah1_a_first_account_reads_five_hints_once_an_alt_none_and_a_restart_kee
             .iter()
             .map(|line| (*line).to_owned())
             .collect::<Vec<_>>(),
-        "the five, once each, in order"
+        "the six, once each, in order"
     );
     for line in &read {
         assert!(!line.contains("Blue Tank"), "{line}");
@@ -1286,8 +1296,9 @@ async fn ah1_a_first_account_reads_five_hints_once_an_alt_none_and_a_restart_kee
     no_sixteen_digit_word(&read.join("\n"));
 
     // Each hint's OWN mark reaches the store, before any `@tutorial` switch
-    // rewrites a whole document from RAM: Ada's five were written by the
-    // lobby observer, `/start`, and `on_frames` (panel, power, contact), and
+    // rewrites a whole document from RAM: Ada's six were written by the
+    // lobby observer, `/start`, `on_frames` (panel, power, contact) and the
+    // check-in (mind, 17b cut M5.6), and
     // God's lobby-only document by the lobby observer alone. The restart leg
     // below cannot prove this — the alt's switch rewrites Ada's document.
     let every_word = tacsim::match_::tutorial::HintPoint::ALL
@@ -1319,7 +1330,7 @@ async fn ah1_a_first_account_reads_five_hints_once_an_alt_none_and_a_restart_kee
     teleport_to_lobby(&mut god, "Ava").await;
     let seen = ask_whole(&mut ava, "@tutorial").await;
     assert!(
-        seen.contains("Hints are on; you have read 5 of 5."),
+        seen.contains("Hints are on; you have read 6 of 6."),
         "{seen}"
     );
     assert!(
@@ -1348,7 +1359,7 @@ async fn ah1_a_first_account_reads_five_hints_once_an_alt_none_and_a_restart_kee
     let (_a2, mut ada) = login_picking(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let seen = ask_whole(&mut ada, "@tutorial").await;
     assert!(
-        seen.contains("Hints are off; you have read 5 of 5."),
+        seen.contains("Hints are off; you have read 6 of 6."),
         "{seen}"
     );
     let (_g2, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;

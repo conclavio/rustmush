@@ -8580,11 +8580,13 @@ async fn z2_the_lead_screens_supports_and_releases_and_every_callsign_refusal_is
     };
     assert_eq!(rig.tape_count_until(screens, 2).await, 2);
 
+    // 17b cut M5.6 (OQ-6; STOP D, the text made true): `… and fires first on
+    // what RA is fighting.` until that cut.
     assert_eq!(
         rig.say(0, "ORDER red-1 SUPPORT ra"),
         format!(
-            "Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on what \
-             RA is fighting.{Y1_TAIL}"
+            "Ordered red-1 to support RA: it keeps within 150 m of RA and fights what it finds \
+             there.{Y1_TAIL}"
         )
     );
     // The other side's, nonsense, a provisional, an empty pod: one sentence.
@@ -13032,6 +13034,9 @@ fn ah1_classified(team: Team) -> tacsim::arena::perception::FrameNotice {
 /// **16b cut AH.1**: the boarding hint at `SIM START`, the panel hint on the
 /// first frame AFTER its keyframe, and the power hint after `Power online.` and
 /// after that step's keyframe — each once, each on the reply tag.
+///
+/// The `@tutorial` counts read `of 6` (were `of 5` at 16b cut AH.1): the table
+/// holds six since `HintPoint::Mind`, said at a match's end (17b cut M5.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ah1_the_first_frame_and_power_online_each_say_their_hint_once_after_the_keyframe() {
     let mut rig = Rig::boot(2);
@@ -13081,7 +13086,7 @@ async fn ah1_the_first_frame_and_power_online_each_say_their_hint_once_after_the
     assert_eq!(ah1_hints(&rig.log[mark..], p0), Vec::<String>::new());
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 3 of 5."),
+        said.contains("Hints are on; you have read 3 of 6."),
         "boarding, panel and power: {said}"
     );
     audit_hints(&rig.log);
@@ -13090,6 +13095,9 @@ async fn ah1_the_first_frame_and_power_online_each_say_their_hint_once_after_the
 /// **16b cut AH.1**: the contact hint waits for an ENEMY told apart, in a unit
 /// with a gun, with power up — and the panel hint for a first frame with power
 /// off; a bound seat that holds no centre slot reads neither.
+///
+/// The `@tutorial` counts read `of 6` (were `of 5` at 16b cut AH.1): the table
+/// holds six since `HintPoint::Mind`, said at a match's end (17b cut M5.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_hint_for_power_off()
 {
@@ -13110,7 +13118,7 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
     assert!(said.contains(SET_ON), "{said}");
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 5."),
+        said.contains("Hints are on; you have read 0 of 6."),
         "{said}"
     );
 
@@ -13180,7 +13188,7 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
     );
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 1 of 5."),
+        said.contains("Hints are on; you have read 1 of 6."),
         "{said}"
     );
     rig.rebind(p0, match_id, held.unit);
@@ -13218,7 +13226,7 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
     let events = rig.events_of(p2, "@tutorial");
     assert_eq!(
         rig.tw.seen_by(&events, p2),
-        vec!["Hints are on; you have read 0 of 5.".to_owned()]
+        vec!["Hints are on; you have read 0 of 6.".to_owned()]
     );
     audit_hints(&rig.log);
 }
@@ -13249,6 +13257,77 @@ fn ah1_the_fixture_frame_yields_the_points_its_own_fields_earn() {
     cold.notices = vec![];
     assert_eq!(frame_points(true, &cold), vec![HintPoint::Panel]);
     assert_eq!(frame_points(false, &cold), Vec::<HintPoint>::new());
+}
+
+/// `SIM ABORT` from pilot `n`, then pump until the check-in has landed.
+async fn m5_abort_and_check_in(rig: &mut Rig, n: usize) {
+    rig.say(n, "sim abort");
+    for _ in 0..400 {
+        if rig.state().is_terminal() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert!(rig.state().is_terminal(), "the check-in lands");
+}
+
+/// **17b cut M5.6 (the design note's item 2)**: the sixth hint,
+/// `HintPoint::Mind`, is said by `match_::finish` — once per ACCOUNT, to each
+/// pilot of the match with a live connection, as the check-in's last line to
+/// them — and to nobody else: a linkdead pilot is neither told nor marked and reads
+/// it at the end of their next match; a pilot who read it reads it never
+/// again; a bystander and staff, who flew nothing, are never told.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_mind_hint_is_said_at_a_matchs_end_once_per_account_to_a_live_pilot() {
+    let mut rig = Rig::boot(3);
+    let (p0, p1, p2) = (rig.pilot(0), rig.pilot(1), rig.pilot(2));
+    rig.fly().await;
+    rig.tw.world_mut().set_live_conns(p1, 0);
+    let mark = rig.log.len();
+    m5_abort_and_check_in(&mut rig, 0).await;
+    let stream = ah1_stream(&rig.log[mark..], p0);
+    let hatch = stream
+        .iter()
+        .position(|said| {
+            said.as_deref()
+                .is_some_and(|line| line.contains("swings open"))
+        })
+        .unwrap_or_else(|| panic!("the pod was opened: {stream:?}"));
+    let hint = ah1_at(&stream, HINT_LINES[5]);
+    assert!(hatch < hint, "after the lobby's release: {stream:?}");
+    assert_eq!(hint, stream.len() - 1, "the match's last line: {stream:?}");
+    assert_eq!(
+        ah1_hints(&rig.log[mark..], p0)
+            .into_iter()
+            .filter(|line| line == HINT_LINES[5])
+            .count(),
+        1,
+        "once"
+    );
+    for (who, name) in [(p1, "linkdead"), (p2, "a bystander"), (GOD, "staff")] {
+        assert!(
+            !ah1_hints(&rig.log[mark..], who).contains(&HINT_LINES[5].to_owned()),
+            "{name}"
+        );
+    }
+
+    // The next match: pilot 1 is live again and reads the point that waited;
+    // pilot 0 has read it.
+    rig.staff("@arena/reset");
+    rig.tw.world_mut().set_live_conns(p1, 1);
+    rig.fly().await;
+    let mark = rig.log.len();
+    m5_abort_and_check_in(&mut rig, 1).await;
+    assert!(
+        ah1_hints(&rig.log[mark..], p1).contains(&HINT_LINES[5].to_owned()),
+        "the point waited for a live connection"
+    );
+    assert!(
+        !ah1_hints(&rig.log[mark..], p0).contains(&HINT_LINES[5].to_owned()),
+        "once per account"
+    );
+    audit_hints(&rig.log);
 }
 
 // ---------------------------------------------------------------------------
@@ -17614,4 +17693,259 @@ async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
     let mut block = cockpit::mind_lines(&two, !dead.weapons.is_empty(), 0);
     block.push("[panel arena.cockpit]".to_owned());
     assert_eq!(rig.say(0, "mind"), block.join("\n"));
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.6: the `Your mind` block's spans, on the arena's own clock
+// ---------------------------------------------------------------------------
+
+use tacsim::match_::report::stamp;
+
+/// **The world's copy of the arena's own clock for the centre's match**
+/// (`MatchMirror::now_ms`).
+fn m5_arena_clock(rig: &Rig) -> i64 {
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(match_id))
+        .map(|mirror| mirror.now_ms)
+        .expect("the registry mirrors the running match")
+}
+
+/// Pump until the mirror's clock reads past `after`, or give up.
+async fn m5_clock_past(rig: &mut Rig, after: i64) -> i64 {
+    for _ in 0..600 {
+        rig.pump();
+        let now = m5_arena_clock(rig);
+        if now > after {
+            return now;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the arena's clock never passed {after} ms");
+}
+
+/// **One pilot's `Your mind` block as their report would print it now**: the
+/// debrief fold on the match's record, finished on a copy.
+fn m5_block_now(rig: &Rig, n: usize) -> Vec<String> {
+    let match_id = rig.centre().match_id.expect("a running match");
+    let tank = rig.tank(n);
+    rig.tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .and_then(|record| record.folds.get(&tank).cloned())
+        .expect("a pilot's debrief fold")
+        .finish()
+        .mind
+        .map(|block| block.lines)
+        .unwrap_or_default()
+}
+
+/// **One pilot's spans as the world told them, to the millisecond** (17b cut
+/// M5.6's review, R4/R28): `(from_ms, to_ms)` off the debrief fold's own live
+/// record (`mind.spans`), where the block prints them only to the second.
+fn m5_spans_now(rig: &Rig, n: usize) -> Vec<(i64, Option<i64>)> {
+    let match_id = rig.centre().match_id.expect("a running match");
+    let tank = rig.tank(n);
+    let fold = rig
+        .tw
+        .world()
+        .module_state::<match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .and_then(|record| record.folds.get(&tank).cloned())
+        .expect("a pilot's debrief fold");
+    let record = serde_json::to_value(&fold).expect("a fold writes");
+    record["mind"]["spans"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|span| {
+            (
+                span["from_ms"].as_i64().expect("a span opens"),
+                span["to_ms"].as_i64(),
+            )
+        })
+        .collect()
+}
+
+/// **The ledger's last stamp for the centre's match** (`MatchMirror::arena_ms`)
+/// — the number the spans must never read (the ruling at 17b cut M5.4's close).
+fn m5_ledger_ms(rig: &Rig) -> i64 {
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(match_id))
+        .map(|mirror| mirror.arena_ms)
+        .expect("the registry mirrors the running match")
+}
+
+/// **17b cut M5.6** (the owner's OQ-9 (ii); the design note's M5.6 item 1, as
+/// the orchestrator ruled its clock at 17b cut M5.4's close): the spans of the
+/// `Your mind` block are opened where the slot is marked out of its cockpit
+/// (`lobby::slot_left`, every `Released` that names a pilot) and closed where
+/// a `BOARD` takes the tank back (`lobby::slot_reclaimed`), each at the
+/// arena's own clock as the world last heard it — `MatchMirror::now_ms`, never
+/// the ledger's last stamp — on the pilot's own fold alone: a drop, a reclaim
+/// past `reclaim_min_ms`, then an `EXIT`, on a slot that chose no mind (the
+/// block printed because the mind flew it). The other pilot, seated
+/// throughout and choosing nothing, has no block. (17b cut M5.6's review,
+/// R4/R28: each span's edges are read to the millisecond off the fold's own
+/// record against `MatchMirror::now_ms`, and the ledger's `arena_ms` is read
+/// and shown apart at the reclaim, not left to a comment.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_drop_a_reclaim_and_an_exit_open_and_close_the_minds_spans_on_the_arena_clock() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the arena brings power online");
+    assert!(
+        m5_block_now(&rig, 0).is_empty(),
+        "no block before a release"
+    );
+
+    // The drop: the span opens at the mirror's clock as it stands — to the
+    // millisecond, off the fold's own record.
+    let dropped_at = m5_arena_clock(&rig);
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    assert_eq!(m5_spans_now(&rig, 0), vec![(dropped_at, None)]);
+    let block = m5_block_now(&rig, 0);
+    assert_eq!(
+        block.get(1),
+        Some(&format!(
+            "  It flew your tank from {} to the end, while your line was down.",
+            stamp(dropped_at)
+        )),
+        "{block:#?}"
+    );
+
+    // The reclaim, past the floor and once the arena's clock has passed its
+    // first second — so the stamp reads neither the world's clock (`rig.now`,
+    // five seconds on) nor the ledger's last stamp (nought on a quiet opening).
+    rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let reclaimed_at = m5_clock_past(&mut rig, dropped_at.max(999)).await;
+    assert_ne!(
+        stamp(reclaimed_at),
+        stamp(rig.now.saturating_mul(1_000)),
+        "the arena's clock and the world's read apart here"
+    );
+    let ledger_at = m5_ledger_ms(&rig);
+    assert_ne!(
+        stamp(ledger_at),
+        stamp(reclaimed_at),
+        "the ledger's last stamp and the arena's clock read apart here"
+    );
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands"), "{said}");
+    assert_eq!(
+        m5_spans_now(&rig, 0),
+        vec![(dropped_at, Some(reclaimed_at))],
+        "closed on `MatchMirror::now_ms` ({reclaimed_at} ms), never the ledger's {ledger_at} ms"
+    );
+    let block = m5_block_now(&rig, 0);
+    assert_eq!(
+        block.get(1),
+        Some(&format!(
+            "  It flew your tank from {} to {}, while your line was down.",
+            stamp(dropped_at),
+            stamp(reclaimed_at)
+        )),
+        "{block:#?}"
+    );
+
+    // The `EXIT`: a second span, to the end — one drop and one climb-out, so
+    // the line carries no cause clause.
+    assert!(rig.frame_for(0).await, "a frame after the reclaim");
+    let exited_at = m5_clock_past(&mut rig, reclaimed_at).await;
+    let said = rig.say(0, "exit");
+    assert!(said.contains("you cannot take it back"), "{said}");
+    assert_eq!(
+        m5_spans_now(&rig, 0),
+        vec![(dropped_at, Some(reclaimed_at)), (exited_at, None)]
+    );
+    let block = m5_block_now(&rig, 0);
+    assert_eq!(
+        block.first().map(String::as_str),
+        Some("Your mind: Standard Doctrine (Line)."),
+        "{block:#?}"
+    );
+    assert_eq!(
+        block.get(1),
+        Some(&format!(
+            "  It flew your tank from {} to {} and from {} to the end.",
+            stamp(dropped_at),
+            stamp(reclaimed_at),
+            stamp(exited_at)
+        )),
+        "{block:#?}"
+    );
+    assert!(
+        block
+            .get(2)
+            .is_some_and(|line| line.starts_with("  Its shots: ") || line == "  It fired nothing."),
+        "{block:#?}"
+    );
+
+    // The other pilot: seated throughout, nothing chosen, no block.
+    assert!(m5_block_now(&rig, 1).is_empty());
+}
+
+/// **17b cut M5.6's review** (R25; the design note's M5.6 gate: "a chosen `SIM
+/// MIND Standard` with no `PROFILE`, never released, prints it"): the check-out
+/// seed, end to end — the choice typed in Selection, sealed by `SIM START`'s
+/// check-out (`match_::start`'s `own_minds`, off `Side::minds` and the custody
+/// unit's seal) and read off the pilot's own debrief fold: red, who chose
+/// `Standard PROFILE Sniper, Line` and never left the seat, reads their block;
+/// blue, seated throughout and choosing nothing, reads none. A chosen hull
+/// seals byte for byte as an unchosen one, so only this seed can tell them
+/// apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_chosen_mind_is_named_in_the_pilots_block_from_the_check_out() {
+    let rig = m5_sniper_line().await;
+    assert_eq!(
+        m5_block_now(&rig, 0),
+        vec![
+            "Your mind: Standard Doctrine (Sniper, Line).",
+            "  It never flew: you flew the tank the whole match.",
+        ]
+    );
+    assert!(
+        m5_block_now(&rig, 1).is_empty(),
+        "an unchosen pilot, seated throughout, reads none"
+    );
+}
+
+/// **17b cut M5.6's review** (R25): the bare choice — `SIM MIND Standard`, no
+/// `PROFILE` — is named too, on Line, though its seal is the default's byte for
+/// byte; and blue, who chose nothing, still reads none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_bare_standard_choice_is_named_on_line_in_the_pilots_block() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    assert_eq!(
+        rig.say(0, "sim mind Standard"),
+        "Your slot will carry Standard Doctrine (Line)."
+    );
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    assert!(rig.frame_for(0).await, "the arena sends red its frame");
+    assert_eq!(
+        m5_block_now(&rig, 0),
+        vec![
+            "Your mind: Standard Doctrine (Line).",
+            "  It never flew: you flew the tank the whole match.",
+        ]
+    );
+    assert!(m5_block_now(&rig, 1).is_empty());
 }
