@@ -159,8 +159,9 @@ pub enum MachineState {
     /// a memory, and unreachable in production before 17b cut M6 (every
     /// production seal is Standard Doctrine, the owner's OQ-2); since 17b cut
     /// M5.2 a fixture's mind sealed through the holdings seam reaches it. The
-    /// catch-up sentence has no phrase of its own for it (the renderers open
-    /// the word, D14).
+    /// catch-up sentence says it as the mind's own since 17b cut M5.3 (D14):
+    /// `  The machine was flying on its own mind under no order.` (the three
+    /// renderers opened the word, `… was unknown under …`, until then).
     Unknown,
 }
 

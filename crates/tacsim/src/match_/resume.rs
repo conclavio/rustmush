@@ -50,7 +50,7 @@
 //! `snapshot_ms` of arena time the old process fought past it are abandoned,
 //! and their chunks stay in the append-only log behind a `resumed` marker every
 //! reader truncates at (`crate::arena_bridge::tape_in_order`). A pilot the
-//! resume released reads [`RESUME_LINE`] before Y.3's [`doctrine_line`].
+//! resume released reads [`RESUME_LINE`] before Y.3's [`mind_line`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -72,12 +72,19 @@ pub const RESUME_LINE: &str = "The server restarted and the match resumed from i
                                what happened after that save did not count.";
 
 /// **Y.3's line** (16b cut Y.3; 16c `N4`): the pilot's own tank is flying on
-/// doctrine and `BOARD` takes it back. One function, so `SeatFacts::connected`
+/// its mind and `BOARD` takes it back. One function, so `SeatFacts::connected`
 /// and the boarding tick say the same bytes.
+///
+/// **17b cut M5.3**: `{tank} is flying on its mind; BOARD takes it back.` —
+/// it was `doctrine_line`, saying `… is flying on doctrine; …`, until that cut.
+/// A released hull flies the mind sealed for it at the check-out (Standard
+/// Doctrine unless its pilot chose another — a fixture's mind before 17b cut
+/// M6), and the line names none: one word for every mind, as the board's drop
+/// clause ([`lobby::DROP_CLAUSE`]) is.
 #[must_use]
-pub fn doctrine_line(w: &mush_core::World, tank: ObjId) -> String {
+pub fn mind_line(w: &mush_core::World, tank: ObjId) -> String {
     format!(
-        "{} is flying on doctrine; BOARD takes it back.",
+        "{} is flying on its mind; BOARD takes it back.",
         mush_core::output::display_name(w, tank)
     )
 }

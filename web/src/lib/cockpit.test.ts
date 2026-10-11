@@ -976,7 +976,8 @@ describe("16b cut Y.4: the catch-up report", () => {
 
   it("decodes every case of `catchup_lines.json` and words it as the file says", () => {
     const cases = json("catchup_lines.json") as Case[];
-    expect(cases).toHaveLength(9);
+    // Nine until 17b cut M5.3, which added the tenth (D14).
+    expect(cases).toHaveLength(10);
     for (const { callsign, catchup, lines } of cases) {
       const decoded = decodeCatchup(catchup);
       expect(decoded, JSON.stringify(catchup)).not.toBeNull();
@@ -1047,6 +1048,42 @@ describe("16b cut Y.4: the catch-up report", () => {
     expect(long?.contacts_new).toHaveLength(12);
     expect(long?.sections).toHaveLength(6);
     expect(long?.rounds_spent).toHaveLength(6);
+  });
+});
+
+// **17b cut M5.3 (D14, doc 17 §24's index)**: the machine's `unknown` — a hull
+// flown by a mind that is not Standard Doctrine — said as the mind's own, the
+// tenth case of `catchup_lines.json`, in parity with the server's
+// `machine_state_words` and the TUI's `catchup_words` (each a test of this name).
+describe("17b cut M5.3", () => {
+  type Case = { callsign: string; catchup: unknown; lines: string[] };
+  const D14 = "  The machine was flying on its own mind under no order.";
+
+  it("m5_d14_the_catch_up_says_its_own_mind_in_three_renderers", () => {
+    const cases = json("catchup_lines.json") as Case[];
+    const said = cases.filter(
+      (c) => (c.catchup as { machine: { state: string } | null }).machine?.state === "unknown",
+    );
+    expect(said).toHaveLength(1);
+    const decoded = decodeCatchup(said[0]!.catchup);
+    expect(decoded?.machine?.state).toBe("unknown");
+    const lines = catchupLines(said[0]!.callsign, decoded!);
+    expect(lines[1]).toBe(D14);
+    expect(lines).toEqual(said[0]!.lines);
+    expect(lines.some((line) => line.includes("unknown under"))).toBe(false);
+    // Under each order a machine can hold, the same phrase, under 120.
+    for (const objective of ["hold", "advance", "engage", "withdraw", "screen", "support"]) {
+      const machine = { state: "unknown", goal: null, objective };
+      const line = catchupLines("RA", { ...decoded!, machine })[1]!;
+      expect(line.startsWith("  The machine was flying on its own mind under a")).toBe(true);
+      expect(line.length).toBeLessThan(120);
+    }
+    // The six doctrine states keep their words.
+    for (const state of ["startup", "patrol", "approach", "engage", "withdraw", "disabled"]) {
+      const machine = { state, goal: null, objective: null };
+      const line = catchupLines("RA", { ...decoded!, machine })[1]!;
+      expect(line).not.toContain("mind");
+    }
   });
 });
 

@@ -316,8 +316,11 @@ pub struct StatusHead {
 pub enum Standing {
     Seated,
     Left,
-    /// `flown by doctrine`: dropped, the machine holding the tank.
-    Doctrine,
+    /// `flown by its mind`: dropped, the tank's own sealed mind holding it
+    /// until `BOARD` takes it back (the game's 17b cut M5.3; one word for every
+    /// mind, so the row names none). Was `Doctrine`, read off `flown by
+    /// doctrine`, until that cut.
+    Mind,
 }
 
 /// One pilot entry of a board side row: `1 (RA): Ada [biped_mk1], pod Red Pod
@@ -534,8 +537,9 @@ pub enum Line {
     ClimbOut { pod: String },
     /// `The server restarted and the match resumed from its last save; …`
     Resumed,
-    /// `Red Tank 1 is flying on doctrine; BOARD takes it back.`
-    Doctrine { tank: String },
+    /// `Red Tank 1 is flying on its mind; BOARD takes it back.` (the game's 17b
+    /// cut M5.3; `Doctrine`, on `… is flying on doctrine; …`, until then).
+    OnItsMind { tank: String },
     /// `Connected as Ada (account ada, 1 connection).`
     Connected { name: String, account: String },
 
@@ -1047,7 +1051,7 @@ fn board_pilot(entry: &str) -> Option<BoardPilot> {
     for (suffix, word) in [
         (", seated", Standing::Seated),
         (", left", Standing::Left),
-        (", flown by doctrine", Standing::Doctrine),
+        (", flown by its mind", Standing::Mind),
     ] {
         if let Some(before) = rest.strip_suffix(suffix) {
             rest = before;
@@ -1845,8 +1849,8 @@ fn unseated(body: &str) -> Option<Line> {
             pod: pod.to_owned(),
         });
     }
-    if let Some(tank) = body.strip_suffix(" is flying on doctrine; BOARD takes it back.") {
-        return Some(Line::Doctrine {
+    if let Some(tank) = body.strip_suffix(" is flying on its mind; BOARD takes it back.") {
+        return Some(Line::OnItsMind {
             tank: tank.to_owned(),
         });
     }
@@ -2174,7 +2178,7 @@ pub fn answer_to(line: &Line) -> Option<AnswerTo> {
         | Line::BackAtStation { .. }
         | Line::ClimbOut { .. }
         | Line::Resumed
-        | Line::Doctrine { .. }
+        | Line::OnItsMind { .. }
         | Line::Connected { .. } => None,
         // The arena's notices.
         Line::NewContact { .. }
@@ -2753,6 +2757,12 @@ mod tests {
             classify("  The machine was withdrawing toward its entry zone under no order."),
             Line::Other("The machine was withdrawing toward its entry zone under no order.".into())
         );
+        // The game's 17b cut M5.3 (D14): a mind that keeps no doctrine state
+        // is said as its own, and the row stays a neutral catch-up line.
+        assert_eq!(
+            classify("  The machine was flying on its own mind under no order."),
+            Line::Other("The machine was flying on its own mind under no order.".into())
+        );
         assert_eq!(
             classify(
                 "The server restarted and the match resumed from its last save; what happened after that save did not count."
@@ -2760,10 +2770,16 @@ mod tests {
             Line::Resumed
         );
         assert_eq!(
-            classify("Red Tank 1 is flying on doctrine; BOARD takes it back."),
-            Line::Doctrine {
+            classify("Red Tank 1 is flying on its mind; BOARD takes it back."),
+            Line::OnItsMind {
                 tank: "Red Tank 1".into()
             }
+        );
+        // The line the game said until its 17b cut M5.3 is no longer read as
+        // the reconnect: the bot and the server are deployed together.
+        assert_eq!(
+            classify("Red Tank 1 is flying on doctrine; BOARD takes it back."),
+            Line::Other("Red Tank 1 is flying on doctrine; BOARD takes it back.".into())
         );
         assert_eq!(
             classify("You climb back into Red Pod 1: Red Tank 1 is yours again where it stands."),
@@ -3085,9 +3101,12 @@ mod tests {
                 pilots: vec![]
             }
         );
+        // Bo's drop clause, `, flown by its mind`, read `Standing::Mind` (was
+        // `, flown by doctrine` read `Standing::Doctrine` until the game's 17b
+        // cut M5.3).
         assert_eq!(
             classify(
-                "  blue: 1 (BA): Ada [biped_mk1], pod Blue Pod 1, seated; 2 (BB): Bo, flown by doctrine; 3 (BC): Cy"
+                "  blue: 1 (BA): Ada [biped_mk1], pod Blue Pod 1, seated; 2 (BB): Bo, flown by its mind; 3 (BC): Cy"
             ),
             Line::BoardSide {
                 side: Side::Blue,
@@ -3108,7 +3127,7 @@ mod tests {
                         unit_type: None,
                         mind: false,
                         pod: None,
-                        standing: Some(Standing::Doctrine)
+                        standing: Some(Standing::Mind)
                     },
                     BoardPilot {
                         index: 3,
@@ -3120,6 +3139,27 @@ mod tests {
                         standing: None
                     },
                 ]
+            }
+        );
+        // The drop clause the game printed until its 17b cut M5.3 is no longer
+        // a standing: a row from a server older than the bot reads with no
+        // standing and the old clause in the pod's name, the name whole. The
+        // lobby follows a running match on any standing but `Left`, so such a
+        // row is still followed (the bot and the server are deployed
+        // together all the same).
+        assert_eq!(
+            classify("  red: 1 (RA): Pilot, pod Red Pod 1, flown by doctrine"),
+            Line::BoardSide {
+                side: Side::Red,
+                pilots: vec![BoardPilot {
+                    index: 1,
+                    callsign: "RA".into(),
+                    name: "Pilot".into(),
+                    unit_type: None,
+                    mind: false,
+                    pod: Some("Red Pod 1, flown by doctrine".into()),
+                    standing: None
+                }]
             }
         );
         // The game's 17b cut M5.1: the selection fog's mark after the

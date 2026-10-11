@@ -1429,7 +1429,7 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
         assert_eq!(lines.first(), Some(&want), "{sentence} read as {lines:?}");
     }
 
-    // -- the reclaim catch-up block and the doctrine line ------------------------
+    // -- the reclaim catch-up block and the reconnect line ----------------------
     let mut reader = Reader::new();
     let catchup = Catchup {
         away_ms: 134_567,
@@ -1500,9 +1500,11 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
     let tank = world
         .create(ObjKind::Thing, "Red Tank 1", GOD, None)
         .expect("a tank");
+    // The game's 17b cut M5.3: `resume::mind_line` (`doctrine_line`, `… is
+    // flying on doctrine; …`, until then), read as `Line::OnItsMind`.
     assert_eq!(
-        reader.one(&resume::doctrine_line(&world, tank)),
-        Line::Doctrine {
+        reader.one(&resume::mind_line(&world, tank)),
+        Line::OnItsMind {
             tank: "Red Tank 1".into()
         }
     );
@@ -2760,6 +2762,175 @@ fn m5_2_the_profile_refusal_and_the_seal_lines_read_as_the_bot_reads_them() {
             "{line}"
         );
     }
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+}
+
+// ---------------------------------------------------------------------------
+// The game's 17b cut M5.3: release to the sealed mind
+// ---------------------------------------------------------------------------
+
+/// **The game's 17b cut M5.3: the release's words, read as the game prints
+/// them** (a declared reader change; the design note's C-11, D11 and D14):
+///
+/// * the board's drop clause, the lobby's own `DROP_CLAUSE` (what
+///   `board_standing_clause` returns for a drop) — `, flown by its mind`
+///   (`, flown by doctrine` until that cut, and exactly as wide) — reads
+///   `Standing::Mind`, the resume standing the bot follows a running match
+///   on; an `EXIT`'s `, left` still reads `Standing::Left` and a seated pilot
+///   `Standing::Seated`, each with its pod and its name whole;
+/// * the reconnect line, through `resume::mind_line` — `Red Tank 1 is flying
+///   on its mind; BOARD takes it back.` — reads `Line::OnItsMind` and puts the
+///   pilot out of the tank;
+/// * the release acknowledgement, singular and plural, through the cockpit's
+///   own `order_ack` — `Released red-1 to its mind: …` — reads `Line::Other`
+///   byte for byte (the bot never types `ORDER`, so it is never an answer to
+///   it);
+/// * D14's catch-up line, through `catchup_lines` — `  The machine was flying
+///   on its own mind under no order.` — reads `Line::Other`, and the block
+///   around it reads as every catch-up block does;
+///
+/// the reconnect line, both release forms and every line of D14's block each
+/// under 120 columns, and none opening a reply.
+#[test]
+fn m5_3_the_release_words_read_as_the_bot_reads_them() {
+    use mush_bot::arena::lines::{BoardPilot, Standing};
+    use tacsim::match_::{cockpit::ObjectiveWords, lobby};
+    // The board: a dropped, an exited and a seated slot, in the game's words.
+    let dropped = lobby::DROP_CLAUSE;
+    assert_eq!(dropped, ", flown by its mind", "the game's word");
+    // `board_standing_clause(dropped, left, seated)` as `status_lines` asks
+    // it: a drop (left by a drop, the slot still seated on its unit), an
+    // `EXIT` (left, no drop) and a pilot in the cockpit.
+    assert_eq!(lobby::board_standing_clause(true, true, true), dropped);
+    let exited = lobby::board_standing_clause(false, true, true);
+    let seated = lobby::board_standing_clause(false, false, true);
+    let row = format!(
+        "  red: 1 (RA): Pilot, pod Red Pod 1{dropped}; 2 (RB): Bo, pod Red Pod 2{exited}; 3 (RC): \
+         Cy, pod Red Pod 3{seated}"
+    );
+    // The clause is as wide as the one it replaced (`, flown by doctrine`,
+    // 19 columns): no board row grows.
+    assert_eq!(
+        dropped.chars().count(),
+        ", flown by doctrine".chars().count()
+    );
+    let pilot = |index: u8, callsign: &str, name: &str, standing: Standing| BoardPilot {
+        index,
+        callsign: callsign.into(),
+        name: name.into(),
+        unit_type: None,
+        mind: false,
+        pod: Some(format!("Red Pod {index}")),
+        standing: Some(standing),
+    };
+    assert_eq!(
+        classify(&row),
+        Line::BoardSide {
+            side: Side::Red,
+            pilots: vec![
+                pilot(1, "RA", "Pilot", Standing::Mind),
+                pilot(2, "RB", "Bo", Standing::Left),
+                pilot(3, "RC", "Cy", Standing::Seated),
+            ]
+        },
+        "{row}"
+    );
+    // The reconnect line.
+    let mut reader = Reader::new();
+    let mut world = World::new_minimal();
+    let tank = world
+        .create(ObjKind::Thing, "Red Tank 1", GOD, None)
+        .expect("a tank");
+    let reconnect = resume::mind_line(&world, tank);
+    assert_eq!(
+        reconnect,
+        "Red Tank 1 is flying on its mind; BOARD takes it back."
+    );
+    assert!(reconnect.chars().count() < 120, "{reconnect}");
+    reader.picture.aboard = true;
+    assert_eq!(
+        reader.one(&reconnect),
+        Line::OnItsMind {
+            tank: "Red Tank 1".into()
+        }
+    );
+    assert!(!reader.picture.aboard, "the reconnect puts the pilot out");
+    // The release acknowledgement, in both forms.
+    for (who, want) in [
+        (
+            vec!["red-1".to_owned()],
+            "Released red-1 to its mind: it fights on its own until it is ordered again.",
+        ),
+        (
+            vec!["red-1".to_owned(), "red-2".to_owned()],
+            "Released red-1 and red-2 to their minds: they fight on their own until they are \
+             ordered again.",
+        ),
+    ] {
+        let said = cockpit::order_ack(&who, &ObjectiveWords::Release, None, None, false, 0);
+        assert_eq!(said, want, "the game's words");
+        assert!(said.chars().count() < 120, "{said}");
+        assert_eq!(reader.one(&said), Line::Other(said.clone()), "{said}");
+    }
+    // D14: the catch-up of a hull a mind that is not Doctrine flew.
+    let catchup = Catchup {
+        away_ms: 95_000,
+        cell_then: Some((20, 30)),
+        cell_now: Some((24, 31)),
+        power_then: ArenaPower::Online,
+        power_now: ArenaPower::Online,
+        wreck: false,
+        contacts_new: vec![Designator::Provisional(4)],
+        contacts_lost: vec![],
+        contacts_more: 0,
+        sections: vec![],
+        sections_more: 0,
+        rounds_spent: vec![("cannon".into(), 2)],
+        rounds_more: 0,
+        machine: Some(MachineWords {
+            state: "unknown".into(),
+            goal: Some((26, 31)),
+            objective: None,
+        }),
+    };
+    let block = cockpit::catchup_lines(
+        Designator::Slot {
+            team: Team::Red,
+            slot: 1,
+        },
+        &catchup,
+    );
+    let d14 = "  The machine was flying on its own mind under no order.";
+    assert_eq!(block.get(1).map(String::as_str), Some(d14), "{block:?}");
+    for line in &block {
+        assert!(line.chars().count() < 120, "{line}");
+    }
+    assert_eq!(
+        classify(d14),
+        Line::Other(d14.trim_start().to_owned()),
+        "the D14 line"
+    );
+    let lines = reader.say(&block.join("\n"));
+    assert_eq!(lines.len(), block.len());
+    assert_eq!(
+        lines[0],
+        Line::BackAboard {
+            callsign: "RA".into(),
+            away_ms: 95_000
+        }
+    );
+    assert!(
+        lines[1..]
+            .iter()
+            .all(|line| matches!(line, Line::Other(_) | Line::CatchupPower { .. })),
+        "{lines:?}"
+    );
+    assert!(reader.picture.aboard, "the catch-up is a reclaim");
     let open = &reader.picture.open;
     assert!(open.contacts.is_none(), "a CONTACTS reply opened");
     assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");

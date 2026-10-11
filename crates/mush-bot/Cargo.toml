@@ -44,7 +44,9 @@ mush-llm.workspace = true
 # Cut AJ.1: server-under-test fixture and the line-format contract; never in the
 # runtime graph. `tacsim` is the simulator the arena rig boots and the crate
 # whose own cockpit formatters `tests/arena_contract.rs` feeds through the
-# bot's parser; `mush-sim` and `mush-server` wire the account oracle the
+# bot's parser (and, since the game's 17b cut M5.3, whose board clauses
+# `tests/arena_lane.rs`' fake server prints, so the lane serves the game's
+# own row); `mush-sim` and `mush-server` wire the account oracle the
 # simulator's slots are keyed on, as `crates/mushd/tests/sim_solo.rs` does.
 tacsim.workspace = true
 mush-sim.workspace = true

@@ -1765,13 +1765,14 @@ impl Lobby {
         self.say("The tank is destroyed; waiting for the match to end.".to_owned());
     }
 
-    /// `OUTSIDE_COCKPIT`, `RESUME_LINE` or the doctrine line naming the own tank:
-    /// the pilot is out of it.
+    /// `OUTSIDE_COCKPIT`, `RESUME_LINE` or the reconnect line naming the own
+    /// tank (`… is flying on its mind; BOARD takes it back.`, the game's 17b cut
+    /// M5.3): the pilot is out of it.
     fn dropped(&self, line: &Line, picture: &Picture) -> bool {
         match line {
             Line::OutsideCockpit => !self.hatch_seen,
             Line::Resumed => true,
-            Line::Doctrine { tank } => picture.own.name.as_deref().is_none_or(|own| own == tank),
+            Line::OnItsMind { tank } => picture.own.name.as_deref().is_none_or(|own| own == tank),
             _ => false,
         }
     }
@@ -2448,7 +2449,9 @@ mod tests {
         rig.fly();
         rig.hear("The server restarted and the match resumed from its last save; what happened after that save did not count.");
         assert_eq!(rig.lobby.step(), Step::Reboard);
-        rig.hear("Red Tank 1 is flying on doctrine; BOARD takes it back.");
+        // The reconnect line (`… is flying on doctrine; …` until the game's
+        // 17b cut M5.3).
+        rig.hear("Red Tank 1 is flying on its mind; BOARD takes it back.");
         assert_eq!(rig.next(100).as_deref(), Some("BOARD"));
         rig.hear("Boarding is through one of the simulator's team rooms.");
         assert_eq!(rig.next(100).as_deref(), Some("red"));
@@ -2536,13 +2539,16 @@ mod tests {
         assert!(!rig.lobby.leave_pending(rig.now));
     }
 
+    /// Named `a_survey_of_a_running_centre_flown_by_doctrine_reboards`, its row
+    /// ending `, flown by doctrine`, until the game's 17b cut M5.3 renamed the
+    /// drop clause.
     #[test]
-    fn a_survey_of_a_running_centre_flown_by_doctrine_reboards() {
+    fn a_survey_of_a_running_centre_flown_by_its_mind_reboards() {
         let mut rig = Rig::new(Side::Red);
         rig.walk_in();
         rig.board(
             "running (match 6)",
-            "1 (RA): Pilot, pod Red Pod 1, flown by doctrine",
+            "1 (RA): Pilot, pod Red Pod 1, flown by its mind",
             "1 (BA): Bo",
         );
         assert_eq!(rig.lobby.step(), Step::Reboard);

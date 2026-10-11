@@ -226,7 +226,8 @@ impl Slot {
     /// **Whether this slot's pilot dropped and may take the tank back** (16b cut
     /// Y.3): out of the cockpit ([`Slot::left`]) by a drop
     /// ([`Slot::dropped_at_ms`]) and not by an `EXIT`. The board reads it as
-    /// `flown by doctrine`.
+    /// `flown by its mind` ([`board_standing_clause`]; `flown by doctrine`
+    /// until 17b cut M5.3, which made it one word for every sealed mind).
     #[must_use]
     pub const fn is_dropped(&self) -> bool {
         self.left && self.dropped_at_ms.is_some()
@@ -3616,8 +3617,9 @@ pub fn slot_vacated(ctx: &mut Ctx<'_>, match_id: MatchId, pilot: ObjId) -> Resul
 ///
 /// **16b cut Y.3**: *for good* only by an `EXIT`. A drop reaches this line too,
 /// but [`slot_dropped`] has stamped [`Slot::dropped_at_ms`] a moment before, so
-/// the slot reads `flown by doctrine` and [`slot_reclaimed`] can put the pilot
-/// back; this function is unchanged and still knows no route.
+/// the slot reads `flown by its mind` (`flown by doctrine` until 17b cut M5.3)
+/// and [`slot_reclaimed`] can put the pilot back; this function is unchanged
+/// and still knows no route.
 ///
 /// [`Slot::left`] is what stops `SIM STATUS` calling somebody standing in the
 /// team room `seated`, and it belongs **where the release is decided**, not in
@@ -5391,7 +5393,8 @@ pub enum BoardReader {
 /// `Stopping`, and only for a [`BoardReader::Player`], the reader's **own** side
 /// — the team of their slot — prints in full and every other side prints
 /// **reduced**: `{index} ({callsign}): {pilot name}` and nothing else. No pod, no
-/// `, seated`, no `, left`, no `, flown by doctrine` (16b cut Y.3), no `[type]`.
+/// `, seated`, no `, left`, no `, flown by its mind` (16b cut Y.3's drop clause,
+/// reworded by 17b cut M5.3), no `[type]`.
 /// A player holding no slot reads both sides reduced. [`BoardReader::Staff`],
 /// and every other state — `Idle`, `Selection`, `Boarding` and the three
 /// terminal states — get the whole board exactly as before; `Boarding`'s `seated` is lobby knowledge, because there is
@@ -5516,15 +5519,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
             // unit it was seated on, and the pilot is not in it. **16b cut Y.3**:
             // and a drop is said apart from an `EXIT`, because a dropped pilot
             // can take the tank back and the machine is only holding it for them.
-            let seated = if slot.is_dropped() {
-                ", flown by doctrine"
-            } else if slot.left {
-                ", left"
-            } else if slot.is_seated() {
-                ", seated"
-            } else {
-                ""
-            };
+            let standing = board_standing_clause(slot.is_dropped(), slot.left, slot.is_seated());
             // **16b cut Q.1**: the callsign the tank in that pod will answer to,
             // beside the index the board has always printed. It withholds
             // nothing — the letter is one piece of arithmetic on an index that is
@@ -5577,7 +5572,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
                 _ => String::new(),
             };
             pilots.push(format!(
-                "{} ({callsign}): {}{fielding}{mind}{pod}{seated}",
+                "{} ({callsign}): {}{fielding}{mind}{pod}{standing}",
                 slot.index,
                 display_name(w, slot.pilot)
             ));
@@ -5691,6 +5686,40 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         rows.push("  `SIM TEAM red` or `SIM TEAM blue` opens the next match.".to_owned());
     }
     rows
+}
+
+/// **The board's drop clause** (17b cut M5.3; `, flown by doctrine` until that
+/// cut): a dropped pilot's row ends with it while the tank's sealed mind holds
+/// the tank for them. One word for every mind, so it names none (the design
+/// note's D11). [`board_standing_clause`] returns it for a drop.
+pub const DROP_CLAUSE: &str = ", flown by its mind";
+
+/// **The board's standing clause for one slot's row** (16b cut F.1, Y.3):
+/// `, flown by its mind` for a pilot who dropped (the linkdead grace run out,
+/// or a `QUIT`) and may take the tank back with `BOARD`; `, left` for an
+/// `EXIT` (one-way); `, seated` for a pilot in the cockpit; nothing for a slot
+/// not yet seated. A drop outranks `left` ([`Slot::is_dropped`] is `left` and
+/// a drop), and `left` outranks `seated`.
+///
+/// **17b cut M5.3** (the design note's C-11 and D11): the drop clause was
+/// `, flown by doctrine`. It is now one word for every mind a hull may be
+/// sealed with, so the row tells nobody which mind flies the tank. An `EXIT`
+/// keeps `, left`, the reader's (and the bot's) "cannot take it back".
+/// [`status_lines`] prints it with [`Slot::is_dropped`], [`Slot::left`] and
+/// [`Slot::is_seated`] (`dropped` without `left` is no slot's state); the bot's
+/// contract test reads what it prints, and its tests take the drop clause
+/// from [`DROP_CLAUSE`].
+#[must_use]
+pub const fn board_standing_clause(dropped: bool, left: bool, seated: bool) -> &'static str {
+    if dropped {
+        DROP_CLAUSE
+    } else if left {
+        ", left"
+    } else if seated {
+        ", seated"
+    } else {
+        ""
+    }
 }
 
 /// **The board's mind clause for one slot's row** (17b cut M5.1; the design

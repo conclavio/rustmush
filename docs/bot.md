@@ -410,7 +410,7 @@ lines of the match it claimed in, and it waits out another match that is
 boarding or running before it claims.
 
 **Taking the tank back.** When a dropped connection or a server restart hands
-its tank to the machines (`… is flying on doctrine; BOARD takes it back.`), or
+its tank to the machines (`… is flying on its mind; BOARD takes it back.`), or
 a cockpit verb answers `You are not at the station of a deployed unit.`, it
 types `BOARD` every three seconds until the tank is its own again
 (`Back aboard {callsign} after {duration} away.`), then types `STARTUP` if the
@@ -426,7 +426,7 @@ as left, and waits for the end only when another match follows. It never gives
 a running match up because the tank would not start, and records it with the
 centre's own word. A run whose own process ended (its SSH connection closed)
 does not come back by itself: start it again for the same side and it walks to the
-centre, reads its own row on the board as `flown by doctrine`, follows that
+centre, reads its own row on the board as `flown by its mind`, follows that
 match, and boards back from its team room as above.
 
 **How it fights.** Written from the player help alone — nothing of the machines'

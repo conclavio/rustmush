@@ -1338,9 +1338,10 @@ pub struct TacsimMatchCfg {
     /// control"), in world milliseconds; `0` to `600000`.
     ///
     /// A drop — the linkdead grace running out, or a `QUIT` — hands the tank to
-    /// a unit mind (the reflex controller until 17b cut M4.3) and the board
-    /// reads `flown by doctrine`; `BOARD`
-    /// in the running match takes it back, where it stands, at a new epoch.
+    /// its sealed unit mind (the reflex controller until 17b cut M4.3) and the
+    /// board reads `flown by its mind` (`flown by doctrine` until 17b cut M5.3);
+    /// `BOARD` in the running match takes it back, where it stands, at a new
+    /// epoch.
     /// This floor closes flapping and gives the arena a pulse to process the
     /// release before the reclaim. `EXIT` is still one-way whatever this says.
     pub reclaim_min_ms: u32,

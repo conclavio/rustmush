@@ -315,5 +315,33 @@
       "  Rounds spent: none.",
       "  Power online."
     ]
+  },
+  {
+    "callsign": "RA",
+    "catchup": {
+      "away_s": 95,
+      "cell_then": [20, 30],
+      "cell_now": [24, 31],
+      "power_then": "online",
+      "power_now": "online",
+      "wreck": false,
+      "contacts_new": ["X4"],
+      "contacts_lost": [],
+      "contacts_more": 0,
+      "sections": [],
+      "sections_more": 0,
+      "rounds_spent": [{ "weapon": "cannon", "rounds": 2 }],
+      "rounds_more": 0,
+      "machine": { "state": "unknown", "goal": [26, 31], "objective": null }
+    },
+    "lines": [
+      "Back aboard RA after 1 m 35 s away.",
+      "  The machine was flying on its own mind under no order.",
+      "  Position: cell (20, 30) then, (24, 31) now.",
+      "  Contacts: new X4; none lost.",
+      "  Sections: unchanged.",
+      "  Rounds spent: cannon 2.",
+      "  Power online."
+    ]
   }
 ]

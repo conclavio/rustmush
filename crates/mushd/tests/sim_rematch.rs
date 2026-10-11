@@ -924,8 +924,9 @@ async fn board_again(term: &mut Term) {
 /// off its authored cell before the check-out; Ada and Bo fly; the server stops
 /// once the arena's snapshot is on disk and boots again over the store.
 ///
-/// Each pilot logs in to the resume line and then `… is flying on doctrine;
-/// BOARD takes it back.`, once each; `BOARD` (retried while the tank is still
+/// Each pilot logs in to the resume line and then `… is flying on its mind;
+/// BOARD takes it back.` (`… on doctrine; …` until 17b cut M5.3), once each;
+/// `BOARD` (retried while the tank is still
 /// being handed over) takes it back where it stands and the first frame says
 /// `Back aboard`; `STATUS` answers a frame. Bo's magazine still reads thirteen
 /// rounds short and the blue tank is still near where staff parked it, not at
@@ -1001,36 +1002,36 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
         );
     }
 
-    // Each pilot reads the resume line, then the doctrine line, once.
-    let doctrine_red = format!("{RED_TANK} is flying on doctrine; BOARD takes it back.");
-    let doctrine_blue = format!("{BLUE_TANK} is flying on doctrine; BOARD takes it back.");
+    // Each pilot reads the resume line, then Y.3's line, once.
+    let on_its_mind_red = format!("{RED_TANK} is flying on its mind; BOARD takes it back.");
+    let on_its_mind_blue = format!("{BLUE_TANK} is flying on its mind; BOARD takes it back.");
     let resumed = tacsim::match_::RESUME_LINE;
     let (_a2, mut ada) = login(second.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let ada_mark = 0;
     let (_b2, mut bo) = login(second.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let bo_mark = 0;
-    ada.expect(&doctrine_red).await;
-    bo.expect(&doctrine_blue).await;
+    ada.expect(&on_its_mind_red).await;
+    bo.expect(&on_its_mind_blue).await;
     // Two more boarding ticks: nothing is said again.
     tokio::time::sleep(Duration::from_millis(2_500)).await;
     say(&mut ada, SENTINEL, HUH).await;
     say(&mut bo, SENTINEL, HUH).await;
-    for (term, mark, doctrine) in [
-        (&ada, ada_mark, &doctrine_red),
-        (&bo, bo_mark, &doctrine_blue),
+    for (term, mark, reconnect) in [
+        (&ada, ada_mark, &on_its_mind_red),
+        (&bo, bo_mark, &on_its_mind_blue),
     ] {
         assert_eq!(count_since(term, mark, resumed), 1, "the resume line, once");
         assert_eq!(
-            count_since(term, mark, doctrine),
+            count_since(term, mark, reconnect),
             1,
-            "the doctrine line, once"
+            "the reconnect line, once"
         );
         let seen = flat(&strip_ansi(&term.seen[mark..]));
-        let (at_resumed, at_doctrine) = (
+        let (at_resumed, at_reconnect) = (
             seen.find(flat(resumed).as_str()).unwrap_or(usize::MAX),
-            seen.find(flat(doctrine).as_str()).unwrap_or(0),
+            seen.find(flat(reconnect).as_str()).unwrap_or(0),
         );
-        assert!(at_resumed < at_doctrine, "the resume line first: {seen}");
+        assert!(at_resumed < at_reconnect, "the resume line first: {seen}");
     }
     // Before the reclaim the pilot is at no station.
     say(&mut ada, "STATUS", OUTSIDE_COCKPIT).await;

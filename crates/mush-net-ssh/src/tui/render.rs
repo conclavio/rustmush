@@ -3370,6 +3370,11 @@ fn catchup_listed(parts: &[String], separator: &str, more: i64, none_word: &str)
 /// 6 weapons); a malformed entry is dropped. A `catchup` that is not an object
 /// answers nothing. **Pinned against the committed
 /// `web/src/lib/fixtures/cockpit/catchup_lines.json`**.
+///
+/// **17b cut M5.3 (D14)**: the machine's `unknown` — a hull flown by a mind
+/// that is not Standard Doctrine — reads `flying on its own mind`, as the
+/// server's `machine_state_words` and the web's `MACHINE_STATE_WORDS` say it,
+/// rather than the opened word.
 #[must_use]
 pub fn catchup_words(callsign: &str, catchup: &Value) -> Vec<String> {
     if !catchup.is_object() {
@@ -3391,6 +3396,7 @@ pub fn catchup_words(callsign: &str, catchup: &Value) -> Vec<String> {
                 "engage" => "engaging".to_string(),
                 "withdraw" => "withdrawing toward its entry zone".to_string(),
                 "disabled" => "disabled".to_string(),
+                "unknown" => "flying on its own mind".to_string(),
                 other => other.replace('_', " "),
             };
             let order = match word(machine, "objective").as_deref() {
@@ -6265,7 +6271,8 @@ mod tests {
             "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
         ))
         .expect("catchup_lines.json is a JSON array");
-        assert_eq!(cases.len(), 9, "the nine shapes the fixture pins");
+        // Was 9 until 17b cut M5.3, which added the tenth (D14).
+        assert_eq!(cases.len(), 10, "the ten shapes the fixture pins");
         for case in &cases {
             let callsign = case
                 .get("callsign")
@@ -6280,6 +6287,47 @@ mod tests {
                 .filter_map(Value::as_str)
                 .collect();
             assert_eq!(catchup_words(callsign, catchup), lines, "{catchup}");
+        }
+    }
+
+    /// **17b cut M5.3 (D14)**: the machine's `unknown` is said as the mind's
+    /// own — `  The machine was flying on its own mind under no order.` — the
+    /// fixture's tenth case, in parity with the server's in-source test and
+    /// vitest of the same name; under every order it is the same phrase, and
+    /// the six doctrine states keep their words.
+    #[test]
+    fn m5_d14_the_catch_up_says_its_own_mind_in_three_renderers() {
+        const D14: &str = "  The machine was flying on its own mind under no order.";
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
+        ))
+        .expect("catchup_lines.json is a JSON array");
+        let said: Vec<&Value> = cases
+            .iter()
+            .filter(|case| case.pointer("/catchup/machine/state") == Some(&Value::from("unknown")))
+            .collect();
+        assert_eq!(said.len(), 1, "one case of the fixture is D14's");
+        let catchup = said[0].get("catchup").expect("a catchup");
+        let lines = catchup_words("RA", catchup);
+        assert_eq!(lines.get(1).map(String::as_str), Some(D14), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains("unknown under")));
+        for objective in ["hold", "advance", "engage", "withdraw", "screen", "support"] {
+            let mut ordered = catchup.clone();
+            ordered["machine"]["objective"] = Value::from(objective);
+            let line = catchup_words("RA", &ordered).swap_remove(1);
+            assert!(
+                line.starts_with("  The machine was flying on its own mind under a"),
+                "{line}"
+            );
+            assert!(line.chars().count() < 120, "{line}");
+        }
+        for state in [
+            "startup", "patrol", "approach", "engage", "withdraw", "disabled",
+        ] {
+            let mut doctrine = catchup.clone();
+            doctrine["machine"]["state"] = Value::from(state);
+            let line = catchup_words("RA", &doctrine).swap_remove(1);
+            assert!(!line.contains("mind"), "{state}: {line}");
         }
     }
 

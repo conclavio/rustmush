@@ -1491,6 +1491,14 @@ pub fn notice_lines(frame: &Frame) -> Vec<String> {
 /// [`crate::arena::doctrine::MachineState::as_str`]'s word. A word this build
 /// predates reads as itself with its underscores opened out, which is the
 /// panels' own fallback for a word they do not know.
+///
+/// **17b cut M5.3 (D14, doc 17 §24's index)**: `unknown` — a hull whose sealed
+/// mind is not Standard Doctrine, whose memory says nothing in the doctrine's
+/// words ([`crate::arena::doctrine::MachineState::Unknown`]) — reads `flying on
+/// its own mind`, not the opened word: `  The machine was flying on its own
+/// mind under no order.` The TUI's `catchup_words` and the web's
+/// `MACHINE_STATE_WORDS` say the same, pinned by `catchup_lines.json`.
+/// Reachable only with a fixture mind before 17b cut M6.
 fn machine_state_words(state: &str) -> String {
     match state {
         "startup" => "starting up".to_owned(),
@@ -1499,6 +1507,7 @@ fn machine_state_words(state: &str) -> String {
         "engage" => "engaging".to_owned(),
         "withdraw" => "withdrawing toward its entry zone".to_owned(),
         "disabled" => "disabled".to_owned(),
+        "unknown" => "flying on its own mind".to_owned(),
         other => other.replace('_', " "),
     }
 }
@@ -7894,14 +7903,20 @@ fn span_refusal(others: usize, named: usize, max_span: u32) -> Option<CockpitErr
 /// Ordered red-1 to screen 090°, holding fire: it holds where it stands, faces 090° and locks what comes inside its arc but fires nothing.
 /// Ordered red-1 to support RA: it keeps within 150 m of RA and fires first on what RA is fighting.
 /// Ordered red-1 to support RA, holding fire: it keeps within 150 m of RA and locks what RA is fighting but fires nothing.
-/// Released red-1 to doctrine: it fights on its own reflexes until it is ordered again.
-/// Released red-1 and red-2 to doctrine: they fight on their own reflexes until they are ordered again.
+/// Released red-1 to its mind: it fights on its own until it is ordered again.
+/// Released red-1 and red-2 to their minds: they fight on their own until they are ordered again.
 /// ```
 ///
 /// The four order lines take the ten-minute tail; the release takes none, and
 /// its sentence is true on a server whose machines' own commander may order the
 /// squad again at its next signal — which dropping the watch allows on purpose.
 /// The plural is the release's alone: the ordered lines keep Y.1's singular.
+///
+/// **17b cut M5.3**: the release said `to doctrine: it fights on its own
+/// reflexes …` until that cut. A released squad flies the mind sealed for
+/// each of its hulls, which a lead's `SIM AI MIND` may make another than
+/// Standard Doctrine (a fixture's mind before 17b cut M6), so the sentence
+/// names none — one word for every mind.
 #[must_use]
 pub fn order_ack(
     who: &[String],
@@ -7916,14 +7931,11 @@ pub fn order_ack(
         let who = join_names(who);
         return if many {
             format!(
-                "Released {who} to doctrine: they fight on their own reflexes until they are \
-                 ordered again."
-            )
-        } else {
-            format!(
-                "Released {who} to doctrine: it fights on its own reflexes until it is ordered \
+                "Released {who} to their minds: they fight on their own until they are ordered \
                  again."
             )
+        } else {
+            format!("Released {who} to its mind: it fights on its own until it is ordered again.")
         };
     }
     let who = join_names(who);
@@ -8490,7 +8502,9 @@ mod tests {
             "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
         ))
         .expect("catchup_lines.json is an array of cases");
-        assert_eq!(cases.len(), 9, "the nine shapes the fixture pins");
+        // Was 9 until 17b cut M5.3, which added the tenth (D14: the machine
+        // `flying on its own mind`).
+        assert_eq!(cases.len(), 10, "the ten shapes the fixture pins");
         let raw: Vec<serde_json::Value> = serde_json::from_str(include_str!(
             "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
         ))
@@ -8509,6 +8523,95 @@ mod tests {
                 "the fixture is the wire's shape"
             );
         }
+    }
+
+    /// **17b cut M5.3 (D14, doc 17 §24's index)**: the machine's `unknown` —
+    /// a hull flown by a mind that is not Standard Doctrine, whose memory says
+    /// nothing in the doctrine's words
+    /// ([`crate::arena::doctrine::MachineState::Unknown`]) — is said as the
+    /// mind's own, `  The machine was flying on its own mind under no order.`,
+    /// and no longer as the opened word (`… was unknown under no order.` until
+    /// that cut). Line mode here; the TUI's `catchup_words` (`mush-net-ssh`'s
+    /// test of the same name) and the web's `catchupLines` (vitest, the same
+    /// name) read the committed `catchup_lines.json`, whose tenth case IS this
+    /// line, so the three renderers say one sentence. The six doctrine states
+    /// keep their words; the line names no mind, so it is one sentence for
+    /// every mind that is not Doctrine, and every one fits the 120-column line.
+    #[test]
+    fn m5_d14_the_catch_up_says_its_own_mind_in_three_renderers() {
+        use crate::arena::catchup::MachineWords;
+        use crate::arena::doctrine::MachineState;
+        const D14: &str = "  The machine was flying on its own mind under no order.";
+        let base: WireCatchup = serde_json::from_value(serde_json::json!({
+            "away_s": 30, "cell_then": [4, 4], "cell_now": [5, 4],
+            "power_then": "online", "power_now": "online", "wreck": false,
+            "contacts_new": [], "contacts_lost": [], "contacts_more": 0,
+            "sections": [], "sections_more": 0,
+            "rounds_spent": [], "rounds_more": 0, "machine": null
+        }))
+        .expect("a wire object");
+        let mut report = decoded(&base);
+        let callsign = designator("RA");
+        // The arena's own words for such a hull, as `Arena::machine_state`
+        // reads it and the `Live` keeps it.
+        report.machine = Some(MachineWords::of_mind(MachineState::Unknown, None, None));
+        let lines = catchup_lines(callsign, &report);
+        assert_eq!(lines.get(1).map(String::as_str), Some(D14), "{lines:?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("unknown under")),
+            "the opened word is gone: {lines:?}"
+        );
+        // Under each order a machine can hold, the same phrase, under 120.
+        for objective in ["hold", "advance", "engage", "withdraw", "screen", "support"] {
+            report.machine = Some(crate::arena::catchup::MachineWords {
+                state: SmolStr::new_static(MachineState::Unknown.as_str()),
+                goal: None,
+                objective: Some(SmolStr::new(objective)),
+            });
+            let line = catchup_lines(callsign, &report).swap_remove(1);
+            assert!(
+                line.starts_with("  The machine was flying on its own mind under a"),
+                "{line}"
+            );
+            assert!(line.chars().count() < 120, "{line}");
+        }
+        // The six doctrine states keep their Y.4 words; only `unknown` moved.
+        for state in MachineState::DOCTRINE {
+            let words = machine_state_words(state.as_str());
+            assert_ne!(words, "flying on its own mind", "{state:?}");
+            assert!(!words.contains("mind"), "{state:?}: {words}");
+        }
+        assert_eq!(
+            machine_state_words(MachineState::Unknown.as_str()),
+            "flying on its own mind"
+        );
+        assert_eq!(
+            MachineState::ALL.last(),
+            Some(&MachineState::Unknown),
+            "the one state the doctrine never writes"
+        );
+        // The committed parity fixture carries the line, so the TUI and the
+        // web are pinned to these bytes too.
+        let cases: Vec<WireCase> = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
+        ))
+        .expect("catchup_lines.json is an array of cases");
+        let said: Vec<&WireCase> = cases
+            .iter()
+            .filter(|case| {
+                case.catchup
+                    .machine
+                    .as_ref()
+                    .is_some_and(|machine| machine.state == MachineState::Unknown.as_str())
+            })
+            .collect();
+        assert_eq!(said.len(), 1, "one case of the fixture is D14's");
+        let case = said[0];
+        assert_eq!(case.lines.get(1).map(String::as_str), Some(D14));
+        assert_eq!(
+            catchup_lines(designator(&case.callsign), &decoded(&case.catchup)),
+            case.lines
+        );
     }
 
     /// **16b cut Y.4**: `away_s` is the floor of the milliseconds, on the wire
@@ -10386,9 +10489,13 @@ mod tests {
         for (said, want) in cases {
             assert_eq!(said, format!("{want}{TAIL}"));
         }
+        // The three release forms were `Released … to doctrine: it fights on
+        // its own reflexes until …` / `… they fight on their own reflexes …`
+        // until 17b cut M5.3: "doctrine" is false of a mind sealed off it and
+        // names the mind (the design note's M5.3 item 3).
         assert_eq!(
             order_ack(&one, &ObjectiveWords::Release, None, None, false, 150),
-            "Released red-1 to doctrine: it fights on its own reflexes until it is ordered again."
+            "Released red-1 to its mind: it fights on its own until it is ordered again."
         );
         assert_eq!(
             order_ack(
@@ -10399,7 +10506,7 @@ mod tests {
                 false,
                 0
             ),
-            "Released RB to doctrine: it fights on its own reflexes until it is ordered again."
+            "Released RB to its mind: it fights on its own until it is ordered again."
         );
         assert_eq!(
             order_ack(
@@ -10410,8 +10517,8 @@ mod tests {
                 false,
                 0
             ),
-            "Released red-1 and red-2 to doctrine: they fight on their own reflexes until they \
-             are ordered again."
+            "Released red-1 and red-2 to their minds: they fight on their own until they are \
+             ordered again."
         );
     }
 

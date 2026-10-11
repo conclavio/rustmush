@@ -30,7 +30,8 @@
 //!   else;
 //! * (16b cut AF.3) two pilots who really boarded, whose sessions survive the
 //!   restart on the gateway, read that the match resumed and that their tanks
-//!   fly on doctrine, and take them back with `BOARD` — the split's whole point;
+//!   fly on their minds (on doctrine until 17b cut M5.3), and take them back
+//!   with `BOARD` — the split's whole point;
 //! * (16b cut U.4, 16c `B-37`) a pilot in a pod when the server stops during
 //!   `Boarding` — nothing checked out, nothing to resume — is let out of the pod
 //!   by the boot and reads the hatch line from the rebooted world's first tick.
@@ -814,10 +815,11 @@ fn crash_now(crash: &Arc<Mutex<Option<oneshot::Sender<()>>>>) {
 ///
 /// Two pilots really `BOARD`; once `Good hunting` is read and both markers and
 /// the arena's snapshot are durable, the server half exits on its own. Each
-/// surviving session reads `Reconnected`, then the resume line and the
-/// doctrine line exactly once; `BOARD` (retried while the tank is still being
-/// handed over) takes the tank back where it stands and the first frame says
-/// `Back aboard`; the markers are still there; `STATUS` answers a frame.
+/// surviving session reads `Reconnected`, then the resume line and Y.3's line
+/// (`… is flying on its mind; …`) exactly once; `BOARD` (retried while the tank
+/// is still being handed over) takes the tank back where it stands and the
+/// first frame says `Back aboard`; the markers are still there; `STATUS`
+/// answers a frame.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
     let store = shared_store().await;
@@ -860,21 +862,23 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
         (&mut ada, ada_mark, "Red Tank 1"),
         (&mut bo, bo_mark, "Blue Tank 1"),
     ] {
-        let doctrine = format!("{tank} is flying on doctrine; BOARD takes it back.");
+        // Y.3's line (`… is flying on doctrine; …` until 17b cut M5.3, one
+        // word for every sealed mind since).
+        let on_its_mind = format!("{tank} is flying on its mind; BOARD takes it back.");
         term.expect_after(mark, "Reconnected").await;
-        term.expect_after(mark, &doctrine).await;
+        term.expect_after(mark, &on_its_mind).await;
         // Two more boarding ticks: nothing is said again.
         tokio::time::sleep(Duration::from_millis(2_500)).await;
         term.say("zzz-sentinel", "Huh?").await;
         assert_eq!(count_since(term, mark, resumed), 1, "the resume line, once");
         assert_eq!(
-            count_since(term, mark, &doctrine),
+            count_since(term, mark, &on_its_mind),
             1,
-            "the doctrine line, once"
+            "the reconnect line, once"
         );
         let seen = flat(&strip_ansi(&term.seen[mark..]));
         assert!(
-            seen.find(flat(resumed).as_str()) < seen.find(flat(&doctrine).as_str()),
+            seen.find(flat(resumed).as_str()) < seen.find(flat(&on_its_mind).as_str()),
             "the resume line first: {seen}"
         );
     }

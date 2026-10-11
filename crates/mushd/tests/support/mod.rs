@@ -56,8 +56,8 @@ pub async fn holds_a_cockpit(store: &Arc<dyn mush_store::ObjectStore>, unit: u32
 
 /// Wait for the staff board to acknowledge a pilot's arena binding released by
 /// an `EXIT` — the slot's row ending `, left`, which since 16b cut Y.3 is a
-/// deliberate leave's alone (a drop reads `, flown by doctrine`; see
-/// [`wait_arena_pilot_out`]).
+/// deliberate leave's alone (a drop reads `, flown by its mind`, `, flown by
+/// doctrine` until 17b cut M5.3; see [`wait_arena_pilot_out`]).
 pub async fn wait_arena_pilot_left(term: &mut Term, callsign: &str, pilot: &str) {
     wait_arena_pilot_out(term, callsign, pilot, "left").await;
 }
@@ -65,10 +65,11 @@ pub async fn wait_arena_pilot_left(term: &mut Term, callsign: &str, pilot: &str)
 /// **Wait for the staff board to say `word` about one pilot's slot** (16b cut
 /// Y.3): the row `({callsign}): {pilot}, …` ending `, {word}`.
 ///
-/// `word` is the board's own: `flown by doctrine` for a drop (the linkdead
-/// grace run out, or a `QUIT`: the tank is the reflex controller's and `BOARD`
-/// takes it back), `left` for an `EXIT` (one-way), `seated` for a pilot in the
-/// cockpit — so the same wait reads a reclaim landing, too.
+/// `word` is the board's own: `flown by its mind` for a drop (the linkdead
+/// grace run out, or a `QUIT`: the tank is its sealed mind's and `BOARD` takes
+/// it back; `flown by doctrine` until 17b cut M5.3), `left` for an `EXIT`
+/// (one-way), `seated` for a pilot in the cockpit — so the same wait reads a
+/// reclaim landing, too.
 pub async fn wait_arena_pilot_out(term: &mut Term, callsign: &str, pilot: &str, word: &str) {
     let slot = format!("({callsign}): {pilot},");
     let tail = format!(", {word}");

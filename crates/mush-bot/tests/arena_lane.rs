@@ -93,6 +93,10 @@
 //! `start_without_us`: the match started with the bot's slot dropped, and
 //! `BOARD` answered `You hold no slot in the simulator.` until the match
 //! ends), and re-bases the lattice rigs on `LIVE_EDGE_LAG_MS`.
+//!
+//! The game's 17b cut M5.3 adds, off by default too, `red_row` (the red side
+//! row `SIM STATUS` prints in place of `nobody`): a run started while its
+//! own match runs reads its row there, in the game's own drop clause.
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     ops::RangeInclusive,
@@ -384,6 +388,9 @@ struct Server {
     /// window closed with nobody seated in the bot's slot, so `BOARD` is
     /// answered `You hold no slot in the simulator.` until [`Server::end`].
     slot_dropped: bool,
+    /// **The red row `SIM STATUS` prints** (the game's 17b cut M5.3), in place
+    /// of `nobody`; unset, `nobody`, as before.
+    red_row: Option<String>,
 }
 
 /// The transient the cut AM.1 knobs answer with.
@@ -442,6 +449,7 @@ impl Server {
             accept_lag_ms: 0,
             ba_plotted_s: None,
             slot_dropped: false,
+            red_row: None,
         }
     }
 
@@ -706,10 +714,11 @@ impl Server {
                     self.say(3, "This server has no simulator centre.");
                 } else {
                     let board = self.board.clone();
+                    let red = self.red_row.clone().unwrap_or_else(|| "nobody".into());
                     self.say(
                         3,
                         &format!(
-                            "Simulator centre: {board}\n  red: nobody\n  blue: nobody\n  AI fill: each side fields 1; machines take the unclaimed pods."
+                            "Simulator centre: {board}\n  red: {red}\n  blue: nobody\n  AI fill: each side fields 1; machines take the unclaimed pods."
                         ),
                     );
                 }
@@ -5306,6 +5315,91 @@ fn a_pause_through_the_boarding_and_the_start_loses_that_match() {
         ),
         ("left", "red")
     );
+}
+
+/// **The game's 17b cut M5.3: a run started while its match runs reads its
+/// row `flown by its mind`, follows the match and boards back** (the design
+/// note's M5.3 gate evidence; `docs/bot.md`, "Taking the tank back": "start
+/// it again for the same side and it walks to the centre, reads its own row
+/// on the board as `flown by its mind`, follows that match, and boards back
+/// from its team room"). The server's match is running with the bot's slot
+/// dropped — its row in the game's own drop clause
+/// (`tacsim::match_::lobby::DROP_CLAUSE`), the tank the machine's —
+/// and a fresh lane walks in: `SIM STATUS`, then `BOARD`, answered with the
+/// catch-up (this server takes `BOARD` anywhere); it flies, and the match's
+/// end is recorded with the reclaim. The same walk over a row ending `, left`
+/// (an `EXIT`, one-way) follows nothing: no `BOARD`, no claim.
+///
+/// The flow alone does not tell `Standing::Mind` from no standing (the lobby
+/// follows a running match on any standing but `Left`, so an older reader,
+/// which read this clause into the pod's name, followed it too); the
+/// classification of the served row below is what pins the reader.
+#[test]
+fn m5_3_a_fresh_run_reads_its_row_flown_by_its_mind_and_boards_back() {
+    let clause = tacsim::match_::lobby::DROP_CLAUSE;
+    assert_eq!(clause, ", flown by its mind", "the game's drop clause");
+    let row = format!("1 (RA): Pilot, pod Red Pod 1{clause}");
+    // The row the lane surveys, as its reader reads it: the resume standing,
+    // the pod and the name whole (an older reader, which knew `, flown by
+    // doctrine` alone, read this clause into the pod's name).
+    let read = mush_bot::arena::classify(&format!("  red: {row}"));
+    assert!(
+        matches!(&read, mush_bot::arena::Line::BoardSide { pilots, .. }
+            if pilots.len() == 1
+                && pilots[0].name == "Pilot"
+                && pilots[0].pod.as_deref() == Some("Red Pod 1")
+                && pilots[0].standing == Some(mush_bot::arena::lines::Standing::Mind)),
+        "{read:?}"
+    );
+    let mut run = Run::new(base());
+    run.server.board = "running (match 1)".into();
+    run.server.running = true;
+    run.server.outside = true;
+    run.server.red_row = Some(row);
+    assert!(
+        run.until(60_000, Run::fighting),
+        "never flew again; sent {:?}, said {:?}",
+        run.lines(),
+        run.said
+    );
+    // This server takes `BOARD` anywhere; the game's own refusal outside a
+    // team room, and the walk it sends the bot on, are `arena::lobby`'s
+    // `a_reboard_outside_the_team_room_walks_there_first_…`.
+    assert_eq!(
+        run.lines()[..5],
+        ["look", "ooc", "simulator", "SIM STATUS", "BOARD"],
+        "no claim, no start: it follows the running match"
+    );
+    assert_eq!(run.sends_of("SIM TEAM red", 0), Vec::<u64>::new());
+    assert!(
+        run.said.iter().any(|s| s == "Back aboard after 4 s away."),
+        "{:?}",
+        run.said
+    );
+    run.server.end(run.now, "red");
+    assert!(run.until(5_000, |run| run.lane.result().is_some()));
+    let flown = &run.lane.report().matches[0];
+    assert_eq!(flown.match_id, 1);
+    assert_eq!((flown.reclaims, flown.away_ms), (1, 4_000));
+
+    // An `EXIT`'s row: nothing to take back, so nothing is followed.
+    let mut run = Run::new(base());
+    run.server.board = "running (match 1)".into();
+    run.server.running = true;
+    run.server.outside = true;
+    // `board_standing_clause(dropped, left, seated)`: left by an `EXIT`, no drop.
+    run.server.red_row = Some(format!(
+        "1 (RA): Pilot, pod Red Pod 1{}",
+        tacsim::match_::lobby::board_standing_clause(false, true, true)
+    ));
+    run.until(10_000, |_| false);
+    assert!(run.sends_of("BOARD", 0).is_empty(), "{:?}", run.lines());
+    assert!(
+        run.sends_of("SIM TEAM red", 0).is_empty(),
+        "{:?}",
+        run.lines()
+    );
+    assert_eq!(run.lane.lobby().step(), Step::Survey, "{:?}", run.lines());
 }
 
 /// **A match ending mid-pause rematches after the resume** (cut AM.2): two

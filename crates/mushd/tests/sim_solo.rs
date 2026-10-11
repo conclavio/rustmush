@@ -1005,10 +1005,11 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
     // of theirs that landed, and nothing would ever be journalled.
     let seen = ask(&mut ada, "ORDER red-1 RELEASE", "again.").await;
     let seen = unwrapped(&seen);
+    // 17b cut M5.3: `to doctrine: it fights on its own reflexes …` until that
+    // cut — a release names no mind.
     assert!(
         seen.contains(
-            "Released red-1 to doctrine: it fights on its own reflexes until it is ordered \
-             again."
+            "Released red-1 to its mind: it fights on its own until it is ordered again."
         ),
         "{seen}"
     );

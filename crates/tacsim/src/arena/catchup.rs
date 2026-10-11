@@ -933,6 +933,67 @@ mod tests {
         assert_eq!(report.machine, machine, "read before the row went");
     }
 
+    /// **17b cut M5.3 (D14)**: the same life on a hull whose sealed mind is
+    /// not Standard Doctrine — the fixture seal renamed after the seal, as
+    /// `arena::mind`'s `m4_6c_…` reads one — comes back to its pilot with the
+    /// machine's word `unknown` (`Arena::machine_state`, off the seal), and the
+    /// catch-up says it as the mind's own: `  The machine was flying on its own
+    /// mind under no order.` The word names no mind, so a pilot whose hull a
+    /// fixture flew and one whose hull another mind flew read one sentence.
+    #[test]
+    fn m5_d14_a_hull_not_on_doctrine_comes_back_flying_on_its_own_mind() {
+        use crate::arena::doctrine::MachineState;
+        let mut arena = arena(0);
+        let mut seal = {
+            let mut red = line_tank(RED, Team::Red, pose(500, 500));
+            red.reseal(&crate::match_::SealTerms::fixture())
+                .expect("the fixture terms seal");
+            red.seal
+        };
+        seal.mind = SmolStr::new("Fixture I");
+        if let Some(unit) = arena.unit_mut(RED) {
+            unit.seal = seal.seal_ref();
+        }
+        assert!(!arena.unit(RED).is_some_and(|unit| unit.seal.doctrine));
+        arena.now_ms = 1_000;
+        for control in every_channel(2, ControlState::Linkdead) {
+            apply_control(&mut arena, &control);
+        }
+        arena.now_ms = 4_000;
+        for control in every_channel(2, ControlState::Released) {
+            apply_control(&mut arena, &control);
+        }
+        assert_eq!(
+            arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Mind),
+            "a released tank goes to its sealed mind"
+        );
+        assert_eq!(arena.machine_state(RED), Some(MachineState::Unknown));
+        arena.now_ms = 9_500;
+        for control in every_channel(3, ControlState::Live) {
+            apply_control(&mut arena, &control);
+        }
+        let report = arena
+            .pending_catchup
+            .get(&PILOT)
+            .expect("the pilot's report");
+        assert_eq!(
+            report.machine.as_ref().map(|words| words.state.as_str()),
+            Some("unknown"),
+            "the wire's word is unchanged"
+        );
+        let red = Designator::Slot {
+            team: Team::Red,
+            slot: 1,
+        };
+        let lines = crate::match_::cockpit::catchup_lines(red, report);
+        assert_eq!(
+            lines.get(1).map(String::as_str),
+            Some("  The machine was flying on its own mind under no order."),
+            "{lines:?}"
+        );
+    }
+
     /// K4's revival inside the grace: the `Live` finds the pilot on the roster,
     /// so the snapshot goes and nothing is built — and a later drop takes a
     /// fresh one.

@@ -54,7 +54,8 @@ line tagged `arena-notice`) and both rings print. Three readers, one file:
 `tacsim`'s in-source `cockpit.rs` test and `tests/cockpit.rs` (which also puts
 each object on `cockpit_frame.json`'s frame and pins that `status_frame` writes
 it back exactly), the TUI's `catchup_words` (`render.rs`), and vitest through
-`decodeCatchup` and `catchupLines` (`cockpit.test.ts`). Its nine cases: the
+`decodeCatchup` and `catchupLines` (`cockpit.test.ts`). Its ten cases (nine
+until 17b cut M5.3): the
 full report; the empty one (`none new, none lost`, `unchanged`, `none`, an
 unchanged position); a capped contact list (`and 3 more` on the `new` list,
 the one that is full); capped sections and weapons (seven of each, `and 1 more`
@@ -62,7 +63,10 @@ on both lines, one section whose armour and internals both fell); a wreck (the
 eighth line); `machine: null`; `cell_now: null`; `cell_then: null` with a
 `cell_now` (and a section whose internals alone fell); and both contact lists
 full, where the one overflow count cannot say whose it was and is its own
-clause (`3 more not named`) rather than read as contacts gained. The condition words are
+clause (`3 more not named`) rather than read as contacts gained; and (**17b cut
+M5.3**, D14) a machine whose state is `unknown` — a hull flown by a mind that
+is not Standard Doctrine — said as `  The machine was flying on its own mind
+under no order.`, no longer as the opened word. The condition words are
 the arena's own (`intact`, `destroyed`, `wreck`). `cockpit_frame.json` and
 `view_frame.json` carry `"catchup": null`: the scene is an ordinary pulse. They
 carry `"ecm": null` too (16b cut O.2): the scene's platform carries no jamming

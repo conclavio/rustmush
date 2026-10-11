@@ -356,7 +356,7 @@ your focus are released, the tank goes to its autopilot for the rest of the
 match, and you cannot board again.
 
 Losing your connection past the link-dead grace, or quitting, is not final. Your
-tank goes to its autopilot and the board reads `flown by doctrine` beside your
+tank goes to its autopilot and the board reads `flown by its mind` beside your
 slot. When you come back you are told so; type `BOARD` again, from your pod,
 where you still are, or from your team room, and after a few seconds the tank is
 yours again where it stands, at a new epoch, with what happened meanwhile said
@@ -375,7 +375,7 @@ While it runs, the cockpit is the whole of it: `help cockpit`.
 
 If the server restarts during a match, the match goes on from its last save a
 few seconds back: the machines fly every tank until its pilot comes back. You
-will read that the match resumed and that your tank is flying on doctrine;
+will read that the match resumed and that your tank is flying on its mind;
 `BOARD` from your pod or your team room takes it back a few seconds later, and
 your first frame says what happened while you were away.
 

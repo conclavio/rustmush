@@ -534,7 +534,7 @@ fn say_owed_resume_lines(ctx: &mut Ctx<'_>) {
         }
         ctx.out
             .sys_to_actor(body, NOTICE_CATEGORY, crate::match_::RESUME_LINE);
-        let line = crate::match_::doctrine_line(ctx.w, tank);
+        let line = crate::match_::mind_line(ctx.w, tank);
         ctx.out.sys_to_actor(body, NOTICE_CATEGORY, line);
         // Said once: a later login while still dropped reads Y.3's line alone.
         lobby::resume_line_said(ctx, body);

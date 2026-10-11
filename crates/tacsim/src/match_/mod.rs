@@ -135,7 +135,7 @@ pub use record::{
 };
 pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
 pub use resume::{
-    PendingResume, RESUME_LINE, ResumeRefusal, doctrine_line, resume_pending, void_at_boot,
+    PendingResume, RESUME_LINE, ResumeRefusal, mind_line, resume_pending, void_at_boot,
 };
 pub use seal::{
     HUMANS_FALLBACK, NO_CORE_FALLBACK, PRODUCTION_FILL_ENGINE, SEALED_CHARTER, SEALED_LICENCE,
@@ -359,7 +359,7 @@ impl MatchBook {
     }
 
     /// **Owe one pilot the resume's two lines** (16b cut AF.3; 16c N16,
-    /// `Q-AF4`): [`RESUME_LINE`], then Y.3's [`doctrine_line`] for `tank`.
+    /// `Q-AF4`): [`RESUME_LINE`], then Y.3's [`mind_line`] for `tank`.
     ///
     /// The boot's resume releases every seat to doctrine, and it cannot say so:
     /// boot output reaches no session, and on the split server, which is

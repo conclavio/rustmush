@@ -835,7 +835,9 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
 /// Until cut Y.3 this was `past_the_grace_the_seat_is_released_and_the_pilot_
 /// cannot_reclaim_it`: the seat went with the session and a reconnecting pilot
 /// was told nothing. Now the release past the grace is a **drop**: the staff
-/// board reads `flown by doctrine`, the reconnect is told so in one line (and
+/// board reads `flown by its mind`, the reconnect is told so in one line —
+/// `… is flying on its mind; BOARD takes it back.` (both said `doctrine` until
+/// 17b cut M5.3, which made them one word for every sealed mind) — (and
 /// not K4's `back at your station`, which is a revival inside the grace), the
 /// cockpit verbs still mean nothing until `BOARD` — which, once
 /// `[tacsim.match].reclaim_min_ms` (5,000 here, the default) has passed, takes
@@ -897,11 +899,11 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     drop(ada);
     drop(ada_handle);
     // Past the two-second grace: the machine has the tank, and the board says so.
-    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by doctrine").await;
+    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by its mind").await;
 
     // The reconnect is told, in one line — and it is not a revival.
     let (_a2, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
-    ada.expect("is flying on doctrine; BOARD takes it back.")
+    ada.expect("is flying on its mind; BOARD takes it back.")
         .await;
     assert!(
         !ada.seen.contains("back at your station"),

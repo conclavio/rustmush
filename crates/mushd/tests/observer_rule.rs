@@ -3884,8 +3884,10 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
 /// a seated pilot could read the other side's standing: `, pod Blue Pod 1,
 /// seated` before, `, left` the moment the human on `BA` dropped and a machine
 /// took the tank. No sensor of theirs told them any of it. Since cut Y.3 a drop
-/// reads `flown by doctrine` on the full board and an `EXIT` `left`; the test
-/// drops `BA`'s line and then climbs out, and the other side reads neither.
+/// reads `flown by its mind` on the full board (`flown by doctrine` until 17b
+/// cut M5.3, which made it one word for every sealed mind) and an `EXIT`
+/// `left`; the test drops `BA`'s line and then climbs out, and the other side
+/// reads neither.
 ///
 /// Over the real front door, from inside the pod, because that is where a pilot
 /// types it and because the reader is the whole of the rule.
@@ -3920,9 +3922,10 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     // of `Selection` and neither can change while the match runs.
     assert!(blue.contains("(BA)") && blue.contains("Bo"), "{board}");
     // **16b cut Y.3**: and not the drop's word either — a dropped pilot's
-    // row reads `flown by doctrine` on the full board, which is as much the
-    // other side's standing as `left` is.
-    for word in [", pod ", ", seated", ", left", "doctrine"] {
+    // row reads `flown by its mind` on the full board (17b cut M5.3; `flown
+    // by doctrine` before), which is as much the other side's standing as
+    // `left` is.
+    for word in [", pod ", ", seated", ", left", "flown by"] {
         assert!(
             !blue.contains(word),
             "a seated pilot read `{word}` about the other side: {board}"
@@ -3930,17 +3933,17 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     }
 
     // **16b cut Y.3**: Bo's line drops — a clean `QUIT` is a drop, reclaimable,
-    // and the machine flies BA meanwhile. Staff read `flown by doctrine`; Ada's
+    // and the machine flies BA meanwhile. Staff read `flown by its mind`; Ada's
     // board does not move by one byte and carries neither word.
     bo.send_line("QUIT").await;
-    support::wait_arena_pilot_out(&mut god, "BA", "Bo", "flown by doctrine").await;
+    support::wait_arena_pilot_out(&mut god, "BA", "Bo", "flown by its mind").await;
     let dropped = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
     assert_eq!(
         row(&dropped, "blue:"),
         blue,
         "the other side's row moved when its pilot dropped:\n{dropped}"
     );
-    for word in ["left", "doctrine"] {
+    for word in ["left", "flown by"] {
         assert!(
             !row(&dropped, "blue:").contains(word),
             "a seated pilot read `{word}` about the other side's drop:\n{dropped}"
@@ -3959,7 +3962,7 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
         blue,
         "the other side's row moved when its pilot left:\n{after}"
     );
-    for word in ["left", "doctrine"] {
+    for word in ["left", "flown by"] {
         assert!(
             !row(&after, "blue:").contains(word),
             "a seated pilot read `{word}` about the other side mid-match:\n{after}"
@@ -3969,7 +3972,7 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     // and no longer the drop's word.
     let staff = strip_ansi(&ask(&mut god, "@arena/status", "blue:").await);
     assert!(
-        row(&staff, "blue:").contains(", left") && !row(&staff, "blue:").contains("doctrine"),
+        row(&staff, "blue:").contains(", left") && !row(&staff, "blue:").contains("flown by"),
         "staff were refused the whole board: {staff}"
     );
 }
@@ -4747,10 +4750,11 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
     let seen = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
     assert!(seen.contains(NO_CONTACTS), "RA holds nothing yet: {seen}");
 
-    // Ada's line drops; past the grace the machine has `RA`.
+    // Ada's line drops; past the grace the machine has `RA` (the board's
+    // `flown by its mind`, `flown by doctrine` until 17b cut M5.3).
     drop(ada);
     drop(ada_handle);
-    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by doctrine").await;
+    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by its mind").await;
 
     // Bo drives east, the machine drives `RA` west: wait until Bo's own plot of
     // `RA` is well inside the stock sight, so `RA`'s (the same sight, both on
@@ -4768,7 +4772,7 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
 
     // Ada comes back: told, and then `BOARD` once the floor has passed.
     let (_a2, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
-    ada.expect("is flying on doctrine; BOARD takes it back.")
+    ada.expect("is flying on its mind; BOARD takes it back.")
         .await;
     let window = ada.mark();
     let mut web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
@@ -7401,12 +7405,13 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
     let (_c2, mut cy) = login(second.addr, "cy", PILOT_PASSWORD, "Cy").await;
     let (_a2, mut ada) = login(second.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b2, mut bo) = login(second.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    // Y.3's line, `… is flying on doctrine; …` until 17b cut M5.3.
     ada.expect(&format!(
-        "{RED_TANK} is flying on doctrine; BOARD takes it back."
+        "{RED_TANK} is flying on its mind; BOARD takes it back."
     ))
     .await;
     bo.expect(&format!(
-        "{BLUE_TANK} is flying on doctrine; BOARD takes it back."
+        "{BLUE_TANK} is flying on its mind; BOARD takes it back."
     ))
     .await;
     // Two more boarding ticks for anything late, then everything read to the end.
@@ -7432,7 +7437,9 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
         !bo_seen.contains(RED_TANK),
         "Bo read the other tank: {bo_seen}"
     );
-    for word in ["resumed", "doctrine", RED_TANK, BLUE_TANK] {
+    // `"flying on"` is the reconnect line's (was `"doctrine"` until 17b cut M5.3,
+    // when the line stopped saying it, so the old word could no longer fire).
+    for word in ["resumed", "flying on", RED_TANK, BLUE_TANK] {
         assert!(
             !cy_seen.contains(word),
             "the bystander read {word:?} of the resume: {cy_seen}"

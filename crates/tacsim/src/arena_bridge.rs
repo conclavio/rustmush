@@ -3544,8 +3544,9 @@ fn notify_staff(ctx: &mut Ctx<'_>, text: String) {
 /// | a clean connect | `Control { Live }` | (a seat that was never released) |
 ///
 /// **16b cut Y.3** added the fifth fact, which is not a hook: past the grace the
-/// tank is the reflex controller's and the board reads `flown by doctrine`; a
-/// reconnect is told so, and `BOARD` in the running match sends
+/// tank is flown by its sealed mind (the reflex controller until 17b cut M4.3)
+/// and the board reads `flown by its mind` (`flown by doctrine` until 17b cut
+/// M5.3); a reconnect is told so, and `BOARD` in the running match sends
 /// `Control { Live }` at a new epoch through [`reseat`] — the same message a
 /// revival inside the grace sends, from the verb rather than the kernel.
 ///
@@ -3575,7 +3576,8 @@ impl mush_core::EventHook for SeatFacts {
     ///
     /// **16b cut Y.3 (16c `N4`)**: a pilot with **no** seat whose slot in the
     /// running match was taken by a drop is told one line — their own tank is
-    /// flying on doctrine and `BOARD` takes it back — because before this cut a
+    /// flying on its mind and `BOARD` takes it back (`match_::mind_line`; on
+    /// doctrine until 17b cut M5.3) — because before this cut a
     /// reconnecting pilot past the grace was told nothing at all. The tank is
     /// the pilot's own, which they may always be told about (doc 16 §1); what
     /// it did while they were gone is not said here.
@@ -3620,7 +3622,7 @@ impl mush_core::EventHook for SeatFacts {
         ctx.out.sys_to_actor(
             actor,
             NOTICE_CATEGORY,
-            crate::match_::doctrine_line(ctx.w, tank),
+            crate::match_::mind_line(ctx.w, tank),
         );
     }
 

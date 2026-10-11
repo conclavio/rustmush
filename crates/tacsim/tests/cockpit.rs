@@ -1900,9 +1900,11 @@ async fn exit_mid_match_takes_the_pilot_off_the_frame_roster_and_off_the_binding
         "a reconnect reclaimed a seat that was given up: {said}"
     );
     // **16b cut Y.3**: nor is an `EXIT` a drop, so the reconnect does not
-    // offer `BOARD` a tank the pilot left for good.
+    // offer `BOARD` a tank the pilot left for good. (`flying on doctrine`
+    // until 17b cut M5.3, which made the reconnect line one word for every
+    // sealed mind.)
     assert!(
-        !said.contains("flying on doctrine"),
+        !said.contains("flying on its mind"),
         "a reconnect after an EXIT offered the tank back: {said}"
     );
     // And the centre says so: the slot is `left`, not `seated`. Read by the
@@ -1944,10 +1946,12 @@ async fn exit_mid_match_takes_the_pilot_off_the_frame_roster_and_off_the_binding
 /// drops them from its frame roster and the registry drops the binding. So `SIM
 /// STATUS` must not go on calling them `seated` either, and the flag is written
 /// where the release is decided rather than in one verb. Cut Y.3 split the
-/// word: a drop can be taken back (`BOARD`), so the row reads `flown by
-/// doctrine` rather than F.1's `left`, which is now an `EXIT`'s alone.
+/// word: a drop can be taken back (`BOARD`), so the row reads `flown by its
+/// mind` rather than F.1's `left`, which is now an `EXIT`'s alone. (Was `flown
+/// by doctrine`, and this test `…_reads_as_flown_by_doctrine`, until 17b cut
+/// M5.3: the drop clause is one word for every sealed mind, C-11 and D11.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_pilot_whose_session_ends_mid_match_reads_as_flown_by_doctrine() {
+async fn a_pilot_whose_session_ends_mid_match_reads_as_flown_by_its_mind() {
     let mut rig = Rig::boot(2);
     rig.fly().await;
     let pilot = rig.pilot(0);
@@ -1980,7 +1984,7 @@ async fn a_pilot_whose_session_ends_mid_match_reads_as_flown_by_doctrine() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        red_row.contains(", flown by doctrine"),
+        red_row.contains(", flown by its mind"),
         "SIM STATUS does not say the machine flies a quit pilot's tank: {staff}"
     );
     assert!(
@@ -7537,7 +7541,7 @@ fn y3_account(rig: &Rig, pilot: ObjId) -> AccountId {
 ///
 /// The drop is `fire_conn(Disconnected)`, which runs `SeatFacts::disconnected`
 /// and mush-sim's own hook exactly as production does: the board reads `flown
-/// by doctrine`, nobody is flying and the registry has no seat. The reconnect
+/// by its mind`, nobody is flying and the registry has no seat. The reconnect
 /// says so in one line; a `BOARD` inside `reclaim_min_ms` is told to wait; past
 /// it, a `BOARD` from inside the pod the drop left the pilot in takes the tank
 /// back — bound again, every channel's epoch raised, a frame, a `HEADING`
@@ -7553,10 +7557,11 @@ async fn y3_a_dropped_pilot_is_told_and_boards_again_from_the_pod() {
     rig.say(0, "startup");
     assert!(rig.powered(0).await, "the arena brings power online");
 
-    // The drop.
+    // The drop. (17b cut M5.3: `, flown by doctrine` and `… is flying on
+    // doctrine; …` until that cut — one word for every sealed mind now.)
     rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
     let row = y3_red_row(&rig);
-    assert!(row.contains(", flown by doctrine"), "{row}");
+    assert!(row.contains(", flown by its mind"), "{row}");
     assert!(
         !row.contains(", seated") && !row.contains(", left"),
         "{row}"
@@ -7579,7 +7584,7 @@ async fn y3_a_dropped_pilot_is_told_and_boards_again_from_the_pod() {
         .find(|line| line.trim_start().starts_with("red:"))
         .unwrap_or_default();
     assert!(
-        !red_to_blue.contains("doctrine") && !red_to_blue.contains("left"),
+        !red_to_blue.contains("flown by") && !red_to_blue.contains("left"),
         "the other side read the drop: {theirs}"
     );
 
@@ -7588,7 +7593,7 @@ async fn y3_a_dropped_pilot_is_told_and_boards_again_from_the_pod() {
     let said = rig.tw.seen_by(&events, pilot).join("\n");
     assert!(
         said.contains(&format!(
-            "{} is flying on doctrine; BOARD takes it back.",
+            "{} is flying on its mind; BOARD takes it back.",
             mush_core::output::display_name(rig.tw.world(), tank)
         )),
         "{said}"
@@ -7704,7 +7709,7 @@ async fn y3_an_exit_is_final_before_or_after_a_drop() {
     let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
     let said = rig.tw.seen_by(&events, pilot).join("\n");
     assert!(
-        !said.contains("flying on doctrine") && !said.contains("back at your station"),
+        !said.contains("flying on its mind") && !said.contains("back at your station"),
         "a reconnect after an EXIT and a QUIT offered the tank back: {said}"
     );
     let now = rig.now;
@@ -8436,7 +8441,9 @@ fn y4_the_catch_up_fixture_is_the_wire_s_object_and_its_lines() {
         "../../../web/src/lib/fixtures/cockpit/catchup_lines.json"
     ))
     .expect("catchup_lines.json is an array");
-    assert_eq!(cases.len(), 9);
+    // Was 9 until 17b cut M5.3, which added the tenth case (D14: the machine
+    // `flying on its own mind`).
+    assert_eq!(cases.len(), 10);
     for case in &cases {
         let wire = case.get("catchup").expect("a catchup object");
         let report = y4_decode(wire);
@@ -8518,8 +8525,9 @@ async fn z2_the_lead_screens_supports_and_releases_and_every_callsign_refusal_is
     let mut rig = Rig::boot_with(2, y1_config());
     rig.fly_with_ai(1, 1, 3).await;
     let issuer = rig.tank(0);
-    let release = "Released red-1 to doctrine: it fights on its own reflexes until it is ordered \
-                   again.";
+    // 17b cut M5.3: `to doctrine: it fights on its own reflexes …` until that
+    // cut — a release names no mind, one word for every sealed mind.
+    let release = "Released red-1 to its mind: it fights on its own until it is ordered again.";
 
     // Nothing is under an order yet: acknowledged, and nothing to journal.
     //
@@ -8655,9 +8663,10 @@ async fn z2_a_release_frees_the_span_it_was_given_and_nothing_else() {
         vec!["red-1".to_string(), "red-2".to_string()]
     );
 
+    // 17b cut M5.3: `to doctrine: … own reflexes …` until that cut.
     assert_eq!(
         rig.say(0, "ORDER red-1 RELEASE"),
-        "Released red-1 to doctrine: it fights on its own reflexes until it is ordered again."
+        "Released red-1 to its mind: it fights on its own until it is ordered again."
     );
     assert_eq!(
         z2_live(&rig, issuer),
@@ -8733,9 +8742,10 @@ async fn z2_a_wingmans_release_is_their_one_machine_and_the_leads_order_stands()
         |event: &tacsim::arena::ledger::LedgerEvent| y1_ordered_by(event, lead).is_some();
     assert_eq!(rig.tape_count_until(from_lead, 2).await, 2);
 
+    // 17b cut M5.3: `to doctrine: … own reflexes …` until that cut.
     assert_eq!(
         rig.say(2, "ORDER 1 RELEASE"),
-        "Released RD to doctrine: it fights on its own reflexes until it is ordered again."
+        "Released RD to its mind: it fights on its own until it is ordered again."
     );
     let watch = rig
         .tw
@@ -8769,8 +8779,8 @@ async fn z2_a_wingmans_release_is_their_one_machine_and_the_leads_order_stands()
 async fn z2_a_release_spends_a_rate_stamp() {
     let mut rig = Rig::boot_with(2, y2_config());
     rig.fly_with_ai(1, 1, 3).await;
-    let release =
-        "Released red-1 to doctrine: it fights on its own reflexes until it is ordered again.";
+    // 17b cut M5.3: `to doctrine: … own reflexes …` until that cut.
+    let release = "Released red-1 to its mind: it fights on its own until it is ordered again.";
     assert_eq!(rig.say(0, "ORDER red-1 RELEASE"), release);
     assert_eq!(rig.say(0, "ORDER red-1 RELEASE"), release);
     assert_eq!(
@@ -12430,14 +12440,15 @@ fn af3_config() -> TacsimConfig {
 /// - Before any tick, a reconnect says nothing to a pilot the resume owes the
 ///   two lines (the tick is the path that says them); `STATUS` answers `You
 ///   are not at the station of a deployed unit.`; the board reads `flown by
-///   doctrine` on every slot the resume released, and the other side's reduced
+///   its mind` on every slot the resume released, and the other side's reduced
 ///   row is byte-identical to the one it read before the restart (Y.3's,
 ///   withholding it); `BOARD` inside `reclaim_min_ms` answers `HandingOver`
 ///   with the seconds.
 /// - Blue 1 takes the tank back before the tick fires (the world's clock moved
 ///   with no tick), and the tick then says nothing to them.
-/// - The first boarding tick says red 1 the resume line then the doctrine line,
-///   once, and sends red 1's attached session exactly one cleared cockpit
+/// - The first boarding tick says red 1 the resume line then Y.3's line (`…
+///   is flying on its mind; …`, `… on doctrine; …` until 17b cut M5.3), once,
+///   and sends red 1's attached session exactly one cleared cockpit
 ///   keyframe (the abandoned timeline's last panel); a later tick says nothing,
 ///   and a login after it reads Y.3's line alone.
 /// - Red 1 past the floor: `You climb back into … is yours again where it
@@ -12588,7 +12599,7 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
     let events = rig.fire_conn(red1, mush_core::ConnTransition::Connected);
     let said = rig.tw.seen_by(&events, red1).join("\n");
     assert!(
-        !said.contains("resumed") && !said.contains("doctrine"),
+        !said.contains("resumed") && !said.contains("flying on"),
         "the reconnect said what the tick owes: {said}"
     );
     let said = rig.say(0, "status");
@@ -12598,7 +12609,7 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
     );
     let board = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
     assert_eq!(
-        board.matches(", flown by doctrine").count(),
+        board.matches(", flown by its mind").count(),
         3,
         "red 1, blue 1 and blue 2: {board}"
     );
@@ -12612,7 +12623,7 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
         "the other side's reduced row moved across the resume: {theirs}"
     );
     assert!(
-        !red_to_blue.contains("doctrine") && !red_to_blue.contains("left"),
+        !red_to_blue.contains("flown by") && !red_to_blue.contains("left"),
         "the other side read the resume: {theirs}"
     );
     let tank0_name = mush_core::output::display_name(rig.tw.world(), tank0);
@@ -12635,10 +12646,10 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
     let mark = rig.log.len();
     rig.tick_to(now + 6);
     let lines = af3_said(&rig, red1, mark);
-    let doctrine = format!("{tank0_name} is flying on doctrine; BOARD takes it back.");
+    let on_its_mind = format!("{tank0_name} is flying on its mind; BOARD takes it back.");
     assert_eq!(
         lines,
-        vec![match_::RESUME_LINE.to_owned(), doctrine.clone()],
+        vec![match_::RESUME_LINE.to_owned(), on_its_mind.clone()],
         "the tick's two lines, in order"
     );
     assert!(
@@ -12668,7 +12679,7 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
     let events = rig.fire_conn(red1, mush_core::ConnTransition::Connected);
     assert_eq!(
         rig.tw.seen_by(&events, red1),
-        vec![doctrine.clone()],
+        vec![on_its_mind.clone()],
         "the resume line is said once, whichever path said it"
     );
 
@@ -12723,7 +12734,7 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
     let said = rig.tw.seen_by(&events, blue2).join("\n");
     assert!(
         said.contains(&format!(
-            "{} is flying on doctrine; BOARD takes it back.",
+            "{} is flying on its mind; BOARD takes it back.",
             mush_core::output::display_name(rig.tw.world(), tank3)
         )),
         "{said}"
@@ -12840,14 +12851,14 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
         "nothing was said to a body with no session"
     );
     rig.tw.world_mut().set_connected(pilot, true);
-    let doctrine = format!(
-        "{} is flying on doctrine; BOARD takes it back.",
+    let on_its_mind = format!(
+        "{} is flying on its mind; BOARD takes it back.",
         mush_core::output::display_name(rig.tw.world(), tank)
     );
     let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
     assert_eq!(
         rig.tw.seen_by(&events, pilot),
-        vec![match_::RESUME_LINE.to_owned(), doctrine.clone()],
+        vec![match_::RESUME_LINE.to_owned(), on_its_mind.clone()],
         "a later login says the two lines"
     );
     let mark = rig.log.len();
@@ -12860,7 +12871,7 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
     let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
     assert_eq!(
         rig.tw.seen_by(&events, pilot),
-        vec![doctrine],
+        vec![on_its_mind],
         "a login after that reads Y.3's line alone"
     );
 }
@@ -16292,9 +16303,10 @@ fn m1b5_head(said: &str) -> String {
 ///   `foo 1` and `=berserker` the unknown sentence; a bare `@mind` or another
 ///   switch, a slider with no value (`=min_odds`) and a preset with one
 ///   (`=sniper 5`) the usage;
-/// * a pilot's hull is `not flown by a mind`, and so is it after its pilot
-///   drops (the reflex machine's, as the arena's own row goes) — while the
-///   board still reads `flown by doctrine` for that slot;
+/// * a pilot's hull is `not flown by a mind`; after its pilot drops it is its
+///   sealed mind's (17b cut M4.3; the reflex machine's before it), which
+///   `=sniper` sets, and the board reads `flown by its mind` for that slot
+///   (`flown by doctrine` until 17b cut M5.3);
 /// * a pilot is refused by the gate;
 /// * after a restart of the server half resumes the match, the head is
 ///   `not read since the resume`, `min_odds 5` still meets the floor's
@@ -16487,7 +16499,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         "the arena applied the preset to the released seat's mind"
     );
     assert!(
-        y3_red_row(&rig).contains(", flown by doctrine"),
+        y3_red_row(&rig).contains(", flown by its mind"),
         "{}",
         y3_red_row(&rig)
     );
@@ -16658,8 +16670,9 @@ async fn m2_mind_set_refuses_a_preset_that_breaks_the_pair_by_name() {
 /// `PRODUCTION_FILL_ENGINE` (a seated hull's too, so a release hands it to a
 /// mind of the same class on the same engine), the mirror holds a card for
 /// every hull, the board says what it said (`AI fill: each side fields 2;
-/// machines take the unclaimed pods.`, and `flown by doctrine` for a dropped
-/// pilot's slot: T1 IS Standard Doctrine), and a fill hull takes a card.
+/// machines take the unclaimed pods.`, and `flown by its mind` for a dropped
+/// pilot's slot — `flown by doctrine` until 17b cut M5.3, which made the drop
+/// clause one word for every sealed mind), and a fill hull takes a card.
 ///
 /// [`Controller::Mind`]: tacsim::arena::state::Controller::Mind
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -16724,7 +16737,7 @@ async fn m4_3_the_fill_is_a_mind_sealed_at_fill_class() {
     );
     rig.fire_conn(rig.pilot(0), mush_core::ConnTransition::Disconnected);
     let row = y3_red_row(&rig);
-    assert!(row.contains(", flown by doctrine"), "{row}");
+    assert!(row.contains(", flown by its mind"), "{row}");
     // A fill hull takes a card.
     let id = fill.first().map_or(0, |unit| unit.0);
     assert!(

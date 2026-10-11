@@ -1660,7 +1660,7 @@ impl Picture {
                     self.touch();
                 }
             }
-            Line::Doctrine { tank } => {
+            Line::OnItsMind { tank } => {
                 if self.own.name.as_deref().is_none_or(|own| own == tank) {
                     self.set_aboard(false);
                 }
@@ -3777,9 +3777,11 @@ mod tests {
         assert!(!p.aboard);
         feed(&mut p, &[(4, "Power online.")]);
         assert!(p.aboard);
+        // The reconnect line (`… is flying on doctrine; …` until the game's
+        // 17b cut M5.3).
         feed(
             &mut p,
-            &[(5, "Red Tank 1 is flying on doctrine; BOARD takes it back.")],
+            &[(5, "Red Tank 1 is flying on its mind; BOARD takes it back.")],
         );
         assert!(!p.aboard);
         feed(&mut p, &[(6, "You are already in your pod.")]);
@@ -3881,7 +3883,8 @@ mod tests {
             "That unit carries no weapon called `cannon`.",
             "You are not at the station of a deployed unit.",
             "Back aboard RA after 2 m 14 s away.",
-            "Red Tank 1 is flying on doctrine; BOARD takes it back.",
+            // `… is flying on doctrine; …` until the game's 17b cut M5.3.
+            "Red Tank 1 is flying on its mind; BOARD takes it back.",
             "Connected as Pilot (account pilot, 1 connection).",
             "Lock on BA broken: contact gone.",
             "Contact BA lost.",

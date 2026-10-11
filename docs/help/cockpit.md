@@ -477,8 +477,8 @@ There are six orders and a release, and the answer says what each one means:
   ORDER 1 SUPPORT RA             Ordered red-1 to support RA: it keeps within
                                  150 m of RA and fires first on what RA is
                                  fighting.
-  ORDER red-1 RELEASE            Released red-1 to doctrine: it fights on its
-                                 own reflexes until it is ordered again.
+  ORDER red-1 RELEASE            Released red-1 to its mind: it fights on its
+                                 own until it is ordered again.
 
 Engage without a contact — `ORDER red-1 ENGAGE` — and the squad closes and fires
 on what it finds. A withdrawal without hold fire still fights anything that comes

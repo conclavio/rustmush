@@ -1328,7 +1328,10 @@ export function noticeLines(notices: readonly CockpitNotice[]): string[] {
 }
 
 /** The machine's state in the pilot's words (16b cut Y.4). A `Map`, for the
- * reason `NOTICE_WORDS` is one. */
+ * reason `NOTICE_WORDS` is one. **17b cut M5.3 (D14)**: `unknown` — a hull
+ * flown by a mind that is not Standard Doctrine — reads `flying on its own
+ * mind`, as the server's `machine_state_words` and the TUI's `catchup_words`
+ * say it, rather than the opened word. */
 const MACHINE_STATE_WORDS: ReadonlyMap<string, string> = new Map([
   ["startup", "starting up"],
   ["patrol", "patrolling"],
@@ -1336,6 +1339,7 @@ const MACHINE_STATE_WORDS: ReadonlyMap<string, string> = new Map([
   ["engage", "engaging"],
   ["withdraw", "withdrawing toward its entry zone"],
   ["disabled", "disabled"],
+  ["unknown", "flying on its own mind"],
 ]);
 
 /** The standing order's objective in the pilot's words (16b cut Y.4). */
