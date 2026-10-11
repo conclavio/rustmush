@@ -615,8 +615,11 @@ pub struct MatchMirror {
     /// `mind_card` line (the arena's own row, as applied), [`CardSource::Sent`]
     /// when `@mind/set` offered a change and no line for it has arrived since
     /// (the verb's scratch card at the mirror's arena clock), and
-    /// [`CardSource::CheckOut`] for every mind hull at [`open_match`] (Line on
-    /// the match's doctrine, at arena millisecond nought). Absent after a
+    /// [`CardSource::CheckOut`] for every mind hull at [`open_match`] (its
+    /// first sealed profile's card on the match's doctrine — Line for a hull
+    /// nobody chose a mind for — at arena millisecond nought; 17b cut M5.2).
+    /// A seat's `MIND PROFILE` is a `mind_card` line too (17b cut M5.2), so
+    /// the mirror follows a switch: the card that will fly. Absent after a
     /// resume until a line arrives — the tape's last `mind_card` line names the
     /// card, and the read-back says so. The tape is read per closed chunk, so
     /// a line reaches the mirror when its chunk closes (the read-back's lag).
@@ -626,8 +629,10 @@ pub struct MatchMirror {
 /// **Where the world's copy of a mind's card came from** (17b cut M1b.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardSource {
-    /// The check-out's: every mind row opens on `line` of the match's own
-    /// doctrine (`MindState::fresh`), which the world knows without the tape.
+    /// The check-out's: every mind row opens on its hull's first sealed
+    /// profile over the match's own doctrine (`MindState::fresh_with`; `line`
+    /// for a hull nobody chose a mind for, 17b cut M5.2), which the world
+    /// knows without the tape.
     CheckOut,
     /// A `mind_card` line on the tape: the card the arena applied.
     OnTape,
@@ -1624,6 +1629,14 @@ pub fn open_match(
         .iter()
         .map(|unit| (unit.id, unit.controller))
         .collect();
+    // **17b cut M5.2** (the design note's item 10): each hull's first sealed
+    // profile, the card its mind row opens on (`Arena::adopt_mind` over
+    // `Arena::active_card`) — Line for a hull nobody chose a mind for.
+    let first_cards: BTreeMap<ObjId, crate::arena::StockCard> = custody
+        .units
+        .iter()
+        .map(|unit| (unit.id, unit.seal.profile_set().card(0, &arena_cfg.reflex)))
+        .collect();
     let armed: BTreeSet<ObjId> = custody
         .units
         .iter()
@@ -1681,18 +1694,13 @@ pub fn open_match(
     // `spawn_arena` was handed, and the check-out's controllers.
     if let Some(mirror) = registry.matches.get_mut(&match_id) {
         mirror.odds_floor_permille = minds_cfg.odds_floor_permille;
-        // Every mind row opens on Line of this doctrine (`MindState::fresh`)
-        // — and from 17b cut M4.3 every hull is sealed with it, a seated one
-        // too (a released seat's mind reads the card), so every hull has one.
-        for unit in controllers.keys() {
-            mirror.cards.insert(
-                *unit,
-                (
-                    crate::arena::line(&arena_cfg.reflex),
-                    0,
-                    CardSource::CheckOut,
-                ),
-            );
+        // Every mind row opens on its hull's first sealed profile over this
+        // doctrine (`MindState::fresh_with`; Line for a hull nobody chose a
+        // mind for, 17b cut M5.2) — and from 17b cut M4.3 every hull is
+        // sealed, a seated one too (a released seat's mind reads the card),
+        // so every hull has one.
+        for (unit, card) in first_cards {
+            mirror.cards.insert(unit, (card, 0, CardSource::CheckOut));
         }
         mirror.controllers = controllers;
         mirror.armed = armed;
@@ -3106,7 +3114,9 @@ pub fn match_log_id(match_id: MatchId) -> String {
 /// mirror** (17b cut M1b.5; [`MatchMirror::cards`]): in line order, a
 /// `mind_card` writes `(card, t_ms, OnTape)` unless the entry is a `Sent` one
 /// newer than the line; a `mind_card_refused` removes a `Sent` entry it is not
-/// older than. Per chunk, never per pulse.
+/// older than. Per chunk, never per pulse. Since 17b cut M5.2 a seat's `MIND
+/// PROFILE` journals a `mind_card` too, so the mirror's card follows a
+/// pilot's switch — the card the hull's mind will fly at the release.
 fn note_cards_from_tape(ctx: &mut Ctx<'_>, match_id: MatchId, events: &[LedgerEvent]) {
     if !events.iter().any(|event| {
         matches!(
@@ -4858,8 +4868,10 @@ const ROM_TAIL: &str = "The hull is on the ROM; MIND is off for the match.";
 /// tape's `mind_dropped` line — its cause, its last fault's word and the op
 /// budget the faulting thinks ran under, never a config read (16b cut V.3's
 /// rule: a reload cannot change how a match is told). `whose` is `Your` where
-/// the principal is the hull's own seated pilot (reachable from 17b cut M5)
-/// and `{callsign}'s` otherwise (`RB's`: the fill, told to its side's lead):
+/// the principal is the hull's own seated pilot — a pilot's released hull,
+/// flown by a mind sealed in that pilot's name (since 17b cut M5.2 the mind
+/// the pilot chose) — and `{callsign}'s` otherwise (`RB's`: the fill, told to
+/// its side's lead):
 ///
 /// * strikes, the last fault `ops`: `Your core tripped: over its 1,500-op
 ///   budget three thinks running. The hull is on the ROM; MIND is off for the
@@ -5356,7 +5368,8 @@ mod tests {
     /// * the fill `RB`'s strikes, led by Ada: Ada reads `RB's core tripped:
     ///   over its 1,500-op budget …` and nobody else of either side;
     /// * Ada's own `RA` (the principal is its own seated pilot: `Your`, the
-    ///   shape 17b cut M5 reaches) on a destroyed core;
+    ///   shape a pilot's released hull reaches — since 17b cut M5.2 flying
+    ///   the mind its pilot chose) on a destroyed core;
     /// * blue's `BB` under a lance-leader persona and `XA` with no principal:
     ///   told to nobody — Bo, blue's own pilot, reads neither;
     ///

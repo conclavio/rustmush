@@ -40,8 +40,11 @@ present), and a `refused` `unlawful` arming carrying `detail.floor_permille`
 100 (`FIRE cannon refused. The Compact floor is 10%; a condition may not ask
 for less`); `tests/cockpit.rs` pins that `status_frame` publishes those five
 objects exactly, and the `range` and `rounds` whys are pinned in vitest and in
-the TUI's own unit test from the same composition. Change a line here only
-together with both renderers.
+the TUI's own unit test from the same composition. **17b cut M5.2** added a
+`refused` notice of `order: "mind"`, `refusal: "profile"` (the arena's word for
+a `MIND PROFILE` it cannot take; `MIND refused: that profile cannot be switched
+to now`), which `tests/cockpit.rs` pins `status_frame` publishes exactly.
+Change a line here only together with both renderers.
 
 `catchup_lines.json` is the parity fixture for the catch-up report a reclaim's
 first frame carries (16b cut Y.4; doc 07 §1.3 step 5). Every `catchup` is

@@ -468,6 +468,185 @@ pub fn preset(name: &str, cfg: &ReflexConfig) -> Option<StockCard> {
     Some(card)
 }
 
+/// **A preset's code**: its index in [`PRESETS`], `word` case-folded — what a
+/// [`ProfileSet`] holds — or `None` for a word that names none.
+#[must_use]
+pub fn preset_code(word: &str) -> Option<u8> {
+    let word = word.trim();
+    PRESETS
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(word))
+        .and_then(|at| u8::try_from(at).ok())
+}
+
+/// **The profiles a hull is sealed with** (17b cut M5.2; doc 17 §11, §12;
+/// the owner's OQ-3 of 2026-10-10: a profile is one of Standard Doctrine's
+/// six [`PRESETS`], a slot seals up to N at the choice, N the class row's
+/// `profiles` at the mind's sealed class — Class I's two — and no row holds
+/// more than four, `[tacsim.minds].classes.*.profiles` being 1 to 4): each
+/// code an index into [`PRESETS`], in the order they were chosen, the first
+/// the profile that flies at the release.
+///
+/// Kept on [`crate::arena::mind::SealRef::profiles`], derived from the seal's
+/// own names in [`crate::arena::mind::MindSeal::seal_ref`]; a per-match
+/// constant, carried and **never folded**, as the rest of the reference is.
+/// `Copy`, so `SealRef` stays `Copy` — which holds only because the profiles
+/// 17b cut M5.2 seals are preset codes (17b cut M6's authored profiles change
+/// that). Serialised
+/// as the array of its codes (`[2, 0]` is Sniper then Line); the codes past
+/// `len` are kept `0`, so two equal sets compare equal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProfileSet {
+    /// How many profiles the set holds, 1 to [`ProfileSet::MOST`].
+    pub len: u8,
+    /// The codes, the first `len` of them read.
+    pub codes: [u8; 4],
+}
+
+impl ProfileSet {
+    /// **The Line card alone** — what every seal whose `profiles` record is
+    /// empty holds, every default seal, and what `SealRef::none` reads.
+    pub const LINE: ProfileSet = ProfileSet {
+        len: 1,
+        codes: [0; 4],
+    };
+
+    /// The most profiles a set holds — the greatest a class row may store.
+    pub const MOST: usize = 4;
+
+    /// **The set a seal's names make** — [`ProfileSet::LINE`] for none (a seal
+    /// whose set is the Line card alone writes no names), else each name's
+    /// [`preset_code`] in order; `None` for a name that is no preset, or more
+    /// than [`ProfileSet::MOST`].
+    #[must_use]
+    pub fn of_names<S: AsRef<str>>(names: &[S]) -> Option<ProfileSet> {
+        if names.is_empty() {
+            return Some(ProfileSet::LINE);
+        }
+        if names.len() > ProfileSet::MOST {
+            return None;
+        }
+        let mut codes = [0_u8; 4];
+        for (slot, name) in codes.iter_mut().zip(names) {
+            *slot = preset_code(name.as_ref())?;
+        }
+        Some(ProfileSet {
+            len: u8::try_from(names.len()).ok()?,
+            codes,
+        })
+    }
+
+    /// The codes held, in order.
+    #[must_use]
+    pub fn codes(&self) -> &[u8] {
+        self.codes
+            .get(..usize::from(self.len))
+            .unwrap_or(&self.codes)
+    }
+
+    /// **The preset at `index`** in the set (`0` the first), or `None` past
+    /// its end.
+    #[must_use]
+    pub fn name(&self, index: u8) -> Option<&'static str> {
+        self.codes()
+            .get(usize::from(index))
+            .and_then(|code| PRESETS.get(usize::from(*code)))
+            .copied()
+    }
+
+    /// **The card the profile at `index` flies** (17b cut M5.2; its review):
+    /// its preset over `reflex`, or the Line card for an index past the set —
+    /// the one rule a mind row laid on a hull's active profile
+    /// (`Arena::active_card`) and the check-out's mirror cards (the first,
+    /// `crate::arena_bridge::open_match`) share.
+    #[must_use]
+    pub fn card(&self, index: u8, reflex: &ReflexConfig) -> StockCard {
+        self.name(index)
+            .and_then(|name| preset(name, reflex))
+            .unwrap_or_else(|| line(reflex))
+    }
+
+    /// The presets held, in order. No production reader yet: 17b cut M5.4's
+    /// `MIND` block lists a seal's profiles (its review left it for that).
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.codes()
+            .iter()
+            .filter_map(|code| PRESETS.get(usize::from(*code)).copied())
+    }
+}
+
+impl Serialize for ProfileSet {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.codes().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileSet {
+    /// The array of codes: 1 to [`ProfileSet::MOST`] of them, each an index
+    /// into [`PRESETS`] — anything else is refused, never clamped.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let codes = Vec::<u8>::deserialize(deserializer)?;
+        if codes.is_empty() || codes.len() > ProfileSet::MOST {
+            return Err(serde::de::Error::invalid_length(
+                codes.len(),
+                &"1 to 4 profile codes",
+            ));
+        }
+        let mut set = ProfileSet {
+            len: 0,
+            codes: [0; 4],
+        };
+        for (slot, code) in set.codes.iter_mut().zip(&codes) {
+            if usize::from(*code) >= PRESETS.len() {
+                return Err(serde::de::Error::invalid_value(
+                    serde::de::Unexpected::Unsigned(u64::from(*code)),
+                    &"a preset's code, 0 to 5",
+                ));
+            }
+            *slot = *code;
+        }
+        set.len = u8::try_from(codes.len()).map_err(serde::de::Error::custom)?;
+        Ok(set)
+    }
+}
+
+/// **Which of its sealed profiles a hull's mind will fly, and when it last
+/// switched** (17b cut M5.2; doc 17 §11, §12, D-UM-44): `index` into the
+/// hull's [`crate::arena::mind::SealRef::profiles`] (`0`, the first, at
+/// check-out) and the arena millisecond of the last switch (`None` until the
+/// first) — the stamp D-UM-44's "at most once per 10 s" is checked against.
+///
+/// On [`crate::arena::state::UnitState::card_profile`] (`UnitState.profile`
+/// is the hull's `UnitProfile`), laid at [`ActiveProfile::FIRST`] by
+/// `Arena::new`; carried by the unit's derive, and folded into the state hash
+/// as item 1's sub-item 20 **only when it is not [`ActiveProfile::FIRST`]**
+/// (`crate::arena::hash::state_hash`), so a match that switches nothing folds
+/// the bytes it always did. Both fields decide a later card and a refusal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveProfile {
+    /// The profile flown: an index into the hull's sealed set.
+    pub index: u8,
+    /// The arena millisecond of the last switch, or `None`.
+    pub switched_ms: Option<i64>,
+}
+
+impl ActiveProfile {
+    /// **The first profile, never switched** — every hull at check-out.
+    pub const FIRST: ActiveProfile = ActiveProfile {
+        index: 0,
+        switched_ms: None,
+    };
+
+    /// Whether this is [`ActiveProfile::FIRST`]: the first profile and no
+    /// stamp — a switch back to the first still carries its stamp, so it is
+    /// not.
+    #[must_use]
+    pub const fn is_first(&self) -> bool {
+        self.index == 0 && self.switched_ms.is_none()
+    }
+}
+
 /// **The card's twenty-one sliders**, in doc 17 §11's order — the order
 /// [`StockCard::name_of`] names the first difference in and
 /// [`StockCard::read_back`] prints.
@@ -1731,5 +1910,85 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("prefer hurt (100/40/120)"))
         );
+    }
+
+    /// **17b cut M5.2: the sealed set and the active profile** (doc 17 §11,
+    /// §12; the owner's OQ-3): a set made of a seal's names holds each
+    /// preset's code in order, case-folded, and [`ProfileSet::LINE`] for none;
+    /// a name that is no preset, or a fifth, makes none. It is written as the
+    /// array of its codes and read back only as one to four codes each a
+    /// preset's. [`ActiveProfile::FIRST`] is the default and the only value
+    /// [`ActiveProfile::is_first`] holds for — a switch back to the first
+    /// keeps its stamp.
+    #[test]
+    fn m5_a_profile_set_is_its_preset_codes_and_the_first_profile_is_the_default() {
+        assert_eq!(ProfileSet::of_names::<&str>(&[]), Some(ProfileSet::LINE));
+        let set = ProfileSet::of_names(&["sniper", "LINE"]).expect("two presets");
+        assert_eq!(
+            set,
+            ProfileSet {
+                len: 2,
+                codes: [2, 0, 0, 0],
+            }
+        );
+        assert_eq!(set.codes(), &[2, 0]);
+        assert_eq!(set.names().collect::<Vec<_>>(), vec!["Sniper", "Line"]);
+        assert_eq!(
+            (set.name(0), set.name(1), set.name(2)),
+            (Some("Sniper"), Some("Line"), None)
+        );
+        assert_eq!(ProfileSet::LINE.names().collect::<Vec<_>>(), vec!["Line"]);
+        assert_eq!(ProfileSet::of_names(&["Line", "Brawler"]), None);
+        assert_eq!(
+            ProfileSet::of_names(&["Line", "Sentry", "Sniper", "Hunter", "Rearguard"]),
+            None
+        );
+        let four = ProfileSet::of_names(&["Rearguard", "Hunter", "Skirmisher", "Sentry"])
+            .expect("four presets");
+        for set in [ProfileSet::LINE, set, four] {
+            let wire = serde_json::to_value(set).expect("a set writes");
+            assert_eq!(
+                wire,
+                serde_json::json!(set.codes()),
+                "the array of its codes"
+            );
+            assert_eq!(serde_json::from_value::<ProfileSet>(wire).ok(), Some(set));
+        }
+        for refused in [
+            serde_json::json!([]),
+            serde_json::json!([0, 1, 2, 3, 4]),
+            serde_json::json!([6]),
+            serde_json::json!({"len": 1, "codes": [0, 0, 0, 0]}),
+        ] {
+            assert!(
+                serde_json::from_value::<ProfileSet>(refused.clone()).is_err(),
+                "{refused}"
+            );
+        }
+        assert_eq!(ActiveProfile::default(), ActiveProfile::FIRST);
+        assert!(ActiveProfile::FIRST.is_first());
+        for profile in [
+            ActiveProfile {
+                index: 1,
+                switched_ms: Some(5_000),
+            },
+            ActiveProfile {
+                index: 0,
+                switched_ms: Some(5_000),
+            },
+            ActiveProfile {
+                index: 1,
+                switched_ms: None,
+            },
+        ] {
+            assert!(!profile.is_first(), "{profile:?}");
+            let wire = serde_json::to_value(profile).expect("it writes");
+            assert_eq!(
+                serde_json::from_value::<ActiveProfile>(wire).ok(),
+                Some(profile)
+            );
+        }
+        assert_eq!(preset_code("rEaRgUaRd"), Some(5));
+        assert_eq!(preset_code("Brawler"), None);
     }
 }

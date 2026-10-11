@@ -736,8 +736,8 @@ impl Arena {
         // an order to a dead tank, to a tank whose engine was gone, or one past
         // the queue's bound simply vanished — three of six smoke matches left a
         // pilot typing into a wreck and being told nothing. Four of the refusals
-        // are now staged, and the other five are silent on purpose: see
-        // [`Arena::phase_two_tells`].
+        // are now staged (five since 17b cut M5.2's `Refusal::Profile`), and the
+        // other five are silent on purpose: see [`Arena::phase_two_tells`].
         let mut fire_intent_queued = false;
         // **16b cut Y.1**: phase 2 runs at one arena timestamp, so every `ordered`
         // line of one pulse belongs to one hash — an `ORDER ALL` over four pairs
@@ -1030,7 +1030,10 @@ impl Arena {
                     | IntentKind::Speed { .. }
                     | IntentKind::Order(_)
                     | IntentKind::ReleaseOrder { .. }
-                    | IntentKind::Goal(_) => {}
+                    | IntentKind::Goal(_)
+                    // 17b cut M5.2: nor a profile switch, which phase 2 writes
+                    // onto the unit (and a standing mind row's card).
+                    | IntentKind::Profile { .. } => {}
                 }
             }
         }
@@ -3050,7 +3053,8 @@ impl Arena {
 
     /// **Whether pulse phase 2 says a refusal out loud** (16b cut D.2, `B-03`).
     ///
-    /// Four of the fifteen, and no others:
+    /// Five of the twenty, and no others (four until 17b cut M5.2 added the
+    /// fifth):
     ///
     /// * [`Refusal::Wreck`] — the pilot is typing into a dead tank and nothing
     ///   else was telling them so;
@@ -3063,7 +3067,13 @@ impl Arena {
     ///   side of is a seat's discrete orders a unit per **arena second**
     ///   (`apply_intent`, 16b cut M.1, `T-82`), the same at every tempo; before
     ///   that cut it was a queue drained once a pulse, which made how many orders
-    ///   a pilot might burst a function of the tempo.
+    ///   a pilot might burst a function of the tempo;
+    /// * [`Refusal::Profile`] (**17b cut M5.2**; doc 17 D-UM-44) — a seat's
+    ///   `MIND PROFILE` the arena could not take: a hull with no seal, an index
+    ///   past the sealed set, the profile already active, or a switch inside
+    ///   ten seconds of the last. The cockpit's local pre-checks (17b cut M5.4)
+    ///   catch most of these first; this is the arena's word when one gets this
+    ///   far.
     ///
     /// The other five have nobody to tell. [`Refusal::Epoch`] is doc 16 §3.1's
     /// `FIRE` then `EXIT` burst working exactly as written: the pilot who left is
@@ -3092,7 +3102,11 @@ impl Arena {
         }
         matches!(
             refusal,
-            Refusal::Wreck | Refusal::MotionDisabled | Refusal::QueueFull | Refusal::PowerNotOnline
+            Refusal::Wreck
+                | Refusal::MotionDisabled
+                | Refusal::QueueFull
+                | Refusal::PowerNotOnline
+                | Refusal::Profile
         )
     }
 
@@ -3119,7 +3133,8 @@ impl Arena {
     /// phase, so an AI refusal reaches nobody.
     ///
     /// Pulse **phase 2** stages through here too since 16b cut D.2 (`B-03`), for
-    /// the four refusals [`Arena::phase_two_tells`] admits; the order word is
+    /// the five refusals [`Arena::phase_two_tells`] admits (four until 17b cut
+    /// M5.2); the order word is
     /// [`IntentKind::as_str`] in both phases, so one order cannot be spelled two
     /// ways.
     fn stage_refusal(

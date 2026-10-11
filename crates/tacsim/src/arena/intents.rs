@@ -256,6 +256,31 @@ pub enum IntentKind {
     /// `move`) holds that name and the command registry refuses a collision —
     /// the M1a plan's departure (f).
     Goal(MotorGoal),
+    /// **Switch the profile the hull's mind will fly** (17b cut M5.2; doc 17
+    /// §11, §12, D-UM-44; the owner's OQ-3): a seated pilot's `MIND PROFILE`
+    /// (the station verb lands in 17b cut M5.4), naming one of the hull's
+    /// sealed profiles by its index in
+    /// [`crate::arena::mind::SealRef::profiles`]. Continuous, [`Channel::Helm`],
+    /// word `mind` — the verb the pilot types, as `Goal` reads `drive` — under
+    /// a buffer key of its own (`continuous_code` 5 in the arena task), so of
+    /// two switches in one pulse the later stands and a `HEADING` or an
+    /// `ORDER` of the same pulse keeps its own key.
+    ///
+    /// Taken in its own arm of [`apply_intent`] **before the continuous
+    /// gates**, on [`IntentKind::Order`]'s precedent: the profile is what the
+    /// mind will fly, not motion, so a cold or immobile hull switches. Only a
+    /// seat gives one — a mind does not switch its own profile and no station
+    /// function builds one, so [`IntentSource::Mind`], `Machine` and `Cond`
+    /// are refused [`Refusal::Channel`] — and the arena refuses
+    /// [`Refusal::Profile`] a hull with no seal, an index past the sealed set,
+    /// the profile already active, or a switch inside 10,000 ms of the last
+    /// (D-UM-44's "at most once per 10 s"). A switch writes
+    /// [`crate::arena::state::UnitState::card_profile`], the card of a mind row
+    /// that stands (dormant under the seat), and one `mind_card` line.
+    Profile {
+        /// The profile switched to: an index into the hull's sealed set.
+        index: u8,
+    },
 }
 
 /// **What a [`IntentKind::Goal`] asks of the motor** (17b cut M1a.4; doc 17 §4
@@ -303,6 +328,7 @@ impl IntentKind {
                 | IntentKind::Order(_)
                 | IntentKind::ReleaseOrder { .. }
                 | IntentKind::Goal(_)
+                | IntentKind::Profile { .. }
         )
     }
 
@@ -347,7 +373,9 @@ impl IntentKind {
             | IntentKind::ReleaseOrder { .. }
             | IntentKind::Place { .. }
             // 17b cut M1a.4: the motor is the helm's drive-by-wire.
-            | IntentKind::Goal(_) => Channel::Helm,
+            | IntentKind::Goal(_)
+            // 17b cut M5.2: a profile is a posture, as an order is.
+            | IntentKind::Profile { .. } => Channel::Helm,
             IntentKind::Lock { .. } | IntentKind::Emcon { .. } => Channel::Sensors,
             // 17b cut M1b.1: an arming is the weapons station's.
             IntentKind::Fire { .. } | IntentKind::Condition(_) => Channel::Fire,
@@ -372,6 +400,9 @@ impl IntentKind {
             // 17b cut M1a.4: the cockpit's word, not doc 17's `goto` (departure
             // (f)), so the staged refusal names the verb the pilot typed.
             IntentKind::Goal(_) => "drive",
+            // 17b cut M5.2: the verb the pilot types (`MIND PROFILE`, 17b cut
+            // M5.4), so a staged refusal reads `MIND refused. …`.
+            IntentKind::Profile { .. } => "mind",
         }
     }
 
@@ -550,6 +581,16 @@ pub enum Refusal {
     /// ([`crate::arena::perception::RefusalDetail::Floor`]).
     #[error("that condition is under the Compact floor")]
     Unlawful,
+    /// **A profile switch the arena cannot take now** (17b cut M5.2; doc 17
+    /// §11, D-UM-44): a [`IntentKind::Profile`] landing on a hull with no
+    /// seal, naming an index past its sealed set, naming the profile already
+    /// active, or inside 10,000 ms of the last switch. The cockpit refuses
+    /// each case locally off the held frame (17b cut M5.4); this is the
+    /// arena's word when the order gets that far — the `NoJammer`
+    /// precedent. Outside a mind's API (no station function builds a switch),
+    /// so `API_VERSION` stands.
+    #[error("that profile cannot be switched to now")]
+    Profile,
 }
 
 impl Refusal {
@@ -577,6 +618,8 @@ impl Refusal {
             Refusal::Unwarranted => "unwarranted",
             Refusal::NoSlot => "no_slot",
             Refusal::Unlawful => "unlawful",
+            // 17b cut M5.2: a profile switch's one word.
+            Refusal::Profile => "profile",
         }
     }
 }
@@ -742,7 +785,14 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
 /// 3. the channel carries this order — [`Refusal::Channel`];
 /// 4. the unit is not a wreck — [`Refusal::Wreck`].
 ///
-/// Then, for a **continuous** order: power must be online
+/// Three continuous kinds are taken in arms of their own BEFORE the next two
+/// gates, so neither answers them: a squad's [`IntentKind::Order`] and its
+/// [`IntentKind::ReleaseOrder`] (16b cuts N.2 and Z.2 — an order to a cold or
+/// immobile tank is how it is told to start up, and still says whether it
+/// shoots), and (**17b cut M5.2**) a seat's [`IntentKind::Profile`] (the
+/// profile is what the mind will fly, not motion: `apply_profile`).
+///
+/// Then, for every other **continuous** order: power must be online
 /// ([`Refusal::PowerNotOnline`], doc 16 §3.3) and motion must not be disabled
 /// ([`Refusal::MotionDisabled`]); the desired value is set, latest-wins. A
 /// heading is normalised modulo 360,000. A speed is clamped to
@@ -833,6 +883,13 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     if unit.limits.wreck && !place {
         return IntentOutcome::Refused(Refusal::Wreck);
     }
+    // **17b cut M5.2** — a seat's profile switch (doc 17 §11, D-UM-44), taken
+    // here, before the continuous gates, on the order's precedent: the profile
+    // is what the mind will fly, not motion, so neither `PowerNotOnline` nor
+    // `MotionDisabled` answers it and a cold or immobile hull switches.
+    if let IntentKind::Profile { index } = i.kind {
+        return apply_profile(arena, i.unit, index, source);
+    }
     // **16b cut N.2** — the squad's standing order (doc 16 §6 "Deliberation").
     //
     // It is taken here, before the continuous branch, because it is subject to
@@ -859,10 +916,23 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         let hash = arena.event_hash();
         let standing = crate::deliberation::order::StandingOrder::accepted((**order).clone(), at);
         let rekeyed = arena.rekey_order(i.unit, &standing.order, standing.expires_ms);
-        let row = arena
-            .minds
-            .entry(i.unit)
-            .or_insert_with(|| crate::arena::mind::MindState::fresh(&arena.arena_cfg.reflex));
+        // **17b cut M5.2** (the design note's item 5): a row laid here flies
+        // the hull's active sealed profile (`Arena::active_card`; the Line
+        // card for a default seal, byte for byte `MindState::fresh`), as
+        // `Arena::adopt_mind` lays one. Latent: every mind hull is handed its
+        // row at the check-out or its release, and no row is ever removed.
+        if !arena.minds.contains_key(&i.unit) {
+            let card = arena.unit(i.unit).map_or_else(
+                || crate::arena::card::line(&arena.arena_cfg.reflex),
+                |state| arena.active_card(state),
+            );
+            arena
+                .minds
+                .insert(i.unit, crate::arena::mind::MindState::fresh_with(card));
+        }
+        let Some(row) = arena.minds.get_mut(&i.unit) else {
+            return IntentOutcome::Refused(Refusal::Unknown);
+        };
         row.order = Some(rekeyed);
         // **17b cut M4.6** (the owner's STOP C ruling, 2026-10-09): the issuer
         // beside the order, written here where it lands — from the same
@@ -870,6 +940,18 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         // and never folded (`MindState::order_issuer`), so the hash asked above
         // is the one the line would carry without it.
         row.order_issuer = order.issuer;
+        // **17b cut M5.2** (doc 17 §24's STOP E, the owner's remedy): the
+        // charge of a `Support` beside it, from the same `Order` — the unit,
+        // not this hull's row for it, so the arena ends the order when the
+        // charge leaves the match whether or not the supporter held it
+        // classified here (`Arena::end_mind_support_whose_charge_left`). A
+        // self-charge is `Engage` (`Arena::rekey_order`) and holds none.
+        // Folded inside the order's `Support` bytes, so the hash asked above
+        // is the one the line would carry without it.
+        row.order_charge = match order.objective {
+            crate::deliberation::order::Objective::Support { of } if of != i.unit => Some(of),
+            _ => None,
+        };
         // **16b cut Y.1** — the black box records the order that landed, one line
         // per unit, at `now_ms`, with no draws. It is cadence-safe for the reason
         // `StandingOrder::accepted_ms` already is: phase 2 runs at the pulse's
@@ -952,7 +1034,9 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             | IntentKind::ReleaseOrder { .. }
             | IntentKind::Place { .. }
             | IntentKind::Emcon { .. }
-            | IntentKind::Condition(_) => {}
+            | IntentKind::Condition(_)
+            // 17b cut M5.2: taken in its own arm above.
+            | IntentKind::Profile { .. } => {}
         }
         match &i.kind {
             IntentKind::Goal(goal) => land_goal(arena, i.unit, *goal, source),
@@ -1014,6 +1098,102 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     IntentOutcome::Queued
 }
 
+/// **The least time between two profile switches of one hull**, arena
+/// milliseconds (17b cut M5.2; doc 17 D-UM-44: "at most once per 10 s"),
+/// checked at the switch's landing against
+/// [`crate::arena::card::ActiveProfile::switched_ms`].
+pub const PROFILE_SWITCH_MS: i64 = 10_000;
+
+/// **Apply one seat's profile switch** (17b cut M5.2; doc 17 §11, §12,
+/// D-UM-44), for [`apply_intent`]'s [`IntentKind::Profile`] arm once the unit,
+/// the epoch, the channel and the wreck have been read.
+///
+/// Refused, in this order: [`Refusal::Channel`] from anything but an
+/// [`IntentSource::Seat`] (a mind does not switch its own profile; no
+/// station function builds one); then [`Refusal::Profile`] for a hull with no
+/// seal ([`crate::arena::mind::SealRef::none`]'s zero digest), an `index` not
+/// under the sealed set's `len`, the profile already active, or a landing
+/// inside [`PROFILE_SWITCH_MS`] of the last switch.
+///
+/// Taken, in this order: the hash asked **before** anything is written
+/// (`Arena::event_hash`'s rule — under phase 2's one lazy hash); the hull's
+/// [`crate::arena::state::UnitState::card_profile`] written (`index`, stamped
+/// `now_ms`); the card of a mind row that STANDS — dormant under the seat
+/// (`Arena::suspend_mind`) — written to the preset the profile names, over
+/// the arena's own doctrine ([`crate::arena::card::preset`]), so the release
+/// adopts the row flying it; and ONE [`EventKind::MindCard`] line at `now_ms`
+/// with the card's name, the sliders the switch moved (from the row's card,
+/// or from the profile it switched from when no row stands) and the whole
+/// card. A hull with no row is laid one on the active profile at its release
+/// (`Arena::adopt_mind`).
+///
+/// **The row it writes is a dormant one** (an invariant, not a check): only a
+/// seat's switch is taken, and a seat's helm epoch is current only while the
+/// hull is [`Controller::Pilot`]'s — a `Released` raises the epoch, so a seat
+/// cannot reach a hull a mind is flying, and staff `@arena/intent` builds no
+/// `Profile`. A standing row here is therefore always the dormant row of a
+/// seated hull (`Arena::suspend_mind`), never a flying mind's, whose card is
+/// `@mind/set`'s lane alone. 17b cut M5.4's `MIND PROFILE` forwards from the
+/// helm seat only, which keeps it so. (The `af1` shape walk applies a seat's
+/// switch to a mind-flown hull directly, a state no production path reaches,
+/// to put the switched profile under the pin.)
+fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource) -> IntentOutcome {
+    if source != IntentSource::Seat {
+        return IntentOutcome::Refused(Refusal::Channel);
+    }
+    let now_ms = arena.now_ms;
+    let Some(state) = arena.unit(unit) else {
+        return IntentOutcome::Refused(Refusal::Unknown);
+    };
+    let (seal, active) = (state.seal, state.card_profile);
+    let inside_switch_window = active
+        .switched_ms
+        .is_some_and(|at| now_ms < at.saturating_add(PROFILE_SWITCH_MS));
+    let (Some(from), Some(to)) = (seal.profiles.name(active.index), seal.profiles.name(index))
+    else {
+        return IntentOutcome::Refused(Refusal::Profile);
+    };
+    if seal.digest == [0; 32] || index == active.index || inside_switch_window {
+        return IntentOutcome::Refused(Refusal::Profile);
+    }
+    let reflex = &arena.arena_cfg.reflex;
+    let (Some(card), Some(was)) = (
+        crate::arena::card::preset(to, reflex),
+        crate::arena::card::preset(from, reflex),
+    ) else {
+        return IntentOutcome::Refused(Refusal::Profile);
+    };
+    let name = SmolStr::new(card.name_of(reflex));
+    let before = arena.minds.get(&unit).map_or(was, |row| row.card.clone());
+    let changed = card
+        .changed_from(&before)
+        .into_iter()
+        .map(SmolStr::new_static)
+        .collect();
+    let hash = arena.event_hash();
+    if let Some(state) = arena.unit_mut(unit) {
+        state.card_profile = crate::arena::card::ActiveProfile {
+            index,
+            switched_ms: Some(now_ms),
+        };
+    }
+    if let Some(row) = arena.minds.get_mut(&unit) {
+        row.card = card.clone();
+    }
+    let _ = arena.ledger.append(
+        now_ms,
+        EventKind::MindCard {
+            unit,
+            name,
+            changed,
+            card,
+        },
+        Vec::new(),
+        hash,
+    );
+    IntentOutcome::AppliedContinuous
+}
+
 /// **Apply one unit's release** (16b cut Z.2; 16c Q44), for [`apply_intent`]'s
 /// [`IntentKind::ReleaseOrder`] arm once the unit is known to be a machine's —
 /// a mind's since **17b cut M1a.5** (one helper for the reflex controller's and
@@ -1060,8 +1240,10 @@ fn release_machine_order(
     let hash = arena.event_hash();
     if let Some(state) = arena.minds.get_mut(&unit) {
         state.order = None;
-        // 17b cut M4.6 (the owner's STOP C): the issuer goes with the order.
+        // 17b cut M4.6 (the owner's STOP C): the issuer goes with the order,
+        // and (17b cut M5.2, STOP E) the charge.
         state.order_issuer = None;
+        state.order_charge = None;
     }
     journal_released(arena, unit, squad, issuer, at, hash);
 }
@@ -3623,6 +3805,34 @@ mod tests {
             serde_json::to_string(&Refusal::Unlawful).expect("serialises"),
             "\"unlawful\""
         );
+    }
+
+    /// **17b cut M5.2: the profile switch's intent and word** (doc 17 §11,
+    /// D-UM-44; the design note's item 4): `IntentKind::Profile` is
+    /// continuous, not discrete, on the helm, word `mind` (the verb the pilot
+    /// types), carried as `{"profile": {"index": n}}`; `Refusal::Profile`'s
+    /// word is `profile`, carried as `"profile"`, its sentence `that profile
+    /// cannot be switched to now`.
+    #[test]
+    fn m5_the_profile_intent_and_its_refusal_word() {
+        let kind = IntentKind::Profile { index: 1 };
+        assert!(kind.is_continuous());
+        assert!(!kind.is_discrete());
+        assert_eq!(kind.channel_required(), Channel::Helm);
+        assert_eq!(kind.as_str(), "mind");
+        let wire = serde_json::to_value(&kind).expect("serialises");
+        assert_eq!(wire, serde_json::json!({"profile": {"index": 1}}));
+        assert_eq!(serde_json::from_value::<IntentKind>(wire).ok(), Some(kind));
+        assert_eq!(Refusal::Profile.as_str(), "profile");
+        assert_eq!(
+            serde_json::to_string(&Refusal::Profile).expect("serialises"),
+            "\"profile\""
+        );
+        assert_eq!(
+            Refusal::Profile.to_string(),
+            "that profile cannot be switched to now"
+        );
+        assert_eq!(PROFILE_SWITCH_MS, 10_000);
     }
 
     /// **A possess clears the dormant row's order** (17b cut M4.3 over

@@ -129,7 +129,8 @@ pub fn start(
     // unit-id order. A `@arena/start` match therefore has callsigns too, and they
     // are the same on a replay. **17b cut M5.1**: and no lobby, so no mind was
     // chosen for any of them (`Side::minds` empty): every hull is sealed with
-    // the default, as every hull of every match still is until 17b cut M5.2.
+    // the default, Standard Doctrine on Line (17b cut M5.2 reads a missing
+    // entry as `SealChoice::unchosen`).
     let sides = vec![
         Side {
             team: crate::arena::state::Team::Red,
@@ -1117,6 +1118,32 @@ fn arm_panic_for_seed(
     .map_err(|error| error.to_string())?;
     let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
         .map_err(|error| error.to_string())?;
+    // 17b cut M5.2's review: sealed under the fixture terms rated Class 0,
+    // which no core is under, a refusal returned as the verb's `Err` and never
+    // the fixture seal's `expect` — this throwaway arena runs no mind. (Since
+    // 17b cut M5.2's S1 ruling a governed core whose class cell reads 0 is
+    // never over-class either: it flies the ROM, as no core does.)
+    let mut fault_unit = CustodyUnit {
+        id: unit,
+        team: Team::Red,
+        pose: mush_sim::data::Pose::at(500, 500, 0, posture),
+        mobility: TrackedRules::default(),
+        sensor_height_cm: 0,
+        sensor: None,
+        weapons: Vec::new(),
+        profile: crate::arena::resolution::UnitProfile::default(),
+        gunnery: 0,
+        controller: crate::arena::state::Controller::Pilot,
+        // 16b cut Q.1: no pod behind it.
+        slot: 0,
+        unit: cells,
+        seal: crate::arena::MindSeal::placeholder(),
+    };
+    fault_unit
+        .reseal(
+            &crate::match_::seal::SealTerms::fixture().rated(crate::arena::core::CoreClass::Zero),
+        )
+        .map_err(|error| error.to_string())?;
     let mut arena = Arena::new(
         CustodyOut {
             definition: ArenaDefinition {
@@ -1127,25 +1154,7 @@ fn arm_panic_for_seed(
                 waypoints: crate::arena::state::Waypoints::default(),
                 modes: Vec::new(),
             },
-            units: vec![
-                CustodyUnit {
-                    id: unit,
-                    team: Team::Red,
-                    pose: mush_sim::data::Pose::at(500, 500, 0, posture),
-                    mobility: TrackedRules::default(),
-                    sensor_height_cm: 0,
-                    sensor: None,
-                    weapons: Vec::new(),
-                    profile: crate::arena::resolution::UnitProfile::default(),
-                    gunnery: 0,
-                    controller: crate::arena::state::Controller::Pilot,
-                    // 16b cut Q.1: no pod behind it.
-                    slot: 0,
-                    unit: cells,
-                    seal: crate::arena::MindSeal::placeholder(),
-                }
-                .sealed(),
-            ],
+            units: vec![fault_unit],
             pilots: Vec::new(),
             resolution: crate::match_::stock_resolution(),
             seed,

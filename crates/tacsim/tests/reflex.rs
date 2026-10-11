@@ -9888,9 +9888,10 @@ fn z2_charge_lost(cadence_ms: i64, loss: Z2Loss) -> (Replay, Vec<Kept>, bool) {
 /// thinks, one substep after its think — inside
 /// `(10,000, 10,000 + STOCK_THINK_MS + substep]`. A charge gone from
 /// `arena.units` has no row on a mind's view (`frame_scope` drops it), so
-/// the mind cannot see the end; the arena reads the supporter's own contact
-/// row for the order's `of`, still in its store (a row ages out only after
-/// the contact TTL), and finds its unit gone. The line is the reflex's own
+/// the mind cannot see the end; the arena reads the charge's unit off the
+/// order (`MindState::order_charge`, 17b cut M5.2 — until then the
+/// supporter's own contact row for the order's `of`, still in its store
+/// here) and finds it gone. The line is the reflex's own
 /// shape: `OrderExpired { unit, squad, objective: support }`. Three
 /// cadences under `step_settled`: one event list, one hash sequence, one
 /// final field, one think sequence.

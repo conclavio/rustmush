@@ -530,12 +530,19 @@ pub enum EventKind {
     /// D-UM-43): a staff `@mind/set` landed on the arena's OWN row of a
     /// [`crate::arena::state::Controller::Mind`] hull at the start of the
     /// pulse after it was offered (`Arena::apply_mind_cards`, phase 2's head),
-    /// under phase 2's one hash.
+    /// under phase 2's one hash — or (**17b cut M5.2**; doc 17 §11, D-UM-44)
+    /// a seat's `MIND PROFILE` ([`crate::arena::intents::IntentKind::Profile`])
+    /// landing in phase 2 on a seated hull — its dormant row's card rewritten
+    /// when one stands — under the same hash: a recorded intent, its `card` the
+    /// switched-to profile's preset, the card that will fly at the release.
+    /// Read back to staff, and to the hull's own pilot in their report (17b
+    /// cut M5.6).
     ///
     /// It carries **the whole card as applied**, so the tape alone says what
-    /// the mind was flying from that millisecond on — the registry's read-back
-    /// is written from this line (`crate::arena_bridge`'s `on_chunk`), never
-    /// from a world-side copy. Never said to a pilot.
+    /// the mind was flying — or, after a seat's switch, will fly — from that
+    /// millisecond on; the registry's read-back is written from this line
+    /// (`crate::arena_bridge`'s `on_chunk`), never from a world-side copy.
+    /// Never said to a pilot as it lands.
     MindCard {
         /// The hull.
         unit: ObjId,

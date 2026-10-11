@@ -1347,6 +1347,11 @@ pub(crate) fn consequence_words(consequences: &[SmolStr]) -> String {
         .join("; ")
 }
 
+/// **The arena's sentence for a profile switch it refused** (17b cut M5.2;
+/// [`crate::arena::intents::Refusal::Profile`]): the half after `MIND
+/// refused.`, which [`order_refused`] composes from the intent's word.
+pub const PROFILE_REFUSED: &str = "That profile cannot be switched to now.";
+
 /// **The line an arena-side refusal prints** (16b cut F.2).
 ///
 /// It is the **same sentence** the cockpit's own pre-check prints for the same
@@ -1419,6 +1424,11 @@ pub(crate) fn refusal_line(
         (Refusal::NoSlot, _) => CockpitError::NoSlot.to_string(),
         // The law's other word (gated for a mind from 17b cut M1b.2).
         (Refusal::Unwarranted, _) => "That has no warrant.".to_owned(),
+        // **17b cut M5.2** (doc 17 §11, D-UM-44): the arena's word for a
+        // `MIND PROFILE` it cannot take, said as `MIND refused. That profile
+        // cannot be switched to now.`; the cockpit's own pre-checks (17b cut
+        // M5.4) say the specific case through the same `order_refused`.
+        (Refusal::Profile, _) => PROFILE_REFUSED.to_owned(),
     };
     order_refused(order, weapon, &said)
 }
@@ -11238,6 +11248,17 @@ mod tests {
         assert_eq!(
             CockpitError::Unlawful { floor_pct: 10 }.to_string(),
             "The Compact floor is 10%; a condition may not ask for less."
+        );
+        // 17b cut M5.2: the arena's word for a `MIND PROFILE`, composed from
+        // the intent's own word as every staged refusal is.
+        assert_eq!(
+            refusal_line(
+                IntentKind::Profile { index: 1 }.as_str(),
+                Refusal::Profile,
+                None,
+                RefusalDetail::None
+            ),
+            "MIND refused. That profile cannot be switched to now."
         );
         assert_eq!(
             CockpitError::NoSlot.to_string(),

@@ -375,8 +375,8 @@ pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, Ledge
 pub use mind::{
     DropCause, Landed, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue,
     Memory, MindRunner, MindSeal, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS,
-    STOCK_MEMORY_LIMITS, STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SortieId,
-    ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory, default_mind_runner,
+    STOCK_MEMORY_LIMITS, STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SealedProfile,
+    SortieId, ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory, default_mind_runner,
     encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};

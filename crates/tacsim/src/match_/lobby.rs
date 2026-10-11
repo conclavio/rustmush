@@ -149,8 +149,9 @@ pub struct Slot {
     /// changes), resolved against the holdings seam at the check-out
     /// ([`SimError::MindNotHeld`] when the pilot no longer holds it) into
     /// `crate::match_::Side::minds`. It goes with the slot, as
-    /// [`Slot::unit_type`] does. **17b cut M5.1 records and reads it back; the
-    /// check-out still seals Standard Doctrine on Line until 17b cut M5.2.**
+    /// [`Slot::unit_type`] does. **Since 17b cut M5.2 the check-out seals
+    /// it** (`crate::match_::start`; Q-UM-15's substitution under
+    /// [`Centre::doctrine_only`]).
     ///
     /// `#[serde(default)]` and skipped when `None`, under the live record's
     /// `LIVE_FORMAT` policy ([`Slot::released_by_resume`]'s precedent): a
@@ -343,6 +344,24 @@ pub struct Centre {
     /// it always wrote.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill_minds: Vec<FillChoice>,
+    /// **Humans on both sides: only Standard Doctrine flies** (17b cut M5.2;
+    /// doc 17 §21's Q-UM-15 at its default, the owner's OQ-5; the design
+    /// note's C-7 and item 11). Decided ONCE, at `SIM START` ([`start`]),
+    /// from the claimed slots: `true` when both sides hold one. Under it the
+    /// check-out (`ready`) seals a pilot's non-Doctrine choice as Standard
+    /// Doctrine on Line, and a lead's non-Doctrine fill as Standard Doctrine
+    /// at the lead's chosen profile when it is one of Doctrine's six presets
+    /// (else Line), each `substituted` and sealed with the fallback `humans
+    /// on the other side`; Standard Doctrine at any preset is Doctrine and
+    /// never substituted, so no production match substitutes anything before
+    /// 17b cut M6 (production holds Doctrine alone, the owner's OQ-2).
+    ///
+    /// Cleared with the rest of the board at the return to `Idle`.
+    /// `#[serde(default)]` and skipped when `false`, under the live record's
+    /// `LIVE_FORMAT` policy: a centre with humans on one side writes the bytes
+    /// it always wrote.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub doctrine_only: bool,
 }
 
 impl Centre {
@@ -792,7 +811,8 @@ pub enum SimError {
     /// **A mind rated above a governed core's class** (17b cut M5.1;
     /// D-UM-41, the owner's OQ-10 (d); the design note's C-24): refused at
     /// the choice. A chassis with no core is never over-class (it flies the
-    /// ROM).
+    /// ROM), nor one whose governed core is Class 0 (17b cut M5.2's S1
+    /// ruling: it flies the ROM, as no core does).
     #[error(
         "{mind} thinks at Class {rated_word}; this {chassis}'s core is Class {core_word} and is \
          governed.",
@@ -2224,7 +2244,9 @@ fn profile_lawful(
 /// **The fit at the choice, but the pool** (17b cut M5.1; doc 17 §9, §12;
 /// the design note's M5.1 item 4): whether `held`, sealed with `profiles`,
 /// may fly `chassis` — over-class (D-UM-41, C-24: a governed core below the
-/// mind's rating; a chassis with no core never is), the profile count at the
+/// mind's rating; a chassis with no core never is, nor, since 17b cut M5.2's
+/// S1 ruling, one whose governed core is Class 0, which flies the ROM — the
+/// seal's own predicate, `crate::match_::seal::seal_for`), the profile count at the
 /// class it would seal at (OQ-3), and each profile's card ([`profile_lawful`],
 /// the floor on an armed chassis only, C-23) — answering that class.
 /// [`fit_mind`] adds the pool; `SIM AI MIND` asks this alone for each pod its
@@ -2242,6 +2264,7 @@ fn fit_on_chassis(
     let core = core_of_type(w, chassis);
     if let Some((core, true)) = core
         && held.rated > core
+        && core > CoreClass::Zero
     {
         return Err(SimError::OverClass {
             mind: held.name().to_owned(),
@@ -2355,6 +2378,98 @@ fn fill_held(w: &World, centre: &Centre, fill: &FillChoice) -> Option<HeldMind> 
         }
     }
 }
+
+/// **What a side's fill is sealed with** (17b cut M5.1's resolution, and
+/// 17b cut M5.2's Q-UM-15): the mind `held` resolved from `fill` at its one
+/// profile — or, under [`Centre::doctrine_only`] with `held` not Standard
+/// Doctrine, Standard Doctrine **at the lead's chosen profile** when it is
+/// one of Doctrine's six presets, else Line (doc 17:1488; the design note's
+/// C-7), `substituted`.
+fn fill_seal_choice(held: &HeldMind, fill: &FillChoice, doctrine_only: bool) -> SealChoice {
+    if doctrine_only && !held.is_doctrine() {
+        let doctrine = HeldMind::doctrine();
+        let profiles = fill
+            .choice
+            .profiles
+            .first()
+            .and_then(|name| doctrine.preset(name))
+            .filter(|name| name != "Line")
+            .into_iter()
+            .collect();
+        return SealChoice {
+            held: doctrine,
+            profiles,
+            chose: true,
+            substituted: true,
+        };
+    }
+    SealChoice {
+        held: held.clone(),
+        profiles: fill.choice.profiles.clone(),
+        chose: true,
+        substituted: false,
+    }
+}
+
+/// **The pilots Q-UM-15's sentence is owed to at `SIM START`** (17b cut
+/// M5.2; the design note's item 11): under [`Centre::doctrine_only`], each
+/// claimed slot's pilot whose own choice resolves to a mind that is not
+/// Standard Doctrine, and each lead whose fill choice does (when the fill
+/// fields a pod: `[tacsim.match].ai_fill` on, no range, and [`fill_pods`]
+/// finds one) — the hulls [`ready`] will substitute — once each, in claim
+/// order. Empty when the rule is off, and on every production server before
+/// 17b cut M6 (production holds Standard Doctrine alone).
+fn substituted_pilots(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> Vec<ObjId> {
+    let mut pilots: Vec<ObjId> = Vec::new();
+    if !centre.doctrine_only {
+        return pilots;
+    }
+    for slot in &centre.slots {
+        let Some(choice) = slot.mind.as_ref() else {
+            continue;
+        };
+        if holdings::resolve(&holdings::held_by(w, slot.pilot), &choice.mind)
+            .is_some_and(|held| !held.is_doctrine())
+            && !pilots.contains(&slot.pilot)
+        {
+            pilots.push(slot.pilot);
+        }
+    }
+    if match_cfg.ai_fill && centre.mode != MatchMode::Range {
+        for fill in &centre.fill_minds {
+            let FillSetter::Lead(account) = fill.by else {
+                continue;
+            };
+            let Some(lead) = centre
+                .slots
+                .iter()
+                .find(|slot| slot.team == fill.team && slot.account == account)
+            else {
+                continue;
+            };
+            let fielded: Vec<ObjId> = centre
+                .slots
+                .iter()
+                .filter(|slot| slot.team == fill.team)
+                .filter_map(|slot| centre::tank_for_slot(w, fill.team, slot.index))
+                .collect();
+            if fill_held(w, centre, fill).is_some_and(|held| !held.is_doctrine())
+                && !fill_pods(w, centre, match_cfg, fill.team, &fielded).is_empty()
+                && !pilots.contains(&lead.pilot)
+            {
+                pilots.push(lead.pilot);
+            }
+        }
+    }
+    pilots
+}
+
+/// **Q-UM-15's sentence** (17b cut M5.2; doc 17:1490-1491; the owner's
+/// OQ-5): said at `SIM START` to each pilot whose own choice (or, for a
+/// lead, whose fill's) is substituted, to that pilot alone — never in a
+/// production match of 17b cut M5. 80 columns.
+pub const HUMANS_ON_THE_OTHER_SIDE: &str =
+    "Humans on the other side: your fill and any released hull fly Standard Doctrine.";
 
 /// **Every class side `team` would field, but slot `except`'s** (17b cut
 /// M5.1): its claimed slots at their own class ([`slot_class`]) and, under
@@ -2612,8 +2727,8 @@ fn mind_read_lines(w: &World, actor: ObjId, state: MatchState, slot: Option<&Slo
 ///
 /// **Every reply is the actor's alone** (`sys_to_actor`): nothing about a
 /// choice is announced (doc 17 §12's fog; `SIM UNIT`'s announce is what this
-/// must not copy). The choice is recorded on [`Slot::mind`]; **the check-out
-/// still seals Standard Doctrine on Line until 17b cut M5.2.**
+/// must not copy). The choice is recorded on [`Slot::mind`], and the
+/// check-out seals it (17b cut M5.2).
 ///
 /// # Errors
 ///
@@ -3124,6 +3239,9 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         centre.state = MatchState::Boarding;
         centre.match_id = Some(match_id);
         centre.board_deadline_ms = Some(deadline);
+        // **17b cut M5.2** (Q-UM-15; the owner's OQ-5): decided once, here,
+        // from the claims — humans on both sides.
+        centre.doctrine_only = Team::ALL.iter().all(|team| centre.side_len(*team) > 0);
     }
     tracing::info!(
         match_id = match_id.0,
@@ -3146,6 +3264,18 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         .unwrap_or_default();
     for pilot in pilots {
         crate::match_::tutorial::hint(ctx, pilot, crate::match_::tutorial::HintPoint::Boarding);
+    }
+    // **17b cut M5.2** (Q-UM-15; the design note's item 11): each pilot whose
+    // own choice — or, for a lead, whose fill's — the check-out will seal as
+    // Standard Doctrine is told so now, to that pilot alone (the actor of
+    // `SIM START` is whoever typed it), once. Never in production before
+    // 17b cut M6 (production holds Standard Doctrine alone).
+    let told = centre(ctx.w)
+        .map(|centre| substituted_pilots(ctx.w, centre, &match_cfg))
+        .unwrap_or_default();
+    for pilot in told {
+        ctx.out
+            .sys_to_actor(pilot, NOTICE_CATEGORY, HUMANS_ON_THE_OTHER_SIDE);
     }
     Ok(())
 }
@@ -3771,6 +3901,11 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             // waits on to know the match is theirs, so the join line is already in
             // hand by then and never lands in the answer to what they type next.
             join_the_nets(ctx);
+            // **17b cut M5.2** (doc 17 §12; D7, C-18; the design note's item
+            // 12): each seated pilot whose slot chose a mind, or whose choice
+            // was substituted, reads what was sealed — to that pilot alone,
+            // before `Good hunting.`, which stays the check-out's last line.
+            tell_seal_lines(ctx, match_id, &sides);
             announce(ctx, format!("Match {match_id} is running. Good hunting."));
             Ok(())
         }
@@ -3805,6 +3940,79 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             );
             Err(SimError::Start(format!("{said}.")))
         }
+    }
+}
+
+/// **The seal line** (17b cut M5.2; doc 17 §12 "The station view says so in
+/// one line before `STARTUP`"; the design note's D7, C-18 and item 12):
+/// `Sealed for this sortie: Standard Doctrine (Sniper, Line), Class I; MIND
+/// reads it.` — the mind and its profiles as the seal names them (Line
+/// alone when it names none) and the class the seal records — or, for a
+/// choice Q-UM-15 substituted, `…, Class I, for humans on the other side;
+/// MIND reads it.` No seal id (C-14). `None` for a seal that names no mind.
+#[must_use]
+pub fn seal_line(seal: &crate::arena::mind::MindSeal, substituted: bool) -> Option<String> {
+    if seal.mind.is_empty() {
+        return None;
+    }
+    let profiles: Vec<SmolStr> = seal
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    let why = if substituted {
+        ", for humans on the other side"
+    } else {
+        ""
+    };
+    Some(format!(
+        "Sealed for this sortie: {}, Class {}{why}; MIND reads it.",
+        mind_words(&seal.mind, &profiles),
+        seal.class.as_str()
+    ))
+}
+
+/// **Tell each choosing pilot what was sealed** (17b cut M5.2; the design
+/// note's item 12) — [`run`]'s success arm, after the nets and before `Good
+/// hunting.`: per seated slot whose hull's [`SealChoice`] chose a mind or was
+/// substituted, its [`seal_line`] off the seal the check-out recorded
+/// (`MatchRecord::minds`), **to that slot's pilot alone** — an audience
+/// naming the pilot's own object, never the actor of `run` (the last BOARDer,
+/// or nobody on the deadline's tick: F2). An unchosen slot's seal is the
+/// default the board, the help and `MIND` describe, and is not said (C-18).
+/// The fill's choice is no seated pilot's hull, and is not said either.
+fn tell_seal_lines(ctx: &mut Ctx<'_>, match_id: MatchId, sides: &[Side]) {
+    let seated: Vec<(ObjId, ObjId)> = centre(ctx.w)
+        .map(|centre| {
+            centre
+                .slots
+                .iter()
+                .filter_map(|slot| slot.unit.map(|unit| (slot.pilot, unit)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let lines: Vec<(ObjId, String)> = {
+        let Some(record) = ctx
+            .w
+            .module_state::<MatchBook>()
+            .and_then(|book| book.matches.get(&match_id))
+        else {
+            return;
+        };
+        seated
+            .iter()
+            .filter_map(|(pilot, unit)| {
+                let choice = sides.iter().find_map(|side| side.minds.get(unit))?;
+                if !(choice.chose || choice.substituted) {
+                    return None;
+                }
+                let sealed = record.minds.get(unit)?;
+                seal_line(&sealed.seal, choice.substituted).map(|line| (*pilot, line))
+            })
+            .collect()
+    };
+    for (pilot, line) in lines {
+        ctx.out.sys_to_actor(pilot, NOTICE_CATEGORY, line);
     }
 }
 
@@ -3963,8 +4171,8 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             // slot and never the mind — into the side's `minds` and, for a
             // slot that chose, the class its mind seals at on the fitted
             // chassis (`Fielded::mind_class`); an unchosen hull is admitted
-            // by the fill rule. Declared: the check-out still seals Standard
-            // Doctrine on Line until 17b cut M5.2 reads `Side::minds`.
+            // by the fill rule. Since 17b cut M5.2 the check-out seals each
+            // hull with its entry (`crate::match_::start`).
             let mut units: Vec<crate::match_::Fielded> = Vec::new();
             let mut minds: BTreeMap<ObjId, SealChoice> = BTreeMap::new();
             for slot in centre.slots.iter().filter(|slot| slot.team == team) {
@@ -3981,18 +4189,30 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                                     team: team.as_str(),
                                     index: Some(slot.index),
                                 })?;
-                        let chassis =
-                            fitted_type(ctx.w, unit).or_else(|| effective_type(ctx.w, slot));
-                        let class = sealed_class(ctx.w, &held, chassis.as_deref(), fill_class);
-                        (
-                            Some(class),
+                        // **17b cut M5.2** (Q-UM-15, the owner's OQ-5): with
+                        // humans on both sides a non-Doctrine choice is
+                        // sealed as Standard Doctrine on Line (the fallback
+                        // preset: no configuration exists, critic G10).
+                        let choice = if centre.doctrine_only && !held.is_doctrine() {
+                            SealChoice {
+                                held: HeldMind::doctrine(),
+                                profiles: Vec::new(),
+                                chose: true,
+                                substituted: true,
+                            }
+                        } else {
                             SealChoice {
                                 held,
                                 profiles: choice.profiles.clone(),
                                 chose: true,
                                 substituted: false,
-                            },
-                        )
+                            }
+                        };
+                        let chassis =
+                            fitted_type(ctx.w, unit).or_else(|| effective_type(ctx.w, slot));
+                        let class =
+                            sealed_class(ctx.w, &choice.held, chassis.as_deref(), fill_class);
+                        (Some(class), choice)
                     }
                 };
                 units.push(crate::match_::Fielded {
@@ -4044,12 +4264,13 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                 let fielded: Vec<ObjId> = units.iter().map(|fielded| fielded.unit).collect();
                 let pods = fill_pods(ctx.w, centre, &match_cfg, team, &fielded);
                 let fill = match centre.fill_minds.iter().find(|fill| fill.team == team) {
-                    Some(fill) if !pods.is_empty() => Some((
-                        fill,
-                        fill_held(ctx.w, centre, fill).ok_or(SimError::MindNotHeld {
+                    Some(fill) if !pods.is_empty() => Some(fill_seal_choice(
+                        &fill_held(ctx.w, centre, fill).ok_or(SimError::MindNotHeld {
                             team: team.as_str(),
                             index: None,
                         })?,
+                        fill,
+                        centre.doctrine_only,
                     )),
                     _ => None,
                 };
@@ -4059,17 +4280,17 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                     // pod would be.
                     let (mind_class, choice) = match &fill {
                         None => (None, SealChoice::unchosen()),
-                        Some((fill, held)) => {
+                        Some(choice) => {
                             let chassis = fitted_type(ctx.w, tank)
                                 .or_else(|| authored_unit_type(ctx.w, team, index));
                             (
-                                Some(sealed_class(ctx.w, held, chassis.as_deref(), fill_class)),
-                                SealChoice {
-                                    held: held.clone(),
-                                    profiles: fill.choice.profiles.clone(),
-                                    chose: true,
-                                    substituted: false,
-                                },
+                                Some(sealed_class(
+                                    ctx.w,
+                                    &choice.held,
+                                    chassis.as_deref(),
+                                    fill_class,
+                                )),
+                                choice.clone(),
                             )
                         }
                     };
@@ -5136,6 +5357,9 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
             // 17b cut M5.1: and the fills' mind choices, which belonged to the
             // match that was set up (a slot's choice goes with `slots`).
             centre.fill_minds.clear();
+            // 17b cut M5.2: and Q-UM-15's rule, decided at that match's
+            // `SIM START`.
+            centre.doctrine_only = false;
         }
     }
 }

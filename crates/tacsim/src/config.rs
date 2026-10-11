@@ -826,8 +826,8 @@ impl MindsConfig {
     /// refuses every Line-carded check-out
     /// (`crate::match_::StartError::CardUnlawful`): 17b cut M5.1 lets a
     /// principal choose a lawful preset with `SIM MIND` (one under the floor
-    /// refused by name), and every hull is sealed on Line until 17b cut M5.2
-    /// carries the choice into the seal.
+    /// refused by name), which 17b cut M5.2 seals; an armed hull nobody chose
+    /// for is still sealed on Line, and refused.
     ///
     /// # Errors
     ///

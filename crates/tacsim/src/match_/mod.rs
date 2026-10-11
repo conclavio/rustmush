@@ -138,8 +138,8 @@ pub use resume::{
     PendingResume, RESUME_LINE, ResumeRefusal, doctrine_line, resume_pending, void_at_boot,
 };
 pub use seal::{
-    NO_CORE_FALLBACK, PRODUCTION_FILL_ENGINE, SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE,
-    SEALED_MIND, SealError, SealTerms, seal_for,
+    HUMANS_FALLBACK, NO_CORE_FALLBACK, PRODUCTION_FILL_ENGINE, SEALED_CHARTER, SEALED_LICENCE,
+    SEALED_LINE, SEALED_MIND, SealError, SealIdentity, SealTerms, seal_for,
 };
 pub use sim::{SIM_VERB, Selector, sim_command};
 pub use verbs::{
@@ -786,9 +786,10 @@ pub struct Side {
     /// fielded, resolved against the holdings seam at the check-out — a
     /// slot's `SIM MIND`, the side's `SIM AI MIND`, else
     /// [`holdings::SealChoice::unchosen`]. Empty for a staff `@arena/start`
-    /// and a fixture. **Declared: 17b cut M5.1 records it and nothing reads it
-    /// at the seal — the check-out still seals Standard Doctrine on Line until
-    /// 17b cut M5.2.**
+    /// and a fixture. **Since 17b cut M5.2 [`start`] seals each hull with its
+    /// entry** — the held mind's identity, rating, engine and profiles, and
+    /// Q-UM-15's fallback for a substituted one — and a missing entry with
+    /// [`holdings::SealChoice::unchosen`], exactly as at `5f505c8`.
     pub minds: BTreeMap<ObjId, holdings::SealChoice>,
 }
 
@@ -870,10 +871,10 @@ pub enum StartError {
     /// operator floor above the Line card's 10 per cent
     /// (`[tacsim.minds].odds_floor_permille` above 100): 17b cut M5.1 lets a
     /// principal choose a lawful preset at the choice (`SIM MIND`, refusing
-    /// one under the floor by name), but every hull is still sealed on Line
-    /// until 17b cut M5.2 carries the choice into the seal — and after it an
-    /// armed hull nobody chose a preset for still is (declared: the default
-    /// is as built). Refused before the first write.
+    /// one under the floor by name), and 17b cut M5.2 seals the choice; an
+    /// armed hull nobody chose a preset for is still sealed on Line and
+    /// still refused here (declared: the default is as built). Refused
+    /// before the first write.
     #[error(
         "{callsign}'s card asks for odds under the Compact floor of {}%; the match cannot start.",
         .floor / 10
@@ -887,6 +888,59 @@ pub enum StartError {
         callsign: String,
         /// The floor, per mille.
         floor: u32,
+    },
+    /// **17b cut M5.2** (its review; doc 17 §11, D-UM-43): a unit's seal
+    /// refused a sealed card against its schema ([`seal::SealError::Card`]) —
+    /// a profile whose survival pair does not hold over the match's doctrine,
+    /// a profile that is no preset, or more than four sealed. No lobby
+    /// check-out reaches it: `SIM MIND` and `SIM AI MIND` refuse all three at
+    /// the choice, under the same `[tacsim]` block, frozen at boot — only a
+    /// direct caller's [`Side::minds`] does. The refusal names the profile
+    /// and its sliders, so this long form is the log's and the fixtures';
+    /// the call-off says the short form ([`StartError::call_off_words`]),
+    /// `{callsign}'s card could not be sealed`, which names no profile: a
+    /// chosen preset is its pilot's alone (C-4), and the long form runs past
+    /// 120 columns. Refused before the first write.
+    #[error("{callsign}'s card could not be sealed: {refusal}; the match cannot start.")]
+    CardRefused {
+        /// The unit.
+        unit: ObjId,
+        /// How the unit is named before the arena resolves a callsign
+        /// ([`StartError::CardUnlawful`]'s rule).
+        callsign: String,
+        /// What the card's schema said.
+        refusal: crate::arena::card::CardError,
+    },
+    /// **17b cut M5.2** (doc 17 §9, D-UM-41; the design note's C-24 as
+    /// amended by M5.2's S1 ruling): a unit's seal refused its mind as rated
+    /// above its governed core's class ([`seal::SealError::OverClass`]) — the
+    /// backstop behind the lobby's choice, which refuses the same predicate
+    /// first on the chassis's content-declared core, so no choice reaches it;
+    /// only a live core below its type's class does — a tank the claim's
+    /// reset could not put back to spec, whose core a `degrade_core` lowered
+    /// — and only under a rating above Class I. A governed core lowered to
+    /// Class 0 is never over-class: it seals Class 0 and flies the ROM, as no
+    /// core does. So no production check-out meets it (production's one mind,
+    /// Standard Doctrine, is rated I); it is built against the fixture mind
+    /// (the owner's OQ-10 (d)). Its long form names both classes and is the
+    /// log's and the fixtures'; the call-off says the short form
+    /// ([`StartError::call_off_words`]), `{callsign}'s mind is over its
+    /// core's class`, naming no mind. Refused before the first write.
+    #[error(
+        "{callsign}'s mind is rated Class {}, over its core's Class {}; the match cannot start.",
+        .rated.as_str(),
+        .core.as_str()
+    )]
+    MindOverClass {
+        /// The unit.
+        unit: ObjId,
+        /// How the unit is named before the arena resolves a callsign
+        /// ([`StartError::CardUnlawful`]'s rule).
+        callsign: String,
+        /// The mind's rating.
+        rated: crate::arena::core::CoreClass,
+        /// The core's class as fitted.
+        core: crate::arena::core::CoreClass,
     },
     /// **17b cut M3.5** (doc 17 §9, D-UM-36): a side whose minds' class
     /// ceilings would think past its half of the centre's pool — the last
@@ -930,7 +984,9 @@ impl StartError {
     /// sentence. The long forms stay the `Display` (pinned by the lifecycle
     /// fixtures) and the log's; since 17b cut M5.1's review the last
     /// `BOARD`er reads these words too (`lobby::run`'s reply), so no pilot
-    /// reads a long form.
+    /// reads a long form. **17b cut M5.2** adds two by hull alone, naming no
+    /// mind, class or profile: [`StartError::MindOverClass`] and (its review)
+    /// [`StartError::CardRefused`].
     #[must_use]
     pub fn call_off_words(&self, w: &mush_core::World, sides: &[Side]) -> String {
         let callsign = |unit: ObjId| {
@@ -945,6 +1001,14 @@ impl StartError {
                 .unwrap_or_else(|| unit.to_string())
         };
         match self {
+            // 17b cut M5.2: the hull, never the mind or its classes.
+            StartError::MindOverClass { callsign, .. } => {
+                format!("{callsign}'s mind is over its core's class")
+            }
+            // 17b cut M5.2 (its review): the hull, never the profile.
+            StartError::CardRefused { callsign, .. } => {
+                format!("{callsign}'s card could not be sealed")
+            }
             StartError::Pool { team, refusal, .. } => format!(
                 "{team}'s compute ({} ops a second) is over its half ({})",
                 pool::thousands(refusal.spoken.saturating_add(refusal.would)),
@@ -974,8 +1038,10 @@ impl StartError {
 /// 1. **Every refusal first.** Sides non-empty and inside
 ///    `match.max_slots_per_side`, no duplicate, every unit a live tactical unit,
 ///    placed, and not already deployed; the arena definition resolved; an entry
-///    cell for every unit; (17b cut M3.3) every seal's card lawful; and last
-///    (17b cut M3.5) every side inside its half of the centre's compute pool
+///    cell for every unit; (17b cut M3.3) every seal's card lawful; (17b cut
+///    M5.2) no mind over its core's class, and every scripted seal's source
+///    held; and last (17b cut M3.5) every side inside its half of the
+///    centre's compute pool
 ///    ([`StartError::Pool`], [`pool`]). Nothing is written while any of this
 ///    can still fail.
 /// 2. **Check out.** One marker per unit, one write each, the world placement
@@ -1008,6 +1074,16 @@ impl StartError {
 /// terms, so a release hands it to a mind of the same class on the same
 /// engine and adds no unadmitted load. The lab knob `fill_controller` (17b cut
 /// M1b.5) is retired with the `fill` parameter it fed.
+///
+/// **17b cut M5.2** (the design note's item 10): each hull's seal terms are
+/// read off [`Side::minds`] — the held mind's identity, rating
+/// (`SealTerms::rated`) and engine (`SealTerms::engine_for_minds`), its
+/// profiles each as its preset over the match's doctrine (the first the card
+/// that flies at the release), and Q-UM-15's fallback for a substituted
+/// choice; a hull with no entry seals as the default, Standard Doctrine on
+/// Line, byte for byte as at `5f505c8`. A chosen mind's source, when its
+/// holding carries one, is installed into the store's RAM map before its
+/// seal is used, so `open_match` finds it by its digest.
 ///
 /// [`Controller::Mind`]: crate::arena::state::Controller::Mind
 #[allow(clippy::too_many_arguments)]
@@ -1152,6 +1228,48 @@ pub fn start(
                 None => lobby::lead_character_of(ctx.w, side.team)
                     .map(|id| CharacterRef::Character { id }),
             };
+            // **17b cut M5.2** (the design note's item 10): the hull's choice
+            // as `ready` resolved it (`Side::minds`) — a missing entry, which
+            // is every hull of a staff `@arena/start` and of a fixture, is
+            // the unchosen default: Standard Doctrine on Line, rated I, on
+            // the production engine, so every such hull seals exactly as at
+            // `5f505c8` (the default seal's digest is pinned).
+            let choice = side
+                .minds
+                .get(&unit)
+                .cloned()
+                .unwrap_or_else(holdings::SealChoice::unchosen);
+            // The carried item from 17b cut M5.1: a chosen mind's source in
+            // the store before its seal is used — `install_holdings` installs
+            // the provider's `sources()`, and a provider whose `held()` hands
+            // a source missing from them would otherwise meet
+            // `InstallError::NoSource` at `open_match`. RAM only, idempotent
+            // (an installed digest is kept as it is), and nothing for
+            // Standard Doctrine, whose source is compiled in.
+            if let Some(source) = choice.held.source.as_deref()
+                && let Some(store) = ctx.w.module_state_mut::<crate::store::TacsimStore>()
+            {
+                let _ = crate::store::install_mind_source(store, source);
+            }
+            // 17b cut M5.2's review: what the seal NAMES is the held
+            // identity's digest, not the text just installed — so a
+            // scripted choice whose source the store does not hold under
+            // that digest (a provider whose source and identity disagree)
+            // is refused below, once its seal is taken and before the first
+            // write, with the refusal `open_match` would give after it.
+            // Each profile's card is its preset over the match's doctrine; a
+            // name that is no preset is passed on as written (over the Line
+            // card) and refused by the seal (`SealError::Card`, the presets
+            // listed), never dropped.
+            let profiles: Vec<(SmolStr, crate::arena::card::StockCard)> = choice
+                .profiles
+                .iter()
+                .map(|name| {
+                    let card = crate::arena::card::preset(name, &arena_cfg.reflex)
+                        .unwrap_or_else(|| crate::arena::card::line(&arena_cfg.reflex));
+                    (name.clone(), card)
+                })
+                .collect();
             let terms = seal::SealTerms {
                 match_id,
                 principal,
@@ -1159,13 +1277,24 @@ pub fn start(
                 odds_floor_permille: floor,
                 // 17b cut M4.3: the fill's engine — the fill decision,
                 // `native` since 2026-10-09 — on EVERY hull, so a released
-                // seat's mind runs on it too.
-                engine_for_minds: PRODUCTION_FILL_ENGINE,
+                // seat's mind runs on it too. 17b cut M5.2: the held mind's
+                // (`PRODUCTION_FILL_ENGINE` for Standard Doctrine, a
+                // fixture's `Scripted`).
+                engine_for_minds: choice.held.engine,
                 // 17b cut M4.1: Standard Doctrine's rating; 17b cut M4.3:
-                // capped at `[tacsim.minds].fill_class`, every hull.
-                rated: crate::arena::mind::STOCK_RATED_CLASS,
+                // capped at `[tacsim.minds].fill_class`, every hull. 17b cut
+                // M5.2: the held mind's rating.
+                rated: choice.held.rated,
                 class_cap: minds_cfg.fill_class,
-            };
+                // 17b cut M5.2: the held mind's identity.
+                identity: choice.held.identity.clone(),
+                profiles: Vec::new(),
+                // 17b cut M5.2 (Q-UM-15): a substituted choice says why.
+                fallback: choice
+                    .substituted
+                    .then(|| SmolStr::new_static(seal::HUMANS_FALLBACK)),
+            }
+            .with_profiles(profiles);
             let custody = arena_def::custody_unit(
                 &catalog,
                 cells,
@@ -1183,13 +1312,38 @@ pub fn start(
                     callsign: unsealed_callsign(ctx.w, unit, side.team, fielded.slot),
                     floor,
                 },
-                // The Line card over a validated doctrine always pairs; a
-                // card that does not is the check-out's own refusal, named.
-                card @ seal::SealError::Card(_) => StartError::Custody {
+                // 17b cut M5.2: every sealed profile's card is checked (the
+                // lobby's choice fits the same pair under the same frozen
+                // `[tacsim]` block, so only a direct caller's `Side::minds`
+                // reaches this) — refused by hull, the profile in the long
+                // form only (its review: the call-off is said to the centre).
+                seal::SealError::Card(refusal) => StartError::CardRefused {
                     unit,
-                    detail: card.to_string(),
+                    callsign: unsealed_callsign(ctx.w, unit, side.team, fielded.slot),
+                    refusal,
+                },
+                // 17b cut M5.2 (C-24): the seal's backstop, named by hull.
+                seal::SealError::OverClass { rated, core } => StartError::MindOverClass {
+                    unit,
+                    callsign: unsealed_callsign(ctx.w, unit, side.team, fielded.slot),
+                    rated,
+                    core,
                 },
             })?;
+            if custody.seal.engine == crate::arena::mind::SealEngine::Scripted
+                && crate::minds::source_lookup(
+                    ctx.w.module_state::<crate::store::TacsimStore>(),
+                    &custody.seal.source_sha256,
+                )
+                .is_none()
+            {
+                return Err(StartError::Open(OpenMatchError::Mind(
+                    crate::minds::InstallError::NoSource {
+                        unit,
+                        digest: custody.seal.digest(),
+                    },
+                )));
+            }
             custody_units.push(custody);
             for (pilot, station) in seated {
                 roster.pilots.push((pilot, unit));

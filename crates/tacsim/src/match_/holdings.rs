@@ -26,11 +26,12 @@
 //! is the same player but not the same character, and a character's
 //! holdings are the character's.
 //!
-//! What this module does NOT do in 17b cut M5.1: seal anything. The lobby
-//! records a choice and the check-out resolves it against the seam
-//! (`SimError::MindNotHeld` when a holding is gone) into
-//! `crate::match_::Side::minds`; the check-out still seals Standard Doctrine
-//! on Line until 17b cut M5.2 carries the choice into the seal.
+//! What this module does NOT do: seal anything. The lobby records a choice
+//! and the check-out resolves it against the seam (`SimError::MindNotHeld`
+//! when a holding is gone) into `crate::match_::Side::minds`, which — since
+//! 17b cut M5.2 — `crate::match_::start` reads into each hull's seal terms
+//! (the held mind's identity, rating, engine and profiles), installing a
+//! chosen mind's source into the store's RAM map first.
 
 use std::sync::Arc;
 
@@ -217,10 +218,11 @@ pub fn held_by(w: &World, character: ObjId) -> Vec<HeldMind> {
 /// design note's M5.1 item 6): the held mind, the profiles in the order they
 /// were chosen (empty is Line alone), whether the slot or its side's fill
 /// chose at all, and whether Q-UM-15 substituted Standard Doctrine for it
-/// (always `false` until 17b cut M5.2 builds the substitution).
+/// (17b cut M5.2; under `crate::match_::lobby::Centre::doctrine_only`).
 ///
 /// `crate::match_::Side::minds` carries one per fielded hull — an unchosen
-/// hull's is [`SealChoice::unchosen`] — and 17b cut M5.2's seal reads it.
+/// hull's is [`SealChoice::unchosen`] — and since 17b cut M5.2
+/// `crate::match_::start` seals each hull with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealChoice {
     /// The mind the hull will be sealed with.
@@ -231,7 +233,7 @@ pub struct SealChoice {
     /// Whether the slot (or the side's fill) chose a mind at all.
     pub chose: bool,
     /// Whether Q-UM-15 substituted Standard Doctrine for the choice (17b cut
-    /// M5.2; `false` here).
+    /// M5.2): sealed then with the fallback `humans on the other side`.
     pub substituted: bool,
 }
 

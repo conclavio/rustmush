@@ -110,7 +110,22 @@ thread_local! {
 ///        both ends of the mesh — and it is authoritative state with one writer
 ///        ([`crate::arena::intents::resolve_emcon`]), so a replay whose pilot's
 ///        switch landed a pulse later must not compare equal even before the
-///        next pass shows the difference in a contact.
+///        next pass shows the difference in a contact;
+///    20. **the active profile** (17b cut M5.2; doc 17 §11, §12, D-UM-44):
+///        [`crate::arena::state::UnitState::card_profile`] — `[1]`, then
+///        `index` as `u8` and `switched_ms` as `i64` (`i64::MIN` for none, a
+///        millisecond no arena reaches: a stamp-less index past the first is
+///        no state a switch writes) — and **nothing at all for a unit at its
+///        first profile and never switched**
+///        ([`crate::arena::card::ActiveProfile::FIRST`]), so every match that
+///        switches nothing — every production match, every fixture before
+///        this cut — folds exactly the bytes it folded before it. The one
+///        sub-item of item 1 that writes no byte for its default (where the
+///        others always write at least one): items 3b to 3e's "no byte for
+///        none" rule applied inside the unit's row. The whole default is the
+///        condition — index `0` AND no stamp — so a switch back to the first
+///        profile, which keeps its stamp, still folds. Both fields decide a
+///        later card and a refusal (the seat window's reason, sub-item 17).
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -152,8 +167,10 @@ thread_local! {
 ///
 ///    **Item 3c, the unit minds** (17b cut M1a.5; doc 17 §3, §6, §8), right
 ///    after item 3b: every row of [`Arena::minds`], in unit-id order and with
-///    **no count prefix** (so an arena with no mind — every match that exists
-///    — adds no byte): the unit's `u32`; `think_seq` as `u64`; `pending` as
+///    **no count prefix** (so an arena with no mind adds no byte — every
+///    match before 17b cut M4.3, which fielded minds; every production match
+///    since folds a row per hull a mind flies, and a dormant row per hull a
+///    pilot possessed): the unit's `u32`; `think_seq` as `u64`; `pending` as
 ///    `[0]`, or `[1]` then its `think_seq` `u64` and its `t_ms` `i64` (and,
 ///    since 17b cut M3.6, its answer: below); the
 ///    memory's length as `u64` then its FNV-1a 64 digest as `u64`; the
@@ -165,9 +182,12 @@ thread_local! {
 ///    `ContactId`'s `u64` and the figure's `u64`; the order as `[0]`, or
 ///    `[1]`, the objective's code byte (`MindObjective::code`) and its payload
 ///    (`Advance`'s two `u16`, `Engage`'s target as `u64` or `0`, `Screen`'s
-///    facing as `u32`, `Support`'s charge as `u64` or `0`, nothing for the
-///    other two), the `hold_fire` byte, the band byte (`0` none, `1` close, `2`
-///    effective, `3` far), `expires_ms` as `i64` and the squad word's bytes;
+///    facing as `u32`, `Support`'s charge as `u64` or `0` and — since 17b
+///    cut M5.2, STOP E — the charge's unit
+///    ([`crate::arena::mind::MindState::order_charge`]) as `u32` or `0`,
+///    nothing for the other two), the `hold_fire` byte, the band byte (`0`
+///    none, `1` close, `2` effective, `3` far), `expires_ms` as `i64` and the
+///    squad word's bytes;
 ///    then `strikes`, one byte. Every field decides a later intent — a notice
 ///    a mind reads, a range it holds, an order it obeys — and none of them has
 ///    a ledger line of its own, so a replay that differed in one would
@@ -220,7 +240,8 @@ thread_local! {
 ///    whose `closed` moves only with a ledger line, 17b cut M3.6's
 ///    `sortie_closed`, which the ledger's sequence folds — and, since 17b cut
 ///    M4.6, its `doctrine` bit, derived from the seal whose digest item 3c
-///    folds) and
+///    folds, and since 17b cut M5.2 its `profiles`, the sealed set, likewise)
+///    and
 ///    [`Arena::classes`] (17b cut M3.1's class table, captured at check-out
 ///    and carried from 17b cut M3.2: a per-match constant, likewise), and
 ///    [`crate::arena::mind::MindState::doctrine_state`] (17b cut M4.3: a
@@ -697,6 +718,20 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // **16b cut O.2** (16c N12): the pod's switch, which decides what every
         // sight inside its bubble sees.
         hash = fnv1a64_update(hash, &[u8::from(unit.ecm_on)]);
+        // **17b cut M5.2** (sub-item 20): the active profile, only when it is
+        // not the first never switched — no byte at all for the default, so
+        // a match that switches nothing hashes as it did.
+        if !unit.card_profile.is_first() {
+            hash = fnv1a64_update(hash, &[1_u8, unit.card_profile.index]);
+            hash = fnv1a64_update(
+                hash,
+                &unit
+                    .card_profile
+                    .switched_ms
+                    .unwrap_or(i64::MIN)
+                    .to_le_bytes(),
+            );
+        }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
     hash = fnv1a64_update(hash, &(arena.spent_said.len() as u64).to_le_bytes());
@@ -739,7 +774,8 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fold_search(hash, motor);
     }
     // **17b cut M1a.5** (item 3c): the unit minds, per row with no count
-    // prefix — an arena with none (every production match) folds no byte here.
+    // prefix — an arena with none folds no byte here (every match before 17b
+    // cut M4.3; every production match since folds a row per mind).
     for (unit, mind) in &arena.minds {
         hash = fold_mind(hash, *unit, mind);
     }
@@ -934,6 +970,13 @@ fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::M
                 }
                 MindObjective::Support { of } => {
                     hash = fnv1a64_update(hash, &of.map_or(0, |id| id.0).to_le_bytes());
+                    // **17b cut M5.2** (STOP E): the charge's unit, inside the
+                    // `Support` arm only — a row holding any other order, or
+                    // none, folds no new byte.
+                    hash = fnv1a64_update(
+                        hash,
+                        &mind.order_charge.map_or(0, |unit| unit.0).to_le_bytes(),
+                    );
                 }
                 MindObjective::Hold | MindObjective::Withdraw => {}
             }
@@ -1998,6 +2041,131 @@ mod tests {
         assert_eq!(state_hash(&silent), base);
     }
 
+    /// **17b cut M5.2: the active profile folds only off its default** (item
+    /// 1's sub-item 20): a unit at [`crate::arena::card::ActiveProfile::FIRST`]
+    /// folds no byte — the arena hashes as one that never had the field
+    /// (pinned at `5f505c8`'s value, 17b cut M5.2's review) — and every other
+    /// value moves the hash, each from the base and from
+    /// every other: a switch to the second profile, a switch BACK to the
+    /// first (its stamp kept), a later stamp, and a stamp-less second.
+    #[test]
+    fn m5_the_active_profile_folds_only_off_its_default() {
+        use crate::arena::card::ActiveProfile;
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        assert!(
+            base_arena
+                .units
+                .iter()
+                .all(|unit| unit.card_profile == ActiveProfile::FIRST),
+            "every unit checks out on its first profile"
+        );
+        // The default folds nothing: the hash is the one the fold below
+        // would give with sub-item 20 skipped — two units, no byte each.
+        // 17b cut M5.2's review: pinned at the value `5f505c8` gives for the
+        // same two tanks (read on a clean `5f505c8` worktree, before the
+        // field existed), so a fold that wrote ANY byte for the default — a
+        // constant `[0]` included — fails here, not only against itself.
+        assert_eq!(base, 0x15a4_d2a7_9200_fae0, "5f505c8's hash of two_tanks");
+        let probe = |profile: ActiveProfile| {
+            let mut arena = two_tanks();
+            if let Some(unit) = arena.unit_mut(ObjId(9)) {
+                unit.card_profile = profile;
+            }
+            state_hash(&arena)
+        };
+        assert_eq!(probe(ActiveProfile::FIRST), base);
+        let mut seen = vec![("first, never switched", base)];
+        for (what, profile) in [
+            (
+                "second, switched at 5 s",
+                ActiveProfile {
+                    index: 1,
+                    switched_ms: Some(5_000),
+                },
+            ),
+            (
+                "first again, switched at 5 s",
+                ActiveProfile {
+                    index: 0,
+                    switched_ms: Some(5_000),
+                },
+            ),
+            (
+                "second, switched at 15 s",
+                ActiveProfile {
+                    index: 1,
+                    switched_ms: Some(15_000),
+                },
+            ),
+            (
+                "second, no stamp",
+                ActiveProfile {
+                    index: 1,
+                    switched_ms: None,
+                },
+            ),
+        ] {
+            let hash = probe(profile);
+            for (other, had) in &seen {
+                assert_ne!(hash, *had, "`{what}` folds as `{other}` does");
+            }
+            seen.push((what, hash));
+        }
+    }
+
+    /// **17b cut M5.2: STOP E's charge folds inside the `Support` arm only**
+    /// (item 3c): two rows holding one `Support` and differing only in
+    /// `order_charge` hash differently; a row holding any other order — or
+    /// none — folds no byte for it, so the charge can only ever move the hash
+    /// of an arena holding a `Support` (never a per-row presence byte).
+    #[test]
+    fn m5_the_support_charge_folds_inside_the_support_arm_only() {
+        use crate::arena::mind::MindState;
+        use crate::arena::perception::{FrameOrder, MindObjective};
+        let with_row = |objective: Option<MindObjective>, charge: Option<ObjId>| {
+            let mut arena = two_tanks();
+            arena.minds.insert(
+                ObjId(4),
+                MindState {
+                    order: objective.map(|objective| FrameOrder {
+                        squad: "red-1".into(),
+                        objective,
+                        hold_fire: false,
+                        max_range_band: None,
+                        expires_ms: 30_000,
+                    }),
+                    order_charge: charge,
+                    ..MindState::default()
+                },
+            );
+            state_hash(&arena)
+        };
+        let support = Some(MindObjective::Support { of: None });
+        assert_ne!(
+            with_row(support, Some(ObjId(9))),
+            with_row(support, None),
+            "the charge of a `Support` is folded"
+        );
+        assert_ne!(
+            with_row(support, Some(ObjId(9))),
+            with_row(support, Some(ObjId(5))),
+            "the charge's unit is folded"
+        );
+        for objective in [
+            None,
+            Some(MindObjective::Hold),
+            Some(MindObjective::Engage { target: None }),
+            Some(MindObjective::Withdraw),
+        ] {
+            assert_eq!(
+                with_row(objective, Some(ObjId(9))),
+                with_row(objective, None),
+                "{objective:?}: a charge outside a `Support` folds no byte"
+            );
+        }
+    }
+
     /// **17b cut M1b.1** (items 3d, 3e, the card inside 3c): every new field
     /// moves the hash, and an arena with none folds no byte for them — the
     /// floor folds nothing at all.
@@ -2321,6 +2489,17 @@ mod tests {
             // 17b cut M4.6: the doctrine bit (the fixture's seal is Standard
             // Doctrine's, so the base reads `true`).
             ("seal.doctrine", sealed(&|s| s.doctrine = false)),
+            // 17b cut M5.2: the sealed set (the fixture's is the Line card
+            // alone, so the base reads `LINE`).
+            (
+                "seal.profiles",
+                sealed(&|s| {
+                    s.profiles = crate::arena::card::ProfileSet {
+                        len: 2,
+                        codes: [2, 0, 0, 0],
+                    };
+                }),
+            ),
         ] {
             assert_eq!(hash, before, "`{field}` is folded");
         }

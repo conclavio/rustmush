@@ -2933,6 +2933,216 @@ fn m1a5_an_order_to_a_mind_is_re_keyed_to_its_own_held_contact_or_none() {
     );
 }
 
+/// **17b cut M5.2's STOP E rig**: [`m1a5_an_order_to_a_mind_is_re_keyed_to_its_own_held_contact_or_none`]'s
+/// field — red's mind (`RED`, the supporter) beside its wingman (`RED2`, a
+/// pilot's tank, the charge) and blue — on a mind that answers nothing.
+fn support_rig() -> Rig {
+    let mut rig = Rig::new(arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Mind,
+            ),
+            tank(
+                RED2,
+                Team::Red,
+                centre(6, 10),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[RED2, BLUE],
+    ));
+    rig.arena.mind_runner = ScriptedMind::new(&[]);
+    rig
+}
+
+/// A wingman's `SUPPORT` of `RED2` to `RED`'s mind, a minute long.
+fn support_of_the_wingman(arena: &Arena) -> Intent {
+    intent(
+        arena,
+        RED,
+        IntentKind::Order(Box::new(order(
+            RED_ONE,
+            Objective::Support { of: RED2 },
+            Some(RED2),
+            60_000,
+        ))),
+        1,
+    )
+}
+
+/// `RED`'s held order and the charge beside it.
+fn held_support(arena: &Arena) -> (Option<FrameOrder>, Option<ObjId>) {
+    arena.minds.get(&RED).map_or((None, None), |state| {
+        (state.order.clone(), state.order_charge)
+    })
+}
+
+/// **Pulse until `RED`'s order is gone** — at most a think period and two
+/// substeps past the charge leaving at `left_ms` — and read the one
+/// `order_expired` line the arena journals for it: `support`, after the
+/// leaving and before the order's own deadline.
+fn ended_by_its_charge_leaving(rig: &mut Rig, left_ms: i64, expires_ms: i64) {
+    let _ = rig.until(left_ms + STOCK_THINK_MS + 2 * SUBSTEP, |arena| {
+        held_support(arena).0.is_none()
+    });
+    assert_eq!(
+        held_support(&rig.arena),
+        (None, None),
+        "the order and its charge went together"
+    );
+    let expired: Vec<(i64, serde_json::Value)> = rig
+        .journal()
+        .iter()
+        .filter(|event| event.kind.as_str() == "order_expired")
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_value(&event.kind).unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(expired.len(), 1, "one line: {expired:?}");
+    let (t_ms, line) = &expired[0];
+    assert!(
+        *t_ms > left_ms && *t_ms < expires_ms,
+        "ended by its charge leaving, not run out: {t_ms}"
+    );
+    assert_eq!(line.get("objective"), Some(&serde_json::json!("support")));
+    assert_eq!(line.get("unit"), Some(&serde_json::json!(RED.0)));
+}
+
+/// **17b cut M5.2: a `Support` landed blind is ended when its charge leaves**
+/// (doc 17 §24's STOP E, its first residual; the owner's remedy of
+/// 2026-10-09, the charge's `ObjId` on the order). A `SUPPORT` of the
+/// wingman landed before any pass — the mind holds no row for its charge,
+/// so it re-keys to `Support { of: None }` — carries the charge's unit on
+/// the row (`MindState::order_charge`). The charge leaves the match (taken
+/// out of `Arena::units`, as `arena/catchup.rs`' observer test takes one):
+/// the arena ends the order at the mind's next landing, one `order_expired`
+/// line naming `support`, inside a think period. Until this cut such an
+/// order named no row and stood blind until its `expires_ms`.
+#[test]
+fn m5_a_support_landed_blind_is_ended_when_its_charge_leaves() {
+    let mut rig = support_rig();
+    assert!(
+        rig.arena.contacts.of(RED).next().is_none(),
+        "the precondition: the supporter holds nothing"
+    );
+    let first = support_of_the_wingman(&rig.arena);
+    let _ = rig.pulse(&[], &[first]);
+    let (order, charge) = held_support(&rig.arena);
+    let order = order.expect("the support landed");
+    assert_eq!(
+        order.objective,
+        MindObjective::Support { of: None },
+        "landed blind: no row for its charge"
+    );
+    assert_eq!(charge, Some(RED2), "the charge's unit, on the order");
+    rig.arena.units.retain(|unit| unit.id != RED2);
+    let left_ms = rig.arena.now_ms;
+    ended_by_its_charge_leaving(&mut rig, left_ms, order.expires_ms);
+}
+
+/// **17b cut M5.2: a supporter blind to its charge for a contact TTL is
+/// ended when its charge leaves** (doc 17 §24's STOP E, its second residual).
+/// The `SUPPORT` lands once the mind has told its wingman apart — `Support {
+/// of: Some(row) }` — and the mind then goes blind to it for a contact TTL:
+/// its row ages out of its store (taken here as `ShadowContacts::expire`
+/// takes one past the TTL). The charge leaves the match: the arena ends the
+/// order at the next landing, one `order_expired` line naming `support`.
+/// Until this cut the end read the supporter's row for its charge, which was
+/// gone, and the order stood blind until its `expires_ms` (the blind stand
+/// of `t1_a_support_keeps_station_and_stands_blind`).
+#[test]
+fn m5_a_supporter_blind_for_a_ttl_is_ended_when_its_charge_leaves() {
+    let mut rig = support_rig();
+    let _ = rig.until(5_000, |arena| told_apart(arena, RED, RED2));
+    let again = support_of_the_wingman(&rig.arena);
+    let _ = rig.pulse(&[], &[again]);
+    let row = rig
+        .arena
+        .contacts
+        .id_of(RED, RED2)
+        .expect("the wingman held");
+    let (order, charge) = held_support(&rig.arena);
+    let order = order.expect("the support landed");
+    assert_eq!(order.objective, MindObjective::Support { of: Some(row) });
+    assert_eq!(charge, Some(RED2));
+    // Blind for a TTL: the row is gone from the supporter's store.
+    assert!(rig.arena.contacts.remove(RED, row).is_some());
+    rig.arena.units.retain(|unit| unit.id != RED2);
+    let left_ms = rig.arena.now_ms;
+    ended_by_its_charge_leaving(&mut rig, left_ms, order.expires_ms);
+}
+
+/// **17b cut M5.2: the charge goes wherever the order goes** (STOP E's
+/// field, cleared as `MindState::order_issuer` is): a `Support` writes its
+/// charge beside the order where it lands; a `RELEASE`, the landing that
+/// reaches its deadline and a possess each clear it with the order; any
+/// other order, and a self-charge (`Engage`), hold none.
+#[test]
+fn m5_the_charge_goes_with_the_order_at_a_release_an_expiry_and_a_possess() {
+    let mut rig = support_rig();
+    let land = |rig: &mut Rig, objective: Objective, ttl_ms: u32| {
+        let kind = IntentKind::Order(Box::new(order(RED_ONE, objective, Some(RED2), ttl_ms)));
+        let landing = intent(&rig.arena, RED, kind, 1);
+        let _ = rig.pulse(&[], &[landing]);
+    };
+    // A release.
+    land(&mut rig, Objective::Support { of: RED2 }, 60_000);
+    assert_eq!(held_support(&rig.arena).1, Some(RED2));
+    let release = intent(
+        &rig.arena,
+        RED,
+        IntentKind::ReleaseOrder {
+            squad: RED_ONE,
+            issuer: Some(RED2),
+        },
+        1,
+    );
+    let _ = rig.pulse(&[], &[release]);
+    assert_eq!(held_support(&rig.arena), (None, None), "a release");
+    // The landing that reaches its deadline.
+    land(&mut rig, Objective::Support { of: RED2 }, 1_000);
+    let deadline = held_support(&rig.arena)
+        .0
+        .map_or(0, |order| order.expires_ms);
+    assert_eq!(held_support(&rig.arena).1, Some(RED2));
+    let _ = rig.until(deadline + 3 * STOCK_THINK_MS, |arena| {
+        held_support(arena).0.is_none()
+    });
+    assert_eq!(held_support(&rig.arena), (None, None), "an expiry");
+    // Another order, and a self-charge, hold none.
+    land(&mut rig, Objective::Hold, 60_000);
+    assert!(held_support(&rig.arena).0.is_some());
+    assert_eq!(held_support(&rig.arena).1, None, "a hold holds no charge");
+    land(&mut rig, Objective::Support { of: RED }, 60_000);
+    assert!(matches!(
+        held_support(&rig.arena).0.map(|order| order.objective),
+        Some(MindObjective::Engage { .. })
+    ));
+    assert_eq!(held_support(&rig.arena).1, None, "a self-charge is engage");
+    // A possess: the row stays, dormant, its order and charge cleared.
+    land(&mut rig, Objective::Support { of: RED2 }, 60_000);
+    assert_eq!(held_support(&rig.arena).1, Some(RED2));
+    rig.arena
+        .set_controller(RED, Controller::Pilot, MachineState::Withdraw);
+    assert!(rig.arena.minds.contains_key(&RED), "the row stays");
+    assert_eq!(held_support(&rig.arena), (None, None), "a possess");
+}
+
 /// **An order's hint re-keys only to a CLASSIFIED row** (17b cut M1b.3; the
 /// lead's ruling on M1a's residual (2), D-UM-17's rule applied to the hint;
 /// `Arena::rekey_order`'s one resolution closure and its `Support` arm).
@@ -8099,6 +8309,11 @@ fn core_cell_at(unit: &TacticalUnit, value: i64) -> TacticalUnit {
 /// fifth nearest, its own core cell at `core_cell` (set by a plan before the
 /// check-out): red at (2, 8) armed with the cannon, the fourteen blues on
 /// cells two to fifteen away.
+///
+/// **17b cut M5.2** (the S1 ruling): the check-out seals a governed core
+/// lowered to Class 0 at Class 0 — it flies the ROM, as no core does, and is
+/// never over-class (the design note's C-24 as amended) — as it did at
+/// 5f505c8.
 fn crowded_field(core_cell: i64) -> Arena {
     use tacsim::arena::state::SeenPose;
     let mut red = tank(
@@ -8170,11 +8385,27 @@ fn crowded_field(core_cell: i64) -> Arena {
 /// frame's two. With red's core cell set to 0 by a plan before the check-out
 /// the mind is Class 0, the ROM: eight rows, the lock's odds alone, and the
 /// think is handed `dropped` and Class 0's row.
+///
+/// **Re-pinned at 17b cut M5.2, back to its 5f505c8 behaviour: a governed
+/// Class-0 core flies the ROM** (17b cut M5.2's S1 ruling). M5.2's stage A
+/// read the design note's C-24 literally — Standard Doctrine's rating I over
+/// a governed core at Class 0 refused `SealError::OverClass { I, Zero }` —
+/// and moved this test's plan to after the check-out with that refusal
+/// pinned here; the ruling (C-24 amended: "a governed core at Class 0 flies
+/// the ROM, as no core does") puts the plan back before the check-out, the
+/// hull sealed at Class 0 on its core as lowered, and the pin removed.
 #[test]
 fn m3_the_view_is_cut_to_the_minds_class() {
     use tacsim::arena::core::{ClassTable, CoreClass};
     for (cell, class, rows) in [(1, CoreClass::I, 12), (0, CoreClass::Zero, 8)] {
         let mut arena = crowded_field(cell);
+        assert_eq!(
+            arena
+                .unit(RED)
+                .map(|state| (state.seal.core_class, state.seal.class)),
+            Some((class, class)),
+            "sealed at the check-out on the core as lowered"
+        );
         assert_eq!(arena.mind_class(RED), class);
         let view = arena.mind_view(RED).expect("red's view");
         assert_eq!(view.contacts.len(), rows, "{class:?}'s rows");
@@ -9435,5 +9666,864 @@ fn m3_a_released_over_a_hull_its_mind_flies_changes_no_controller() {
     assert_eq!(
         rig.arena.unit(RED).map(|unit| unit.controller),
         Some(Controller::Mind)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.2: the sealed set and the active profile (doc 17 §11, §12;
+// D-UM-44; the owner's OQ-3) — `IntentKind::Profile`, the row on the active
+// profile's card, the `Withdraw` seed gated on the doctrine bit
+// ---------------------------------------------------------------------------
+
+/// The pilot seated in red by [`profile_field`] (`arena_of`'s first seat).
+const RED_PILOT: ObjId = ObjId(1_000);
+
+/// **`unit` sealed with `names` as its profiles** — each its preset over this
+/// rig's doctrine, the first the one that flies at the release — under the
+/// fixture terms otherwise (`SealTerms::with_profiles`).
+fn sealed_with(mut unit: CustodyUnit, names: &[&str]) -> CustodyUnit {
+    let reflex = reflex_cfg();
+    let profiles = names
+        .iter()
+        .map(|name| {
+            (
+                SmolStr::new(*name),
+                tacsim::arena::preset(name, &reflex).expect("a preset"),
+            )
+        })
+        .collect();
+    unit.reseal(&tacsim::match_::SealTerms::fixture().with_profiles(profiles))
+        .expect("the profiles seal");
+    unit
+}
+
+/// **The profile field**: red armed and sealed with `names`, flown by
+/// `controller` — seated by [`RED_PILOT`] when it is `Controller::Pilot` —
+/// and a presenting blue pilot it can see.
+fn profile_field(controller: Controller, names: &[&str]) -> Arena {
+    let red = sealed_with(
+        tank(RED, Team::Red, centre(6, 8), vec![cannon()], controller),
+        names,
+    );
+    let blue = presenting(tank(
+        BLUE,
+        Team::Blue,
+        centre(9, 8),
+        Vec::new(),
+        Controller::Pilot,
+    ));
+    let seated: &[ObjId] = if controller == Controller::Pilot {
+        &[RED, BLUE]
+    } else {
+        &[BLUE]
+    };
+    arena_of(vec![red, blue], seated)
+}
+
+/// **The card every think was handed** — `(unit, t_ms, card)` per think —
+/// over the arena's own runner, which answers untouched (an input recorder,
+/// 16b §0.4).
+#[derive(Debug)]
+struct CardsSeen {
+    inner: Arc<dyn MindRunner>,
+    seen: Mutex<Vec<(ObjId, i64, tacsim::arena::StockCard)>>,
+}
+
+impl MindRunner for CardsSeen {
+    fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push((job.unit, job.t_ms, job.card.clone()));
+        }
+        self.inner.think(job)
+    }
+}
+
+impl CardsSeen {
+    /// The cards `unit`'s thinks were handed, in order.
+    fn of(&self, unit: ObjId) -> Vec<tacsim::arena::StockCard> {
+        self.seen
+            .lock()
+            .map(|seen| {
+                seen.iter()
+                    .filter(|(on, ..)| *on == unit)
+                    .map(|(_, _, card)| card.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Wrap `arena`'s runner in a [`CardsSeen`].
+fn cards_seen(arena: &mut Arena) -> Arc<CardsSeen> {
+    let seen = Arc::new(CardsSeen {
+        inner: Arc::clone(&arena.mind_runner),
+        seen: Mutex::new(Vec::new()),
+    });
+    arena.mind_runner = seen.clone();
+    seen
+}
+
+/// `unit`'s active profile.
+fn active(arena: &Arena, unit: ObjId) -> Option<tacsim::arena::card::ActiveProfile> {
+    arena.unit(unit).map(|state| state.card_profile)
+}
+
+/// `unit`'s row's card.
+fn row_card(arena: &Arena, unit: ObjId) -> Option<tacsim::arena::StockCard> {
+    arena.minds.get(&unit).map(|state| state.card.clone())
+}
+
+/// The `mind_card` lines journalled so far, as `(t_ms, line)`.
+fn mind_card_lines(rig: &mut Rig) -> Vec<(i64, serde_json::Value)> {
+    rig.journal()
+        .iter()
+        .filter(|event| event.kind.as_str() == "mind_card")
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_value(&event.kind).unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// A `MIND PROFILE` from red's seat, switching to `index`.
+fn switch_to(arena: &Arena, index: u8, seq: u64) -> Intent {
+    intent(arena, RED, IntentKind::Profile { index }, seq)
+}
+
+/// Red's seat released by its pilot, at the next helm epoch.
+fn release_red(arena: &Arena) -> Control {
+    control(
+        Channel::Helm,
+        arena.epochs.current(RED, Channel::Helm) + 1,
+        ControlState::Released,
+        Some(RED_PILOT),
+    )
+}
+
+/// **The fill flies its lead's preset** (17b cut M5.2; the design note's
+/// items 5 and 10; Q-UM-22's check): a mind hull sealed with one profile,
+/// Sniper — the shape `match_::start` seals a side's fill in when its lead
+/// chose `SIM AI MIND Standard PROFILE Sniper` — is laid at check-out on
+/// Sniper's card over the arena's own doctrine (`Arena::adopt_mind` through
+/// `Arena::active_card`), and its first think is handed that card; its seal
+/// reference holds the set as preset codes (`[2]`). The same hull sealed on
+/// the Line card alone is laid on Line, as every hull always was. Nothing
+/// the persona's deliberated orders assume reads the card (orders steer the
+/// objective; the card is the mind's) — checked here by the order landing
+/// on the Sniper row exactly as on a Line one.
+#[test]
+fn m5_the_fill_flies_the_leads_preset() {
+    let mut rig = Rig::new(profile_field(Controller::Mind, &["Sniper"]));
+    let seen = cards_seen(&mut rig.arena);
+    assert_eq!(
+        rig.arena
+            .unit(RED)
+            .map(|unit| unit.seal.profiles.codes().to_vec()),
+        Some(vec![2]),
+        "the sealed set, as preset codes"
+    );
+    assert_eq!(
+        row_card(&rig.arena, RED),
+        Some(preset_on_field("sniper")),
+        "laid on Sniper at check-out"
+    );
+    let _ = rig.until(5_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.think_seq >= 1)
+    });
+    assert_eq!(
+        seen.of(RED).first(),
+        Some(&preset_on_field("sniper")),
+        "the first think is handed Sniper"
+    );
+    let hold = intent(
+        &rig.arena,
+        RED,
+        IntentKind::Order(Box::new(order(RED_ONE, Objective::Hold, None, 60_000))),
+        1,
+    );
+    let _ = rig.pulse(&[], &[hold]);
+    assert!(
+        rig.arena
+            .minds
+            .get(&RED)
+            .and_then(|state| state.order.as_ref())
+            .is_some_and(|order| order.objective == MindObjective::Hold),
+        "the lead's order lands on the Sniper row as on any"
+    );
+    let line = Rig::new(profile_field(Controller::Mind, &[]));
+    assert_eq!(
+        row_card(&line.arena, RED),
+        Some(preset_on_field("line")),
+        "the Line card alone lays Line"
+    );
+    assert_eq!(
+        line.arena
+            .unit(RED)
+            .map(|unit| unit.seal.profiles.codes().to_vec()),
+        Some(vec![0])
+    );
+}
+
+/// **The row's card digests as its sealed profile, for every preset** (17b
+/// cut M5.2; the design note's item 5): a hull sealed with each of the six
+/// presets alone is laid a row whose card — derived from the arena's own
+/// doctrine at the stock config, as Line always was — is byte for byte the
+/// card the seal digested (`MindSeal::card_digest`, and the set's one
+/// `SealedProfile::card_digest` for every preset but Line, whose set is
+/// written as none).
+#[test]
+fn m5_the_row_card_digests_as_the_sealed_profile_for_every_preset() {
+    use sha2::{Digest as _, Sha256};
+    for name in tacsim::arena::card::PRESETS {
+        let unit = sealed_with(
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Mind,
+            ),
+            &[name],
+        );
+        let seal = unit.seal.clone();
+        let arena = arena_of(
+            vec![
+                unit,
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(9, 8),
+                    Vec::new(),
+                    Controller::Pilot,
+                ),
+            ],
+            &[BLUE],
+        );
+        let card = row_card(&arena, RED).expect("a mind's row");
+        let digest: [u8; 32] =
+            Sha256::digest(serde_json::to_vec(&card).expect("a card writes")).into();
+        assert_eq!(digest, seal.card_digest, "{name}: the sealed card");
+        match seal.profiles.as_slice() {
+            [] => assert_eq!(name, "Line", "only Line alone writes no set"),
+            [one] => {
+                assert_eq!(one.name, name);
+                assert_eq!(one.card_digest, digest, "{name}: the set's own digest");
+            }
+            more => panic!("{name}: one profile sealed, not {more:?}"),
+        }
+    }
+}
+
+/// **Past the grace, a pilot's hull flies its sealed profile** (17b cut
+/// M5.2; doc 17 §12 "Release and possess"; the design note's item 5): red,
+/// seated and sealed `[Sniper, Line]`, has no mind row while its pilot flies
+/// it; the `Released` that ends the grace hands it to a mind laid on its
+/// FIRST profile, Sniper — seeded `Withdraw` (a Standard Doctrine seal) —
+/// and that mind's first think is handed Sniper's card.
+#[test]
+fn m5_past_the_grace_a_pilots_hull_flies_its_sealed_profile() {
+    let mut rig = Rig::new(profile_field(Controller::Pilot, &["Sniper", "Line"]));
+    let seen = cards_seen(&mut rig.arena);
+    for _ in 0..4 {
+        let _ = rig.pulse(&[], &[]);
+    }
+    assert!(!rig.arena.minds.contains_key(&RED), "no row under a pilot");
+    let released = release_red(&rig.arena);
+    let _ = rig.pulse(&[released], &[]);
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Mind)
+    );
+    let row = rig.arena.minds.get(&RED).expect("a mind's row");
+    assert_eq!(row.card, preset_on_field("sniper"), "the first profile");
+    assert_eq!(
+        doctrine_state_of(&row.memory),
+        MachineState::Withdraw,
+        "seeded Withdraw: a Standard Doctrine seal"
+    );
+    let _ = rig.until(5_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.think_seq >= 1)
+    });
+    assert_eq!(seen.of(RED).first(), Some(&preset_on_field("sniper")));
+}
+
+/// **A switch while seated is flown at the release** (17b cut M5.2; doc 17
+/// §11, D-UM-44; the design note's item 4): red's pilot, sealed `[Sniper,
+/// Line]`, switches to Line (`IntentKind::Profile { index: 1 }`) — refused
+/// nothing, told nothing — and the arena writes the active profile (index
+/// 1, stamped at the pulse's start) and journals ONE `mind_card` line there:
+/// `Line`, the sliders the switch moved off Sniper, the whole card. No row
+/// stands under the pilot, so none is written. The `Released` lays the mind
+/// on Line, and its first think is handed Line's card.
+#[test]
+fn m5_a_profile_switch_while_seated_is_flown_at_the_release() {
+    let mut rig = Rig::new(profile_field(Controller::Pilot, &["Sniper", "Line"]));
+    let seen = cards_seen(&mut rig.arena);
+    for _ in 0..4 {
+        let _ = rig.pulse(&[], &[]);
+    }
+    let at = rig.arena.now_ms;
+    let switch = switch_to(&rig.arena, 1, 1);
+    let out = rig.pulse(&[], &[switch]);
+    assert!(pilot_refusals(&out, RED_PILOT).is_empty(), "told nothing");
+    assert_eq!(
+        active(&rig.arena, RED),
+        Some(tacsim::arena::card::ActiveProfile {
+            index: 1,
+            switched_ms: Some(at),
+        })
+    );
+    assert!(!rig.arena.minds.contains_key(&RED), "no row is laid by it");
+    let lines = mind_card_lines(&mut rig);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let (t_ms, line) = &lines[0];
+    assert_eq!(*t_ms, at, "at the pulse's start");
+    assert_eq!(line["unit"], RED.0);
+    assert_eq!(line["name"], "Line");
+    let moved = preset_on_field("line").changed_from(&preset_on_field("sniper"));
+    assert!(!moved.is_empty());
+    assert_eq!(line["changed"], serde_json::json!(moved));
+    let card: tacsim::arena::StockCard =
+        serde_json::from_value(line["card"].clone()).expect("the whole card");
+    assert_eq!(card, preset_on_field("line"));
+    let released = release_red(&rig.arena);
+    let _ = rig.pulse(&[released], &[]);
+    assert_eq!(row_card(&rig.arena, RED), Some(preset_on_field("line")));
+    let _ = rig.until(at + 5_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.think_seq >= 1)
+    });
+    assert_eq!(seen.of(RED).first(), Some(&preset_on_field("line")));
+}
+
+/// **The profile driver**: [`profile_field`] with red seated and sealed
+/// `[Line, Sniper]`, its runner recorded ([`CardsSeen`]), stepped at
+/// `cadence_ms` to `until_ms` through `beats` — each delivered in the first
+/// pulse whose arena time has reached it ([`seat_run`]'s rule; every beat a
+/// multiple of 5,000). A control raises the helm epoch and names the seat's
+/// pilot. Answers the run, the cards seen and the arena.
+fn profile_run(
+    cadence_ms: i64,
+    until_ms: i64,
+    beats: &[(i64, Beat)],
+) -> (Run, Vec<tacsim::arena::StockCard>, Arena) {
+    let mut arena = profile_field(Controller::Pilot, &["Line", "Sniper"]);
+    let seen = cards_seen(&mut arena);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut counters = MotorCounters::default();
+    let mut pulses = 0_u32;
+    let mut next = 0_usize;
+    let mut seq = 0_u64;
+    let mut wall = 0_i64;
+    loop {
+        let mut intents: Vec<Intent> = Vec::new();
+        let mut controls: Vec<Control> = Vec::new();
+        while let Some((at, beat)) = beats.get(next) {
+            if *at > arena.now_ms {
+                break;
+            }
+            match beat {
+                Beat::Order(kind) => {
+                    seq += 1;
+                    intents.push(intent(&arena, RED, kind.clone(), seq));
+                }
+                Beat::Control(state) => controls.push(control(
+                    Channel::Helm,
+                    arena.epochs.current(RED, Channel::Helm) + 1,
+                    *state,
+                    Some(RED_PILOT),
+                )),
+            }
+            next += 1;
+        }
+        let out = arena.step_settled(wall, &controls, &intents);
+        pulses += 1;
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        counters.absorb(&out.motor);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    (
+        Run {
+            events,
+            hashes,
+            pulses,
+            counters,
+        },
+        seen.of(RED),
+        arena,
+    )
+}
+
+/// **A profile switch is one event list and one hash sequence at three
+/// cadences** (17b cut M5.2; 16b §11's mandatory cross-tempo property, 17b
+/// §0.4; the design note's gate evidence): red's pilot, sealed `[Line,
+/// Sniper]`, switches to Sniper at 5,000 and is released at 10,000; the
+/// mind flies Sniper to 30,000. Stepped (settled) at 5,000, 1,000 and 500 ms:
+/// one event list, one hash sequence, one card sequence — and the one
+/// `mind_card` line at 5,000 names Sniper.
+#[test]
+fn m5_a_profile_switch_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let beats = [
+        (5_000, Beat::Order(IntentKind::Profile { index: 1 })),
+        (10_000, Beat::Control(ControlState::Released)),
+    ];
+    let (first, cards, arena) = profile_run(5_000, 30_000, &beats);
+    let switched: Vec<(i64, serde_json::Value)> = first
+        .events
+        .iter()
+        .filter_map(|(t_ms, json, _)| {
+            let value: serde_json::Value = serde_json::from_str(json).ok()?;
+            (value["kind"] == "mind_card").then_some((*t_ms, value))
+        })
+        .collect();
+    assert_eq!(switched.len(), 1, "{switched:?}");
+    assert_eq!(switched[0].0, 5_000);
+    assert_eq!(switched[0].1["name"], "Sniper");
+    assert_eq!(
+        active(&arena, RED),
+        Some(tacsim::arena::card::ActiveProfile {
+            index: 1,
+            switched_ms: Some(5_000),
+        })
+    );
+    assert_eq!(row_card(&arena, RED), Some(preset_on_field("sniper")));
+    assert!(cards.len() >= 15, "{} thinks", cards.len());
+    assert!(
+        cards.iter().all(|card| *card == preset_on_field("sniper")),
+        "every think after the release flies Sniper"
+    );
+    for cadence in [1_000, 500] {
+        let (other, other_cards, _) = profile_run(cadence, 30_000, &beats);
+        assert_eq!(other.events, first.events, "the event list at {cadence}");
+        assert_eq!(other.hashes, first.hashes, "the hash sequence at {cadence}");
+        assert_eq!(other_cards, cards, "the cards at {cadence}");
+        assert_ne!(other.pulses, first.pulses);
+    }
+}
+
+/// **A second switch inside ten seconds is refused `profile`** (17b cut
+/// M5.2; doc 17 D-UM-44: "at most once per 10 s"; the design note's item
+/// 4): red's pilot, sealed `[Sniper, Line]`, switches to Line; a switch back
+/// 9,750 ms later is refused `profile` — told to the pilot as `MIND refused.
+/// That profile cannot be switched to now.` — and changes nothing, journals
+/// nothing; at 10,000 ms it lands. So are refused: an index past the sealed
+/// set, the profile already active, and a hull with no seal
+/// (`SealRef::none`).
+#[test]
+fn m5_a_second_switch_inside_ten_seconds_is_refused_profile() {
+    let mut rig = Rig::new(profile_field(Controller::Pilot, &["Sniper", "Line"]));
+    for _ in 0..4 {
+        let _ = rig.pulse(&[], &[]);
+    }
+    let first_at = rig.arena.now_ms;
+    let switch = switch_to(&rig.arena, 1, 1);
+    let _ = rig.pulse(&[], &[switch]);
+    let landed = active(&rig.arena, RED);
+    assert_eq!(landed.map(|profile| profile.index), Some(1));
+    while rig.arena.now_ms < first_at + 9_750 {
+        let _ = rig.pulse(&[], &[]);
+    }
+    let lines_before = mind_card_lines(&mut rig).len();
+    let again = switch_to(&rig.arena, 0, 2);
+    let out = rig.pulse(&[], &[again]);
+    assert_eq!(
+        pilot_refusals(&out, RED_PILOT),
+        vec![("mind".to_owned(), Refusal::Profile)],
+        "told to the pilot"
+    );
+    let told: Vec<String> = out
+        .frames
+        .iter()
+        .filter(|(to, _)| *to == RED_PILOT)
+        .flat_map(|(_, frame)| tacsim::match_::cockpit::notice_lines(frame))
+        .collect();
+    assert_eq!(
+        told,
+        vec!["MIND refused. That profile cannot be switched to now.".to_owned()]
+    );
+    assert_eq!(active(&rig.arena, RED), landed, "nothing changed");
+    assert_eq!(mind_card_lines(&mut rig).len(), lines_before);
+    assert_eq!(rig.arena.now_ms, first_at + 10_000);
+    let at_ten = switch_to(&rig.arena, 0, 3);
+    let out = rig.pulse(&[], &[at_ten]);
+    assert!(pilot_refusals(&out, RED_PILOT).is_empty());
+    assert_eq!(
+        active(&rig.arena, RED),
+        Some(tacsim::arena::card::ActiveProfile {
+            index: 0,
+            switched_ms: Some(first_at + 10_000),
+        }),
+        "ten seconds on, it lands"
+    );
+    // Past the set, and the one already active.
+    for refused in [2, 0] {
+        let mut later = Rig::new(profile_field(Controller::Pilot, &["Sniper", "Line"]));
+        let _ = later.pulse(&[], &[]);
+        let switch = switch_to(&later.arena, refused, 1);
+        assert_eq!(
+            apply_intent(&mut later.arena, &switch, IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Profile),
+            "index {refused}"
+        );
+        assert_eq!(
+            active(&later.arena, RED),
+            Some(tacsim::arena::card::ActiveProfile::FIRST)
+        );
+    }
+    // No seal: `SealRef::none`'s zero digest, over the hull's own two-profile
+    // set kept as sealed — so the switch to index 1 (in the set, not the
+    // active one, no stamp) is refused by the digest alone (17b cut M5.2's
+    // review: switching to index 0 would be refused as already active).
+    let mut unsealed = Rig::new(profile_field(Controller::Pilot, &["Sniper", "Line"]));
+    let _ = unsealed.pulse(&[], &[]);
+    if let Some(unit) = unsealed.arena.unit_mut(RED) {
+        assert_eq!(unit.seal.profiles.len, 2, "the set stands");
+        unit.seal.digest = tacsim::arena::mind::SealRef::none().digest;
+    }
+    assert_eq!(
+        active(&unsealed.arena, RED),
+        Some(tacsim::arena::card::ActiveProfile::FIRST)
+    );
+    let switch = switch_to(&unsealed.arena, 1, 1);
+    assert_eq!(
+        apply_intent(&mut unsealed.arena, &switch, IntentSource::Seat),
+        IntentOutcome::Refused(Refusal::Profile),
+        "a hull with no seal"
+    );
+    assert_eq!(
+        active(&unsealed.arena, RED),
+        Some(tacsim::arena::card::ActiveProfile::FIRST)
+    );
+}
+
+/// **A cold or immobile hull switches** (17b cut M5.2; the design note's
+/// item 4: the switch's own arm comes before the continuous gates — the
+/// profile is what the mind will fly, not motion). On a cold tank a heading
+/// is refused `power_not_online` and the switch lands; on a tank whose
+/// tracks are out (motion disabled) a heading is refused `motion_disabled`
+/// and the switch lands.
+#[test]
+fn m5_a_cold_or_immobile_hull_switches() {
+    for (power, immobile, heading_refused) in [
+        (Power::Off, false, Refusal::PowerNotOnline),
+        (Power::Online, true, Refusal::MotionDisabled),
+    ] {
+        let mut arena = profile_field(Controller::Pilot, &["Sniper", "Line"]);
+        if let Some(unit) = arena.unit_mut(RED) {
+            unit.power = power;
+            unit.limits.motion_disabled = immobile;
+        }
+        let heading = intent(&arena, RED, IntentKind::Heading { mdeg: 90_000 }, 1);
+        assert_eq!(
+            apply_intent(&mut arena, &heading, IntentSource::Seat),
+            IntentOutcome::Refused(heading_refused)
+        );
+        let switch = switch_to(&arena, 1, 2);
+        assert_eq!(
+            apply_intent(&mut arena, &switch, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous,
+            "{power:?}, immobile {immobile}: the switch lands"
+        );
+        assert_eq!(active(&arena, RED).map(|profile| profile.index), Some(1));
+    }
+}
+
+/// **A switch and a heading in one pulse both land** (17b cut M5.2; the
+/// design note's item 4: the switch keys under `continuous_code` 5, so a
+/// `HEADING` of the same pulse keeps its own key — the buffer half is
+/// `arena_task`'s in-source `m5_a_profile_switch_keys_on_its_own_code`):
+/// both handed to one pulse's phase 2, the heading is set and the profile
+/// switched.
+#[test]
+fn m5_a_switch_and_a_heading_in_one_pulse_both_land() {
+    let mut rig = Rig::new(profile_field(Controller::Pilot, &["Sniper", "Line"]));
+    let startup = intent(&rig.arena, RED, IntentKind::Startup, 1);
+    let _ = rig.pulse(&[], &[startup]);
+    let _ = rig.until(2_000, |arena| {
+        arena
+            .unit(RED)
+            .is_some_and(|unit| unit.power == Power::Online)
+    });
+    let heading = intent(&rig.arena, RED, IntentKind::Heading { mdeg: 90_000 }, 2);
+    let switch = switch_to(&rig.arena, 1, 3);
+    let out = rig.pulse(&[], &[heading, switch]);
+    assert!(pilot_refusals(&out, RED_PILOT).is_empty());
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.desired_heading_mdeg),
+        Some(90_000)
+    );
+    assert_eq!(
+        active(&rig.arena, RED).map(|profile| profile.index),
+        Some(1)
+    );
+}
+
+/// **A switch from a mind or a slot is refused `channel`** (17b cut M5.2;
+/// the design note's item 4: a mind does not switch its own profile and no
+/// station function builds one): a `Profile` applied as a mind's, a
+/// machine's or a condition slot's is refused `channel` and switches
+/// nothing; a seat's lands.
+#[test]
+fn m5_a_profile_switch_from_a_mind_or_a_slot_is_refused_channel() {
+    let mut arena = profile_field(Controller::Pilot, &["Sniper", "Line"]);
+    let switch = switch_to(&arena, 1, 1);
+    for source in [
+        IntentSource::Mind,
+        IntentSource::Machine,
+        IntentSource::Cond,
+    ] {
+        assert_eq!(
+            apply_intent(&mut arena, &switch, source),
+            IntentOutcome::Refused(Refusal::Channel),
+            "{source:?}"
+        );
+        assert_eq!(
+            active(&arena, RED),
+            Some(tacsim::arena::card::ActiveProfile::FIRST)
+        );
+    }
+    assert_eq!(
+        apply_intent(&mut arena, &switch, IntentSource::Seat),
+        IntentOutcome::AppliedContinuous
+    );
+}
+
+/// **A release hands a non-Doctrine mind its own memory** (17b cut M5.2;
+/// the design note's item 6; reachable only with a fixture mind, the owner's
+/// OQ-2): [`possess_field`]'s red, its seal's identity renamed off Standard
+/// Doctrine (`SealRef::doctrine` false), its scripted mind writing memory
+/// `[3, 1, 4]`; possessed and released, the dormant row is adopted again
+/// with its memory UNTOUCHED — no `Withdraw` seed — where the same field
+/// under a Standard Doctrine seal is handed the stock seed.
+#[test]
+fn m5_a_release_hands_a_non_doctrine_mind_its_own_memory() {
+    for doctrine in [false, true] {
+        let (mut rig, _mind) = possess_field(vec![Says {
+            memory: Some(vec![3, 1, 4]),
+            ..says(0, vec![IntentKind::Startup])
+        }]);
+        if !doctrine && let Some(unit) = rig.arena.unit_mut(RED) {
+            unit.seal.doctrine = false;
+        }
+        let _ = rig.until(5_000, |arena| {
+            arena
+                .minds
+                .get(&RED)
+                .is_some_and(|state| state.think_seq >= 1 && state.pending.is_none())
+        });
+        assert_eq!(
+            rig.arena.minds.get(&RED).map(|state| state.memory.clone()),
+            Some(vec![3, 1, 4])
+        );
+        let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+        let _ = rig.pulse(
+            &[control(
+                Channel::Helm,
+                epoch,
+                ControlState::Live,
+                Some(POSSESSOR),
+            )],
+            &[],
+        );
+        assert_eq!(
+            rig.arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Pilot)
+        );
+        let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+        let _ = rig.pulse(
+            &[control(
+                Channel::Helm,
+                epoch,
+                ControlState::Released,
+                Some(POSSESSOR),
+            )],
+            &[],
+        );
+        let memory = rig
+            .arena
+            .minds
+            .get(&RED)
+            .map(|state| state.memory.clone())
+            .expect("the dormant row, adopted again");
+        if doctrine {
+            assert_eq!(memory, withdraw_seed(), "Standard Doctrine is seeded");
+        } else {
+            assert_eq!(memory, vec![3, 1, 4], "its own memory, untouched");
+        }
+    }
+}
+
+/// **A dormant row's card follows the switch** (17b cut M5.2; the design
+/// note's item 4): red, a mind sealed `[Sniper, Line]` and flying Sniper, is
+/// possessed — its row stays, dormant, on Sniper — and its pilot switches to
+/// Line: the dormant row's card is Line at once (the `mind_card` line's
+/// `changed` read off the row's own card), and the release adopts the row
+/// flying it, its next think handed Line.
+#[test]
+fn m5_a_dormant_rows_card_follows_the_switch() {
+    let mut rig = Rig::new(profile_field(Controller::Mind, &["Sniper", "Line"]));
+    let seen = cards_seen(&mut rig.arena);
+    let _ = rig.until(5_000, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.think_seq >= 1)
+    });
+    assert_eq!(row_card(&rig.arena, RED), Some(preset_on_field("sniper")));
+    let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+    let _ = rig.pulse(
+        &[control(
+            Channel::Helm,
+            epoch,
+            ControlState::Live,
+            Some(POSSESSOR),
+        )],
+        &[],
+    );
+    assert_eq!(
+        rig.arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Pilot)
+    );
+    let switch = switch_to(&rig.arena, 1, 1);
+    let out = rig.pulse(&[], &[switch]);
+    assert!(pilot_refusals(&out, POSSESSOR).is_empty());
+    assert_eq!(
+        row_card(&rig.arena, RED),
+        Some(preset_on_field("line")),
+        "the dormant row's card"
+    );
+    let lines = mind_card_lines(&mut rig);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        lines[0].1["changed"],
+        serde_json::json!(preset_on_field("line").changed_from(&preset_on_field("sniper")))
+    );
+    let thought = seen.of(RED).len();
+    let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
+    let _ = rig.pulse(
+        &[control(
+            Channel::Helm,
+            epoch,
+            ControlState::Released,
+            Some(POSSESSOR),
+        )],
+        &[],
+    );
+    let at = rig.arena.now_ms;
+    let _ = rig.until(at + 5_000, |_| seen.of(RED).len() > thought);
+    assert_eq!(
+        seen.of(RED).get(thought),
+        Some(&preset_on_field("line")),
+        "the release flies the switched profile"
+    );
+}
+
+/// **A resume across a snapshot holding a switched profile and a chosen set
+/// reproduces the hash sequence** (17b cut M5.2; the design note's gate
+/// evidence; AF.3's resume, format 10): red's pilot, sealed `[Line,
+/// Sniper]`, switches to Sniper at the first second; the arena is encoded
+/// two seconds later — the document carries the sealed set (`[0, 2]`) and
+/// the active profile (index 1, stamped) — decoded, resumed, and driven on
+/// with the same beats (the release at 4,000 ms) to 12,000 ms. Every
+/// substep's hash after the resume is the uninterrupted run's, the decoded
+/// hull reads the set and the profile it was encoded with, and the released
+/// mind flies Sniper in both.
+#[test]
+fn m5_a_resume_across_a_switched_profile_reproduces_the_hash_sequence() {
+    /// Pulse `rig` to `until_ms`, switching at 1,000 and releasing at 4,000
+    /// (each in the first pulse that reaches it), answering every substep
+    /// hash from `from_ms` on.
+    fn drive(rig: &mut Rig, until_ms: i64, from_ms: i64) -> Vec<u64> {
+        let mut hashes = Vec::new();
+        while rig.arena.now_ms < until_ms {
+            let now = rig.arena.now_ms;
+            let mut intents = Vec::new();
+            let mut controls = Vec::new();
+            if now == 1_000 {
+                intents.push(switch_to(&rig.arena, 1, 1));
+            }
+            if now == 4_000 {
+                controls.push(release_red(&rig.arena));
+            }
+            let _ = rig.pulse(&controls, &intents);
+            if rig.arena.now_ms > from_ms {
+                hashes.extend(rig.arena.substep_hashes.iter().copied());
+            }
+        }
+        hashes
+    }
+    let mut whole = Rig::new(profile_field(Controller::Pilot, &["Line", "Sniper"]));
+    let uninterrupted = drive(&mut whole, 12_000, 3_000);
+
+    let mut first = Rig::new(profile_field(Controller::Pilot, &["Line", "Sniper"]));
+    let _ = drive(&mut first, 3_000, 3_000);
+    let switched = tacsim::arena::card::ActiveProfile {
+        index: 1,
+        switched_ms: Some(1_000),
+    };
+    assert_eq!(active(&first.arena, RED), Some(switched));
+    let snapshot = Snapshot::encode(&first.arena).expect("the arena encodes");
+    let decoded = Snapshot::decode(&snapshot.document, (*first.arena.definition).clone())
+        .expect("format 10 decodes");
+    assert_eq!(active(&decoded, RED), Some(switched), "the active profile");
+    assert_eq!(
+        decoded
+            .unit(RED)
+            .map(|unit| unit.seal.profiles.codes().to_vec()),
+        Some(vec![0, 2]),
+        "the chosen set"
+    );
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&decoded),
+        tacsim::arena::hash::state_hash(&first.arena),
+        "the decode is the encoded state"
+    );
+    let mut resumed = Rig::new(decoded);
+    // The tempo pin is the rig's, not the arena's state: a decode does not
+    // carry it ([`stepped`]'s rule).
+    resumed.arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let now = resumed.arena.now_ms;
+    let _ = resumed.arena.resume_at(now);
+    resumed.wall = first.wall;
+    let stitched = drive(&mut resumed, 12_000, 3_000);
+    assert!(!uninterrupted.is_empty());
+    assert_eq!(stitched, uninterrupted, "one hash sequence");
+    for rig in [&whole, &resumed] {
+        assert_eq!(row_card(&rig.arena, RED), Some(preset_on_field("sniper")));
+        assert_eq!(
+            rig.arena.unit(RED).map(|unit| unit.controller),
+            Some(Controller::Mind)
+        );
+    }
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&resumed.arena),
+        tacsim::arena::hash::state_hash(&whole.arena)
     );
 }

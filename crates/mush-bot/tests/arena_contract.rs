@@ -472,6 +472,8 @@ fn every_refusal() -> Vec<Refusal> {
         Refusal::Unwarranted,
         Refusal::NoSlot,
         Refusal::Unlawful,
+        // 17b cut M5.2: a profile switch the arena cannot take now.
+        Refusal::Profile,
     ];
     for refusal in &refusals {
         match refusal {
@@ -493,7 +495,8 @@ fn every_refusal() -> Vec<Refusal> {
             | Refusal::NoJammer
             | Refusal::Unwarranted
             | Refusal::NoSlot
-            | Refusal::Unlawful => {}
+            | Refusal::Unlawful
+            | Refusal::Profile => {}
         }
     }
     refusals
@@ -620,6 +623,13 @@ fn every_notice() -> Vec<FrameNotice> {
     notices.push(FrameNotice::Refused {
         order: "heading".into(),
         refusal: Refusal::MotionDisabled,
+        weapon: None,
+        detail: RefusalDetail::None,
+    });
+    // 17b cut M5.2: a `MIND PROFILE` the arena refused, as it stages one.
+    notices.push(FrameNotice::Refused {
+        order: "mind".into(),
+        refusal: Refusal::Profile,
         weapon: None,
         detail: RefusalDetail::None,
     });
@@ -2620,4 +2630,140 @@ fn m1b4_the_arming_its_line_and_its_sentences_read_as_the_bot_reads_them() {
         let mut reader = Reader::new();
         assert_eq!(reader.one(line), read, "{line} through the renderer");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.2: the profile refusal, the seal line and Q-UM-15's sentence
+// ---------------------------------------------------------------------------
+
+/// **The game's 17b cut M5.2, read as the game prints it** (a declared
+/// reader change; the bot never types `MIND`, so none of these is an answer
+/// to it):
+///
+/// * the arena's `profile` refusal of a `MIND PROFILE` it cannot take,
+///   through the cockpit's own `notice_line` —
+///   `MIND refused. That profile cannot be switched to now.` — reads
+///   `Line::Refused { order: "MIND", weapon: None }` and opens no reply;
+/// * the seal line a choosing pilot alone reads before `Good hunting.`
+///   (`lobby::seal_line`), in its three shapes — a chosen Doctrine set at
+///   the widest preset pair, a substituted choice, a non-Doctrine mind —
+///   and Q-UM-15's `SIM START` sentence read `Line::Other` byte for byte,
+///   fit the 120-column line, and open no reply;
+/// * the check-out's call-off by hull — `Match 12 could not start: RA's mind
+///   is over its core's class. The pods are free again.` and (the cut's
+///   review) `… RA's card could not be sealed. …` — reads
+///   `Line::CouldNotStart`, under 120.
+#[test]
+fn m5_2_the_profile_refusal_and_the_seal_lines_read_as_the_bot_reads_them() {
+    use tacsim::match_::lobby;
+    let frame = frame();
+    let rows = cockpit::frame_contacts(&frame);
+    let refused = cockpit::notice_line(
+        &frame,
+        &FrameNotice::Refused {
+            order: "mind".into(),
+            refusal: Refusal::Profile,
+            weapon: None,
+            detail: RefusalDetail::None,
+        },
+        &rows,
+    );
+    assert_eq!(
+        refused,
+        "MIND refused. That profile cannot be switched to now."
+    );
+    let mut reader = Reader::new();
+    let read = reader.one(&refused);
+    assert!(
+        matches!(&read, Line::Refused { order, weapon: None, cycling_s: None, .. }
+            if order == "MIND"),
+        "{refused} read as {read:?}"
+    );
+    let seal = |mind: &str, profiles: &[&str]| tacsim::arena::MindSeal {
+        mind: mind.into(),
+        class: tacsim::arena::core::CoreClass::I,
+        profiles: profiles
+            .iter()
+            .map(|name| tacsim::arena::SealedProfile {
+                name: (*name).into(),
+                card_digest: [0; 32],
+            })
+            .collect(),
+        ..tacsim::arena::MindSeal::placeholder()
+    };
+    let lines = [
+        (
+            lobby::seal_line(
+                &seal("Standard Doctrine", &["Skirmisher", "Rearguard"]),
+                false,
+            ),
+            "Sealed for this sortie: Standard Doctrine (Skirmisher, Rearguard), Class I; MIND \
+             reads it.",
+        ),
+        (
+            lobby::seal_line(&seal("Standard Doctrine", &[]), true),
+            "Sealed for this sortie: Standard Doctrine (Line), Class I, for humans on the other \
+             side; MIND reads it.",
+        ),
+        (
+            lobby::seal_line(&seal("Fixture I", &[]), false),
+            "Sealed for this sortie: Fixture I (Line), Class I; MIND reads it.",
+        ),
+        (
+            Some(lobby::HUMANS_ON_THE_OTHER_SIDE.to_owned()),
+            "Humans on the other side: your fill and any released hull fly Standard Doctrine.",
+        ),
+    ];
+    for (said, line) in lines {
+        assert_eq!(said.as_deref(), Some(line), "the game's words");
+        assert!(line.chars().count() < 120, "{line}");
+        assert_eq!(reader.one(line), Line::Other(line.to_owned()), "{line}");
+    }
+    // The check-out's two new call-offs by hull (the over-class backstop,
+    // and since the cut's review a card the seal refuses), as the lobby
+    // composes them off `StartError::call_off_words`: the bot's
+    // `CouldNotStart`, naming no mind, class or profile.
+    let world = World::new_minimal();
+    for (refused, why) in [
+        (
+            tacsim::match_::StartError::MindOverClass {
+                unit: ObjId(9),
+                callsign: "RA".into(),
+                rated: tacsim::arena::core::CoreClass::III,
+                core: tacsim::arena::core::CoreClass::II,
+            },
+            "RA's mind is over its core's class",
+        ),
+        (
+            tacsim::match_::StartError::CardRefused {
+                unit: ObjId(9),
+                callsign: "RA".into(),
+                refusal: tacsim::arena::CardError::Pair {
+                    slider: "Rearguard",
+                    fight_home: "75".to_owned(),
+                    break_off: "70".to_owned(),
+                },
+            },
+            "RA's card could not be sealed",
+        ),
+    ] {
+        let words = refused.call_off_words(&world, &[]);
+        assert_eq!(words, why, "the game's words");
+        let line = format!("Match 12 could not start: {words}. The pods are free again.");
+        assert!(line.chars().count() < 120, "{line}");
+        assert_eq!(
+            reader.one(&line),
+            Line::CouldNotStart {
+                match_id: 12,
+                why: format!("{why}. The pods are free again."),
+            },
+            "{line}"
+        );
+    }
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
 }

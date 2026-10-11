@@ -2092,22 +2092,37 @@ pub struct UnitState {
     /// §13, D-UM-45, D-UM-46): its sortie, the seal's digest, the core class
     /// the seal recorded (what 17b cut M3.4's cause-`core` drop keys on), the
     /// class its mind thinks at, the engine that flies it, the governor bit,
-    /// whether the sortie is closed, and (17b cut M4.6) whether the mind
-    /// sealed is Standard Doctrine ([`crate::arena::mind::SealRef::doctrine`],
-    /// derived at the seal, unfolded). Laid down empty
+    /// whether the sortie is closed, (17b cut M4.6) whether the mind sealed
+    /// is Standard Doctrine ([`crate::arena::mind::SealRef::doctrine`],
+    /// derived at the seal, unfolded) and (17b cut M5.2) the profiles it was
+    /// sealed with ([`crate::arena::mind::SealRef::profiles`], likewise).
+    /// Laid down empty
     /// ([`crate::arena::mind::SealRef::none`]) in 17b cut M3.2; **since 17b cut
     /// M3.3** [`Arena::new`] writes it from the custody's own seal
     /// ([`crate::arena::mind::MindSeal::seal_ref`]), and a snapshot carries it
     /// whole — a resume never re-derives it from the world's record.
     ///
     /// Carried by this struct's derive (`SNAPSHOT_FORMAT` 8; 9 since 17b cut
-    /// M4.6, with `doctrine`) and **NOT
+    /// M4.6, with `doctrine`; 10 since 17b cut M5.2, with `profiles`) and
+    /// **NOT
     /// folded into [`crate::arena::hash::state_hash`]**: a per-match
     /// constant, [`Arena::odds_floor_permille`]'s argument — and its one
     /// moving bit, `closed`, moves only with a ledger line (17b cut M3.6's
     /// `sortie_closed`), which the hash already folds through the ledger's
     /// sequence.
     pub seal: crate::arena::mind::SealRef,
+    /// **Which of its sealed profiles the hull's mind will fly** (17b cut
+    /// M5.2; doc 17 §11, §12, D-UM-44; [`UnitState::profile`] is the hull's
+    /// silhouette, so this is `card_profile`): an index into
+    /// [`crate::arena::mind::SealRef::profiles`] and the arena millisecond
+    /// of the last switch — [`crate::arena::card::ActiveProfile::FIRST`] at
+    /// check-out ([`Arena::new`]). Carried by this struct's derive
+    /// (`SNAPSHOT_FORMAT` 10), decided carried on purpose: both fields decide
+    /// a later card and a refusal. **Folded into
+    /// [`crate::arena::hash::state_hash`] as item 1's sub-item 20 only when
+    /// it is not the first profile never switched**, so a match that
+    /// switches nothing folds the bytes it always did.
+    pub card_profile: crate::arena::card::ActiveProfile,
     /// M32 unit truth, carried opaque — and, from 16b cut W.2, written by exactly
     /// one thing: one [`mush_tactics::UnitMutationPlan`] per impact through
     /// `mush_tactics::apply` (doc 16 §3.5 "Damage").
@@ -4548,6 +4563,9 @@ impl Arena {
                 // custody's own seal — what the check-out sealed, never
                 // re-derived here (a resume decodes it whole).
                 seal: unit.seal.seal_ref(),
+                // **17b cut M5.2**: every hull checks out on its first
+                // sealed profile, never switched.
+                card_profile: crate::arena::card::ActiveProfile::FIRST,
                 unit: unit.unit,
                 condition,
                 lock: None,

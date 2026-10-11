@@ -366,6 +366,24 @@
       "designator": null,
       "detail": null,
       "friendly": false,
+      "kind": "refused",
+      "order": "mind",
+      "refusal": "profile",
+      "section": null,
+      "spent": false,
+      "text": "MIND refused. That profile cannot be switched to now.",
+      "was": null,
+      "weapon": null
+    },
+    "line": "MIND refused: that profile cannot be switched to now"
+  },
+  {
+    "notice": {
+      "cause": null,
+      "contact": null,
+      "designator": null,
+      "detail": null,
+      "friendly": false,
       "kind": "drive_arrived",
       "order": null,
       "refusal": null,

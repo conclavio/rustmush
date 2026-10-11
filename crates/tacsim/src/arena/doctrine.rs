@@ -156,9 +156,11 @@ pub enum MachineState {
     /// **Not a doctrine state** (17b cut M4.6; the conventions' D2): a hull a
     /// mind flies whose seal is not Standard Doctrine, whose memory says
     /// nothing in the doctrine's words. Read off the seal, never decoded from
-    /// a memory, and unreachable in production before 17b cut M5 (every seal
-    /// is Standard Doctrine); the catch-up sentence has no phrase of its own
-    /// for it (the renderers open the word, D14).
+    /// a memory, and unreachable in production before 17b cut M6 (every
+    /// production seal is Standard Doctrine, the owner's OQ-2); since 17b cut
+    /// M5.2 a fixture's mind sealed through the holdings seam reaches it. The
+    /// catch-up sentence has no phrase of its own for it (the renderers open
+    /// the word, D14).
     Unknown,
 }
 
@@ -359,7 +361,8 @@ pub const SEALED_CHARTER: &str = "registry";
 pub const SEALED_LINE: &str = "standard";
 
 /// **The licence a sim seal records** (D-UM-49: the OOC sim reads no IC
-/// holding before 17b cut M5).
+/// holding and holds no licence before 17b cut M6, the owner's OQ-1 and
+/// OQ-2).
 pub const SEALED_LICENCE: &str = "doctrine";
 
 #[cfg(test)]

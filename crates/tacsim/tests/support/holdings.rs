@@ -140,3 +140,25 @@ pub fn install(w: &mut World) -> Arc<TestHoldings> {
     tacsim::match_::holdings::install_holdings(w, holdings.clone());
     holdings
 }
+
+/// **The test provider with no sources** (17b cut M5.2; the orchestrator's
+/// carried item from 17b cut M5.1): every character holds what
+/// [`TestHoldings`] holds — `Fixture I`'s holding carries its source text —
+/// but [`Holdings::sources`] hands out nothing, so [`install_holdings`]
+/// installs no source and the check-out alone must put a chosen mind's
+/// source in the store before its seal is used.
+///
+/// [`install_holdings`]: tacsim::match_::holdings::install_holdings
+#[derive(Debug, Default)]
+pub struct NoSources(TestHoldings);
+
+impl Holdings for NoSources {
+    fn held(&self, w: &World, character: ObjId) -> Vec<HeldMind> {
+        self.0.held(w, character)
+    }
+}
+
+/// **Install [`NoSources`] on `w`** through the production seam.
+pub fn install_without_sources(w: &mut World) {
+    tacsim::match_::holdings::install_holdings(w, Arc::new(NoSources::default()));
+}

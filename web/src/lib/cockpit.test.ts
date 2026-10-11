@@ -1338,4 +1338,12 @@ describe("17b cut M1b.3", () => {
       "FIRE cannon refused: under the floor",
     );
   });
+
+  it("says the profile refusal word (17b cut M5.2)", () => {
+    // The arena's word for a `MIND PROFILE` it cannot take; the order word is
+    // the intent's own (`mind`), as every staged refusal's is.
+    expect(notice({ kind: "refused", order: "mind", refusal: "profile" })).toBe(
+      "MIND refused: that profile cannot be switched to now",
+    );
+  });
 });

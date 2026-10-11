@@ -2422,8 +2422,9 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         state.notices.extend(carried.iter().cloned());
     }
     let snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
-    // 17b cut M3.2 moved the format to 8 and 17b cut M4.6 to 9.
-    assert_eq!(snapshot.document["format"], 9);
+    // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
+    // to 10.
+    assert_eq!(snapshot.document["format"], 10);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -2481,21 +2482,22 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         tacsim::arena::state_hash(&resumed)
     );
 
-    // A format-6 document is refused by name.
+    // A format-6 document is refused by name (expected 10 since 17b cut
+    // M5.2; 9 from 17b cut M4.6).
     let mut old = snapshot.document.clone();
     old["format"] = serde_json::json!(6);
     assert_eq!(
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 9
+            expected: 10
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 9
+            expected: 10
         })
     ));
 }

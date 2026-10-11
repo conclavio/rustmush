@@ -3081,6 +3081,8 @@ const REFUSAL_WORDS: &[(&str, &str)] = &[
     ("unwarranted", "no warrant"),
     ("no_slot", "every slot armed"),
     ("unlawful", "under the floor"),
+    // 17b cut M5.2: a `MIND PROFILE` the arena could not take.
+    ("profile", "that profile cannot be switched to now"),
 ];
 
 /// Why motion stopped, in the pilot's words (`BlockedCause::as_str`; the web's

@@ -9629,6 +9629,22 @@ fn start_as_staff(
     match_id: u64,
     sides: &[match_::Side],
 ) -> Result<tacsim::arena_task::MatchId, match_::StartError> {
+    start_as_staff_queued(rig, cfg, match_id, sides).0
+}
+
+/// [`start_as_staff`], answering too how much deferred work the call left
+/// queued (17b cut M5.2's review) — every document write among it — so a
+/// test tells a refusal taken before the first write (none) from one rolled
+/// back after the check-out wrote.
+fn start_as_staff_queued(
+    rig: &mut Rig,
+    cfg: &TacsimConfig,
+    match_id: u64,
+    sides: &[match_::Side],
+) -> (
+    Result<tacsim::arena_task::MatchId, match_::StartError>,
+    usize,
+) {
     let mut out = Outbox::new();
     let engine = rig.tw.engine_mut();
     let mut ctx = Ctx {
@@ -9641,7 +9657,7 @@ fn start_as_staff(
         module: Some(smol_str::SmolStr::new(tacsim::NS)),
         typed_state: mush_core::ModuleActionState::unavailable(),
     };
-    match_::start(
+    let started = match_::start(
         &mut ctx,
         tacsim::arena_task::MatchId(match_id),
         &smol_str::SmolStr::new_static(match_::PROVING_GROUND),
@@ -9650,7 +9666,8 @@ fn start_as_staff(
         &cfg.match_,
         &cfg.sensors,
         tacsim::arena::MatchMode::Skirmish,
-    )
+    );
+    (started, out.deferred().len())
 }
 
 /// **THE GATE FIXTURE: an over-subscribed roster is refused by name at
@@ -10770,10 +10787,15 @@ async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
 /// test hook with Ada seated and Bo not, on a server with the fill on and the
 /// test provider installed:
 ///
-/// * Ada's slot chose `Fixture I` (Sniper) on its `line_tank`: her hull's
-///   `Side::minds` entry holds `Fixture I` as the provider holds it, its
-///   profiles, `chose` and never `substituted`, and its `Fielded::mind_class`
-///   is the class `Fixture I` seals at there (I);
+/// * Ada's slot chose `Fixture I` (Sniper) on its `line_tank`: **since 17b
+///   cut M5.2** (Q-UM-15, the owner's OQ-5) humans hold both sides, so her
+///   hull's `Side::minds` entry is the substitution — Standard Doctrine on
+///   Line, `chose` and `substituted` — and its `Fielded::mind_class` the
+///   class Standard Doctrine seals at there (I). Was `Fixture I` as the
+///   provider holds it, its profiles, never `substituted`, at 17b cut M5.1,
+///   which built no substitution; the unsubstituted seal of `Fixture I` is
+///   `m5_check_out_seals_the_slots_choice_and_the_leads_fill`'s, on a match
+///   with humans on one side;
 /// * red's lead chose its fill Standard Doctrine (Hunter): under `SIM AI 3`
 ///   each of red's two fill hulls carries that choice, chosen, at Class I;
 /// * Bo chose nothing, and blue's fill was chosen by nobody: each blue hull
@@ -10807,12 +10829,11 @@ async fn m5_the_check_out_reads_each_hulls_choice() {
     let tank_of = |rig: &Rig, n: usize| {
         match_::tank_of(rig.tw.world(), rig.pod(n).expect("a locked pod")).expect("its tank")
     };
+    // 17b cut M5.2 (Q-UM-15): Ada's `Fixture I (Sniper)` is substituted —
+    // Standard Doctrine on Line — with humans on both sides.
+    assert!(rig.centre().doctrine_only, "humans on both sides");
     for (team, pilot, chosen) in [
-        (
-            Team::Red,
-            tank_of(&rig, ada),
-            Some((support::holdings::fixture_i(), "Sniper")),
-        ),
+        (Team::Red, tank_of(&rig, ada), Some(HeldMind::doctrine())),
         (Team::Blue, tank_of(&rig, bo), None),
     ] {
         let side = side_of(&sides, team);
@@ -10830,13 +10851,13 @@ async fn m5_the_check_out_reads_each_hulls_choice() {
         );
         for fielded in &side.units {
             let (class, choice) = match (fielded.unit == pilot, &chosen, team) {
-                (true, Some((held, profile)), _) => (
+                (true, Some(held), _) => (
                     Some(CoreClass::I),
                     SealChoice {
                         held: held.clone(),
-                        profiles: vec![SmolStr::new_static(profile)],
+                        profiles: Vec::new(),
                         chose: true,
-                        substituted: false,
+                        substituted: true,
                     },
                 ),
                 (false, _, Team::Red) => (
@@ -11360,4 +11381,730 @@ async fn m5_a_holding_lost_before_check_out_calls_the_match_off_by_slot() {
         .to_string(),
         "The red fill's chosen mind is no longer held by its lead."
     );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.2: the seal carries the choice — the check-out reads
+// `Side::minds`, Q-UM-15's substitution, the seal line
+// ---------------------------------------------------------------------------
+
+/// **Board pilot `n`** from their team room's `entry` and answer what each
+/// pilot of `heard` saw of that one `BOARD` (the actor's own reply among
+/// them when `n` is listed).
+fn board_heard(rig: &mut Rig, n: usize, entry: &str, heard: &[usize]) -> Vec<String> {
+    let room = match_::centre_object(rig.tw.world(), entry).expect("a team room");
+    let pilot = rig.pilot(n);
+    rig.tw
+        .world_mut()
+        .move_to(pilot, room)
+        .expect("a pilot walks into their team room");
+    let _ = rig.pump_ops();
+    let events = rig.tw.run(pilot, "board");
+    heard
+        .iter()
+        .map(|other| rig.seen(rig.pilot(*other), &events))
+        .collect()
+}
+
+/// The seal the running match's record keeps for `unit`.
+fn sealed_of(rig: &Rig, unit: ObjId) -> tacsim::arena::MindSeal {
+    let match_id = rig.centre().match_id.expect("a match id");
+    rig.book()
+        .get(match_id)
+        .and_then(|record| record.minds.get(&unit))
+        .map(|sealed| sealed.seal.clone())
+        .expect("a seal per unit")
+}
+
+/// The SHA-256 of a card's canonical bytes, as a seal digests it.
+fn card_digest(card: &tacsim::arena::StockCard) -> [u8; 32] {
+    use sha2::{Digest as _, Sha256};
+    Sha256::digest(serde_json::to_vec(card).expect("a card writes")).into()
+}
+
+/// The units of `team` in the running match's record.
+fn units_of(rig: &Rig, team: Team) -> Vec<ObjId> {
+    let match_id = rig.centre().match_id.expect("a match id");
+    rig.book()
+        .get(match_id)
+        .and_then(|record| record.teams.iter().find(|side| side.team == team))
+        .map(|side| side.units.clone())
+        .expect("the side's roster")
+}
+
+/// **The check-out seals each slot's choice and the lead's fill** (17b cut
+/// M5.2; the design note's item 10), on a server with the fill on and the
+/// test provider installed, Ada and Bo both on red (so humans hold one side
+/// and Q-UM-15 substitutes nothing), `SIM AI 3`:
+///
+/// * Ada's `Standard PROFILE Sniper, Line`: her hull's seal names Standard
+///   Doctrine on the production engine, its card Sniper's (the first, which
+///   flies at the release), its set `[Sniper, Line]` each with its card's
+///   digest, Class I, no fallback;
+/// * Bo's `Fixture I PROFILE Sniper` on his `line_tank`: sealed on its OWN
+///   identity (`Fixture I`, its charter, line, revision and source digest),
+///   on its own engine (`Scripted`), rated I on the governed Class II core —
+///   Class I — its set `[Sniper]` with Sniper's card digest, unsubstituted
+///   (17b cut M5.2's review: the non-Doctrine choice with a profile, from
+///   the lobby to the seal, which M5.1's `m5_the_check_out_reads_each_hulls_choice`
+///   pinned before Q-UM-15 substituted it there); and its source found, so
+///   the arena opened on it (`InstallError::NoSource` would have called the
+///   match off) — the store holds it;
+/// * red's fill hull: the lead's `Standard PROFILE Hunter`, set `[Hunter]`;
+/// * blue's three fill hulls, chosen by nobody: the default seal, Standard
+///   Doctrine on Line, no set;
+/// * the world's mirror holds each hull's first sealed card
+///   (`CardSource::CheckOut`): Ada's and Bo's Sniper, the fill's Hunter,
+///   blue's Line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_check_out_seals_the_slots_choice_and_the_leads_fill() {
+    use tacsim::arena::SealEngine;
+    use tacsim::arena::core::CoreClass;
+    use tacsim::arena_bridge::CardSource;
+    let (ada, bo) = (0, 1);
+    let cfg = fill_config();
+    let reflex = cfg.arena.reflex.clone();
+    let preset = |name: &str| tacsim::arena::preset(name, &reflex).expect("a preset");
+    let mut rig = fill_rig(2);
+    let _provider = holdings_on(&mut rig);
+    rig.say(ada, "sim team red");
+    rig.say(bo, "sim team red");
+    assert_eq!(
+        rig.say(ada, "sim mind Standard PROFILE Sniper, Line"),
+        "Your slot will carry Standard Doctrine (Sniper, Line)."
+    );
+    assert_eq!(
+        rig.say(bo, "sim mind Fixture I PROFILE Sniper"),
+        "Your slot will carry Fixture I (Sniper)."
+    );
+    assert_eq!(
+        rig.say(ada, "sim ai mind Standard PROFILE Hunter"),
+        "Red's fill will carry Standard Doctrine (Hunter)."
+    );
+    rig.say(ada, "sim ai 3");
+    let said = rig.say(ada, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert!(!rig.centre().doctrine_only, "humans hold one side");
+    let tank_of = |rig: &Rig, n: usize| {
+        match_::tank_of(rig.tw.world(), rig.pod(n).expect("a locked pod")).expect("its tank")
+    };
+    let (ada_tank, bo_tank) = (tank_of(&rig, ada), tank_of(&rig, bo));
+    assert!(!rig.seat(ada));
+    assert!(rig.seat(bo));
+    assert_eq!(rig.state(), MatchState::Running, "the arena opened on them");
+
+    let seal = sealed_of(&rig, ada_tank);
+    assert_eq!(seal.mind.as_str(), "Standard Doctrine");
+    assert_eq!(seal.engine, tacsim::match_::PRODUCTION_FILL_ENGINE);
+    assert_eq!(seal.class, CoreClass::I);
+    assert_eq!(seal.fallback, None);
+    assert_eq!(seal.card_digest, card_digest(&preset("Sniper")));
+    assert_eq!(
+        seal.profiles
+            .iter()
+            .map(|profile| (profile.name.to_string(), profile.card_digest))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Sniper".to_owned(), card_digest(&preset("Sniper"))),
+            ("Line".to_owned(), card_digest(&preset("Line"))),
+        ]
+    );
+
+    let fixture = support::holdings::fixture_i();
+    let seal = sealed_of(&rig, bo_tank);
+    assert_eq!(seal.mind, fixture.identity.mind);
+    assert_eq!(seal.charter, fixture.identity.charter);
+    assert_eq!(seal.line, fixture.identity.line);
+    assert_eq!(seal.revision, fixture.identity.revision);
+    assert_eq!(seal.source_sha256, fixture.identity.source_sha256);
+    assert_eq!(seal.engine, SealEngine::Scripted, "on its own engine");
+    assert_eq!((seal.core_class, seal.class), (CoreClass::II, CoreClass::I));
+    assert_eq!(
+        seal.profiles
+            .iter()
+            .map(|profile| (profile.name.to_string(), profile.card_digest))
+            .collect::<Vec<_>>(),
+        vec![("Sniper".to_owned(), card_digest(&preset("Sniper")))],
+        "its chosen profile, unsubstituted"
+    );
+    assert_eq!(seal.card_digest, card_digest(&preset("Sniper")));
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(|store| store.mind_source(&fixture.identity.source_sha256)),
+        Some(support::holdings::FIXTURE_I_RHAI),
+        "its source found"
+    );
+
+    let red = units_of(&rig, Team::Red);
+    let fill: Vec<ObjId> = red
+        .iter()
+        .copied()
+        .filter(|unit| *unit != ada_tank && *unit != bo_tank)
+        .collect();
+    assert_eq!(fill.len(), 1, "red's one fill hull");
+    let match_id = rig.centre().match_id.expect("a match id");
+    let mirror_card = |rig: &Rig, unit: ObjId| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.mirror(match_id))
+            .and_then(|mirror| mirror.cards.get(&unit).cloned())
+            .expect("a mirror card")
+    };
+    for unit in &fill {
+        let seal = sealed_of(&rig, *unit);
+        assert_eq!(seal.mind.as_str(), "Standard Doctrine");
+        assert_eq!(
+            seal.profiles
+                .iter()
+                .map(|profile| profile.name.to_string())
+                .collect::<Vec<_>>(),
+            vec!["Hunter".to_owned()]
+        );
+        assert_eq!(
+            mirror_card(&rig, *unit),
+            (preset("Hunter"), 0, CardSource::CheckOut)
+        );
+    }
+    assert_eq!(
+        mirror_card(&rig, ada_tank),
+        (preset("Sniper"), 0, CardSource::CheckOut)
+    );
+    assert_eq!(
+        mirror_card(&rig, bo_tank),
+        (preset("Sniper"), 0, CardSource::CheckOut)
+    );
+    let blue = units_of(&rig, Team::Blue);
+    assert_eq!(blue.len(), 3);
+    for unit in blue {
+        let seal = sealed_of(&rig, unit);
+        assert_eq!(seal.mind.as_str(), "Standard Doctrine");
+        assert!(seal.profiles.is_empty(), "the default seal");
+        assert_eq!(seal.card_digest, card_digest(&preset("Line")));
+        assert_eq!(
+            mirror_card(&rig, unit),
+            (preset("Line"), 0, CardSource::CheckOut)
+        );
+    }
+}
+
+/// **A chosen mind's source is installed where the seal is built** (17b cut
+/// M5.2; the orchestrator's item carried from 17b cut M5.1): under a
+/// provider whose `sources()` is EMPTY ([`support::holdings::NoSources`]) —
+/// so `install_holdings` put nothing in the store — Ada, alone on red with
+/// the fill on, chooses `Fixture I`; the store holds no `Fixture I` source
+/// until the check-out, which installs her holding's source before her seal
+/// is used: the arena opens on her scripted seal (no `InstallError::NoSource`
+/// call-off) and the store then holds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_check_out_installs_a_chosen_minds_source() {
+    use support::holdings::{FIXTURE_I_RHAI, digest};
+    let mut rig = fill_rig(1);
+    support::holdings::install_without_sources(rig.tw.world_mut());
+    let held = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(|store| store.mind_source(&digest(FIXTURE_I_RHAI)))
+            .is_some()
+    };
+    assert!(!held(&rig), "the provider installed nothing");
+    rig.say(0, "sim team red");
+    assert_eq!(
+        rig.say(0, "sim mind Fixture I"),
+        "Your slot will carry Fixture I (Line)."
+    );
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert!(!held(&rig), "nothing before the check-out");
+    assert!(rig.seat(0));
+    assert_eq!(rig.state(), MatchState::Running, "the arena opened on it");
+    assert!(held(&rig), "the check-out installed it");
+    let tank = match_::tank_of(rig.tw.world(), rig.pod(0).expect("a pod")).expect("a tank");
+    assert_eq!(
+        sealed_of(&rig, tank).engine,
+        tacsim::arena::SealEngine::Scripted
+    );
+}
+
+/// **The seal takes no seat and posts nothing** (17b cut M5.2; the design
+/// note's gate evidence): Ada and Bo on red with the fill on; the
+/// check-out's `(op, key)` write list when Bo's slot chose `Fixture I` — a
+/// chosen mind actually sealed (humans hold one side) — equals the list when
+/// nobody chose anything, key for key; tacsim's own family in it is the live
+/// record alone: the seal is the match record's (`MatchRecord::minds`, in
+/// the live record), no document of its own and no `tacsim:mindsrc:` (a
+/// holding's source goes to the store's RAM map); and no seat is taken (the
+/// record's pilots are the same).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_sim_seal_takes_no_seat_and_posts_nothing() {
+    /// The check-out's `(op, key)` list, sorted, and the record's pilots.
+    fn checkout(chose: bool) -> (Vec<(&'static str, String)>, usize) {
+        let mut rig = fill_rig(2);
+        rig.tick_to(1);
+        let _provider = holdings_on(&mut rig);
+        rig.say(0, "sim team red");
+        rig.say(1, "sim team red");
+        if chose {
+            assert_eq!(
+                rig.say(1, "sim mind Fixture I"),
+                "Your slot will carry Fixture I (Line)."
+            );
+        }
+        let _ = rig.pump_ops();
+        rig.say(0, "sim start");
+        rig.board_writes(0, match_::RED_ROOM_ENTRY);
+        let (said, writes) = rig.board_writes(1, match_::RED_ROOM_ENTRY);
+        assert!(said.contains("climb into"), "{said}");
+        assert_eq!(rig.state(), MatchState::Running, "the check-out ran");
+        let match_id = rig.centre().match_id.expect("a match id");
+        let record = rig.book().get(match_id).cloned().expect("the record");
+        let pilots = record.teams.iter().map(|side| side.pilots.len()).sum();
+        if chose {
+            let tank = match_::tank_of(rig.tw.world(), rig.pod(1).expect("a pod")).expect("a tank");
+            assert_eq!(sealed_of(&rig, tank).mind.as_str(), "Fixture I");
+        }
+        let mut keys: Vec<(&'static str, String)> =
+            writes.into_iter().map(|(op, key, _)| (op, key)).collect();
+        keys.sort();
+        (keys, pilots)
+    }
+    let (chosen, seated) = checkout(true);
+    let (unchosen, plain) = checkout(false);
+    assert!(!chosen.is_empty());
+    assert_eq!(chosen, unchosen, "a sealed choice adds no write");
+    assert_eq!((seated, plain), (2, 2), "no seat taken");
+    // tacsim's own family: the live record alone, which carries the seals
+    // (`MatchRecord::minds`) — no seal document, and no `tacsim:mindsrc:`
+    // (a holding's source goes to the store's RAM map, never a document).
+    let ours: Vec<&str> = chosen
+        .iter()
+        .map(|(_, key)| key.as_str())
+        .filter(|key| key.starts_with("tacsim:"))
+        .collect();
+    assert_eq!(ours, vec!["tacsim:live:1"], "{chosen:?}");
+}
+
+/// **A range's check-out seals its coreless target** (17b cut M5.2; C-24:
+/// a hull with no core is never over-class), with the fill off and both
+/// claimants on red under `SIM RANGE 1`: blue's one target, `target_mk1`
+/// (no core), is sealed — Standard Doctrine rated I over no core, never
+/// refused `OverClass` — at Class 0, governed, flying the ROM (`no core:
+/// the ROM`), and the match runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_range_check_out_seals_its_coreless_target() {
+    use tacsim::arena::core::CoreClass;
+    let mut rig = Rig::boot(2);
+    o3_range_boarding(&mut rig);
+    assert!(!rig.seat(0));
+    assert!(rig.seat(1));
+    assert_eq!(rig.state(), MatchState::Running, "never over-class");
+    let targets = units_of(&rig, Team::Blue);
+    assert_eq!(targets.len(), 1);
+    let seal = sealed_of(&rig, targets[0]);
+    assert_eq!(seal.core, None, "target_mk1 has no core");
+    assert_eq!(
+        (seal.core_class, seal.class),
+        (CoreClass::Zero, CoreClass::Zero)
+    );
+    assert!(seal.governed);
+    assert_eq!(seal.mind.as_str(), "Standard Doctrine");
+    assert_eq!(
+        seal.fallback.as_deref(),
+        Some(tacsim::match_::NO_CORE_FALLBACK)
+    );
+}
+
+/// **One shipped tank a side** for `match_::start` as staff calls it
+/// ([`start_as_staff_queued`]), red's carrying `choice` in `Side::minds` as
+/// `lobby::ready` would hand it (17b cut M5.2's review: the seal's backstops
+/// reached through the check-out itself, where no lobby choice can).
+fn one_a_side_choosing(
+    rig: &Rig,
+    choice: match_::holdings::SealChoice,
+) -> (Vec<match_::Side>, ObjId) {
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("a shipped tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("a shipped tank");
+    let sides = vec![
+        match_::Side {
+            team: Team::Red,
+            units: vec![match_::Fielded::unslotted(red)],
+            minds: BTreeMap::from([(red, choice)]),
+        },
+        match_::Side {
+            team: Team::Blue,
+            units: vec![match_::Fielded::unslotted(blue)],
+            minds: BTreeMap::new(),
+        },
+    ];
+    (sides, red)
+}
+
+/// Nothing deployed and no record for `match_id`: a refused check-out.
+fn nothing_checked_out(rig: &Rig, sides: &[match_::Side], match_id: u64) {
+    for side in sides {
+        for fielded in &side.units {
+            assert!(
+                !mush_sim::deployed::is_deployed(rig.tw.world(), fielded.unit),
+                "#{} was checked out",
+                fielded.unit.0
+            );
+        }
+    }
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .and_then(|book| book.get(tacsim::arena_task::MatchId(match_id)))
+            .is_none(),
+        "no record was written"
+    );
+}
+
+/// **An over-class mind is refused at the check-out, by hull** (17b cut
+/// M5.2; doc 17 §9, D-UM-41; the design note's C-24; built against the
+/// fixture mind `Load III`, the owner's OQ-10 (d); 17b cut M5.2's review: the
+/// mapping from the seal's `OverClass` to the call-off had no test) — the
+/// seal's backstop reached through `match_::start` itself: red's shipped
+/// line tank (a governed Class II core) handed `Load III` (rated III) in
+/// `Side::minds`, as no lobby choice can (`SIM MIND` refuses it first):
+/// refused `StartError::MindOverClass` naming the hull, III over II, before
+/// the first write — nothing queued, nothing deployed, no record; its long
+/// form names both classes (the log's and the fixtures'), and the call-off's
+/// words name the hull alone, `{callsign}'s mind is over its core's class`
+/// — no mind and no class — under 120 columns in the lobby's call-off line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_an_over_class_mind_is_refused_at_the_check_out_by_hull() {
+    use tacsim::arena::core::CoreClass;
+    let cfg = config();
+    let mut rig = Rig::boot_on(0, roster_with(cfg.clone()));
+    let choice = match_::holdings::SealChoice {
+        held: support::holdings::load_iii(),
+        profiles: Vec::new(),
+        chose: true,
+        substituted: false,
+    };
+    let (sides, red) = one_a_side_choosing(&rig, choice);
+    let (refused, queued) = start_as_staff_queued(&mut rig, &cfg, 93, &sides);
+    let Err(error @ match_::StartError::MindOverClass { .. }) = refused else {
+        panic!("refused over-class: {refused:?}");
+    };
+    let match_::StartError::MindOverClass {
+        unit,
+        callsign,
+        rated,
+        core,
+    } = error.clone()
+    else {
+        unreachable!("matched above");
+    };
+    assert_eq!((unit, rated, core), (red, CoreClass::III, CoreClass::II));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "{callsign}'s mind is rated Class III, over its core's Class II; the match cannot start."
+        )
+    );
+    let words = error.call_off_words(rig.tw.world(), &sides);
+    assert_eq!(words, format!("{callsign}'s mind is over its core's class"));
+    assert!(
+        !words.contains("Load") && !words.contains("Class"),
+        "{words}"
+    );
+    let call_off = format!("Match 93 could not start: {words}. The pods are free again.");
+    assert!(call_off.chars().count() < 120, "{call_off}");
+    assert_eq!(queued, 0, "refused before the first write");
+    nothing_checked_out(&rig, &sides, 93);
+}
+
+/// **A card the seal refuses is called off by hull, naming no profile** (17b
+/// cut M5.2's review; doc 17 §11, D-UM-43; C-4: a chosen preset is its
+/// pilot's alone) — through `match_::start` itself: red's shipped tank
+/// handed Standard Doctrine `PROFILE Rearguard` in `Side::minds` over a
+/// doctrine the config admits (`withdraw_permille` 800 over
+/// `stand_min_permille` 750: `fight_home_pct` 75) under which Rearguard's
+/// `break_off_pct` 70 breaks the survival pair. No lobby choice reaches it —
+/// `SIM MIND` fits the same pair under the same frozen `[tacsim]` block —
+/// but the seal checks every sealed profile, so the check-out has its own
+/// word: refused `StartError::CardRefused` naming the hull and the pair,
+/// before the first write; its long form names Rearguard (the log's), and
+/// the call-off's words — said to the whole centre and to the last `BOARD`er
+/// — name the hull alone, `{callsign}'s card could not be sealed`, never the
+/// profile, and fit under 120 columns where the long form does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_card_the_seal_refuses_is_called_off_by_hull_naming_no_profile() {
+    let mut cfg = config();
+    cfg.arena.reflex.withdraw_permille = 800;
+    cfg.arena.reflex.stand_min_permille = 750;
+    assert_eq!(
+        tacsim::config::ArenaConfig {
+            reflex: cfg.arena.reflex.clone(),
+            ..tacsim::config::ArenaConfig::default()
+        }
+        .validate(),
+        Ok(()),
+        "the config admits the pair"
+    );
+    let mut rig = Rig::boot_on(0, roster_with(cfg.clone()));
+    let choice = match_::holdings::SealChoice {
+        held: match_::holdings::HeldMind::doctrine(),
+        profiles: vec![smol_str::SmolStr::new_static("Rearguard")],
+        chose: true,
+        substituted: false,
+    };
+    let (sides, red) = one_a_side_choosing(&rig, choice);
+    let (refused, queued) = start_as_staff_queued(&mut rig, &cfg, 94, &sides);
+    let Err(error @ match_::StartError::CardRefused { .. }) = refused else {
+        panic!("refused for the card: {refused:?}");
+    };
+    let match_::StartError::CardRefused {
+        unit,
+        callsign,
+        refusal,
+    } = error.clone()
+    else {
+        unreachable!("matched above");
+    };
+    assert_eq!(unit, red);
+    assert_eq!(
+        refusal,
+        tacsim::arena::CardError::Pair {
+            slider: "Rearguard",
+            fight_home: "75".to_owned(),
+            break_off: "70".to_owned(),
+        }
+    );
+    let long = error.to_string();
+    assert_eq!(
+        long,
+        format!(
+            "{callsign}'s card could not be sealed: Rearguard would put fight_home_pct 75 above \
+             break_off_pct 70; fight_home_pct is at most break_off_pct; the match cannot start."
+        )
+    );
+    let words = error.call_off_words(rig.tw.world(), &sides);
+    assert_eq!(words, format!("{callsign}'s card could not be sealed"));
+    assert!(!words.contains("Rearguard"), "{words}");
+    let call_off = format!("Match 94 could not start: {words}. The pods are free again.");
+    assert!(call_off.chars().count() < 120, "{call_off}");
+    assert_eq!(queued, 0, "refused before the first write");
+    nothing_checked_out(&rig, &sides, 94);
+}
+
+/// **A scripted choice whose source the store lacks under its identity is
+/// refused before the first write** (17b cut M5.2's review of the carried
+/// install) — through `match_::start` itself: red's shipped line tank handed
+/// `Fixture I` whose held `source` is NOT its identity's text but Load
+/// III's (a provider whose source and identity disagree), on a world where
+/// no provider installed anything: the check-out installs the text it was
+/// handed (the store then holds Load III's, never Fixture I's) and refuses
+/// the seal, which names Fixture I's digest, with the refusal `open_match`
+/// would have given after the check-out wrote — `InstallError::NoSource`
+/// for the hull — before any write: nothing queued, nothing deployed; the
+/// call-off's words `{callsign}'s sealed mind has no source on this
+/// server`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_scripted_choice_with_no_source_under_its_identity_is_refused_before_any_write() {
+    use support::holdings::{FIXTURE_I_RHAI, LOAD_III_RHAI, digest};
+    let cfg = config();
+    let mut rig = Rig::boot_on(0, roster_with(cfg.clone()));
+    let mismatched = match_::holdings::HeldMind {
+        source: Some(Arc::from(LOAD_III_RHAI)),
+        ..support::holdings::fixture_i()
+    };
+    let choice = match_::holdings::SealChoice {
+        held: mismatched,
+        profiles: Vec::new(),
+        chose: true,
+        substituted: false,
+    };
+    let (sides, red) = one_a_side_choosing(&rig, choice);
+    let (refused, queued) = start_as_staff_queued(&mut rig, &cfg, 95, &sides);
+    let Err(
+        error @ match_::StartError::Open(tacsim::arena_bridge::OpenMatchError::Mind(
+            tacsim::minds::InstallError::NoSource { unit, .. },
+        )),
+    ) = refused
+    else {
+        panic!("refused for the source: {refused:?}");
+    };
+    assert_eq!(unit, red);
+    let held = |text: &str| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(|store| store.mind_source(&digest(text)))
+            .is_some()
+    };
+    assert!(held(LOAD_III_RHAI), "the text it was handed, installed");
+    assert!(!held(FIXTURE_I_RHAI), "never the identity's");
+    let words = error.call_off_words(rig.tw.world(), &sides);
+    assert!(
+        words.ends_with("'s sealed mind has no source on this server"),
+        "{words}"
+    );
+    assert_eq!(queued, 0, "refused before the first write");
+    nothing_checked_out(&rig, &sides, 95);
+}
+
+/// **Humans on both sides: a non-Doctrine choice is substituted, and said
+/// so once** (17b cut M5.2; doc 17 §21's Q-UM-15 at its default, the owner's
+/// OQ-5; the design note's C-7 and item 11), on a server with the fill on and
+/// the test provider installed, `SIM AI 2`: Ada (red) chooses `Fixture I`
+/// for her slot and, as red's lead, `Fixture I PROFILE Sniper` for red's
+/// fill; Bo (blue) chooses nothing and types `SIM START`:
+///
+/// * the centre is `doctrine_only` from `SIM START`, and Ada — and Ada
+///   alone, though both her choices are substituted — hears `Humans on the
+///   other side: your fill and any released hull fly Standard Doctrine.`
+///   ONCE; Bo, who typed `SIM START`, hears nothing of it;
+/// * her hull is sealed Standard Doctrine on Line, and red's fill hull
+///   Standard Doctrine at Sniper (the lead's chosen profile, one of
+///   Doctrine's presets), each with the fallback `humans on the other side`;
+/// * blue's hulls are the default seal, no fallback;
+/// * Ada's seal line says the substitution:
+///   `Sealed for this sortie: Standard Doctrine (Line), Class I, for humans
+///   on the other side; MIND reads it.` (103).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_humans_on_both_sides_substitute_a_non_doctrine_choice_and_say_so_once() {
+    let (ada, bo) = (0, 1);
+    let sentence =
+        "Humans on the other side: your fill and any released hull fly Standard Doctrine.";
+    assert_eq!(sentence.chars().count(), 80);
+    let mut rig = fill_rig(2);
+    rig.tick_to(1);
+    let _provider = holdings_on(&mut rig);
+    rig.say(ada, "sim team red");
+    rig.say(bo, "sim team blue");
+    rig.say(ada, "sim mind Fixture I");
+    assert_eq!(
+        rig.say(ada, "sim ai mind Fixture I PROFILE Sniper"),
+        "Red's fill will carry Fixture I (Sniper)."
+    );
+    rig.say(ada, "sim ai 2");
+    let (to_bo, to_ada) = rig.say_heard(bo, "sim start", ada);
+    assert!(to_bo.contains("boarding"), "{to_bo}");
+    assert!(rig.centre().doctrine_only, "humans on both sides");
+    assert_eq!(
+        to_ada.matches(sentence).count(),
+        1,
+        "once, to Ada: {to_ada}"
+    );
+    assert!(!to_bo.contains("Humans on the other side"), "{to_bo}");
+    let tank_of = |rig: &Rig, n: usize| {
+        match_::tank_of(rig.tw.world(), rig.pod(n).expect("a locked pod")).expect("its tank")
+    };
+    let ada_tank = tank_of(&rig, ada);
+    assert!(!rig.seat(bo));
+    let heard = board_heard(&mut rig, ada, match_::RED_ROOM_ENTRY, &[ada, bo]);
+    assert_eq!(rig.state(), MatchState::Running, "{heard:?}");
+    assert!(
+        heard[0].contains(
+            "Sealed for this sortie: Standard Doctrine (Line), Class I, for humans on the other \
+             side; MIND reads it."
+        ),
+        "{}",
+        heard[0]
+    );
+    assert!(!heard[1].contains("Sealed for this sortie"), "{}", heard[1]);
+    let seal = sealed_of(&rig, ada_tank);
+    assert_eq!(seal.mind.as_str(), "Standard Doctrine");
+    assert!(seal.profiles.is_empty(), "on Line");
+    assert_eq!(
+        seal.fallback.as_deref(),
+        Some(tacsim::match_::HUMANS_FALLBACK)
+    );
+    let fill: Vec<ObjId> = units_of(&rig, Team::Red)
+        .into_iter()
+        .filter(|unit| *unit != ada_tank)
+        .collect();
+    assert_eq!(fill.len(), 1);
+    let seal = sealed_of(&rig, fill[0]);
+    assert_eq!(seal.mind.as_str(), "Standard Doctrine");
+    assert_eq!(
+        seal.profiles
+            .iter()
+            .map(|profile| profile.name.to_string())
+            .collect::<Vec<_>>(),
+        vec!["Sniper".to_owned()],
+        "at the lead's chosen profile"
+    );
+    assert_eq!(
+        seal.fallback.as_deref(),
+        Some(tacsim::match_::HUMANS_FALLBACK)
+    );
+    for unit in units_of(&rig, Team::Blue) {
+        let seal = sealed_of(&rig, unit);
+        assert_eq!(seal.fallback, None);
+        assert!(seal.profiles.is_empty());
+    }
+}
+
+/// **The seal line reaches the choosing pilot alone, before `Good
+/// hunting.`** (17b cut M5.2; doc 17 §12; the design note's D7, C-18 and
+/// item 12): Ada (red) chooses `Standard PROFILE Skirmisher, Rearguard` (the
+/// widest preset pair); Cy, her red teammate, chose nothing and boards
+/// FIRST, so he sits in his own red pod; Ada boards second; Bo (blue), who
+/// chose nothing, boards LAST — so the check-out's actor is Bo, and a line
+/// written to the actor would reach him and not her; and Di, who claimed no
+/// slot, stands in the red team room. Ada reads `Sealed for this sortie:
+/// Standard Doctrine (Skirmisher, Rearguard), Class I; MIND reads it.` (90)
+/// once, before `Match 1 is running. Good hunting.`, which stays the
+/// check-out's last line; Cy, Bo and Di — the teammate, the actor and the
+/// red room's observer, each of whom hears `Good hunting.` — read no seal
+/// line and no profile of hers (17b cut M5.2's review: a line said to
+/// Ada's side or her room instead of to her would reach Cy or Di). An
+/// unchosen slot's seal is the default, and not said (C-18).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_seal_line_reaches_the_choosing_pilot_alone_before_good_hunting() {
+    let (ada, bo, cy, di) = (0, 1, 2, 3);
+    let line = "Sealed for this sortie: Standard Doctrine (Skirmisher, Rearguard), Class I; MIND \
+                reads it.";
+    assert!(line.chars().count() < 120);
+    let mut rig = Rig::boot(4);
+    rig.tick_to(1);
+    rig.say(ada, "sim team red");
+    rig.say(cy, "sim team red");
+    rig.say(bo, "sim team blue");
+    assert_eq!(
+        rig.say(ada, "sim mind Standard PROFILE Skirmisher, Rearguard"),
+        "Your slot will carry Standard Doctrine (Skirmisher, Rearguard)."
+    );
+    rig.say(ada, "sim start");
+    let red_room =
+        match_::centre_object(rig.tw.world(), match_::RED_ROOM_ENTRY).expect("the red room");
+    let observer = rig.pilot(di);
+    rig.tw
+        .world_mut()
+        .move_to(observer, red_room)
+        .expect("Di walks into the red room");
+    let early = board_heard(&mut rig, cy, match_::RED_ROOM_ENTRY, &[cy, ada, di]);
+    let early = board_heard(&mut rig, ada, match_::RED_ROOM_ENTRY, &[ada, cy, di])
+        .into_iter()
+        .chain(early)
+        .collect::<Vec<_>>();
+    assert!(
+        early.iter().all(|heard| !heard.contains("Sealed")),
+        "nothing before the check-out: {early:?}"
+    );
+    let heard = board_heard(&mut rig, bo, match_::BLUE_ROOM_ENTRY, &[ada, bo, cy, di]);
+    assert_eq!(rig.state(), MatchState::Running);
+    let to_ada = &heard[0];
+    assert_eq!(to_ada.matches(line).count(), 1, "{to_ada}");
+    let hunting = "Match 1 is running. Good hunting.";
+    let sealed_at = to_ada.find(line).expect("the seal line");
+    let hunting_at = to_ada.find(hunting).expect("the check-out's last line");
+    assert!(sealed_at < hunting_at, "before Good hunting: {to_ada}");
+    assert!(
+        to_ada.trim_end().ends_with(hunting),
+        "Good hunting stays last: {to_ada}"
+    );
+    for (who, other) in [("Bo", &heard[1]), ("Cy", &heard[2]), ("Di", &heard[3])] {
+        assert!(other.contains(hunting), "{who} hears the centre: {other}");
+        assert!(!other.contains("Sealed for this sortie"), "{who}: {other}");
+        assert!(!other.contains("Skirmisher"), "{who}: {other}");
+        assert!(!other.contains("Rearguard"), "{who}: {other}");
+    }
 }

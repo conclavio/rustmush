@@ -993,12 +993,21 @@ fn buffer_control(controls: &mut Controls, releases: &mut Releases, control: Con
 /// [`buffer_continuous`] settles a goal against the helm orders the key order
 /// would put in the wrong place by `seq`, since the key order alone would
 /// apply a goal after a `HEADING` typed later than it.
+///
+/// **17b cut M5.2**: a `Profile` (`MIND PROFILE`) answers `5`
+/// ([`PROFILE_CODE`]) — a key of its own, past the discrete kinds' `4`, which
+/// stay where they are. A switch is the desired profile, latest-wins: of two
+/// in one pulse the later stands and at most one lands a pulse, while a
+/// `HEADING`, `SPEED`, `ORDER` or `DRIVE` of the same pulse keeps its own key
+/// and is never swallowed by it. It settles against nothing
+/// ([`settle_the_helm`] reads the helm keys alone): a switch steers nothing.
 const fn continuous_code(kind: &IntentKind) -> u8 {
     match kind {
         IntentKind::Heading { .. } => 0,
         IntentKind::Speed { .. } => 1,
         IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } => 2,
         IntentKind::Goal(_) => GOAL_CODE,
+        IntentKind::Profile { .. } => PROFILE_CODE,
         // Discrete (16b cut I.3: a staff `Place` among them; 16b cut O.2: the
         // pod's `Emcon` switch too); never buffered under a continuous key.
         IntentKind::Startup
@@ -1055,6 +1064,9 @@ fn buffer_continuous(map: &mut Continuous, intent: Intent) {
 
 /// The key [`continuous_code`] gives a `Goal`.
 const GOAL_CODE: u8 = 3;
+
+/// The key [`continuous_code`] gives a `Profile` (17b cut M5.2).
+const PROFILE_CODE: u8 = 5;
 
 /// The helm keys a standing goal of this shape settles against (17b cut
 /// M1a.4; see [`buffer_continuous`]).
@@ -2357,6 +2369,63 @@ mod tests {
                 left
             );
         }
+    }
+
+    /// **17b cut M5.2: a profile switch keys on its own code** (`5`,
+    /// [`PROFILE_CODE`]; the design note's item 4): of two `MIND PROFILE`s in
+    /// one pulse the later `seq` stands — one switch lands a pulse — and a
+    /// `HEADING`, a `SPEED`, an `ORDER` and a `DRIVE` of the same pulse each
+    /// keep their own key whichever was typed first, so none is swallowed by
+    /// a switch, nor a switch by them; the switch is handed over last.
+    #[test]
+    fn m5_a_profile_switch_keys_on_its_own_code() {
+        use crate::arena::intents::MotorGoal;
+        use crate::deliberation::order::{Constraints, Objective, Order};
+        use crate::deliberation::squad::SquadId;
+        let hold = IntentKind::Order(Box::new(Order {
+            squad: SquadId {
+                team: Team::Red,
+                index: 1,
+            },
+            objective: Objective::Hold,
+            target: None,
+            horizon_ms: 600_000,
+            constraints: Constraints::default(),
+            ttl_ms: 600_000,
+            issued_ms: 0,
+            issuer: Some(A),
+            by: crate::deliberation::order::CharacterRef::Character {
+                id: mush_core::ObjId(9_001),
+            },
+            spot: None,
+        }));
+        let drive = IntentKind::Goal(MotorGoal::Hold);
+        assert_eq!(continuous_code(&IntentKind::Profile { index: 0 }), 5);
+        let mut waiting = PrePulse::default();
+        for (kind, seq) in [
+            (IntentKind::Profile { index: 1 }, 1),
+            (IntentKind::Heading { mdeg: 90_000 }, 2),
+            (hold.clone(), 3),
+            (IntentKind::Profile { index: 0 }, 4),
+            (drive, 5),
+            (IntentKind::Speed { cms: 100 }, 6),
+        ] {
+            buffer_continuous(&mut waiting.continuous, order(RED, kind, seq));
+        }
+        let (_, intents) = waiting.take();
+        let handed: Vec<IntentKind> = intents.into_iter().map(|intent| intent.kind).collect();
+        assert_eq!(
+            handed,
+            vec![
+                IntentKind::Heading { mdeg: 90_000 },
+                // `DRIVE HOLD` then `SPEED 100`: the speed was typed last
+                // (`settle_the_helm`), as without a switch.
+                IntentKind::Speed { cms: 100 },
+                hold,
+                IntentKind::Profile { index: 0 },
+            ],
+            "every key its own, the later switch standing"
+        );
     }
 
     /// **17b cut M1a.4 (doc 17 §4 D-UM-10): of a `DRIVE` and a helm order in

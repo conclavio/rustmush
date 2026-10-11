@@ -285,7 +285,32 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// holds the mind rows, their due thinks, `seal.doctrine`, a motor row's nine
 /// carried fields, a standing order's `FrameOrder` fields and `order_issuer`
 /// as a number, and was re-blessed once.
-pub const SNAPSHOT_FORMAT: u32 = 9;
+///
+/// **10 since 17b cut M5.2** (doc 17 §11, §12, §24's STOP E; the owner's
+/// OQ-1 and OQ-3 of 2026-10-10 — the one format move the M5 cuts make):
+/// three carried additions a format-9 reader cannot decode — `UnitState.seal`
+/// gains `SealRef::profiles` (the sealed set, preset codes, never folded),
+/// `UnitState` gains `card_profile` (the active profile and its switch's
+/// stamp, folded only off its default) and `MindState` gains `order_charge`
+/// (the charge of a held `Support`, folded inside the order's `Support`
+/// bytes) — and two carried enums a variant each: `IntentKind::Profile` (a
+/// seat's `MIND PROFILE`; continuous, so never queued in `pending`, but the
+/// enum is the carried one) and `Refusal::Profile` (its word, `profile`, on
+/// a carried `FrameNotice::Refused`). A format-9 document is refused by name
+/// ([`SnapshotError::Format`]) before any field of it is read, so **the first
+/// reload onto this build voids every match running across it**
+/// `aborted(restart)`, "snapshot format 9 is not 10" (AF.3's boot, as every
+/// refused document is); nothing migrates. The `af1` pin was re-blessed once
+/// with it (509 lines to 556): it walks the three additions on every unit and
+/// row, its squad arena's mover — sealed with a chosen set and switched off
+/// its first profile, holding a `Support` with a `RangeBand`, its charge's
+/// row (`of`) and its charge, and a motor row whose route, avoided cell,
+/// search origin and remembered stop are filled — and an order on each of
+/// the other three minds (an `Advance`, an `Engage` with its `target` and a
+/// `Screen`), so the inner shapes doc 17 §24's index named as unwalked —
+/// the route and avoid elements, `Refusal`, `RangeBand`, the other
+/// objectives — are under it.
+pub const SNAPSHOT_FORMAT: u32 = 10;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -1242,7 +1267,7 @@ mod tests {
     ///
     /// [`UnitState`] destructured with every field named and no `..`, answering
     /// the names, so the test below can hold the encoded unit's keys to them.
-    fn every_unit_field(unit: &UnitState) -> [&'static str; 43] {
+    fn every_unit_field(unit: &UnitState) -> [&'static str; 44] {
         let UnitState {
             id: _,
             team: _,
@@ -1274,6 +1299,7 @@ mod tests {
             heat: _,
             controller: _,
             seal: _,
+            card_profile: _,
             unit: _,
             condition: _,
             ready_at_ms: _,
@@ -1319,6 +1345,9 @@ mod tests {
             "heat",
             "controller",
             "seal",
+            // 17b cut M5.2: carried on purpose — the active profile and its
+            // stamp decide a later card and a refusal.
+            "card_profile",
             "unit",
             "condition",
             "ready_at_ms",

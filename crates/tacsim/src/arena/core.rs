@@ -160,7 +160,11 @@ pub struct CoreProfile {
     pub memory_keys: usize,
     /// The `line_to` traces one think may ask for.
     pub line_to: u32,
-    /// The card profiles a principal may store (17b cut M6's; carried here).
+    /// The card profiles a principal may seal (doc 17 §9, §11; the owner's
+    /// OQ-3), read at the SEALED mind's class, never the core's — a Class I
+    /// mind seals two on a line tank's Class II core — by the lobby's choice
+    /// (`SIM MIND`) since 17b cut M5.1, and carried into the seal since 17b
+    /// cut M5.2 (it was carried here for 17b cut M6 until then).
     pub profiles: u8,
 }
 
@@ -613,7 +617,13 @@ mod tests {
     /// **The three readings** (17b cut M3's ruling, the plan's F4): a rated-I
     /// mind on a II hull thinks at I (`min`), the hull holds II's slots; a
     /// hull with no core, one whose cell reads 0 and a dropped row think at
-    /// `Zero`; rated III, the II hull thinks at II.
+    /// `Zero`; rated II, the II hull thinks at II.
+    ///
+    /// **Re-pinned at 17b cut M5.2**: over-class is refused at the seal since
+    /// 17b cut M5.2 (doc 17 §9, D-UM-41) — rated III on this governed Class
+    /// II core sealed II here ("the core caps it") and is
+    /// `SealError::OverClass { rated: III, core: II }` now; the rated case
+    /// is rated II on II, lawful.
     #[test]
     fn m3_a_mind_thinks_at_the_lesser_of_its_rating_and_its_core() {
         use crate::arena::state::{Controller, Team};
@@ -642,19 +652,29 @@ mod tests {
         assert_eq!(arena.slot_capacity(BLUE), 1);
         // 17b cut M4.1: the rating is the seal's (`SealTerms::rated`), read
         // off `UnitState::seal.class` — `min(rated, core, cap)` at the seal.
-        let rated_iii = line_tank(RED, Team::Red, pose(1_500, 4_500));
-        let mut rated_iii = crate::arena::state::CustodyUnit {
+        let rated_ii = line_tank(RED, Team::Red, pose(1_500, 4_500));
+        let mut rated_ii = crate::arena::state::CustodyUnit {
             controller: Controller::Mind,
-            ..rated_iii
+            ..rated_ii
         };
-        rated_iii
-            .reseal(&crate::match_::SealTerms::fixture().rated(CoreClass::III))
+        rated_ii
+            .reseal(&crate::match_::SealTerms::fixture().rated(CoreClass::II))
             .expect("the fixture terms seal");
-        assert_eq!(rated_iii.seal.class, CoreClass::II, "the core caps it");
+        assert_eq!(rated_ii.seal.class, CoreClass::II, "rated II on II");
+        // 17b cut M5.2: rated III over the governed Class II core is refused
+        // at the seal, never capped by the core.
+        assert_eq!(
+            rated_ii.reseal(&crate::match_::SealTerms::fixture().rated(CoreClass::III)),
+            Err(crate::match_::SealError::OverClass {
+                rated: CoreClass::III,
+                core: CoreClass::II,
+            })
+        );
+        assert_eq!(rated_ii.seal.class, CoreClass::II, "the seal as it was");
         if let Some(state) = arena.unit_mut(RED) {
-            state.seal.class = rated_iii.seal.class;
+            state.seal.class = rated_ii.seal.class;
         }
-        assert_eq!(arena.mind_class(RED), CoreClass::II, "the core caps it");
+        assert_eq!(arena.mind_class(RED), CoreClass::II, "rated II on II");
         if let Some(state) = arena.unit_mut(RED) {
             state.seal.class = CoreClass::I;
         }

@@ -14183,6 +14183,55 @@ fn m1a4_the_drive_notice_rows_are_what_status_frame_publishes() {
     }
 }
 
+/// **The `profile` refusal's ring row is the server's own wire shape** (17b
+/// cut M5.2; the design note's M5.2 "What moves", the wire): the notice
+/// `status_frame` publishes for the arena's refusal of a `MIND PROFILE` —
+/// `order: "mind"`, `refusal: "profile"`, no weapon, no detail — equals the
+/// `notice` object of its row in `notice_lines.json` byte for byte, its
+/// sentence is `MIND refused. That profile cannot be switched to now.`
+/// (composed through `order_refused` from the intent's word, no renderer
+/// special-cased), and the line client prints exactly that.
+#[test]
+fn m5_the_profile_refusal_row_is_what_status_frame_publishes() {
+    use tacsim::arena::intents::{IntentKind, Refusal};
+    use tacsim::arena::perception::{FrameNotice, RefusalDetail};
+
+    let text = "MIND refused. That profile cannot be switched to now.";
+    let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../web/src/lib/fixtures/cockpit/notice_lines.json"
+    ))
+    .expect("notice_lines.json is an array");
+    let mut frame = fixture::frame();
+    frame.notices = vec![FrameNotice::Refused {
+        order: IntentKind::Profile { index: 1 }.as_str().into(),
+        refusal: Refusal::Profile,
+        weapon: None,
+        detail: RefusalDetail::None,
+    }];
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    let published = payload
+        .pointer("/notices/0")
+        .cloned()
+        .unwrap_or_else(|| panic!("no notice on the frame: {payload}"));
+    assert_eq!(published.get("text"), Some(&serde_json::json!(text)));
+    let committed = rows
+        .iter()
+        .find(|row| {
+            row.get("notice")
+                .is_some_and(|notice| notice.get("refusal") == Some(&serde_json::json!("profile")))
+        })
+        .cloned()
+        .expect("notice_lines.json has a profile row");
+    assert_eq!(committed.get("notice"), Some(&published));
+    assert_eq!(
+        committed.get("line"),
+        Some(&serde_json::json!(
+            "MIND refused: that profile cannot be switched to now"
+        ))
+    );
+    assert_eq!(cockpit::notice_lines(&frame), vec![text.to_owned()]);
+}
+
 // ---------------------------------------------------------------------------
 // 17b cut M1b.3 — the arming and the floor on the frame, Q2's odds rows
 // (doc 17 §3, §5, D-UM-4, D-UM-5, D-UM-17)

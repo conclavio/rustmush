@@ -18,17 +18,40 @@
 //! 1. **The hull's loadout and stations**: the channels its stations grant —
 //!    helm and sensors on every hull, fire on one that carries a weapon row.
 //! 2. **The licence state**: `doctrine` (the OOC sim holds no licence before
-//!    17b cut M5; D-UM-49).
+//!    17b cut M6; D-UM-49, the owner's OQ-1).
 //! 3. **The core**: its component, class, governed bit and condition, read
 //!    live off the unit (`crate::arena::core::read_core`); a hull with none is
 //!    Class 0, governed, and flies the ROM from the start, which its
-//!    `fallback` says.
-//! 4. **The revision**: Standard Doctrine, the registry's stock line, at the
-//!    stock version, its source named by its digest alone.
-//! 5. **The card**, validated against the schema and the Compact floor the
-//!    terms carry — refused, never clamped (D-UM-17): a card whose pair of
-//!    survival sliders does not hold is [`SealError::Card`], one whose
-//!    `min_odds` is under the floor [`SealError::Unlawful`].
+//!    `fallback` says. **17b cut M5.2** (doc 17 §9, D-UM-41; the design
+//!    note's C-24 as amended by M5.2's S1 ruling): a mind rated above a
+//!    GOVERNED core's class of I or more is refused
+//!    [`SealError::OverClass`] — the backstop behind the lobby's choice,
+//!    which asks the same predicate first of the chassis's content-declared
+//!    core (`crate::match_::lobby`'s fit, by type). This reads the core
+//!    LIVE, which differs from the type's only on a tank a reset could not
+//!    put back to spec (a core a `degrade_core` lowered) and in fixtures.
+//!    A hull with NO core is never over-class: it flies the ROM, whatever
+//!    this records as `governed` for it — and neither is a governed core
+//!    whose class reads 0: Class 0 is the drive ROM's (D-UM-35), so such a
+//!    hull seals Class 0 on its core and flies the ROM, as no core does
+//!    (and as it did at 5f505c8). Standard Doctrine's rating I is
+//!    therefore over no core, and no production seal meets the refusal.
+//! 4. **The revision**: the mind the terms name ([`SealTerms::identity`]:
+//!    Standard Doctrine, the registry's stock line, at the stock version, in
+//!    production — the one mind production holds before 17b cut M6), its
+//!    source named by its digest alone.
+//! 5. **The cards** — since 17b cut M5.2 EVERY profile the terms seal
+//!    ([`SealTerms::profiles`]; the Line card alone when it is empty) —
+//!    each validated against the schema and the Compact floor the terms
+//!    carry — refused, never clamped (D-UM-17): a card whose pair of
+//!    survival sliders does not hold is [`SealError::Card`] on every hull;
+//!    one whose `min_odds` is under the floor is [`SealError::Unlawful`] on a
+//!    hull with a weapons station only (17b cut M5.2, the design note's
+//!    C-23 and doc 17 §11's R-60: a fire section a hull cannot use is shown
+//!    inert and never refuses the seal). The first profile's card is
+//!    [`MindSeal::card`]; the set is [`MindSeal::profiles`], written LAST and
+//!    empty — skipped — when it is the Line card alone, so a default seal is
+//!    the record it always was.
 //!
 //! The class the mind thinks at is `min(rated, core_class, class_cap)` under
 //! the terms' [`SealTerms::rated`] (Standard Doctrine's `STOCK_RATED_CLASS`)
@@ -39,10 +62,10 @@
 //! production is [`PRODUCTION_FILL_ENGINE`] — the native stock mind since
 //! the fill decision of 2026-10-09.
 
-use crate::arena::card::{CardError, StockCard};
+use crate::arena::card::{CardError, PRESETS, StockCard};
 use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget, condition_is_lawful};
 use crate::arena::core::{CoreClass, read_core};
-use crate::arena::mind::{MindSeal, STOCK_RATED_CLASS, SealEngine, SortieId};
+use crate::arena::mind::{MindSeal, STOCK_RATED_CLASS, SealEngine, SealedProfile, SortieId};
 use crate::arena::state::{Channel, CustodyUnit};
 use crate::arena_task::MatchId;
 use crate::config::ReflexConfig;
@@ -60,9 +83,9 @@ pub use crate::arena::doctrine::{SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE, SE
 /// the name, the charter, the line, the revision and the source's digest.
 ///
 /// What a holding names (`crate::match_::holdings::HeldMind::identity`), so a
-/// mind chosen at the lobby is the mind a seal can name. 17b cut M5.1 builds
-/// it and reads it at the choice; the check-out still seals Standard Doctrine
-/// on Line until 17b cut M5.2 puts it on [`SealTerms`].
+/// mind chosen at the lobby is the mind a seal can name. 17b cut M5.1 built
+/// it and reads it at the choice; 17b cut M5.2 puts it on the terms
+/// ([`SealTerms::identity`]), which [`seal_for`] writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealIdentity {
     /// The mind's name (`Standard Doctrine`).
@@ -81,8 +104,9 @@ pub struct SealIdentity {
 impl SealIdentity {
     /// **Standard Doctrine's identity** — [`SEALED_MIND`], [`SEALED_CHARTER`],
     /// [`SEALED_LINE`], [`crate::minds::STOCK_VERSION`] and the shipped
-    /// source's digest ([`crate::minds::content::standard_digest`]), the five
-    /// [`seal_for`] writes on every seal today.
+    /// source's digest ([`crate::minds::content::standard_digest`]) — the
+    /// five [`seal_for`] writes on every production seal, and under
+    /// [`SealTerms::fixture`].
     #[must_use]
     pub fn doctrine() -> SealIdentity {
         SealIdentity {
@@ -128,7 +152,16 @@ pub const NO_CORE_FALLBACK: &str = "no core: the ROM";
 
 /// **What a seal is taken under, beside the custody** (17b cut M3.3): the
 /// match it mints the sortie in, the warrant principal, the card and the
-/// Compact floor the card is validated against.
+/// Compact floor the card is validated against — and since 17b cut M5.2 the
+/// mind's identity, the profiles sealed and why a substituted hull flies
+/// Standard Doctrine (`fallback`).
+///
+/// **`rated` and `engine_for_minds` stay the terms' own and authoritative**
+/// (17b cut M5.2): [`seal_for`] takes only the five identity fields from
+/// [`SealTerms::identity`], never a rating or an engine, so every fixture
+/// lever ([`SealTerms::rated`], a scripted muster's engine, the harness's
+/// Load III heavies) stays whole and no seal digest moves by a second source
+/// of either.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealTerms {
     /// The match the sortie is minted in ([`SortieId::in_match`]).
@@ -136,8 +169,11 @@ pub struct SealTerms {
     /// The warrant principal: the hull's first seated pilot, else the side
     /// lead's character, else `None` (a staff match; a side with no lead).
     pub principal: Option<CharacterRef>,
-    /// The card: the Line preset over the match's doctrine until 17b cut M5
-    /// lets a principal choose one.
+    /// **The card**: the first sealed profile's — the one that flies at the
+    /// release, [`MindSeal::card`]. With [`SealTerms::profiles`] empty it is
+    /// the one card sealed, the Line preset over the match's doctrine on
+    /// every hull nobody chose a mind for; with a set, [`seal_for`] seals the
+    /// set's first card, which [`SealTerms::with_profiles`] writes here too.
     pub card: StockCard,
     /// The Compact floor, per mille (`[tacsim.minds].odds_floor_permille`).
     pub odds_floor_permille: u32,
@@ -154,19 +190,52 @@ pub struct SealTerms {
     pub engine_for_minds: SealEngine,
     /// **The class the mind is rated at** (17b cut M4.1; doc 17 §9, D-UM-35;
     /// the M4 row's finding (9)): Standard Doctrine's
-    /// [`STOCK_RATED_CLASS`] (I) everywhere in production before 17b cut M5,
-    /// Class III for a fixture's load mind. The seal's `class` is
+    /// [`STOCK_RATED_CLASS`] (I) on every production seal — production holds
+    /// no other mind before 17b cut M6 (the owner's OQ-2) — and a fixture's
+    /// own (Class III for the load mind). The seal's `class` is
     /// `min(rated, core, class_cap)`, and the think side reads it off the
     /// seal (`Arena::mind_class`) — the arena-wide `rated_class` this
-    /// replaces is gone.
+    /// replaces is gone. **17b cut M5.2**: a rating above a governed core's
+    /// class is refused, [`SealError::OverClass`], never capped by the core
+    /// — save a governed core at Class 0, which flies the ROM, as no core
+    /// does (the S1 ruling).
     pub rated: CoreClass,
     /// **The class the hull is capped at** (17b cut M4.1; doc 17 §9, D-UM-37:
     /// the lead's or the operator's cap): `[tacsim.minds].fill_class` on
-    /// every production seal from 17b cut M4.3 (Class I stock, so it caps
-    /// nothing until 17b cut M5 rates minds); Class III — no cap — under the
+    /// every production seal from 17b cut M4.3 (Class I stock, so in
+    /// production it caps nothing until the cut that rates a mind above
+    /// Class I — the owner's OQ-10 (b)); Class III — no cap — under the
     /// fixture terms.
     pub class_cap: CoreClass,
+    /// **The mind's identity** (17b cut M5.2; [`SealIdentity`]): the five
+    /// fields [`seal_for`] writes — name, charter, line, revision and the
+    /// source's digest — [`SealIdentity::doctrine`] on every production seal
+    /// (the same constants, so the same bytes) and under the fixture terms;
+    /// a fixture mind's own through the holdings seam.
+    pub identity: SealIdentity,
+    /// **The profiles sealed** (17b cut M5.2; doc 17 §11, §12; the owner's
+    /// OQ-3): each a preset's name (one of [`PRESETS`], case-folded) with its
+    /// card over the match's doctrine, in the order chosen, the first the one
+    /// that flies at the release. **Empty is the Line card alone** —
+    /// [`SealTerms::card`] sealed as `Line` — which every hull nobody chose a
+    /// mind for and every fixture is sealed with.
+    pub profiles: Vec<(SmolStr, StockCard)>,
+    /// **Why the hull flies a mind other than the one chosen for it, from the
+    /// start** (17b cut M5.2; doc 17 §21's Q-UM-15 at the owner's OQ-5):
+    /// [`HUMANS_FALLBACK`] when the check-out substituted Standard Doctrine
+    /// for a non-Doctrine choice with humans on both sides
+    /// (`crate::match_::start` off `SealChoice::substituted`), else `None` —
+    /// on every production seal (production holds Standard Doctrine alone
+    /// before 17b cut M6, the owner's OQ-2) and under the fixture terms.
+    /// [`seal_for`] writes it as [`MindSeal::fallback`], unless the hull has
+    /// no core, whose [`NO_CORE_FALLBACK`] says what actually flies (the ROM).
+    pub fallback: Option<SmolStr>,
 }
+
+/// **The fallback a substituted seal records** (17b cut M5.2; Q-UM-15 at the
+/// owner's OQ-5): a non-Doctrine choice sealed as Standard Doctrine because
+/// humans are on both sides ([`SealTerms::fallback`]).
+pub const HUMANS_FALLBACK: &str = "humans on the other side";
 
 /// **The engine the AI fill is sealed on — the fill decision, taken
 /// 2026-10-09** (the M4 row's (ii) and (iii); doc 17 §18, §22's M4):
@@ -229,7 +298,8 @@ pub const PRODUCTION_FILL_ENGINE: SealEngine = SealEngine::Native;
 impl SealTerms {
     /// **The terms every fixture seals under**: match 0, no principal, the
     /// Line preset over the default doctrine, the seed floor of 100, a
-    /// mind's hull sealed native, rated at the stock class and uncapped.
+    /// mind's hull sealed native, rated at the stock class and uncapped —
+    /// Standard Doctrine's identity, the Line card alone (17b cut M5.2).
     #[must_use]
     pub fn fixture() -> SealTerms {
         SealTerms {
@@ -240,6 +310,25 @@ impl SealTerms {
             engine_for_minds: SealEngine::Native,
             rated: STOCK_RATED_CLASS,
             class_cap: CoreClass::III,
+            identity: SealIdentity::doctrine(),
+            profiles: Vec::new(),
+            fallback: None,
+        }
+    }
+
+    /// **These terms sealing `profiles`** (17b cut M5.2): the set in order,
+    /// and [`SealTerms::card`] the first's — the card that flies at the
+    /// release. An empty set leaves the card as it was (the Line card alone).
+    #[must_use]
+    pub fn with_profiles(self, profiles: Vec<(SmolStr, StockCard)>) -> SealTerms {
+        let card = match profiles.first() {
+            Some((_, first)) => first.clone(),
+            None => self.card.clone(),
+        };
+        SealTerms {
+            card,
+            profiles,
+            ..self
         }
     }
 
@@ -278,16 +367,46 @@ impl SealTerms {
 /// **Why a seal was refused** (17b cut M3.3; D-UM-17: refuse, never clamp).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SealError {
-    /// The card breaks its own schema (its pair of survival sliders).
+    /// A card breaks its own schema (its pair of survival sliders) — or
+    /// (17b cut M5.2) a profile is no preset, or more than four are sealed,
+    /// which no lobby choice reaches (`SIM MIND` refuses both first).
     #[error("{0}")]
     Card(CardError),
-    /// The card's `min_odds` is under the Compact floor.
+    /// A card's `min_odds` is under the Compact floor, on a hull with a
+    /// weapons station (17b cut M5.2; C-23).
     #[error("the card asks for odds under the Compact floor of {}%", .floor / 10)]
     Unlawful {
         /// The floor, per mille.
         floor: u32,
     },
+    /// **The mind is rated above its governed core's class** (17b cut
+    /// M5.2; doc 17 §9, D-UM-41; the design note's C-24 as amended by
+    /// M5.2's S1 ruling): `read_core` finds a core, it is governed, its
+    /// class is I or more, and the terms' rating is above it. Never on a
+    /// hull with no core, nor on a governed core whose class reads 0: both
+    /// seal Class 0 and fly the ROM. The backstop behind the lobby's choice,
+    /// which refuses the same predicate first on the chassis's
+    /// content-declared core, so a choice never reaches it; only a live core
+    /// below its type's class does (a tank a reset could not put back to
+    /// spec), and only under a rating above Class I — a fixture mind's, since
+    /// production's one mind is rated I. Built against the fixture mind (the
+    /// owner's OQ-10 (d)).
+    #[error(
+        "the mind is rated Class {}, over its governed core's Class {}",
+        .rated.as_str(),
+        .core.as_str()
+    )]
+    OverClass {
+        /// The mind's rating.
+        rated: CoreClass,
+        /// The core's class as fitted.
+        core: CoreClass,
+    },
 }
+
+/// **Every preset's name, as a refusal lists them** — what
+/// [`SealError::Card`] names for a profile that is no preset.
+const PRESET_CHOICES: &str = "Line, Sentry, Sniper, Skirmisher, Hunter or Rearguard";
 
 /// **The one seal computation** (17b cut M3.3; this module's head): `unit`'s
 /// seal under `terms`, read off the FINISHED custody — its cells, id,
@@ -295,16 +414,35 @@ pub enum SealError {
 ///
 /// # Errors
 ///
-/// [`SealError::Card`] when the card's pair does not hold, and
-/// [`SealError::Unlawful`] when its `min_odds` is under the floor.
+/// [`SealError::OverClass`] when the mind is rated above its governed core's
+/// class; [`SealError::Card`] when a card's pair does not hold (or a profile
+/// is no preset, or more than four are sealed); and [`SealError::Unlawful`]
+/// when an armed hull's card has its `min_odds` under the floor.
 pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealError> {
     // (1) The stations: helm and sensors on every hull, fire on an armed one.
+    let armed = !unit.weapons.is_empty();
     let mut channels = vec![Channel::Helm, Channel::Sensors];
-    if !unit.weapons.is_empty() {
+    if armed {
         channels.push(Channel::Fire);
     }
     // (2) The licence is `doctrine` (below); (3) the core, read live.
-    let (core, core_class, governed, fallback) = match read_core(&unit.unit) {
+    let hardware = read_core(&unit.unit);
+    // **17b cut M5.2** (C-24, as its S1 ruling amended it): over-class is a
+    // governed core's class under the rating — read off the core itself, so
+    // a hull with no core (which this seal records `governed`, Class 0) is
+    // never over-class, and a governed core whose class reads 0 flies the
+    // ROM, as no core does (`lobby::fit_on_chassis` asks the same).
+    if let Some(hw) = hardware.as_ref()
+        && hw.governed
+        && terms.rated > hw.class
+        && hw.class > CoreClass::Zero
+    {
+        return Err(SealError::OverClass {
+            rated: terms.rated,
+            core: hw.class,
+        });
+    }
+    let (core, core_class, governed, fallback) = match hardware {
         Some(hardware) => (
             Some(hardware.component),
             hardware.class,
@@ -318,21 +456,51 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
             Some(SmolStr::new_static(NO_CORE_FALLBACK)),
         ),
     };
-    // (5) The card, against its schema and the floor, refuse-not-clamp.
-    terms.card.pair("Line").map_err(SealError::Card)?;
-    // 17b cut M5.1: the probe lifted into `odds_are_lawful`, the one question
-    // the lobby's choice asks too; the predicate is unchanged.
-    if !odds_are_lawful(&terms.card, terms.odds_floor_permille) {
-        return Err(SealError::Unlawful {
-            floor: terms.odds_floor_permille,
-        });
+    // **17b cut M5.2** (Q-UM-15): a substituted seal says why — unless the
+    // hull has no core, whose ROM is what flies.
+    let fallback = fallback.or_else(|| terms.fallback.clone());
+    // (5) The cards — every profile sealed (17b cut M5.2), the Line card
+    // alone when the terms name none — each against its schema on every hull
+    // and (17b cut M5.2, C-23) against the floor on an armed hull only,
+    // refuse-not-clamp.
+    let sealed = sealed_set(terms)?;
+    for &(name, card) in &sealed {
+        card.pair(name).map_err(SealError::Card)?;
+        // 17b cut M5.1: the probe lifted into `odds_are_lawful`, the one
+        // question the lobby's choice asks too; the predicate is unchanged.
+        if armed && !odds_are_lawful(card, terms.odds_floor_permille) {
+            return Err(SealError::Unlawful {
+                floor: terms.odds_floor_permille,
+            });
+        }
     }
     // `StockCard` is strings, numbers and booleans: it always serialises.
-    let card = serde_json::to_vec(&terms.card).unwrap_or_default();
-    let card_digest = {
+    let bytes = |card: &StockCard| serde_json::to_vec(card).unwrap_or_default();
+    let digest = |bytes: &[u8]| -> [u8; 32] {
         use sha2::{Digest as _, Sha256};
-        Sha256::digest(&card).into()
+        Sha256::digest(bytes).into()
     };
+    // The first profile's card flies at the release (`sealed` is never
+    // empty: the Line card alone at least).
+    let card = sealed
+        .first()
+        .map(|(_, card)| bytes(card))
+        .unwrap_or_default();
+    let card_digest = digest(&card);
+    // **17b cut M5.2** (D3, F4): the set by name with each card's digest —
+    // EMPTY exactly when it is the Line card alone, so the field is skipped
+    // and a default seal is the record it always was.
+    let profiles = match sealed.as_slice() {
+        [(name, _)] if *name == "Line" => Vec::new(),
+        set => set
+            .iter()
+            .map(|&(name, card)| SealedProfile {
+                name: SmolStr::new_static(name),
+                card_digest: digest(&bytes(card)),
+            })
+            .collect(),
+    };
+    let identity = &terms.identity;
     Ok(MindSeal {
         unit: unit.id,
         sortie: SortieId::in_match(terms.match_id.0, unit.id),
@@ -342,14 +510,16 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         // where it was `min(STOCK_RATED_CLASS, core)`.
         class: terms.rated.min(core_class).min(terms.class_cap),
         governed,
-        // (4) The revision.
-        mind: SmolStr::new_static(SEALED_MIND),
-        charter: SmolStr::new_static(SEALED_CHARTER),
-        line: SmolStr::new_static(SEALED_LINE),
-        revision: crate::minds::STOCK_VERSION,
-        // The digest of the script's own bytes, which `tests/content.rs` pins
-        // equal to `STANDARD_SHA256` — the key the source store holds it under.
-        source_sha256: crate::minds::content::standard_digest().0,
+        // (4) The revision — the terms' identity (17b cut M5.2): Standard
+        // Doctrine's five constants in production, so the same bytes. Its
+        // digest is the script's own bytes', which `tests/content.rs` pins
+        // equal to `STANDARD_SHA256` — the key the source store holds it
+        // under.
+        mind: identity.mind.clone(),
+        charter: identity.charter.clone(),
+        line: identity.line.clone(),
+        revision: identity.revision,
+        source_sha256: identity.source_sha256,
         card,
         card_digest,
         armed: Vec::new(),
@@ -368,17 +538,60 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         // and `MindSeal::placeholder` still default to it, unhashed: the
         // conventions' D8).
         engine: terms.engine_for_minds,
+        // 17b cut M5.2: LAST, and skipped when empty.
+        profiles,
     })
+}
+
+/// **The set a seal is taken over** (17b cut M5.2): `terms.profiles` with
+/// each name canonically spelled — or `[("Line", &terms.card)]` when it is
+/// empty, the Line card alone.
+///
+/// # Errors
+///
+/// [`SealError::Card`] naming the presets for a profile that is none of
+/// them, and a range of 1 to 4 for a set of more than four — neither
+/// reachable through the lobby, which refuses both at the choice.
+fn sealed_set(terms: &SealTerms) -> Result<Vec<(&'static str, &StockCard)>, SealError> {
+    if terms.profiles.is_empty() {
+        return Ok(vec![("Line", &terms.card)]);
+    }
+    if terms.profiles.len() > crate::arena::card::ProfileSet::MOST {
+        return Err(SealError::Card(CardError::Range {
+            slider: "profiles",
+            low: 1,
+            high: 4,
+            step: 1,
+        }));
+    }
+    terms
+        .profiles
+        .iter()
+        .map(|(name, card)| {
+            crate::arena::card::preset_code(name)
+                .and_then(|code| PRESETS.get(usize::from(code)).copied())
+                .map(|name| (name, card))
+                .ok_or(SealError::Card(CardError::Choice {
+                    slider: "profile",
+                    choices: PRESET_CHOICES,
+                }))
+        })
+        .collect()
 }
 
 impl MindSeal {
     /// **A fixture's seal**: [`seal_for`] under [`SealTerms::fixture`] — the
     /// one computation, never a second one. The fixture terms are lawful by
-    /// construction (the Line preset at the seed floor), so it never refuses.
+    /// construction on every hull a fixture fields (the Line preset at the
+    /// seed floor, rated I).
     ///
     /// # Panics
     ///
-    /// Never on any unit: the fixture card pairs and sits on the floor.
+    /// Never: the fixture card pairs and sits on the floor, and rated I is
+    /// over no core (17b cut M5.2's over-class rule) — a hull with no core,
+    /// and a governed core whose class cell reads 0, seal Class 0 and fly the
+    /// ROM (the rule as M5.2's S1 ruling amended it), and a core of Class I
+    /// or more is at or above the rating.
     #[must_use]
     pub fn fixture(unit: &CustodyUnit) -> MindSeal {
         seal_for(unit, &SealTerms::fixture()).expect("a fixture seals")
@@ -516,6 +729,8 @@ mod tests {
                     odds_floor_permille: 100,
                     fallback: None,
                     engine,
+                    // 17b cut M5.2: the Line card alone writes no set.
+                    profiles: Vec::new(),
                 },
                 "{controller:?}"
             );
@@ -528,6 +743,11 @@ mod tests {
                 (CoreClass::II, CoreClass::I, engine)
             );
             assert!(reference.governed && !reference.closed);
+            assert_eq!(
+                reference.profiles,
+                crate::arena::card::ProfileSet::LINE,
+                "17b cut M5.2: the Line card alone"
+            );
         }
         // The target: no core, Class 0, governed, the ROM from the start, and
         // no weapon row — so no fire channel.
@@ -634,8 +854,20 @@ mod tests {
                 Box::new(|s| s.fallback = Some(SmolStr::new(NO_CORE_FALLBACK))),
             ),
             ("engine", Box::new(|s| s.engine = SealEngine::Scripted)),
+            // 17b cut M5.2: the sealed set, written when it is more than the
+            // Line card alone.
+            (
+                "profiles",
+                Box::new(|s| {
+                    s.profiles.push(crate::arena::mind::SealedProfile {
+                        name: SmolStr::new_static("Sniper"),
+                        card_digest: [3; 32],
+                    });
+                }),
+            ),
         ];
-        assert_eq!(edits.len(), 21, "every field of the seal");
+        // 17b cut M5.2: 21 → 22, `profiles` (the seal's one new field).
+        assert_eq!(edits.len(), 22, "every field of the seal");
         for (field, edit) in edits {
             let mut moved = unit.seal.clone();
             edit(&mut moved);
@@ -750,6 +982,451 @@ mod tests {
 }
 
 #[cfg(test)]
+mod m5_tests {
+    use mush_core::ObjId;
+
+    use super::*;
+    use crate::arena::state::{Controller, Team};
+    use crate::definitions::Catalog;
+
+    /// **The presets a profile refusal lists are `PRESETS`** (17b cut M5.2's
+    /// review): [`PRESET_CHOICES`] is written out as a sentence lists them,
+    /// so it is pinned to the table it copies — a preset renamed or added
+    /// there fails here, not in a refusal.
+    #[test]
+    fn m5_the_profile_refusal_lists_every_preset() {
+        let (last, rest) = PRESETS.split_last().expect("presets");
+        assert_eq!(PRESET_CHOICES, format!("{} or {last}", rest.join(", ")));
+    }
+
+    /// One shipped `entry` checked out as `id` under `terms` on a mind,
+    /// through the production assembly ([`crate::match_::custody_unit`]).
+    fn checked_out(entry: &str, id: ObjId, terms: &SealTerms) -> Result<CustodyUnit, SealError> {
+        let catalog = Catalog::build_fielded(&[], "tacsim").expect("the fielded content");
+        let key = mush_core::CanonicalId::new(entry).expect("a canonical id");
+        let cells = crate::definitions::to_tactical_unit(
+            catalog.specs.get(&key).expect("a shipped entry"),
+            catalog.bindings.get(&key).expect("its binding"),
+            id,
+        )
+        .expect("the entry instantiates");
+        let posture =
+            mush_sim::data::passive_rules_value(serde_json::json!({})).expect("an empty posture");
+        crate::match_::custody_unit(
+            &catalog,
+            cells,
+            id,
+            Team::Red,
+            mush_sim::data::Pose::at(1_500, 1_500, 0, posture),
+            0,
+            Controller::Mind,
+            1,
+            terms,
+        )
+    }
+
+    /// **17b cut M5.2, written FIRST** (the design note's M5.2 risks; D3, F4):
+    /// a default seal — the Line card alone — digests to the bytes it did at
+    /// `5f505c8`, under [`SealTerms::fixture`] ([`MindSeal::fixture`]) and
+    /// under [`SealTerms::production_fixture`] (what `crate::match_::start`
+    /// seals an unchosen hull under), on an armed line tank, the heavy (the
+    /// command core) and the coreless target. The values were read on the base
+    /// tree `4078b9dd` before any seal edit; 17b cut M5.1 changed no byte
+    /// `seal_for` writes (it lifted the floor probe into [`odds_are_lawful`],
+    /// the predicate unchanged), so they are `5f505c8`'s. A default seal's
+    /// JSON carries no `profiles` key. A digest that moves here is a STOP.
+    #[test]
+    fn m5_a_default_seal_digests_as_it_did_at_5f505c8() {
+        use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
+        let mut got = Vec::new();
+        for (entry, id) in [(LINE_TANK, 4_u32), (HEAVY_MK1, 5), (TARGET_MK1, 9)] {
+            for (which, terms) in [
+                ("fixture", SealTerms::fixture()),
+                ("production_fixture", SealTerms::production_fixture()),
+                (
+                    "production_principal",
+                    SealTerms {
+                        match_id: MatchId(7),
+                        principal: Some(CharacterRef::Character { id: ObjId(77) }),
+                        ..SealTerms::production_fixture()
+                    },
+                ),
+            ] {
+                let unit = checked_out(entry, ObjId(id), &terms).expect("seals");
+                if which == "fixture" {
+                    assert_eq!(unit.seal, MindSeal::fixture(&unit), "{entry}");
+                }
+                let text = serde_json::to_string(&unit.seal).expect("a seal writes");
+                assert!(!text.contains("profiles"), "{entry} {which}: {text}");
+                got.push(format!(
+                    "{entry} {which} {}",
+                    crate::arena::snapshot::digest_text(&unit.seal.digest())
+                ));
+            }
+        }
+        // Read on `4078b9dd` before any seal edit (17b cut M5.2's first step).
+        let pinned = [
+            "tacsim.unit.line_tank fixture \
+             a6dc725e3a1bb7499fbc4d693d449f52a0c5367529e757507b736058d9cef9e4",
+            "tacsim.unit.line_tank production_fixture \
+             a6dc725e3a1bb7499fbc4d693d449f52a0c5367529e757507b736058d9cef9e4",
+            "tacsim.unit.line_tank production_principal \
+             74eccface52d7ec4f39d56bf115d6d8814033bf3d7bc0df3bcd6cb9201d5a54e",
+            "tacsim.unit.heavy_mk1 fixture \
+             52ccdf9d9c93b6be8da3647ea608f4d1a1fbf02fad5bad5e4453f0dbae67f127",
+            "tacsim.unit.heavy_mk1 production_fixture \
+             52ccdf9d9c93b6be8da3647ea608f4d1a1fbf02fad5bad5e4453f0dbae67f127",
+            "tacsim.unit.heavy_mk1 production_principal \
+             3bba7c1e86cdef78be70d2bed91c06e36456504ce529d5f407e0edf75a10a225",
+            "tacsim.unit.target_mk1 fixture \
+             65931484835d262e0522c2961e1d928867b8d3786d94b4e9cbc19e427ac7396e",
+            "tacsim.unit.target_mk1 production_fixture \
+             65931484835d262e0522c2961e1d928867b8d3786d94b4e9cbc19e427ac7396e",
+            "tacsim.unit.target_mk1 production_principal \
+             4fddc9ec67e9f96f4129ad46101205326acef5737e03813ad0ff08c29fda34f9",
+        ];
+        assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
+    }
+
+    /// SHA-256 over a card's canonical bytes, as a seal digests it.
+    fn card_digest(card: &StockCard) -> [u8; 32] {
+        use sha2::{Digest as _, Sha256};
+        Sha256::digest(serde_json::to_vec(card).expect("a card")).into()
+    }
+
+    /// A preset over the default doctrine.
+    fn preset(name: &str) -> StockCard {
+        crate::arena::card::preset(name, &ReflexConfig::default()).expect("a preset")
+    }
+
+    /// **17b cut M5.2: a sealed profile is named with its card's digest, and
+    /// every card is validated** (doc 17 §11, §12; the owner's OQ-3; D3):
+    /// Sniper then Line, typed in any case, seal canonically spelled, each
+    /// with its card's digest, written LAST; the first's card is the seal's
+    /// `card` (and `SealTerms::with_profiles` puts it on the terms) and the
+    /// reference holds the codes `[2, 0]`. The Line card alone, named, writes
+    /// no set — the default seal byte for byte. EVERY card is held to its
+    /// pair, and on an armed hull to the floor: a second card off its pair is
+    /// refused naming its preset, a second under the floor refuses the seal.
+    /// A name that is no preset and a fifth profile are refused as cards
+    /// (unreachable through the lobby). And the identity is the terms': a
+    /// fixture mind's five fields sealed as given, its reference not
+    /// doctrine, its rating and engine the terms' own.
+    #[test]
+    fn m5_a_sealed_profile_is_named_with_its_card_digest_and_every_card_is_validated() {
+        use crate::arena::card::ProfileSet;
+        use crate::arena::mind::SealedProfile;
+        use crate::definitions::content::LINE_TANK;
+        let unit = checked_out(LINE_TANK, ObjId(4), &SealTerms::fixture()).expect("seals");
+        assert!(
+            unit.seal.profiles.is_empty(),
+            "a default seal writes no set"
+        );
+        let terms = SealTerms::fixture().with_profiles(vec![
+            (SmolStr::new("sniper"), preset("Sniper")),
+            (SmolStr::new("LINE"), preset("Line")),
+        ]);
+        assert_eq!(
+            terms.card,
+            preset("Sniper"),
+            "the first's card on the terms"
+        );
+        let seal = seal_for(&unit, &terms).expect("seals");
+        assert_eq!(
+            seal.profiles,
+            vec![
+                SealedProfile {
+                    name: SmolStr::new_static("Sniper"),
+                    card_digest: card_digest(&preset("Sniper")),
+                },
+                SealedProfile {
+                    name: SmolStr::new_static("Line"),
+                    card_digest: card_digest(&preset("Line")),
+                },
+            ]
+        );
+        assert_eq!(
+            seal.card,
+            serde_json::to_vec(&preset("Sniper")).expect("a card")
+        );
+        assert_eq!(seal.card_digest, card_digest(&preset("Sniper")));
+        assert_eq!(
+            seal.seal_ref().profiles,
+            ProfileSet {
+                len: 2,
+                codes: [2, 0, 0, 0],
+            }
+        );
+        assert_ne!(seal.digest(), unit.seal.digest(), "the set is sealed");
+        let text = serde_json::to_string(&seal).expect("a seal writes");
+        let at = |key: &str| text.find(&format!("\"{key}\":")).expect(key);
+        assert!(at("profiles") > at("engine"), "written last: {text}");
+        assert_eq!(
+            serde_json::from_str::<MindSeal>(&text).ok(),
+            Some(seal.clone())
+        );
+        // The Line card alone, named: no set, the default seal.
+        let line_alone =
+            SealTerms::fixture().with_profiles(vec![(SmolStr::new("Line"), preset("Line"))]);
+        assert_eq!(seal_for(&unit, &line_alone), Ok(unit.seal.clone()));
+        assert_eq!(unit.seal.seal_ref().profiles, ProfileSet::LINE);
+
+        // Every card validated: a second off its pair, named by its preset.
+        let mut unpaired = preset("Rearguard");
+        unpaired.stand_min_permille = unpaired.withdraw_permille + 50;
+        let refused = seal_for(
+            &unit,
+            &SealTerms::fixture().with_profiles(vec![
+                (SmolStr::new("Sniper"), preset("Sniper")),
+                (SmolStr::new("Rearguard"), unpaired),
+            ]),
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(SealError::Card(CardError::Pair {
+                    slider: "Rearguard",
+                    ..
+                }))
+            ),
+            "{refused:?}"
+        );
+        // A second under the floor (Hunter's 30 under 40), on this armed hull;
+        // Sniper's 65 alone is lawful there.
+        let floored = |profiles: Vec<(SmolStr, StockCard)>| SealTerms {
+            odds_floor_permille: 400,
+            ..SealTerms::fixture().with_profiles(profiles)
+        };
+        assert_eq!(
+            seal_for(
+                &unit,
+                &floored(vec![
+                    (SmolStr::new("Sniper"), preset("Sniper")),
+                    (SmolStr::new("Hunter"), preset("Hunter")),
+                ])
+            ),
+            Err(SealError::Unlawful { floor: 400 })
+        );
+        assert!(
+            seal_for(
+                &unit,
+                &floored(vec![(SmolStr::new("Sniper"), preset("Sniper"))])
+            )
+            .is_ok()
+        );
+        // No preset by that name; a fifth profile.
+        assert_eq!(
+            seal_for(
+                &unit,
+                &SealTerms::fixture()
+                    .with_profiles(vec![(SmolStr::new("Brawler"), preset("Line"))])
+            ),
+            Err(SealError::Card(CardError::Choice {
+                slider: "profile",
+                choices: "Line, Sentry, Sniper, Skirmisher, Hunter or Rearguard",
+            }))
+        );
+        let five = ["Line", "Sentry", "Sniper", "Hunter", "Rearguard"]
+            .into_iter()
+            .map(|name| (SmolStr::new(name), preset(name)))
+            .collect();
+        assert!(matches!(
+            seal_for(&unit, &SealTerms::fixture().with_profiles(five)),
+            Err(SealError::Card(CardError::Range {
+                slider: "profiles",
+                ..
+            }))
+        ));
+
+        // The identity is the terms' — its rating and engine are not.
+        let identity = SealIdentity {
+            mind: SmolStr::new_static("Fixture I"),
+            charter: SmolStr::new_static("Fixture"),
+            line: SmolStr::new_static("fixture_i"),
+            revision: 1,
+            source_sha256: [9; 32],
+        };
+        let terms = SealTerms {
+            identity: identity.clone(),
+            engine_for_minds: SealEngine::Scripted,
+            ..SealTerms::fixture()
+        };
+        let seal = seal_for(&unit, &terms).expect("seals");
+        assert_eq!(
+            SealIdentity {
+                mind: seal.mind.clone(),
+                charter: seal.charter.clone(),
+                line: seal.line.clone(),
+                revision: seal.revision,
+                source_sha256: seal.source_sha256,
+            },
+            identity
+        );
+        assert!(!seal.seal_ref().doctrine, "not Standard Doctrine");
+        assert_eq!(
+            (seal.class, seal.engine),
+            (CoreClass::I, SealEngine::Scripted)
+        );
+    }
+
+    /// **17b cut M5.2: an over-class seal is refused by name** (doc 17 §9,
+    /// D-UM-41; the design note's C-24; the owner's OQ-10 (d)): rated III on
+    /// the line tank's governed Class II core is `SealError::OverClass`,
+    /// whatever the cap, and `StartError::MindOverClass`'s two forms (built
+    /// here; the mapping from the seal through `match_::start`, on the
+    /// fixture mind `Load III`, is `tests/match_lifecycle.rs`'
+    /// `m5_an_over_class_mind_is_refused_at_the_check_out_by_hull`) name the
+    /// hull in the call-off's short form, never the mind; rated II there
+    /// seals II. A coreless hull
+    /// (`target_mk1`) rated III seals Class 0 on the ROM — never over-class,
+    /// though its seal records it `governed`. **The S1 ruling** (C-24
+    /// amended: "a governed core at Class 0 flies the ROM, as no core
+    /// does"): the line tank with its governed core lowered to Class 0 seals
+    /// Class 0 on that core under rating I (production's) and rating III
+    /// alike, never `OverClass`. The heavy's Class III command
+    /// core takes rated III (sealed III), capped at I sealing I.
+    #[test]
+    fn m5_an_over_class_seal_is_refused_by_name() {
+        use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
+        let rated = |class: CoreClass, cap: CoreClass| SealTerms {
+            class_cap: cap,
+            ..SealTerms::fixture().rated(class)
+        };
+        for cap in [CoreClass::III, CoreClass::I] {
+            let refused = checked_out(LINE_TANK, ObjId(4), &rated(CoreClass::III, cap));
+            assert_eq!(
+                refused.as_ref().err(),
+                Some(&SealError::OverClass {
+                    rated: CoreClass::III,
+                    core: CoreClass::II,
+                }),
+                "capped {cap:?}"
+            );
+            assert_eq!(
+                refused.err().map(|error| error.to_string()).as_deref(),
+                Some("the mind is rated Class III, over its governed core's Class II")
+            );
+        }
+        let lawful = checked_out(LINE_TANK, ObjId(4), &rated(CoreClass::II, CoreClass::III))
+            .expect("rated II on II seals");
+        assert_eq!(lawful.seal.class, CoreClass::II);
+        // The check-out's refusal: the hull named, the classes in the long
+        // form only, the mind never.
+        let tw = mush_testkit::TestWorld::new();
+        let start = crate::match_::StartError::MindOverClass {
+            unit: ObjId(4),
+            callsign: "RA".to_owned(),
+            rated: CoreClass::III,
+            core: CoreClass::II,
+        };
+        assert_eq!(
+            start.to_string(),
+            "RA's mind is rated Class III, over its core's Class II; the match cannot start."
+        );
+        assert_eq!(
+            start.call_off_words(tw.world(), &[]),
+            "RA's mind is over its core's class"
+        );
+        // No core: never over-class.
+        let target = checked_out(TARGET_MK1, ObjId(9), &rated(CoreClass::III, CoreClass::III))
+            .expect("a coreless hull seals whatever its rating");
+        assert_eq!(
+            (target.seal.core, target.seal.class, target.seal.governed),
+            (None, CoreClass::Zero, true)
+        );
+        assert_eq!(target.seal.fallback.as_deref(), Some(NO_CORE_FALLBACK));
+        // A governed core at Class 0 (a `degrade_core`'s floor): never
+        // over-class — it seals Class 0 on that core and flies the ROM, as no
+        // core does (17b cut M5.2's S1 ruling), whatever the rating.
+        let mut nought =
+            checked_out(LINE_TANK, ObjId(4), &SealTerms::fixture()).expect("the line tank seals");
+        let addr = mush_tactics::CellAddr::Component {
+            component: mush_tactics::ComponentId::new("core").expect("a component"),
+            cell: mush_tactics::CellId::new(crate::definitions::unit::CORE_CLASS_CELL)
+                .expect("a cell"),
+        };
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetCell { addr, value: 0 }],
+            None,
+            None,
+        )
+        .expect("a plan");
+        nought.unit = mush_tactics::apply(&nought.unit, &plan, 0)
+            .expect("the plan applies")
+            .0;
+        assert_eq!(
+            read_core(&nought.unit).map(|hw| (hw.class, hw.governed)),
+            Some((CoreClass::Zero, true)),
+            "a governed core at Class 0, still a core"
+        );
+        for rating in [CoreClass::I, CoreClass::III] {
+            let seal = seal_for(&nought, &rated(rating, CoreClass::III))
+                .expect("a governed Class 0 core is never over-class");
+            assert_eq!(
+                (
+                    seal.core.as_deref(),
+                    seal.core_class,
+                    seal.class,
+                    seal.governed
+                ),
+                (Some("core"), CoreClass::Zero, CoreClass::Zero, true),
+                "rated {rating:?} on a governed Class 0 core seals Class 0"
+            );
+        }
+        // The command core takes Class III.
+        let heavy = checked_out(HEAVY_MK1, ObjId(5), &rated(CoreClass::III, CoreClass::III))
+            .expect("the heavy seals rated III");
+        assert_eq!(
+            (heavy.seal.core_class, heavy.seal.class),
+            (CoreClass::III, CoreClass::III)
+        );
+        let capped = checked_out(HEAVY_MK1, ObjId(5), &rated(CoreClass::III, CoreClass::I))
+            .expect("the heavy seals rated III capped at I");
+        assert_eq!(capped.seal.class, CoreClass::I);
+    }
+
+    /// **17b cut M5.2: an unarmed hull is never refused for the floor** (the
+    /// design note's C-23; doc 17 §11's R-60: a fire section a hull cannot
+    /// use is shown inert and never refuses the seal). Under an operator
+    /// floor of 20%, the armed line tank's Line card (10%) is refused as it
+    /// always was; the same tank with its weapon rows cleared, sealed again,
+    /// is sealed — it was refused before this cut — and so is the unarmed
+    /// target under a floor of 90%. The pair still runs on every hull: an
+    /// unarmed hull's card off its pair is refused.
+    #[test]
+    fn m5_an_unarmed_hull_is_never_refused_for_the_floor() {
+        use crate::definitions::content::{LINE_TANK, TARGET_MK1};
+        let floored = |floor: u32| SealTerms {
+            odds_floor_permille: floor,
+            ..SealTerms::fixture()
+        };
+        assert_eq!(
+            checked_out(LINE_TANK, ObjId(4), &floored(200)).err(),
+            Some(SealError::Unlawful { floor: 200 }),
+            "armed: refused, as before"
+        );
+        let mut unarmed = checked_out(LINE_TANK, ObjId(4), &SealTerms::fixture()).expect("seals");
+        unarmed.weapons.clear();
+        unarmed
+            .reseal(&floored(200))
+            .expect("unarmed: the floor is inert");
+        assert_eq!(unarmed.seal.channels, vec![Channel::Helm, Channel::Sensors]);
+        assert_eq!(unarmed.seal.odds_floor_permille, 200);
+        let target = checked_out(TARGET_MK1, ObjId(9), &floored(900));
+        assert!(target.is_ok(), "{target:?}");
+        let mut card = preset("Line");
+        card.stand_min_permille = card.withdraw_permille + 50;
+        assert!(matches!(
+            unarmed.reseal(&SealTerms {
+                card,
+                ..floored(200)
+            }),
+            Err(SealError::Card(CardError::Pair { slider: "Line", .. }))
+        ));
+    }
+}
+
+#[cfg(test)]
 mod m4_tests {
     use mush_core::ObjId;
 
@@ -759,11 +1436,17 @@ mod m4_tests {
 
     /// **17b cut M4.1: the seal's class is `min(rated, core, cap)`** (the M4
     /// row's finding (9); doc 17 §9, D-UM-35, D-UM-37): on a Class II line
-    /// core, rated I and uncapped seals I (the stock terms); rated III seals
-    /// II (the core caps it); rated III capped at I seals I; rated I capped
-    /// at Zero seals Zero; a hull with no core seals Zero whatever the terms
-    /// say, its `fallback` named. The fixture terms rate at
+    /// core, rated I and uncapped seals I (the stock terms); rated I capped
+    /// at Zero seals Zero; rated II capped at II seals II; a hull with no
+    /// core seals Zero whatever the terms say, its `fallback` named — rated
+    /// III included, never over-class (C-24). The fixture terms rate at
     /// [`STOCK_RATED_CLASS`] and cap at III.
+    ///
+    /// **Re-pinned at 17b cut M5.2**: over-class is refused at the seal since
+    /// 17b cut M5.2 (doc 17 §9, D-UM-41) — the rows rated III on the governed
+    /// Class II core, `(III, III)` (sealed II, "the core caps it") and
+    /// `(III, I)` (sealed I), were lawful here and are
+    /// `SealError::OverClass { rated: III, core: II }` now, whatever the cap.
     #[test]
     fn m4_the_seal_s_class_is_the_least_of_the_rating_the_core_and_the_cap() {
         let fixture = SealTerms::fixture();
@@ -778,8 +1461,6 @@ mod m4_tests {
         );
         for (rated, cap, class) in [
             (CoreClass::I, CoreClass::III, CoreClass::I),
-            (CoreClass::III, CoreClass::III, CoreClass::II),
-            (CoreClass::III, CoreClass::I, CoreClass::I),
             (CoreClass::I, CoreClass::Zero, CoreClass::Zero),
             (CoreClass::II, CoreClass::II, CoreClass::II),
         ] {
@@ -790,6 +1471,22 @@ mod m4_tests {
             let seal = seal_for(&red, &terms).expect("the terms seal");
             assert_eq!(seal.class, class, "rated {rated:?} capped {cap:?}");
             assert_eq!(seal.core_class, CoreClass::II, "the core as fitted");
+        }
+        // 17b cut M5.2: rated III over the governed Class II core is refused,
+        // whatever the cap — the two rows that sealed II and I before it.
+        for cap in [CoreClass::III, CoreClass::I] {
+            let terms = SealTerms {
+                class_cap: cap,
+                ..SealTerms::fixture().rated(CoreClass::III)
+            };
+            assert_eq!(
+                seal_for(&red, &terms),
+                Err(SealError::OverClass {
+                    rated: CoreClass::III,
+                    core: CoreClass::II,
+                }),
+                "rated III capped {cap:?}"
+            );
         }
         let bare = crate::arena::state::CustodyUnit {
             unit: tactical_unit(ObjId(9)),
