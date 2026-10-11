@@ -932,6 +932,15 @@ fn right_holds(text: &str, needle: &str, w: u16) -> bool {
 /// under the contacts — is the frame's two notices composed from their fields
 /// and none of the scrollback's chatter. One row under `COCKPIT_ROWS` the
 /// damage pane goes first, for height.
+///
+/// **17b cut M5.5** (the M5 design note's M5.5 item 1): the weapons pane's
+/// tail — the mind's four rows, `render_cockpit_mind_tail` — sits directly
+/// under the machine gun's row, each row whole in the Right column: all four
+/// at 120 by 34 (the pane's seven inner rows hold the scene's three weapon
+/// rows and the tail exactly) and at 160 by 48; at 120 by 30 the pane holds
+/// six, so the first three are whole and the fourth, the channels, is clipped
+/// from the bottom, the weapon rows above it never displaced. No pane is
+/// added, no split moves and the contact assertions above are as they were.
 #[test]
 fn the_cockpit_screen_paints_at_both_budget_sizes() {
     let mut app = cockpit_app();
@@ -1018,6 +1027,33 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
             right_holds(&text, "\u{2502}  S1: >=60% side/rear keeps 8 ", w),
             "{w}x{h}: the arming line under the cannon:\n{text}"
         );
+        // **17b cut M5.5**: the mind's rows, in order, directly under the
+        // machine gun's row — four at 120 by 34 and 160 by 48, three at 120
+        // by 30 with the weapons pane's bottom border under the third.
+        let right: Vec<String> = text.lines().map(|line| right_of(line, w)).collect();
+        let gun = right
+            .iter()
+            .position(|row| row.starts_with("\u{2502}machine_gun  1 s  380/500  21% "))
+            .unwrap_or_else(|| panic!("{w}x{h}: the machine gun's row:\n{text}"));
+        let whole = if h == COCKPIT_ROWS { 3 } else { 4 };
+        for (at, row) in SCENE_MIND_TAIL.iter().enumerate() {
+            let painted = right.get(gun + 1 + at).map(String::as_str).unwrap_or("");
+            if at < whole {
+                assert!(
+                    painted.starts_with(&format!("\u{2502}{row} ")),
+                    "{w}x{h}: tail row {at} {row:?} is not whole under the weapons:\n{text}"
+                );
+            } else {
+                assert!(
+                    painted.starts_with('\u{2514}'),
+                    "{w}x{h}: the pane ends after the tail's first {whole} rows:\n{text}"
+                );
+                assert!(
+                    !right_holds(&text, row, w),
+                    "{w}x{h}: {row:?} was expected clipped:\n{text}"
+                );
+            }
+        }
         // The ring, under `┌notices` in the Right column.
         let notices_at = text
             .lines()
@@ -1910,4 +1946,225 @@ fn i4_the_live_picture_paints_at_the_floor() {
         "the live table's legend"
     );
     check("tui_watch_120x34.txt", &text);
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.5 — the MIND block on the TUI: the weapons pane's tail
+// ---------------------------------------------------------------------------
+//
+// The keyframe's `mind` object (17b cut M5.4) drawn as four rows under the
+// weapon rows (`render_cockpit_mind_tail`), and in `(no weapon)`'s place on an
+// unarmed hull. No pane, no split, no key: the Right column is still the
+// weapons, contacts and notices panes on their even split, `COCKPIT_ROWS` 30.
+
+/// The canonical scene's tail: `cockpit_frame.json`'s `mind` — Standard
+/// Doctrine sealed on Sniper and Line, Sniper flown, at Class I, an armed hull.
+const SCENE_MIND_TAIL: [&str; 4] = [
+    "mind Standard Doctrine \u{b7} Class I",
+    "> Sniper   Line",
+    "dormant while you fly",
+    "you: helm sensors fire",
+];
+
+/// The web's view-model golden (16b cut Q.5), every line the web's cockpit
+/// screen prints for the same scene.
+const WEB_VIEW_MODEL: &str =
+    include_str!("../../../web/src/lib/fixtures/cockpit/web_view_model.txt");
+
+/// **The TUI and the web draw the same tail** (17b cut M5.5; doc 16 §5's
+/// parity): the four rows this pane paints for the canonical frame are the
+/// four lines the web's view model prints after the same weapon rows
+/// (`mindLines`, `web_view_model.txt`) — one keyframe object, one set of
+/// words, in one place on both surfaces.
+#[test]
+fn m5_the_tui_and_the_web_draw_the_same_mind_tail() {
+    let web: Vec<&str> = WEB_VIEW_MODEL.lines().collect();
+    let gun = web
+        .iter()
+        .position(|line| *line == "machine_gun  1 s  380/500  21%")
+        .expect("the web prints the machine gun's row");
+    assert_eq!(
+        web.get(gun + 1..gun + 5),
+        Some(&SCENE_MIND_TAIL[..]),
+        "the web's tail, under the same weapon rows"
+    );
+    let mut app = cockpit_app();
+    let text = frame_text(&mut app, 120, 34);
+    for row in SCENE_MIND_TAIL {
+        assert!(
+            right_holds(&text, &format!("\u{2502}{row} "), 120),
+            "the TUI paints {row:?}:\n{text}"
+        );
+    }
+}
+
+/// **On an unarmed hull the tail takes the weapons' place** (17b cut M5.5;
+/// the M5 design note's M5.5 item 1, R-61): the drone — no weapons station, so
+/// no `weapons` key and no contact odds, a Class I core, the unchosen slot's
+/// seal of Standard Doctrine on Line alone, its channels `helm` and
+/// `sensors` — paints the four rows as the weapons pane's first rows where
+/// `(no weapon)` stood, whole at 120 by 34, at 120 by 30 (`COCKPIT_ROWS`; the
+/// pane's six inner rows hold all four) and at 160 by 48. The five panes are
+/// painted, every row within the width, and the contacts are as they were:
+/// whole, ending at the side word, X4 below the fold at 120 by 30.
+#[test]
+fn m5_the_mind_tail_takes_the_weapons_place_on_an_unarmed_hull() {
+    let mut frame = fixture(COCKPIT_FRAME);
+    if let Some(object) = frame.as_object_mut() {
+        object.remove("weapons");
+    }
+    if let Some(contacts) = frame["contacts"].as_array_mut() {
+        for contact in contacts {
+            contact["odds"] = serde_json::json!([]);
+        }
+    }
+    frame["mind"] = serde_json::json!({
+        "name": "Standard Doctrine", "profiles": ["Line"], "active": 0,
+        "class": "I", "core": "I", "channels": ["helm", "sensors"],
+        "next_switch_ms": null, "off": false,
+    });
+    let drone = [
+        "mind Standard Doctrine \u{b7} Class I",
+        "> Line",
+        "dormant while you fly",
+        "you: helm sensors",
+    ];
+    let mut app = cockpit_app_with(frame);
+    assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+    for (w, h) in [(120u16, 34u16), (120, COCKPIT_ROWS), (160, 48)] {
+        let text = frame_text(&mut app, w, h);
+        assert_eq!(text.lines().count(), usize::from(h));
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= usize::from(w),
+                "{w}x{h}: row too wide: {line:?}"
+            );
+        }
+        for title in ["status", "damage", "weapons", "contacts", "notices"] {
+            assert!(
+                text.contains(&format!("\u{250c}{title}")),
+                "{w}x{h}: {title} is painted:\n{text}"
+            );
+        }
+        assert!(
+            !text.contains("(no weapon)"),
+            "{w}x{h}: the tail is in its place:\n{text}"
+        );
+        let right: Vec<String> = text.lines().map(|line| right_of(line, w)).collect();
+        let top = right
+            .iter()
+            .position(|row| row.starts_with("\u{250c}weapons"))
+            .unwrap_or_else(|| panic!("{w}x{h}: the weapons pane:\n{text}"));
+        let pane: Vec<&String> = right
+            .iter()
+            .skip(top + 1)
+            .take_while(|row| !row.starts_with('\u{2514}'))
+            .collect();
+        assert!(
+            !pane
+                .iter()
+                .any(|row| row.contains("cannon") || row.contains("S1:") || row.contains("fire")),
+            "{w}x{h}: nothing of a weapons station in the pane:\n{text}"
+        );
+        for (at, row) in drone.iter().enumerate() {
+            let painted = right.get(top + 1 + at).map(String::as_str).unwrap_or("");
+            assert!(
+                painted.starts_with(&format!("\u{2502}{row} ")),
+                "{w}x{h}: tail row {at} {row:?} is not the pane's row {at}:\n{text}"
+            );
+        }
+        let x4 = "X4  unknown  030\u{b0}  far  600 m  6 s rear";
+        for row in [
+            "BA  blue  045\u{b0}  far  450 m  1 s side",
+            "RB  red  270\u{b0}  close  100 m  0 s front",
+            "X3  unknown  315\u{b0}  effective  200 m  3 s front",
+            x4,
+        ] {
+            if h == COCKPIT_ROWS && row == x4 {
+                assert!(
+                    !right_holds(&text, "X4  unknown", w),
+                    "{w}x{h}: X4's row was expected below the fold:\n{text}"
+                );
+                continue;
+            }
+            // Whole, and ending where the row ends: no odds on an unarmed hull.
+            assert!(
+                right.iter().any(|painted| painted
+                    .strip_prefix('\u{2502}')
+                    .and_then(|inner| inner.strip_suffix('\u{2502}'))
+                    .map(str::trim_end)
+                    == Some(row)),
+                "{w}x{h}: {row:?} is not a whole row of the Right column:\n{text}"
+            );
+        }
+    }
+}
+
+/// **The replay and the live picture draw no tail** (17b cut M5.5): both
+/// screens paint the cockpit's panes off the cleared frame (`seated: false`)
+/// and their own payloads, none of which carries a `mind` key (17b cut M5.4
+/// item 3) — and the weapons pane's tail is a seated pilot's alone, so even a
+/// cleared frame that carried one would draw none. Read at the replay's two
+/// budget sizes and the picture's floor; the screens' goldens
+/// (`tui_replay_*.txt`, `tui_watch_120x34.txt`) are their own tests'.
+#[test]
+fn m5_the_replay_and_watch_screens_draw_no_mind_tail() {
+    let scene = fixture(COCKPIT_FRAME);
+    let mind = scene
+        .get("mind")
+        .cloned()
+        .expect("the scene carries a mind");
+    let tail_words = [
+        "mind Standard Doctrine",
+        "mind: your own",
+        "Sniper",
+        "dormant while you fly",
+        "on the ROM",
+        "you: helm",
+    ];
+    let no_tail = |label: &str, text: &str| {
+        for word in tail_words {
+            assert!(
+                !text.contains(word),
+                "{label}: the screen drew {word:?}:\n{text}"
+            );
+        }
+    };
+    let cleared_with_a_mind = OutputEvent::Panel {
+        feed: SmolStr::new_static("arena.cockpit"),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "seated": false,
+            "mind": mind,
+        }),
+    };
+
+    let mut replay = replay_app();
+    assert_eq!(replay.active_screen(), COCKPIT_SCREEN);
+    for (w, h) in [(120u16, 34u16), (160, 48)] {
+        let text = frame_text(&mut replay, w, h);
+        assert!(text.contains("\u{250c}weapons"), "{text}");
+        no_tail(&format!("replay {w}x{h}"), &text);
+    }
+    replay.apply_event(&cleared_with_a_mind);
+    let text = frame_text(&mut replay, 120, 34);
+    assert!(
+        text.contains("Replay 7"),
+        "the replay is still open:\n{text}"
+    );
+    no_tail("replay, a cleared frame carrying a mind", &text);
+
+    let mut watch = watch_app();
+    assert_eq!(watch.active_screen(), COCKPIT_SCREEN);
+    let text = frame_text(&mut watch, 120, 34);
+    assert!(text.contains("Watching 7"), "{text}");
+    no_tail("watch 120x34", &text);
+    watch.apply_event(&cleared_with_a_mind);
+    let text = frame_text(&mut watch, 120, 34);
+    assert!(
+        text.contains("Watching 7"),
+        "the picture is still up:\n{text}"
+    );
+    no_tail("watch, a cleared frame carrying a mind", &text);
 }

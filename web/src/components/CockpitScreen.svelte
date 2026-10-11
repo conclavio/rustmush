@@ -2,8 +2,9 @@
   // The cockpit screen (16b cut Q.5; doc 16 §5): the whole of what the arena
   // tells one pilot, updating by itself as the frames arrive — the ground
   // around the tank with the contacts on it, what the platform is doing, what
-  // is left of it, what it can shoot with, what it holds, and the arena's own
-  // notices.
+  // is left of it, what it can shoot with (and, 17b cut M5.5, the mind sealed
+  // to fly it when the pilot is not in the seat), what it holds, and the
+  // arena's own notices.
   //
   // It renders ONLY what the payload carries. There is no lookup by id into
   // any other store — not who, not presence, not the unit feed, not the atlas
@@ -102,7 +103,8 @@
   }
 
   /** Prefill the composer with an order; the player presses Enter. None of the
-   * five ordering verbs is ever SENT by this screen. */
+   * five ordering verbs — nor (17b cut M5.5) `MIND PROFILE` — is ever SENT by
+   * this screen. */
   function prefill(line: string): void {
     app.focusComposer(line);
   }
@@ -294,6 +296,27 @@
         <h4 class="pt">weapons</h4>
         {#each view.weapons as line, i (i)}
           <p class="line">{line}</p>
+        {/each}
+        <!-- 17b cut M5.5: the mind's four lines, the section's tail (in
+             `(no weapon)`'s place on an unarmed hull). On the profile row each
+             sealed profile the mind is NOT flying is a button that puts `MIND
+             PROFILE <name>` in the box and sends nothing (its title says so);
+             the flown one is plain text, since the cockpit refuses a switch to
+             it (the review's D4); the row's text is `mindLines`' own. -->
+        {#each view.mind as line, i (i)}
+          {#if i === 1 && view.profiles.length > 0}
+            <p class="line mind profiles" title={line}>{#each view.profiles as profile, p (p)}<span
+                  class="lead">{profile.lead}</span>{#if profile.active}<span class="flown"
+                    >{profile.name}</span
+                  >{:else}<button
+                    type="button"
+                    class="profile"
+                    title={`MIND PROFILE ${profile.name}`}
+                    onclick={() => prefill(`MIND PROFILE ${profile.name}`)}>{profile.name}</button
+                  >{/if}{/each}</p>
+          {:else}
+            <p class="line mind">{line}</p>
+          {/if}
         {/each}
       </section>
 
@@ -507,6 +530,29 @@
     padding: 0;
     min-width: 2.5rem;
     text-align: left;
+  }
+
+  /* 17b cut M5.5's review: a little air between the last weapon line and the
+     mind's first, so the tail does not read as one more weapon (on an unarmed
+     hull it follows the heading and takes none). */
+  .line:not(.mind) + .line.mind {
+    margin-top: 0.35rem;
+  }
+
+  /* 17b cut M5.5: a sealed profile on the mind tail's profile row. */
+  .profile {
+    background: none;
+    border: none;
+    border-bottom: 1px dotted var(--border);
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+
+  /* The profile the mind flies: named, not offered (a switch to it is refused). */
+  .flown {
+    font-weight: 600;
   }
 
   .detail {

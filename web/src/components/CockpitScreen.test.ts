@@ -391,3 +391,94 @@ describe("CockpitScreen, 16b cut Y.4", () => {
     expect(lines).toEqual([...cases[0]!.lines, "X4 new contact", "BA section destroyed: turret"]);
   });
 });
+
+// **17b cut M5.5** (the M5 design note's M5.5 item 2; C-6): the mind's four
+// lines drawn as the weapons section's tail — the same placement as the TUI's,
+// so the headings stay five — and a click on a sealed profile the mind is not
+// flying puts `MIND PROFILE <name>` in the box and sends nothing until the
+// pilot presses Enter.
+describe("CockpitScreen, 17b cut M5.5", () => {
+  const TAIL = [
+    "mind Standard Doctrine · Class I",
+    "> Sniper   Line",
+    "dormant while you fly",
+    "you: helm sensors fire",
+  ];
+
+  /** The text of every line the weapons section prints, in order. */
+  function weaponsSection(): string[] {
+    const pane = document.querySelector('section[aria-label="weapons"]');
+    return [...(pane?.querySelectorAll("p.line") ?? [])].map((p) => p.textContent ?? "");
+  }
+
+  it("draws the mind's four lines as the weapons section's tail", async () => {
+    await seated();
+    expect(weaponsSection()).toEqual([
+      "cannon  ready  14/20  62%",
+      "  S1: >=60% side/rear keeps 8",
+      "machine_gun  1 s  380/500  21%",
+      ...TAIL,
+    ]);
+    // No section is added: the headings are the five they were.
+    const headings = [...document.querySelectorAll("h4")].map((h) => h.textContent);
+    expect(headings).toEqual(["status", "damage", "weapons", "contacts", "notices"]);
+    // The profile row: a button for each profile the mind is not flying, the
+    // flown one plain text (a switch to it is refused: the review's D4), and
+    // the row's text the view model's own line.
+    const row = document.querySelector("p.profiles");
+    expect(row?.textContent).toBe("> Sniper   Line");
+    expect([...(row?.querySelectorAll("span.flown") ?? [])].map((s) => s.textContent)).toEqual([
+      "Sniper",
+    ]);
+    const buttons = [...document.querySelectorAll("button.profile")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Line"]);
+    // Each says what its click puts in the box (17b cut M5.5's review).
+    expect(buttons.map((b) => b.getAttribute("title"))).toEqual(["MIND PROFILE Line"]);
+  });
+
+  it("puts `MIND PROFILE <name>` in the box from a profile, and sends nothing", async () => {
+    const { focusComposer } = await seated();
+    const buttons = [...document.querySelectorAll("button.profile")];
+    await fireEvent.click(buttons[0]!);
+    expect(focusComposer).toHaveBeenLastCalledWith("MIND PROFILE Line");
+    // The flown profile offers nothing: a click on it fills no box.
+    await fireEvent.click(document.querySelector("p.profiles span.flown")!);
+    // The composer is filled and nothing else: the screen reaches for no other
+    // method of the app, so no line is sent until Enter.
+    expect(focusComposer).toHaveBeenCalledTimes(1);
+  });
+
+  it("m5_the_mind_tail_takes_the_weapons_place_on_an_unarmed_hull", async () => {
+    // The drone: no weapons key, no contact odds, the unchosen slot's seal.
+    const m = mount();
+    const drone = json("cockpit_frame.json");
+    delete drone.weapons;
+    drone.contacts = (drone.contacts as Record<string, unknown>[]).map((c) => ({ ...c, odds: [] }));
+    drone.mind = {
+      name: "Standard Doctrine",
+      profiles: ["Line"],
+      active: 0,
+      class: "I",
+      core: "I",
+      channels: ["helm", "sensors"],
+      next_switch_ms: null,
+      off: false,
+    };
+    m.cockpit.applyFrame(drone);
+    m.cockpit.applyMap(json("arena_map.json"));
+    await tick();
+    expect(weaponsSection()).toEqual([
+      "mind Standard Doctrine · Class I",
+      "> Line",
+      "dormant while you fly",
+      "you: helm sensors",
+    ]);
+    expect(screen.queryByText("(no weapon)")).toBeNull();
+    const headings = [...document.querySelectorAll("h4")].map((h) => h.textContent);
+    expect(headings).toEqual(["status", "damage", "weapons", "contacts", "notices"]);
+    // A set of one offers no switch (line mode: `no other is sealed to switch
+    // to`): its one profile is the flown one, plain text, and no button.
+    expect(document.querySelector("p.profiles span.flown")?.textContent).toBe("Line");
+    expect(document.querySelector("button.profile")).toBeNull();
+  });
+});

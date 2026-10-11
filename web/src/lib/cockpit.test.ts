@@ -31,9 +31,13 @@ import {
   decodeArenaMap,
   decodeCatchup,
   decodeCockpitFrame,
+  decodeMind,
   labelledAt,
   labelPlan,
   markerLegend,
+  MAX_MIND_PROFILES,
+  mindLines,
+  mindProfiles,
   noticeLine,
   noticeLines,
   scanChips,
@@ -44,6 +48,7 @@ import {
   type ArenaMap,
   type CockpitArming,
   type CockpitFrame,
+  type CockpitMind,
   type CockpitNotice,
   type Marker,
 } from "./cockpit";
@@ -1382,5 +1387,209 @@ describe("17b cut M1b.3", () => {
     expect(notice({ kind: "refused", order: "mind", refusal: "profile" })).toBe(
       "MIND refused: that profile cannot be switched to now",
     );
+  });
+});
+
+// **17b cut M5.5** (doc 17 §12, OQ-8; the M5 design note's M5.5 item 2): the
+// keyframe's `mind` object (17b cut M5.4) decoded, and drawn as the weapons
+// section's tail — `mindLines`, the TUI's `render_cockpit_mind_tail` line for
+// line — in `(no weapon)`'s place on an unarmed hull.
+describe("17b cut M5.5", () => {
+  /** The canonical scene's tail (`cockpit_frame.json`'s `mind`). */
+  const SCENE_TAIL = [
+    "mind Standard Doctrine · Class I",
+    "> Sniper   Line",
+    "dormant while you fly",
+    "you: helm sensors fire",
+  ];
+
+  /** The committed frame's raw object, a fresh copy each call. */
+  function raw(): Record<string, unknown> {
+    return json("cockpit_frame.json") as Record<string, unknown>;
+  }
+
+  function withMind(patch: Partial<CockpitMind>): CockpitFrame {
+    const frame = theFrame();
+    return { ...frame, mind: { ...frame.mind!, ...patch } };
+  }
+
+  it("decodes the committed mind object, and reads an absent or malformed one as null", () => {
+    const frame = theFrame();
+    expect(frame.mind).toEqual({
+      name: "Standard Doctrine",
+      profiles: ["Sniper", "Line"],
+      active: 0,
+      class: "I",
+      core: "II",
+      channels: ["helm", "sensors", "fire"],
+      next_switch_ms: null,
+      off: false,
+    });
+    // An older server (no key), a hull no seal reached (`null`), and a value
+    // that is not an object: no mind, and no tail.
+    const old = raw();
+    delete old.mind;
+    for (const mind of [undefined, null, "Sniper", ["Sniper"]]) {
+      const decoded = decodeCockpitFrame(mind === undefined ? old : { ...raw(), mind });
+      expect(decoded?.mind).toBeNull();
+      expect(decoded ? mindLines(decoded) : ["?"]).toEqual([]);
+      expect(decoded ? mindProfiles(decoded) : ["?"]).toEqual([]);
+    }
+    // A profile that is not a string is dropped and the flown one is still the
+    // one the wire's index named; the set is cut to four, the words cleaned.
+    const odd = decodeMind({
+      name: null,
+      profiles: [7, "Line\u0007", "Sniper", "Sentry", "Hunter", "Rearguard"],
+      active: 2,
+      class: "II",
+      core: "III",
+      channels: ["helm", 3, "sensors"],
+      next_switch_ms: 41_000,
+      off: true,
+    });
+    expect(odd).toEqual({
+      name: null,
+      profiles: ["Line", "Sniper", "Sentry", "Hunter"],
+      active: 1,
+      class: "II",
+      core: "III",
+      channels: ["helm", "sensors"],
+      next_switch_ms: 41_000,
+      off: true,
+    });
+    expect(odd?.profiles).toHaveLength(MAX_MIND_PROFILES);
+    expect(decodeMind({ profiles: [7, "Line"], active: 0 })?.active).toBe(-1);
+  });
+
+  it("draws the four lines under the weapons, in their order and words", () => {
+    const frame = theFrame();
+    expect(mindLines(frame)).toEqual(SCENE_TAIL);
+    const view = cockpitView(frame, null, []);
+    expect(view.weapons).toEqual(weaponLines(frame));
+    expect(view.mind).toEqual(SCENE_TAIL);
+    // The tail follows the weapon rows and comes before the contacts.
+    const lines = cockpitViewLines(view);
+    const gun = lines.indexOf("machine_gun  1 s  380/500  21%");
+    expect(lines.slice(gun + 1, gun + 5)).toEqual(SCENE_TAIL);
+    expect(lines[gun + 5]?.startsWith("BA  ")).toBe(true);
+    // The profile row in its parts: the flown one marked, joined to the line.
+    expect(mindProfiles(frame)).toEqual([
+      { lead: "> ", name: "Sniper", active: true },
+      { lead: "   ", name: "Line", active: false },
+    ]);
+    expect(view.profiles.map((p) => `${p.lead}${p.name}`).join("")).toBe(view.mind[1]);
+  });
+
+  it("says every reading, and draws no countdown", () => {
+    // The other profile flown inside its switch window, a seal that is not
+    // Standard Doctrine, a class read off the frame, a hull dropped to the ROM.
+    const other = withMind({ active: 1, next_switch_ms: 40_000, name: null, class: "0", off: true });
+    expect(mindLines(other)).toEqual([
+      "mind: your own · Class 0",
+      "  Sniper > Line",
+      "off for the match: on the ROM",
+      "you: helm sensors fire",
+    ]);
+    expect(mindLines({ ...other, mind: { ...other.mind!, next_switch_ms: null } })).toEqual(
+      mindLines(other),
+    );
+    // A live class of 0 that is not `off` — a coreless hull such as
+    // `target_mk1`, or a seal capped at Class 0 on a real core — is the ROM's
+    // as well (line mode's `MIND` head names the ROM for both).
+    for (const core of ["0", "II"]) {
+      expect(mindLines(withMind({ class: "0", core, off: false }))).toEqual([
+        "mind Standard Doctrine · Class 0",
+        "> Sniper   Line",
+        "off for the match: on the ROM",
+        "you: helm sensors fire",
+      ]);
+    }
+    expect(mindLines(withMind({ profiles: ["Line"], active: 0 }))[1]).toBe("> Line");
+    expect(
+      mindLines(withMind({ profiles: ["Sentry", "Sniper", "Skirmisher", "Rearguard"], active: 2 }))[1],
+    ).toBe("  Sentry   Sniper > Skirmisher   Rearguard");
+  });
+
+  it("m5_the_mind_tail_takes_the_weapons_place_on_an_unarmed_hull", () => {
+    // The drone: no weapons station, so no `weapons` key and no contact odds; a
+    // Class I core; the unchosen slot's seal, Standard Doctrine on Line alone;
+    // its channels `helm` and `sensors`.
+    const drone = raw();
+    delete drone.weapons;
+    drone.contacts = (drone.contacts as Record<string, unknown>[]).map((c) => ({ ...c, odds: [] }));
+    drone.mind = {
+      name: "Standard Doctrine",
+      profiles: ["Line"],
+      active: 0,
+      class: "I",
+      core: "I",
+      channels: ["helm", "sensors"],
+      next_switch_ms: null,
+      off: false,
+    };
+    const frame = decodeCockpitFrame(drone)!;
+    expect(frame.armed).toBe(false);
+    const tail = ["mind Standard Doctrine · Class I", "> Line", "dormant while you fly", "you: helm sensors"];
+    const view = cockpitView(frame, null, []);
+    expect(view.weapons).toEqual([]);
+    expect(view.mind).toEqual(tail);
+    const lines = cockpitViewLines(view);
+    expect(lines).not.toContain("(no weapon)");
+    const head = lines.indexOf(tail[0]!);
+    expect(lines.slice(head, head + 4)).toEqual(tail);
+    expect(lines[head - 1]).toBe(damageText(view.damage[view.damage.length - 1]!));
+    // `weaponLines` itself is unchanged: the place is the view's to give.
+    expect(weaponLines(frame)).toEqual(["(no weapon)"]);
+    // With no mind on the frame, the unarmed hull reads as it did.
+    const bare = cockpitView({ ...frame, mind: null }, null, []);
+    expect(bare.weapons).toEqual(["(no weapon)"]);
+    expect(bare.mind).toEqual([]);
+    expect(cockpitViewLines(bare)).toContain("(no weapon)");
+  });
+
+  it("keeps every line within the TUI pane's 44 columns", () => {
+    // Every ordered set of one to four of the six presets, each flown, either
+    // name, every class word, either state, either channel list — the TUI's
+    // `m5_every_mind_tail_row_is_at_most_44_columns`, over the same words.
+    // A COPY of `tacsim::arena::card::PRESETS`: nothing ties it to the source,
+    // so a renamed or longer preset would pass here unseen — tying both walks
+    // to one committed fixture is carried to the cut that next touches the
+    // presets (M6).
+    const presets = ["Line", "Sentry", "Sniper", "Skirmisher", "Hunter", "Rearguard"];
+    let sets: string[][] = [[]];
+    const ordered: string[][] = [];
+    for (let size = 0; size < 4; size += 1) {
+      sets = sets.flatMap((set) => presets.filter((p) => !set.includes(p)).map((p) => [...set, p]));
+      ordered.push(...sets);
+    }
+    expect(ordered).toHaveLength(6 + 30 + 120 + 360);
+    const frame = theFrame();
+    const base = frame.mind!;
+    let widest = 0;
+    let checked = 0;
+    const over: string[] = [];
+    for (const profiles of ordered) {
+      for (let active = 0; active < profiles.length; active += 1) {
+        for (const name of ["Standard Doctrine", null]) {
+          for (const cls of ["0", "I", "II", "III"]) {
+            for (const off of [false, true]) {
+              for (const channels of [["helm", "sensors", "fire"], ["helm", "sensors"]]) {
+                const mind = { ...base, profiles, active, name, class: cls, off, channels };
+                for (const line of mindLines({ ...frame, mind })) {
+                  widest = Math.max(widest, line.length);
+                  if (line.length > 44) {
+                    over.push(line);
+                  }
+                }
+                checked += 1;
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(over).toEqual([]);
+    expect(checked).toBe((6 + 2 * 30 + 3 * 120 + 4 * 360) * 2 * 4 * 2 * 2);
+    expect(widest).toBe(42);
   });
 });

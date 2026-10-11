@@ -31,8 +31,9 @@
 // `reads_dead`, `odds` and `fatal` per contact, `bands_cm` per weapon, `t_ms` and
 // `order` at the top, and no `weapons` key at all on a hull with no weapons
 // station; 17b cut M1b.3's at 3 — `armed` per weapon and `odds_floor_permille`
-// at the top), and neither an older server nor a newer one may make this client
-// throw. The version is not read.
+// at the top; 17b cut M5.4's `mind` at the top, added without a version and
+// decoded since 17b cut M5.5), and neither an older server nor a newer one may
+// make this client throw. The version is not read.
 
 /** The per-pulse cockpit keyframe's feed (`tacsim::arena_bridge::FRAME_FEED`). */
 export const COCKPIT_FEED = "arena.cockpit";
@@ -267,6 +268,42 @@ export interface CockpitArming {
   max_range_m: number | null;
 }
 
+/**
+ * **The hull's sealed mind** (17b cut M5.4's keyframe object, decoded by 17b
+ * cut M5.5; doc 17 §12, OQ-8): what the pilot's own seal says, for the person
+ * in the seat alone — never a seal id, never a card. Both classes are read
+ * live by the arena (a degraded core reads as it is now).
+ */
+export interface CockpitMind {
+  /** `Standard Doctrine`, or `null` for a seal that is not Standard Doctrine
+   * (the pilot's own mind, whose name the frame does not carry). */
+  name: string | null;
+  /** The sealed profiles, in sealed order — one to four of the six preset
+   * names (`MAX_MIND_PROFILES`). */
+  profiles: string[];
+  /** The index into `profiles` of the one flown; `-1` when the frame names
+   * none of the profiles kept. */
+  active: number;
+  /** The class the mind thinks at — `I`, `II` or `III` — or `0`, where the ROM
+   * flies the hull (no core, a core at Class 0, a seal capped there). */
+  class: string;
+  /** The class of the hull's core (`0` with no core). */
+  core: string;
+  /** The channels the pilot holds: `helm`, `sensors` and, on an armed hull,
+   * `fire`. */
+  channels: string[];
+  /** The ABSOLUTE arena millisecond from which the next `MIND PROFILE` switch
+   * is taken, or `null`. Decoded and never drawn: a quiet frame would leave a
+   * drawn countdown stale (line mode's `MIND` prints it off the mirror's
+   * clock). */
+  next_switch_ms: number | null;
+  /** The hull was dropped to the ROM for the match. */
+  off: boolean;
+}
+
+/** The most profiles a seal carries (the arena's `ProfileSet`, four codes). */
+export const MAX_MIND_PROFILES = 4;
+
 export interface CockpitFacet {
   id: string;
   armor: number;
@@ -401,6 +438,9 @@ export interface CockpitFrame {
   /** Whether the frame carries the `weapons` key (17b cut M1a.3): a hull with
    * no weapons station carries none, and its contact rows end at the aspect. */
   armed: boolean;
+  /** The hull's sealed mind (17b cut M5.4's key, decoded by 17b cut M5.5), or
+   * `null` — a hull no seal reached, and an older server. */
+  mind: CockpitMind | null;
 }
 
 /** One of the ground's named places, as `arena.map` carries it (16b cut V.1):
@@ -610,6 +650,42 @@ function decodeOrder(raw: unknown): CockpitOrder | null {
     hold_fire: raw.hold_fire === true,
     max_range_band: optStr(raw.max_range_band, 16),
     expires_in_ms: Math.max(0, int(raw.expires_in_ms, 0)),
+  };
+}
+
+/**
+ * Decode the frame's `mind` object (17b cut M5.5); `null` for anything that is
+ * not an object. A profile that is not a string is dropped and `active` still
+ * names the profile the wire's index named (`-1` when that one was dropped);
+ * the set is cut to `MAX_MIND_PROFILES`, each name to 16, each class word to
+ * 8, the channels to four of 16.
+ */
+export function decodeMind(raw: unknown): CockpitMind | null {
+  if (!isObj(raw)) {
+    return null;
+  }
+  const flown = optInt(raw.active);
+  const profiles: string[] = [];
+  let active = -1;
+  (Array.isArray(raw.profiles) ? raw.profiles : []).forEach((entry, at) => {
+    const name = optStr(entry, 16);
+    if (name === null || profiles.length >= MAX_MIND_PROFILES) {
+      return;
+    }
+    if (at === flown) {
+      active = profiles.length;
+    }
+    profiles.push(name);
+  });
+  return {
+    name: optStr(raw.name, 32),
+    profiles,
+    active,
+    class: clean(raw.class, "?", 8),
+    core: clean(raw.core, "?", 8),
+    channels: names(raw.channels, 16, 4),
+    next_switch_ms: optInt(raw.next_switch_ms),
+    off: raw.off === true,
   };
 }
 
@@ -886,6 +962,8 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     armed: Array.isArray(data.weapons),
     // 17b cut M1b.3.
     odds_floor_permille: optInt(data.odds_floor_permille),
+    // 17b cut M5.5 (the key is 17b cut M5.4's).
+    mind: decodeMind(data.mind),
   };
 }
 
@@ -1498,8 +1576,17 @@ export interface CockpitView {
    * limit), heat, the degraded receiver, scope (and the pod's switch), lock. */
   status: string[];
   damage: CockpitDamageRow[];
-  /** One line a weapon, or the single `(no weapon)` line. */
+  /** One line a weapon, or the single `(no weapon)` line — and (17b cut M5.5)
+   * none on a hull with no weapons station whose frame carries a mind: the
+   * mind's rows take that line's place. */
   weapons: string[];
+  /** **The weapons section's tail** (17b cut M5.5): `mindLines`, four lines
+   * under the weapons, or none when the frame carries no `mind`. */
+  mind: string[];
+  /** The tail's profile row in its parts (17b cut M5.5): `mindProfiles`, one
+   * part a sealed profile, which the screen makes a button each; joined they
+   * are `mind[1]`, and empty when `mind` is. */
+  profiles: CockpitMindProfile[];
   contacts: CockpitContactRow[];
   /** The ring, oldest first. */
   notices: string[];
@@ -1631,6 +1718,77 @@ export function weaponLines(frame: CockpitFrame): string[] {
     const row = `${w.id}  ${ready}  ${w.rounds}/${w.rounds_max}${chance}`;
     return w.armed === null ? [row] : [row, `  ${armingWords(w.armed)}`];
   });
+}
+
+/** One sealed profile on the mind tail's profile row (17b cut M5.5): its name,
+ * whether it is the one flown, and the text before it — one space after the
+ * previous part, then `> ` for the flown profile or two spaces for another. */
+export interface CockpitMindProfile {
+  lead: string;
+  name: string;
+  active: boolean;
+}
+
+/** The profile row's parts, every sealed profile in sealed order (17b cut
+ * M5.5); `[]` when the frame carries no mind. */
+export function mindProfiles(frame: CockpitFrame): CockpitMindProfile[] {
+  const mind = frame.mind;
+  if (mind === null) {
+    return [];
+  }
+  return mind.profiles.map((name, at) => ({
+    lead: `${at === 0 ? "" : " "}${at === mind.active ? "> " : "  "}`,
+    name,
+    active: at === mind.active,
+  }));
+}
+
+/**
+ * **The mind's four lines, the weapons section's tail** (17b cut M5.5; doc 17
+ * §12, OQ-8; the M5 design note's M5.5 item 2) — the TUI's weapons pane tail
+ * (`render_cockpit_mind_tail`) line for line, held equal for the same scene by
+ * `tui_golden.rs`' `m5_the_tui_and_the_web_draw_the_same_mind_tail`, which
+ * reads `web_view_model.txt` beside the TUI's own rows:
+ *
+ * ```text
+ * mind Standard Doctrine · Class I
+ * > Sniper   Line
+ * dormant while you fly
+ * you: helm sensors fire
+ * ```
+ *
+ * Line for line for every object the arena's `mind_json` sends (one to four
+ * preset names, the class words): `decodeMind`'s tolerance of anything else
+ * (its cuts, its cap of four, a blank dropped, `?` for an empty class) is the
+ * web's alone, so an object no server sends may read otherwise on the TUI.
+ *
+ * The mind (`mind: your own · Class I` for a seal that is not Standard
+ * Doctrine) and the class it thinks at; every sealed profile, the flown one
+ * marked `> `; `dormant while you fly`, or `off for the match: on the ROM`
+ * where the ROM flies the hull — one dropped to it (`off`), or one whose mind
+ * class reads `0` (no core, a core at Class 0, a seal capped there), for which
+ * line mode's `MIND` names the ROM too (a live class only falls during a
+ * match); the channels the pilot holds. No countdown (the frame's
+ * `next_switch_ms` is absolute, and a quiet frame would leave one stale), no
+ * card and no rule glyph (M6's). `[]` when the frame carries no mind.
+ */
+export function mindLines(frame: CockpitFrame): string[] {
+  const mind = frame.mind;
+  if (mind === null) {
+    return [];
+  }
+  const head =
+    mind.name === null
+      ? `mind: your own · Class ${mind.class}`
+      : `mind ${mind.name} · Class ${mind.class}`;
+  return [
+    head,
+    mindProfiles(frame)
+      .map((p) => `${p.lead}${p.name}`)
+      .join(""),
+    mind.off || mind.class === "0" ? "off for the match: on the ROM" : "dormant while you fly",
+    `you: ${mind.channels.join(" ")}`.trimEnd(),
+  ];
 }
 
 /**
@@ -1874,7 +2032,11 @@ export function cockpitView(
     legend: markerLegend(win),
     status: statusLines(frame),
     damage: damageRows(frame),
-    weapons: weaponLines(frame),
+    // 17b cut M5.5: on a hull with no weapons station, the mind's rows take
+    // `(no weapon)`'s place.
+    weapons: frame.weapons.length === 0 && frame.mind !== null ? [] : weaponLines(frame),
+    mind: mindLines(frame),
+    profiles: mindProfiles(frame),
     contacts: contactRows(frame),
     notices: [...notices],
   };
@@ -1893,6 +2055,8 @@ export function cockpitViewLines(view: CockpitView): string[] {
   lines.push(...view.status);
   lines.push(...view.damage.map(damageText));
   lines.push(...view.weapons);
+  // 17b cut M5.5: the weapons section's tail.
+  lines.push(...view.mind);
   for (const row of view.contacts) {
     lines.push(contactText(row));
     if (row.chips.length > 0) {

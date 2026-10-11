@@ -2777,10 +2777,21 @@ fn pack_facet_cells(cells: &[String], width: usize) -> Vec<String> {
 /// (`draw_pane`'s `wrap_spans`, 16b cut B.3), as a long contact row does. A
 /// frame from an older server carries no `armed` key and prints as it always
 /// did.
+///
+/// **17b cut M5.5** (doc 17 §12; the M5 design note's M5.5 item 1): under the
+/// weapon rows, the mind's four rows — [`render_cockpit_mind_tail`], the
+/// `MIND` block as this pane draws it — and on a hull with no weapons station
+/// the same four rows in `(no weapon)`'s place. A frame with no `mind` object
+/// (no seal reached the hull, or an older server) prints exactly as before.
+/// The tail is the pane's last rows, so where the pane is short (six inner
+/// rows at 120 by 30 under the scene's three) it loses its own last row, the
+/// channels, from the bottom, and the weapon rows above it are never displaced.
 #[must_use]
 pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
         // 16b cut I.2: no seat, and a replay open — the shots of this step.
+        // 17b cut M5.5: the replay's and the live picture's rows carry no
+        // mind tail; the tail is a seated pilot's alone.
         return replay::weapons_rows(ctx).unwrap_or_default();
     }
     // **17b cut M1a.3** (doc 17 §22's italic line): a hull with no weapons
@@ -2790,10 +2801,16 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
         .get("weapons")
         .and_then(Value::as_array)
         .map_or(&[][..], Vec::as_slice);
+    let tail = render_cockpit_mind_tail(data, ctx);
     if weapons.is_empty() {
-        return PaneRows::one("(no weapon)");
+        // 17b cut M5.5: the mind's rows take the weapons' place.
+        return if tail.rows.is_empty() {
+            PaneRows::one("(no weapon)")
+        } else {
+            tail
+        };
     }
-    let mut rows = Vec::with_capacity(weapons.len());
+    let mut rows = Vec::with_capacity(weapons.len() + tail.rows.len());
     for weapon in weapons {
         let ready = if weapon.get("ready").and_then(Value::as_bool) == Some(true) {
             "ready".to_string()
@@ -2826,7 +2843,118 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
             rows.push(PaneRow::plain(Line::from(Span::raw(format!("  {words}")))));
         }
     }
+    // 17b cut M5.5: the mind's rows, last.
+    rows.extend(tail.rows);
     PaneRows { rows }
+}
+
+/// **The mind's four rows, the weapons pane's tail** (17b cut M5.5; doc 17
+/// §12, OQ-8; the M5 design note's M5.5 item 1): the keyframe's `mind` object
+/// (17b cut M5.4, the hull's sealed mind for the person in the seat) as the
+/// TUI draws it, in this order —
+///
+/// ```text
+/// mind Standard Doctrine · Class I
+/// > Sniper   Line
+/// dormant while you fly
+/// you: helm sensors fire
+/// ```
+///
+/// The first row names the mind (`mind: your own · Class I` for a seal that is
+/// not Standard Doctrine, whose `name` is `null`) and the class it thinks at,
+/// read live off the frame; the second, every sealed profile in sealed order,
+/// the one flown marked `> ` and the others two spaces in, one space between
+/// them; the third, `dormant while you fly`, or `off for the match: on the
+/// ROM` where the ROM flies the hull — one dropped to it (`off`), or one
+/// whose mind class reads `0` (no core, a core at Class 0, a seal capped
+/// there), for which line mode's `MIND` names the ROM too; the fourth, the
+/// channels the pilot holds, as the frame lists them. Each row is at most 44 columns, the Right
+/// column's inner width at the 120-column floor, at the widest set of four
+/// presets and the longest class word — so no row wraps there. The separator
+/// is `·` on a UTF-8 terminal and `|` on any other (`unit_sep`, the unit
+/// screen's).
+///
+/// No countdown is drawn: `next_switch_ms` is absolute, and a quiet frame
+/// would leave a drawn countdown stale; line mode's `MIND` prints it off the
+/// mirror's clock. No row is selectable and no key is bound: `MIND PROFILE
+/// <name>` is typed. No card is drawn (the M5 design note's reading of OQ-8,
+/// C-22: the card's slider drawing and the rules' glyphs are M6's).
+///
+/// Empty when the frame carries no `mind` object — `null` on a hull no seal
+/// reached, absent from an older server and from every replay or live
+/// picture's payload — or when it is not seated.
+#[must_use]
+pub fn render_cockpit_mind_tail(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if !seated(data) {
+        return PaneRows::default();
+    }
+    let Some(mind) = data.get("mind").filter(|mind| mind.is_object()) else {
+        return PaneRows::default();
+    };
+    PaneRows {
+        rows: mind_tail_lines(mind, ctx.utf8)
+            .into_iter()
+            .map(|text| PaneRow::plain(Line::from(Span::raw(text))))
+            .collect(),
+    }
+}
+
+/// The four rows of [`render_cockpit_mind_tail`] for one `mind` object, as
+/// text.
+fn mind_tail_lines(mind: &Value, utf8: bool) -> [String; 4] {
+    let class = clean(mind.get("class").and_then(Value::as_str).unwrap_or("?"));
+    let sep = unit_sep(utf8);
+    let name = mind
+        .get("name")
+        .and_then(Value::as_str)
+        .map(clean)
+        .filter(|name| !name.trim().is_empty());
+    let head = match name {
+        Some(name) => format!("mind {name}{sep}Class {class}"),
+        // A seal that is not Standard Doctrine: `mind: your own`, the colon
+        // keeping it from reading as the idiom.
+        None => format!("mind: your own{sep}Class {class}"),
+    };
+    let active = mind
+        .get("active")
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok());
+    let profiles = mind
+        .get("profiles")
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .enumerate()
+                .filter_map(|(at, name)| name.as_str().map(|name| (at, name)))
+                .map(|(at, name)| {
+                    let mark = if Some(at) == active { "> " } else { "  " };
+                    format!("{mark}{}", clean(name))
+                })
+                .collect::<Vec<String>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    // 17b cut M5.5's review: the ROM flies a hull dropped to it (`off`) and
+    // one whose mind class reads 0 (no core, a core at Class 0, a seal capped
+    // there) alike — line mode's `MIND` names the ROM for both (17b cut M5.4's
+    // `mind_head_line`) — and a live class only falls during a match, so both
+    // are off for the match.
+    let on_rom = mind.get("off").and_then(Value::as_bool) == Some(true) || class == "0";
+    let state = if on_rom {
+        "off for the match: on the ROM"
+    } else {
+        "dormant while you fly"
+    };
+    let channels: Vec<String> = mind
+        .get("channels")
+        .and_then(Value::as_array)
+        .map(|words| words.iter().filter_map(Value::as_str).map(clean).collect())
+        .unwrap_or_default();
+    let you = format!("you: {}", channels.join(" "))
+        .trim_end()
+        .to_string();
+    [head, profiles, state.to_string(), you]
 }
 
 /// **The arming line of one weapon's `armed` object** (17b cut M1b.3) — the
@@ -6781,6 +6909,254 @@ mod tests {
             wrapped.join(" ").split_whitespace().collect::<Vec<_>>(),
             printed.split_whitespace().collect::<Vec<_>>(),
             "no word lost to the wrap"
+        );
+    }
+
+    /// The `mind` object of the canonical scene (17b cut M5.4's
+    /// `cockpit_frame.json`): Standard Doctrine sealed on Sniper and Line,
+    /// Sniper flown, thinking at Class I on a Class II core, an armed hull.
+    fn scene_mind() -> Value {
+        serde_json::json!({
+            "name": "Standard Doctrine", "profiles": ["Sniper", "Line"], "active": 0,
+            "class": "I", "core": "II", "channels": ["helm", "sensors", "fire"],
+            "next_switch_ms": null, "off": false,
+        })
+    }
+
+    /// The text of the weapons pane's rows for `frame`.
+    fn weapons_text(frame: &Value, utf8: bool) -> Vec<String> {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8,
+            store: &store,
+            selected_channel: None,
+            pane: Some((44, 7)),
+            picture: None,
+        };
+        render_cockpit_weapons_rows(frame, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect()
+    }
+
+    /// **17b cut M5.5** (doc 17 §12; the M5 design note's M5.5 item 1): the
+    /// mind's four rows under the weapon rows, in their order and words; the
+    /// readings each row has; on an unarmed hull the four rows in `(no
+    /// weapon)`'s place; and nothing where the frame carries no `mind`
+    /// object — `null`, absent, malformed, or a cleared frame. No row is
+    /// selectable, and none says a countdown: a switched profile's
+    /// `next_switch_ms` draws nothing.
+    #[test]
+    fn m5_the_mind_tail_draws_four_rows_under_the_weapons() {
+        let gun = serde_json::json!({
+            "id": "cannon", "ready": true, "ready_in_ms": 0, "rounds": 14,
+            "rounds_max": 20, "percent": 62, "armed": null,
+        });
+        let armed = serde_json::json!({ "weapons": [gun], "mind": scene_mind() });
+        assert_eq!(
+            weapons_text(&armed, true),
+            vec![
+                "cannon  ready  14/20  62%".to_string(),
+                "mind Standard Doctrine \u{b7} Class I".to_string(),
+                "> Sniper   Line".to_string(),
+                "dormant while you fly".to_string(),
+                "you: helm sensors fire".to_string(),
+            ]
+        );
+        // A terminal that is not UTF-8 gets the ASCII separator.
+        assert_eq!(
+            weapons_text(&armed, false).get(1).map(String::as_str),
+            Some("mind Standard Doctrine | Class I")
+        );
+        // Every reading: the other profile flown, inside its switch window
+        // (no countdown drawn), a seal that is not Standard Doctrine, a
+        // degraded core's class read off the frame, a hull dropped to the ROM.
+        let mut other = armed.clone();
+        other["mind"]["active"] = serde_json::json!(1);
+        other["mind"]["next_switch_ms"] = serde_json::json!(40_000);
+        other["mind"]["name"] = Value::Null;
+        other["mind"]["class"] = serde_json::json!("0");
+        other["mind"]["off"] = serde_json::json!(true);
+        let rows = weapons_text(&other, true);
+        assert_eq!(
+            rows[1..],
+            [
+                "mind: your own \u{b7} Class 0".to_string(),
+                "  Sniper > Line".to_string(),
+                "off for the match: on the ROM".to_string(),
+                "you: helm sensors fire".to_string(),
+            ]
+        );
+        let mut unswitched = other.clone();
+        unswitched["mind"]["next_switch_ms"] = Value::Null;
+        assert_eq!(
+            weapons_text(&unswitched, true),
+            rows,
+            "the switch window draws nothing: no countdown"
+        );
+        // A live class of 0 that is not `off` — a coreless hull such as
+        // `target_mk1`, or a seal capped at Class 0 on a real core — is the
+        // ROM's as well (line mode's `MIND` head names the ROM for both).
+        for core in ["0", "II"] {
+            let mut rom = armed.clone();
+            rom["mind"]["class"] = serde_json::json!("0");
+            rom["mind"]["core"] = serde_json::json!(core);
+            rom["mind"]["off"] = serde_json::json!(false);
+            assert_eq!(
+                weapons_text(&rom, true)[1..],
+                [
+                    "mind Standard Doctrine \u{b7} Class 0".to_string(),
+                    "> Sniper   Line".to_string(),
+                    "off for the match: on the ROM".to_string(),
+                    "you: helm sensors fire".to_string(),
+                ],
+                "core {core}"
+            );
+        }
+        // A set of one, and every profile of a four-set in sealed order.
+        let mut one = armed.clone();
+        one["mind"]["profiles"] = serde_json::json!(["Line"]);
+        assert_eq!(weapons_text(&one, true)[2], "> Line");
+        let mut four = armed.clone();
+        four["mind"]["profiles"] =
+            serde_json::json!(["Sentry", "Sniper", "Skirmisher", "Rearguard"]);
+        four["mind"]["active"] = serde_json::json!(2);
+        assert_eq!(
+            weapons_text(&four, true)[2],
+            "  Sentry   Sniper > Skirmisher   Rearguard"
+        );
+
+        // An unarmed hull: no `weapons` key, and the four rows in `(no
+        // weapon)`'s place, its channels without `fire`.
+        let mut unarmed = serde_json::json!({ "mind": scene_mind() });
+        unarmed["mind"]["channels"] = serde_json::json!(["helm", "sensors"]);
+        assert_eq!(
+            weapons_text(&unarmed, true),
+            vec![
+                "mind Standard Doctrine \u{b7} Class I".to_string(),
+                "> Sniper   Line".to_string(),
+                "dormant while you fly".to_string(),
+                "you: helm sensors".to_string(),
+            ]
+        );
+        // No `mind` object: the pane as it was before the cut, armed or not.
+        for mind in [None, Some(Value::Null), Some(serde_json::json!("Sniper"))] {
+            let mut bare = serde_json::json!({});
+            let mut gunned = serde_json::json!({ "weapons": [armed["weapons"][0].clone()] });
+            if let Some(mind) = mind {
+                bare["mind"] = mind.clone();
+                gunned["mind"] = mind;
+            }
+            assert_eq!(weapons_text(&bare, true), vec!["(no weapon)".to_string()]);
+            assert_eq!(
+                weapons_text(&gunned, true),
+                vec!["cannon  ready  14/20  62%".to_string()]
+            );
+        }
+        // A cleared frame draws no tail, whatever it carries.
+        let cleared = serde_json::json!({ "seated": false, "mind": scene_mind() });
+        assert!(weapons_text(&cleared, true).is_empty());
+
+        // No tail row is selectable: the pane binds no key.
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        // The tail's own guard, not only its caller's early return.
+        assert!(render_cockpit_mind_tail(&cleared, &ctx).rows.is_empty());
+        let tail = render_cockpit_mind_tail(&armed, &ctx);
+        assert_eq!(tail.rows.len(), 4);
+        assert!(
+            tail.rows
+                .iter()
+                .all(|row| !row.selectable && row.prefill.is_none() && row.row_key.is_none())
+        );
+    }
+
+    /// **17b cut M5.5**: every tail row is at most 44 columns — the Right
+    /// column's inner width at the 120-column floor, so no row wraps there —
+    /// over every ordered set of one to four of Standard Doctrine's six
+    /// presets (`tacsim::arena::card::PRESETS`, the words a sealed set holds)
+    /// with each flown, either mind name, every class word, either state,
+    /// either channel list and either separator.
+    #[test]
+    fn m5_every_mind_tail_row_is_at_most_44_columns() {
+        // A COPY of `tacsim::arena::card::PRESETS` (this crate does not depend
+        // on tacsim): nothing ties it to the source, so a renamed or longer
+        // preset would pass here unseen — tying both walks to one committed
+        // fixture is carried to the cut that next touches the presets (M6).
+        const PRESETS: [&str; 6] = [
+            "Line",
+            "Sentry",
+            "Sniper",
+            "Skirmisher",
+            "Hunter",
+            "Rearguard",
+        ];
+        let mut sets: Vec<Vec<&str>> = vec![Vec::new()];
+        let mut ordered: Vec<Vec<&str>> = Vec::new();
+        for _ in 0..4 {
+            let mut longer = Vec::new();
+            for set in &sets {
+                for preset in PRESETS {
+                    if !set.contains(&preset) {
+                        let mut next = set.clone();
+                        next.push(preset);
+                        longer.push(next);
+                    }
+                }
+            }
+            ordered.extend(longer.iter().cloned());
+            sets = longer;
+        }
+        assert_eq!(ordered.len(), 6 + 30 + 120 + 360);
+        let mut widest = 0usize;
+        let mut checked = 0usize;
+        for set in &ordered {
+            for active in 0..set.len() {
+                for name in [serde_json::json!("Standard Doctrine"), Value::Null] {
+                    for class in ["0", "I", "II", "III"] {
+                        for off in [false, true] {
+                            for channels in
+                                [vec!["helm", "sensors", "fire"], vec!["helm", "sensors"]]
+                            {
+                                let mind = serde_json::json!({
+                                    "name": name, "profiles": set, "active": active,
+                                    "class": class, "core": "III", "channels": channels,
+                                    "next_switch_ms": 1_000_000_000_i64, "off": off,
+                                });
+                                for utf8 in [true, false] {
+                                    for row in mind_tail_lines(&mind, utf8) {
+                                        let width = row.chars().count();
+                                        assert!(width <= 44, "{width}: {row:?}");
+                                        widest = widest.max(width);
+                                    }
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            checked,
+            (6 + 2 * 30 + 3 * 120 + 4 * 360) * 2 * 4 * 2 * 2 * 2
+        );
+        assert_eq!(
+            widest, 42,
+            "the widest row: a four-set holding Skirmisher and Rearguard"
         );
     }
 

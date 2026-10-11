@@ -14,6 +14,10 @@ turret  intact  30/30  top 18/20
 cannon  ready  14/20  62%
   S1: >=60% side/rear keeps 8
 machine_gun  1 s  380/500  21%
+mind Standard Doctrine · Class I
+> Sniper   Line
+dormant while you fly
+you: helm sensors fire
 BA  blue  045°  far  450 m  1 s  side  cannon 62%
   engine hull left_track/y right_track/r turret/d 
 RB  red  270°  close  100 m  0 s  front  -
