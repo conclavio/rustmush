@@ -1442,7 +1442,7 @@ the bystander, God as staff (`:1-25`); no test provider (`DoctrineOnly` already 
   Bo and Cy received, terminal bytes and WebSocket frames alike, is searched for the bare words
   `Sniper` and `Hunter` (so a frame's `"profiles":["Sniper","Line"]`, a staff-style `name="Sniper…"`
   or a future sentence's bare preset fails it, not only the `(Sniper, Line)` and `(Hunter)` forms the
-  board prints), and for six-hex and sixteen-hex words (`names_nothing`, `:952`;
+  board prints), and for six- and sixteen-hex-digit words (`names_nothing`, `:952`;
   `no_sixteen_digit_word`, `:2843`). Bo's own frame's `mind` object carries `["Line"]` (he chose
   nothing), so it holds neither word.
 - **The cheap twin.** `tests/match_lifecycle.rs::m5_the_board_names_a_slots_mind_to_its_own_character_alone_in_selection`
@@ -1744,7 +1744,7 @@ fifteen were completed on 2026-10-11. B-numbers below follow the full text's ord
 | B13 | doc 17's record list misses C-4, C-6, C-8, C-11, C-18, C-20, the §21 Q-UM rows and OQ-6's acceptance | should-fix | §8.1 lists every C-ruling; **doc 17 §21's Q-UM-13, Q-UM-15, Q-UM-16 entries marked "ruled by the owner 2026-10-10 (OQ-n)"**; **17b Deviations quotes OQ-6's acceptance of D's designation half under D-UM-15 in its own sentence** |
 | B14 | `MindSeal.armed`'s new doc names the wrong later cut | note | M5.2 item 1: "none before 17b cut M6, whose authoring seals a profile's rules" |
 | B15 | how `MIND PROFILE refused.` is composed; B-16's one-string rule | note | as A13: composed through `order_refused` with `as_str` `mind`, every refused switch (cockpit or arena) opening `MIND refused.` — the already-active case included; the specific-versus-generic split declared as `NoJammer`'s precedent (M5.4 item 5) |
-| B16 | the fog sweep's search strings are too narrow | note | §4.3: Bo's and Cy's own bare `SIM MIND` replies windowed out by `Term::mark`; everything else, terminal and WebSocket frames, swept for the bare words `Sniper` and `Hunter`, plus six- and sixteen-hex |
+| B16 | the fog sweep's search strings are too narrow | note | §4.3: Bo's and Cy's own bare `SIM MIND` replies windowed out by `Term::mark`; everything else, terminal and WebSocket frames, swept for the bare words `Sniper` and `Hunter`, plus six- and sixteen-hex-digit words |
 | B17 | installing the test provider in the fog battery is unexplained | note | as A8: dropped (`DoctrineOnly` refuses any other name) (§4.3) |
 | B18 | lobby refusals and re-checks left to guesswork | note | §2.4 and M5.1 item 2: `SIM AI MIND` in `SIM AI`'s order (`AiOff`, `AiOnRange` and the range's own bare read, `WrongState`, `NotLeadForAi`); `SIM MIND`'s set `WrongState`/`NoSlotToField`; M5.1 item 6: `SimError::MindNotHeld`, called off by slot; M5.1 item 4: only `SIM UNIT` and `SIM MIND` re-run the pool, a claim, `SIM AI <n>` and `SIM AI MIND` left to the check-out's gate and unable to refuse at the stock constants; tests named |
 | B19 | `MIND` prints the sealed core class, not the live one | note | M5.4 item 2: `FrameMind.class` = `Arena::mind_class`, `core_class` = `Arena::core_of`'s, both live; the seal line keeps the sealed figures; `same_as`'s reason updated; `m5_the_frames_mind_reads_the_core_class_now` |
