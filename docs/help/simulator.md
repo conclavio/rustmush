@@ -44,8 +44,16 @@ the same thing this topic does, in fewer words.
                       what this server can field, for anybody in the centre, and
                       adds what you are flying if you hold a slot. A choice the
                       centre's compute cannot carry is refused with the
-                      arithmetic: how much your side would think a second, your
+                      arithmetic: how much this tank would think a second, its
                       side's half of the pool, and what is spoken for.
+  SIM MIND [mind]     which mind your own slot chooses for its tank, during
+                      selection. The bare word reads your choice, what fits
+                      your tank's core and your side's compute; see "Choosing a
+                      mind" below.
+  SIM AI MIND [mind]  which mind your side's machines are chosen to carry. Its
+                      lead chooses from their own holdings, staff choose
+                      Standard Doctrine's presets for either side, during
+                      selection; the bare words read what you may know of it.
   SIM MODE [mode]     which rule the match is fought under: skirmish (eliminate
                       the other side) or hold (keep the ground's key spot
                       uncontested for its time). A side's lead or staff sets it
@@ -102,6 +110,46 @@ every other side is its slot numbers, its callsigns and its pilots' names and
 nothing more — no pod, no `seated`, no `left`. Whether the pilot on `BA` is
 still in that tank is a thing your sensors have to earn. Staff read the whole
 board with `@arena/status`.
+
+## Choosing a mind
+
+Your tank's core can fly it when you are not in the seat, and `SIM MIND` is
+where your slot chooses which mind that is. Every character holds Standard
+Doctrine, the Registry's own, and its six presets: Line, Sentry, Sniper,
+Skirmisher, Hunter and Rearguard. A slot that chooses nothing stays Standard
+Doctrine on Line.
+
+  SIM MIND                    Yours: none; a tank you leave flies Standard
+                              Doctrine on Line.
+                              Fits line_tank (II): Standard Doctrine, up to two
+                              of Line, Sentry, Sniper, Skirmisher, Hunter or
+                              Rearguard.
+                              Red's half of the centre's pool is 244,000 ops a
+                              second and 1,500 are spoken for.
+  SIM MIND Standard PROFILE Sniper, Line
+                              Your slot will carry Standard Doctrine (Sniper,
+                              Line).
+  SIM MIND none               clears it.
+
+The profiles are presets of the mind you name, the first the one it would fly
+and the rest the ones you could switch to; how many it keeps is the class it
+thinks at on your tank's core (two at Class I), and a tank with no core flies
+the ROM, which keeps one. Every line is said to you alone. You choose during
+selection only; once the match has started the bare word reads your choice
+and that selection is closed. A choice is refused with its reason: a mind you
+do not hold, a profile it does not carry or that is named twice, more
+profiles than the class keeps, a profile whose odds are under the server's
+Compact floor on a tank that carries a gun, or a choice your side's compute
+cannot carry. Changing your unit type with `SIM UNIT` fits your choice to the
+new tank again.
+
+On the board, during selection, your own row ends
+`, mind Standard Doctrine (Sniper, Line)` for you and for staff on
+`@arena/status`, and `, a mind` for everybody else; a slot that chose nothing
+reads nothing. `SIM AI MIND` sets what a side's machines are chosen to carry
+(`SIM AI MIND red` reads red's alone); its board row names the mind to that
+side's lead and to staff on `@arena/status`, and reads `red fill: a mind` for
+everybody else. Once the match has started no row names or marks a mind.
 
 What the shipped server can field:
 

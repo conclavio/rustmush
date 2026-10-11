@@ -2982,6 +2982,7 @@ async fn d3_the_ai_floor_is_clamped_to_the_pods_a_side_has() {
             dropped_at_ms: None,
             unit_type: None,
             released_by_resume: false,
+            mind: None,
         });
     }
     assert_eq!(
@@ -9614,6 +9615,7 @@ fn twelve_a_side(
         sides.push(match_::Side {
             team,
             units: fielded,
+            minds: BTreeMap::new(),
         });
     }
     sides
@@ -9664,9 +9666,11 @@ fn start_as_staff(
 ///
 /// * eight of red's twelve fielded with a Class III mind: refused
 ///   `StartError::Pool` on the EIGHTH — `would 18,000`, `half 138,000`,
-///   `spoken 126,000` (seven Class III before it), said in doc 17 §9's
-///   sentence behind the side — before any write: no unit deployed, no
-///   record in the book;
+///   `spoken 126,000` (seven Class III before it), said in the pool's
+///   sentence behind the refused hull's name (17b cut M5.1: the hull named,
+///   `Spare Hull 1`, in the owner's OQ-11 wording; behind the side, `red: This
+///   side would think …`, at 17b cut M3.5) — before any write: no unit
+///   deployed, no record in the book;
 /// * seven Class III (and five fill hulls at Class I's 1,500 — 17b cut
 ///   M4.3's `fill_class`: 133,500 a side): admitted, and the match opens;
 /// * on a fresh world under the same pool, twelve a side by the fill rule
@@ -9690,18 +9694,22 @@ async fn m3_an_over_subscribed_roster_is_refused_by_name_at_check_out() {
         half: 138_000,
         spoken: 126_000,
     };
+    // Red's eighth hull: its six tanks, then its second spare.
+    let eighth = *spares.get(1).expect("red's second spare");
     assert_eq!(
         refused,
         Err(match_::StartError::Pool {
             team: "red",
+            unit: eighth,
+            callsign: "Spare Hull 1".to_owned(),
             refusal: expected,
         })
     );
     assert_eq!(
         refused.map_err(|error| error.to_string()),
         Err(
-            "red: This side would think 18,000 ops a second; its half of the centre's pool is \
-             138,000 and 126,000 are spoken for."
+            "Spare Hull 1: This tank would think 18,000 ops a second; its side's half of the \
+             centre's pool is 138,000 and 126,000 are spoken for."
                 .to_owned()
         )
     );
@@ -9785,12 +9793,17 @@ fn seat_beside(rig: &mut Rig, n: usize, unit: ObjId) {
 /// and a twelfth (18,000) does not.
 ///
 /// * twelve a side, nobody seated, every hull by the fill rule: red is
-///   refused on its TWELFTH hull — `would 1,500`, `spoken 16,500` — so an
-///   unseated hull loads the fill's Class I;
-/// * a pilot stationed on red's seventh hull, a spare (the two writes
-///   `BOARD` makes): red is admitted with that hull loading nothing, and
-///   blue — all fill — is refused the same way: a seated hull loads 0;
-/// * a pilot on blue's seventh hull too: the match opens;
+///   refused on its TWELFTH hull (`Spare Hull 5`) — `would 1,500`, `spoken
+///   16,500` — so an unseated hull loads the fill's Class I;
+/// * **17b cut M5.1** (the design note's M5.1 item 7; doc 17 §24's carried
+///   "seated hulls at the pool"): a pilot stationed on red's seventh hull, a
+///   spare (the two writes `BOARD` makes), and another on blue's: red is
+///   refused exactly as before — a seated hull is admitted at `fill_class`
+///   too, the class it is sealed and, released, flown at. At 17b cut M3.5
+///   the seat on red's hull loaded nothing, so red was admitted and blue
+///   refused (`fill_refused("blue")`), and a seat a side opened the match;
+/// * eleven a side, the two seats among them (22 units: 33,002, a half of
+///   16,501): the match opens;
 /// * and on a fresh world whose roster is BOTH over the pool and carries a
 ///   card under `odds_floor_permille = 200`, check-out is refused for the
 ///   card (`StartError::CardUnlawful`), never the pool: the pool gate comes
@@ -9805,9 +9818,11 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
     tiny.minds.pool_per_unit_ops_s = 1;
     tiny.minds.pool_floor_ops_s = 1;
     assert_eq!(tacsim::match_::pool::pool_for(&tiny.minds, 24), 33_000);
-    let fill_refused = |team: &'static str| {
+    let fill_refused = |team: &'static str, unit: ObjId, callsign: &str| {
         Err(match_::StartError::Pool {
             team,
+            unit,
+            callsign: callsign.to_owned(),
             refusal: PoolRefusal {
                 would: 1_500,
                 half: 16_500,
@@ -9822,18 +9837,21 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
     rig.tick_to(1);
     let spares = spare_hulls(&mut rig, 12);
     let sides = twelve_a_side(&rig, &spares, 0, CoreClass::III);
+    let red_twelfth = *spares.get(5).expect("red's last spare");
     assert_eq!(
         start_as_staff(&mut rig, &tiny, 95, &sides),
-        fill_refused("red"),
+        fill_refused("red", red_twelfth, "Spare Hull 5"),
         "twelve unseated hulls load the fill's Class I each"
     );
 
-    // Red's first spare (its seventh hull): a seat on it loads nothing.
+    // Red's first spare (its seventh hull) and blue's: a seat on each. 17b cut
+    // M5.1: a seated hull loads `fill_class` too, so the seats change nothing.
     seat_beside(&mut rig, 0, *spares.first().expect("red's first spare"));
+    seat_beside(&mut rig, 1, *spares.get(6).expect("blue's first spare"));
     assert_eq!(
         start_as_staff(&mut rig, &tiny, 96, &sides),
-        fill_refused("blue"),
-        "a seated hull loads nothing, so red fits and blue is refused"
+        fill_refused("red", red_twelfth, "Spare Hull 5"),
+        "a seated hull loads the fill's Class I, so red is refused as before the seats"
     );
     for side in &sides {
         for fielded in &side.units {
@@ -9845,11 +9863,19 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
         }
     }
 
-    seat_beside(&mut rig, 1, *spares.get(6).expect("blue's first spare"));
+    // Eleven a side, the seats among them: 22 units, a half of 16,501.
+    assert_eq!(tacsim::match_::pool::pool_for(&tiny.minds, 22), 33_002);
+    let eleven: Vec<match_::Side> = sides
+        .iter()
+        .map(|side| match_::Side {
+            units: side.units.get(..11).unwrap_or_default().to_vec(),
+            ..side.clone()
+        })
+        .collect();
     assert_eq!(
-        start_as_staff(&mut rig, &tiny, 97, &sides),
+        start_as_staff(&mut rig, &tiny, 97, &eleven),
         Ok(tacsim::arena_task::MatchId(97)),
-        "one seated hull a side: the match opens"
+        "eleven a side, a seated hull on each: the match opens"
     );
 
     // Over the pool AND under the Compact floor: the card is refused first.
@@ -9866,5 +9892,1472 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
             Err(match_::StartError::CardUnlawful { unit, floor: 200, .. }) if unit == red_first
         ),
         "the pool is the last gate: {refused:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.1: the choice in the lobby — `SIM MIND`, `SIM AI MIND`, the
+// holdings seam, the fit, the pool and the selection fog
+// ---------------------------------------------------------------------------
+
+/// The test provider on `rig`'s world, through the production seam
+/// (`tests/support/holdings.rs`): Standard Doctrine, `Fixture I` and `Load
+/// III` for every character.
+fn holdings_on(rig: &mut Rig) -> Arc<support::holdings::TestHoldings> {
+    support::holdings::install(rig.tw.world_mut())
+}
+
+/// God in the simulator lobby, so a staff `SIM` line is of the centre.
+fn god_in_the_lobby(rig: &mut Rig) {
+    let lobby =
+        match_::centre_object(rig.tw.world(), match_::LOBBY_ENTRY).expect("the simulator lobby");
+    rig.tw
+        .world_mut()
+        .move_to(GOD, lobby)
+        .expect("God walks into the lobby");
+}
+
+impl Rig {
+    /// **17b cut M5.1** (its review): run one line as pilot `n` and answer
+    /// both what that pilot saw and what pilot `other` heard of it — the
+    /// reply and its audience from the one run.
+    fn say_heard(&mut self, n: usize, line: &str, other: usize) -> (String, String) {
+        let actor = self.pilot(n);
+        let listener = self.pilot(other);
+        let events = self.tw.run(actor, line);
+        (self.seen(actor, &events), self.seen(listener, &events))
+    }
+
+    /// **17b cut M5.1** (its review): the sides the check-out would be handed
+    /// now — `lobby::ready`'s, through its test hook — with each hull's
+    /// `Fielded::mind_class` and each side's `Side::minds`; nothing is run,
+    /// written or said.
+    fn ready_sides(&mut self) -> Result<Vec<match_::Side>, match_::SimError> {
+        let mut out = Outbox::new();
+        let sides = {
+            let engine = self.tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(smol_str::SmolStr::new(tacsim::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            match_::lobby::ready_sides_for_tests(&mut ctx)
+        };
+        assert!(out.take().is_empty(), "the hook says nothing");
+        sides
+    }
+}
+
+/// Side `team` of what [`Rig::ready_sides`] answered.
+fn side_of(sides: &[match_::Side], team: Team) -> &match_::Side {
+    sides
+        .iter()
+        .find(|side| side.team == team)
+        .expect("the check-out fields both sides")
+}
+
+/// The sentence `SIM MIND`'s bare read prints first for a slot that chose
+/// nothing.
+const UNCHOSEN: &str = "Yours: none; a tank you leave flies Standard Doctrine on Line.";
+
+/// Every stock preset, as a `Fits` line lists them.
+const SIX: &str = "Line, Sentry, Sniper, Skirmisher, Hunter or Rearguard";
+
+/// **17b cut M5.1** (D-UM-49; the owner's OQ-2): the bare `SIM MIND` lists
+/// what the CHARACTER holds and what fits its slot's chassis, to the actor
+/// alone — under `DoctrineOnly`, Standard Doctrine alone.
+///
+/// * no slot: `You hold Standard Doctrine (six presets); claim a slot and SIM
+///   MIND lists what fits its core.`;
+/// * a `line_tank` slot (a governed Class II core): `Yours: none; …`, the
+///   `Fits line_tank (II)` line — up to two profiles, the count read at the
+///   class Standard Doctrine is sealed at (I), not the core's — and the pool
+///   line (`Red's half … is 244,000 … 1,500 are spoken for.`: the centre's
+///   twelve pods, one claimed hull at `fill_class`);
+/// * a `drone_mk1` slot (a governed Class I core, no gun): the same lines on
+///   its own chassis — every preset is lawful on it;
+/// * another pilot hears none of it;
+/// * with the test provider installed, `Fixture I` fits the `line_tank`, and
+///   `Load III`, rated above the line core, has no `Fits` line;
+/// * (17b cut M5.1's review) Bo, in the lobby, hears nothing of Ada's set or
+///   clear, and of `SIM UNIT`'s re-fit of her standing choice only the
+///   type it announces — no mind, no preset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_sim_mind_lists_only_what_the_character_holds_and_what_fits() {
+    let mut rig = Rig::boot(2);
+    assert_eq!(
+        rig.say(0, "sim mind"),
+        "You hold Standard Doctrine (six presets); claim a slot and SIM MIND lists what fits its \
+         core."
+    );
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim mind");
+    assert_eq!(
+        said,
+        [
+            UNCHOSEN.to_owned(),
+            format!("Fits line_tank (II): Standard Doctrine, up to two of {SIX}."),
+            "Red's half of the centre's pool is 244,000 ops a second and 1,500 are spoken for."
+                .to_owned(),
+        ]
+        .join("\n")
+    );
+    assert!(
+        !said.contains("Fixture") && !said.contains("Load"),
+        "Standard Doctrine is all a character holds: {said}"
+    );
+    let heard = rig.say_overheard(0, "sim mind", 1);
+    assert!(heard.is_empty(), "the read is the actor's alone: {heard}");
+
+    rig.say(1, "sim team blue");
+    let said = rig.say(1, "sim unit drone_mk1");
+    assert!(said.contains("Slot blue 1 will field drone_mk1."), "{said}");
+    assert_eq!(
+        rig.say(1, "sim mind"),
+        [
+            UNCHOSEN.to_owned(),
+            format!("Fits drone_mk1 (I): Standard Doctrine, up to two of {SIX}."),
+            "Blue's half of the centre's pool is 244,000 ops a second and 1,500 are spoken for."
+                .to_owned(),
+        ]
+        .join("\n")
+    );
+
+    let _provider = holdings_on(&mut rig);
+    assert_eq!(
+        rig.say(0, "sim mind"),
+        [
+            UNCHOSEN.to_owned(),
+            format!("Fits line_tank (II): Standard Doctrine, up to two of {SIX}."),
+            "Fits line_tank (II): Fixture I, up to two of Line or Sniper.".to_owned(),
+            "Red's half of the centre's pool is 244,000 ops a second and 1,500 are spoken for."
+                .to_owned(),
+        ]
+        .join("\n"),
+        "Load III is rated above the line core, so it fits nothing here"
+    );
+
+    // 17b cut M5.1's review: nothing about a choice is told to anybody else
+    // (doc 17 §12's fog) — the set, `SIM UNIT`'s re-fit of the standing
+    // choice (the one choice-adjacent verb that announces: the type, never
+    // the mind) and the clear, each overheard by Bo in the lobby.
+    let (said, heard) = rig.say_heard(0, "sim mind Standard PROFILE Sniper, Line", 1);
+    assert_eq!(
+        said,
+        "Your slot will carry Standard Doctrine (Sniper, Line)."
+    );
+    assert!(heard.is_empty(), "a choice is told to nobody else: {heard}");
+    let (said, heard) = rig.say_heard(0, "sim unit line_tank_thermal", 1);
+    assert!(
+        said.contains("Slot red 1 will field line_tank_thermal."),
+        "{said}"
+    );
+    assert!(
+        heard.contains("Slot red 1 will field line_tank_thermal."),
+        "SIM UNIT announces the type: {heard}"
+    );
+    for word in ["mind", "Doctrine", "Sniper"] {
+        assert!(!heard.contains(word), "the re-fit names no mind: {heard}");
+    }
+    assert!(
+        rig.say(0, "sim mind")
+            .starts_with("Yours: Standard Doctrine (Sniper, Line).\n"),
+        "the standing choice is fitted to the new chassis"
+    );
+    let (said, heard) = rig.say_heard(0, "sim mind none", 1);
+    assert_eq!(said, tacsim::match_::lobby::MIND_CLEARED);
+    assert!(heard.is_empty(), "a clear is told to nobody else: {heard}");
+}
+
+/// **17b cut M5.1** (doc 17 §22's italic: *a fixture that a mind the
+/// character does not hold is refused*, *a fixture that the sim seal takes no
+/// seat and posts nothing*): `SIM MIND` naming a mind the character does not
+/// hold is refused in one sentence to the actor alone, against
+/// `DoctrineOnly` (`Sentinel`, and the test provider's two minds, which no
+/// production character holds) and against the test provider (`Sentinel`);
+/// neither a refusal nor an accepted choice queues one module write; and the
+/// check-out of a match with a chosen mind writes exactly the keys the
+/// check-out of one without writes (`board_writes`).
+///
+/// Also the provider's own pins: `Fixture I`'s and `Load III`'s digests, and
+/// `install_holdings` putting `Fixture I`'s source in the store's RAM map,
+/// where a seal's digest finds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_mind_the_character_does_not_hold_is_refused_and_posts_nothing() {
+    use support::holdings::{
+        FIXTURE_I_RHAI, FIXTURE_I_SHA256_HEX, LOAD_III_RHAI, LOAD_III_SHA256_HEX, digest,
+        digest_hex,
+    };
+    assert_eq!(digest_hex(FIXTURE_I_RHAI), FIXTURE_I_SHA256_HEX);
+    assert_eq!(digest_hex(LOAD_III_RHAI), LOAD_III_SHA256_HEX);
+
+    /// The `(op, key)` list of the second `BOARD`'s check-out, sorted.
+    fn checkout_keys(rig: &mut Rig) -> Vec<(&'static str, String)> {
+        rig.say(0, "sim start");
+        rig.board_writes(0, match_::RED_ROOM_ENTRY);
+        let (said, writes) = rig.board_writes(1, match_::BLUE_ROOM_ENTRY);
+        assert!(said.contains("climb into"), "{said}");
+        assert_eq!(rig.state(), MatchState::Running, "the check-out ran");
+        let mut keys: Vec<(&'static str, String)> =
+            writes.into_iter().map(|(op, key, _)| (op, key)).collect();
+        keys.sort();
+        keys
+    }
+
+    let mut rig = Rig::boot(2);
+    rig.tick_to(1);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let _ = rig.pump_ops();
+    for word in ["Sentinel", "Fixture I", "Load III"] {
+        assert_eq!(
+            rig.say(0, &format!("sim mind {word}")),
+            format!("You hold no mind called {word}; SIM MIND lists the minds you hold.")
+        );
+    }
+    let heard = rig.say_overheard(0, "sim mind Sentinel", 1);
+    assert!(heard.is_empty(), "a refusal is the actor's alone: {heard}");
+    assert!(rig.pump_ops().is_empty(), "a refusal writes nothing");
+    assert_eq!(
+        rig.centre()
+            .slots
+            .first()
+            .and_then(|slot| slot.mind.clone()),
+        None
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper, Line"),
+        "Your slot will carry Standard Doctrine (Sniper, Line)."
+    );
+    assert!(rig.pump_ops().is_empty(), "a choice writes nothing");
+
+    let _provider = holdings_on(&mut rig);
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(|store| store.mind_source(&digest(FIXTURE_I_RHAI))),
+        Some(FIXTURE_I_RHAI),
+        "the provider's source is in the store's RAM map"
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Sentinel"),
+        "You hold no mind called Sentinel; SIM MIND lists the minds you hold."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind fixture i"),
+        "Your slot will carry Fixture I (Line)."
+    );
+    assert!(rig.pump_ops().is_empty(), "a choice writes nothing");
+    let chosen = checkout_keys(&mut rig);
+
+    let mut plain = Rig::boot(2);
+    plain.tick_to(1);
+    plain.say(0, "sim team red");
+    plain.say(1, "sim team blue");
+    let unchosen = checkout_keys(&mut plain);
+    assert!(!chosen.is_empty());
+    assert_eq!(
+        chosen, unchosen,
+        "a chosen mind adds no write to the check-out"
+    );
+}
+
+/// **The later of `SIM UNIT` and `SIM MIND` is the one refused, with the
+/// arithmetic** (17b cut M5.1; doc 17 §9, §12; D-UM-36), under a pool lowered
+/// to base 3,812, per unit 1, floor 1 — 3,800 over the centre's twelve pods,
+/// a half of 1,900: one hull at Class I (1,500) beside one at Class 0 (400)
+/// fits, two at Class I do not.
+///
+/// Both choices re-run the pool at the hull's own class against every other
+/// hull of the side; a claim does not (the check-out is its backstop), so with
+/// the fill off red's second claim, between the two choices, puts the side at
+/// 3,000 — and the later choice is the one refused, in both orders, with
+/// `This tank would think 1,500 ops a second; its side's half of the centre's
+/// pool is 1,900 and 1,500 are spoken for.` (the design note's gate evidence,
+/// `Fixture I` on a `line_tank`):
+///
+/// * `SIM UNIT` earlier, `SIM MIND` later: Ada's `SIM UNIT line_tank` is
+///   taken, Bo claims red, and her `SIM MIND Fixture I` (Class I on the line
+///   core) is refused — the slot keeps no mind;
+/// * `SIM MIND` earlier, `SIM UNIT` later: her `SIM MIND Fixture I` is taken,
+///   Bo claims red, and her `SIM UNIT line_tank_thermal` (`Fixture I` re-fitted
+///   at Class I) is refused — the slot keeps its chassis and its mind.
+///
+/// And on a chassis with no core, where a chosen mind seals at Class 0 (400)
+/// and an unchosen hull loads `fill_class` (1,500): Ada's Standard Doctrine
+/// on `target_mk1` beside Bo's claim fits at 1,900 exactly; the later `SIM
+/// UNIT line_tank` is refused with the same arithmetic, and so is the later
+/// `SIM MIND none`, which would put the hull back at `fill_class` (declared:
+/// `SIM MIND none` is held to the pool like every `SIM MIND` set). Was, at
+/// 17b cut M5.1 before its review, this case alone (with `Fixture I` on the
+/// coreless chassis), on the reading that a later `SIM MIND <mind>` could
+/// never be refused; the review showed the unchecked claim reaching it.
+///
+/// And a side past its half may still move down (the review's D-R2): with
+/// three claims on red (4,500), Ada's `SIM MIND Standard` on `target_mk1`
+/// lowers her hull from 1,500 to 400 and is taken; her `SIM MIND none`, which
+/// would raise it again, is refused against the 3,000 the others speak for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() {
+    let mut lowered = config();
+    lowered.minds.pool_base_ops_s = 3_812;
+    lowered.minds.pool_per_unit_ops_s = 1;
+    lowered.minds.pool_floor_ops_s = 1;
+    assert_eq!(tacsim::match_::pool::pool_for(&lowered.minds, 12), 3_800);
+    let refusal = "This tank would think 1,500 ops a second; its side's half of the centre's pool \
+                   is 1,900 and 1,500 are spoken for.";
+    let first_slot = |rig: &Rig| rig.centre().slots.first().cloned().expect("Ada's slot");
+
+    // `SIM UNIT` earlier, `SIM MIND` later.
+    let mut rig = Rig::boot_on(2, roster_with(lowered.clone()));
+    let _provider = holdings_on(&mut rig);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit line_tank");
+    assert!(said.contains("Slot red 1 will field line_tank."), "{said}");
+    rig.say(1, "sim team red");
+    assert_eq!(
+        rig.say(0, "sim mind Fixture I"),
+        refusal,
+        "the later, a SIM MIND"
+    );
+    assert_eq!(first_slot(&rig).mind, None, "the slot keeps no mind");
+
+    // `SIM MIND` earlier, `SIM UNIT` later.
+    let mut rig = Rig::boot_on(2, roster_with(lowered.clone()));
+    let _provider = holdings_on(&mut rig);
+    rig.say(0, "sim team red");
+    assert_eq!(
+        rig.say(0, "sim mind Fixture I"),
+        "Your slot will carry Fixture I (Line)."
+    );
+    rig.say(1, "sim team red");
+    assert_eq!(
+        rig.say(0, "sim unit line_tank_thermal"),
+        refusal,
+        "the later, a SIM UNIT"
+    );
+    let slot = first_slot(&rig);
+    assert_eq!(slot.unit_type, None, "the slot keeps its chassis");
+    assert_eq!(
+        slot.mind.map(|choice| choice.mind.to_string()).as_deref(),
+        Some("Fixture I"),
+        "the slot keeps its mind"
+    );
+
+    // A chassis with no core.
+    let mut rig = Rig::boot_on(2, roster_with(lowered.clone()));
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit target_mk1");
+    assert!(said.contains("Slot red 1 will field target_mk1."), "{said}");
+    assert_eq!(
+        rig.say(0, "sim mind Standard"),
+        "Your slot will carry Standard Doctrine (Line)."
+    );
+    rig.say(1, "sim team red");
+    assert_eq!(rig.say(0, "sim unit line_tank"), refusal);
+    assert_eq!(
+        first_slot(&rig).unit_type.as_deref(),
+        Some(tacsim::definitions::content::TARGET_MK1),
+        "the slot keeps its chassis"
+    );
+    assert_eq!(rig.say(0, "sim mind none"), refusal);
+    assert_eq!(
+        first_slot(&rig)
+            .mind
+            .map(|choice| choice.mind.to_string())
+            .as_deref(),
+        Some("Standard Doctrine"),
+        "the slot keeps its mind"
+    );
+    let said = rig.say(0, "sim mind");
+    assert!(
+        said.ends_with(
+            "Red's half of the centre's pool is 1,900 ops a second and 1,900 are spoken for."
+        ),
+        "{said}"
+    );
+
+    // A side past its half may still move down (the review's D-R2): Ada
+    // fields `target_mk1` with no mind (1,500), and Bo's and Cy's unchecked
+    // claims put red at 4,500 against a half of 1,900. Her `SIM MIND
+    // Standard` (Class 0, 400) lowers her hull's load and is taken, though
+    // the side stays past its half; the `SIM MIND none` that would raise it
+    // back to `fill_class` is refused with the arithmetic.
+    let mut rig = Rig::boot_on(3, roster_with(lowered));
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit target_mk1");
+    assert!(said.contains("Slot red 1 will field target_mk1."), "{said}");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team red");
+    assert_eq!(rig.centre().slots.len(), 3, "three claims on red");
+    assert_eq!(
+        rig.say(0, "sim mind Standard"),
+        "Your slot will carry Standard Doctrine (Line).",
+        "a change that lowers the load"
+    );
+    assert_eq!(
+        rig.say(0, "sim mind none"),
+        "This tank would think 1,500 ops a second; its side's half of the centre's pool is \
+         1,900 and 3,000 are spoken for.",
+        "a change that raises it again"
+    );
+    let said = rig.say(0, "sim mind");
+    assert!(
+        said.ends_with(
+            "Red's half of the centre's pool is 1,900 ops a second and 3,400 are spoken for."
+        ),
+        "{said}"
+    );
+}
+
+/// **The over-class refusal at the choice** (17b cut M5.1; D-UM-41, the
+/// owner's OQ-10 (d), the design note's C-24): `Load III`, rated III, on a
+/// `line_tank` (a governed Class II core) is refused — `Load III thinks at
+/// Class III; this line_tank's core is Class II and is governed.` — and on a
+/// chassis with no core (`target_mk1`, which flies the ROM) it is never
+/// over-class; the later `SIM UNIT` back onto the line core is refused for
+/// it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_an_over_class_mind_is_refused_at_the_choice() {
+    let mut rig = Rig::boot(1);
+    let _provider = holdings_on(&mut rig);
+    rig.say(0, "sim team red");
+    let over = "Load III thinks at Class III; this line_tank's core is Class II and is governed.";
+    assert_eq!(rig.say(0, "sim mind Load III"), over);
+    rig.say(0, "sim unit target_mk1");
+    assert_eq!(
+        rig.say(0, "sim mind load iii"),
+        "Your slot will carry Load III (Line)."
+    );
+    assert_eq!(rig.say(0, "sim unit line_tank"), over);
+}
+
+/// **A profile under the operator's Compact floor is refused as typed** (17b
+/// cut M5.1; D-UM-17: refuse, never clamp) on an armed `line_tank`, under
+/// `[tacsim.minds].odds_floor_permille = 400`: Skirmisher (35%), Hunter (30%)
+/// and Line alone (10%) are refused by name, the first under the floor in the
+/// order typed; Sniper and Rearguard are sealed; and the bare read's `Fits`
+/// line lists only the presets the floor admits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_profile_under_the_floor_is_refused_as_typed() {
+    let mut floor = config();
+    floor.minds.odds_floor_permille = 400;
+    let mut rig = Rig::boot_on(1, roster_with(floor));
+    rig.say(0, "sim team red");
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Skirmisher"),
+        "Skirmisher fires at 35% and better; this server's Compact floor is 40%, so it cannot be \
+         sealed."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper, hunter"),
+        "Hunter fires at 30% and better; this server's Compact floor is 40%, so it cannot be \
+         sealed."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard"),
+        "Line fires at 10% and better; this server's Compact floor is 40%, so it cannot be sealed."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper, Rearguard"),
+        "Your slot will carry Standard Doctrine (Sniper, Rearguard)."
+    );
+    let said = rig.say(0, "sim mind");
+    assert!(
+        said.contains(
+            "Fits line_tank (II): Standard Doctrine, up to two of Sentry, Sniper or Rearguard."
+        ),
+        "{said}"
+    );
+}
+
+/// **An unarmed hull takes any preset under any floor** (17b cut M5.1; the
+/// design note's C-23; R-60, R-61): on a `drone_mk1` — no weapons station —
+/// under the highest floor the keys allow (95%), every preset is lawful and
+/// listed, `Hunter, Line` is sealed; and the later `SIM UNIT` onto an armed
+/// chassis is refused for the floor it now binds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_an_unarmed_hull_takes_any_preset_under_any_floor() {
+    let mut floor = config();
+    floor.minds.odds_floor_permille = 950;
+    let mut rig = Rig::boot_on(1, roster_with(floor));
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit drone_mk1");
+    assert!(said.contains("Slot red 1 will field drone_mk1."), "{said}");
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Hunter, Line"),
+        "Your slot will carry Standard Doctrine (Hunter, Line)."
+    );
+    let said = rig.say(0, "sim mind");
+    assert!(
+        said.contains(&format!(
+            "Fits drone_mk1 (I): Standard Doctrine, up to two of {SIX}."
+        )),
+        "{said}"
+    );
+    assert_eq!(
+        rig.say(0, "sim unit line_tank"),
+        "Hunter fires at 30% and better; this server's Compact floor is 95%, so it cannot be \
+         sealed."
+    );
+}
+
+/// **The sealed class caps the profile count** (17b cut M5.1; the owner's
+/// OQ-3: N from the mind's sealed class, Class I → 2): on a `line_tank`
+/// Standard Doctrine seals at Class I — not the core's II — so three profiles
+/// are refused; a coreless `target_mk1` flies the ROM, Class 0, whose row
+/// keeps one, and its refusal and `Fits` line say so (17b cut M5.1's review:
+/// `Standard Doctrine thinks at Class 0 on this core, …` and `Fits target_mk1
+/// (0): …` before it, naming a core the chassis does not have). And the other
+/// profile refusals: a profile the mind does not carry (the presets listed),
+/// one named twice, a revision pin, and the two usage lines.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_sealed_class_caps_the_profile_count() {
+    let mut rig = Rig::boot(1);
+    rig.say(0, "sim team red");
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper, Line, Hunter"),
+        "Standard Doctrine thinks at Class I on this core, which seals two profiles at most."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Brawler"),
+        format!("Standard Doctrine has no profile called Brawler: {SIX}.")
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper, sniper"),
+        "Sniper is named twice; a profile is sealed once."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard @3"),
+        "No revisions are kept before the workshop; SIM MIND Standard seals the Registry's own."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE"),
+        "Which profiles? `SIM MIND Standard PROFILE Sniper, Line`."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind PROFILE Sniper"),
+        "Which mind? `SIM MIND Standard`, or `SIM MIND none`."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind doctrine profile Sniper, Line"),
+        "Your slot will carry Standard Doctrine (Sniper, Line)."
+    );
+    rig.say(0, "sim mind none");
+    rig.say(0, "sim unit target_mk1");
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper, Line"),
+        "This target_mk1 has no core and flies the ROM, which seals one profile at most."
+    );
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper"),
+        "Your slot will carry Standard Doctrine (Sniper)."
+    );
+    let said = rig.say(0, "sim mind");
+    assert!(
+        said.contains(&format!(
+            "Fits target_mk1 (ROM): Standard Doctrine, up to one of {SIX}."
+        )),
+        "{said}"
+    );
+}
+
+/// **`SIM AI MIND` is the lead's, and reads to the lead alone** (17b cut
+/// M5.1; doc 17 §12, §19; D9, D-UM-49; the design note's §2.4), on a server
+/// with the fill on:
+///
+/// * red's second claimant may not set red's fill (`NotLeadForAi`); its lead
+///   may, with ONE profile, from its own holdings — `Red's fill will carry
+///   Standard Doctrine (Hunter).`, said to the lead alone;
+/// * the bare read: the lead reads red's choice and blue's `nothing chosen`;
+///   red's other claimant `Red's fill carries a mind.`;
+/// * staff lead no side and hold no minds: a set with no side asks which,
+///   `Fixture I` is refused with the staff sentence, and `SIM AI MIND blue
+///   Standard PROFILE Sentry` sets blue's; staff read both;
+/// * (17b cut M5.1's review) a side word alone reads that side's line as
+///   far as the reader may know it, and the lead's clear is told to nobody
+///   else;
+/// * with the test provider, the lead may choose `Fixture I` for red's fill.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_sim_ai_mind_is_the_leads_and_reads_to_the_lead_alone() {
+    let mut rig = fill_rig(2);
+    god_in_the_lobby(&mut rig);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    assert_eq!(
+        rig.say(1, "sim ai mind Standard PROFILE Hunter"),
+        "Only a side's lead or staff can set the AI fill."
+    );
+    assert_eq!(
+        rig.say(0, "sim ai mind Standard PROFILE Hunter, Sniper"),
+        "The fill flies one profile; nobody aboard switches it."
+    );
+    let heard = rig.say_overheard(0, "sim ai mind Standard PROFILE Hunter", 1);
+    assert!(
+        heard.is_empty(),
+        "the choice is told to nobody else: {heard}"
+    );
+    assert_eq!(
+        rig.say(0, "sim ai mind Standard PROFILE Hunter"),
+        "Red's fill will carry Standard Doctrine (Hunter)."
+    );
+    assert_eq!(
+        rig.say(0, "sim ai mind"),
+        "Red's fill: Standard Doctrine (Hunter).\nBlue's fill: nothing chosen."
+    );
+    assert_eq!(
+        rig.say(1, "sim ai mind"),
+        "Red's fill carries a mind.\nBlue's fill: nothing chosen."
+    );
+    assert_eq!(
+        rig.staff("sim ai mind Standard PROFILE Sentry"),
+        "Which side's fill? SIM AI MIND red Standard sets red's."
+    );
+    assert_eq!(
+        rig.staff("sim ai mind blue Fixture I"),
+        "Staff hold no minds; SIM AI MIND Standard sets the fill's doctrine and preset."
+    );
+    assert_eq!(
+        rig.staff("sim ai mind blue Standard PROFILE Sentry"),
+        "Blue's fill will carry Standard Doctrine (Sentry)."
+    );
+    assert_eq!(
+        rig.staff("sim ai mind"),
+        "Red's fill: Standard Doctrine (Hunter).\nBlue's fill: Standard Doctrine (Sentry)."
+    );
+    assert_eq!(
+        rig.say(0, "sim ai mind"),
+        "Red's fill: Standard Doctrine (Hunter).\nBlue's fill carries a mind."
+    );
+    // 17b cut M5.1's review: a side word alone reads that side's line —
+    // never a mind called `red` — as far as the reader may know it.
+    assert_eq!(
+        rig.say(0, "sim ai mind red"),
+        "Red's fill: Standard Doctrine (Hunter)."
+    );
+    assert_eq!(
+        rig.say(1, "sim ai mind BLUE"),
+        "Blue's fill carries a mind."
+    );
+    assert_eq!(
+        rig.staff("sim ai mind blue"),
+        "Blue's fill: Standard Doctrine (Sentry)."
+    );
+    // And a clear is told to nobody else either.
+    let (said, heard) = rig.say_heard(0, "sim ai mind none", 1);
+    assert_eq!(
+        said,
+        "Red's fill: nothing chosen; it flies Standard Doctrine on Line."
+    );
+    assert!(heard.is_empty(), "a clear is told to nobody else: {heard}");
+    let _provider = holdings_on(&mut rig);
+    assert_eq!(
+        rig.say(0, "sim ai mind Fixture I"),
+        "Red's fill will carry Fixture I (Line)."
+    );
+    assert_eq!(
+        rig.staff("sim ai mind red Fixture I"),
+        "Staff hold no minds; SIM AI MIND Standard sets the fill's doctrine and preset.",
+        "staff hold no minds whatever a provider holds"
+    );
+}
+
+/// **The bare reads follow the state** (17b cut M5.1; the design note's §2.4,
+/// row by row), on a server with the fill on: Ada (red's lead, who chooses
+/// her slot's mind and her fill's), Bo (blue's lead, who chooses nothing),
+/// Cy (a bystander holding no slot) and staff — in `Idle`, `Selection`,
+/// `Boarding` and `Running`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_bare_reads_follow_the_state() {
+    let (ada, bo, cy) = (0, 1, 2);
+    let mut rig = fill_rig(3);
+    god_in_the_lobby(&mut rig);
+    let hold = "You hold Standard Doctrine (six presets); claim a slot and SIM MIND lists what fits its \
+         core.";
+    let unchosen_fill = "Red's fill: nothing chosen; it flies Standard Doctrine on Line.\nBlue's \
+                         fill: nothing chosen; it flies Standard Doctrine on Line.";
+    let nothing = "Red's fill: nothing chosen.\nBlue's fill: nothing chosen.";
+
+    // Idle.
+    for n in [ada, bo, cy] {
+        assert_eq!(rig.say(n, "sim mind"), hold, "idle, pilot {n}");
+        assert_eq!(rig.say(n, "sim ai mind"), nothing, "idle, pilot {n}");
+    }
+    assert_eq!(rig.staff("sim ai mind"), unchosen_fill, "idle, staff");
+
+    // Selection.
+    rig.say(ada, "sim team red");
+    rig.say(bo, "sim team blue");
+    rig.say(ada, "sim mind Standard PROFILE Sniper, Line");
+    rig.say(ada, "sim ai mind Standard PROFILE Hunter");
+    let said = rig.say(ada, "sim mind");
+    assert!(
+        said.starts_with("Yours: Standard Doctrine (Sniper, Line).\nFits line_tank (II):"),
+        "{said}"
+    );
+    assert!(rig.say(bo, "sim mind").starts_with(UNCHOSEN));
+    assert_eq!(rig.say(cy, "sim mind"), hold);
+    assert_eq!(
+        rig.say(ada, "sim ai mind"),
+        "Red's fill: Standard Doctrine (Hunter).\nBlue's fill: nothing chosen."
+    );
+    assert_eq!(
+        rig.say(bo, "sim ai mind"),
+        "Red's fill carries a mind.\nBlue's fill: nothing chosen; it flies Standard Doctrine on \
+         Line."
+    );
+    assert_eq!(
+        rig.say(cy, "sim ai mind"),
+        "Red's fill carries a mind.\nBlue's fill: nothing chosen."
+    );
+    assert_eq!(
+        rig.staff("sim ai mind"),
+        "Red's fill: Standard Doctrine (Hunter).\nBlue's fill: nothing chosen; it flies Standard \
+         Doctrine on Line."
+    );
+
+    // Boarding, then Running: the same reads.
+    rig.say(ada, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    for running in [false, true] {
+        if running {
+            assert!(!rig.seat(ada));
+            assert!(rig.seat(bo));
+            assert_eq!(rig.state(), MatchState::Running);
+        }
+        let state = if running { "running" } else { "boarding" };
+        assert_eq!(
+            rig.say(ada, "sim mind"),
+            "Yours: Standard Doctrine (Sniper, Line); selection is closed.",
+            "{state}"
+        );
+        assert_eq!(
+            rig.say(bo, "sim mind"),
+            "Yours: none; selection is closed.",
+            "{state}"
+        );
+        assert_eq!(
+            rig.say(cy, "sim mind"),
+            "You hold Standard Doctrine (six presets); selection is closed.",
+            "{state}"
+        );
+        assert_eq!(
+            rig.say(ada, "sim ai mind"),
+            "Red's fill: Standard Doctrine (Hunter).",
+            "{state}: the setter reads her own"
+        );
+        for n in [bo, cy] {
+            assert_eq!(
+                rig.say(n, "sim ai mind"),
+                "The fills are not shown once a match starts.",
+                "{state}, pilot {n}"
+            );
+        }
+        assert_eq!(
+            rig.staff("sim ai mind"),
+            "Red's fill: Standard Doctrine (Hunter).\nBlue's fill: nothing chosen; it flies \
+             Standard Doctrine on Line.",
+            "{state}, staff"
+        );
+    }
+}
+
+/// **A change of lead clears the side's fill choice** (17b cut M5.1; the
+/// design note's §2.4, the adversarial review's B4): red's lead sets red's
+/// fill and leaves with `SIM LEAVE`; red's next claimant leads and reads
+/// `Red's fill: nothing chosen; it flies Standard Doctrine on Line.` — no new
+/// lead reads or inherits another account's choice — while a staff choice
+/// for blue stays; and the check-out's `Side::minds` holds no red fill
+/// choice: read through `lobby::ready`'s test hook once the new lead is
+/// seated and blue's pilot is not, every red hull — the lead's and the fill's
+/// — is `SealChoice::unchosen()` with no `mind_class`, and blue's fill hull
+/// carries the staff's Standard Doctrine (Sentry), chosen, at Class I (17b
+/// cut M5.1's review: the test read `Centre::fill_minds` after `Running`
+/// before it, the input and not the check-out's sides).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
+    use tacsim::arena::core::CoreClass;
+    use tacsim::match_::holdings::{HeldMind, SealChoice};
+    let mut rig = fill_rig(3);
+    god_in_the_lobby(&mut rig);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team blue");
+    assert_eq!(
+        rig.say(0, "sim ai mind Standard PROFILE Hunter"),
+        "Red's fill will carry Standard Doctrine (Hunter)."
+    );
+    rig.staff("sim ai mind blue Standard PROFILE Sentry");
+    assert_eq!(rig.centre().fill_minds.len(), 2);
+    rig.say(0, "sim leave");
+    assert!(
+        rig.centre().leads_side(Team::Red, account(1)),
+        "red's next claimant leads"
+    );
+    assert_eq!(
+        rig.say(1, "sim ai mind"),
+        "Red's fill: nothing chosen; it flies Standard Doctrine on Line.\nBlue's fill carries a \
+         mind."
+    );
+    let fills = rig.centre().fill_minds;
+    assert_eq!(fills.len(), 1, "{fills:?}");
+    assert!(
+        fills
+            .iter()
+            .all(|fill| fill.team == Team::Blue && fill.by == match_::lobby::FillSetter::Staff),
+        "the staff choice stays: {fills:?}"
+    );
+    rig.say(1, "sim ai 2");
+    let said = rig.say(1, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert!(!rig.seat(1), "blue's pilot is not seated yet");
+
+    let sides = rig.ready_sides().expect("the check-out would run");
+    let red = side_of(&sides, Team::Red);
+    assert_eq!(red.units.len(), 2, "the new lead's hull and one fill hull");
+    assert_eq!(
+        red.minds.keys().copied().collect::<Vec<ObjId>>(),
+        {
+            let mut units: Vec<ObjId> = red.units.iter().map(|fielded| fielded.unit).collect();
+            units.sort();
+            units
+        },
+        "one choice per red hull"
+    );
+    for fielded in &red.units {
+        assert_eq!(fielded.mind_class, None, "slot {}", fielded.slot);
+        assert_eq!(
+            red.minds.get(&fielded.unit),
+            Some(&SealChoice::unchosen()),
+            "slot {}: no red fill choice reaches the check-out",
+            fielded.slot
+        );
+    }
+    let blue = side_of(&sides, Team::Blue);
+    assert_eq!(blue.units.len(), 2, "blue's pilot's hull and one fill hull");
+    let pilot_tank = match_::tank_of(rig.tw.world(), rig.pod(2).expect("blue's locked pod"))
+        .expect("the pod's tank");
+    for fielded in &blue.units {
+        if fielded.unit == pilot_tank {
+            assert_eq!(fielded.mind_class, None);
+            assert_eq!(blue.minds.get(&fielded.unit), Some(&SealChoice::unchosen()));
+        } else {
+            assert_eq!(fielded.mind_class, Some(CoreClass::I), "the staff's fill");
+            assert_eq!(
+                blue.minds.get(&fielded.unit),
+                Some(&SealChoice {
+                    held: HeldMind::doctrine(),
+                    profiles: vec![smol_str::SmolStr::new_static("Sentry")],
+                    chose: true,
+                    substituted: false,
+                }),
+                "the staff choice reaches the check-out"
+            );
+        }
+    }
+    assert!(rig.seat(2));
+    assert_eq!(rig.state(), MatchState::Running);
+}
+
+/// **The check-out reads each hull's choice** (17b cut M5.1's review; the
+/// design note's M5.1 item 6): what `lobby::ready` writes, read through its
+/// test hook with Ada seated and Bo not, on a server with the fill on and the
+/// test provider installed:
+///
+/// * Ada's slot chose `Fixture I` (Sniper) on its `line_tank`: her hull's
+///   `Side::minds` entry holds `Fixture I` as the provider holds it, its
+///   profiles, `chose` and never `substituted`, and its `Fielded::mind_class`
+///   is the class `Fixture I` seals at there (I);
+/// * red's lead chose its fill Standard Doctrine (Hunter): under `SIM AI 3`
+///   each of red's two fill hulls carries that choice, chosen, at Class I;
+/// * Bo chose nothing, and blue's fill was chosen by nobody: each blue hull
+///   is `SealChoice::unchosen()`, admitted by the fill rule (no class);
+/// * one entry per fielded hull, keyed by the hull — and the check-out then
+///   runs on them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_check_out_reads_each_hulls_choice() {
+    use smol_str::SmolStr;
+    use tacsim::arena::core::CoreClass;
+    use tacsim::match_::holdings::{HeldMind, SealChoice};
+    let (ada, bo) = (0, 1);
+    let mut rig = fill_rig(2);
+    let _provider = holdings_on(&mut rig);
+    rig.say(ada, "sim team red");
+    rig.say(bo, "sim team blue");
+    assert_eq!(
+        rig.say(ada, "sim mind Fixture I PROFILE Sniper"),
+        "Your slot will carry Fixture I (Sniper)."
+    );
+    assert_eq!(
+        rig.say(ada, "sim ai mind Standard PROFILE Hunter"),
+        "Red's fill will carry Standard Doctrine (Hunter)."
+    );
+    rig.say(ada, "sim ai 3");
+    let said = rig.say(ada, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert!(!rig.seat(ada), "Bo is not seated yet");
+
+    let sides = rig.ready_sides().expect("the check-out would run");
+    let tank_of = |rig: &Rig, n: usize| {
+        match_::tank_of(rig.tw.world(), rig.pod(n).expect("a locked pod")).expect("its tank")
+    };
+    for (team, pilot, chosen) in [
+        (
+            Team::Red,
+            tank_of(&rig, ada),
+            Some((support::holdings::fixture_i(), "Sniper")),
+        ),
+        (Team::Blue, tank_of(&rig, bo), None),
+    ] {
+        let side = side_of(&sides, team);
+        assert_eq!(
+            side.units.len(),
+            3,
+            "{team:?}: a pilot's hull and two fill hulls"
+        );
+        let mut units: Vec<ObjId> = side.units.iter().map(|fielded| fielded.unit).collect();
+        units.sort();
+        assert_eq!(
+            side.minds.keys().copied().collect::<Vec<ObjId>>(),
+            units,
+            "{team:?}: one choice per hull, keyed by the hull"
+        );
+        for fielded in &side.units {
+            let (class, choice) = match (fielded.unit == pilot, &chosen, team) {
+                (true, Some((held, profile)), _) => (
+                    Some(CoreClass::I),
+                    SealChoice {
+                        held: held.clone(),
+                        profiles: vec![SmolStr::new_static(profile)],
+                        chose: true,
+                        substituted: false,
+                    },
+                ),
+                (false, _, Team::Red) => (
+                    Some(CoreClass::I),
+                    SealChoice {
+                        held: HeldMind::doctrine(),
+                        profiles: vec![SmolStr::new_static("Hunter")],
+                        chose: true,
+                        substituted: false,
+                    },
+                ),
+                _ => (None, SealChoice::unchosen()),
+            };
+            assert_eq!(
+                fielded.mind_class, class,
+                "{team:?} slot {}: the admitted class",
+                fielded.slot
+            );
+            assert_eq!(
+                side.minds.get(&fielded.unit),
+                Some(&choice),
+                "{team:?} slot {}: the choice",
+                fielded.slot
+            );
+        }
+    }
+    assert!(rig.seat(bo));
+    assert_eq!(
+        rig.state(),
+        MatchState::Running,
+        "the check-out ran on them"
+    );
+}
+
+/// **The check-out admits a chosen hull at the class its mind seals at**
+/// (17b cut M5.1's review; the design note's M5.1 items 6 and 8), under a
+/// pool lowered to base 3,812, per unit 1, floor 1 — at the check-out's four
+/// hulls 3,808, a half of 1,904 — on a server with the fill on, `SIM AI 2`:
+///
+/// * Ada (red) and Cy (blue) each field `target_mk1`, which has no core, and
+///   choose Standard Doctrine, which seals there at Class 0 (400); each side's
+///   second hull is a fill `line_tank` at `fill_class` (1,500). `ready` writes
+///   `Some(Class 0)` on Ada's hull and nothing on red's fill hull, each side
+///   speaks for 1,900 of 1,904, and the match opens — `Fielded::mind_class`
+///   decides the check-out's pool;
+/// * the same roster with Ada's choice left out: red's two hulls load Class
+///   I (3,000), and the check-out refuses on red's second hull. The last
+///   `BOARD`er is Cy, on BLUE, whose `BOARD` answers with `lobby::run`'s
+///   refusal: since the review it is the call-off's short form, one sentence
+///   under 120 columns — `The match could not start: red's compute (3,000
+///   ops a second) is over its half (1,904).` — naming no hull and no class
+///   (`StartError::Pool`'s long form, `RB: This tank would think 1,500 ops a
+///   second; …`, told a blue pilot what red's second hull is admitted at).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_check_out_admits_a_chosen_hull_at_the_class_its_mind_seals_at() {
+    use tacsim::arena::core::CoreClass;
+    let (ada, cy) = (0, 1);
+    let mut lowered = fill_config();
+    lowered.minds.pool_base_ops_s = 3_812;
+    lowered.minds.pool_per_unit_ops_s = 1;
+    lowered.minds.pool_floor_ops_s = 1;
+    assert_eq!(tacsim::match_::pool::pool_for(&lowered.minds, 4), 3_808);
+    let roster = |rig: &mut Rig, ada_chooses: bool| {
+        rig.tick_to(1);
+        for (n, team) in [(ada, "red"), (cy, "blue")] {
+            rig.say(n, &format!("sim team {team}"));
+            let said = rig.say(n, "sim unit target_mk1");
+            assert!(said.contains("will field target_mk1."), "{said}");
+            if n == cy || ada_chooses {
+                assert_eq!(
+                    rig.say(n, "sim mind Standard"),
+                    "Your slot will carry Standard Doctrine (Line)."
+                );
+            }
+        }
+        rig.say(ada, "sim ai 2");
+        let said = rig.say(ada, "sim start");
+        assert!(said.contains("boarding"), "{said}");
+        assert!(!rig.seat(ada), "Cy is not seated yet");
+    };
+
+    // Chosen: admitted.
+    let mut rig = Rig::boot_on(2, roster_with(lowered.clone()));
+    roster(&mut rig, true);
+    let sides = rig.ready_sides().expect("the check-out would run");
+    assert_eq!(
+        side_of(&sides, Team::Red)
+            .units
+            .iter()
+            .map(|fielded| (fielded.slot, fielded.mind_class))
+            .collect::<Vec<(u8, Option<CoreClass>)>>(),
+        [(1, Some(CoreClass::Zero)), (2, None)],
+        "Ada's hull at Class 0, red's fill hull by the fill rule"
+    );
+    assert!(rig.seat(cy), "the chosen roster's check-out runs");
+    assert_eq!(rig.state(), MatchState::Running);
+
+    // Unchosen: refused, and the last BOARDer — Cy, on blue — reads the
+    // short form.
+    let mut rig = Rig::boot_on(2, roster_with(lowered));
+    roster(&mut rig, false);
+    let (said, _) = rig.board_writes(cy, match_::BLUE_ROOM_ENTRY);
+    let reply = "The match could not start: red's compute (3,000 ops a second) is over its half \
+                 (1,904).";
+    assert!(said.contains(reply), "{said}");
+    for line in said.lines() {
+        assert!(
+            line.chars().count() < 120,
+            "{} columns: {line}",
+            line.chars().count()
+        );
+    }
+    for word in ["would think", "RB", "1,500"] {
+        assert!(!said.contains(word), "no hull and no class: {said}");
+    }
+    assert_eq!(rig.state(), MatchState::Aborted);
+    assert!(rig.centre().slots.is_empty(), "the slots are given back");
+}
+
+/// **The board names a slot's mind to its own character alone in
+/// selection** (17b cut M5.1; the design note's §2.4; the
+/// `q8_the_board_prints_a_chosen_type_only_during_selection` analogue), on a
+/// server with the fill on: Ada chooses her slot's mind and red's fill's; Bo
+/// (blue) and Cy (no slot) read `, a mind` against her row and `red fill: a
+/// mind`; Bo's own unchosen row prints nothing to anybody; staff read both
+/// names. From `SIM START` on nobody reads a mind on the board, staff
+/// included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_the_board_names_a_slots_mind_to_its_own_character_alone_in_selection() {
+    let (ada, bo, cy) = (0, 1, 2);
+    let mut rig = fill_rig(3);
+    rig.say(ada, "sim team red");
+    rig.say(bo, "sim team blue");
+    rig.say(ada, "sim mind Standard PROFILE Sniper, Line");
+    rig.say(ada, "sim ai mind Standard PROFILE Hunter");
+
+    let board = rig.say(ada, "sim status");
+    assert!(
+        board.contains("  red: 1 (RA): Pilot0, mind Standard Doctrine (Sniper, Line)\n"),
+        "{board}"
+    );
+    assert!(
+        board.contains("  red fill: Standard Doctrine (Hunter)\n"),
+        "{board}"
+    );
+    assert!(board.contains("  blue: 1 (BA): Pilot1\n"), "{board}");
+    for n in [bo, cy] {
+        let board = rig.say(n, "sim status");
+        assert!(
+            board.contains("  red: 1 (RA): Pilot0, a mind\n"),
+            "{n}: {board}"
+        );
+        assert!(board.contains("  red fill: a mind\n"), "{n}: {board}");
+        assert!(board.contains("  blue: 1 (BA): Pilot1\n"), "{n}: {board}");
+        assert!(
+            !board.contains("Sniper") && !board.contains("Hunter") && !board.contains("Doctrine"),
+            "{n}: {board}"
+        );
+    }
+    let staff = rig.staff("@arena/status");
+    assert!(
+        staff.contains("1 (RA): Pilot0, mind Standard Doctrine (Sniper, Line)"),
+        "{staff}"
+    );
+    assert!(
+        staff.contains("red fill: Standard Doctrine (Hunter)"),
+        "{staff}"
+    );
+
+    rig.say(ada, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    for n in [ada, bo, cy] {
+        let board = rig.say(n, "sim status");
+        assert!(!board.contains("mind"), "{n}: {board}");
+        assert!(
+            !board.contains("fill:") || board.contains("AI fill:"),
+            "{n}: {board}"
+        );
+    }
+    let staff = rig.staff("@arena/status");
+    assert!(
+        !staff.contains("mind") && !staff.contains("Sniper"),
+        "{staff}"
+    );
+}
+
+/// **Every `SIM MIND` line is under 120 columns on every fieldable type**
+/// (17b cut M5.1; the design note's M5.1 item 3, the adversarial review's
+/// B10): with the test provider installed, a pilot fields every type `SIM
+/// UNIT` lists, in turn, and every line of the bare `SIM MIND` on it is under
+/// 120 columns and carries no sixteen-hex-digit word; then every sentence of item
+/// 3 is measured at its widest — every type word in the `Fits` line at the
+/// widest class word and count word with all six presets (and, since the
+/// review, in its `(ROM)` form and the coreless profile-count refusal), the
+/// widest preset pair (`Skirmisher, Rearguard`), six-figure pool terms, the
+/// widest fill preset, every refusal, and the last BOARDer's reply when the
+/// check-out's pool refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_every_sim_mind_line_is_under_120_columns_on_every_fieldable_type() {
+    use smol_str::SmolStr;
+    use tacsim::arena::core::CoreClass;
+    use tacsim::match_::lobby::{self, SimError};
+    fn sixteen_hex(line: &str) -> bool {
+        line.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word.len() >= 16 && word.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+    let mut measured: Vec<String> = Vec::new();
+    let mut rig = Rig::boot(1);
+    let _provider = holdings_on(&mut rig);
+    let held = rig.say(0, "sim mind");
+    assert_eq!(
+        held,
+        "You hold Standard Doctrine, Fixture I and Load III; claim a slot and SIM MIND lists \
+         what fits its core.",
+        "several minds by their names"
+    );
+    measured.push(held);
+    rig.say(0, "sim team red");
+    let list = rig.say(0, "sim unit");
+    let types: Vec<String> = list
+        .strip_prefix("Fieldable units: ")
+        .and_then(|rest| rest.split_once(". Yours:"))
+        .map(|(types, _)| types.split(", ").map(str::to_owned).collect())
+        .unwrap_or_default();
+    assert_eq!(types.len(), 11, "{list}");
+    for word in &types {
+        let said = rig.say(0, &format!("sim unit {word}"));
+        assert!(said.contains("will field"), "{word}: {said}");
+        let read = rig.say(0, "sim mind");
+        assert!(read.contains("Fits "), "{word}: {read}");
+        measured.extend(read.lines().map(str::to_owned));
+    }
+    let six: Vec<SmolStr> = [
+        "Line",
+        "Sentry",
+        "Sniper",
+        "Skirmisher",
+        "Hunter",
+        "Rearguard",
+    ]
+    .into_iter()
+    .map(SmolStr::new_static)
+    .collect();
+    let widest_pair = [
+        SmolStr::new_static("Skirmisher"),
+        SmolStr::new_static("Rearguard"),
+    ];
+    let pair = lobby::mind_words("Standard Doctrine", &widest_pair);
+    for word in &types {
+        measured.push(lobby::fits_line(
+            word,
+            Some(CoreClass::III),
+            "Standard Doctrine",
+            3,
+            &six,
+        ));
+        // 17b cut M5.1's review: a chassis with no core flies the ROM, and
+        // its `Fits` bracket and profile-count refusal say so.
+        measured.push(lobby::fits_line(word, None, "Standard Doctrine", 3, &six));
+        measured.push(
+            SimError::TooManyProfiles {
+                mind: "Standard Doctrine".to_owned(),
+                class: CoreClass::Zero,
+                most: 3,
+                rom: Some(word.clone()),
+            }
+            .to_string(),
+        );
+        measured.push(
+            SimError::OverClass {
+                mind: "Standard Doctrine".to_owned(),
+                rated: CoreClass::III,
+                chassis: word.clone(),
+                core: CoreClass::III,
+            }
+            .to_string(),
+        );
+    }
+    for team in [Team::Red, Team::Blue] {
+        measured.push(lobby::pool_line(team, 999_999, 999_999));
+    }
+    measured.extend([
+        lobby::MIND_UNCHOSEN.to_owned(),
+        lobby::MIND_CLEARED.to_owned(),
+        lobby::FILLS_HIDDEN.to_owned(),
+        format!("Yours: {pair}."),
+        format!("Yours: {pair}; selection is closed."),
+        "Yours: none; selection is closed.".to_owned(),
+        format!("Your slot will carry {pair}."),
+        "You hold Standard Doctrine (six presets); claim a slot and SIM MIND lists what fits its \
+         core."
+            .to_owned(),
+        format!(
+            "You hold {}; claim a slot and SIM MIND lists what fits its core.",
+            lobby::holdings_words(&[
+                tacsim::match_::holdings::HeldMind::doctrine(),
+                support::holdings::fixture_i(),
+                support::holdings::load_iii(),
+            ])
+        ),
+        "Blue's fill will carry Standard Doctrine (Skirmisher).".to_owned(),
+        "Blue's fill: Standard Doctrine (Skirmisher).".to_owned(),
+        "Blue's fill: nothing chosen; it flies Standard Doctrine on Line.".to_owned(),
+        "Blue's fill carries a mind.".to_owned(),
+        "AI fill: none on a range.".to_owned(),
+        "Which profiles? `SIM MIND Standard PROFILE Sniper, Line`.".to_owned(),
+        "Which mind? `SIM MIND Standard`, or `SIM MIND none`.".to_owned(),
+        "Which profile? `SIM AI MIND Standard PROFILE Hunter`.".to_owned(),
+        "Which mind? `SIM AI MIND Standard`, or `SIM AI MIND none`.".to_owned(),
+        format!(
+            "Match 999 could not start: {}. The pods are free again.",
+            SimError::MindNotHeld {
+                team: "blue",
+                index: Some(6),
+            }
+            .to_string()
+            .trim_end_matches('.')
+        ),
+        format!(
+            "Match 999 could not start: {}. The pods are free again.",
+            SimError::MindNotHeld {
+                team: "blue",
+                index: None,
+            }
+            .to_string()
+            .trim_end_matches('.')
+        ),
+    ]);
+    for error in [
+        SimError::NoSuchMind {
+            word: "Sentinel".to_owned(),
+        },
+        SimError::NoRevisions,
+        SimError::NoSuchProfile {
+            mind: "Standard Doctrine".to_owned(),
+            word: "Brawler".to_owned(),
+            presets: "Line, Sentry, Sniper, Skirmisher, Hunter or Rearguard".to_owned(),
+        },
+        SimError::ProfileTwice {
+            profile: "Skirmisher".to_owned(),
+        },
+        SimError::TooManyProfiles {
+            mind: "Standard Doctrine".to_owned(),
+            class: CoreClass::III,
+            most: 3,
+            rom: None,
+        },
+        SimError::UnderFloor {
+            profile: "Skirmisher".to_owned(),
+            odds_permille: 950,
+            floor_permille: 950,
+        },
+        SimError::ProfilePair {
+            profile: "Rearguard".to_owned(),
+            fight_home: "77.5".to_owned(),
+            break_off: "70".to_owned(),
+        },
+        SimError::FillOneProfile,
+        SimError::StaffHoldNoMinds,
+        SimError::FillWhichSide,
+        SimError::Pool(tacsim::match_::pool::PoolRefusal {
+            would: 999_999,
+            half: 999_999,
+            spoken: 999_999,
+        }),
+        // 17b cut M5.1's review: what the last BOARDer reads when the
+        // check-out's pool refuses — the call-off's short form, as one
+        // sentence (`lobby::run`), at six-figure terms.
+        SimError::Start(format!(
+            "{}.",
+            tacsim::match_::StartError::Pool {
+                team: "blue",
+                unit: ObjId(999_999),
+                callsign: "Spare Hull 999".to_owned(),
+                refusal: tacsim::match_::pool::PoolRefusal {
+                    would: 999_999,
+                    half: 999_999,
+                    spoken: 999_999,
+                },
+            }
+            .call_off_words(rig.tw.world(), &[])
+        )),
+    ] {
+        measured.push(error.to_string());
+    }
+    for line in &measured {
+        assert!(
+            line.chars().count() < 120,
+            "{} columns: {line}",
+            line.chars().count()
+        );
+        assert!(!sixteen_hex(line), "a sixteen-hex-digit word: {line}");
+    }
+    assert!(measured.len() > 60, "{}", measured.len());
+}
+
+/// **`SIM MIND` and `SIM AI MIND` reuse the lobby's refusals** (17b cut M5.1;
+/// the design note's §2.4 and M5.1 item 2): a `SIM MIND` set in `SIM UNIT`'s
+/// order — no slot in `Idle` and `Selection` is `NoSlotToField`, outside
+/// `Selection` `WrongState` — and `SIM AI MIND` in `SIM AI`'s — the fill off
+/// is `AiOff` for every form, a range reads `AI fill: none on a range.` and
+/// refuses a set with `AiOnRange` (never `AiOff`), outside `Selection` a set
+/// is `WrongState`, and a pilot who leads no side is `NotLeadForAi`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_sim_mind_and_sim_ai_mind_reuse_the_lobby_refusals() {
+    let no_slot = "Claim a slot first: SIM TEAM red|blue.";
+    // The fill off.
+    let mut rig = Rig::boot(3);
+    assert_eq!(rig.say(0, "sim mind Standard"), no_slot, "idle");
+    for line in ["sim ai mind", "sim ai mind Standard", "sim ai mind none"] {
+        assert_eq!(rig.say(0, line), "AI fill is off on this server.", "{line}");
+    }
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    assert_eq!(rig.say(2, "sim mind Standard"), no_slot, "selection");
+    assert_eq!(rig.say(2, "sim mind none"), no_slot, "selection");
+    rig.say(0, "sim start");
+    let boarding = "The simulator centre is boarding; that is not something you can do to it now.";
+    assert_eq!(rig.say(0, "sim mind Standard"), boarding);
+    assert_eq!(rig.say(0, "sim mind none"), boarding);
+    assert_eq!(rig.say(2, "sim mind Standard"), boarding, "no slot");
+
+    // The fill on.
+    let mut rig = fill_rig(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    assert_eq!(
+        rig.say(1, "sim ai mind Standard"),
+        "Only a side's lead or staff can set the AI fill."
+    );
+    rig.say(0, "sim range 1");
+    assert_eq!(rig.say(0, "sim ai mind"), "AI fill: none on a range.");
+    for line in ["sim ai mind Standard", "sim ai mind none"] {
+        assert_eq!(
+            rig.say(0, line),
+            "The range fields no machines; SIM RANGE sets its targets.",
+            "{line}"
+        );
+    }
+    rig.say(0, "sim mode skirmish");
+    rig.say(0, "sim start");
+    assert_eq!(
+        rig.say(0, "sim ai mind Standard"),
+        "The simulator centre is boarding; that is not something you can do to it now."
+    );
+}
+
+/// **A holding lost before the check-out calls the match off by slot** (17b
+/// cut M5.1; the design note's M5.1 item 6): Ada chooses `Fixture I` (the
+/// test provider's) on her `line_tank`; the provider drops it between the
+/// choice and the check-out; the last seat fires the check-out, which refuses
+/// with `SimError::MindNotHeld` and calls the match off through `run`'s
+/// `ready` arm — `Match 1 could not start: Slot red 1's chosen mind is no
+/// longer held by its pilot. The pods are free again.` — said to the centre,
+/// naming the slot and never the mind (the `d3_`/`ae3_` call-off pattern:
+/// the seat reported through `match_::slot_seated`, what the pilot heard read
+/// off its own outbox) — read by the seating pilot and, since the review, by
+/// Ada in the lobby.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m5_a_holding_lost_before_check_out_calls_the_match_off_by_slot() {
+    let mut rig = Rig::boot(2);
+    let provider = holdings_on(&mut rig);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    assert_eq!(
+        rig.say(0, "sim mind Fixture I"),
+        "Your slot will carry Fixture I (Line)."
+    );
+    rig.say(0, "sim start");
+    assert!(!rig.seat(0), "red is in and blue is not");
+    provider.drop_fixture_i();
+    let pilot = rig.pilot(1);
+    let pod = rig.pod(1).expect("a locked pod");
+    let unit = match_::tank_of(rig.tw.world(), pod).expect("the pod's tank");
+    let match_id = rig
+        .centre()
+        .match_id
+        .expect("a boarding centre has a match id");
+    let mut out = Outbox::new();
+    let refused = {
+        let engine = rig.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: pilot,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        match_::slot_seated(&mut ctx, match_id, pilot, unit)
+    };
+    assert_eq!(
+        refused,
+        Err(match_::SimError::MindNotHeld {
+            team: "red",
+            index: Some(1),
+        })
+    );
+    let events = out.take();
+    let call_off = "Match 1 could not start: Slot red 1's chosen mind is no longer held by its \
+                    pilot. The pods are free again.";
+    // The pilot whose seat fired the check-out, and (17b cut M5.1's review)
+    // Ada — the centre, to whom the call-off is said.
+    for n in [1, 0] {
+        let heard = rig.seen(rig.pilot(n), &events);
+        assert!(heard.contains(call_off), "pilot {n}: {heard}");
+        assert!(
+            !heard.contains("Fixture"),
+            "pilot {n}: the call-off names no mind: {heard}"
+        );
+    }
+    assert_eq!(rig.state(), MatchState::Aborted);
+    assert!(rig.centre().slots.is_empty(), "the slots are given back");
+    assert_eq!(
+        match_::SimError::MindNotHeld {
+            team: "red",
+            index: None,
+        }
+        .to_string(),
+        "The red fill's chosen mind is no longer held by its lead."
     );
 }

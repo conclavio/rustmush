@@ -903,16 +903,15 @@ pub(crate) fn put_tutorial(
 /// stock mind's source at every boot, so the first boot writes it and every
 /// later one finds it.
 pub(crate) fn put_mind_source(ctx: &mut Ctx<'_>, source: &str) -> bool {
-    use sha2::{Digest as _, Sha256};
-    let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
     let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {
         return false;
     };
-    if store.mind_source_keys.contains(&digest) {
+    // 17b cut M5.1: the RAM half is `install_mind_source`, which the holdings
+    // seam's test provider is installed through too; the document is this
+    // function's alone.
+    let Some(digest) = install_mind_source(store, source) else {
         return false;
-    }
-    store.mind_source_keys.insert(digest);
-    store.mind_sources.insert(digest, source.to_owned());
+    };
     let record = MindSourceRecord {
         sha256: crate::arena::digest_text(&digest),
         abi: crate::minds::MIND_ABI.to_owned(),
@@ -925,6 +924,29 @@ pub(crate) fn put_mind_source(ctx: &mut Ctx<'_>, source: &str) -> bool {
     };
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
     true
+}
+
+/// **One mind source into this world's RAM map, content-addressed** (17b cut
+/// M5.1; doc 17 §13) — the RAM half of [`put_mind_source`], split out of it:
+/// the text's SHA-256 computed from its own bytes and the text installed
+/// under it, **only when this world holds no source under that digest**
+/// (readable or not — the immutability rule `put_mind_source` keeps). Answers
+/// the digest it installed under, or `None` when it installed nothing.
+///
+/// It queues no document. [`put_mind_source`] calls it and then queues the
+/// document; `crate::match_::holdings::install_holdings` calls it alone, for a
+/// test rig's scripted fixture mind (an integration rig has no `Ctx` to put a
+/// document with), so `crate::minds::source_lookup` finds a fixture's source
+/// exactly as it finds a stored one.
+pub(crate) fn install_mind_source(store: &mut TacsimStore, source: &str) -> Option<[u8; 32]> {
+    use sha2::{Digest as _, Sha256};
+    let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+    if store.mind_source_keys.contains(&digest) {
+        return None;
+    }
+    store.mind_source_keys.insert(digest);
+    store.mind_sources.insert(digest, source.to_owned());
+    Some(digest)
 }
 
 /// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.

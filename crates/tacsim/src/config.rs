@@ -704,10 +704,12 @@ pub struct MindsConfig {
     /// 17 §9, D-UM-37): the `class_cap` of every production seal — the fill's
     /// and a seated hull's alike, so a release hands a hull to a mind of the
     /// same class and adds no unadmitted load — and the load `match_::pool`
-    /// counts for every unseated pod at `SIM UNIT` and at check-out. The
-    /// seal's class is `min(STOCK_RATED_CLASS, the core, this)`, so above `I`
-    /// it caps nothing until 17b cut M5 rates minds; `0` fields every hull on
-    /// the drive ROM. By its word, `0`, `I`, `II` or `III`. Read once, at
+    /// counts for every hull that chose no mind, seated or not (17b cut
+    /// M5.1), at `SIM UNIT`, `SIM MIND` and at check-out. The seal's class is
+    /// `min(rated, the core, this)`, and every production mind is rated `I`
+    /// (Standard Doctrine's `STOCK_RATED_CLASS`), so above
+    /// `I` it caps nothing until the cut that rates a mind above Class I; `0`
+    /// fields every hull on the drive ROM. By its word, `0`, `I`, `II` or `III`. Read once, at
     /// `crate::match_::start` and `@arena/start`; never carried.
     #[serde(default = "default_fill_class")]
     pub fill_class: crate::arena::core::CoreClass,
@@ -822,8 +824,10 @@ impl MindsConfig {
     /// the card against the floor by name (`crate::match_::seal::seal_for`),
     /// so an operator floor above 100 — above the Line card's 10 per cent —
     /// refuses every Line-carded check-out
-    /// (`crate::match_::StartError::CardUnlawful`) until 17b cut M5 lets a
-    /// principal choose a card.
+    /// (`crate::match_::StartError::CardUnlawful`): 17b cut M5.1 lets a
+    /// principal choose a lawful preset with `SIM MIND` (one under the floor
+    /// refused by name), and every hull is sealed on Line until 17b cut M5.2
+    /// carries the choice into the seal.
     ///
     /// # Errors
     ///
@@ -893,8 +897,10 @@ impl MindsConfig {
     /// * `ops` 100 to `mush_mind::MAX_OPS_ANY_CLASS` (the engine's backstop:
     ///   a think past it is refused before it runs), and no fewer than the
     ///   class below's;
-    /// * `rows` 1 to 32 and no fewer than the class below's; `odds_rows` 0 to
-    ///   the class's own `rows`;
+    /// * `rows` 2 to 32 and no fewer than the class below's (17b cut M5.1's
+    ///   rider: the floor was 1 — a class of one row cannot carry the seat's
+    ///   two, the hull's lock and its order's contact); `odds_rows` 0 to the
+    ///   class's own `rows`;
     /// * `slots` 1 to [`crate::arena::core::MAX_CONDITION_SLOTS`] and no fewer
     ///   than the class below's;
     /// * `memory_keys` 1 to `mush_mind::MAX_MEMORY_ANY_CLASS.keys` (the
@@ -920,7 +926,9 @@ impl MindsConfig {
                 ));
             }
             between(&key("ops"), 100, mush_mind::MAX_OPS_ANY_CLASS, row.ops)?;
-            between(&key("rows"), 1, 32, to_u64(row.rows))?;
+            // 17b cut M5.1: the floor 1 -> 2 (doc 17 §24's carried "a configured
+            // class of fewer rows than the seat's two").
+            between(&key("rows"), 2, 32, to_u64(row.rows))?;
             between(
                 &key("odds_rows"),
                 0,
@@ -2008,12 +2016,20 @@ mod tests {
             (
                 "0",
                 r#"{"rows": 0}"#,
-                "[tacsim.minds].classes.0.rows must be 1 to 32 (it is 0)",
+                // 17b cut M5.1: `must be 1 to 32 (it is 0)` until the rider
+                // raised the floor to the seat's two rows.
+                "[tacsim.minds].classes.0.rows must be 2 to 32 (it is 0)",
+            ),
+            (
+                "0",
+                r#"{"rows": 1}"#,
+                "[tacsim.minds].classes.0.rows must be 2 to 32 (it is 1)",
             ),
             (
                 "III",
                 r#"{"rows": 33}"#,
-                "[tacsim.minds].classes.III.rows must be 1 to 32 (it is 33)",
+                // 17b cut M5.1: `must be 1 to 32 (it is 33)` until the rider.
+                "[tacsim.minds].classes.III.rows must be 2 to 32 (it is 33)",
             ),
             (
                 "II",

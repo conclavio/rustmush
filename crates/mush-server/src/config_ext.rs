@@ -1972,6 +1972,12 @@ mod tests {
                 "[tacsim.minds.classes.IV]\nops = 100\n",
                 ["[tacsim.minds].classes", "IV"],
             ),
+            // 17b cut M5.1's rider: a class of one row cannot carry the seat's
+            // two (the lock and the order's contact), so the floor is 2.
+            (
+                "[tacsim.minds.classes.0]\nrows = 1\n",
+                ["[tacsim.minds].classes.0.rows", "must be 2 to 32 (it is 1)"],
+            ),
         ] {
             let refused = tacsim_config(&tacsim_cfg(body)).expect_err(body);
             for needle in needles {

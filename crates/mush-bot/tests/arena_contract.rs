@@ -2304,6 +2304,81 @@ fn m3_the_turret_lost_with_its_core_words_raises_the_weapons_doubt_and_nothing_e
 // 17b cut M1b.4: the arming, its line and its two sentences
 // ---------------------------------------------------------------------------
 
+/// **The game's 17b cut M5.1: the selection fog, read as the game prints
+/// it** (a declared reader change). A board row whose slot chose a mind with
+/// `SIM MIND` ends `, a mind` for every reader but its own pilot and staff
+/// (`lobby::board_mind_clause`), after the chassis bracket: the reader strips
+/// it into `BoardPilot::mind` and keeps the name, the bracket and the
+/// callsign; a slot that chose nothing prints nothing. A side's fill choice
+/// is a board row of its own (`lobby::board_fill_row`), which is no side row
+/// and reads as a neutral `Line::Other` whoever may read it. The check-out's
+/// new call-off — a chosen mind no longer held, naming the slot — reads as
+/// the call-off it is. The bot never types `SIM MIND` (`arena_e2e.rs`'
+/// `forbidden`), so its own row never carries the named form.
+#[test]
+fn m5_1_the_selection_fog_reads_as_the_bot_reads_it() {
+    use mush_bot::arena::lines::BoardPilot;
+    use tacsim::match_::lobby::{self, MindChoice};
+    let choice = MindChoice {
+        mind: "Standard Doctrine".into(),
+        profiles: vec!["Sniper".into(), "Line".into()],
+    };
+    let row = format!(
+        "  red: 1 (RA): Ada [biped_mk1]{}; 2 (RB): Bo{}; 3 (RC): Cy{}",
+        lobby::board_mind_clause(Some(&choice), false),
+        lobby::board_mind_clause(Some(&choice), false),
+        lobby::board_mind_clause(None, false),
+    );
+    let pilot =
+        |index: u8, callsign: &str, name: &str, unit_type: Option<&str>, mind: bool| BoardPilot {
+            index,
+            callsign: callsign.into(),
+            name: name.into(),
+            unit_type: unit_type.map(str::to_owned),
+            mind,
+            pod: None,
+            standing: None,
+        };
+    assert_eq!(
+        classify(&row),
+        Line::BoardSide {
+            side: Side::Red,
+            pilots: vec![
+                pilot(1, "RA", "Ada", Some("biped_mk1"), true),
+                pilot(2, "RB", "Bo", None, true),
+                pilot(3, "RC", "Cy", None, false),
+            ]
+        },
+        "{row}"
+    );
+    for reads in [false, true] {
+        let fill = lobby::board_fill_row(Team::Blue, &choice, reads);
+        assert_eq!(
+            classify(&fill),
+            Line::Other(fill.trim().to_owned()),
+            "the fill row is no side row: {fill}"
+        );
+    }
+    let why = SimError::MindNotHeld {
+        team: "red",
+        index: Some(1),
+    }
+    .to_string();
+    let call_off = format!(
+        "Match 4 could not start: {}. The pods are free again.",
+        why.trim_end_matches('.')
+    );
+    assert_eq!(
+        classify(&call_off),
+        Line::CouldNotStart {
+            match_id: 4,
+            why: "Slot red 1's chosen mind is no longer held by its pilot. The pods are free \
+                  again."
+                .into()
+        }
+    );
+}
+
 /// **The pilot's arming surface reads as the bot reads it** (the game's 17b
 /// cut M1b.4; doc 17 §5, a declared reader change under doc 16 §11):
 ///

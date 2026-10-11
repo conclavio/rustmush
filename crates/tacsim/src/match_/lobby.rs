@@ -44,16 +44,20 @@
 //! and focus go through `mush_sim`'s one revocation seam, so either the whole
 //! release rides the batch or none of it does.
 
+use std::collections::BTreeMap;
+
 use mush_core::{AccountId, Ctx, ObjId, World};
 use mush_proto::{OutputEvent, RichText};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::arena::core::CoreClass;
 use crate::arena::state::{Designator, EndReason, MatchMode, StopReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, CommandConfig, MatchConfig, MindsConfig, SensorsConfig};
 use crate::match_::centre::{self, CENTRE_ARENA, CentreRoom, PODS_PER_SIDE};
+use crate::match_::holdings::{self, HeldMind, SealChoice};
 use crate::match_::net;
 use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
 
@@ -135,6 +139,79 @@ pub struct Slot {
     /// (the live record's own `LIVE_FORMAT` policy).
     #[serde(default)]
     pub released_by_resume: bool,
+    /// **The mind this pilot has chosen for the hull** (17b cut M5.1; doc 17
+    /// §12, D-UM-49), as `SIM MIND` wrote it, or `None` for the default every
+    /// unchosen slot is sealed with — Standard Doctrine on Line (the owner's
+    /// OQ-9 (i): an unchosen slot stays as built).
+    ///
+    /// Written by [`mind`] during `Selection` only, fitted to the slot's
+    /// chassis at the choice ([`unit_type`] fits it again when the chassis
+    /// changes), resolved against the holdings seam at the check-out
+    /// ([`SimError::MindNotHeld`] when the pilot no longer holds it) into
+    /// `crate::match_::Side::minds`. It goes with the slot, as
+    /// [`Slot::unit_type`] does. **17b cut M5.1 records and reads it back; the
+    /// check-out still seals Standard Doctrine on Line until 17b cut M5.2.**
+    ///
+    /// `#[serde(default)]` and skipped when `None`, under the live record's
+    /// `LIVE_FORMAT` policy ([`Slot::released_by_resume`]'s precedent): a
+    /// record written before it decodes, and a slot that chose nothing writes
+    /// the bytes it always wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mind: Option<MindChoice>,
+}
+
+/// **A chosen mind and its profiles** (17b cut M5.1; doc 17 §11, §12; the
+/// owner's OQ-3) — what `SIM MIND` stores on a slot and `SIM AI MIND` on a
+/// side's fill: the mind's own name and the profiles in the order they were
+/// chosen, each a canonical preset spelling. The first profile is the one
+/// that flies at the release, the rest are switchable with `MIND PROFILE`
+/// (17b cut M5.4). **Empty is Line alone** — `SIM MIND Standard` and `SIM MIND
+/// Standard PROFILE Line` store the same choice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MindChoice {
+    /// The mind's name as its holding spells it (`Standard Doctrine`).
+    pub mind: SmolStr,
+    /// The profiles, canonical spellings, first flies first; empty is Line
+    /// alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<SmolStr>,
+}
+
+impl MindChoice {
+    /// **How every line spells it**: `Standard Doctrine (Sniper, Line)`, and
+    /// `Standard Doctrine (Line)` for Line alone.
+    #[must_use]
+    pub fn words(&self) -> String {
+        mind_words(&self.mind, &self.profiles)
+    }
+}
+
+/// **Who set a side's fill choice** (17b cut M5.1; the design note's §2.4):
+/// the side's lead, by account — the one who may read it back after the
+/// start, and whose leaving clears it before the check-out — or staff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FillSetter {
+    /// The side's lead at the time of the choice. Opaque and never rendered.
+    Lead(AccountId),
+    /// Staff, who hold no minds and set Standard Doctrine's presets only
+    /// (D9).
+    Staff,
+}
+
+/// **One side's fill choice** (17b cut M5.1; doc 17 §12, §19) — what `SIM AI
+/// MIND` stores: the side, who set it, and the mind with its ONE profile
+/// (nobody aboard a fill hull switches it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FillChoice {
+    /// The side whose unclaimed pods it flies.
+    pub team: Team,
+    /// Who set it.
+    pub by: FillSetter,
+    /// The mind and its one profile (empty is Line).
+    pub choice: MindChoice,
 }
 
 impl Slot {
@@ -248,6 +325,24 @@ pub struct Centre {
     /// every claim is on one side by construction ([`range`] refuses two sides,
     /// [`claim`] refuses the target side).
     pub range_targets: Option<u8>,
+    /// **What each side's AI fill is to carry** (17b cut M5.1; doc 17 §12,
+    /// §19; the design note's §2.4), as `SIM AI MIND` set it — at most one
+    /// entry a side, none for a side whose fill flies the default (Standard
+    /// Doctrine on Line).
+    ///
+    /// Set by a side's lead (from the lead's own holdings) or by staff
+    /// (Standard Doctrine's presets only), in `Selection` only ([`ai_mind`]).
+    /// **A change of lead before the check-out clears a lead's entry**
+    /// ([`Centre::resettle_leads`]), so no new lead reads or inherits another
+    /// account's choice; a staff entry stays. After the check-out the entry is
+    /// kept as it was resolved, read only by its setter and staff, and it is
+    /// cleared with the rest of the board at the return to `Idle`.
+    ///
+    /// `#[serde(default)]` and skipped when empty, under the live record's
+    /// `LIVE_FORMAT` policy: a centre nobody chose a fill for writes the bytes
+    /// it always wrote.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_minds: Vec<FillChoice>,
 }
 
 impl Centre {
@@ -308,6 +403,14 @@ impl Centre {
     ///
     /// The vector is rebuilt in [`Team::ALL`] order. Nothing reads the order:
     /// every reader asks `any`.
+    ///
+    /// **17b cut M5.1** (the design note's §2.4): before the check-out — in
+    /// `Selection` and `Boarding`, which is `SIM LEAVE` and the boarding
+    /// deadline — a side whose lead account changes loses the fill choice that
+    /// lead set ([`Centre::fill_minds`], [`FillSetter::Lead`]), so the fill
+    /// reverts to Standard Doctrine on Line and no new lead reads or inherits
+    /// another account's choice; a staff choice stays. From `Running` on the
+    /// entry is what the check-out resolved and stays as it is.
     pub fn resettle_leads(&mut self) {
         let mut leads: Vec<(Team, AccountId)> = Vec::with_capacity(Team::ALL.len());
         for team in Team::ALL {
@@ -332,6 +435,15 @@ impl Centre {
             }
         }
         self.leads = leads;
+        if matches!(self.state, MatchState::Selection | MatchState::Boarding) {
+            let leads = &self.leads;
+            self.fill_minds.retain(|fill| match fill.by {
+                FillSetter::Staff => true,
+                FillSetter::Lead(account) => leads
+                    .iter()
+                    .any(|(side, lead)| *side == fill.team && *lead == account),
+            });
+        }
     }
 
     /// **Forget that every pilot had left** (16b cut D.3, `B-33`) — the stamp and
@@ -575,17 +687,155 @@ pub enum SimError {
         /// `[tacsim.arena].max_units_by_class` for that class.
         cap: u32,
     },
-    /// **`SIM UNIT <type>` past the side's half of the centre's compute pool**
-    /// (17b cut M3.5; doc 17 §9, D-UM-36: *`SIM MIND` and `SIM UNIT` check at
-    /// choice time … refused with the arithmetic*), said in doc 17's own
-    /// sentence ([`crate::match_::pool::PoolRefusal`]). **It cannot refuse
-    /// before 17b cut M5**: the caller's hull is seated and loads nothing
-    /// until `SIM MIND` names a mind for it, and so does every other claimed
-    /// slot of the side (declared). The arithmetic and the sentence are
-    /// pinned in-source on the choice's one check, `pool_at_the_choice`,
-    /// with a class named; no `SIM UNIT` can reach this variant yet.
+    /// **`SIM UNIT <type>` or `SIM MIND …` past the side's half of the
+    /// centre's compute pool** (17b cut M3.5; doc 17 §9, D-UM-36: *`SIM MIND`
+    /// and `SIM UNIT` check at choice time … refused with the arithmetic*),
+    /// said in the pool's sentence ([`crate::match_::pool::PoolRefusal`], the
+    /// owner's OQ-11 wording since 17b cut M5.1). **17b cut M5.1**: every
+    /// claimed hull of the side loads its class — the class its chosen mind
+    /// seals at, else `[tacsim.minds].fill_class`, seated or not — so the
+    /// later of `SIM UNIT` and `SIM MIND` is the one refused (doc 17 §12).
+    /// The question is the side AFTER the change — the hull's new class
+    /// beside every other hull's — unless the change lowers the hull's load,
+    /// which is never refused (17b cut M5.1's review): a side that an
+    /// unchecked claim or `SIM AI <n>` has put past its half refuses every
+    /// `SIM UNIT` and `SIM MIND` of it that keeps or raises a hull's load,
+    /// `SIM MIND none` back to `fill_class` included, until a claim is given
+    /// up or the fill lowered.
+    /// At the stock constants it cannot refuse (twelve Class III a side fit,
+    /// `crate::match_::pool`'s head); an operator's lowered pool reaches it.
     #[error("{0}")]
     Pool(crate::match_::pool::PoolRefusal),
+    /// **`SIM MIND <word>` naming no mind the character holds** (17b cut
+    /// M5.1; D-UM-49): a refusal that posts nothing.
+    #[error("You hold no mind called {word}; SIM MIND lists the minds you hold.")]
+    NoSuchMind {
+        /// What was typed, as it was typed.
+        word: String,
+    },
+    /// **`SIM MIND <mind> @<rev>`** (17b cut M5.1; the owner's OQ-2): a
+    /// revision pin waits for 17b cut M6's workshop.
+    #[error(
+        "No revisions are kept before the workshop; SIM MIND Standard seals the Registry's own."
+    )]
+    NoRevisions,
+    /// **A profile the mind does not carry** (17b cut M5.1; OQ-3): its
+    /// presets, listed.
+    #[error("{mind} has no profile called {word}: {presets}.")]
+    NoSuchProfile {
+        /// The mind's name.
+        mind: String,
+        /// What was typed, as it was typed.
+        word: String,
+        /// Its presets, as a sentence lists them (`Line, Sentry … or
+        /// Rearguard`).
+        presets: String,
+    },
+    /// **One profile named twice** (17b cut M5.1): a profile is sealed once.
+    #[error("{profile} is named twice; a profile is sealed once.")]
+    ProfileTwice {
+        /// The profile's canonical spelling.
+        profile: String,
+    },
+    /// **More profiles than the sealed class stores** (17b cut M5.1; OQ-3:
+    /// the class row's `profiles`, Class I → 2, read at the class the mind
+    /// would be sealed at on this chassis). A chassis with no core flies the
+    /// ROM (C-24), Class 0's row, and the sentence says so rather than naming
+    /// a core it does not have (17b cut M5.1's review): `This target_mk1 has
+    /// no core and flies the ROM, which seals one profile at most.`
+    #[error("{}", too_many_profiles_line(.mind, *.class, *.most, .rom.as_deref()))]
+    TooManyProfiles {
+        /// The mind's name.
+        mind: String,
+        /// The class it would be sealed at.
+        class: crate::arena::core::CoreClass,
+        /// The class row's `profiles`.
+        most: u8,
+        /// The chassis, as the board spells it, when it has no core and flies
+        /// the ROM; `None` on a chassis with a core.
+        rom: Option<String>,
+    },
+    /// **A profile whose odds are under the operator's Compact floor**
+    /// (17b cut M5.1; D-UM-17: refused, never clamped) — on a chassis with a
+    /// weapons station only (C-23: an unarmed hull never refuses for the
+    /// floor).
+    #[error(
+        "{profile} fires at {}% and better; this server's Compact floor is {}%, so it cannot be \
+         sealed.",
+        .odds_permille / 10,
+        .floor_permille / 10
+    )]
+    UnderFloor {
+        /// The profile's canonical spelling.
+        profile: String,
+        /// Its `min_odds`, per mille.
+        odds_permille: u32,
+        /// `[tacsim.minds].odds_floor_permille`.
+        floor_permille: u32,
+    },
+    /// **A profile whose survival pair does not hold on this server's
+    /// doctrine** (17b cut M5.1; the card's `pair`, run on every chassis):
+    /// Rearguard's `break_off_pct` 70 under a configured `fight_home_pct`
+    /// above it.
+    #[error(
+        "{profile} cannot be sealed here: it would put fight_home_pct {fight_home} above \
+         break_off_pct {break_off}."
+    )]
+    ProfilePair {
+        /// The profile's canonical spelling.
+        profile: String,
+        /// `fight_home_pct` as the card prints it.
+        fight_home: String,
+        /// `break_off_pct` as the card prints it.
+        break_off: String,
+    },
+    /// **A mind rated above a governed core's class** (17b cut M5.1;
+    /// D-UM-41, the owner's OQ-10 (d); the design note's C-24): refused at
+    /// the choice. A chassis with no core is never over-class (it flies the
+    /// ROM).
+    #[error(
+        "{mind} thinks at Class {rated_word}; this {chassis}'s core is Class {core_word} and is \
+         governed.",
+        rated_word = .rated.as_str(),
+        core_word = .core.as_str()
+    )]
+    OverClass {
+        /// The mind's name.
+        mind: String,
+        /// The class it is rated at.
+        rated: crate::arena::core::CoreClass,
+        /// The chassis, as the board spells it.
+        chassis: String,
+        /// The core's class.
+        core: crate::arena::core::CoreClass,
+    },
+    /// **`SIM AI MIND` with more than one profile** (17b cut M5.1): nobody
+    /// aboard a fill hull switches it.
+    #[error("The fill flies one profile; nobody aboard switches it.")]
+    FillOneProfile,
+    /// **Staff naming a mind that is not Standard Doctrine for a fill** (17b
+    /// cut M5.1; D9: staff hold no holdings, D-UM-49).
+    #[error("Staff hold no minds; SIM AI MIND Standard sets the fill's doctrine and preset.")]
+    StaffHoldNoMinds,
+    /// **Staff setting a fill without naming its side** (17b cut M5.1): a
+    /// lead's side is their own, staff lead none.
+    #[error("Which side's fill? SIM AI MIND red Standard sets red's.")]
+    FillWhichSide,
+    /// **A chosen mind no longer held at the check-out** (17b cut M5.1; the
+    /// design note's M5.1 item 6): `ready` resolves every fielded hull's
+    /// choice against the holdings seam, and a holding the pilot (or, for a
+    /// fill, the lead who set it) no longer holds calls the match off. The
+    /// sentence names the slot or the fill and NEVER the mind, because the
+    /// call-off is said to the whole centre (C-4). Unreachable in production
+    /// (every character holds Standard Doctrine); reached with a test
+    /// provider.
+    #[error("{}", mind_not_held_line(.team, *.index))]
+    MindNotHeld {
+        /// The side's word.
+        team: &'static str,
+        /// The slot's index, or `None` for the side's fill.
+        index: Option<u8>,
+    },
     /// **A side that fields no gun** (16b cut AE.3; plan §6 AE-X3).
     ///
     /// Every machine the side would fly carries no weapon component — a lone
@@ -661,7 +911,10 @@ pub enum SimError {
         /// Which slot.
         index: u8,
     },
-    /// The check-out itself refused, with the reason cut T.3 gave.
+    /// The check-out itself refused, with the reason cut T.3 gave — since 17b
+    /// cut M5.1 (its review) in the call-off's own words
+    /// (`crate::match_::StartError::call_off_words`), one sentence: what the
+    /// last `BOARD`er reads, under 120 columns.
     #[error("The match could not start: {0}")]
     Start(String),
 }
@@ -680,6 +933,102 @@ fn class_cap_line(class: crate::definitions::UnitClass, cap: u32) -> String {
             "A side fields at most {cap} {}; pick another type.",
             class.noun(cap)
         )
+    }
+}
+
+/// **[`SimError::MindNotHeld`]'s sentence** (17b cut M5.1): the slot, or the
+/// side's fill — never the mind.
+fn mind_not_held_line(team: &str, index: Option<u8>) -> String {
+    match index {
+        Some(index) => {
+            format!("Slot {team} {index}'s chosen mind is no longer held by its pilot.")
+        }
+        None => format!("The {team} fill's chosen mind is no longer held by its lead."),
+    }
+}
+
+/// **A small count in words** (17b cut M5.1): `one` to `six`, the figure
+/// past them — the lobby's mind lines never print more than a class row's
+/// `profiles` (at most four) or a held mind's presets.
+fn count_word(n: usize) -> String {
+    match n {
+        1 => "one".to_owned(),
+        2 => "two".to_owned(),
+        3 => "three".to_owned(),
+        4 => "four".to_owned(),
+        5 => "five".to_owned(),
+        6 => "six".to_owned(),
+        n => n.to_string(),
+    }
+}
+
+/// `one profile`, `two profiles` — [`SimError::TooManyProfiles`]'s count.
+fn profiles_counted(n: u8) -> String {
+    if n == 1 {
+        "one profile".to_owned()
+    } else {
+        format!("{} profiles", count_word(usize::from(n)))
+    }
+}
+
+/// **[`SimError::TooManyProfiles`]'s sentence** (17b cut M5.1): the class
+/// the mind thinks at on the chassis's core, or — on a chassis with no core,
+/// `rom` naming it — that the hull flies the ROM (C-24; its review).
+fn too_many_profiles_line(mind: &str, class: CoreClass, most: u8, rom: Option<&str>) -> String {
+    match rom {
+        None => format!(
+            "{mind} thinks at Class {} on this core, which seals {} at most.",
+            class.as_str(),
+            profiles_counted(most)
+        ),
+        Some(chassis) => format!(
+            "This {chassis} has no core and flies the ROM, which seals {} at most.",
+            profiles_counted(most)
+        ),
+    }
+}
+
+/// **A list as a sentence says it**: `a`, `a or b`, `a, b or c` (with `or`),
+/// or the same with `and`.
+fn listed(items: &[SmolStr], last: &str) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [head @ .., tail] => format!(
+            "{} {last} {tail}",
+            head.iter()
+                .map(SmolStr::as_str)
+                .collect::<Vec<&str>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// **A chosen mind as every line spells it** (17b cut M5.1): `Standard
+/// Doctrine (Sniper, Line)`; an empty profile list is Line alone, `Standard
+/// Doctrine (Line)`.
+#[must_use]
+pub fn mind_words(mind: &str, profiles: &[SmolStr]) -> String {
+    if profiles.is_empty() {
+        format!("{mind} (Line)")
+    } else {
+        format!(
+            "{mind} ({})",
+            profiles
+                .iter()
+                .map(SmolStr::as_str)
+                .collect::<Vec<&str>>()
+                .join(", ")
+        )
+    }
+}
+
+/// **A side's word with a capital** (`Red`, `Blue`), as a sentence opens
+/// with it.
+fn side_word(team: Team) -> &'static str {
+    match team {
+        Team::Red => "Red",
+        Team::Blue => "Blue",
     }
 }
 
@@ -1042,6 +1391,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
             dropped_at_ms: None,
             unit_type: None,
             released_by_resume: false,
+            mind: None,
         });
         if !centre.leads.iter().any(|(side, _)| *side == team) {
             centre.leads.push((team, account));
@@ -1416,9 +1766,14 @@ fn fill_pods(
 /// already holds is never refused: the count leaves the caller's own slot out.
 /// `Arena::new` is the final word (`ArenaError::ClassCap`); this is the refusal
 /// at the choice, where the pilot can still pick another type. **17b cut
-/// M3.5** (doc 17 §9, D-UM-36): then [`SimError::Pool`], the centre's compute
-/// pool at the choice with the arithmetic — unreachable before 17b cut M5
-/// (a seated hull loads nothing; `crate::match_::pool`'s head).
+/// M5.1**: then the slot's standing mind fitted to the new chassis — the
+/// refusals of [`mind`]'s fit ([`SimError::OverClass`],
+/// [`SimError::TooManyProfiles`], [`SimError::UnderFloor`],
+/// [`SimError::ProfilePair`]) — and **17b cut M3.5** (doc 17 §9, D-UM-36)
+/// [`SimError::Pool`], the centre's compute pool at the choice with the
+/// arithmetic, the caller's hull at its own class: its mind's, else
+/// `[tacsim.minds].fill_class` (17b cut M5.1; at the stock constants it
+/// cannot refuse, `crate::match_::pool`'s head).
 pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
     let actor = ctx.actor;
     require_layer(ctx.w)?;
@@ -1526,42 +1881,33 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
             return Err(SimError::ClassCap { class, cap });
         }
     }
-    // **17b cut M3.5** (doc 17 §9, D-UM-36): the pool, at the choice, after
-    // the class cap — the caller's hull's load against what the side's other
-    // loads speak for, under the pool of the most units this centre can
-    // field (its pods, both sides: the smallest pool any match of it runs
-    // under). Every claimed slot is a seated pilot's, whose hull loads
-    // nothing until 17b cut M5's `SIM MIND` names a mind; **17b cut M4.3**:
-    // the side's unclaimed pods under the AI fill are spoken for at
-    // `[tacsim.minds].fill_class` (what `SIM START` fields them at), and a
-    // choice that adds nothing is never refused, so this cannot refuse
-    // before M5 (declared); the arithmetic and the sentence are pinned on
-    // [`pool_at_the_choice`] in-source, with a class named.
+    // **17b cut M5.1** (doc 17 §12: *the later of `SIM UNIT` and `SIM MIND`
+    // is the one refused*): the slot's standing mind, fitted to the NEW
+    // chassis — over-class, the profile count at the class it would seal
+    // at, the floor on an armed chassis — so the arithmetic printed below is
+    // the new chassis's. A standing choice the pilot no longer holds is left
+    // to the check-out (`SimError::MindNotHeld`) and loads `fill_class`
+    // here, as an unchosen slot does.
+    //
+    // **17b cut M3.5** (doc 17 §9, D-UM-36): then the pool, at the choice —
+    // the caller's hull at its OWN class (its mind's, else
+    // `[tacsim.minds].fill_class`: 17b cut M5.1 counts a seated hull as
+    // check-out admits it) against what the side's other hulls speak for
+    // (`pool_at_slot`), under the pool of the most units this centre can
+    // field. At the stock constants it cannot refuse; an operator's lowered
+    // pool reaches it.
     if let Some(minds_cfg) = minds_config(ctx.w) {
-        let (claimed, fill_pods) = centre(ctx.w)
-            .map(|centre| {
-                let claimed = centre
-                    .slots
-                    .iter()
-                    .filter(|slot| slot.team == held.team)
-                    .count();
-                let fill_pods = configs(ctx.w)
-                    .filter(|(_, match_cfg, _)| {
-                        match_cfg.ai_fill && centre.mode != MatchMode::Range
-                    })
-                    .map_or(0, |(_, match_cfg, _)| {
-                        usize::from(ai_side_size(ctx.w, centre, &match_cfg)).saturating_sub(claimed)
-                    });
-                (claimed, fill_pods)
-            })
-            .unwrap_or_default();
-        pool_at_the_choice(
-            &minds_cfg,
-            centre::fieldable_per_side(ctx.w),
-            std::iter::repeat_n(None, claimed.saturating_sub(1))
-                .chain(std::iter::repeat_n(Some(minds_cfg.fill_class), fill_pods)),
-            None,
-        )?;
+        let class = match held.mind.as_ref() {
+            Some(choice) => {
+                let holdings = holdings::held_by(ctx.w, held.pilot);
+                match holdings::resolve(&holdings, &choice.mind) {
+                    Some(mind) => fit_on_chassis(ctx.w, chosen.as_str(), mind, &choice.profiles)?,
+                    None => minds_cfg.fill_class,
+                }
+            }
+            None => minds_cfg.fill_class,
+        };
+        pool_at_slot(ctx.w, held.team, held.index, class)?;
     }
     let spelling = type_word(ctx.w, chosen.as_str());
     let stored =
@@ -1589,16 +1935,17 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
 }
 
 /// **The pool at the choice** (17b cut M3.5; doc 17 §9, D-UM-36) — what
-/// [`unit_type`] asks after the class cap: the caller's hull's load at `mine`
-/// against what the side's other loads speak for — its other claimed slots
-/// (one class each, `None` before 17b cut M5: a seated hull loads nothing)
-/// AND, since 17b cut M4.3, its unclaimed pods at `[tacsim.minds].fill_class`
-/// under the AI fill — under the pool of `per_side` pods a side, both sides
-/// (`centre::fieldable_per_side`: the most units the centre can field, so the
-/// smallest pool any match of it runs under). **A choice that adds nothing is
-/// never refused** (`would think 0` is never said): before M5 every `mine` is
-/// `None`, so nothing is refusable at the choice yet (declared); the
-/// arithmetic is the same one check-out's last gate does.
+/// [`unit_type`] and [`mind`] ask last ([`pool_at_slot`] gathers the loads):
+/// the caller's hull's load at `mine` against what the side's other loads
+/// speak for — its other claimed slots, each at its own class (17b cut M5.1:
+/// its chosen mind's, else `[tacsim.minds].fill_class`, seated or not), AND,
+/// since 17b cut M4.3, its unclaimed pods under the AI fill at the fill's
+/// chosen class or `fill_class` — under the pool of `per_side` pods a side,
+/// both sides (`centre::fieldable_per_side`: the most units the centre can
+/// field, so the smallest pool any match of it runs under). **A choice that
+/// adds nothing is never refused** (`would think 0` is never said): `None`
+/// is admitted under any pool, which no lobby caller passes since 17b cut
+/// M5.1; the arithmetic is the same one check-out's last gate does.
 ///
 /// # Errors
 ///
@@ -1620,6 +1967,944 @@ fn pool_at_the_choice(
         .map(|class| load_of(&cfg.classes, class))
         .fold(0_u64, u64::saturating_add);
     admit(compute, spoken, would).map_err(SimError::Pool)
+}
+
+// ---------------------------------------------------------------------------
+// `SIM MIND` and `SIM AI MIND`: which mind a hull carries (17b cut M5.1)
+// ---------------------------------------------------------------------------
+
+/// **The bare `SIM MIND` line of a slot that chose nothing** (17b cut M5.1;
+/// the owner's OQ-9 (i): an unchosen slot stays as built).
+pub const MIND_UNCHOSEN: &str = "Yours: none; a tank you leave flies Standard Doctrine on Line.";
+
+/// **`SIM MIND none`'s reply** (17b cut M5.1).
+pub const MIND_CLEARED: &str =
+    "Your slot carries no mind of your own; a tank you leave flies Standard Doctrine on Line.";
+
+/// **Everybody else's `SIM AI MIND` from `SIM START` on** (17b cut M5.1; the
+/// design note's §2.4): it names nothing and marks nothing.
+pub const FILLS_HIDDEN: &str = "The fills are not shown once a match starts.";
+
+/// **What one `SIM MIND` line (or `SIM AI MIND`'s, after its side word) asks
+/// for** (17b cut M5.1; D8), read by [`MindRequest::parse`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MindRequest {
+    /// The bare word: a read, to the actor alone.
+    Read,
+    /// `none`: the choice cleared.
+    Clear,
+    /// `<mind> [@<rev>] [PROFILE <p>[, <p>]…]`.
+    Choose {
+        /// The mind's words, as typed.
+        mind: String,
+        /// Whether an `@<rev>` pin was written (refused: no revisions are
+        /// kept before 17b cut M6).
+        revision: bool,
+        /// The profiles' words, as typed, in order; empty is Line alone.
+        profiles: Vec<String>,
+    },
+}
+
+/// **Why a mind line is not one** — the usage line `crate::match_::sim` says
+/// for it (17b cut M5.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MindUsage {
+    /// No mind before `PROFILE`.
+    Mind,
+    /// `PROFILE` with no profile after it.
+    Profiles,
+}
+
+impl MindRequest {
+    /// **Read one line** (17b cut M5.1; D8): empty is [`MindRequest::Read`],
+    /// `none` (case-folded) [`MindRequest::Clear`], anything else a choice —
+    /// the mind's words up to an `@` or the word `PROFILE` (case-folded), and
+    /// after `PROFILE` the profiles, comma-separated.
+    ///
+    /// # Errors
+    ///
+    /// [`MindUsage`] when the words are not a choice: no mind before
+    /// `PROFILE`, or nothing after it.
+    pub fn parse(rest: &str) -> Result<MindRequest, MindUsage> {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Ok(MindRequest::Read);
+        }
+        if rest.eq_ignore_ascii_case("none") {
+            return Ok(MindRequest::Clear);
+        }
+        let (head, tail) = match split_profile(rest) {
+            Some((head, tail)) => (head, Some(tail)),
+            None => (rest, None),
+        };
+        let (mind, revision) = match head.split_once('@') {
+            Some((mind, _)) => (mind.trim(), true),
+            None => (head.trim(), false),
+        };
+        if mind.is_empty() {
+            return Err(MindUsage::Mind);
+        }
+        let profiles = match tail {
+            None => Vec::new(),
+            Some(tail) => {
+                let words: Vec<String> = tail
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|word| !word.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if words.is_empty() {
+                    return Err(MindUsage::Profiles);
+                }
+                words
+            }
+        };
+        Ok(MindRequest::Choose {
+            mind: mind.to_owned(),
+            revision,
+            profiles,
+        })
+    }
+}
+
+/// **`rest` split at the word `PROFILE`**, case-folded and standing alone
+/// between whitespace: the words before it and the words after it.
+fn split_profile(rest: &str) -> Option<(&str, &str)> {
+    let mut start: Option<usize> = None;
+    for (at, ch) in rest
+        .char_indices()
+        .chain(std::iter::once((rest.len(), ' ')))
+    {
+        if ch.is_whitespace() {
+            if let Some(from) = start.take()
+                && rest.get(from..at)?.eq_ignore_ascii_case("profile")
+            {
+                return Some((rest.get(..from)?, rest.get(at..)?));
+            }
+        } else if start.is_none() {
+            start = Some(at);
+        }
+    }
+    None
+}
+
+/// **What one `SIM AI MIND` line asks for** (17b cut M5.1): an optional side
+/// word — staff name the side they set, a lead's side is their own — then a
+/// [`MindRequest`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FillRequest {
+    /// `red` or `blue`, when the line names one.
+    pub side: Option<Team>,
+    /// The rest.
+    pub request: MindRequest,
+}
+
+impl FillRequest {
+    /// **Read one line**: a leading `red` or `blue` (case-folded) is the
+    /// side, and the rest is [`MindRequest::parse`]'s — so a side word alone
+    /// is a bare read, never a mind called `red` (17b cut M5.1's review).
+    ///
+    /// # Errors
+    ///
+    /// [`MindRequest::parse`]'s.
+    pub fn parse(rest: &str) -> Result<FillRequest, MindUsage> {
+        let rest = rest.trim();
+        let (head, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        let side = match head.to_ascii_lowercase().as_str() {
+            "red" => Some(Team::Red),
+            "blue" => Some(Team::Blue),
+            _ => None,
+        };
+        if let Some(side) = side {
+            return Ok(FillRequest {
+                side: Some(side),
+                request: MindRequest::parse(tail)?,
+            });
+        }
+        Ok(FillRequest {
+            side: None,
+            request: MindRequest::parse(rest)?,
+        })
+    }
+}
+
+/// **The core one unit type is built with, read without an instance** (17b
+/// cut M5.1; R-9, D-UM-37: the pod emulates the chassis's content-declared
+/// core and never reads owned IC hardware): the spec's
+/// [`crate::definitions::unit::ComponentRole::Core`] and the store's
+/// [`crate::definitions::core::CoreDef`] — `(class, governed)` — or `None` for
+/// a type with no core (or one the catalog does not carry), which flies the
+/// ROM. [`class_of_type`]'s neighbour.
+pub(crate) fn core_of_type(w: &World, id: &str) -> Option<(CoreClass, bool)> {
+    let key = mush_core::CanonicalId::new(id).ok()?;
+    let catalog = w.module_state::<crate::TacsimStore>()?.definitions();
+    let core = catalog.specs.get(&key)?.cores().next()?;
+    catalog.cores.get(core).map(|def| (def.class, def.governed))
+}
+
+/// **Whether one unit type carries a weapon** (17b cut M5.1; C-23: the odds
+/// floor binds only a hull with a weapons station) — the spec's weapon
+/// components, read as [`side_fields_a_gun`] reads them.
+pub(crate) fn armed_of_type(w: &World, id: &str) -> bool {
+    let Ok(key) = mush_core::CanonicalId::new(id) else {
+        return false;
+    };
+    w.module_state::<crate::TacsimStore>()
+        .and_then(|store| store.definitions().specs.get(&key).cloned())
+        .is_some_and(|spec| spec.weapons().next().is_some())
+}
+
+/// **The unit type one slot fields**: its choice, else its pod's authored
+/// type.
+fn effective_type(w: &World, slot: &Slot) -> Option<SmolStr> {
+    slot.unit_type
+        .clone()
+        .or_else(|| authored_unit_type(w, slot.team, slot.index))
+}
+
+/// **The class `held` would be sealed at on `chassis`** — the seal's own rule
+/// (`crate::match_::seal::seal_for`): `min(rated, core, fill_class)`, and
+/// Class 0 on a chassis with no core.
+fn sealed_class(
+    w: &World,
+    held: &HeldMind,
+    chassis: Option<&str>,
+    fill_class: CoreClass,
+) -> CoreClass {
+    match chassis.and_then(|id| core_of_type(w, id)) {
+        Some((core, _)) => held.rated.min(core).min(fill_class),
+        None => CoreClass::Zero,
+    }
+}
+
+/// **One profile's card, held to the server** (17b cut M5.1): the card's
+/// survival pair on every chassis, and on an `armed` one the Compact floor —
+/// the seal's own questions (`crate::match_::seal::seal_for`,
+/// [`crate::match_::seal::odds_are_lawful`]), refused, never clamped
+/// (D-UM-17). A profile that is not a stock preset has no stock card and
+/// nothing to hold.
+fn profile_lawful(
+    profile: &str,
+    reflex: &crate::config::ReflexConfig,
+    floor_permille: u32,
+    armed: bool,
+) -> Result<(), SimError> {
+    let Some(named) = crate::arena::card::PRESETS
+        .iter()
+        .find(|preset| preset.eq_ignore_ascii_case(profile.trim()))
+        .copied()
+    else {
+        return Ok(());
+    };
+    let Some(card) = crate::arena::card::preset(named, reflex) else {
+        return Ok(());
+    };
+    if let Err(crate::arena::card::CardError::Pair {
+        fight_home,
+        break_off,
+        ..
+    }) = card.pair(named)
+    {
+        return Err(SimError::ProfilePair {
+            profile: named.to_owned(),
+            fight_home,
+            break_off,
+        });
+    }
+    if armed && !crate::match_::seal::odds_are_lawful(&card, floor_permille) {
+        return Err(SimError::UnderFloor {
+            profile: named.to_owned(),
+            odds_permille: u32::from(card.min_odds_permille),
+            floor_permille,
+        });
+    }
+    Ok(())
+}
+
+/// **The fit at the choice, but the pool** (17b cut M5.1; doc 17 §9, §12;
+/// the design note's M5.1 item 4): whether `held`, sealed with `profiles`,
+/// may fly `chassis` — over-class (D-UM-41, C-24: a governed core below the
+/// mind's rating; a chassis with no core never is), the profile count at the
+/// class it would seal at (OQ-3), and each profile's card ([`profile_lawful`],
+/// the floor on an armed chassis only, C-23) — answering that class.
+/// [`fit_mind`] adds the pool; `SIM AI MIND` asks this alone for each pod its
+/// side's fill may take.
+fn fit_on_chassis(
+    w: &World,
+    chassis: &str,
+    held: &HeldMind,
+    profiles: &[SmolStr],
+) -> Result<CoreClass, SimError> {
+    let minds_cfg = minds_config(w).unwrap_or_default();
+    let reflex = configs(w)
+        .map(|(arena_cfg, _, _)| arena_cfg.reflex)
+        .unwrap_or_default();
+    let core = core_of_type(w, chassis);
+    if let Some((core, true)) = core
+        && held.rated > core
+    {
+        return Err(SimError::OverClass {
+            mind: held.name().to_owned(),
+            rated: held.rated,
+            chassis: type_word(w, chassis),
+            core,
+        });
+    }
+    let class = sealed_class(w, held, Some(chassis), minds_cfg.fill_class);
+    let most = minds_cfg.classes.row(class).profiles;
+    if profiles.len() > usize::from(most) {
+        return Err(SimError::TooManyProfiles {
+            mind: held.name().to_owned(),
+            class,
+            most,
+            rom: core.is_none().then(|| type_word(w, chassis)),
+        });
+    }
+    let armed = armed_of_type(w, chassis);
+    if profiles.is_empty() {
+        profile_lawful("Line", &reflex, minds_cfg.odds_floor_permille, armed)?;
+    }
+    for profile in profiles {
+        profile_lawful(profile, &reflex, minds_cfg.odds_floor_permille, armed)?;
+    }
+    Ok(class)
+}
+
+/// **The fit at the choice** (17b cut M5.1; the design note's M5.1 item 4):
+/// [`fit_on_chassis`], then the pool for side `team`'s slot `index` at the
+/// class it answered ([`pool_at_slot`]) — so `SIM MIND` and `SIM UNIT` ask
+/// the same questions and "the later … is the one refused" (doc 17 §12).
+fn fit_mind(
+    w: &World,
+    team: Team,
+    index: u8,
+    chassis: &str,
+    held: &HeldMind,
+    profiles: &[SmolStr],
+) -> Result<CoreClass, SimError> {
+    let class = fit_on_chassis(w, chassis, held, profiles)?;
+    pool_at_slot(w, team, index, class)?;
+    Ok(class)
+}
+
+/// **The presets of `held` that `chassis` may seal** (17b cut M5.1) — the
+/// bare `SIM MIND`'s `Fits` line: how many it may seal there (the class
+/// row's `profiles` at the class it would seal at, and never more than the
+/// presets listed), and the presets [`fit_on_chassis`] takes there one at a
+/// time — the choice's own questions, so the line and the refusal cannot
+/// drift (17b cut M5.1's review); `None` when it is over-class there or no
+/// preset is lawful.
+fn fits(w: &World, chassis: &str, held: &HeldMind) -> Option<(u8, Vec<SmolStr>)> {
+    let mut class = None;
+    let lawful: Vec<SmolStr> = held
+        .presets
+        .iter()
+        .filter(|preset| {
+            fit_on_chassis(w, chassis, held, std::slice::from_ref(*preset))
+                .map(|sealed| class = Some(sealed))
+                .is_ok()
+        })
+        .cloned()
+        .collect();
+    let most = minds_config(w)
+        .unwrap_or_default()
+        .classes
+        .row(class?)
+        .profiles;
+    let listed = u8::try_from(lawful.len()).unwrap_or(u8::MAX);
+    Some((most.min(listed), lawful))
+}
+
+/// **The class one claimed slot's hull is admitted at** (17b cut M5.1): the
+/// class its chosen mind would seal at on its chassis, else `fill_class` —
+/// seated or not, the class check-out admits it at
+/// (`crate::match_::pool::admitted_class`). A choice the pilot no longer holds
+/// is left to the check-out and counts as unchosen.
+fn slot_class(w: &World, slot: &Slot, fill_class: CoreClass) -> CoreClass {
+    slot.mind
+        .as_ref()
+        .and_then(|choice| {
+            let held = holdings::held_by(w, slot.pilot);
+            let mind = holdings::resolve(&held, &choice.mind)?;
+            Some(sealed_class(
+                w,
+                mind,
+                effective_type(w, slot).as_deref(),
+                fill_class,
+            ))
+        })
+        .unwrap_or(fill_class)
+}
+
+/// **The mind a side's fill choice names, resolved** (17b cut M5.1): against
+/// the holdings of the lead who set it (their own slot's pilot, F11), or
+/// Standard Doctrine for staff (D9). `None` when it no longer resolves.
+fn fill_held(w: &World, centre: &Centre, fill: &FillChoice) -> Option<HeldMind> {
+    match fill.by {
+        FillSetter::Staff => {
+            let doctrine = HeldMind::doctrine();
+            holdings::names(&doctrine, &fill.choice.mind).then_some(doctrine)
+        }
+        FillSetter::Lead(account) => {
+            let pilot = centre
+                .slots
+                .iter()
+                .find(|slot| slot.team == fill.team && slot.account == account)?
+                .pilot;
+            holdings::resolve(&holdings::held_by(w, pilot), &fill.choice.mind).cloned()
+        }
+    }
+}
+
+/// **Every class side `team` would field, but slot `except`'s** (17b cut
+/// M5.1): its claimed slots at their own class ([`slot_class`]) and, under
+/// the AI fill and no range, the pods the fill would add ([`fill_pods`]) at
+/// the fill's chosen class on each pod's chassis, else `fill_class`.
+fn side_classes(
+    w: &World,
+    centre: &Centre,
+    team: Team,
+    except: Option<u8>,
+    fill_class: CoreClass,
+) -> Vec<CoreClass> {
+    let mut classes: Vec<CoreClass> = centre
+        .slots
+        .iter()
+        .filter(|slot| slot.team == team && Some(slot.index) != except)
+        .map(|slot| slot_class(w, slot, fill_class))
+        .collect();
+    if let Some((_, match_cfg, _)) = configs(w)
+        && match_cfg.ai_fill
+        && centre.mode != MatchMode::Range
+    {
+        let fielded: Vec<ObjId> = centre
+            .slots
+            .iter()
+            .filter(|slot| slot.team == team)
+            .filter_map(|slot| centre::tank_for_slot(w, team, slot.index))
+            .collect();
+        let held = centre
+            .fill_minds
+            .iter()
+            .find(|fill| fill.team == team)
+            .and_then(|fill| fill_held(w, centre, fill));
+        for (index, _) in fill_pods(w, centre, &match_cfg, team, &fielded) {
+            classes.push(match &held {
+                Some(held) => sealed_class(
+                    w,
+                    held,
+                    authored_unit_type(w, team, index).as_deref(),
+                    fill_class,
+                ),
+                None => fill_class,
+            });
+        }
+    }
+    classes
+}
+
+/// **The pool at the choice for one slot** (17b cut M5.1; doc 17 §9,
+/// D-UM-36): side `team`'s slot `index` at `class` against every other hull
+/// of the side ([`side_classes`]), through [`pool_at_the_choice`]. Nothing to
+/// refuse on a world with no `[tacsim.minds]` or no centre. **A change that
+/// lowers the slot's load is never refused** (17b cut M5.1's review, D-R2): a
+/// side that an unchecked claim or `SIM AI <n>` has put past its half may
+/// still move down — a mind chosen on a chassis with no core (400 for 1,500)
+/// — while a change that keeps or raises the load (`SIM MIND none` back to
+/// `fill_class` included) is asked of the side after it, so the later of `SIM
+/// UNIT` and `SIM MIND` stays the one refused (doc 17 §12).
+fn pool_at_slot(w: &World, team: Team, index: u8, class: CoreClass) -> Result<(), SimError> {
+    use crate::match_::pool::load_of;
+    let (Some(minds_cfg), Some(centre)) = (minds_config(w), centre(w)) else {
+        return Ok(());
+    };
+    if let Some(slot) = centre
+        .slots
+        .iter()
+        .find(|slot| slot.team == team && slot.index == index)
+        && load_of(&minds_cfg.classes, Some(class))
+            < load_of(
+                &minds_cfg.classes,
+                Some(slot_class(w, slot, minds_cfg.fill_class)),
+            )
+    {
+        return Ok(());
+    }
+    let others = side_classes(w, centre, team, Some(index), minds_cfg.fill_class);
+    pool_at_the_choice(
+        &minds_cfg,
+        centre::fieldable_per_side(w),
+        others.into_iter().map(Some),
+        Some(class),
+    )
+}
+
+/// **The profiles of one choice, resolved against `held`** (17b cut M5.1;
+/// OQ-3): each a preset it carries, case-folded, in its canonical spelling,
+/// none twice; a list that is Line alone is stored empty.
+fn resolve_profiles(held: &HeldMind, words: &[String]) -> Result<Vec<SmolStr>, SimError> {
+    let mut profiles: Vec<SmolStr> = Vec::with_capacity(words.len());
+    for word in words {
+        let profile = held.preset(word).ok_or_else(|| SimError::NoSuchProfile {
+            mind: held.name().to_owned(),
+            word: word.clone(),
+            presets: listed(&held.presets, "or"),
+        })?;
+        if profiles.contains(&profile) {
+            return Err(SimError::ProfileTwice {
+                profile: profile.to_string(),
+            });
+        }
+        profiles.push(profile);
+    }
+    if let [only] = profiles.as_slice()
+        && only == "Line"
+    {
+        profiles.clear();
+    }
+    Ok(profiles)
+}
+
+/// **A bare `SIM MIND`'s `Fits` line** (17b cut M5.1): the chassis and its
+/// core's class, the mind, and how many of which presets it may seal there —
+/// `Fits line_tank (II): Standard Doctrine, up to two of Line, Sentry, Sniper,
+/// Skirmisher, Hunter or Rearguard.` A chassis with no core (`core` `None`)
+/// flies the ROM (C-24), and its bracket says so — `Fits target_mk1 (ROM):
+/// …` — rather than naming a core class it does not have (17b cut M5.1's
+/// review; `(ROM)` is no wider than `(III)`).
+#[must_use]
+pub fn fits_line(
+    chassis: &str,
+    core: Option<CoreClass>,
+    mind: &str,
+    most: u8,
+    presets: &[SmolStr],
+) -> String {
+    format!(
+        "Fits {chassis} ({}): {mind}, up to {} of {}.",
+        core.map_or("ROM", CoreClass::as_str),
+        count_word(usize::from(most)),
+        listed(presets, "or")
+    )
+}
+
+/// **A bare `SIM MIND`'s pool line** (17b cut M5.1; doc 17 §9, C-8: the pool
+/// "visible in the fiction") — `Red's half of the centre's pool is 244,000
+/// ops a second and 3,000 are spoken for.`
+#[must_use]
+pub fn pool_line(team: Team, half: u64, spoken: u64) -> String {
+    format!(
+        "{}'s half of the centre's pool is {} ops a second and {} are spoken for.",
+        side_word(team),
+        crate::match_::pool::thousands(half),
+        crate::match_::pool::thousands(spoken)
+    )
+}
+
+/// **A holding list as a line says it** (17b cut M5.1): one mind with its
+/// presets counted — `Standard Doctrine (six presets)`, production's every
+/// character — and several by their names alone, joined with `and` (`Standard
+/// Doctrine, Fixture I and Load III`), so the line stays under 120 columns
+/// where a test provider holds three.
+#[must_use]
+pub fn holdings_words(held: &[HeldMind]) -> String {
+    match held {
+        [] => "no mind".to_owned(),
+        [mind] => {
+            let n = mind.presets.len();
+            format!(
+                "{} ({} preset{})",
+                mind.name(),
+                count_word(n),
+                if n == 1 { "" } else { "s" }
+            )
+        }
+        several => {
+            let names: Vec<SmolStr> = several
+                .iter()
+                .map(|mind| mind.identity.mind.clone())
+                .collect();
+            listed(&names, "and")
+        }
+    }
+}
+
+/// **The bare `SIM MIND`'s lines** (17b cut M5.1; the design note's §2.4),
+/// always the reader's own: in `Selection` their slot's choice, one `Fits`
+/// line per held mind that fits the slot's chassis and the side's pool; from
+/// `SIM START` on their choice and that selection is closed; and with no
+/// slot what they hold.
+fn mind_read_lines(w: &World, actor: ObjId, state: MatchState, slot: Option<&Slot>) -> Vec<String> {
+    let character = slot.map_or(actor, |slot| slot.pilot);
+    let held = holdings::held_by(w, character);
+    let closed = matches!(
+        state,
+        MatchState::Boarding | MatchState::Running | MatchState::Stopping
+    );
+    let Some(slot) = slot else {
+        let what = holdings_words(&held);
+        return vec![if closed {
+            format!("You hold {what}; selection is closed.")
+        } else {
+            format!("You hold {what}; claim a slot and SIM MIND lists what fits its core.")
+        }];
+    };
+    if state != MatchState::Selection {
+        return vec![match &slot.mind {
+            Some(choice) => format!("Yours: {}; selection is closed.", choice.words()),
+            None => "Yours: none; selection is closed.".to_owned(),
+        }];
+    }
+    let mut lines = vec![match &slot.mind {
+        Some(choice) => format!("Yours: {}.", choice.words()),
+        None => MIND_UNCHOSEN.to_owned(),
+    }];
+    if let Some(chassis) = effective_type(w, slot) {
+        let core = core_of_type(w, &chassis).map(|(class, _)| class);
+        for mind in &held {
+            if let Some((most, presets)) = fits(w, &chassis, mind) {
+                lines.push(fits_line(
+                    &type_word(w, &chassis),
+                    core,
+                    mind.name(),
+                    most,
+                    &presets,
+                ));
+            }
+        }
+    }
+    if let (Some(minds_cfg), Some(centre)) = (minds_config(w), centre(w)) {
+        use crate::match_::pool::{load_of, pool_for};
+        let spoken = side_classes(w, centre, slot.team, None, minds_cfg.fill_class)
+            .into_iter()
+            .map(|class| load_of(&minds_cfg.classes, Some(class)))
+            .fold(0_u64, u64::saturating_add);
+        let units = usize::from(centre::fieldable_per_side(w)).saturating_mul(2);
+        let half = pool_for(&minds_cfg, units) / 2;
+        lines.push(pool_line(slot.team, half, spoken));
+    }
+    lines
+}
+
+/// **`SIM MIND [<mind> [PROFILE <p>[, <p>]…] | none]`** — read or choose the
+/// mind the caller's own slot carries (17b cut M5.1; doc 17 §12, D-UM-49;
+/// the owner's OQ-2, OQ-3; D8).
+///
+/// **The bare read** answers in any state, to the actor alone, about their
+/// own slot (the design note's §2.4): in `Selection` their choice (or
+/// [`MIND_UNCHOSEN`]), one `Fits` line per held mind that fits the slot's
+/// chassis ([`fits_line`]) and the side's pool ([`pool_line`]); from `SIM
+/// START` on their choice and `selection is closed`; with no slot what they
+/// hold.
+///
+/// **A choice** is `Selection` only and the caller's own slot, in `SIM
+/// UNIT`'s order: [`SimError::WrongState`], then [`SimError::NoSlotToField`]
+/// — no new variant for either. Then the mind: an `@<rev>` pin is
+/// [`SimError::NoRevisions`], a mind the character does not hold
+/// [`SimError::NoSuchMind`] (posting nothing), a profile it does not carry
+/// [`SimError::NoSuchProfile`], one named twice [`SimError::ProfileTwice`];
+/// then the fit (`fit_mind`): [`SimError::OverClass`],
+/// [`SimError::TooManyProfiles`], [`SimError::ProfilePair`],
+/// [`SimError::UnderFloor`] (an armed chassis only) and [`SimError::Pool`].
+/// `none` clears the choice, and is held to the pool too: the default loads
+/// `fill_class`, which may be more than a chosen mind on a chassis with no
+/// core.
+///
+/// **Every reply is the actor's alone** (`sys_to_actor`): nothing about a
+/// choice is announced (doc 17 §12's fog; `SIM UNIT`'s announce is what this
+/// must not copy). The choice is recorded on [`Slot::mind`]; **the check-out
+/// still seals Standard Doctrine on Line until 17b cut M5.2.**
+///
+/// # Errors
+///
+/// [`SimError`], as the line the player sees.
+pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
+    let actor = ctx.actor;
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, actor)?;
+    let account = account_of(ctx.w, actor)?;
+    let state = centre(ctx.w).ok_or(SimError::Unavailable)?.state;
+    let slot = centre(ctx.w)
+        .and_then(|centre| centre.slot_of_account(account))
+        .cloned();
+    let chosen = match request {
+        MindRequest::Read => {
+            for line in mind_read_lines(ctx.w, actor, state, slot.as_ref()) {
+                ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+            }
+            return Ok(());
+        }
+        MindRequest::Clear => None,
+        MindRequest::Choose {
+            mind,
+            revision,
+            profiles,
+        } => Some((mind, revision, profiles)),
+    };
+    // `SIM UNIT`'s order: the state where the slot advice is not true, the
+    // slot, then `Selection`.
+    if !matches!(state, MatchState::Idle | MatchState::Selection) && !state.is_terminal() {
+        return Err(SimError::WrongState {
+            state: state.as_str(),
+        });
+    }
+    let slot = slot.ok_or(SimError::NoSlotToField)?;
+    if state != MatchState::Selection {
+        return Err(SimError::WrongState {
+            state: state.as_str(),
+        });
+    }
+    let (stored, reply) = match chosen {
+        None => {
+            let fill_class = minds_config(ctx.w).map_or(CoreClass::I, |cfg| cfg.fill_class);
+            pool_at_slot(ctx.w, slot.team, slot.index, fill_class)?;
+            (None, MIND_CLEARED.to_owned())
+        }
+        Some((word, revision, profiles)) => {
+            if revision {
+                return Err(SimError::NoRevisions);
+            }
+            let held = holdings::held_by(ctx.w, slot.pilot);
+            let mind = holdings::resolve(&held, &word).ok_or_else(|| SimError::NoSuchMind {
+                word: word.trim().to_owned(),
+            })?;
+            let profiles = resolve_profiles(mind, &profiles)?;
+            let chassis = effective_type(ctx.w, &slot).ok_or(SimError::NoUnit {
+                team: slot.team.as_str(),
+                index: slot.index,
+            })?;
+            fit_mind(ctx.w, slot.team, slot.index, &chassis, mind, &profiles)?;
+            let choice = MindChoice {
+                mind: mind.identity.mind.clone(),
+                profiles,
+            };
+            let reply = format!("Your slot will carry {}.", choice.words());
+            (Some(choice), reply)
+        }
+    };
+    {
+        let book = ctx
+            .w
+            .module_state_mut::<MatchBook>()
+            .ok_or(SimError::Unavailable)?;
+        let Some(held) = book
+            .centre_mut()
+            .slots
+            .iter_mut()
+            .find(|held| held.account == account)
+        else {
+            return Err(SimError::NoSlotToField);
+        };
+        held.mind = stored;
+    }
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, reply);
+    Ok(())
+}
+
+/// **The fill read for one side, privileged** — the setter's, the lead's
+/// and staff's line.
+fn fill_line(team: Team, fill: Option<&FillChoice>) -> String {
+    match fill {
+        Some(fill) => format!("{}'s fill: {}.", side_word(team), fill.choice.words()),
+        None => format!(
+            "{}'s fill: nothing chosen; it flies Standard Doctrine on Line.",
+            side_word(team)
+        ),
+    }
+}
+
+/// **The bare `SIM AI MIND`'s lines** (17b cut M5.1; the design note's
+/// §2.4): before `SIM START`, one a side — the side's lead and staff read the
+/// choice ([`fill_line`]), everyone else whether one was made; from `SIM
+/// START` on, the account that set a fill reads its own and staff read both,
+/// and everyone else reads [`FILLS_HIDDEN`] alone. `only` (`SIM AI MIND red`)
+/// keeps that side's line alone.
+fn fill_read_lines(
+    centre: &Centre,
+    account: Option<AccountId>,
+    staff: bool,
+    only: Option<Team>,
+) -> Vec<String> {
+    let fill_of = |team: Team| centre.fill_minds.iter().find(|fill| fill.team == team);
+    let teams = Team::ALL
+        .into_iter()
+        .filter(|team| only.is_none_or(|only| only == *team));
+    if matches!(centre.state, MatchState::Idle | MatchState::Selection) {
+        return teams
+            .map(|team| {
+                let lead = account.is_some_and(|account| centre.leads_side(team, account));
+                match (fill_of(team), staff || lead) {
+                    (fill, true) => fill_line(team, fill),
+                    (Some(_), false) => format!("{}'s fill carries a mind.", side_word(team)),
+                    (None, false) => format!("{}'s fill: nothing chosen.", side_word(team)),
+                }
+            })
+            .collect();
+    }
+    let lines: Vec<String> = teams
+        .filter_map(|team| {
+            let fill = fill_of(team);
+            let setter = fill.is_some_and(|fill| {
+                account.is_some_and(|account| fill.by == FillSetter::Lead(account))
+            });
+            (staff || setter).then(|| fill_line(team, fill))
+        })
+        .collect();
+    if lines.is_empty() {
+        vec![FILLS_HIDDEN.to_owned()]
+    } else {
+        lines
+    }
+}
+
+/// **`SIM AI MIND [[red|blue] <mind> [PROFILE <p>] | none]`** — read or
+/// choose the mind a side's AI fill carries (17b cut M5.1; doc 17 §12, §19;
+/// D9, D-UM-49).
+///
+/// **In `SIM AI`'s order** (the design note's §2.4): every form is
+/// [`SimError::AiOff`] on a server whose fill is off; on a range the bare read
+/// is `AI fill: none on a range.` and a set [`SimError::AiOnRange`]. The bare
+/// read then answers anybody in the centre (`fill_read_lines`). A set is
+/// `Selection` only ([`SimError::WrongState`]) and a side's lead's, for their
+/// own side, from their own holdings, or staff's, for the side they name,
+/// Standard Doctrine's presets only ([`SimError::StaffHoldNoMinds`],
+/// [`SimError::FillWhichSide`]); anyone else is [`SimError::NotLeadForAi`].
+/// The fill flies **one** profile ([`SimError::FillOneProfile`]) — nobody
+/// aboard switches it — and the choice is fitted, but for the pool, to every
+/// pod of the side the fill may take (`fit_on_chassis`). `none` clears it.
+///
+/// It does not re-run the pool: the check-out's `StartError::Pool` is the
+/// backstop, and no fill choice can refuse at the stock constants (the
+/// design note's M5.1 item 4). Every reply is the actor's alone; nothing is
+/// announced.
+///
+/// # Errors
+///
+/// [`SimError`], as the line the player sees.
+pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> {
+    let actor = ctx.actor;
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, actor)?;
+    let staff = is_staff(ctx.w, actor);
+    let account = match account_of(ctx.w, actor) {
+        Ok(account) => Some(account),
+        Err(_) if staff => None,
+        Err(error) => return Err(error),
+    };
+    let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    if !match_cfg.ai_fill {
+        return Err(SimError::AiOff);
+    }
+    if centre(ctx.w).is_some_and(|centre| centre.mode == MatchMode::Range) {
+        if request.request != MindRequest::Read {
+            return Err(SimError::AiOnRange);
+        }
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            "AI fill: none on a range.".to_owned(),
+        );
+        return Ok(());
+    }
+    let chosen = match request.request {
+        MindRequest::Read => {
+            let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+            for line in fill_read_lines(centre, account, staff, request.side) {
+                ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+            }
+            return Ok(());
+        }
+        MindRequest::Clear => None,
+        MindRequest::Choose {
+            mind,
+            revision,
+            profiles,
+        } => Some((mind, revision, profiles)),
+    };
+    let (team, lead_pilot) = {
+        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+        if centre.state != MatchState::Selection {
+            return Err(SimError::WrongState {
+                state: centre.state.as_str(),
+            });
+        }
+        let led = account.and_then(|account| {
+            Team::ALL
+                .into_iter()
+                .find(|team| centre.leads_side(*team, account))
+        });
+        let team = match (request.side, led) {
+            (Some(side), Some(led)) if side == led => side,
+            (Some(side), _) if staff => side,
+            (None, Some(led)) => led,
+            (None, None) if staff => return Err(SimError::FillWhichSide),
+            _ => return Err(SimError::NotLeadForAi),
+        };
+        let lead_pilot = (led == Some(team))
+            .then(|| {
+                account.and_then(|account| {
+                    centre
+                        .slots
+                        .iter()
+                        .find(|slot| slot.team == team && slot.account == account)
+                        .map(|slot| slot.pilot)
+                })
+            })
+            .flatten();
+        (team, lead_pilot)
+    };
+    let (stored, reply) = match chosen {
+        None => (None, fill_line(team, None)),
+        Some((word, revision, profiles)) => {
+            if revision {
+                return Err(SimError::NoRevisions);
+            }
+            let held = match lead_pilot {
+                Some(pilot) => holdings::resolve(&holdings::held_by(ctx.w, pilot), &word)
+                    .cloned()
+                    .ok_or_else(|| SimError::NoSuchMind {
+                        word: word.trim().to_owned(),
+                    })?,
+                None => {
+                    let doctrine = HeldMind::doctrine();
+                    if !holdings::names(&doctrine, &word) {
+                        return Err(SimError::StaffHoldNoMinds);
+                    }
+                    doctrine
+                }
+            };
+            if profiles.len() > 1 {
+                return Err(SimError::FillOneProfile);
+            }
+            let profiles = resolve_profiles(&held, &profiles)?;
+            let per_side =
+                configs(ctx.w).map_or(1, |(_, match_cfg, _)| slots_per_side(ctx.w, &match_cfg));
+            for index in 1..=per_side {
+                if let Some(chassis) = authored_unit_type(ctx.w, team, index) {
+                    fit_on_chassis(ctx.w, &chassis, &held, &profiles)?;
+                }
+            }
+            let choice = MindChoice {
+                mind: held.identity.mind.clone(),
+                profiles,
+            };
+            let reply = format!("{}'s fill will carry {}.", side_word(team), choice.words());
+            let by = match (lead_pilot, account) {
+                (Some(_), Some(account)) => FillSetter::Lead(account),
+                _ => FillSetter::Staff,
+            };
+            (Some(FillChoice { team, by, choice }), reply)
+        }
+    };
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        let centre = book.centre_mut();
+        centre.fill_minds.retain(|fill| fill.team != team);
+        if let Some(fill) = stored {
+            centre.fill_minds.push(fill);
+        }
+    }
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, reply);
+    Ok(())
 }
 
 /// Re-ask `Boarding`'s two questions after a slot moved: did a side empty, and
@@ -2497,15 +3782,28 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             // **17b cut M4.3**: the pool and a sealed mind the server cannot
             // run — the two refusals the flip made reachable here — in their
             // short form, under 120 columns (`StartError::call_off_words`).
+            //
+            // **17b cut M5.1** (its review): and the actor — the last
+            // BOARDer, whose `BOARD` answers with this `Err` byte for byte,
+            // or nobody on the deadline's tick — reads the same short form,
+            // as its own sentence. `StartError::Pool`'s long form names a
+            // hull and the class it is admitted at, which marks a chosen
+            // mind to a pilot who may be on the other side, and runs past
+            // 120 columns; it is the log's, here, and the fixtures'.
+            // `CardUnlawful`'s short form is its own sentence, so its reply
+            // is unchanged.
+            tracing::warn!(
+                match_id = match_id.0,
+                %error,
+                "tacsim: the check-out refused, and the match is called off"
+            );
             let said = error.call_off_words(ctx.w, &sides);
+            let said = said.trim_end_matches('.');
             call_off(
                 ctx,
-                format!(
-                    "Match {match_id} could not start: {}. The pods are free again.",
-                    said.trim_end_matches('.')
-                ),
+                format!("Match {match_id} could not start: {said}. The pods are free again."),
             );
-            Err(SimError::Start(error.to_string()))
+            Err(SimError::Start(format!("{said}.")))
         }
     }
 }
@@ -2567,6 +3865,16 @@ fn join_the_nets(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// **Test hook** (17b cut M5.1's review): the sides [`run`] would hand the
+/// check-out — each hull's `Fielded::mind_class` and each side's
+/// `Side::minds`, as [`ready`] resolves them — or its refusal, without
+/// running the check-out or writing anything. Nothing in the shipped lane
+/// calls it.
+#[doc(hidden)]
+pub fn ready_sides_for_tests(ctx: &mut Ctx<'_>) -> Result<Vec<Side>, SimError> {
+    ready(ctx).map(|ready| ready.sides)
+}
+
 /// The sides [`run`] would check out, or the refusal that says it cannot.
 fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
     let (arena_cfg, match_cfg, sensors_cfg) = configs(ctx.w).ok_or(SimError::Unavailable)?;
@@ -2585,6 +3893,9 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         .module_state::<MatchBook>()
         .map(|book| book.opening_cells().clone())
         .unwrap_or_default();
+    // 17b cut M5.1: the class a chosen mind is admitted at is capped here, as
+    // the seal caps it (`seal_for`'s `min(rated, core, class_cap)`).
+    let fill_class = minds_config(ctx.w).map_or(CoreClass::I, |cfg| cfg.fill_class);
     {
         let Some(centre) = centre(ctx.w) else {
             return Err(SimError::Unavailable);
@@ -2618,6 +3929,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                 && team == targets
             {
                 let mut units: Vec<crate::match_::Fielded> = Vec::new();
+                let mut minds: BTreeMap<ObjId, SealChoice> = BTreeMap::new();
                 for index in 1..=count {
                     let tank =
                         centre::tank_for_slot(ctx.w, team, index).ok_or(SimError::NoUnit {
@@ -2628,36 +3940,69 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                         unit: tank,
                         slot: index,
                         opening: openings.get(&(team, index)).copied(),
-                        // 17b cut M3.5: the pool admits it by the fill rule until
-                        // 17b cut M5 lets the lead or `SIM MIND` name a class.
+                        // 17b cut M5.1: a target chooses no mind, so the pool
+                        // admits it by the fill rule (`fill_class`).
                         mind_class: None,
                     });
+                    minds.insert(tank, SealChoice::unchosen());
                 }
                 if units.is_empty() {
                     return Err(SimError::EmptySide(team.as_str()));
                 }
-                sides.push(Side { team, units });
+                sides.push(Side { team, units, minds });
                 continue;
             }
             // **16b cut Q.1**: the pod index travels with the unit. It is the
             // only place in the tree that knows which slot fielded which tank, so
             // `Arena::new` can resolve `RA`, `BC` and a pilot and their teammates
             // call one machine by one name.
-            let mut units: Vec<crate::match_::Fielded> = centre
-                .slots
-                .iter()
-                .filter(|slot| slot.team == team)
-                .filter_map(|slot| {
-                    slot.unit.map(|unit| crate::match_::Fielded {
-                        unit,
-                        slot: slot.index,
-                        opening: openings.get(&(team, slot.index)).copied(),
-                        // 17b cut M3.5: the pool admits it by the fill rule until
-                        // 17b cut M5 lets the lead or `SIM MIND` name a class.
-                        mind_class: None,
-                    })
-                })
-                .collect();
+            //
+            // **17b cut M5.1** (the design note's M5.1 item 6): each seated
+            // slot's choice resolved against the holdings seam — a mind its
+            // pilot no longer holds is `SimError::MindNotHeld`, naming the
+            // slot and never the mind — into the side's `minds` and, for a
+            // slot that chose, the class its mind seals at on the fitted
+            // chassis (`Fielded::mind_class`); an unchosen hull is admitted
+            // by the fill rule. Declared: the check-out still seals Standard
+            // Doctrine on Line until 17b cut M5.2 reads `Side::minds`.
+            let mut units: Vec<crate::match_::Fielded> = Vec::new();
+            let mut minds: BTreeMap<ObjId, SealChoice> = BTreeMap::new();
+            for slot in centre.slots.iter().filter(|slot| slot.team == team) {
+                let Some(unit) = slot.unit else {
+                    continue;
+                };
+                let (mind_class, choice) = match &slot.mind {
+                    None => (None, SealChoice::unchosen()),
+                    Some(choice) => {
+                        let held =
+                            holdings::resolve(&holdings::held_by(ctx.w, slot.pilot), &choice.mind)
+                                .cloned()
+                                .ok_or(SimError::MindNotHeld {
+                                    team: team.as_str(),
+                                    index: Some(slot.index),
+                                })?;
+                        let chassis =
+                            fitted_type(ctx.w, unit).or_else(|| effective_type(ctx.w, slot));
+                        let class = sealed_class(ctx.w, &held, chassis.as_deref(), fill_class);
+                        (
+                            Some(class),
+                            SealChoice {
+                                held,
+                                profiles: choice.profiles.clone(),
+                                chose: true,
+                                substituted: false,
+                            },
+                        )
+                    }
+                };
+                units.push(crate::match_::Fielded {
+                    unit,
+                    slot: slot.index,
+                    opening: openings.get(&(team, slot.index)).copied(),
+                    mind_class,
+                });
+                minds.insert(unit, choice);
+            }
             if (!match_cfg.ai_fill || range.is_some()) && units.is_empty() {
                 return Err(SimError::EmptySide(team.as_str()));
             }
@@ -2689,20 +4034,52 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             //
             // **16b cut AE.3**: the walk is [`fill_pods`], shared with `SIM
             // START`'s courtesy so the two cannot differ.
+            //
+            // **17b cut M5.1**: the side's fill choice, when it fields a pod,
+            // resolved against the holdings of the lead who set it (staff's is
+            // Standard Doctrine) — `SimError::MindNotHeld` naming the fill
+            // when it no longer resolves — and each fill hull's class read on
+            // its own chassis.
             if match_cfg.ai_fill && range.is_none() {
                 let fielded: Vec<ObjId> = units.iter().map(|fielded| fielded.unit).collect();
-                for (index, tank) in fill_pods(ctx.w, centre, &match_cfg, team, &fielded) {
+                let pods = fill_pods(ctx.w, centre, &match_cfg, team, &fielded);
+                let fill = match centre.fill_minds.iter().find(|fill| fill.team == team) {
+                    Some(fill) if !pods.is_empty() => Some((
+                        fill,
+                        fill_held(ctx.w, centre, fill).ok_or(SimError::MindNotHeld {
+                            team: team.as_str(),
+                            index: None,
+                        })?,
+                    )),
+                    _ => None,
+                };
+                for (index, tank) in pods {
                     // 16b cut Q.1: an AI-filled pod carries its own index too, so
                     // a machine in red pod 3 is `RC`, exactly as a pilot in that
                     // pod would be.
+                    let (mind_class, choice) = match &fill {
+                        None => (None, SealChoice::unchosen()),
+                        Some((fill, held)) => {
+                            let chassis = fitted_type(ctx.w, tank)
+                                .or_else(|| authored_unit_type(ctx.w, team, index));
+                            (
+                                Some(sealed_class(ctx.w, held, chassis.as_deref(), fill_class)),
+                                SealChoice {
+                                    held: held.clone(),
+                                    profiles: fill.choice.profiles.clone(),
+                                    chose: true,
+                                    substituted: false,
+                                },
+                            )
+                        }
+                    };
                     units.push(crate::match_::Fielded {
                         unit: tank,
                         slot: index,
                         opening: openings.get(&(team, index)).copied(),
-                        // 17b cut M3.5: the pool admits it by the fill rule until
-                        // 17b cut M5 lets the lead or `SIM MIND` name a class.
-                        mind_class: None,
+                        mind_class,
                     });
+                    minds.insert(tank, choice);
                 }
             }
             // A side with no unit at all is still a side nobody can fight: with
@@ -2722,7 +4099,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                 .filter_map(|fielded| fitted_type(ctx.w, fielded.unit))
                 .collect();
             side_fields_a_gun(ctx.w, team, &types)?;
-            sides.push(Side { team, units });
+            sides.push(Side { team, units, minds });
         }
     }
     Ok(Ready {
@@ -3756,6 +5133,9 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
             // 16b cut O.3: and the range's count with it (the invariant on
             // `Centre::range_targets`).
             centre.range_targets = None;
+            // 17b cut M5.1: and the fills' mind choices, which belonged to the
+            // match that was set up (a slot's choice goes with `slots`).
+            centre.fill_minds.clear();
         }
     }
 }
@@ -3807,6 +5187,15 @@ pub enum BoardReader {
 ///
 /// The `AI fill:` line, the boarding clock, the arena clock and the terminal hint
 /// are the same for every reader.
+///
+/// **17b cut M5.1 adds the minds, fogged** (the design note's §2.4; doc 17
+/// §12, D10): in `Selection` only, a slot's row ends `, mind Standard Doctrine
+/// (Sniper, Line)` for its own character and for staff and `, a mind` for
+/// everyone else, and a slot that chose nothing prints nothing; a side's fill
+/// choice is one row after both sides' — `  red fill: Standard Doctrine
+/// (Sniper)` for the side's lead and staff, `  red fill: a mind` for everyone
+/// else, no row for an unchosen fill. From `SIM START` on no row names or marks
+/// a mind for any reader, staff included.
 #[must_use]
 pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
     // **16b cut F.4**: the board of a centre that cannot run a match is a
@@ -3945,8 +5334,26 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
                     .unwrap_or_default(),
                 _ => String::new(),
             };
+            // **17b cut M5.1** (the design note's §2.4; doc 17 §12's fog):
+            // the slot's mind, after the bracket and on its model, in
+            // `Selection` only — named to the slot's own character and to
+            // staff (`, mind Standard Doctrine (Sniper, Line)`), marked to
+            // everyone else (`, a mind`), and nothing against a slot that
+            // chose nothing, so a stock lobby's row is byte for byte what it
+            // was. From `SIM START` on no row names or marks a mind for any
+            // reader, staff included (doc 17:937).
+            let mind = match centre.state {
+                MatchState::Selection => board_mind_clause(
+                    slot.mind.as_ref(),
+                    match reader {
+                        BoardReader::Staff => true,
+                        BoardReader::Player(actor) => actor == slot.pilot,
+                    },
+                ),
+                _ => String::new(),
+            };
             pilots.push(format!(
-                "{} ({callsign}): {}{fielding}{pod}{seated}",
+                "{} ({callsign}): {}{fielding}{mind}{pod}{seated}",
                 slot.index,
                 display_name(w, slot.pilot)
             ));
@@ -3955,6 +5362,28 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
             rows.push(format!("  {}: nobody", team.as_str()));
         } else {
             rows.push(format!("  {}: {}", team.as_str(), pilots.join("; ")));
+        }
+    }
+    // **17b cut M5.1** (the design note's §2.4): each side's fill choice, in
+    // `Selection` only and only where the fill runs, after both sides' rows —
+    // named to the side's lead and to staff (`  red fill: Standard Doctrine
+    // (Sniper)`), marked to everyone else (`  red fill: a mind`), and no row
+    // for a fill nobody chose for.
+    if centre.state == MatchState::Selection
+        && centre.mode != MatchMode::Range
+        && configs(w).is_some_and(|(_, match_cfg, _)| match_cfg.ai_fill)
+    {
+        for team in Team::ALL {
+            let Some(fill) = centre.fill_minds.iter().find(|fill| fill.team == team) else {
+                continue;
+            };
+            let reads = match reader {
+                BoardReader::Staff => true,
+                BoardReader::Player(actor) => {
+                    account_of(w, actor).is_ok_and(|account| centre.leads_side(team, account))
+                }
+            };
+            rows.push(board_fill_row(team, &fill.choice, reads));
         }
     }
     // **16b cut Q.7**: what the machines are doing here.
@@ -4038,6 +5467,33 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         rows.push("  `SIM TEAM red` or `SIM TEAM blue` opens the next match.".to_owned());
     }
     rows
+}
+
+/// **The board's mind clause for one slot's row** (17b cut M5.1; the design
+/// note's §2.4) — `, mind Standard Doctrine (Sniper, Line)` for a reader who
+/// may read it (the slot's own character, staff), `, a mind` for everyone
+/// else, and nothing for a slot that chose nothing. [`status_lines`] prints
+/// it in `Selection` only; the bot's contract test reads what it prints.
+#[must_use]
+pub fn board_mind_clause(choice: Option<&MindChoice>, reads: bool) -> String {
+    match choice {
+        Some(choice) if reads => format!(", mind {}", choice.words()),
+        Some(_) => ", a mind".to_owned(),
+        None => String::new(),
+    }
+}
+
+/// **The board's row for one side's fill choice** (17b cut M5.1; the design
+/// note's §2.4) — `  red fill: Standard Doctrine (Sniper)` for a reader who
+/// may read it (the side's lead, staff), `  red fill: a mind` for everyone
+/// else. [`status_lines`] prints it in `Selection` only, for a chosen fill.
+#[must_use]
+pub fn board_fill_row(team: Team, choice: &MindChoice, reads: bool) -> String {
+    if reads {
+        format!("  {} fill: {}", team.as_str(), choice.words())
+    } else {
+        format!("  {} fill: a mind", team.as_str())
+    }
 }
 
 /// The centre's rows for `@arena/status`: the same lines `SIM STATUS` renders,
@@ -4129,16 +5585,21 @@ pub(crate) fn display_name(w: &World, object: ObjId) -> String {
 mod tests {
     use super::*;
 
-    /// **`SIM UNIT`'s pool at the choice** (17b cut M3.5; doc 17 §9,
-    /// D-UM-36), with a class named as 17b cut M5 will name one:
+    /// **The pool at the choice** (17b cut M3.5; doc 17 §9, D-UM-36), as
+    /// `SIM UNIT` and `SIM MIND` ask it since 17b cut M5.1, with a class
+    /// named on every hull:
     ///
-    /// * today's call — every load `None` — is admitted under any pool, the
-    ///   smallest legal one (1/1/1, a half of nothing) included;
+    /// * a call whose every load is `None` — what `SIM UNIT` passed before
+    ///   17b cut M5.1, and nothing passes since — is admitted under any pool,
+    ///   the smallest legal one (1/1/1, a half of nothing) included;
     /// * under base 9,000, per unit 1, floor 1 and six pods a side, the pool
     ///   is over TWELVE units (8,988, a half of 4,494 — over six it would be
     ///   4,497): eleven Class 0 slots speak for 4,400 and the caller's Class
-    ///   0 is refused with `SimError::Pool`, said in doc 17 §9's sentence;
-    ///   ten slots and the caller fit;
+    ///   0 is refused with `SimError::Pool`, said in the pool's sentence (the
+    ///   owner's OQ-11 wording since 17b cut M5.1: `This side would think
+    ///   400 ops a second; its half of the centre's pool is 4,494 and 4,400
+    ///   are spoken for.` was this pin at 17b cut M3.5); ten slots and the
+    ///   caller fit;
     /// * a Class III choice under the 1/1/1 pool is refused against a half of
     ///   0 with nothing spoken for.
     #[test]
@@ -4181,8 +5642,8 @@ mod tests {
         assert_eq!(
             refused.map_err(|error| error.to_string()),
             Err(
-                "This side would think 400 ops a second; its half of the centre's pool is 4,494 \
-                 and 4,400 are spoken for."
+                "This tank would think 400 ops a second; its side's half of the centre's pool is \
+                 4,494 and 4,400 are spoken for."
                     .to_owned()
             )
         );
@@ -4222,6 +5683,7 @@ mod tests {
             dropped_at_ms: None,
             unit_type: None,
             released_by_resume: false,
+            mind: None,
         }
     }
 

@@ -55,6 +55,73 @@ use smol_str::SmolStr;
 /// Standard Doctrine by identity without reaching into the match half.
 pub use crate::arena::doctrine::{SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE, SEALED_MIND};
 
+/// **A mind's identity on a seal** (17b cut M5.1; doc 17 §13, D-UM-46):
+/// exactly the five identity fields [`seal_for`] writes on a [`MindSeal`] —
+/// the name, the charter, the line, the revision and the source's digest.
+///
+/// What a holding names (`crate::match_::holdings::HeldMind::identity`), so a
+/// mind chosen at the lobby is the mind a seal can name. 17b cut M5.1 builds
+/// it and reads it at the choice; the check-out still seals Standard Doctrine
+/// on Line until 17b cut M5.2 puts it on [`SealTerms`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealIdentity {
+    /// The mind's name (`Standard Doctrine`).
+    pub mind: SmolStr,
+    /// Its charter (`Registry`).
+    pub charter: SmolStr,
+    /// Its line (`standard`).
+    pub line: SmolStr,
+    /// Its revision on that line.
+    pub revision: u32,
+    /// The SHA-256 of its source's bytes — the key the source store holds it
+    /// under (`tacsim:mindsrc:<sha256>`).
+    pub source_sha256: [u8; 32],
+}
+
+impl SealIdentity {
+    /// **Standard Doctrine's identity** — [`SEALED_MIND`], [`SEALED_CHARTER`],
+    /// [`SEALED_LINE`], [`crate::minds::STOCK_VERSION`] and the shipped
+    /// source's digest ([`crate::minds::content::standard_digest`]), the five
+    /// [`seal_for`] writes on every seal today.
+    #[must_use]
+    pub fn doctrine() -> SealIdentity {
+        SealIdentity {
+            mind: SmolStr::new_static(SEALED_MIND),
+            charter: SmolStr::new_static(SEALED_CHARTER),
+            line: SmolStr::new_static(SEALED_LINE),
+            revision: crate::minds::STOCK_VERSION,
+            source_sha256: crate::minds::content::standard_digest().0,
+        }
+    }
+
+    /// **Whether this is Standard Doctrine** — by identity, the rule
+    /// [`MindSeal::seal_ref`] derives `SealRef::doctrine` by: the name, the
+    /// charter and the line are the Registry's own, whatever the revision.
+    #[must_use]
+    pub fn is_doctrine(&self) -> bool {
+        self.mind == SEALED_MIND && self.charter == SEALED_CHARTER && self.line == SEALED_LINE
+    }
+}
+
+/// **Whether `card`'s odds are lawful under `floor_permille`** (17b cut M5.1):
+/// the Compact-floor probe [`seal_for`] runs — a best-hostile slot at the
+/// card's `min_odds`, held to [`condition_is_lawful`] — lifted out so the
+/// lobby's choice (`crate::match_::lobby`'s fit) asks the seal's own
+/// question rather than a copy of it.
+#[must_use]
+pub fn odds_are_lawful(card: &StockCard, floor_permille: u32) -> bool {
+    let probe = FireCondition {
+        weapon: SmolStr::default(),
+        target: SlotTarget::BestHostile,
+        min_permille: card.min_odds_permille,
+        aspects: ASPECTS_ANY,
+        min_rounds_left: 0,
+        min_range_m: 0,
+        max_range_m: u32::MAX,
+    };
+    condition_is_lawful(&probe, floor_permille).is_ok()
+}
+
 /// **Why a hull flies the ROM from its first think**: it has no core
 /// (D-UM-33).
 pub const NO_CORE_FALLBACK: &str = "no core: the ROM";
@@ -253,16 +320,9 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
     };
     // (5) The card, against its schema and the floor, refuse-not-clamp.
     terms.card.pair("Line").map_err(SealError::Card)?;
-    let probe = FireCondition {
-        weapon: SmolStr::default(),
-        target: SlotTarget::BestHostile,
-        min_permille: terms.card.min_odds_permille,
-        aspects: ASPECTS_ANY,
-        min_rounds_left: 0,
-        min_range_m: 0,
-        max_range_m: u32::MAX,
-    };
-    if condition_is_lawful(&probe, terms.odds_floor_permille).is_err() {
+    // 17b cut M5.1: the probe lifted into `odds_are_lawful`, the one question
+    // the lobby's choice asks too; the predicate is unchanged.
+    if !odds_are_lawful(&terms.card, terms.odds_floor_permille) {
         return Err(SealError::Unlawful {
             floor: terms.odds_floor_permille,
         });

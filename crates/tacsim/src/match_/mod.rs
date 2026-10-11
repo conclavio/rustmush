@@ -53,6 +53,10 @@ pub mod centre;
 /// 16b cut K.2: **the cockpit** — `BOARD`, `EXIT`, doc 16 §3.7's nine selectors,
 /// the gate that makes them contextual, and doc 16 §5's frame.
 pub mod cockpit;
+// 17b cut M5.1 (doc 17 §15, D-UM-49; OQ-2): the holdings seam — what a
+// character may choose at the lobby, Standard Doctrine alone in production.
+// Documented by its own module doc.
+pub mod holdings;
 pub mod lobby;
 /// 16b cut Z.4 (16c `N8`): **the side nets** — `RedNet` and `BlueNet`, comsys
 /// channels made at boot, joined at the check-out and left with the seat.
@@ -748,11 +752,11 @@ pub struct Fielded {
     pub opening: Option<OpeningCell>,
     /// **17b cut M3.5** (doc 17 §9, D-UM-36): the class the pool admits this
     /// hull's mind at — `None` for the fill rule
-    /// ([`pool::admitted_class`]: nothing on a seated hull, and
-    /// `[tacsim.minds].fill_class` on an unseated one), `Some` for a
-    /// fixture's choice and, from 17b cut M5, the lead's or `SIM MIND`'s.
-    /// Read by [`start`]'s pool gate alone; it decides no seal and no class
-    /// the arena thinks at.
+    /// ([`pool::admitted_class`]: `[tacsim.minds].fill_class`, seated or not,
+    /// since 17b cut M5.1), `Some` for a fixture's choice and, since 17b cut
+    /// M5.1, the class a chosen mind seals at — the slot's `SIM MIND` or the
+    /// side's `SIM AI MIND` (`lobby`'s `ready`). Read by [`start`]'s pool gate
+    /// alone; it decides no seal and no class the arena thinks at.
     pub mind_class: Option<crate::arena::core::CoreClass>,
 }
 
@@ -777,6 +781,15 @@ pub struct Side {
     /// Its units, in the order they were named, each with the centre slot it was
     /// fielded from (16b cut Q.1).
     pub units: Vec<Fielded>,
+    /// **What each hull's mind was chosen as** (17b cut M5.1; the design
+    /// note's M5.1 item 6): one [`holdings::SealChoice`] per hull the lobby
+    /// fielded, resolved against the holdings seam at the check-out — a
+    /// slot's `SIM MIND`, the side's `SIM AI MIND`, else
+    /// [`holdings::SealChoice::unchosen`]. Empty for a staff `@arena/start`
+    /// and a fixture. **Declared: 17b cut M5.1 records it and nothing reads it
+    /// at the seal — the check-out still seals Standard Doctrine on Line until
+    /// 17b cut M5.2.**
+    pub minds: BTreeMap<ObjId, holdings::SealChoice>,
 }
 
 /// Why a match could not start. Every variant names the subject.
@@ -855,8 +868,12 @@ pub enum StartError {
     /// **17b cut M3.3** (doc 17 §13, D-UM-17): a unit's seal refused its card
     /// against the Compact floor — refused, never clamped. Reachable from an
     /// operator floor above the Line card's 10 per cent
-    /// (`[tacsim.minds].odds_floor_permille` above 100) until 17b cut M5 lets
-    /// a principal choose a card. Refused before the first write.
+    /// (`[tacsim.minds].odds_floor_permille` above 100): 17b cut M5.1 lets a
+    /// principal choose a lawful preset at the choice (`SIM MIND`, refusing
+    /// one under the floor by name), but every hull is still sealed on Line
+    /// until 17b cut M5.2 carries the choice into the seal — and after it an
+    /// armed hull nobody chose a preset for still is (declared: the default
+    /// is as built). Refused before the first write.
     #[error(
         "{callsign}'s card asks for odds under the Compact floor of {}%; the match cannot start.",
         .floor / 10
@@ -879,11 +896,27 @@ pub enum StartError {
     /// refuse in the arena** ([`pool`]'s head: twelve Class III a side fit,
     /// and a thirteenth is [`StartError::TooManyUnits`]); an operator's
     /// lowered pool reaches it.
-    #[error("{team}: {refusal}")]
+    ///
+    /// **17b cut M5.1** names the refused hull (17b:114; [`StartError::CardUnlawful`]'s
+    /// shape): `{callsign}: This tank would think …` is the long form — the
+    /// log's (`lobby::run` logs it) and the fixtures', and it may run past
+    /// 120 columns at six-figure terms and a long callsign. **No pilot reads
+    /// it**: the lobby's call-off says the short form to the centre
+    /// ([`StartError::call_off_words`]), and since 17b cut M5.1's review the
+    /// last `BOARD`er, whose `BOARD` answers with `run`'s `Err`, reads that
+    /// same short form — the side's figures, no hull and no class, which
+    /// would mark a chosen mind to a pilot who may be on the other side.
+    #[error("{callsign}: {refusal}")]
     Pool {
         /// Which side.
         team: &'static str,
-        /// The arithmetic at the first hull refused.
+        /// The first hull refused.
+        unit: ObjId,
+        /// How it is named before the arena resolves a callsign: its pod's
+        /// designator (`RA`) when the lobby fielded it from a slot, else the
+        /// unit's world name (a staff `@arena/start`).
+        callsign: String,
+        /// The arithmetic at that hull.
         refusal: pool::PoolRefusal,
     },
 }
@@ -895,7 +928,9 @@ impl StartError {
     /// columns inside `Match {id} could not start: {}. The pods are free
     /// again.`, the hull named by its callsign; every other refusal its own
     /// sentence. The long forms stay the `Display` (pinned by the lifecycle
-    /// fixtures) and the log's.
+    /// fixtures) and the log's; since 17b cut M5.1's review the last
+    /// `BOARD`er reads these words too (`lobby::run`'s reply), so no pilot
+    /// reads a long form.
     #[must_use]
     pub fn call_off_words(&self, w: &mush_core::World, sides: &[Side]) -> String {
         let callsign = |unit: ObjId| {
@@ -910,7 +945,7 @@ impl StartError {
                 .unwrap_or_else(|| unit.to_string())
         };
         match self {
-            StartError::Pool { team, refusal } => format!(
+            StartError::Pool { team, refusal, .. } => format!(
                 "{team}'s compute ({} ops a second) is over its half ({})",
                 pool::thousands(refusal.spoken.saturating_add(refusal.would)),
                 pool::thousands(refusal.half)
@@ -1176,9 +1211,11 @@ pub fn start(
     // over every unit of the match, split evenly between the sides and
     // spoken for first-come within a side in slot order, each hull at its
     // admitted class's ceiling (`pool::admitted_class`: the fielded unit's
-    // own, else the fill rule — a seated hull nothing, M5's gap, and an
-    // unseated one `[tacsim.minds].fill_class`, 17b cut M4.3). **At the
-    // stock pool this cannot refuse**: `TooManyUnits` above holds a side to
+    // own — a fixture's, or since 17b cut M5.1 the class its chosen mind
+    // seals at — else `[tacsim.minds].fill_class`, seated or not: 17b cut
+    // M5.1 counts a seated hull at the class it is sealed and, released,
+    // flown at). The refused hull is named (17b cut M5.1). **At the stock
+    // pool this cannot refuse**: `TooManyUnits` above holds a side to
     // twelve, and twelve Class III load 216,000 of a half of 238,000
     // (`pool`'s head); twelve at the fill's Class I speak for 18,000.
     let fielded_units: usize = sides.iter().map(|side| side.units.len()).sum();
@@ -1188,16 +1225,26 @@ pub fn start(
             .units
             .iter()
             .map(|fielded| {
-                let seated = !seated_pilots(ctx, fielded.unit).is_empty();
                 pool::load_of(
                     &minds_cfg.classes,
-                    pool::admitted_class(fielded.mind_class, seated, minds_cfg.fill_class),
+                    pool::admitted_class(fielded.mind_class, minds_cfg.fill_class),
                 )
             })
             .collect();
-        pool::admit_side(compute, loads).map_err(|refusal| StartError::Pool {
-            team: side.team.as_str(),
-            refusal,
+        pool::admit_side(compute, loads).map_err(|(at, refusal)| {
+            let fielded = side.units.get(at);
+            let unit = fielded.map_or(ObjId(0), |fielded| fielded.unit);
+            StartError::Pool {
+                team: side.team.as_str(),
+                unit,
+                callsign: unsealed_callsign(
+                    ctx.w,
+                    unit,
+                    side.team,
+                    fielded.map_or(0, |fielded| fielded.slot),
+                ),
+                refusal,
+            }
         })?;
     }
 
@@ -2265,6 +2312,8 @@ mod tests {
             |words: &str| format!("Match 12 could not start: {words}. The pods are free again.");
         let pool = StartError::Pool {
             team: "red",
+            unit: ObjId(90),
+            callsign: "RC".to_owned(),
             refusal: pool::PoolRefusal {
                 would: 18_000,
                 half: 138_000,
@@ -2277,10 +2326,19 @@ mod tests {
             "red's compute (144,000 ops a second) is over its half (138,000)"
         );
         assert!(frame(&said).len() <= 120, "{}", frame(&said).len());
+        // 17b cut M5.1: the long form names the refused hull, in the owner's
+        // OQ-11 wording — `red: This side would think 18,000 ops a second;
+        // its half of the centre's pool is 138,000 and 126,000 are spoken
+        // for.` was this pin at 17b cut M4.3. It is the log's and the
+        // fixtures'; every pilot reads the short form above — the centre in
+        // the call-off and, since 17b cut M5.1's review, the last BOARDer in
+        // `lobby::run`'s reply (`SimError::Start`, pinned at
+        // `tests/match_lifecycle.rs`'
+        // `m5_the_check_out_admits_a_chosen_hull_at_the_class_its_mind_seals_at`).
         assert_eq!(
             pool.to_string(),
-            "red: This side would think 18,000 ops a second; its half of the centre's pool is \
-             138,000 and 126,000 are spoken for.",
+            "RC: This tank would think 18,000 ops a second; its side's half of the centre's pool \
+             is 138,000 and 126,000 are spoken for.",
             "the long form is the Display's"
         );
         let sides = vec![Side {
@@ -2291,6 +2349,7 @@ mod tests {
                 opening: None,
                 mind_class: None,
             }],
+            minds: BTreeMap::new(),
         }];
         let no_source =
             StartError::Open(OpenMatchError::Mind(crate::minds::InstallError::NoSource {

@@ -318,6 +318,69 @@ Back outside the fence: `SIM STATUS` and `<contact>`.
     );
 }
 
+// ---- the SIM selectors -------------------------------------------------------
+
+/// **17b cut M5.1 (doc 17 §12; the design note's M5.1 gate evidence)**: every
+/// selector word the help writes after `SIM` is one of `SIM`'s registered
+/// switches, case-folded — `SIM MIND` above all, the fourteenth, whose `mind`
+/// switch is asserted registered — so a page can never tell a pilot to type
+/// a `SIM` word the server answers with the usage line.
+///
+/// The read is every `SIM <WORD>` anywhere in a page — a span, a table row or
+/// prose — where `<WORD>` is command-shaped; the word after it (`SIM AI
+/// MIND`'s `MIND`) is `SIM AI`'s own argument and is not read here.
+#[test]
+fn every_sim_selector_the_help_writes_is_a_registered_switch() {
+    let composition = production_composition();
+    let registry = composition.registry();
+    let sim = registry
+        .spec_of("SIM")
+        .expect("the production composition registers SIM");
+    assert!(
+        sim.switches.iter().any(|s| s.eq_ignore_ascii_case("mind")),
+        "SIM registers the mind selector: {:?}",
+        sim.switches
+    );
+    let dir = help_dir();
+    let mut checked: BTreeSet<String> = BTreeSet::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.expect("a help directory entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for line in body.lines() {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            for pair in words.windows(2) {
+                let [head, word] = pair else { continue };
+                if trim_word(head) != "SIM" {
+                    continue;
+                }
+                let word = trim_word(word);
+                if !is_command_shaped(word) {
+                    continue;
+                }
+                if sim.switches.iter().any(|s| s.eq_ignore_ascii_case(word)) {
+                    checked.insert(word.to_string());
+                } else {
+                    unknown.push(format!("{name}: `SIM {word}` is none of SIM's selectors"));
+                }
+            }
+        }
+    }
+    assert!(unknown.is_empty(), "{unknown:#?}");
+    assert!(
+        checked.contains("MIND"),
+        "the help writes `SIM MIND`: {checked:?}"
+    );
+}
+
 // ---- the first-time hints ----------------------------------------------------
 
 /// **16b cut AH.1 (16c N18; 16c section 6: "N18's hints quote the registered

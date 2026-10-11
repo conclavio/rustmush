@@ -334,8 +334,9 @@ orders_per_minute = 12             # ORDERs one commander may give in sixty seco
 # (17b cut M4.3, doc 17 section 9) the class the AI fill (and every seated hull) is
 # sealed and admitted at: "0" (the drive ROM), "I", "II" or "III". The seal's class is
 # the least of the stock rating (I), the core and this, so above "I" it caps nothing
-# until M5 rates minds. The lab knob fill_controller (17b cut M1b.5) is retired: the
-# fill IS a mind, and a config still naming it refuses the boot.
+# until the cut that rates a mind above Class I (17b cut M5.1: a hull that chose no
+# mind is admitted at this, seated or not). The lab knob fill_controller (17b cut
+# M1b.5) is retired: the fill IS a mind, and a config still naming it refuses the boot.
 # fill_class = "I"
 # (17b cut M4.1, doc 17 section 6) the think pool's worker threads: the process-wide
 # pool every running match sends a pulse's unit-mind thinks to, sized once per

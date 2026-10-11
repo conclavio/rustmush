@@ -9662,21 +9662,21 @@ impl MindsVariant {
 /// **The admission arithmetic** (the M4 row's finding (8); doc 17 §9): how
 /// many hulls a side `admit_side` admits at `class` with the rest at the
 /// ROM's 400, classed first, every hull counted — the fighting line's seats
-/// included, read `admitted_class(Some(class), seated, fill_class)`, which
-/// answers the class whatever the seat bit and the fill's class say (a
-/// fixture naming a class is the documented case). 36 at Class I and 2 at Class III at the 300-unit defaults
+/// included, read `admitted_class(Some(class), fill_class)`, which answers
+/// the class whatever the fill's class says (a fixture naming a class is the
+/// documented case; 17b cut M5.1 took the seat bit out of `admitted_class`,
+/// which never read it for a named class, and with it this function's
+/// `fighting` count — no figure here moved). 36 at Class I and 2 at Class III at the 300-unit defaults
 /// ([`m4_2_the_harness_s_three_hundred_admit_thirty_six_at_class_i_and_two_at_class_iii_a_side`]).
 fn admitted_per_side(
     cfg: &tacsim::config::MindsConfig,
     units: u32,
     class: tacsim::arena::core::CoreClass,
-    fighting: u32,
 ) -> u32 {
     use tacsim::arena::core::CoreClass;
     use tacsim::match_::pool::{admit_side, admitted_class, load_of, pool_for};
     let pool = pool_for(cfg, usize::try_from(units).unwrap_or(usize::MAX));
     let per_side = units / 2;
-    let seated_per_side = fighting / 2;
     (0..=per_side)
         .rev()
         .find(|&n| {
@@ -9685,7 +9685,6 @@ fn admitted_per_side(
                     &cfg.classes,
                     admitted_class(
                         Some(if k < n { class } else { CoreClass::Zero }),
-                        k < seated_per_side,
                         cfg.fill_class,
                     ),
                 )
@@ -9730,7 +9729,7 @@ impl MindsPlan {
                 authored: std::collections::BTreeSet::new(),
             };
         };
-        let admitted = admitted_per_side(cfg, knobs.units, slots.class, knobs.fighting);
+        let admitted = admitted_per_side(cfg, knobs.units, slots.class);
         let mut authored = std::collections::BTreeSet::new();
         let fielded = if slots.heavy {
             let middle_cm = i64::from(SIDE) / 2 * i64::from(CELL_CM);
@@ -12494,45 +12493,53 @@ fn m4_2_the_harness_s_three_hundred_admit_thirty_six_at_class_i_and_two_at_class
     use tacsim::match_::pool::{PoolRefusal, admit_side, admitted_class, pool_for};
     let cfg = MindsConfig::default();
     assert_eq!(pool_for(&cfg, 300), 200_000);
-    assert_eq!(admitted_per_side(&cfg, 300, CoreClass::I, 24), 36);
-    assert_eq!(admitted_per_side(&cfg, 300, CoreClass::III, 24), 2);
+    assert_eq!(admitted_per_side(&cfg, 300, CoreClass::I), 36);
+    assert_eq!(admitted_per_side(&cfg, 300, CoreClass::III), 2);
     let loads = |classed: u64, n: usize, rest: usize| {
         std::iter::repeat_n(classed, n).chain(std::iter::repeat_n(400, rest))
     };
     assert_eq!(admit_side(200_000, loads(1_500, 36, 114)), Ok(()));
+    // 17b cut M5.1: `admit_side` names the refused load's index (the 149th
+    // hull is index 148; the 119th, 118), so `StartError::Pool` can name it.
     assert_eq!(
         admit_side(200_000, loads(1_500, 37, 113)),
-        Err(PoolRefusal {
-            would: 400,
-            half: 100_000,
-            spoken: 99_900,
-        }),
+        Err((
+            148,
+            PoolRefusal {
+                would: 400,
+                half: 100_000,
+                spoken: 99_900,
+            }
+        )),
         "the 149th hull: 37 Class I and 111 ROMs spoken for"
     );
     assert_eq!(admit_side(200_000, loads(18_000, 2, 148)), Ok(()));
     assert_eq!(
         admit_side(200_000, loads(18_000, 3, 147)),
-        Err(PoolRefusal {
-            would: 400,
-            half: 100_000,
-            spoken: 100_000,
-        }),
+        Err((
+            118,
+            PoolRefusal {
+                would: 400,
+                half: 100_000,
+                spoken: 100_000,
+            }
+        )),
         "the 119th hull: three heavies and 115 ROMs reach the half exactly"
     );
-    // The seat bit and the fill's class are inert for an explicitly classed
-    // hull.
+    // The fill's class is inert for an explicitly classed hull (17b cut M5.1
+    // took the seat bit out: it was inert for one too).
     assert_eq!(
-        admitted_class(Some(CoreClass::I), true, CoreClass::Zero),
+        admitted_class(Some(CoreClass::I), CoreClass::Zero),
         Some(CoreClass::I)
     );
     assert_eq!(
-        admitted_class(Some(CoreClass::Zero), false, CoreClass::I),
+        admitted_class(Some(CoreClass::Zero), CoreClass::I),
         Some(CoreClass::Zero)
     );
     // A sizing run: at a hundred units the pool is 400,000, so every Class I
     // hull of a side is admitted and ten heavies are.
-    assert_eq!(admitted_per_side(&cfg, 100, CoreClass::I, 8), 50);
-    assert_eq!(admitted_per_side(&cfg, 100, CoreClass::III, 8), 10);
+    assert_eq!(admitted_per_side(&cfg, 100, CoreClass::I), 50);
+    assert_eq!(admitted_per_side(&cfg, 100, CoreClass::III), 10);
     // The plan over a synthetic placement (unit `n` at x = (n × 37 mod 256)
     // cells): thirty-six fill slots a side from side index 0, the seats
     // included; two heavies a side, the unseated hulls deepest in each rear —

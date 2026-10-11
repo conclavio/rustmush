@@ -127,7 +127,9 @@ pub fn start(
     // **16b cut Q.1**: the staff shortcut fields no pods, so every unit goes over
     // with slot `0` and `Arena::new` gives it the lowest free slot of its team in
     // unit-id order. A `@arena/start` match therefore has callsigns too, and they
-    // are the same on a replay.
+    // are the same on a replay. **17b cut M5.1**: and no lobby, so no mind was
+    // chosen for any of them (`Side::minds` empty): every hull is sealed with
+    // the default, as every hull of every match still is until 17b cut M5.2.
     let sides = vec![
         Side {
             team: crate::arena::state::Team::Red,
@@ -135,6 +137,7 @@ pub fn start(
                 .into_iter()
                 .map(super::Fielded::unslotted)
                 .collect(),
+            minds: std::collections::BTreeMap::new(),
         },
         Side {
             team: crate::arena::state::Team::Blue,
@@ -142,6 +145,7 @@ pub fn start(
                 .into_iter()
                 .map(super::Fielded::unslotted)
                 .collect(),
+            minds: std::collections::BTreeMap::new(),
         },
     ];
     // **16b cut K.1.** The shortcut runs through the same machine the lobby

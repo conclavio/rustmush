@@ -344,8 +344,9 @@ orders_per_minute = 12
 # (17b cut M4.3, doc 17 section 9) the class the AI fill (and every seated hull) is
 # sealed and admitted at: "0" (the drive ROM), "I", "II" or "III". The seal's class is
 # the least of the stock rating (I), the core and this, so above "I" it caps nothing
-# until M5 rates minds. The lab knob fill_controller (17b cut M1b.5) is retired: the
-# fill IS a mind, and a config still naming it refuses the boot.
+# until the cut that rates a mind above Class I (17b cut M5.1: a hull that chose no
+# mind is admitted at this, seated or not). The lab knob fill_controller (17b cut
+# M1b.5) is retired: the fill IS a mind, and a config still naming it refuses the boot.
 # fill_class = "I"
 # (17b cut M3.5, doc 17 section 9) the centre's compute pool, ops a sim second:
 # a match's allotment is max(floor, base - per_unit x units), split evenly between
@@ -359,7 +360,7 @@ orders_per_minute = 12
 # class word ("0", "I", "II", "III"), and any figure left out -- or any class
 # left out -- is the stock row's. Each is checked by name at boot: think_ms
 # 250 to 5000 in steps of 250 and never longer than the class below; ops 100
-# to 4500; rows 1 to 32 and odds_rows up to rows; slots 1 to 6; memory_keys 1
+# to 4500; rows 2 to 32 and odds_rows up to rows; slots 1 to 6; memory_keys 1
 # to 128 -- ops, rows, slots and memory_keys never fewer than the class
 # below's; line_to 0 to 8; profiles 1 to 4. The stock table:
 # [tacsim.minds.classes."0"]

@@ -414,6 +414,11 @@ impl GameModule for TacsimRuleset {
         };
         slot.install_packs(packs);
         reg.state(slot);
+        // **17b cut M5.1** (doc 17 §15, D-UM-49; OQ-2): the holdings seam, on
+        // its own slot, with the production provider — every character holds
+        // Standard Doctrine and its six presets. A test rig installs another
+        // through `match_::holdings::install_holdings`.
+        reg.state(match_::holdings::HoldingsSeam::production());
         commands::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
         // One validator per kind first — `Registrar::definition` admits nothing

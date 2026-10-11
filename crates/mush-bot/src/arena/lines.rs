@@ -328,6 +328,12 @@ pub struct BoardPilot {
     pub callsign: String,
     pub name: String,
     pub unit_type: Option<String>,
+    /// **The game's 17b cut M5.1**: `, a mind` after the bracket — another
+    /// pilot's slot chose a mind with `SIM MIND` during selection (the board
+    /// never names it to anyone but that pilot). This bot never chooses one,
+    /// so its own row never carries the named form.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mind: bool,
     pub pod: Option<String>,
     pub standing: Option<Standing>,
 }
@@ -1028,7 +1034,8 @@ fn board_row(body: &str) -> Option<Line> {
     Some(Line::BoardSide { side, pilots })
 }
 
-/// `1 (RA): Ada [biped_mk1], pod Red Pod 1, seated`
+/// `1 (RA): Ada [biped_mk1], pod Red Pod 1, seated` — and, during
+/// selection, `1 (RA): Ada [biped_mk1], a mind` (the game's 17b cut M5.1).
 fn board_pilot(entry: &str) -> Option<BoardPilot> {
     let (index, rest) = entry.split_once(" (")?;
     let (callsign, rest) = rest.split_once("): ")?;
@@ -1053,6 +1060,12 @@ fn board_pilot(entry: &str) -> Option<BoardPilot> {
         rest = before;
         pod = Some(name.to_owned());
     }
+    // The game's 17b cut M5.1: the selection fog's mark, after the bracket.
+    let mut mind = false;
+    if let Some(before) = rest.strip_suffix(", a mind") {
+        rest = before;
+        mind = true;
+    }
     let mut unit_type = None;
     if let Some(before) = rest.strip_suffix(']')
         && let Some((name, kind)) = before.rsplit_once(" [")
@@ -1066,6 +1079,7 @@ fn board_pilot(entry: &str) -> Option<BoardPilot> {
         callsign: callsign.to_owned(),
         name: rest.to_owned(),
         unit_type,
+        mind,
         pod,
         standing,
     })
@@ -3083,6 +3097,7 @@ mod tests {
                         callsign: "BA".into(),
                         name: "Ada".into(),
                         unit_type: Some("biped_mk1".into()),
+                        mind: false,
                         pod: Some("Blue Pod 1".into()),
                         standing: Some(Standing::Seated)
                     },
@@ -3091,6 +3106,7 @@ mod tests {
                         callsign: "BB".into(),
                         name: "Bo".into(),
                         unit_type: None,
+                        mind: false,
                         pod: None,
                         standing: Some(Standing::Doctrine)
                     },
@@ -3099,11 +3115,53 @@ mod tests {
                         callsign: "BC".into(),
                         name: "Cy".into(),
                         unit_type: None,
+                        mind: false,
                         pod: None,
                         standing: None
                     },
                 ]
             }
+        );
+        // The game's 17b cut M5.1: the selection fog's mark after the
+        // bracket (or the name), and the fill's row, which is not a side row.
+        assert_eq!(
+            classify("  red: 1 (RA): Ada [biped_mk1], a mind; 2 (RB): Bo, a mind; 3 (RC): Cy"),
+            Line::BoardSide {
+                side: Side::Red,
+                pilots: vec![
+                    BoardPilot {
+                        index: 1,
+                        callsign: "RA".into(),
+                        name: "Ada".into(),
+                        unit_type: Some("biped_mk1".into()),
+                        mind: true,
+                        pod: None,
+                        standing: None
+                    },
+                    BoardPilot {
+                        index: 2,
+                        callsign: "RB".into(),
+                        name: "Bo".into(),
+                        unit_type: None,
+                        mind: true,
+                        pod: None,
+                        standing: None
+                    },
+                    BoardPilot {
+                        index: 3,
+                        callsign: "RC".into(),
+                        name: "Cy".into(),
+                        unit_type: None,
+                        mind: false,
+                        pod: None,
+                        standing: None
+                    },
+                ]
+            }
+        );
+        assert_eq!(
+            classify("  red fill: a mind"),
+            Line::Other("red fill: a mind".into())
         );
         assert_eq!(
             classify("  AI fill: each side fields 2; machines take the unclaimed pods."),

@@ -122,12 +122,22 @@ fn allowed(line: &str) -> bool {
     false
 }
 
-/// The verbs the pilot must never type (16c Q-AJ2, Q-AJ3).
+/// The verbs the pilot must never type (16c Q-AJ2, Q-AJ3) — and, since the
+/// game's 17b cut M5.1, `SIM MIND` (the programme lead's note for M5, as the
+/// owner adopted it: the bot never chooses a mind; `SIM AI MIND` is already
+/// `SIM AI`'s).
 fn forbidden(line: &str) -> bool {
     let upper = line.to_ascii_uppercase();
-    ["SIM AI", "SIM UNIT", "SIM MODE", "SIM RANGE", "ORDER"]
-        .iter()
-        .any(|verb| upper == *verb || upper.starts_with(&format!("{verb} ")))
+    [
+        "SIM AI",
+        "SIM UNIT",
+        "SIM MODE",
+        "SIM RANGE",
+        "SIM MIND",
+        "ORDER",
+    ]
+    .iter()
+    .any(|verb| upper == *verb || upper.starts_with(&format!("{verb} ")))
         || ["SIM CONCEDE", "SIM ABORT", "EXIT"].contains(&upper.as_str())
 }
 

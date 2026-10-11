@@ -2778,6 +2778,7 @@ mod tests {
                 dropped_at_ms: Some(1_234),
                 unit_type: None,
                 released_by_resume: false,
+                mind: None,
             }],
             leads: vec![(Team::Red, account)],
             ..crate::match_::lobby::Centre::default()

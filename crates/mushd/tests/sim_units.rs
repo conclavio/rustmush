@@ -1453,23 +1453,33 @@ async fn ae3_the_second_drone_and_a_gunless_side_are_refused_at_the_lobby() {
     );
 }
 
-/// **`SIM UNIT` is never refused for the pool before 17b cut M5** (17b cut
-/// M3.5; doc 17 §9, D-UM-36: *`SIM MIND` and `SIM UNIT` check at choice
-/// time*). The check is wired after the class cap, but every claimed slot is a
-/// seated pilot's, whose hull loads nothing until `SIM MIND` names a mind —
-/// so even on a server whose pool is the smallest the keys allow (one op a
-/// second: `pool_base_ops_s = pool_floor_ops_s = pool_per_unit_ops_s = 1`, a
-/// side's half nought) Ada's `SIM UNIT heavy_mk1`, the Class III chassis,
-/// beside Bo on her side, is announced and never refused with the pool's
-/// sentence. The help page says what such a refusal would say.
+/// **`SIM UNIT` is never refused for the pool at the stock constants** (17b
+/// cut M3.5; doc 17 §9, D-UM-36: *`SIM MIND` and `SIM UNIT` check at choice
+/// time*). The check is wired after the class cap, and since 17b cut M5.1
+/// every claimed hull loads its class there — its chosen mind's, else
+/// `[tacsim.minds].fill_class`, seated or not — so `SIM UNIT` refuses under
+/// an operator's lowered pool (`tests/match_lifecycle.rs`'
+/// `m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic`).
+/// At the STOCK pool it cannot: Ada's and Bo's `SIM UNIT heavy_mk1`, the Class
+/// III chassis, side by side on red, are each announced and never refused
+/// with the pool's sentence (two hulls at Class I, 3,000 of a half of
+/// 244,000). The help page says what such a refusal would say, in the
+/// owner's OQ-11 wording.
+///
+/// Was `m3_sim_unit_is_never_refused_for_the_pool_before_m5` at 17b cut M4.7,
+/// run under the smallest pool the keys allow (one op a second), where a
+/// seated hull loaded nothing; renamed and read at the stock pool by 17b cut
+/// M5.1, whose seated hulls load `fill_class` (the design note's M5.1 "What
+/// moves").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn m3_sim_unit_is_never_refused_for_the_pool_before_m5() {
-    let mut cfg = tacsim_config();
-    cfg.minds.pool_base_ops_s = 1;
-    cfg.minds.pool_per_unit_ops_s = 1;
-    cfg.minds.pool_floor_ops_s = 1;
-    assert_eq!(cfg.minds.validate(), Ok(()), "the smallest pool is lawful");
-    let server = boot_with("sim-units-m3-pool", cfg).await;
+async fn m5_sim_unit_is_never_refused_for_the_pool_at_the_stock_constants() {
+    let cfg = tacsim_config();
+    assert_eq!(
+        cfg.minds,
+        tacsim::config::MindsConfig::default(),
+        "the stock [tacsim.minds]"
+    );
+    let server = boot_with("sim-units-m5-pool", cfg).await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god).await;
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
@@ -1492,7 +1502,7 @@ async fn m3_sim_unit_is_never_refused_for_the_pool_before_m5() {
     let seen = strip_ansi(&ada.seen[mark..]);
     assert!(
         !seen.contains("ops a second"),
-        "no pool refusal before 17b cut M5: {seen}"
+        "no pool refusal at the stock constants: {seen}"
     );
 
     let help = std::fs::read_to_string(concat!(
@@ -1504,10 +1514,10 @@ async fn m3_sim_unit_is_never_refused_for_the_pool_before_m5() {
     assert!(
         help.contains(
             "A choice the centre's compute cannot carry is refused with the arithmetic: how \
-             much your side would think a second, your side's half of the pool, and what is \
+             much this tank would think a second, its side's half of the pool, and what is \
              spoken for."
         ),
-        "the help's pool sentence under SIM UNIT"
+        "the help's pool sentence under SIM UNIT (the owner's OQ-11 wording since 17b cut M5.1)"
     );
 }
 

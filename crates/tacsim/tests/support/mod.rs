@@ -48,6 +48,9 @@ pub mod yard;
 /// `tests/content.rs` so the version-1 ground a shelf test boots on can be
 /// built ([`ground::atlas_pack_at`]).
 pub mod ground;
+/// **17b cut M5.1**: the holdings seam's test provider — Standard Doctrine and
+/// two scripted fixture minds, installed through the production seam.
+pub mod holdings;
 pub mod rig;
 pub mod scripted;
 

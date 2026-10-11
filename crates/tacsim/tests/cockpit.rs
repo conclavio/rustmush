@@ -11044,6 +11044,7 @@ async fn o1_start_refuses_a_mode_the_ground_does_not_declare() {
             &[match_::Side {
                 team: Team::Red,
                 units: vec![match_::Fielded::unslotted(tank)],
+                minds: std::collections::BTreeMap::new(),
             }],
             &tacsim::config::ArenaConfig::default(),
             &tacsim::config::MatchConfig::default(),

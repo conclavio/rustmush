@@ -13,33 +13,40 @@
 //!
 //! **In the arena** the pool is split evenly between the two sides
 //! ([`admit`]'s `half`) and spoken for first-come within a side, in slot order.
-//! It is checked at the choice — `SIM UNIT` (`crate::match_::lobby::unit_type`,
+//! It is checked at the choice — `SIM UNIT` and `SIM MIND`
+//! (`crate::match_::lobby::unit_type`, `crate::match_::lobby::mind`,
 //! [`crate::match_::lobby::SimError::Pool`]) — and, by name, as the LAST gate
 //! of check-out's every-refusal block (`crate::match_::start`,
-//! [`crate::match_::StartError::Pool`]), so `BOARD` never fails because of a
-//! core and a refused roster writes nothing. Both refuse with the arithmetic
-//! ([`PoolRefusal`]): how much the side would think a second, its half, and
-//! what is spoken for.
+//! [`crate::match_::StartError::Pool`], naming the refused hull since 17b cut
+//! M5.1), so `BOARD` never fails because of a core and a refused roster writes
+//! nothing. Both refuse with the arithmetic ([`PoolRefusal`], the owner's
+//! OQ-11 wording since 17b cut M5.1): how much this tank would think a second,
+//! its side's half, and what is spoken for.
 //!
-//! **Who loads what before 17b cut M5** (the lead's instruction): the AI
-//! fill's hull at `[tacsim.minds].fill_class` — Class I, 1,500 each, from 17b
-//! cut M4.3 (Class 0's 400 before it) — until M5 lets
-//! the lead set the fill's class (D-UM-37); a seated pilot's hull nothing,
-//! until M5's `SIM MIND` names a mind for it; a fixture (or M5) may name a
-//! class on the fielded unit (`crate::match_::Fielded::mind_class`).
+//! **Who loads what** (17b cut M5.1): a hull whose slot chose a mind with
+//! `SIM MIND`, or whose side's fill the lead or staff chose one for with `SIM
+//! AI MIND`, at the class that mind seals at on its chassis — `min(rated,
+//! core, [tacsim.minds].fill_class)`, Class 0 on a chassis with no core
+//! (`crate::match_::Fielded::mind_class`); **every other hull at
+//! `fill_class`, seated or not** — Class I, 1,500 each (17b cut M4.3; Class
+//! 0's 400 before it) — because a seated hull is sealed at `fill_class` too
+//! and a release hands it to a mind of that class. Until 17b cut M5.1 a
+//! seated hull loaded nothing, the gap 17b cut M3.5 declared. A claim, `SIM
+//! AI <n>` and `SIM AI MIND` do not re-run the pool: the check-out's gate is
+//! their backstop, and none of them can refuse at the stock constants.
+//! The lead's fill class (D-UM-37) waits for the cut that rates a mind above
+//! Class I (the owner's OQ-10 (b)); a fixture may name a class on the fielded
+//! unit.
 //!
-//! **At the stock constants the arena's check-out gate cannot refuse**
-//! (declared for doc 17 §24): `crate::config::MatchConfig::max_slots_per_side`
-//! is validated 1 to 12 and `StartError::TooManyUnits` is the first gate, so a
-//! side is at most twelve hulls; twelve Class III a side load 12 × 18,000 =
-//! 216,000 against a half of 476,000 / 2 = 238,000 at 24 units — doc 17 §9's
-//! "a 12v12 of Class III takes 432,000 and fits" — and a thirteenth is
-//! `TooManyUnits`. The gate bites only under an operator's lowered pool
+//! **At the stock constants neither gate can refuse** (declared for doc 17
+//! §24): `crate::config::MatchConfig::max_slots_per_side` is validated 1 to
+//! 12 and `StartError::TooManyUnits` is the first gate, so a side is at most
+//! twelve hulls; twelve Class III a side load 12 × 18,000 = 216,000 against a
+//! half of 476,000 / 2 = 238,000 at 24 units — doc 17 §9's "a 12v12 of Class
+//! III takes 432,000 and fits" — and a thirteenth is `TooManyUnits`. The
+//! gates bite only under an operator's lowered pool
 //! (`tests/match_lifecycle.rs`' over-subscribed fixture runs at
-//! `pool_base_ops_s = 300_000`). Nor can `SIM UNIT` refuse before 17b cut M5:
-//! every hull a pilot chooses for is seated, and loads nothing — and since
-//! 17b cut M4.3 the side's unclaimed pods under the AI fill are spoken for at
-//! `fill_class` there too, a choice that adds nothing never refused.
+//! `pool_base_ops_s = 300_000`).
 //!
 //! **Doc 17 §9's recount of the harness's 300 machines** (all at Class 0
 //! take 120,000 of a 200,000 pool) is a per-TASK sum over the hulls the
@@ -62,37 +69,42 @@ pub fn pool_for(cfg: &MindsConfig, units: usize) -> u64 {
 }
 
 /// **One hull's load, ops a sim second**: nothing for `None` (a hull no mind
-/// will run on — a seated pilot's, until 17b cut M5's `SIM MIND` names a
-/// mind), else the class's ceiling ([`ClassTable::ceiling_per_s`]).
+/// will run on — no lobby or check-out caller passes it since 17b cut M5.1,
+/// [`admitted_class`] always answering a class), else the class's ceiling
+/// ([`ClassTable::ceiling_per_s`]).
 #[must_use]
 pub fn load_of(classes: &ClassTable, mind: Option<CoreClass>) -> u64 {
     mind.map_or(0, |class| classes.ceiling_per_s(class))
 }
 
-/// **The class a fielded hull is admitted at** — `chosen` where a fixture (or
-/// 17b cut M5) named one, else the fill rule: nothing on a seated hull (M5's
-/// gap, declared: a seated hull is sealed at `fill_class` too, so a release
-/// adds no unadmitted load), and `fill_class` — `[tacsim.minds].fill_class`,
-/// 17b cut M4.3 — on an unseated one, which the fill flies.
+/// **The class a fielded hull is admitted at** — `chosen` where a fixture or,
+/// since 17b cut M5.1, a chosen mind named one, else the fill rule:
+/// `fill_class` — `[tacsim.minds].fill_class`, 17b cut M4.3 — **seated or
+/// not** (17b cut M5.1: a seated hull is sealed at `fill_class` and a release
+/// hands it to a mind of that class, so it is admitted there; the `seated`
+/// parameter that admitted it at nothing, M3.5's declared gap, is gone).
 #[must_use]
-pub const fn admitted_class(
-    chosen: Option<CoreClass>,
-    seated: bool,
-    fill_class: CoreClass,
-) -> Option<CoreClass> {
+pub const fn admitted_class(chosen: Option<CoreClass>, fill_class: CoreClass) -> Option<CoreClass> {
     match chosen {
         Some(class) => Some(class),
-        None if seated => None,
         None => Some(fill_class),
     }
 }
 
-/// **A side the pool cannot carry** (D-UM-36): the arithmetic, every figure
-/// with a thousands separator ([`thousands`]) — doc 17 §9's sentence.
+/// **A hull the pool cannot carry** (D-UM-36): the arithmetic, every figure
+/// with a thousands separator ([`thousands`]) — in the owner's OQ-11 wording
+/// since 17b cut M5.1, said of the hull being admitted ("This tank would
+/// think …"), where doc 17 §9's sentence said "This side" (its example is
+/// corrected in the record). Under 120 columns at every figure a refusal can
+/// print: `would` is at most a class ceiling the class table admits (18,000:
+/// 4,500 ops every 250 ms), a refusal needs `spoken + would` past the half,
+/// and a side is at most twelve hulls, so `spoken` is at most 216,000 and the
+/// half under 234,000 — 118 columns at `18,000`, `233,999` and `216,000`
+/// (119 with every figure at six digits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "This side would think {} ops a second; its half of the centre's pool is {} and {} are spoken \
-     for.",
+    "This tank would think {} ops a second; its side's half of the centre's pool is {} and {} are \
+     spoken for.",
     thousands(*.would),
     thousands(*.half),
     thousands(*.spoken)
@@ -131,11 +143,15 @@ pub const fn admit(pool: u64, spoken: u64, would: u64) -> Result<(), PoolRefusal
 ///
 /// # Errors
 ///
-/// The first [`PoolRefusal`].
-pub fn admit_side(pool: u64, loads: impl IntoIterator<Item = u64>) -> Result<(), PoolRefusal> {
+/// The first [`PoolRefusal`], with its load's index among `loads` (17b cut
+/// M5.1: `crate::match_::StartError::Pool` names the hull it refused).
+pub fn admit_side(
+    pool: u64,
+    loads: impl IntoIterator<Item = u64>,
+) -> Result<(), (usize, PoolRefusal)> {
     let mut spoken: u64 = 0;
-    for would in loads {
-        admit(pool, spoken, would)?;
+    for (at, would) in loads.into_iter().enumerate() {
+        admit(pool, spoken, would).map_err(|refusal| (at, refusal))?;
         spoken = spoken.saturating_add(would);
     }
     Ok(())
@@ -181,9 +197,13 @@ mod tests {
 
     /// **The loads are the class ceilings** (doc 17 §9): 400, 1,500, 6,000
     /// and 18,000 a second on the stock table; nothing for no mind; and the
-    /// fill rule — a named class wins, a seated hull loads nothing, an
-    /// unseated one `[tacsim.minds].fill_class` (17b cut M4.3; Class 0 until
-    /// then).
+    /// fill rule — a named class wins, every other hull loads
+    /// `[tacsim.minds].fill_class` (17b cut M4.3; Class 0 until then).
+    ///
+    /// 17b cut M5.1: `admitted_class` lost its `seated` parameter — the
+    /// pin `admitted_class(None, true, CoreClass::I) == None` (a seated hull
+    /// loaded nothing, M3.5's declared gap) is now
+    /// `m5_a_seated_hull_is_admitted_at_fill_class`'s `Some(CoreClass::I)`.
     #[test]
     fn m3_the_loads_are_the_class_ceilings_and_the_fill_is_fill_class() {
         let classes = ClassTable::STOCK;
@@ -194,18 +214,58 @@ mod tests {
         assert_eq!(loads, [400, 1_500, 6_000, 18_000]);
         assert_eq!(load_of(&classes, None), 0);
         assert_eq!(MindsConfig::default().fill_class, CoreClass::I);
-        assert_eq!(admitted_class(None, true, CoreClass::I), None);
+        assert_eq!(admitted_class(None, CoreClass::I), Some(CoreClass::I));
+        assert_eq!(admitted_class(None, CoreClass::Zero), Some(CoreClass::Zero));
         assert_eq!(
-            admitted_class(None, false, CoreClass::I),
-            Some(CoreClass::I)
-        );
-        assert_eq!(
-            admitted_class(None, false, CoreClass::Zero),
-            Some(CoreClass::Zero)
-        );
-        assert_eq!(
-            admitted_class(Some(CoreClass::III), true, CoreClass::I),
+            admitted_class(Some(CoreClass::III), CoreClass::I),
             Some(CoreClass::III)
+        );
+    }
+
+    /// **17b cut M5.1** (the design note's M5.1 item 7; doc 17 §24's carried
+    /// "seated hulls at the pool"): a hull that chose no mind is admitted at
+    /// `[tacsim.minds].fill_class`, seated or not — there is no seat bit to
+    /// ask any more — so a side of seated pilots that chose nothing loads
+    /// what the same side of fill hulls loads (twelve at Class I: 18,000),
+    /// and a hull whose mind was chosen loads that mind's class, below
+    /// `fill_class` (Class 0 on a coreless chassis: 400) as well as at it.
+    #[test]
+    fn m5_a_seated_hull_is_admitted_at_fill_class() {
+        let cfg = MindsConfig::default();
+        let unchosen = load_of(&cfg.classes, admitted_class(None, cfg.fill_class));
+        assert_eq!(unchosen, 1_500, "an unchosen hull, seated or not");
+        assert_eq!(
+            [unchosen; 12].iter().sum::<u64>(),
+            18_000,
+            "twelve seated pilots who chose nothing speak for the fill's 18,000"
+        );
+        assert_eq!(
+            load_of(
+                &cfg.classes,
+                admitted_class(Some(CoreClass::Zero), cfg.fill_class)
+            ),
+            400,
+            "a chosen mind on a coreless chassis seals at Class 0"
+        );
+        assert_eq!(
+            admitted_class(None, CoreClass::III),
+            Some(CoreClass::III),
+            "an operator's fill_class is every unchosen hull's"
+        );
+        // Under a pool whose half is 1,900, a Class 0 hull beside a seated
+        // Class I one fits, and a second Class I does not: the arithmetic the
+        // lobby's choice refuses with.
+        assert_eq!(admit_side(3_800, [1_500, 400]), Ok(()));
+        assert_eq!(
+            admit_side(3_800, [1_500, 1_500]),
+            Err((
+                1,
+                PoolRefusal {
+                    would: 1_500,
+                    half: 1_900,
+                    spoken: 1_500,
+                }
+            ))
         );
     }
 
@@ -240,15 +300,19 @@ mod tests {
         assert_eq!(admit(3, 0, 1), Ok(()), "an odd pool's half rounds down");
         assert!(admit(3, 1, 1).is_err());
         assert_eq!(admit(0, u64::MAX, u64::MAX).map_err(|r| r.half), Err(0));
-        // First-come within a side.
+        // First-come within a side; the refused load's index named (17b cut
+        // M5.1: the eighth, index 7).
         assert_eq!(admit_side(276_000, [18_000; 7]), Ok(()));
         assert_eq!(
             admit_side(276_000, [18_000; 8]),
-            Err(PoolRefusal {
-                would: 18_000,
-                half: 138_000,
-                spoken: 126_000,
-            })
+            Err((
+                7,
+                PoolRefusal {
+                    would: 18_000,
+                    half: 138_000,
+                    spoken: 126_000,
+                }
+            ))
         );
     }
 
@@ -265,7 +329,12 @@ mod tests {
         assert_eq!(admit_side(pool, [load; 12]), Ok(()));
     }
 
-    /// **Doc 17 §9's sentence, byte for byte**, and its figures' separator.
+    /// **The pool's sentence, byte for byte**, and its figures' separator —
+    /// doc 17 §9's until 17b cut M5.1, the owner's OQ-11 wording since:
+    /// `This side would think 96,000 ops a second; its half of the centre's
+    /// pool is 100,000 and 92,000 are spoken for.` was this pin at 17b cut
+    /// M3.5; the sentence is said of the hull being admitted now (OQ-11),
+    /// 17b cut M5.1. With every figure at six digits it is 119 columns.
     #[test]
     fn m3_the_refusal_is_doc_17_s_sentence() {
         assert_eq!(
@@ -275,9 +344,17 @@ mod tests {
                 spoken: 92_000,
             }
             .to_string(),
-            "This side would think 96,000 ops a second; its half of the centre's pool is 100,000 \
-             and 92,000 are spoken for."
+            "This tank would think 96,000 ops a second; its side's half of the centre's pool is \
+             100,000 and 92,000 are spoken for."
         );
+        let widest = PoolRefusal {
+            would: 999_999,
+            half: 999_999,
+            spoken: 999_999,
+        }
+        .to_string();
+        assert_eq!(widest.len(), 119, "{widest}");
+        assert!(widest.len() < 120, "every figure at six digits fits");
         for (n, written) in [
             (0, "0"),
             (7, "7"),

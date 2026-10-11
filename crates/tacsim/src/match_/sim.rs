@@ -15,6 +15,8 @@
 //! SIM REPLAY <match> …    watch a finished match back, both sides, a keyframe at a time
 //! SIM MODE [mode]         which rule the match is fought under: skirmish or hold
 //! SIM RANGE [n]           your side against n targets that neither move nor shoot
+//! SIM MIND [<mind> …]     which mind your own slot chooses for its tank
+//! SIM AI MIND [<mind> …]  which mind your side's fill is chosen to carry (its lead, or staff)
 //! ```
 //!
 //! # Why one verb and not five
@@ -118,13 +120,19 @@ pub enum Selector {
     /// **`SIM RANGE [<n>]`** (16b cut O.3; 16c N13): the claimed side against
     /// `n` targets on the other side's pods — [`crate::match_::lobby::range`].
     Range,
+    /// **`SIM MIND [<mind> [PROFILE <p>[, <p>]…] | none]`** (17b cut M5.1;
+    /// doc 17 §12, D-UM-49): which mind the caller's own slot chooses for its tank —
+    /// [`crate::match_::lobby::mind`]. `SIM AI MIND` is [`Selector::Ai`]'s,
+    /// read before its number.
+    Mind,
 }
 
 impl Selector {
-    /// The thirteen words, in help order (16b cut V.2 added `history`, ninth;
+    /// The fourteen words, in help order (16b cut V.2 added `history`, ninth;
     /// 16b cut V.3 `report`, tenth; 16b cut I.1 `replay`, eleventh; 16b cut O.1
-    /// `mode`, twelfth; 16b cut O.3 `range`, thirteenth).
-    pub const ALL: [(Selector, &'static str); 13] = [
+    /// `mode`, twelfth; 16b cut O.3 `range`, thirteenth; 17b cut M5.1 `mind`,
+    /// fourteenth).
+    pub const ALL: [(Selector, &'static str); 14] = [
         (Selector::Team, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
@@ -138,6 +146,7 @@ impl Selector {
         (Selector::Replay, "replay"),
         (Selector::Mode, "mode"),
         (Selector::Range, "range"),
+        (Selector::Mind, "mind"),
     ];
 
     /// One word, however it was spelled.
@@ -185,7 +194,7 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
     Selector::parse(head).map(|selector| (selector, rest.to_owned()))
 }
 
-/// `SIM <team|leave|start|abort|concede|status|ai|unit|history|report|replay|mode|range>`
+/// `SIM <team|leave|start|abort|concede|status|ai|unit|history|report|replay|mode|range|mind>`
 /// — the whole lobby (doc 16 §3.7).
 ///
 /// # Errors
@@ -195,7 +204,9 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM CONCEDE | \
                          SIM STATUS | SIM AI [n] | SIM UNIT [type] | SIM HISTORY | \
                          SIM REPORT [match] | SIM REPLAY <match> [<m:ss> | next | prev] \
-                         [<callsign>] | SIM MODE [skirmish|hold] | SIM RANGE [<n>]";
+                         [<callsign>] | SIM MODE [skirmish|hold] | SIM RANGE [<n>] | \
+                         SIM MIND [<mind> [PROFILE <p>, …] | none] | \
+                         SIM AI MIND [[red|blue] <mind> [PROFILE <p>] | none]";
     // **Where before what** (16b cut F.4 residual). The deleted gate answered
     // every spelling of the verb outside the centre with the one
     // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
@@ -231,8 +242,28 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // **16b cut Q.7**: bare reads, with a number sets. A word that is not a
         // number is the usage line and never a silent read — `SIM AI four` must
         // not quietly answer "AI fill: 2 a side."
+        //
+        // **17b cut M5.1** (the design note's F11): `SIM AI MIND …` is read
+        // here, BEFORE the number, when the rest's first word is `mind`
+        // (case-folded) — the fill's mind, not its size.
         Selector::Ai => {
             let rest = rest.trim();
+            let (head, tail) = rest
+                .split_once(char::is_whitespace)
+                .map_or((rest, ""), |(head, tail)| (head, tail.trim()));
+            if head.eq_ignore_ascii_case("mind") {
+                let request = lobby::FillRequest::parse(tail).map_err(|usage| {
+                    CmdError::msg(match usage {
+                        lobby::MindUsage::Mind => {
+                            "Which mind? `SIM AI MIND Standard`, or `SIM AI MIND none`."
+                        }
+                        lobby::MindUsage::Profiles => {
+                            "Which profile? `SIM AI MIND Standard PROFILE Hunter`."
+                        }
+                    })
+                })?;
+                return lobby::ai_mind(ctx, request).map_err(refusal);
+            }
             let size = if rest.is_empty() {
                 None
             } else {
@@ -324,6 +355,23 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 }
             };
             lobby::range(ctx, count).map_err(refusal)
+        }
+        // **17b cut M5.1** (doc 17 §12, D-UM-49; D8): the fourteenth selector,
+        // and no fourteenth verb. Bare reads (to the actor alone, in any
+        // state), a mind chooses, `none` clears; every refusal is the
+        // library's, and the two usage lines are the parser's.
+        Selector::Mind => {
+            let request = lobby::MindRequest::parse(&rest).map_err(|usage| {
+                CmdError::msg(match usage {
+                    lobby::MindUsage::Mind => {
+                        "Which mind? `SIM MIND Standard`, or `SIM MIND none`."
+                    }
+                    lobby::MindUsage::Profiles => {
+                        "Which profiles? `SIM MIND Standard PROFILE Sniper, Line`."
+                    }
+                })
+            })?;
+            lobby::mind(ctx, request).map_err(refusal)
         }
     }
 }
@@ -556,6 +604,16 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    neither move nor shoot, on the other side's pods; the match ends when every \
                    target is out of action, or on SIM ABORT. A side's lead or staff, with a \
                    number, during selection; the bare word reads it.\n\
+                   SIM MIND [mind]     which mind your own slot chooses for its tank: bare, it \
+                   reads your choice, what fits your tank's core and your side's compute; SIM \
+                   MIND Standard PROFILE Sniper, Line records Standard Doctrine with as many \
+                   profiles as its class allows, the first the one it would fly; SIM MIND none \
+                   clears it. Your own slot only, during selection, refused with the reason when \
+                   it does not fit; no other pilot reads which mind you chose.\n\
+                   SIM AI MIND [mind]  which mind your side's machines are chosen to carry: its \
+                   lead, from their own holdings, or staff (SIM AI MIND red Standard PROFILE \
+                   Hunter), during selection, with one profile; bare, it reads what each side's \
+                   fill is chosen to carry, as far as you may know it.\n\
                    The switch spelling (SIM/STATUS) is the same command. All of it works in \
                    the simulator lobby, the two team rooms and the pods; anywhere else every \
                    spelling of SIM answers only where the simulator is."
@@ -583,9 +641,10 @@ mod tests {
         // 16b cut Q.7 made it six: `ai` joined the five. 16b cut Q.8 made it
         // seven with `unit`, 16b cut D.3 eight with `concede`, 16b cut V.2
         // nine with `history`, 16b cut V.3 ten with `report`, 16b cut I.1
-        // eleven with `replay`, 16b cut O.1 twelve with `mode`, and 16b cut O.3
-        // thirteen with `range`.
-        assert_eq!(switches.len(), 13);
+        // eleven with `replay`, 16b cut O.1 twelve with `mode`, 16b cut O.3
+        // thirteen with `range`, and 17b cut M5.1 fourteen with `mind` (was
+        // 13 at 17b cut M4.7).
+        assert_eq!(switches.len(), 14);
         for (selector, name) in Selector::ALL {
             assert!(switches.iter().any(|switch| switch == name), "{name}");
             assert_eq!(Selector::parse(name), Some(selector));

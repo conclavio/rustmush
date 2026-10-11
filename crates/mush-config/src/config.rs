@@ -100,8 +100,8 @@
 //! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from its unit mind (the reflex controller until 17b cut M4.3); `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
-//! | `[tacsim.minds].fill_class` | `"I"` | **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every seated hull are sealed and admitted at — `0`, `I`, `II` or `III` by its word; the seal's class is the least of the stock rating (`I`), the core and this, so above `I` it caps nothing until M5 rates minds; a config still naming the retired lab knob `fill_controller` (17b cut M1b.5) refuses the boot |
-//! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out until 17b cut M5) |
+//! | `[tacsim.minds].fill_class` | `"I"` | **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every seated hull are sealed and admitted at — `0`, `I`, `II` or `III` by its word; the seal's class is the least of the stock rating (`I`), the core and this, so above `I` it caps nothing until the cut that rates a mind above Class I (17b cut M5.1: every mind is rated `I`; a hull that chose no mind is admitted at this, seated or not); a config still naming the retired lab knob `fill_controller` (17b cut M1b.5) refuses the boot |
+//! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out; 17b cut M5.1 lets a principal choose a lawful preset with `SIM MIND`, sealed from 17b cut M5.2) |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
@@ -1406,7 +1406,8 @@ impl Default for TacsimCommandCfg {
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimMindsCfg {
     /// The Compact floor, per mille. `10` to `950` in steps of `10` (17b cut
-    /// M3.3; above `100` every Line-carded check-out is refused until M5).
+    /// M3.3; above `100` every Line-carded check-out is refused, and 17b cut
+    /// M5.1's `SIM MIND` refuses a preset under it at the choice).
     pub odds_floor_permille: u32,
     /// **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every
     /// seated hull are sealed and admitted at, by its word — `0`, `I`, `II`
