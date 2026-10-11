@@ -1592,6 +1592,9 @@ on the local rig of a pilot sealing a mind, exiting, and the tank flown by it; g
 parser updated; fog asserted (during selection only the slot's own character, and the lead for the
 fill, reads a slot's mind; everyone else reads `a mind` or nothing; no mind named after the start or
 in the record).
+Planned 2026-10-10 from `5f505c8` in seven sub-cuts on the programme lead's note for M5 as the owner
+adopted it that day (the rule language its own cut right after M5's gate, the doctrine and motor
+residues a cut after M5); see 17b section 1, row M5, and section 3, row M5.
 *Sortie and stations, and the OOC boundary: `SIM MIND` and `SIM AI MIND` list and accept only the
 character's (or the lead's) IC holdings and Doctrine (D-UM-49), with a fixture that a mind the
 character does not hold is refused and that the sim seal takes no seat and posts nothing; the
