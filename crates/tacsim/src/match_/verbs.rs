@@ -1297,7 +1297,8 @@ pub const MIND_SET_USAGE: &str = "@mind/set <unit>[=<preset> | =<slider> <value>
 /// owner-facing `@mind/set` on T1*; D-UM-17 as amended, D-UM-43, D-UM-44): set
 /// a preset or one slider on a [`Controller::Mind`] hull of a running match,
 /// and read its card back. Staff only (the verb's gate, as `@arena`'s); the
-/// pilot's `MIND` verb is 17b cut M5's. Three forms:
+/// pilot's own `MIND` verb (17b cut M5.4) reads the hull's seal from the seat
+/// and switches among its sealed profiles, never a slider. Three forms:
 ///
 /// * `@mind/set <unit>` — the read-back: a head naming the card AND where the
 ///   world's knowledge of it comes from (the check-out, the tape, an offer not

@@ -309,6 +309,59 @@ pub struct Frame {
     /// [`Frame::same_as`] does not compare it and the observer rule has nothing
     /// to say about it.
     pub odds_floor_permille: u32,
+    /// **The hull's sealed mind, as the pilot in the seat reads it** (17b cut
+    /// M5.4; doc 17 §12 "The `MIND` verb"), or `None` on a hull no seal
+    /// reached ([`crate::arena::mind::SealRef::none`]'s zero digest).
+    ///
+    /// Built by `Arena::frame_for` off the unit's own
+    /// [`crate::arena::mind::SealRef`] (`doctrine`, `profiles`), its
+    /// [`crate::arena::state::UnitState::card_profile`] and its mind row —
+    /// see [`FrameMind`]. The pilot's own hull, which is physical knowledge
+    /// and outside the observer rule, as [`Frame::sections`] is.
+    /// [`Frame::same_as`] compares it. **Never copied into
+    /// `crate::arena::mind::MindView`** (D-UM-4: a tier truncates the
+    /// keyframe, never extends it), so a mind reads nothing of its own seal
+    /// here and `crate::minds::api::PARITY` is untouched.
+    pub mind: Option<FrameMind>,
+}
+
+/// **The hull's sealed mind on the pilot's frame** (17b cut M5.4; doc 17 §12
+/// "The `MIND` verb", §11; the M5 design note's M5.4 item 2): what `MIND`
+/// prints and the keyframe's `mind` object carries.
+///
+/// `doctrine` and `profiles` are the seal's own, per-match constants
+/// ([`crate::arena::mind::SealRef::doctrine`],
+/// [`crate::arena::mind::SealRef::profiles`]). **Both classes are read LIVE**,
+/// never [`crate::arena::mind::SealRef`]'s figures fixed at the seal: `class`
+/// is [`Arena::mind_class`] (the sealed class against the core NOW; `Zero`
+/// once the row is dropped) and `core_class` the class of
+/// [`Arena::core_of`] (`Zero` for a hull with no core) — so a heavy whose core
+/// a `degrade_core` has lowered reads the class it now is; only the seal line,
+/// said once at check-out, keeps the sealed figures. `active` and
+/// `switch_at_ms` are [`crate::arena::state::UnitState::card_profile`]'s:
+/// the index flown and the ABSOLUTE arena millisecond the next switch is
+/// allowed — the last switch's stamp plus
+/// [`crate::arena::intents::PROFILE_SWITCH_MS`], `None` before any switch — so
+/// it changes only at a switch, never with the clock. `off` is the mind row's
+/// drop to the ROM ([`crate::arena::mind::MindState::dropped`]; `false` with
+/// no row).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameMind {
+    /// Whether the mind sealed is Standard Doctrine.
+    pub doctrine: bool,
+    /// The profiles sealed, the first the one that flies at the release.
+    pub profiles: crate::arena::card::ProfileSet,
+    /// The index into [`FrameMind::profiles`] the mind will fly.
+    pub active: u8,
+    /// The class the mind thinks at now ([`Arena::mind_class`]).
+    pub class: crate::arena::core::CoreClass,
+    /// The class of the hull's core now ([`Arena::core_of`]).
+    pub core_class: crate::arena::core::CoreClass,
+    /// The arena millisecond the next switch is allowed, or `None` before
+    /// any switch.
+    pub switch_at_ms: Option<i64>,
+    /// Whether the mind row is dropped to the ROM.
+    pub off: bool,
 }
 
 /// **How many contacts a frame carries odds for** (17b cut M1a.3; doc 17 §9,
@@ -317,9 +370,10 @@ pub struct Frame {
 /// reads the profile, the tests' arithmetic keeps the constant** (17b cut
 /// M3.1): a mind's view keeps the odds of the first `odds_rows` of the
 /// frame's rows (`Arena::mind_view`). The FRAME itself stays at this width —
-/// it is the pilot's picture, and it does not move before 17b cut M5 — so a
-/// Class II or III mind reads at most these two (D-UM-4: a tier never
-/// extends the keyframe).
+/// it is the pilot's picture, and it does not move before the cut that
+/// rates a mind above Class I (the owner's OQ-10 (c), re-pointed by 17b cut
+/// M5.4) — so a Class II or III mind reads at most these two (D-UM-4: a tier
+/// never extends the keyframe).
 pub const STOCK_ODDS_ROWS: usize = 2;
 
 /// **One facet's armour, as the pilot's own status block carries it** (16b cut
@@ -425,6 +479,11 @@ impl Frame {
     /// [`FrameWeapon::same_as`]; [`Frame::odds_floor_permille`] is never
     /// compared — a per-match constant, captured at check-out, which cannot
     /// differ between two frames of one match.
+    ///
+    /// **17b cut M5.4**: [`Frame::mind`] is compared exactly. A switch, the
+    /// next-switch moment, a degraded core and a drop to the ROM are what
+    /// `MIND` prints; without it a switch on a quiet, stationary hull sends
+    /// no frame and every reader of the held frame reads the old profile.
     #[must_use]
     pub fn same_as(&self, other: &Frame, pass_ms: i64) -> bool {
         self.catchup.is_none()
@@ -502,6 +561,10 @@ impl Frame {
                     && mine.weapon == theirs.weapon
                     && mine.p_permille / 10 == theirs.p_permille / 10
             })
+            // **17b cut M5.4**: a switch, the next-switch moment, a degraded
+            // core and a drop to the ROM are what `MIND` prints; the sealed
+            // set is a per-match constant and compares equal.
+            && self.mind == other.mind
     }
 }
 
@@ -2386,6 +2449,39 @@ impl Arena {
             // **17b cut M1b.3** (D-UM-4, D-UM-17): the floor the match was
             // checked out with — never the live config.
             odds_floor_permille: self.odds_floor_permille,
+            // **17b cut M5.4** (doc 17 §12): the hull's sealed mind, its
+            // classes read live.
+            mind: self.frame_mind(unit),
+        })
+    }
+
+    /// **The hull's sealed mind as its frame carries it** (17b cut M5.4; see
+    /// [`FrameMind`]), or `None` on a hull no seal reached (the zero digest
+    /// of [`crate::arena::mind::SealRef::none`], the test `apply_profile`
+    /// refuses a switch on).
+    fn frame_mind(&self, unit: &crate::arena::state::UnitState) -> Option<FrameMind> {
+        let seal = unit.seal;
+        if seal.digest == [0; 32] {
+            return None;
+        }
+        Some(FrameMind {
+            doctrine: seal.doctrine,
+            profiles: seal.profiles,
+            active: unit.card_profile.index,
+            // Both LIVE: the sealed class against the core now, and the core
+            // now — never `seal.class` or `seal.core_class`.
+            class: self.mind_class(unit.id),
+            core_class: self
+                .core_of(unit.id)
+                .map_or(crate::arena::core::CoreClass::Zero, |core| core.class),
+            switch_at_ms: unit
+                .card_profile
+                .switched_ms
+                .map(|at| at.saturating_add(crate::arena::intents::PROFILE_SWITCH_MS)),
+            off: self
+                .minds
+                .get(&unit.id)
+                .is_some_and(crate::arena::mind::MindState::dropped),
         })
     }
 
@@ -7954,5 +8050,192 @@ mod tests {
         );
         let out = dormant.step(1_000, &[], &[]);
         assert_eq!(out.tempo, Tempo::Quiet);
+    }
+
+    /// The fixture tank, seated, sealed with Standard Doctrine on `profiles`
+    /// (17b cut M5.4) under the fixture terms `terms` turns them into.
+    fn m5_sealed(
+        unit: crate::arena::state::CustodyUnit,
+        profiles: &[&str],
+        terms: crate::match_::SealTerms,
+    ) -> crate::arena::state::CustodyUnit {
+        let reflex = crate::config::ReflexConfig::default();
+        let cards = profiles
+            .iter()
+            .map(|name| {
+                let card = crate::arena::card::preset(name, &reflex)
+                    .unwrap_or_else(|| panic!("{name} is a preset"));
+                (SmolStr::new(*name), card)
+            })
+            .collect();
+        let mut unit = unit;
+        unit.reseal(&terms.with_profiles(cards))
+            .unwrap_or_else(|error| panic!("the fixture seals: {error:?}"));
+        unit
+    }
+
+    /// **17b cut M5.4** (doc 17 §12; the M5 design note's M5.4 item 2): a
+    /// switch alone changes the frame. A seated, cold, stationary tank sealed
+    /// on Sniper and Line is sent its frame once and nothing more; then its
+    /// pilot's `MIND PROFILE Line` (`IntentKind::Profile { index: 1 }`) lands
+    /// in a pulse that advances no time and moves nothing, and that pulse
+    /// sends one frame whose `mind` reads the new profile and the ABSOLUTE
+    /// moment of the next switch — the frame equal to the one before in every
+    /// field but `mind`, so without [`Frame::same_as`]'s comparison of it the
+    /// pilot would have been sent nothing. A quiet pulse after it sends
+    /// nothing again: `switch_at_ms` does not move with the clock.
+    #[test]
+    fn m5_a_switch_alone_changes_the_frame() {
+        use crate::arena::core::CoreClass;
+        let unit = m5_sealed(
+            tank(A, Team::Red, pose(3_500, 3_500)),
+            &["Sniper", "Line"],
+            crate::match_::SealTerms::fixture(),
+        );
+        let mut arena = arena_at_epoch(vec![unit], 1);
+        let opening = arena.step(1_000_000, &[], &[]);
+        let Some((_, before)) = opening.frames.first().cloned() else {
+            panic!("the pilot's first frame");
+        };
+        let Some(mind) = before.mind else {
+            panic!("a sealed hull's frame carries its mind");
+        };
+        assert!(mind.doctrine);
+        assert_eq!(
+            mind.profiles.names().collect::<Vec<_>>(),
+            ["Sniper", "Line"]
+        );
+        assert_eq!((mind.active, mind.switch_at_ms, mind.off), (0, None, false));
+        assert_eq!((mind.class, mind.core_class), (CoreClass::I, CoreClass::I));
+        assert!(arena.step(1_000_000, &[], &[]).frames.is_empty(), "quiet");
+
+        let switch = Intent {
+            unit: A,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Profile { index: 1 },
+            seq: 1,
+        };
+        let out = arena.step(1_000_000, &[], &[switch]);
+        assert_eq!(out.substeps, 0, "no time passed");
+        let Some((_, after)) = out.frames.first().cloned() else {
+            panic!("a switch alone sends the pilot a frame");
+        };
+        let Some(switched) = after.mind else {
+            panic!("the mind");
+        };
+        assert_eq!(switched.active, 1);
+        assert_eq!(
+            switched.switch_at_ms,
+            Some(arena.now_ms + crate::arena::intents::PROFILE_SWITCH_MS),
+            "absolute: the switch's own millisecond plus ten seconds"
+        );
+        assert_eq!(after.pose.x_cm, before.pose.x_cm);
+        assert_eq!(after.pose.heading_mdeg, before.pose.heading_mdeg);
+        assert_eq!(after.speed_cms, before.speed_cms);
+        assert!(!after.same_as(&before, 1_000), "the switch is told");
+        let unswitched = Frame {
+            mind: before.mind,
+            ..after.clone()
+        };
+        assert!(
+            unswitched.same_as(&before, 1_000),
+            "and nothing but the mind differs"
+        );
+        assert!(
+            arena.step(1_000_000, &[], &[]).frames.is_empty(),
+            "the next-switch moment does not move with the clock"
+        );
+    }
+
+    /// **17b cut M5.4** (doc 17 §12, §9; the M5 design note's M5.4 item 2):
+    /// the frame's classes are read LIVE. A heavy's hull, its core Class III,
+    /// rated and sealed at Class III under the fixture terms (their cap,
+    /// `fill_class`, raised to III), reads `class` III on a `core_class` III;
+    /// then its core is degraded one class by `degrade_core` — the op built by
+    /// `Arena::core_ops`, the builder a destroyed section's plan takes it from
+    /// (one `AdjustCell { core.core_class, -1 }`), applied as a plan, and the
+    /// consequence applied — and the frame reads `core_class` II and `class`
+    /// II — the seal still records III — and [`Frame::same_as`] is false
+    /// across the degrade, so the pilot is told, the mind alone differing.
+    #[test]
+    fn m5_the_frames_mind_reads_the_core_class_now() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::test_support::tactical_unit_cored;
+        let heavy = crate::arena::state::CustodyUnit {
+            unit: tactical_unit_cored(A, CoreClass::III),
+            ..tank(A, Team::Red, pose(3_500, 3_500))
+        };
+        let terms = crate::match_::SealTerms::fixture().rated(CoreClass::III);
+        assert_eq!(terms.class_cap, CoreClass::III, "the raised cap");
+        let heavy = m5_sealed(heavy, &["Line"], terms);
+        assert_eq!(heavy.seal.class, CoreClass::III, "sealed at III");
+        let mut arena = arena_at_epoch(vec![heavy], 1);
+        let Some(before) = arena.frame_for(A, Tempo::Quiet) else {
+            panic!("a frame");
+        };
+        let Some(mind) = before.mind else {
+            panic!("its mind");
+        };
+        assert_eq!(
+            (mind.class, mind.core_class),
+            (CoreClass::III, CoreClass::III)
+        );
+
+        let Some(core) = arena.core_of(A) else {
+            panic!("the heavy's core");
+        };
+        let addr = mush_tactics::CellAddr::Component {
+            component: mush_tactics::ComponentId::new(core.component.as_str())
+                .unwrap_or_else(|_| panic!("a component id")),
+            cell: mush_tactics::CellId::new(crate::definitions::unit::CORE_CLASS_CELL)
+                .unwrap_or_else(|_| panic!("a cell id")),
+        };
+        // `degrade_core`'s op, as a destroyed section's plan takes it.
+        let ops = arena.core_ops(A, &[crate::arena::resolution::Consequence::DegradeCore]);
+        assert_eq!(
+            ops,
+            [mush_tactics::UnitMutationOp::AdjustCell { addr, delta: -1 }],
+            "one class off the core's own cell"
+        );
+        let plan = mush_tactics::UnitMutationPlan::new(ops, None, None)
+            .unwrap_or_else(|_| panic!("the plan fits"));
+        let Some(unit) = arena.unit(A).map(|state| state.unit.clone()) else {
+            panic!("the heavy");
+        };
+        let (post, _) = mush_tactics::apply(&unit, &plan, 0)
+            .unwrap_or_else(|error| panic!("the plan applies: {error}"));
+        arena.set_unit(A, post, Arena::plan_touches_bands(&plan));
+        let mut journal = Vec::new();
+        arena.apply_consequence(
+            A,
+            &crate::arena::resolution::Consequence::DegradeCore,
+            0,
+            None,
+            &mut journal,
+        );
+
+        let Some(after) = arena.frame_for(A, Tempo::Quiet) else {
+            panic!("a frame");
+        };
+        let Some(degraded) = after.mind else {
+            panic!("its mind");
+        };
+        assert_eq!(degraded.core_class, CoreClass::II, "the core as it is now");
+        assert_eq!(degraded.class, CoreClass::II, "the mind thinks at it");
+        assert_eq!(
+            arena.unit(A).map(|state| state.seal.class),
+            Some(CoreClass::III),
+            "the seal keeps the sealed figure"
+        );
+        assert!(!after.same_as(&before, 1_000), "the degrade is told");
+        let undegraded = Frame {
+            mind: before.mind,
+            ..after.clone()
+        };
+        assert!(
+            undegraded.same_as(&before, 1_000),
+            "and nothing but the mind differs"
+        );
     }
 }

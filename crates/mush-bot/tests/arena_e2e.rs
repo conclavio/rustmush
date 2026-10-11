@@ -125,7 +125,12 @@ fn allowed(line: &str) -> bool {
 /// The verbs the pilot must never type (16c Q-AJ2, Q-AJ3) — and, since the
 /// game's 17b cut M5.1, `SIM MIND` (the programme lead's note for M5, as the
 /// owner adopted it: the bot never chooses a mind; `SIM AI MIND` is already
-/// `SIM AI`'s).
+/// `SIM AI`'s), and since its 17b cut M5.4 the cockpit's `MIND` (bare, `MIND
+/// PROFILE`, `MIND RULES`, `MIND TRACE`: the bot never reads or switches its
+/// tank's mind) — with `M`, `MI` and `MIN`, the prefixes that cut gave `MIND`
+/// (no other bare primary verb starts with `m`), so `MI PROFILE Line` is
+/// caught as `MIND PROFILE Line` is. (`ORDER`'s prefixes are left out of this
+/// check, as they were before that cut.)
 fn forbidden(line: &str) -> bool {
     let upper = line.to_ascii_uppercase();
     [
@@ -134,6 +139,10 @@ fn forbidden(line: &str) -> bool {
         "SIM MODE",
         "SIM RANGE",
         "SIM MIND",
+        "MIND",
+        "MIN",
+        "MI",
+        "M",
         "ORDER",
     ]
     .iter()

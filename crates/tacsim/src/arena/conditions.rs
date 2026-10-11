@@ -50,11 +50,12 @@
 //! check-out), and a target kind the floor admits — **in 17b cut M1b any
 //! [`SlotTarget::Contact`] is unlawful whatever the id**: the rule language has
 //! no contact word and nobody arms one, and a held id and an unheld one must
-//! answer one word (M5 admits a classified `Contact` at the landing when the
-//! `LOCK` rules arrive). Refuse-not-clamp: a condition under the floor is
-//! refused [`Refusal::Unlawful`], never raised to it. The lock's classification
-//! is **not** a lawfulness term but a warrant term ([`Arena::warrant`]): a slot
-//! on an unclassified lock is idle.
+//! answer one word (the rule-language cut after 17b cut M5.7's gate admits a
+//! classified `Contact` at the landing when the `LOCK` rules arrive — the
+//! owner's OQ-4, re-pointed by 17b cut M5.4). Refuse-not-clamp: a condition
+//! under the floor is refused [`Refusal::Unlawful`], never raised to it. The
+//! lock's classification is **not** a lawfulness term but a warrant term
+//! ([`Arena::warrant`]): a slot on an unclassified lock is idle.
 //!
 //! # What the warrant is, and is not
 //!
@@ -143,7 +144,9 @@ pub enum SlotTarget {
     /// The lock when it is this contact, classified and not reading dead
     /// (the read-dead term since 17b cut M2.2) — **unlawful in 17b cut
     /// M1b whatever the id** ([`condition_is_lawful`]); kept for the type's
-    /// meaning, which M5's `LOCK` rules make reachable.
+    /// meaning, which the rule-language cut's `LOCK` rules make reachable
+    /// (after 17b cut M5.7's gate, the owner's OQ-4; re-pointed by 17b cut
+    /// M5.4).
     Contact {
         /// The contact.
         id: ContactId,
@@ -201,9 +204,10 @@ pub struct FireCondition {
 /// **In 17b cut M1b any [`SlotTarget::Contact`] is unlawful whatever the id**:
 /// the rule language has no contact word and nobody arms one, and a held id
 /// and an unheld one must answer one word — so the predicate never reads the
-/// contact store. 17b cut M5 admits a classified `Contact` at the landing when
-/// the `LOCK` rules arrive. The lock's classification is a WARRANT term
-/// ([`Arena::warrant`]), not a lawfulness one.
+/// contact store. The rule-language cut after 17b cut M5.7's gate (the owner's
+/// OQ-4; re-pointed by 17b cut M5.4) admits a classified `Contact` at the
+/// landing when the `LOCK` rules arrive. The lock's classification is a
+/// WARRANT term ([`Arena::warrant`]), not a lawfulness one.
 ///
 /// # Errors
 ///

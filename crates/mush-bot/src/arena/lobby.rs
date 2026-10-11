@@ -11,13 +11,15 @@
 //! `ooc`, `simulator`, `red`/`blue`, `SIM STATUS`, `SIM TEAM red|blue`,
 //! `SIM START`, `BOARD`, `STARTUP` and `SIM LEAVE`. It can never type `SIM AI`,
 //! `SIM UNIT`, `SIM CONCEDE`, `SIM MODE`, `SIM RANGE`, `SIM ABORT`, `ORDER` or
-//! `EXIT` (16c Q-AJ2, Q-AJ3). `SIM START` goes out only while the machine
-//! believes the pilot leads its side and stands at [`Step::Start`] (cut AM.2:
-//! checked in [`Lobby::poll`] and again in [`Lobby::due`], so a lead lost to a
-//! line read in between never starts a match). `SIM LEAVE` goes once, as the
-//! lane stops (again only on a busy answer, inside the 3 s its answer is
-//! waited for), when the centre was last read idle or in selection and the
-//! pilot holds a slot — and (cut AM.2, 16c Q-AM3) when a stop finds a
+//! `EXIT` (16c Q-AJ2, Q-AJ3), nor `SIM MIND` or `MIND` (the game's 17b cut M5.1
+//! and M5.4: the bot never chooses, reads or switches a mind) — the list
+//! `tests/arena_e2e.rs`' `forbidden` enforces. `SIM START` goes out only while
+//! the machine believes the pilot leads its side and stands at [`Step::Start`]
+//! (cut AM.2: checked in [`Lobby::poll`] and again in [`Lobby::due`], so a lead
+//! lost to a line read in between never starts a match). `SIM LEAVE` goes
+//! once, as the lane stops (again only on a busy answer, inside the 3 s its
+//! answer is waited for), when the centre was last read idle or in selection
+//! and the pilot holds a slot — and (cut AM.2, 16c Q-AM3) when a stop finds a
 //! `SIM TEAM` or a `SIM START` typed and unanswered, the stop waits for that
 //! answer (at most `[arena].step_timeout_ms` from its typing) and then types
 //! the one `SIM LEAVE` whatever it learned, none when the answer names the

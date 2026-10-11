@@ -128,6 +128,23 @@
   "lock_percent": 62,
   "lock_range_m": 440,
   "match": 7,
+  "mind": {
+    "active": 0,
+    "channels": [
+      "helm",
+      "sensors",
+      "fire"
+    ],
+    "class": "I",
+    "core": "II",
+    "name": "Standard Doctrine",
+    "next_switch_ms": null,
+    "off": false,
+    "profiles": [
+      "Sniper",
+      "Line"
+    ]
+  },
   "notices": [
     {
       "cause": null,

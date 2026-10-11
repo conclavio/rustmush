@@ -1011,16 +1011,17 @@ fn too_many_profiles_line(mind: &str, class: CoreClass, most: u8, rom: Option<&s
 
 /// **A list as a sentence says it**: `a`, `a or b`, `a, b or c` (with `or`),
 /// or the same with `and`.
-fn listed(items: &[SmolStr], last: &str) -> String {
+pub(crate) fn listed<S: AsRef<str>>(items: &[S], last: &str) -> String {
     match items {
         [] => String::new(),
-        [one] => one.to_string(),
+        [one] => one.as_ref().to_owned(),
         [head @ .., tail] => format!(
-            "{} {last} {tail}",
+            "{} {last} {}",
             head.iter()
-                .map(SmolStr::as_str)
+                .map(AsRef::as_ref)
                 .collect::<Vec<&str>>()
-                .join(", ")
+                .join(", "),
+            tail.as_ref()
         ),
     }
 }

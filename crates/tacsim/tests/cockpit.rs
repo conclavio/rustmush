@@ -9,7 +9,7 @@
 //! 1. `BOARD` puts the body in the pod, the station on the **tank**, the seat in
 //!    the pilot's hands and the focus on it — and the second one fires cut K.1's
 //!    `Boarding → Running` trigger;
-//! 2. the eighteen verbs are contextual: each refuses with its own one line where
+//! 2. the nineteen verbs are contextual: each refuses with its own one line where
 //!    it does not mean anything;
 //! 3. `HEADING` before `STARTUP` is refused with the cold tank's own word;
 //! 4. `VIEW` draws the platform at the centre of a grid;
@@ -792,7 +792,8 @@ async fn board_puts_the_body_in_the_pod_the_station_on_the_tank_and_the_seat_in_
 }
 
 // ---------------------------------------------------------------------------
-// (2) The gate: eighteen verbs (the sixteen selectors, BOARD and EXIT), one line each
+// (2) The gate: nineteen verbs (the seventeen selectors, BOARD and EXIT; eighteen and
+// sixteen until 17b cut M5.4's MIND), one line each
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2459,14 +2460,16 @@ mod fixture {
     use mush_core::ObjId;
     use mush_sim::data::Pose;
     use smol_str::SmolStr;
+    use tacsim::arena::card::ProfileSet;
     use tacsim::arena::clock::Tempo;
     use tacsim::arena::condition::{Condition, ConditionBand};
     use tacsim::arena::conditions::{SlotTarget, aspect_mask};
+    use tacsim::arena::core::CoreClass;
     use tacsim::arena::perception::{
         Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind,
     };
     use tacsim::arena::state::{Classification, ContactId, Designator, Power, Team};
-    use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameSection};
+    use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameMind, FrameSection};
     use tacsim::arena::weapons::{FrameArming, FrameBand, FrameWeapon};
     use tacsim::arena_task::MatchId;
     use tacsim::match_::cockpit;
@@ -2813,6 +2816,18 @@ mod fixture {
             t_ms: 61_250,
             // **17b cut M1b.3**: the shipped Compact floor, 10 per cent.
             odds_floor_permille: 100,
+            // **17b cut M5.4** (doc 17 §12): the pilot chose Standard Doctrine
+            // on Sniper and Line and has not switched; the mind is rated I on
+            // the line tank's Class II core and stands, dormant under the seat.
+            mind: Some(FrameMind {
+                doctrine: true,
+                profiles: ProfileSet::of_names(&["Sniper", "Line"]).expect("two presets"),
+                active: 0,
+                class: CoreClass::I,
+                core_class: CoreClass::II,
+                switch_at_ms: None,
+                off: false,
+            }),
         }
     }
 
@@ -14011,6 +14026,67 @@ fn m1a4_drive_collides_with_no_registered_command() {
     assert_eq!(named("drive"), Ok("drive".to_owned()));
 }
 
+// ---------------------------------------------------------------------------
+// 17b cut M5.4 — `MIND`, the seventeenth selector (doc 17 §12 "The `MIND` verb")
+// ---------------------------------------------------------------------------
+
+/// **The verb word collides with no registered command, and the prefix shift
+/// is pinned** (17b cut M5.4; the M5 design note's M5.4 item 7; the check
+/// 17b cut M1a.4 added for every new verb word). `mind` is no kernel or host
+/// word; the cockpit registers it, `authoritative` with the rest of the
+/// cockpit, with its help line. Core's lookup tries exact names and aliases
+/// first and then prefixes of bare primary names only — `@` and `+` names
+/// and aliases never prefix-match — and this production roster has no other
+/// bare primary verb starting with `m` (its m-names are `+map`, `+market`,
+/// `+move`, `+muster`, `@macro`, `@mail`, `@market` and `@mind`; `move` is
+/// only `goto`'s alias). So `m`, `mi` and `min`, which found no command
+/// before this cut, are `MIND`'s, and no verb loses a prefix: the staff
+/// verb `@mind` and the `move` alias still answer as they did. Declared in
+/// the `mind` stanza of `legacy-handlers.toml`.
+#[test]
+fn m5_mind_collides_with_no_registered_command() {
+    let mut rig = Rig::boot(1);
+    let registry = &rig.tw.engine_mut().registry;
+    assert_eq!(registry.kernel_command_named("mind"), None);
+    let mind = registry
+        .spec_of("mind")
+        .expect("the cockpit registers mind");
+    assert_eq!(mind.name.as_str(), "mind");
+    assert!(
+        mind.help.starts_with("MIND [PROFILE <name>|RULES]"),
+        "{}",
+        mind.help
+    );
+    assert_eq!(
+        registry.compatibility_of("mind"),
+        Some(mush_core::CommandCompatibility::Authoritative)
+    );
+    let named = |word: &str| {
+        registry
+            .lookup(word)
+            .map(|(spec, _)| spec.name.to_string())
+            .map_err(|err| match err {
+                mush_core::LookupErr::NotFound => Vec::new(),
+                mush_core::LookupErr::Ambiguous(names) => {
+                    let mut names: Vec<String> = names.iter().map(ToString::to_string).collect();
+                    names.sort();
+                    names
+                }
+            })
+    };
+    for word in ["m", "mi", "min", "mind", "MIND", "Mi"] {
+        assert_eq!(named(word), Ok("mind".to_owned()), "{word}");
+    }
+    // Nothing else lost a word: the staff verb and the alias are where they were.
+    assert_eq!(named("@mind"), Ok("@mind".to_owned()));
+    assert_eq!(named("move"), Ok("goto".to_owned()));
+    assert_eq!(
+        named("minds"),
+        Err(Vec::new()),
+        "a prefix, never a longer word"
+    );
+}
+
 /// Every line `pilot` was sent from `mark` on, as the client reads them.
 fn m1a4_said_since(rig: &Rig, pilot: ObjId, mark: usize) -> Vec<String> {
     rig.tw.seen_by(&rig.log[mark..], pilot)
@@ -16884,4 +16960,658 @@ async fn m3_a_released_mind_hull_is_its_mind_s_again_on_the_mirror() {
         })
         .await;
     assert!(landed, "the arena applied the card: the hull is its mind's");
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.4: `MIND` and `MIND PROFILE` through the seat
+// ---------------------------------------------------------------------------
+
+/// **Two pilots flown, red's slot sealed on Sniper and Line** (17b cut M5.4):
+/// red claims and chooses `SIM MIND Standard PROFILE Sniper, Line` in
+/// Selection, blue claims, the match starts and both board; red's first frame
+/// is held. Nobody types `STARTUP`: both tanks stand cold where the check-out
+/// put them.
+async fn m5_sniper_line() -> Rig {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    assert_eq!(
+        rig.say(0, "sim mind Standard PROFILE Sniper, Line"),
+        "Your slot will carry Standard Doctrine (Sniper, Line)."
+    );
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    assert!(rig.frame_for(0).await, "the arena sends red its frame");
+    rig
+}
+
+/// Pump until `done` holds of the rig, or fail saying `what` (17b cut M5.4) —
+/// [`m1b4_until`] with room for the ten seconds a switch waits.
+async fn m5_until(rig: &mut Rig, what: &str, done: impl Fn(&Rig) -> bool) {
+    for _ in 0..4_000 {
+        rig.pump();
+        if done(rig) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let heard = rig.tw.seen_by(&rig.log, rig.pilot(0));
+    let tail = heard
+        .get(heard.len().saturating_sub(12)..)
+        .unwrap_or_default();
+    panic!("never: {what}; pilot 0 last heard {tail:#?}");
+}
+
+/// **The mirror's arena clock** (`MatchMirror::now_ms`), what the cockpit
+/// reads a mind's time against.
+fn m5_now_ms(rig: &Rig) -> i64 {
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(match_id))
+        .map(|mirror| mirror.now_ms)
+        .expect("the match is mirrored")
+}
+
+/// Red's held frame's `mind`.
+fn m5_mind(rig: &Rig) -> tacsim::arena::step::FrameMind {
+    rig.held_frame(0)
+        .mind
+        .expect("a sealed hull's frame carries its mind")
+}
+
+/// The tape's `mind_card` lines for `unit`, in order: the millisecond, the
+/// card's name, the sliders it moved and the card.
+fn m5_cards(rig: &Rig, unit: ObjId) -> Vec<(i64, String, Vec<String>, tacsim::arena::StockCard)> {
+    rig.tape
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::MindCard {
+                unit: carded,
+                name,
+                changed,
+                card,
+            } if *carded == unit => Some((
+                event.t_ms,
+                name.to_string(),
+                changed.iter().map(ToString::to_string).collect(),
+                card.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The mirror's copy of `unit`'s card, as `@mind/set` reads it.
+fn m5_mirror_card(
+    rig: &Rig,
+    unit: ObjId,
+) -> Option<(
+    tacsim::arena::StockCard,
+    i64,
+    tacsim::arena_bridge::CardSource,
+)> {
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.mirror(match_id))
+        .and_then(|mirror| mirror.cards.get(&unit).cloned())
+}
+
+/// **`MIND PROFILE` switches a sealed profile, at most once in ten seconds**
+/// (17b cut M5.4; doc 17 §11, §12, D-UM-44; the M5 design note's M5.4 items
+/// 4 and 5), over the production composition, on a COLD tank (no `STARTUP`:
+/// a switch asks no power, 17b cut M5.2):
+///
+/// * bare `MIND` prints [`cockpit::mind_lines`]' block off the held frame —
+///   Sniper flown, Line the other, every channel the pilot's;
+/// * `MIND PROFILE line` is acknowledged, staged through the seat on helm,
+///   and the next frame's `mind` reads Line and the ABSOLUTE moment of the
+///   next switch, which the keyframe the bridge pushes carries as
+///   `next_switch_ms`;
+/// * inside the ten seconds the cockpit refuses in one line each — the
+///   countdown read against the mirror's arena clock — and the profile
+///   already flown and a preset not sealed; and the arena refuses a switch
+///   the cockpit never pre-checked (offered straight through the seat's own
+///   forward) in its one generic sentence, the profile unmoved;
+/// * the tape holds the switch as one `mind_card` line, named Line, at the
+///   millisecond the next switch counts from;
+/// * once the mirror's clock passes the ten seconds the next switch is taken
+///   (back to Sniper), and ten seconds on, a third (Line again);
+/// * after `EXIT` the released hull flies the card the pilot switched to: a
+///   staff slider set lands on Line's card, never the first sealed profile's.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m5_mind_profile_switches_a_sealed_profile_at_most_once_in_ten_seconds() {
+    use tacsim::arena::intents::IntentKind;
+    use tacsim::arena::state::Power;
+    let mut rig = m5_sniper_line().await;
+    let pilot = rig.pilot(0);
+    let tank = rig.tank(0);
+    assert_eq!(rig.held_frame(0).power, Power::Off, "a cold tank");
+    let mind = m5_mind(&rig);
+    assert!(mind.doctrine);
+    assert_eq!(
+        mind.profiles.names().collect::<Vec<_>>(),
+        ["Sniper", "Line"]
+    );
+    assert_eq!((mind.active, mind.switch_at_ms, mind.off), (0, None, false));
+
+    // Bare `MIND`: the block, off the held frame.
+    let now = m5_now_ms(&rig);
+    let said = rig.say(0, "mind");
+    // The block, then the frame it read (the line client marks the panel).
+    let mut block = cockpit::mind_lines(&mind, true, now);
+    block.push("[panel arena.cockpit]".to_owned());
+    assert_eq!(said, block.join("\n"));
+    assert_eq!(
+        said.lines().nth(1),
+        Some(
+            "Profile: Sniper, 1 of 2 (also Line); MIND PROFILE Line switches, once in ten seconds."
+        )
+    );
+    assert_eq!(
+        said.lines().nth(2),
+        Some("Channels: you hold helm, sensors and fire; the mind is dormant while you fly.")
+    );
+    assert_eq!(
+        rig.say(0, "mind rules"),
+        "No rules are sealed on Sniper or Line; your own armings are under WEAPONSTATUS.\n\
+         [panel arena.cockpit]"
+    );
+    assert_eq!(
+        rig.say(0, "mind trace 3"),
+        "MIND TRACE refused. This core keeps no trace of its thinks yet."
+    );
+
+    // The switch, from the seat on helm.
+    let mark = rig.log.len();
+    assert_eq!(
+        rig.say(0, "mind profile line"),
+        "Profile Line: the mind will fly it when you leave the seat."
+    );
+    m5_until(&mut rig, "the switch on red's frame", |rig| {
+        rig.frame(0)
+            .and_then(|frame| frame.mind)
+            .is_some_and(|mind| mind.active == 1)
+    })
+    .await;
+    let at = m5_mind(&rig)
+        .switch_at_ms
+        .expect("a switch stamps the next one's moment");
+    let pushed = y4_cockpit_frames(&rig, pilot, mark);
+    let last = pushed.last().expect("the bridge pushed the switched frame");
+    assert_eq!(last["mind"]["active"], serde_json::json!(1), "{last}");
+    assert_eq!(
+        last["mind"]["next_switch_ms"],
+        serde_json::json!(at),
+        "{last}"
+    );
+    assert_eq!(
+        last["mind"]["profiles"],
+        serde_json::json!(["Sniper", "Line"])
+    );
+
+    // Inside the ten seconds: the cockpit's own pre-checks, one line each,
+    // the countdown against the mirror's arena clock.
+    let now = m5_now_ms(&rig);
+    assert!(now < at, "the window is open: {now} against {at}");
+    let secs = (at - now + 999) / 1_000;
+    assert_eq!(
+        rig.say(0, "mind profile sniper"),
+        format!("MIND refused. One switch in ten seconds; the next in {secs} s.")
+    );
+    assert_eq!(
+        rig.say(0, "mind profile LINE"),
+        "MIND refused. Line is already the profile."
+    );
+    assert_eq!(
+        rig.say(0, "mind profile hunter"),
+        "MIND refused. Hunter is not sealed on this mind; it carries Sniper and Line."
+    );
+    // The arena's own check: a switch the cockpit never pre-checked, offered
+    // through the seat's own forward inside the ten seconds.
+    let mark = rig.log.len();
+    rig.with_ctx_mut(0, |ctx| {
+        tacsim::arena_bridge::forward_intent(ctx, pilot, tank, IntentKind::Profile { index: 0 })
+    })
+    .expect("the seat forwards the switch");
+    m5_until(&mut rig, "the arena's refusal", |rig| {
+        m1a4_said_since(rig, pilot, mark)
+            .iter()
+            .any(|line| line == "MIND refused. That profile cannot be switched to now.")
+    })
+    .await;
+    assert_eq!(m5_mind(&rig).active, 1, "the profile did not move");
+
+    // The tape: one `mind_card` line, the switch, at the stamp's moment.
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, .. } if *unit == tank
+            )
+        })
+        .await;
+    assert!(landed, "the switch is on the tape");
+    let cards = m5_cards(&rig, tank);
+    let (t_ms, name, _, card) = cards.first().cloned().expect("the switch's line");
+    assert_eq!((t_ms, name.as_str()), (at - 10_000, "Line"));
+    assert_eq!(card, tacsim::arena::line(&config().arena.reflex));
+
+    // Past the ten seconds, on the mirror's clock: the next is taken.
+    m5_until(&mut rig, "the ten seconds", |rig| m5_now_ms(rig) >= at).await;
+    assert_eq!(
+        rig.say(0, "mind profile sniper"),
+        "Profile Sniper: the mind will fly it when you leave the seat."
+    );
+    m5_until(&mut rig, "the second switch", |rig| {
+        rig.frame(0)
+            .and_then(|frame| frame.mind)
+            .is_some_and(|mind| mind.active == 0)
+    })
+    .await;
+    let again = m5_mind(&rig).switch_at_ms.expect("the second stamp");
+    assert!(again >= at + 10_000, "{again} against {at}");
+    m5_until(&mut rig, "ten seconds more", |rig| m5_now_ms(rig) >= again).await;
+    assert_eq!(
+        rig.say(0, "mind profile line"),
+        "Profile Line: the mind will fly it when you leave the seat."
+    );
+    m5_until(&mut rig, "the third switch", |rig| {
+        rig.frame(0)
+            .and_then(|frame| frame.mind)
+            .is_some_and(|mind| mind.active == 1)
+    })
+    .await;
+
+    // The release flies the switched card: a staff slider set after `EXIT`
+    // lands on Line's card (the first sealed profile was Sniper).
+    rig.say(0, "exit");
+    m5_until(&mut rig, "the release", |rig| {
+        m1b5_controller(rig, tank) == Some(tacsim::arena::state::Controller::Mind)
+    })
+    .await;
+    let said = rig.staff(&format!("@mind/set #{}=band_pct 80", tank.0));
+    assert!(
+        said.starts_with(&format!(
+            "Mind card on #{}: band_pct 80 sent; the arena takes it at its next pulse.",
+            tank.0
+        )),
+        "{said}"
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, name, .. }
+                    if *unit == tank && name == "Line, edited (band_pct 80)"
+            )
+        })
+        .await;
+    assert!(landed, "the staff set lands on the released hull");
+    let mut expected = tacsim::arena::line(&config().arena.reflex);
+    expected
+        .set("band_pct", "80")
+        .expect("band_pct 80 is on Line's scale");
+    let (_, name, changed, card) = m5_cards(&rig, tank)
+        .last()
+        .cloned()
+        .expect("the staff set's line");
+    assert_eq!(changed, ["band_pct"]);
+    assert_eq!(card, expected, "the row flew Line, the switched card");
+    assert_eq!(name, "Line, edited (band_pct 80)");
+}
+
+/// **A switch on a stationary hull sends one frame, and `MIND` reads it**
+/// (17b cut M5.4; the M5 design note's M5.4 item 2, the feasibility review's
+/// A4): red's cold tank stands where the check-out put it and its pilot is
+/// sent nothing for two arena seconds; then `MIND PROFILE Line` — and in the
+/// three arena seconds after it, exactly ONE keyframe reaches the pilot, its
+/// `mind.active` moved to Line, its `next_switch_ms` the switch's absolute
+/// moment; then bare `MIND` prints the new profile, the countdown read
+/// against the mirror's arena clock. Without `Frame::same_as`' comparison of
+/// the mind the pilot would have been sent nothing, and every reader of the
+/// held frame would read Sniper.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m5_a_switch_on_a_stationary_hull_sends_one_frame_and_mind_reads_it() {
+    let mut rig = m5_sniper_line().await;
+    let pilot = rig.pilot(0);
+    let from = rig.staged_now_ms;
+    m5_until(&mut rig, "two arena seconds", |rig| {
+        rig.staged_now_ms >= from + 2_000
+    })
+    .await;
+    let quiet = rig.log.len();
+    let from = rig.staged_now_ms;
+    m5_until(&mut rig, "two quiet arena seconds", |rig| {
+        rig.staged_now_ms >= from + 2_000
+    })
+    .await;
+    assert!(
+        y4_cockpit_frames(&rig, pilot, quiet).is_empty(),
+        "a parked, cold hull is sent nothing"
+    );
+
+    let mark = rig.log.len();
+    assert_eq!(
+        rig.say(0, "mind profile Line"),
+        "Profile Line: the mind will fly it when you leave the seat."
+    );
+    let from = rig.staged_now_ms;
+    m5_until(&mut rig, "three arena seconds", |rig| {
+        rig.staged_now_ms >= from + 3_000
+    })
+    .await;
+    let frames = y4_cockpit_frames(&rig, pilot, mark);
+    assert_eq!(frames.len(), 1, "one frame for the switch: {frames:#?}");
+    let mind = m5_mind(&rig);
+    assert_eq!(mind.active, 1);
+    let at = mind.switch_at_ms.expect("the switch's stamp");
+    let sent = frames.first().expect("the one frame");
+    assert_eq!(sent["mind"]["active"], serde_json::json!(1));
+    assert_eq!(sent["mind"]["next_switch_ms"], serde_json::json!(at));
+
+    // `MIND` reads it, against the mirror's clock.
+    let now = m5_now_ms(&rig);
+    assert!(now < at, "inside the ten seconds: {now} against {at}");
+    let secs = (at - now + 999) / 1_000;
+    let said = rig.say(0, "mind");
+    assert_eq!(
+        said.lines().nth(1),
+        Some(
+            format!(
+                "Profile: Line, 2 of 2 (also Sniper); one switch in ten seconds, the next in \
+                 {secs} s."
+            )
+            .as_str()
+        ),
+        "{said}"
+    );
+    let mut block = cockpit::mind_lines(&mind, true, now);
+    block.push("[panel arena.cockpit]".to_owned());
+    assert_eq!(said, block.join("\n"));
+}
+
+/// **A staff read-back follows a pilot's switch** (17b cut M5.4; doc 17 §11,
+/// D14 of the M5 design note; `@mind/set`, 17b cut M1b.5): red's hull opens
+/// the match with the world's mirror holding its first sealed profile's card
+/// — Sniper, `as checked out` at nought; its pilot switches to Line from the
+/// seat, and the switch's `mind_card` line, absorbed off the tape as a staff
+/// edit's is, leaves the mirror on Line. After `EXIT` the hull is its mind's,
+/// so staff's bare `@mind/set #<tank>` reads `Line (on the tape at N ms)`
+/// with Line's five sections, and a staff slider set is validated and read
+/// back on a scratch card made from Line — `Line, edited (band_pct 80)`,
+/// never Sniper — and lands on the arena's row as that very card.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m5_a_staff_read_back_follows_a_pilots_switch() {
+    use tacsim::arena_bridge::CardSource;
+    let mut rig = m5_sniper_line().await;
+    let tank = rig.tank(0);
+    let id = tank.0;
+    let reflex = config().arena.reflex;
+    let sniper = tacsim::arena::preset("Sniper", &reflex).expect("a preset");
+    let line = tacsim::arena::line(&reflex);
+    assert_eq!(
+        m5_mirror_card(&rig, tank),
+        Some((sniper, 0, CardSource::CheckOut)),
+        "the check-out's card: the first sealed profile"
+    );
+    // A seated hull is not staff's to set.
+    assert_eq!(
+        rig.staff(&format!("@mind/set #{id}")),
+        format!("@mind/set: #{id} is not flown by a mind.")
+    );
+
+    assert_eq!(
+        rig.say(0, "mind profile line"),
+        "Profile Line: the mind will fly it when you leave the seat."
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, .. } if *unit == tank
+            )
+        })
+        .await;
+    assert!(landed, "the switch is on the tape");
+    let (t_ms, ..) = m5_cards(&rig, tank).first().cloned().expect("the line");
+    assert_eq!(
+        m5_mirror_card(&rig, tank),
+        Some((line.clone(), t_ms, CardSource::OnTape)),
+        "the mirror follows the switch"
+    );
+
+    rig.say(0, "exit");
+    m5_until(&mut rig, "the release", |rig| {
+        m1b5_controller(rig, tank) == Some(tacsim::arena::state::Controller::Mind)
+    })
+    .await;
+    let name = mush_core::output::display_name(rig.tw.world(), tank);
+    let said = rig.staff(&format!("@mind/set #{id}"));
+    let mut want = vec![format!(
+        "Mind card on #{id} ({name}): Line (on the tape at {t_ms} ms)"
+    )];
+    want.extend(line.read_back(&reflex, true));
+    assert_eq!(said, want.join("\n"));
+
+    // A staff slider set after the release: validated and read back on Line.
+    let mut edited = line.clone();
+    edited
+        .set("band_pct", "80")
+        .expect("band_pct 80 is on Line's scale");
+    let said = rig.staff(&format!("@mind/set #{id}=band_pct 80"));
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some(
+            format!("Mind card on #{id}: band_pct 80 sent; the arena takes it at its next pulse.")
+                .as_str()
+        )
+    );
+    assert!(
+        lines.get(1).is_some_and(|head| head.starts_with(&format!(
+            "Mind card on #{id} ({name}): Line, edited (band_pct 80) (sent at "
+        ))),
+        "{said}"
+    );
+    assert_eq!(
+        lines.get(2..).map(<[&str]>::to_vec),
+        Some(
+            edited
+                .read_back(&reflex, true)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        )
+    );
+    assert!(
+        !said.contains("Sniper"),
+        "nothing off the check-out's card: {said}"
+    );
+    let landed = rig
+        .tape_until(|event| {
+            matches!(
+                &event.kind,
+                tacsim::arena::ledger::EventKind::MindCard { unit, name, .. }
+                    if *unit == tank && name == "Line, edited (band_pct 80)"
+            )
+        })
+        .await;
+    assert!(landed, "the staff set lands");
+    let (_, _, changed, card) = m5_cards(&rig, tank).last().cloned().expect("its line");
+    assert_eq!(changed, ["band_pct"]);
+    assert_eq!(card, edited, "the arena's row is the read-back's card");
+}
+
+/// **`MIND` reads the SEAL, so after Q-UM-15's substitution it names what
+/// flies** (17b cut M5.4; the orchestrator's addendum, M5.2's D26; doc 17
+/// §21's Q-UM-15 at its default, the owner's OQ-5): with the test provider
+/// installed through the production seam (`install_holdings`), red's pilot
+/// chooses `Fixture I` — a mind that is not Standard Doctrine — and blue's
+/// claims, so there are humans on both sides and the check-out seals red's
+/// hull Standard Doctrine on Line. From the seat, bare `MIND` reads that
+/// seal off the frame — `Mind: Standard Doctrine, …` and the set of one —
+/// never the choice (no `Fixture I`, no `your own mind`, no Sniper), and
+/// `MIND PROFILE Sniper` is refused as a profile the sealed mind does not
+/// carry.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m5_mind_reads_the_seal_and_after_a_substitution_names_what_flies() {
+    let mut rig = Rig::boot(2);
+    let _provider = support::holdings::install(rig.tw.world_mut());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    assert_eq!(
+        rig.say(0, "sim mind Fixture I PROFILE Sniper"),
+        "Your slot will carry Fixture I (Sniper)."
+    );
+    rig.say(0, "sim start");
+    assert!(rig.centre().doctrine_only, "humans on both sides");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    assert!(rig.frame_for(0).await, "the arena sends red its frame");
+
+    let mind = m5_mind(&rig);
+    assert!(mind.doctrine, "the substitution is what flies");
+    assert_eq!(mind.profiles.names().collect::<Vec<_>>(), ["Line"]);
+    let said = rig.say(0, "mind");
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some(cockpit::mind_head_line(&mind).as_str())
+    );
+    assert!(
+        lines.first().is_some_and(
+            |head| head.starts_with("Mind: Standard Doctrine, sealed for this sortie;")
+        ),
+        "{said}"
+    );
+    assert_eq!(
+        lines.get(1).copied(),
+        Some("Profile: Line, 1 of 1; no other is sealed to switch to.")
+    );
+    for leak in ["Fixture", "your own mind", "Sniper"] {
+        assert!(!said.contains(leak), "MIND names the choice: {said}");
+    }
+    assert_eq!(
+        rig.say(0, "mind profile sniper"),
+        "MIND refused. Sniper is not sealed on this mind; it carries Line."
+    );
+}
+
+/// **Every `MIND` form answers through the verb, its guards in their order**
+/// (17b cut M5.4; the M5 design note's M5.4 items 4-6; the review's finding
+/// that the dispatch was pinned only through its composed strings), over the
+/// production composition, red's hull sealed as every unchosen slot is
+/// (Standard Doctrine on Line alone):
+///
+/// * before the arena's first frame (16b cut V.1's precedent, `EMCON`'s):
+///   bare `MIND` and `MIND RULES` say [`cockpit::NO_FRAME_YET`] and push
+///   nothing, `MIND PROFILE line` says it after `MIND refused.`, and `MIND
+///   TRACE` is refused in its own form;
+/// * on the sealed frame: `MIND PROFILE` with no name, `MIND RULES` with a
+///   word after it and a form `MIND` does not take each say
+///   [`cockpit::MIND_USAGE`]; a word no preset answers is refused without
+///   an echo; the profile already flown is refused; `MI` and `MIN` (the
+///   prefix shift) dispatch to the same answers as `MIND`;
+/// * on a frame that carries no `mind` (a hull no seal reached), bare `MIND`
+///   and `MIND RULES` say [`cockpit::NO_SEAL`] with the frame and `MIND
+///   PROFILE` says it after the prefix;
+/// * on a wreck the wreck is refused first, in `MIND refused.`'s prefix —
+///   before the no-seal check and before a switch the frame would allow
+///   (D-B3) — while bare `MIND` still reads the block, as every read verb
+///   answers a wreck.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
+    use tacsim::arena::card::ProfileSet;
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+
+    // Before the first frame: the panel is dark, and nothing is pushed.
+    assert!(rig.frame(0).is_none(), "nothing has been pumped yet");
+    assert_eq!(rig.say(0, "mind"), cockpit::NO_FRAME_YET);
+    assert_eq!(rig.say(0, "mind rules"), cockpit::NO_FRAME_YET);
+    assert_eq!(
+        rig.say(0, "mind profile line"),
+        "MIND refused. The panel has told you nothing yet."
+    );
+    assert_eq!(
+        rig.say(0, "mind trace"),
+        "MIND TRACE refused. This core keeps no trace of its thinks yet."
+    );
+
+    // The sealed frame: every form `MIND` does not take is the usage.
+    assert!(rig.frame_for(0).await, "the arena sends red its frame");
+    let mind = m5_mind(&rig);
+    assert_eq!(mind.profiles, ProfileSet::LINE, "an unchosen slot's seal");
+    for form in [
+        "mind profile",
+        "MIND PROFILE",
+        "mind rules now",
+        "mind bogus",
+        "mind profiles line",
+    ] {
+        assert_eq!(rig.say(0, form), cockpit::MIND_USAGE, "{form}");
+    }
+    assert_eq!(
+        rig.say(0, "mind profile berserker"),
+        "MIND refused. No profile of that name is sealed on this mind; it carries Line."
+    );
+    assert_eq!(
+        rig.say(0, "mind profile line"),
+        "MIND refused. Line is already the profile."
+    );
+    let block = rig.say(0, "mind");
+    assert!(
+        block.starts_with("Mind: Standard Doctrine, sealed for this sortie;"),
+        "{block}"
+    );
+    for prefix in ["mi", "MIN"] {
+        assert_eq!(rig.say(0, prefix), block, "{prefix}");
+    }
+    assert_eq!(
+        rig.say(0, "mi profile line"),
+        "MIND refused. Line is already the profile."
+    );
+
+    // A frame no seal reached: `NO_SEAL`, with the frame for the reads.
+    let mut unsealed = rig.held_frame(0);
+    unsealed.notices.clear();
+    unsealed.mind = None;
+    rig.push_frame(0, unsealed);
+    let no_seal = format!("{}\n[panel arena.cockpit]", cockpit::NO_SEAL);
+    assert_eq!(rig.say(0, "mind"), no_seal);
+    assert_eq!(rig.say(0, "mind rules"), no_seal);
+    assert_eq!(
+        rig.say(0, "mind profile line"),
+        "MIND refused. This hull carries no seal."
+    );
+
+    // A wreck: refused first, before the no-seal check …
+    let mut dead = rig.held_frame(0);
+    dead.notices.clear();
+    dead.wreck = true;
+    rig.push_frame(0, dead.clone());
+    let wrecked = "MIND refused. Your tank is destroyed and takes no orders. EXIT leaves the pod.";
+    assert_eq!(rig.say(0, "mind profile line"), wrecked);
+    // … and before a switch the frame would allow; bare `MIND` still reads.
+    let two = tacsim::arena::step::FrameMind {
+        profiles: ProfileSet::of_names(&["Sniper", "Line"]).expect("two presets"),
+        ..mind
+    };
+    dead.mind = Some(two);
+    rig.push_frame(0, dead.clone());
+    assert_eq!(rig.say(0, "mind profile line"), wrecked);
+    let mut block = cockpit::mind_lines(&two, !dead.weapons.is_empty(), 0);
+    block.push("[panel arena.cockpit]".to_owned());
+    assert_eq!(rig.say(0, "mind"), block.join("\n"));
 }

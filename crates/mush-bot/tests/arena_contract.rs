@@ -361,6 +361,8 @@ fn frame() -> Frame {
         t_ms: 61_250,
         // 17b cut M1b.3: the shipped Compact floor.
         odds_floor_permille: 100,
+        // 17b cut M5.4: the bot reads nothing of the hull's sealed mind.
+        mind: None,
     }
 }
 
@@ -2931,6 +2933,186 @@ fn m5_3_the_release_words_read_as_the_bot_reads_them() {
         "{lines:?}"
     );
     assert!(reader.picture.aboard, "the catch-up is a reclaim");
+    let open = &reader.picture.open;
+    assert!(open.contacts.is_none(), "a CONTACTS reply opened");
+    assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");
+    assert!(open.status.is_none(), "a STATUS reply opened");
+    assert!(!open.lock_line, "a lock line was read");
+    assert!(!open.brief, "a VIEW BRIEF opened");
+}
+
+// ---------------------------------------------------------------------------
+// The game's 17b cut M5.4: the `MIND` verb in line mode
+// ---------------------------------------------------------------------------
+
+/// **The game's 17b cut M5.4: every `MIND` line, read as the game prints it**
+/// (a declared reader change; the bot never types `MIND` — it joins
+/// `arena_e2e.rs`' `forbidden` — so none of these is ever an answer to it):
+///
+/// * bare `MIND`'s block, through the cockpit's own `mind_lines` — the head
+///   in its five shapes (a Doctrine seal at its live classes, a mind of the
+///   pilot's own, a row dropped to the ROM, a hull with no core above Class
+///   0, a hull sealed at Class 0 on a real core), the profile line in its three (a pair at the widest presets, the set
+///   of one, a countdown on the mirror's clock), both channel lines and the
+///   rules line — `MIND RULES`' line, `This hull carries no seal.`, the
+///   switch's acknowledgement and the verb's usage line each read
+///   `Line::Other` byte for byte and open no reply;
+/// * every `MIND PROFILE` pre-check — a preset not sealed, a word that is no
+///   preset, the profile already flown, the ten seconds, no seal, no frame,
+///   the wreck — composed through `order_refused` as the arena's own
+///   `profile` refusal is, reads `Line::Refused { order: "MIND", weapon:
+///   None }` as that refusal does (17b cut M5.2), its countdown never read as
+///   a gun's `cycling` seconds — reader cases, not neutral lines (declared:
+///   the design note's item 5 gives every one the `MIND refused.` prefix,
+///   which the reader reads as a refusal of the verb, as it reads the
+///   arena's own);
+/// * `MIND TRACE refused. This core keeps no trace of its thinks yet.` — a
+///   form refused, two words before `refused` and the second no weapon id —
+///   reads `Line::Other`;
+///
+/// each under 120 columns.
+#[test]
+fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
+    use tacsim::arena::card::ProfileSet;
+    use tacsim::arena::core::CoreClass;
+    use tacsim::arena::step::FrameMind;
+    let set = |names: &[&str]| ProfileSet::of_names(names).expect("presets");
+    let sniper_line = FrameMind {
+        doctrine: true,
+        profiles: set(&["Sniper", "Line"]),
+        active: 0,
+        class: CoreClass::I,
+        core_class: CoreClass::II,
+        switch_at_ms: None,
+        off: false,
+    };
+    let widest = FrameMind {
+        profiles: set(&["Skirmisher", "Rearguard"]),
+        active: 1,
+        switch_at_ms: Some(40_000),
+        ..sniper_line
+    };
+    let mut neutral: Vec<String> = Vec::new();
+    for (mind, armed, now_ms) in [
+        (sniper_line, true, 0),
+        (widest, false, 34_000),
+        (widest, true, 40_000),
+        (
+            FrameMind {
+                doctrine: false,
+                profiles: ProfileSet::LINE,
+                ..sniper_line
+            },
+            false,
+            0,
+        ),
+        (
+            FrameMind {
+                off: true,
+                class: CoreClass::Zero,
+                ..sniper_line
+            },
+            true,
+            0,
+        ),
+        (
+            FrameMind {
+                class: CoreClass::Zero,
+                core_class: CoreClass::Zero,
+                ..sniper_line
+            },
+            false,
+            0,
+        ),
+        (
+            FrameMind {
+                class: CoreClass::Zero,
+                ..sniper_line
+            },
+            true,
+            0,
+        ),
+    ] {
+        neutral.extend(cockpit::mind_lines(&mind, armed, now_ms));
+        neutral.push(cockpit::mind_rules_line(&mind));
+    }
+    neutral.push(cockpit::NO_SEAL.to_owned());
+    neutral.push(cockpit::profile_ack("Sniper"));
+    neutral.push(cockpit::MIND_USAGE.to_owned());
+    neutral.push(cockpit::order_refused(
+        "mind trace",
+        None,
+        cockpit::MIND_NO_TRACE,
+    ));
+    // The game's words, in each shape.
+    for line in [
+        "Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on a Class II core.",
+        "Mind: your own mind, sealed for this sortie; it thinks at Class I on a Class II core.",
+        "Mind: Standard Doctrine, off for the match: the hull is on the ROM.",
+        "Mind: Standard Doctrine, sealed for this sortie; with no core above Class 0, the hull is \
+         on the ROM.",
+        "Mind: Standard Doctrine, sealed for this sortie at Class 0 on a Class II core: the hull \
+         is on the ROM.",
+        "Profile: Sniper, 1 of 2 (also Line); MIND PROFILE Line switches, once in ten seconds.",
+        "Profile: Rearguard, 2 of 2 (also Skirmisher); one switch in ten seconds, the next in 6 s.",
+        "Profile: Line, 1 of 1; no other is sealed to switch to.",
+        "Channels: you hold helm, sensors and fire; the mind is dormant while you fly.",
+        "Channels: you hold helm and sensors (no weapons station on this hull); the mind is \
+         dormant while you fly.",
+        "Rules: none sealed; your own armings are under WEAPONSTATUS.",
+        "No rules are sealed on Sniper or Line; your own armings are under WEAPONSTATUS.",
+        "This hull carries no seal.",
+        "Profile Sniper: the mind will fly it when you leave the seat.",
+        "MIND TRACE refused. This core keeps no trace of its thinks yet.",
+    ] {
+        assert!(
+            neutral.iter().any(|said| said == line),
+            "the game no longer says {line:?}: {neutral:#?}"
+        );
+    }
+    let mut reader = Reader::new();
+    for line in &neutral {
+        assert!(line.chars().count() < 120, "{line}");
+        assert_eq!(reader.one(line), Line::Other(line.clone()), "{line}");
+    }
+
+    // Every pre-check of a switch, in the arena's own refusal's shape.
+    let refused = |said: &str| cockpit::order_refused("mind", None, said);
+    let mut checks: Vec<String> = ["Hunter", "berserker", "Sniper"]
+        .into_iter()
+        .filter_map(|word| cockpit::profile_switch(&sniper_line, word, 0).err())
+        .map(|said| refused(&said))
+        .collect();
+    checks.extend(
+        cockpit::profile_switch(&widest, "Skirmisher", 34_000)
+            .err()
+            .map(|said| refused(&said)),
+    );
+    checks.push(refused(cockpit::NO_SEAL));
+    checks.push(refused(cockpit::NO_FRAME_YET));
+    checks.push(refused(cockpit::DESTROYED));
+    assert_eq!(
+        checks,
+        [
+            "MIND refused. Hunter is not sealed on this mind; it carries Sniper and Line.",
+            "MIND refused. No profile of that name is sealed on this mind; it carries Sniper and \
+             Line.",
+            "MIND refused. Sniper is already the profile.",
+            "MIND refused. One switch in ten seconds; the next in 6 s.",
+            "MIND refused. This hull carries no seal.",
+            "MIND refused. The panel has told you nothing yet.",
+            "MIND refused. Your tank is destroyed and takes no orders. EXIT leaves the pod.",
+        ]
+    );
+    for line in &checks {
+        assert!(line.chars().count() < 120, "{line}");
+        let read = reader.one(line);
+        assert!(
+            matches!(&read, Line::Refused { order, weapon: None, cycling_s: None, said }
+                if order == "MIND" && line.ends_with(said.as_str())),
+            "{line} read as {read:?}"
+        );
+    }
     let open = &reader.picture.open;
     assert!(open.contacts.is_none(), "a CONTACTS reply opened");
     assert!(open.weapons.is_none(), "a WEAPONSTATUS reply opened");

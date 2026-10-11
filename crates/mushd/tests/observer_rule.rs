@@ -4369,6 +4369,8 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         t_ms: 0,
         // 17b cut M1b.3: the shipped floor.
         odds_floor_permille: 100,
+        // 17b cut M5.4: no seal on this hand-built frame.
+        mind: None,
     }
 }
 
@@ -8080,6 +8082,261 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
         assert!(
             !theirs.contains(leak),
             "Bo read {leak:?} of Ada's slot:\n{theirs}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.4 — the hull's sealed mind on the pilot's own frame
+// ---------------------------------------------------------------------------
+
+/// The keyframe's `mind` object, or `Value::Null`.
+fn m5_mind(frame: &Value) -> Value {
+    frame.get("mind").cloned().unwrap_or(Value::Null)
+}
+
+/// [`m1b3_cockpit`], keeping EVERY envelope the socket delivered on the way
+/// (17b cut M5.4) — each written whole into `seen` — so a test sweeps all a
+/// pilot's WebSocket carried (the bridge's pushed keyframes, every other
+/// feed, every line), not only the replies it asked for.
+async fn m5_cockpit_seen(ws: &mut Ws, id: u64, seen: &mut String) -> Value {
+    let request = ClientCommand::Req {
+        id,
+        q: Query::PanelSubscribe {
+            feed: COCKPIT_FEED.into(),
+        },
+    };
+    ws.send(Message::Text(
+        serde_json::to_string(&request)
+            .expect("a request encodes")
+            .into(),
+    ))
+    .await
+    .expect("the socket takes a request");
+    for _ in 0..400 {
+        let env = recv_env(ws).await;
+        seen.push_str(&serde_json::to_string(&env).expect("an envelope encodes"));
+        seen.push('\n');
+        let OutputEvent::Reply {
+            id: answered,
+            event,
+        } = &env.event
+        else {
+            continue;
+        };
+        if *answered != id {
+            continue;
+        }
+        let OutputEvent::Panel { data, .. } = event.as_ref() else {
+            panic!("a cockpit subscribe must answer a keyframe, got {event:?}");
+        };
+        return data.clone();
+    }
+    panic!("no reply {id} for {COCKPIT_FEED}")
+}
+
+/// Every text message the socket delivers until it has been quiet for
+/// `quiet`, at most `within` in all (17b cut M5.4), written into `seen`.
+async fn m5_drain(ws: &mut Ws, quiet: Duration, within: Duration, seen: &mut String) {
+    let until = tokio::time::Instant::now() + within;
+    loop {
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(quiet.min(left), ws.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                seen.push_str(text.as_str());
+                seen.push('\n');
+            }
+            Ok(Some(Ok(_))) => {}
+            _ => return,
+        }
+    }
+}
+
+/// **17b cut M5.4: the mind object names nothing but the pilot's own seal**
+/// (doc 17 §12 "The `MIND` verb", the fog's last row — the pilot whose hull
+/// carries the mind, alone; doc 16 §5's observer rule; the M5 design note's
+/// M5.4 gate evidence, `m1b3_the_arming_names_nothing_but_the_pilots_own_slot`'s
+/// pattern).
+///
+/// On the real rig Ada chooses `SIM MIND Standard PROFILE Sniper, Line` in
+/// Selection and Bo chooses nothing. Then:
+///
+/// * Ada's keyframe over the WebSocket carries her `mind` — Standard
+///   Doctrine, `["Sniper", "Line"]`, Sniper flown, the classes read live, the
+///   three channels of an armed hull, no switch yet, not off — and the object
+///   names no object number, no tank, no sixteen-figure word, no pilot;
+/// * Bo's carries HIS own — Standard Doctrine on Line alone, the default seal
+///   — and no byte of hers: no `Sniper` anywhere in his frame;
+/// * Ada's `MIND PROFILE Line`, typed in the terminal, is acknowledged to her,
+///   and her next frame's object reads Line and the absolute moment of her
+///   next switch, while Bo's object is what it was and his frame still holds
+///   no `Sniper`; and her bare `MIND` names her profiles to her;
+/// * Bo's terminal, read to its end, never read `Sniper`, her switch's
+///   acknowledgement or her block; and neither did his WebSocket — EVERY
+///   envelope it carried from his login on, the bridge's pushed keyframes
+///   and every other feed among them (not only the replies he asked for),
+///   drained at the end until it falls quiet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m5_the_mind_object_names_nothing_but_the_pilots_own_seal() {
+    let server = boot("observer-mind").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    let mut bo_web = web_session(&server, "bo", PILOT_PASSWORD, "Bo").await;
+    let bo_mark = bo.mark();
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(
+        &mut ada,
+        "SIM MIND Standard PROFILE Sniper, Line",
+        "Your slot will carry",
+    )
+    .await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    let mut query = 9_500_u64;
+    let mut ada_frame = Value::Null;
+    wait_until(STEP_TIMEOUT, "Ada's mind on her frame", async || {
+        query += 1;
+        ada_frame = m1b3_cockpit(&mut ada_web, query).await;
+        !m5_mind(&ada_frame).is_null()
+    })
+    .await;
+    // Everything Bo's WebSocket carries, swept at the end.
+    let mut bo_seen = String::new();
+    let mut bo_frame = Value::Null;
+    wait_until(STEP_TIMEOUT, "Bo's mind on his frame", async || {
+        query += 1;
+        bo_frame = m5_cockpit_seen(&mut bo_web, query, &mut bo_seen).await;
+        !m5_mind(&bo_frame).is_null()
+    })
+    .await;
+    let ada_mind = m5_mind(&ada_frame);
+    // The design note's example object, exactly: Standard Doctrine thinks at
+    // Class I on the line tank's Class II core.
+    assert_eq!(
+        ada_mind,
+        json!({
+            "name": "Standard Doctrine",
+            "profiles": ["Sniper", "Line"],
+            "active": 0,
+            "class": "I",
+            "core": "II",
+            "channels": ["helm", "sensors", "fire"],
+            "next_switch_ms": null,
+            "off": false,
+        }),
+        "Ada's own seal: {ada_frame}"
+    );
+    // The pilot's own seal and nothing else: no unit, no pilot, no id.
+    let holds = |ada_frame: &Value, bo_frame: &Value, stage: &str| {
+        let object = m5_mind(ada_frame).to_string();
+        names_nothing(&object, red, blue, "Ada's mind object");
+        no_sixteen_digit_word(&object, "Ada's mind object");
+        for leak in ["Ada", "Bo", "RA", "BA", "#", "unit", "seal"] {
+            assert!(
+                !object.contains(leak),
+                "{stage}: Ada's mind object said {leak}: {object}"
+            );
+        }
+        let theirs = m5_mind(bo_frame);
+        assert_eq!(
+            theirs.get("profiles"),
+            Some(&json!(["Line"])),
+            "{stage}: Bo's own default seal: {bo_frame}"
+        );
+        assert_eq!(theirs.get("name"), Some(&json!("Standard Doctrine")));
+        assert_eq!(theirs.get("next_switch_ms"), Some(&Value::Null));
+        let whole = bo_frame.to_string();
+        assert!(
+            !whole.contains("Sniper"),
+            "{stage}: Bo's frame carries Ada's profile: {whole}"
+        );
+        names_nothing(&theirs.to_string(), red, blue, "Bo's mind object");
+    };
+    holds(&ada_frame, &bo_frame, "at the start");
+
+    // Ada switches from the seat; she alone is told, and her frame follows.
+    let said = ask(
+        &mut ada,
+        "MIND PROFILE Line",
+        "the mind will fly it when you leave the seat",
+    )
+    .await;
+    assert!(
+        said.contains("Profile Line: the mind will fly it when you leave the seat."),
+        "{said}"
+    );
+    wait_until(STEP_TIMEOUT, "the switch on Ada's frame", async || {
+        query += 1;
+        ada_frame = m1b3_cockpit(&mut ada_web, query).await;
+        m5_mind(&ada_frame).get("active") == Some(&json!(1))
+    })
+    .await;
+    assert!(
+        m5_mind(&ada_frame)
+            .get("next_switch_ms")
+            .and_then(Value::as_i64)
+            .is_some_and(|at| at >= 10_000),
+        "the next switch's absolute moment: {ada_frame}"
+    );
+    query += 1;
+    let bo_frame = m5_cockpit_seen(&mut bo_web, query, &mut bo_seen).await;
+    holds(&ada_frame, &bo_frame, "after Ada's switch");
+    let block = ask_whole(&mut ada, "MIND").await;
+    assert!(
+        block.contains("Profile: Line, 2 of 2 (also Sniper);"),
+        "Ada reads her own: {block}"
+    );
+
+    // Bo, read to the end of a whole answer of his own, read none of it.
+    let _ = ask_whole(&mut bo, "STATUS").await;
+    let theirs = strip_ansi(&bo.seen[bo_mark..]);
+    for leak in [
+        "Sniper",
+        "Profile Line",
+        "the mind will fly it",
+        "Profile: ",
+        "Your slot will carry",
+    ] {
+        assert!(
+            !theirs.contains(leak),
+            "Bo read {leak:?} of Ada's mind:\n{theirs}"
+        );
+    }
+    // And his WebSocket, every envelope of it, drained until it falls quiet.
+    m5_drain(
+        &mut bo_web,
+        Duration::from_secs(2),
+        Duration::from_secs(10),
+        &mut bo_seen,
+    )
+    .await;
+    assert!(
+        bo_seen.contains("\"mind\""),
+        "the sweep read Bo's keyframes: {bo_seen}"
+    );
+    for leak in [
+        "Sniper",
+        "Profile Line",
+        "the mind will fly it",
+        "Profile: ",
+        "Your slot will carry",
+    ] {
+        assert!(
+            !bo_seen.contains(leak),
+            "Bo's WebSocket carried {leak:?} of Ada's mind:\n{bo_seen}"
         );
     }
 }

@@ -566,8 +566,8 @@ impl ProfileSet {
             .unwrap_or_else(|| line(reflex))
     }
 
-    /// The presets held, in order. No production reader yet: 17b cut M5.4's
-    /// `MIND` block lists a seal's profiles (its review left it for that).
+    /// The presets held, in order — what the keyframe's `mind` object lists
+    /// as `profiles` (17b cut M5.4, `crate::match_::cockpit::mind_json`).
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.codes()
             .iter()

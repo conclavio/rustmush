@@ -1,6 +1,6 @@
 # The cockpit
 
-The sixteen verbs you fly a tank with, in the order a pilot uses them. They work
+The seventeen verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
 else — `help simulator` is how you get there.
 
@@ -55,6 +55,12 @@ else — `help simulator` is how you get there.
                       drive to a named spot or a cell on the machine's own
                       route-finding; HEADING or SPEED takes the helm back. See
                       "Driving".
+  MIND [PROFILE <name>|RULES]
+                      your tank's sealed mind: what it is, its profiles and the
+                      one it will fly when you leave the seat, and who holds
+                      each channel; it is dormant while you fly. MIND PROFILE
+                      <name> switches to another sealed profile, once in ten
+                      seconds; MIND RULES says what rules it carries.
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.

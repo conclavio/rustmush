@@ -989,7 +989,14 @@ impl Arena {
     /// A unit with no core, or a list naming neither word (every shipped
     /// section but the line tanks', the scout's and the heavy's turrets, which
     /// author them since 17b cut M3.6), builds nothing.
-    fn core_ops(&self, target: ObjId, consequences: &[Consequence]) -> Vec<UnitMutationOp> {
+    ///
+    /// `pub(crate)` since 17b cut M5.4, so `arena::step`'s test of the
+    /// frame's live classes degrades a core through this very builder.
+    pub(crate) fn core_ops(
+        &self,
+        target: ObjId,
+        consequences: &[Consequence],
+    ) -> Vec<UnitMutationOp> {
         let mut ops: Vec<UnitMutationOp> = Vec::new();
         if !consequences.iter().any(|consequence| {
             matches!(

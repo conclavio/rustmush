@@ -1,4 +1,4 @@
-//! **The cockpit: boarding, the pilot's eighteen verbs, and the frame they
+//! **The cockpit: boarding, the pilot's nineteen verbs, and the frame they
 //! read** (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations
 //! are on the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5, §6
 //! "Deliberation").
@@ -8,7 +8,7 @@
 //! This is the half that reports one, and everything the pilot can do once
 //! seated.
 //!
-//! **Eighteen**: the sixteen cockpit selectors of [`COCKPIT_VERBS`], plus
+//! **Nineteen**: the seventeen cockpit selectors of [`COCKPIT_VERBS`], plus
 //! [`BOARD_VERB`] and [`EXIT_VERB`], which are not selectors — they are how a
 //! pilot gets into the cockpit and out of it. The table below is that list in
 //! that order, and **16b cut D.2** made the three agree: the head said twelve in
@@ -23,7 +23,10 @@
 //! [`crate::match_::cockpit::watch_lines`]. **17b cut M1a.4** added the
 //! sixteenth, `DRIVE`: the tank's own drive-by-wire, steering for a named spot
 //! or a cell on the machines' route-finding (doc 17 §4 D-UM-10; the word is
-//! `DRIVE` because core's `goto` holds that name).
+//! `DRIVE` because core's `goto` holds that name). **17b cut M5.4** added the
+//! seventeenth, `MIND`: the hull's sealed mind read from the seat — what it
+//! is, its profiles, who holds each channel — and `MIND PROFILE`, the seat's
+//! switch to another sealed profile (doc 17 §12 "The `MIND` verb").
 //!
 //! ```text
 //! BOARD                      climb into your pod and take the tank's cockpit
@@ -44,6 +47,7 @@
 //! ORDER <squad|ALL> <what>   command your side's machines (HOLD, ADVANCE, ENGAGE, WITHDRAW, SCREEN, SUPPORT; RELEASE)
 //! WATCH [ON|OFF]             push your own line, guns and contacts as they change, for line mode
 //! DRIVE <spot|x,y|HOLD|OFF>  drive to a named spot or a cell on the machine's own route-finding
+//! MIND [PROFILE <name>|RULES] your tank's sealed mind, dormant while you fly; PROFILE switches its profile
 //! EXIT                       climb out
 //! ```
 //!
@@ -88,10 +92,10 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So all eighteen are registered globally and
+//! table is global. So all nineteen are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
-//! sixteen cockpit selectors to anyone who is not focused on a station of a
+//! seventeen cockpit selectors to anyone who is not focused on a station of a
 //! **deployed** unit. A pilot who has boarded but whose match has not started
 //! yet is in that last case on purpose: there is no arena to order until the
 //! trigger fires.
@@ -146,7 +150,7 @@ use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
 use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, NoticeKind, RefusalDetail};
 use crate::arena::state::{ArenaTerrain, Channel, ContactId, Designator, KeySpot, Power};
-use crate::arena::step::Frame;
+use crate::arena::step::{Frame, FrameMind};
 use crate::arena::weapons::FrameArming;
 use crate::arena_bridge::{
     ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, NOTICE_SENTENCE_TAG,
@@ -202,7 +206,14 @@ pub const EXIT_VERB: &str = "exit";
 /// after `watch`. Doc 17 calls it `GOTO`, and core's baseline `goto` (aliases
 /// `go`, `move`) holds that name — the registry refuses a collision, so the
 /// word is `DRIVE` (the M1a plan's departure (f)).
-pub const COCKPIT_VERBS: [&str; 16] = [
+///
+/// **17b cut M5.4** added `mind`, the seventeenth (doc 17 §12 "The `MIND`
+/// verb"; the M5 design note's C-1: D-UM-10's "16 with `GOTO` and `MIND`"
+/// read as 17, with `DRIVE` and `MIND`). Appended after `drive`. It shifts
+/// a prefix and takes none: no other bare primary verb of the production
+/// roster starts with `m` (`@`/`+` names and aliases never prefix-match), so
+/// `m`, `mi` and `min` went from no command to `MIND`.
+pub const COCKPIT_VERBS: [&str; 17] = [
     "startup",
     "heading",
     "speed",
@@ -219,6 +230,7 @@ pub const COCKPIT_VERBS: [&str; 16] = [
     "emcon",
     "watch",
     "drive",
+    "mind",
 ];
 
 /// The station id one pod's pilot holds **on the tank** (doc 16 §3.3).
@@ -630,7 +642,8 @@ pub enum CockpitError {
     /// `OR`, a fifth condition, a malformed or missing number, an empty `WHEN`,
     /// a term repeated with another value. Printed through `fire_refused`, so
     /// it reads `FIRE cannon refused. That condition is …`. The rest of the
-    /// rule language arrives with the mind's own card (17b cut M5).
+    /// rule language is the rule-language cut's, after 17b cut M5.7's gate
+    /// (the owner's OQ-4; re-pointed by 17b cut M5.4).
     #[error("That condition is not one this core takes; help cockpit lists the eight it does.")]
     NotThisCore,
 }
@@ -2711,8 +2724,8 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 // ---------------------------------------------------------------------------
 // K3: the cockpit verbs (twelve at K3; `ORDER`, the thirteenth, is below
 // under "Commanding the machines"; `EMCON`, the fourteenth, follows `STARTUP`,
-// `WATCH`, the fifteenth, follows `EMCON`, and `DRIVE`, the sixteenth, follows
-// `WATCH`)
+// `WATCH`, the fifteenth, follows `EMCON`, `DRIVE`, the sixteenth, follows
+// `WATCH`, and `MIND`, the seventeenth, follows `DRIVE`)
 // ---------------------------------------------------------------------------
 
 /// `STARTUP` — bring power up (doc 16 §3.3).
@@ -3129,6 +3142,352 @@ fn drive_goal(
             ))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// `MIND`, the seventeenth selector (17b cut M5.4; doc 17 §12 "The `MIND` verb")
+// ---------------------------------------------------------------------------
+
+/// **`MIND`'s usage line** (17b cut M5.4), for a form it does not take — a
+/// word that is not `PROFILE`, `RULES` or `TRACE`, `PROFILE` with no name,
+/// `RULES` with a word after it.
+pub const MIND_USAGE: &str =
+    "MIND [PROFILE <name>|RULES]; bare MIND reads your tank's sealed mind.";
+
+/// **What `MIND` says of a hull no seal reached** (17b cut M5.4): the frame
+/// carries no [`Frame::mind`]. Bare `MIND` and `MIND RULES` say it alone;
+/// `MIND PROFILE` says it after `MIND refused.`.
+pub const NO_SEAL: &str = "This hull carries no seal.";
+
+/// **The block's channel line on an armed hull** (17b cut M5.4; doc 17 §12,
+/// OQ-8): the pilot holds every channel, and the sealed mind waits.
+pub const MIND_CHANNELS_ARMED: &str =
+    "Channels: you hold helm, sensors and fire; the mind is dormant while you fly.";
+
+/// **The block's channel line on a hull with no weapons station** (17b cut
+/// M5.4; doc 17 §11's inert fire half, §22's italic line): the frame's own
+/// rule — no weapon rows — as the keyframe's `channels` reads it.
+pub const MIND_CHANNELS_UNARMED: &str = "Channels: you hold helm and sensors (no weapons station \
+                                          on this hull); the mind is dormant while you fly.";
+
+/// **The block's rules line** (17b cut M5.4; OQ-4, OQ-8): no rule is sealed
+/// on any profile before the rule-language cut (its own, after 17b cut
+/// M5.7's gate), and the pilot's own condition slots are `FIRE … WHEN`'s,
+/// read by `WEAPONSTATUS`.
+pub const MIND_RULES_LINE: &str = "Rules: none sealed; your own armings are under WEAPONSTATUS.";
+
+/// **The half after `MIND TRACE refused.`** (17b cut M5.4; OQ-8): the think
+/// ring a trace reads is 17b cut M6's.
+pub const MIND_NO_TRACE: &str = "This core keeps no trace of its thinks yet.";
+
+/// The verb word every `MIND PROFILE` refusal opens with, the intent's own
+/// ([`IntentKind::as_str`] of [`IntentKind::Profile`]) — so the cockpit's
+/// pre-checks and the arena's `profile` refusal compose one prefix through
+/// [`order_refused`].
+fn profile_order() -> &'static str {
+    IntentKind::Profile { index: 0 }.as_str()
+}
+
+/// **The arena millisecond the cockpit reads a mind's time against** (17b
+/// cut M5.4; the M5 design note's M5.4 items 4 and 5: "the mirror's arena
+/// clock"): [`crate::arena_bridge::MatchMirror::now_ms`], the arena's own
+/// clock as the last `Frames` message reported it — moved every arena
+/// second whether or not anybody was sent a frame — never the held frame's
+/// `t_ms`, which a quiet hull's frame leaves stale. (The mirror's
+/// `arena_ms`, the field the note names, is the last closed ledger chunk's
+/// stamp — nought for a match's first minutes — so the countdown reads the
+/// clock the note means; declared.) The held frame's own
+/// [`CockpitFrame::arena_ms`] where the registry no longer mirrors the match;
+/// never below it.
+fn mind_now_ms(w: &World, held: &CockpitFrame) -> i64 {
+    w.module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.mirror(held.match_id))
+        .map_or(held.arena_ms, |mirror| mirror.now_ms)
+        .max(held.arena_ms)
+}
+
+/// **The whole seconds until the next switch is allowed** (17b cut M5.4),
+/// rounded up as every countdown a pilot reads is, read against `now_ms` (the
+/// mirror's arena clock, `mind_now_ms`); `None` when a switch is allowed
+/// now — before any switch, or once [`FrameMind::switch_at_ms`] is past.
+#[must_use]
+pub fn next_switch_s(mind: &FrameMind, now_ms: i64) -> Option<i64> {
+    let left = mind.switch_at_ms?.saturating_sub(now_ms);
+    (left > 0).then(|| left.saturating_add(999) / 1_000)
+}
+
+/// **`MIND`'s first line** (17b cut M5.4; doc 17 §12; the M5 design note's
+/// M5.4 item 4): the mind, that it is sealed for this sortie, and the two
+/// classes the frame reads LIVE ([`FrameMind`]) —
+/// `Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on
+/// a Class II core.` A mind that is not Standard Doctrine reads `your own
+/// mind` (the arena keeps no other mind's name); a row dropped to the ROM
+/// reads `Mind: Standard Doctrine, off for the match: the hull is on the
+/// ROM.`, the words of `crate::arena_bridge`'s `ROM_TAIL`. A live row whose
+/// mind class is 0 is the ROM's too (`Arena::collect_think`'s rule: no core,
+/// a core at Class 0, or a seal capped at Class 0 hands every think to the
+/// ROM), so "it thinks at Class 0" would be false of it: a hull whose core
+/// is gone or reads Class 0 — `target_mk1`, which a pilot may field, has
+/// none — reads `Mind: Standard Doctrine, sealed for this sortie; with no
+/// core above Class 0, the hull is on the ROM.`, and a hull sealed at Class
+/// 0 on a real core (`[tacsim.minds].fill_class = "0"`, a lawful setting,
+/// seals every seated hull there) reads `Mind: Standard Doctrine, sealed for
+/// this sortie at Class 0 on a Class II core: the hull is on the ROM.` (17b
+/// cut M5.4: both are keyed on the class the ROM rule reads, not on the
+/// core's alone).
+#[must_use]
+pub fn mind_head_line(mind: &FrameMind) -> String {
+    use crate::arena::core::CoreClass;
+    let name = if mind.doctrine {
+        crate::arena::doctrine::SEALED_MIND
+    } else {
+        "your own mind"
+    };
+    if mind.off {
+        return format!("Mind: {name}, off for the match: the hull is on the ROM.");
+    }
+    if mind.class == CoreClass::Zero {
+        if mind.core_class == CoreClass::Zero {
+            return format!(
+                "Mind: {name}, sealed for this sortie; with no core above Class 0, the hull is \
+                 on the ROM."
+            );
+        }
+        return format!(
+            "Mind: {name}, sealed for this sortie at Class 0 on a Class {} core: the hull is on \
+             the ROM.",
+            mind.core_class.as_str()
+        );
+    }
+    format!(
+        "Mind: {name}, sealed for this sortie; it thinks at Class {} on a Class {} core.",
+        mind.class.as_str(),
+        mind.core_class.as_str()
+    )
+}
+
+/// **`MIND`'s profile line** (17b cut M5.4; doc 17 §11, §12; OQ-3): the
+/// profile the mind will fly, its place in the sealed set and the others,
+/// and the switch —
+/// `Profile: Sniper, 1 of 2 (also Line); MIND PROFILE Line switches, once in
+/// ten seconds.` (`MIND PROFILE <name>` past two profiles), or, inside ten
+/// seconds of the last switch, `…; one switch in ten seconds, the next in 6
+/// s.` — the seconds read against `now_ms`, the mirror's arena clock
+/// (`mind_now_ms`). A set of one, every hull nobody chose a mind for, reads
+/// `Profile: Line, 1 of 1; no other is sealed to switch to.`
+#[must_use]
+pub fn mind_profile_line(mind: &FrameMind, now_ms: i64) -> String {
+    let names: Vec<&str> = mind.profiles.names().collect();
+    // `ProfileSet::card`'s rule for an index past the set: the Line card.
+    let active = mind.profiles.name(mind.active).unwrap_or("Line");
+    let head = format!(
+        "Profile: {active}, {} of {}",
+        u16::from(mind.active).saturating_add(1),
+        names.len()
+    );
+    let others: Vec<&str> = names
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| *at != usize::from(mind.active))
+        .map(|(_, name)| *name)
+        .collect();
+    if others.is_empty() {
+        return format!("{head}; no other is sealed to switch to.");
+    }
+    let also = format!("{head} (also {})", lobby::listed(&others, "and"));
+    if let Some(secs) = next_switch_s(mind, now_ms) {
+        return format!("{also}; one switch in ten seconds, the next in {secs} s.");
+    }
+    let target = match others.as_slice() {
+        [one] => one,
+        _ => "<name>",
+    };
+    format!("{also}; MIND PROFILE {target} switches, once in ten seconds.")
+}
+
+/// **Bare `MIND`'s block** (17b cut M5.4; doc 17 §12 "The `MIND` verb"; the
+/// M5 design note's M5.4 item 4; OQ-8): four lines, at most seven, each under
+/// 120 columns at the widest preset pair —
+///
+/// ```text
+/// Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on a Class II core.
+/// Profile: Sniper, 1 of 2 (also Line); MIND PROFILE Line switches, once in ten seconds.
+/// Channels: you hold helm, sensors and fire; the mind is dormant while you fly.
+/// Rules: none sealed; your own armings are under WEAPONSTATUS.
+/// ```
+///
+/// [`mind_head_line`], [`mind_profile_line`] (its time read against `now_ms`,
+/// the mirror's arena clock), [`MIND_CHANNELS_ARMED`] or
+/// [`MIND_CHANNELS_UNARMED`] by `armed` (the frame's own rule: it carries a
+/// weapon row), and [`MIND_RULES_LINE`]. No ops figure, no seal id, no card.
+#[must_use]
+pub fn mind_lines(mind: &FrameMind, armed: bool, now_ms: i64) -> Vec<String> {
+    let channels = if armed {
+        MIND_CHANNELS_ARMED
+    } else {
+        MIND_CHANNELS_UNARMED
+    };
+    vec![
+        mind_head_line(mind),
+        mind_profile_line(mind, now_ms),
+        channels.to_owned(),
+        MIND_RULES_LINE.to_owned(),
+    ]
+}
+
+/// **`MIND RULES`' line** (17b cut M5.4; OQ-4): `No rules are sealed on
+/// Sniper or Line; your own armings are under WEAPONSTATUS.`
+#[must_use]
+pub fn mind_rules_line(mind: &FrameMind) -> String {
+    let names: Vec<&str> = mind.profiles.names().collect();
+    format!(
+        "No rules are sealed on {}; your own armings are under WEAPONSTATUS.",
+        lobby::listed(&names, "or")
+    )
+}
+
+/// **What a `MIND PROFILE <word>` asks of a sealed mind** (17b cut M5.4; the
+/// M5 design note's M5.4 item 5): the index to stage and the profile's
+/// name, or the half of the refusal after `MIND refused.` — read off the
+/// held frame's [`FrameMind`] and `now_ms`, the mirror's arena clock
+/// (`mind_now_ms`), in this order:
+///
+/// * a word that names no sealed profile: `Hunter is not sealed on this
+///   mind; it carries Sniper and Line.` (the preset's own name, never an
+///   echo of the word), or for a word that is no preset at all `No profile
+///   of that name is sealed on this mind; it carries Sniper and Line.`;
+/// * the profile already flown: `Sniper is already the profile.`;
+/// * inside ten seconds of the last switch: `One switch in ten seconds; the
+///   next in 6 s.`
+///
+/// No power test (a cold hull switches, 17b cut M5.2). The arena checks the
+/// same three, and the seal, at the landing, and says one generic sentence
+/// for all four ([`PROFILE_REFUSED`]) — `NoJammer`'s precedent, declared.
+///
+/// # Errors
+///
+/// The refusal's sentence after its prefix.
+pub fn profile_switch(
+    mind: &FrameMind,
+    word: &str,
+    now_ms: i64,
+) -> Result<(u8, &'static str), String> {
+    let names: Vec<&str> = mind.profiles.names().collect();
+    let code = crate::arena::card::preset_code(word);
+    let index = code.and_then(|code| {
+        mind.profiles
+            .codes()
+            .iter()
+            .position(|held| *held == code)
+            .and_then(|at| u8::try_from(at).ok())
+    });
+    let Some((index, name)) = index.and_then(|index| Some((index, mind.profiles.name(index)?)))
+    else {
+        let carries = lobby::listed(&names, "and");
+        return Err(
+            match code.and_then(|code| crate::arena::card::PRESETS.get(usize::from(code))) {
+                Some(preset) => {
+                    format!("{preset} is not sealed on this mind; it carries {carries}.")
+                }
+                None => {
+                    format!("No profile of that name is sealed on this mind; it carries {carries}.")
+                }
+            },
+        );
+    };
+    if index == mind.active {
+        return Err(format!("{name} is already the profile."));
+    }
+    if let Some(secs) = next_switch_s(mind, now_ms) {
+        return Err(format!("One switch in ten seconds; the next in {secs} s."));
+    }
+    Ok((index, name))
+}
+
+/// **`MIND PROFILE`'s acknowledgement** (17b cut M5.4): `Profile Sniper: the
+/// mind will fly it when you leave the seat.` — said once the switch is on
+/// its way; the arena's word follows only if it refuses it.
+#[must_use]
+pub fn profile_ack(name: &str) -> String {
+    format!("Profile {name}: the mind will fly it when you leave the seat.")
+}
+
+/// `MIND [PROFILE <name>|RULES|TRACE [n]]` — the hull's sealed mind, read from
+/// the seat (17b cut M5.4; doc 17 §12 "The `MIND` verb"; OQ-8). Every form
+/// reads the held keyframe ([`Frame::mind`]) and, for a time, the mirror's
+/// arena clock ([`mind_now_ms`]) — never the arena:
+///
+/// * bare, [`mind_lines`]' block (at most seven lines; four today), or
+///   [`NO_SEAL`] on a hull no seal reached, or [`NO_FRAME_YET`] before any
+///   frame; then the frame it read, as every read verb pushes it
+///   ([`say_and_frame`]);
+/// * `RULES`, [`mind_rules_line`] (or [`NO_SEAL`] / [`NO_FRAME_YET`]), and the
+///   frame;
+/// * `PROFILE <name>`, the switch: the wreck refused first, as for every
+///   order, then the pre-checks — no frame, no seal, and [`profile_switch`]'s
+///   three — each one line opening `MIND refused.` through [`order_refused`]
+///   from the intent's own word, exactly as the arena's own refusal
+///   ([`PROFILE_REFUSED`]) is composed; no power test. Then
+///   [`IntentKind::Profile`] is staged through the seat on helm (the arena
+///   takes it from a seat alone, `apply_profile`), and [`profile_ack`] is
+///   said;
+/// * `TRACE [n]`, refused in one sentence until 17b cut M6's think ring:
+///   `MIND TRACE refused. This core keeps no trace of its thinks yet.` — a
+///   form refused, not an intent, so it names its form;
+/// * anything else, [`MIND_USAGE`].
+fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let (form, tail) = first_word(rest.trim());
+    match form.to_ascii_lowercase().as_str() {
+        "" => {
+            let held = last_frame(ctx.w, seat.driver);
+            let lines = match held.as_ref() {
+                None => vec![NO_FRAME_YET.to_owned()],
+                Some(held) => match held.frame.mind {
+                    None => vec![NO_SEAL.to_owned()],
+                    Some(mind) => mind_lines(
+                        &mind,
+                        !held.frame.weapons.is_empty(),
+                        mind_now_ms(ctx.w, held),
+                    ),
+                },
+            };
+            say_and_frame(ctx, held.as_ref(), lines);
+            Ok(())
+        }
+        "rules" if tail.is_empty() => {
+            let held = last_frame(ctx.w, seat.driver);
+            let line = match held.as_ref().map(|held| held.frame.mind) {
+                None => NO_FRAME_YET.to_owned(),
+                Some(None) => NO_SEAL.to_owned(),
+                Some(Some(mind)) => mind_rules_line(&mind),
+            };
+            say_and_frame(ctx, held.as_ref(), vec![line]);
+            Ok(())
+        }
+        "profile" if !tail.is_empty() => mind_profile(ctx, seat, tail),
+        "trace" => Err(CockpitError::Refused(order_refused(
+            "mind trace",
+            None,
+            MIND_NO_TRACE,
+        ))),
+        _ => Err(CockpitError::Usage(MIND_USAGE.to_owned())),
+    }
+}
+
+/// `MIND PROFILE <name>` — see [`mind`].
+fn mind_profile(ctx: &mut Ctx<'_>, seat: &Seat, word: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    let refused = |said: &str| CockpitError::Refused(order_refused(profile_order(), None, said));
+    // The wreck first, as for every order — in this verb's one prefix.
+    require_alive(ctx.w, seat.driver).map_err(|said| refused(&said.to_string()))?;
+    let held = last_frame(ctx.w, seat.driver).ok_or_else(|| refused(NO_FRAME_YET))?;
+    let mind = held.frame.mind.ok_or_else(|| refused(NO_SEAL))?;
+    let now_ms = mind_now_ms(ctx.w, &held);
+    let (index, name) = profile_switch(&mind, word, now_ms).map_err(|said| refused(&said))?;
+    forward_intent(ctx, seat.driver, seat.unit, IntentKind::Profile { index })?;
+    ctx.out
+        .sys_to_actor(actor, NOTICE_CATEGORY, profile_ack(name));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4885,7 +5244,8 @@ pub struct ArmingEcho {
 }
 
 /// **Compile a `FIRE <weapon> WHEN …` rule** (17b cut M1b.4; D-UM-18's
-/// slot-fitting subset — the rest of the rule language is 17b cut M5's) into
+/// slot-fitting subset — the rest of the rule language is the rule-language
+/// cut's, after 17b cut M5.7's gate, the owner's OQ-4) into
 /// the [`FireCondition`] the arena arms, off the weapon's row and the held
 /// frame. Pure: it reads nothing else and forwards nothing.
 ///
@@ -4918,7 +5278,8 @@ pub struct ArmingEcho {
 /// * `rounds > n` (0 to the weapon's full load) → `min_rounds_left = n`;
 ///   `rounds > n%` (0 to 100) → `rounds_max × n / 100`, rounded down;
 /// * `reserve` → `min_rounds_left = 0` on a piloted hull (the cockpit reads no
-///   card before 17b cut M5): it compiles to `rounds > 0`;
+///   card — 17b cut M5.4's `MIND` reads the seal, never a card's sliders): it
+///   compiles to `rounds > 0`;
 /// * `target = identified` → accepted, and adds nothing: every slot fires only
 ///   a lock its platform has classified;
 /// * `lock` → the lock, the default and the only target word here.
@@ -5694,6 +6055,10 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// mind reads its own slots and the floor exactly as a pilot does. Every
 /// consumer ignores unknown keys and the version, so an older client prints
 /// the old rows.
+///
+/// **17b cut M5.4 kept it at 3** while adding the top-level `mind` object
+/// (doc 17 §12; F7 of the M5 design note): a field added for the person in
+/// the seat is not a version, and a mind's view never carries it.
 pub const FRAME_VERSION: u32 = 3;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
@@ -5856,6 +6221,14 @@ pub const RETAIN_LATEST: &str = "latest";
 /// Compact floor captured at check-out, beside `t_ms`. Each contact's `odds`
 /// now ride the lock first and only classified contacts of another side
 /// (`Arena::frame_odds`, Q2): a friend's row carries `[]`.
+///
+/// **17b cut M5.4** (doc 17 §12 "The `MIND` verb") added one top-level key,
+/// `mind`, for the person in the seat — `null` on a hull no seal reached, else
+/// `{ name, profiles, active, class, core, channels, next_switch_ms, off }`
+/// ([`mind_json`]) — and [`FRAME_VERSION`] stays `3`: a field added for the
+/// person in the seat is not a version. It rides only this, the seated
+/// pilot's own frame (the replay builds its window from the tape, and a
+/// mind's view never copies it).
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     status_frame_held(match_id, frame, &BTreeMap::new())
@@ -6177,6 +6550,11 @@ pub fn status_frame_held(
         // Compact floor, captured at check-out — a public constant.
         "odds_floor_permille": frame.odds_floor_permille,
         "order": frame.order.as_ref().map(|order| order_json(frame, order)),
+        // **17b cut M5.4** (doc 17 §12): the hull's sealed mind, for the
+        // person in the seat — `null` on a hull no seal reached. Its classes
+        // are the frame's live ones; `channels` follows the weapons block's
+        // own rule (`fire` on an armed hull only).
+        "mind": frame.mind.as_ref().map(|mind| mind_json(mind, armed)),
         "heat": frame.heat.map(|heat| serde_json::json!({
             "heat": heat.heat,
             "max": heat.max,
@@ -6211,6 +6589,41 @@ pub fn status_frame_held(
         object.remove("weapons");
     }
     payload
+}
+
+/// **The hull's sealed mind as the keyframe carries it** (17b cut M5.4; doc 17
+/// §12; the M5 design note's M5.4 item 3):
+/// `{"name": "Standard Doctrine", "profiles": ["Sniper", "Line"], "active": 0,
+/// "class": "I", "core": "II", "channels": ["helm", "sensors", "fire"],
+/// "next_switch_ms": null, "off": false}`.
+///
+/// * `name` is `Standard Doctrine` for a doctrine seal and `null` for any other
+///   — the arena keeps no other mind's name, and every renderer prints `your
+///   own mind`;
+/// * `profiles` the sealed presets in order, `active` the index flown;
+/// * `class` and `core` the class words ([`crate::arena::core::CoreClass::as_str`])
+///   of the frame's LIVE classes ([`FrameMind`]);
+/// * `channels` the stations the pilot holds: `helm` and `sensors`, and `fire`
+///   on a hull with a weapons station (`armed`, the frame's own rule);
+/// * `next_switch_ms` the absolute arena millisecond the next switch is
+///   allowed, `null` before any switch;
+/// * `off` whether the mind is dropped to the ROM.
+#[must_use]
+pub fn mind_json(mind: &FrameMind, armed: bool) -> serde_json::Value {
+    let mut channels = vec!["helm", "sensors"];
+    if armed {
+        channels.push("fire");
+    }
+    serde_json::json!({
+        "name": mind.doctrine.then_some(crate::arena::doctrine::SEALED_MIND),
+        "profiles": mind.profiles.names().collect::<Vec<&str>>(),
+        "active": mind.active,
+        "class": mind.class.as_str(),
+        "core": mind.core_class.as_str(),
+        "channels": channels,
+        "next_switch_ms": mind.switch_at_ms,
+        "off": mind.off,
+    })
 }
 
 /// **A standing order as the keyframe carries it** (17b cut M1a.3; doc 17 §3,
@@ -8014,7 +8427,7 @@ fn join_names(names: &[String]) -> String {
 // The gate and the dispatch
 // ---------------------------------------------------------------------------
 
-/// **The contextual gate**: the eighteen verbs exist everywhere and mean
+/// **The contextual gate**: the nineteen verbs exist everywhere and mean
 /// something in a team room, in a pod, and at a deployed unit's station.
 ///
 /// One line each, and nothing else refused: a gate that is asked about `look`
@@ -8053,7 +8466,7 @@ impl mush_core::CommandGate for CockpitGate {
         // line (twice on the alias path) while `where_in_centre` resolves the
         // content latch up to fifteen times — three rooms and then all twelve pods.
         // A gate asked about `look` must cost what it always cost: two string
-        // compares and a sixteen-element scan, and no world read at all.
+        // compares and a seventeen-element scan, and no world read at all.
         let ours = verb.eq_ignore_ascii_case(BOARD_VERB)
             || verb.eq_ignore_ascii_case(EXIT_VERB)
             || COCKPIT_VERBS
@@ -8156,7 +8569,7 @@ fn refusal(error: CockpitError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// Run one cockpit verb: resolve the station first, so every one of the sixteen
+/// Run one cockpit verb: resolve the station first, so every one of the seventeen
 /// answers the same way to somebody who is not flying.
 ///
 /// **16b cut U.4 (16c `T-53`)**: the seat is resolved **once**, here, and every
@@ -8193,6 +8606,8 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         "watch" => watch(ctx, &seat, &rest),
         // 17b cut M1a.4: the motor's goal.
         "drive" => drive(ctx, &seat, &rest),
+        // 17b cut M5.4: the hull's sealed mind, off the held keyframe.
+        "mind" => mind(ctx, &seat, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
@@ -8284,6 +8699,14 @@ fn cockpit_help(verb: &str) -> String {
                     or SPEED takes the helm back. DRIVE HOLD stops and holds here; DRIVE OFF \
                     lets go."
             .to_owned(),
+        // 17b cut M5.4 (doc 17 §12 "The `MIND` verb"; OQ-8): what the block
+        // says, that the mind is dormant while the pilot flies, and the
+        // switch's one limit.
+        "mind" => "MIND [PROFILE <name>|RULES]  your tank's sealed mind: what it is, its \
+                   profiles and the one it will fly when you leave the seat, and who holds each \
+                   channel; it is dormant while you fly. MIND PROFILE <name> switches to another \
+                   sealed profile, once in ten seconds; MIND RULES says what rules it carries."
+            .to_owned(),
         // 16b cut D.2 (`T-77`): the callsign is `STATUS`'s first line and the
         // help did not mention it, so a pilot asked "who is RA?" had nowhere to
         // be sent; and cut D.1 replaced the arena's global tempo on the third
@@ -8295,7 +8718,7 @@ fn cockpit_help(verb: &str) -> String {
     }
 }
 
-/// Register the cockpit on the **tacsim** module: eighteen verbs and one gate.
+/// Register the cockpit on the **tacsim** module: nineteen verbs and one gate.
 ///
 /// The state the verbs read is [`ArenaRegistry`]'s and [`crate::match_::MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
@@ -8307,12 +8730,14 @@ fn cockpit_help(verb: &str) -> String {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `BOARD` writes a station document, a placement, a billet and (at the
     // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. Of
-    // the sixteen selectors, seven stage at most one arena intent each (cut
+    // the seventeen selectors, seven stage at most one arena intent each (cut
     // O.2's `EMCON` among them, which also stamps a bridge hint, and 17b cut
     // M1a.4's `DRIVE`), cut Y.1's `ORDER` stages one per unit it fans out to,
     // seven — cut Q.1's `RANGE` and `BEARING` and cut Q.2's `SCAN` among them —
-    // only read the last frame, and cut AP.3's `WATCH` sets or clears one RAM
-    // flag on the bridge's registry; none of the sixteen writes a document.
+    // only read the last frame, cut AP.3's `WATCH` sets or clears one RAM
+    // flag on the bridge's registry, and 17b cut M5.4's `MIND` reads the last
+    // frame, its `PROFILE` form staging one arena intent on the helm;
+    // none of the seventeen writes a document.
     // They are
     // registered on the same
     // lane as their two neighbours rather than split across two classifications
@@ -8957,11 +9382,14 @@ mod tests {
                 "{verb}'s help names it"
             );
         }
+        // Was 16 at 17b cut M1a.4; 17b cut M5.4 appended MIND, the
+        // seventeenth (doc 17 §12).
         assert_eq!(
             COCKPIT_VERBS.len(),
-            16,
+            17,
             "doc 16 section 3.7's nine, cut Q.1's two read verbs, cut Q.2's SCAN, cut Y.1's \
-             ORDER, cut O.2's EMCON, cut AP.3's WATCH and 17b cut M1a.4's DRIVE"
+             ORDER, cut O.2's EMCON, cut AP.3's WATCH, 17b cut M1a.4's DRIVE and 17b cut \
+             M5.4's MIND"
         );
     }
 
@@ -9293,7 +9721,8 @@ mod tests {
     /// and the `STATUS` help names the callsign line.
     #[test]
     fn d2_the_verb_table_and_the_help_agree_with_the_selector_list() {
-        assert_eq!(COCKPIT_VERBS.len(), 16);
+        // Was 16 at 17b cut M1a.4; 17b cut M5.4's MIND is the seventeenth.
+        assert_eq!(COCKPIT_VERBS.len(), 17);
         let head = include_str!("cockpit.rs");
         for verb in COCKPIT_VERBS {
             let upper = verb.to_uppercase();
@@ -10640,9 +11069,10 @@ mod tests {
     #[test]
     fn y1_order_is_the_thirteenth_selector() {
         // 16b cut O.2 put `emcon` after it, so it is the thirteenth and no
-        // longer the last; 16b cut AP.3 put `watch` after that, and 17b cut
-        // M1a.4 `drive` after `watch`.
-        assert_eq!(COCKPIT_VERBS.len(), 16);
+        // longer the last; 16b cut AP.3 put `watch` after that, 17b cut
+        // M1a.4 `drive` after `watch` and 17b cut M5.4 `mind` after `drive`
+        // (the length was 16 until that cut).
+        assert_eq!(COCKPIT_VERBS.len(), 17);
         assert_eq!(COCKPIT_VERBS.get(12), Some(&"order"));
         assert_eq!(
             cockpit_help("order"),
@@ -10697,7 +11127,9 @@ mod tests {
     #[test]
     fn m1a4_drive_is_the_sixteenth_selector_and_its_words_are_pinned() {
         use crate::arena::perception::RefusalDetail;
-        assert_eq!(COCKPIT_VERBS.len(), 16);
+        // Was 16 until 17b cut M5.4 appended `mind` after it; `drive` keeps
+        // its place, the sixteenth.
+        assert_eq!(COCKPIT_VERBS.len(), 17);
         assert_eq!(COCKPIT_VERBS.get(15), Some(&"drive"));
         assert_eq!(
             cockpit_help("drive"),
@@ -10816,6 +11248,523 @@ mod tests {
         assert_eq!(
             refusal_line(goal.as_str(), Refusal::QueueFull, None, RefusalDetail::None),
             "DRIVE refused. Too many orders at once; try that again."
+        );
+    }
+
+    /// **17b cut M5.4** (doc 17 §12 "The `MIND` verb"): the seventeenth
+    /// selector, appended after `drive`; its help line; its row in the module
+    /// head's table; its first line in the three readings of the frame (a
+    /// doctrine seal at the classes read live, a mind that is not Standard
+    /// Doctrine, a row dropped to the ROM); the keyframe's `mind` object
+    /// exactly, on an armed hull and an unarmed one, before and after a
+    /// switch; and the arena's refusal of a switch, which names the verb
+    /// through [`IntentKind::as_str`].
+    #[test]
+    fn m5_mind_is_the_seventeenth_selector_and_its_words_are_pinned() {
+        use crate::arena::card::ProfileSet;
+        use crate::arena::core::CoreClass;
+        use crate::arena::perception::RefusalDetail;
+        assert_eq!(COCKPIT_VERBS.len(), 17);
+        assert_eq!(COCKPIT_VERBS.get(15), Some(&"drive"));
+        assert_eq!(COCKPIT_VERBS.get(16), Some(&"mind"));
+        assert_eq!(
+            cockpit_help("mind"),
+            "MIND [PROFILE <name>|RULES]  your tank's sealed mind: what it is, its profiles and \
+             the one it will fly when you leave the seat, and who holds each channel; it is \
+             dormant while you fly. MIND PROFILE <name> switches to another sealed profile, \
+             once in ten seconds; MIND RULES says what rules it carries."
+        );
+        let head = include_str!("cockpit.rs");
+        assert!(
+            head.contains(
+                "//! MIND [PROFILE <name>|RULES] your tank's sealed mind, dormant while you \
+                 fly; PROFILE switches its profile"
+            ),
+            "the module head's MIND row"
+        );
+        let sniper_line = FrameMind {
+            doctrine: true,
+            profiles: ProfileSet::of_names(&["Sniper", "Line"])
+                .unwrap_or_else(|| panic!("two presets")),
+            active: 0,
+            class: CoreClass::I,
+            core_class: CoreClass::II,
+            switch_at_ms: None,
+            off: false,
+        };
+        assert_eq!(
+            mind_head_line(&sniper_line),
+            "Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on a Class II \
+             core."
+        );
+        let own = FrameMind {
+            doctrine: false,
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_head_line(&own),
+            "Mind: your own mind, sealed for this sortie; it thinks at Class I on a Class II core."
+        );
+        let off = FrameMind {
+            off: true,
+            class: CoreClass::Zero,
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_head_line(&off),
+            "Mind: Standard Doctrine, off for the match: the hull is on the ROM."
+        );
+        // The keyframe's object, exactly (the M5 design note's M5.4 item 3).
+        assert_eq!(
+            mind_json(&sniper_line, true),
+            serde_json::json!({
+                "name": "Standard Doctrine",
+                "profiles": ["Sniper", "Line"],
+                "active": 0,
+                "class": "I",
+                "core": "II",
+                "channels": ["helm", "sensors", "fire"],
+                "next_switch_ms": null,
+                "off": false,
+            })
+        );
+        let switched = FrameMind {
+            active: 1,
+            switch_at_ms: Some(42_000),
+            ..own
+        };
+        assert_eq!(
+            mind_json(&switched, false),
+            serde_json::json!({
+                "name": null,
+                "profiles": ["Sniper", "Line"],
+                "active": 1,
+                "class": "I",
+                "core": "II",
+                "channels": ["helm", "sensors"],
+                "next_switch_ms": 42_000,
+                "off": false,
+            })
+        );
+        // The arena's own refusal of a switch names the verb the pilot typed.
+        let switch = IntentKind::Profile { index: 1 };
+        assert_eq!(switch.as_str(), "mind");
+        assert_eq!(
+            refusal_line(switch.as_str(), Refusal::Profile, None, RefusalDetail::None),
+            "MIND refused. That profile cannot be switched to now."
+        );
+    }
+
+    /// Every ordered set of one to four of the six presets — every
+    /// [`crate::arena::card::ProfileSet`] a seal can hold (17b cut M5.4's
+    /// width tests walk them all).
+    fn m5_every_profile_set() -> Vec<crate::arena::card::ProfileSet> {
+        use crate::arena::card::{PRESETS, ProfileSet};
+        let mut sets: Vec<Vec<&str>> = vec![Vec::new()];
+        let mut all = Vec::new();
+        for _ in 0..ProfileSet::MOST {
+            let mut longer = Vec::new();
+            for set in &sets {
+                for name in PRESETS {
+                    if !set.contains(&name) {
+                        let mut next = set.clone();
+                        next.push(name);
+                        longer.push(next);
+                    }
+                }
+            }
+            all.extend(longer.iter().cloned());
+            sets = longer;
+        }
+        all.iter()
+            .map(|names| ProfileSet::of_names(names).unwrap_or_else(|| panic!("{names:?}")))
+            .collect()
+    }
+
+    /// Whether a line holds a word of sixteen hex digits — a seal or contact
+    /// id, which no line a pilot reads may carry.
+    fn m5_has_sixteen_hex(line: &str) -> bool {
+        line.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word.len() >= 16 && word.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// **17b cut M5.4** (doc 17 §12 "The `MIND` verb"; the M5 design note's
+    /// M5.4 item 4; OQ-8): bare `MIND`'s block is at most seven lines, each
+    /// under 120 columns and free of any word of sixteen hex digits, over
+    /// EVERY sealed set (one to four presets, the widest pair `Skirmisher,
+    /// Rearguard` among them) at every active index, a Doctrine seal and a
+    /// non-Doctrine one, an armed hull and an unarmed one, a live row and a
+    /// dropped one, a hull with no core above Class 0 and one sealed at Class
+    /// 0 on a real core, before a switch, inside
+    /// the ten seconds and after them; and so are `MIND RULES`' line and every `MIND PROFILE`
+    /// sentence (each refusal composed through [`order_refused`], the
+    /// acknowledgement). The block's words are pinned exactly on the note's
+    /// examples: the widest pair, an unarmed hull, a dropped row, a
+    /// non-Doctrine seal, the set of one every unchosen slot seals, a running
+    /// countdown — and [`NO_SEAL`], what a hull no seal reached reads.
+    #[test]
+    fn m5_the_mind_block_is_at_most_seven_lines_under_120_columns() {
+        use crate::arena::card::ProfileSet;
+        use crate::arena::core::CoreClass;
+        let set = |names: &[&str]| {
+            ProfileSet::of_names(names).unwrap_or_else(|| panic!("{names:?} are presets"))
+        };
+        let sniper_line = FrameMind {
+            doctrine: true,
+            profiles: set(&["Sniper", "Line"]),
+            active: 0,
+            class: CoreClass::I,
+            core_class: CoreClass::II,
+            switch_at_ms: None,
+            off: false,
+        };
+        // The note's block, exactly.
+        assert_eq!(
+            mind_lines(&sniper_line, true, 90_000),
+            [
+                "Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on a Class \
+                 II core.",
+                "Profile: Sniper, 1 of 2 (also Line); MIND PROFILE Line switches, once in ten \
+                 seconds.",
+                "Channels: you hold helm, sensors and fire; the mind is dormant while you fly.",
+                "Rules: none sealed; your own armings are under WEAPONSTATUS.",
+            ]
+        );
+        // The widest pair, unarmed, the second profile flown, six seconds
+        // (rounded up) from the next switch on the mirror's clock.
+        let widest = FrameMind {
+            profiles: set(&["Skirmisher", "Rearguard"]),
+            active: 1,
+            switch_at_ms: Some(40_000),
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_lines(&widest, false, 34_001),
+            [
+                "Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on a Class \
+                 II core.",
+                "Profile: Rearguard, 2 of 2 (also Skirmisher); one switch in ten seconds, the \
+                 next in 6 s.",
+                "Channels: you hold helm and sensors (no weapons station on this hull); the mind \
+                 is dormant while you fly.",
+                "Rules: none sealed; your own armings are under WEAPONSTATUS.",
+            ]
+        );
+        // At the next switch's millisecond the countdown is gone.
+        assert_eq!(
+            mind_profile_line(&widest, 40_000),
+            "Profile: Rearguard, 2 of 2 (also Skirmisher); MIND PROFILE Skirmisher switches, \
+             once in ten seconds."
+        );
+        assert_eq!(
+            crate::arena::intents::PROFILE_SWITCH_MS,
+            10_000,
+            "the block says ten seconds"
+        );
+        // A dropped row: only the first line moves (the ROM flies the card
+        // the profile names, so the switch still means something).
+        let dropped = FrameMind {
+            off: true,
+            class: CoreClass::Zero,
+            ..sniper_line
+        };
+        let lines = mind_lines(&dropped, true, 0);
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("Mind: Standard Doctrine, off for the match: the hull is on the ROM.")
+        );
+        assert_eq!(lines.get(1..), mind_lines(&sniper_line, true, 0).get(1..));
+        // A non-Doctrine seal names no mind.
+        let own = FrameMind {
+            doctrine: false,
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_head_line(&own),
+            "Mind: your own mind, sealed for this sortie; it thinks at Class I on a Class II core."
+        );
+        // A hull with no core above Class 0 (`target_mk1` has none).
+        let coreless = FrameMind {
+            class: CoreClass::Zero,
+            core_class: CoreClass::Zero,
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_head_line(&coreless),
+            "Mind: Standard Doctrine, sealed for this sortie; with no core above Class 0, the \
+             hull is on the ROM."
+        );
+        // A hull sealed at Class 0 on a real core (`fill_class` "0") is the
+        // ROM's as well: the class the ROM rule reads, never "thinks at Class
+        // 0".
+        let capped = FrameMind {
+            class: CoreClass::Zero,
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_head_line(&capped),
+            "Mind: Standard Doctrine, sealed for this sortie at Class 0 on a Class II core: the \
+             hull is on the ROM."
+        );
+        assert_eq!(
+            mind_head_line(&FrameMind {
+                doctrine: false,
+                core_class: CoreClass::III,
+                ..capped
+            }),
+            "Mind: your own mind, sealed for this sortie at Class 0 on a Class III core: the hull \
+             is on the ROM."
+        );
+        // The set of one every unchosen slot seals.
+        let line_alone = FrameMind {
+            profiles: ProfileSet::LINE,
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_profile_line(&line_alone, 0),
+            "Profile: Line, 1 of 1; no other is sealed to switch to."
+        );
+        assert_eq!(
+            mind_rules_line(&sniper_line),
+            "No rules are sealed on Sniper or Line; your own armings are under WEAPONSTATUS."
+        );
+        assert_eq!(
+            mind_rules_line(&line_alone),
+            "No rules are sealed on Line; your own armings are under WEAPONSTATUS."
+        );
+        assert_eq!(NO_SEAL, "This hull carries no seal.");
+        // Three or four: the target is the form, the others listed.
+        let four = FrameMind {
+            profiles: set(&["Skirmisher", "Rearguard", "Sniper", "Hunter"]),
+            ..sniper_line
+        };
+        assert_eq!(
+            mind_profile_line(&four, 0),
+            "Profile: Skirmisher, 1 of 4 (also Rearguard, Sniper and Hunter); MIND PROFILE <name> \
+             switches, once in ten seconds."
+        );
+
+        // Every set, every reading: the bounds.
+        let sets = m5_every_profile_set();
+        assert_eq!(
+            sets.len(),
+            6 + 30 + 120 + 360,
+            "every ordered set of 1 to 4"
+        );
+        let mut widest_line = 0;
+        let mut checked = 0_u32;
+        let mut bounded = |said: &[String]| {
+            for line in said {
+                let width = line.chars().count();
+                assert!(width < 120, "{width}: {line}");
+                assert!(!m5_has_sixteen_hex(line), "{line}");
+                widest_line = widest_line.max(width);
+            }
+            checked = checked.saturating_add(1);
+        };
+        for profiles in sets {
+            for active in 0..profiles.len {
+                for switch_at_ms in [None, Some(40_000)] {
+                    // 30,001: ten seconds to go, rounded up.
+                    for now_ms in [0, 30_001, 40_000] {
+                        // The switch's sentences read the set, the index and
+                        // the clock alone.
+                        let mind = FrameMind {
+                            doctrine: true,
+                            profiles,
+                            active,
+                            class: CoreClass::I,
+                            core_class: CoreClass::II,
+                            switch_at_ms,
+                            off: false,
+                        };
+                        let mut said = vec![mind_rules_line(&mind)];
+                        for word in crate::arena::card::PRESETS
+                            .iter()
+                            .copied()
+                            .chain(["bogus", ""])
+                        {
+                            said.push(match profile_switch(&mind, word, now_ms) {
+                                Ok((_, name)) => profile_ack(name),
+                                Err(why) => order_refused(profile_order(), None, &why),
+                            });
+                        }
+                        bounded(&said);
+                        for doctrine in [true, false] {
+                            for (off, class, core_class) in [
+                                (false, CoreClass::I, CoreClass::II),
+                                (false, CoreClass::III, CoreClass::III),
+                                (false, CoreClass::Zero, CoreClass::Zero),
+                                (false, CoreClass::Zero, CoreClass::III),
+                                (true, CoreClass::Zero, CoreClass::II),
+                            ] {
+                                let mind = FrameMind {
+                                    doctrine,
+                                    class,
+                                    core_class,
+                                    off,
+                                    ..mind
+                                };
+                                for armed in [true, false] {
+                                    let said = mind_lines(&mind, armed, now_ms);
+                                    assert!(said.len() <= 7, "{said:?}");
+                                    bounded(&said);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0);
+        assert!(widest_line < 120, "{widest_line}");
+    }
+
+    /// **17b cut M5.4** (the M5 design note's M5.4 item 5): every `MIND
+    /// PROFILE` pre-check refuses off the frame in one line opening `MIND
+    /// refused.`, composed through [`order_refused`] from the intent's own
+    /// word exactly as the arena's `profile` refusal is: a preset the mind
+    /// does not carry (named as the preset is, never as typed), a word no
+    /// preset answers (never echoed), the profile already flown (the arena
+    /// refuses the same case, so the same prefix), and a switch inside the
+    /// ten seconds — its seconds read against the clock the caller hands it
+    /// (the mirror's arena clock, `mind_now_ms`), rounded up, gone at the
+    /// next switch's millisecond; and a cold hull's switch is not refused
+    /// (no power test: the frame carries none to read). A word in any case
+    /// names its preset; the acknowledgement names the profile the mind will
+    /// fly. `MIND TRACE` is refused in its own form, and [`NO_SEAL`] and
+    /// [`NO_FRAME_YET`] after the prefix read as the arena's words do.
+    #[test]
+    fn m5_mind_profile_refuses_off_the_frame_in_one_line() {
+        use crate::arena::card::ProfileSet;
+        use crate::arena::core::CoreClass;
+        let refused = |said: &str| order_refused(profile_order(), None, said);
+        let mind = FrameMind {
+            doctrine: true,
+            profiles: ProfileSet::of_names(&["Sniper", "Line"])
+                .unwrap_or_else(|| panic!("two presets")),
+            active: 0,
+            class: CoreClass::I,
+            core_class: CoreClass::II,
+            switch_at_ms: None,
+            off: false,
+        };
+        let check = |mind: &FrameMind, word: &str, now_ms: i64| {
+            profile_switch(mind, word, now_ms)
+                .map(|(index, name)| (index, profile_ack(name)))
+                .map_err(|said| refused(&said))
+        };
+        assert_eq!(
+            check(&mind, "Hunter", 0),
+            Err(
+                "MIND refused. Hunter is not sealed on this mind; it carries Sniper and Line."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            check(&mind, "hUNTER", 0),
+            check(&mind, "Hunter", 0),
+            "the preset's own name"
+        );
+        assert_eq!(
+            check(&mind, "berserker", 0),
+            Err(
+                "MIND refused. No profile of that name is sealed on this mind; it carries Sniper \
+                 and Line."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            check(&mind, "sniper", 0),
+            Err("MIND refused. Sniper is already the profile.".to_owned())
+        );
+        assert_eq!(
+            check(&mind, "LINE", 0),
+            Ok((
+                1,
+                "Profile Line: the mind will fly it when you leave the seat.".to_owned()
+            ))
+        );
+        // Switched to Line at 30,000: the next is allowed at 40,000.
+        let switched = FrameMind {
+            active: 1,
+            switch_at_ms: Some(40_000),
+            ..mind
+        };
+        for (now_ms, secs) in [(30_000, 10), (34_000, 6), (34_001, 6), (39_999, 1)] {
+            assert_eq!(
+                check(&switched, "Sniper", now_ms),
+                Err(format!(
+                    "MIND refused. One switch in ten seconds; the next in {secs} s."
+                )),
+                "at {now_ms} ms"
+            );
+            assert_eq!(next_switch_s(&switched, now_ms), Some(secs));
+        }
+        assert_eq!(
+            check(&switched, "Sniper", 40_000),
+            Ok((
+                0,
+                "Profile Sniper: the mind will fly it when you leave the seat.".to_owned()
+            ))
+        );
+        assert_eq!(next_switch_s(&switched, 40_000), None);
+        // The profile already flown is said before the window.
+        assert_eq!(
+            check(&switched, "line", 31_000),
+            Err("MIND refused. Line is already the profile.".to_owned())
+        );
+        // A dropped row, a coreless hull and a hull sealed at Class 0 still
+        // switch: the ROM flies the card the profile names (17b cut M5.2's
+        // adoption on the row).
+        for odd in [
+            FrameMind {
+                off: true,
+                class: CoreClass::Zero,
+                ..mind
+            },
+            FrameMind {
+                class: CoreClass::Zero,
+                core_class: CoreClass::Zero,
+                ..mind
+            },
+            FrameMind {
+                class: CoreClass::Zero,
+                ..mind
+            },
+        ] {
+            assert_eq!(check(&odd, "Line", 0).map(|(index, _)| index), Ok(1));
+        }
+        // The set of one has nothing to switch to.
+        let alone = FrameMind {
+            profiles: ProfileSet::LINE,
+            ..mind
+        };
+        assert_eq!(
+            check(&alone, "line", 0),
+            Err("MIND refused. Line is already the profile.".to_owned())
+        );
+        // One prefix for every refused switch, whichever side refuses it.
+        assert_eq!(refused(NO_SEAL), "MIND refused. This hull carries no seal.");
+        assert_eq!(
+            refused(NO_FRAME_YET),
+            "MIND refused. The panel has told you nothing yet."
+        );
+        assert_eq!(
+            refused(&CockpitError::Destroyed.to_string()),
+            "MIND refused. Your tank is destroyed and takes no orders. EXIT leaves the pod."
+        );
+        assert_eq!(
+            refusal_line(profile_order(), Refusal::Profile, None, RefusalDetail::None),
+            refused(PROFILE_REFUSED)
+        );
+        assert_eq!(
+            order_refused("mind trace", None, MIND_NO_TRACE),
+            "MIND TRACE refused. This core keeps no trace of its thinks yet."
+        );
+        assert_eq!(
+            MIND_USAGE,
+            "MIND [PROFILE <name>|RULES]; bare MIND reads your tank's sealed mind."
         );
     }
 
