@@ -1485,6 +1485,68 @@ pub(crate) fn fatal_section_words(
         .collect()
 }
 
+/// **A unit's chassis-static words, read once** (16c `T-105`, the VPS spike
+/// of 2026-10-09 continued on 2026-10-12).
+///
+/// Every frame a pilot or a mind is given carries, per contact row, three
+/// facts of the *target's* chassis that nothing in a match moves: which of
+/// its sections are the body (`fatal_section_mask`), those sections' names
+/// (`fatal_section_words`) and its section vocabulary in its own order (the
+/// scan table [`crate::arena::step::Frame::scan_tables`] is built from).
+/// `Arena::frame_scope` used to recompute all three for every row of every
+/// frame — a walk of the sections and the profile's consequence rows, then
+/// the `SmolStr` allocations — about 74 mind views and 24 pilot frames a wake
+/// at 300 units, which the spike measured at about 3 per cent of the authored
+/// step on the conclav.io VPS. Here they are read once per unit, from the
+/// same two functions over the same two inputs, so every frame's bytes are
+/// the ones the per-row computation produced: this is a cache of a pure
+/// function of carried state, not a new fact.
+///
+/// The table lives on [`Arena::chassis`], one row per unit in
+/// [`Arena::units`]' order (the unit table is laid down once by [`Arena::new`]
+/// and never reordered), and is **re-derived** — by [`Arena::new`] and by the
+/// snapshot decode (`crate::arena::snapshot`'s re-derived list) — never
+/// carried and never hashed, as [`UnitState::fatal_sections`] is never hashed:
+/// a function of the definition and the fit the record carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChassisWords {
+    /// `fatal_section_mask` of the unit and its profile.
+    pub fatal_mask: u32,
+    /// `fatal_section_words` of the unit and its profile.
+    pub fatal_words: Vec<SmolStr>,
+    /// Every section's name in the unit's own order — the scan table a
+    /// frame's `FrameCondition::table` indexes (all sections, not the scanned
+    /// prefix: the table names the whole chassis).
+    pub section_names: Vec<SmolStr>,
+}
+
+impl ChassisWords {
+    /// The three words of one unit, off its chassis and its profile.
+    #[must_use]
+    pub(crate) fn of(
+        unit: &mush_tactics::TacticalUnit,
+        profile: &crate::arena::resolution::UnitProfile,
+    ) -> Self {
+        Self {
+            fatal_mask: fatal_section_mask(unit, profile),
+            fatal_words: fatal_section_words(unit, profile),
+            section_names: unit
+                .sections()
+                .map(|(section, _)| SmolStr::new(section.as_str()))
+                .collect(),
+        }
+    }
+
+    /// One row per unit, in the unit table's order.
+    #[must_use]
+    pub(crate) fn table(units: &[UnitState]) -> Arc<[ChassisWords]> {
+        units
+            .iter()
+            .map(|state| Self::of(&state.unit, &state.profile))
+            .collect()
+    }
+}
+
 /// **What a unit does with heat** (16b cut X.1; doc 16 §9 item 1: *a `heat` cell
 /// and dissipation appear on the unit*).
 ///
@@ -3894,6 +3956,13 @@ pub struct Arena {
     /// once for the match instead of once per substep, and so that cut S's sensor
     /// pass reads the same index motion tested occupancy against.
     pub index: SpatialIndex,
+    /// **Each unit's chassis-static words** ([`ChassisWords`]; 16c `T-105`),
+    /// one row per unit in [`Arena::units`]' order, read by `frame_scope` for
+    /// every contact row instead of recomputed there. Re-derived by
+    /// [`Arena::new`] and by the snapshot decode from the units' own chassis
+    /// and profiles; never carried, never hashed. Shared, so a clone of the
+    /// arena (the twin, the tests) shares the table.
+    pub chassis: Arc<[ChassisWords]>,
     /// The adaptive tempo and the lag clamp.
     pub clock: Clock,
     /// The match seed: the key of every draw.
@@ -4736,10 +4805,14 @@ impl Arena {
             .filter_map(|state| state.jammer.map(|jammer| jammer.radius_cm))
             .max()
             .unwrap_or(0);
+        // 16c T-105: each unit's chassis-static words, once, in the unit
+        // table's order.
+        let chassis = ChassisWords::table(&states);
         let mut arena = Arena {
             // 17b cut M2.2: the map behind its one `Arc`.
             definition: Arc::new(definition),
             units: states,
+            chassis,
             epochs,
             contacts: ShadowContacts::new(),
             designators: DesignatorBook::default(),
@@ -4856,11 +4929,16 @@ impl Arena {
     /// One unit by id, by binary search over the sorted vector.
     #[must_use]
     pub fn unit(&self, id: ObjId) -> Option<&UnitState> {
-        let index = self
-            .units
-            .binary_search_by_key(&id, |state| state.id)
-            .ok()?;
-        self.units.get(index)
+        self.units.get(self.unit_at(id)?)
+    }
+
+    /// **The unit's row in [`Arena::units`]** (and so in every table kept in
+    /// the unit table's order, [`Arena::chassis`] among them), by the binary
+    /// search [`Arena::unit`] has always made: the table is laid down in
+    /// unit-id order by [`Arena::new`] and never reordered.
+    #[must_use]
+    pub(crate) fn unit_at(&self, id: ObjId) -> Option<usize> {
+        self.units.binary_search_by_key(&id, |state| state.id).ok()
     }
 
     /// The same, mutably.

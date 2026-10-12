@@ -3720,22 +3720,36 @@ impl Arena {
         for (id, held) in self.contacts.of(platform) {
             // A contact whose target has left the match is dropped: only the
             // unit's presence is read here, never its pose.
-            let Some(target) = self.unit(held.target) else {
+            let Some(at) = self.unit_at(held.target) else {
                 continue;
+            };
+            let Some(target) = self.units.get(at) else {
+                continue;
+            };
+            // **16c T-105**: the target chassis's static words — its body
+            // mask, those sections' names and its section vocabulary — read
+            // off the arena's table instead of recomputed for every row of
+            // every frame. The table is the same two functions over the same
+            // two inputs, laid down once per unit, so the frame's bytes are
+            // unchanged; a row the table lacks (it never does: the table is
+            // built over the unit table, which never moves) is computed here
+            // as every row was before.
+            let computed;
+            let words = match self.chassis.get(at) {
+                Some(words) => words,
+                None => {
+                    computed = crate::arena::state::ChassisWords::of(&target.unit, &target.profile);
+                    &computed
+                }
             };
             // **16b cut Q.2**: the reading, and the chassis vocabulary it is in —
             // resolved only for a row that has one, so a row with no reading
             // cannot put a section id on the frame at all.
             let condition = held.seen_condition.map(|reading| {
-                let names: Vec<SmolStr> = target
-                    .unit
-                    .sections()
-                    .map(|(section, _)| SmolStr::new(section.as_str()))
-                    .collect();
-                let table = match tables.iter().position(|held| *held == names) {
+                let table = match tables.iter().position(|held| *held == words.section_names) {
                     Some(at) => at,
                     None => {
-                        tables.push(names);
+                        tables.push(words.section_names.clone());
                         tables.len().saturating_sub(1)
                     }
                 };
@@ -3748,7 +3762,7 @@ impl Arena {
             // **17b cut M1a.3** (departure (j)): the target chassis's fatal
             // sections, off its definition and profile — the content its
             // `fatal_sections` is built from, never `limits.wreck`.
-            let fatal_mask = crate::arena::state::fatal_section_mask(&target.unit, &target.profile);
+            let fatal_mask = words.fatal_mask;
             let reads_dead = armed.then(|| {
                 held.known_dead
                     || held
@@ -3757,9 +3771,7 @@ impl Arena {
             });
             // Beside a held reading only: the row already carries the chassis's
             // vocabulary there, so the words name nothing new.
-            let fatal = held
-                .seen_condition
-                .map(|_| crate::arena::state::fatal_section_words(&target.unit, &target.profile));
+            let fatal = held.seen_condition.map(|_| words.fatal_words.clone());
             rows.push(FrameContact {
                 id: *id,
                 // **16b cut Q.1**: read off the live contact, so a row that
@@ -8236,6 +8248,95 @@ mod tests {
         assert!(
             undegraded.same_as(&before, 1_000),
             "and nothing but the mind differs"
+        );
+    }
+
+    /// **16c `T-105`**: the chassis table on the arena is the unit's own two
+    /// functions over its own chassis and profile — one row per unit in the
+    /// unit table's order, its mask the one `fatal_sections` was laid down
+    /// from — and `frame_scope` reads the table, not the functions: a doctored
+    /// row moves the frame's fatal words, its `reads_dead` and its scan
+    /// table. A snapshot re-derives the honest table, whatever the arena held.
+    #[test]
+    fn t105_the_chassis_table_is_the_units_own_words_and_the_frame_reads_it() {
+        use crate::arena::snapshot::Snapshot;
+        use crate::arena::state::{ChassisWords, fatal_section_mask, fatal_section_words};
+        use m1a3::*;
+        let mut arena = field();
+        assert_eq!(arena.chassis.len(), arena.units.len());
+        for (at, unit) in arena.units.iter().enumerate() {
+            let words = arena.chassis.get(at).expect("a row per unit");
+            assert_eq!(arena.unit_at(unit.id), Some(at));
+            assert_eq!(
+                words.fatal_mask,
+                fatal_section_mask(&unit.unit, &unit.profile)
+            );
+            assert_eq!(words.fatal_mask, unit.fatal_sections, "unit {}", unit.id.0);
+            assert_eq!(
+                words.fatal_words,
+                fatal_section_words(&unit.unit, &unit.profile)
+            );
+            let names: Vec<SmolStr> = unit
+                .unit
+                .sections()
+                .map(|(section, _)| SmolStr::new(section.as_str()))
+                .collect();
+            assert_eq!(words.section_names, names);
+            assert_eq!(*words, ChassisWords::of(&unit.unit, &unit.profile));
+        }
+
+        // The frame reads the table: TIE's row, given a reading, carries the
+        // chassis's fatal words off it and reads dead off its mask.
+        if let Some(held) = arena.contacts.get_mut(RED, TIE_ID) {
+            held.seen_condition = Some(reading_with(1));
+        }
+        let honest = row(&red(&arena), TIE_ID);
+        assert_eq!(honest.fatal, Some(vec![SmolStr::new_static("hull")]));
+        assert_eq!(honest.reads_dead, Some(true));
+        assert!(!arena.frame_scan_tables(RED).is_empty());
+        let tie_target = arena
+            .contacts
+            .of(RED)
+            .find(|(id, _)| **id == TIE_ID)
+            .map(|(_, held)| held.target)
+            .expect("TIE is held");
+        let tie_at = arena.unit_at(tie_target).expect("TIE's hull");
+        let mut doctored: Vec<ChassisWords> = arena.chassis.to_vec();
+        doctored[tie_at] = ChassisWords {
+            fatal_mask: 0,
+            fatal_words: vec![SmolStr::new_static("turret")],
+            section_names: vec![SmolStr::new_static("turret")],
+        };
+        arena.chassis = doctored.into();
+        let read = row(&red(&arena), TIE_ID);
+        assert_eq!(
+            read.fatal,
+            Some(vec![SmolStr::new_static("turret")]),
+            "the words are the table's"
+        );
+        assert_eq!(read.reads_dead, Some(false), "the mask is the table's");
+        assert!(
+            arena
+                .frame_scan_tables(RED)
+                .iter()
+                .any(|table| table.as_slice() == [SmolStr::new_static("turret")]),
+            "the scan table is the table's"
+        );
+
+        // The snapshot re-derives the honest table.
+        let snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
+        let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
+            .expect("the snapshot decodes");
+        assert_eq!(decoded.chassis.len(), decoded.units.len());
+        for (at, unit) in decoded.units.iter().enumerate() {
+            assert_eq!(
+                decoded.chassis.get(at),
+                Some(&ChassisWords::of(&unit.unit, &unit.profile))
+            );
+        }
+        assert_eq!(
+            row(&red(&decoded), TIE_ID).fatal,
+            Some(vec![SmolStr::new_static("hull")])
         );
     }
 }

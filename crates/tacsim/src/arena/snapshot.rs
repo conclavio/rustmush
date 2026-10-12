@@ -101,10 +101,14 @@
 //!   views `squad_watch` and `squads_expired` — integers, carried so a resumed
 //!   squad's `SignalReason` stays true (`no_order` is chosen exactly when a
 //!   squad was never reported) and a resume does not re-ask every squad at once.
-//! - **Re-derived** (6), from the caller's ground — whose digest must be the
+//! - **Re-derived** (7), from the caller's ground — whose digest must be the
 //!   recorded one — and from compiled code: `definition` (and the horizon index
 //!   inside its terrain), `index` (built and rebuilt over the carried units, as
-//!   [`Arena::new`] builds it), `min_cost` (`Arena::new`'s own line),
+//!   [`Arena::new`] builds it), `chassis` (16c `T-105`: each unit's
+//!   chassis-static words, `crate::arena::state::ChassisWords::table` over
+//!   the decoded units, as `Arena::new` reads them off the check-out records —
+//!   a pure function of the carried `unit` and `profile`), `min_cost`
+//!   (`Arena::new`'s own line),
 //!   `jam_fold` (empty: a memo, exact by 16b cut U.2's rule), `mind_runner`
 //!   (17b cut M1a.5: `crate::arena::mind::default_mind_runner`, the call
 //!   [`Arena::new`] makes, so a resumed match thinks with the runner a fresh
@@ -880,6 +884,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             ledger,
             // Re-derived: built and rebuilt over the carried units.
             index: _index,
+            // Re-derived (16c T-105): built over the carried units' chassis.
+            chassis: _chassis,
             clock,
             seed,
             resolution,
@@ -1090,6 +1096,9 @@ impl ArenaState {
         // units it now holds, and the cheapest passable cell of each row.
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &units);
+        // 16c T-105: the chassis words, re-derived over the decoded units as
+        // `Arena::new` reads them off the check-out records.
+        let chassis = crate::arena::state::ChassisWords::table(&units);
         let min_cost = CostRow::ALL.map(|row| definition.terrain.min_cost(row));
         // 17b cut M1a.5: the runner `Arena::new` opens with, by the same call.
         let mind_runner = default_mind_runner(&arena_cfg);
@@ -1097,6 +1106,7 @@ impl ArenaState {
             // 17b cut M2.2: wrapped once, as `Arena::new` wraps it.
             definition: std::sync::Arc::new(definition),
             units,
+            chassis,
             epochs,
             contacts,
             designators,
