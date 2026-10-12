@@ -1747,8 +1747,8 @@ pub fn open_match(
 /// and the boot's phase A checked that the tape reaches it); then the task
 /// ([`crate::arena_task::resume_arena`]), the table, the mirror row, the ground,
 /// every unit bound and every epoch row published. **No pilot is bound and no
-/// watcher**: the resume releases every seat to doctrine, and the pilots come
-/// back through `BOARD`.
+/// watcher**: the resume releases every seat to its sealed mind ("to doctrine"
+/// here until 17b cut M5.7), and the pilots come back through `BOARD`.
 ///
 /// The mirror is the snapshot's moment: the chunk counters off the live
 /// record, the arena clock and the snapshot's time and hash, and
@@ -3540,7 +3540,7 @@ fn notify_staff(ctx: &mut Ctx<'_>, text: String) {
 /// |---|---|---|
 /// | linkdead onset | `Control { Linkdead }` | keeps its continuous orders, fires nothing |
 /// | revival in the grace | `Control { Live }`, new epoch | takes orders again at the next pulse |
-/// | the grace expires | `Control { Released }` | zeroes its desired speed and idles |
+/// | the grace expires | `Control { Released }` | is flown by its sealed mind (below) |
 /// | a clean connect | `Control { Live }` | (a seat that was never released) |
 ///
 /// **16b cut Y.3** added the fifth fact, which is not a hook: past the grace the
@@ -3657,7 +3657,8 @@ impl mush_core::EventHook for SeatFacts {
     }
 
     /// The grace ran out, or the pilot quit: the seat is released and the tank
-    /// goes to the reflex controller.
+    /// goes to its sealed mind (the reflex controller until 17b cut M4.3;
+    /// re-pointed by 17b cut M5.7).
     ///
     /// **16b cut Y.3 (16c `N4`)**: and it is a **drop**, which the pilot may take
     /// back (`BOARD` in the running match; doc 07 §1.3). A clean `QUIT` reaches
@@ -4795,12 +4796,13 @@ fn lapse_line(squad: crate::deliberation::SquadId, whose: &str, objective: &str)
 /// Who hears it depends on who gave it:
 ///
 /// - **a lance-leader** (`CharacterRef::Persona`): every **pilot of the squad's own
-///   side** in that match, because their AI wingmen just went back to doctrine —
-///   *`Squad red-1: red lance leader 1's hold order has run out; back on
-///   doctrine.`*;
+///   side** in that match, because their AI wingmen just went back on their own
+///   minds — *`Squad red-1: red lance leader 1's hold order has run out; back on
+///   their minds.`*;
 /// - **a character** (`CharacterRef::Character`, a seated pilot's `ORDER`): that
 ///   character **alone**, as *`Squad red-1: your hold order has run out; back on
-///   doctrine.`* — 16c Q38's "no radio line" never told the side a pilot ordered,
+///   their minds.`* (each `back on doctrine.` until 17b cut M5.6; re-quoted by 17b
+///   cut M5.7) — 16c Q38's "no radio line" never told the side a pilot ordered,
 ///   so its lapse is not told to them either (a declared narrowing of the sentence
 ///   this replaced, which reached the whole side);
 ///

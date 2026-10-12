@@ -90,9 +90,10 @@
 //! only); and no match mode, so a think does not know a Hold match from a
 //! skirmish and the Hold arms below run only for a caller that hands them
 //! the objective — this module's own tests do, and no production think can
-//! until the mode is on the view (the owner carried it to M5: doc 17 §24,
-//! STOP A). A third, the view carrying no authored speed, is closed since
-//! 17b cut M4.6b (the owner's STOP B ruling, 2026-10-09): the view's
+//! until the mode is on the view (the owner carried it to the residues cut
+//! after 17b's M5: doc 17 §24, STOP A; re-pointed by 17b cut M5.7). A third,
+//! the view carrying no authored speed, is closed since 17b cut M4.6b (the
+//! owner's STOP B ruling, 2026-10-09): the view's
 //! `immobile` is motion disabled, or `cannot_close` once the power is
 //! `Online` (`Arena::mind_view`) — so the range's target starts up, then
 //! reads the `Disabled` edge and parks.

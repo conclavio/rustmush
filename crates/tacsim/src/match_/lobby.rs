@@ -86,7 +86,8 @@ pub struct Slot {
     /// **Whether this pilot is out of their cockpit, by any route** (16b cut
     /// F.1; the meaning since 16b cut Y.3).
     ///
-    /// A seat given up during `Running` hands the tank to the reflex controller.
+    /// A seat given up during `Running` hands the tank to its sealed mind (the
+    /// reflex controller's until 17b cut M4.3; re-pointed by 17b cut M5.7).
     /// The slot stays on the board because the result record names its pilot,
     /// but `SIM STATUS` said `seated` about somebody standing in the team room,
     /// which is the one fact a spectator most wants right.
@@ -129,7 +130,8 @@ pub struct Slot {
     pub unit_type: Option<SmolStr>,
     /// **Whether the boot's resume released this seat** (16b cut AF.3; 16c
     /// N16, `Q-AF4`): a restart of the server half resumed the match from its
-    /// last snapshot and gave every seat to doctrine, this one included. It is
+    /// last snapshot and gave every seat to its sealed mind, this one included
+    /// ("to doctrine" here until 17b cut M5.7: one word for every mind). It is
     /// what tells a pilot who dropped of their own accord (Y.3's line alone)
     /// from one the restart dropped, who is owed the resume line before it.
     /// Cleared by `slot_reclaimed`, and by `resume_line_said` once the line
@@ -287,8 +289,9 @@ pub struct Centre {
     /// other route). On this same `MatchBook` slot: no new state slot. It is
     /// carried by the live record (16b cut AF.2) but **not trusted across a
     /// restart**: a resumed centre (16b cut AF.3) comes back with it cleared,
-    /// its seats are released to doctrine through `slot_left`, which stamps it
-    /// once the last one is marked, and the resume restamps it at the boot's
+    /// its seats are released to their sealed minds ("to doctrine" here until
+    /// 17b cut M5.7) through `slot_left`, which stamps it once the last one is
+    /// marked, and the resume restamps it at the boot's
     /// own moment when every slot was already left — so a match nobody comes
     /// back to ends `unattended_ms` after the restart, not an hour later.
     ///
@@ -4293,8 +4296,9 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             // side is topped up to [`ai_side_size`] with the tanks of the lowest
             // unclaimed pods: the pods nobody claimed, and the pods of the slots
             // dropped at the boarding deadline. They arrive at the check-out with
-            // **no seated pilot**, which is the one thing that makes them the
-            // reflex controller's (`crate::match_::start`) — the lobby names no
+            // **no seated pilot**, which is the one thing that makes them their
+            // sealed minds' (`crate::match_::start`; the reflex controller's until
+            // 17b cut M4.3, re-pointed by 17b cut M5.7) — the lobby names no
             // controller of its own, so the two halves cannot disagree about who
             // is flying what.
             //

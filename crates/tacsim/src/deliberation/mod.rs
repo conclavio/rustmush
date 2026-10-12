@@ -74,7 +74,7 @@
 //!    it, and the repair turn the row asks for thrown away.
 //! 2. **Durability would preserve the wrong thing.** Since 16b cut AF a match
 //!    survives a server-half restart: the arena resumes from its last snapshot
-//!    and the world releases every seat to doctrine. What a restart does NOT
+//!    and the world releases every seat to its sealed mind. What a restart does NOT
 //!    preserve is a deliberation in flight — the `Effect::ModuleAsync` died with
 //!    the process and its reply has nowhere to land. The arena carries its
 //!    standing orders and its squad watch across the resume, so the machines

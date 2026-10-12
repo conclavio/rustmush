@@ -10,7 +10,8 @@
 //! split half built its dependencies from throwaway in-memory ones and never set
 //! `llm`, so every LLM-backed `Effect::ModuleAsync` met `no LlmService on this
 //! world task` — worldgen, npc and weather dropped, a squad's deliberation refused
-//! back to doctrine — while the all-in-one, which dev1 does not run, ran them. dev1
+//! and the squad left on its own — while the all-in-one, which dev1 does not run,
+//! ran them ("refused back to doctrine" here until 17b cut M5.7). dev1
 //! logged that WARN on every deliberation. Here a machine squad's first
 //! deliberation (its `NoOrder` signal on the first pulse after the squads form,
 //! doc 16 section 6) is raised on the server half and must REACH the provider
@@ -31,8 +32,8 @@
 //! The stub answers the well-formed EMPTY chat completion `mush-llm`'s own wire
 //! tests use: the adapter parses it, the structured call finds no tool call,
 //! appends one repair and posts again, and the reply is a `malformed` refusal —
-//! the squad stays on doctrine (doc 16 section 6's fallback). The HITS are the
-//! proof; the reply's content is not what is under test.
+//! the squad stays on its machines' own minds (doc 16 section 6's fallback).
+//! The HITS are the proof; the reply's content is not what is under test.
 //!
 //! # Why it is its own binary
 //!

@@ -47,11 +47,15 @@
 //! are ported onto minds as `t1_*` tests: the mind's view reads a hull with no
 //! authored speed `immobile` once its power is `Online`, and the arena ends a
 //! `Support` whose charge has left the match at the supporter's landing. The
-//! residues of the STOPs the owner carried to M5 are deleted, each loss and
-//! any mirror that remains recorded in doc 17 §24: A (the Hold match: the
-//! O.1 fixtures and the drone in a Hold match), D (a supporter preferring its
-//! charge's target), F (a placed machine re-plans), G (a wreck's motor row
-//! forgotten) and J (a round stopped by the ground re-plans the machine). The
+//! residues of the STOPs the owner carried past this cut are deleted, each
+//! loss and any mirror that remains recorded in doc 17 §24: A (the Hold match:
+//! the O.1 fixtures and the drone in a Hold match), D (a supporter preferring
+//! its charge's target), F (a placed machine re-plans), G (a wreck's motor row
+//! forgotten) and J (a round stopped by the ground re-plans the machine).
+//! They were carried to 17b's M5, which made the text true and left the
+//! behaviour of A, F and G to the residues cut after it (OQ-6), D's
+//! designation half and J standing as accepted divergences under D-UM-15 and
+//! doc 17 §17 (re-pointed by 17b cut M5.7). The
 //! one reflex fielding left here was STOP C's
 //! `y2_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_commander`,
 //! which rode 17b cut M4.6c with the order's issuer.
@@ -607,9 +611,10 @@ fn t1_under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
 /// `goal == None` and empty route were the reflex's own reset on its
 /// `Disabled` edge, which nothing does for a mind; they stayed on the reflex
 /// in `a_wreck_and_a_disabled_tank_order_nothing_at_all` until 17b cut M4.6b
-/// deleted that residue (the owner carried STOP G to M5: a mind's wreck keeps
-/// its motor goal and route as its last tick left them, recorded in doc 17
-/// §24), and this test is the claim's remaining mirror. **(2)
+/// deleted that residue (the owner carried STOP G to the residues cut after
+/// 17b's M5 — OQ-6, re-pointed by 17b cut M5.7: a mind's wreck keeps its
+/// motor goal and route as its last tick left them, recorded in doc 17 §24),
+/// and this test is the claim's remaining mirror. **(2)
 /// The reflex's hand-set
 /// `disabled = true` half is unreachable as written** — `UnitState::disabled`
 /// is not on the view; the stock mind's `Disabled` edge reads
@@ -9193,10 +9198,12 @@ fn z2_station(cadence_ms: i64) -> (Replay, Z2Station, Z2Samples, Z2Order, Vec<Ke
 /// Part 1 of the reflex fixture (the designation: a supporter prefers what
 /// its charge is fighting) stayed on the reflex as
 /// `z2_a_support_keeps_station_and_prefers_its_charges_target`, a STOP, until
-/// 17b cut M4.6b deleted it — the owner carried STOP D to M5 (the charge's
-/// designation is not on a mind's view; `hint()` answers `None` for a
-/// `Support`), the loss recorded in doc 17 §24. Its `of == self` half stays
-/// mirrored by `tests/minds.rs`' `l2_a_self_charged_support_fights_on_doctrine`;
+/// 17b cut M4.6b deleted it — the owner carried STOP D to 17b's M5, whose
+/// OQ-6 accepted its designation half as a divergence under D-UM-15 (the
+/// charge's designation is not on a mind's view; `hint()` answers `None` for
+/// a `Support`; re-pointed by 17b cut M5.7), the loss recorded in doc 17 §24.
+/// Its `of == self` half stays mirrored by `tests/minds.rs`'
+/// `l2_a_self_charged_support_fights_on_doctrine`;
 /// the designation half has no mirror.
 #[test]
 fn t1_a_support_keeps_station_and_stands_blind() {
@@ -10562,8 +10569,9 @@ fn ae3_drone(id: ObjId, team: Team, cell: (u16, u16), sight: u16, share: u16) ->
 /// the spot and holds nothing — was a STOP (the Hold match is not on the
 /// view) and stayed on the reflex as
 /// `ae3_a_released_drone_in_a_hold_match_drives_to_the_spot_and_holds_nothing`
-/// until 17b cut M4.6b deleted it: the owner carried STOP A to M5, the loss
-/// recorded in doc 17 §24. Its "a drone alone on the square holds nothing"
+/// until 17b cut M4.6b deleted it: the owner carried STOP A to the residues
+/// cut after 17b's M5 (OQ-6; re-pointed by 17b cut M5.7), the loss recorded
+/// in doc 17 §24. Its "a drone alone on the square holds nothing"
 /// half stays pinned beside it by `arena::state`'s
 /// `ae3_a_drone_holds_nothing_and_contests_nothing`.
 #[test]

@@ -48,8 +48,9 @@
 //! timeline: the mind and its profiles as sealed and the card changes on their
 //! hull by the card's own name, whether and from when it flew the tank (never a
 //! wreck: a span ends at the hull's destruction, and one the world opened after
-//! it is none), its shots, and a drop to the ROM by its cause. The check-out hands the fold what the tape cannot say
-//! ([`OwnMind`], [`Fold::with_own_mind`]), and the world opens and closes each
+//! it is none), its shots, and a drop to the ROM by its cause. The check-out
+//! hands the fold what the tape cannot say ([`OwnMind`],
+//! [`Fold::with_own_mind`]), and the world opens and closes each
 //! span of its flying ([`Fold::released`], [`Fold::reclaimed`]) at the arena's
 //! own clock as it last heard it — the one fact of a report not told from the
 //! tape or the check-out (a declared departure). The block is beside the

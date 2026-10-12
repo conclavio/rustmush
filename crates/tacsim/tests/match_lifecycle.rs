@@ -7121,7 +7121,7 @@ async fn af3_a_boot_resumes_a_match_from_its_two_documents() {
     assert_eq!(record.state, MatchState::Running);
     assert_eq!(record.folds.len(), 2, "a fold per pilot");
     assert!(record.replay.is_some(), "the replay fold");
-    // The centre, and every seat released to doctrine.
+    // The centre, and every seat released to its sealed mind.
     let centre = rig.centre();
     assert_eq!(centre.state, MatchState::Running);
     assert_eq!(centre.match_id, Some(match_id));
@@ -9527,7 +9527,8 @@ async fn m3_an_unchanged_record_resumes_with_the_seal_it_was_checked_out_under()
     }
     let (after, rows) = after.expect("the resumed task snapshots again");
     check(&resumed, &after);
-    // The boot released every seat to doctrine, and the rows the release laid
+    // The boot released every seat to its sealed mind ("to doctrine" here
+    // until 17b cut M5.7), and the rows the release laid
     // read their digest off the scripted references (`Arena::adopt_mind`).
     assert_eq!(
         rows,
@@ -11041,9 +11042,23 @@ async fn m5_the_board_names_a_slots_mind_to_its_own_character_alone_in_selection
 
     rig.say(ada, "sim start");
     assert_eq!(rig.state(), MatchState::Boarding);
+    // After the start no row names a mind by ANY word — not `mind`, not
+    // `Doctrine`, not one of the six presets — for any reader, the slot's
+    // own pilot and staff included (the review of 17b cut M5.7: a row that
+    // named the mind to its own pilot without the word `mind` passed).
+    let names_no_mind = |who: &str, board: &str| {
+        let words: Vec<&str> = board
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        for name in std::iter::once("Doctrine").chain(tacsim::arena::card::PRESETS) {
+            assert!(!words.contains(&name), "{who} reads {name}: {board}");
+        }
+    };
     for n in [ada, bo, cy] {
         let board = rig.say(n, "sim status");
         assert!(!board.contains("mind"), "{n}: {board}");
+        names_no_mind(&n.to_string(), &board);
         assert!(
             !board.contains("fill:") || board.contains("AI fill:"),
             "{n}: {board}"
@@ -11054,6 +11069,7 @@ async fn m5_the_board_names_a_slots_mind_to_its_own_character_alone_in_selection
         !staff.contains("mind") && !staff.contains("Sniper"),
         "{staff}"
     );
+    names_no_mind("staff", &staff);
 }
 
 /// **Every `SIM MIND` line is under 120 columns on every fieldable type**

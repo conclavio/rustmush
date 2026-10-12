@@ -361,7 +361,8 @@ impl MatchBook {
     /// **Owe one pilot the resume's two lines** (16b cut AF.3; 16c N16,
     /// `Q-AF4`): [`RESUME_LINE`], then Y.3's [`mind_line`] for `tank`.
     ///
-    /// The boot's resume releases every seat to doctrine, and it cannot say so:
+    /// The boot's resume releases every seat to its sealed mind ("to doctrine"
+    /// here until 17b cut M5.7), and it cannot say so:
     /// boot output reaches no session, and on the split server, which is
     /// production, the pilot's session survived the restart of the server half
     /// and still shows the abandoned timeline's last cockpit frame. So each

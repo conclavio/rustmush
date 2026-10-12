@@ -604,7 +604,8 @@ pub struct MatchConfig {
     /// **world** milliseconds.
     ///
     /// A drop — the linkdead grace running out, or a `QUIT` — hands the tank
-    /// to the reflex controller with a `Control { Released }`; the reclaim is a
+    /// to its sealed mind (the reflex controller until 17b cut M4.3) with a
+    /// `Control { Released }`; the reclaim is a
     /// `Control { Live }` at a newer epoch. The floor does two things: it
     /// closes flapping (a line that drops and comes back every second does not
     /// hand the tank to the machine and back every second), and it gives the

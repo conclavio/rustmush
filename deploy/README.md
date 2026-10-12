@@ -527,7 +527,7 @@ writes less, `0` writes none).
 **Resume (16b cut AF.3).** From the first reload whose running half is 16b cut
 AF.2 or later, a server-half reload resumes a running match from its last
 snapshot (every five arena seconds; the match rewinds to it, every tank flies
-on doctrine until its pilot boards again and reads what they missed), and a
+on its sealed mind until its pilot boards again and reads what they missed), and a
 full gateway restart resumes it too once the players reconnect. Four things
 void it instead, recorded `aborted(restart)` with the reason in the log: a
 deploy that changes the snapshot format (a key added under `[tacsim.arena]`,

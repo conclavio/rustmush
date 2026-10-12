@@ -1201,8 +1201,9 @@ fn the_task_s_own_wakes_at_three_periods_are_the_fixed_cadence_replay() {
 /// lattice, so it lands at one arena millisecond whether a floored wake moves
 /// 2,000, 1,000 or 500 ms of arena time. The mover starts up cold at 0, drives
 /// north into the parked tank from 10,000, turns east at 24,000, and its seat is
-/// `Released` at 40,000 — which hands it to the reflex controller, so the
-/// machine's ticks and searches run under the floor too.
+/// `Released` at 40,000 — which hands it to its sealed mind (the reflex
+/// controller until 17b cut M4.3; re-pointed by 17b cut M5.7), so the
+/// machine's thinks and searches run under the floor too.
 fn floor_script() -> Vec<Beat> {
     vec![
         Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
@@ -2078,8 +2079,9 @@ fn startup_then_released_in_one_burst_never_starts() {
     assert!(arena.pending.is_empty(), "the order was not purged");
     assert_eq!(arena.epochs.current(MOVER, Channel::Helm), 2);
     // **16b cut N.1** amends doc 16 §3.8's *the tank idles*: the released seat goes
-    // to the reflex controller in `Withdraw`, which puts its first tick on the
-    // schedule beside the position summary.
+    // to its sealed mind (the reflex controller in `Withdraw` until 17b cut M4.3;
+    // re-pointed by 17b cut M5.7), which puts its first think on the schedule
+    // beside the position summary.
     // 16b cut F.3 adds one sensor pass per unit, which every platform now has
     // because the pass is where its contacts expire. **16b cut M.2** (16c `T-01`)
     // adds the duration bound, a due event since that cut.

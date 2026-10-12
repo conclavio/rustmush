@@ -7731,7 +7731,8 @@ fn hold_lane_requested(value: Option<&str>) -> bool {
 /// production think — no view carries the spot and no production think hands
 /// the stock mind's Hold arms the objective (STOP A: held on the reflex in
 /// `tests/reflex.rs` until 17b cut M4.6b deleted those residues, the owner
-/// carrying it to M5 — the loss recorded in doc 17 §24; the Hold arms stay
+/// carrying it to the residues cut after 17b's M5 (OQ-6; re-pointed by 17b
+/// cut M5.7) — the loss recorded in doc 17 §24; the Hold arms stay
 /// pinned on hand-built holds by `stock_mind.rs`' `m1a6_*` kernels) — so its
 /// machines are NOT driven to the spot by the
 /// Hold objective, and its goal cost is the minds' own fight at Hold's

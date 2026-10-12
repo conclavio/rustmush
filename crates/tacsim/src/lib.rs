@@ -537,7 +537,7 @@ impl GameModule for TacsimRuleset {
     /// (`boot_matches`) found resumable is re-opened
     /// (`match_::resume::phase_b`): its ground built, its snapshot decoded
     /// once, its task opened on a fresh base, its record and centre restored,
-    /// its seats released to doctrine. It runs here because the ground is
+    /// its seats released to their sealed minds. It runs here because the ground is
     /// built from the atlas's records, which are certain only once every module
     /// has loaded, and **before** the sweep, which leaves a resumed match's
     /// pods and tanks alone.

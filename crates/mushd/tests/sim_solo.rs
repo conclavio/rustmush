@@ -755,7 +755,8 @@ fn no_sixteen_digit_word(seen: &str) {
 ///
 /// This is the lane the row was written for and the only file that can show it:
 /// doc 16 §11's N.1 amendment makes `EXIT` one-way during `Running`, so the tank
-/// goes to the reflex controller and its pilot cannot take it back — and with
+/// goes to its sealed mind (the reflex controller until 17b cut M4.3) and its
+/// pilot cannot take it back — and with
 /// the AI fill on and one human in the centre, that leaves a match with **nobody
 /// in it who could abort it**. Before this cut it ran to
 /// `match.max_duration_ms`, an hour in which no second crew could claim a slot.
@@ -1370,5 +1371,498 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
         !strip_ansi(&ada.seen).contains("Hint:"),
         "a hint after the restart: {}",
         strip_ansi(&ada.seen)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.7 — M5's gate transcript: a pilot seals a mind, climbs out, and
+// the tank is flown by it (the M5 design note's §4.1)
+// ---------------------------------------------------------------------------
+
+/// [`login`] on a PTY of 120 columns by 40 — the floor a client is built to,
+/// `sim_weapons.rs`' `login_wide` — so every line a pilot reads (each under
+/// 120 columns, the M5 conventions' §3) arrives on one line of its own.
+async fn login_wide(
+    addr: SocketAddr,
+    account: &str,
+    password: &str,
+    character: &str,
+) -> (russh::client::Handle<support::AcceptAll>, Term) {
+    let (handle, mut term) = support::play_client_sized(addr, 120, 40).await;
+    term.expect("Welcome to the simulator.").await;
+    term.send_line(&format!("connect {account} {password}"))
+        .await;
+    term.expect(&format!("Connected as {character}")).await;
+    (handle, term)
+}
+
+/// The lines of one [`ask_whole`] answer: everything up to the sentinel's
+/// `Huh?`, without the two echoes (the line's and the sentinel's, which the
+/// session echoes as they are typed, before either is answered), each
+/// trimmed of its line end, the blank ones dropped.
+fn m5_answer_lines(whole: &str, line: &str) -> Vec<String> {
+    let body = whole.rsplit_once(HUH).map_or(whole, |(before, _)| before);
+    body.lines()
+        .map(str::trim_end)
+        .filter(|said| {
+            let said = said.trim();
+            !said.is_empty() && said != line && said != SENTINEL
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The ends a `SIM REPORT` closes on (`observer_rule.rs`' `REPORT_ENDS`; a
+/// test binary cannot import another).
+const M5_REPORT_ENDS: [&str; 3] = [
+    "the match was aborted.",
+    "the match ended: ",
+    "the match was voided.",
+];
+
+/// **`SIM REPORT`, read whole** (`observer_rule.rs`' `sim_report`): asked
+/// again while the result is not yet the centre's to read (`still being
+/// written`, a read in flight, or no remembered match yet), then fenced by
+/// the sentinel once its end line has arrived.
+async fn m5_sim_report(term: &mut Term) -> String {
+    const AGAIN: [&str; 5] = [
+        "still being written",
+        "already being read",
+        "You have not flown a match the centre remembers.",
+        "is still running.",
+        COMMIT_PENDING,
+    ];
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line("SIM REPORT").await;
+        let mut needles: Vec<&str> = M5_REPORT_ENDS.to_vec();
+        needles.extend(AGAIN);
+        if term.expect_one_of_after(mark, &needles).await < M5_REPORT_ENDS.len() {
+            term.send_line(SENTINEL).await;
+            term.expect_after(mark, HUH).await;
+            return strip_ansi(&term.seen[mark..]);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!(
+        "`SIM REPORT` was never read whole:\n{}",
+        strip_ansi(&term.seen)
+    )
+}
+
+/// **The arena's own clock**, in whole seconds, as staff's `@arena/status`
+/// prints it (`support::arena_clock_seconds`; the bridge mirror's `now_ms`,
+/// the clock a report's span is stamped on).
+async fn m5_arena_clock(god: &mut Term) -> u64 {
+    let mut clock = None;
+    wait_until(STEP_TIMEOUT, "the arena clock to read", async || {
+        let mark = god.mark();
+        god.send_line("@arena/status").await;
+        if god
+            .expect_one_of_after(
+                mark,
+                &["ledger writes awaiting", COMMIT_PENDING, CONTROL_UNKNOWN],
+            )
+            .await
+            != 0
+        {
+            return false;
+        }
+        clock = support::arena_clock_seconds(&strip_ansi(&god.seen[mark..]));
+        clock.is_some()
+    })
+    .await;
+    clock.expect("waited for the clock")
+}
+
+/// **A preset's card digest, as the seal takes it**: SHA-256 over
+/// `serde_json::to_vec` of the preset over THIS rig's own arena doctrine
+/// (`match_::start` builds each profile's card with `card::preset(name,
+/// &arena_cfg.reflex)`), in the tape's sixty-four lower-case hex digits.
+fn m5_card_digest(preset: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let doctrine = tacsim_config().arena.reflex;
+    let card = tacsim::arena::card::preset(preset, &doctrine)
+        .unwrap_or_else(|| panic!("{preset} is one of the six presets"));
+    let bytes = serde_json::to_vec(&card).expect("a card serialises");
+    Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// One unit's tape lines of one kind, in tape order.
+fn m5_lines_of<'a>(events: &'a [Value], kind: &str, unit: u32) -> Vec<&'a Value> {
+    events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some(kind))
+        .filter(|event| event.get("unit").and_then(Value::as_u64) == Some(u64::from(unit)))
+        .collect()
+}
+
+/// **17b cut M5.7: M5's gate, in line mode on the local rig** (the M5 design
+/// note's §4.1; doc 17 §22's first gate item): over SSH on the production
+/// composition with the AI fill — the lone pilot against the machine, the
+/// field Q-UM-15 names as unaffected — a pilot chooses a mind and two of its
+/// profiles in the lobby, the match's start seals them, `MIND` reads them in
+/// the seat, a profile she did not seal is refused, she climbs out of a COLD
+/// tank, and the mind she chose flies it: it starts the tank itself, and her
+/// report says from when it flew.
+///
+/// The eleven steps, each asserted on her terminal: `SIM TEAM red`; the bare
+/// `SIM MIND` (her default, the `Fits` line and the pool line); `SIM MIND
+/// Sentinel` refused as not held; `SIM MIND Standard PROFILE Sniper, Line`;
+/// her board row naming it; `SIM START` with no `Humans on the other side`
+/// line (Doctrine is never substituted); `BOARD`'s climb, the seal line and
+/// `Good hunting`, in that order; `MIND` in its four lines (at most seven),
+/// each under 120 columns and none wrapped, naming Sniper and `dormant while
+/// you fly`; `MIND PROFILE Hunter` refused in one line; `EXIT` two arena
+/// seconds in, with no `STARTUP` ever typed, her `STATUS` reading `power
+/// off` just before it and no `Power online.` told her while she sat, staff
+/// reading the arena clock on either side of it; and, after the rig's own
+/// ten-second unattended end, `SIM REPORT`'s `Your mind` block — the mind as
+/// sealed, and the span from her exit's second to the end.
+///
+/// Then the tape the world wrote (`log:match.1`): her hull's `mind_sealed`
+/// carries the Sniper preset's card digest over the rig's own doctrine (the
+/// sealed card is the chosen one; the Sniper and Line cards asserted to
+/// differ) and the fill's carries Line's; her hull's one `startup` and one
+/// `power_online` stand at or after the start of her exit's arena second (the
+/// report's `m:ss`, floored: the tape keeps no release line, so the order is
+/// read to the second). With the cold panel just before the `EXIT` and no
+/// `Power online.` in the seat, the hull was cold when she left, so only its
+/// mind started it: **the tank flown by it**. No line Ada read carries a
+/// sixteen-digit word, and the run
+/// is under the M1b transcript's 150 s (measured under 30 s in debug, so it is
+/// not `#[ignore]`d). `help minds` is not typed: the solo rig serves no help
+/// topics; `match_::cockpit`'s `m5_help_minds_opens_with_three_true_lines`
+/// pins the page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m5_a_pilot_seals_a_mind_climbs_out_and_the_tank_is_flown_by_it() {
+    const SEALED: &str =
+        "Sealed for this sortie: Standard Doctrine (Sniper, Line), Class I; MIND reads it.";
+    const GOOD_HUNTING: &str = "Match 1 is running. Good hunting.";
+    let began = std::time::Instant::now();
+    let server = boot("sim-solo-m5").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    // The tanks stay where the shipped ground musters them, out of every
+    // sensor's reach of each other, so nothing finds her hull before the
+    // end; their dbrefs are read before the match (16b cut I.3: `@find`
+    // omits a unit an arena holds).
+    let mut tanks = Vec::new();
+    for name in ["Red Tank 1", "Blue Tank 1"] {
+        let listing = ask(&mut god, &format!("@find {name}"), "END OF LIST").await;
+        tanks.push(dbref_of(&listing, name));
+    }
+    let (red, blue) = match tanks.as_slice() {
+        [red, blue] => (*red, *blue),
+        _ => panic!("two tanks"),
+    };
+    teleport_to_lobby(&mut god, "Ada").await;
+    let (_a, mut ada) = login_wide(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+
+    // (1) The claim.
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+
+    // (2) The bare read: her default, what fits her slot, and the pool.
+    let read = m5_answer_lines(&ask_whole(&mut ada, "SIM MIND").await, "SIM MIND");
+    let said = |lines: &[String], line: &str| lines.iter().any(|seen| seen.trim() == line);
+    assert!(
+        said(
+            &read,
+            "Yours: none; a tank you leave flies Standard Doctrine on Line."
+        ),
+        "{read:#?}"
+    );
+    assert!(
+        said(
+            &read,
+            "Fits line_tank (II): Standard Doctrine, up to two of Line, Sentry, Sniper, \
+             Skirmisher, Hunter or Rearguard."
+        ),
+        "{read:#?}"
+    );
+    assert!(
+        read.iter().any(|line| {
+            let line = line.trim();
+            line.starts_with("Red's half of the centre's pool is ")
+                && line.ends_with(" are spoken for.")
+        }),
+        "the pool line: {read:#?}"
+    );
+
+    // (3) A mind she does not hold.
+    let refused = m5_answer_lines(
+        &ask_whole(&mut ada, "SIM MIND Sentinel").await,
+        "SIM MIND Sentinel",
+    );
+    assert!(
+        said(
+            &refused,
+            "You hold no mind called Sentinel; SIM MIND lists the minds you hold."
+        ),
+        "{refused:#?}"
+    );
+
+    // (4) The choice: Standard Doctrine, Sniper first.
+    let chose = m5_answer_lines(
+        &ask_whole(&mut ada, "SIM MIND Standard PROFILE Sniper, Line").await,
+        "SIM MIND Standard PROFILE Sniper, Line",
+    );
+    assert!(
+        said(
+            &chose,
+            "Your slot will carry Standard Doctrine (Sniper, Line)."
+        ),
+        "{chose:#?}"
+    );
+
+    // (5) Her own row names it to her.
+    let board = m5_answer_lines(&ask_whole(&mut ada, "SIM STATUS").await, "SIM STATUS");
+    assert!(
+        board.iter().any(|line| {
+            line.trim_start().starts_with("red: ")
+                && line.ends_with(", mind Standard Doctrine (Sniper, Line)")
+        }),
+        "her row ends with her mind: {board:#?}"
+    );
+
+    // (6) The start: Doctrine is never substituted, so no `Humans on the
+    // other side` (asserted over the whole transcript at the end too).
+    let start = ada.mark();
+    say(&mut ada, "SIM START", "is boarding").await;
+
+    // (7) The climb, the seal line and `Good hunting`, in that order.
+    say(&mut ada, "red", "Red Room").await;
+    let board_mark = ada.mark();
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect_after(board_mark, GOOD_HUNTING).await;
+    let boarded = strip_ansi(&ada.seen[board_mark..]);
+    let at = |needle: &str| {
+        boarded
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} was not said:\n{boarded}"))
+    };
+    let (climbed, sealed, hunting) = (
+        at("You climb into Red Pod 1."),
+        at(SEALED),
+        at(GOOD_HUNTING),
+    );
+    assert!(
+        climbed < sealed && sealed < hunting,
+        "the climb, the seal line, then `Good hunting`:\n{boarded}"
+    );
+    // A fresh account reads the panel hint on its first frame, one pulse
+    // after `Good hunting` (16b cut AH.1); fenced here so it cannot land
+    // inside the block read below — and once it is said, a frame is held.
+    ada.expect_after(board_mark, "Hint: the panel").await;
+
+    // (8) `MIND`: at most seven lines, each under 120 columns, naming Sniper
+    // and dormant while she flies. The session wraps every line at her 120
+    // columns, so a line past them would arrive as two: the block's shape is
+    // pinned whole — exactly its four lines, by their heads — so a wrapped
+    // continuation fails it, and the width check reads whole lines (the
+    // review of 17b cut M5.7).
+    let block = m5_answer_lines(&ask_whole(&mut ada, "MIND").await, "MIND");
+    let heads: Vec<&str> = block
+        .iter()
+        .map(|line| line.split_once(':').map_or("", |(head, _)| head))
+        .collect();
+    assert_eq!(
+        heads,
+        ["Mind", "Profile", "Channels", "Rules"],
+        "MIND reads in its four lines (at most seven), none wrapped: {block:#?}"
+    );
+    for line in &block {
+        assert!(line.chars().count() < 120, "{line:?}");
+    }
+    assert!(
+        block.iter().any(|line| line.contains("Sniper")),
+        "{block:#?}"
+    );
+    assert!(
+        block
+            .iter()
+            .any(|line| line.contains("dormant while you fly")),
+        "{block:#?}"
+    );
+
+    // (9) A profile she did not seal, refused in one line.
+    let refused = m5_answer_lines(
+        &ask_whole(&mut ada, "MIND PROFILE Hunter").await,
+        "MIND PROFILE Hunter",
+    );
+    assert_eq!(
+        refused,
+        vec!["MIND refused. Hunter is not sealed on this mind; it carries Sniper and Line."],
+        "one line"
+    );
+
+    // (10) `EXIT`, cold: no `STARTUP` was ever typed. She sits two arena
+    // seconds first — read off staff's `@arena/status`, never a wall sleep —
+    // so the tape's claim below (nothing started her hull before her exit's
+    // second) covers a stretch of the match and is never true by an exit at
+    // `0:00`; staff read the clock on either side of the `EXIT`.
+    support::wait_arena_seconds(&mut god, 2).await;
+    let before_s = m5_arena_clock(&mut god).await;
+    assert!(before_s >= 2, "two arena seconds in the seat: {before_s}");
+    // Her own panel, read just before she leaves: the hull is still off
+    // after two seconds of her seat (the review of 17b cut M5.7: the tape
+    // below places the startup only to her exit's second).
+    let status = m5_answer_lines(&ask_whole(&mut ada, "STATUS").await, "STATUS");
+    assert!(
+        status.iter().any(|line| {
+            line.trim_start().starts_with("Red Tank 1") && line.contains(": power off, ")
+        }),
+        "the hull is cold just before the EXIT: {status:#?}"
+    );
+    let exit_mark = ada.mark();
+    say(&mut ada, "EXIT", "You climb out of").await;
+    ada.expect_after(exit_mark, "you cannot take it back.")
+        .await;
+    let after_s = m5_arena_clock(&mut god).await;
+    let left = strip_ansi(&ada.seen[exit_mark..]);
+    assert!(
+        left.lines().any(|line| line.trim()
+            == "You climb out of Red Pod 1. Red Tank 1 is on its own for the rest of the \
+                match; you cannot take it back."),
+        "{left}"
+    );
+    // Nothing powered her hull while she sat: a startup in the seat is told
+    // to its pilot as `Power online.` (the duel above reads it in line mode),
+    // and none was, from `Good hunting` to her climb-out line.
+    let seated = strip_ansi(&ada.seen[board_mark..]);
+    let sat = seated
+        .find(GOOD_HUNTING)
+        .zip(seated.find("You climb out of Red Pod 1."))
+        .and_then(|(from, to)| seated.get(from..to))
+        .unwrap_or_else(|| panic!("her seat, from `Good hunting` to her climb-out:\n{seated}"));
+    assert!(
+        !sat.contains("Power online."),
+        "her hull powered up while she sat in it:\n{sat}"
+    );
+
+    // (11) The rig's ten-second unattended end, then her report's block.
+    ada.expect_after(exit_mark, "Match 1 ends: every pilot has left it.")
+        .await;
+    ada.expect_after(exit_mark, "Its units are checked in.")
+        .await;
+    let report = m5_sim_report(&mut ada).await;
+    let lines: Vec<&str> = report.lines().map(str::trim_end).collect();
+    let head = lines
+        .iter()
+        .position(|line| line.trim() == "Your mind: Standard Doctrine (Sniper, Line).")
+        .unwrap_or_else(|| panic!("no `Your mind` block:\n{report}"));
+    let span = lines.get(head + 1).copied().unwrap_or_default().trim();
+    let from = span
+        .strip_prefix("It flew your tank from ")
+        .and_then(|rest| rest.strip_suffix(", when you climbed out, to the end."))
+        .unwrap_or_else(|| panic!("the span line under the head: {span:?}\n{report}"));
+    let exit_s = from
+        .split_once(':')
+        .and_then(|(m, s)| Some(m.parse::<u64>().ok()? * 60 + s.parse::<u64>().ok()?))
+        .unwrap_or_else(|| panic!("an m:ss stamp: {from:?}"));
+    assert!(
+        (before_s..=after_s).contains(&exit_s),
+        "the span opens at her exit's arena second: {before_s} <= {exit_s} <= {after_s}"
+    );
+    assert!(
+        lines.get(head + 2).is_some_and(|line| {
+            let line = line.trim();
+            line == "It fired nothing." || line.starts_with("Its shots: ")
+        }),
+        "the shots line under the span:\n{report}"
+    );
+
+    // ---- the tape: the sealed card is the chosen one, and the mind flew ----
+    let mut events = Vec::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "her hull's power line to reach the tape",
+        async || {
+            events = ledger_events(&server.store, 1).await;
+            !m5_lines_of(&events, "power_online", red).is_empty()
+                && !m5_lines_of(&events, "mind_sealed", blue).is_empty()
+        },
+    )
+    .await;
+    // The two cards differ, or the seal checks below could not tell the
+    // chosen card from the default (the review of 17b cut M5.7).
+    assert_ne!(
+        m5_card_digest("Sniper"),
+        m5_card_digest("Line"),
+        "the Sniper and Line presets are two cards"
+    );
+    let digest_of = |unit: u32| -> Vec<String> {
+        m5_lines_of(&events, "mind_sealed", unit)
+            .iter()
+            .filter_map(|event| event.get("card_digest").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(
+        digest_of(red),
+        vec![m5_card_digest("Sniper")],
+        "her hull's seal carries the Sniper card over the rig's doctrine"
+    );
+    assert_eq!(
+        digest_of(blue),
+        vec![m5_card_digest("Line")],
+        "the fill's seal carries Line's"
+    );
+    let t_ms = |event: &Value| event.get("t_ms").and_then(Value::as_i64).unwrap_or(-1);
+    let exit_ms = i64::try_from(exit_s * 1_000).expect("a small clock");
+    let startups = m5_lines_of(&events, "startup", red);
+    let online = m5_lines_of(&events, "power_online", red);
+    assert_eq!(
+        (startups.len(), online.len()),
+        (1, 1),
+        "one startup and one power line for her hull: {startups:?} {online:?}"
+    );
+    // To the second: `exit_ms` is the start of her exit's arena second (the
+    // report's `m:ss`, floored), so this bound alone cannot order a startup
+    // inside that second against the `EXIT`; with the two seconds of her
+    // seat it rules out a mind awake while she sat (it would have started
+    // the hull at its first think), and the panel's `power off` just before
+    // the `EXIT` and the absent `Power online.` above close the second.
+    assert!(
+        startups.iter().all(|event| t_ms(event) >= exit_ms)
+            && online.iter().all(|event| t_ms(event) >= exit_ms),
+        "nothing started her hull before her exit's second ({exit_ms} ms): \
+         {startups:?} {online:?}"
+    );
+    assert!(
+        t_ms(startups[0]) < t_ms(online[0]),
+        "the startup, then the power: {startups:?} {online:?}"
+    );
+
+    // ---- the whole transcript ----
+    let whole = strip_ansi(&ada.seen);
+    assert!(
+        !strip_ansi(&ada.seen[start..]).contains("Humans on the other side"),
+        "Doctrine is never substituted"
+    );
+    // The script never types `STARTUP` (whose reply this is): a check on the
+    // script, not on the hull — the hull's coldness is the panel's `power
+    // off` and the absent `Power online.` above.
+    assert!(
+        !whole.contains("Startup sequence"),
+        "she never started the tank herself"
+    );
+    no_sixteen_digit_word(&whole);
+    println!(
+        "==== Ada ====\n{whole}\n==== tape ====\nher hull's card_digest {} (Sniper), the \
+         fill's {} (Line); her exit at {exit_s} s, her hull's startup at {} ms and power_online \
+         at {} ms\n==== end ({} s) ====",
+        m5_card_digest("Sniper"),
+        m5_card_digest("Line"),
+        t_ms(startups[0]),
+        t_ms(online[0]),
+        began.elapsed().as_secs()
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(150),
+        "the transcript took {:?}",
+        began.elapsed()
     );
 }

@@ -8,7 +8,8 @@
 //! arena writer lane). This is the boot reading them back: the arena rebuilt on
 //! the ground it was fought on, re-opened as a task with its clock re-anchored,
 //! the world's record and centre as the last snapshot left them, every seat
-//! released to doctrine — so the pilots come back through Y.3's `BOARD`, reading
+//! released to its sealed mind ("to doctrine" here until 17b cut M5.7: one
+//! word for every mind) — so the pilots come back through Y.3's `BOARD`, reading
 //! what they missed — and a match that cannot resume voided **loudly**, by one
 //! reason out of a closed list ([`ResumeRefusal`]).
 //!
@@ -560,7 +561,7 @@ pub(crate) fn phase_b(ctx: &mut Ctx<'_>) {
 /// 6. **the marker applied**, in the boot's own write, ahead of the task's
 ///    first chunk (which reaches the world only through a later drain);
 /// 7. **the seats, reconciled from both sides**: every `(pilot, unit)` the
-///    decoded arena still seats is released to doctrine on every channel
+///    decoded arena still seats is released to its sealed mind on every channel
 ///    (`slot_dropped` first, when its slot is still seated — an `EXIT` the world
 ///    saw after the snapshot's pulse stays final), and every seated, un-left
 ///    slot whose pilot the arena does NOT hold (a `BOARD` reclaim the world saw
@@ -731,7 +732,7 @@ fn ground_for_resume(
 /// restamp. Answers how many slots it released.
 fn reconcile_seats(ctx: &mut Ctx<'_>, roster: &[(ObjId, ObjId)], now_ms: i64) -> usize {
     let mut touched: Vec<(ObjId, ObjId)> = Vec::new();
-    // (i) From the arena's roster: every seat it still holds goes to doctrine.
+    // (i) From the arena's roster: every seat it still holds goes to its mind.
     for (pilot, unit) in roster {
         if lobby::slot_dropped(ctx, *pilot, now_ms) {
             touched.push((*pilot, *unit));

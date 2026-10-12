@@ -1811,7 +1811,7 @@ pub struct ServerDeps {
     /// [`ServerDeps::in_memory`] and the rigs that boot no LLM-driven module —
     /// such an effect is then logged and, for worldgen, npc and weather,
     /// dropped; a tacsim deliberation re-enters an `unavailable` refusal (the
-    /// squad stays on doctrine); never a panic. The M8 NPC module
+    /// squad stays on its machines' own minds); never a panic. The M8 NPC module
     /// shares this same handle (its off-loop turn is driven from `EffectDispatcher`);
     /// its on-loop ability execution goes through the module's grounding adapter,
     /// not this struct.
@@ -1845,7 +1845,7 @@ impl ServerDeps {
     /// half used to build these from `in_memory()` and overwrite five fields,
     /// leaving `llm` `None`, so on dev1 every LLM-backed `Effect::ModuleAsync` met
     /// no service — worldgen, npc and weather dropped, a squad's deliberation
-    /// refused back to doctrine — while the all-in-one ran them.
+    /// refused and the squad left on its own — while the all-in-one ran them.
     #[must_use]
     pub fn production(
         booted: &crate::boot::BootedEngine,
@@ -1873,7 +1873,7 @@ impl ServerDeps {
     /// [`ServerDeps::production`], and a production world task whose `llm` is
     /// `None` is the 16c `B-82` defect (every LLM-backed `Effect::ModuleAsync`
     /// met no service: worldgen, npc and weather dropped, a squad's deliberation
-    /// refused back to doctrine).
+    /// refused and the squad left on its own).
     #[must_use]
     pub fn in_memory() -> ServerDeps {
         ServerDeps {

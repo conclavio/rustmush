@@ -1321,7 +1321,9 @@ impl Arena {
         // its motor row's goal and route cleared, until 17b cut M4.6 deleted the
         // reflex controller; a mind's wreck reads `Disabled` off
         // `Arena::machine_state` and its motor row stays as its last landing
-        // left it — the owner's STOP G, carried to 17b cut M5.)
+        // left it — the owner's STOP G, carried to the residues cut after 17b's
+        // M5 (OQ-6: M5 made the text true, the behaviour is that cut's;
+        // re-pointed by 17b cut M5.7).)
         //
         // **17b cut M1a.5**: the think waiting to land goes with the landing
         // the retain above took off the heap — the row's `pending`, which
@@ -1592,8 +1594,9 @@ impl Arena {
     /// nothing** — it is skipped as a wreck is, beside O.1's reading. A machine
     /// that carries no gun and decides nothing may drive to the spot (the reflex
     /// controller's `hold_goal` sent it there like any machine until 17b cut
-    /// M4.6; no mind's think reaches the Hold arms before M5, the owner's STOP
-    /// A), but it can
+    /// M4.6; no mind's think reaches the Hold arms — the owner's STOP A,
+    /// carried to the residues cut after 17b's M5, re-pointed by 17b cut
+    /// M5.7), but it can
     /// neither win the square for its side nor deny it to the other. Keyed on
     /// the class, so O.1's own tests, whose holders are the unarmed `Armour`
     /// fixtures, read as they did.

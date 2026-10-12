@@ -1742,8 +1742,9 @@ async fn m1_a_frame_the_world_can_take_is_never_cut() {
 /// (its `startup` is journalled), one at 18 is not, and the released pilot is
 /// sent nothing.
 ///
-/// A `Live` stands on top, so the release's hand-over to the reflex controller
-/// is taken back in the same phase 1, before the machine ever ticks, and the one
+/// A `Live` stands on top, so the release's hand-over to the hull's sealed mind
+/// (the reflex controller until 17b cut M4.3; re-pointed by 17b cut M5.7) is
+/// taken back in the same phase 1, before the machine ever ticks, and the one
 /// `startup` in the black box is the seat's.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn m1_seventeen_controls_and_a_release_collapse_to_the_highest_epoch() {

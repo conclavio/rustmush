@@ -488,7 +488,8 @@ impl MotorTable {
     /// **Since 17b cut M4.6** the decision half is a mind's memory, which this
     /// does not reach and no notice tells: a placed mind keeps its goal and
     /// stands where staff put it until that goal next changes (the owner's
-    /// STOP F, carried to M5; doc 17 §24).
+    /// STOP F, carried to the residues cut after 17b's M5; doc 17 §24;
+    /// re-pointed by 17b cut M5.7).
     pub fn forget_route(&mut self, unit: ObjId) {
         if let Some(row) = self.rows.get_mut(&unit) {
             row.goal = None;

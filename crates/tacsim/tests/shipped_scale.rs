@@ -18,8 +18,9 @@
 //! [`Arena::machine_state`] reads (the state its last landing wrote) and its
 //! target the object its mind row's `StockMemory` settled on ([`target_of`]).
 //! One residue stayed on the reflex controller, **STOP K**, until 17b cut
-//! M4.6b deleted it (the owner carried STOP K to M5, the loss recorded in doc
-//! 17 §24): `e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other`,
+//! M4.6b deleted it (the owner carried STOP K to the residues cut after 17b's
+//! M5 — OQ-6, re-pointed by 17b cut M5.7 — the loss recorded in doc 17 §24):
+//! `e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other`,
 //! the hunt fan's integration proof on the shipped ground (16b cut E.3; 16c
 //! `B-46`) — two minds of one side do not keep it, because a mind's hunt cell
 //! is never fanned in its own memory (the `fan` divergence: the motor fans the

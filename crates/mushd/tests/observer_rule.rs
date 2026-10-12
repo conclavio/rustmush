@@ -228,13 +228,13 @@ fn observer_packs(classify_after_ms: u32) -> Vec<tacsim::config::PackSource> {
 fn module_list(
     onboarding: &mush_core::OnboardingConfig,
     llm: &Arc<LlmService>,
-    designate: bool,
+    tacsim: tacsim::TacsimConfig,
 ) -> Vec<Box<dyn GameModule>> {
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(tacsim_config(designate)));
+    mods.push(modules::tacsim_module(tacsim));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
 }
@@ -262,6 +262,30 @@ async fn boot_grace(tag: &str, designate: bool, grace: Duration) -> Server {
 async fn boot_over(
     tag: &str,
     designate: bool,
+    grace: Duration,
+    reuse: Option<Arc<dyn ObjectStore>>,
+) -> Server {
+    boot_composed(tag, tacsim_config(designate), grace, reuse).await
+}
+
+/// **17b cut M5.7: the composition with the AI fill on** — `[tacsim.match]
+/// .ai_fill = true`, as `sim_solo.rs` sets it (this file's [`tacsim_config`]
+/// leaves it at its default `false`, under which `SIM AI MIND` is refused
+/// `AI fill is off on this server.`). Booted by
+/// [`m5_a_slots_mind_is_read_by_its_own_character_alone`] ALONE, so no other
+/// test's two-tank field moves: with a pilot a side the fill fields nothing
+/// (it is sized to the pilots), but a side's lead may choose its mind.
+async fn boot_filled(tag: &str) -> Server {
+    let mut cfg = tacsim_config(false);
+    cfg.match_.ai_fill = true;
+    boot_composed(tag, cfg, SessionConfig::default().linkdead_grace, None).await
+}
+
+/// [`boot_over`] over a whole `[tacsim]` configuration (17b cut M5.7, so
+/// [`boot_filled`] shares the one composition).
+async fn boot_composed(
+    tag: &str,
+    tacsim: tacsim::TacsimConfig,
     grace: Duration,
     reuse: Option<Arc<dyn ObjectStore>>,
 ) -> Server {
@@ -328,9 +352,8 @@ async fn boot_over(
             .build(),
     );
 
-    let mut engine =
-        Engine::with_modules(world, registry, module_list(&onboarding, &llm, designate))
-            .expect("modules");
+    let mut engine = Engine::with_modules(world, registry, module_list(&onboarding, &llm, tacsim))
+        .expect("modules");
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
@@ -8338,6 +8361,703 @@ async fn m5_the_mind_object_names_nothing_but_the_pilots_own_seal() {
         assert!(
             !bo_seen.contains(leak),
             "Bo's WebSocket carried {leak:?} of Ada's mind:\n{bo_seen}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 17b cut M5.7 — a slot's mind is read by its own character alone (the M5
+// design note's §4.3, the fog battery)
+// ---------------------------------------------------------------------------
+
+/// The two presets the battery's choices name — Ada's slot flies Sniper
+/// first, red's fill Hunter — swept for as BARE words over everything Bo and
+/// Cy received, so a frame's `"profiles":["Sniper","Line"]`, a staff-style
+/// `name="Sniper…"` or a future sentence's bare preset fails it, not only the
+/// `(Sniper, Line)` and `(Hunter)` forms the board prints.
+const M5_FOG_PRESETS: [&str; 2] = ["Sniper", "Hunter"];
+
+/// Ada's seal line, as the check-out says it to her alone.
+const M5_FOG_SEALED: &str =
+    "Sealed for this sortie: Standard Doctrine (Sniper, Line), Class I; MIND reads it.";
+
+/// The lines of one [`ask_whole`] answer: everything up to the sentinel's
+/// `Huh?`, without the two echoes (the line's and the sentinel's, which the
+/// session echoes as they are typed, before either is answered), each
+/// trimmed, the blank ones dropped.
+fn m5_fog_answer(whole: &str, line: &str) -> Vec<String> {
+    let body = whole.rsplit_once(HUH).map_or(whole, |(before, _)| before);
+    body.lines()
+        .map(str::trim)
+        .filter(|said| !said.is_empty() && *said != line && *said != SENTINEL)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The board's rows of a `SIM STATUS` or `@arena/status` answer: each side's
+/// row and each fill's, trimmed.
+fn m5_fog_rows(answer: &str) -> Vec<String> {
+    answer
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            ["red:", "blue:", "red fill:", "blue fill:"]
+                .iter()
+                .any(|head| line.starts_with(head))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// **Every message the socket delivers until it has been quiet for `quiet`**
+/// (at most `within` in all), each kept whole in `seen` — the keepalive
+/// answered on the way (17b cut M5.7; [`m5_drain`] with the pong
+/// [`pushed_cockpit`] sends), so a socket the battery reads only between its
+/// steps is never closed as dead. Quiet is the ONLY silent return: a socket
+/// that closes or fails panics (the review of 17b cut M5.7), so a dead socket
+/// can never pass the sweep as one that carried nothing.
+async fn m5_fog_pump(ws: &mut Ws, quiet: Duration, within: Duration, seen: &mut Vec<String>) {
+    let until = tokio::time::Instant::now() + within;
+    loop {
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(quiet.min(left), ws.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let Ok(Envelope {
+                    event: OutputEvent::Ping { nonce },
+                    ..
+                }) = serde_json::from_str::<Envelope>(text.as_str())
+                {
+                    let pong = ClientCommand::Pong { nonce };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&pong).expect("a pong encodes").into(),
+                    ))
+                    .await
+                    .expect("the socket takes a pong");
+                }
+                seen.push(text.as_str().to_owned());
+            }
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                panic!("the socket closed mid-battery ({frame:?}); it read: {seen:#?}")
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(error))) => {
+                panic!("the socket failed mid-battery ({error}); it read: {seen:#?}")
+            }
+            Ok(None) => panic!("the socket ended mid-battery; it read: {seen:#?}"),
+            Err(_quiet) => return,
+        }
+    }
+}
+
+/// **Fence a terminal** (the review of 17b cut M5.7): the sentinel, read to
+/// its `Huh?`. [`Term::mark`] is how much of the terminal has been READ, and
+/// a terminal grows only when it is read, so a slice from a mark is empty
+/// until the terminal is read past it — an absence asserted over it could
+/// not fail. The world answers a session's lines in the order it took them,
+/// so once the sentinel's refusal is in, everything said to this terminal
+/// before it is in too.
+async fn m5_fog_fence(term: &mut Term) {
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(SENTINEL).await;
+        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("the sentinel was never refused")
+}
+
+/// **What the fog sweep finds on one surface** (17b cut M5.7; the M5 design
+/// note's §4.3): each bare preset word of [`M5_FOG_PRESETS`] ([`words_of`]),
+/// a `Your mind` block, a seal line, and every word of six or sixteen
+/// hexadecimal digits — sixteen as [`no_sixteen_digit_word`] reads them (a
+/// contact id), six where the word is all hexadecimal digits and not all
+/// figures (C-14: a seal id players would see is a digest's first six hex
+/// digits, and none is printed in M5; a six-figure count is not one). And,
+/// since the review of 17b cut M5.7, a digest at any other length: a run of
+/// more than sixteen hexadecimal digits that is not all figures (a whole
+/// sixty-four-digit `card_digest` or seal digest), and a word of six or more
+/// that mixes figures and the letters `a`-`f` (an eight- or twelve-digit
+/// prefix). Neither occurs in the battery's traffic; a long count of figures
+/// alone (a nonce, a stamp) is not a digest. Empty when the surface carries
+/// none of them.
+fn m5_fog_leaks(seen: &str, what: &str) -> Vec<String> {
+    let mut leaks = Vec::new();
+    let words = words_of(seen);
+    for preset in M5_FOG_PRESETS {
+        if words.contains(&preset) {
+            leaks.push(format!("{what} carried the bare word {preset:?}"));
+        }
+    }
+    for sentence in ["Your mind", "Sealed for this sortie"] {
+        if seen.contains(sentence) {
+            leaks.push(format!("{what} carried {sentence:?}"));
+        }
+    }
+    let figures = |word: &str| word.chars().all(|c| c.is_ascii_digit());
+    for word in seen.split(|c: char| !c.is_ascii_hexdigit()) {
+        if word.len() == 16 && u64::from_str_radix(word, 16).is_ok() {
+            leaks.push(format!("{what} carried a sixteen-digit word ({word})"));
+        } else if word.len() > 16 && !figures(word) {
+            leaks.push(format!("{what} carried a digest-long hex word ({word})"));
+        }
+    }
+    for word in words {
+        let hex = word.chars().all(|c| c.is_ascii_hexdigit());
+        if word.len() == 6 && hex && !figures(word) {
+            leaks.push(format!("{what} carried a six-digit hex word ({word})"));
+        } else if word.len() >= 6
+            && hex
+            && word.chars().any(|c| c.is_ascii_digit())
+            && !figures(word)
+        {
+            leaks.push(format!("{what} carried a hex prefix ({word})"));
+        }
+    }
+    leaks
+}
+
+/// **17b cut M5.7: a slot's mind is read by its own character alone** — M5's
+/// fog battery (the M5 design note's §4.3; doc 17 §12's fog, C-4, D10; doc 16
+/// §5's observer rule), over the real SSH front door and the real web socket,
+/// on [`boot_filled`] (the AI fill on, so a side's lead may choose its mind)
+/// and no test provider (production's holdings: Standard Doctrine's six
+/// presets for everyone). Ada claims red and leads it, Bo claims blue and
+/// chooses nothing, Cy stands in the lobby and flies nothing, God is staff.
+///
+/// * **Selection.** Ada chooses `SIM MIND Standard PROFILE Sniper, Line` and,
+///   as red's lead, `SIM AI MIND Standard PROFILE Hunter`. Her board names
+///   both; Bo's and Cy's read `, a mind` on her row and `red fill: a mind`;
+///   Bo's unchosen row prints nothing to anybody; staff's `@arena/status`
+///   names both. Bare `SIM MIND` and `SIM AI MIND` by Bo and Cy print only
+///   their own (or `Red's fill carries a mind.`); Bo's `SIM MIND Sentinel` is
+///   refused as not held; neither choice is announced to the lobby they all
+///   stand in.
+/// * **From `SIM START` on.** No board row names or marks a mind for any
+///   reader, staff included (each reader's rows pinned whole, and none
+///   carries `Doctrine` or a preset); the seal line reaches Ada alone; Ada's bare
+///   `SIM AI MIND` reads `Red's fill: Standard Doctrine (Hunter).`, Bo's and
+///   Cy's `The fills are not shown once a match starts.`; Bo's bare `SIM
+///   MIND` reads his own; nobody reads `Humans on the other side`; Bo's
+///   keyframe over the socket carries his own `mind` object, on Line alone,
+///   and no byte of Ada's (M5.4's case, re-run).
+/// * **After the end** (Ada climbs out, so her mind flies her tank; Bo
+///   aborts from his seat): `SIM HISTORY` and `SIM REPLAY 1` read by Bo and
+///   Cy name no mind and no preset; Bo's `SIM REPORT 1` carries no `Your
+///   mind` block (he chose nothing and was never released) and Cy's is
+///   refused; Ada's, over the same wire, carries hers — the wire half of
+///   M5.6's report fog.
+/// * **The sweep.** Bo's own bare `SIM MIND` reply in Selection — the only
+///   bytes he receives that list the presets (`up to two of Line, Sentry,
+///   Sniper, Skirmisher, Hunter or Rearguard`) — is windowed out by
+///   `Term::mark` on his terminal, and its own lines out of his socket; Cy's
+///   bare reply lists none and is swept with the rest. EVERYTHING ELSE Bo
+///   and Cy received, terminal bytes and web-socket frames alike, is swept
+///   by [`m5_fog_leaks`]: the bare words `Sniper` and `Hunter`, a `Your
+///   mind` block, a seal line, and six- and sixteen-digit hex words (and a
+///   digest at any other length).
+///
+/// Every absence over a terminal is read off a FENCED terminal
+/// ([`m5_fog_fence`]; the review of 17b cut M5.7: a mark is only what has
+/// been read), and the sockets are asserted alive to the end (each carries
+/// its reader's last post-end answer; [`m5_fog_pump`] panics on a closed one).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
+    let server = boot_filled("observer-mind-fog").await;
+    let (_g, mut god) = login_sized(server.addr, "boss", GM_PASSWORD, "God", 120, 40).await;
+    let (_a, mut ada) = login_sized(server.addr, "ada", PILOT_PASSWORD, "Ada", 120, 40).await;
+    let (_b, mut bo) = login_sized(server.addr, "bo", PILOT_PASSWORD, "Bo", 120, 40).await;
+    let (_c, mut cy) = login_sized(server.addr, "cy", PILOT_PASSWORD, "Cy", 120, 40).await;
+    let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
+    // Cy and God into the lobby too: every spelling of `SIM` answers only
+    // where the simulator is, and an announcement of a choice would reach
+    // the room it was typed in.
+    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&listing, "Simulator Lobby");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", CY.0),
+        "Teleported",
+    )
+    .await;
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", GOD.0),
+        "Simulator Lobby",
+    )
+    .await;
+    // Bo's and Cy's sockets, open before anything is chosen and kept whole.
+    let mut bo_web = web_session(&server, "bo", PILOT_PASSWORD, "Bo").await;
+    let mut cy_web = web_session(&server, "cy", PILOT_PASSWORD, "Cy").await;
+    let (mut bo_ws, mut cy_ws): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let pump = Duration::from_millis(500);
+    let most = Duration::from_secs(5);
+
+    // ---- Selection ----
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    let unannounced = god.mark();
+    let chose = m5_fog_answer(
+        &ask_whole(&mut ada, "SIM MIND Standard PROFILE Sniper, Line").await,
+        "SIM MIND Standard PROFILE Sniper, Line",
+    );
+    assert!(
+        chose.contains(&"Your slot will carry Standard Doctrine (Sniper, Line).".to_owned()),
+        "{chose:#?}"
+    );
+    let filled = m5_fog_answer(
+        &ask_whole(&mut ada, "SIM AI MIND Standard PROFILE Hunter").await,
+        "SIM AI MIND Standard PROFILE Hunter",
+    );
+    assert!(
+        filled.contains(&"Red's fill will carry Standard Doctrine (Hunter).".to_owned()),
+        "{filled:#?}"
+    );
+    // Nothing of either choice reached the lobby: God stands in it, and
+    // neither Bo's nor Cy's bytes (the sweep, below) carry it. God's terminal
+    // is fenced first, so the slice holds everything said to it since the
+    // mark (an unread terminal's slice is empty and could not fail).
+    m5_fog_fence(&mut god).await;
+    let heard = strip_ansi(&god.seen[unannounced..]);
+    assert!(
+        heard.contains(HUH),
+        "the fence was read into the slice:\n{heard}"
+    );
+    for leak in ["will carry", "Sniper", "Hunter"] {
+        assert!(
+            !heard.contains(leak),
+            "a choice was announced to the lobby ({leak:?}):\n{heard}"
+        );
+    }
+    m5_fog_pump(&mut bo_web, pump, most, &mut bo_ws).await;
+    m5_fog_pump(&mut cy_web, pump, most, &mut cy_ws).await;
+
+    // The board, per reader: Ada's own names both of hers; Bo's and Cy's
+    // mark them; nobody reads anything against Bo's unchosen row.
+    let unchosen = "blue: 1 (BA): Bo";
+    let rows = m5_fog_rows(&ask_whole(&mut ada, "SIM STATUS").await);
+    assert!(
+        rows.contains(&"red: 1 (RA): Ada, mind Standard Doctrine (Sniper, Line)".to_owned())
+            && rows.contains(&"red fill: Standard Doctrine (Hunter)".to_owned())
+            && rows.contains(&unchosen.to_owned()),
+        "Ada's board: {rows:#?}"
+    );
+    for (who, term) in [("Bo", &mut bo), ("Cy", &mut cy)] {
+        let rows = m5_fog_rows(&ask_whole(term, "SIM STATUS").await);
+        assert_eq!(
+            rows,
+            vec![
+                "red: 1 (RA): Ada, a mind".to_owned(),
+                unchosen.to_owned(),
+                "red fill: a mind".to_owned(),
+            ],
+            "{who}'s board"
+        );
+    }
+    let staff = ask_whole(&mut god, "@arena/status").await;
+    let rows = m5_fog_rows(&staff);
+    assert!(
+        rows.iter()
+            .any(|row| row.ends_with("(RA): Ada, mind Standard Doctrine (Sniper, Line)"))
+            && rows.contains(&"red fill: Standard Doctrine (Hunter)".to_owned())
+            && rows.iter().any(|row| row.ends_with("(BA): Bo")),
+        "staff read both choices and nothing against Bo's row: {rows:#?}\n{staff}"
+    );
+
+    // The bare reads: each reader's own. Bo's `SIM MIND` lists the presets
+    // his slot can fit — the one answer the sweep windows out of his bytes:
+    // his terminal between two marks, and his socket's envelopes of those
+    // same lines delivered between two pumps around it.
+    m5_fog_pump(&mut bo_web, pump, most, &mut bo_ws).await;
+    let socket_from = bo_ws.len();
+    let window_from = bo.mark();
+    let own = m5_fog_answer(&ask_whole(&mut bo, "SIM MIND").await, "SIM MIND");
+    let window_to = bo.mark();
+    // The socket's half of the window closes only once the reply's `Fits`
+    // line has crossed it (bounded), then after a quiet pump — never on a
+    // quiet spell alone, which a slow envelope could outlast.
+    let crossed = tokio::time::Instant::now() + STEP_TIMEOUT;
+    while !bo_ws[socket_from..]
+        .iter()
+        .any(|raw| raw.contains("Fits line_tank (II)"))
+    {
+        assert!(
+            tokio::time::Instant::now() < crossed,
+            "Bo's bare reply never crossed his socket: {:#?}",
+            &bo_ws[socket_from..]
+        );
+        m5_fog_pump(&mut bo_web, pump, most, &mut bo_ws).await;
+    }
+    m5_fog_pump(&mut bo_web, pump, most, &mut bo_ws).await;
+    let socket_to = bo_ws.len();
+    let bo_reply = own.clone();
+    assert!(
+        own.contains(&"Yours: none; a tank you leave flies Standard Doctrine on Line.".to_owned())
+            && own.contains(
+                &"Fits line_tank (II): Standard Doctrine, up to two of Line, Sentry, Sniper, \
+                  Skirmisher, Hunter or Rearguard."
+                    .to_owned()
+            )
+            && own
+                .iter()
+                .any(|line| line.starts_with("Blue's half of the centre's pool is "))
+            && own.len() == 3,
+        "Bo reads his own, and only it: {own:#?}"
+    );
+    let cy_own = m5_fog_answer(&ask_whole(&mut cy, "SIM MIND").await, "SIM MIND");
+    assert_eq!(
+        cy_own,
+        vec![
+            "You hold Standard Doctrine (six presets); claim a slot and SIM MIND lists what \
+             fits its core."
+                .to_owned()
+        ],
+        "Cy holds a slot of nobody's"
+    );
+    let fills = m5_fog_answer(&ask_whole(&mut bo, "SIM AI MIND").await, "SIM AI MIND");
+    assert_eq!(
+        fills,
+        vec![
+            "Red's fill carries a mind.".to_owned(),
+            "Blue's fill: nothing chosen; it flies Standard Doctrine on Line.".to_owned(),
+        ],
+        "Bo leads blue: his own side's fill, and red's marked"
+    );
+    let fills = m5_fog_answer(&ask_whole(&mut cy, "SIM AI MIND").await, "SIM AI MIND");
+    assert_eq!(
+        fills,
+        vec![
+            "Red's fill carries a mind.".to_owned(),
+            "Blue's fill: nothing chosen.".to_owned(),
+        ],
+        "Cy leads nothing"
+    );
+    let refused = m5_fog_answer(
+        &ask_whole(&mut bo, "SIM MIND Sentinel").await,
+        "SIM MIND Sentinel",
+    );
+    assert_eq!(
+        refused,
+        vec!["You hold no mind called Sentinel; SIM MIND lists the minds you hold.".to_owned()]
+    );
+    m5_fog_pump(&mut bo_web, pump, most, &mut bo_ws).await;
+    m5_fog_pump(&mut cy_web, pump, most, &mut cy_ws).await;
+
+    // ---- From `SIM START` on ----
+    let started = (ada.mark(), bo.mark(), cy.mark(), god.mark());
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect_after(started.0, "Good hunting").await;
+    bo.expect_after(started.1, "Good hunting").await;
+    // Fresh accounts read the panel hint on their first frame, one pulse
+    // after `Good hunting` (16b cut AH.1): fenced, so it cannot land inside
+    // the whole answers read below.
+    ada.expect_after(started.0, "Hint: the panel").await;
+    bo.expect_after(started.1, "Hint: the panel").await;
+    // The seal line, to Ada alone (Bo chose nothing: no seal line at all).
+    // Cy and God are fenced first: neither has been read since the start,
+    // and an unread terminal's slice is empty (the review of 17b cut M5.7).
+    m5_fog_fence(&mut cy).await;
+    m5_fog_fence(&mut god).await;
+    let hers = strip_ansi(&ada.seen[started.0..]);
+    assert!(hers.contains(M5_FOG_SEALED), "{hers}");
+    for (who, seen) in [
+        ("Bo", strip_ansi(&bo.seen[started.1..])),
+        ("Cy", strip_ansi(&cy.seen[started.2..])),
+        ("God", strip_ansi(&god.seen[started.3..])),
+    ] {
+        assert!(
+            seen.contains("Good hunting") || seen.contains(HUH),
+            "{who}'s slice was read: {seen}"
+        );
+        assert!(
+            !seen.contains("Sealed for this sortie"),
+            "{who} read a seal line:\n{seen}"
+        );
+    }
+    // No board row names or marks a mind, for any reader, staff included:
+    // each reader's rows pinned whole (a row naming the mind without the
+    // word `mind` fails it), and no reader's rows carry `Doctrine` or any of
+    // the six presets.
+    let seated = [
+        "red: 1 (RA): Ada, pod Red Pod 1, seated",
+        "blue: 1 (BA): Bo, pod Blue Pod 1, seated",
+    ];
+    let reduced = ["red: 1 (RA): Ada", "blue: 1 (BA): Bo"];
+    let no_mind_named = |who: &str, rows: &[String]| {
+        for row in rows {
+            let words = words_of(row);
+            for name in std::iter::once("Doctrine").chain(tacsim::arena::card::PRESETS) {
+                assert!(
+                    !words.contains(&name),
+                    "{who}'s board names a mind after the start ({name}): {rows:#?}"
+                );
+            }
+        }
+    };
+    for (who, term, expected) in [
+        ("Ada", &mut ada, [seated[0], reduced[1]]),
+        ("Bo", &mut bo, [reduced[0], seated[1]]),
+        ("Cy", &mut cy, reduced),
+    ] {
+        let rows = m5_fog_rows(&ask_whole(term, "SIM STATUS").await);
+        no_mind_named(who, &rows);
+        assert_eq!(rows, expected, "{who}'s board after the start");
+    }
+    let staff = ask_whole(&mut god, "@arena/status").await;
+    let rows = m5_fog_rows(&staff);
+    no_mind_named("staff", &rows);
+    assert_eq!(rows, seated, "staff's board after the start:\n{staff}");
+    // The fill: its setter's, and nobody else's.
+    let fills = m5_fog_answer(&ask_whole(&mut ada, "SIM AI MIND").await, "SIM AI MIND");
+    assert_eq!(
+        fills,
+        vec!["Red's fill: Standard Doctrine (Hunter).".to_owned()],
+        "the setter reads her own fill"
+    );
+    for (who, term) in [("Bo", &mut bo), ("Cy", &mut cy)] {
+        let fills = m5_fog_answer(&ask_whole(term, "SIM AI MIND").await, "SIM AI MIND");
+        assert_eq!(
+            fills,
+            vec!["The fills are not shown once a match starts.".to_owned()],
+            "{who}'s fill read after the start"
+        );
+    }
+    let own = m5_fog_answer(&ask_whole(&mut bo, "SIM MIND").await, "SIM MIND");
+    assert_eq!(own, vec!["Yours: none; selection is closed.".to_owned()]);
+    // Bo's own keyframe: his own seal, on Line alone, and nothing of Ada's.
+    let mut query = 9_700_u64;
+    let mut bo_frame = Value::Null;
+    wait_until(STEP_TIMEOUT, "Bo's mind on his frame", async || {
+        query += 1;
+        let mut seen = String::new();
+        bo_frame = m5_cockpit_seen(&mut bo_web, query, &mut seen).await;
+        bo_ws.extend(seen.lines().map(str::to_owned));
+        !m5_mind(&bo_frame).is_null()
+    })
+    .await;
+    let theirs = m5_mind(&bo_frame);
+    assert_eq!(theirs.get("name"), Some(&json!("Standard Doctrine")));
+    assert_eq!(
+        theirs.get("profiles"),
+        Some(&json!(["Line"])),
+        "Bo's own default seal: {bo_frame}"
+    );
+    m5_fog_pump(&mut bo_web, pump, most, &mut bo_ws).await;
+    m5_fog_pump(&mut cy_web, pump, most, &mut cy_ws).await;
+
+    // ---- After the end ----
+    // Ada climbs out, so her mind flies her tank; Bo aborts from his seat.
+    let exit = ada.mark();
+    say(&mut ada, "EXIT", "You climb out of").await;
+    ada.expect_after(exit, "you cannot take it back.").await;
+    let ended = cy.mark();
+    say(&mut bo, "SIM ABORT", "aborts match").await;
+    cy.expect_after(ended, "Its units are checked in.").await;
+    for (who, term, flew) in [("Bo", &mut bo, Some("BA")), ("Cy", &mut cy, None)] {
+        let history = ask_whole(term, "SIM HISTORY").await;
+        let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
+        history_row_is_public(&flat, 1, "#1 aborted", flew);
+        let replay = ask(term, "SIM REPLAY 1", "Next: SIM REPLAY 1 next").await;
+        for (what, read) in [("SIM HISTORY", &history), ("SIM REPLAY 1", &replay)] {
+            let words = words_of(read);
+            // Doctrine and EVERY preset, off the card's own list so the two
+            // cannot drift (Rearguard was missing until the review of 17b
+            // cut M5.7).
+            for name in std::iter::once("Doctrine").chain(tacsim::arena::card::PRESETS) {
+                assert!(
+                    !words.contains(&name),
+                    "{who}'s `{what}` named a mind or a preset ({name}):\n{read}"
+                );
+            }
+        }
+    }
+    let report = sim_report(&mut bo, "SIM REPORT 1").await;
+    assert!(
+        !report.contains("Your mind") && !report.contains("Doctrine"),
+        "Bo chose nothing and was never released:\n{report}"
+    );
+    report_is_the_pilots_own(&report, red, blue, "Bo's report");
+    let refused = ask(&mut cy, "SIM REPORT 1", "You did not fly in match 1.").await;
+    assert!(!refused.contains("Your mind"), "{refused}");
+    let report = sim_report(&mut ada, "SIM REPORT 1").await;
+    let lines: Vec<&str> = report.lines().map(str::trim).collect();
+    let head = lines
+        .iter()
+        .position(|line| *line == "Your mind: Standard Doctrine (Sniper, Line).")
+        .unwrap_or_else(|| panic!("Ada reads her block over the wire:\n{report}"));
+    assert!(
+        lines
+            .get(head + 1)
+            .is_some_and(|line| line.starts_with("It flew your tank from ")
+                && line.contains(", when you climbed out, to ")),
+        "her span:\n{report}"
+    );
+    report_is_the_pilots_own(&report, red, blue, "Ada's report");
+
+    // ---- The sweep ----
+    // Bo and Cy fenced, so every byte said to either terminal is in what is
+    // swept, not only what the last read happened to reach.
+    m5_fog_fence(&mut bo).await;
+    m5_fog_fence(&mut cy).await;
+    m5_fog_pump(
+        &mut bo_web,
+        Duration::from_secs(2),
+        Duration::from_secs(10),
+        &mut bo_ws,
+    )
+    .await;
+    m5_fog_pump(
+        &mut cy_web,
+        Duration::from_secs(2),
+        Duration::from_secs(10),
+        &mut cy_ws,
+    )
+    .await;
+    // Bo's terminal with his own Selection-time bare reply windowed out; his
+    // socket with that reply's own lines taken out (every line of a socket
+    // envelope one of them); Cy's whole.
+    let bo_term = format!(
+        "{}\n{}",
+        strip_ansi(&bo.seen[..window_from]),
+        strip_ansi(&bo.seen[window_to..])
+    );
+    let windowed = |at: usize, raw: &str| {
+        (socket_from..socket_to).contains(&at)
+            && serde_json::from_str::<Envelope>(raw).is_ok_and(|env| {
+                let text = text_of(&env.event);
+                let lines: Vec<&str> = text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                !lines.is_empty()
+                    && lines
+                        .iter()
+                        .all(|line| bo_reply.iter().any(|own| own == line))
+            })
+    };
+    // The window is his own reply and nothing else, and it really crossed his
+    // socket (the socket carries what his terminal reads): the sweep below
+    // is over everything but it.
+    assert!(
+        bo_ws
+            .iter()
+            .enumerate()
+            .any(|(at, raw)| windowed(at, raw) && raw.contains("Fits line_tank (II)")),
+        "Bo's socket carried his own bare reply: {:#?}",
+        bo_ws.get(socket_from..socket_to)
+    );
+    let bo_socket = bo_ws
+        .iter()
+        .enumerate()
+        .filter(|(at, raw)| !windowed(*at, raw))
+        .map(|(_, raw)| raw.as_str())
+        .collect::<Vec<&str>>()
+        .join("\n");
+    // The sweep read real traffic: Bo's keyframes (his own `mind` object) and
+    // the lines both of them were told.
+    assert!(
+        bo_socket.contains("\"mind\""),
+        "the sweep read Bo's keyframes"
+    );
+    let cy_socket = cy_ws.join("\n");
+    assert!(
+        cy_socket.contains("The fills are not shown once a match starts."),
+        "the sweep read Cy's lines over his socket"
+    );
+    // And both sockets stayed alive to the end (the review of 17b cut M5.7):
+    // each carries its reader's last post-end answer, so the post-end
+    // traffic — `SIM HISTORY`, `SIM REPLAY 1`, the reports — was swept too.
+    assert!(
+        bo_socket.contains("the match was aborted."),
+        "Bo's socket carried his report's end: the sweep read past the end"
+    );
+    assert!(
+        cy_socket.contains("You did not fly in match 1."),
+        "Cy's socket carried his refused report: the sweep read past the end"
+    );
+    // The seal line reached no staff terminal at any point (God fenced).
+    m5_fog_fence(&mut god).await;
+    assert!(
+        !strip_ansi(&god.seen).contains("Sealed for this sortie"),
+        "staff read a seal line"
+    );
+    // Doctrine is never substituted (OQ-5): Q-UM-15's sentence reached nobody.
+    for (who, seen) in [
+        ("Ada", strip_ansi(&ada.seen)),
+        ("Bo", strip_ansi(&bo.seen)),
+        ("Cy", strip_ansi(&cy.seen)),
+        ("God", strip_ansi(&god.seen)),
+    ] {
+        assert!(
+            !seen.contains("Humans on the other side"),
+            "{who} read Q-UM-15's sentence"
+        );
+    }
+    let mut leaks = Vec::new();
+    leaks.extend(m5_fog_leaks(&bo_term, "Bo's terminal"));
+    leaks.extend(m5_fog_leaks(&bo_socket, "Bo's socket"));
+    leaks.extend(m5_fog_leaks(&strip_ansi(&cy.seen), "Cy's terminal"));
+    leaks.extend(m5_fog_leaks(&cy_socket, "Cy's socket"));
+    assert!(leaks.is_empty(), "the fog leaked:\n{}", leaks.join("\n"));
+}
+
+/// **17b cut M5.7: the fog sweep finds each leak it names, and no other**
+/// ([`m5_fog_leaks`]): a frame's bare preset, a board's bracketed one, a
+/// `Your mind` block, a seal line, a six-digit hex word (a would-be seal id),
+/// a sixteen-digit one (a contact id), a whole sixty-four-digit digest and an
+/// eight- or twelve-digit prefix of one are each found; a six-figure count, a
+/// long run of figures (a nonce, a stamp), a word that only begins with a
+/// preset's name and the lines Bo and Cy are meant to read are not.
+#[test]
+fn m5_the_fog_sweep_finds_each_leak_it_names() {
+    for (seen, found) in [
+        (r#"{"mind":{"profiles":["Sniper","Line"]}}"#, "\"Sniper\""),
+        ("red fill: Standard Doctrine (Hunter)", "\"Hunter\""),
+        ("Your mind: Standard Doctrine (Line).", "\"Your mind\""),
+        (M5_FOG_SEALED, "\"Sealed for this sortie\""),
+        ("sealed as 3fa9c2", "six-digit hex word (3fa9c2)"),
+        (
+            "contact 0123456789abcdef",
+            "sixteen-digit word (0123456789abcdef)",
+        ),
+        // A whole digest, and an eight- and a twelve-digit prefix of one (the
+        // review of 17b cut M5.7).
+        (
+            "seal 6edd245e28832b1020158d1e78bc94ea924c3e78bd2b99840b1b9ea3c21cbd22",
+            "digest-long hex word (6edd245e28832b1020158d1e78bc94ea",
+        ),
+        ("seal 6edd245e2883", "hex prefix (6edd245e2883)"),
+        ("seal 6edd245e", "hex prefix (6edd245e)"),
+        ("seal 6edd245e…bd22", "hex prefix (6edd245e)"),
+    ] {
+        let leaks = m5_fog_leaks(seen, "the sample");
+        assert!(
+            leaks.iter().any(|leak| leak.contains(found)),
+            "{seen:?} should be found as {found}: {leaks:?}"
+        );
+    }
+    for clean in [
+        "Red's fill carries a mind.",
+        "The fills are not shown once a match starts.",
+        "Blue's half of the centre's pool is 244,000 ops a second and 1,500 are spoken for.",
+        "a pool of 244000 ops",
+        "a nonce of 18446744073709551615 and a stamp of 1760234567890",
+        "Snipers and Hunters are words of their own",
+        r#"{"mind":{"name":"Standard Doctrine","profiles":["Line"]}}"#,
+    ] {
+        assert_eq!(
+            m5_fog_leaks(clean, "the sample"),
+            Vec::<String>::new(),
+            "{clean:?}"
         );
     }
 }

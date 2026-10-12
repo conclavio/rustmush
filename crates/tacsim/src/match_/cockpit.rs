@@ -1611,9 +1611,10 @@ fn section_clause(id: &str, then: &SectionWords, now: &SectionWords) -> String {
 /// Line 1's duration is `away_ms.div_euclid(1_000)` whole seconds through
 /// [`crate::match_::duration_words`] — the wire's own `away_s`, so the line
 /// client and both rings print one figure — and it says `away` and not `on
-/// doctrine`, because the count starts at the `Linkdead`, before the machine
-/// had the tank. An eighth line, `Your tank is a wreck.`, follows the power
-/// line when it is one. A capped list ends `and N more`; the contacts' one
+/// its mind` (`on doctrine` here until 17b cut M5.7), because the count starts
+/// at the `Linkdead`, before the machine had the tank. An eighth line, `Your
+/// tank is a wreck.`, follows the power line when it is one. A capped list
+/// ends `and N more`; the contacts' one
 /// overflow count goes on the one list that is full — only a full list can
 /// have overflowed — and when both are full, which cannot tell whose it was,
 /// it is its own clause, `3 more not named`.
@@ -8202,7 +8203,9 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
 }
 
 /// **`ORDER <squad|ALL> RELEASE`** (16b cut Z.2; 16c Q44) — hand the squads the
-/// pilot may order back to doctrine, from [`order`]'s step 4, after the parse,
+/// pilot may order back to their own minds ("to doctrine" here until 17b cut
+/// M5.7, as the acknowledgement's words moved at 17b cut M5.3), from
+/// [`order`]'s step 4, after the parse,
 /// [`require_alive`] and authority (the same set, and the same
 /// [`NO_SUCH_SQUAD`] and [`NO_SQUAD_TO_ORDER`], as every other arm).
 ///
@@ -8222,7 +8225,7 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
 ///    to the issuer alone.
 ///
 /// A release to a squad under no order is acknowledged, and the arena applies
-/// and journals nothing: the machines are on doctrine already.
+/// and journals nothing: the machines are on their own minds already.
 fn release(
     ctx: &mut Ctx<'_>,
     seat: &Seat,
@@ -8786,11 +8789,13 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             // amendment is that a released seat cannot be retaken, and a pilot
             // who reads the help before typing the word deserves to know it.
             // Cut Y.3 narrowed that to this verb: a dropped line can be
-            // reclaimed, an `EXIT` cannot, even after a drop.
+            // reclaimed, an `EXIT` cannot, even after a drop. 17b cut M5.7: `the
+            // tank goes to its autopilot` until then — it is the tank's sealed
+            // mind that flies it, in `help simulator`'s words.
             help: "EXIT               climb out of the pod you are in: the seat, its control \
                    lease and your focus are released, and a match still boarding stops waiting \
-                   for you. Once the match is RUNNING this is final: the tank goes to its \
-                   autopilot for the rest of the match and you cannot board again."
+                   for you. Once the match is RUNNING this is final: your tank's mind flies it \
+                   for the rest of the match and you cannot board again."
                 .into(),
             ..CommandSpec::default()
         },
@@ -11378,6 +11383,16 @@ mod tests {
         };
         for line in mind_lines(&sniper_line, true, 0) {
             assert!(quoted(&line), "the page quotes MIND's line: {line}");
+        }
+        // 17b cut M5.7 (M5.6's carried item): `help cockpit`'s copy of the
+        // four lines ("Your tank's mind") is pinned to the same frame, so the
+        // two pages cannot drift apart unseen.
+        let cockpit_page = include_str!("../../../../docs/help/cockpit.md");
+        for line in mind_lines(&sniper_line, true, 0) {
+            assert!(
+                cockpit_page.lines().any(|said| said.trim_start() == line),
+                "help cockpit quotes MIND's line: {line}"
+            );
         }
         let switched = FrameMind {
             active: 1,

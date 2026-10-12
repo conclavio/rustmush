@@ -895,9 +895,9 @@ live. It is asked for per squad, never per unit.
   ordinary order intent or nothing at all, and never waits for either.
 - **What a person sees.** One line when an order runs out unrenewed, in the name
   of whoever gave it. A lance leader's (the sim persona each squad is led by):
-  *"Squad red-1: red lance leader 1's hold order has run out; back on
-  doctrine."* to the pilots on that squad's own side. A pilot's own `ORDER`:
-  *"Squad red-1: your hold order has run out; back on doctrine."* to that pilot
+  *"Squad red-1: red lance leader 1's hold order has run out; back on their
+  minds."* to the pilots on that squad's own side. A pilot's own `ORDER`:
+  *"Squad red-1: your hold order has run out; back on their minds."* to that pilot
   alone — nobody else on the side was told the order existed. Either way
   connected wizards get one line naming the author (`Arena match <n>: Squad
   red-1: Ada's hold order …`). The match ledger carries the matching
@@ -928,7 +928,7 @@ which writes `tacsim:snapshot:<match>` and the match's live record
 `tacsim:live:<match>` in one action on the module's own lane; both are deleted
 with the result, and by a boot for every match it does not resume. Since 16b cut
 AF.3 the boot resumes a running match from them (the match rewinds to its last
-snapshot and every tank flies on doctrine until its pilot `BOARD`s again) and
+snapshot and every tank flies on its sealed mind until its pilot `BOARD`s again) and
 voids it by name, `aborted(restart)`, only when it cannot. Nothing but the boot
 reads them. `@arena/status` prints `last snapshot: at
 N ms of arena time` under each match once one has been written.
