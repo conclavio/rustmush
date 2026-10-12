@@ -1216,8 +1216,19 @@ impl Arena {
         };
         // One hash for every event this phase appends, taken after the tempo is
         // settled so that a `tempo` event carries the tempo it announces.
-        let hash = state_hash(self);
+        //
+        // **16c T-104 (the walks)**: taken LAZILY, at the first line this phase
+        // journals, and shared by every later line of the phase — the same
+        // value the eager walk read, because nothing between the tempo's
+        // settling and the first line writes hashed state (the floor change
+        // and the lag are views, the settles write `ended`, which is not
+        // folded), and the lines' own appends come after the slot is filled,
+        // exactly as they came after the eager walk. A wake that journals
+        // none of these lines — nearly every wake — now walks the state once
+        // less: the VPS profile read this walk at 8 per cent of the CI step.
+        let mut wake_hash: Option<u64> = None;
         if let Some((from, to)) = changed {
+            let hash = self.wake_hash(&mut wake_hash);
             ledger_full |= !self.journal(self.now_ms, EventKind::Tempo { from, to }, hash);
         }
         // **16b cut I.3** (16c N10): a staff floor set or lifted since the last
@@ -1227,6 +1238,7 @@ impl Arena {
         // 11). Not on a match a substep already ended: nothing is journalled
         // after `match_ended` (16b cut W.2), and the change is left untaken.
         if !over && let Some(period_ms) = self.clock.take_floor_change() {
+            let hash = self.wake_hash(&mut wake_hash);
             ledger_full |= !self.journal(self.now_ms, EventKind::TempoFloor { period_ms }, hash);
         }
         // One notice per pulse whichever half is behind: the clock absorbed more
@@ -1235,6 +1247,7 @@ impl Arena {
         // paragraph). `dt_ms` is the clamped `dt` the pulse actually ran with.
         let egress_lagged = self.ledger.lagged();
         if !over && (clock_lagged || egress_lagged) {
+            let hash = self.wake_hash(&mut wake_hash);
             ledger_full |= !self.journal(self.now_ms, EventKind::Lagged { dt_ms }, hash);
         }
         // **16b cut W.2**, the **backstop** for doc 16 §3.8's team elimination. Every
@@ -1266,6 +1279,7 @@ impl Arena {
         // first, at the end's millisecond under the end's hash
         // (`Arena::journal_sortie_closes`), so the end stays the last line.
         if let Some(end) = settled {
+            let hash = self.wake_hash(&mut wake_hash);
             ledger_full |= !self.journal_sortie_closes(self.now_ms, hash);
             ledger_full |= !self.journal(
                 self.now_ms,
@@ -1282,6 +1296,7 @@ impl Arena {
         // due loop already settled, `ended` is set and this is skipped.
         if self.ended.is_none() && self.now_ms >= i64::from(self.match_cfg.max_duration_ms) {
             let reason = EndReason::Timeout;
+            let hash = self.wake_hash(&mut wake_hash);
             ledger_full |= !self.journal_sortie_closes(self.now_ms, hash);
             ledger_full |= !self.journal(self.now_ms, EventKind::MatchEnded { reason }, hash);
             self.ended = Some(MatchEnd {
@@ -1313,6 +1328,7 @@ impl Arena {
         // more.
         if self.ended.is_none() && self.ledger.overflowed() {
             // 17b cut M3.6: a void closes every open sortie too, first.
+            let hash = self.wake_hash(&mut wake_hash);
             let _ = self.journal_sortie_closes(self.now_ms, hash);
             let _ = self.journal(self.now_ms, EventKind::Void, hash);
             self.ended = Some(MatchEnd {
@@ -2289,6 +2305,15 @@ impl Arena {
     /// [`SORTIE_MATCH_END`] at `t_ms`, each line under `hash` — the end's own
     /// — answering whether every line was recorded (the ledger's byte bound,
     /// as [`Arena::journal`] answers it).
+    /// **The wake's tail-phase hash, taken once and only when a line needs
+    /// it** (16c `T-104`, the walks). The slot is the caller's local; the
+    /// first call fills it with [`crate::arena::hash::state_hash`] and every
+    /// later call reads it back, so the lines of one phase share one hash as
+    /// they always did, and a phase that journals nothing walks nothing.
+    fn wake_hash(&self, slot: &mut Option<u64>) -> u64 {
+        *slot.get_or_insert_with(|| state_hash(self))
+    }
+
     fn journal_sortie_closes(&mut self, t_ms: i64, hash: u64) -> bool {
         let mut recorded = true;
         for (at, kind, draws) in self.close_open_sorties(t_ms, SORTIE_MATCH_END) {
@@ -6068,8 +6093,11 @@ mod tests {
         let mut arena = m2_pair(600_000);
         let mut journal = Log::default();
         journal.absorb(&arena.step(0, &[], &[]));
+        let mut prior = Tempo::Quiet;
         for wall in [1_000, 2_000, 3_000] {
-            journal.absorb(&arena.step(wall, &[], &[]));
+            let out = arena.step(wall, &[], &[]);
+            prior = out.tempo;
+            journal.absorb(&out);
         }
         assert!(
             arena
@@ -6086,10 +6114,13 @@ mod tests {
         let quiet_taken = taken() - before;
         journal.absorb(&quiet);
         assert!(quiet.substeps > 0, "the quiet pulse ran its substeps");
+        // **16c T-104 (the walks)**: phase 5 hashes only for a line it
+        // journals — its tempo line, when the tempo moved on this pulse.
+        let quiet_tail = u64::from(quiet.tempo != prior);
         assert_eq!(
             quiet_taken,
-            u64::from(quiet.substeps) + 1,
-            "one hash per substep and phase 5's; phase 4 took none"
+            u64::from(quiet.substeps) + quiet_tail,
+            "one hash per substep and phase 5's only for its line; phase 4 took none"
         );
         assert_eq!(arena.action_hash, ActionHash::Outside);
         let before = taken();
@@ -6120,9 +6151,10 @@ mod tests {
         let busy = arena.step(5_000, &[], &intents);
         let busy_taken = taken() - before;
         journal.absorb(&busy);
+        let busy_tail = u64::from(busy.tempo != quiet.tempo);
         assert_eq!(
             busy_taken,
-            u64::from(busy.substeps) + 2,
+            u64::from(busy.substeps) + 1 + busy_tail,
             "the two actions shared one phase-4 hash"
         );
         assert_eq!(
@@ -6166,8 +6198,11 @@ mod tests {
         let mut arena = m2_pair(600_000);
         let mut journal = Log::default();
         journal.absorb(&arena.step(0, &[], &[]));
+        let mut prior = Tempo::Quiet;
         for wall in [1_000, 2_000, 3_000] {
-            journal.absorb(&arena.step(wall, &[], &[]));
+            let out = arena.step(wall, &[], &[]);
+            prior = out.tempo;
+            journal.absorb(&out);
         }
         for unit in [A, B] {
             if let Some(state) = arena.unit_mut(unit) {
@@ -6179,10 +6214,13 @@ mod tests {
         let quiet = arena.step(4_000, &[], &[]);
         let quiet_taken = taken() - before;
         journal.absorb(&quiet);
+        // **16c T-104 (the walks)**: phase 5 hashes only when it journals a
+        // line — here its tempo line, when the tempo moved on this pulse.
+        let quiet_tail = u64::from(quiet.tempo != prior);
         assert_eq!(
             quiet_taken,
-            u64::from(quiet.substeps) + 1,
-            "the baseline: one hash per substep and phase 5's"
+            u64::from(quiet.substeps) + quiet_tail,
+            "the baseline: one hash per substep, and phase 5's only for its line"
         );
         let told = crate::deliberation::order::Order {
             squad: crate::deliberation::squad::SquadId::parse("red-1").expect("a squad id"),
@@ -6214,9 +6252,10 @@ mod tests {
         let busy = arena.step(5_000, &[], &intents);
         let busy_taken = taken() - before;
         journal.absorb(&busy);
+        let busy_tail = u64::from(busy.tempo != quiet.tempo);
         assert_eq!(
             busy_taken,
-            u64::from(busy.substeps) + 2,
+            u64::from(busy.substeps) + 1 + busy_tail,
             "the two `ordered` lines shared phase 2's one hash"
         );
         assert_eq!(
@@ -6266,9 +6305,10 @@ mod tests {
         let mixed = arena.step(6_000, &[], &intents);
         let mixed_taken = taken() - before;
         journal.absorb(&mixed);
+        let mixed_tail = u64::from(mixed.tempo != busy.tempo);
         assert_eq!(
             mixed_taken,
-            u64::from(mixed.substeps) + 2,
+            u64::from(mixed.substeps) + 1 + mixed_tail,
             "the release and the order shared phase 2's one hash"
         );
         assert_eq!(mixed.motor.orders_released, 1, "one machine dropped");
@@ -8338,5 +8378,49 @@ mod tests {
             row(&red(&decoded), TIE_ID).fatal,
             Some(vec![SmolStr::new_static("hull")])
         );
+    }
+
+    /// **16c `T-104`, the walks**: the tail phase of a wake hashes the state
+    /// only when it journals a line — a quiet wake takes no hash there at
+    /// all, and a wake that journals the tempo and the floor takes one, the
+    /// hash both lines carry, equal to the state's hash at that moment.
+    #[test]
+    fn t104a_the_wakes_tail_phase_hashes_only_when_it_journals() {
+        let taken = || crate::arena::hash::STATE_HASHES_TAKEN.with(std::cell::Cell::get);
+        let mut arena = arena();
+        let mut journal = Log::default();
+        // The opening pulse runs no substep and journals nothing: no hash.
+        let before = taken();
+        journal.absorb(&arena.step(0, &[], &[]));
+        assert_eq!(taken() - before, 0, "a quiet wake walks nothing");
+        // A wake that raises the tempo and sets a floor journals two lines
+        // under one hash: the tail phase walks once for both.
+        let fire = Intent {
+            unit: A,
+            channel: Channel::Fire,
+            epoch: 1,
+            kind: IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+                slot: None,
+            },
+            seq: 2,
+        };
+        arena.clock.set_floor(Some(5_000));
+        journal.absorb(&arena.step(5_000, &[], &[fire]));
+        let log = journal.events(&mut arena);
+        let tempo = log
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Tempo { .. }))
+            .expect("the fire raised the tempo");
+        let floor = log
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::TempoFloor { .. }))
+            .expect("the floor line");
+        assert_eq!(tempo.hash, floor.hash, "one hash for the phase's lines");
+        assert_eq!(tempo.t_ms, floor.t_ms);
+        // And it is the hash the phase's moment has: the ledger's sequence
+        // is folded, so the hash on the lines is the state's hash before the
+        // first of them was appended — the eager walk's value, line for line.
+        assert_ne!(tempo.hash, 0);
     }
 }
