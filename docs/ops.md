@@ -1402,7 +1402,10 @@ run of this script fails the minds lane and blesses nothing. A match checked
 out between 17b cut M4.3 and the decision carries `scripted` seals and resumed on them (the
 stock source is compiled in) until 17b cut M4.6's format 9, which voids every older snapshot. A `stock_ci` `held=no` was to be
 the owner's STOP before 17b cut M4.5 moved the CI lane onto minds; the owner
-waived that precondition on 2026-10-08, and the three runs remain the owner's.
+waived that precondition on 2026-10-08. The three runs were made on the VPS on
+2026-10-12 at `47bcb620` and did not hold — one of three whole, the authored
+cohort's window p99 27.5 to 33.0 ms against its 32 ms lens (17b §2) — so the
+M4 gate waits on 16c `T-104` to `T-107`.
 Its four
 `harness-minds-<variant>.json` reports carry a deterministic `minds` block
 (thinks, inline and pooled, landings, faults, ops, fees, the final substep
@@ -1472,9 +1475,9 @@ its thresholds and its timing — and exactly those seven
 `minds.fill_authored` leaves were carried onto it by hand, nothing else, so the
 timing gate stays live on the VPS. The merged tree's lanes then read the
 deterministic block and all four minds blocks equal against it in a cloud
-container (timing skipped there, the host differing); the next run of the
-script on the VPS reads them equal with the gate live, and a bless there
-re-stamps the file.
+container (timing skipped there, the host differing); the script's three runs
+on the VPS on 2026-10-12 (at `47bcb620`) read them equal with the gate live, the
+timing +17.2 per cent at worst, and a bless there re-stamps the file.
 
 **A timing-only failure is re-run once before it is believed.** Two runs of one
 tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A
