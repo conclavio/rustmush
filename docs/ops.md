@@ -1479,6 +1479,17 @@ container (timing skipped there, the host differing); the script's three runs
 on the VPS on 2026-10-12 (at `47bcb620`) read them equal with the gate live, the
 timing +17.2 per cent at worst, and a bless there re-stamps the file.
 
+**Re-blessed at hash v2** (16c `T-104`, 2026-10-12, the one declared re-bless
+of every state-hash pin): the fold behind `state_hash` moved (`Fold`, a word a
+multiply; the notices by `fold_value`), so every `final_substep_hash` leaf and
+every byte count a hash's decimal width moves (`ledger_bytes_streamed`,
+`ledger_chunks`, the snapshot bytes) moved with it, and `arena.linux.json` was
+re-blessed on the VPS by procedure β under `srv1930616` at `16320d7c` —
+the thresholds unchanged, the timing the VPS's at that tree, the gate live
+there as before. The in-tree pins (the D-UM-28 rows, the duel's and the
+field's hashes, the three ledger-line tables) moved in the code commit; the
+RNG's fold did not, so no draw and no outcome moved.
+
 **A timing-only failure is re-run once before it is believed.** Two runs of one
 tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A
 deterministic difference is never noise: it means the arena did something

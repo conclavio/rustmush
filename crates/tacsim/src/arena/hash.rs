@@ -17,7 +17,7 @@
 //! **Hash v2** (16c `T-104`, 2026-10-12): the stream of bytes is the one
 //! [`state_hash`]'s list gives, unchanged; the mix is [`Fold`], eight bytes a
 //! multiply where FNV-1a 64 took one a byte, and a pending notice or intent
-//! is folded by [`fold_value`]'s walk of its fields where its canonical JSON
+//! is folded by `fold_value`'s walk of its fields where its canonical JSON
 //! text was. The RNG ([`crate::arena::rng`]) keeps [`fnv1a64_update`], so no
 //! draw moved; every state hash did, once, with its pins re-blessed in the
 //! same cut.
@@ -165,7 +165,7 @@ pub(crate) fn fold_value<T: serde::Serialize + ?Sized>(fold: &mut Fold, value: &
     let _ = value.serialize(FieldFold { fold });
 }
 
-/// The serializer behind [`fold_value`]: every call folds bytes and returns
+/// The serializer behind `fold_value`: every call folds bytes and returns
 /// `Ok(())`.
 struct FieldFold<'a> {
     fold: &'a mut Fold,
@@ -633,7 +633,7 @@ thread_local! {
 ///    since 17b cut M3.6, its answer: below); the
 ///    memory's length as `u64` then its bytes (its FNV-1a 64 digest as `u64`
 ///    until 16c `T-104`); the
-///    notices' count as `u64`, then per notice **[`fold_value`]'s walk of
+///    notices' count as `u64`, then per notice **`fold_value`'s walk of
 ///    its fields** (its canonical `serde_json::to_vec` bytes until 16c
 ///    `T-104`) — every field, so two buffers that would
 ///    drive two different decisions (two `Miss` notices differing only in
@@ -665,7 +665,7 @@ thread_local! {
 ///    `pending`, when present, folds after its `[1]`, `think_seq` and `t_ms`
 ///    its ANSWER — the three epochs ([`crate::arena::mind::PendingThink`]'s
 ///    `epochs`, `Channel::ALL`'s order) as `u64` each, the intents' count as
-///    `u64` then each intent by [`fold_value`] (its canonical
+///    `u64` then each intent by `fold_value` (its canonical
 ///    `serde_json::to_vec` bytes until 16c `T-104`), the new
 ///    memory's length as `u64` then its bytes (its FNV-1a 64 digest until
 ///    16c `T-104`); and after
