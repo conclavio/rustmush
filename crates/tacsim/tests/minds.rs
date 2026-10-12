@@ -3363,7 +3363,9 @@ fn m1b3_an_order_hint_re_keys_only_to_a_classified_row() {
 /// `M1B0_DUEL_LINES`) are byte-equal but for their `hash` values. Old → new:
 /// `0x692d_5b0e_3c04_93a6` → `0xc734_ca3c_2cce_2a0c`, `0xd243_f6a1_30c0_00c7`
 /// → `0xbabf_b4c3_71e8_786d`, `0x65eb_692a_b7a8_a72d` →
-/// `0x999b_45cb_390f_4af8`.
+/// `0x999b_45cb_390f_4af8`. **Hash v2** (16c T-104, 2026-10-12): the state hash's fold moved — `Fold`, eight bytes a multiply, the notices by `fold_value` — so every `hash` moved and nothing else did: `0xc734_ca3c_2cce_2a0c` → `0x6d99_9a2c_d37b_179d`, `0xbabf_b4c3_71e8_786d` →
+/// `0xef15_99c8_e01f_1022`, `0x999b_45cb_390f_4af8` → `0xa4cd_3db1_3485_19ef`; the three tapes byte-equal but
+/// for their `hash` values, the thinks and faults unchanged.
 #[test]
 fn m1a5_the_production_hash_does_not_move() {
     let seeing = |mut unit: CustodyUnit| {
@@ -3402,8 +3404,8 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = install_standard(&mut arena);
     let run = run(&mut arena, Drive::Every(1_000), 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
-    assert_eq!(run.hashes.first().copied(), Some(0xc734_ca3c_2cce_2a0c));
-    assert_eq!(run.hashes.last().copied(), Some(0xbabf_b4c3_71e8_786d));
+    assert_eq!(run.hashes.first().copied(), Some(0x6d99_9a2c_d37b_179d));
+    assert_eq!(run.hashes.last().copied(), Some(0xef15_99c8_e01f_1022));
     assert_eq!(
         run.counters.thinks, 60,
         "the two minds' thinks over 30 s at Class I's second"
@@ -3433,7 +3435,7 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(
         tacsim::arena::hash::state_hash(&duel),
-        0x999b_45cb_390f_4af8,
+        0xa4cd_3db1_3485_19ef,
         "the shipped duel's hash moved"
     );
     assert_eq!(duel.minds.len(), 4, "four minds");

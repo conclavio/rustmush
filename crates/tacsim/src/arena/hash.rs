@@ -13,6 +13,14 @@
 //! seed, no wall time, no floating point. Every byte folded in below is an
 //! integer read in unit-id order, and the mix is written out here so that the
 //! answer does not move when the toolchain does.
+//!
+//! **Hash v2** (16c `T-104`, 2026-10-12): the stream of bytes is the one
+//! [`state_hash`]'s list gives, unchanged; the mix is [`Fold`], eight bytes a
+//! multiply where FNV-1a 64 took one a byte, and a pending notice or intent
+//! is folded by [`fold_value`]'s walk of its fields where its canonical JSON
+//! text was. The RNG ([`crate::arena::rng`]) keeps [`fnv1a64_update`], so no
+//! draw moved; every state hash did, once, with its pins re-blessed in the
+//! same cut.
 
 use crate::arena::state::Arena;
 
@@ -24,8 +32,10 @@ pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Fold `bytes` into an FNV-1a 64 accumulator.
 ///
-/// Public because [`crate::arena::rng::draw`] keys on the same primitive: one
-/// mix, written once, testable on its own.
+/// Public because [`crate::arena::rng::draw`] keys on this primitive: one
+/// mix, written once, testable on its own. Since 16c `T-104` the state hash
+/// folds with [`Fold`] instead; this stays the RNG's and the designator
+/// book's, so neither moved.
 #[must_use]
 pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
     let mut hash = state;
@@ -34,6 +44,454 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
+}
+
+/// **The hash v2 fold** (16c `T-104`): the state hash's stream — the fields
+/// [`state_hash`]'s list gives, in that order, every multi-byte integer
+/// little-endian — folded a word at a time instead of a byte at a time.
+///
+/// Each call of [`Fold::bytes`] is one message. A message of at most eight
+/// bytes is one word (its bytes little-endian in the low bytes, the rest
+/// zero, its length in the top four bits) mixed once; a longer message is
+/// its length as a word, then each full eight-byte word, then its tail word
+/// tagged the same way. A word `w` is mixed as
+/// `h = (h ^ w).wrapping_mul(K); h ^= h >> 32`: a bijection of `h` for any
+/// `w` and of `w` for any `h`, so one changed word always changes the state,
+/// the multiply carrying every low bit upward and the shift bringing the
+/// high bits back down. [`Fold::finish`] applies splitmix64's finaliser so
+/// every output bit depends on every input bit.
+///
+/// The hash is therefore a function of the *sequence of messages*, which is
+/// what the callers' fixed order of fields makes it: a `u32` field is one
+/// word whatever its value, a weapon name of nine bytes is its length and
+/// two words. (FNV-1a 64 was a function of the concatenated bytes, which the
+/// same fixed order made equally unambiguous; the difference is one
+/// dependent multiply per word here against one per byte there, and the
+/// VPS profile read the byte chain at 17 per cent of the CI step.) The
+/// constants are written out here so the answer does not move when the
+/// toolchain does.
+#[derive(Clone, Copy, Debug)]
+pub struct Fold {
+    h: u64,
+}
+
+/// The fold's seed: FNV-1a 64's offset basis, kept for familiarity.
+pub const FOLD_SEED: u64 = FNV_OFFSET_BASIS;
+/// The word multiplier: the 64-bit golden-ratio constant (odd).
+pub const FOLD_K: u64 = 0x9e37_79b9_7f4a_7c15;
+
+impl Default for Fold {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Fold {
+    /// An empty fold.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { h: FOLD_SEED }
+    }
+
+    #[inline]
+    const fn mix(h: u64, w: u64) -> u64 {
+        let h = (h ^ w).wrapping_mul(FOLD_K);
+        h ^ (h >> 32)
+    }
+
+    /// One word of at most eight bytes, little-endian, the rest zero.
+    #[inline]
+    fn word(bytes: &[u8]) -> u64 {
+        match *bytes {
+            [a] => u64::from(a),
+            [a, b] => u64::from(u16::from_le_bytes([a, b])),
+            [a, b, c, d] => u64::from(u32::from_le_bytes([a, b, c, d])),
+            [a, b, c, d, e, f, g, i] => u64::from_le_bytes([a, b, c, d, e, f, g, i]),
+            _ => {
+                let mut word = [0_u8; 8];
+                let n = bytes.len().min(8);
+                word[..n].copy_from_slice(&bytes[..n]);
+                u64::from_le_bytes(word)
+            }
+        }
+    }
+
+    /// Fold one message.
+    #[inline]
+    pub fn bytes(&mut self, bytes: &[u8]) {
+        if bytes.len() <= 8 {
+            // The length rides in the top four bits of the word, so a byte and
+            // the same byte zero-padded to a word are two messages.
+            self.h = Self::mix(self.h, Self::word(bytes) ^ ((bytes.len() as u64) << 60));
+            return;
+        }
+        self.h = Self::mix(self.h, bytes.len() as u64);
+        let (words, tail) = bytes.as_chunks::<8>();
+        for word in words {
+            self.h = Self::mix(self.h, u64::from_le_bytes(*word));
+        }
+        if !tail.is_empty() {
+            self.h = Self::mix(self.h, Self::word(tail) ^ ((tail.len() as u64) << 60));
+        }
+    }
+
+    /// The hash of every message folded so far; the fold itself is
+    /// unchanged, so a caller may read it and fold on.
+    #[must_use]
+    pub const fn finish(&self) -> u64 {
+        let mut h = self.h;
+        h ^= h >> 30;
+        h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h ^= h >> 27;
+        h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+        h ^ (h >> 31)
+    }
+}
+
+/// **A value folded field by field** (16c `T-104`): the pending notices
+/// and the pending intents were folded as their canonical
+/// `serde_json::to_vec` bytes, so that every field counted without a
+/// hand-written fold a new field could miss. This keeps that property — it
+/// is serde's own walk of the derive, every field and every variant, in
+/// declaration order — and drops the text: a scalar folds as its
+/// little-endian bytes, a string or byte slice as its length then its bytes,
+/// an option as a presence byte then the value, a sequence or map as its
+/// length (`u64::MAX` when unknown) then its items, an enum as its variant
+/// index then its payload, a struct as its field count then its fields. The
+/// VPS profile read the JSON at 3 per cent of the CI step.
+pub(crate) fn fold_value<T: serde::Serialize + ?Sized>(fold: &mut Fold, value: &T) {
+    // The serializer itself cannot fail; a `Serialize` impl that errors on
+    // its own (none of ours do) folds what it folded before the error.
+    let _ = value.serialize(FieldFold { fold });
+}
+
+/// The serializer behind [`fold_value`]: every call folds bytes and returns
+/// `Ok(())`.
+struct FieldFold<'a> {
+    fold: &'a mut Fold,
+}
+
+/// [`FieldFold`]'s error type, never produced by the serializer itself.
+#[derive(Debug)]
+struct FoldError;
+
+impl std::fmt::Display for FoldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a value refused to serialize into the fold")
+    }
+}
+
+impl std::error::Error for FoldError {}
+
+impl serde::ser::Error for FoldError {
+    fn custom<T: std::fmt::Display>(_: T) -> Self {
+        FoldError
+    }
+}
+
+impl FieldFold<'_> {
+    fn len(&mut self, len: Option<usize>) {
+        self.fold
+            .bytes(&len.map_or(u64::MAX, |n| n as u64).to_le_bytes());
+    }
+
+    fn index(&mut self, index: u32) {
+        self.fold.bytes(&index.to_le_bytes());
+    }
+}
+
+impl<'a> serde::Serializer for FieldFold<'a> {
+    type Ok = ();
+    type Error = FoldError;
+    type SerializeSeq = FieldFold<'a>;
+    type SerializeTuple = FieldFold<'a>;
+    type SerializeTupleStruct = FieldFold<'a>;
+    type SerializeTupleVariant = FieldFold<'a>;
+    type SerializeMap = FieldFold<'a>;
+    type SerializeStruct = FieldFold<'a>;
+    type SerializeStructVariant = FieldFold<'a>;
+
+    fn serialize_bool(self, v: bool) -> Result<(), FoldError> {
+        self.fold.bytes(&[u8::from(v)]);
+        Ok(())
+    }
+
+    fn serialize_i8(self, v: i8) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_i16(self, v: i16) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_i32(self, v: i32) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_i64(self, v: i64) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_i128(self, v: i128) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_u8(self, v: u8) -> Result<(), FoldError> {
+        self.fold.bytes(&[v]);
+        Ok(())
+    }
+
+    fn serialize_u16(self, v: u16) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_u32(self, v: u32) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_u64(self, v: u64) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_u128(self, v: u128) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_f32(self, v: f32) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_bits().to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_f64(self, v: f64) -> Result<(), FoldError> {
+        self.fold.bytes(&v.to_bits().to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_char(self, v: char) -> Result<(), FoldError> {
+        self.fold.bytes(&u32::from(v).to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_str(mut self, v: &str) -> Result<(), FoldError> {
+        self.len(Some(v.len()));
+        self.fold.bytes(v.as_bytes());
+        Ok(())
+    }
+
+    fn serialize_bytes(mut self, v: &[u8]) -> Result<(), FoldError> {
+        self.len(Some(v.len()));
+        self.fold.bytes(v);
+        Ok(())
+    }
+
+    fn serialize_none(self) -> Result<(), FoldError> {
+        self.fold.bytes(&[0_u8]);
+        Ok(())
+    }
+
+    fn serialize_some<T: serde::Serialize + ?Sized>(self, v: &T) -> Result<(), FoldError> {
+        self.fold.bytes(&[1_u8]);
+        v.serialize(self)
+    }
+
+    fn serialize_unit(self) -> Result<(), FoldError> {
+        Ok(())
+    }
+
+    fn serialize_unit_struct(self, _: &'static str) -> Result<(), FoldError> {
+        Ok(())
+    }
+
+    fn serialize_unit_variant(
+        mut self,
+        _: &'static str,
+        index: u32,
+        _: &'static str,
+    ) -> Result<(), FoldError> {
+        self.index(index);
+        Ok(())
+    }
+
+    fn serialize_newtype_struct<T: serde::Serialize + ?Sized>(
+        self,
+        _: &'static str,
+        v: &T,
+    ) -> Result<(), FoldError> {
+        v.serialize(self)
+    }
+
+    fn serialize_newtype_variant<T: serde::Serialize + ?Sized>(
+        mut self,
+        _: &'static str,
+        index: u32,
+        _: &'static str,
+        v: &T,
+    ) -> Result<(), FoldError> {
+        self.index(index);
+        v.serialize(self)
+    }
+
+    fn serialize_seq(mut self, len: Option<usize>) -> Result<Self, FoldError> {
+        self.len(len);
+        Ok(self)
+    }
+
+    fn serialize_tuple(self, _: usize) -> Result<Self, FoldError> {
+        Ok(self)
+    }
+
+    fn serialize_tuple_struct(self, _: &'static str, _: usize) -> Result<Self, FoldError> {
+        Ok(self)
+    }
+
+    fn serialize_tuple_variant(
+        mut self,
+        _: &'static str,
+        index: u32,
+        _: &'static str,
+        _: usize,
+    ) -> Result<Self, FoldError> {
+        self.index(index);
+        Ok(self)
+    }
+
+    fn serialize_map(mut self, len: Option<usize>) -> Result<Self, FoldError> {
+        self.len(len);
+        Ok(self)
+    }
+
+    fn serialize_struct(mut self, _: &'static str, len: usize) -> Result<Self, FoldError> {
+        self.len(Some(len));
+        Ok(self)
+    }
+
+    fn serialize_struct_variant(
+        mut self,
+        _: &'static str,
+        index: u32,
+        _: &'static str,
+        len: usize,
+    ) -> Result<Self, FoldError> {
+        self.index(index);
+        self.len(Some(len));
+        Ok(self)
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+}
+
+impl serde::ser::SerializeSeq for FieldFold<'_> {
+    type Ok = ();
+    type Error = FoldError;
+
+    fn serialize_element<T: serde::Serialize + ?Sized>(&mut self, v: &T) -> Result<(), FoldError> {
+        v.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn end(self) -> Result<(), FoldError> {
+        Ok(())
+    }
+}
+
+impl serde::ser::SerializeTuple for FieldFold<'_> {
+    type Ok = ();
+    type Error = FoldError;
+
+    fn serialize_element<T: serde::Serialize + ?Sized>(&mut self, v: &T) -> Result<(), FoldError> {
+        v.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn end(self) -> Result<(), FoldError> {
+        Ok(())
+    }
+}
+
+impl serde::ser::SerializeTupleStruct for FieldFold<'_> {
+    type Ok = ();
+    type Error = FoldError;
+
+    fn serialize_field<T: serde::Serialize + ?Sized>(&mut self, v: &T) -> Result<(), FoldError> {
+        v.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn end(self) -> Result<(), FoldError> {
+        Ok(())
+    }
+}
+
+impl serde::ser::SerializeTupleVariant for FieldFold<'_> {
+    type Ok = ();
+    type Error = FoldError;
+
+    fn serialize_field<T: serde::Serialize + ?Sized>(&mut self, v: &T) -> Result<(), FoldError> {
+        v.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn end(self) -> Result<(), FoldError> {
+        Ok(())
+    }
+}
+
+impl serde::ser::SerializeMap for FieldFold<'_> {
+    type Ok = ();
+    type Error = FoldError;
+
+    fn serialize_key<T: serde::Serialize + ?Sized>(&mut self, key: &T) -> Result<(), FoldError> {
+        key.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn serialize_value<T: serde::Serialize + ?Sized>(&mut self, v: &T) -> Result<(), FoldError> {
+        v.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn end(self) -> Result<(), FoldError> {
+        Ok(())
+    }
+}
+
+impl serde::ser::SerializeStruct for FieldFold<'_> {
+    type Ok = ();
+    type Error = FoldError;
+
+    fn serialize_field<T: serde::Serialize + ?Sized>(
+        &mut self,
+        _: &'static str,
+        v: &T,
+    ) -> Result<(), FoldError> {
+        v.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn end(self) -> Result<(), FoldError> {
+        Ok(())
+    }
+}
+
+impl serde::ser::SerializeStructVariant for FieldFold<'_> {
+    type Ok = ();
+    type Error = FoldError;
+
+    fn serialize_field<T: serde::Serialize + ?Sized>(
+        &mut self,
+        _: &'static str,
+        v: &T,
+    ) -> Result<(), FoldError> {
+        v.serialize(FieldFold { fold: self.fold })
+    }
+
+    fn end(self) -> Result<(), FoldError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -49,8 +507,8 @@ thread_local! {
 
 /// **The state hash** of an arena, as the ledger records it.
 ///
-/// FNV-1a 64 over these bytes, in this order, every multi-byte integer
-/// **little-endian**:
+/// [`Fold`] (hash v2, 16c `T-104`; FNV-1a 64 until then) over these bytes, in
+/// this order, every multi-byte integer **little-endian**:
 ///
 /// 1. For each unit, **in unit-id order** (the order [`Arena::units`] is kept
 ///    in):
@@ -173,9 +631,11 @@ thread_local! {
 ///    pilot possessed): the unit's `u32`; `think_seq` as `u64`; `pending` as
 ///    `[0]`, or `[1]` then its `think_seq` `u64` and its `t_ms` `i64` (and,
 ///    since 17b cut M3.6, its answer: below); the
-///    memory's length as `u64` then its FNV-1a 64 digest as `u64`; the
-///    notices' count as `u64`, then per notice its **canonical
-///    `serde_json::to_vec` bytes** — every field, so two buffers that would
+///    memory's length as `u64` then its bytes (its FNV-1a 64 digest as `u64`
+///    until 16c `T-104`); the
+///    notices' count as `u64`, then per notice **[`fold_value`]'s walk of
+///    its fields** (its canonical `serde_json::to_vec` bytes until 16c
+///    `T-104`) — every field, so two buffers that would
 ///    drive two different decisions (two `Miss` notices differing only in
 ///    their reason, a `Struck`'s figures, a `was`, a section) never fold the
 ///    same; the range memory's count as `u64`, then per entry the
@@ -205,8 +665,10 @@ thread_local! {
 ///    `pending`, when present, folds after its `[1]`, `think_seq` and `t_ms`
 ///    its ANSWER — the three epochs ([`crate::arena::mind::PendingThink`]'s
 ///    `epochs`, `Channel::ALL`'s order) as `u64` each, the intents' count as
-///    `u64` then each intent's canonical `serde_json::to_vec` bytes, the new
-///    memory's length as `u64` then its FNV-1a 64 digest as `u64`; and after
+///    `u64` then each intent by [`fold_value`] (its canonical
+///    `serde_json::to_vec` bytes until 16c `T-104`), the new
+///    memory's length as `u64` then its bytes (its FNV-1a 64 digest until
+///    16c `T-104`); and after
 ///    `strikes`, before the card, the row's `dropped` as `[0]`, or `[1]` then
 ///    the cause's byte (strikes `1`, core `2`, abi `3`), then `seal_digest`'s
 ///    32 bytes. The answer had to be hashed whole because it is NOT a
@@ -623,108 +1085,102 @@ thread_local! {
 pub fn state_hash(arena: &Arena) -> u64 {
     #[cfg(test)]
     STATE_HASHES_TAKEN.with(|taken| taken.set(taken.get().saturating_add(1)));
-    let mut hash = FNV_OFFSET_BASIS;
+    let mut fold = Fold::new();
+    let fold = &mut fold;
     for unit in &arena.units {
-        hash = fnv1a64_update(hash, &unit.id.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.pose.x_cm.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.pose.y_cm.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.pose.z_cm.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.pose.heading_mdeg.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.speed_cms.to_le_bytes());
-        hash = fnv1a64_update(hash, &[unit.power.code()]);
-        hash = fnv1a64_update(
-            hash,
-            &[
-                unit.limits.slow_pct,
-                // 16b cut M.4 (`B-47`): the two sides are two bytes.
-                u8::from(unit.limits.no_turn_left),
-                u8::from(unit.limits.no_turn_right),
-                u8::from(unit.limits.motion_disabled),
-                u8::from(unit.limits.wreck),
-            ],
-        );
+        fold.bytes(&unit.id.0.to_le_bytes());
+        fold.bytes(&unit.pose.x_cm.to_le_bytes());
+        fold.bytes(&unit.pose.y_cm.to_le_bytes());
+        fold.bytes(&unit.pose.z_cm.to_le_bytes());
+        fold.bytes(&unit.pose.heading_mdeg.to_le_bytes());
+        fold.bytes(&unit.speed_cms.to_le_bytes());
+        fold.bytes(&[unit.power.code()]);
+        fold.bytes(&[
+            unit.limits.slow_pct,
+            // 16b cut M.4 (`B-47`): the two sides are two bytes.
+            u8::from(unit.limits.no_turn_left),
+            u8::from(unit.limits.no_turn_right),
+            u8::from(unit.limits.motion_disabled),
+            u8::from(unit.limits.wreck),
+        ]);
         // **16b cut M.3** (`T-04`): what it is held against — its own item after
         // the limit bytes (five since 16b cut M.4).
         match unit.held {
             Some(held) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &held.x.to_le_bytes());
-                hash = fnv1a64_update(hash, &held.y.to_le_bytes());
-                hash = fnv1a64_update(hash, &[held.cause.code()]);
+                fold.bytes(&[1_u8]);
+                fold.bytes(&held.x.to_le_bytes());
+                fold.bytes(&held.y.to_le_bytes());
+                fold.bytes(&[held.cause.code()]);
             }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
+            None => fold.bytes(&[0_u8]),
         }
         // 16b cut W.1: the lock and the two weapon cells.
-        hash = fnv1a64_update(
-            hash,
-            &unit.lock.map_or(0_u64, |contact| contact.0).to_le_bytes(),
-        );
-        hash = fnv1a64_update(hash, &(unit.ready_at_ms.len() as u64).to_le_bytes());
+        fold.bytes(&unit.lock.map_or(0_u64, |contact| contact.0).to_le_bytes());
+        fold.bytes(&(unit.ready_at_ms.len() as u64).to_le_bytes());
         for (weapon, ready_at_ms) in &unit.ready_at_ms {
-            hash = fnv1a64_update(hash, weapon.as_bytes());
-            hash = fnv1a64_update(hash, &ready_at_ms.to_le_bytes());
+            fold.bytes(weapon.as_bytes());
+            fold.bytes(&ready_at_ms.to_le_bytes());
         }
-        hash = fnv1a64_update(hash, &(unit.ammo.len() as u64).to_le_bytes());
+        fold.bytes(&(unit.ammo.len() as u64).to_le_bytes());
         for (weapon, rounds) in &unit.ammo {
-            hash = fnv1a64_update(hash, weapon.as_bytes());
-            hash = fnv1a64_update(hash, &rounds.to_le_bytes());
+            fold.bytes(weapon.as_bytes());
+            fold.bytes(&rounds.to_le_bytes());
         }
         // 16b cut N.1: who is flying it.
-        hash = fnv1a64_update(hash, &[unit.controller.code()]);
+        fold.bytes(&[unit.controller.code()]);
         // 16b cut X.6: the slope it is standing on.
-        hash = fnv1a64_update(hash, &unit.grade_pct.to_le_bytes());
+        fold.bytes(&unit.grade_pct.to_le_bytes());
         // **16b cut E.3**: and what it is standing *against* — see this function's
         // head for why a hold is hashed where the slope limit beside it is not.
         match unit.occupied_hold {
             Some(hold) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &hold.cell.0.to_le_bytes());
-                hash = fnv1a64_update(hash, &hold.cell.1.to_le_bytes());
-                hash = fnv1a64_update(hash, &hold.since_ms.to_le_bytes());
+                fold.bytes(&[1_u8]);
+                fold.bytes(&hold.cell.0.to_le_bytes());
+                fold.bytes(&hold.cell.1.to_le_bytes());
+                fold.bytes(&hold.since_ms.to_le_bytes());
             }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
+            None => fold.bytes(&[0_u8]),
         }
         // 16b cut Q.6: the fractions of a turn, a speed change and a centimetre
         // that the last substep did not spend.
-        hash = fnv1a64_update(hash, &unit.carry.turn.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.carry.speed.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.carry.east.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.carry.north.to_le_bytes());
+        fold.bytes(&unit.carry.turn.to_le_bytes());
+        fold.bytes(&unit.carry.speed.to_le_bytes());
+        fold.bytes(&unit.carry.east.to_le_bytes());
+        fold.bytes(&unit.carry.north.to_le_bytes());
         // 16b cut M.4 (`T-16`): which way each of the first two was banked.
-        hash = fnv1a64_update(hash, &[unit.carry.turn_side, unit.carry.speed_rate]);
+        fold.bytes(&[unit.carry.turn_side, unit.carry.speed_rate]);
         // **16b cut D.4**: what this platform's own last pass ran under.
         match unit.receiver {
             Some(receiver) => {
-                hash = fnv1a64_update(hash, &[1_u8, receiver.budget, receiver.budget_max]);
-                hash = fnv1a64_update(hash, &receiver.reach_permille.to_le_bytes());
+                fold.bytes(&[1_u8, receiver.budget, receiver.budget_max]);
+                fold.bytes(&receiver.reach_permille.to_le_bytes());
             }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
+            None => fold.bytes(&[0_u8]),
         }
         // **16b cut M.1** (`T-82`): the seat-order rate's window and count — they
         // persist between pulses and decide a `queue_full` refusal.
-        hash = fnv1a64_update(hash, &unit.orders_window_s.to_le_bytes());
-        hash = fnv1a64_update(hash, &unit.orders_in_window.to_le_bytes());
+        fold.bytes(&unit.orders_window_s.to_le_bytes());
+        fold.bytes(&unit.orders_in_window.to_le_bytes());
         // **16b cut M.3** (`T-06`): heat, which gates firing and moves every
         // substep with no line — the cell's value and the carry that is its
         // fractional part, under one presence byte.
         match (unit.heat_now(), unit.heat.as_ref()) {
             (Some(now), Some(heat)) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &now.to_le_bytes());
-                hash = fnv1a64_update(hash, &heat.carry_milli.to_le_bytes());
+                fold.bytes(&[1_u8]);
+                fold.bytes(&now.to_le_bytes());
+                fold.bytes(&heat.carry_milli.to_le_bytes());
             }
-            _ => hash = fnv1a64_update(hash, &[0_u8]),
+            _ => fold.bytes(&[0_u8]),
         }
         // **16b cut O.2** (16c N12): the pod's switch, which decides what every
         // sight inside its bubble sees.
-        hash = fnv1a64_update(hash, &[u8::from(unit.ecm_on)]);
+        fold.bytes(&[u8::from(unit.ecm_on)]);
         // **17b cut M5.2** (sub-item 20): the active profile, only when it is
         // not the first never switched — no byte at all for the default, so
         // a match that switches nothing hashes as it did.
         if !unit.card_profile.is_first() {
-            hash = fnv1a64_update(hash, &[1_u8, unit.card_profile.index]);
-            hash = fnv1a64_update(
-                hash,
+            fold.bytes(&[1_u8, unit.card_profile.index]);
+            fold.bytes(
                 &unit
                     .card_profile
                     .switched_ms
@@ -734,12 +1190,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
         }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
-    hash = fnv1a64_update(hash, &(arena.spent_said.len() as u64).to_le_bytes());
+    fold.bytes(&(arena.spent_said.len() as u64).to_le_bytes());
     for ((told, target, section), at_ms) in &arena.spent_said {
-        hash = fnv1a64_update(hash, &told.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &target.0.to_le_bytes());
-        hash = fnv1a64_update(hash, section.as_bytes());
-        hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
+        fold.bytes(&told.0.to_le_bytes());
+        fold.bytes(&target.0.to_le_bytes());
+        fold.bytes(section.as_bytes());
+        fold.bytes(&at_ms.to_le_bytes());
     }
     // (Item 3, 16b cut N.1's reflex machines — each row with its hull's motor
     // row folded inside it — was deleted with the reflex controller in 17b cut
@@ -753,95 +1209,95 @@ pub fn state_hash(arena: &Arena) -> u64 {
     // anywhere the guard skipped nothing, and it went with item 3, the fold
     // unchanged.
     for (unit, motor) in arena.motors.rows() {
-        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
+        fold.bytes(&unit.0.to_le_bytes());
         let (gx, gy) = motor.goal.unwrap_or((u16::MAX, u16::MAX));
-        hash = fnv1a64_update(hash, &gx.to_le_bytes());
-        hash = fnv1a64_update(hash, &gy.to_le_bytes());
-        hash = fnv1a64_update(hash, &motor.waypoint.unwrap_or(u16::MAX).to_le_bytes());
-        hash = fnv1a64_update(hash, &(motor.route.len() as u64).to_le_bytes());
+        fold.bytes(&gx.to_le_bytes());
+        fold.bytes(&gy.to_le_bytes());
+        fold.bytes(&motor.waypoint.unwrap_or(u16::MAX).to_le_bytes());
+        fold.bytes(&(motor.route.len() as u64).to_le_bytes());
         // **16b cut Q.7**: the cells it was stopped at, with the stamps that
         // age them out.
-        hash = fold_avoid(hash, &motor.avoid);
+        fold_avoid(fold, &motor.avoid);
         // **16b cut O.1**: when a Hold spot no route reached may be tried
         // again — a decision with no line of its own, written and read at
         // arena timestamps. Kept folded after 17b cut M4.6 took its only
         // production writer's only passer (the reflex's decision): dropping
         // the byte would move the hash of every match with a motor row.
-        hash = fold_stamp(hash, motor.hold_retry_ms);
+        fold_stamp(fold, motor.hold_retry_ms);
         // **16b cut AI.1** (16c `B-84`): the cell the last search started
         // from, and the stop the row remembers. Neither has a line of its
         // own, and each gates a later search.
-        hash = fold_search(hash, motor);
+        fold_search(fold, motor);
     }
     // **17b cut M1a.5** (item 3c): the unit minds, per row with no count
     // prefix — an arena with none folds no byte here (every match before 17b
     // cut M4.3; every production match since folds a row per mind).
     for (unit, mind) in &arena.minds {
-        hash = fold_mind(hash, *unit, mind);
+        fold_mind(fold, *unit, mind);
     }
     // **17b cut M1b.1** (item 3d): every hull's condition slots, per row with
     // no count prefix — an arena with none (every production match) folds no
     // byte here.
     for (unit, slots) in arena.conditions.rows() {
-        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
+        fold.bytes(&unit.0.to_le_bytes());
         for (at, slot) in slots.iter().enumerate() {
             let Some(cond) = slot else {
                 continue;
             };
             let number = u8::try_from(at.saturating_add(1)).unwrap_or(u8::MAX);
-            hash = fnv1a64_update(hash, &[number]);
-            hash = fnv1a64_update(hash, cond.weapon.as_bytes());
-            hash = fnv1a64_update(hash, &[cond.target.code()]);
+            fold.bytes(&[number]);
+            fold.bytes(cond.weapon.as_bytes());
+            fold.bytes(&[cond.target.code()]);
             if let crate::arena::conditions::SlotTarget::Contact { id } = cond.target {
-                hash = fnv1a64_update(hash, &id.0.to_le_bytes());
+                fold.bytes(&id.0.to_le_bytes());
             }
-            hash = fnv1a64_update(hash, &cond.min_permille.to_le_bytes());
-            hash = fnv1a64_update(hash, &[cond.aspects]);
-            hash = fnv1a64_update(hash, &cond.min_rounds_left.to_le_bytes());
-            hash = fnv1a64_update(hash, &cond.min_range_m.to_le_bytes());
-            hash = fnv1a64_update(hash, &cond.max_range_m.to_le_bytes());
+            fold.bytes(&cond.min_permille.to_le_bytes());
+            fold.bytes(&[cond.aspects]);
+            fold.bytes(&cond.min_rounds_left.to_le_bytes());
+            fold.bytes(&cond.min_range_m.to_le_bytes());
+            fold.bytes(&cond.max_range_m.to_le_bytes());
         }
     }
     // **17b cut M1b.1** (item 3e): when each slot last said why it held, per row
     // with no count prefix — empty in every production match.
     for ((unit, slot, contact), at_ms) in &arena.held_said {
-        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &[*slot]);
-        hash = fnv1a64_update(hash, &contact.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
+        fold.bytes(&unit.0.to_le_bytes());
+        fold.bytes(&[*slot]);
+        fold.bytes(&contact.0.to_le_bytes());
+        fold.bytes(&at_ms.to_le_bytes());
     }
     // **17b cut M1b.1**: `arena.odds_floor_permille` is deliberately NOT folded
     // (this function's head says why).
     for (viewer, id, held) in arena.contacts.all() {
-        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &id.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &held.target.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &[held.class.code()]);
-        hash = fnv1a64_update(hash, &held.first_seen_ms.to_le_bytes());
-        hash = fnv1a64_update(hash, &held.last_seen_ms.to_le_bytes());
+        fold.bytes(&viewer.0.to_le_bytes());
+        fold.bytes(&id.0.to_le_bytes());
+        fold.bytes(&held.target.0.to_le_bytes());
+        fold.bytes(&[held.class.code()]);
+        fold.bytes(&held.first_seen_ms.to_le_bytes());
+        fold.bytes(&held.last_seen_ms.to_le_bytes());
         // **16b cut F.3**: the plot and the provenance are authoritative state,
         // folded exactly as the stamps beside them are. A replay whose share
         // arrived from a different sighting, or whose plot is a metre away, must
         // not compare equal — the plot is what every reader of a contact's
         // position now reads, and the own sighting is what decides whether the
         // mesh may carry it a hop further.
-        hash = fold_plot(hash, &held.seen_at);
+        fold_plot(fold, &held.seen_at);
         match held.own_seen {
             Some(own) => {
-                hash = fnv1a64_update(hash, &[1_u8]);
-                hash = fnv1a64_update(hash, &own.at_ms.to_le_bytes());
-                hash = fold_plot(hash, &own.plot);
+                fold.bytes(&[1_u8]);
+                fold.bytes(&own.at_ms.to_le_bytes());
+                fold_plot(fold, &own.plot);
                 // **16b cut Q.2**: what this platform's OWN sensors read, which
                 // is what it may put on the mesh.
-                hash = fold_reading(hash, own.condition);
+                fold_reading(fold, own.condition);
             }
-            None => hash = fnv1a64_update(hash, &[0_u8]),
+            None => fold.bytes(&[0_u8]),
         }
         // **16b cut Q.2**: and what it holds, which may be a teammate's. Both are
         // knowledge that moves with no event of its own — a close look taken one
         // pass earlier, a share that arrived, a band the gunner watched go — so a
         // replay that read the same hull a pass sooner must not compare equal.
-        hash = fold_reading(hash, held.seen_condition);
+        fold_reading(fold, held.seen_condition);
         // **16b cut D.4**: whether this hold was opened under a number, which is
         // what decides the `identified` line and which moves with no
         // distinguishable event of its own — see this function's head.
@@ -850,65 +1306,62 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // die, beside it and for the same reason — the `destroyed` line that
         // moves it names the victim and the shooter and never the **holder**,
         // so the fold is the only thing that tells two replays apart.
-        hash = fnv1a64_update(hash, &[u8::from(held.numbered), u8::from(held.known_dead)]);
+        fold.bytes(&[u8::from(held.numbered), u8::from(held.known_dead)]);
     }
     // **16b cut Q.1**: the provisional numbers — since **16b cut M.3** (`T-27`)
     // as the book's running digest of every mint and the issued count, in place
     // of a walk of both maps that grew with the match (this function's head).
-    hash = fnv1a64_update(hash, &arena.designators.digest().to_le_bytes());
-    hash = fnv1a64_update(hash, &(arena.designators.issued_len() as u64).to_le_bytes());
+    fold.bytes(&arena.designators.digest().to_le_bytes());
+    fold.bytes(&(arena.designators.issued_len() as u64).to_le_bytes());
     // **16b cut M.2** (16c `T-83`): the held losses, in the map's own key order —
     // the deadline decides whether a later substep says `lost`. The designator
     // beside it is not folded: it is read off the book and the callsign, both
     // already in here.
-    hash = fnv1a64_update(hash, &(arena.held_losses.len() as u64).to_le_bytes());
+    fold.bytes(&(arena.held_losses.len() as u64).to_le_bytes());
     for ((viewer, contact), (deadline, _)) in &arena.held_losses {
-        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &contact.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &deadline.to_le_bytes());
+        fold.bytes(&viewer.0.to_le_bytes());
+        fold.bytes(&contact.0.to_le_bytes());
+        fold.bytes(&deadline.to_le_bytes());
     }
-    hash = fnv1a64_update(hash, &[arena.clock.tempo().code()]);
-    hash = fnv1a64_update(hash, &arena.now_ms.to_le_bytes());
-    hash = fnv1a64_update(hash, &(arena.due.len() as u64).to_le_bytes());
-    hash = fnv1a64_update(hash, &(arena.shots.len() as u64).to_le_bytes());
-    hash = fnv1a64_update(hash, &arena.ledger.seq().to_le_bytes());
+    fold.bytes(&[arena.clock.tempo().code()]);
+    fold.bytes(&arena.now_ms.to_le_bytes());
+    fold.bytes(&(arena.due.len() as u64).to_le_bytes());
+    fold.bytes(&(arena.shots.len() as u64).to_le_bytes());
+    fold.bytes(&arena.ledger.seq().to_le_bytes());
     // **16b cut O.1** (item 12): the mode, and the Hold objective with its clock.
-    hash = fnv1a64_update(hash, &[arena.mode.code()]);
+    fold.bytes(&[arena.mode.code()]);
     match arena.hold.as_ref() {
         Some(hold) => {
-            hash = fnv1a64_update(hash, &[1_u8]);
-            hash = fnv1a64_update(hash, &hold.spot.0.to_le_bytes());
-            hash = fnv1a64_update(hash, &hold.spot.1.to_le_bytes());
-            hash = fnv1a64_update(hash, &hold.radius_cells.to_le_bytes());
-            hash = fnv1a64_update(hash, &hold.hold_ms.to_le_bytes());
+            fold.bytes(&[1_u8]);
+            fold.bytes(&hold.spot.0.to_le_bytes());
+            fold.bytes(&hold.spot.1.to_le_bytes());
+            fold.bytes(&hold.radius_cells.to_le_bytes());
+            fold.bytes(&hold.hold_ms.to_le_bytes());
             match hold.held_by {
                 Some((team, since_ms)) => {
-                    hash = fnv1a64_update(
-                        hash,
-                        &[
-                            1_u8,
-                            match team {
-                                crate::arena::state::Team::Red => 0_u8,
-                                crate::arena::state::Team::Blue => 1_u8,
-                            },
-                        ],
-                    );
-                    hash = fnv1a64_update(hash, &since_ms.to_le_bytes());
+                    fold.bytes(&[
+                        1_u8,
+                        match team {
+                            crate::arena::state::Team::Red => 0_u8,
+                            crate::arena::state::Team::Blue => 1_u8,
+                        },
+                    ]);
+                    fold.bytes(&since_ms.to_le_bytes());
                 }
-                None => hash = fnv1a64_update(hash, &[0_u8]),
+                None => fold.bytes(&[0_u8]),
             }
         }
-        None => hash = fnv1a64_update(hash, &[0_u8]),
+        None => fold.bytes(&[0_u8]),
     }
-    hash
+    fold.finish()
 }
 
 /// **One unit mind's row** (17b cut M1a.5; item 3c of [`state_hash`]).
-fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::MindState) -> u64 {
+fn fold_mind(fold: &mut Fold, unit: mush_core::ObjId, mind: &crate::arena::mind::MindState) {
     use crate::arena::perception::MindObjective;
     use crate::deliberation::order::RangeBand;
-    hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
-    hash = fnv1a64_update(hash, &mind.think_seq.to_le_bytes());
+    fold.bytes(&unit.0.to_le_bytes());
+    fold.bytes(&mind.think_seq.to_le_bytes());
     // **17b cut M3.6** (D-UM-23 as amended, "hashed whole"): the pending
     // think's presence, `think_seq` and `t_ms` (M2's bytes), then its ANSWER —
     // the three epochs in `Channel::ALL` order, the intents' count and each
@@ -916,67 +1369,58 @@ fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::M
     // digest. This head's item 3c has the list.
     match mind.pending.as_ref() {
         Some(pending) => {
-            hash = fnv1a64_update(hash, &[1_u8]);
-            hash = fnv1a64_update(hash, &pending.think_seq.to_le_bytes());
-            hash = fnv1a64_update(hash, &pending.t_ms.to_le_bytes());
+            fold.bytes(&[1_u8]);
+            fold.bytes(&pending.think_seq.to_le_bytes());
+            fold.bytes(&pending.t_ms.to_le_bytes());
             for epoch in pending.epochs {
-                hash = fnv1a64_update(hash, &epoch.to_le_bytes());
+                fold.bytes(&epoch.to_le_bytes());
             }
-            hash = fnv1a64_update(hash, &(pending.intents.len() as u64).to_le_bytes());
+            fold.bytes(&(pending.intents.len() as u64).to_le_bytes());
             for intent in &pending.intents {
                 // Canonical bytes, as a notice's are below: a derive over plain
                 // data, the same intent the same bytes on every run.
-                hash = fnv1a64_update(hash, &serde_json::to_vec(intent).unwrap_or_default());
+                fold_value(fold, intent);
             }
-            hash = fnv1a64_update(hash, &(pending.memory.len() as u64).to_le_bytes());
-            hash = fnv1a64_update(
-                hash,
-                &fnv1a64_update(FNV_OFFSET_BASIS, &pending.memory).to_le_bytes(),
-            );
+            fold.bytes(&(pending.memory.len() as u64).to_le_bytes());
+            fold.bytes(&pending.memory);
         }
-        None => hash = fnv1a64_update(hash, &[0_u8]),
+        None => fold.bytes(&[0_u8]),
     }
-    hash = fnv1a64_update(hash, &(mind.memory.len() as u64).to_le_bytes());
-    hash = fnv1a64_update(
-        hash,
-        &fnv1a64_update(FNV_OFFSET_BASIS, &mind.memory).to_le_bytes(),
-    );
-    hash = fnv1a64_update(hash, &(mind.notices.len() as u64).to_le_bytes());
+    fold.bytes(&(mind.memory.len() as u64).to_le_bytes());
+    fold.bytes(&mind.memory);
+    fold.bytes(&(mind.notices.len() as u64).to_le_bytes());
     for notice in &mind.notices {
         // Canonical bytes: a derive over closed enums, integers and words, so
         // the same notice is the same bytes on every run. A notice that does not
         // serialise cannot exist (every payload is plain data); it would fold
         // as no bytes rather than take the arena down.
-        hash = fnv1a64_update(hash, &serde_json::to_vec(notice).unwrap_or_default());
+        fold_value(fold, notice);
     }
-    hash = fnv1a64_update(hash, &(mind.ranges.len() as u64).to_le_bytes());
+    fold.bytes(&(mind.ranges.len() as u64).to_le_bytes());
     for (contact, range_m) in &mind.ranges {
-        hash = fnv1a64_update(hash, &contact.0.to_le_bytes());
-        hash = fnv1a64_update(hash, &range_m.to_le_bytes());
+        fold.bytes(&contact.0.to_le_bytes());
+        fold.bytes(&range_m.to_le_bytes());
     }
     match mind.order.as_ref() {
         Some(order) => {
-            hash = fnv1a64_update(hash, &[1_u8, order.objective.code()]);
+            fold.bytes(&[1_u8, order.objective.code()]);
             match order.objective {
                 MindObjective::Advance { to } => {
-                    hash = fnv1a64_update(hash, &to.0.to_le_bytes());
-                    hash = fnv1a64_update(hash, &to.1.to_le_bytes());
+                    fold.bytes(&to.0.to_le_bytes());
+                    fold.bytes(&to.1.to_le_bytes());
                 }
                 MindObjective::Engage { target } => {
-                    hash = fnv1a64_update(hash, &target.map_or(0, |id| id.0).to_le_bytes());
+                    fold.bytes(&target.map_or(0, |id| id.0).to_le_bytes());
                 }
                 MindObjective::Screen { facing_mdeg } => {
-                    hash = fnv1a64_update(hash, &facing_mdeg.to_le_bytes());
+                    fold.bytes(&facing_mdeg.to_le_bytes());
                 }
                 MindObjective::Support { of } => {
-                    hash = fnv1a64_update(hash, &of.map_or(0, |id| id.0).to_le_bytes());
+                    fold.bytes(&of.map_or(0, |id| id.0).to_le_bytes());
                     // **17b cut M5.2** (STOP E): the charge's unit, inside the
                     // `Support` arm only — a row holding any other order, or
                     // none, folds no new byte.
-                    hash = fnv1a64_update(
-                        hash,
-                        &mind.order_charge.map_or(0, |unit| unit.0).to_le_bytes(),
-                    );
+                    fold.bytes(&mind.order_charge.map_or(0, |unit| unit.0).to_le_bytes());
                 }
                 MindObjective::Hold | MindObjective::Withdraw => {}
             }
@@ -986,24 +1430,24 @@ fn fold_mind(mut hash: u64, unit: mush_core::ObjId, mind: &crate::arena::mind::M
                 Some(RangeBand::Effective) => 2,
                 Some(RangeBand::Far) => 3,
             };
-            hash = fnv1a64_update(hash, &[u8::from(order.hold_fire), band]);
-            hash = fnv1a64_update(hash, &order.expires_ms.to_le_bytes());
-            hash = fnv1a64_update(hash, order.squad.as_bytes());
+            fold.bytes(&[u8::from(order.hold_fire), band]);
+            fold.bytes(&order.expires_ms.to_le_bytes());
+            fold.bytes(order.squad.as_bytes());
         }
-        None => hash = fnv1a64_update(hash, &[0_u8]),
+        None => fold.bytes(&[0_u8]),
     }
-    hash = fnv1a64_update(hash, &[mind.strikes]);
+    fold.bytes(&[mind.strikes]);
     // **17b cut M3.6** (doc 17 §13's list): the drop — its presence, then the
     // cause's byte (strikes 1, core 2, abi 3) — and the seal's digest, after
     // `strikes` and before the card.
-    hash = match mind.dropped {
-        None => fnv1a64_update(hash, &[0_u8]),
-        Some(cause) => fnv1a64_update(hash, &[1_u8, drop_cause_code(cause)]),
-    };
-    hash = fnv1a64_update(hash, &mind.seal_digest);
+    match mind.dropped {
+        None => fold.bytes(&[0_u8]),
+        Some(cause) => fold.bytes(&[1_u8, drop_cause_code(cause)]),
+    }
+    fold.bytes(&mind.seal_digest);
     // **17b cut M1b.1**: the card, its fields in declaration order — an enum as
     // its code byte, a bool as one byte, an integer little-endian.
-    fold_card(hash, &mind.card)
+    fold_card(fold, &mind.card);
 }
 
 /// **A drop's cause as its one hash byte** (17b cut M3.6; item 3c): strikes
@@ -1020,47 +1464,43 @@ const fn drop_cause_code(cause: crate::arena::mind::DropCause) -> u8 {
 
 /// **One mind's card** (17b cut M1b.1; inside item 3c of [`state_hash`], after
 /// `strikes`, the drop and the seal's digest).
-fn fold_card(mut hash: u64, card: &crate::arena::card::StockCard) -> u64 {
-    hash = fnv1a64_update(hash, &[card.stance.code()]);
-    hash = fnv1a64_update(hash, &card.engage_band_permille.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.close_m.to_le_bytes());
-    hash = fnv1a64_update(
-        hash,
-        &[card.orbit_sense.code(), u8::from(card.turn_into_hits)],
-    );
-    hash = fnv1a64_update(hash, &card.turn_s.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.screen_bearing.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.screen_arc.to_le_bytes());
-    hash = fnv1a64_update(hash, &[card.opening.code()]);
-    hash = fnv1a64_update(hash, &card.min_odds_permille.to_le_bytes());
-    hash = fnv1a64_update(hash, &[card.aspect.code()]);
-    hash = fnv1a64_update(hash, &card.reserve_pct.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.reserve_odds_pct.to_le_bytes());
-    hash = fnv1a64_update(hash, &[card.prefer.code()]);
-    hash = fnv1a64_update(hash, &card.weight_range.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.weight_facet.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.weight_health.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.switch_m.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.withdraw_permille.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.stand_min_permille.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.rally_ms.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.search_ms.to_le_bytes());
-    hash = fnv1a64_update(hash, &card.hunt_after_ms.to_le_bytes());
-    fnv1a64_update(hash, &[u8::from(card.stop_unseen)])
+fn fold_card(fold: &mut Fold, card: &crate::arena::card::StockCard) {
+    fold.bytes(&[card.stance.code()]);
+    fold.bytes(&card.engage_band_permille.to_le_bytes());
+    fold.bytes(&card.close_m.to_le_bytes());
+    fold.bytes(&[card.orbit_sense.code(), u8::from(card.turn_into_hits)]);
+    fold.bytes(&card.turn_s.to_le_bytes());
+    fold.bytes(&card.screen_bearing.to_le_bytes());
+    fold.bytes(&card.screen_arc.to_le_bytes());
+    fold.bytes(&[card.opening.code()]);
+    fold.bytes(&card.min_odds_permille.to_le_bytes());
+    fold.bytes(&[card.aspect.code()]);
+    fold.bytes(&card.reserve_pct.to_le_bytes());
+    fold.bytes(&card.reserve_odds_pct.to_le_bytes());
+    fold.bytes(&[card.prefer.code()]);
+    fold.bytes(&card.weight_range.to_le_bytes());
+    fold.bytes(&card.weight_facet.to_le_bytes());
+    fold.bytes(&card.weight_health.to_le_bytes());
+    fold.bytes(&card.switch_m.to_le_bytes());
+    fold.bytes(&card.withdraw_permille.to_le_bytes());
+    fold.bytes(&card.stand_min_permille.to_le_bytes());
+    fold.bytes(&card.rally_ms.to_le_bytes());
+    fold.bytes(&card.search_ms.to_le_bytes());
+    fold.bytes(&card.hunt_after_ms.to_le_bytes());
+    fold.bytes(&[u8::from(card.stop_unseen)]);
 }
 
 /// **A motor row's avoided cells** (16b cut Q.7's encoding; one function since
 /// 17b cut M1a.1 so items 3 and 3b could not fold them differently, item 3b's
 /// alone since 17b cut M4.6): their count as
 /// `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp.
-fn fold_avoid(mut hash: u64, avoid: &[((u16, u16), i64)]) -> u64 {
-    hash = fnv1a64_update(hash, &(avoid.len() as u64).to_le_bytes());
+fn fold_avoid(fold: &mut Fold, avoid: &[((u16, u16), i64)]) {
+    fold.bytes(&(avoid.len() as u64).to_le_bytes());
     for ((x, y), at_ms) in avoid {
-        hash = fnv1a64_update(hash, &x.to_le_bytes());
-        hash = fnv1a64_update(hash, &y.to_le_bytes());
-        hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
+        fold.bytes(&x.to_le_bytes());
+        fold.bytes(&y.to_le_bytes());
+        fold.bytes(&at_ms.to_le_bytes());
     }
-    hash
 }
 
 /// **A motor row's search start and remembered stop** (16b cut AI.1's encoding;
@@ -1070,30 +1510,29 @@ fn fold_avoid(mut hash: u64, avoid: &[((u16, u16), i64)]) -> u64 {
 /// and `refused` as `[0]` alone for none, else `[1]`, the stand cell's and the
 /// refused cell's two `u16` each, the cause's code byte, the goal's two `u16`
 /// and the `i64` it lapses at.
-fn fold_search(mut hash: u64, motor: &crate::arena::motor::MotorRow) -> u64 {
+fn fold_search(fold: &mut Fold, motor: &crate::arena::motor::MotorRow) {
     match motor.searched_from {
         Some((x, y)) => {
-            hash = fnv1a64_update(hash, &[1_u8]);
-            hash = fnv1a64_update(hash, &x.to_le_bytes());
-            hash = fnv1a64_update(hash, &y.to_le_bytes());
+            fold.bytes(&[1_u8]);
+            fold.bytes(&x.to_le_bytes());
+            fold.bytes(&y.to_le_bytes());
         }
-        None => hash = fnv1a64_update(hash, &[0_u8]),
+        None => fold.bytes(&[0_u8]),
     }
     match motor.refused {
         Some(refusal) => {
-            hash = fnv1a64_update(hash, &[1_u8]);
-            hash = fnv1a64_update(hash, &refusal.at.0.to_le_bytes());
-            hash = fnv1a64_update(hash, &refusal.at.1.to_le_bytes());
-            hash = fnv1a64_update(hash, &refusal.cell.0.to_le_bytes());
-            hash = fnv1a64_update(hash, &refusal.cell.1.to_le_bytes());
-            hash = fnv1a64_update(hash, &[refusal.cause.code()]);
-            hash = fnv1a64_update(hash, &refusal.goal.0.to_le_bytes());
-            hash = fnv1a64_update(hash, &refusal.goal.1.to_le_bytes());
-            hash = fnv1a64_update(hash, &refusal.until_ms.to_le_bytes());
+            fold.bytes(&[1_u8]);
+            fold.bytes(&refusal.at.0.to_le_bytes());
+            fold.bytes(&refusal.at.1.to_le_bytes());
+            fold.bytes(&refusal.cell.0.to_le_bytes());
+            fold.bytes(&refusal.cell.1.to_le_bytes());
+            fold.bytes(&[refusal.cause.code()]);
+            fold.bytes(&refusal.goal.0.to_le_bytes());
+            fold.bytes(&refusal.goal.1.to_le_bytes());
+            fold.bytes(&refusal.until_ms.to_le_bytes());
         }
-        None => hash = fnv1a64_update(hash, &[0_u8]),
+        None => fold.bytes(&[0_u8]),
     }
-    hash
 }
 
 /// **One contact's reading** (16b cut Q.2): a presence byte, then the look's own
@@ -1102,15 +1541,15 @@ fn fold_search(mut hash: u64, motor: &crate::arena::motor::MotorRow) -> u64 {
 /// A contact carries two of them — what this platform's own sensors read and what
 /// it holds, which may be a teammate's — and they are folded by one function so
 /// they cannot fold differently, exactly as [`fold_plot`]'s two plots are.
-fn fold_reading(hash: u64, reading: Option<crate::arena::condition::Reading>) -> u64 {
+fn fold_reading(fold: &mut Fold, reading: Option<crate::arena::condition::Reading>) {
     match reading {
         Some(reading) => {
-            let hash = fnv1a64_update(hash, &[1_u8]);
-            let hash = fnv1a64_update(hash, &reading.at_ms.to_le_bytes());
-            let hash = fnv1a64_update(hash, &reading.condition.bands.to_le_bytes());
-            fnv1a64_update(hash, &[reading.condition.sections])
+            fold.bytes(&[1_u8]);
+            fold.bytes(&reading.at_ms.to_le_bytes());
+            fold.bytes(&reading.condition.bands.to_le_bytes());
+            fold.bytes(&[reading.condition.sections]);
         }
-        None => fnv1a64_update(hash, &[0_u8]),
+        None => fold.bytes(&[0_u8]),
     }
 }
 
@@ -1121,13 +1560,13 @@ fn fold_reading(hash: u64, reading: Option<crate::arena::condition::Reading>) ->
 /// were folded by one function so they could not fold differently, for the
 /// reason [`fold_plot`] and [`fold_reading`] are one function each; item 3b's
 /// `hold_retry_ms` reads it.
-fn fold_stamp(hash: u64, at_ms: Option<i64>) -> u64 {
+fn fold_stamp(fold: &mut Fold, at_ms: Option<i64>) {
     match at_ms {
         Some(at_ms) => {
-            let hash = fnv1a64_update(hash, &[1_u8]);
-            fnv1a64_update(hash, &at_ms.to_le_bytes())
+            fold.bytes(&[1_u8]);
+            fold.bytes(&at_ms.to_le_bytes());
         }
-        None => fnv1a64_update(hash, &[0_u8]),
+        None => fold.bytes(&[0_u8]),
     }
 }
 
@@ -1136,12 +1575,12 @@ fn fold_stamp(hash: u64, at_ms: Option<i64>) -> u64 {
 /// A contact carries two of them — the plot every reader reads, and the plot of
 /// this platform's own last sighting — and they are folded by one function so
 /// they cannot fold differently.
-fn fold_plot(hash: u64, plot: &crate::arena::state::SeenPose) -> u64 {
-    let hash = fnv1a64_update(hash, &plot.x_cm.to_le_bytes());
-    let hash = fnv1a64_update(hash, &plot.y_cm.to_le_bytes());
-    let hash = fnv1a64_update(hash, &plot.z_cm.to_le_bytes());
-    let hash = fnv1a64_update(hash, &plot.heading_mdeg.to_le_bytes());
-    fnv1a64_update(hash, &plot.speed_cms.to_le_bytes())
+fn fold_plot(fold: &mut Fold, plot: &crate::arena::state::SeenPose) {
+    fold.bytes(&plot.x_cm.to_le_bytes());
+    fold.bytes(&plot.y_cm.to_le_bytes());
+    fold.bytes(&plot.z_cm.to_le_bytes());
+    fold.bytes(&plot.heading_mdeg.to_le_bytes());
+    fold.bytes(&plot.speed_cms.to_le_bytes());
 }
 
 #[cfg(test)]
@@ -2066,7 +2505,10 @@ mod tests {
         // same two tanks (read on a clean `5f505c8` worktree, before the
         // field existed), so a fold that wrote ANY byte for the default — a
         // constant `[0]` included — fails here, not only against itself.
-        assert_eq!(base, 0x15a4_d2a7_9200_fae0, "5f505c8's hash of two_tanks");
+        assert_eq!(
+            base, 0x0588_c49e_80b6_962c,
+            "the hash of two_tanks since hash v2 (16c T-104; 5f505c8's 0x15a4_d2a7_9200_fae0 before)"
+        );
         let probe = |profile: ActiveProfile| {
             let mut arena = two_tanks();
             if let Some(unit) = arena.unit_mut(ObjId(9)) {
@@ -2541,6 +2983,225 @@ mod tests {
             state_hash(&by_pilot),
             state_hash(&by_commander),
             "`order_issuer` is folded"
+        );
+    }
+
+    /// [`t104_the_fold_s_vectors`]'s pins.
+    const FOLD_EMPTY: u64 = 0xf937_6fe9_0135_a10e;
+    const FOLD_A: u64 = 0x4681_e5df_70d4_9b0a;
+    const FOLD_WORD: u64 = 0x2e0f_7611_7070_06f3;
+    const FOLD_WORD_AND_BYTE: u64 = 0xdf88_2b87_20a5_a1fb;
+    const FOLD_ALL_BYTES: u64 = 0x7140_4dd0_7980_1636;
+
+    // ---- 16c T-104, hash v2: the fold and the field fold ----------------
+
+    fn folded(bytes: &[u8]) -> u64 {
+        let mut fold = Fold::new();
+        fold.bytes(bytes);
+        fold.finish()
+    }
+
+    /// **A call is one message**: the hash is a function of the sequence of
+    /// messages the callers' fixed field order makes — two `u32` fields are
+    /// not one `u64`, a byte is not a zero-padded word, nine bytes are not
+    /// eight and one, an empty message counts — and the same messages in
+    /// the same order fold the same.
+    #[test]
+    fn t104_a_call_is_one_message() {
+        let mut two = Fold::new();
+        two.bytes(&1_u32.to_le_bytes());
+        two.bytes(&2_u32.to_le_bytes());
+        let mut one = Fold::new();
+        one.bytes(&[1, 0, 0, 0, 2, 0, 0, 0]);
+        assert_ne!(two.finish(), one.finish(), "two words, not one");
+        assert_ne!(folded(&[7]), folded(&[7, 0]), "a byte, not a padded word");
+        assert_ne!(folded(b""), folded(&[0]), "empty, not a zero byte");
+        let mut split = Fold::new();
+        split.bytes(b"abcdefgh");
+        split.bytes(b"i");
+        assert_ne!(
+            split.finish(),
+            folded(b"abcdefghi"),
+            "nine, not eight and one"
+        );
+        let mut with_empty = Fold::new();
+        with_empty.bytes(b"ab");
+        with_empty.bytes(b"");
+        assert_ne!(
+            with_empty.finish(),
+            folded(b"ab"),
+            "an empty message counts"
+        );
+        let mut again = Fold::new();
+        again.bytes(&1_u32.to_le_bytes());
+        again.bytes(&2_u32.to_le_bytes());
+        assert_eq!(again.finish(), two.finish());
+        assert_ne!(
+            Fold::new().finish(),
+            folded(b""),
+            "no message is not an empty one"
+        );
+    }
+
+    /// **Every bit and every length counts**: one flipped bit anywhere in a
+    /// 64-byte stream moves the hash, a trailing zero byte moves it, and the
+    /// empty stream is not a zero-byte stream.
+    #[test]
+    fn t104_the_fold_sees_every_bit_and_the_length() {
+        let base: Vec<u8> = (0..64_u8).collect();
+        let whole = folded(&base);
+        let mut seen = std::collections::BTreeSet::new();
+        seen.insert(whole);
+        for byte in 0..base.len() {
+            for bit in 0..8 {
+                let mut flipped = base.clone();
+                flipped[byte] ^= 1 << bit;
+                let hash = folded(&flipped);
+                assert_ne!(hash, whole, "byte {byte} bit {bit}");
+                assert!(seen.insert(hash), "byte {byte} bit {bit} collided");
+            }
+        }
+        let word = [0_u8, 1, 2, 3, 4, 5, 6, 7];
+        let word_hash = folded(&word);
+        for byte in 0..8 {
+            for bit in 0..8 {
+                let mut flipped = word;
+                flipped[byte] ^= 1 << bit;
+                assert_ne!(folded(&flipped), word_hash, "word byte {byte} bit {bit}");
+            }
+        }
+        let mut longer = base.clone();
+        longer.push(0);
+        assert_ne!(folded(&longer), whole, "a trailing zero byte");
+        assert_ne!(folded(b""), folded(&[0]), "empty against one zero");
+        assert_ne!(
+            folded(&[0; 8]),
+            folded(&[0; 16]),
+            "one zero word against two"
+        );
+        assert_ne!(folded(&[0; 9]), folded(&[0; 10]), "nine zeros against ten");
+    }
+
+    /// **The fold's vectors**, written out so a toolchain cannot move the
+    /// mix without a diff here: the empty stream, one byte, one word, a word
+    /// and a byte, and the 256 byte values in order.
+    #[test]
+    fn t104_the_fold_s_vectors() {
+        let all: Vec<u8> = (0..=255_u8).collect();
+        let vectors = [
+            (&b""[..], FOLD_EMPTY),
+            (&b"a"[..], FOLD_A),
+            (&b"tacsim!!"[..], FOLD_WORD),
+            (&b"tacsim!!x"[..], FOLD_WORD_AND_BYTE),
+            (all.as_slice(), FOLD_ALL_BYTES),
+        ];
+        let read: Vec<u64> = vectors.iter().map(|(stream, _)| folded(stream)).collect();
+        for ((stream, _), hash) in vectors.iter().zip(&read) {
+            println!("t104_fold_vector: {stream:?} -> {hash:#018x}");
+        }
+        for ((stream, pinned), hash) in vectors.iter().zip(&read) {
+            assert_eq!(hash, pinned, "{stream:?}");
+        }
+    }
+
+    /// **The field fold is serde's walk**: every field and every variant
+    /// counts — a notice with one field changed folds differently, an
+    /// option's presence folds, an empty and a one-element sequence differ —
+    /// and on the frame module's notices it tells apart every pair the
+    /// canonical JSON told apart.
+    #[test]
+    fn t104_the_field_fold_counts_every_field() {
+        use crate::arena::perception::FrameNotice;
+        use smol_str::SmolStr;
+        fn fv<T: serde::Serialize + ?Sized>(value: &T) -> u64 {
+            let mut fold = Fold::new();
+            fold_value(&mut fold, value);
+            fold.finish()
+        }
+        assert_ne!(fv(&Some(1_u8)), fv(&None::<u8>));
+        assert_ne!(fv(&Vec::<u8>::new()), fv(&vec![0_u8]));
+        assert_ne!(fv(&(1_u8, 2_u8)), fv(&(2_u8, 1_u8)));
+        assert_ne!(fv("ab"), fv("ba"));
+        assert_eq!(
+            fv(&[1_u8, 2, 3][..]),
+            fv(&vec![1_u8, 2, 3]),
+            "a slice is a sequence"
+        );
+        assert_ne!(
+            fv(&[1_u8, 2, 3]),
+            fv(&vec![1_u8, 2, 3]),
+            "an array is a tuple: no length"
+        );
+        let s = SmolStr::new_static;
+        let struck = |armor_left: u32, facet: &'static str| FrameNotice::Struck {
+            section: s("hull"),
+            armor_section: s("hull"),
+            facet: s(facet),
+            armor_left,
+            armor_max: 40,
+            internals_left: 12,
+            internals_max: 12,
+        };
+        let notices: Vec<FrameNotice> = vec![
+            FrameNotice::Miss {
+                contact: None,
+                reason: s("deflected"),
+            },
+            FrameNotice::Miss {
+                contact: None,
+                reason: s("wide"),
+            },
+            FrameNotice::Miss {
+                contact: None,
+                reason: s("deflected"),
+            },
+            FrameNotice::Kill { contact: None },
+            FrameNotice::Hit {
+                contact: None,
+                section: None,
+                spent: false,
+            },
+            FrameNotice::Hit {
+                contact: None,
+                section: None,
+                spent: true,
+            },
+            FrameNotice::Hit {
+                contact: None,
+                section: Some(s("hull")),
+                spent: false,
+            },
+            FrameNotice::StruckSpent { section: s("hull") },
+            FrameNotice::StruckSpent {
+                section: s("turret"),
+            },
+            FrameNotice::SectionLost {
+                section: s("hull"),
+                consequences: Vec::new(),
+            },
+            FrameNotice::SectionLost {
+                section: s("hull"),
+                consequences: vec![s("destroy_unit")],
+            },
+            struck(39, "front"),
+            struck(38, "front"),
+            struck(39, "left"),
+        ];
+        assert!(notices.len() >= 4, "the corpus");
+        let mut by_json: std::collections::BTreeMap<Vec<u8>, u64> =
+            std::collections::BTreeMap::new();
+        for notice in &notices {
+            let json = serde_json::to_vec(notice).expect("a notice serialises");
+            let hash = fv(notice);
+            if let Some(seen) = by_json.insert(json, hash) {
+                assert_eq!(seen, hash, "equal JSON, equal fold: {notice:?}");
+            }
+        }
+        let distinct: std::collections::BTreeSet<u64> = by_json.values().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            by_json.len(),
+            "every pair the JSON told apart, the fold tells apart"
         );
     }
 }
