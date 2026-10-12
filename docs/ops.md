@@ -1404,8 +1404,8 @@ stock source is compiled in) until 17b cut M4.6's format 9, which voids every ol
 the owner's STOP before 17b cut M4.5 moved the CI lane onto minds; the owner
 waived that precondition on 2026-10-08. The three runs were made on the VPS on
 2026-10-12 at `47bcb620` and did not hold — one of three whole, the authored
-cohort's window p99 27.5 to 33.0 ms against its 32 ms lens (17b §2) — so the
-M4 gate waits on 16c `T-104` to `T-107`.
+cohort's window p99 27.5 to 33.0 ms against its 32 ms lens (17b §2). After
+16c `T-105` and `T-104` (hash v2, re-blessed at `16320d7c`) the minds lane held in 10 of 12 asserting runs the same day and the last pass read whole, burst, whole: the lenses hold with 15 to 30 per cent of margin whenever the box is itself, and one run in three on this box runs 20 to 35 per cent slower across every lane at once — the gate's three-running letter waits on the owner's ruling about the box or the delta's bound (17b §2).
 Its four
 `harness-minds-<variant>.json` reports carry a deterministic `minds` block
 (thinks, inline and pooled, landings, faults, ops, fees, the final substep
