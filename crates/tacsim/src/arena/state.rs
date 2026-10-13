@@ -26,7 +26,7 @@ use smol_str::SmolStr;
 
 use crate::arena::clock::Clock;
 use crate::arena::horizon::{Block, Horizon, HorizonSight};
-use crate::arena::index::SpatialIndex;
+use crate::arena::index::{Candidate, SpatialIndex};
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
 use crate::arena::perception::{Eccm, FrameNotice, Jammer, SensorProfile, ThermalSignature};
@@ -4941,6 +4941,39 @@ impl Arena {
         self.units.binary_search_by_key(&id, |state| state.id).ok()
     }
 
+    /// **A cull's candidate, read by its row** (16c `T-107b`):
+    /// [`Arena::unit_by_row`] over the candidate's row and id — `units[row]`
+    /// when that element's id is the candidate's, which it is for every
+    /// candidate [`crate::arena::index::SpatialIndex::in_range_rows`] answers
+    /// over [`Arena::units`], the slice the index is rebuilt over and the one
+    /// the passes hand it — and otherwise [`Arena::unit`], the binary search
+    /// the perception passes made for every candidate before this cut.
+    #[must_use]
+    pub(crate) fn unit_row(&self, candidate: &Candidate) -> Option<&UnitState> {
+        self.unit_by_row(
+            usize::try_from(candidate.row).unwrap_or(usize::MAX),
+            candidate.id,
+        )
+    }
+
+    /// **The verified read by row** (16c `T-107b`): `units[row]` when that
+    /// element's id is `id`, and otherwise [`Arena::unit`]'s binary search.
+    /// The read and the search find the one element of an id-sorted,
+    /// duplicate-free table, so the answer is `unit(id)` either way; a row
+    /// past the table (`usize::MAX` for a candidate with no hint) or one
+    /// naming another unit falls to the search
+    /// (`t107b_unit_row_reads_the_row_and_falls_back_to_the_search`).
+    /// [`Arena::unit_row`] is it over a candidate; `share_pass` takes it over
+    /// the row [`Arena::unit_at`] found for the sharer at its head, which
+    /// holds across the folds between because nothing reorders the table.
+    #[must_use]
+    pub(crate) fn unit_by_row(&self, row: usize, id: ObjId) -> Option<&UnitState> {
+        self.units
+            .get(row)
+            .filter(|unit| unit.id == id)
+            .or_else(|| self.unit(id))
+    }
+
     /// The same, mutably.
     pub fn unit_mut(&mut self, id: ObjId) -> Option<&mut UnitState> {
         let index = self
@@ -5313,6 +5346,96 @@ mod tests {
     fn l2_is_machine_is_a_mind_and_never_a_pilot() {
         assert!(!Controller::Pilot.is_machine());
         assert!(Controller::Mind.is_machine());
+    }
+
+    /// **16c `T-107b`**: [`Arena::unit_row`] is the verified read with the
+    /// search as its fallback, and [`Arena::unit_by_row`] is its one body — a
+    /// true row answers the element at that row, which is [`Arena::unit`]'s;
+    /// a row past the table, the no-hint `u32::MAX`, or one naming another
+    /// unit answers [`Arena::unit`]; and a candidate for a unit the table does
+    /// not hold is `None` whatever its row. Dropping the id check or the
+    /// fallback fails here.
+    #[test]
+    fn t107b_unit_row_reads_the_row_and_falls_back_to_the_search() {
+        use crate::arena::index::Candidate;
+        let arena = arena_of(vec![
+            tank(ObjId(4), Team::Red, pose(500, 500)),
+            tank(ObjId(9), Team::Blue, pose(2_500, 500)),
+            tank(ObjId(11), Team::Blue, pose(7_500, 7_500)),
+        ]);
+        let candidate = |id: ObjId, row: u32| Candidate {
+            id,
+            row,
+            cell: (0, 0),
+        };
+        let is = |read: Option<&UnitState>, unit: &UnitState| {
+            read.is_some_and(|read| std::ptr::eq(read, unit))
+        };
+        let rows = u32::try_from(arena.units.len()).unwrap_or(u32::MAX);
+        for (n, unit) in arena.units.iter().enumerate() {
+            let row = u32::try_from(n).unwrap_or(u32::MAX);
+            // The true row: the element at that row, and `unit`'s.
+            let read = arena.unit_row(&candidate(unit.id, row));
+            assert!(is(read, unit), "the true row of {:?}", unit.id);
+            assert!(
+                read.zip(arena.unit(unit.id))
+                    .is_some_and(|(read, searched)| std::ptr::eq(read, searched))
+            );
+            // No hint at all, one past the table, and far past it: the search.
+            for past in [u32::MAX, rows, rows.saturating_add(1_000)] {
+                assert!(
+                    is(arena.unit_row(&candidate(unit.id, past)), unit),
+                    "row {past} for {:?} did not fall back to the search",
+                    unit.id
+                );
+            }
+            // Every other unit's row: the id check refuses it and the search
+            // answers.
+            for (wrong, other) in arena.units.iter().enumerate() {
+                if wrong == n {
+                    continue;
+                }
+                let read = arena.unit_row(&candidate(unit.id, u32::try_from(wrong).unwrap_or(0)));
+                assert!(
+                    is(read, unit),
+                    "row {wrong} of {:?} read as {:?}",
+                    other.id,
+                    unit.id
+                );
+                assert!(!is(read, other));
+            }
+        }
+        // A unit the table does not hold is `None` at every row.
+        for row in [0, 1, 2, 3, u32::MAX] {
+            assert!(arena.unit_row(&candidate(ObjId(20), row)).is_none());
+        }
+        // And the one body, over a slice position: the row, the wrong row,
+        // and no row.
+        assert!(
+            arena
+                .unit_by_row(1, ObjId(9))
+                .is_some_and(|unit| unit.id == ObjId(9))
+        );
+        assert!(
+            arena
+                .unit_by_row(0, ObjId(9))
+                .is_some_and(|unit| unit.id == ObjId(9))
+        );
+        assert!(
+            arena
+                .unit_by_row(usize::MAX, ObjId(9))
+                .is_some_and(|unit| unit.id == ObjId(9))
+        );
+        assert!(arena.unit_by_row(1, ObjId(20)).is_none());
+        // The production candidate is the true row: what the index hands the
+        // passes over `Arena::units`.
+        for c in arena
+            .index
+            .in_range_rows(&pose(500, 500), 100_000, &arena.units)
+        {
+            assert_eq!(arena.unit_at(c.id), usize::try_from(c.row).ok());
+            assert!(arena.unit_row(&c).is_some_and(|unit| unit.id == c.id));
+        }
     }
 
     /// 17b cut M4.6a: moved here from `crate::arena::reflex`'s tests with

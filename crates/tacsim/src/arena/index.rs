@@ -80,6 +80,56 @@
 //!    places a distance is *stored* or *shown* — a frame's contact rows, a
 //!    weapon's range check — which this cut does not touch.
 //!
+//! # The rows of 16c `T-107b`
+//!
+//! The annotate at the hash v2 tree put a quarter of `in_range`'s twelve per
+//! cent in the per-candidate search — the branchless select over the unit
+//! table's 1,128-byte rows that `keep` made to find a candidate's pose — and
+//! `T-107a`'s perf lens noted a second search of the same depth per candidate
+//! in the perception passes, where `Arena::unit` found the unit `keep` had just
+//! found. Both searches go, and no answer moves:
+//!
+//! 1. **The index's unit table carries each unit's row.** `IndexRow` is the
+//!    id, the cell and the unit's position in the slice [`SpatialIndex::rebuild`]
+//!    was handed; `rebuild` writes it from `units.iter().enumerate()`, which costs
+//!    nothing it did not already walk.
+//! 2. **The cull hands back candidates with their rows.**
+//!    [`SpatialIndex::in_range_rows`] answers [`Candidate`]s — the id, the row
+//!    and the cell — and [`SpatialIndex::in_range`] is it mapped to the ids, so
+//!    [`SpatialIndex::pairs_within`] and every test of the set compile and
+//!    answer unchanged.
+//! 3. **`keep` reads the row first and searches only on a miss.** The row names
+//!    the unit when `units[row].id == id`; a slice that is not the one the index
+//!    was rebuilt over — a test's `retain`, an appended unit — misses, and
+//!    `keep` then runs the `binary_search_by_key` it always ran. What the
+//!    verified read promises is exactly this: it finds **the one element with
+//!    that id**, which is the element the search finds whenever the search can
+//!    find one — on an id-sorted, duplicate-free slice, always. The two part
+//!    only over an unsorted slice, where the search is promised nothing and
+//!    the hint may find what it misses (the rotated half of
+//!    `t107b_the_table_walk_pushes_in_id_order` is that case, pinned); no such
+//!    slice reaches the cull — [`crate::arena::state::Arena::new`] sorts the
+//!    table and refuses duplicates, nothing reorders it, and a snapshot decodes
+//!    the table it encoded. The candidate's row is the found element's row **in
+//!    the slice the query was handed**, whichever path found it.
+//! 4. **The perception passes read a candidate's unit by row** —
+//!    `crate::arena::state::Arena::unit_row`, the same verified read with
+//!    `Arena::unit` as its fallback — where they looked the id up a second time.
+//!
+//! The grid does not change shape: a slot still names an id, and the cell walk
+//! takes a candidate's row off the index's own table by the search
+//! [`SpatialIndex::cell_of_unit`] makes, over twelve-byte rows rather than
+//! kilobyte ones. The on-window `sort_unstable` is **kept**, and it is two
+//! facts and not one: the table walk pushes in the table's order, which on the
+//! production slice is id order already, so there the sort is the identity
+//! (`t107b_the_table_walk_pushes_in_id_order`); the cell walk pushes in
+//! row-major cell order, which is no id order on any slice, so for it the sort
+//! is what makes the answer id-ordered — and a pod's jamming scan at a one-cell
+//! radius takes that walk. Dropping the sort would move the cell walk's order
+//! everywhere and the table walk's over any unsorted slice. The snapshot
+//! re-derives the index over the units it decodes, so no row is carried and the
+//! format does not move.
+//!
 //! # Why it is rebuilt rather than maintained
 //!
 //! A rebuild is `O(units)` — [`SpatialIndex::rebuild`] clears only the cells the
@@ -307,6 +357,45 @@ pub fn within_cm(a: &Pose, b: &Pose, reach_cm: u64) -> bool {
 /// produce one set.
 const UNIT_WALK_CELLS_PER_UNIT: usize = 4;
 
+/// **One row of the index's unit table** (16c `T-107b`): a unit's id, the
+/// cell it stands in, and its **row** — its position in the slice
+/// [`SpatialIndex::rebuild`] was handed, which on the production slice
+/// ([`crate::arena::state::Arena::units`], laid down in id order and never
+/// reordered) is where [`crate::arena::state::Arena::unit`]'s binary search
+/// finds it. Twelve bytes, so the table of a 300-unit match is under four
+/// kilobytes and stays in cache across a pass.
+///
+/// `row` is a hint and not a promise: the cull's `keep`
+/// (`SpatialIndex::in_range_rows_by`'s, the one body every walk shares)
+/// verifies it against the slice it is handed (`units[row].id == id`) and
+/// searches on a miss, so a slice that is not the rebuilt one still answers
+/// exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IndexRow {
+    id: ObjId,
+    cell: (u16, u16),
+    row: u32,
+}
+
+/// **A unit the cull offers, with where to find it** (16c `T-107b`): the
+/// answer of [`SpatialIndex::in_range_rows`], one per unit within reach.
+///
+/// `row` is the unit's position **in the `units` slice the query was handed**
+/// — verified there by `keep`, whichever path found it — so a caller holding
+/// that slice reads `units[row]` and checks `id` where it used to search;
+/// `crate::arena::state::Arena::unit_row` is that read with `Arena::unit` as
+/// its fallback. `cell` is the cell the index records the unit in, the one its
+/// slot names it at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    /// The unit.
+    pub id: ObjId,
+    /// Its row in the slice the query was handed (see the type).
+    pub row: u32,
+    /// The cell the index holds it in.
+    pub cell: (u16, u16),
+}
+
 /// **The uniform grid of cell buckets over unit positions** (doc 16 §3.2 "The
 /// spatial index").
 ///
@@ -314,18 +403,20 @@ const UNIT_WALK_CELLS_PER_UNIT: usize = 4;
 ///
 /// - `occupant`, one slot per cell, row-major over the window — the answer to
 ///   *may a unit enter this cell* (doc 16 §3.4 step 4);
-/// - `of_unit`, the cell each unit stands in, **sorted by unit id** because
-///   [`SpatialIndex::rebuild`] is handed [`crate::arena::state::Arena::units`],
-///   which is kept in that order. A binary search over a flat vector costs less
-///   than a map node per unit and, unlike a hash map, its iteration order is the
-///   deterministic one every walk in the arena uses.
+/// - `of_unit`, the cell each unit stands in and its row in the slice the
+///   rebuild was handed (`IndexRow`; 16c `T-107b`), **sorted by unit id**
+///   because [`SpatialIndex::rebuild`] is handed
+///   [`crate::arena::state::Arena::units`], which is kept in that order. A
+///   binary search over a flat vector costs less than a map node per unit and,
+///   unlike a hash map, its iteration order is the deterministic one every walk
+///   in the arena uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpatialIndex {
     width: u16,
     height: u16,
     cell_cm: u16,
     occupant: Vec<Option<ObjId>>,
-    of_unit: Vec<(ObjId, (u16, u16))>,
+    of_unit: Vec<IndexRow>,
 }
 
 impl SpatialIndex {
@@ -363,18 +454,33 @@ impl SpatialIndex {
     /// recorded in `of_unit` at the cell it stands in. Nothing in the shipped lane
     /// reaches that state, and [`SpatialIndex::in_range`]'s two culls are equivalent
     /// exactly while it is unreachable.
+    ///
+    /// **16c `T-107b`: each row records the unit's position in `units`.** The
+    /// walk is `enumerate()`d and the position written beside the id and the
+    /// cell (`IndexRow::row`), so a cull can hand a candidate back with where
+    /// to find it and the perception passes can read the unit by row instead of
+    /// searching for it. On the production slice the row is the binary search's
+    /// answer; on any other it is a hint the cull's `keep`
+    /// (`SpatialIndex::in_range_rows_by`'s) verifies before it trusts (see the
+    /// module head).
     pub fn rebuild(&mut self, terrain: &ArenaTerrain, units: &[UnitState]) {
-        for (_, (x, y)) in self.of_unit.drain(..) {
+        for IndexRow { cell: (x, y), .. } in self.of_unit.drain(..) {
             if let Some(slot) = Self::slot_mut(&mut self.occupant, self.width, self.height, x, y) {
                 *slot = None;
             }
         }
         self.of_unit.reserve(units.len());
-        for unit in units {
+        for (row, unit) in units.iter().enumerate() {
             let Some((x, y)) = terrain.cell_of(&unit.pose) else {
                 continue;
             };
-            self.of_unit.push((unit.id, (x, y)));
+            self.of_unit.push(IndexRow {
+                id: unit.id,
+                cell: (x, y),
+                // A slice past `u32::MAX` rows has no row to record; `keep`'s
+                // verified read misses it and searches, as it always did.
+                row: u32::try_from(row).unwrap_or(u32::MAX),
+            });
             if let Some(slot) = Self::slot_mut(&mut self.occupant, self.width, self.height, x, y)
                 && slot.is_none()
             {
@@ -398,11 +504,15 @@ impl SpatialIndex {
     /// The cell `id` stands in, or `None` when the index does not hold it.
     #[must_use]
     pub fn cell_of_unit(&self, id: ObjId) -> Option<(u16, u16)> {
-        let at = self
-            .of_unit
-            .binary_search_by_key(&id, |(unit, _)| *unit)
-            .ok()?;
-        self.of_unit.get(at).map(|(_, cell)| *cell)
+        self.row_of(id).map(|row| row.cell)
+    }
+
+    /// The unit table's row for `id` (16c `T-107b`), by the binary search over
+    /// the table [`SpatialIndex::cell_of_unit`] has always made, or `None` when
+    /// the index does not hold it.
+    fn row_of(&self, id: ObjId) -> Option<&IndexRow> {
+        let at = self.of_unit.binary_search_by_key(&id, |row| row.id).ok()?;
+        self.of_unit.get(at)
     }
 
     /// **Record a move made inside the substep just being integrated** (doc 16
@@ -429,10 +539,10 @@ impl SpatialIndex {
         {
             *slot = Some(id);
         }
-        if let Ok(at) = self.of_unit.binary_search_by_key(&id, |(unit, _)| *unit)
+        if let Ok(at) = self.of_unit.binary_search_by_key(&id, |row| row.id)
             && let Some(entry) = self.of_unit.get_mut(at)
         {
-            entry.1 = to;
+            entry.cell = to;
         }
     }
 
@@ -469,9 +579,32 @@ impl SpatialIndex {
     /// per cell, which check-out and motion both enforce (see
     /// [`SpatialIndex::rebuild`]); a grid slot cannot report a second unit standing
     /// in one cell, and no reachable state has one.
+    ///
+    /// **16c `T-107b`**: the ids of [`SpatialIndex::in_range_rows`], which is
+    /// where the walks now live; a caller that goes on to read each unit takes
+    /// that one and reads by row.
     #[must_use]
     pub fn in_range(&self, pose: &Pose, range_cm: u32, units: &[UnitState]) -> Vec<ObjId> {
         self.in_range_by(pose, range_cm, units, None)
+    }
+
+    /// **[`SpatialIndex::in_range`] with each unit's row** (16c `T-107b`): the
+    /// same set in the same order, each unit as a [`Candidate`] — its id, its
+    /// row in `units` and its cell — so the perception passes read the unit
+    /// they are about by row (`crate::arena::state::Arena::unit_row`) instead
+    /// of searching the unit table a second time for the unit `keep` just found.
+    ///
+    /// The row is **verified against `units` before it is handed back**: `keep`
+    /// reads `units[row]` and checks the id, and on a miss — a slice that is not
+    /// the one the index was rebuilt over — runs the binary search it ran before
+    /// this cut, so the answer is the search's whichever path found it, and the
+    /// row is the found element's position in `units`
+    /// (`t107b_a_foreign_slice_takes_the_fallback`). The cell walk takes a row
+    /// off the index's own table (`SpatialIndex::row_of`) for the id a slot
+    /// names and verifies it the same way.
+    #[must_use]
+    pub fn in_range_rows(&self, pose: &Pose, range_cm: u32, units: &[UnitState]) -> Vec<Candidate> {
+        self.in_range_rows_by(pose, range_cm, units, None)
     }
 
     /// [`SpatialIndex::in_range`] with the on-window walk forced — `Some(true)`
@@ -484,17 +617,46 @@ impl SpatialIndex {
         units: &[UnitState],
         by_table: Option<bool>,
     ) -> Vec<ObjId> {
-        let mut found: Vec<ObjId> = Vec::new();
+        self.in_range_rows_by(pose, range_cm, units, by_table)
+            .into_iter()
+            .map(|candidate| candidate.id)
+            .collect()
+    }
+
+    /// [`SpatialIndex::in_range_rows`] with the on-window walk forced, as
+    /// [`SpatialIndex::in_range_by`] forces it: the one body both culls share.
+    fn in_range_rows_by(
+        &self,
+        pose: &Pose,
+        range_cm: u32,
+        units: &[UnitState],
+        by_table: Option<bool>,
+    ) -> Vec<Candidate> {
         let reach = u64::from(range_cm);
         // **16c `T-107a`**: `within_cm`'s bound squared once for the query rather
         // than once a candidate; `keep` is still exactly `within_cm`.
         let bound_sq = reach_bound_sq(reach);
-        let keep = |id: ObjId, found: &mut Vec<ObjId>| {
-            if let Ok(at) = units.binary_search_by_key(&id, |unit| unit.id)
+        // **16c `T-107b`**: the row first, verified, and the search only on a
+        // miss. `row` is the index's hint — the position the unit had in the
+        // slice the index was rebuilt over — and it names the unit in *this*
+        // slice exactly when `units[row].id == id`; any other slice falls to
+        // the `binary_search_by_key` this closure always ran. The candidate's
+        // row is wherever the unit was found, so it is true of `units`
+        // whichever path answered.
+        let keep = |id: ObjId, row: u32, cell: (u16, u16), found: &mut Vec<Candidate>| {
+            let at = usize::try_from(row)
+                .ok()
+                .filter(|&at| units.get(at).is_some_and(|unit| unit.id == id))
+                .or_else(|| units.binary_search_by_key(&id, |unit| unit.id).ok());
+            if let Some(at) = at
                 && let Some(unit) = units.get(at)
                 && square_cm(pose, &unit.pose) < bound_sq
             {
-                found.push(id);
+                found.push(Candidate {
+                    id,
+                    row: u32::try_from(at).unwrap_or(u32::MAX),
+                    cell,
+                });
             }
         };
         let span = reach / u64::from(self.cell_cm.max(1)) + 1;
@@ -506,6 +668,10 @@ impl SpatialIndex {
                 let x1 = cx.saturating_add(span).min(self.width.saturating_sub(1));
                 let y1 = cy.saturating_add(span).min(self.height.saturating_sub(1));
                 let box_cells = (usize::from(x1 - x0) + 1).saturating_mul(usize::from(y1 - y0) + 1);
+                // 16c `T-107b`: sized once for the most either walk can push,
+                // so a 300-unit cull grows no vector on the way.
+                let mut found: Vec<Candidate> =
+                    Vec::with_capacity(box_cells.min(self.of_unit.len()));
                 if by_table.unwrap_or_else(|| {
                     box_cells > self.of_unit.len().saturating_mul(UNIT_WALK_CELLS_PER_UNIT)
                 }) {
@@ -514,34 +680,55 @@ impl SpatialIndex {
                     // only at the cell its `of_unit` row records (`rebuild` and
                     // `move_unit` are the grid's only writers and keep that), so
                     // this is the cell walk's set whatever the occupancy.
-                    for &(id, (x, y)) in &self.of_unit {
+                    for &IndexRow { id, cell, row } in &self.of_unit {
+                        let (x, y) = cell;
                         if (x0..=x1).contains(&x)
                             && (y0..=y1).contains(&y)
                             && self.occupant(x, y) == Some(id)
                         {
-                            keep(id, &mut found);
+                            keep(id, row, cell, &mut found);
                         }
                     }
                 } else {
                     for y in y0..=y1 {
                         for x in x0..=x1 {
                             if let Some(id) = self.occupant(x, y) {
-                                keep(id, &mut found);
+                                // 16c `T-107b`: the slot names an id; its row
+                                // comes off the index's own table, and `keep`
+                                // verifies it as it does the table walk's. A
+                                // slot naming a unit the table does not hold
+                                // has no hint and takes the search — and is
+                                // unreachable: `move_unit` is only ever asked
+                                // about a unit with a cell, and the index is
+                                // rebuilt over the same slice before either
+                                // caller runs (the motion loop's rebuild just
+                                // ahead of its integrate loop, and `place`'s
+                                // own on its `None` arm), so a unit with a
+                                // cell is in the table.
+                                let row = self.row_of(id).map_or(u32::MAX, |row| row.row);
+                                keep(id, row, (x, y), &mut found);
                             }
                         }
                     }
                 }
-                found.sort_unstable();
+                // Kept (16c `T-107b`), two facts: for the table walk it is the
+                // identity on the production slice, whose pushes are already in
+                // id order there; for the cell walk, whose pushes are in
+                // row-major cell order on every slice, it is what makes the
+                // answer id-ordered (see the module head).
+                found.sort_unstable_by_key(|candidate| candidate.id);
+                found
             }
             // The pose is off the window: there is no cell to centre a window on,
             // and the honest answer is still every unit the range function keeps.
             None => {
-                for (id, _) in &self.of_unit {
-                    keep(*id, &mut found);
+                let mut found: Vec<Candidate> = Vec::with_capacity(self.of_unit.len());
+                for &IndexRow { id, cell, row } in &self.of_unit {
+                    keep(id, row, cell, &mut found);
                 }
+                found
             }
         }
-        found
     }
 
     /// **Every pair of distinct units within `range_cm` of each other**, each pair
@@ -785,36 +972,110 @@ mod tests {
         assert_eq!(index.in_range(&from, 100_000, &arena.units), vec![A, B, C]);
     }
 
-    /// **The VPS spike's unit-table walk** (2026-10-09): every pose on the
-    /// window and every reach from nothing to past the window answer one set by
-    /// the cells and by the table — in a lawful field, with two units sharing a
-    /// cell (the lower id holds it, the higher is in no slot), and after the
-    /// higher one has moved off into a held cell and on again — so the cost rule
-    /// that picks between them cannot move a candidate.
-    #[test]
-    fn the_unit_table_walk_answers_the_cell_walk_s_set() {
+    /// The reaches the sweeps below ask about: nothing; either side of the
+    /// 3-4-5 triangle's five metres, which is the one exact boundary the
+    /// sweep's grid lands on (from (2,800, 900) to B at (2,500, 500) — 16c
+    /// `T-107b`, so a range compare loosened to `<=` fails the sweep itself);
+    /// either side of one cell, two, three and a half, the diagonal of five,
+    /// past the window's side and past the whole window.
+    const SWEEP_REACHES: [u32; 10] = [
+        0, 499, 500, 999, 1_000, 2_000, 3_500, 7_071, 12_000, 100_000,
+    ];
+
+    /// **`in_range_by` before 16c `T-107b`**, kept as the reference the rows
+    /// sweeps hold the new walks to: the walk by the cells or by the table as
+    /// `by_table` forces it (`None` the cost rule's choice), exactly as the old
+    /// body made it — the clamped box, the occupant test on the table walk,
+    /// each id found in `units` by `binary_search_by_key`, kept by
+    /// [`range_cm`] (the rooted form [`within_cm`] is pinned to), and sorted
+    /// on the window — with each kept unit's position in `units` beside its
+    /// id, which is what the new `keep` hands back as the row. A mutation of
+    /// the range compare, the occupant test or the lookup fails against this
+    /// rather than only in a downstream pin.
+    fn keep_before_t107b(
+        index: &SpatialIndex,
+        from: &Pose,
+        reach: u32,
+        units: &[UnitState],
+        by_table: Option<bool>,
+    ) -> Vec<(ObjId, usize)> {
+        let mut found: Vec<(ObjId, usize)> = Vec::new();
+        let keep = |id: ObjId, found: &mut Vec<(ObjId, usize)>| {
+            if let Ok(at) = units.binary_search_by_key(&id, |unit| unit.id)
+                && let Some(unit) = units.get(at)
+                && range_cm(from, &unit.pose) <= u64::from(reach)
+            {
+                found.push((id, at));
+            }
+        };
+        let span = u64::from(reach) / u64::from(index.cell_cm.max(1)) + 1;
+        match index.cell_of_pose(from) {
+            Some((cx, cy)) => {
+                let span = u16::try_from(span).unwrap_or(u16::MAX);
+                let x0 = cx.saturating_sub(span);
+                let y0 = cy.saturating_sub(span);
+                let x1 = cx.saturating_add(span).min(index.width.saturating_sub(1));
+                let y1 = cy.saturating_add(span).min(index.height.saturating_sub(1));
+                let box_cells = (usize::from(x1 - x0) + 1).saturating_mul(usize::from(y1 - y0) + 1);
+                if by_table.unwrap_or_else(|| {
+                    box_cells > index.of_unit.len().saturating_mul(UNIT_WALK_CELLS_PER_UNIT)
+                }) {
+                    for row in &index.of_unit {
+                        let (x, y) = row.cell;
+                        if (x0..=x1).contains(&x)
+                            && (y0..=y1).contains(&y)
+                            && index.occupant(x, y) == Some(row.id)
+                        {
+                            keep(row.id, &mut found);
+                        }
+                    }
+                } else {
+                    for y in y0..=y1 {
+                        for x in x0..=x1 {
+                            if let Some(id) = index.occupant(x, y) {
+                                keep(id, &mut found);
+                            }
+                        }
+                    }
+                }
+                // By id first; an id is pushed at most once a walk, so this is
+                // the old `sort_unstable` over the ids.
+                found.sort_unstable();
+            }
+            None => {
+                for row in &index.of_unit {
+                    keep(row.id, &mut found);
+                }
+            }
+        }
+        found
+    }
+
+    /// A candidate as the reference states it: the id and the row as a slice
+    /// position.
+    fn id_and_row(candidate: &Candidate) -> (ObjId, usize) {
+        (
+            candidate.id,
+            usize::try_from(candidate.row).unwrap_or(usize::MAX),
+        )
+    }
+
+    /// **The four states the unit-table sweep walks**, each handed to `check`
+    /// with the index and the slice it was rebuilt over: a lawful field; two
+    /// units sharing a cell (the lower id holds it, the higher is in no slot);
+    /// the higher one moved off into a held cell; and moved on to a free one.
+    /// Factored out of `the_unit_table_walk_answers_the_cell_walk_s_set` by 16c
+    /// `T-107b` so the rows sweep exactly the states the set does.
+    fn over_the_sweep_states(check: impl Fn(&SpatialIndex, &[UnitState], &str)) {
         let arena = arena_of(vec![
             tank(A, Team::Red, pose(500, 500)),
             tank(B, Team::Blue, pose(2_500, 500)),
             tank(C, Team::Blue, pose(7_500, 7_500)),
         ]);
         let terrain = &arena.definition.terrain;
-        let agree = |index: &SpatialIndex, units: &[UnitState], state: &str| {
-            for x in (0..8_000).step_by(700) {
-                for y in (0..8_000).step_by(900) {
-                    let from = pose(x, y);
-                    for reach in [0, 999, 1_000, 2_000, 3_500, 7_071, 12_000, 100_000] {
-                        let cells = index.in_range_by(&from, reach, units, Some(false));
-                        let table = index.in_range_by(&from, reach, units, Some(true));
-                        assert_eq!(cells, table, "{state}: from ({x}, {y}) at {reach} cm");
-                        assert_eq!(index.in_range(&from, reach, units), cells, "{state}");
-                    }
-                }
-            }
-        };
         let mut index = SpatialIndex::new(terrain);
         index.rebuild(terrain, &arena.units);
-        agree(&index, &arena.units, "lawful");
+        check(&index, &arena.units, "lawful");
         // B into A's cell: (0, 0) held by A, B recorded there and in no slot.
         let mut shared = arena.units.clone();
         if let Some(unit) = shared.iter_mut().find(|unit| unit.id == B) {
@@ -824,12 +1085,395 @@ mod tests {
         index.rebuild(terrain, &shared);
         assert_eq!(index.occupant(0, 0), Some(A));
         assert_eq!(index.cell_of_unit(B), Some((0, 0)));
-        agree(&index, &shared, "shared");
+        check(&index, &shared, "shared");
         // B moves into C's held cell (taking nothing), then on to a free one.
         index.move_unit(B, (0, 0), (7, 7));
-        agree(&index, &shared, "moved into a held cell");
+        check(&index, &shared, "moved into a held cell");
         index.move_unit(B, (7, 7), (3, 4));
-        agree(&index, &shared, "moved on");
+        check(&index, &shared, "moved on");
+    }
+
+    /// **The VPS spike's unit-table walk** (2026-10-09): every pose on the
+    /// window and every reach from nothing to past the window answer one set by
+    /// the cells and by the table — in a lawful field, with two units sharing a
+    /// cell (the lower id holds it, the higher is in no slot), and after the
+    /// higher one has moved off into a held cell and on again — so the cost rule
+    /// that picks between them cannot move a candidate.
+    #[test]
+    fn the_unit_table_walk_answers_the_cell_walk_s_set() {
+        over_the_sweep_states(|index, units, state| {
+            for x in (0..8_000).step_by(700) {
+                for y in (0..8_000).step_by(900) {
+                    let from = pose(x, y);
+                    for reach in SWEEP_REACHES {
+                        let cells = index.in_range_by(&from, reach, units, Some(false));
+                        let table = index.in_range_by(&from, reach, units, Some(true));
+                        assert_eq!(cells, table, "{state}: from ({x}, {y}) at {reach} cm");
+                        assert_eq!(index.in_range(&from, reach, units), cells, "{state}");
+                    }
+                }
+            }
+        });
+    }
+
+    /// **16c `T-107b`**: [`SpatialIndex::in_range_rows`] answers what
+    /// `in_range_by`'s `keep` answered before the cut — `keep_before_t107b`,
+    /// the old body kept as the reference: the same walk, the search, the
+    /// rooted range, the sort — id for id and row for row, over the sweep's
+    /// four states, by the cells, by the table and by the cost rule, and from
+    /// off the window; [`SpatialIndex::in_range`] is the ids of that answer;
+    /// and every row and cell handed back is true: `units[row].id == id` in
+    /// the slice the query was handed, and the cell is the one
+    /// [`SpatialIndex::cell_of_unit`] records.
+    #[test]
+    fn t107b_in_range_rows_answers_in_range_s_set_with_its_rows() {
+        let mut candidates = 0_usize;
+        let mut nonempty = 0_usize;
+        over_the_sweep_states(|index, units, state| {
+            let froms = (0..8_000)
+                .step_by(700)
+                .flat_map(|x| (0..8_000).step_by(900).map(move |y| pose(x, y)))
+                .chain([pose(-1_000, -1_000), pose(9_000, 100), pose(100, 9_000)]);
+            for from in froms {
+                let (x, y) = (from.x_cm, from.y_cm);
+                for reach in SWEEP_REACHES {
+                    for by_table in [Some(false), Some(true), None] {
+                        let rows = index.in_range_rows_by(&from, reach, units, by_table);
+                        let reference = keep_before_t107b(index, &from, reach, units, by_table);
+                        assert_eq!(
+                            rows.iter().map(id_and_row).collect::<Vec<_>>(),
+                            reference,
+                            "{state}: from ({x}, {y}) at {reach} cm by {by_table:?}"
+                        );
+                        // And the id-only cull is the reference's ids: not the
+                        // map over `in_range_rows_by` compared with itself, but
+                        // the old answer.
+                        assert_eq!(
+                            index.in_range_by(&from, reach, units, by_table),
+                            reference.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                            "{state}: the ids from ({x}, {y}) at {reach} cm by {by_table:?}"
+                        );
+                        for c in &rows {
+                            let at = usize::try_from(c.row).unwrap_or(usize::MAX);
+                            assert_eq!(
+                                units.get(at).map(|unit| unit.id),
+                                Some(c.id),
+                                "{state}: row {} of {:?} from ({x}, {y}) at {reach} cm",
+                                c.row,
+                                c.id
+                            );
+                            assert_eq!(
+                                index.cell_of_unit(c.id),
+                                Some(c.cell),
+                                "{state}: the cell of {:?}",
+                                c.id
+                            );
+                        }
+                    }
+                    let chosen = index.in_range_rows(&from, reach, units);
+                    assert_eq!(chosen, index.in_range_rows_by(&from, reach, units, None));
+                    let by_id: Vec<ObjId> = chosen.iter().map(|c| c.id).collect();
+                    assert_eq!(by_id, index.in_range(&from, reach, units), "{state}");
+                }
+            }
+            // And the fast path is the one the production slice takes: every
+            // candidate's row is the index's own hint, verified rather than
+            // searched for.
+            for c in index.in_range_rows(&pose(500, 500), 100_000, units) {
+                assert_eq!(
+                    index.row_of(c.id).map(|row| row.row),
+                    Some(c.row),
+                    "{state}"
+                );
+            }
+        });
+        // Not vacuous: count what one lawful rebuild hands back across the grid.
+        let arena = arena_of(vec![
+            tank(A, Team::Red, pose(500, 500)),
+            tank(B, Team::Blue, pose(2_500, 500)),
+            tank(C, Team::Blue, pose(7_500, 7_500)),
+        ]);
+        let terrain = &arena.definition.terrain;
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, &arena.units);
+        for x in (0..8_000).step_by(700) {
+            for y in (0..8_000).step_by(900) {
+                for reach in SWEEP_REACHES {
+                    let rows = index.in_range_rows(&pose(x, y), reach, &arena.units);
+                    candidates += rows.len();
+                    nonempty += usize::from(!rows.is_empty());
+                }
+            }
+        }
+        assert!(
+            candidates > 108 && nonempty > 108,
+            "{candidates} over {nonempty}"
+        );
+        assert_eq!(
+            index.in_range_rows(&pose(500, 500), 2_000, &arena.units),
+            vec![
+                Candidate {
+                    id: A,
+                    row: 0,
+                    cell: (0, 0)
+                },
+                Candidate {
+                    id: B,
+                    row: 1,
+                    cell: (2, 0)
+                },
+            ]
+        );
+    }
+
+    /// **16c `T-107b`'s verified fallback**: a `units` slice that is not the
+    /// one the index was rebuilt over — B `retain`ed away and a D appended, so
+    /// C's row names D and B's names C — answers what `keep`'s old computation
+    /// answered (`keep_before_t107b`: the walk, each id found in **this** slice
+    /// by `binary_search_by_key`, kept by `range_cm`, sorted on the window),
+    /// with each row the found element's position in that slice; the appended
+    /// D, which the index does not hold, is never offered; and the rebuilt
+    /// slice itself takes the hint unsearched. The fixture is lawful — every
+    /// unit the index holds holds its slot — so the reference's occupant test
+    /// on the table walk keeps every unit in the box, and the two old walks
+    /// agree here as everywhere, which is asserted rather than assumed.
+    #[test]
+    fn t107b_a_foreign_slice_takes_the_fallback() {
+        let arena = arena_of(vec![
+            tank(A, Team::Red, pose(500, 500)),
+            tank(B, Team::Blue, pose(2_500, 500)),
+            tank(C, Team::Blue, pose(7_500, 7_500)),
+        ]);
+        let terrain = &arena.definition.terrain;
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, &arena.units);
+        const D: ObjId = ObjId(20);
+        let mut foreign = arena.units.clone();
+        foreign.retain(|unit| unit.id != B);
+        let appended = arena_of(vec![tank(D, Team::Red, pose(3_500, 500))]);
+        foreign.extend(appended.units.iter().cloned());
+        assert_eq!(
+            foreign.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+            vec![A, C, D]
+        );
+        // The index's rows are the rebuilt slice's: A 0, B 1, C 2 — so in the
+        // foreign slice A's hint holds, B's names C and C's names D.
+        assert_eq!(index.row_of(A).map(|row| row.row), Some(0));
+        assert_eq!(index.row_of(B).map(|row| row.row), Some(1));
+        assert_eq!(index.row_of(C).map(|row| row.row), Some(2));
+        assert!(index.row_of(D).is_none());
+        // `keep` before this cut, over the foreign slice, by the walk asked
+        // for; on the window the two old walks are first held to one answer.
+        let reference = |from: &Pose, reach: u32, by_table: Option<bool>| -> Vec<(ObjId, usize)> {
+            if index.cell_of_pose(from).is_some() {
+                assert_eq!(
+                    keep_before_t107b(&index, from, reach, &foreign, Some(false)),
+                    keep_before_t107b(&index, from, reach, &foreign, Some(true)),
+                    "the two old walks part over the foreign slice from ({}, {}) at {reach} cm",
+                    from.x_cm,
+                    from.y_cm
+                );
+            }
+            keep_before_t107b(&index, from, reach, &foreign, by_table)
+        };
+        let froms = [
+            pose(500, 500),
+            pose(2_500, 500),
+            pose(3_500, 500),
+            pose(7_500, 7_500),
+            pose(4_000, 4_000),
+            pose(-1_000, -1_000),
+            pose(9_000, 9_000),
+        ];
+        let mut fell_back = 0_usize;
+        for from in &froms {
+            for reach in SWEEP_REACHES {
+                for by_table in [Some(false), Some(true), None] {
+                    let rows = index.in_range_rows_by(from, reach, &foreign, by_table);
+                    assert_eq!(
+                        rows.iter().map(id_and_row).collect::<Vec<_>>(),
+                        reference(from, reach, by_table),
+                        "from ({}, {}) at {reach} cm by {by_table:?}",
+                        from.x_cm,
+                        from.y_cm
+                    );
+                    for c in &rows {
+                        assert_ne!(c.id, B, "a unit retained away was offered");
+                        assert_ne!(c.id, D, "a unit the index never held was offered");
+                        if c.id == C {
+                            assert_eq!(c.row, 1, "C's row in the foreign slice");
+                            fell_back += 1;
+                        }
+                    }
+                }
+                // And over the rebuilt slice the rows are the hints themselves.
+                for c in index.in_range_rows_by(from, reach, &arena.units, None) {
+                    assert_eq!(index.row_of(c.id).map(|row| row.row), Some(c.row));
+                }
+            }
+        }
+        assert!(fell_back > 0, "the fallback was never taken");
+        // The point cases, by hand: C from its own cell is found at row 1 of
+        // the foreign slice (row 2 of the index); B from its old cell is
+        // nobody; D from its own cell is nobody.
+        assert_eq!(
+            index.in_range_rows(&pose(7_500, 7_500), 0, &foreign),
+            vec![Candidate {
+                id: C,
+                row: 1,
+                cell: (7, 7)
+            }]
+        );
+        assert_eq!(
+            index.in_range_rows(&pose(2_500, 500), 0, &foreign),
+            Vec::<Candidate>::new()
+        );
+        assert_eq!(
+            index.in_range_rows(&pose(3_500, 500), 0, &foreign),
+            Vec::<Candidate>::new()
+        );
+        assert_eq!(
+            index.in_range(&pose(500, 500), 100_000, &foreign),
+            vec![A, C]
+        );
+    }
+
+    /// **16c `T-107b` keeps the on-window sort**, and this is why: on the
+    /// production slice — [`crate::arena::state::Arena::units`], laid down in
+    /// id order — the table is in id order, its rows are `0..n`, and the table
+    /// walk pushes in id order, so for that walk the sort is the identity;
+    /// over a slice in any other order the table walk pushes in *that* order,
+    /// each hint still verified, and it is the sort that makes the answer
+    /// id-ordered. The rotated half is also **the one place the hint and the
+    /// search part**: the search over an unsorted slice is promised nothing,
+    /// and the hint finds a unit it misses.
+    #[test]
+    fn t107b_the_table_walk_pushes_in_id_order() {
+        let arena = arena_of(vec![
+            tank(C, Team::Blue, pose(7_500, 7_500)),
+            tank(A, Team::Red, pose(500, 500)),
+            tank(B, Team::Blue, pose(2_500, 500)),
+        ]);
+        // `Arena::new` sorted the slice whatever order it was handed in.
+        assert_eq!(
+            arena.units.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+            vec![A, B, C]
+        );
+        let terrain = &arena.definition.terrain;
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, &arena.units);
+        assert_eq!(
+            index
+                .of_unit
+                .iter()
+                .map(|row| (row.id, row.row))
+                .collect::<Vec<_>>(),
+            vec![(A, 0), (B, 1), (C, 2)]
+        );
+        for x in (0..8_000).step_by(700) {
+            for y in (0..8_000).step_by(900) {
+                for reach in SWEEP_REACHES {
+                    let table =
+                        index.in_range_rows_by(&pose(x, y), reach, &arena.units, Some(true));
+                    // What the walk pushed before the sort: the table's order,
+                    // filtered — and that is already id order.
+                    let pushed: Vec<ObjId> = index
+                        .of_unit
+                        .iter()
+                        .map(|row| row.id)
+                        .filter(|id| table.iter().any(|c| c.id == *id))
+                        .collect();
+                    assert_eq!(
+                        table.iter().map(|c| c.id).collect::<Vec<_>>(),
+                        pushed,
+                        "the sort moved a candidate from ({x}, {y}) at {reach} cm"
+                    );
+                    assert!(
+                        table.windows(2).all(|pair| pair[0].id < pair[1].id),
+                        "not strictly ascending from ({x}, {y}) at {reach} cm"
+                    );
+                    assert!(
+                        table.windows(2).all(|pair| pair[0].row < pair[1].row),
+                        "rows out of order from ({x}, {y}) at {reach} cm"
+                    );
+                }
+            }
+        }
+        // A slice in another order — the production slice rotated, C first —
+        // rebuilt over: the table and its rows follow the slice, every hint
+        // still names its unit, and the table walk's pushes are C, A, B until
+        // the kept sort puts them in id order.
+        //
+        // **This is the one place the hint and the search part.** The hint
+        // finds C at row 0, where it is. The old `keep` searched the slice for
+        // C, and a binary search over an unsorted slice is promised nothing:
+        // over this one, std's halving (today) probes rows 1 and 2 for the
+        // largest id and misses, so the old `keep` dropped C and answered A,
+        // B — the new answer is a superset, and a different set. On a
+        // duplicate-free slice any hit the search does make is the element
+        // with that id, which is the hint's row, so the new answer always
+        // holds the old one at the same rows; it is more than the old one
+        // only over a slice no production cull is handed (`Arena::new` sorts;
+        // the module head), and the assertions below are the ones that hold
+        // whatever the search does.
+        let mut rotated = arena.units.clone();
+        rotated.rotate_left(2);
+        assert_eq!(
+            rotated.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+            vec![C, A, B]
+        );
+        index.rebuild(terrain, &rotated);
+        assert_eq!(
+            index
+                .of_unit
+                .iter()
+                .map(|row| (row.id, row.row))
+                .collect::<Vec<_>>(),
+            vec![(C, 0), (A, 1), (B, 2)]
+        );
+        let whole = index.in_range_rows_by(&pose(500, 500), 100_000, &rotated, Some(true));
+        assert_eq!(
+            whole,
+            vec![
+                Candidate {
+                    id: A,
+                    row: 1,
+                    cell: (0, 0)
+                },
+                Candidate {
+                    id: B,
+                    row: 2,
+                    cell: (2, 0)
+                },
+                Candidate {
+                    id: C,
+                    row: 0,
+                    cell: (7, 7)
+                },
+            ]
+        );
+        for c in &whole {
+            assert_eq!(
+                rotated
+                    .get(usize::try_from(c.row).unwrap_or(usize::MAX))
+                    .map(|unit| unit.id),
+                Some(c.id)
+            );
+        }
+        // The old `keep` over the rotated slice, by the same walk: whatever
+        // the search found, the new answer holds at the same row — and any
+        // hit the search makes for C is row 0, the hint's.
+        let old = keep_before_t107b(&index, &pose(500, 500), 100_000, &rotated, Some(true));
+        assert!(old.len() <= whole.len());
+        for (id, at) in &old {
+            assert!(
+                whole.iter().any(|c| id_and_row(c) == (*id, *at)),
+                "the old keep found {id:?} at row {at} and the new answer does not hold it"
+            );
+        }
+        if let Ok(at) = rotated.binary_search_by_key(&C, |unit| unit.id) {
+            assert_eq!(at, 0, "a hit for C that is not C's row");
+        }
     }
 
     /// **16b cut S.2's first index fix**, pinned as the identity it rests on: the

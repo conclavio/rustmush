@@ -167,7 +167,7 @@ use mush_tactics::TacticalUnit;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::index::{reach_bound_sq, square_between, square_cm};
+use crate::arena::index::{Candidate, reach_bound_sq, square_between, square_cm};
 use crate::arena::ledger::EventKind;
 use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
 use crate::arena::state::{
@@ -1210,11 +1210,16 @@ impl Arena {
         // close look can be is *everything this platform can detect*.
         let close_permille = self.sensors_cfg.condition_reach_permille.min(1_000);
         let mut found: Vec<Detection> = Vec::new();
-        for id in self.index.in_range(&watcher.pose, cull, &self.units) {
+        // **16c `T-107b`**: the cull hands each candidate back with its row in
+        // `self.units`, and the target is read by that row (`Arena::unit_row`,
+        // verified, with `Arena::unit` as its fallback) where this loop used
+        // to search the table a second time for the unit the cull just found.
+        for candidate in self.index.in_range_rows(&watcher.pose, cull, &self.units) {
+            let id = candidate.id;
             if id == observer {
                 continue;
             }
-            let Some(target) = self.unit(id) else {
+            let Some(target) = self.unit_row(&candidate) else {
                 continue;
             };
             if target.limits.wreck && !sensor.sees_wrecks {
@@ -1335,9 +1340,14 @@ impl Arena {
         let mut cost: u32 = 0;
         let mut permille = FULL_SIGNATURE_PERMILLE;
         let mut jammed = false;
-        for id in self.index.in_range(pose, self.jam_radius_cm, &self.units) {
+        // 16c `T-107b`: each pod read by the row the cull hands back, the
+        // search kept as the fallback (`Arena::unit_row`).
+        for candidate in self
+            .index
+            .in_range_rows(pose, self.jam_radius_cm, &self.units)
+        {
             counters.jam_checks = counters.jam_checks.saturating_add(1);
-            let Some(pod) = self.unit(id) else {
+            let Some(pod) = self.unit_row(&candidate) else {
                 continue;
             };
             let Some(jammer) = pod.jammer else {
@@ -1476,7 +1486,16 @@ impl Arena {
         counters: &mut PerceptionCounters,
         journal: &mut Vec<Notice>,
     ) -> Vec<(ObjId, ContactId)> {
-        let Some(sharing) = self.unit(sharer) else {
+        // **16c `T-107b`**: the sharer's row, found once here by the search
+        // `Arena::unit` makes, and read back below by `Arena::unit_by_row` —
+        // verified, the search as its fallback — where the candidates build
+        // searched the table a second time for this same unit. The row holds
+        // across the fold between the two reads: `jam_fold_of` writes only the
+        // memo, and nothing reorders `self.units`.
+        let Some(sharer_row) = self.unit_at(sharer) else {
+            return Vec::new();
+        };
+        let Some(sharing) = self.units.get(sharer_row) else {
             return Vec::new();
         };
         if sharing.limits.wreck {
@@ -1547,25 +1566,33 @@ impl Arena {
         // Who to say it to, decided against the same snapshot: the index query and
         // the side and wreck tests, collected first (16b cut U.2) because each
         // mate's fold below goes through the memo, which takes the arena mutably.
-        let candidates: Vec<ObjId> = self
-            .unit(sharer)
+        // **16c `T-107b`**: the sharer read back by the row its head found,
+        // the candidates keep the rows the cull hands back, and both reads of
+        // a mate — the side and wreck test here, the eye and the coordinates
+        // below — go by row (`Arena::unit_row`, verified, the search as its
+        // fallback). A row held across the folds between two reads still
+        // names the same element: `jam_fold_of` writes only the memo, and
+        // nothing reorders `self.units`.
+        let candidates: Vec<Candidate> = self
+            .unit_by_row(sharer_row, sharer)
             .map(|sharing| {
                 self.index
-                    .in_range(&sharing.pose, reach, &self.units)
+                    .in_range_rows(&sharing.pose, reach, &self.units)
                     .into_iter()
-                    .filter(|id| *id != sharer)
-                    .filter(|id| {
-                        self.unit(*id)
+                    .filter(|candidate| candidate.id != sharer)
+                    .filter(|candidate| {
+                        self.unit_row(candidate)
                             .is_some_and(|mate| mate.team == side && !mate.limits.wreck)
                     })
                     .collect()
             })
             .unwrap_or_default();
         let mut mates: Vec<ObjId> = Vec::new();
-        for id in candidates {
+        for candidate in candidates {
+            let id = candidate.id;
             // 16c `T-107a`: the mate's three coordinates come out with its eye
             // and its filter, for the link-reach compare below.
-            let Some((to, mate_eccm, mate_at)) = self.unit(id).and_then(|mate| {
+            let Some((to, mate_eccm, mate_at)) = self.unit_row(&candidate).and_then(|mate| {
                 Some((
                     self.eye_of(mate)?,
                     mate.eccm,
