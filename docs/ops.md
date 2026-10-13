@@ -1405,7 +1405,12 @@ the owner's STOP before 17b cut M4.5 moved the CI lane onto minds; the owner
 waived that precondition on 2026-10-08. The three runs were made on the VPS on
 2026-10-12 at `47bcb620` and did not hold — one of three whole, the authored
 cohort's window p99 27.5 to 33.0 ms against its 32 ms lens (17b §2). After
-16c `T-105` and `T-104` (hash v2, re-blessed at `16320d7c`) the minds lane held in 10 of 12 asserting runs the same day and the last pass read whole, burst, whole: the lenses hold with 15 to 30 per cent of margin whenever the box is itself, and one run in three on this box runs 20 to 35 per cent slower across every lane at once — the gate's three-running letter waits on the owner's ruling about the box or the delta's bound (17b §2).
+16c `T-105` and `T-104` (hash v2, re-blessed at `16320d7c`) the minds lane held in
+10 of 12 asserting runs the same day; and at `9bbd2b4a` (2026-10-13, after 16c `T-107a`
+to `T-107d` and `T-110a`) every lens held three times running, the delta's timing guard
+tripping once at +20.1 per cent against its 20 per cent bound with every block equal —
+the lenses held, the letter two of three; one run in three on this box runs 20 to 35 per
+cent slower across every lane at once, and the owner rules on the box or the bound (17b §2).
 Its four
 `harness-minds-<variant>.json` reports carry a deterministic `minds` block
 (thinks, inline and pooled, landings, faults, ops, fees, the final substep
