@@ -130,6 +130,38 @@
 //! re-derives the index over the units it decodes, so no row is carried and the
 //! format does not move.
 //!
+//! # The sliced slots of 16c `T-107c`
+//!
+//! What T-107a's annotate left to this cut: the cell walk's slot reads and the
+//! table walk's box check. Two things moved, and no answer:
+//!
+//! 1. **The cell walk reads each row of the box as one slice.** The box is
+//!    `(x0..=x1) × (y0..=y1)`, clamped to the window, and the grid is row-major
+//!    with the **width** as its stride, so row `y`'s cells are the slots
+//!    `y·width + x0 ..= y·width + x1` in x-ascending order — exactly the slots
+//!    [`SpatialIndex::occupant`] reads one bounds check at a time. The walk
+//!    takes them as one slice (`SpatialIndex::row_slots`) and feeds the same
+//!    ids to the same `keep` in the same order. The slice is **always there by
+//!    the clamps** — `y ≤ height − 1` and `x1 ≤ width − 1` put its last slot at
+//!    `width·height − 1` at the most, the buffer's last — but the walk does not
+//!    rest on that: a row whose slice is not there falls back to the per-cell
+//!    `occupant` reads, and is never skipped
+//!    (`t107c_a_row_the_buffer_does_not_hold_falls_back_to_the_cells` holds a
+//!    truncated buffer to the old walk). A pod's one-cell jamming scan and every
+//!    small-reach cull take this branch.
+//! 2. **The table walk's box check is two compares, not four.** `x0 ≤ x ≤ x1`
+//!    is `x − x0 ≤ x1 − x0` in wrapping `u16` arithmetic (`within_span`),
+//!    exact for every `u16` whenever `x0 ≤ x1`, which the clamps give; the two
+//!    spans are hoisted out of the loop over the table's rows. The order of the
+//!    rows and the set they keep are untouched, and the occupant test after the
+//!    box check is the one it was.
+//!
+//! No RNG, hash, ledger, frame or counter reads the walk's shape, so nothing
+//! downstream can move; `t107c_the_cell_walk_on_a_non_square_window_answers_the_brute_force_scan`
+//! holds the walk to a brute-force scan on a 12 by 5 and a 5 by 12 window,
+//! where a `y·height` stride — the slip no square window would catch — would
+//! read the wrong row.
+//!
 //! # Why it is rebuilt rather than maintained
 //!
 //! A rebuild is `O(units)` — [`SpatialIndex::rebuild`] clears only the cells the
@@ -357,6 +389,22 @@ pub fn within_cm(a: &Pose, b: &Pose, reach_cm: u64) -> bool {
 /// produce one set.
 const UNIT_WALK_CELLS_PER_UNIT: usize = 4;
 
+/// **Whether `v` lies in `lo..=lo + span`**, as one unsigned compare (16c
+/// `T-107c`): the table walk's box check, `(x0..=x1).contains(&x)`, written as
+/// `x − x0 ≤ x1 − x0` with the span hoisted out of the loop over the rows.
+///
+/// Exact for every `u16` `v` whenever `lo + span` does not overflow, which a
+/// span taken as `hi − lo` for `lo ≤ hi` guarantees: for `v ≥ lo` the wrapping
+/// difference is the true one and `v − lo ≤ hi − lo` is `v ≤ hi`; for `v < lo`
+/// it wraps to `v − lo + 65,536 > 65,535 − lo ≥ hi − lo`, and the test is
+/// false as `v < lo` wants. `t107c_the_span_test_is_the_inclusive_range_test`
+/// holds it to the range's own `contains` across every boundary and at the
+/// `u16` extremes.
+#[inline]
+const fn within_span(v: u16, lo: u16, span: u16) -> bool {
+    v.wrapping_sub(lo) <= span
+}
+
 /// **One row of the index's unit table** (16c `T-107b`): a unit's id, the
 /// cell it stands in, and its **row** — its position in the slice
 /// [`SpatialIndex::rebuild`] was handed, which on the production slice
@@ -501,6 +549,34 @@ impl SpatialIndex {
         self.occupant.get(index).copied().flatten()
     }
 
+    /// **The slots of cells `(x0..=x1, y)` as one slice** (16c `T-107c`): the
+    /// `x1 − x0 + 1` slots [`SpatialIndex::occupant`] would read one at a time
+    /// for those cells, in x-ascending order — the grid is row-major with the
+    /// **width** as its stride (`occupant` reads slot `y·width + x`, and so does
+    /// this), so row `y`'s cells `x0..=x1` are the contiguous slots
+    /// `y·width + x0 ..= y·width + x1`.
+    ///
+    /// `None` when the row is not wholly on the window (`y ≥ height` or `x1 ≥
+    /// width`: a slice across a row's end would hold the next row's cells) or
+    /// the buffer does not hold it; the cell walk then reads the row's cells one
+    /// by one, which answer what `occupant` always has — `None` for a cell off
+    /// the window or past the buffer's end, the slot's id for a cell whose slot
+    /// the buffer still holds
+    /// (`t107c_a_row_the_buffer_does_not_hold_falls_back_to_the_cells` finds
+    /// the neighbour of a slot that is gone through exactly those reads). A
+    /// `None` slice is not an empty row. For `x0 > x1` nothing is offered
+    /// either way: the slice is empty or `None`, and the per-cell range is
+    /// empty.
+    fn row_slots(&self, y: u16, x0: u16, x1: u16) -> Option<&[Option<ObjId>]> {
+        if y >= self.height || x1 >= self.width {
+            return None;
+        }
+        let base = usize::from(y).checked_mul(usize::from(self.width))?;
+        let first = base.checked_add(usize::from(x0))?;
+        let last = base.checked_add(usize::from(x1))?;
+        self.occupant.get(first..=last)
+    }
+
     /// The cell `id` stands in, or `None` when the index does not hold it.
     #[must_use]
     pub fn cell_of_unit(&self, id: ObjId) -> Option<(u16, u16)> {
@@ -582,7 +658,10 @@ impl SpatialIndex {
     ///
     /// **16c `T-107b`**: the ids of [`SpatialIndex::in_range_rows`], which is
     /// where the walks now live; a caller that goes on to read each unit takes
-    /// that one and reads by row.
+    /// that one and reads by row. **16c `T-107c`**: the cell walk reads each
+    /// row of the box as one slice of the grid (`SpatialIndex::row_slots`,
+    /// with the per-cell reads as its fallback) and the table walk's box check
+    /// is `within_span` an axis; the module head has both.
     #[must_use]
     pub fn in_range(&self, pose: &Pose, range_cm: u32, units: &[UnitState]) -> Vec<ObjId> {
         self.in_range_by(pose, range_cm, units, None)
@@ -680,33 +759,80 @@ impl SpatialIndex {
                     // only at the cell its `of_unit` row records (`rebuild` and
                     // `move_unit` are the grid's only writers and keep that), so
                     // this is the cell walk's set whatever the occupancy.
+                    //
+                    // 16c `T-107c`: the box check as one unsigned compare an
+                    // axis (`within_span`), its two spans hoisted out of the
+                    // loop — the same predicate as the two inclusive ranges,
+                    // exact because the clamps give `x0 ≤ x1` and `y0 ≤ y1`.
+                    // The rows are walked in the order they were and the
+                    // occupant test is the one it was.
+                    let span_x = x1 - x0;
+                    let span_y = y1 - y0;
                     for &IndexRow { id, cell, row } in &self.of_unit {
                         let (x, y) = cell;
-                        if (x0..=x1).contains(&x)
-                            && (y0..=y1).contains(&y)
+                        if within_span(x, x0, span_x)
+                            && within_span(y, y0, span_y)
                             && self.occupant(x, y) == Some(id)
                         {
                             keep(id, row, cell, &mut found);
                         }
                     }
                 } else {
+                    // 16c `T-107b`: the slot names an id; its row comes off
+                    // the index's own table, and `keep` verifies it as it does
+                    // the table walk's. A slot naming a unit the table does
+                    // not hold has no hint and takes the search — and is
+                    // unreachable: `move_unit` is only ever asked about a
+                    // unit with a cell, and the index is rebuilt over the
+                    // same slice before either caller runs (the motion loop's
+                    // rebuild just ahead of its integrate loop, and `place`'s
+                    // own on its `None` arm), so a unit with a cell is in the
+                    // table.
+                    let offer = |id: ObjId, x: u16, y: u16, found: &mut Vec<Candidate>| {
+                        let row = self.row_of(id).map_or(u32::MAX, |row| row.row);
+                        keep(id, row, (x, y), found);
+                    };
+                    // 16c `T-107c`: each row of the box read as one slice of
+                    // the grid rather than a bounds-checked slot a cell. The
+                    // grid is row-major with the WIDTH as its stride — never
+                    // the height, which only a non-square window tells apart —
+                    // so row `y`'s cells `x0..=x1` are the contiguous slots
+                    // `y·width + x0 ..= y·width + x1` (`row_slots`), walked in
+                    // x-ascending order: the same ids to the same `keep` in
+                    // the same order as the per-cell reads. The slice is there
+                    // by the clamps (its last slot is at most the buffer's
+                    // last), but a row whose slice is not there is read cell by
+                    // cell as before, never skipped.
                     for y in y0..=y1 {
-                        for x in x0..=x1 {
-                            if let Some(id) = self.occupant(x, y) {
-                                // 16c `T-107b`: the slot names an id; its row
-                                // comes off the index's own table, and `keep`
-                                // verifies it as it does the table walk's. A
-                                // slot naming a unit the table does not hold
-                                // has no hint and takes the search — and is
-                                // unreachable: `move_unit` is only ever asked
-                                // about a unit with a cell, and the index is
-                                // rebuilt over the same slice before either
-                                // caller runs (the motion loop's rebuild just
-                                // ahead of its integrate loop, and `place`'s
-                                // own on its `None` arm), so a unit with a
-                                // cell is in the table.
-                                let row = self.row_of(id).map_or(u32::MAX, |row| row.row);
-                                keep(id, row, (x, y), &mut found);
+                        match self.row_slots(y, x0, x1) {
+                            Some(slots) => {
+                                // The slice has exactly `x1 − x0 + 1` slots, so
+                                // a count from `x0` beside the slice iterator
+                                // names each slot's cell — `x0..=x1`, in order
+                                // — with no second iterator's bookkeeping (the
+                                // review of this cut: a `RangeInclusive` zipped
+                                // with the slice takes `Zip`'s general path,
+                                // the range's exhausted flag and two compares a
+                                // step on top of the slice's own end test).
+                                // The count cannot wrap — `row_slots` gives
+                                // `x1 ≤ width − 1 ≤ 65,534`, so the step past
+                                // the last slot is at most `65,535` — and the
+                                // wrapping form says so without a check; that
+                                // one step past is never read.
+                                let mut x = x0;
+                                for slot in slots {
+                                    if let Some(id) = *slot {
+                                        offer(id, x, y, &mut found);
+                                    }
+                                    x = x.wrapping_add(1);
+                                }
+                            }
+                            None => {
+                                for x in x0..=x1 {
+                                    if let Some(id) = self.occupant(x, y) {
+                                        offer(id, x, y, &mut found);
+                                    }
+                                }
                             }
                         }
                     }
@@ -992,6 +1118,15 @@ mod tests {
     /// id, which is what the new `keep` hands back as the row. A mutation of
     /// the range compare, the occupant test or the lookup fails against this
     /// rather than only in a downstream pin.
+    ///
+    /// **Also 16c `T-107c`'s reference**, unchanged: its cell branch is the
+    /// per-cell [`SpatialIndex::occupant`] walk over `(x0..=x1) × (y0..=y1)`
+    /// and its table branch the `contains` box check an axis, which are
+    /// exactly the two walk shapes T-107c replaced (the row slices of
+    /// `SpatialIndex::row_slots` with the per-cell fallback, and
+    /// [`within_span`] with its spans hoisted). The T-107c sweeps hold the
+    /// new walks to it id for id and row for row, over the non-square windows
+    /// and over a buffer cut short.
     fn keep_before_t107b(
         index: &SpatialIndex,
         from: &Pose,
@@ -1858,6 +1993,514 @@ mod tests {
         assert_eq!(
             index.pairs_within(100_000, &arena.units),
             vec![(A, B), (A, C), (B, C)]
+        );
+    }
+
+    /// **A window of `width` by `height` cells of ground** (16c `T-107c`) with
+    /// the stock definition's zones, spots and graph, fielded with `units` —
+    /// the shape `the_cell_window_cull_answers_what_a_brute_force_scan_answers`
+    /// has on the square test window, on a window whose two strides differ.
+    fn arena_on(
+        width: u16,
+        height: u16,
+        units: Vec<crate::arena::state::CustodyUnit>,
+    ) -> crate::arena::state::Arena {
+        use crate::arena::state::{Arena, ArenaDefinition, ArenaTerrain, CustodyOut, MatchMode};
+        use crate::arena::test_support::{definition, ground, resolution};
+        use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+        let cells = vec![ground(); usize::from(width) * usize::from(height)];
+        Arena::new(
+            CustodyOut {
+                definition: ArenaDefinition {
+                    terrain: ArenaTerrain::new(width, height, 1_000, cells).unwrap_or_else(
+                        |error| panic!("the {width} by {height} window: {error:?}"),
+                    ),
+                    ..definition()
+                },
+                units,
+                pilots: Vec::new(),
+                resolution: resolution(),
+                seed: 2_350,
+                mode: MatchMode::Skirmish,
+            },
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .unwrap_or_else(|error| panic!("the {width} by {height} arena: {error:?}"))
+    }
+
+    /// **The ten placements of the non-square sweeps** (16c `T-107c`) on the
+    /// 12 by 5 window, as `(x_cm, y_cm)`: the four corners, a neighbour across
+    /// the first corner's cell boundary, two neighbours mid-window, the far
+    /// corner's diagonal neighbour and its neighbour along the last row, and
+    /// one more on the last row — deliberately not all cell centres, so a
+    /// reach under one cell has to look into the next cell. Transposed
+    /// (`(y_cm, x_cm)`) they are the same field on the 5 by 12 window.
+    const T107C_PLACEMENTS: [(i64, i64); 10] = [
+        (500, 500),      // cell (0, 0): the near corner
+        (11_900, 100),   // cell (11, 0)
+        (100, 4_900),    // cell (0, 4)
+        (11_500, 4_500), // cell (11, 4): the far corner
+        (1_100, 500),    // cell (1, 0), 600 cm from the near corner
+        (5_500, 2_500),  // cell (5, 2)
+        (6_100, 2_900),  // cell (6, 2), 721 cm from (5, 2)
+        (10_900, 3_900), // cell (10, 3), 848 cm from the far corner
+        (3_500, 4_500),  // cell (3, 4)
+        (10_500, 4_500), // cell (10, 4), 1,000 cm from the far corner exactly
+    ];
+
+    /// The reaches the non-square sweeps ask about (16c `T-107c`): nothing;
+    /// one centimetre; half a cell; either side of one cell, where the span
+    /// grows from one to two; just under two cells; and three and a half, where
+    /// the clamped box outgrows the cost rule's four cells a unit and the
+    /// unforced cull takes the table.
+    const T107C_REACHES: [u32; 7] = [0, 1, 500, 999, 1_000, 1_999, 3_500];
+
+    /// [`T107C_PLACEMENTS`] fielded on a `width` by `height` window, transposed
+    /// when `transposed` — ten tanks, ids `10..=19` in placement order, so
+    /// `Arena::new`'s id order is the placement order and each unit's row is its
+    /// placement.
+    fn t107c_field(width: u16, height: u16, transposed: bool) -> crate::arena::state::Arena {
+        let units: Vec<crate::arena::state::CustodyUnit> = T107C_PLACEMENTS
+            .iter()
+            .enumerate()
+            .map(|(n, (x_cm, y_cm))| {
+                let id = ObjId(10 + u32::try_from(n).unwrap_or(0));
+                let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+                let at = if transposed {
+                    pose(*y_cm, *x_cm)
+                } else {
+                    pose(*x_cm, *y_cm)
+                };
+                tank(id, team, at)
+            })
+            .collect();
+        arena_on(width, height, units)
+    }
+
+    /// Every pose the non-square sweeps cull from: each unit's own, and the
+    /// centres of the window's four corner cells — on the transposed window in
+    /// the transposed order, so the `n`th from on either window is the
+    /// transpose of the `n`th on the other.
+    fn t107c_froms(width: u16, height: u16, transposed: bool, units: &[UnitState]) -> Vec<Pose> {
+        let far_x = i64::from(width - 1) * 1_000 + 500;
+        let far_y = i64::from(height - 1) * 1_000 + 500;
+        let (second, third) = if transposed {
+            (pose(500, far_y), pose(far_x, 500))
+        } else {
+            (pose(far_x, 500), pose(500, far_y))
+        };
+        units
+            .iter()
+            .map(|unit| unit.pose.clone())
+            .chain([pose(500, 500), second, third, pose(far_x, far_y)])
+            .collect()
+    }
+
+    /// **16c `T-107c`: the sliced cell walk on a window whose strides differ.**
+    /// A 12 by 5 window and its 5 by 12 transpose, ten units at the corners and
+    /// inside, seven reaches from every unit and every corner: the cull by the
+    /// cells — now a slice a row, `y · width` its stride — answers a brute-force
+    /// [`within_cm`] scan of the units; answers, id for id and row for row, the
+    /// pre-cut walk kept as `keep_before_t107b` (whose cell branch reads
+    /// [`SpatialIndex::occupant`] one cell at a time, which is exactly the walk
+    /// this cut replaced); answers the table walk, forced by
+    /// `in_range_rows_by`'s switch, and the unforced cull, which the cost rule
+    /// — restated here as a tally, since the body exposes no counter — sends
+    /// to the cells at the six short reaches and the table at the seventh (the
+    /// forcing is what guarantees both walks run at every comparison); and the
+    /// transpose answers the same ids from the transposed pose. A `y · height` stride
+    /// would read row 4 of the 12 by 5 window at slot 20 rather than 48 — the
+    /// slip no square window could tell from the right one — and the far
+    /// corner's own cull is pinned by hand so that case is not only implied.
+    #[test]
+    fn t107c_the_cell_walk_on_a_non_square_window_answers_the_brute_force_scan() {
+        let wide = t107c_field(12, 5, false);
+        let tall = t107c_field(5, 12, true);
+        let mut comparisons = 0_usize;
+        let mut by_cells = 0_usize;
+        let mut by_table = 0_usize;
+        let mut answers: Vec<Vec<Vec<ObjId>>> = Vec::new();
+        for (arena, width, height, transposed) in
+            [(&wide, 12_u16, 5_u16, false), (&tall, 5, 12, true)]
+        {
+            let terrain = &arena.definition.terrain;
+            assert_eq!((terrain.width(), terrain.height()), (width, height));
+            let units = &arena.units;
+            assert_eq!(
+                units.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+                (10..20).map(ObjId).collect::<Vec<_>>()
+            );
+            let mut index = SpatialIndex::new(terrain);
+            index.rebuild(terrain, units);
+            assert_eq!(index.len(), 10);
+            assert_eq!((index.width(), index.height()), (width, height));
+            let brute = |from: &Pose, reach: u32| -> Vec<ObjId> {
+                let mut found: Vec<ObjId> = units
+                    .iter()
+                    .filter(|unit| within_cm(from, &unit.pose, u64::from(reach)))
+                    .map(|unit| unit.id)
+                    .collect();
+                found.sort_unstable();
+                found
+            };
+            let mut here: Vec<Vec<ObjId>> = Vec::new();
+            for from in t107c_froms(width, height, transposed, units) {
+                let (x, y) = (from.x_cm, from.y_cm);
+                for reach in T107C_REACHES {
+                    let expected = brute(&from, reach);
+                    let cells = index.in_range_rows_by(&from, reach, units, Some(false));
+                    let table = index.in_range_rows_by(&from, reach, units, Some(true));
+                    let chosen = index.in_range_rows_by(&from, reach, units, None);
+                    assert_eq!(
+                        cells.iter().map(|c| c.id).collect::<Vec<_>>(),
+                        expected,
+                        "{width} by {height}: the cell walk and the scan disagree at {reach} cm from ({x}, {y})"
+                    );
+                    assert_eq!(
+                        cells, table,
+                        "{width} by {height}: the cell walk and the table walk disagree at {reach} cm from ({x}, {y})"
+                    );
+                    assert_eq!(
+                        chosen, cells,
+                        "{width} by {height}: the unforced cull at {reach} cm from ({x}, {y})"
+                    );
+                    assert_eq!(
+                        index.in_range(&from, reach, units),
+                        expected,
+                        "{width} by {height}: the ids at {reach} cm from ({x}, {y})"
+                    );
+                    // The pre-cut walk, by the same branch, id for id and row
+                    // for row.
+                    for forced in [Some(false), Some(true), None] {
+                        assert_eq!(
+                            index
+                                .in_range_rows_by(&from, reach, units, forced)
+                                .iter()
+                                .map(id_and_row)
+                                .collect::<Vec<_>>(),
+                            keep_before_t107b(&index, &from, reach, units, forced),
+                            "{width} by {height}: the pre-cut walk at {reach} cm from ({x}, {y}) by {forced:?}"
+                        );
+                    }
+                    // Every row and cell handed back is true.
+                    for c in &cells {
+                        let at = usize::try_from(c.row).unwrap_or(usize::MAX);
+                        assert_eq!(units.get(at).map(|unit| unit.id), Some(c.id));
+                        assert_eq!(index.cell_of_unit(c.id), Some(c.cell));
+                        assert_eq!(terrain.cell_of(&units[at].pose), Some(c.cell));
+                    }
+                    // Which branch the cost rule sends the unforced cull down,
+                    // as this test restates the rule — the box against four
+                    // cells a unit, sized as `in_range_rows_by` sizes it. A
+                    // tally and not an observation: the production body
+                    // exposes no counter, so what guarantees both walks ran
+                    // at this comparison is the forcing above (`Some(false)`
+                    // and `Some(true)` take each branch whatever the rule
+                    // says) with `chosen` held equal to both.
+                    let span = u16::try_from(u64::from(reach) / 1_000 + 1).unwrap_or(u16::MAX);
+                    let (cx, cy) = index
+                        .cell_of_pose(&from)
+                        .expect("every from is on the window");
+                    let box_cells = (usize::from(
+                        cx.saturating_add(span).min(width - 1) - cx.saturating_sub(span),
+                    ) + 1)
+                        * (usize::from(
+                            cy.saturating_add(span).min(height - 1) - cy.saturating_sub(span),
+                        ) + 1);
+                    if box_cells > 10 * UNIT_WALK_CELLS_PER_UNIT {
+                        by_table += 1;
+                    } else {
+                        by_cells += 1;
+                    }
+                    comparisons += 1;
+                    here.push(expected);
+                }
+            }
+            answers.push(here);
+        }
+        // Fourteen froms by seven reaches on each of two windows; the cost
+        // rule as restated here sends the unforced cull down both branches
+        // across the sweep (the forced walks exercised both at every
+        // comparison regardless).
+        assert_eq!(comparisons, 2 * 14 * 7);
+        assert!(
+            by_cells > 0 && by_table > 0,
+            "{by_cells} by the cells, {by_table} by the table"
+        );
+        assert_eq!(by_cells + by_table, comparisons);
+        // The transpose answers the same ids from the transposed pose: the
+        // froms are built in the same order on both windows, and a Euclidean
+        // range does not care which axis is which.
+        assert_eq!(
+            answers[0], answers[1],
+            "the 5 by 12 window answers differently"
+        );
+        // Not vacuous, and the stride pinned by hand: on the 12 by 5 window the
+        // far corner's unit at (11, 4) holds slot 4 · 12 + 11 = 59, and a walk
+        // striding by the height would read 4 · 5 + 11 = 31 — cell (7, 2),
+        // which is empty — and find nobody at reach 0.
+        let terrain = &wide.definition.terrain;
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, &wide.units);
+        assert_eq!(index.occupant.get(59).copied().flatten(), Some(ObjId(13)));
+        assert_eq!(index.occupant.get(31).copied().flatten(), None);
+        assert_eq!(
+            index.in_range_rows_by(&pose(11_500, 4_500), 0, &wide.units, Some(false)),
+            vec![Candidate {
+                id: ObjId(13),
+                row: 3,
+                cell: (11, 4)
+            }]
+        );
+        // From the far corner: 848 cm reaches the diagonal neighbour and not
+        // the one along the row at 1,000 exactly, which 1,000 reaches.
+        assert_eq!(
+            index.in_range(&pose(11_500, 4_500), 999, &wide.units),
+            vec![ObjId(13), ObjId(17)]
+        );
+        assert_eq!(
+            index.in_range(&pose(11_500, 4_500), 1_000, &wide.units),
+            vec![ObjId(13), ObjId(17), ObjId(19)]
+        );
+        // From the near corner: 600 cm across the cell boundary at 999 and not
+        // at 500.
+        assert_eq!(
+            index.in_range(&pose(500, 500), 999, &wide.units),
+            vec![ObjId(10), ObjId(14)]
+        );
+        assert_eq!(
+            index.in_range(&pose(500, 500), 500, &wide.units),
+            vec![ObjId(10)]
+        );
+        // And on the transpose, the same from the transposed corner.
+        let terrain = &tall.definition.terrain;
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, &tall.units);
+        assert_eq!(
+            index.in_range_rows_by(&pose(4_500, 11_500), 0, &tall.units, Some(false)),
+            vec![Candidate {
+                id: ObjId(13),
+                row: 3,
+                cell: (4, 11)
+            }]
+        );
+        assert_eq!(
+            index.in_range(&pose(4_500, 11_500), 1_000, &tall.units),
+            vec![ObjId(13), ObjId(17), ObjId(19)]
+        );
+    }
+
+    /// **16c `T-107c`'s fallback**: a row whose slice the buffer does not
+    /// hold is read cell by cell, never skipped. The 12 by 5 field's buffer
+    /// is cut one slot short — the far corner's own — so the box of a cull
+    /// from that corner at one cell's reach, `(9..=11) × (2..=4)`, has two
+    /// rows the slice answers and one, the last, it does not; the walk answers
+    /// what the pre-cut walk answers over the same cut buffer
+    /// (`keep_before_t107b`'s cell branch, one [`SpatialIndex::occupant`] read
+    /// a cell, which is `None` for the missing slot and the unit at (10, 4) for
+    /// the slot before it), over the whole sweep and by hand: the neighbour at
+    /// (10, 4) is found through the fallback, the corner unit is gone with its
+    /// slot, and a walk that skipped the row would have lost the neighbour.
+    #[test]
+    fn t107c_a_row_the_buffer_does_not_hold_falls_back_to_the_cells() {
+        let arena = t107c_field(12, 5, false);
+        let terrain = &arena.definition.terrain;
+        let units = &arena.units;
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, units);
+        assert_eq!(index.occupant.len(), 60);
+        // Whole: every row of the box is a slice.
+        assert!(index.row_slots(4, 9, 11).is_some());
+        index.occupant.truncate(59);
+        // Cut: the last row of the box is not, the two before it are, and the
+        // per-cell reads answer what they always did — nothing for the slot
+        // that is gone, the unit for the one before it.
+        assert!(index.row_slots(4, 9, 11).is_none());
+        assert!(index.row_slots(3, 9, 11).is_some());
+        assert!(index.row_slots(2, 9, 11).is_some());
+        assert_eq!(index.occupant(11, 4), None);
+        assert_eq!(index.occupant(10, 4), Some(ObjId(19)));
+        assert_eq!(index.occupant(10, 3), Some(ObjId(17)));
+        let from = pose(11_500, 4_500);
+        let walked = index.in_range_rows_by(&from, 1_000, units, Some(false));
+        assert_eq!(
+            walked,
+            vec![
+                Candidate {
+                    id: ObjId(17),
+                    row: 7,
+                    cell: (10, 3)
+                },
+                Candidate {
+                    id: ObjId(19),
+                    row: 9,
+                    cell: (10, 4)
+                },
+            ],
+            "the neighbour in the cut row was skipped, or the corner unit found without its slot"
+        );
+        assert_eq!(
+            walked.iter().map(id_and_row).collect::<Vec<_>>(),
+            keep_before_t107b(&index, &from, 1_000, units, Some(false))
+        );
+        // And the whole sweep over the cut buffer, by every branch, against the
+        // pre-cut walk — the table walk reads the same cut `occupant`, so it
+        // and the cell walk still agree.
+        let mut whole = SpatialIndex::new(terrain);
+        whole.rebuild(terrain, units);
+        let mut fell_short = 0_usize;
+        for from in t107c_froms(12, 5, false, units) {
+            let (x, y) = (from.x_cm, from.y_cm);
+            for reach in T107C_REACHES {
+                for forced in [Some(false), Some(true), None] {
+                    let rows = index.in_range_rows_by(&from, reach, units, forced);
+                    assert_eq!(
+                        rows.iter().map(id_and_row).collect::<Vec<_>>(),
+                        keep_before_t107b(&index, &from, reach, units, forced),
+                        "over the cut buffer at {reach} cm from ({x}, {y}) by {forced:?}"
+                    );
+                    assert!(
+                        rows.iter().all(|c| c.id != ObjId(13)),
+                        "the unit whose slot is gone was offered at {reach} cm from ({x}, {y}) by {forced:?}"
+                    );
+                }
+                let cells = index.in_range_rows_by(&from, reach, units, Some(false));
+                assert_eq!(
+                    cells,
+                    index.in_range_rows_by(&from, reach, units, Some(true))
+                );
+                // What the whole buffer answers less the corner unit, which is
+                // what a cut buffer can answer at most: the cut loses exactly
+                // that unit and nothing else.
+                let mut expected = whole.in_range_rows_by(&from, reach, units, Some(false));
+                let before = expected.len();
+                expected.retain(|c| c.id != ObjId(13));
+                fell_short += usize::from(expected.len() < before);
+                assert_eq!(cells, expected, "at {reach} cm from ({x}, {y})");
+            }
+        }
+        assert!(fell_short > 0, "the cut slot was never in a box");
+    }
+
+    /// **16c `T-107c`**: [`within_span`] is the inclusive range's own
+    /// `contains` — for every `lo ≤ hi` over `0..=45` and the three top `u16`s,
+    /// and every `v` over the same values, with `span = hi − lo` as the table
+    /// walk hoists it — so the box check it replaced cannot keep or drop a row
+    /// the range would not.
+    #[test]
+    fn t107c_the_span_test_is_the_inclusive_range_test() {
+        let values: Vec<u16> = (0..=45_u16)
+            .chain([u16::MAX - 2, u16::MAX - 1, u16::MAX])
+            .collect();
+        let mut checked = 0_u64;
+        let mut inside = 0_u64;
+        for &lo in &values {
+            for &hi in &values {
+                if lo > hi {
+                    continue;
+                }
+                let span = hi - lo;
+                for &v in &values {
+                    let expected = (lo..=hi).contains(&v);
+                    assert_eq!(within_span(v, lo, span), expected, "v={v} lo={lo} hi={hi}");
+                    checked += 1;
+                    inside += u64::from(expected);
+                }
+            }
+        }
+        assert!(
+            checked > 50_000 && inside > 0 && inside < checked,
+            "{inside} of {checked}"
+        );
+        // The boundaries by hand, including the one the wrap matters at: a
+        // value just below `lo`, which an unsigned subtraction would otherwise
+        // put inside.
+        assert!(within_span(3, 3, 0));
+        assert!(!within_span(2, 3, 0));
+        assert!(!within_span(4, 3, 0));
+        assert!(within_span(0, 0, u16::MAX));
+        assert!(within_span(u16::MAX, 0, u16::MAX));
+        assert!(!within_span(0, 1, u16::MAX - 1));
+        assert!(within_span(u16::MAX, 1, u16::MAX - 1));
+    }
+
+    /// **16c `T-107c`**: [`SpatialIndex::row_slots`] is the [`SpatialIndex::occupant`]
+    /// reads it stands in for — on the 12 by 5 window and its transpose, for
+    /// every row and every `x0 ≤ x1` on the window, the slice is the cells'
+    /// slots in x-ascending order and exactly `x1 − x0 + 1` of them; off the
+    /// window (a row past the height, a span past the width, where a slice
+    /// would run into the next row) it is `None`.
+    #[test]
+    fn t107c_a_row_s_slots_are_the_cells_occupant_reads() {
+        let mut sliced = 0_usize;
+        let mut refused = 0_usize;
+        let mut occupied = 0_usize;
+        for (width, height, transposed) in [(12_u16, 5_u16, false), (5, 12, true)] {
+            let arena = t107c_field(width, height, transposed);
+            let terrain = &arena.definition.terrain;
+            let mut index = SpatialIndex::new(terrain);
+            index.rebuild(terrain, &arena.units);
+            for y in 0..=height {
+                for x0 in 0..=width {
+                    for x1 in x0..=width {
+                        let slots = index.row_slots(y, x0, x1);
+                        if y < height && x1 < width {
+                            let slots = slots.unwrap_or_else(|| {
+                                panic!("{width} by {height}: no slice for row {y}, {x0}..={x1}")
+                            });
+                            assert_eq!(slots.len(), usize::from(x1 - x0) + 1);
+                            let reads: Vec<Option<ObjId>> =
+                                (x0..=x1).map(|x| index.occupant(x, y)).collect();
+                            assert_eq!(
+                                slots,
+                                reads.as_slice(),
+                                "{width} by {height}: row {y}, {x0}..={x1}"
+                            );
+                            sliced += 1;
+                            occupied += slots.iter().flatten().count();
+                        } else {
+                            assert!(
+                                slots.is_none(),
+                                "{width} by {height}: a slice for row {y}, {x0}..={x1}"
+                            );
+                            refused += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            sliced > 0 && refused > 0 && occupied > 0,
+            "{sliced} sliced, {refused} refused, {occupied} occupied"
+        );
+        // The whole last row of the 12 by 5 window, by hand: units at (0, 4),
+        // (3, 4), (10, 4) and (11, 4), and nothing else.
+        let arena = t107c_field(12, 5, false);
+        let terrain = &arena.definition.terrain;
+        let mut index = SpatialIndex::new(terrain);
+        index.rebuild(terrain, &arena.units);
+        let last = index.row_slots(4, 0, 11).expect("the last row");
+        assert_eq!(
+            last.iter()
+                .enumerate()
+                .filter_map(|(x, slot)| slot.map(|id| (x, id)))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, ObjId(12)),
+                (3, ObjId(18)),
+                (10, ObjId(19)),
+                (11, ObjId(13))
+            ]
+        );
+        // The slice across a row's end that `row_slots` refuses would have been
+        // the next row's first cells: on the 12 by 5 window slots 10..=13 are
+        // (10, 0), (11, 0), (0, 1), (1, 1).
+        assert!(index.row_slots(0, 10, 13).is_none());
+        assert_eq!(
+            index.occupant.get(10..=13).map(<[Option<ObjId>]>::len),
+            Some(4)
         );
     }
 }
