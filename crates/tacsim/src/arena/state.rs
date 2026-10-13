@@ -478,6 +478,45 @@ impl ArenaTerrain {
         Some((x, y))
     }
 
+    /// **Whether `cell` is the cell [`ArenaTerrain::cell_at`] answers for
+    /// `(x_cm, y_cm)`** (16c `T-107d`), by `cell_at`'s own arithmetic turned
+    /// around and without its two divisions: for a non-negative dividend
+    /// `x_cm / cell_cm == x` exactly when `x · cell_cm ≤ x_cm < (x + 1) ·
+    /// cell_cm`, and the window bound is the same `x < width`, `y < height`
+    /// test. A negative coordinate fails the lower bound at every cell (`x ·
+    /// cell_cm` is never below zero), so the sign test needs no line of its
+    /// own; a coordinate whose quotient is past `u16` is at or past `(x + 1) ·
+    /// cell_cm` for every `x` the window holds. One multiply and one add an
+    /// axis: the upper bound `(x + 1) · cell_cm` is the lower bound plus the
+    /// side, exactly. Both are checked in the pose's `i64` — a `u16` times a
+    /// `u16`, and that plus a `u16`, fit it with bits to spare, so neither can
+    /// overflow — and a `None` answers `false`, never a wrong `true`. The one
+    /// production reader is `Arena::eye_at`, which takes the cull's cell for
+    /// a candidate on this test and runs [`ArenaTerrain::cell_of`] when it
+    /// fails (`t107d_is_cell_at_is_cell_at_s_own_answer`).
+    #[must_use]
+    pub fn is_cell_at(&self, cell: (u16, u16), x_cm: i64, y_cm: i64) -> bool {
+        let (x, y) = cell;
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let side = i64::from(self.cell_cm);
+        Self::in_span(i64::from(x), side, x_cm) && Self::in_span(i64::from(y), side, y_cm)
+    }
+
+    /// `c · side ≤ v < c · side + side` (16c `T-107d`): the product and the
+    /// sum checked, the sum being `(c + 1) · side` without the second
+    /// multiply.
+    fn in_span(c: i64, side: i64, v: i64) -> bool {
+        let Some(low) = c.checked_mul(side) else {
+            return false;
+        };
+        let Some(high) = low.checked_add(side) else {
+            return false;
+        };
+        low <= v && v < high
+    }
+
     /// Columns.
     #[must_use]
     pub const fn width(&self) -> u16 {
@@ -5436,6 +5475,100 @@ mod tests {
             assert_eq!(arena.unit_at(c.id), usize::try_from(c.row).ok());
             assert!(arena.unit_row(&c).is_some_and(|unit| unit.id == c.id));
         }
+    }
+
+    /// **16c `T-107d`**: [`ArenaTerrain::is_cell_at`] is `cell_at`'s own
+    /// answer restated — `is_cell_at(cell, x, y)` is `cell_at(x, y) ==
+    /// Some(cell)` for every cell and every pair of coordinates — on the unit
+    /// tests' 8 by 8 window of 1,000 cm cells and on a 12 by 5 window of 700
+    /// cm cells (a width/height slip, or a side baked in, fails on the
+    /// second). The coordinates straddle every boundary the cut's brief names
+    /// and 700's, the far edge of each window, the sign, the `u16` quotient
+    /// bound (65,535,000 and 65,536,000) and both ends of `i64`; the cells are
+    /// every cell of a 13 by 13 box over the windows (both windows' cells, and
+    /// a column and a row past each), `(99, 99)` and the three `u16::MAX`
+    /// corners. 183,034 comparisons, and the agreements counted so the
+    /// on-window pairs are known to have found their one cell.
+    #[test]
+    fn t107d_is_cell_at_is_cell_at_s_own_answer() {
+        let windows = [
+            ArenaTerrain::uniform(8, 8, 1_000, ground()).expect("the 8 by 8 window"),
+            ArenaTerrain::uniform(12, 5, 700, ground()).expect("a 12 by 5 window"),
+        ];
+        const COORDINATES: [i64; 23] = [
+            i64::MIN,
+            -65_536_000,
+            -1,
+            0,
+            1,
+            699,
+            700,
+            701,
+            999,
+            1_000,
+            1_001,
+            3_499,
+            3_500,
+            3_501,
+            7_999,
+            8_000,
+            8_001,
+            8_399,
+            8_400,
+            8_401,
+            65_535_000,
+            65_536_000,
+            i64::MAX,
+        ];
+        let mut cells: Vec<(u16, u16)> = (0..13_u16)
+            .flat_map(|x| (0..13_u16).map(move |y| (x, y)))
+            .collect();
+        cells.extend([(99, 99), (u16::MAX, 0), (0, u16::MAX), (u16::MAX, u16::MAX)]);
+        let mut compared = 0_u32;
+        let mut agreed = 0_u32;
+        for terrain in &windows {
+            let (width, height) = (terrain.width(), terrain.height());
+            for x in COORDINATES {
+                for y in COORDINATES {
+                    let answer = terrain.cell_at(x, y);
+                    for &cell in &cells {
+                        let expected = answer == Some(cell);
+                        assert_eq!(
+                            terrain.is_cell_at(cell, x, y),
+                            expected,
+                            "{width} by {height}: is {cell:?} the cell at ({x}, {y})? cell_at says {answer:?}"
+                        );
+                        compared += 1;
+                        if expected {
+                            agreed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, 2 * 23 * 23 * 173);
+        // The on-window pairs, each finding its one cell (every window cell is
+        // in the box): on the 8 by 8 window the on-window coordinates are {0,
+        // 1, 699, 700, 701, 999, 1,000, 1,001, 3,499, 3,500, 3,501, 7,999} (12
+        // an axis, 144 pairs); on the 12 by 5 the x axis has those twelve and
+        // 8,000, 8,001 and 8,399 (15; the last four in column 11), the y axis
+        // those up to 3,499 (9): 135 pairs.
+        assert_eq!(agreed, 144 + 135);
+        // By hand: the boundary belongs to the cell it opens, on both windows,
+        // and the sign and the far edge are off.
+        let [eight, twelve] = &windows;
+        assert!(eight.is_cell_at((0, 0), 999, 999));
+        assert!(eight.is_cell_at((1, 0), 1_000, 999));
+        assert!(!eight.is_cell_at((0, 0), 1_000, 0));
+        assert!(eight.is_cell_at((7, 7), 7_999, 7_999));
+        assert!(!eight.is_cell_at((8, 7), 8_000, 7_999));
+        assert!(!eight.is_cell_at((7, 7), 8_000, 7_999));
+        assert!(!eight.is_cell_at((0, 0), -1, 0));
+        assert!(!eight.is_cell_at((0, 0), 0, -1));
+        assert!(twelve.is_cell_at((11, 4), 8_399, 3_499));
+        assert!(!twelve.is_cell_at((11, 4), 8_400, 3_499));
+        assert!(!twelve.is_cell_at((11, 4), 8_399, 3_500));
+        assert!(!twelve.is_cell_at((4, 11), 3_499, 8_399));
     }
 
     /// 17b cut M4.6a: moved here from `crate::arena::reflex`'s tests with

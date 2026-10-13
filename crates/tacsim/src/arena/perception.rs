@@ -822,12 +822,57 @@ impl Arena {
 
     /// The observer's eye and the target's, as the atlas trace wants them: each
     /// unit's cell and its own `sensor_height_cm` (doc 16 §3.2 "Line of sight").
+    ///
+    /// **16c `T-107d`**: the cell by [`ArenaTerrain::cell_of`]'s two divisions,
+    /// the eye by [`Arena::eye_in`], the one builder of its other fields, which
+    /// [`Arena::eye_at`] shares.
+    ///
+    /// [`ArenaTerrain::cell_of`]: crate::arena::state::ArenaTerrain::cell_of
     fn eye_of(&self, unit: &UnitState) -> Option<Eye> {
         let cell = self.definition.terrain.cell_of(&unit.pose)?;
-        Some(Eye {
+        Some(Self::eye_in(unit, cell))
+    }
+
+    /// **The eye of `unit` standing in `cell`** (16c `T-107d`): the one place
+    /// the eye's height is read off the unit — `sensor_height_cm`, saturated
+    /// into the trace's `i32` — so [`Arena::eye_of`] and [`Arena::eye_at`]
+    /// cannot drift.
+    fn eye_in(unit: &UnitState, cell: (u16, u16)) -> Eye {
+        Eye {
             cell,
             height_cm: i32::try_from(unit.sensor_height_cm).unwrap_or(i32::MAX),
-        })
+        }
+    }
+
+    /// **[`Arena::eye_of`] with the index's cell as a hint** (16c `T-107d`):
+    /// the cell the cull recorded the unit in ([`Candidate::cell`]), which the
+    /// detections loop and [`Arena::share_pass`] pass for each candidate.
+    ///
+    /// The hint is checked against the pose by [`ArenaTerrain::is_cell_at`],
+    /// which is `cell_at`'s own arithmetic turned around — for a non-negative
+    /// dividend `x_cm / cell_cm == x` exactly when `x · cell_cm ≤ x_cm < (x +
+    /// 1) · cell_cm`, with the window bound in the test — so a true hint costs
+    /// compares and checked multiplies where `cell_of` costs two divisions,
+    /// and the eye it answers is the one `eye_of` builds, field for field
+    /// ([`Arena::eye_in`]). A hint the check refuses — one from an index not
+    /// rebuilt over this pose, a pose off the window, anything at all — runs
+    /// `eye_of`, its `None` included. So the answer never depends on the hint;
+    /// only the cost does (`t107d_eye_at_is_eye_of`). The hit rate is the
+    /// step's ordering: the index is rebuilt after motion and no pose moves
+    /// inside the due loop, so every hint a pass sees is the pose's own cell
+    /// (`t107d_a_fights_index_cells_are_its_poses_cells`).
+    ///
+    /// [`Candidate::cell`]: crate::arena::index::Candidate::cell
+    /// [`ArenaTerrain::is_cell_at`]: crate::arena::state::ArenaTerrain::is_cell_at
+    fn eye_at(&self, unit: &UnitState, hint: (u16, u16)) -> Option<Eye> {
+        if self
+            .definition
+            .terrain
+            .is_cell_at(hint, unit.pose.x_cm, unit.pose.y_cm)
+        {
+            return Some(Self::eye_in(unit, hint));
+        }
+        self.eye_of(unit)
     }
 
     /// **One unit's sensor pass** (doc 16 §3.6), applied at `t_ms` against the
@@ -1226,7 +1271,9 @@ impl Arena {
                 continue;
             }
             counters.candidates = counters.candidates.saturating_add(1);
-            let Some(to) = self.eye_of(target) else {
+            // **16c `T-107d`**: the target's eye from the cull's cell, checked
+            // against the pose (`Arena::eye_at`); `eye_of` when it is not.
+            let Some(to) = self.eye_at(target, candidate.cell) else {
                 continue;
             };
             // Step 3 before step 2: see this module's head. One cell read and
@@ -1591,10 +1638,12 @@ impl Arena {
         for candidate in candidates {
             let id = candidate.id;
             // 16c `T-107a`: the mate's three coordinates come out with its eye
-            // and its filter, for the link-reach compare below.
+            // and its filter, for the link-reach compare below. **16c
+            // `T-107d`**: the eye from the cull's cell, checked against the
+            // pose (`Arena::eye_at`); `eye_of` when it is not.
             let Some((to, mate_eccm, mate_at)) = self.unit_row(&candidate).and_then(|mate| {
                 Some((
-                    self.eye_of(mate)?,
+                    self.eye_at(mate, candidate.cell)?,
                     mate.eccm,
                     (mate.pose.x_cm, mate.pose.y_cm, mate.pose.z_cm),
                 ))
@@ -4511,5 +4560,228 @@ mod tests {
             }
         }
         assert_eq!((landed, missed), (12, 6));
+    }
+
+    // -----------------------------------------------------------------------
+    // 16c T-107d — the target's eye from the candidate's cell
+    // -----------------------------------------------------------------------
+
+    /// **16c `T-107d`**: [`Arena::eye_at`] is [`Arena::eye_of`] whatever the
+    /// hint. The body the cut found is kept here as the reference
+    /// (`before_t107d`: `cell_of`'s two divisions, the height saturated),
+    /// `eye_of` is held to it and `eye_at` to both, over every pair of
+    /// `x_cm`/`y_cm` in {-1, 0, 999, 1,000, 1,001, 7,999, 8,000, 8,001} on
+    /// the unit tests' 8 by 8 window of 1,000 cm cells — on it, off it by a
+    /// centimetre on each side, on each boundary — with the hints an index
+    /// could hand a pass: the pose's own cell, each of its eight neighbours
+    /// (the ones off the window included; around `(0, 0)` for a pose off the
+    /// window, so such a pose is still offered on-window hints), `(99, 99)`
+    /// and `(u16::MAX, 0)`; at two sensor heights, the fixture's 150 and
+    /// `u32::MAX`, which saturates to `i32::MAX` on both paths. 906
+    /// comparisons equal, `None` included. Beside them the check itself,
+    /// [`crate::arena::state::ArenaTerrain::is_cell_at`], is asked of every
+    /// hint: it accepts exactly the pose's own cell and refuses every other —
+    /// one acceptance per on-window pose, 50 — so `eye_at`'s check has a true
+    /// case to take on every pose of the window. Which branch of `eye_at`
+    /// answered is not something this test, or any black-box test, can see:
+    /// both build the same `Eye` by design, and a mutant that always ran
+    /// `eye_of` would pass here (and be exact, being the old path). That the
+    /// fast path is taken in production, and what it is worth, is the VPS
+    /// A/B's to show.
+    #[test]
+    fn t107d_eye_at_is_eye_of() {
+        use crate::arena::state::ArenaTerrain;
+        const COORDINATES: [i64; 8] = [-1, 0, 999, 1_000, 1_001, 7_999, 8_000, 8_001];
+        let before_t107d = |terrain: &ArenaTerrain, unit: &UnitState| -> Option<Eye> {
+            let cell = terrain.cell_of(&unit.pose)?;
+            Some(Eye {
+                cell,
+                height_cm: i32::try_from(unit.sensor_height_cm).unwrap_or(i32::MAX),
+            })
+        };
+        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let mut compared = 0_u32;
+        let mut accepted = 0_u32;
+        for height in [150_u32, u32::MAX] {
+            for x in COORDINATES {
+                for y in COORDINATES {
+                    if let Some(unit) = arena.unit_mut(ObjId(4)) {
+                        unit.pose.x_cm = x;
+                        unit.pose.y_cm = y;
+                        unit.sensor_height_cm = height;
+                    }
+                    let unit = arena.unit(ObjId(4)).expect("the tank");
+                    let terrain = &arena.definition.terrain;
+                    let expected = before_t107d(terrain, unit);
+                    assert_eq!(arena.eye_of(unit), expected, "eye_of at ({x}, {y})");
+                    assert_eq!(expected.map(|eye| eye.cell), terrain.cell_of(&unit.pose));
+                    if height == u32::MAX {
+                        assert_eq!(
+                            expected.map(|eye| eye.height_cm),
+                            expected.map(|_| i32::MAX)
+                        );
+                    }
+                    let own = terrain.cell_of(&unit.pose);
+                    let (cx, cy) = own.unwrap_or((0, 0));
+                    let mut hints: Vec<(u16, u16)> = Vec::new();
+                    for dx in -1_i32..=1 {
+                        for dy in -1_i32..=1 {
+                            let (Ok(hx), Ok(hy)) = (
+                                u16::try_from(i32::from(cx) + dx),
+                                u16::try_from(i32::from(cy) + dy),
+                            ) else {
+                                continue;
+                            };
+                            hints.push((hx, hy));
+                        }
+                    }
+                    hints.extend([(99, 99), (u16::MAX, 0)]);
+                    for hint in hints {
+                        assert_eq!(
+                            arena.eye_at(unit, hint),
+                            expected,
+                            "eye_at at ({x}, {y}) with the hint {hint:?}"
+                        );
+                        compared += 1;
+                        if terrain.is_cell_at(hint, x, y) {
+                            assert_eq!(
+                                Some(hint),
+                                own,
+                                "the check accepted a hint that is not the cell"
+                            );
+                            accepted += 1;
+                        } else {
+                            assert_ne!(Some(hint), own, "the check refused the pose's own cell");
+                        }
+                    }
+                }
+            }
+        }
+        // Per height: the 25 on-window poses (both coordinates in {0, 999,
+        // 1,000, 1,001, 7,999}) offer their own cell and its neighbours with
+        // non-negative coordinates — 2 columns at cell 0, 3 at cells 1 and 7,
+        // so 13 an axis and 169 over the pairs — plus the two far hints each,
+        // 219; the 39 off-window poses offer (0, 0)'s four and the two, 234.
+        assert_eq!(compared, 2 * (219 + 234));
+        assert_eq!(accepted, 2 * 25);
+    }
+
+    /// **16c `T-107d`**: the fast path's hit rate, documented — exactness does
+    /// not depend on it (`t107d_eye_at_is_eye_of`). Twenty line tanks, ten a
+    /// side, driving across the unit tests' window on several headings at the
+    /// fixture's full 1,000 cm/s — into the far edge, into each other across
+    /// the middle, so cell crossings, edge stops and occupied holds all
+    /// happen — stepped forty substeps, one a pulse. At every substep's end
+    /// every unit's cell in the index is the cell its pose is in, which is
+    /// what the step's ordering says (the index rebuilt after motion, no pose
+    /// write in the due loop) and what makes every hint a pass is handed the
+    /// pose's own cell: the hit rate is a hundred per cent. The crossings are
+    /// counted so the run is known to have moved units between cells, and the
+    /// passes and their candidates so the production path is known to have
+    /// run over these hints.
+    #[test]
+    fn t107d_a_fights_index_cells_are_its_poses_cells() {
+        use crate::arena::test_support::line_tank;
+        // One tank a cell at the start; `(x_cm, y_cm, heading_mdeg)`.
+        const RED: [(i64, i64, u32); 10] = [
+            (500, 500, 90_000),
+            (500, 1_500, 90_000),
+            (500, 2_500, 60_000),
+            (500, 3_500, 90_000),
+            (500, 4_500, 90_000),
+            (500, 5_500, 120_000),
+            (500, 6_500, 90_000),
+            (500, 7_500, 90_000),
+            (1_500, 500, 45_000),
+            (1_500, 4_500, 90_000),
+        ];
+        const BLUE: [(i64, i64, u32); 10] = [
+            (7_500, 500, 270_000),
+            (7_500, 1_500, 270_000),
+            (7_500, 2_500, 300_000),
+            (7_500, 3_500, 270_000),
+            (7_500, 4_500, 270_000),
+            (7_500, 5_500, 240_000),
+            (7_500, 6_500, 270_000),
+            (7_500, 7_500, 270_000),
+            (6_500, 500, 315_000),
+            (6_500, 4_500, 270_000),
+        ];
+        let mut units: Vec<crate::arena::state::CustodyUnit> = Vec::new();
+        let mut headings: Vec<(ObjId, u32)> = Vec::new();
+        for (n, (x, y, heading)) in RED.iter().enumerate() {
+            let id = ObjId(10 + u32::try_from(n).unwrap_or(0));
+            units.push(line_tank(id, Team::Red, pose(*x, *y)));
+            headings.push((id, *heading));
+        }
+        for (n, (x, y, heading)) in BLUE.iter().enumerate() {
+            let id = ObjId(30 + u32::try_from(n).unwrap_or(0));
+            units.push(line_tank(id, Team::Blue, pose(*x, *y)));
+            headings.push((id, *heading));
+        }
+        let mut arena = arena_of(units);
+        assert_eq!(arena.units.len(), 20);
+        for (id, heading) in headings {
+            if let Some(unit) = arena.unit_mut(id) {
+                unit.power = Power::Online;
+                unit.pose.heading_mdeg = heading;
+                unit.desired_heading_mdeg = heading;
+                unit.speed_cms = 1_000;
+                unit.desired_speed_cms = 1_000;
+            }
+        }
+        let ids: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
+        let mut last: Vec<Option<(u16, u16)>> =
+            ids.iter().map(|id| arena.index.cell_of_unit(*id)).collect();
+        assert!(
+            last.iter().all(Option::is_some),
+            "every tank starts on the window"
+        );
+        let mut crossings = 0_u32;
+        let mut checks = 0_u32;
+        let mut total = PerceptionCounters::default();
+        arena.step(0, &[], &[]);
+        let substep = arena.substep_len_ms();
+        for pulse in 1..=40_i64 {
+            let out = arena.step(pulse * substep, &[], &[]);
+            assert_eq!(out.substeps, 1, "pulse {pulse}: one substep a pulse");
+            total.absorb(&out.perception);
+            for (n, id) in ids.iter().enumerate() {
+                let unit = arena.unit(*id).expect("the tank is in the match");
+                let by_pose = arena.definition.terrain.cell_of(&unit.pose);
+                let by_index = arena.index.cell_of_unit(*id);
+                assert_eq!(
+                    by_index, by_pose,
+                    "pulse {pulse}: {id:?} at ({}, {})",
+                    unit.pose.x_cm, unit.pose.y_cm
+                );
+                // The hint a pass was handed for this unit is the one the
+                // check accepts.
+                assert!(
+                    by_index.is_some_and(|cell| arena.definition.terrain.is_cell_at(
+                        cell,
+                        unit.pose.x_cm,
+                        unit.pose.y_cm
+                    )),
+                    "pulse {pulse}: {id:?}'s hint {by_index:?} refused"
+                );
+                if let Some(seen) = last.get_mut(n)
+                    && *seen != by_pose
+                {
+                    crossings += 1;
+                    *seen = by_pose;
+                }
+                checks += 1;
+            }
+        }
+        assert_eq!(checks, 40 * 20);
+        assert!(
+            crossings >= 40,
+            "only {crossings} cell crossings in forty substeps"
+        );
+        assert!(
+            total.passes > 0 && total.candidates > 0,
+            "no pass read a hint: {total:?}"
+        );
     }
 }
