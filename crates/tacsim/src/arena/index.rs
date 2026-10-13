@@ -30,9 +30,11 @@
 //!
 //! 1. **The membership test squares instead of rooting.** `range_cm` floors, so
 //!    `floor(sqrt(s)) ≤ r` is exactly `s < (r+1)²` — [`within_cm`] is that, and it
-//!    is the one test [`SpatialIndex::in_range`] decides membership with.
-//!    [`range_cm`] stays, for the one place a distance is *stored*
-//!    (`crate::arena::Arena::frame_contacts`).
+//!    is the one test [`SpatialIndex::in_range`] decides membership with (since
+//!    16c `T-107a` written there as `square_cm < reach_bound_sq`, the bound
+//!    squared once a query; the same test). [`range_cm`] stays for the places a
+//!    distance is *stored* or *shown* — a frame's contact rows
+//!    (`crate::arena::Arena::frame_contacts`) and a weapon's range check.
 //! 2. **The cell window is preferred whenever the pose is on the window.** The old
 //!    rule took the cell branch only while the covered area was no larger than the
 //!    unit count, which on a 300-unit arena meant any reach past about eight cells
@@ -40,6 +42,43 @@
 //!    way, so the cell branch is bounded by the arena's own cell count, and the
 //!    scan is now only what an **off-window** pose gets — the case where there is
 //!    no cell to centre a window on at all.
+//!
+//! # The index arithmetic of 16c `T-107a`
+//!
+//! The VPS profile that opened 16c `T-107` put a tenth of the authored step in
+//! [`SpatialIndex::in_range`]'s own body — [`square_between`]'s `i128`
+//! saturating chain run once per candidate, with the reach bound squared once
+//! per candidate beside it — and the rest of a per cent in the `isqrt` of a
+//! [`range_cm`] the perception passes only ever compared. Three things moved,
+//! and no answer:
+//!
+//! 1. **The square is taken in `i64` first.** Every pose on a window is a few
+//!    hundred thousand centimetres from every other — about 362,000 at the most
+//!    across the 2.56 km the game ships, whose square is under `2^37` — so the
+//!    three differences and their squares fit `i64` with some twenty-six bits
+//!    to spare; [`square_between`] takes them there with checked arithmetic and
+//!    widens the exact `i64`, and falls back to the `i128` saturating body it
+//!    always had ([`square_between_wide`]) the moment any step would overflow.
+//!    An `i64` that fit is the exact integer and `i128::from` is lossless,
+//!    while the wide body saturates only at `2^127`, which no integer that fit
+//!    `i64` reaches: the two paths are one function, and
+//!    `t107a_the_narrow_square_is_the_wide_square` holds them to it over every
+//!    mix of fitting and overflowing differences.
+//! 2. **The reach bound is squared once per query** ([`reach_bound_sq`]) rather
+//!    than once per candidate, and `in_range`'s `keep` compares the square
+//!    against it — the same test, [`within_cm`]'s identity, written once. The
+//!    bound itself is taken in `u64` first and widened, the `i128` saturating
+//!    two lines kept for a reach of `u32::MAX` or past it, whose bound overflows
+//!    `u64`: the perception passes take a bound per reach — a target's own, a
+//!    pod's own, a link's own — and the narrow form makes each one add and one
+//!    multiply rather than the last `i128` multiply on the candidate path.
+//! 3. **The four range compares in the perception passes compare squares.**
+//!    `range_cm(a, b) > r` is `square_cm(a, b) ≥ (r+1)²`, the negation of the
+//!    identity [`within_cm`] rests on, so detection's reach test and its close
+//!    look, a pod's own radius and the mesh's link reach no longer root a
+//!    square they only compare ([`square_cm`]). [`range_cm`] stays for the
+//!    places a distance is *stored* or *shown* — a frame's contact rows, a
+//!    weapon's range check — which this cut does not touch.
 //!
 //! # Why it is rebuilt rather than maintained
 //!
@@ -60,10 +99,11 @@ use crate::arena::state::{ArenaTerrain, UnitState};
 /// between two poses, over all three coordinates, rounded down to a whole
 /// centimetre.
 ///
-/// The squares are taken in `i128` because a pose is `i64` centimetres and two
-/// poses far apart in the region frame would overflow `i64` squared. The answer
-/// is `u64`: a distance is a magnitude, and the largest one the 2.56 km window
-/// can produce is about 362,000.
+/// The squares are [`square_between`]'s — in `i64` first, and in `i128` only
+/// when a difference or a square overflows it (16c `T-107a`), because a pose is
+/// `i64` centimetres and two poses far apart in the region frame would overflow
+/// `i64` squared. The answer is `u64`: a distance is a magnitude, and the
+/// largest one the 2.56 km window can produce is about 362,000.
 #[must_use]
 pub fn range_cm(a: &Pose, b: &Pose) -> u64 {
     range_between(a.x_cm, a.y_cm, a.z_cm, b.x_cm, b.y_cm, b.z_cm)
@@ -95,13 +135,70 @@ pub fn range_between(
 /// The **squared** separation of two points given as six coordinates, square
 /// centimetres (16b cut U.1; 16c `T-24`): the sum [`range_between`] roots.
 ///
-/// In `i128` for the reason [`range_cm`] takes its squares there: a pose is `i64`
-/// centimetres and two poses far apart in the region frame would overflow `i64`
-/// squared. Saturating, so the answer is monotone in the separation even at the
-/// edges of the region frame, which is what keeps [`within_between`] and
+/// **16c `T-107a`: taken in `i64` first.** The three differences and their
+/// squares are checked in `i64` — every pair of poses on the 2.56 km window the
+/// game ships is far short of the 3,037,000,499 cm a square needs to fit, and a
+/// window is `u16` cells of `u16` centimetres, so one *could* be built past it;
+/// the fallback is for that one — and the exact `i64` is widened; any `None`
+/// falls back to [`square_between_wide`], the
+/// `i128` saturating body this function had from cut U.1. The narrow path is
+/// exact whenever it answers (`i128::from` is lossless) and the wide one
+/// saturates only at `2^127`, which no integer that fit `i64` reaches, so the
+/// two are one function and `t107a_the_narrow_square_is_the_wide_square`
+/// holds them to one answer over every mix of fitting and overflowing
+/// differences.
+///
+/// Saturating at the region frame's edges for the reason the wide body gives:
+/// monotone in the separation, which is what keeps [`within_between`] and
 /// [`range_between`] agreeing there.
 #[must_use]
 pub fn square_between(
+    ax_cm: i64,
+    ay_cm: i64,
+    az_cm: i32,
+    bx_cm: i64,
+    by_cm: i64,
+    bz_cm: i32,
+) -> i128 {
+    match square_between_narrow(ax_cm, ay_cm, az_cm, bx_cm, by_cm, bz_cm) {
+        Some(square) => i128::from(square),
+        None => square_between_wide(ax_cm, ay_cm, az_cm, bx_cm, by_cm, bz_cm),
+    }
+}
+
+/// [`square_between`]'s narrow path (16c `T-107a`): the same sum in `i64`,
+/// every step checked, or `None` at the first one that would overflow.
+///
+/// `dz` is a difference of two `i32`s and cannot overflow `i64`, so it is
+/// taken plainly; its square can, and is checked with the rest.
+fn square_between_narrow(
+    ax_cm: i64,
+    ay_cm: i64,
+    az_cm: i32,
+    bx_cm: i64,
+    by_cm: i64,
+    bz_cm: i32,
+) -> Option<i64> {
+    let dx = ax_cm.checked_sub(bx_cm)?;
+    let dy = ay_cm.checked_sub(by_cm)?;
+    let dz = i64::from(az_cm) - i64::from(bz_cm);
+    dx.checked_mul(dx)?
+        .checked_add(dy.checked_mul(dy)?)?
+        .checked_add(dz.checked_mul(dz)?)
+}
+
+/// [`square_between`]'s wide path (16c `T-107a`): the `i128` saturating body
+/// the function had from 16b cut U.1, kept as the fallback for a pair of
+/// points whose separation overflows `i64` somewhere — two poses at opposite
+/// edges of the region frame — and as the reference the narrow path is held
+/// to.
+///
+/// In `i128` because a pose is `i64` centimetres and two poses far apart in the
+/// region frame overflow `i64` squared — the narrow path's `None` is exactly
+/// that pair. Saturating, so the answer is monotone in the separation even at
+/// the edges of the region frame.
+#[must_use]
+pub fn square_between_wide(
     ax_cm: i64,
     ay_cm: i64,
     az_cm: i32,
@@ -117,6 +214,48 @@ pub fn square_between(
         .saturating_add(dz.saturating_mul(dz))
 }
 
+/// **The squared range over two poses** (16c `T-107a`): [`square_between`]
+/// over their six coordinates, as [`range_cm`] is [`range_between`] — the form
+/// a caller takes when it only *compares* a range, against [`reach_bound_sq`]
+/// of its reach, and never stores or shows it.
+#[must_use]
+pub fn square_cm(a: &Pose, b: &Pose) -> i128 {
+    square_between(a.x_cm, a.y_cm, a.z_cm, b.x_cm, b.y_cm, b.z_cm)
+}
+
+/// **The square a reach is compared against** (16c `T-107a`): `(reach_cm + 1)²`
+/// as an `i128` — the right-hand side of the identity [`within_cm`] rests on,
+/// `range ≤ r` iff `square < (r+1)²`, and of its negation, `range > r` iff
+/// `square ≥ (r+1)²`.
+///
+/// It was [`within_between`]'s own two lines, an `i128` saturating add and
+/// multiply computed once per candidate; [`SpatialIndex::in_range`] now computes
+/// it once per query and each of the perception passes' four compares once per
+/// reach. **Taken in `u64` first**: the add and the multiply are checked there
+/// and the exact `u64` widened — `i128::from` is lossless, and an integer that
+/// fit `u64` is one the saturating form never clipped — with the `i128` two
+/// lines kept for a reach of `u32::MAX` or past it, whose bound is `2^64` or
+/// more. `t107a_the_reach_bound_is_the_inline_bound_it_replaces` holds both
+/// paths to the old two lines either side of that boundary and at `u64::MAX`.
+///
+/// The one place the identity fails is a bound that saturates, which needs
+/// `r ≥ 2^63.5`; every reach the arena compares is a `u16` cells by `u16`
+/// cell_cm by per-mille product, a `u32` pod radius or a `u32` share reach, none
+/// within thirty bits of it.
+#[must_use]
+pub fn reach_bound_sq(reach_cm: u64) -> i128 {
+    match reach_cm
+        .checked_add(1)
+        .and_then(|bound| bound.checked_mul(bound))
+    {
+        Some(square) => i128::from(square),
+        None => {
+            let bound = i128::from(reach_cm).saturating_add(1);
+            bound.saturating_mul(bound)
+        }
+    }
+}
+
 /// **Whether two points given as six coordinates are within `reach_cm` of each
 /// other** — [`range_between`]'s comparison without its square root (16b cut
 /// U.1; 16c `T-24`), the identity [`within_cm`] documents: `range_between(..) ≤
@@ -125,7 +264,9 @@ pub fn square_between(
 /// [`within_cm`] is this function over two poses, and
 /// [`crate::arena::state::SeenPose::within_cm`] is it over a plot and a pose, so
 /// the cull and the two per-pulse tempo signals decide membership with one
-/// arithmetic.
+/// arithmetic. **16c `T-107a`**: the bound is [`reach_bound_sq`], the two lines
+/// this function used to compute for itself, so a caller with one reach and
+/// many candidates can square it once.
 #[must_use]
 pub fn within_between(
     ax_cm: i64,
@@ -136,8 +277,7 @@ pub fn within_between(
     bz_cm: i32,
     reach_cm: u64,
 ) -> bool {
-    let bound = i128::from(reach_cm).saturating_add(1);
-    square_between(ax_cm, ay_cm, az_cm, bx_cm, by_cm, bz_cm) < bound.saturating_mul(bound)
+    square_between(ax_cm, ay_cm, az_cm, bx_cm, by_cm, bz_cm) < reach_bound_sq(reach_cm)
 }
 
 /// **Whether two poses are within `reach_cm` of each other** — [`range_cm`]'s
@@ -149,8 +289,10 @@ pub fn within_between(
 /// `the_squared_test_agrees_with_the_rooted_one_at_every_boundary` below pins it
 /// over every distance either function can be asked about near a boundary.
 ///
-/// This is the test [`SpatialIndex::in_range`] decides membership with, so a
-/// 300-unit cull costs three multiplications a pair instead of an `i128::isqrt`.
+/// This is the test [`SpatialIndex::in_range`] decides membership with — since
+/// 16c `T-107a` written in its `keep` as `square_cm < reach_bound_sq`, the bound
+/// squared once a query rather than once a candidate — so a 300-unit cull costs
+/// three multiplications a pair instead of an `i128::isqrt`.
 #[must_use]
 pub fn within_cm(a: &Pose, b: &Pose, reach_cm: u64) -> bool {
     within_between(a.x_cm, a.y_cm, a.z_cm, b.x_cm, b.y_cm, b.z_cm, reach_cm)
@@ -344,10 +486,13 @@ impl SpatialIndex {
     ) -> Vec<ObjId> {
         let mut found: Vec<ObjId> = Vec::new();
         let reach = u64::from(range_cm);
+        // **16c `T-107a`**: `within_cm`'s bound squared once for the query rather
+        // than once a candidate; `keep` is still exactly `within_cm`.
+        let bound_sq = reach_bound_sq(reach);
         let keep = |id: ObjId, found: &mut Vec<ObjId>| {
             if let Ok(at) = units.binary_search_by_key(&id, |unit| unit.id)
                 && let Some(unit) = units.get(at)
-                && within_cm(pose, &unit.pose, reach)
+                && square_cm(pose, &unit.pose) < bound_sq
             {
                 found.push(id);
             }
@@ -724,6 +869,187 @@ mod tests {
             &far,
             u64::from(u32::MAX)
         ));
+        // **16c `T-107a`**: the saturated side, at the reaches the arena can ask
+        // about and far past them. Half the frame apart the square still fits
+        // `i128` and roots to `2^63 − 1`; the whole frame apart — and the whole
+        // `i32` span of elevation besides — it saturates and roots to
+        // `floor(2^63.5)`. Neither pair is within any of these reaches by either
+        // test, and the two tests agree at every one.
+        let mut low = pose(i64::MIN, 0);
+        low.z_cm = i32::MIN;
+        let mut high = pose(i64::MAX, 0);
+        high.z_cm = i32::MAX;
+        assert_eq!(square_cm(&low, &high), i128::MAX);
+        assert_eq!(range_cm(&low, &high), 13_043_817_825_332_782_212);
+        for (a, b) in [(pose(i64::MIN / 2, 0), far), (low, high)] {
+            let exact = range_cm(&a, &b);
+            for reach in [0_u64, 1, u64::from(u32::MAX), 1 << 48] {
+                assert_eq!(
+                    within_cm(&a, &b, reach),
+                    exact <= reach,
+                    "the saturated side disagrees at reach {reach}"
+                );
+                assert!(!within_cm(&a, &b, reach));
+            }
+        }
+    }
+
+    /// **16c `T-107a`**: the narrow `i64` square is the wide `i128` one. Over
+    /// every combination of the planar coordinates at the values where a
+    /// difference or a square first overflows `i64` — 3,037,000,499 is the last
+    /// whole number whose square fits — and of the `i32` extremes of elevation,
+    /// [`square_between`] answers [`square_between_wide`] to the unit whichever
+    /// path it took, both paths are taken, and the pin of 16b cut U.1 is still
+    /// what [`range_between`] roots.
+    #[test]
+    fn t107a_the_narrow_square_is_the_wide_square() {
+        const PLANAR: [i64; 21] = [
+            0,
+            1,
+            -1,
+            999,
+            -999,
+            1_000,
+            -1_000,
+            2_147_483_647,
+            -2_147_483_647,
+            2_147_483_648,
+            -2_147_483_648,
+            3_037_000_499,
+            -3_037_000_499,
+            3_037_000_500,
+            -3_037_000_500,
+            1 << 40,
+            -(1 << 40),
+            i64::MIN / 2,
+            i64::MAX / 2,
+            i64::MIN,
+            i64::MAX,
+        ];
+        const HEIGHT: [i32; 5] = [i32::MIN, -1, 0, 1, i32::MAX];
+        // The last square that fits `i64`, and the first that does not.
+        assert_eq!(
+            3_037_000_499_i64.checked_mul(3_037_000_499),
+            Some(9_223_372_030_926_249_001)
+        );
+        assert_eq!(3_037_000_500_i64.checked_mul(3_037_000_500), None);
+        let mut narrow = 0_u64;
+        let mut wide = 0_u64;
+        for ax in PLANAR {
+            for bx in PLANAR {
+                for ay in PLANAR {
+                    for by in PLANAR {
+                        for az in HEIGHT {
+                            for bz in HEIGHT {
+                                let reference = square_between_wide(ax, ay, az, bx, by, bz);
+                                assert_eq!(
+                                    square_between(ax, ay, az, bx, by, bz),
+                                    reference,
+                                    "({ax}, {ay}, {az}) to ({bx}, {by}, {bz})"
+                                );
+                                match square_between_narrow(ax, ay, az, bx, by, bz) {
+                                    Some(square) => {
+                                        narrow += 1;
+                                        assert_eq!(
+                                            i128::from(square),
+                                            reference,
+                                            "the narrow path at ({ax}, {ay}, {az}) to ({bx}, {by}, {bz})"
+                                        );
+                                    }
+                                    None => wide += 1,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(narrow + wide, 21_u64.pow(4) * 25);
+        assert!(
+            narrow > 0 && wide > 0,
+            "both paths were walked: {narrow} narrow, {wide} wide"
+        );
+        // The pose form is the six-coordinate form, and the pin of 16b cut U.1
+        // holds through the narrow path.
+        let mut high = pose(300, 400);
+        high.z_cm = 1_200;
+        assert_eq!(square_cm(&pose(0, 0), &high), 1_690_000);
+        assert_eq!(square_between(0, 0, 0, 300, 400, 1_200), 1_690_000);
+        assert_eq!(range_between(0, 0, 0, 300, 400, 1_200), 1_300);
+        assert_eq!(
+            square_between_narrow(0, 0, 0, 300, 400, 1_200),
+            Some(1_690_000)
+        );
+        // And a pair the narrow path refuses still roots to the separation.
+        assert_eq!(
+            square_between_narrow(i64::MIN / 2, 0, 0, i64::MAX / 2, 0, 0),
+            None
+        );
+        assert_eq!(
+            range_cm(&pose(i64::MIN / 2, 0), &pose(i64::MAX / 2, 0)),
+            9_223_372_036_854_775_807
+        );
+    }
+
+    /// **16c `T-107a`**: [`reach_bound_sq`] is the two lines [`within_between`]
+    /// computed for itself before the cut — on its `u64` path and on its `i128`
+    /// fallback, either side of the reach whose bound first overflows `u64`, at
+    /// every reach the arena can be asked about and at the one that saturates —
+    /// and the index's once-per-query bound keeps exactly what the
+    /// per-candidate [`within_cm`] kept.
+    #[test]
+    fn t107a_the_reach_bound_is_the_inline_bound_it_replaces() {
+        // `within_between`'s own bound before 16c `T-107a`, kept as the reference.
+        let inline = |reach_cm: u64| -> i128 {
+            let bound = i128::from(reach_cm).saturating_add(1);
+            bound.saturating_mul(bound)
+        };
+        // The `u64` path's own boundary: `u32::MAX − 1` is the last reach whose
+        // bound fits `u64`, `u32::MAX`'s is exactly `2^64`, and `u64::MAX` has
+        // no bound in `u64` at all.
+        let narrow = |reach_cm: u64| {
+            reach_cm
+                .checked_add(1)
+                .and_then(|bound| bound.checked_mul(bound))
+        };
+        assert_eq!(narrow(4_294_967_294), Some(18_446_744_065_119_617_025));
+        assert_eq!(narrow(u64::from(u32::MAX)), None);
+        assert_eq!(narrow(1 << 48), None);
+        assert_eq!(narrow(u64::MAX), None);
+        for reach in [
+            0_u64,
+            1,
+            3_000,
+            362_000,
+            4_294_967_294,
+            u64::from(u32::MAX),
+            1 << 48,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            assert_eq!(reach_bound_sq(reach), inline(reach), "at reach {reach}");
+        }
+        assert_eq!(reach_bound_sq(0), 1);
+        assert_eq!(reach_bound_sq(1), 4);
+        assert_eq!(reach_bound_sq(3_000), 9_006_001);
+        assert_eq!(reach_bound_sq(4_294_967_294), 18_446_744_065_119_617_025);
+        assert_eq!(reach_bound_sq(u64::from(u32::MAX)), 1_i128 << 64);
+        assert_eq!(reach_bound_sq(1 << 48), (1_i128 << 96) + (1 << 49) + 1);
+        assert_eq!(reach_bound_sq(u64::MAX - 1), i128::MAX);
+        assert_eq!(reach_bound_sq(u64::MAX), i128::MAX);
+        // The bound squared once answers the per-candidate test at every reach,
+        // either way round the 3-4-5 triangle and along an axis.
+        let origin = pose(0, 0);
+        for reach in 0..=600_u64 {
+            let bound = reach_bound_sq(reach);
+            for there in [pose(300, 400), pose(-300, 400), pose(500, 0), pose(0, -501)] {
+                assert_eq!(
+                    square_cm(&origin, &there) < bound,
+                    within_cm(&origin, &there, reach),
+                    "the once-per-query bound disagrees at reach {reach}"
+                );
+            }
+        }
     }
 
     /// **16b cut U.1** (16c `T-24`): a plot's squared membership test,

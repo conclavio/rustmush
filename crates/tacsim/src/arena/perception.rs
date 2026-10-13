@@ -167,7 +167,7 @@ use mush_tactics::TacticalUnit;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::index::range_cm;
+use crate::arena::index::{reach_bound_sq, square_between, square_cm};
 use crate::arena::ledger::EventKind;
 use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
 use crate::arena::state::{
@@ -1250,8 +1250,12 @@ impl Arena {
             if let Some(jam) = jam {
                 reach_cm = jam.scale(reach_cm);
             }
-            let range = range_cm(&watcher.pose, &target.pose);
-            if range > reach_cm {
+            // **16c `T-107a`**: the square against the reach's bound, never the
+            // root — `range > reach` is `square ≥ (reach+1)²`, the negation of the
+            // identity `within_cm` rests on. The range is only ever compared
+            // here and in the close look below, never stored or journalled.
+            let square = square_cm(&watcher.pose, &target.pose);
+            if square >= reach_bound_sq(reach_cm) {
                 continue;
             }
             // Step 2: the atlas trace over the arena's own cell grid, through
@@ -1267,11 +1271,14 @@ impl Arena {
                 // was decided against.
                 seen_at: SeenPose::of(target),
                 // **16b cut Q.2**: the close look, against the reach the range
-                // test above was decided with — see [`Detection::close`].
-                close: range
-                    <= reach_cm
-                        .saturating_mul(u64::from(close_permille))
-                        .saturating_div(1_000),
+                // test above was decided with — see [`Detection::close`]. 16c
+                // `T-107a`: the same square against the close reach's bound.
+                close: square
+                    < reach_bound_sq(
+                        reach_cm
+                            .saturating_mul(u64::from(close_permille))
+                            .saturating_div(1_000),
+                    ),
                 condition: target.condition,
             });
         }
@@ -1339,7 +1346,9 @@ impl Arena {
             if pod.limits.wreck || pod.power != Power::Online || !pod.ecm_on {
                 continue;
             }
-            if range_cm(pose, &pod.pose) > u64::from(jammer.radius_cm) {
+            // 16c `T-107a`: the square against the pod's own radius, never the
+            // root; the range is compared and nothing else.
+            if square_cm(pose, &pod.pose) >= reach_bound_sq(u64::from(jammer.radius_cm)) {
                 continue;
             }
             jammed = true;
@@ -1490,6 +1499,12 @@ impl Arena {
         // takes the arena mutably.
         let side = sharing.team;
         let sharer_eccm = sharing.eccm;
+        // 16c `T-107a`: and the sharer's three coordinates, once for the pass.
+        // The link-reach compare below reads them against each mate's, and
+        // nothing between here and there moves a unit (the folds write the memo,
+        // the traces read the ground), so a lookup per mate of this same row
+        // would be a cost and not a reading.
+        let sharer_at = (sharing.pose.x_cm, sharing.pose.y_cm, sharing.pose.z_cm);
         // What there is to say: [`ShadowContact::shareable`], which is both of this
         // function's rules written once — classified, and seen by **this
         // platform's own** sensors inside the time to live, with that sighting's
@@ -1548,10 +1563,15 @@ impl Arena {
             .unwrap_or_default();
         let mut mates: Vec<ObjId> = Vec::new();
         for id in candidates {
-            let Some((to, mate_eccm)) = self
-                .unit(id)
-                .and_then(|mate| Some((self.eye_of(mate)?, mate.eccm)))
-            else {
+            // 16c `T-107a`: the mate's three coordinates come out with its eye
+            // and its filter, for the link-reach compare below.
+            let Some((to, mate_eccm, mate_at)) = self.unit(id).and_then(|mate| {
+                Some((
+                    self.eye_of(mate)?,
+                    mate.eccm,
+                    (mate.pose.x_cm, mate.pose.y_cm, mate.pose.z_cm),
+                ))
+            }) else {
                 continue;
             };
             counters.share_ops = counters.share_ops.saturating_add(1);
@@ -1580,11 +1600,15 @@ impl Arena {
             }
             let link_reach = sharer_reach
                 .min(mate_jam.map_or(u64::from(reach), |jam| jam.scale(u64::from(reach))));
-            let apart = match (self.unit(sharer), self.unit(id)) {
-                (Some(sharing), Some(mate)) => range_cm(&sharing.pose, &mate.pose),
-                _ => continue,
-            };
-            if apart > link_reach {
+            // 16c `T-107a`: the square against the link reach's bound, never the
+            // root; the separation is compared and nothing else. Over the six
+            // coordinates copied out above — the sharer's once for the pass, the
+            // mate's with its eye — the same six integers the two lookups this
+            // line used to make read back, because nothing between those reads
+            // and this line moves a unit.
+            let (sx, sy, sz) = sharer_at;
+            let (mx, my, mz) = mate_at;
+            if square_between(sx, sy, sz, mx, my, mz) >= reach_bound_sq(link_reach) {
                 continue;
             }
             mates.push(id);
@@ -4137,5 +4161,328 @@ mod tests {
         // A share no newer than the mate's row refreshes nothing.
         let pairs = arena.share_pass(SHARER, 200, &mut counters, &mut journal);
         assert!(pairs.is_empty(), "{pairs:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 16c T-107a — the four range compares, squared
+    // -----------------------------------------------------------------------
+
+    /// **16c `T-107a`**: the four `range_cm` compares the passes made —
+    /// detection's reach test, its close look, a pod's own radius in
+    /// `jamming_at` and the mesh's link reach in `share_pass` — compare squares
+    /// now, and each answers exactly what the rooted compare answered on a
+    /// field of poses straddling its boundary: the reach, a centimetre either
+    /// side of it, off the axis where the root floors, and up the elevation.
+    /// The reference is [`crate::arena::index::range_cm`] itself, which is the
+    /// arithmetic every site compared before the cut.
+    ///
+    /// Each site is put where it decides *alone* — the cull in front of it
+    /// offering every pose on the field — so a wrong compare at that site
+    /// fails here and not only in the index's own tests: the reach test under
+    /// a jam that halves the reach while the cull stays at the sensor's own,
+    /// the close look on both fields, the pod's radius inside a wider match
+    /// bubble, and the link reach under the same halving pod. The offsets a
+    /// cull decides (a target or a mate past the sensor's own reach) are pinned
+    /// by `the_cell_window_cull_answers_what_a_brute_force_scan_answers` and
+    /// `in_range_is_culled_but_never_decided_by_the_grid` in `index.rs`.
+    #[test]
+    fn t107a_the_squared_compares_answer_the_rooted_compares_at_every_boundary() {
+        use crate::arena::index::range_cm;
+        use crate::arena::state::CustodyUnit;
+        const OBS: ObjId = ObjId(4);
+        const MATE: ObjId = ObjId(5);
+        const TGT: ObjId = ObjId(9);
+        const POD: ObjId = ObjId(13);
+        /// Three cells of sight and of share, and no signature table, so the
+        /// effective reach is 3,000 cm on any ground, the close look 1,500 (the
+        /// fixture config's 500 per mille) and the share reach 3,000.
+        fn short_sight() -> SensorProfile {
+            SensorProfile {
+                max_range_cells: 3,
+                share_range_cells: 3,
+                signature: Vec::new(),
+                ..visual()
+            }
+        }
+        /// An observer at (500, 500) with the short sight.
+        fn watcher(id: ObjId) -> CustodyUnit {
+            CustodyUnit {
+                sensor: Some(short_sight()),
+                ..tank(id, Team::Red, pose(500, 500))
+            }
+            .sealed()
+        }
+        let origin = pose(500, 500);
+        let mut counters = PerceptionCounters::default();
+        let mut journal: Vec<Notice> = Vec::new();
+
+        // Sites 1 and 2: the detections loop's reach test and its close look,
+        // over a target at each offset from the observer — each boundary on
+        // both axes, the 3-4-5 triangle and a centimetre past it where the root
+        // floors, and the same up the elevation — on two fields.
+        //
+        // The first is unjammed: the reach is 3,000 cm, the close look 1,500,
+        // and the cull in front of the loop is the same 3,000 — so a target
+        // past it (the 3,001 offsets, the centimetre past the triangle, the top
+        // of the climb) is refused by the index's `keep` before the reach test
+        // reads it, and only the close look is decided here alone.
+        //
+        // The second is jammed: the fold handed to `detections` halves every
+        // signature (500 per mille) at no attenuation cost, so the reach is
+        // 1,500 cm and the close look 750, while the cull — deliberately never
+        // shortened by a jam (16b cut X.4) — stays at 3,000. Every offset is
+        // inside the cull, so the reach test is what decides, alone: a `≥` read
+        // as `>` at that site would detect the target at exactly 1,501.
+        let halving = Jamming {
+            attenuation_cost: 0,
+            signature_permille: 500,
+        };
+        let unjammed: [(i64, i64, i32); 24] = [
+            (1_499, 0, 0),
+            (1_500, 0, 0),
+            (1_501, 0, 0),
+            (0, 1_499, 0),
+            (0, 1_500, 0),
+            (0, 1_501, 0),
+            (900, 1_200, 0),
+            (900, 1_201, 0),
+            (901, 1_201, 0),
+            (1_000, 1_000, 500),
+            (1_000, 1_000, 501),
+            (1_000, 1_000, 503),
+            (2_999, 0, 0),
+            (3_000, 0, 0),
+            (3_001, 0, 0),
+            (0, 2_999, 0),
+            (0, 3_000, 0),
+            (0, 3_001, 0),
+            (1_800, 2_400, 0),
+            (1_800, 2_401, 0),
+            (1_801, 2_401, 0),
+            (2_000, 2_000, 1_000),
+            (2_000, 2_000, 1_001),
+            (2_000, 2_000, 1_004),
+        ];
+        let jammed: [(i64, i64, i32); 21] = [
+            (749, 0, 0),
+            (750, 0, 0),
+            (751, 0, 0),
+            (0, 749, 0),
+            (0, 750, 0),
+            (0, 751, 0),
+            (450, 600, 0),
+            (450, 601, 0),
+            (451, 601, 0),
+            (1_499, 0, 0),
+            (1_500, 0, 0),
+            (1_501, 0, 0),
+            (0, 1_499, 0),
+            (0, 1_500, 0),
+            (0, 1_501, 0),
+            (900, 1_200, 0),
+            (900, 1_201, 0),
+            (901, 1_201, 0),
+            (1_000, 1_000, 500),
+            (1_000, 1_000, 501),
+            (1_000, 1_000, 503),
+        ];
+        for (fold, reach, close, offsets, counts) in [
+            (
+                None,
+                3_000_u64,
+                1_500_u64,
+                &unjammed[..],
+                (20_u32, 4_u32, 8_u32, 12_u32),
+            ),
+            (Some(halving), 1_500, 750, &jammed[..], (17, 4, 6, 11)),
+        ] {
+            let (mut inside, mut outside, mut near, mut far) = (0_u32, 0_u32, 0_u32, 0_u32);
+            for &(dx, dy, dz) in offsets {
+                let mut arena = arena_of(vec![
+                    watcher(OBS),
+                    tank(TGT, Team::Blue, pose(500 + dx, 500 + dy)),
+                ]);
+                // Check-out puts a unit at its cell's elevation; the climb is after.
+                if let Some(unit) = arena.unit_mut(TGT) {
+                    unit.pose.z_cm = dz;
+                }
+                let there = arena
+                    .unit(TGT)
+                    .map(|unit| unit.pose.clone())
+                    .expect("the target is in the match");
+                let exact = range_cm(&origin, &there);
+                let sweep = arena
+                    .detections(OBS, fold, &mut counters)
+                    .expect("the observer runs a pass");
+                let seen = sweep.found.iter().find(|found| found.target == TGT);
+                assert_eq!(
+                    seen.is_some(),
+                    exact <= reach,
+                    "the reach test at ({dx}, {dy}, {dz}) under reach {reach}, range {exact}"
+                );
+                match seen {
+                    Some(found) => {
+                        inside += 1;
+                        assert_eq!(
+                            found.close,
+                            exact <= close,
+                            "the close look at ({dx}, {dy}, {dz}) under reach {reach}, range {exact}"
+                        );
+                        if found.close {
+                            near += 1;
+                        } else {
+                            far += 1;
+                        }
+                    }
+                    None => outside += 1,
+                }
+            }
+            assert_eq!(
+                (inside, outside, near, far),
+                counts,
+                "the field under reach {reach} did not straddle as laid out"
+            );
+        }
+
+        // Site 3: a pod's own radius in `jamming_at`, inside a wider match
+        // bubble — the carrier declares 2,000 cm and the match's widest
+        // (`jam_radius_cm`) is 3,000 — so the cull offers every pose below and
+        // the per-pod compare is what decides.
+        let mut arena = arena_of(vec![tank(POD, Team::Blue, pose(3_500, 3_500))]);
+        if let Some(state) = arena.unit_mut(POD) {
+            state.jammer = Some(Jammer {
+                radius_cm: 2_000,
+                attenuation_cost: 25,
+                signature_permille: 150,
+            });
+            state.power = Power::Online;
+        }
+        arena.jam_radius_cm = 3_000;
+        let bubble = pose(3_500, 3_500);
+        let (mut jammed_at, mut clear_at) = (0_u32, 0_u32);
+        for (dx, dy) in [
+            (1_999, 0),
+            (2_000, 0),
+            (2_001, 0),
+            (0, -1_999),
+            (0, -2_000),
+            (0, -2_001),
+            (1_200, 1_600),
+            (1_200, 1_601),
+            (1_201, 1_601),
+            (2_999, 0),
+            (3_000, 0),
+            (3_001, 0),
+        ] {
+            let at = pose(3_500 + dx, 3_500 + dy);
+            let exact = range_cm(&at, &bubble);
+            let jammed = arena.jamming_at(&at, &mut counters).is_some();
+            assert_eq!(
+                jammed,
+                exact <= 2_000,
+                "the pod's radius at ({dx}, {dy}), range {exact}"
+            );
+            if jammed {
+                jammed_at += 1;
+            } else {
+                clear_at += 1;
+            }
+        }
+        assert_eq!((jammed_at, clear_at), (6, 6));
+
+        // Site 4: the mesh's link reach in `share_pass`, with the mate at each
+        // offset from the sharer — unjammed, where the link reach is the share
+        // reach of 3,000 cm and the cull is the same 3,000 (so the 3,001
+        // offsets are the cull's answer, which the compare agrees with), and
+        // under a pod over the whole window that halves every reach and costs
+        // no attenuation, where it is 1,500 and the cull at 3,000 offers every
+        // mate, so the compare is what decides, alone.
+        let (mut landed, mut missed) = (0_u32, 0_u32);
+        for (halved, link_reach, offsets) in [
+            (
+                false,
+                3_000_u64,
+                [
+                    (2_999, 0),
+                    (3_000, 0),
+                    (3_001, 0),
+                    (0, 2_999),
+                    (0, 3_000),
+                    (0, 3_001),
+                    (1_800, 2_400),
+                    (1_800, 2_401),
+                    (1_801, 2_401),
+                ],
+            ),
+            (
+                true,
+                1_500,
+                [
+                    (1_499, 0),
+                    (1_500, 0),
+                    (1_501, 0),
+                    (0, 1_499),
+                    (0, 1_500),
+                    (0, 1_501),
+                    (900, 1_200),
+                    (900, 1_201),
+                    (901, 1_201),
+                ],
+            ),
+        ] {
+            for (dx, dy) in offsets {
+                let mut arena = arena_of(vec![
+                    watcher(OBS),
+                    tank(MATE, Team::Red, pose(500 + dx, 500 + dy)),
+                    tank(TGT, Team::Blue, pose(7_500, 7_500)),
+                    tank(POD, Team::Blue, pose(7_500, 500)),
+                ]);
+                if halved {
+                    if let Some(state) = arena.unit_mut(POD) {
+                        state.jammer = Some(Jammer {
+                            radius_cm: 12_000,
+                            attenuation_cost: 0,
+                            signature_permille: 500,
+                        });
+                        state.power = Power::Online;
+                    }
+                    arena.jam_radius_cm = 12_000;
+                }
+                arena.jam_fold.clear();
+                let plot = arena
+                    .unit(TGT)
+                    .map(crate::arena::state::SeenPose::of)
+                    .unwrap_or_default();
+                let theirs = draw_contact_id(arena.seed, OBS, TGT);
+                let mine = draw_contact_id(arena.seed, MATE, TGT);
+                arena.contacts.insert(
+                    OBS,
+                    theirs,
+                    crate::arena::state::ShadowContact::sighted(
+                        TGT,
+                        Classification::Classified { team: Team::Blue },
+                        100,
+                        plot,
+                    ),
+                );
+                let apart = arena
+                    .unit(MATE)
+                    .map(|mate| range_cm(&origin, &mate.pose))
+                    .expect("the mate is in the match");
+                arena.share_pass(OBS, 100, &mut counters, &mut journal);
+                let got = arena.contacts.get(MATE, mine).is_some();
+                assert_eq!(
+                    got,
+                    apart <= link_reach,
+                    "the link reach at ({dx}, {dy}), halved {halved}, range {apart}"
+                );
+                if got {
+                    landed += 1;
+                } else {
+                    missed += 1;
+                }
+            }
+        }
+        assert_eq!((landed, missed), (12, 6));
     }
 }
