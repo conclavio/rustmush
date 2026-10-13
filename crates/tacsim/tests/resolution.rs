@@ -2838,6 +2838,142 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
     assert_eq!(published.get("section_lost"), Some(&1), "{published:?}");
 }
 
+/// **16c T-110a: the reference** — `Arena::frame_sections`' body as it was
+/// before the cut, word for word: the two ids built by `CellId::new` on every
+/// call, one `cell` probe per section for its internals and one per facet for
+/// its armour, each address built from cloned ids. Kept so the merged walk the
+/// arena runs now is held to the probe walk it replaced, on the shipped chassis
+/// under fire, and not to a figure somebody typed.
+fn lookup_walk(unit: &TacticalUnit) -> Vec<tacsim::arena::step::FrameSection> {
+    let Ok(armor_cell) = mush_tactics::CellId::new(tacsim::definitions::unit::ARMOR_CELL) else {
+        return Vec::new();
+    };
+    let Ok(internals_cell) = mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
+    else {
+        return Vec::new();
+    };
+    unit.sections()
+        .map(|(id, section)| tacsim::arena::step::FrameSection {
+            id: SmolStr::new(id.as_str()),
+            condition: SmolStr::new(section.condition.as_str()),
+            internals: unit
+                .cell(&mush_tactics::CellAddr::Section {
+                    section: id.clone(),
+                    cell: internals_cell.clone(),
+                })
+                .map(|cell| (cell.current, cell.max)),
+            facets: section
+                .facets
+                .iter()
+                .filter_map(|facet| {
+                    let cell = unit.cell(&mush_tactics::CellAddr::Facet {
+                        section: id.clone(),
+                        facet: facet.clone(),
+                        cell: armor_cell.clone(),
+                    })?;
+                    Some(tacsim::arena::step::FrameFacet {
+                        id: SmolStr::new(facet.as_str()),
+                        armor: cell.current,
+                        armor_max: cell.max,
+                    })
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// **16c T-110a: the frame's status block is the probe walk's** — on the
+/// shipped chassis, in a shipped fight, under fire. The duel warmed and blue
+/// held, then three cannon rounds at the cycle's pace with eight pulses after
+/// each: after every pulse, every unit's `frame_sections` and every frame the
+/// pilots were sent are held to [`lookup_walk`] over that unit's cells as they
+/// stand. The first round's hit is pinned by the status-block test above, so
+/// the equality is over a struck tank and not over two whole ones agreeing;
+/// the rounds that found armour are counted off the cells at the end.
+#[test]
+fn t110a_frame_sections_is_the_lookup_walk() {
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = hold(&mut arena, RED, BLUE);
+    let held_to_the_walk = |arena: &Arena, out: &StepOutput| {
+        for state in &arena.units {
+            assert_eq!(
+                arena.frame_sections(state.id),
+                lookup_walk(&state.unit),
+                "#{} at {} ms",
+                state.id.0,
+                arena.now_ms
+            );
+        }
+        for (pilot, frame) in &out.frames {
+            let unit = arena
+                .unit(frame.unit)
+                .unwrap_or_else(|| panic!("#{}'s unit for pilot #{}", frame.unit.0, pilot.0));
+            assert_eq!(
+                frame.sections,
+                lookup_walk(&unit.unit),
+                "the frame sent to #{} at {} ms",
+                pilot.0,
+                arena.now_ms
+            );
+        }
+    };
+    let whole = arena.frame_sections(BLUE);
+    assert_eq!(
+        whole,
+        lookup_walk(
+            arena
+                .unit(BLUE)
+                .map_or_else(|| panic!("blue"), |state| &state.unit)
+        )
+    );
+    let mut wall_ms = wall + 500;
+    let mut seq = 3;
+    let mut frames = 0_usize;
+    for round in 0..3 {
+        let mut intents = Vec::new();
+        if round == 0 {
+            intents.push(intent(RED, IntentKind::Lock { contact }, seq));
+            seq += 1;
+        }
+        intents.push(intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+                slot: None,
+            },
+            seq,
+        ));
+        seq += 1;
+        let out = pulse(&mut arena, wall_ms, &intents, &mut bytes);
+        held_to_the_walk(&arena, &out);
+        frames += out.frames.len();
+        for _ in 0..8 {
+            wall_ms += 500;
+            let out = pulse(&mut arena, wall_ms, &[], &mut bytes);
+            held_to_the_walk(&arena, &out);
+            frames += out.frames.len();
+            if let Some(held) = arena.contacts.get_mut(RED, contact) {
+                held.last_seen_ms = arena.now_ms;
+            }
+        }
+        wall_ms += 500;
+    }
+    // Frames go to a pilot only when something changed (latest-wins), so the
+    // count is the rounds' and not the pulses': one a round at the least, so
+    // the frame-side assertion above was not over an empty list.
+    assert!(frames >= 3, "the pilots were sent frames: {frames}");
+    let struck = arena.frame_sections(BLUE);
+    assert_ne!(struck, whole, "the rounds moved blue's block");
+    let plates_struck = struck
+        .iter()
+        .flat_map(|section| section.facets.iter())
+        .filter(|facet| facet.armor < facet.armor_max)
+        .count();
+    assert!(plates_struck >= 1, "a plate took a round: {struck:?}");
+}
+
 #[test]
 fn the_frame_carries_the_tanks_own_status_block_and_status_prints_it_in_eighty_columns() {
     // Doc 16 §5's status block — *armor and internals per section as current over

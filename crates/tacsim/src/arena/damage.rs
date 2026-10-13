@@ -88,7 +88,7 @@ use crate::arena::perception::Notice;
 use crate::arena::resolution::{Consequence, Resolution};
 use crate::arena::rng::{DrawLabel, draw};
 use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, Team, UnitState};
-use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL, UnitClass};
+use crate::definitions::unit::{UnitClass, armor_cell, internals_cell};
 
 // ---------------------------------------------------------------------------
 // The vocabulary
@@ -837,6 +837,12 @@ impl Arena {
     /// through `hull.rear`*), and otherwise the chosen section's facet **of this
     /// band** — falling back to its first authored facet, which is what a track
     /// hit from the rear quarter takes.
+    ///
+    /// **16c T-110a**: the two cell ids are the once-built ones
+    /// ([`crate::definitions::unit::armor_cell`],
+    /// [`crate::definitions::unit::internals_cell`]) where each was a
+    /// `CellId::new` a round; the `None` they can answer is the `Err` that build
+    /// could, and the plan refuses on it as it did.
     fn plan_hit(
         &self,
         target: ObjId,
@@ -860,11 +866,11 @@ impl Arena {
         let armor_addr = CellAddr::Facet {
             section: SectionId::new(armor_section.as_str()).ok()?,
             facet: mush_tactics::FacetId::new(armor_facet.as_str()).ok()?,
-            cell: mush_tactics::CellId::new(ARMOR_CELL).ok()?,
+            cell: armor_cell()?.clone(),
         };
         let internals_addr = CellAddr::Section {
             section: SectionId::new(section).ok()?,
-            cell: mush_tactics::CellId::new(INTERNALS_CELL).ok()?,
+            cell: internals_cell()?.clone(),
         };
         let armor = state.unit.cell(&armor_addr)?;
         let internals = state.unit.cell(&internals_addr)?;
@@ -1746,6 +1752,7 @@ mod tests {
     use super::*;
     use crate::arena::state::Team;
     use crate::arena::test_support::{arena_of, line_tank, line_tank_unit, pose};
+    use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL};
 
     const RED: ObjId = ObjId(4);
     const BLUE: ObjId = ObjId(9);

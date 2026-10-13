@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use mush_core::ObjId;
 use mush_sim::data::Pose;
+use mush_tactics::{CellAddr, CellId, FacetId, ScalarCell, SectionId, SectionState};
 use smol_str::SmolStr;
 
 use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
@@ -71,6 +72,7 @@ use crate::arena::state::{
     MatchEnd, Power, SPENT_NOTICE_MS, StopReason, Team,
 };
 use crate::arena::weapons::FrameWeapon;
+use crate::definitions::unit::{armor_cell, internals_cell};
 
 /// **One pilot's latest-wins view** (doc 16 §3.1's `Frames`).
 ///
@@ -404,6 +406,144 @@ pub struct FrameSection {
     /// Its facets, in **facet-id order** (the unit's own ordered map's), so the
     /// hull reads `front, left, rear, right, top`.
     pub facets: Vec<FrameFacet>,
+}
+
+/// **The status block by one ordered pass** (16c T-110a): `sections`, in
+/// section-id order, merged with the unit's cell map read through two cursors
+/// over it — `section_run` for the `Section` entries and `facet_run` for the
+/// `Facet` entries — in place of one `BTreeMap` probe per section and per
+/// facet, each probe an address built from two or three cloned ids.
+///
+/// Both cursors are the one map's own ordered iterator
+/// (`TacticalUnit::cells`), so each is in `CellAddr`'s derived order: every
+/// `Unit` entry, then every `Section` entry by section id then cell id, then
+/// every `Facet` entry by section id, facet id then cell id, then every
+/// `Component` entry. The targets are asked in that same order —
+/// `(section, internals)` ascends with `sections()` (a `BTreeMap`), and
+/// `(section, facet, armor)` with `sections()` then each section's `facets` (a
+/// `BTreeSet`) — so a cursor only ever moves forward: [`take_at`] skips the
+/// entries that sort before its target, takes the one equal to it, and stops
+/// at the first that sorts after, which is what `BTreeMap::get` answers for
+/// that address. The section cursor halts at the first `Facet` entry; the
+/// facet cursor passes every `Section` entry on its variant alone
+/// ([`rank_facet`]), without a string compared.
+///
+/// The membership filters are the probe walk's: a `Section` entry is read only
+/// for a section `sections` names, and a `Facet` entry only for a facet in
+/// that section's `facets`. A cell map could hold an address its sections do
+/// not name — nothing `from_spec` builds does, and `validate` refuses one on
+/// load, but the claim does not rest on that:
+/// `t110a_the_merge_is_the_lookup_walk_on_hand_built_maps` feeds both. A
+/// facet whose armour cell is missing is dropped as it was; a section with no
+/// internals cell reads `None` as it did; the ids on the rows are the
+/// `SmolStr::new(id.as_str())` copies they were.
+///
+/// Per stock-tank frame: one section `Vec` sized to the map's own count (the
+/// iterator's lower bound, exact for a `BTreeMap`), one facet `Vec` per
+/// section sized to its facets, and the id copies on the rows — where the
+/// probes spent 43 `SmolStr` clones, 16 searches and two `canon` strings.
+fn frame_sections_merged<'a>(
+    sections: impl Iterator<Item = (&'a SectionId, &'a SectionState)>,
+    section_run: impl Iterator<Item = (&'a CellAddr, &'a ScalarCell)>,
+    facet_run: impl Iterator<Item = (&'a CellAddr, &'a ScalarCell)>,
+    armor: &CellId,
+    internals: &CellId,
+) -> Vec<FrameSection> {
+    let mut section_run = section_run.peekable();
+    let mut facet_run = facet_run.peekable();
+    let mut out = Vec::with_capacity(sections.size_hint().0);
+    for (id, section) in sections {
+        let internals = take_at(&mut section_run, |addr| rank_section(addr, id, internals))
+            .map(|cell| (cell.current, cell.max));
+        let mut facets = Vec::with_capacity(section.facets.len());
+        for facet in &section.facets {
+            if let Some(cell) = take_at(&mut facet_run, |addr| rank_facet(addr, id, facet, armor)) {
+                facets.push(FrameFacet {
+                    id: SmolStr::new(facet.as_str()),
+                    armor: cell.current,
+                    armor_max: cell.max,
+                });
+            }
+        }
+        out.push(FrameSection {
+            id: SmolStr::new(id.as_str()),
+            condition: SmolStr::new(section.condition.as_str()),
+            internals,
+            facets,
+        });
+    }
+    out
+}
+
+/// **Advance one cursor to `rank`'s target** (16c T-110a): consume the entries
+/// that rank `Less`, answer the cell of the one that ranks `Equal` (consumed),
+/// stop without consuming at the first that ranks `Greater`, and answer `None`
+/// at the end of the run or at that stop.
+///
+/// Over a run in the target's ascending order, with distinct targets asked in
+/// ascending order, this is `BTreeMap::get` for each target: an entry consumed
+/// for one target sorts below it and so below every later target, and the
+/// entry it stops at is the first a later target can equal. The map's keys are
+/// unique, so the `Equal` entry is the only one.
+fn take_at<'a, I>(
+    run: &mut std::iter::Peekable<I>,
+    mut rank: impl FnMut(&CellAddr) -> std::cmp::Ordering,
+) -> Option<&'a ScalarCell>
+where
+    I: Iterator<Item = (&'a CellAddr, &'a ScalarCell)>,
+{
+    while let Some(&(addr, cell)) = run.peek() {
+        match rank(addr) {
+            std::cmp::Ordering::Less => {
+                run.next();
+            }
+            std::cmp::Ordering::Equal => {
+                run.next();
+                return Some(cell);
+            }
+            std::cmp::Ordering::Greater => return None,
+        }
+    }
+    None
+}
+
+/// **Where a cell address sorts against the section cell `(section, cell)`**
+/// (16c T-110a): `CellAddr`'s own derived order without the address built —
+/// `Unit` before every `Section`, `Facet` and `Component` after every one, and
+/// a `Section` entry by its section id then its cell id, the ids compared as
+/// the text they are (`SmolStr`'s order is `str`'s).
+/// `t110a_the_cursor_ranks_as_the_address_orders` holds it to `CellAddr::cmp`
+/// on every address of the stock tank against every target, present or not.
+fn rank_section(addr: &CellAddr, section: &SectionId, cell: &CellId) -> std::cmp::Ordering {
+    match addr {
+        CellAddr::Unit { .. } => std::cmp::Ordering::Less,
+        CellAddr::Section {
+            section: at,
+            cell: of,
+        } => (at, of).cmp(&(section, cell)),
+        CellAddr::Facet { .. } | CellAddr::Component { .. } => std::cmp::Ordering::Greater,
+    }
+}
+
+/// **Where a cell address sorts against the facet cell `(section, facet,
+/// cell)`** (16c T-110a): [`rank_section`]'s twin — `Unit` and every `Section`
+/// before, `Component` after, and a `Facet` entry by its section id, facet id
+/// then cell id.
+fn rank_facet(
+    addr: &CellAddr,
+    section: &SectionId,
+    facet: &FacetId,
+    cell: &CellId,
+) -> std::cmp::Ordering {
+    match addr {
+        CellAddr::Unit { .. } | CellAddr::Section { .. } => std::cmp::Ordering::Less,
+        CellAddr::Facet {
+            section: at,
+            facet: on,
+            cell: of,
+        } => (at, on, of).cmp(&(section, facet, cell)),
+        CellAddr::Component { .. } => std::cmp::Ordering::Greater,
+    }
 }
 
 /// **The platform's heat, as its pilots' frame carries it** (16b cut X.1).
@@ -2447,8 +2587,9 @@ impl Arena {
             lock,
             weapons: self.frame_weapons(unit.id, aim.as_ref()),
             // 16b cut F.2: doc 16 §5's status block, off the same M32
-            // cells the impact writes.
-            sections: self.frame_sections(unit.id),
+            // cells the impact writes. 16c T-110a: off the unit in hand,
+            // not a second search for it.
+            sections: Self::frame_sections_of(&unit.unit),
             // 16b cut X.1: two integers off the unit's own cells, and
             // `None` for a platform that carries no heat at all.
             heat: match (unit.heat_now(), unit.heat_max()) {
@@ -3109,6 +3250,11 @@ impl Arena {
     ///
     /// Both maxima are read off the cells' own `max`, which is content and does
     /// not move, so they are facts about the tank rather than about the round.
+    ///
+    /// **16c T-110a**: the two cell ids are the once-built ones
+    /// ([`crate::definitions::unit::armor_cell`],
+    /// [`crate::definitions::unit::internals_cell`]) where each was a
+    /// `CellId::new` a round; the section and facet ids are still built here.
     fn struck_maxima(&self, unit: ObjId, section: &str, facet: &str) -> (SmolStr, u32, u32) {
         let Some(state) = self.unit(unit) else {
             return (SmolStr::new(section), 0, 0);
@@ -3125,22 +3271,21 @@ impl Arena {
             .ok()
             .zip(mush_tactics::FacetId::new(facet).ok())
             .and_then(|(section, facet)| {
-                mush_tactics::CellId::new(crate::definitions::unit::ARMOR_CELL)
-                    .ok()
-                    .map(|cell| mush_tactics::CellAddr::Facet {
-                        section,
-                        facet,
-                        cell,
-                    })
+                armor_cell().map(|cell| mush_tactics::CellAddr::Facet {
+                    section,
+                    facet,
+                    cell: cell.clone(),
+                })
             })
             .and_then(|addr| state.unit.cell(&addr))
             .map_or(0, |cell| u32::try_from(cell.max.max(0)).unwrap_or(u32::MAX));
         let internals = mush_tactics::SectionId::new(section)
             .ok()
             .and_then(|section| {
-                mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL)
-                    .ok()
-                    .map(|cell| mush_tactics::CellAddr::Section { section, cell })
+                internals_cell().map(|cell| mush_tactics::CellAddr::Section {
+                    section,
+                    cell: cell.clone(),
+                })
             })
             .and_then(|addr| state.unit.cell(&addr))
             .map_or(0, |cell| u32::try_from(cell.max.max(0)).unwrap_or(u32::MAX));
@@ -3835,50 +3980,56 @@ impl Arena {
     ///
     /// It names the pilot's **own** tank and is therefore outside the observer
     /// rule: what a crew can read off its own gauges is physical knowledge.
+    ///
+    /// **16c T-110a — one ordered pass.** Until this cut the block was sixteen
+    /// `BTreeMap` probes a frame on the stock tank — `TacticalUnit::cell` once
+    /// per section for its internals and once per facet for its armour, each
+    /// probe an address built from two or three cloned ids and compared by
+    /// `CellAddr`'s derived order — under two `CellId::new`s, each a fresh
+    /// `String` through `canon`: 9.4 per cent of the CI step and 6.1 of the
+    /// authored at the hash v2 tree (`canon` 2.1–3.6, `CellAddr::cmp` 2.7–3.7
+    /// beside it), run inside every mind view (about 74 a wake) and every
+    /// pilot frame (24). Now the two ids are built once for the process
+    /// ([`crate::definitions::unit::armor_cell`] and
+    /// [`crate::definitions::unit::internals_cell`]) and the block is one
+    /// forward pass over `sections()` merged with the unit's cell map in that
+    /// map's own order (`frame_sections_merged`): no address is built, no id
+    /// is cloned, and the rows carry the same `SmolStr::new(id.as_str())`
+    /// copies in the same order. The output is the probe walk's exactly —
+    /// `t110a_frame_sections_is_the_lookup_walk` holds it to that walk, kept
+    /// in the tests as the reference, over a shipped fight under fire — so no
+    /// frame byte moves; the frame is never hashed or journalled by these
+    /// fields, and no draw, fold, ledger line or counter reads this path.
+    /// [`Arena::frame_sections_of`] is the walk on a unit in hand, which is
+    /// how `frame_for` reads it — off the unit it has already resolved, with
+    /// no second search of the unit table for the same row; this is that
+    /// search followed by it.
     #[must_use]
     pub fn frame_sections(&self, platform: ObjId) -> Vec<FrameSection> {
-        let Some(state) = self.unit(platform) else {
+        self.unit(platform)
+            .map_or_else(Vec::new, |state| Self::frame_sections_of(&state.unit))
+    }
+
+    /// **The status block of a unit in hand** (16c T-110a):
+    /// [`Arena::frame_sections`] without the search — the merged walk
+    /// (`frame_sections_merged`) over the unit's sections and cells under the
+    /// once-built ids, and an empty block if either id were ever refused, as
+    /// before. `frame_for` reads it off the unit it has already resolved, where
+    /// it searched the unit table a second time for the same row (one of the
+    /// six such searches a frame makes; the other five remain);
+    /// `frame_sections` is the search followed by it, so the two cannot drift.
+    #[must_use]
+    pub fn frame_sections_of(unit: &mush_tactics::TacticalUnit) -> Vec<FrameSection> {
+        let (Some(armor), Some(internals)) = (armor_cell(), internals_cell()) else {
             return Vec::new();
         };
-        let Ok(armor_cell) = mush_tactics::CellId::new(crate::definitions::unit::ARMOR_CELL) else {
-            return Vec::new();
-        };
-        let Ok(internals_cell) =
-            mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL)
-        else {
-            return Vec::new();
-        };
-        state
-            .unit
-            .sections()
-            .map(|(id, section)| FrameSection {
-                id: SmolStr::new(id.as_str()),
-                condition: SmolStr::new(section.condition.as_str()),
-                internals: state
-                    .unit
-                    .cell(&mush_tactics::CellAddr::Section {
-                        section: id.clone(),
-                        cell: internals_cell.clone(),
-                    })
-                    .map(|cell| (cell.current, cell.max)),
-                facets: section
-                    .facets
-                    .iter()
-                    .filter_map(|facet| {
-                        let cell = state.unit.cell(&mush_tactics::CellAddr::Facet {
-                            section: id.clone(),
-                            facet: facet.clone(),
-                            cell: armor_cell.clone(),
-                        })?;
-                        Some(FrameFacet {
-                            id: SmolStr::new(facet.as_str()),
-                            armor: cell.current,
-                            armor_max: cell.max,
-                        })
-                    })
-                    .collect(),
-            })
-            .collect()
+        frame_sections_merged(
+            unit.sections(),
+            unit.cells(),
+            unit.cells(),
+            armor,
+            internals,
+        )
     }
 
     /// **The substep length**, arena milliseconds (doc 16 §3.1 "Rate
@@ -8422,5 +8573,610 @@ mod tests {
         // is folded, so the hash on the lines is the state's hash before the
         // first of them was appended — the eager walk's value, line for line.
         assert_ne!(tempo.hash, 0);
+    }
+
+    /// **16c T-110a: the reference** — `Arena::frame_sections`' body as it was
+    /// before the cut, word for word: the two ids built by `CellId::new` on
+    /// every call, one `probe` per section for its internals and one per facet
+    /// for its armour, each address built from cloned ids. Kept here so the
+    /// merged walk is held to the probe walk and not to a figure somebody
+    /// typed; `probe` is `TacticalUnit::cell` on a unit and `BTreeMap::get` on
+    /// a hand-built map, which is the same read.
+    fn lookup_walk<'a>(
+        sections: impl Iterator<Item = (&'a SectionId, &'a SectionState)>,
+        probe: impl Fn(&CellAddr) -> Option<&'a ScalarCell>,
+    ) -> Vec<FrameSection> {
+        let Ok(armor_cell) = CellId::new(crate::definitions::unit::ARMOR_CELL) else {
+            return Vec::new();
+        };
+        let Ok(internals_cell) = CellId::new(crate::definitions::unit::INTERNALS_CELL) else {
+            return Vec::new();
+        };
+        sections
+            .map(|(id, section)| FrameSection {
+                id: SmolStr::new(id.as_str()),
+                condition: SmolStr::new(section.condition.as_str()),
+                internals: probe(&CellAddr::Section {
+                    section: id.clone(),
+                    cell: internals_cell.clone(),
+                })
+                .map(|cell| (cell.current, cell.max)),
+                facets: section
+                    .facets
+                    .iter()
+                    .filter_map(|facet| {
+                        let cell = probe(&CellAddr::Facet {
+                            section: id.clone(),
+                            facet: facet.clone(),
+                            cell: armor_cell.clone(),
+                        })?;
+                        Some(FrameFacet {
+                            id: SmolStr::new(facet.as_str()),
+                            armor: cell.current,
+                            armor_max: cell.max,
+                        })
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The block's rows as bare text and numbers, for an assertion that reads.
+    type Shape<'a> = Vec<(
+        &'a str,
+        &'a str,
+        Option<(i64, i64)>,
+        Vec<(&'a str, i64, i64)>,
+    )>;
+
+    fn shape(sections: &[FrameSection]) -> Shape<'_> {
+        sections
+            .iter()
+            .map(|section| {
+                (
+                    section.id.as_str(),
+                    section.condition.as_str(),
+                    section.internals,
+                    section
+                        .facets
+                        .iter()
+                        .map(|facet| (facet.id.as_str(), facet.armor, facet.armor_max))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn section_id(name: &str) -> SectionId {
+        SectionId::new(name).unwrap_or_else(|why| panic!("{name}: {why:?}"))
+    }
+
+    fn facet_id(name: &str) -> FacetId {
+        FacetId::new(name).unwrap_or_else(|why| panic!("{name}: {why:?}"))
+    }
+
+    fn cell_id(name: &str) -> CellId {
+        CellId::new(name).unwrap_or_else(|why| panic!("{name}: {why:?}"))
+    }
+
+    /// **16c T-110a: the once-built ids are the constants** — the same text
+    /// `CellId::new` answers for them, and one allocation per process: every
+    /// read hands back the same reference.
+    #[test]
+    fn t110a_the_once_built_ids_are_the_constants() {
+        assert_eq!(
+            armor_cell().map(CellId::as_str),
+            Some(crate::definitions::unit::ARMOR_CELL)
+        );
+        assert_eq!(
+            internals_cell().map(CellId::as_str),
+            Some(crate::definitions::unit::INTERNALS_CELL)
+        );
+        assert_eq!(
+            armor_cell(),
+            CellId::new(crate::definitions::unit::ARMOR_CELL)
+                .ok()
+                .as_ref()
+        );
+        assert_eq!(
+            internals_cell(),
+            CellId::new(crate::definitions::unit::INTERNALS_CELL)
+                .ok()
+                .as_ref()
+        );
+        assert!(
+            armor_cell()
+                .zip(armor_cell())
+                .is_some_and(|(first, again)| std::ptr::eq(first, again)),
+            "built once"
+        );
+        assert!(
+            internals_cell()
+                .zip(internals_cell())
+                .is_some_and(|(first, again)| std::ptr::eq(first, again)),
+            "built once"
+        );
+    }
+
+    /// **16c T-110a: the cursors' rank is the address's order** — `rank_section`
+    /// and `rank_facet` against `CellAddr::cmp` on the address they stand in
+    /// for, over every cell of the stock tank against every target: each of
+    /// its sections and two it does not name (one sorting before them all, one
+    /// after), each of its facets and two it does not name, and four cell ids
+    /// (the two the walk asks for, one sorting between them, one after). All
+    /// three orderings occur, and `Equal` exactly as often as the map holds a
+    /// matching entry — sixteen on the stock tank, its five internals and
+    /// eleven armour cells.
+    #[test]
+    fn t110a_the_cursor_ranks_as_the_address_orders() {
+        let unit = crate::arena::test_support::line_tank_unit(A);
+        let sections: Vec<SectionId> = unit
+            .sections()
+            .map(|(id, _)| id.clone())
+            .chain([section_id("aft"), section_id("zz_mast")])
+            .collect();
+        let facets: Vec<FacetId> = unit
+            .sections()
+            .flat_map(|(_, section)| section.facets.iter().cloned())
+            .collect::<std::collections::BTreeSet<FacetId>>()
+            .into_iter()
+            .chain([facet_id("aft"), facet_id("zz")])
+            .collect();
+        let cells: Vec<CellId> = ["armor", "heat", "internals", "zzz"]
+            .into_iter()
+            .map(cell_id)
+            .collect();
+        let slot = |ordering: std::cmp::Ordering| match ordering {
+            std::cmp::Ordering::Less => 0,
+            std::cmp::Ordering::Equal => 1,
+            std::cmp::Ordering::Greater => 2,
+        };
+        let mut seen = [0_usize; 3];
+        for (addr, _) in unit.cells() {
+            for section in &sections {
+                for cell in &cells {
+                    let target = CellAddr::Section {
+                        section: section.clone(),
+                        cell: cell.clone(),
+                    };
+                    let want = addr.cmp(&target);
+                    assert_eq!(
+                        rank_section(addr, section, cell),
+                        want,
+                        "{addr:?} against {target:?}"
+                    );
+                    seen[slot(want)] += 1;
+                    for facet in &facets {
+                        let target = CellAddr::Facet {
+                            section: section.clone(),
+                            facet: facet.clone(),
+                            cell: cell.clone(),
+                        };
+                        let want = addr.cmp(&target);
+                        assert_eq!(
+                            rank_facet(addr, section, facet, cell),
+                            want,
+                            "{addr:?} against {target:?}"
+                        );
+                        seen[slot(want)] += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            seen.iter().all(|n| *n > 0),
+            "every ordering occurs: {seen:?}"
+        );
+        let matching = unit
+            .cells()
+            .filter(|(addr, _)| match addr {
+                CellAddr::Section { cell, .. } => cells.contains(cell),
+                CellAddr::Facet { facet, cell, .. } => {
+                    facets.contains(facet) && cells.contains(cell)
+                }
+                CellAddr::Unit { .. } | CellAddr::Component { .. } => false,
+            })
+            .count();
+        assert_eq!(seen[1], matching, "one Equal per matching entry");
+        assert_eq!(
+            matching, 16,
+            "the stock tank's five internals and eleven plates"
+        );
+    }
+
+    /// **16c T-110a: a cursor stops short of its target and keeps the entry**
+    /// — `take_at`'s three arms by hand, on a run of two section entries,
+    /// `b/internals` and `d/internals`. `a` ends `None` with nothing consumed;
+    /// `c` consumes `b` (ranked `Less`), stops on `d` (ranked `Greater`) and
+    /// answers `None` with `d` still the head of the run; `d` then answers its
+    /// own cell, which a cursor that consumed the entry it stopped at could
+    /// not; `e` runs the cursor out. A fresh run takes `b` first, so the
+    /// `Greater` stop is also tried straight after an `Equal` take.
+    #[test]
+    fn t110a_a_cursor_stops_short_and_keeps_the_entry() {
+        type Run<'a> =
+            std::iter::Peekable<std::collections::btree_map::Iter<'a, CellAddr, ScalarCell>>;
+        fn ask(run: &mut Run<'_>, section: &str, internals: &CellId) -> Option<i64> {
+            let section = section_id(section);
+            take_at(run, |addr| rank_section(addr, &section, internals)).map(|cell| cell.current)
+        }
+        fn head(run: &mut Run<'_>) -> Option<CellAddr> {
+            run.peek().map(|(addr, _)| (*addr).clone())
+        }
+        let Some(internals) = internals_cell() else {
+            panic!("the once-built id");
+        };
+        let at = |section: &str| CellAddr::Section {
+            section: section_id(section),
+            cell: cell_id("internals"),
+        };
+        let scalar = |current: i64| ScalarCell {
+            min: 0,
+            max: 9,
+            current,
+        };
+        let cells: BTreeMap<CellAddr, ScalarCell> = [(at("b"), scalar(2)), (at("d"), scalar(4))]
+            .into_iter()
+            .collect();
+
+        let mut run = cells.iter().peekable();
+        assert_eq!(ask(&mut run, "a", internals), None, "a: before the run");
+        assert_eq!(head(&mut run), Some(at("b")), "a consumed nothing");
+        assert_eq!(ask(&mut run, "c", internals), None, "c: between b and d");
+        assert_eq!(head(&mut run), Some(at("d")), "c stopped on d and kept it");
+        assert_eq!(ask(&mut run, "d", internals), Some(4), "d: the kept entry");
+        assert_eq!(head(&mut run), None, "the run is spent");
+        assert_eq!(ask(&mut run, "e", internals), None, "e: past the end");
+
+        let mut run = cells.iter().peekable();
+        assert_eq!(ask(&mut run, "b", internals), Some(2), "b: the first entry");
+        assert_eq!(head(&mut run), Some(at("d")), "b consumed only b");
+        assert_eq!(
+            ask(&mut run, "c", internals),
+            None,
+            "c: straight after a take"
+        );
+        assert_eq!(head(&mut run), Some(at("d")), "c kept d");
+        assert_eq!(ask(&mut run, "d", internals), Some(4));
+    }
+
+    /// **16c T-110a: the merge is the probe walk on maps built by hand** — the
+    /// three shapes the shipped content never builds, fed as the very types
+    /// `TacticalUnit::sections` and `TacticalUnit::cells` iterate: a facet
+    /// with no armour cell (`aft/right`, which has a `paint` cell and nothing
+    /// else, dropped as the probe walk drops it), a section with no internals
+    /// cell (`bow`, `None` as the probe walk reads it), and `Facet` and
+    /// `Section` entries for a facet (`aft/stern`) and a section (`keel`) the
+    /// sections do not name, which both walks pass over. Beside them the cells
+    /// a cursor must step across — a `Unit` pool, section cells sorting on
+    /// either side of `internals`, a second cell on a plated facet, a
+    /// `Component` magazine — and `zed`, whose one plate lies past `keel`'s so
+    /// the facet cursor skips a foreign section's entry to reach it.
+    ///
+    /// Two misses stop on the next target's own entry, one on each cursor:
+    /// `lamp` has no cell at all and its internals probe stops on
+    /// `mast/internals`; `bow/rear` has no cell and its plate probe stops on
+    /// `bow/top/armor`. The shipped content never reaches `take_at`'s
+    /// `Greater` arm — the line tank's section run is exactly its five
+    /// `internals`, and every facet cell is `armor` — so these two are what
+    /// hold the arm to *stop without consuming*: a cursor that consumed the
+    /// entry it stopped at would read `mast` as `None` and drop `bow`'s top,
+    /// and the equality and the shape below both fail it. Then a run that
+    /// ends before the target, so the cursor's end is the probe's miss.
+    ///
+    /// The maps are built by hand because `TacticalUnit` refuses them: the
+    /// stock tank's own document with a plate on a facet its section does not
+    /// name, or an internals cell on a section it does not have, fails to
+    /// decode — asserted here, which is why the filters cannot be exercised
+    /// through the unit and must be exercised through its iterators.
+    #[test]
+    fn t110a_the_merge_is_the_lookup_walk_on_hand_built_maps() {
+        let (Some(armor), Some(internals)) = (armor_cell(), internals_cell()) else {
+            panic!("the once-built ids");
+        };
+        let scalar = |current: i64, max: i64| ScalarCell {
+            min: 0,
+            max,
+            current,
+        };
+        let state = |condition: &str, facets: &[&str]| SectionState {
+            condition: mush_tactics::ConditionId::new(condition)
+                .unwrap_or_else(|why| panic!("{condition}: {why:?}")),
+            facets: facets.iter().map(|facet| facet_id(facet)).collect(),
+            slots: std::collections::BTreeSet::new(),
+        };
+        let at = |section: &str, cell: &str| CellAddr::Section {
+            section: section_id(section),
+            cell: cell_id(cell),
+        };
+        let on = |section: &str, facet: &str, cell: &str| CellAddr::Facet {
+            section: section_id(section),
+            facet: facet_id(facet),
+            cell: cell_id(cell),
+        };
+        let sections: BTreeMap<SectionId, SectionState> = [
+            (section_id("aft"), state("intact", &["left", "right"])),
+            (
+                section_id("bow"),
+                state("destroyed", &["front", "rear", "top"]),
+            ),
+            (section_id("lamp"), state("intact", &[])),
+            (section_id("mast"), state("intact", &[])),
+            (section_id("zed"), state("intact", &["x"])),
+        ]
+        .into_iter()
+        .collect();
+        let cells: BTreeMap<CellAddr, ScalarCell> = [
+            (
+                CellAddr::Unit {
+                    cell: cell_id("heat"),
+                },
+                scalar(3, 9),
+            ),
+            (at("aft", "heat"), scalar(1, 5)),
+            (at("aft", "internals"), scalar(40, 50)),
+            (at("aft", "speed"), scalar(2, 2)),
+            (at("bow", "heat"), scalar(0, 5)),
+            (at("keel", "internals"), scalar(7, 7)),
+            (at("mast", "internals"), scalar(0, 30)),
+            (on("aft", "left", "armor"), scalar(12, 20)),
+            (on("aft", "right", "paint"), scalar(1, 1)),
+            (on("aft", "stern", "armor"), scalar(9, 9)),
+            (on("bow", "front", "armor"), scalar(0, 25)),
+            (on("bow", "front", "plating"), scalar(1, 1)),
+            (on("bow", "top", "armor"), scalar(25, 25)),
+            (on("keel", "left", "armor"), scalar(5, 5)),
+            (on("zed", "x", "armor"), scalar(4, 8)),
+            (
+                CellAddr::Component {
+                    component: mush_tactics::ComponentId::new("gun")
+                        .unwrap_or_else(|why| panic!("gun: {why:?}")),
+                    cell: cell_id("ammo"),
+                },
+                scalar(3, 40),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let merged = frame_sections_merged(
+            sections.iter(),
+            cells.iter(),
+            cells.iter(),
+            armor,
+            internals,
+        );
+        let walked = lookup_walk(sections.iter(), |addr| cells.get(addr));
+        assert_eq!(merged, walked);
+        assert_eq!(
+            shape(&merged),
+            vec![
+                ("aft", "intact", Some((40, 50)), vec![("left", 12, 20)]),
+                (
+                    "bow",
+                    "destroyed",
+                    None,
+                    vec![("front", 0, 25), ("top", 25, 25)]
+                ),
+                ("lamp", "intact", None, Vec::new()),
+                ("mast", "intact", Some((0, 30)), Vec::new()),
+                ("zed", "intact", None, vec![("x", 4, 8)]),
+            ],
+            "the shape, so the equality is not two empty lists agreeing"
+        );
+
+        // A run that ends before the target: one internals cell and no plate
+        // at all, under two sections — the section cursor runs out before
+        // `bow`'s target and the facet cursor before `aft/left`'s.
+        let short: BTreeMap<SectionId, SectionState> = [
+            (section_id("aft"), state("intact", &["left"])),
+            (section_id("bow"), state("intact", &[])),
+        ]
+        .into_iter()
+        .collect();
+        let one: BTreeMap<CellAddr, ScalarCell> = [(at("aft", "internals"), scalar(6, 6))]
+            .into_iter()
+            .collect();
+        let merged = frame_sections_merged(short.iter(), one.iter(), one.iter(), armor, internals);
+        assert_eq!(merged, lookup_walk(short.iter(), |addr| one.get(addr)));
+        assert_eq!(
+            shape(&merged),
+            vec![
+                ("aft", "intact", Some((6, 6)), Vec::new()),
+                ("bow", "intact", None, Vec::new()),
+            ]
+        );
+
+        // And why by hand: the unit refuses both unnamed addresses on load,
+        // where its own document decodes.
+        let unit = crate::arena::test_support::line_tank_unit(A);
+        let doc = serde_json::to_value(&unit).expect("the stock tank encodes");
+        assert_eq!(
+            serde_json::from_value::<mush_tactics::TacticalUnit>(doc.clone()).ok(),
+            Some(unit),
+            "the stock tank's own document decodes to itself"
+        );
+        for (what, addr) in [
+            (
+                "a plate on a facet the hull does not name",
+                serde_json::json!({"Facet": {"section": "hull", "facet": "stern", "cell": "armor"}}),
+            ),
+            (
+                "internals on a section the tank does not have",
+                serde_json::json!({"Section": {"section": "keel", "cell": "internals"}}),
+            ),
+        ] {
+            let mut doc = doc.clone();
+            let Some(cells) = doc
+                .get_mut("cells")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                panic!("the document's cells");
+            };
+            cells.push(serde_json::json!([
+                addr,
+                {"min": 0, "max": 1, "current": 1}
+            ]));
+            assert!(
+                serde_json::from_value::<mush_tactics::TacticalUnit>(doc).is_err(),
+                "{what} decodes"
+            );
+        }
+    }
+
+    /// **16c T-110a: the stock chassis, whole and at its floors, walks the
+    /// same** — two line tanks under seated pilots, every unit's block held
+    /// to the probe walk whole; then red struck by one plan to the shapes a
+    /// fight reaches (the hull's rear plate and the engine's internals at
+    /// their floors, the turret's front and the hull's internals part way,
+    /// the engine `destroyed`) and held again, with the figures read back so
+    /// the equality is over a struck tank; then four pulses of the arena
+    /// with the struck tank in it, every unit and every frame the pilots were
+    /// sent held to the walk over the cells as they stand.
+    #[test]
+    fn t110a_the_stock_chassis_at_its_floors_walks_the_same() {
+        use crate::arena::test_support::line_tank;
+        const B: ObjId = ObjId(9);
+        let same = |arena: &Arena| {
+            for state in &arena.units {
+                let walked = lookup_walk(state.unit.sections(), |addr| state.unit.cell(addr));
+                assert_eq!(arena.frame_sections(state.id), walked, "#{}", state.id.0);
+                assert_eq!(
+                    Arena::frame_sections_of(&state.unit),
+                    walked,
+                    "#{} off the unit in hand",
+                    state.id.0
+                );
+            }
+        };
+        let mut arena = arena_at_epoch(
+            vec![
+                line_tank(A, Team::Red, pose(1_500, 1_500)),
+                line_tank(B, Team::Blue, pose(1_500, 2_500)),
+            ],
+            1,
+        );
+        same(&arena);
+        let whole = arena.frame_sections(A);
+        assert_eq!(
+            whole
+                .iter()
+                .map(|section| section.id.as_str())
+                .collect::<Vec<&str>>(),
+            vec!["engine", "hull", "left_track", "right_track", "turret"]
+        );
+        let set =
+            |addr: CellAddr, value: i64| mush_tactics::UnitMutationOp::SetCell { addr, value };
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![
+                set(
+                    CellAddr::Facet {
+                        section: section_id("hull"),
+                        facet: facet_id("rear"),
+                        cell: cell_id("armor"),
+                    },
+                    0,
+                ),
+                set(
+                    CellAddr::Section {
+                        section: section_id("engine"),
+                        cell: cell_id("internals"),
+                    },
+                    0,
+                ),
+                set(
+                    CellAddr::Facet {
+                        section: section_id("turret"),
+                        facet: facet_id("front"),
+                        cell: cell_id("armor"),
+                    },
+                    123,
+                ),
+                set(
+                    CellAddr::Section {
+                        section: section_id("hull"),
+                        cell: cell_id("internals"),
+                    },
+                    77,
+                ),
+                mush_tactics::UnitMutationOp::SetSectionCondition {
+                    section: section_id("engine"),
+                    condition: mush_tactics::ConditionId::new(crate::arena::damage::DESTROYED)
+                        .unwrap_or_else(|why| panic!("destroyed: {why:?}")),
+                },
+            ],
+            None,
+            None,
+        )
+        .unwrap_or_else(|why| panic!("a plan: {why:?}"));
+        if let Some(state) = arena.unit_mut(A) {
+            state.unit = mush_tactics::apply(&state.unit, &plan, 0)
+                .unwrap_or_else(|why| panic!("the plan applies: {why:?}"))
+                .0;
+        }
+        same(&arena);
+        let struck = arena.frame_sections(A);
+        assert_ne!(struck, whole, "the plan moved the block");
+        assert_eq!(
+            shape(&struck),
+            vec![
+                ("engine", "destroyed", Some((0, 120)), Vec::new()),
+                (
+                    "hull",
+                    "intact",
+                    Some((77, 200)),
+                    vec![
+                        ("front", 400, 400),
+                        ("left", 250, 250),
+                        ("rear", 0, 150),
+                        ("right", 250, 250),
+                        ("top", 100, 100),
+                    ]
+                ),
+                (
+                    "left_track",
+                    "intact",
+                    Some((100, 100)),
+                    vec![("left", 120, 120)]
+                ),
+                (
+                    "right_track",
+                    "intact",
+                    Some((100, 100)),
+                    vec![("right", 120, 120)]
+                ),
+                (
+                    "turret",
+                    "intact",
+                    Some((150, 150)),
+                    vec![
+                        ("front", 123, 350),
+                        ("left", 220, 220),
+                        ("rear", 140, 140),
+                        ("right", 220, 220),
+                    ]
+                ),
+            ]
+        );
+        let mut wall = 0_i64;
+        let mut frames = 0_usize;
+        for _ in 0..4 {
+            let out = arena.step(wall, &[], &[]);
+            same(&arena);
+            for (_, frame) in &out.frames {
+                let Some(state) = arena.unit(frame.unit) else {
+                    panic!("#{} is in the match", frame.unit.0);
+                };
+                assert_eq!(
+                    frame.sections,
+                    lookup_walk(state.unit.sections(), |addr| state.unit.cell(addr)),
+                    "the frame sent for #{}",
+                    frame.unit.0
+                );
+                frames += 1;
+            }
+            wall += 500;
+        }
+        assert!(frames >= 2, "the pilots were sent frames: {frames}");
+        assert_eq!(arena.frame_sections(A), struck, "nothing else moved it");
     }
 }

@@ -39,7 +39,7 @@
 use mush_tactics::TacticalUnit;
 use serde::{Deserialize, Serialize};
 
-use crate::definitions::unit::{ARMOR_CELL, INTACT, INTERNALS_CELL};
+use crate::definitions::unit::{INTACT, armor_cell, internals_cell};
 
 /// The most sections one [`Condition`] carries — see the module head.
 pub const MAX_SCANNED_SECTIONS: usize = 16;
@@ -163,13 +163,19 @@ impl Condition {
     /// Integer arithmetic throughout (D-16-4). It reads at most
     /// [`MAX_SCANNED_SECTIONS`] sections; see the module head for why that is a
     /// clamp and not the rule.
+    ///
+    /// **16c T-110a**: the two cell ids are the once-built ones
+    /// ([`crate::definitions::unit::armor_cell`],
+    /// [`crate::definitions::unit::internals_cell`]) where each was a
+    /// `CellId::new` a reading; the probes per section and per facet are as
+    /// they were.
     #[must_use]
     pub fn of(unit: &TacticalUnit, green_permille: u32, yellow_permille: u32) -> Condition {
-        let armor = mush_tactics::CellId::new(ARMOR_CELL).ok();
-        let internals = mush_tactics::CellId::new(INTERNALS_CELL).ok();
+        let armor = armor_cell();
+        let internals = internals_cell();
         let mut out = Condition::default();
         for (index, (id, section)) in unit.sections().enumerate().take(MAX_SCANNED_SECTIONS) {
-            let inside = internals.as_ref().and_then(|cell| {
+            let inside = internals.and_then(|cell| {
                 unit.cell(&mush_tactics::CellAddr::Section {
                     section: id.clone(),
                     cell: cell.clone(),
@@ -187,7 +193,7 @@ impl Condition {
                     whole = whole.saturating_add(cell.max.max(0).unsigned_abs());
                 }
                 for facet in &section.facets {
-                    let Some(cell) = armor.as_ref().and_then(|cell| {
+                    let Some(cell) = armor.and_then(|cell| {
                         unit.cell(&mush_tactics::CellAddr::Facet {
                             section: id.clone(),
                             facet: facet.clone(),
@@ -328,6 +334,7 @@ mod tests {
     use super::*;
     use crate::arena::test_support::{line_tank_unit, tactical_unit};
     use crate::config::SensorsConfig;
+    use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL};
     use mush_core::ObjId;
     use mush_tactics::{CellAddr, CellId, ConditionId, FacetId, SectionId, UnitMutationOp};
 

@@ -34,6 +34,7 @@
 //! it is the only layer that decodes [`mush_tactics::ModeRules`].
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use mush_core::CanonicalId;
 use mush_core::mechanics::{DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef};
@@ -142,6 +143,36 @@ pub const ARMOR_CELL: &str = "armor";
 
 /// The cell every section carries under its armour.
 pub const INTERNALS_CELL: &str = "internals";
+
+/// **[`ARMOR_CELL`] as a [`CellId`], built once for the process** (16c
+/// T-110a).
+///
+/// `CellId::new` runs `mush_tactics`' `canon` — a trim, an ASCII lowercase and
+/// a fresh `String` — on every call (`canon` itself 2.1–3.6 per cent of the
+/// step at the hash v2 tree, over every caller), and the arena was running it
+/// on a constant: twice per pilot frame and per mind view in
+/// `Arena::frame_sections`, once or twice a round in `Arena::plan_hit` and
+/// `Arena::struck_maxima`, and a reading in `Condition::of`. The id is now
+/// built on the first read and shared from then on.
+///
+/// `None` only if `canon` ever refused the constant, which it does not
+/// (`t110a_the_once_built_ids_are_the_constants`); the readers keep the
+/// refusal they had, so a `None` here is exactly the `Err` the per-call build
+/// would have answered, and no reader's behaviour moves.
+#[must_use]
+pub fn armor_cell() -> Option<&'static CellId> {
+    static ARMOR: LazyLock<Option<CellId>> = LazyLock::new(|| CellId::new(ARMOR_CELL).ok());
+    ARMOR.as_ref()
+}
+
+/// **[`INTERNALS_CELL`] as a [`CellId`], built once for the process** (16c
+/// T-110a) — [`armor_cell`]'s twin, for the same readers and on the same
+/// terms.
+#[must_use]
+pub fn internals_cell() -> Option<&'static CellId> {
+    static INTERNALS: LazyLock<Option<CellId>> = LazyLock::new(|| CellId::new(INTERNALS_CELL).ok());
+    INTERNALS.as_ref()
+}
 
 /// A firing component's magazine cell.
 pub const AMMO_CELL: &str = "ammo";
