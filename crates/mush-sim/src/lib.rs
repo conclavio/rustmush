@@ -55,7 +55,7 @@ use mush_core::{
 };
 use mush_proto::RichText;
 
-pub use commands::ROUTE_NOT_FROM_HERE;
+pub use commands::{MANUAL_ROUTE_STAFF_ONLY, ROUTE_NOT_FROM_HERE};
 pub use custody::InteriorCustodyProvider;
 pub use data::{
     CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord,

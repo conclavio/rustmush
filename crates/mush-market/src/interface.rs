@@ -2,6 +2,12 @@
 //! `market.quote` over `+market`'s public projection, never the book beneath
 //! it (doc 10 §14): the listing walk is the asker's own visibility, and a
 //! quote is the asker's own record, reserving nothing.
+//!
+//! **Both replies are the asker's alone** (`ReplyAudience::Asker`, doc 18 cut IC0).
+//! The list is filtered by `may_view_listing` **as the asker** — a hidden listing
+//! they may see is in it and one they may not is out — and the quote is a record
+//! issued to them, so the NPC said aloud to the room exactly what the read had kept
+//! private. The default audience is the one that matches the read.
 
 use mush_core::{
     AbilityCall, Ctx, InterfaceAbility, InterfaceAbilityProvider, InterfaceError, InterfaceReply,
@@ -86,7 +92,7 @@ impl InterfaceAbilityProvider for MarketInterface {
                 if page.next.is_some() {
                     rows.push("(There is more: +market/list shows the rest.)".to_string());
                 }
-                Ok(InterfaceReply::public_lines(&rows))
+                Ok(InterfaceReply::lines(&rows))
             }
             "market.quote" => {
                 let listing = input
@@ -114,14 +120,15 @@ impl InterfaceAbilityProvider for MarketInterface {
                     .w
                     .module_state::<MarketStore>()
                     .and_then(|s| s.quote(id).cloned());
-                Ok(InterfaceReply::public(q.map_or_else(
+                Ok(InterfaceReply::text(q.map_or_else(
                     || format!("Quote #{id}."),
                     |q| {
+                        let instrument = crate::commands::quote_instrument(ctx.w, &q);
                         format!(
                             "Quote #{id}: {} × {} = {} — good until {} (real time). It reserves nothing; +market/accept #{id} takes it up.",
                             q.quantity,
-                            q.price.minor(),
-                            q.total().minor(),
+                            crate::commands::money(ctx.w, instrument.as_ref(), q.price),
+                            crate::commands::money(ctx.w, instrument.as_ref(), q.total()),
                             q.expires.at
                         )
                     },
@@ -180,6 +187,8 @@ mod tests {
         // matches nothing is an empty list, never a refusal (08a decision 13).
         let reply = invoke(&mut tw, rae, "market.list", json!({})).expect("a list");
         assert_eq!(reply.text, "Nothing is for sale.");
+        // Doc 18 cut IC0: the list was filtered as the asker, so it is theirs alone.
+        assert_eq!(reply.audience, mush_core::ReplyAudience::Asker);
         let reply = invoke(
             &mut tw,
             rae,

@@ -2264,7 +2264,18 @@ fn arrival_parent(ctx: &Ctx<'_>, place: ObjId) -> Result<SpatialParent, CmdError
 /// its own legs, drive class, declared propellant and alignment band, so those
 /// three accessors finally have a caller. A hand-typed id that names no authored
 /// route, or a line that also lists places, still builds the **manual fixture
-/// route** exactly as cut 6 did: the catalog is a resolution, never a gate.
+/// route** exactly as cut 6 did — **for staff**: the catalog is a resolution, never
+/// a gate, and the manual arm is a staff act.
+///
+/// **Doc 18 cut IC0: the manual arm is closed to everyone else.** E7r1 R6 let a
+/// crew member depart the hull they drive, and the manual arm then built them any
+/// `#dbref` legs at [`DEFAULT_LEG_S`] each, on [`STAFF_DRIVE_CLASS`], with no
+/// propellant and no alignment band — a teleport anywhere a domain or an interior
+/// stood, for the price of typing a place list. A non-staff actor now gets
+/// [`MANUAL_ROUTE_STAFF_ONLY`] for any line that lists places, **before** the catalog
+/// is consulted, so the line reads the same whether the id is authored, from
+/// elsewhere or nonsense (§4 rule 4, fold O12 kept). An authored route by its bare id
+/// is still theirs to fly.
 fn build_route(
     ctx: &Ctx<'_>,
     origin: ObjId,
@@ -2283,6 +2294,9 @@ fn build_route(
     let id = CanonicalId::new(id_token)
         .map_err(|e| CmdError::msg(format!("`{id_token}` is not a usable route id: {e}")))?;
     let mut tokens = tokens.peekable();
+    if tokens.peek().is_some() && !is_admin(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(MANUAL_ROUTE_STAFF_ONLY));
+    }
     // **The catalog is consulted on the ID FIRST** (E7 cut 7 independent verify
     // fold, O5). Before the fold the authored arm was gated on
     // `tokens.peek().is_none()`, so ONE extra place token skipped it entirely —
@@ -2374,6 +2388,12 @@ const fn mush_sim_max_route_id_bytes() -> usize {
 /// out from here — byte-identical to what an unknown id yields, so a crew route
 /// probe learns nothing (§4 rule 4, fold O12).
 pub const ROUTE_NOT_FROM_HERE: &str = "That route does not set out from here.";
+
+/// The one line a non-staff actor gets for any `@journey/depart` or `/plan` line
+/// that lists places (doc 18 cut IC0): the hand-built route is a staff act, and the
+/// line is answered before the catalog is consulted so it names nothing about the id.
+pub const MANUAL_ROUTE_STAFF_ONLY: &str =
+    "A route is flown by its authored id; a hand-built place list is a staff act.";
 
 /// **The carrier-root invariant and the seal, surfaced early.**
 /// `move_carrier_subtree` refuses a root that would come to rest inside its own

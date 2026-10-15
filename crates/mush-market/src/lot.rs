@@ -373,11 +373,17 @@ impl ActionProvider for MarketLotProvider {
                 true,
                 ProjectedParameterKind::Text { maximum_bytes: 64 },
             )?,
+            // **Listing ids are allocated from zero** (`MarketStore::alloc_listing` on a
+            // fresh world), and this floor was one (doc 18 cut IC0): the very first lot
+            // listing a world ever published queued its reserve and the driver refused
+            // it at resolution with `InvalidParameters`, so the listing advertised a
+            // hold nobody placed until the sweep withdrew it and paged. The IC0 gate
+            // (`tests/ic0.rs`) is what found it.
             parameter(
                 "listing",
                 true,
                 ProjectedParameterKind::Integer {
-                    minimum: 1,
+                    minimum: 0,
                     maximum: i64::MAX,
                 },
             )?,
@@ -760,4 +766,74 @@ pub fn action_ref(registry: &mush_core::Registry) -> Option<DefinitionRef> {
             id: DefinitionId::new(ACTION_LOT).ok()?,
         })
         .cloned()
+}
+
+// ---- doc 18 cut IC0: the hold behind a lot listing, read where money moves ----
+
+/// What the inventory holds behind one lot listing **right now** (doc 18 cut IC0).
+///
+/// Read through the typed-state seam the composition delegated to this crate — the
+/// same `Ctx::action_state` read `boot::reconcile_lot_holds` makes — and never through
+/// a probe of another principal's inventory: the listing names its endpoint and
+/// commodity, the reservation id is a pure derivation of the listing, and the one
+/// record read is the listing's own hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldStanding {
+    /// `Held`, with its deadline still ahead of the world's IC clock.
+    Live,
+    /// `Held` past its deadline — or stamped on a clock generation the world no
+    /// longer runs on, which K4a refuses to compare rather than expiring early and
+    /// which the settle inside the bundle would refuse too.
+    Lapsed,
+    /// Consumed, released, expired, or never placed.
+    Gone,
+    /// This server composed no lot supply, the listing's identities would not
+    /// derive, or the family could not be read from this context.
+    Unreadable,
+}
+
+/// The standing of the hold behind `listing`, and `None` for a listing that is not a
+/// `Supply::Lot` — the one accessor `trade::quote` and `trade::is_current` read.
+#[must_use]
+pub(crate) fn hold_standing(
+    ctx: &mush_core::Ctx<'_>,
+    listing: &crate::record::Listing,
+) -> Option<HoldStanding> {
+    let (endpoint, commodity, _) = listing.source.lot()?;
+    let Some(families) = crate::module::lot_supply(ctx.w) else {
+        return Some(HoldStanding::Unreadable);
+    };
+    let (Ok(reservation), Ok(key)) = (
+        listing_reservation(listing.id, endpoint, commodity),
+        mush_inventory::pool_key(endpoint, commodity),
+    ) else {
+        return Some(HoldStanding::Unreadable);
+    };
+    let book = match ctx.action_state(&families.books, &key) {
+        Ok(Some(book)) => book,
+        Ok(None) => return Some(HoldStanding::Gone),
+        Err(_) => return Some(HoldStanding::Unreadable),
+    };
+    let Some(record) = book.records().iter().find(|r| r.id() == reservation) else {
+        return Some(HoldStanding::Gone);
+    };
+    if !matches!(record.state(), mush_core::ReservationState::Held) {
+        return Some(HoldStanding::Gone);
+    }
+    Some(match ctx.w.world_ic_now().checked_cmp(record.expires()) {
+        Ok(std::cmp::Ordering::Less) => HoldStanding::Live,
+        Ok(_) | Err(_) => HoldStanding::Lapsed,
+    })
+}
+
+/// How long a hold placed now lasts in **real** seconds at the world's current IC
+/// rate — the longest a lot listing may be advertised for (doc 18 cut IC0).
+///
+/// `RESERVATION_TTL_SECS` counts IC seconds and the listing's deadline counts real
+/// ones, so the conversion is the current epoch's rate. `None` while the IC clock is
+/// paused (rate 0): a hold on a paused clock never lapses, so there is nothing to cap.
+#[must_use]
+pub fn hold_ttl_real_secs(w: &mush_core::World) -> Option<i64> {
+    let rate = i64::from(w.world_timeline().current().rate);
+    (rate > 0).then(|| mush_inventory::RESERVATION_TTL_SECS / rate)
 }

@@ -15,7 +15,7 @@ use mush_testkit::TestWorld;
 const PINNED: [(&str, &str); 3] = [
     (
         REGION_PACK,
-        "f127f7d7cc79b6d1f8f2e0b11f49f57497e101af0fe19cdd8cfaad0631501ef0",
+        "46beb771027b8fa0e4056d9374259f4a32321c8b308aeb0e721c737b7b1cc94e",
     ),
     (
         OOC_AREA_PACK,
@@ -176,5 +176,51 @@ fn no_shipped_exit_segment_is_a_word_the_kernel_owns() {
         collisions.is_empty(),
         "a shipped exit takes a kernel word, which refuses the pack at apply:\n{}",
         collisions.join("\n")
+    );
+}
+
+/// **Doc 18 cut IC0: every service driver a shipped pack names is an NPC entry of the
+/// pack it points at.** `region.limbo`'s lot tour named `npc.aaron_samuels` while the
+/// OOC area's entry is `npc.aaron`, so the applied connection carried a key no latch
+/// held and the bus announced itself as "The driver" (`travel.rs` `driver_name`). The
+/// validator checks the service *vehicle* and not the driver, so this is the pin.
+#[test]
+fn ic0_every_shipped_service_driver_names_an_npc_entry_that_exists() {
+    let packs: Vec<(&str, mush_content::Pack)> = SOURCES
+        .iter()
+        .map(|(name, json)| (*name, parse_pack(json).expect(name)))
+        .collect();
+    let mut drivers = 0;
+    for (name, pack) in &packs {
+        for (id, entry) in pack.entries() {
+            if entry.kind().as_str() != "connection" {
+                continue;
+            }
+            let Some(driver) = entry.def().get("service").and_then(|s| s.get("driver")) else {
+                continue;
+            };
+            let driver_pack = driver["pack"].as_str().expect("a driver names a pack");
+            let driver_entry = driver["entry"].as_str().expect("a driver names an entry");
+            let (_, target) = packs
+                .iter()
+                .find(|(_, p)| p.manifest().id().as_str() == driver_pack)
+                .unwrap_or_else(|| {
+                    panic!("{name}: {id} names driver pack {driver_pack}, which is not shipped")
+                });
+            let key = CanonicalId::new(driver_entry).expect("a canonical entry id");
+            let found = target.entries().get(&key).unwrap_or_else(|| {
+                panic!("{name}: {id} names driver {driver_pack}:{driver_entry}, which that pack does not define")
+            });
+            assert_eq!(
+                found.kind().as_str(),
+                "npc",
+                "{name}: {id}'s driver {driver_pack}:{driver_entry} is not an npc entry"
+            );
+            drivers += 1;
+        }
+    }
+    assert_eq!(
+        drivers, 1,
+        "the lot tour's bus driver is the one shipped service driver"
     );
 }

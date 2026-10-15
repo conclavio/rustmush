@@ -25,6 +25,16 @@
 //! seeded fleet, funded accounts, a live operation and a fight, which is a fixture,
 //! not a gate. What item 11 asks — and what a regression would break — is whether a
 //! *player* can reach every arrow, and that is exactly what this measures.
+//!
+//! **Doc 18 cut IC0 promoted the last two arrows — stock → quote → accept → settle —
+//! to a gate**, in `crates/mush-market/tests/ic0.rs`: the loop runs through the verbs
+//! a player types, the contract settles on the sweep, the lot lands in the buyer's
+//! hold, and the economy's ladder holds no `SettlementRefused` page. It runs on the
+//! production composition *in miniature* rather than on this file's roster because a
+//! vendor organization's programmatic acceptance needs a party cap, and the game's
+//! root passes `with_party_caps(Vec::new())` until cut IC5's `with_party_cap_source`
+//! lands; on this roster the money leg stops at "that vendor cannot complete the
+//! sale", honestly and with nothing charged. The staff-act audit below is unchanged.
 
 use mush_core::{Audience, GOD, ObjId, ObjKind, Powers, Role};
 use mush_proto::OutputEvent;

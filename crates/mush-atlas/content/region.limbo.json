@@ -3,7 +3,7 @@
     "id": "region.limbo",
     "version": 2,
     "kind": "region",
-    "digest": "f127f7d7cc79b6d1f8f2e0b11f49f57497e101af0fe19cdd8cfaad0631501ef0",
+    "digest": "46beb771027b8fa0e4056d9374259f4a32321c8b308aeb0e721c737b7b1cc94e",
     "requires": []
   },
   "brief": {
@@ -176,7 +176,7 @@
           "dwell_s": 90,
           "driver": {
             "pack": "neighborhood.ooc_area",
-            "entry": "npc.aaron_samuels"
+            "entry": "npc.aaron"
           }
         }
       }

@@ -861,7 +861,21 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
     {
         return Err(MarketError::bad("The market is full; try later."));
     }
-    let ttl = spec.ttl_secs.clamp(60, MAX_LISTING_TTL_SECS);
+    let mut ttl = spec.ttl_secs.clamp(60, MAX_LISTING_TTL_SECS);
+    // **A lot listing cannot outlive its hold** (doc 18 cut IC0). The reservation
+    // `lot::stage` places below lapses `RESERVATION_TTL_SECS` of **IC** time after it
+    // is placed, while a listing's deadline is real time; before IC0 the command's
+    // default was fourteen real days against seven IC days and nothing read the hold,
+    // so a quote taken late took the money and the matter leg refused with it in
+    // force. The listing's window is cut to the hold's, converted at the world's
+    // current rate, so what the page advertises as for sale is what the hold still
+    // backs; `trade::is_current` and `trade::quote` read the hold itself as well,
+    // which is what holds when the rate moves after the listing is written.
+    if lot_leg.is_some()
+        && let Some(cap) = crate::lot::hold_ttl_real_secs(ctx.w)
+    {
+        ttl = ttl.min(cap).max(1);
+    }
     let now = ctx.w.now();
     let Some(id) = ctx
         .w

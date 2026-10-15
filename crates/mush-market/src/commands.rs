@@ -239,6 +239,97 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+// ---- doc 18 cut IC0: the one money render ------------------------------------
+
+/// **The one money render in the market** (doc 18 cut IC0). Every price, total, band,
+/// volume and baseline a market verb or the economist prints goes through here, so a
+/// 700-centicredit price reads in the instrument's own scale and symbol and never as
+/// the bare minor value the verbs used to print. It is [`mush_economy::render_amount`]
+/// — the economy's one player-facing render — on the instrument the record settles
+/// in; the bare minor value is kept only for an amount nothing knows the instrument
+/// of, because a render never refuses. The parse side (`price=<n>`) still takes minor
+/// units, exactly as every economy verb does.
+#[must_use]
+pub(crate) fn money(
+    w: &mush_core::World,
+    instrument: Option<&mush_economy::InstrumentId>,
+    amount: Amount,
+) -> String {
+    match (w.module_state::<mush_economy::EconomyStore>(), instrument) {
+        (Some(economy), Some(instrument)) => {
+            mush_economy::render_amount(economy.snapshot(), instrument, amount)
+        }
+        _ => amount.to_decimal_string(0),
+    }
+}
+
+/// The instrument a vendor's deals settle in: its own cash account's.
+#[must_use]
+pub(crate) fn vendor_instrument_of(
+    w: &mush_core::World,
+    vendor: VendorId,
+) -> Option<mush_economy::InstrumentId> {
+    let account = w.module_state::<MarketStore>()?.vendor(vendor)?.account;
+    w.module_state::<mush_economy::EconomyStore>()?
+        .snapshot()
+        .account(account)
+        .map(|a| a.instrument.clone())
+}
+
+/// The instrument a listing settles in.
+#[must_use]
+pub(crate) fn listing_instrument(
+    w: &mush_core::World,
+    l: &crate::record::Listing,
+) -> Option<mush_economy::InstrumentId> {
+    vendor_instrument_of(w, l.vendor)
+}
+
+/// The instrument a quote settles in: its listing's while the listing stands, and the
+/// seller's vendor record's once it is gone — a lot listing is deleted by its one
+/// sale, and a settled quote is the tape row that must describe itself afterwards.
+#[must_use]
+pub(crate) fn quote_instrument(
+    w: &mush_core::World,
+    q: &crate::record::Quote,
+) -> Option<mush_economy::InstrumentId> {
+    let store = w.module_state::<MarketStore>()?;
+    let vendor = store
+        .listing(q.listing)
+        .map(|l| l.vendor)
+        .or_else(|| match &q.seller {
+            mush_org::PrincipalId::Organization(org) => store.vendor_of_org(*org).map(|v| v.id),
+            mush_org::PrincipalId::Object(_) | mush_org::PrincipalId::System(_) => None,
+        })?;
+    vendor_instrument_of(w, vendor)
+}
+
+/// The instrument a venue trades in: that of its first vendor by id. One instrument
+/// per venue is the market's working assumption (a listing settles in its vendor's,
+/// and the projection sums prices across vendors as if they agreed); a venue with no
+/// vendor renders bare minor.
+#[must_use]
+pub(crate) fn market_instrument(
+    w: &mush_core::World,
+    market: &MarketId,
+) -> Option<mush_economy::InstrumentId> {
+    let vendor = w
+        .module_state::<MarketStore>()?
+        .vendors()
+        .find(|v| &v.market == market)?
+        .id;
+    vendor_instrument_of(w, vendor)
+}
+
+/// The instrument a catalogue **baseline** is read in: the first vendor's by id, there
+/// being no venue in a catalogue entry. A reference price in a world with no vendor
+/// renders bare minor.
+#[must_use]
+pub(crate) fn catalog_instrument(w: &mush_core::World) -> Option<mush_economy::InstrumentId> {
+    let vendor = w.module_state::<MarketStore>()?.vendors().next()?.id;
+    vendor_instrument_of(w, vendor)
+}
+
 pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String {
     let name = ctx
         .w
@@ -254,11 +345,12 @@ pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String 
     // D4): a maker's spread moved `Quote.price`, and this line read `Listing.price`
     // unmoved, so `+market/list` advertised a price nobody pays.
     let price = crate::trade::price_for(l, ctx.w.module_state::<MarketStore>());
+    let instrument = listing_instrument(ctx.w, l);
     format!(
         "#{} {name} — {} × {} [{}]{}{}",
         l.id,
         l.quantity,
-        price.minor(),
+        money(ctx.w, instrument.as_ref(), price),
         l.market,
         if shop.is_empty() {
             String::new()
@@ -350,23 +442,24 @@ fn depth(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(refuse(ctx, NO_SUCH_ENTRY));
     };
     let p = store.projection(&catalog, &market, economy.snapshot(), &hidden, now);
+    let instrument = market_instrument(ctx.w, &market);
+    let render = |amount: Amount| money(ctx.w, instrument.as_ref(), amount);
     let mut out = vec![
         format!("{}:{} in {market}", catalog.ruleset, catalog.code),
         format!(
             "  last trade: {}   band: {}..{}   volume ({} d): {}",
-            p.last_trade
-                .map_or("—".to_string(), |a| a.minor().to_string()),
-            p.band.0.minor(),
-            p.band.1.minor(),
+            p.last_trade.map_or("—".to_string(), render),
+            render(p.band.0),
+            render(p.band.1),
             p.window_secs / 86_400,
-            p.volume.minor()
+            render(p.volume)
         ),
     ];
     let depth: Vec<String> = p
         .depth
         .iter()
         .filter(|b| b.quantity > 0)
-        .map(|b| format!("{}×{}", b.price.minor(), b.quantity))
+        .map(|b| format!("{}×{}", render(b.price), b.quantity))
         .collect();
     out.push(format!(
         "  depth: {}",
@@ -454,12 +547,13 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let msg = q.map_or_else(
                 || format!("Quote #{id}."),
                 |q| {
+                    let instrument = quote_instrument(ctx.w, &q);
                     format!(
                         "Quote #{id}: {} × {} = {} — good until {} (real time). It reserves \
                          nothing; take it up with +market/accept #{id}.",
                         q.quantity,
-                        q.price.minor(),
-                        q.total().minor(),
+                        money(ctx.w, instrument.as_ref(), q.price),
+                        money(ctx.w, instrument.as_ref(), q.total()),
                         q.expires.at
                     )
                 },
@@ -536,12 +630,13 @@ fn orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             s.quotes_of_buyer(&me)
                 .take(crate::store::MARKET_PAGE_MAX)
                 .map(|q| {
+                    let instrument = quote_instrument(ctx.w, q);
                     format!(
                         "#{} {} × {} = {}{}",
                         q.id,
                         q.quantity,
-                        q.price.minor(),
-                        q.total().minor(),
+                        money(ctx.w, instrument.as_ref(), q.price),
+                        money(ctx.w, instrument.as_ref(), q.total()),
                         match (q.contract, q.settled) {
                             (_, Some(s)) => format!(" — settled ({})", s.transaction),
                             (Some(c), None) => format!(" — contract #{c}"),
@@ -753,8 +848,11 @@ fn admin_catalog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 ),
                 format!(
                     "  baseline (a REFERENCE price, never charged): {}",
-                    e.baseline
-                        .map_or("—".to_string(), |b| b.minor().to_string())
+                    e.baseline.map_or("—".to_string(), |b| money(
+                        ctx.w,
+                        catalog_instrument(ctx.w).as_ref(),
+                        b
+                    ))
                 ),
                 format!(
                     "  availability: {}",
@@ -1006,6 +1104,14 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .get("days")
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(14);
+            // Doc 18 cut IC0: a lot listing stands no longer than the hold behind it
+            // (`RESERVATION_TTL_IC_DAYS`); `api::list_goods` cuts the real-time window
+            // to the hold's at the world's rate, and this is the day count's own cap.
+            let days = if matches!(source, Supply::Lot { .. }) {
+                days.min(mush_inventory::RESERVATION_TTL_IC_DAYS)
+            } else {
+                days
+            };
             match crate::api::list_goods(
                 ctx,
                 crate::api::ListingSpec {

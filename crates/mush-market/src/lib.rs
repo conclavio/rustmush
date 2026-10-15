@@ -128,8 +128,8 @@ pub use ids::{
     ListingId, MAX_MARKET_ID_BYTES, MarketId, MarketSourceId, QuoteId, VendorId, parse_u64,
 };
 pub use lot::{
-    ACTION_LOT, LOT_REFUSED, LotError, LotOp, MAX_LOT_ENDPOINT_CHOICES,
-    OUTCOME_ID as LOT_OUTCOME_ID, action_ref as lot_action_ref, listing_holder,
+    ACTION_LOT, HoldStanding, LOT_REFUSED, LotError, LotOp, MAX_LOT_ENDPOINT_CHOICES,
+    OUTCOME_ID as LOT_OUTCOME_ID, action_ref as lot_action_ref, hold_ttl_real_secs, listing_holder,
     listing_holder_text, listing_reservation,
 };
 pub use module::{

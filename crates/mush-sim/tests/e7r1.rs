@@ -23,8 +23,27 @@ use mush_testkit::{TestWorld, text_of};
 
 // ---- E7r1: the rig --------------------------------------------------------
 
+/// **Doc 18 cut IC0: the hand-built place list is a staff act**, so the crew-driven
+/// tests below fly an **authored** route — `corridor`, field → phobos, the two legs
+/// `depart_line` used to type by hand — handed in through the `RouteCatalog` seam and
+/// filled in once the rooms exist (`e7c6.rs`'s cell-catalog shape). What R6 proves is
+/// unchanged: a billeted pilot puts the hull under way with no staff step.
+struct Authored(std::sync::Arc<std::sync::Mutex<Option<RouteDef>>>);
+
+impl mush_sim::RouteCatalog for Authored {
+    fn resolve(&self, _world: &mush_core::World, id: &mush_core::CanonicalId) -> Option<RouteDef> {
+        self.0.lock().ok()?.clone().filter(|route| route.id() == id)
+    }
+}
+
 fn boot() -> TestWorld {
-    TestWorld::with_modules(vec![Box::new(SimulationModule::new())])
+    boot_with(std::sync::Arc::default())
+}
+
+fn boot_with(route: std::sync::Arc<std::sync::Mutex<Option<RouteDef>>>) -> TestWorld {
+    TestWorld::with_modules(vec![Box::new(
+        SimulationModule::new().with_route_catalog(std::sync::Arc::new(Authored(route))),
+    )])
 }
 
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
@@ -63,7 +82,6 @@ fn bind(tw: &mut TestWorld, obj: ObjId, behavior: &str) {
 }
 
 struct Fx {
-    field: ObjId,
     phobos: ObjId,
     /// A hull nobody in this fixture *owns*, so `perm::controls` is false for
     /// every player here and only the billet can let one of them through.
@@ -76,7 +94,8 @@ struct Fx {
 }
 
 fn scene() -> (TestWorld, Fx) {
-    let mut tw = boot();
+    let route: std::sync::Arc<std::sync::Mutex<Option<RouteDef>>> = std::sync::Arc::default();
+    let mut tw = boot_with(std::sync::Arc::clone(&route));
     tw.set_now(1_000);
     let field = tw
         .world_mut()
@@ -86,6 +105,20 @@ fn scene() -> (TestWorld, Fx) {
         .world_mut()
         .create(ObjKind::Room, "Phobos", GOD, None)
         .unwrap();
+    // The authored `corridor`: the legs the manual line used to build, no propellant.
+    *route.lock().unwrap() = Some(
+        RouteDef::new(
+            mush_core::CanonicalId::new("corridor").unwrap(),
+            (field, phobos),
+            vec![
+                LegDef::new(field, 100).unwrap(),
+                LegDef::new(phobos, 200).unwrap(),
+            ],
+            mush_core::CanonicalId::new("fusion_torch").unwrap(),
+            0,
+        )
+        .unwrap(),
+    );
     // `spawn_player` makes a player its OWN owner, so one player never controls
     // another and `perm::controls` cannot silently satisfy the gate for them.
     let pilot = tw.spawn_player("Ann");
@@ -140,7 +173,6 @@ fn scene() -> (TestWorld, Fx) {
     (
         tw,
         Fx {
-            field,
             phobos,
             carrier,
             owned,
@@ -151,11 +183,10 @@ fn scene() -> (TestWorld, Fx) {
     )
 }
 
-fn depart_line(carrier: ObjId, waypoint: ObjId, destination: ObjId) -> String {
-    format!(
-        "@journey/depart #{}=corridor #{}:100 #{}:200",
-        carrier.0, waypoint.0, destination.0
-    )
+/// The crew's departure line: the authored `corridor` by its bare id (doc 18 cut IC0
+/// closed the place-list form to everyone but staff).
+fn depart_line(carrier: ObjId) -> String {
+    format!("@journey/depart #{}=corridor", carrier.0)
 }
 
 fn under_way(tw: &TestWorld, root: ObjId) -> bool {
@@ -177,11 +208,7 @@ fn e7r1_r6_a_billeted_pilot_departs_the_carrier_with_no_staff_step() {
     let (mut tw, fx) = scene();
     assert!(!under_way(&tw, fx.carrier));
 
-    ok(
-        &mut tw,
-        fx.pilot,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
+    ok(&mut tw, fx.pilot, &depart_line(fx.carrier));
 
     assert!(
         under_way(&tw, fx.carrier),
@@ -203,18 +230,14 @@ fn e7r1_r6_a_billeted_pilot_departs_the_carrier_with_no_staff_step() {
 #[test]
 fn e7r1_r6_a_bystander_is_refused_byte_identically_and_the_hull_stays_put() {
     let (mut tw, fx) = scene();
-    let refused = run_as(
-        &mut tw,
-        fx.bystander,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
+    let refused = run_as(&mut tw, fx.bystander, &depart_line(fx.carrier));
     // `@journey/divert` still runs the pre-R6 `require_admin`, so its refusal IS
     // the byte string R6 must not have moved.
     let staff_only = run_as(
         &mut tw,
         fx.bystander,
         &format!(
-            "@journey/divert #{}=corridor #{}:100",
+            "@journey/divert #{}=detour #{}:100",
             fx.carrier.0, fx.phobos.0
         ),
     );
@@ -236,20 +259,12 @@ fn e7r1_r6_a_bystander_is_refused_byte_identically_and_the_hull_stays_put() {
 fn e7r1_r6_the_hulls_owner_may_depart_it_without_a_billet() {
     let (mut tw, fx) = scene();
     // `owned` has no stations at all, so no billet exists to hold.
-    ok(
-        &mut tw,
-        fx.owner,
-        &depart_line(fx.owned, fx.field, fx.phobos),
-    );
+    ok(&mut tw, fx.owner, &depart_line(fx.owned));
     assert!(under_way(&tw, fx.owned));
 
     // The pilot billeted on the OTHER hull is a stranger to this one.
     let (mut tw, fx) = scene();
-    let refused = run_as(
-        &mut tw,
-        fx.pilot,
-        &depart_line(fx.owned, fx.field, fx.phobos),
-    );
+    let refused = run_as(&mut tw, fx.pilot, &depart_line(fx.owned));
     assert!(
         refused.contains("Permission denied"),
         "a billet is over ONE carrier, not over hulls in general: {refused}"
@@ -261,7 +276,7 @@ fn e7r1_r6_the_hulls_owner_may_depart_it_without_a_billet() {
 #[test]
 fn e7r1_r6_staff_still_depart_a_carrier_they_neither_own_nor_crew() {
     let (mut tw, fx) = scene();
-    ok(&mut tw, GOD, &depart_line(fx.carrier, fx.field, fx.phobos));
+    ok(&mut tw, GOD, &depart_line(fx.carrier));
     assert!(under_way(&tw, fx.carrier));
 }
 
@@ -272,17 +287,13 @@ fn e7r1_r6_staff_still_depart_a_carrier_they_neither_own_nor_crew() {
 #[test]
 fn e7r1_r6_divert_stays_staff_only_for_the_billeted_pilot_and_the_owner() {
     let (mut tw, fx) = scene();
-    ok(
-        &mut tw,
-        fx.pilot,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
+    ok(&mut tw, fx.pilot, &depart_line(fx.carrier));
     for actor in [fx.pilot, fx.owner, fx.bystander] {
         let refused = run_as(
             &mut tw,
             actor,
             &format!(
-                "@journey/divert #{}=corridor #{}:50",
+                "@journey/divert #{}=detour #{}:50",
                 fx.carrier.0, fx.phobos.0
             ),
         );
@@ -295,7 +306,7 @@ fn e7r1_r6_divert_stays_staff_only_for_the_billeted_pilot_and_the_owner() {
         &mut tw,
         GOD,
         &format!(
-            "@journey/divert #{}=corridor #{}:50",
+            "@journey/divert #{}=detour #{}:50",
             fx.carrier.0, fx.phobos.0
         ),
     );
@@ -929,11 +940,7 @@ fn vf_c8a_a_gunner_with_no_movement_channel_is_refused_byte_identically_and_the_
         "a billet is still a billet for reading: {read}"
     );
 
-    let refused = run_as(
-        &mut tw,
-        gunner,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
+    let refused = run_as(&mut tw, gunner, &depart_line(fx.carrier));
     assert!(
         !under_way(&tw, fx.carrier),
         "the GUNNER did not put the hull under way: {refused}"
@@ -941,19 +948,11 @@ fn vf_c8a_a_gunner_with_no_movement_channel_is_refused_byte_identically_and_the_
     assert!(refused.contains("Permission denied"), "{refused}");
 
     // The refusal discloses nothing the bystander's does not.
-    let bystander = run_as(
-        &mut tw,
-        fx.bystander,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
+    let bystander = run_as(&mut tw, fx.bystander, &depart_line(fx.carrier));
     assert_eq!(refused, bystander, "byte-identical to a total stranger's");
 
     // …and the pilot, who holds the movement channel, still departs unaided.
-    ok(
-        &mut tw,
-        fx.pilot,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
+    ok(&mut tw, fx.pilot, &depart_line(fx.carrier));
     assert!(under_way(&tw, fx.carrier));
 }
 
@@ -984,11 +983,7 @@ fn vf_c8b_a_station_declaring_no_channels_is_not_a_drive_gate() {
         GOD,
         &format!("@spatial/assign #{}=deck,#{}", fx.carrier.0, loader.0),
     );
-    let refused = run_as(
-        &mut tw,
-        loader,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
+    let refused = run_as(&mut tw, loader, &depart_line(fx.carrier));
     assert!(
         !under_way(&tw, fx.carrier),
         "an unauthored channel set is not a licence to fly: {refused}"
@@ -1032,28 +1027,13 @@ fn vf_b4a_an_existing_a_foreign_and_a_free_dbref_all_refuse_byte_identically() {
         "the fixture's free dbref really names nothing"
     );
 
-    let exists = run_as(
-        &mut tw,
-        fx.bystander,
-        &depart_line(fx.carrier, fx.field, fx.phobos),
-    );
-    let foreign = run_as(
-        &mut tw,
-        fx.bystander,
-        &depart_line(fx.owned, fx.field, fx.phobos),
-    );
-    let absent = run_as(
-        &mut tw,
-        fx.bystander,
-        &depart_line(missing, fx.field, fx.phobos),
-    );
+    let exists = run_as(&mut tw, fx.bystander, &depart_line(fx.carrier));
+    let foreign = run_as(&mut tw, fx.bystander, &depart_line(fx.owned));
+    let absent = run_as(&mut tw, fx.bystander, &depart_line(missing));
     let divert = run_as(
         &mut tw,
         fx.bystander,
-        &format!(
-            "@journey/divert #{}=corridor #{}:100",
-            missing.0, fx.phobos.0
-        ),
+        &format!("@journey/divert #{}=detour #{}:100", missing.0, fx.phobos.0),
     );
     assert_eq!(exists, absent, "an existing hull and a free dbref");
     assert_eq!(foreign, absent, "somebody else's hull and a free dbref");

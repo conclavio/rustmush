@@ -3127,3 +3127,80 @@ fn vf_o12_a_crew_route_probe_refuses_identically_for_a_real_and_a_nonsense_id() 
     );
     assert!(staff.contains("sets out from"), "{staff}");
 }
+
+// ---- doc 18 cut IC0: the manual arm is a staff act ---------------------------
+
+/// **IC0.** A non-staff pilot with place tokens no longer gets the manual-route arm.
+///
+/// E7r1 R6 opened `@journey/depart` to the hull's own crew, and the manual parser then
+/// built a crew member any `#dbref` legs at one second each on the staff drive class
+/// with no propellant — a teleport. Now the line is refused with one fixed sentence
+/// **before** the catalog is consulted, so an authored id, an id from elsewhere and a
+/// nonsense id read identically with a place list behind them (fold O12 kept); no
+/// journey is created; staff keep the arm; and the authored route by its bare id is
+/// still the crew's to fly.
+#[test]
+fn ic0_a_non_staff_place_list_is_refused_before_the_catalog_is_consulted() {
+    let (mut tw, fx) = authored_elsewhere();
+    // The doc's own line: `@journey/depart x=r #12:1`.
+    let refused = run_as(
+        &mut tw,
+        fx.pilot,
+        &format!("@journey/depart #{}=r #{}:1", fx.carrier.0, fx.phobos.0),
+    );
+    assert!(
+        refused.contains(mush_sim::MANUAL_ROUTE_STAFF_ONLY),
+        "a crew place list is a staff act: {refused}"
+    );
+    assert!(
+        !refused.contains("Permission denied"),
+        "the pilot is past the authority gate and refused on the route: {refused}"
+    );
+    assert!(
+        tw.world()
+            .module_state::<mush_sim::JourneyBook>()
+            .is_none_or(|book| !book.under_way(fx.carrier)),
+        "no journey was built from a crew place list"
+    );
+    // The same sentence whatever the id: authored-from-elsewhere, authored-by-no-one.
+    let authored = run_as(
+        &mut tw,
+        fx.pilot,
+        &format!(
+            "@journey/depart #{}=mars_corridor #{}:1",
+            fx.carrier.0, fx.phobos.0
+        ),
+    );
+    let nonsense = run_as(
+        &mut tw,
+        fx.pilot,
+        &format!(
+            "@journey/depart #{}=not_a_real_route_at_all #{}:1",
+            fx.carrier.0, fx.phobos.0
+        ),
+    );
+    assert_eq!(
+        authored, nonsense,
+        "a place list names nothing about the id"
+    );
+    assert_eq!(authored, refused);
+    assert!(!authored.contains("is authored"), "{authored}");
+    // `/plan` builds the same route and is closed the same way.
+    let planned = run_as(
+        &mut tw,
+        fx.pilot,
+        &format!("@journey/plan #{}=r #{}:1", fx.carrier.0, fx.phobos.0),
+    );
+    assert!(
+        planned.contains(mush_sim::MANUAL_ROUTE_STAFF_ONLY),
+        "{planned}"
+    );
+    // Staff keep the manual fixture arm exactly as cut 6 built it.
+    ok(
+        &mut tw,
+        &format!("@journey/depart #{}=r #{}:1", fx.carrier.0, fx.phobos.0),
+    );
+    let route = journey(&tw, fx.carrier).route().clone();
+    assert_eq!(route.drive_class().as_str(), "manual");
+    assert_eq!(route.propellant(), 0);
+}

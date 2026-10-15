@@ -110,6 +110,21 @@ pub fn is_current(ctx: &Ctx<'_>, q: &Quote) -> bool {
     if crate::projection::lapsed(listing.expires.at, listing.expires.clock, now) {
         return false;
     }
+    // **The hold's own deadline** (doc 18 cut IC0). A `Supply::Lot` listing is backed
+    // by a `mush-inventory` reservation with a deadline of its own, on the world's IC
+    // clock, and nothing here read it: a quote taken against a lapsed hold passed every
+    // declared-stamp check above, the money leg came into force, and the matter leg
+    // then refused inside the settling bundle — the buyer paid and held nothing. The
+    // hold is read through the typed-state seam the composition delegated to this
+    // crate (the sweep's own reconcile read), and **anything but a live hold refuses**:
+    // lapsed, consumed, released, never placed, on another clock generation (K4a
+    // refuses the comparison rather than expiring early, and so does the settle), or
+    // unreadable from this context. Fail closed, because this is the point money moves.
+    if crate::lot::hold_standing(ctx, listing)
+        .is_some_and(|standing| standing != crate::lot::HoldStanding::Live)
+    {
+        return false;
+    }
     let Some(entry) = store.entry_of(&q.catalog) else {
         return false;
     };
@@ -232,6 +247,19 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
         return Err(MarketError::bad(STALE_QUOTE));
     }
     if ctx.w.now() >= listing.expires.at {
+        return Err(MarketError::bad(STALE_QUOTE));
+    }
+    // **The hold behind a lot listing** (doc 18 cut IC0): a hold that has lapsed or
+    // gone refuses the quote in the same words a lapsed listing does. A hold this
+    // context cannot read (no lot supply composed, or a detached typed-state reader)
+    // is not a refusal here — a quote reserves nothing, and `is_current` makes the
+    // same read, fail-closed, at the point money moves.
+    if crate::lot::hold_standing(ctx, &listing).is_some_and(|standing| {
+        matches!(
+            standing,
+            crate::lot::HoldStanding::Lapsed | crate::lot::HoldStanding::Gone
+        )
+    }) {
         return Err(MarketError::bad(STALE_QUOTE));
     }
     let unit = price_for(&listing, ctx.w.module_state::<MarketStore>());

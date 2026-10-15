@@ -363,6 +363,14 @@ pub(crate) fn resolve_availability(
 /// Hand the goods over after a settlement. `Representation::Asset` needs no provider:
 /// its title moved as an ordinary E4b2 deliverable inside the settlement itself.
 ///
+/// **`Representation::Lot` needs none either** (doc 18 cut IC0). Its matter leg is the
+/// market's own `market_lot` action, staged at activation by `trade::accept` on the
+/// same serialization point the money leg is in force at (E7r2 P1), so by the time the
+/// contract settles the buyer's endpoint already holds the lot. Before IC0 this walked
+/// the delivery table for a `'lot'` purchase, found no provider, and paged
+/// `SettlementRefused` on **every** settled lot sale — a false alarm that said "the
+/// buyer paid and holds nothing" about a buyer who held exactly what they paid for.
+///
 /// A refused delivery **reaches staff through the economy's own ladder** (independent
 /// verify fold, M1): the money has already moved and the quote is written with
 /// `settled: Some(..)`, so the trade tape counts a trade that delivered nothing, and a
@@ -383,7 +391,7 @@ pub(crate) fn deliver(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
         );
         return;
     };
-    if matches!(representation, Representation::Asset) {
+    if settles_inside_the_contract(representation) {
         return;
     }
     let order = delivery_order(q, representation, contract);
@@ -429,18 +437,34 @@ fn delivery_order(
     }
 }
 
+/// **The representations whose goods leg is the contract's own**, so neither the
+/// delivery pre-check nor the post-settlement hand-over has a provider to ask:
+///
+/// - `Asset`: the title moves inside the settlement as an ordinary E4b2 deliverable,
+///   and the contract's own `TitleHeld` condition is the pre-check;
+/// - `Lot`: the matter moves through the market's own `market_lot` action, staged at
+///   activation, and `trade::accept`'s own endpoint checks are the pre-check (doc 18
+///   cut IC0).
+///
+/// One predicate for both callers, so `deliver` and `cannot_deliver` can never disagree
+/// about which purchases the table is asked about.
+#[must_use]
+pub(crate) fn settles_inside_the_contract(representation: Representation) -> bool {
+    matches!(representation, Representation::Asset | Representation::Lot)
+}
+
 /// **Ask the frozen table whether this purchase could be delivered at all**, before the
 /// money moves (independent verify fold, M1). `Some(why)` refuses the accept.
 ///
-/// `Representation::Asset` is never asked: its title moves inside the settlement as an
-/// ordinary E4b2 deliverable, and the contract's own `TitleHeld` condition is the
-/// pre-check.
+/// `Representation::Asset` and `Representation::Lot` are never asked
+/// ([`settles_inside_the_contract`]): their goods legs are the contract's and the lot
+/// action's own, with their own pre-checks.
 pub(crate) fn cannot_deliver(
     ctx: &Ctx<'_>,
     q: &Quote,
     representation: Representation,
 ) -> Option<String> {
-    if matches!(representation, Representation::Asset) {
+    if settles_inside_the_contract(representation) {
         return None;
     }
     // The contract does not exist yet; the pre-check names none, and no provider may
