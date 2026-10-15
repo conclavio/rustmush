@@ -744,7 +744,7 @@ object is following", keyed by traveler) and folded these sharpenings, all accep
 - **R7. Storage rule for the account id.** Opaque, audit-only, staff-visible through an audit verb;
   never in a journaled or canon record.
 
-## 22. Addendum — T17, the frozen sky (owner, 2026-09-09, binding)
+## 22. Addendum — T17, the frozen sky (owner, 2026-09-09, binding; amended 2026-10-15: the constant sky of the first slice, superseded after it by the astronomy engine)
 
 **T17. Distances are derived from real geometry at one chosen epoch and then frozen.** Refines
 1A and T1; supersedes nothing. The solar system is **not a coordinate map** — no 2²⁴ × 2²⁴ grid,
@@ -769,3 +769,29 @@ consistent (no configuration has every pair at closest approach). T1's freeze-at
 rule is unchanged and, with a frozen sky, moot. `RouteDef.alignment_band` — declared by E7 cut 6
 and never applied by `route_duration` — is replaced by the body-pair reference the distance came
 from. Build: the spatial plan's cut S7 (`14-spatial-implementation-plan.md` §3.8).
+
+**Amendment (owner, 2026-10-15; doc 18 R9).** T17 now governs only the constant sky of the first IC
+vertical slice ([doc 18](18-trade-run-vertical-slice.md)). After that slice it is superseded by the
+astronomy engine (doc 18 cut P-A): real ephemerides in three dimensions, with eccentricity and
+inclination (Pallas far from the ecliptic); bodies moving on the IC calendar, so a route's distance,
+duration and fuel depend on when it departs; the best route between two ports changing over months; a
+port's position moving its prices. Until P-A lands `rate = 0` stays configured and every slice figure is
+the constant sky's output at its epoch, never an invariant: no code, test or help text may treat a
+distance, a duration or a price as constant beyond a frozen commitment. The slice reaches the sky only
+through the seams the engine will reuse — one sky query (the distance between two bodies at two
+instants) and one passage planner over the sky at departure, the route's legs as body pairs, the drive's
+law and the departure mass — and derives durations rather than relying on authored seconds.
+
+**What stands:** 1A's scales and compression (local orbit in hours, the inner system in days to weeks,
+the Belt in weeks, the outer system in weeks to months, about one OOC hour per IC day); 1A's rule that
+transfer conditions modify routes rather than closing destinations (no launch windows; every port
+reachable at a cost); T1's freeze, no longer moot — a passage's per-leg distances, durations, burn and
+crew-days are computed once at commitment and frozen into the ticket and the journey, and nothing after
+the burn re-reads the sky; T17's coherence (every pair sharing a body changes together), kept by the one
+query. **Superseded, after the slice:** "No body moves. No transfer window opens or closes. Nobody waits
+for an alignment" (bodies move and distances vary; still no window closes a destination); the circular,
+coplanar model as the final model (it remains the e = i = 0 case of the engine's elements); 1A's
+rejection of simulated ephemerides ("long non-opportunity" is doc 18 Q-18-35 by another name, re-opened
+knowingly). Travel time becomes the planner's output: the sky at departure, the drive's law (coasting at
+a cruise speed, or a constant-acceleration flip) and the departure mass. The epoch moves from server
+config to the pack's bodies (doc 18 D-18-48), which is what this addendum always said.

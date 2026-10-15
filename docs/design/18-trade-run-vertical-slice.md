@@ -1,21 +1,36 @@
 # 18 — The trade run: the first IC vertical slice
 
-**Draft 0.2 — 2026-10-15**, revised in place at `main` `c87d78f7` (IC0 landed; its parent `8a32734a`
-is Draft 0.1's commit) from Draft 0.1 (written at `f4b14f3b`; only this document and the README changed
-between `f4b14f3b` and `8a32734a`, so every A–I file:line in §3 holds at `8a32734a`; IC0 then moved six
-source files — `mush-market` `trade.rs` +28, `lot.rs` +78, `commands.rs` +132, `module.rs` +34,
-`api.rs` +16 and `mush-sim` `commands.rs` +22 — and the cites into those files are re-pinned at
-`c87d78f7` where this draft uses them, or marked "8a32734a" where it does not).
-Draft 0.1's nine-beat map (§3 A–I), three designs and three-lens review stand; this draft adds a
-seven-beat map of the new ground (§3 J–P: the six-room interior, the captain's queue, the backer, finite
-stock, mass and volume, the two stations, and an audit of the owner's pasted proposal), three revised
-designs and a second three-lens review (daily loop as play, fidelity, buildability), and folds the
-owner's rulings of 2026-10-15 (R1–R6, §1) over Draft 0.1's defaults. Decisions are §7, D-18-1 to
-D-18-20 re-stated with the replaced ones marked, plus D-18-21 to D-18-38; questions are §8, with the
-answered ones struck and the new ones added. The companion content brief is
-[18a-trade-run-stations-and-ship.md](18a-trade-run-stations-and-ship.md) (the two stations and the
-Dray's interior, room by room). **IC0 has landed** as `c87d78f7`, HEAD of `main`; its record is
-[18-cut-notes.md](18-cut-notes.md), written by the IC0 session, which never writes this document.
+**Draft 0.3 — 2026-10-15**, revised in place at `main` `1fc40d01` (Draft 0.2's commit; IC0 landed at
+its parent `c87d78f7`, Draft 0.1 at `8a32734a`). Only documents changed between `c87d78f7` and
+`1fc40d01`, so every file:line below holds at `1fc40d01`: the A–I cites at `8a32734a`, the six files
+IC0 moved (`mush-market` `trade.rs` +28, `lot.rs` +78, `commands.rs` +132, `module.rs` +34, `api.rs` +16;
+`mush-sim` `commands.rs` +22) re-pinned at `c87d78f7` where marked, and the sky cites of §4.8 taken
+fresh. Draft 0.1's nine-beat map (§3 A–I) and Draft 0.2's seven-beat map (§3 J–P), their designs and
+reviews stand; this draft adds two beats (§3 Q the sky, R volume) condensed from a third verified map,
+two designs with their judges (the sky seam; volume beside mass), and folds the owner's **second-round
+rulings of 2026-10-15 (R7–R9, §1)** over Draft 0.2. Decisions are §7, D-18-1 to D-18-38 re-stated with
+the replaced ones marked (D-18-28 replaced by R7), every accepted default now **binding (owner,
+2026-10-15)**, plus D-18-39 to D-18-51; questions are §8, every Draft 0.2 question closed in one line,
+Q-18-21 reversed, and only what the two designs could not settle left open (Q-18-32 to Q-18-41). The
+companion content brief is [18a-trade-run-stations-and-ship.md](18a-trade-run-stations-and-ship.md),
+revised with this draft. **IC0 has landed** as `c87d78f7`; its record is [18-cut-notes.md](18-cut-notes.md),
+written by the IC0 session, which never writes this document. The IC5 proposal is pending.
+
+**The second-round rulings (2026-10-15), in the owner's words.** *"Q-18-21 .. both volume and mass are
+critical components of capacity .. that's part of the trick is balancing the payload from station to
+station to utilize both the available volume and mass .. other defaults are accepted. .. i had said that
+i wanted to lock in the geometry of the solar system for constant flight paths, but after watching
+belter-charts i want to change my mind because the map is fascinating, and it adds a whole extra degree
+of strategy to the game .. a trading path that was optimal last month might be less optimal as Pallas
+gets further from the ecliptic plane .. and Pallas might be willing to pay more money for emergency
+supplies when they're in an awkward position relative to the rest of the inners .. we can flag this for
+implementation after the current slice, but i want to make sure we dont make any decisions during this
+slice that we'll regret when we implement the astronomy engine."* Read as three rulings: **R7** volume
+capacity is in the slice and the hold binds on tonnes and cubic metres, so a captain balances each leg's
+payload to fill both (§4.3; D-18-28 replaced); **R8** every other Draft 0.2 default is accepted and
+binding (§7, §8); **R9** the sky will move after this slice — a real, three-dimensional ephemeris on the
+IC calendar, route optimality that drifts over months, prices that read position — and the slice must
+make no decision the astronomy engine would undo (§4.8; post-slice cut **P-A**; doc 10 §22 T17 amended).
 
 **What the owner ruled (2026-10-15).** Start on IC0 while the details settle. **R1** The pilot charters;
 a required purchase is refused; owning a hull is an aspiration "a couple of weeks of good luck away", so
@@ -23,14 +38,18 @@ a buyout exists in the design and the start does not make it trivial. **R2** No 
 revolving line: a corporation invests in new pilots up front on a profit-sharing basis because it wants
 pilots who can manage runs for it (the default lay of §4.1 shares **trading margin** over posted
 reference prices, not net profit — fuel, stores and port costs stay the pilot's — which departs from the
-word "profit"; Q-18-13 asks whether the owner wants the net). **R3** A passage under a day and around a day; travel is primarily
+word "profit"; Q-18-13, closed under R8: the net share with a run book is P9). **R3** A passage under a day and around a day; travel is primarily
 offline; a pilot who logs in 30–60 minutes at about the same hour each day runs a productive career by
 queuing orders for the time they are away (departure times, loading, the captain's minutiae) and logging
 off. **R4** Seed an initial finite world stock; nothing from thin air. **R5** A five- or six-room ship —
 an airlock on a central passage with the bridge, a crew area and the cargo hold off it — because the
 pilot may be aboard for long stretches. **R6** Flesh out the two stations and the flavour of each. The
 ports (Q-18-1) stand. Where a ruling overrides a Draft 0.1 default the text says so and §7 marks the
-decision "replaced by R*n*".
+decision "replaced by R*n*". **Second round (2026-10-15; the words are in the header):** **R7** volume
+beside mass (§4.3; D-18-28 replaced by D-18-39/40/41); **R8** every other Draft 0.2 default accepted —
+Q-18-3, 5, 6, 7, 10, 11, 12, 13–20 and 22–31 "as recommended", their decisions binding; **R9** the
+frozen sky superseded *after* the slice by an astronomy engine, the slice flying a constant sky but
+making no decision the engine would undo (§4.8; D-18-42..51; cut P-A).
 
 Reading order for someone new: §0 (the run in one paragraph), §2 (two days, beat by beat), §4.1–§4.4
 (the backer, the ship, the goods, the captain's day), §5 (the cuts), §8 (the questions).
@@ -39,12 +58,13 @@ Reading order for someone new: §0 (the run in one paragraph), §2 (two days, be
 the `Ceres Freeport <C>` door into Port Watch Arrivals. At the Registry & Co-op desk they sign the Belt
 Carriers' Cooperative's First Captain programme: the Co-op charters them a Co-op Dray, the *Salt Moth*,
 stakes them 25,000 cr of working cash, and takes a quarter of the trading margin on every sale until the
-pilot buys the hull out at a price fixed the day they sign. At the Exchange Hall they buy 70 t of metal
-concentrate and 30 t of water ice into the Moth's hold; at the chandlery, 42 t of reaction mass and 21
-crew-days of provisions. They board through the Visiting Berth Gallery, walk the six rooms, check the
-plan on the Bridge (payload, burn, ETA about twenty hours), queue the day's orders — depart now; at
-Stickney sell everything, fill the tank and the locker, buy alloys with what is left, and leave again at
-19:30 tomorrow — and log off in a bunk. The ship flies while they sleep: the burn settles, the Moth
+pilot buys the hull out at a price fixed the day they sign. At the Exchange Hall they buy 20 t of metal
+concentrate and 80 t of water ice into the Moth's hold — the concentrate weighs the hold out, the ice
+cubes it out, and that load fills both the 100 t and the 120 m³ — and at the chandlery, 42 t of reaction
+mass and 21 crew-days of provisions. They board through the Visiting Berth Gallery, walk the six rooms,
+check the plan on the Bridge (payload, burn, ETA about twenty hours at this season's constant sky), queue
+the day's orders — depart now; at Stickney sell everything, fill the tank and the locker, buy crated yard
+fittings and alloy stock with what is left, and leave again at 19:30 tomorrow — and log off in a bunk. The ship flies while they sleep: the burn settles, the Moth
 casts off, passes Kirkwood, docks itself at Stickney Yards, and the queue sells to Kasei Metals, buys,
 and waits for its hour. The next evening the pilot logs in docked at Stickney, reads what the queue did
 and what the Co-op took, walks the Yard, re-files the Ceres orders and logs off again. Two weeks of good
@@ -68,7 +88,8 @@ Water & Propellant; Kirkwood Depot is the Co-op's transfer node with Republic cu
 (11 §2); Phobos holds Stickney Yards and Kasei Metals' one refinery, which turns volatiles into
 propellant and metals into alloys (11 §4.3; §3.2 only names "its Phobos refinery"). Ceres exports water
 and propellant; Phobos needs volatiles.
-That flow is the corridor's reason to exist and the pair the T17 epoch was chosen for (10 §22). The
+That flow is the corridor's reason to exist and the pair the slice's constant-sky epoch is chosen for
+(10 §22 T17, as amended by R9: honoured for the slice, superseded after it by cut P-A). The
 ephemeris already has bodies `ceres`, `mars` and `earth` as pure data
 (`crates/tacsim/src/fixture/tacsim_corridor_v2.json`), and the money is the credit, cleared through Luna.
 
@@ -101,7 +122,7 @@ route pair, all data.
 
 ## 2. The run, beat by beat: two days
 
-Verbs whose status is **new** do not exist today; their names are proposals (Q-18-12). Evidence is
+Verbs whose status is **new** do not exist today; their names are binding under R8 (Q-18-12, "names ok"). Evidence is
 file:line at `c87d78f7` (HEAD, IC0 landed) for the six files IC0 moved and at `8a32734a` everywhere
 else (identical there). Every typed exit word below is an alias 18a authors on that room's exits
 (exit matching is exact over `;`-segments and aliases, `mush-core/src/commands/movement.rs:24-28`), and
@@ -118,13 +139,13 @@ filed; day 2 is the offline turnaround at Stickney and the pilot's second sessio
 | 2 | The IC door | `c` | Port Watch Arrivals, Ceres Freeport: a 2350 desc, the customs counter, notices, the stair down | `exit.limbo_arrivals` in `neighborhood.ceres_freeport`, **unlocked**: tacsim's `OnboardingGate` already refuses every exit line for an unapproved character, so no approval marker is needed; the IC-return hook (§4.5) passes a character with no recorded IC position | new | `tacsim/src/sheet/onboarding.rs:97-112`; `mush-core/src/commands/movement.rs:24-42` (Limbo exits are global) |
 | 3 | Read the programme | `registry` · `+coop` | The lay board: stake 25,000.00cr; 250‰ of margin over the Co-op's reference prices; buyout 90,000.00cr fixed at signing; 8 of 8 Drays free (a fresh world: the applier lays up every hull with no lease); one enrolment per account | Reads the port entry's `programme` block and the live leases (the `next_loaner` shape) | new | `mush-campaign/src/recovery.rs:935-948` |
 | 4 | Sign | `+coop/enrol Salt Moth` | "Ceres Clearing opens account #41 in your name. The Co-op charters you FPC-D-0401, laid up as the *Slack Water*, now the *Salt Moth*, cradled at the Visiting Berth Gallery. 25,000.00cr staked to you. Buyout 90,000.00cr. Ilse Oduya-Brandt countersigns." | One command: `open_account` if absent; lowest-id Trust Dray with no live lease (`next_loaner`'s `min_by_key`, so the first pilot on a fresh world gets 0401); the pilot's name replaces the Trust's laid-up name; `offer_lease` + in-verb `accept_contract` (the market's offer-plus-accept precedent); the stake `post` as `Organization(coop_trust)` keyed by the lease; `create_vault(SpatialInterior(stowage))` owned by the pilot; the enrolment document; refused on a second enrolment from the same gateway account | new | `mush-economy/src/contract_live.rs:4516` offer_lease; `mush-market/src/trade.rs:647-666`; `mush-campaign/src/recoverycmd.rs:621-661,701`; `mush-campaign/src/seatstate.rs:142-146` |
-| 5 | Check the ship | `+ship` | "*Salt Moth* (Dray): docked Ceres Freeport, Berth Gallery. Hold: cargo 0/100 t · tank 0/80 t · locker 0/120 crew-days. Programme: 0 sales; buyout 90,000.00cr." | Reads the enrolment, the live lease, `pose_of`/JourneyBook, the hold pools through `scan_action_state` | new | `mush-sim/src/window.rs:362`; `mush-core/src/module.rs:561,573` |
-| 6 | Buy cargo | `arrivals` · `concourse` · `exchange` · `+market/list` · `+market/quote 4=70` · `+market/accept 11` · `+market/quote 5=30` · `+market/accept 12` | "Metal concentrate 200.00cr/t, 8,500 t · Water ice 100.00cr/t, 3,600 t · WANTED structural alloy 520.00cr/t"; "70 t of metal concentrate are loaded into the *Salt Moth*'s hold. Rosalind Qureshi-Mbeki countersigns." Hold: cargo 100/100 t | The lot path with the port seams: `market=` and `to=` default to this venue and the berthed hold (VenueGate `Presence::Here`); the ask is `Supply::Stock + Representation::Lot` whose matter leg is `LotOp::Draw`, a pool-to-pool `transfer` staged at activation, with the listing quantity as the synchronous availability counter (no reservation, no hold); the vendor org accepts through the content-resolved party-cap source; capacity pre-checked synchronously and again in the Draw prepare | partial | `mush-market/src/trade.rs:573` (`booked_loss` pre-check), `:701-716` (the lot leg staged at activation, `LotOp::Consume` at `:706`), at `c87d78f7`; `mush-inventory/src/pool.rs:413-528`; `mush-economy/src/contract_live.rs:5151-5175`; `tacsim/src/composition/mod.rs:361` |
-| 7 | Fuel and stores | `chandlery` · `+market/quote 6=42` · `+market/accept 13` · `+market/quote 7=21` · `+market/accept 14` · `+ship/hold` | "42 t of reaction mass are bunkered." "21 crew-days into the stores locker." Hold: cargo 100/100 t · tank 42/80 t · locker 21/120. `+credit`: available 6,110.00cr | Same path; the goods table's stowage tag routes each good to its pool (`stow.bulk`, `stow.propellant`, `stow.provisions`); ice into the tank is refused | partial | `crates/tacsim/content/goods.json` (new, §4.3) |
+| 5 | Check the ship | `+ship` | "*Salt Moth* (Dray): docked Ceres Freeport, Berth Gallery. Hold: cargo 0/100 t · 0.0/120 m³ · tank 0/80 t · locker 0/120 crew-days. Programme: 0 sales; buyout 90,000.00cr." | Reads the enrolment, the live lease, `pose_of`/JourneyBook, the hold pools through `scan_action_state` | new | `mush-sim/src/window.rs:362`; `mush-core/src/module.rs:561,573` |
+| 6 | Buy cargo | `arrivals` · `concourse` · `exchange` · `+market/list` · `+market/quote 4=20` · `+market/accept 11` · `+market/quote 5=80` · `+market/accept 12` | "Metal concentrate 200.00cr/t, 4,000 t · Water ice 100.00cr/t, 9,600 t · WANTED structural alloy 520.00cr/t · WANTED yard fittings 560.00cr/t"; "20 t of metal concentrate are loaded into the *Salt Moth*'s hold. Margit Søndergaard-Achebe countersigns."; "80 t of water ice … Rosalind Qureshi-Mbeki countersigns." Hold: cargo 100/100 t · 120.0/120 m³ (both full) | The lot path with the port seams: `market=` and `to=` default to this venue and the berthed hold (VenueGate `Presence::Here`); the ask is `Supply::Stock + Representation::Lot` whose matter leg is `LotOp::Draw`, a pool-to-pool `transfer` staged at activation, with the listing quantity as the synchronous availability counter (no reservation, no hold); the vendor org accepts through the content-resolved party-cap source; capacity (mass **and** packed volume, R7) pre-checked synchronously and again in the Draw prepare; an 81st tonne of ice would be refused on volume with nothing charged | partial | `mush-market/src/trade.rs:573` (`booked_loss` pre-check), `:701-716` (the lot leg staged at activation, `LotOp::Consume` at `:706`), at `c87d78f7`; `mush-inventory/src/pool.rs:413-528`; `mush-economy/src/contract_live.rs:5151-5175`; `tacsim/src/composition/mod.rs:361` |
+| 7 | Fuel and stores | `chandlery` · `+market/quote 6=42` · `+market/accept 13` · `+market/quote 7=21` · `+market/accept 14` · `+ship/hold` | "42 t of reaction mass are bunkered." "21 crew-days into the stores locker." Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 21/120. `+credit`: available 11,110.00cr | Same path; the goods table's stowage tag routes each good to its pool (`stow.bulk`, `stow.propellant`, `stow.provisions`); ice into the tank is refused | partial | `crates/tacsim/content/goods.json` (new, §4.3) |
 | 8 | Board and walk the ship | `exchange` · `concourse` · `arrivals` · `lobby` · `gallery` · `+ship/board` · `in` · `up` · `look` · `down` · `crew` | "You cycle the lock into the *Salt Moth*." Airlock; Central Passage; Bridge (course, tank and hold readouts, the status line "Aboard the *Salt Moth*, docked at Ceres Freeport"); Crew Compartment | `+ship/board` in the berth gallery places the lease tenant `Interior{airlock space, berths}`; the member-room boundary rule lets an Interior actor take an exit whose destination is another member of its own space, with no placement write per step; projection keeps the member location across a restart | new | `mush-sim/src/window.rs:324-341`; `lib.rs:293-303`; `graph.rs:167`; `data.rs:832-835` |
-| 9 | Plan | `+ship/plan stickney` | "Payload 142.2 t of 181 t. Burn 41 t (tank 42 t; 1 t left). Stores 21 crew-days. Passage 19.6 IC days ≈ 19 h 36 m real; arrives about 15:06 UTC tomorrow. Nothing was written." | Pure functions over the hold pools: `route_leg_durations` on the Dray's drive at this payload, `burn_t`, `crew_days`; the `@journey/plan` write-nothing precedent | new | `mush-sim/src/route.rs:794-836`; `mush-sim/src/commands.rs:2605-2614` (`c87d78f7`) |
-| 10 | Queue the orders | `+ship/order depart stickney at=now` · `+ship/order sell metals all min=250` · `+ship/order sell volatiles all min=150` · `+ship/order buy propellant fill max=60` · `+ship/order buy provisions fill` · `+ship/order buy structural_alloys 100 max=400` · `+ship/order depart ceres at=daily 19:30` · `+ship/orders` | Seven numbered orders with states and due times in UTC, IC and real time; "Order 1 fires on the next tick." | The `tacsim:orders:<hull>` document, written in the command's batch; a closed vocabulary (buy, sell, depart, stop); fuel and stores are queued **before** cargo so the executor's clamp can reserve the next departure's needs (§4.4) | new | §4.4; `mush-propagation/src/commands.rs:1252-1279` (`+orders` is taken, hence `+ship/order`) |
-| 11 | Log off aboard | `QUIT` from the Crew Compartment | (in every room, a moment later) "The *Salt Moth*'s lock seals. Berth clamps release; the drive lights." | The disconnected body stays placed aboard (only seat focus lapses, and there is no seat); the tacsim tick's order arm runs the depart step **as the pilot**: lease re-check, undock checks, then one authoritative `tacsim.port.burn` keyed `tacsim.port.burn/<hull>/1/1` (debits the propellant and provisions pools, writes the ticket with payload, `leg_s`, burn and crew-days); the next fire launches it through `pub mush_sim::depart` with the frozen `leg_s`; narration loops over `space.rooms` | new | `mush-sim/src/seat.rs:736-770`; `mush-npc/src/module.rs:1496-1502` (actor swap); `mush-sim/src/journey.rs:11-35,398-408` |
+| 9 | Plan | `+ship/plan stickney` | "Cargo 100 t of 100 t (mass full) · 120.0 m³ of 120 m³ (volume full). Payload 142.2 t of 181 t. Burn 41 t (tank 42 t; 1 t left). Stores 21 crew-days. Passage 19.6 IC days ≈ 19 h 38 m real; arrives about 15:08 UTC tomorrow. Nothing was written." | One pure tacsim `plan_passage` over the sky at departure, the route's legs as body pairs, the Dray's drive law and the hold pools' mass (§4.4, §4.8); the capacity function for the two slacks; the `@journey/plan` write-nothing precedent | new | `mush-sim/src/route.rs:794-836` (the laden arithmetic it calls); `mush-sim/src/commands.rs:2605-2614` (`c87d78f7`) |
+| 10 | Queue the orders | `+ship/order depart stickney at=now` · `+ship/order sell metals all min=250` · `+ship/order sell volatiles all min=150` · `+ship/order buy propellant fill max=60` · `+ship/order buy provisions fill` · `+ship/order buy industrial_parts 49 max=400` · `+ship/order buy structural_alloys 55 max=400` · `+ship/order depart ceres at=daily 19:30` · `+ship/orders` | Eight numbered orders with states and due times in UTC, IC and real time; "Order 1 fires on the next tick." The bulky good is ordered first because cash will bind at Stickney (§4.3, "why you carry both") | The `tacsim:orders:<hull>` document, written in the command's batch; a closed vocabulary (buy, sell, depart, stop); fuel and stores are queued **before** cargo so the executor's clamp can reserve the next departure's needs (§4.4) | new | §4.4; `mush-propagation/src/commands.rs:1252-1279` (`+orders` is taken, hence `+ship/order`) |
+| 11 | Log off aboard | `QUIT` from the Crew Compartment | (in every room, a moment later) "The *Salt Moth*'s lock seals. Berth clamps release; the drive lights." | The disconnected body stays placed aboard (only seat focus lapses, and there is no seat); the tacsim tick's order arm runs the depart step **as the pilot**: lease re-check, undock checks, `plan_passage` at this instant, then one authoritative `tacsim.port.burn` keyed `tacsim.port.burn/<hull>/1/1` (debits the propellant and provisions pools, writes the ticket with the manifest and the whole passage plan: per-leg distance and seconds, burn, crew-days, the sky revision); the next fire launches it through `pub mush_sim::depart` with the plan's frozen `leg_s`; narration loops over `space.rooms` | new | `mush-sim/src/seat.rs:736-770`; `mush-npc/src/module.rs:1496-1502` (actor swap); `mush-sim/src/journey.rs:11-35,398-408` |
 
 **Day 1/2 — offline, about twenty hours.** The `CarrierJourney` advances on the world IC clock; at the
 Kirkwood boundary every member room hears "Kirkwood Depot slides past: the Co-op's tank farm, a Republic
@@ -133,30 +154,35 @@ today's narration reaches no one aboard, `journey.rs:1396-1409`, partial). Nothi
 boundary: the carrier seal refuses placements, the boundary rule refuses every non-member destination
 (the global `o` and `s` exits included), and `+ship/leave` refuses under way.
 
-**Day 2 — the turnaround runs offline at about 15:06 UTC; the pilot logs in at 19:00.**
+**Day 2 — the turnaround runs offline at about 15:08 UTC; the pilot logs in at 19:00.**
 
 | # | Step | The player types | The player sees | Mechanism | Status | Evidence |
 |---|---|---|---|---|---|---|
-| 12 | Arrival and docking | (nothing) | (as a notice) "15:06 UTC *Salt Moth* docked at Stickney Yards, Visiting Berth Gallery." | `apply_arrival` places the hull Direct on Stickney's passive domain, presented into P01; docking is automatic (D-18-18 kept): every hull at a port shares the gallery and is listed there | partial | `mush-sim/src/commands.rs:2207-2256`; `journey.rs:1340-1420`; `window.rs:195` |
-| 13 | The queue sells | (nothing) | (notices) "Sold 70 t metal concentrate to Kasei Metals at 300.00cr/t: 21,000.00cr; Co-op share 1,750.00cr; you received 19,250.00cr. Jonas Achterberg-Nkemelu countersigns." "Sold 30 t water ice at 200.00cr/t: 6,000.00cr; Co-op share 750.00cr; you received 5,250.00cr." | The order arm, as the pilot under VenueGate `Presence::Ship(hull)`: the `+market/sell` lot arm against Kasei's `Supply::Wanted` bid; the buyer org's consideration escrowed by `accept_contract_as`; payouts `Exact(share)` to the Trust and `Exact(rest)` to the pilot from the `ProceedsPolicy`, gated on the inventory `transferred` Fact so money never moves before the matter; `LotOp::Deliver` = `transfer(hold pool → Kasei pool)`; one step per fire, verified by pull before it is marked done | new | `mush-economy/src/contract.rs:1886-1909,1418-1458`; `mush-inventory/src/facts.rs:44-82`; `mush-market/src/trade.rs:1023-1036` (one payout today) |
-| 14 | The queue buys | (nothing) | (notices) "Bought 40 t reaction mass at 60.00cr/t (2,400.00cr): tank 41/80 t." "Bought 19 crew-days (190.00cr)." "Bought 70 t structural alloy stock at 400.00cr/t (28,000.00cr); short of 100 t: funds." "Departure for Ceres Freeport set for 19:30 UTC." | `fill` tops the tank to the full-hold burn of the next depart's route (41 t) and the locker to that route's crew-days (the return at 70 t is 8 + 11 = 19 by the per-leg rule, §4.2); the cargo buy is clamped to min(qty, listing, capacity, funds) **after** the next departure's needs are met; `quote` then `accept_into` as the pilot, clamped before quoting because `quote` refuses a quantity above the listing | new | `mush-market/src/trade.rs:246` (`quantity > listing.quantity`), `:515` (`accept_into`), at `c87d78f7` |
+| 12 | Arrival and docking | (nothing) | (as a notice) "15:08 UTC *Salt Moth* docked at Stickney Yards, Visiting Berth Gallery." | `apply_arrival` places the hull Direct on Stickney's passive domain, presented into P01; docking is automatic (D-18-18 kept): every hull at a port shares the gallery and is listed there | partial | `mush-sim/src/commands.rs:2207-2256`; `journey.rs:1340-1420`; `window.rs:195` |
+| 13 | The queue sells | (nothing) | (notices) "Sold 20 t metal concentrate to Kasei Metals at 280.00cr/t: 5,600.00cr; Co-op share 400.00cr; you received 5,200.00cr. Jonas Achterberg-Nkemelu countersigns." "Sold 80 t water ice at 200.00cr/t: 16,000.00cr; Co-op share 2,000.00cr; you received 14,000.00cr." | The order arm, as the pilot under VenueGate `Presence::Ship(hull)`: the `+market/sell` lot arm against Kasei's `Supply::Wanted` bid; the buyer org's consideration escrowed by `accept_contract_as`; payouts `Exact(share)` to the Trust and `Exact(rest)` to the pilot from the `ProceedsPolicy`, gated on the inventory `transferred` Fact so money never moves before the matter; `LotOp::Deliver` = `transfer(hold pool → Kasei pool)`; one step per fire, verified by pull before it is marked done | new | `mush-economy/src/contract.rs:1886-1909,1418-1458`; `mush-inventory/src/facts.rs:44-82`; `mush-market/src/trade.rs:1023-1036` (one payout today) |
+| 14 | The queue buys | (nothing) | (notices) "Bought 36 t reaction mass at 60.00cr/t (2,160.00cr): tank 37/80 t, the burn for the 73 t your orders can load." "Bought 19 crew-days (190.00cr)." "Bought 49 t yard fittings, crated at 400.00cr/t (19,600.00cr)." "Bought 20 t structural alloy stock at 400.00cr/t (8,000.00cr); short of 55 t: funds." "Departure for Ceres Freeport set for 19:30 UTC." | `fill` projects the heaviest load the queued buys can make under both hold limits (49 t fittings, then alloys clamped to 24 t by volume: 73 t), plans the next depart's passage at its hour and tops the tank to that burn (37 t) and the locker to its crew-days (8 + 11 = 19 by the per-leg rule, §4.2); each cargo buy is then clamped to min(qty, listing, room by mass, room by volume, funds) **after** the departure's needs are met, logging which bound bit; `quote` then `accept_into` as the pilot, clamped before quoting because `quote` refuses a quantity above the listing | new | `mush-market/src/trade.rs:246` (`quantity > listing.quantity`), `:515` (`accept_into`), at `c87d78f7` |
 | 15 | Log in | (connect) | "While you were off watch:" then the lines above, once; "Aboard the *Salt Moth*, docked at Stickney Yards; departs 19:30 UTC (in 31 m)." | tacsim reconnect notices on the housing pattern, rendered once on `Connected`; the look status line on the atlas `look_rendered` precedent | new | `mush-housing/src/notice.rs:1-20`; `mush-atlas/src/travel.rs:2673-2695` |
-| 16 | Ashore at the Yard | `passage` · `airlock` · `+ship/leave` · `lobby` · `customs` · `concourse` · `+coop/statement` · `observation` | The gallery; Republic forms; the statement (readable anywhere, §4.1): 2 sales, margin 10,000.00, shares 2,500.00, cash 20.00 after the alloys, buyout progress; the Guard's pad under Mars | `+ship/leave` in the airlock, docked: `unplace(keep)` + `move_to(gallery)`; `tacsim.last_port` stamped for the IC-return rule; the statement reads the enrolment and share records | new | `mush-sim/src/window.rs:346-358`; `tacsim/src/match_/cockpit.rs:2401-2418` put_out shape |
-| 17 | Re-file and log off | `concourse` · `customs` · `lobby` · `gallery` · `+ship/board` · `+ship/order sell structural_alloys all min=480` · `+ship/order buy propellant fill max=40` · `+ship/order buy provisions fill` · `+ship/order buy metals 70 max=200` · `+ship/order buy volatiles 30 max=100` · `+ship/order depart stickney at=now` · `QUIT` | The Ceres orders queued behind the pending 19:30 depart; at 19:30 the lock seals and the return leg (17 h 45 m at 70 t) lands about 13:15 UTC the next day | The same queue; `rev` bumps on every edit and the inflight step is untouchable | new | §4.4 |
-| 18 | Day 3 and after | (nothing) · (connect at 19:00) | "Sold 70 t structural alloy stock to Freeport Works at 520.00cr/t: 36,400.00cr; Co-op share 2,100.00cr; you received 34,300.00cr." Then the outbound bought; cash 15,630.00cr; the cycle repeats one leg per day | Freeport Works' bid at Ceres is the return leg's buyer; from here a 30–60 minute session a day is the career | new | — |
+| 16 | Ashore at the Yard | `passage` · `airlock` · `+ship/leave` · `lobby` · `customs` · `concourse` · `+coop/statement` · `observation` | The gallery; Republic forms; the statement (readable anywhere, §4.1): 2 sales, margin 9,600.00, shares 2,400.00, cash 360.00 after the fittings and the alloys, buyout progress; the Guard's pad under Mars | `+ship/leave` in the airlock, docked: `unplace(keep)` + `move_to(gallery)`; `tacsim.last_port` stamped for the IC-return rule; the statement reads the enrolment and share records | new | `mush-sim/src/window.rs:346-358`; `tacsim/src/match_/cockpit.rs:2401-2418` put_out shape |
+| 17 | Re-file and log off | `concourse` · `customs` · `lobby` · `gallery` · `+ship/board` · `+ship/order sell industrial_parts all min=500` · `+ship/order sell structural_alloys all min=480` · `+ship/order buy propellant fill max=40` · `+ship/order buy provisions fill` · `+ship/order buy volatiles 80 max=100` · `+ship/order buy metals 20 max=200` · `+ship/order depart stickney at=now` · `QUIT` | The Ceres orders queued behind the pending 19:30 depart; at 19:30 the lock seals and the return leg (17 h 27 m at 69 t: 1,507,276 IC s) lands about 12:57 UTC the next day | The same queue; `rev` bumps on every edit and the inflight step is untouchable | new | §4.4 |
+| 18 | Day 3 and after | (nothing) · (connect at 19:00) | "Sold 49 t yard fittings, crated to the Belt Carriers' Cooperative at 560.00cr/t: 27,440.00cr; Co-op share 1,960.00cr; you received 25,480.00cr." "Sold 20 t structural alloy stock to Freeport Works at 520.00cr/t: 10,400.00cr; Co-op share 600.00cr; you received 9,800.00cr." Then the outbound bought; cash 21,840.00cr; the cycle repeats one leg per day | The Co-op's fittings bid and Freeport Works' alloy bid at Ceres are the return leg's buyers; from here a 30–60 minute session a day is the career; with full funds the best return is 55 t alloys + 45 t fittings (100 t, 120.0 m³) | new | — |
 | 19 | Week two: buyout | `registry` · `+coop/buyout` | "The Registry writes your name over the Co-op's mark. The *Salt Moth* is yours: 90,000.00cr paid; the charter ends; no further share." | Pilot-issued asset contract (`TitleHeld` + `TitleTransfer`, the market's shape); the Trust accepts by party cap; `end_lease` before settlement so invariant 12 holds; the observer marks the enrolment graduated | new (IC13) | `mush-market/src/trade.rs:829-848`; `mush-economy/src/contract_live.rs:4710`; `engine.rs:1121-1125` |
 
-**Money check.** Stake 25,000 − 14,000 (70 t at 200) − 3,000 (30 t at 100) − 1,680 (42 t at 40) − 210
-(21 crew-days at 10) = 6,110. Stickney: + 19,250 + 5,250 (27,000 gross less a 2,500 share on a 10,000
-margin) − 2,400 (40 t at 60) − 190 (19 crew-days) − 28,000 (70 t at 400; the clamp's funds term is
-28,020, so 70 t) = 20.00, with the clamp having reserved fuel and stores first. Ceres: + 34,300 (36,400
-less a 2,100 share on an 8,400 margin) − 1,480 (37 t at 40: the return burned 37 of 41, so `fill` tops 4
-to 41) − 210 − 14,000 − 3,000 = 15,630. A full outbound leg nets the pilot about 5,600 cr in cash and a
-full return about 6,400;
-the first return is funds-limited to 70 t. At one leg a day the 90,000 buyout plus a 20,000 float lands
-on day 14–15 at full loads and about day 22 at 70 % loads (§4.1). Fuel is a decision: a Ceres top-up to
-80 t costs burn (105 kg per tonne carried) and still cannot cover both legs with a full hold (out 45 t,
-back 37 t), so Stickney's 60 cr/t reaction mass is bought every return.
+**Money check** (every figure reproduced by the volume design's judge; §4.3 carries the arithmetic).
+Stake 25,000 − 4,000 (20 t at 200) − 8,000 (80 t at 100) − 1,680 (42 t at 40) − 210 (21 crew-days at 10)
+= 11,110; hold 100 t / 120.0 m³, both limits full. Stickney: + 5,200 (5,600 less a 400 share on a 1,600
+margin) + 14,000 (16,000 less 2,000 on 8,000) = 30,310; − 2,160 (36 t at 60: `fill` tops the 1 t left to
+37, the burn for the 73 t the queued buys can load) − 190 (19 crew-days) = 27,960; − 19,600 (49 t
+fittings at 400) − 8,000 (20 t alloys; the clamp's funds term gives 20, so "short of 55 t: funds") =
+360. Hold 69 t / 118.7 m³; return payload 106,176 kg, burn 37 t (tank 0), crew-days 8 + 10 = 18 (1
+left), 17 h 27 m. Ceres: + 25,480 (27,440 less 1,960 on 7,840) + 9,800 (10,400 less 600 on 2,400) =
+35,640; − 1,600 (40 t at 40) − 200 (20 crew-days: 1 → 21) − 8,000 − 4,000 = 21,840. Steady state, both
+hulls' limits full each way: an outbound nets about 5,390 and a return (55 t alloys + 45 t fittings)
+about 7,740, 13,130 a round trip; the first return is cash-bound to 69 t and the second to 96 t (45 + 51).
+At one leg a day the 90,000 buyout is crossed on day 13 and the buyout plus a 20,000 float lands on
+**day 15** at full loads (about 4,000 to spare) and day 23 at 70 % loads (§4.1). Fuel is a decision: a
+Ceres top-up to 80 t costs burn (105 kg per tonne carried) and still cannot cover both legs with a full
+hold (out 45 t at a brimmed tank, back 37–40 t), so Stickney's 60 cr/t reaction mass is bought every
+return. The timings are the slice's **constant sky** at its epoch (§4.8), never an invariant.
 
 ---
 
@@ -573,6 +599,10 @@ were wrong. "Code wins" throughout.
   (`pool.rs:1162,1169`). (5) Pools-only hull endpoints make the in-txn load figure five point lookups and
   retire the lot-consume blocker. (6) At the pasted 0.5/1/0.5 m³/t a 120 m³ hold can never bind; volume is
   deferred (Q-18-21).
+- **Draft 0.3.** Correction (6) is **reversed by R7** (beat R): the packed volumes are re-authored so
+  each leg has a dense and a bulky good and the hold binds on both; "a burn law" (Missing) is now the
+  drive's tagged law with the coast rate as data (beat Q); (5)'s "five point lookups" is one lookup per
+  good the compartment accepts (four for the hold, one each for the tank and the locker).
 
 ### O. Fifteen-room stations with decks, locks and a berth connection (Draft 0.2)
 
@@ -637,6 +667,98 @@ were wrong. "Code wins" throughout.
   none exists. (6) Three of the audit's "missing" items were already closed by the IC0 working tree
   (the Lot short-circuit, the manual-route arm, the listing/hold TTL); `spacecraft` in `SELF_MODES` is
   still owed (Q-18-6).
+
+### Q. The sky: what the slice assumes frozen, and what a moving sky would undo (Draft 0.3)
+
+- **Exists.** A circular, coplanar, heliocentric ephemeris with a **time-varying** query: `Body
+  {orbit_uau, period_mdays, phase_mdeg}`, `phase_mdeg_at(id, t)` advancing by `rate_permille` of real
+  motion per IC second (the authored phase at rate 0), `distance_km_at(a, b, t)` by the law of cosines
+  in f64 rounded to km (`tacsim/src/ephemeris.rs:42-52,135-170,180-195`); the knob
+  `[tacsim.time.ephemeris] {epoch, rate}`, "0 freezes the sky" (`config.rs:76-88`;
+  `mushd.toml.example:190-192`; `deploy/instance/mushd.toml.tmpl:218-220`, both `epoch = 0`); two
+  distance laws as **ratios to a pin**, torch ∝ √d and coast ∝ d, on `DriveProfile`
+  (`mush-sim/src/route.rs:563-598,607-612`); a committed passage never re-reads the sky or the catalog —
+  `CarrierJourney` embeds its `RouteDef` and stamps every leg instant from `departed + Σ base_s`,
+  `reanchor` keeps `departed.at` across rate generations (`journey.rs:191-202,398-408,1231-1255`;
+  `commands.rs:2306-2311` resolves the catalog only in `build_route`); the IC clock is a continuous
+  calendar of IC Unix seconds (`mush-core/src/clock.rs:197-218,335`; `2350-01-01T00:00Z` =
+  11,991,628,800; dev1 ≈ IC 2350.2 **if** ratio 4 held since unix 0, `deploy/dev1/instance.env:81-82` —
+  the persisted timeline decides); doc 10 T1 is binding and written for an *aligned* sky
+  (`10-tacsim-foundations.md:287-291`); doc 15's lag table is already ranged for a moving sky and D-15-11
+  derives a ship's lag from journey progress (`15-comms-relay-backbone.md:87-111,312`).
+- **Partial.** The rate knob is **inert in production**: `materialize_route` pins one `distance_km` per
+  route from `pinned_km`, always the epoch (`store.rs:761-813`; `ephemeris.rs:168-170`); `reindex_routes`
+  caches it and `route_in_world` re-materializes at the epoch (`store.rs:493-521,720-753`); atlas sites
+  are drawn at the epoch phase with z = 0 and the corridor as a two-point chord of Σ authored `base_s`
+  (`content.rs:130-149,306-340`); `route_duration` and `route_duration_at` have test callers only. The
+  pin is the **direct chord between the endpoint bodies**, not the flown path, and the pack cannot author
+  it (`pack.rs:849-871`): direct Ceres–Mars at the fixture phases is 1.293 AU while the lane's legs sum to
+  1.302 AU. `BodyDef` is a strict three-field wire with a hand-written `Serialize` (`pack.rs:593-626`),
+  so new fields must be `Option` skipped when absent or every digest moves. The epoch is server config
+  while the phases are pack data tuned to no real date (`tacsim/tests/ephemeris.rs:66-86`); doc 10 T17
+  puts the epoch in the pack (`10:762-764`), doc 14 §3.8 S7 put it in config
+  (`14-spatial-implementation-plan.md:881-882`). `spacecraft` is still in `SELF_MODES`
+  (`mush-atlas/src/travel.rs:90`; `content.rs:44`), so atlas `+travel` can fly the epoch projection.
+- **Missing.** 3D positions with eccentricity, inclination, node, perihelion and parents; real data
+  (grep `inclination|eccentric|horizons|kepler` outside the arena: none); a planner that takes the sky at
+  a departure instant (`route_duration` takes neither, `route.rs:794-834`); a flip law with an absolute
+  acceleration or a coast law with an absolute km/s (`coast_km` nowhere); a chart and a position-reading
+  price policy (`@corridor/show`'s pin line is the only sky render, `commands.rs:432-436`).
+- **Corrections to Draft 0.2.** (1) IC2's "the route's `distance_km` as the sum" cannot be produced by
+  today's code; the field stays the chord, relabelled, and the truth lives in the passage plan (§4.8).
+  (2) The 205 km/s rate as "a constant the test owns" is the one regret the engine would unwind; it
+  becomes drive data and IC2's test checks the pack against the sky (D-18-45). (3) Mars moves 0.524°/day:
+  over the laden Kirkwood→Mars leg (4.74 IC days unladen, 8.4 laden — not the route's 11.0) that is
+  2.5–4.4°, and both legs being near-radial the intercept correction here is about **−4 %** per leg,
+  not a 25 % under-statement; the planner still carries a fixed-count intercept for tangential lanes.
+  (4) Kirkwood at 2.06 AU (2.96 yr, the 4:1 gap) cannot co-orbit Ceres (4.60 yr), and "on the
+  Ceres–Mars lane" (doc 11 §2's 2320s row and §5; §1 never mentions Kirkwood) is a **three-body**
+  alignment, not the Ceres–Mars one: the slice's legs put Kirkwood at ~135°, within ~5° of both bodies
+  at the epoch, and per 3.18-yr synodic cycle Kirkwood's offset from the next conjunction longitude
+  steps by 3.18 × 360/2.957 − 3.18 × 360/4.60 ≈ 27° − 249° ≡ +138°, a pseudo-random walk, so a ±5°
+  via-Kirkwood season is hit on about 3 % of cycles (±15°: about 8 %) — once in roughly 40–110 years,
+  never "70 days in every 3.18". The moment the sky moves, an independent 2.06 AU Kirkwood is off the
+  lane for decades, which is the R9 regret Q-18-36 now exists to avoid. (5) Ceres–Mars spans 1.242–4.290
+  AU (circular bounds): a coaster's full outbound stretches up to 3.30× (19.6 h → ~65 h), a flip law's
+  1.82×, so R3's "under a day" holds for a coast Dray only about 16 % of the cycle — the owner's call
+  (Q-18-35). (6) T17's "real geometry" was never checked against a real ephemeris; every slice figure
+  is tuned fiction, cited as the constant sky's output, never as fact.
+
+### R. Volume beside mass: the hold binds on both, and the mixed load is the optimum (Draft 0.3)
+
+- **Exists.** mush-sim's `CapacitySpec.limits: BTreeMap<SmolStr, i64>`, stored and unused, the naming
+  precedent for measure-keyed integer limits (`mush-sim/src/data.rs:797-810`); doc 06 D3's open measure
+  map, "summed and compared, never floating point" (`06-object-behaviors-spatial-domains.md:1285-1300`);
+  unit-less u64 pool quantities (`mush-inventory/src/record.rs:989-999`; `pool.rs:413-420`);
+  `MAX_QUANTITY` 100,000 per listing (`mush-market/src/record.rs:91`), which keeps the ledger unit the
+  tonne; the lot pre-check's slot between the destination check and `cannot_deliver`
+  (`mush-market/src/trade.rs:608-632`); the Draw backstop's home beside `Consume` in
+  `prepare_authoritative`, the families handle cloned at composition (`lot.rs:168-176,199-203,469-540`);
+  `Pools::pool(txn, endpoint, good) -> Result<Option<Pool>, _>` (`mush-inventory/src/pool.rs:253-264`);
+  `industrial_parts` already one of the ten families (`tacsim/src/definitions/resources.rs:34-45`;
+  `content/resources.json:69-73`); 18a's empty `item.yard_spares` cage and the Stickney Yards service
+  clerk who can sign a Yard ask (18a:1219-1230, :1265).
+- **Partial.** Typed-state reads inside an `ActionTxn` are **delegation-gated like writes** and a refused
+  read poisons the txn (`mush-core/src/action_state.rs:1934-1960,2043-2068`; only a second *mutation* is
+  refused, `:2071-2076`): the market's Draw backstop is covered because the market is already a quantity
+  delegate (`tacsim/src/composition/mod.rs:404`); the executor's clamp needs IC5's tacsim delegation; an
+  unreadable pool must refuse, never read as zero. Draft 0.2's stowage `{limit, unit}` shape cannot carry
+  two limits; its clamp names "capacity" with no measure; "three" and "five point lookups" disagreed.
+- **Missing.** Any capacity function, measure registry, packed volume or stowage code (grep
+  `CapacityProvider|volume_l|MeasureId|stowage` in `crates/*.rs`: none); a bulky Stickney export, so the
+  return leg has a decision (alloys at 300 L/t use 30 of 120 m³).
+- **Corrections to Draft 0.2.** (1) Draft 0.2's outbound margins tie at 100/t for metals and ice, so no
+  balance exists until a price moves: Kasei's metals bid 300 → 280 (Q-18-33). (2) Q-18-21's 1.5 m³/t ice
+  gives no whole-tonne load that fills both limits (72.7 t); 1.4 does (80 t). (3) "81 t of ice after 20 t
+  of concentrate (120.05 m³)" is refused by mass too (101 t, 121.4 m³); the volume-only cases are 19 + 81
+  (100 t, 121.0 m³) and 86 t of ice alone (120.4 m³). (4) The first cash-bound return is 49 t fittings +
+  20 t alloys (118.7 m³), not 45 + 24; the executor clamps order by order and never optimises across
+  orders. (5) Draft 0.2's "day 14–15" did not reproduce under its own numbers (day 17); this set lands
+  day 15. (6) Side-slips: 1,696,268 IC s is 19 h 38 m, not 19 h 36 m; the 70 t return payload was
+  111,176 kg, not 111,184; the propellant fixed point at a full hold is 40 (41 the greater); the 181,000
+  kg rail is ≥ 180,680, not "=" it. (7) The volume design's own slips, fixed by its judge: the alloys-bid
+  edge is about 421, not 452; the second cash-bound return is 96 t = 45 + 51, not 94 = 45 + 49; the LP
+  test cannot run in IC2 (no port entry before IC3): it is IC8's.
 
 ---
 
@@ -734,23 +856,33 @@ capital at risk and cannot be clawed back (an org has no debit authority on a pi
 `api.rs:370-394`); alt-farming is bounded by one enrolment per gateway account ever and by finite
 capital. No top-up in the slice (Q-18-14's alternative).
 
-**The share (D-18-24): 250‰ of trading margin over the Co-op's posted reference prices, paid inside the
-sale.** share = 250 × max(0, (price − reference[good]) × qty) / 1000, with the reference per good in the
-programme block (metals 200, volatiles 100, structural_alloys 400: the Ceres and Stickney asks). It is
+**The share (D-18-24): 250‰ of trading margin over the origin port's posted ask, paid inside the
+sale.** share = 250 × max(0, (price − reference[good]) × qty) / 1000, where **reference[good] is a live
+read**: the programme block names, per good, the origin ask it is measured against (`reference`:
+metals → the Freeport Exchange's ask, volatiles → Occator's, structural_alloys → Kasei's,
+industrial_parts → the Yard's; 200 / 100 / 400 / 400 today) and the policy reads that listing's
+**current** price at the moment it builds the payout, from the same listing data the applier writes and
+P-A-4 will move. Only the share permille and the buyout price freeze at signing; a frozen reference
+number was the one slice decision the astronomy engine's price policy would have had to undo (once an
+ask moves with position, a share billed against a stale reference stops being a margin share), so it
+is not a contract term. It is
 computed at contract build by a tacsim `ProceedsPolicy` as an extra `Exact` payout to the Trust's account
 beside the pilot's `Exact(offer − share)`: the engine already accepts a non-party payee and exact splits
 that must sum to the escrow (`contract.rs:1886-1909,1418-1458`) and settles them atomically
 (`:2856-2873`); only the seam is new, because every sell path hard-codes one payout today
 (`trade.rs:1023-1036,877-892`). The policy fires when the sale's **source endpoint** is an enrolled hold,
 never from command arguments, so a queued sale (R3) pays exactly as a typed one. Why margin over
-reference and not gross or net: gross bills a losing run (250‰ of a 27,000 gross is 6,750 against a
-5,600 cash leg); net needs an M-size run book because lots carry no price and quotes no destination
-(`mush-inventory/src/record.rs:222-252`; `mush-market/src/record.rs:771-815`); the reference margin is
-deterministic, computable from the exchange board before the pilot logs off, never bills a sale below the
-posted origin price, and leaves fuel and stores to the pilot. It can bill a run whose fuel ate the
-margin, which is the honest cost — and it is a **margin share, not the "profit-sharing" of R2's
-words**; §1 says so where the ruling is restated, and Q-18-13 offers net with a carried deficit once
-the run book exists. Every sale line prints gross, share and net.
+reference and not gross or net: gross bills a losing run (250‰ of a 21,600 outbound gross is 5,400
+against a 5,390 cash margin); net needs an M-size run book because lots carry no price and quotes no
+destination (`mush-inventory/src/record.rs:222-252`; `mush-market/src/record.rs:771-815`); the reference
+margin is deterministic at the constant sky, computable from the exchange board before the pilot logs
+off, never bills a sale below the origin's posted ask as it stands at settlement, and leaves fuel and
+stores to the pilot. It can bill a run whose fuel ate the margin, which is the honest cost, and once
+P-A moves asks it bills on the ask at settlement, not the ask the pilot paid (a pilot who bought cheap
+and sells after the ask rose is billed less; one who bought dear and sells after it fell, more —
+`trade.md` says so) — and it is a **margin share, not the "profit-sharing" of R2's words**; §1 says
+so where the ruling is restated; Q-18-13 is closed under R8 and the net share with a carried deficit
+is P9, once the run book exists. Every sale line prints gross, share and net.
 
 **The buyout (D-18-25; cut IC13).** The price, 90,000 cr, is posted in the programme block, frozen into
 the enrolment at signing and shown by `+coop` from day one beside the Yard's new-Dray comparator
@@ -778,13 +910,17 @@ alternative). Hull damage is out of scope; Tycho underwrites Trust hulls later (
 refusal; a queued buy clamps to funds and logs the shortfall; a queued depart short of fuel or stores
 holds with nothing burned; `+coop/enrol` twice is refused; nothing is minted on demand.
 
-**Numbers.** Per the §2 money check: a full outbound leg nets the pilot about 5,600 cr cash (27,000 −
-17,000 cargo − 1,680 fuel − 210 stores − 2,500 share), a full return about 6,400 (52,000 − 40,000 − 2,400
-− 190 − 3,000); the first return is funds-limited to 70 t. Simulated at one leg a day with a 20,000 float
-kept at Ceres: full loads reach 90,000 on day 14–15 ("a couple of weeks of good luck"); 70 % loads on day
-21–24; the Trust receives about 43,000 in shares plus the 90,000 sale against its 25,000 stake and the
-hull. At 75,000 the buyout lands on day 12–13, close to trivial; at 60,000 on day 9. Programme capital
-8 × 25,000 + a 50,000 floor = 250,000 cr.
+**Numbers (Draft 0.3, R7's loads).** Per the §2 money check: a full outbound (20 t concentrate + 80 t
+ice, both hold limits full) nets the pilot about 5,390 cr cash (21,600 − 2,400 share − 12,000 cargo −
+1,600 fuel − 210 stores), a full return (55 t alloy stock + 45 t crated fittings) about 7,740 (53,800 −
+3,450 − 40,000 − 2,400 − 210), 13,130 a round trip; the first return is cash-bound to 69 t (49 + 20) and
+the second to 96 t (45 + 51). Simulated at one leg a day with a 20,000 float kept at Ceres and the captain
+striking the best mix each leg: full loads cross 90,000 on day 13 and the buyout plus the float on
+**day 15** with about 4,000 to spare ("a couple of weeks of good luck"); 70 % loads on day 23; the Trust
+receives about 40,000 in shares plus the 90,000 sale against its 25,000 stake and the hull. With the
+fittings bid at 540 instead of 560, or with no fittings at all, day 17. At 75,000 the buyout lands
+about day 12, close to trivial; at 60,000 about day 9. Programme capital 8 × 25,000 + a 50,000 floor =
+250,000 cr. All of it at the constant sky (§4.8).
 
 ### 4.2 The ship
 
@@ -839,29 +975,44 @@ same seal. No room in the slice carries an exit aliased `board` or `disembark`.
 
 **Compartments.** Occupancy is the mush-sim `berths` slot, `maximum_items 2`, enforced at placement; in
 the slice only the lease tenant may board, so the second berth is reserved for a passenger (Q-18-17).
-Matter is the one hold vault with every quantity in **pools**: cargo (Σ `stow.bulk` goods ≤ 100 t),
-propellant (≤ 80 t), provisions (≤ 120 crew-days), from `logistics.stowage`, mass only (D-18-28). Every
-delivery into a hull endpoint is a pool credit — `LotOp::Draw` is a `transfer` (`pool.rs:413-528`) — so
-no loose-lot census is needed, the burn debits pools directly (`pool.rs:306`), and the in-transaction
-load figure is three point lookups. The check runs twice: synchronously in the market lot leg's
-pre-check through `Ctx::action_state` (`trade.rs:572`) and as a backstop inside the Draw prepare. The
-venue gate refuses any non-port listing that would deliver into a hull endpoint, so no lot ever lands
-there. What the pilot sees of the compartments is in each room's `look` (18a §3): the load cells in the
-Cargo Hold, the tank gauges in Engineering Access, the locker tally in the Crew Compartment, all read
-from the same pools, plus `+ship/hold`.
+Matter is the one hold vault with every quantity in **pools**, each compartment limited by doc 06 D3's
+measure map (D-18-28 as replaced by R7): cargo (Σ `stow.bulk` goods ≤ 100,000 kg **and** ≤ 120,000 L of
+packed volume), the tank (≤ 80,000 kg; tank-rated, mass only), the locker (≤ 480 kg and 1,200 L, which is
+120 crew-days at 4 kg and 10 L), from `logistics.stowage`. Every delivery into a hull endpoint is a pool
+credit — `LotOp::Draw` is a `transfer` (`pool.rs:413-528`) — so no loose-lot census is needed, the burn
+debits pools directly (`pool.rs:306`), and the in-transaction load figure is one point lookup per good
+the compartment accepts (four for the hold, one each for the tank and the locker), read by balance (hull
+pools hold no reservations). **One pure tacsim function** (`port/capacity.rs`: `load`, `admits`,
+`max_more`, §4.3) does the arithmetic everywhere it is needed: synchronously in the market lot leg's
+pre-check through `Ctx::action_state` (`trade.rs:572`; refuse, nothing charged), as a backstop inside the
+Draw prepare (fail closed on an unreadable pool), in `+ship/plan` and `+ship/hold`, in the room gauges,
+and in the queue's buy clamp and `fill` (§4.4). The venue gate refuses any non-port listing that would
+deliver into a hull endpoint, so no lot ever lands there. What the pilot sees of the compartments is a
+`look_rendered` line per pool in the rooms `interior.gauges` lists (18a §3): the load cells in the
+Cargo Hold, the tank gauges in Engineering Access, the locker tally in the Crew Compartment, and all
+three on the Central Passage's manifest slate and the Bridge's displays, every figure rendered from the
+pools at look time and none written into pack text (D-18-39: a hull's `details` never carry a load),
+plus `+ship/hold`.
 
 **Propellant and provisions as consumables (D-18-11 kept, extended).** Both are pools in the hold, bought
 like cargo and spent by the burn. The burn is settled at undock, matter first, by ONE authoritative
 `tacsim.port.burn` action submitted as the pilot (by `+ship/undock` live, or by the queue's depart step
-offline): it recomputes payload from transaction quantities, refuses `Overloaded`, tank < burn and locker
-< crew-days, debits the two pools, and writes the typed ticket `{hull, route, route_pack, definition
-digest, manifest{cargo, tank, locker, occupants}, payload_kg, leg_s, burn_t, crew_days, order, attempt,
-burned_at, launched: false}` in the same bundle. The launch is the tacsim tick's arm consuming the ticket
-through `pub mush_sim::depart(ctx, hull, route, leg_s)`; never an `ActionStateChanged` persist
+offline): the command or tick computes the **passage plan** first (`plan_passage`, §4.4/§4.8) and passes
+it as the action's input; the prepare recomputes payload from transaction quantities, recomputes the
+burn and the crew-days from the plan's per-leg seconds and the drive table the provider holds (the
+`MarketLotProvider` shape, families cloned at composition, `lot.rs:199-203`), refuses on mismatch,
+`Overloaded`, tank < burn or locker < crew-days, debits the two pools, and writes the typed ticket
+`{hull, route, route_pack, definition digest, manifest{cargo, tank, locker, occupants}, payload_kg, plan
+{route, law, depart_ic, sky_rev, legs[{to, body, dist_km, secs, t0, t1}], total_s, burn_t, crew_days},
+order, attempt, burned_at, launched: false}` in the same bundle. Only the sky-dependent seconds are taken
+on trust from the plan, which is exactly T1's freeze; nothing after the burn re-reads the sky. The launch
+is the tacsim tick's arm consuming the ticket through `pub mush_sim::depart(ctx, hull, route, leg_s)`
+with `leg_s = plan.legs[].secs`; never an `ActionStateChanged` persist
 (`engine.rs:2939-2942`), never a GOD-tick submission (`tick.rs:28-37`); boot reconcile launches
 stragglers once. A refused departure consumes nothing. **Crew-days burned = occupants × Σ over the
 route's legs of ceil(laden leg IC days)** — the one rule, used by `+ship/plan`, the burn and the
-queue's `fill`: the full outbound is 12 + 9 = 21 (not ceil(19.6) = 20), the 70 t return 8 + 11 = 19.
+queue's `fill`: the full outbound is 12 + 9 = 21 (not ceil(19.6) = 20), the 69 t first return 10 + 8 =
+18, a 100 t return 12 + 9 = 21.
 
 **The helm.** There is no station (D-18-23). `+ship/plan`, `+ship/undock` and the queue are usable from
 anywhere aboard; the Bridge carries the readouts and the status line. P2's helm station, `request_seat
@@ -918,14 +1069,14 @@ moves (`unit.rs:822-847`). The pasted scale replaces Draft 0.1's 2,800 t hold.
         "logistics": {
           "dry_mass_t": 240,
           "stowage": {
-            "cargo":      { "accepts": [ "stow.bulk" ],       "limit": 100, "unit": "t" },
-            "propellant": { "accepts": [ "stow.propellant" ], "limit": 80,  "unit": "t" },
-            "provisions": { "accepts": [ "stow.provisions" ], "limit": 120, "unit": "crew_day" }
+            "cargo":      { "accepts": [ "stow.bulk" ],       "limits": { "si.mass_kg": 100000, "si.volume_l": 120000 } },
+            "propellant": { "accepts": [ "stow.propellant" ], "limits": { "si.mass_kg": 80000 } },
+            "provisions": { "accepts": [ "stow.provisions" ], "limits": { "si.mass_kg": 480, "si.volume_l": 1200 } }
           },
           "berths": 2,
           "occupant_allowance_kg": 100,
           "payload_ceiling_kg": 181000,
-          "drive": { "class": "coast_hauler", "thrust_permille": 1000, "law": "coast", "burn_permille": 105 }
+          "drive": { "class": "coast_hauler", "law": { "coast": { "kms": 205, "burn_permille": 105 } } }
         },
         "interior": {
           "space": "airlock",
@@ -947,22 +1098,33 @@ moves (`unit.rs:822-847`). The pasted scale replaces Draft 0.1's 2,800 t hold.
             { "from": "passage", "to": "hold",        "names": [ "Cargo Hold <H>;hold;down;d", "Passage <U>;passage;up;u" ] },
             { "from": "hold",    "to": "engineering", "names": [ "Engineering <E>;engineering;eng;down;d", "Hold <H>;hold;up;u" ] }
           ],
-          "gauges": { "cargo": "hold", "propellant": "engineering", "provisions": "crew" }
+          "gauges": { "cargo":      [ "hold", "passage", "bridge" ],
+                      "propellant": [ "engineering", "passage", "bridge" ],
+                      "provisions": [ "crew", "passage", "bridge" ] }
         },
-        "note": "Stickney-built hauler (doc 11 section 7): slow, efficient, unarmed, Class 0 (no core component, so the drive ROM of doc 17 section 9; nothing separately titled). The port verbs read logistics and interior only; the combat anatomy is authored for later and never fielded (class hauler filtered out of SIM UNIT; tracked max_speed 0 is the immobile stand-in). Room descs live in the pack beside the names (18a section 3); the airlock is FORWARD of the passage and the crew compartment AFT, and this JSON is the authority 18a section 3.1 matches alias for alias. burn_t = ceil((dry_mass_t + payload_t) * burn_permille / 1000). payload_ceiling_kg is both route_duration's Overloaded rail and its laden denominator."
+        "note": "Stickney-built hauler (doc 11 section 7): slow, efficient, unarmed, Class 0 (no core: the drive ROM of doc 17 section 9; nothing separately titled). The port verbs read logistics and interior only; the combat anatomy is authored for later and never fielded (class hauler is kept out of SIM UNIT; tracked max_speed 0 is the immobile stand-in). Room descs are 18a section 3's; the airlock is FORWARD of the passage and the crew compartment AFT, and this JSON is the authority 18a section 3.1 matches alias for alias. The hold binds on 100 t AND 120 m3 (R7); stowage limits are doc 06 D3's measure map (a later measure is a data key). drive.law is an externally tagged enum, coast {kms, burn_permille} in the slice: kms is the UNLADEN cruise and burn_t = ceil((dry_mass_t + payload_t) * burn_permille / 1000) per departure is doctrine, distance-free; durations come from plan_passage, never from an authored number. payload_ceiling_kg is route_duration's rail and laden denominator, >= 180,680."
       }
     }
   }
 }
 ```
 
-**Numbers.** Dry 240 t; cargo 100 t; tank 80 t; locker 120 crew-days at 4 kg each; two berths at 100 kg;
-payload ceiling 181,000 kg, a rail equal to the stowage maxima plus occupants (180.68 t) that never refuses
-on its own; `coast_hauler` at thrust 1000 with burn 105‰ of departure mass. Full outbound (100 t cargo,
-42 t propellant, 21 crew-days, one person): payload 142,184 kg, burn 41 t, 19.6 h at rate 24. Return
-at 70 t (41 t aboard, 19 crew-days): 111,184 kg, burn 37 t, 17.75 h (17 h 45 m: 950,000 × 292,184 /
-181,000 = 1,533,560 IC s). Per hull: 7 Rooms, 5 exit pairs, 2 space records; eight hulls
-make about 115 objects, far under `MAX_CARRIER_SUBTREE` 256 per hull.
+**Numbers.** Dry 240 t; cargo 100 t and 120 m³; tank 80 t; locker 120 crew-days at 4 kg and 10 L each;
+two berths at 100 kg; payload ceiling 181,000 kg, a rail at or above the stowage maxima plus occupants
+(180,680 kg) that never refuses on its own; `coast_hauler` cruising at 205 km/s with a burn of 105‰ of
+departure mass per departure. Full outbound (20 t concentrate + 80 t ice = 100 t / 120.0 m³, 42 t
+propellant, 21 crew-days, one person): payload 142,184 kg, burn 41 t, legs 965,623 + 730,645 IC s =
+1,696,268 (19.63 IC days, 19 h 38 m at rate 24). First return at 69 t (49 t fittings + 20 t alloys,
+118.7 m³; 37 t aboard, 19 crew-days): 106,176 kg, burn 37 t, 1,507,276 IC s (17 h 27 m). A full return
+(55 + 45): 140,184 kg with 40 t and 21 crew-days, burn 40 t, 19 h 31 m. Volume-bound loads are lighter
+and fly faster (85 t of ice alone: 18.5 h), so the capacity function keeps mass and volume separate and
+never collapses them into one "fullness". Per hull: 1 Thing, 7 Rooms, 10 Exits (5 pairs; the applier
+opens `forward` and `back` as two objects, `apply.rs:1500-1512`), 2 space records: 18 objects, so eight
+hulls make 144, far under `MAX_CARRIER_SUBTREE` 256 per hull. The JSON `note` is 991 bytes against
+`MAX_NOTE_BYTES` 1,024 (`definitions/mod.rs:82`; `UnitSpec::check` calls `check_note`, `unit.rs:938-940`),
+and IC2's pin decodes `dray.json` through `UnitSpec::check` so an over-long note fails the cut, never
+the boot; the R7/R9 rationale lives in this prose, not the note. Every passage figure is the constant
+sky's output at its epoch (§4.8), never an invariant.
 
 **Schema additions.** (1) `UnitClass::Hauler`, excluded from arena class caps; `fieldable_ids` filters
 it (`lobby.rs:1600-1619`) with a custody-seam refusal test. (2) `UnitSpec.logistics` and
@@ -974,21 +1136,26 @@ a thrust mobility mode, `ComponentRole` drive/hold/tank (Q-18-5's alternative), 
 
 ### 4.3 Goods
 
-**The resource set (D-18-13 amended).** Five sale items, four from the ten families and one aggregate.
-Units are tonnes for bulk goods and propellant and whole crew-days for provisions (D-18-28): every listing
-and quote is capped at `MAX_QUANTITY` 100,000 units (`mush-market/src/record.rs:90-91`), which is
-100,000 t, so the cap is untouched and every pasted price is exact in minor units per tonne.
+**The resource set (D-18-13 amended by R7).** Six sale items, five from the ten families and one
+aggregate: the sixth, `industrial_parts` as **yard fittings, crated**, is the bulky Stickney export that
+makes the return leg a balance too (D-18-40; Q-18-32). Units are tonnes for bulk goods and reaction mass
+and whole crew-days for provisions (D-18-28): every listing and quote is capped at `MAX_QUANTITY` 100,000
+units (`mush-market/src/record.rs:90-91`), which is 100,000 t, so the cap is untouched and every price is
+exact in minor units per tonne; a kg ledger would cap a listing at 100 t. **Packed volume is binding**,
+chosen so each leg has one dense and one bulky good and the load that fills both limits falls on whole
+tonnes (the integrality rule: (V − M·v_dense)/(v_bulky − v_dense) is an integer).
 
-| Good (inventory id) | Family | Unit | Packed | Stowage | Role | Ceres | Stickney |
+| Good (inventory id) | Family | Unit | Per unit (binding) | Stowage | Role | Ceres | Stickney |
 |---|---|---|---|---|---|---|---|
-| `metals` metal concentrate | metals | t | 1,000 kg; 0.5 m³/t (display) | `stow.bulk` | Ceres export (doc 10 §11), Kasei's refinery input | **Freeport Exchange** ask 200.00cr/t | **Kasei** bid 300.00cr/t |
-| `volatiles` water ice | volatiles | t | 1,000 kg; 1 m³/t (display) | `stow.bulk` | Occator water to Phobos (11 §3.2) | **Occator** ask 100.00cr/t | **Kasei** bid 200.00cr/t |
-| `structural_alloys` structural alloy stock | structural_alloys | t | 1,000 kg; 0.5 m³/t (display) | `stow.bulk` | Kasei's output (11 §4.3), the return cargo | **Freeport Works** bid 520.00cr/t | **Kasei** ask 400.00cr/t |
-| `propellant` reaction mass | propellant | t | 1,000 kg | `stow.propellant` (tank only) | burned at departure | **Occator** ask 40.00cr/t | **Kasei** ask 60.00cr/t |
-| `provisions` voyage provisions | none (class `ship_supply`) | crew_day | 4 kg; 10 L | `stow.provisions` | `occupants × ceil(days)` burned per leg | **Co-op chandlery** ask 10.00cr | **Yard Commissary** ask 10.00cr |
+| `metals` metal concentrate | metals | t | 1,000 kg; **400 L** (binned, ~2.5 t/m³: weighs out first) | `stow.bulk` | Ceres export (doc 10 §11), Kasei's refinery input | **Freeport Exchange** ask 200.00cr/t | **Kasei** bid **280.00cr/t** (was 300) |
+| `volatiles` water ice | volatiles | t | 1,000 kg; **1,400 L** (1.09 m³/t solid plus insulated canister: cubes out first) | `stow.bulk` | Occator water to Phobos (11 §3.2) | **Occator** ask 100.00cr/t | **Kasei** bid 200.00cr/t |
+| `structural_alloys` structural alloy stock | structural_alloys | t | 1,000 kg; **300 L** (banded bar and plate) | `stow.bulk` | Kasei's output (11 §4.3), the dense return cargo | **Freeport Works** bid 520.00cr/t | **Kasei** ask 400.00cr/t |
+| `industrial_parts` yard fittings, crated | industrial_parts | t | 1,000 kg; **2,300 L** (pressure fittings, ducting, tank sections for the Co-op fleet and the Kirkwood tank farm, crated with dunnage, ~0.43 t/m³) | `stow.bulk` | the bulky return cargo (new) | **Co-op** bid 560.00cr/t | **Stickney Yards** ask 400.00cr/t |
+| `propellant` reaction mass | propellant | t | 1,000 kg; 1,000 L (tank-rated: the tank limits mass only, so never summed) | `stow.propellant` (tank only) | burned at departure | **Occator** ask 40.00cr/t | **Kasei** ask 60.00cr/t |
+| `provisions` voyage provisions | none (class `ship_supply`) | crew_day | 4 kg; 10 L (ten crew-days to the case, 18a C08) | `stow.provisions` | `occupants × ceil(days)` burned per leg | **Co-op chandlery** ask 10.00cr | **Yard Commissary** ask 10.00cr |
 
 Provisions stay an opaque inventory commodity with no instrument; `FAMILIES` stays ten
-(`tacsim/src/definitions/resources.rs:34-45,94-104`); Q-18-3 stands. **The price chain, read
+(`tacsim/src/definitions/resources.rs:34-45,94-104`); Q-18-3 is binding. **The price chain, read
 honestly.** At Ceres reaction mass (40) is cheaper than water ice (100): Occator's reaction mass is
 the bulk, crude fraction of the same extraction and the refined water is the product Phobos pays for;
 18a's lore line says so, never that reaction mass "costs more than the water". At Stickney Kasei bids
@@ -998,19 +1165,71 @@ the Republic's reserve (doc 11 §3.2 wants the volatiles; "Phobos needs volatile
 reaction-mass ask is a **Republic-posted price** (the "Republic prices" of 11 §4.3's refinery, a
 strategic asset the Republic keeps fuelled for the Guard and the Yard), dearer than Occator's crude
 and unrelated to the ice bid. Kasei's capital (600,000) carries the difference; the economist says
-the Stickney prices, not the chain. The numbers 40/60/100/200 are unchanged, so §2's money check and
-§4.1's buyout timeline stand (the alternative, re-pricing so Occator's reaction mass sits above its
-water and Kasei's ask above its bid, re-runs both and is not taken).
+the Stickney prices, not the chain. **One price moves under R7**: Kasei's concentrate bid falls 300 →
+280 because Draft 0.2's margins tied at 100/t on both goods and a tie is no balance (Q-18-33); the lore
+is that Kasei's refinery is water-starved, so it bids concentrate down and pays the same 200 for ice.
+The reference for the share stays the Ceres ask, read live at settlement (200 today). 40/60/100/200 are unchanged.
 
-**The goods table.** All five live in one tacsim-owned compiled-in document,
+**Why you carry both (the captain's arithmetic).** Each leg is a small linear programme: earn Σ margin
+× tonnes, under Σ tonnes ≤ 100, Σ packed volume ≤ 120 m³ and, early on, Σ cost ≤ cash. Outbound the
+concentrate earns 80/t and the ice 100/t (bid − ask), but per cubic metre the concentrate earns 200 and
+the ice 71: the bulky good pays more per tonne, the dense good more per cube, so neither alone is best
+and the load where **both** limits bind wins. At 400 and 1,400 L/t that is 20 t concentrate + 80 t ice
+= 100 t and 120.0 m³ exactly, 9,600 gross margin against 8,500 for 85 t of ice alone (volume-bound),
+8,000 for 100 t of concentrate (mass-bound) and 8,600 for Draft 0.2's 70/30. Return: alloys 120/t
+(400/m³), fittings 160/t (70/m³): 55 t alloys + 45 t fittings, 13,800 against 12,000 all-alloys. The
+rule holds whenever 1 < margin_bulky/margin_dense < volume_bulky/volume_dense (outbound 1.25 inside
+1–3.5; return 1.33 inside 1–7.67), a wide band: the outbound vertex survives a concentrate bid from 229
+to 300 or an ice bid from 180 to 380, the return a fittings bid from 520 to 1,320 or an alloys bid from
+about 421 to 560. When cash binds a third limit enters and per credit the bulky good earns more (0.40
+against 0.30), so a short captain buys fittings first, up to the volume the affordable tonnage leaves,
+then alloys: 49 + 20 on day 2, 45 + 51 on day 4. The executor clamps each order in turn and never
+solves across orders (Q-18-34): the balance is the captain's skill, `trade.md` explains it, and
+`+ship/plan` shows the room by mass and by volume per good and each queued buy's bound, never a
+recommended mix. **No code, fixture, NPC line or test stores 20/80 or 55/45** (D-18-39): IC8's LP test
+derives both vertices from `goods.json`, the hull and the posted port prices and asserts them optimal,
+so when the astronomy engine moves prices the optimum moves inside the band or out of it — "optimal
+last month, less optimal now" is the play, not a broken constant.
+
+**The goods table.** All six live in one tacsim-owned compiled-in document,
 `crates/tacsim/content/market/goods.json` (`deny_unknown_fields`, version 1, a **new** digest pin —
-`resources.json` is only decode-tested, `tests/content.rs:313-322`): id, label, family or null, class,
-ledger unit, quote unit, `mass_kg_per_unit`, `volume_l_per_unit` (display only in the slice), stowage tag,
-consumable role, a reference baseline. It is the one source for the market `CatalogEntry` rows (derived,
-representation lot, loaded by the port applier through `api::load_pack`) and for the capacity check.
-Physics never goes into `CommodityDef` (label/in_use, in the test-only `tacsim.core` fixture, dropped by
-`Catalog::build`) or into the market catalog wire, which silently drops unknown fields
-(`record.rs:328-348`).
+`resources.json` is only decode-tested, `tests/content.rs:313-322`): a top-level `measures` registry
+(`si.mass_kg` → kg, `si.volume_l` → L: kg/L rather than D3's g example or Q-18-21's mL, by choice,
+because every slice figure is a whole kilogram or litre), then per row id, label, family or null, class,
+ledger unit, quote unit, `measures: {"si.mass_kg": 1000, "si.volume_l": 400}` (D3's `LoadProfile`
+shape, so a later measure — reefer slots, hazmat — is a data key on both sides; `mass_kg_per_unit` is a
+derived accessor for the burn and payload arithmetic), stowage tag, consumable role, a reference baseline,
+a note. It is the one source for the market `CatalogEntry` rows (derived, representation lot, loaded by
+the port applier through `api::load_pack`) and for the capacity check. Physics never goes into
+`CommodityDef` (label/in_use, in the test-only `tacsim.core` fixture, dropped by `Catalog::build`) or
+into the market catalog wire, which silently drops unknown fields (`record.rs:328-348`). **The
+validator** (IC2): every limit key is a registered measure; every good whose stowage tag a compartment
+accepts carries every measure that compartment limits (a `stow.bulk` row without volume refuses); where
+a compartment accepts one tag and limits two measures (the locker) the limits agree on the unit count;
+limits are positive and the largest stock × per-unit fits u64.
+
+**The capacity function (D-18-28 replaced).** `crates/tacsim/src/port/capacity.rs`, pure, no World:
+`Compartment {id, accepts, limits: BTreeMap<SmolStr, u64>}`; `load(goods, compartment, contents) ->
+Load` (a measure → sum map, checked u64); `admits(goods, compartment, contents, (good, qty)) ->
+Admitted(Load) | Refused(CapacityRefusal {compartment, bound: Vec<measure>, fits, room}) |
+Error(UnknownGood | NotAccepted | MissingMeasure | Overflow)` (one enum, so no caller can `?` past a
+refusal); `max_more(goods, compartment, contents, good) -> (units, bound)` = the minimum over the
+compartment's limits of floor((limit − load)/per_unit), naming every measure that attains it. The
+market hook (IC7) cannot name tacsim: `trait CapacityProvider { fn check(&self, endpoint, commodity,
+qty, read_pool: &mut dyn FnMut(&CanonicalId) -> Result<u64, CapacityReadError>) ->
+Option<Result<(), CapacityRefused {fits, line}>> }`, `None` for an ungoverned endpoint; `read_pool` is
+backed by `Ctx::action_state` in the pre-check (IC0's `hold_standing`, `lot.rs:775-800`) and by
+`Pools::pool(txn, ..)` in the Draw prepare (absent = 0, `Err` refuses: reads are delegation-gated,
+`action_state.rs:2043-2068`). A Draw refused at its prepare after the pre-check passed (two typed
+accepts staged before the first applies) cancels its contract and returns the escrow with no page — the
+IC0 Lot short-circuit's rule carried to the Draw (IC7's verify). The tacsim implementation (IC8) maps
+endpoint → hull → stowage → `compartment_for` → `admits`. UI: whole tonnes; m³ to one decimal,
+**truncated**, never rounded up (every cargo volume is a multiple of 100 L, so it is exact; a formatter
+test pins it); player text says "packed volume" or "m³", never "volume" alone (mush-market's "volume" is
+a maker's trade budget, `record.rs:1117`). Refusals read, with nothing charged: "86 t of water ice packs
+to 120.4 m³; the hold takes 120 m³. 85 t fits." · "The hold has 1 t of room by mass and 0.4 m³ by
+volume: no more water ice fits." · "101 t of structural alloy stock weighs past the hold's 100 t rating
+(30.3 m³). 100 t fits."
 
 **Finite seeded stock (D-18-26; replaces D-18-15; R4).** Every unit of matter is minted once, before any
 sale, into a storefront pool, with a receipt. **The mint action** is tacsim's first action provider,
@@ -1062,39 +1281,52 @@ the 512-lot cap (`record.rs:58`) and makes intake real, re-sellable stock.
 **Vendors and buyers.** One vendor per org (`store.rs:334-336`); a vendor may hold asks and bids.
 Ceres (venue `ceres`): **Freeport Exchange** (`freeport_exchange`: metals ask; Freeport Works' alloy bid
 is carried by the same org under the name Freeport Works), **Occator Water & Propellant** (`occator`:
-volatiles and propellant asks), **Belt Carriers' Cooperative** (`coop`: provisions). Stickney (venue
-`stickney`): **Kasei Metals** (`kasei`: metals and volatiles bids at P07; alloys and propellant asks at
-P08), **Yard Commissary** (`yard_commissary`: provisions). **The Freeport Exchange is not in doc 11
+volatiles and propellant asks), **Belt Carriers' Cooperative** (`coop`: the provisions ask **and the
+yard-fittings bid** for its Dray fleet and the Kirkwood tank farm, 11 §4.5; a Wanted chit on the
+chandlery's board, signed by the chandler). Stickney (venue `stickney`): **Kasei Metals** (`kasei`:
+metals and volatiles bids at P07; alloys and propellant asks at P08), **Stickney Yards**
+(`stickney_yards`, a vendor now, not only a lore org: the crated-fittings ask from the `item.yard_spares`
+cage in P15, read at the service counter P11, signed by the Yard's service clerk), **Yard Commissary**
+(`yard_commissary`: provisions). **The Freeport Exchange is not in doc 11
 §4** and is added by this slice (§10's doc 11 amendment): the Port Council's commodity floor, a
 Freeport institution (11 §3.3's Council seats registered claim-holders), consigning the Belt claims'
 metal concentrate (Occator's extractor drones and the smaller claim-holders, 11 §4.1; doc 10 §11's
 Ceres export) under the Exchange's mark and taking the corridor's alloy intake under the Freeport Works
 name; its capital is the slice's largest because it is the return leg's buyer. It has **its own officer
 of record**, the Exchange's factor (18a: Margit Søndergaard-Achebe, `npc.sondergaard`, C07); the
-Occator factor (Qureshi) signs **only Occator's lines**, because under the Warrant (11 §2) an officer
-of one org cannot be the liable principal of another's offers. Storefront vaults are
+Occator factor (Qureshi) signs **only Occator's lines** — a slice rule under the Warrant's principle
+(11 §2 says only that every automated act has a liable principal and nothing automated may sign; the
+one-house-one-signatory rule is this slice's, in that spirit): an officer of one org is never the
+liable principal of another's offers. Storefront vaults are
 `CustodyRef::Container` of a manifold or cage item placed in each station's staff-locked Maintenance
 Spine (C15/P15), so no player can `get` it and no `ItemDef` lock is needed; buyer warehouses are the
 same vaults. Each listing is a standing offer signed by the org's officer of record (the `signatory` in
 the `vendors` block, **required** by the `port` schema: an entry with an unsigned listing is refused
 before any mutation), the Warrant principal for every acceptance under it (11 §2; Q-18-10); the accept
-line names them. Five signatories: the Exchange's factor, Occator's factor, the Co-op chandler (C08),
-Kasei's receiving clerk (P07) and the Yard Commissary's storekeeper (P09; 18a: Hanne Okonkwo-Steyn,
-`npc.okonkwo`).
+line names them. Six signatories: the Exchange's factor, Occator's factor, the Co-op chandler (C08; the
+provisions ask and the fittings bid), Kasei's receiving clerk (P07), the Stickney Yards service clerk
+(P11; 18a: Wren Castillo-Haugen, `npc.castillo_haugen`, who signs only the Yard's ask, never Tycho's
+business) and the Yard Commissary's storekeeper (P09; 18a: Hanne Okonkwo-Steyn, `npc.okonkwo`).
 
-**Stock and capital (D-18-27).** Sized for one cohort of eight to ten pilots for about three weeks (the
-pasted seed is about ten round trips in all, beats L and M). Ceres: metals 8,500 t, volatiles 3,600 t,
-propellant 5,000 t, provisions 2,600 crew-days; Freeport Works' alloy intake 12,000 t. Stickney: alloys
-12,000 t, propellant 5,000 t, provisions 2,600; Kasei's intake metals 8,500 t and volatiles 3,600 t.
-Capital by one-shot `create_system_obligation` tranches of at most 800,000 cr, each tranche's receipt row
-written in the same batch as its obligation (the economy does not dedup, `api.rs:1683-1818`), under a
-per-instrument mint-cap override of 1,000,000 in the template: Kasei 600,000 (self-replenishing: its
-alloy and propellant sales exceed its intake); Freeport Exchange/Works 4,000,000 (a season budget: it
-pays about 52,000 per full return and receives about 14,000 per outbound); the Trust 250,000; the
-rest 50,000 each. Exhaustion is honest: a good with no listing quantity renders "SOLD OUT: seeded 8,500 t,
-0 left" from the port map and receipts (a listing cannot carry 0, `record.rs:634-636`); an unfunded or
-exhausted bid renders "not buying". Restock is P5, by production only, and must land before a second
-cohort. `fund_from_faucet` is never used (a 60 s drip, `api.rs:556-590`); capitalization settles on the
+**Stock and capital (D-18-27, resized under R7).** A sizing basis of about 120 legs each way for one
+cohort of eight to ten pilots over about three weeks, derived from today's vertices (80/20 out, 55/45
+back) and expected to drift when the astronomy engine moves prices — a basis, never an invariant the
+readiness report asserts. Ceres: volatiles 9,600 t (80 × 120), metals 4,000 t (20 × 120 plus a 1,600 t
+reserve, so an ice sell-out degrades honestly to mass-bound concentrate loads), propellant 5,000 t,
+provisions 2,600 crew-days; Freeport Works' alloy intake 7,000 t; the Co-op's fittings intake 5,400 t.
+Stickney: alloys 7,000 t, fittings 5,400 t (45 × 120, on the Stickney Yards vendor), propellant 5,000 t,
+provisions 2,600; Kasei's intake volatiles 9,600 t and metals 4,000 t. Capital by one-shot
+`create_system_obligation` tranches of at most 800,000 cr, each tranche's receipt row written in the same
+batch as its obligation (the economy does not dedup, `api.rs:1683-1818`), under a per-instrument
+mint-cap override of 1,000,000 in the template: Kasei 600,000 (self-replenishing: it sells 22,000 of
+alloys and 2,400 of propellant per full return against 21,600 paid per outbound, about +2,800 a round
+trip); Freeport Exchange/Works 4,000,000 (a season budget: about 28,600 per full return, so its 7,000 t
+intake binds first at about 127 returns); the **Co-op 3,100,000** (its fittings intake is 5,400 × 560 =
+3,024,000; tranches 800k, 800k, 800k, 700k); the Trust 250,000; the rest 50,000 each. Exhaustion is
+honest: a good with no listing quantity renders "SOLD OUT: seeded 9,600 t, 0 left" from the port map and
+receipts (a listing cannot carry 0, `record.rs:634-636`); an unfunded or exhausted bid renders "not
+buying". Restock is P5, by production only, and must land before a second cohort; money pools in the
+Yard and the pilots while the Co-op and Freeport Works drain, so risk 9 matters twice over. `fund_from_faucet` is never used (a 60 s drip, `api.rs:556-590`); capitalization settles on the
 next sweep, so the readiness report lists unfunded buyers until it does.
 
 **Presence (D-18-12 kept, extended).** `MarketModule::with_venue_gate(Arc<dyn VenueGate>)`, consulted at
@@ -1125,43 +1357,72 @@ presentation = the gallery (`open_passive_domain`, `window.rs:195`; the applier 
 `window.rs:226-234`, uncounted by `windows()`, `:279-285`), but `open_passive_domain` refuses while
 eight windows are open (`:205-206`), so IC3 skips that guard for passive opens (§3-P, §9 risk 1).
 
-**Passage length and rate (D-18-30; replaces D-18-17).** The lane `ceres_stickney` / `stickney_ceres` via
-Kirkwood Depot, legs 0.74 AU and 0.56 AU, unladen `base_s` **540,800 + 409,200 = 950,000 IC s** (11.0 IC
-days). **No test, constant or per-leg distance for this exists today**: `coast_km_s` appears nowhere in
-the workspace, the only T17 tests are the ephemeris pins, `LegDefWire` is `{to, base_s}` with no
-distance (`route.rs:76-80`) and `RouteDefWire.distance_km` is one `Option<u64>` for the whole route
-(`:255-273`), which `route_duration_at` scales as a whole (`:849-863`). **IC2 therefore adds** a T17 test
-that takes each leg's distance from the sky — `distance_km_at(ceres, kirkwood, T17)` and `(kirkwood,
-mars, T17)`, with the new `kirkwood` body's orbit (2.06 AU) authored so they come to 0.74 and 0.56 AU —
-pins each leg's `base_s` as `distance_km / 205` (the `coast_hauler` coast rate, a constant the test
-owns) and the route's single `distance_km` as the sum, and refuses if the lane pack disagrees.
-**Payload changes flight time now**, because doc 10
-T1 is binding (`10-tacsim-foundations.md:286-291`) and Draft 0.1's deferral was a live breach: a new pure
-`route_leg_durations(route, drive, payload) -> Vec<u32>` using `route_duration`'s exact per-leg arithmetic
-(`route_duration` becomes Σ of it, so its pins hold); `CarrierJourney.leg_s: Option<Vec<u32>>`, a
-serde-defaulted wire field on the `applied_revision` precedent (`journey.rs:204-232,309-318`), validated
-by a fallible `with_leg_times`, read by `leg_due_at` so `due_cursor`, `arrival_at`, interdiction and
-`@journey/show` inherit it; `pub mush_sim::depart` takes `leg_s`; the burn ticket freezes it. The drive is
-the hull's (`DriveProfile::new(class, 1000, 181,000).with_law(coast)`, `route.rs:637-660`), never
-`nominal_drive`. With the laden law leg_s = base_s × (181,000 + payload)/181,000: near-empty (32 t fuel)
-12.9 h, a 70 t return 17.75 h (17 h 45 m), a full outbound 19.6 h, a brimmed 180.7 t hull 22.0 h at
-rate 24 — all under a day with at least two hours of slack before a same-time login (R3), and a light
-load lands earlier.
-The alternative (Q-18-15) is Draft 0.2-thin's fixed 21 IC days with the evaluator deferred. The 181 t
-ceiling stays a non-binding rail: it is also the laden denominator (`route.rs:806-831`), so a binding
-ceiling would slow every passage. **Rate 24** (doc 10 1A's one OOC hour per IC day) is a deploy step and
-a readiness line: dev1 seeds `IC_RATIO=4` (`deploy/dev1/instance.env:81`), where a 20 h passage is five
-real days; `@tacsim/time rate=24` on the next owner-approved redeploy (Q-18-16), and `+coop/enrol`
-refuses at any other rate outside test worlds. Tests run at 3600 (a full leg in about 470 s). The
-real-time ETA is (arrival_ic − now_ic)/rate, re-derived after a rate change; journeys relabel across
-generations (`journey.rs:1230-1257`).
+**Passage: the planner over the sky at departure (D-18-30 as amended by R9; D-18-44/45).** The lane
+`ceres_stickney` / `stickney_ceres` runs via Kirkwood Depot; the lane pack authors each route as **body
+pairs** (its places name bodies, `pack.rs:576-582`) with `PackLeg.base_s` kept, required and authored —
+**540,800 + 409,200 = 950,000 IC s** unladen (11.0 IC days; legs of 0.741 and 0.561 AU at the epoch) —
+as the pack's pin of the constant sky (T1/Q18A: a route's figures come from a published pack,
+`route.rs:224-231`), while the **coast rate is drive data**, `dray.json` `drive.law.coast.kms = 205`,
+never a test constant. Nothing in the slice reads `base_s` as a passage time. **Durations are
+derived**: one pure tacsim `plan_passage(sky, pack, route, drive, dry_kg, payload_kg, occupants,
+depart_ic) -> PassagePlan` (`port/passage.rs`, IC9; §4.8 has the shapes) walks the legs as body pairs,
+and per leg from body A at t0 to body B iterates a fixed three times: d = `Sky::distance_km(A, t0, B,
+t1)`, unladen = ceil(d / kms), laden = `mush_sim::laden_leg_durations([unladen], drive, payload)[0]`
+(`route_duration`'s exact per-leg arithmetic, `route.rs:819-832`, factored out as a sky-free primitive
+that takes per-leg unladen seconds; `route_duration` becomes its Σ over `base_s`, so its pins hold), t1
+= t0 + laden; a leg between two places on one body uses its authored `base_s` through the same laden
+step. At the constant sky one pass is exact and the plan reproduces every figure here. Draft 0.2's
+`route_leg_durations(route, drive, payload)` is **not built**: it took no sky and no instant, and every
+caller would have been rewired at the flip. **IC2's test** (`lane_legs_derive_at_epoch`) derives each
+leg from the sky at the epoch and `dray.json`'s kms and refuses if the lane pack's `base_s` disagrees by
+more than 100 s; the route's `distance_km` stays what `materialize_route` pins — the direct chord
+between the endpoint bodies at the epoch (1.293 AU; `store.rs:800-813`), relabelled "direct chord at the
+epoch" in `RouteDefWire` and `@corridor/show`, never the sum (Draft 0.2's line is withdrawn) and read by
+nothing in the slice. **Payload changes flight time now**, because doc 10 T1 is binding
+(`10-tacsim-foundations.md:287-291`) and Draft 0.1's deferral was a live breach: `CarrierJourney.leg_s:
+Option<Vec<u32>>`, a serde-defaulted wire field on the `applied_revision` precedent
+(`journey.rs:204-232,309-318`), validated by a fallible `with_leg_times`, read by `leg_due_at` so
+`due_cursor`, `arrival_at`, interdiction and `@journey/show` inherit it; `pub mush_sim::depart` takes
+`leg_s = plan.legs[].secs`; the burn ticket freezes the whole plan (D-18-46). The drive is the hull's
+(`DriveProfile::new(class, 1000, 181,000).with_law(coast)`, `route.rs:637-660`; thrust nominal because
+kms is absolute and is the **unladen** cruise), never `nominal_drive`, whose name-sniffing stays for the
+fixtures only. **The laden law is doctrine, not physics**: leg_s = base_s × (181,000 + payload)/181,000
+(`route.rs:819-832`) says a thrust-limited hauler accepts a slower cruise rather than a bigger burn
+(18a's "a week longer on a full hold than on an empty one"), and the rocket equation is not consulted
+(Q-18-41). So: near-empty (32 t fuel) 12.9 h, the 69 t first return
+17.45 h (17 h 27 m), a full outbound 19.63 h (19 h 38 m), a brimmed 180.7 t hull 22.0 h at rate 24 —
+all under a day **at the slice's constant sky**, with at least two hours of slack before a same-time
+login (R3), and a light load lands earlier. No gate, test or help text asserts that bound outside that
+sky (D-18-50; the R3-against-R9 collision is Q-18-35). The 181 t ceiling stays a non-binding rail: it is
+also the laden denominator (`route.rs:806-831`), so a binding ceiling would slow every passage. **Rate
+24** (doc 10 1A's one OOC hour per IC day) is a deploy step and a readiness line: dev1 seeds `IC_RATIO=4`
+(`deploy/dev1/instance.env:81`), where a 20 h passage is five real days; `@tacsim/time rate=24` on the
+next owner-approved redeploy (Q-18-16), and `+coop/enrol` refuses at any other rate outside test worlds.
+Tests run at 3600 (a full leg in about 471 s). The real-time ETA is (arrival_ic − now_ic)/rate,
+re-derived after a rate change; journeys relabel across generations (`journey.rs:1230-1257`). The
+**sky rate** (`[tacsim.time.ephemeris].rate`, "sky motion" in docs to keep it apart from the world rate
+and the inert `[tacsim.time].rate`) stays 0 throughout the slice.
 
-**The fuel function.** `burn_t = ceil((dry_mass_t + payload_t) × burn_permille / 1000)`, `burn_permille`
-105 on the Dray's drive; a tacsim pure function beside `nominal_drive` (`store.rs:838-850`). `RouteDef.
-propellant` is authored 0 and **not** reinterpreted (the `store.rs:823-835` ruling and `e7c1.rs:1447`
-treat it as a payload-unit quantity). Fuel aboard is departure mass, so a reserve costs 105 kg per tonne
-carried; `+ship/plan` says so and shows the remainder; no minimum reserve rule (Q-18-26). The tank cannot
-fuel both legs with a full hold (out 45 t at a brimmed tank, back 37 t), so Stickney's price matters.
+**The fuel function is the planner's output.** `passage_burn(law, dry_kg, payload_kg, legs) ->
+Result<u64, PlanError>`, a tacsim pure function beside `nominal_drive` (`store.rs:838-850`): for
+`DriveLaw::Coast {kms, burn_permille}` it ignores the legs and returns `ceil((dry + payload) ×
+burn_permille / 1000)`, the slice's 105‰ and 41 t. Honestly stated: 105‰ is a **doctrine figure**,
+distance-free by construction, not the rocket equation. A fixed burn fraction gives one Δv (2 × 205
+km/s at an exhaust near 3,700 km/s) and so one cruise whatever the mass, which the laden law
+contradicts by flying a 142 t payload 1.79× slower on the same fraction (at that exhaust a 115 km/s
+cruise would burn about 6 %, not 10.5 %). The slice keeps both as data — a moving sky changes
+durations and crew-days, never the 105‰ — and the engine must choose between a mass-dependent cruise
+(keep the laden law, burn by doctrine) and a mass-dependent burn (the rocket equation, the laden law
+dropped): **Q-18-41**, a P-A decision the slice does not pre-empt because both answers read the same
+`DriveLaw` seam; for the engine's `Flip {accel_mg, exhaust_kms}` it returns a distance-dependent burn
+behind the same seam. A validator refuses two fielded definitions naming one class with different law
+blocks (one class, one law; the "drive table" is the index over fielded definitions, honouring Q-18-5
+and §9's refusal of a `drive` rules kind), and the planner refuses a class with no law
+(`UnknownDriveClass`) rather than falling back. `RouteDef.propellant` is authored 0 and **not**
+reinterpreted (the `store.rs:823-835` ruling and `e7c1.rs:1447` treat it as a payload-unit quantity).
+Fuel aboard is departure mass, so a reserve costs 105 kg per tonne carried; `+ship/plan` says so and shows
+the remainder; no minimum reserve rule (Q-18-26, binding). The tank cannot fuel both legs with a full
+hold (out 45 t at a brimmed tank, back 37–40 t), so Stickney's price matters.
 
 **The queued-orders model (D-18-31).** Rejected carriers: `@wait` re-dispatch (it can act as the pilot,
 `engine.rs:3213-3232`, but is RAM-only, invisible, capped at 100 shared slots, not atomic with any record,
@@ -1182,17 +1443,24 @@ in the same WriteBatch as the step's EconomyCarveOut and market post-image write
     { "id": 3, "kind": "depart", "to": "ceres", "not_before": { "utc_daily": "19:30" }, "not_after_s": 7200,
       "on_fail": "hold", "state": "inflight" } ],
   "log": [ { "utc": 1760551200, "ic": 11842800000, "order": 1,
-             "text": "Sold 70 t metal concentrate to Kasei Metals at 300.00cr/t: 21,000.00cr; Co-op share 1,750.00cr; you received 19,250.00cr." } ] }
+             "text": "Sold 20 t metal concentrate to Kasei Metals at 280.00cr/t: 5,600.00cr; Co-op share 400.00cr; you received 5,200.00cr." } ] }
 ```
 
 Bounds: 16 orders; 32 log lines of at most 240 bytes, FIFO; `kind` ∈ buy | sell | depart | stop;
 `on_short`/`on_fail` ∈ partial | skip | hold; order `state` ∈ pending | inflight | done | skipped | held;
 document `state` ∈ running | paused | held. The venue is implicit (the port the hull is docked at when the
-step runs). `fill` is a quantity for propellant (top the tank to the full-hold burn of the next depart's
-route, the fixed point ceil((240 + 100 + fuel + 0.68) × 0.105) = 41 t) and for provisions (that depart's
-crew-days). A depart's `not_before` is a UTC instant, a daily UTC time or `+Nh` (a real-world habit, immune
-to `@tacsim/time`), with an optional `not_after` window after which the order holds rather than leave at
-an odd hour. **The fiction of the queue, one story in both documents (Q-18-24).** The orders document
+step runs). **`fill` (D-18-41)** is a quantity for propellant and provisions computed together: project the
+heaviest load the queued orders can make — the cargo still aboard after the queued sells plus each
+queued cargo buy clamped by `max_more` in queue order, with no funds term (cash can only make the load
+lighter, so the fuel is always enough) — then take the joint least fixed point at or above what is
+aboard of burn = `passage_burn` and crew-days = occupants × Σ ceil(laden leg days) over `plan_passage`
+at the depart's `not_before` with payload = cargo + fuel + provisions + occupants (six iterations,
+asserted); hold if the tank or the locker cannot carry it. A full hold gives 40 t and 21 crew-days (Draft
+0.2's 41 was the greater fixed point); the day-2 projection of 73 t gives 37 t and 19. Because there is
+no funds term a cash-bound leg over-bunkers by a few tonnes and a crew-day or two, which stay in the tank
+for the next fill and cost about 200 cr once; `trade.md` says so. A depart's `not_before` is a UTC
+instant, a daily UTC time or `+Nh` (a real-world habit, immune to `@tacsim/time`), with an optional
+`not_after` window after which the order holds rather than leave at an odd hour. **The fiction of the queue, one story in both documents (Q-18-24).** The orders document
 is the **sailing plan**: a filed instrument the pilot signs at the dockmaster's (C14) or harbourmaster's
 (P05) counter — sales, loading, bunkering, stores, the departure hour. The **port** executes its money
 and matter legs under the pilot's signature: the berth loads and bunkers on the loading schedule, the
@@ -1225,11 +1493,15 @@ holds the live lease; (2) evaluates the condition from World state (placement an
 MarketStore listings and bids, hold pools through `Ctx::action_state`, available funds); (3) swaps
 `ctx.actor` to the pilot (`mush-npc/src/module.rs:1496-1502`; `tacsim/src/seed.rs:384-398`), calls ONE
 closed typed function, and restores it — **buy** = `trade::quote` then `accept_into` against the port
-counter, destination the hold vault, the quantity clamped first to min(qty, listing remaining, capacity,
-available funds **less the next depart order's burn and crew-days at this port's prices**) because
-`quote` refuses a quantity above the listing (`trade.rs:246` at `c87d78f7`); **sell** = the Wanted lot arm;
-**depart** = the undock checks, then `tacsim.port.burn` staged as the pilot under key
-`tacsim.port.burn/<hull>/<order>/<attempt>`, the same tick launching the ticket on a later fire; (4)
+counter, destination the hold vault, the quantity clamped first to min(qty, listing remaining,
+`max_more` by **mass and by volume**, available funds **less the next depart order's unmet burn and
+crew-days at this port's prices**) because `quote` refuses a quantity above the listing (`trade.rs:246`
+at `c87d78f7`), the log naming every bound that bit in the fixed order stock, hold mass, hold volume,
+funds ("Bought 20 t structural alloy stock … short of 55 t: funds"; "Bought 85 t water ice … short of
+100 t: hold volume"; "Bought 0 t yard fittings: short of 10 t: hold mass and hold volume"); **sell** =
+the Wanted lot arm; **depart** = the undock checks, `plan_passage` now, then `tacsim.port.burn` staged
+as the pilot with the plan as its input under key `tacsim.port.burn/<hull>/<order>/<attempt>`, the same
+tick launching the ticket on a later fire; (4)
 writes the order's transition to `inflight` in the SAME Outbox as the step's market and economy writes;
 (5) on later fires verifies completion by pull (lot in the endpoint and contract settled; ticket burned
 and journey present, `journey.rs:506-520`) before marking it done, logging and queuing a notice. After a
@@ -1315,8 +1587,14 @@ Deck 2 at z 10.5. Cross-deck exits carry `portal.at` + `dz_m` (`mode: stair` for
 restricted room per station below the office deck uses `lock: staff` + `portal.visibility: hidden`
 (the staff-lobby precedent). **Partitions between adjacent public rooms with no exit are `wall`
 features** (`blocks.movement`), because only structure rings and Wall features are walls on the scene
-map (`raster.rs:412-450`): Ceres C02|C10, C01|C10, C01|C08, C05|C06, C06|C09; Stickney P05|P08, P08|P11,
-P02|P10, P01|P10, P09|P12. Hydration `{enabled:false, max_player_sites:0}` on both neighborhoods. Themes:
+map (`raster.rs:412-450`): Ceres C02|C10, C08|C10, C01|C10, C01|C08, C05|C06, C06|C09; Stickney P05|P08,
+P08|P11, P11|P12, P03|P05, P09|P12, P02|P10, P01|P10 — every exitless shared seam of 18a §0.4's boxes,
+re-cut so the Yard Concourse shares an edge with every desk it opens onto, because a plain `door`
+between footprints that do not touch is `geometry.portal_gap`, an **error**, and the applier refuses the
+exit outright (`validate.rs:1808-1840`; `apply.rs:1453-1457`), which on a boot pack aborts the first
+apply; IC1's validate-clean test carries an adjacency check over the authored boxes (every plain door
+shares an edge, every exitless seam is walled) rather than trusting the brief. Hydration
+`{enabled:false, max_player_sites:0}` on both neighborhoods. Themes:
 the 2350 base (banned words, pov rules, desc length) on each region, the flavour on each neighborhood
 (theme fields have no `deny_unknown_fields`; a misspelled name is dropped, a wrong type fails decode).
 Storefront items sit in the Maintenance Spines. `RoomDef.markers` with `port.dock` as the topology seed
@@ -1343,7 +1621,7 @@ Stickney's plan is not readable from Ceres or from aboard a hull.
 the boot of dev1's kept world (`mush-content/src/module.rs:113-139`). Appended to the boot list and the
 atlas shelf. The tacsim `port` entries name rooms by `<pack>.<entry>` through the latch
 (`travel.rs:960-967`); the applier refuses before any mutation if a room lacks `RoomGeo` or the gallery
-lacks `port.dock`. Names below doc 11's principals are proposals (Q-18-12).
+lacks `port.dock`. Names below doc 11's principals are binding under R8 (Q-18-12, "names ok"; 18a §4).
 
 ### 4.6 NPCs
 
@@ -1414,18 +1692,19 @@ via Kirkwood, `drive_class coast_hauler`, `propellant 0`); and the `port` kind (
         "pool": 8, "registry_prefix": "FPC-D-04",
         "hull_names": [ "Slack Water", "Cold Comfort", "Ninth Ledger", "Patience Wen", "Kirkwood Lamp", "Long Division", "Dry Season", "Tally Ho" ],
         "stake_major": 25000, "share_permille": 250,
-        "reference_major": { "metals": 200, "volatiles": 100, "structural_alloys": 400 },
+        "reference": { "metals": "ceres_port/freeport_exchange", "volatiles": "ceres_port/occator",
+                       "structural_alloys": "stickney_port/kasei", "industrial_parts": "stickney_port/stickney_yards" },
         "buyout_major": 90000, "dormancy_real_days": 7, "per_account": 1
       },
       "vendors": [
         { "org": "freeport_exchange", "storefront": "neighborhood.ceres_freeport.item.exchange_manifold",
           "agent": "freeport_exchange.clerk", "signatory": "neighborhood.ceres_freeport.npc.sondergaard",
-          "stock": [ { "good": "metals", "qty": 8500, "grade": 50, "issue": 1 } ],
+          "stock": [ { "good": "metals", "qty": 4000, "grade": 50, "issue": 1 } ],
           "asks":  [ { "good": "metals", "price_major": 200 } ],
-          "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 12000, "as": "Freeport Works" } ] },
+          "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 7000, "as": "Freeport Works" } ] },
         { "org": "occator", "storefront": "neighborhood.ceres_freeport.item.occator_manifold",
           "agent": "occator.clerk", "signatory": "neighborhood.ceres_freeport.npc.qureshi",
-          "stock": [ { "good": "volatiles", "qty": 3600, "grade": 50, "issue": 1 },
+          "stock": [ { "good": "volatiles", "qty": 9600, "grade": 50, "issue": 1 },
                      { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
           "asks":  [ { "good": "volatiles", "price_major": 100 }, { "good": "propellant", "price_major": 40 } ],
           "bids":  [] },
@@ -1433,23 +1712,33 @@ via Kirkwood, `drive_class coast_hauler`, `propellant 0`); and the `port` kind (
           "agent": "coop.clerk", "signatory": "neighborhood.ceres_freeport.npc.akintola",
           "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
           "asks":  [ { "good": "provisions", "price_major": 10 } ],
-          "bids":  [] }
+          "bids":  [ { "good": "industrial_parts", "price_major": 560, "intake": 5400 } ] }
       ],
-      "routes": { "stickney": "ceres_stickney" }
+      "routes": { "stickney": [ "ceres_stickney" ] }
     }
   }
 }
 ```
 
-Ask quantities are never authored: an ask lists the live pool. `hull_names` are the Trust's **laid-up**
-names, replaced by the pilot's choice at `+coop/enrol` (the registry mark stays); no hull is pre-named
-for a transcript. Stickney's entry has no `programme`, orgs `kasei` (capital 600,000) and
-`yard_commissary` (50,000), `stickney_yards` (50,000, lore), vendors Kasei (stock alloys 12,000 t and
-propellant 5,000 t; asks alloys 400 and propellant 60; bids metals 300 with intake 8,500 t and volatiles
-200 with intake 3,600 t; signatory `neighborhood.stickney_yards.npc.achterberg`, the receiving clerk)
-and the commissary (provisions 2,600 at 10; signatory `neighborhood.stickney_yards.npc.okonkwo`, the
-storekeeper), `rooms` for the gallery, customs, harbourmaster, exchange, receiving, commissary and
-spine, and `routes: { "ceres": "stickney_ceres" }`.
+(The `coop` org's `capital_major` becomes 3,100,000 for the fittings bid; §4.3.) Ask quantities are
+never authored: an ask lists the live pool. **`reference` names listings, never prices** (D-18-24):
+`<port entry>/<org>` is the origin ask the share is measured against, read live at settlement, so the
+applier's re-price and P-A-4 move the reference with the board; the validator refuses a reference whose
+org has no ask for that good. **`routes` is a non-empty list per destination** (D-18-47):
+at departure the planner plans every listed route and takes the fastest, ties to the earlier listing;
+`+ship/order depart <port> [via=<place>]` parses `via` and refuses it "not yet" in the slice; an order
+stores the destination, never a route or a duration. `hull_names` are the Trust's **laid-up** names,
+replaced by the pilot's choice at `+coop/enrol` (the registry mark stays); no hull is pre-named for a
+transcript. Stickney's entry has no `programme`, orgs `kasei` (capital 600,000), `stickney_yards`
+(50,000, now a vendor) and `yard_commissary` (50,000), vendors Kasei (stock alloys 7,000 t and propellant
+5,000 t; asks alloys 400 and propellant 60; bids metals **280** with intake 4,000 t and volatiles 200
+with intake 9,600 t; signatory `neighborhood.stickney_yards.npc.achterberg`, the receiving clerk),
+Stickney Yards (storefront `neighborhood.stickney_yards.item.yard_spares`, agent
+`stickney_yards.clerk`, stock `industrial_parts` 5,400 t at 400; signatory
+`neighborhood.stickney_yards.npc.castillo_haugen`) and the commissary (provisions 2,600 at 10; signatory
+`neighborhood.stickney_yards.npc.okonkwo`, the storekeeper), `rooms` for the gallery, customs,
+harbourmaster, exchange, receiving, commissary, **yard** (P11) and spine, and `routes: { "ceres":
+[ "stickney_ceres" ] }`.
 
 **The `PortApplier`** (tacsim/src/content.rs, phase 11, on the `ArenaApplier` pattern). Create, in order,
 all as normal-lane writes and **submitting nothing**: (a) `open_passive_domain(location room, gallery)`
@@ -1497,6 +1786,176 @@ the stake is keyed by the lease contract; the burn by hull/order/attempt; the lo
 `[tacsim].pack_paths/seed_paths` stay `[]`. World rate to 24 by `@tacsim/time rate=24` **after the owner
 approves a redeploy; never redeploy without the owner's ask** (memory rule).
 
+### 4.8 The sky: the slice's constant sky, and the astronomy engine it must not foreclose (R9)
+
+**What the owner wants from it.** belter-charts (`github.com/skylercole/belter-charts`, Apache-2.0;
+fetched 2026-10-15: "unofficial navigator for The Expanse's solar system — real ephemerides, canon
+locations, Epstein flight planner"; JPL Horizons state vectors packed per day for 2340–2365 in
+heliocentric ecliptic J2000 Float32, regenerated by a `fetch-horizons` script; a 3D map of planets,
+moons and asteroids; origin/destination/hull/acceleration inputs; a flip-and-burn plan with travel time,
+flip point, peak velocity and light lag; an "honest physics" vs "canon-feel" toggle; a date scrubber)
+is the inspiration, not a source: the engine imports public JPL data through its own script and takes
+none of belter-charts' code wholesale and none of The Expanse's canon locations or names (D-18-51). What
+it should give this game: a trading path that was optimal last month and is less optimal now (route
+optimality drifting over months as the bodies move); Pallas at high ecliptic latitude being awkward to
+reach and paying more for emergency supplies (prices that read position); light lag that reads real
+positions (doc 15). **R9 does not ask the slice to move the sky.** It asks the slice to stop treating a
+frozen sky as something the code may rely on.
+
+**The regrets avoided** (each the design's finding, verified by its judge; each S):
+
+| Draft 0.2 decision | Why the engine would undo it | Draft 0.3 |
+|---|---|---|
+| The coast rate 205 km/s as "a constant the test owns"; authored `base_s` the only truth (§4.4, IC2) | A moving sky has no one duration per leg; the engine would move 205 into drive data and rewrite the test | The rate is drive data (`drive.law.coast.kms`); `base_s` stays authored as the pack's pin of the constant sky; IC2's test derives each leg from the sky and refuses if the pack disagrees (D-18-45). The engine then stops reading `base_s`; it deletes nothing |
+| `RouteDef.distance_km` "the sum of the legs" (IC2) | The code pins the direct chord (`store.rs:800-813`), the one cached distance a moving sky makes most misleading; a field with two meanings by route kind is a trap | The field stays the direct chord at the epoch, relabelled; the plan's per-leg `dist_km` is the truth; nothing in the slice reads `route_duration_at` |
+| A mush-sim `route_leg_durations(route, drive, payload)` (IC9) | No sky, no departure instant, no per-leg bodies: every caller rewired at the flip; mush-sim must stay sky-free | tacsim `plan_passage` over the sky at departure; mush-sim keeps `laden_leg_durations(unladen, drive, payload)` (D-18-44) |
+| `routes: {dest: one id}` in the port entry | Direct and via-Kirkwood routes coexist after the flip and the best changes by season (Kirkwood laps Ceres) | A list per destination; the planner takes the fastest; `via=` reserved (D-18-47) |
+| The flat 105‰ burn as THE fuel function and `"law": "coast"` as a bare word | A flip law's burn depends on distance; a string law carries no parameters; `thrust_permille` is meaningless beside an absolute speed | `passage_burn(law, dry, payload, legs)` over a tagged `DriveLaw`; Coast returns today's figure (a doctrine fraction, distance-free by construction, not the rocket equation; whether mass slows the cruise or grows the burn is Q-18-41); one class, one law (D-18-45) |
+| The ticket freezing only `leg_s`, `burn_t`, `crew_days` | The chart, doc 15 R5 and a cross-flip audit need what each leg assumed; seconds alone cannot be re-derived; adding fields later is a typed-family wire change | The ticket carries the whole `PassagePlan` (D-18-46) |
+| The epoch as server config `= 0` while phases are tuned to no date (`config.rs:76-82`; `tests/ephemeris.rs:66-86`) | Under rate > 0 one pack gives a different sky per server, and `epoch 0` puts every body about 380 IC years off at IC 2350; doc 10 T17 itself puts the epoch in the pack | `BodyDef.epoch_ic: Option<i64>`, emitted only when present (digests hold), carried into `Body` and read by `phase_mdeg_at` in place of the config epoch when present (today `Body` has no epoch and every body advances from `self.epoch`, `ephemeris.rs:44-52,146`); the lane pack's bodies author it at a real IC date; Ceres, Mars and Pallas at their **true** heliocentric longitudes and **heliocentric distances** on that date, never mean elements (Ceres' equation of centre reaches 2e ≈ 9° and its radius ranges 2.548–2.984 AU, ±30 % on a 0.741 AU leg), so the circular sky is exact at the epoch and drifts only after it; Kirkwood's orbit is Q-18-36's (D-18-48). A date with the two true longitudes within ≈ 10.9° (a 1.302 AU via-Kirkwood lane) recurs each 3.18-yr synodic cycle for a season whose length the script measures on true positions, so one lies within about 1.6 IC years of dev1's persisted IC; inert at rate 0 |
+| Kirkwood "on the Ceres–Mars lane" as a permanent fact (doc 11 §2/§5; 18a "two to three weeks") | At 2.06 AU (1,080 d) it cannot co-orbit Ceres, and a three-body via-Kirkwood season recurs once in decades, not once a cycle (§3-Q (4)); a depot on an independent orbit is off the lane the day the sky moves | Kirkwood authored at its epoch position; its orbit is the owner's (Q-18-36, lane-tied default; D-18-48 provisional); the slice keeps via-Kirkwood as its only route; the lore says "in this season" and "in a good season" |
+| `spacecraft` still in `SELF_MODES` (`travel.rs:90`; Q-18-6 owed) | Atlas `+travel` can fly the epoch projection: a second, wrong travel path once the sky moves | Q-18-6 is binding under R8: IC1 removes it (and `options_from_corridor_room`) with a test that no player verb traverses a spacecraft connection, covering `CORRIDOR_MODE` (`content.rs:44`) so a renamed mode cannot reopen it; the atlas drawing is a projection no code reads as truth (D-18-49) |
+| "All under a day" as a property of the lane (§4.4, the readiness gate, the story test) | A coast Dray is sub-day only while Ceres–Mars ≤ ~1.6 AU, about 16 % of the cycle; a gate or help text asserting it would lie at the flip | Stated "at the slice's constant sky"; the gate reports the sky and never checks a duration; help says passage time depends on load and, later, the season (D-18-50) |
+| `fill` and the buy clamp computed from route constants (IC11) | Crew-days follow durations, which become seasonal | Both call `plan_passage` at the depart order's `not_before` (D-18-41) |
+| "the pair the T17 epoch was chosen for" (§1), "T17 (the pinned sky)" (§7), `@corridor/show`'s "the sky is frozen at the campaign epoch" (`tacsim/src/commands.rs:435`), `route.rs:231`'s "a frozen sky has no departure windows" | They state as permanent a ruling R9 limits to the slice | "T17's constant sky, honoured for the slice and superseded after it by R9 (cut P-A)"; the UI string "constant sky at epoch <date> (T17)"; the comment "a constant sky has no departure windows; the planner computes per departure" (IC2) |
+
+**The seams the slice builds, which the engine reuses unchanged** (D-18-43/44/45/46/47):
+
+```rust
+// crates/tacsim/src/sky.rs (IC2). An enum, not a trait object: serde-free, matchable, deterministic.
+pub struct PosKm { pub x: i64, pub y: i64, pub z: i64 }          // heliocentric ecliptic J2000, km
+pub enum Sky { Circular(Ephemeris) /* P-A: Kepler(ElementsSky), Tabulated(VectorSky) */ }
+impl Sky {
+    pub fn position_km(&self, body: &CanonicalId, t_ic: i64) -> Option<PosKm>;   // z = 0 while Circular
+    pub fn distance_km(&self, a: &CanonicalId, ta: i64, b: &CanonicalId, tb: i64) -> Option<u64>;
+    pub fn revision(&self) -> DefinitionDigest;   // the pack digest type over body data + model + epochs + {epoch, rate}
+}
+// crates/tacsim/src/port/passage.rs (IC9)
+pub enum DriveLaw { Coast { kms: u32, burn_permille: u32 } /* P-A: Flip { accel_mg: u32, exhaust_kms: u32 } */ }
+pub struct HullDrive { pub class: CanonicalId, pub law: DriveLaw, pub payload_ceiling_kg: u64 }
+pub struct LegPlan { pub to: CanonicalId /*place*/, pub body: CanonicalId, pub dist_km: u64, pub secs: u32, pub t0: i64, pub t1: i64 }
+pub struct PassagePlan { pub route: CanonicalId, pub law: CanonicalId, pub depart_ic: i64, pub sky_rev: DefinitionDigest,
+                         pub legs: Vec<LegPlan>, pub total_s: i64, pub burn_t: u64, pub crew_days: u32 }
+pub fn plan_passage(sky: &Sky, pack: &RulesPack, route: &CanonicalId, drive: &HullDrive,
+                    dry_kg: u64, payload_kg: u64, occupants: u32, depart_ic: i64) -> Result<PassagePlan, PlanError>;
+pub fn choose_route(sky, pack, routes: &[CanonicalId], drive, dry, payload, occupants, depart_ic, via: Option<&CanonicalId>)
+    -> Result<PassagePlan, PlanError>;     // fastest total_s; P-A gives it a policy (fastest | cheapest) since a flip's fastest route burns most
+pub fn passage_burn(law: &DriveLaw, dry_kg: u64, payload_kg: u64, legs: &[LegPlan]) -> Result<u64, PlanError>;
+// crates/mush-sim/src/route.rs (IC9): sky-free
+pub fn laden_leg_durations(unladen_s: &[u32], drive: &DriveProfile, payload: u64) -> Result<Vec<u32>, RouteDefError>;
+```
+
+In the slice `Sky::Circular.distance_km` **delegates to `separation_km`** (`ephemeris.rs:188-195`) so
+fixture routes stay bit-identical and no second rounding path exists; the i128 vector distance arrives
+with `Sky::Kepler`. `position_km` is new code with no slice caller but its tests. `plan_passage` plans
+over the symbolic `RouteEntry` while `depart` flies the materialized `RouteDef` from `route_in_world`;
+both are keyed by (pack, version, route id), so a v1-pinned consumer (Q18A) plans and flies one version.
+`PlanError`: `UnknownRoute | UnknownDriveClass | UnknownBody | NoSkyLeg | Overloaded | Overflow`. Callers:
+`+ship/plan` (depart_ic = now; writes nothing), `+ship/undock` and the queue's depart (now; the result is
+the burn's input), `fill` and the clamp (the depart's `not_before`), `choose_route` over the port's list.
+**Prices** stay listing data the applier writes (§4.7 "Update rewrites prices in place"); quotes freeze
+their price; the programme's references are live reads of the named origin asks, so only the share
+permille and the buyout freeze at signing (D-18-24); no trait is added — the engine's price policy is
+a second writer with the applier's authority. **The atlas drawing** stays an epoch projection. **The
+readiness report** prints "sky: constant (rate 0), epoch <date>, rev <digest>" and pages if the sky rate
+is non-zero while any lane body lacks `epoch_ic`. T17's own coherence property — every pair sharing a
+body changes together (`ephemeris.rs:11-15`) — is preserved by having one query.
+
+**The calendar, in one place.** The IC clock is Unix seconds, continuous across rate generations
+(`clock.rs:214-218,335`), so JD = ic_s / 86,400 + 2,440,587.5 and `2350-01-01T00:00Z` = 11,991,628,800.
+A sky rate of 1000 makes the sky's date the IC date, which real data requires. Each body's `epoch_ic`
+is the IC instant whose calendar date its elements were fetched for. dev1's current IC is read from the
+persisted timeline (`mushd.toml.example:105`, "NOT reset at each boot"), never from `instance.env`'s
+`IC_EPOCH`/`IC_RATIO`, which seed generation one only. Test worlds sit near IC 2030
+(`tests/ephemeris.rs` epoch 1,900,000,000), where a 2340–2365 vector table is out of range while
+per-body elements are self-referenced anywhere — one more reason for elements. At world rate 24 one IC
+year is about 15.2 real days; the Ceres–Mars synodic period (3.18 yr) about 48.5 real days, best to worst
+in about 24; Pallas's orbit (4.62 yr) about 70 real days and its latitude cycle about 35; belter-charts'
+2340–2365 window would run out about 228 real days after IC 2350.
+
+**Post-slice cut P-A: the astronomy engine** (P-SKY in the review; L overall; after IC12, with P5
+restock for its price policy and P7 Pallas as a port for its showcase). Supersede T17 as amended: the
+corridor's and the inner system's bodies move on the IC calendar in three dimensions from real orbital
+data; the slice's one planner computes every departure from the sky at that instant under coast and
+flip laws, with intercept and direct routes beside via-Kirkwood; a chart shows the sky; awkwardly placed
+ports pay more; light lag reads positions; committed passages are untouched; the flip is one boot.
+**P-A-1 data and model (M).** `BodyDef` gains `Option` fields skipped when absent (`ecc`, `incl_deg`,
+`node_deg`, `peri_lon_deg`, secular rates, `parent` + `local_orbit_km`, and `a_au` with the mean
+anomaly at `epoch_ic`); `orbit_au` stays the heliocentric **distance** and `phase_deg_at_epoch` the
+**true** longitude at `epoch_ic`, exact at the epoch under both models, and with the Kepler fields
+absent a body is circular at that radius, so every existing pack is a valid e = i = 0 sky; element
+sets by era. `Sky::Kepler` solves Kepler's equation in f64 with a fixed Newton count,
+rotated to ecliptic J2000 and rounded to km (platform drift is harmless: committed plans are frozen).
+Bodies: mercury, venus, earth (+ luna), mars (+ phobos, deimos; Stickney keeps naming mars until a local
+route needs the 9,376 km offset), ceres, pallas (i ≈ 34.8°), vesta, hygiea, jupiter, kirkwood (station
+elements), later saturn/titan. A small committed script beside the fixture (no `xtask` crate exists)
+regenerates osculating elements at era epochs and a quarterly heliocentric vector golden table for
+2340–2400 from JPL Horizons (≈ 240 × ~10 bodies × 24 B ≈ 58 KB), asserted within ~0.5 %; packed daily
+vectors as belter-charts ships them (state vectors ≈ 219 KB per body per 25 years; 110 KB positions
+only) stay an optional `Sky::Tabulated` for a near window (Q-18-38). **P-A-2 laws (M).**
+`DriveLaw::Flip` (secs = 2√(d/a), a scaled by the laden law; Δv = 2√(d·a); burn by the rocket
+equation); coast optionally `exhaust_kms` (≈ 3,700 km/s reproduces 105‰ at 205 km/s for the
+**unladen** hull only) and `max_kms` for a cruise choice, once Q-18-41 has chosen between a
+mass-dependent cruise (the laden law kept) and a mass-dependent burn (the laden law dropped); the
+slice's intercept loop (first-order on tangential lanes); a solar keep-out inside 0.3 AU as a detour
+cost, never a closure (Q-18-40); direct route ids beside via-Kirkwood in lane pack v2; `choose_route`
+with a policy; `via=` honoured. Full-outbound stretches: coast up to 3.30× (19.6 h → ~65 h), flip
+1.82×. **P-A-3 chart (TUI S, web M)** on the one OutputEvent/Panel protocol: `+chart [port]` (AU,
+light lag, laden ETA for the best route and the alternative, "next best window" = a scan of
+`plan_passage` at 1-IC-day steps over 2 IC years, ≤ 730 evaluations), `+chart/body <id>` (heliocentric
+distance, ecliptic latitude), a window line on `+ship/plan`, a web cockpit panel (top-down XY with a
+z-exaggeration toggle, ports, ships under way interpolated along their tickets' frozen legs; the TUI at
+120 columns); the atlas sites re-drawn at the flip or retired for the chart. **P-A-4 price policy
+(M).** A once-per-IC-day arm on the `tacsim.port` tick writing listing and Wanted updates with the
+applier's authority, each carrying its org's officer of record as signatory (in fiction the factor
+re-prices the board each IC day; nothing automated signs, 11 §2, and the `port` schema already refuses
+an unsigned listing): reach(port, good) = the minimum nominal-cruise passage seconds from the supplying
+ports at now; a capped premium on demand-side bids as reach rises against a synodic median; emergency
+Wanted bids for life-support goods when reach crosses a threshold, funded from the org's finite capital
+(doc 10 7A; nothing minted) — the owner's Pallas paying more when awkward; quotes stay frozen, and the
+programme's reference reads the moved ask, which is the point (Q-18-39; D-18-24). **P-A-5 comms (S).**
+Doc 15 R5 from `Sky` positions and a ship's
+frozen legs; the lag table a live render; D-15-11 honoured with the route's light distance from the
+plan. **P-A-6 flip and migration (S).** Nothing to rewrite: in-flight journeys keep their embedded
+`RouteDef` and `leg_s`, burned tickets their plan and `sky_rev`, orders their destinations and UTC
+times, quotes their prices; one owner-approved boot with lane pack v2 and the sky knob collapsed to
+`constant | real` ("sky motion"), `route_in_world`/reindex re-materializing while v1-pinned consumers keep
+v1 (Q18A); a boot test that a mid-passage journey arrives at its frozen instant across the flip and a
+burned-unlaunched ticket launches with its frozen `leg_s`; a golden test that the real sky is
+**identical** to the slice's circular sky at the epoch (true longitude and distance authored, D-18-48)
+and drifts from it afterwards only by the e/i terms, the drift per IC year measured and recorded in
+the cut note; lane pack v2 re-authors every `base_s` from the real sky and IC2's
+`lane_legs_derive_at_epoch` retires with v1 (the v1 pins stay as v1's). Open for the owner: Q-18-35 to
+Q-18-41.
+
+**The doc 10 §22 T17 amendment (owed, §10; the text).** Heading: *"22. Addendum — T17, the frozen sky
+(owner, 2026-09-09, binding; amended 2026-10-15: the constant sky of the first slice, superseded after
+it by the astronomy engine)"*; the 2026-09-09 body kept; appended: *"**Amendment (owner, 2026-10-15; doc
+18 R9).** T17 now governs only the constant sky of the first IC vertical slice (doc 18). After that slice
+it is superseded by the astronomy engine (doc 18 cut P-A): real ephemerides in three dimensions, with
+eccentricity and inclination (Pallas far from the ecliptic); bodies moving on the IC calendar, so a
+route's distance, duration and fuel depend on when it departs; the best route between two ports
+changing over months; a port's position moving its prices. Until P-A lands `rate = 0` stays configured
+and every slice figure is the constant sky's output at its epoch, never an invariant: no code, test or
+help text may treat a distance, a duration or a price as constant beyond a frozen commitment. The slice
+reaches the sky only through the seams the engine will reuse — one sky query (the distance between two
+bodies at two instants) and one passage planner over the sky at departure, the route's legs as body
+pairs, the drive's law and the departure mass — and derives durations rather than relying on authored
+seconds. **What stands:** 1A's scales and compression (local orbit in hours, the inner system in days
+to weeks, the Belt in weeks, the outer system in weeks to months, about one OOC hour per IC day); 1A's
+rule that transfer conditions modify routes rather than closing destinations (no launch windows; every
+port reachable at a cost); T1's freeze, no longer moot — a passage's per-leg distances, durations, burn
+and crew-days are computed once at commitment and frozen into the ticket and the journey, and nothing
+after the burn re-reads the sky; T17's coherence (every pair sharing a body changes together), kept by
+the one query. **Superseded, after the slice:** 'No body moves. No transfer window opens or closes.
+Nobody waits for an alignment' (bodies move and distances vary; still no window closes a destination);
+the circular, coplanar model as the final model (it remains the e = i = 0 case of the engine's
+elements); 1A's rejection of simulated ephemerides ('long non-opportunity' is Q-18-35 by another name,
+re-opened knowingly). Travel time becomes the planner's output: the sky at departure, the drive's law
+(coasting at a cruise speed, or a constant-acceleration flip) and the departure mass."* The epoch's
+move from server config to the pack's bodies is not a doc 10 supersession (T17 always put it in the
+pack) but doc 14 §3.8 S7's and `config.rs`'s, recorded in §10.
+
 ---
 
 ## 5. The cut plan
@@ -1525,18 +1984,18 @@ runnable.**
 | Id | Name | Scope | Crates | Size | Depends on | Verify lens |
 |---|---|---|---|---|---|---|
 | IC0 | Engine blockers first (**landed, `c87d78f7`**) | As Draft 0.1 and [18-cut-notes.md](18-cut-notes.md): Lot short-circuit; listing TTL ≤ hold TTL and the hold read at accept; non-staff manual route closed; major-unit money lines; economist answers the asker; the lot-tour driver; the IC0 gate test. `spacecraft` out of `SELF_MODES` still owed (Q-18-6) | mush-market, mush-sim, mush-atlas | M | — | per the cut note; the Draw path relies on the hold read only for player lot listings |
-| IC1 | Two stations, the IC door and the IC-return rule | The four atlas packs (13 + 12 rooms, three decks at Ceres; wall features on every exitless partition; themes; thirteen NPCs with fallbacks; principals `enabled:false`; lore pools); `RoomDef.markers` + the `port.dock` topology seed (`validate.rs:1958-2000`); unlocked `exit.limbo_arrivals`; the `tacsim.last_port` stamp, the door hook and `+ic`; boot list + shelf; validate-clean, digest-pin and kept-world boot tests | mush-atlas, tacsim | M | — | fresh and kept-world boots apply; `c` lands in C03; every public room walkable; Stickney validates with no foot route; exitless partitions walled on `+map`; `o`→`x`→`c` from a Stickney position refused with the `+ic` hint; starter digests unmoved; T-45 |
-| IC2 | The Dray, the goods table and the lane | `dray.json` (class hauler, `logistics`, `interior`) in `fielded_sources` + pin; `UnitClass::Hauler`; the lobby filter + custody refusal test; `goods.json` (tonnes/crew-days, stowage, mass) with its own pin, deriving the catalog; `tacsim.lane.ceres_phobos` v1 (fresh id; bodies incl. `kirkwood` at 2.06 AU, `pallas`; three locations; two routes at 540,800 + 409,200 s, `distance_km` the sum, `propellant 0`) via the game-packs list; **a new T17 leg test** (`lane_legs_pin_t17` in `tacsim/tests/ephemeris.rs`: each leg's `base_s` = `distance_km_at(a, b, T17) / 205`, the route's `distance_km` their sum; none exists today, §4.4) | tacsim | M | IC1 | `lane_legs_pin_t17` green: `@corridor/show ceres_stickney` prints two legs of 540,800 and 409,200 s from sky distances of 0.74 and 0.56 AU; SIM UNIT never offers `dray`; `@tacsim/pack list` shows `tacsim.lane.ceres_phobos@1` beside the untouched `tacsim.corridor` fixtures; the goods validator refuses a family-less trade row; shipped DefinitionRefs unmoved |
-| IC3 | Ports, orgs, capital and readiness | `PackEntry::Port` + `PortApplier` a–c (two passive domains; treasury; the seven orgs with capital tranches, each tranche's map row in its batch; the Trust's scoped programme account; fail-closed port map; `signatory` required on every listing); mush-sim: `open_passive_domain` skips the `MAX_WINDOWS` guard for passive opens (`window.rs:205-206`, S); the composition's `test_world` flag; the template mint-cap override 1,000,000; `+credit` (posted, held, available); `@tacsim/port status` | tacsim, mush-sim, mush-server | M | IC1, IC2 | after boot and one sweep `@org/list` shows the orgs and capital; a double boot posts nothing; a corrupt map refuses re-creation; `@domain` shows both passive domains presenting into the galleries; **a kept world with eight windows open at restart still applies the lane pack**; the readiness report lists every binding and flags rate ≠ 24 |
+| IC1 | Two stations, the IC door and the IC-return rule | The four atlas packs (13 + 12 rooms, three decks at Ceres; wall features on every exitless partition; themes; thirteen NPCs with fallbacks; principals `enabled:false`; lore pools); `RoomDef.markers` + the `port.dock` topology seed (`validate.rs:1958-2000`); unlocked `exit.limbo_arrivals`; the `tacsim.last_port` stamp, the door hook and `+ic`; boot list + shelf; validate-clean, digest-pin and kept-world boot tests; **`spacecraft` out of `SELF_MODES` and `options_from_corridor_room` (Q-18-6, binding), a sky prerequisite** | mush-atlas, tacsim | M | — | fresh and kept-world boots apply; `c` lands in C03; every public room walkable; Stickney validates with no foot route; the adjacency check over 18a §0.4's boxes: every plain `door` shares an edge (`geometry.portal_gap` is an error and the applier refuses it) and every exitless seam is a `wall`, walled on `+map`; `o`→`x`→`c` from a Stickney position refused with the `+ic` hint; starter digests unmoved; `no_player_verb_traverses_a_spacecraft_connection` (covers `CORRIDOR_MODE`); T-45 |
+| IC2 | The Dray, the goods table, the lane and the sky seam | `dray.json` (class hauler, `logistics` with D3 limit maps and the tagged `drive.law`, `interior`) in `fielded_sources` + pin; `UnitClass::Hauler`; the lobby filter + custody refusal test; `goods.json` (six rows, the `measures` registry, binding mass **and** volume per row) with its validator and pin, deriving the catalog; `port/capacity.rs` (`load`/`admits`/`max_more`) with its pure tests (volume binds on ice and mass on alloys; 86 t ice, 19 + 81 and 101 t alloys refused on the right measure; the m³ formatter truncates); `tacsim.lane.ceres_phobos` v1 (fresh id; bodies `ceres`, `mars`, `pallas` at their **true** heliocentric longitudes and distances on a real date, with `epoch_ic`, from the committed Horizons script; `kirkwood` tuned at its 2.06 AU epoch position with a placeholder period pending Q-18-36, D-18-48; three locations; two routes at 540,800 + 409,200 s, `propellant 0`; `routes` lists in the port entries) via the game-packs list; `sky.rs` (`Sky::Circular`, `distance_km` delegating to `separation_km`, `position_km`, `revision`); `BodyDef.epoch_ic: Option<i64>` **carried into `Body.epoch_ic` and read by `Ephemeris::phase_mdeg_at`** in place of the config epoch when present (today every body advances from `self.epoch`, `ephemeris.rs:44-52,146`; without this IC9's rate-1000 test cannot be written); the one-class-one-law drive validator and `drive_for_class`; `@corridor/show` per-leg AU lines worded "constant sky at epoch <date>"; the `route.rs:231` comment reworded; tests `lane_legs_derive_at_epoch` (each leg from the sky and `dray.json`'s kms, the pack within 100 s; refuses if `kirkwood_depot`'s body is missing; retired with lane v1 at P-A), `sky_circular_agrees_with_the_law_of_cosines` (within 2 km at the epoch and ±1 IC year at rate 1000; z = 0), `body_epoch_holds_its_phase_at_that_instant` (a body with `epoch_ic` set is at its authored phase at that instant under rate 1000), `fixture_digests_unmoved_by_optional_sky_fields`, `one_drive_class_one_law` | tacsim | M | IC1 | the five tests green; `@corridor/show ceres_stickney` prints two legs at about 0.741 and 0.561 AU and 540,800 / 409,200 s, never "the sky is frozen"; SIM UNIT never offers `dray`; `@tacsim/pack list` shows `tacsim.lane.ceres_phobos@1` beside the untouched `tacsim.corridor` fixtures; the goods validator refuses a family-less trade row and a `stow.bulk` row without volume; `tests/content.rs`'s pin decodes `dray.json` through `UnitSpec::check`, so a `note` over `MAX_NOTE_BYTES` (1,024) fails the cut, never the boot; shipped DefinitionRefs and fixture digests unmoved |
+| IC3 | Ports, orgs, capital and readiness | `PackEntry::Port` + `PortApplier` a–c (two passive domains; treasury; the nine orgs with capital tranches, each tranche's map row in its batch; the Trust's scoped programme account; fail-closed port map; `signatory` required on every listing; `routes` validated as a non-empty list of routes from this location to that destination); mush-sim: `open_passive_domain` skips the `MAX_WINDOWS` guard for passive opens (`window.rs:205-206`, S); the composition's `test_world` flag; the template mint-cap override 1,000,000; `+credit` (posted, held, available); `@tacsim/port status` | tacsim, mush-sim, mush-server | M | IC1, IC2 | after boot and one sweep `@org/list` shows the orgs and capital; a double boot posts nothing; a corrupt map refuses re-creation; `@domain` shows both passive domains presenting into the galleries; **a kept world with eight windows open at restart still applies the lane pack**; the readiness report lists every binding and flags rate ≠ 24 |
 | IC4 | Walking aboard: the boundary rule and the hull template | mush-sim: `Transition::Members`, `member_of` + verify, the destination-aware gate (exit-only, member destination), projection returns the member location, the destroy-gate arm, `backing_valid` false for multi-room spaces, `egress` refused in them, narration over `space.rooms`, `pub declare_compartment`. tacsim: `PortApplier` part f instantiates 8 Drays (Thing + unit + 7 Rooms + 5 exit pairs + 2 spaces + Members + `berths`), titled to the Trust, named from `hull_names`, laid up on the Ceres domain | mush-sim, tacsim, mush-economy | M | IC2, IC3 | staff `place_interior` into an airlock, then `in`/`up`/`down` walk all six rooms with no placement write per step; `o`, `s`, `home` and `@teleport` by the occupant refused; a reboot keeps the walker in the Bridge; e7c6 and placement suites green; eight Drays listed in C01; `@asset/show` title Trust |
 | IC5 | Tacsim's authoritative plumbing and the port tick | Tacsim's first action provider registration and typed families (`tacsim.port_stock` receipts, `tacsim.ticket`); tacsim joins `with_quantity_delegates` and gets the inventory handle cell (`composition/mod.rs:404`, pinned edge test); the `tacsim.port` normal-lane Coarse tick skeleton (5 s): rotation cursor, visit/work budgets, per-agent actor swap, at most one submission per actor per fire, the reconnect-notice store on `Connected` | tacsim, mush-server | M | IC0 | a test action submitted by an agent from the tick lands; two agents in one fire do not void each other; GOD never submits; tacsim reads inventory pools via `action_state`; the composition-edge pin updated |
 | IC6 | The Co-op programme and boarding | `+coop`, `+coop/enrol` (account open + `offer_lease` + in-verb accept + keyed stake post + hold vault + enrolment doc; gated on the IC3/IC4 readiness lines and the rate only — pools and listings join the gate in IC8, §4.7), `+coop/statement` (readable anywhere); the lease-reading operate gate; the `page_stale_contracts` lease exemption (`sweep.rs:1597-1640`); the observer folding a staff-ended lease; `+ship`, `+ship/board`, `+ship/leave`, `+ship/hold`; the `look` status line (`look_rendered`) and per-room gauges | tacsim, mush-economy | M | IC4 | enrol once (25,000.00cr posted, lease Active, vault opened, hull renamed); a second enrolment from the same account refused; board and leave only by the tenant, only docked; after eight simulated days no stale-contract page; staff `@contract/cancel` revokes; `look` names the hull and the port |
-| IC7 | Market seams for content ports | `EconomyModule::with_party_cap_source` (after the frozen table, `contract_live.rs:5163-5169`); `Supply::Stock` + `Representation::Lot` with `LotOp::Draw` (seller-side source projection; synchronous quantity decrement); `with_venue_gate` with `Presence::{Here, Ship(hull)}` + `venue_of_room` + default `market=`/`to=`; the `CapacityProvider` hook on the lot pre-check and the Draw prepare; refuse non-port listings into hull endpoints; the contract-keyed lot leg (`market.lot.<op>.<contract>`, e7r2 sweep). **Not here:** the lapsed-hold release — a hold's release is the `market_lot` action's release op under `listing_holder`, an authoritative submission the GOD lapse sweep may not stage (`tick.rs:28-37`; the IC0 cut note); it is IC8's tick arm | mush-economy, mush-market, mush-inventory | M | IC0 | production composition in miniature: a seeded pool, a Draw-backed ask; accept moves the pool quantity and the money once; the listing decrements; two buyers racing the last tonnes, the second refused before any contract; a gate refusal escrows nothing; capacity refusal before any contract; a re-staged lot leg replays as a HIT; no `SettlementRefused` page |
-| IC8 | Finite stock and port commerce | `tacsim_port_stock` (mint + receipt) on IC5's provider; the stock arm (mint → `inv.dissolve` → list, one step per clerk per fire); `PortApplier` d–e (storefront items in C15/P15, vaults, vendors, clerks, grants, stock rows, Wanted docs); the tacsim `VenueGate`, party-cap source and `CapacityProvider` from `logistics`; SOLD OUT and "not buying" rendering; the listing-vs-pool check and the pools/listings lines in the readiness gate; **the lapsed-hold release arm** on the `tacsim.port` tick: one lapsed player listing per fire, the tick acting as the listing holder by IC5's actor swap, the `market_lot` release op keyed by the derived reservation id, verified by pull (D-18-26; Q-18-31) | tacsim, mush-inventory, mush-market | L | IC3, IC5, IC6, IC7 (the two lanes join here) | after boot the ticks seed every pool exactly once (a kill and reboot mid-seed re-mints nothing; conservation from lineage and receipts); at C07 a no-argument list/quote/accept loads the hold pool; 101 t refused; from Limbo refused; into a hull docked at Stickney refused; the board decrements to SOLD OUT; a lapsed player listing's hold is released by the tick, never by the sweep; the applier submitted nothing |
-| **IC9** | **Undock and fly — the first player-runnable flight** | `route_leg_durations` + `CarrierJourney.leg_s` + `pub mush_sim::depart(leg_s)`; `tacsim.port.burn` (pool debits, manifest, the ticket with `leg_s`, burn, crew-days, order/attempt); the launch arm on IC5's tick + boot reconcile; `+ship/plan`, `+ship/undock <port>` (at=now); automatic docking at arrival; narration to member rooms at the Kirkwood boundary and at `apply_arrival`; `+ship` ETA in IC and real time; `+travel/status` aboard arm; apply-time refusal of exits into anchored interiors | mush-sim, tacsim, mush-atlas | L | IC5, IC6, IC8 | at rate 3600: undock burns 41 t / 21 crew-days, launches within a tick, the pilot in the Crew Compartment hears Kirkwood (~270 s) and the arrival (~470 s), the hull docks at Stickney and `+ship/leave` lands in P01; the journey's legs equal `route_leg_durations(payload)`; refusals: tank 40 t, overloaded, not aboard, under way twice; a server-half restart between burn and launch yields exactly one journey; one hand-played smoke at rate 24 on local `mushd`, logged in the cut note |
+| IC7 | Market seams for content ports | `EconomyModule::with_party_cap_source` (after the frozen table, `contract_live.rs:5163-5169`); `Supply::Stock` + `Representation::Lot` with `LotOp::Draw` (seller-side source projection; synchronous quantity decrement); `with_venue_gate` with `Presence::{Here, Ship(hull)}` + `venue_of_room` + default `market=`/`to=`; the `CapacityProvider` hook (a `read_pool` closure returning `Result`, so absent = 0 and unreadable refuses) on the lot pre-check and the Draw prepare, a Draw refused at prepare cancelling its contract and returning the escrow with no page; refuse non-port listings into hull endpoints; the contract-keyed lot leg (`market.lot.<op>.<contract>`, e7r2 sweep). **Not here:** the lapsed-hold release — a hold's release is the `market_lot` action's release op under `listing_holder`, an authoritative submission the GOD lapse sweep may not stage (`tick.rs:28-37`; the IC0 cut note); it is IC8's tick arm | mush-economy, mush-market, mush-inventory | M | IC0 | production composition in miniature: a seeded pool, a Draw-backed ask; accept moves the pool quantity and the money once; the listing decrements; two buyers racing the last tonnes, the second refused before any contract; a gate refusal escrows nothing; a fake provider refusing on volume escrows nothing; a Draw that would exceed the limit at drain refuses fail-closed with the escrow returned; an unreadable pool refuses; a re-staged lot leg replays as a HIT; no `SettlementRefused` page |
+| IC8 | Finite stock and port commerce | `tacsim_port_stock` (mint + receipt) on IC5's provider; the stock arm (mint → `inv.dissolve` → list, one step per clerk per fire); `PortApplier` d–e (storefront items in C15/P15, vaults, vendors, clerks, grants, stock rows, Wanted docs); the tacsim `VenueGate`, party-cap source and `CapacityProvider` (endpoint → hull → stowage → `compartment_for` → `admits`, reading the hold's four pools); the resized port entries (Kasei metals bid 280; stock 9,600/4,000/7,000/5,400; the Stickney Yards vendor on `item.yard_spares` with P11 in the Stickney rooms; the Co-op's fittings bid and 3,100,000 capital; `industrial_parts` → the Yard's ask in the programme's `reference` map, read live by the policy); **the posted-price LP test** (both vertices computed from `goods.json`, the hull and the port entries' asks and bids and asserted optimal; never 20/80 or 55/45 by name); SOLD OUT and "not buying" rendering; the listing-vs-pool check and the pools/listings lines in the readiness gate; **the lapsed-hold release arm** on the `tacsim.port` tick: one lapsed player listing per fire, the tick acting as the listing holder by IC5's actor swap, the `market_lot` release op keyed by the derived reservation id, verified by pull (D-18-26; Q-18-31) | tacsim, mush-inventory, mush-market | L | IC3, IC5, IC6, IC7 (the two lanes join here) | after boot the ticks seed every pool exactly once (a kill and reboot mid-seed re-mints nothing; conservation from lineage and receipts); at C07 a no-argument list/quote/accept loads the hold pool; 101 t of alloys refused (mass), 86 t of ice and 19 + 81 refused (volume), each with nothing charged; from Limbo refused; into a hull docked at Stickney refused; the board decrements to SOLD OUT; the LP test green; a lapsed player listing's hold is released by the tick, never by the sweep; the applier submitted nothing |
+| **IC9** | **Undock and fly — the first player-runnable flight** | mush-sim `laden_leg_durations` (`route_duration` delegating to it) + `CarrierJourney.leg_s` + `pub mush_sim::depart(leg_s)`; tacsim `port/passage.rs` (`plan_passage` with the fixed three-pass intercept, `choose_route` over the port's list, `passage_burn` for Coast); `tacsim.port.burn` taking the `PassagePlan` as its input, the prepare recomputing burn and crew-days from the plan's seconds and the held drive table and the mass terms from the txn (pool debits, manifest, the ticket carrying the whole plan, order/attempt); the launch arm on IC5's tick + boot reconcile passing `plan.legs[].secs` to `depart`; `+ship/plan` (both hold slacks and the binding measure, room per good on this board, payload, burn, stores, ETA; never a recommended mix), `+ship/undock <port>` (at=now); automatic docking at arrival; narration to member rooms at the Kirkwood boundary and at `apply_arrival`; `+ship` ETA in IC and real time; `+travel/status` aboard arm; apply-time refusal of exits into anchored interiors | mush-sim, tacsim, mush-atlas | L (+1 S for the sky seam, IC2 and here) | IC5, IC6, IC8 | at rate 3600: undock burns 41 t / 21 crew-days, launches within a tick, the pilot in the Crew Compartment hears Kirkwood (~268 s) and the arrival (~471 s), the hull docks at Stickney and `+ship/leave` lands in P01; `plan_passage_reproduces_the_slice_figures` (payload 142,184 kg → legs 965,623 + 730,645 s, burn 41, crew-days 21; the 69 t return 1,507,276 s, burn 37, crew-days 18; Overloaded above 181,000 kg); `constant_sky_plan_is_departure_invariant` (rate 0: identical at depart_ic and +400 IC days, t0/t1 shifted); `moving_circular_sky_moves_the_plan_and_converges` (rate 1000 with per-body epochs: half a synodic period later is strictly longer, two runs bit-equal, Coast burn identical); `ticket_freezes_the_plan_across_a_sky_change` (re-materialize the catalog under rate 1000 or a changed epoch: `leg_due_at` and `arrival_at` unchanged, `plan.sky_rev` still the old sky); `journey_arrives_at_its_frozen_instant_across_a_reboot_with_a_new_sky`; `port_routes_are_a_list_and_the_planner_picks_the_fastest` (a bare string refused; a two-route test pack: the faster wins, ties to the earlier; `via=` refused "not yet"); refusals: tank 40 t, overloaded, not aboard, under way twice; a server-half restart between burn and launch yields exactly one journey; one hand-played smoke at rate 24 on local `mushd`, logged in the cut note |
 | IC10 | Selling and the Co-op share — the loop closes interactively | `Supply::Wanted`; inventory `transfer_marked` + the Fact-gated payout; `LotOp::Deliver`; the `+market/sell <listing>=<qty> [from=]` lot arm (gate, synchronous checks, buyer-org escrow by party cap, intake decrement/restore); `MarketModule::with_proceeds_policy` + the tacsim margin-over-reference policy; bids by the applier; the enrolment folds sales and shares; sale lines print gross/share/net | mush-market, mush-inventory, tacsim | L | IC9 | at Stickney, sell 70 t metals: Kasei −21,000 = pilot +19,250 + Trust +1,750 from journals; hold −70 t = Kasei pool +70 t from lineage; money moves only after the marker; a sale at reference pays share 0; over-selling, an unfunded bid and a cross-port sale refused before any contract. From here a tester plays one leg per login by hand |
-| **IC11** | **Captain's orders — the FIRST CUT WITH THE FULL DAILY LOOP** | `tacsim:orders:<hull>` (fail-closed); the order arm on IC5's tick (rotation, one step per hull, actor swap, closed typed calls, the buy clamp reserving the next depart's needs, `fill`, inflight in the same Outbox, pull verification, relabel on a rate generation); `+ship/orders`, `+ship/order …`, `+ship/plan` over the queue; the UTC time parse/format helper; the watch-log reconnect notices; the pilot-aboard and passenger rules | tacsim, mush-core | **L** (risks 2, 3, 7, 8 live here and D-18-38 makes it the acceptance; if it must be split, IC11a = the document, the nine verbs, the time parser and `+ship/plan` over the queue, IC11b = the executor arm with its restart and clustering tests, M each) | IC10 | at rate 3600 with the pilot disconnected after queueing: depart → arrive → sell ×2 → buy ×3 → depart executes unattended, the log and notices matching; a reboot mid-step re-runs nothing (one sale, one burn); a sold-out buy goes partial, an unfunded bid skips, a depart short of fuel holds and burns nothing; the Stickney queue buys fuel and stores before cargo; two pilots with the same due time both complete |
-| IC12 | The story test, help and readiness | `ic_slice_loop.rs`: two simulated days at rate 3600 on the production composition (§6); `docs/help` ports, ships, coop, orders, trade; amendments to getting-started, travel, spatial, cockpit, npc; `ops.md`; the full readiness report and the gate over all of it on `+coop/enrol` (§4.7); every §2 and §6 path walked against the packs' exit aliases; one hand-played two-session smoke at rate 24 on local `mushd`, logged | mush-server, docs, tacsim | M | IC11 | the story test green; a fresh tester completes two legs from help alone; T-45 green; the smoke log shows a sub-day full leg and a docked hull at the next session |
+| **IC11** | **Captain's orders — the FIRST CUT WITH THE FULL DAILY LOOP** | `tacsim:orders:<hull>` (fail-closed); the order arm on IC5's tick (rotation, one step per hull, actor swap, closed typed calls, the buy clamp by stock, hold mass, hold volume and funds less the next depart's unmet needs with every bound logged, `fill` as the joint least fixed point over the queued projection and `plan_passage` at the depart's `not_before`, inflight in the same Outbox, pull verification, relabel on a rate generation); `+ship/orders`, `+ship/order …` (`depart … [via=]` parsed and refused "not yet"), `+ship/plan` over the queue (each buy's clamp and bound, the affordable tonnage at this board); the UTC time parse/format helper; the watch-log reconnect notices; the pilot-aboard and passenger rules | tacsim, mush-core | **L** (risks 2, 3, 7, 8 live here and D-18-38 makes it the acceptance; if it must be split, IC11a = the document, the nine verbs, the time parser and `+ship/plan` over the queue, IC11b = the executor arm with its restart and clustering tests, M each) | IC10 | at rate 3600 with the pilot disconnected after queueing: depart → arrive → sell ×2 → buy ×4 → depart executes unattended, the log and notices matching; a reboot mid-step re-runs nothing (one sale, one burn); a sold-out buy goes partial, an unfunded bid skips, a depart short of fuel holds and burns nothing; the Stickney queue buys fuel and stores before cargo; a cash-bound return logs "funds", re-used 49/55 orders with full funds log "hold volume", `buy volatiles 100` logs "short of 100 t: hold volume", a full hold logs both measures joined; `fill` buys 36 t for the 73 t projection; `fill_and_clamp_plan_at_the_depart_instant` (a test sky at rate 1000 makes the crew-days at `not_before` differ from a stored constant); two pilots with the same due time both complete |
+| IC12 | The story test, help and readiness | `ic_slice_loop.rs`: two simulated days at rate 3600 on the production composition (§6), its sky built explicitly at rate 0; `docs/help` ports, ships (the hold's two limits; passage time depends on load "and, later, the season", never "always under a day"), coop, orders, trade (the dense good weighs out, the bulky good cubes out, the best full load fills both; when cash is short buy the bulky good first up to the volume the affordable tonnage leaves); amendments to getting-started, travel, spatial, cockpit, npc; `ops.md`; the full readiness report ("sky: constant (rate 0), epoch <date>, rev <digest>"; never a duration) and the gate over all of it on `+coop/enrol` (§4.7); every §2 and §6 path walked against the packs' exit aliases; one hand-played two-session smoke at rate 24 on local `mushd`, logged | mush-server, docs, tacsim | M | IC11 | the story test green with "every hold write leaves both cargo limits met"; a fresh tester completes two legs from help alone; T-45 green; the smoke log shows a sub-day full leg at the constant sky and a docked hull at the next session |
 | IC13 | Buyout, graduation and dormancy | `+coop/buyout` (pilot-issued asset contract, Trust accepts by party cap, `end_lease` before settlement with refuse-on-Retrying, observer graduation and re-lease on refund); dormancy recall on the tick; `+coop/release`; `@coop/revoke` | tacsim, mush-economy | M | IC10 | a pilot with 110,000 cr buys out: title to the pilot once, lease ended, the share silent on the next sale; a refunded buyout re-leases; seven idle real days recall a docked empty hull; a buyout while under way refused |
 
 Post-loop cuts, named and ordered: **P-G** real gangway exits (outer door relinked at dock, a station
@@ -1547,13 +2006,15 @@ path at offer projection, for the day a player holds a second endpoint (S–M); 
 spec, `+ship/helm`, `request_seat_activation` and the `movement` channel for a second crew member (M);
 **P3** provider identity fix, `ledger`/`ship`/`port` providers (M); **P4** Kirkwood as a checkpoint, a
 hold of a sim hull, the Customs Assertion front (M); **P5** production restock with conservation (Kasei
-refinery work orders, Ceres deposits, a construction sink) before a second cohort (L); **P6** volume
-capacity (`si.volume_ml`, ice at 1.5 m³/t) and the `LotCensus` quantity index (M); **P7** Pallas as a
-port (data); **P8** delete the legacy seed latch (M); **P9** the net share with a run book and carried
-deficit (M).
+refinery work orders, Ceres deposits, a construction sink) before a second cohort (L); **P6** the
+`LotCensus` quantity index only (S; its volume half is in the slice under R7 and is withdrawn here);
+**P7** Pallas as a port (data); **P8** delete the legacy seed latch (M); **P9** the net share with a run
+book and carried deficit (M); **P-A** the astronomy engine (§4.8; L in six sub-cuts: data and model M,
+laws M, chart S+M, price policy M, comms S, flip S; after IC12, with P5 for its prices and P7 for its
+showcase).
 
-**IC0.** As recorded in [18-cut-notes.md](18-cut-notes.md). Still owed under Q-18-6: `spacecraft` out of
-`SELF_MODES` (`travel.rs:90`) and `options_from_corridor_room`; folded into IC1.
+**IC0.** As recorded in [18-cut-notes.md](18-cut-notes.md). `spacecraft` out of `SELF_MODES`
+(`travel.rs:90`) and `options_from_corridor_room` is IC1's, with its test (Q-18-6, binding).
 
 **IC1.** Author the four packs to 18a §1–§2 and §4.5. Add `markers: Vec<String>` to `RoomDef` with the
 registry the validator consults; seed `port.dock` rooms in `validate.rs:1958-2000`. Write
@@ -1561,9 +2022,13 @@ registry the validator consults; seed `port.dock` rooms in `validate.rs:1958-200
 Limbo-bound OOC exit now), the door hook and `+ic`. Copy the starter digest-pin and validate-clean tests;
 add the kept-world boot test.
 
-**IC2.** Author `dray.json`; add `Hauler`, `logistics` and `interior` with `skip_serializing_if`; filter
-`hauler` in `fieldable_ids`. Author `goods.json` with its validator and pin; derive the catalog rows.
-Author `tacsim.lane.ceres_phobos` with §4.4's legs; the T17 test.
+**IC2.** Author `dray.json` (limit maps, the tagged drive law); add `Hauler`, `logistics` and `interior`
+with `skip_serializing_if`; filter `hauler` in `fieldable_ids`. Author `goods.json` (six rows, measures)
+with its validator and pin; derive the catalog rows; `port/capacity.rs` and its pure tests. Author
+`tacsim.lane.ceres_phobos` with §4.4's legs, real-date true longitudes and distances with `epoch_ic`
+(a small committed script beside the fixture; the date in the cut note) and Kirkwood at its epoch
+position pending Q-18-36; `sky.rs`; `Body.epoch_ic` in `phase_mdeg_at`; the five sky tests; the
+`@corridor/show` and comment wording.
 
 **IC3.** `PackEntry::Port(PortDef)` and the misplacement row. `PortApplier` a–c with the fail-closed map
 and capital tranches. The passive-open guard skip in mush-sim. The `test_world` composition flag.
@@ -1583,8 +2048,9 @@ landed.
 **IC8.** `tacsim_port_stock`; the stock arm; `PortApplier` d–e; the tacsim gate, caps and capacity
 provider; the lapsed-hold release arm; the rendering.
 
-**IC9.** The time half (`route_leg_durations`, `leg_s`, `depart`); the burn; the launch and dock arms;
-the plan and undock verbs; the narration. Play it once by hand at rate 24.
+**IC9.** The time half (`laden_leg_durations`, `plan_passage`, `choose_route`, `passage_burn`, `leg_s`,
+`depart`); the burn with the plan as input and the ticket carrying it; the launch and dock arms; the plan
+and undock verbs; the sky-change and reboot tests; the narration. Play it once by hand at rate 24.
 
 **IC10.** The sell arm, `transfer_marked`, the Fact gate, `ProceedsPolicy`; `ic_slice_loop.rs` part 1.
 
@@ -1603,7 +2069,8 @@ the plan and undock verbs; the narration. Play it once by hand at rate 24.
 (`build_engine`) at `@tacsim/time rate=3600` (the only staff act) with no staff act after boot, in two
 parts. In this listing `;` separates lines typed one at a time (there is no command separator; a
 leading `;` is the semipose prefix, `mush-core/src/cmd.rs:1300-1304`). Timings are for the full outbound
-load at 3600 (a 19.6 h passage is about 471 s; Kirkwood at about 268 s).
+load at 3600 at the test's own constant sky, built explicitly at sky rate 0 (a 19.63 h passage is about
+471 s; Kirkwood at about 268 s).
 
 ```
 --- part 1 (from IC10): interactive, the pilot online ---
@@ -1612,48 +2079,52 @@ c                                   -> Port Watch Arrivals, Ceres Freeport
 registry                            -> (C05 is north of Arrivals; the concourse has no exit to it)
 +coop                               -> stake 25,000.00cr; share 250‰ of margin; buyout 90,000.00cr; 8 of 8 Drays free
 +coop/enrol Salt Moth               -> "... account #41 ... charters you FPC-D-0401, laid up as the Slack Water, now the Salt Moth ... 25,000.00cr staked ..."
-+ship                               -> docked Ceres Freeport, Berth Gallery; cargo 0/100 t; tank 0/80 t; locker 0/120
++ship                               -> docked Ceres Freeport, Berth Gallery; cargo 0/100 t · 0.0/120 m³; tank 0/80 t; locker 0/120
 arrivals ; concourse ; exchange
-+market/list                        -> metal concentrate 200.00cr/t 8,500 t · water ice 100.00cr/t 3,600 t · WANTED alloy 520.00cr/t
-+market/quote 4=70 ; +market/accept 11     -> "70 t of metal concentrate are loaded into the Salt Moth's hold. Rosalind Qureshi-Mbeki countersigns."
-+market/quote 5=30 ; +market/accept 12     -> 30 t water ice, 3,000.00cr
++market/list                        -> metal concentrate 200.00cr/t 4,000 t · water ice 100.00cr/t 9,600 t · WANTED alloy 520.00cr/t · WANTED yard fittings 560.00cr/t
++market/quote 4=20 ; +market/accept 11     -> "20 t of metal concentrate are loaded into the Salt Moth's hold. Margit Søndergaard-Achebe countersigns."
++market/quote 5=80 ; +market/accept 12     -> 80 t water ice, 8,000.00cr; "Rosalind Qureshi-Mbeki countersigns."
 chandlery
 +market/quote 6=42 ; +market/accept 13     -> 42 t reaction mass, 1,680.00cr
 +market/quote 7=21 ; +market/accept 14     -> 21 crew-days, 210.00cr
-+ship/hold                          -> cargo 100/100 t · tank 42/80 t · locker 21/120 ;  +credit -> available 6,110.00cr
++ship/hold                          -> cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 21/120 ;  +credit -> available 11,110.00cr
 exchange ; concourse ; arrivals ; lobby ; gallery ; +ship/board     -> "You cycle the lock into the Salt Moth."  (look: Airlock; status line)
-in ; up ; look                      -> Bridge: course, tank and hold readouts
-+ship/plan stickney                 -> payload 142.2 t; burn 41 t (1 t left); 21 crew-days; 19.6 IC days ≈ 19 h 36 m real
+in ; up ; look                      -> Bridge: course, tank and hold readouts (t and m³)
++ship/plan stickney                 -> cargo 100 t of 100 t (mass full) · 120.0 m³ of 120 m³ (volume full); payload 142.2 t; burn 41 t (1 t left); 21 crew-days; 19.6 IC days ≈ 19 h 38 m real
 +ship/undock stickney               -> "Clearance granted. 41 t reaction mass and 21 crew-days committed ... arrival in 19.6 IC days."
 down ; crew
    (~268 s)                         -> "Kirkwood Depot slides past ... Leg 2 of 2."     (heard in the Crew Compartment)
    (~471 s)                         -> "Salt Moth docks at Stickney Yards."            (heard in the Crew Compartment)
 passage ; airlock ; +ship/leave     -> Visiting Berth Gallery, Stickney Yards
 lobby ; customs ; concourse ; exchange ; down
-+market/list                        -> Kasei Metals WANTS metal concentrate 300.00cr/t (8,500 t) · water ice 200.00cr/t
-+market/sell 21=70                  -> "Sold 70 t metal concentrate to Kasei Metals at 300.00cr/t: 21,000.00cr; Co-op share 1,750.00cr; you received 19,250.00cr. Jonas Achterberg-Nkemelu countersigns."
-+credit                             -> available 25,360.00cr
++market/list                        -> Kasei Metals WANTS metal concentrate 280.00cr/t (4,000 t) · water ice 200.00cr/t (9,600 t)
++market/sell 21=20                  -> "Sold 20 t metal concentrate to Kasei Metals at 280.00cr/t: 5,600.00cr; Co-op share 400.00cr; you received 5,200.00cr. Jonas Achterberg-Nkemelu countersigns."
++market/sell 22=80                  -> "Sold 80 t water ice at 200.00cr/t: 16,000.00cr; Co-op share 2,000.00cr; you received 14,000.00cr."
++credit                             -> available 30,310.00cr
 
 --- part 2 (from IC11): the pilot queues and disconnects before departure ---
 (at Ceres, after loading, aboard)
 +ship/order depart stickney at=now ; +ship/order sell metals all min=250 ; +ship/order sell volatiles all min=150
-+ship/order buy propellant fill max=60 ; +ship/order buy provisions fill ; +ship/order buy structural_alloys 100 max=400
++ship/order buy propellant fill max=60 ; +ship/order buy provisions fill ; +ship/order buy industrial_parts 49 max=400 ; +ship/order buy structural_alloys 55 max=400
 +ship/order depart ceres at=+600s ; +ship/orders ; QUIT
-   (tick)                           -> burn 41 t / 21 crew-days; launch; (~471 s) dock at Stickney
-   (fires)                          -> sell 70 t metals (+19,250 net); sell 30 t ice (+5,250); buy 40 t fuel; buy 19 crew-days; buy 70 t alloys (short of 100: funds); cash 20.00
-   (+600 s)                         -> depart Ceres; (~426 s = 1,533,560 IC s at 3600, the 17.75-day return) dock at Ceres
+   (tick)                           -> plan; burn 41 t / 21 crew-days; launch; (~471 s) dock at Stickney
+   (fires)                          -> sell 20 t metals (+5,200 net); sell 80 t ice (+14,000); buy 36 t fuel (tank 37); buy 19 crew-days; buy 49 t fittings; buy 20 t alloys (short of 55: funds); cash 360.00
+   (+600 s)                         -> depart Ceres at 69 t; (~419 s = 1,507,276 IC s at 3600, the 17.45-day return) dock at Ceres
 connect                             -> "While you were off watch:" every line above, once; "Aboard the Salt Moth, docked at Ceres Freeport"
-+coop/statement                     -> 2 sales; margin 10,000.00; shares 2,500.00; buyout 90,000.00cr
++coop/statement                     -> 2 sales; margin 9,600.00; shares 2,400.00; buyout 90,000.00cr
 ```
 
 **Assertions.** Conservation from journals and lineage: Σ money over pilot, Trust and the orgs is
 unchanged except the boot capitalizations; pilot + Trust = Kasei's payment on every sale; every tonne in
 the hold traces to a seeded Origin receipt; seeded − sold − burned = remaining on every listing and pool;
-Kasei's pool = delivered intake. No `SettlementRefused` and no stale-contract page.
+Kasei's pool = delivered intake; every hold write leaves both cargo limits met. No `SettlementRefused`
+and no stale-contract page. The test asserts "sky: constant" on `@tacsim/port status` and no passage
+bound outside its own sky.
 
 **Negative checks**, each refused with an in-fiction line and nothing moved: a second `+coop/enrol` on the
 same gateway account; another player's `+ship/board` on the Moth; a third person placed into the berths
-slot; `+market/accept` from Limbo, or into a hold docked at the other port; 101 t of cargo; ice into the
+slot; `+market/accept` from Limbo, or into a hold docked at the other port; 101 t of alloy stock
+(mass); 86 t of ice, and 81 t of ice after 19 t of concentrate (volume); ice into the
 tank; `+ship/undock` with 40 t against a 41 t burn, not aboard, or under way twice; a queued depart with
 the pilot ashore (holds, burns nothing); an unfunded bid (sale skipped, cargo kept); `@inv/move` out of
 the hold under way; `o`, `s`, `home`, `@teleport` by an occupant; `o`→`x`→`c` from Stickney (the `+ic`
@@ -1673,7 +2144,8 @@ rate=24` happens only on the owner's ask.
 
 **The harness/CI lens.** `ic_slice_loop.rs` on the production composition; IC0's gate test; the four
 station packs and the lane pack validate clean with a kept-world boot test; `tests/content.rs` pins every
-digest including `goods.json`; the T17 leg test; the custody-seam test refuses a hauler; the
+digest including `goods.json`; the four IC2 sky tests, the six IC9 planner and freeze tests and IC8's LP
+test; the capacity function's pure tests; the custody-seam test refuses a hauler; the
 composition-edge pin covers tacsim's delegation; T-45 holds the help. The load-sensitive suites rule of
 the 16b loop applies to the rate-3600 tests.
 
@@ -1682,7 +2154,10 @@ the 16b loop applies to the rate-3600 tests.
 ## 7. Decisions taken here (under the defaults of §8)
 
 Draft 0.1's twenty decisions, re-stated. "Stands" keeps the number and the text; "replaced by R*n*"
-records the owner's ruling of 2026-10-15 and points at the decision that takes its place.
+records the owner's ruling of 2026-10-15 and points at the decision that takes its place. **Under R8
+every decision below that rested on a Draft 0.2 question is now binding (owner, 2026-10-15)**; the
+"(Rests on …)" notes are kept so the reader can see which ruling closed what. D-18-28 is replaced by R7;
+D-18-39 to D-18-51 are new; D-18-13, 25, 27, 29, 30 and the §4.2 ticket (D-18-11) are amended as marked.
 
 - **D-18-1 Ports.** Stands, confirmed by the owner (Q-18-1 closed): Ceres Freeport → Kirkwood Depot →
   Stickney Yards; Pallas a body, a lore thread and the named next port. Tycho is an insurer's agency at
@@ -1703,19 +2178,25 @@ records the owner's ruling of 2026-10-15 and points at the decision that takes i
   stations, but the live lease is the gate, and the C2A–C4A/F3 bypass is re-justified under R3.
 - **D-18-10 Acquisition from Tycho's pool.** **Replaced by R1/R2** → D-18-21.
 - **D-18-11 Consumables and the burn.** Stands, extended: pools only; the ticket carries the manifest,
-  `leg_s`, burn, crew-days and the order key; a queued depart stages the same action as the pilot.
+  the whole passage plan (D-18-46; `leg_s` is its seconds), burn, crew-days and the order key; a queued
+  depart stages the same action as the pilot; the prepare recomputes burn and crew-days from the plan's
+  seconds and the held drive table and trusts only the seconds (T1).
 - **D-18-12 Presence and defaults.** Stands, extended with `Presence::Ship(hull)` for queued orders.
-- **D-18-13 The resource subset.** Amended: five goods (metals, volatiles, structural alloys,
-  propellant, provisions); provisions opaque and instrument-less; `FAMILIES` ten; units tonnes and crew-days.
+- **D-18-13 The resource subset.** Amended by R7: **six** goods (metals, volatiles, structural alloys,
+  yard fittings as `industrial_parts`, propellant, provisions), five of the ten families; provisions
+  opaque and instrument-less; `FAMILIES` ten; units tonnes and crew-days. (The sixth rests on Q-18-32.)
 - **D-18-14 Vendor funding.** Stands in shape (finite one-shot capitalization, applier-map dedup);
   numbers resized → D-18-27; tranches ≤ 800,000 under a 1,000,000 cap.
 - **D-18-15 Goods origin by issue/retire.** **Replaced by R4** → D-18-26; the E7 pin amendment withdrawn.
-- **D-18-16 The travel record.** Stands (`CarrierJourney`; `spacecraft` leaves `SELF_MODES`, Q-18-6).
-- **D-18-17 Flight time by authored `base_s` only.** **Replaced** → D-18-30 (binding T1 applied).
+- **D-18-16 The travel record.** Stands (`CarrierJourney`; `spacecraft` leaves `SELF_MODES` in IC1 with
+  a test, Q-18-6 binding).
+- **D-18-17 Flight time by authored `base_s` only.** **Replaced** → D-18-30 (binding T1 applied), now
+  through the planner (D-18-44).
 - **D-18-18 Docking.** Stands: one passive domain per port; boarding and leaving are placement verbs;
   no gangway exits in the slice (P-G); docking automatic at arrival; no berth slots (P-F).
 - **D-18-19 `RoomDef.markers` / `port.dock`.** Stands.
-- **D-18-20 The `port` kind.** Stands; its pack is `tacsim.lane.ceres_phobos` v1 → D-18-36.
+- **D-18-20 The `port` kind.** Stands; its pack is `tacsim.lane.ceres_phobos` v1 → D-18-36; its
+  `routes` value is a list per destination (D-18-47).
 
 New decisions:
 
@@ -1734,13 +2215,20 @@ New decisions:
   irrelevant; no station, seat or billet (P2). The C2A–C4A/F3 station-channel gate stays bypassed for the
   hull's departure, now because R3 needs departures while the pilot is disconnected and a seat lease
   lapses 300 s after a disconnect. (Rests on Q-18-17.)
-- **D-18-24 The share base.** 250‰ of trading margin over posted reference prices, computed by a
+- **D-18-24 The share base.** 250‰ of trading margin over the origin port's posted ask, computed by a
   `ProceedsPolicy` from the source endpoint and paid as an `Exact` payout inside the sale; a sale at or
-  under reference pays nothing. The default shares trading margin, not net profit (R2's word);
-  Q-18-13 asks whether the owner wants the net. (Rests on Q-18-13.)
+  under reference pays nothing. The reference is a **live read**: the programme's `reference` map names,
+  per good, the origin listing (`<port>/<org>`) whose current ask the policy reads when it builds the
+  payout, so only the share permille and the buyout price freeze at signing and the astronomy engine's
+  price policy moves the reference with the board (the residual — billed on the ask at settlement, not
+  the ask paid — is `trade.md`'s). It shares trading margin, not net profit (R2's word); the net share
+  with a run book is P9. (Rested on Q-18-13; binding.)
 - **D-18-25 Programme terms.** Stake 25,000 cr; buyout 90,000 cr frozen at signing; one enrolment per
   gateway account ever; a pool of 8 Trust Drays; programme capital 250,000 with a 50,000 floor; dormancy
-  seven real days; release and revoke in IC13. (Rests on Q-18-14.)
+  seven real days; release and revoke in IC13. Numbers restated under R7: the buyout plus a 20,000 float
+  lands on day 15 at full loads (about 4,000 to spare) and day 23 at 70 %, with the Trust's shares about
+  40,000; Draft 0.2's "14–15 / 21–24" did not reproduce under its own numbers (day 17). (Rested on
+  Q-18-14; binding.)
 - **D-18-26 Goods origin.** Finite seeded stock: minted once per issue by `tacsim_port_stock` with a
   `tacsim.port_stock` receipt as the guard, pooled by `inv.dissolve`, driven by a per-port clerk actor on
   the tacsim tick; asks are Stock+Lot with `LotOp::Draw` (pool to pool, the listing quantity as the
@@ -1749,23 +2237,34 @@ New decisions:
   bumped `issue` on a receipted row (paged as drift). A lapsed **player** listing's hold is released by
   the `tacsim.port` tick acting as the listing holder (IC5's actor swap), one per fire, keyed by the
   derived reservation id, never by the GOD lapse sweep. (Rests on Q-18-19, Q-18-31.)
-- **D-18-27 Stock and capital sizing.** For one cohort of 8–10 pilots for about three weeks (Ceres
-  metals 8,500 t, volatiles 3,600 t; Stickney alloys 12,000 t; propellant 5,000 t and provisions 2,600
-  per port; Kasei intake 8,500/3,600 t; Freeport Works intake 12,000 t); capital Kasei 600,000, Freeport
-  4,000,000, the Trust 250,000; no restock in the slice (P5); no top-ups by default. (Rests on Q-18-19.)
-- **D-18-28 Units and capacity.** Tonnes for bulk goods and propellant, crew-days for provisions, in a
-  tacsim-owned `goods.json` with its own digest pin deriving the market catalog; capacity by mass only
-  (cargo 100 t, tank 80 t, locker 120 crew-days) checked synchronously in the lot pre-check and in the
-  Draw prepare; volume deferred (P6). (Rests on Q-18-21.)
-- **D-18-29 The Dray.** 240 t dry, 100 t cargo, 80 t tank, 120 crew-days, two berths at 100 kg, a
-  181,000 kg payload ceiling that is a non-binding rail, `coast_hauler` at thrust 1000 with
-  `burn_permille` 105; `UnitClass::Hauler`, `logistics` and `interior` as optional fields; no core.
-- **D-18-30 Passage.** The laden evaluator applied to live flight now (T1): `route_leg_durations` →
-  `CarrierJourney.leg_s` → `pub depart(leg_s)`; the lane's unladen `base_s` is 540,800 + 409,200 s so a
-  brimmed hull lands in 22 h, a full load in 19.6 h and a 70 t return in 17.75 h at rate 24; crew-days
-  are occupants × Σ ceil(laden leg days); the rate is 24 for play and 3600 for tests;
-  `RouteDef.propellant` is 0 and not reinterpreted; IC2's new T17 test pins the legs from the sky.
-  (Rests on Q-18-15, Q-18-16.)
+- **D-18-27 Stock and capital sizing.** Resized under R7 as a sizing basis of about 120 legs each way
+  for one cohort of 8–10 pilots over about three weeks: Ceres volatiles 9,600 t, metals 4,000 t; Stickney
+  alloys 7,000 t, fittings 5,400 t; propellant 5,000 t and provisions 2,600 per port; Kasei intake
+  9,600/4,000 t; Freeport Works intake 7,000 t; the Co-op's fittings intake 5,400 t; capital Kasei
+  600,000, Freeport 4,000,000, the Co-op 3,100,000, the Trust 250,000; no restock in the slice (P5); no
+  top-ups. A basis derived from today's vertices, never an invariant the readiness report asserts.
+  (Rested on Q-18-19; binding.)
+- **D-18-28 Units and capacity.** **Replaced by R7.** Ledger units stay tonnes for bulk goods and
+  reaction mass and crew-days for provisions, in a tacsim-owned `goods.json` with its own digest pin
+  deriving the market catalog; every good carries integer measures `si.mass_kg` and `si.volume_l` per
+  unit, **both binding**, under doc 06 D3's open measure map (kg/L scale by registered choice); the cargo
+  hold limits 100,000 kg **and** 120,000 L, the tank 80,000 kg (tank-rated, mass only), the locker 480 kg
+  and 1,200 L (120 crew-days); one tacsim pure function (`capacity::load`/`admits`/`max_more`) runs in
+  the lot pre-check (refuse, nothing charged), the Draw prepare (backstop, fail closed), `+ship/plan`,
+  `+ship/hold`, the room gauges and the executor's clamp and `fill`; volume leaves P6.
+- **D-18-29 The Dray.** 240 t dry, 100 t and 120 m³ cargo, 80 t tank, 120 crew-days, two berths at
+  100 kg, a 181,000 kg payload ceiling that is a non-binding rail (≥ 180,680); `UnitClass::Hauler`,
+  `logistics` (D3 limit maps) and `interior` as optional fields; no core. Amended by R9: the drive is a
+  **tagged law**, `law: { coast: { kms: 205, burn_permille: 105 } }`, no `thrust_permille`, one class one
+  law (D-18-45).
+- **D-18-30 Passage.** The laden evaluator applied to live flight now (T1) **through the planner**
+  (D-18-44): `plan_passage` → `CarrierJourney.leg_s` → `pub depart(leg_s)`; the lane's unladen `base_s`
+  is 540,800 + 409,200 s, the pack's pin of the constant sky checked against the sky and the drive's rate
+  by IC2's test (D-18-45), so a brimmed hull lands in 22 h, a full load in 19.63 h and the 69 t first
+  return in 17.45 h at rate 24 — at the slice's constant sky, never as an invariant (D-18-50); crew-days
+  are occupants × Σ ceil(laden leg days); the rate is 24 for play and 3600 for tests; the sky rate is 0;
+  `RouteDef.propellant` is 0 and not reinterpreted; `route_leg_durations` is not built. (Rested on
+  Q-18-15, Q-18-16; binding.)
 - **D-18-31 The queue.** A durable legacy `tacsim:orders:<hull>` document with a closed vocabulary (buy,
   sell, depart, stop; `fill`; UTC departure times), executed by the tacsim pull tick acting as the pilot
   through closed typed calls; `@wait` and `schedule_source` refused as carriers; the verb family is
@@ -1793,12 +2292,85 @@ New decisions:
 - **D-18-38 The daily rhythm is the acceptance.** The slice is done when IC11's queue runs a two-day
   loop unattended and IC12's hand smoke at rate 24 shows a docked hull at the next same-time session.
 
+New in Draft 0.3 (R7, R9; the owner's second-round rulings):
+
+- **D-18-39 The mixed load is the optimum (R7).** Packed volumes 400 / 1,400 / 300 / 2,300 L per t
+  make each leg one dense good against one bulky good with a whole-tonne vertex (20 + 80 outbound,
+  55 + 45 return); Kasei's metals bid moves 300 → 280 to break Draft 0.2's tie; the vertex condition
+  1 < margin_bulky/margin_dense < volume_bulky/volume_dense is the design invariant, a band. No code,
+  fixture, NPC line or test stores the best mix: IC8's LP test derives it from `goods.json`, the hull and
+  the posted prices (the R9 guard). (Rests on Q-18-33.)
+- **D-18-40 The return export.** `industrial_parts` "yard fittings, crated" at 2,300 L/t: the Stickney
+  Yards ask 400 from `item.yard_spares`, signed by the service clerk at P11; the Co-op's bid 560 at Ceres
+  (intake 5,400 t; capital 3,100,000). The return is a three-limit balance: mass, volume and, early on,
+  cash. (Rests on Q-18-32.)
+- **D-18-41 `fill` and the clamp under two limits.** `fill` = the joint least fixed point, at or above
+  what is aboard, of the burn and crew-days (from `plan_passage` at the depart's `not_before`) for the
+  heaviest load the queued orders can make under both cargo limits, no funds term; the cargo clamp =
+  min(qty, listing, `max_more` by mass and by volume, funds less the next departure's unmet fuel and
+  stores), every bound logged; the executor never optimises across orders. Supersedes §4.4's "41" (the
+  greater fixed point; the least is 40). (Rests on Q-18-34.)
+- **D-18-42 The sky in the slice (R9).** A **constant** sky: `[tacsim.time.ephemeris].rate = 0`, doc 10
+  §22 T17 as amended by the owner on 2026-10-15 (§4.8). Every figure here (950,000 s, 19.63 h, burn 41 t,
+  21 crew-days, the day-15 buyout) is that sky's output, never an invariant. The astronomy engine is
+  post-slice cut P-A; doc 10 §22 and the README superseded list are amended now.
+- **D-18-43 The sky seam.** The slice reaches the sky only through tacsim `Sky` (an enum;
+  `distance_km(a, ta, b, tb)` the one query, delegating to `separation_km` while Circular;
+  `position_km(body, t)` in 3D integer km with z = 0, reserved for the chart; `revision()` as a
+  `DefinitionDigest`). `Ephemeris::distance_km_at`/`pinned_km` stay for fixture routes only.
+- **D-18-44 The one passage planner** (replaces D-18-30's `route_leg_durations`). tacsim
+  `plan_passage(sky, pack, route, drive, dry, payload, occupants, depart_ic) -> PassagePlan` is the only
+  source of per-leg distance, duration, burn and crew-days, with a fixed three-pass intercept per leg;
+  its callers are `+ship/plan`, `+ship/undock`, the queue's depart, `fill` and the clamp (at the depart's
+  `not_before`) and `choose_route` over the port's list. mush-sim keeps a sky-free
+  `laden_leg_durations(unladen, drive, payload)`, `route_duration` its Σ over `base_s`; `depart(leg_s)`
+  and `CarrierJourney.leg_s` stand as D-18-30 specifies.
+- **D-18-45 The coast rate is drive data; the pack's seconds are checked.** `PackLeg.base_s` stays
+  required and authored as the pack's pin (T1/Q18A); `dray.json` carries `law: { coast: { kms: 205,
+  burn_permille: 105 } }`; IC2's test derives each lane leg from the sky at the epoch and the drive's kms
+  and refuses if the pack disagrees by more than 100 s; `RouteDef.distance_km` stays the direct chord at
+  the epoch, relabelled, read by nothing in the slice; `passage_burn(law, dry, payload, legs)` is the
+  fuel function (Coast distance-free by doctrine: `kms` is the unladen cruise, the laden law and the
+  105‰ are both data and their reconciliation under the rocket equation is Q-18-41); one class, one law.
+- **D-18-46 The ticket freezes the plan** (extends D-18-11). The departure ticket carries the whole
+  `PassagePlan` (route, law, depart_ic, sky_rev, per-leg to/body/dist_km/secs/t0/t1, total_s, burn_t,
+  crew_days); `leg_s` is its seconds; nothing after the burn re-reads the sky. T1, load-bearing again.
+- **D-18-47 Routes per destination are a list** (amends D-18-20). `routes: { <dest>: [<route id>, …] }`,
+  non-empty; the planner takes the fastest at departure, ties to the earlier listing; `via=` reserved;
+  orders store destinations, never routes or durations.
+- **D-18-48 Per-body epochs and real-date positions.** `BodyDef.epoch_ic: Option<i64>`, emitted only
+  when present, carried into `Body` and read by `phase_mdeg_at` in place of the config epoch; the lane
+  pack's bodies author it at a real IC date near launch on which the **true** heliocentric longitudes
+  of Ceres and Mars are about 10° apart, with Ceres, Mars and Pallas at their true longitudes and
+  heliocentric distances on that date (never mean elements: Ceres' equation of centre reaches 9° and
+  its radius ±0.22 AU, ±30 % on a 0.741 AU leg), so the circular sky is exact at the epoch and only
+  drifts after it. Fictional Kirkwood is tuned at its 2.06 AU epoch position with a placeholder period,
+  inert at rate 0, and its **orbit is provisional on Q-18-36** (the lane-tied default would put it on
+  Ceres's orbit a few degrees astern): IC2 authors Kirkwood's orbit as data the owner has chosen, and
+  lane pack v2 re-authors every `base_s` at the flip, retiring IC2's `lane_legs_derive_at_epoch` with
+  v1. No slice figure is cited as "real geometry".
+- **D-18-49 Prices and the atlas under R9.** Prices stay listing data the applier writes (no pricing
+  trait; the engine's policy is a second writer with the applier's authority); quotes freeze prices; the
+  programme's references are live reads of the named origin asks, and only the share permille and the
+  buyout price freeze at signing (D-18-24); `fill`, the clamp, NPC lore and tests derive from live
+  listings. The atlas drawing is a projection; `spacecraft` leaves `SELF_MODES` in IC1 with a test
+  (Q-18-6, binding); no slice code reads site coordinates.
+- **D-18-50 No passage bound as an invariant.** R3's "under a day" is stated at the slice's constant
+  sky; the readiness gate checks the world rate and reports the sky but never asserts a duration; help
+  says passage time depends on load and, later, the season. The bound under a moving sky is Q-18-35.
+- **D-18-51 belter-charts as inspiration only.** The engine imports public JPL Horizons data through
+  its own committed script, vendors no belter-charts code wholesale and takes none of The Expanse's canon
+  locations or names; its ideas (a date scrubber, a flip-and-burn planner, honest vs canon-feel
+  acceleration, light lag) inform P-A's surfaces.
+
 **Locked decisions this plan touches.** *Leaves:* README superseded 1–7; D-16-* (the arena untouched;
 the hauler filter keeps it so); doc 17 D-UM-* (the Dray has no core: Class 0, the drive ROM, nothing
 separately titled; the queue is the pilot's instrument, not a mind); T2 (no economic transaction in a
 pulse); T4; doc 10 4A (ten families); doc 10 7A (finite capitalization); D-E5-4 (no lock, no exit
 rewrite: boarding is a verb and gangways, when they come, use a hook). *Honours:* **T1** (passage time by
-route, drive and payload, now applied); T17 (the pinned sky: distances by test); doc 11 §2's Warrant
+route, drive and payload, now applied, and its freeze load-bearing again: the ticket freezes the whole
+passage plan); **T17 as amended by R9** (the slice's constant sky; durations derived from it by the one
+planner; superseded after the slice by cut P-A); doc 11 §2's Warrant
 (every listing has a signatory of its own org; every queued order is the pilot's signed sailing plan,
 executed by the port under that signature, and the Class 0 ROM contracts for nothing); doc 17 D-UM-32
 and D-UM-11/52 (the ROM flies, never trades); D-14-34 (the
@@ -1806,134 +2378,138 @@ Asker audience); doc 06 §7.5 (the boundary rule, built as written: staff not ex
 owner's answer:* C2A–C4A / doc 10 §18.1 / F3's station-channel gate for the hull's departure (D-18-23,
 until P2); DL-11 / D-E6-15's frozen party-cap table gains a content-resolved source (Q-18-10); D-14-35's
 wording (Q-18-6); doc 11 §4.5 gains the First Captain programme and §4.7 loses the starter-charter line
-Draft 0.1 proposed; doc 10 1A is honoured as written (one OOC hour per IC day; a Belt passage of
-"weeks" IC in about a day real), so the Draft 0.1 three-day amendment is withdrawn. *Withdrawn:* the E7
-"market never mints" pin amendment (R4 makes it unnecessary).
+Draft 0.1 proposed; doc 10 1A is honoured as written for its scales and compression (one OOC hour per
+IC day; a Belt passage of "weeks" IC in about a day real) and for "transfer conditions modify routes
+rather than closing destinations", so the Draft 0.1 three-day amendment is withdrawn — while its
+rejection of simulated ephemerides is superseded after the slice by R9; doc 10 §22 T17 gains the
+amendment of §4.8; doc 14 §3.8 S7's placement of the sky epoch in server config moves to the pack's
+bodies (D-18-48). *Withdrawn:* the E7 "market never mints" pin amendment (R4 makes it unnecessary).
 
 ---
 
 ## 8. Questions for the owner
 
-Each open question has a recommended default; "as recommended" builds §5 as written.
+**Answered on 2026-10-15, first round** (the ruling in one line): **Q-18-1** Ports: Ceres Freeport →
+Kirkwood → Stickney Yards; Tycho an agency, not the ship desk. **Q-18-2** World rate 24 for play.
+**Q-18-2b** Lane length: about a day real, offline, a 30–60 minute daily session. **Q-18-4** A charter,
+never a required purchase; a buyout exists. **Q-18-8** Finite seeded stock; no issue/retire. **Q-18-9**
+Finite one-shot vendor funding.
 
-**Answered on 2026-10-15** (the ruling recorded in one line; the question is closed):
+**Answered on 2026-10-15, second round (R8: "other defaults are accepted"), each as recommended and
+now binding:** **Q-18-3** provisions opaque, crew-days, `occupants × ceil(days)`. **Q-18-5** optional
+`UnitSpec.logistics`/`interior`, no `ComponentRole` drive and no `drive` rules kind (the drive table is
+the index over fielded definitions). **Q-18-6** D-14-35 decided as two records with a hard boundary;
+`spacecraft` out of `SELF_MODES` in IC1 with a test. **Q-18-7** the burn settles at undock, matter first,
+the tick launching the ticket. **Q-18-10** party caps by content reference, conferring no money
+authority. **Q-18-11** packs declare money as numbers under the cap. **Q-18-12** names ok (18a §4; the
+sixth signatory and the fittings good take their names from 18a). **Q-18-13** the share is 250‰ of
+margin over reference, paid inside the sale; net with a run book stays P9. **Q-18-14** stake 25,000,
+buyout 90,000 fixed at signing, one enrolment per account ever, 8 hulls, no top-up. **Q-18-15** the
+laden law applied now (through the planner, D-18-44). **Q-18-16** `@tacsim/time rate=24` on the next
+owner-approved redeploy; never redeploy without asking. **Q-18-17** the pilot must be aboard; a passenger
+ashore is left behind. **Q-18-18** boarding by verb; gangway exits P-G. **Q-18-19** stock for one cohort
+(resized under R7, D-18-27); restock only by P5; no top-ups. **Q-18-20** no berth slots (P-F).
+**Q-18-22** `+ship/orders` / `+ship/order`; 16 orders, 32 log lines; no repeating plans. **Q-18-23** 13
++ 12 rooms; the freight rooms P-F. **Q-18-24** the signed sailing plan executed by the port; the ROM
+only flies. **Q-18-25** the six rooms plus the store, plain names. **Q-18-26** no minimum fuel reserve.
+**Q-18-27** the 1-minor Manual-clock rent plus the stale-page exemption. **Q-18-28** the queue editable
+aboard or in the port area. **Q-18-29** plain treasury capitalization for Kasei. **Q-18-30** the Trust a
+separate org. **Q-18-31** the port tick releases a lapsed player listing's hold as the holder.
 
-- **Q-18-1 Ports.** Ceres Freeport → Kirkwood → Stickney Yards, confirmed; the owner's own material uses
-  the pair. Tycho is an agency at both ports, not the ship desk.
-- **Q-18-2 World rate.** "Real-world travel times less than a day, around a day": the lane is laden
-  13–22 h at rate 24, so 24 is the play rate and the next owner-approved redeploy sets it (Q-18-16 asks
-  only for the go-ahead).
-- **Q-18-2b Lane length.** About a day real, primarily offline, with a productive 30–60 minute daily
-  session: 950,000 IC s unladen, 19.6 h at a full load; the three-day alternative is withdrawn.
-- **Q-18-4 Starter ship.** A charter, never a required purchase; owning a hull is "a couple of weeks of
-  good luck away" and a buyout exists (IC13). The charter is the lease now, from the Co-op's programme.
-- **Q-18-8 Ports as economic boundaries.** No: "seed an initial finite world stock versus just creating
-  things out of thin air". Issue/retire is gone; stock is minted once with receipts.
-- **Q-18-9 Vendor funding.** Finite; one-shot capitalization; no drip.
+**Q-18-21 Volume capacity — REVERSED by R7 (owner, 2026-10-15):** *"both volume and mass are critical
+components of capacity .. that's part of the trick is balancing the payload from station to station to
+utilize both the available volume and mass."* Draft 0.2's mass-only default is replaced by D-18-28 as
+rewritten and D-18-39/40/41: both limits bind, the packed volumes are re-authored so the balanced load
+is the optimum on each leg, and the capacity function runs everywhere a hold is written or shown.
 
-**Still open from Draft 0.1** (defaults unchanged unless noted):
+**Open — what the two Draft 0.3 designs could not settle** (each with a recommended default; "as
+recommended" builds §5 as written):
 
-- **Q-18-3 Food.** Default: `provisions`, opaque, crew-days, no instrument, `occupants × ceil(days)` per
-  leg. Alternatives: an 11th family; no food. Why: zero code, doc 10 §9's granularity.
-- **Q-18-5 Dray logistics shape.** Default: optional `UnitSpec.logistics` (now with `stowage` and
-  `drive`) and `UnitSpec.interior`, read only by the port verbs. Alternative: `ComponentRole`
-  drive/hold/tank/life_support plus a `drive` rules kind. Why: digests stable, `bind` untouched.
-- **Q-18-6 D-14-35.** Default: decide it as two records with a hard boundary and remove `spacecraft`
-  from `SELF_MODES` (folded into IC1). Alternatives: fold (1,786 lines); leave open.
-- **Q-18-7 When the burn settles.** Default: at undock, matter first, the launch by the tick consuming
-  the ticket (now carrying the manifest and `leg_s`). Alternatives unchanged.
-- **Q-18-10 Party caps by content reference.** Default: yes, conferring no money authority. Needed by
-  every port ask and bid and by the buyout.
-- **Q-18-11 May packs declare money?** Default: yes, as numbers executed by the applier and verbs under
-  the 1,000,000 cap in ≤ 800,000 tranches.
-- **Q-18-12 Names.** Proposed and replaceable (18a §4): the eight laid-up hull names (*Slack Water*
-  first; *Salt Moth* is the transcript pilot's chosen name); the thirteen NPCs of 18a; the Freeport
-  Exchange; the Co-op First Captain Trust; `tacsim.registry`; `coast_hauler`; the verbs
-  `+coop`, `+ship`, `+ship/order`, `+ic`; the registry prefix FPC-D-04. "Names ok", or replacements.
-
-**New in Draft 0.2:**
-
-- **Q-18-13 Share base.** Default: 250‰ of trading margin over posted reference prices (metals 200,
-  volatiles 100, alloys 400), paid inside each sale; computable from the board before logging off; no run
-  book. Alternatives: net of average-cost basis, burned consumables and fees with a carried deficit (adds
-  the M run book, P9; fairer to a run whose fuel ate the margin; the fidelity lens's pick); gross permille
-  (simplest; bills losing runs). Why: deterministic, no new record, never bills a sale below the origin price.
-- **Q-18-14 Programme terms.** Default: stake 25,000; buyout 90,000 fixed at signing (day 14–15 at full
-  loads, 21–24 at 70 %); one enrolment per gateway account ever; 8 hulls; no top-up. Alternatives: buyout
-  75,000 (day 12–13; near trivial); 60,000 (day 9); a list price less half the shares paid; re-enrolment
-  after a 30-day cooldown; one 10,000 top-up when cash cannot fund a load. Why: R1's "couple of weeks of
-  good luck", not trivial.
-- **Q-18-15 Passage law.** Default: apply `route_duration`'s laden law now (T1 is binding) with the
-  unladen lane at 950,000 IC s, so every load lands in 13–22 h at rate 24; the 181 t ceiling stays a
-  non-binding rail. Alternatives: a fixed 21 IC days with the evaluator deferred (the thin design; one
-  fewer S–M in IC9; keeps T1 breached); a reference-mass term in `DriveProfile` to damp the 2× curve
-  (revises the T1 pins); a binding 165 t ceiling (slows every passage, since capacity is the laden
-  denominator). Why: a light load lands earlier and the worst case still leaves two hours of slack.
-- **Q-18-16 Rate 24 at the next redeploy.** Default: `@tacsim/time rate=24` is a line in the next
-  owner-approved dev1 runbook, and `+coop/enrol` refuses at any other rate outside test worlds. On dev1's
-  `IC_RATIO=4` a 20 h passage is five days and the daily loop silently fails. Never redeploy without asking.
-- **Q-18-17 Must the pilot be aboard for a queued departure, and what of a passenger ashore?** Default:
-  yes, Interior in any member room, connection irrelevant; a depart with the pilot ashore holds with
-  nothing burned and notifies; a listed passenger ashore is left behind with a notice to both.
-  Alternatives: the hull sails on the Class 0 ROM with whoever is aboard; refuse while any listed crew is
-  ashore. Why: the Warrant's liable principal travels with the hull, and the manifest stays honest.
-- **Q-18-18 Gangway: verbs or real exits.** Default: `+ship/board`/`+ship/leave` in the slice; real
-  exits (outer door relinked at dock, a station exit named by berth and hull, a housing-shaped access
-  hook, no lock rewrites) as cut P-G right after the loop. Alternative: the exits now (an M cut before the
-  first flight). Why: the same seal for forty lines; walking ashore each session is texture the loop can
-  add next.
-- **Q-18-19 Stock sizing, restock and top-ups.** Default: seed for one cohort of 8–10 pilots for about
-  three weeks (D-18-27); restock only by P5 production before a second cohort; **no** attributed top-ups.
-  Alternatives: the pasted seed (about ten round trips in all; unplayable for a cohort); permit a bumped
-  `issue` on the port entry as a receipted staff top-up until P5. Why: R4 forbids thin air; a receipted
-  top-up is a staff act the owner may or may not count as thin air.
-- **Q-18-20 Berths.** Default: none in the slice; every hull shares the gallery and docking never holds
-  at approach. Alternative: berth slots equal to the pool at both ports (8/8) with berth-holder markers
-  (P-F). Why: a berth count below the pool stalls offline turnarounds when departures cluster at one hour.
-- **Q-18-21 Volume capacity.** Default: mass only. Alternative: `si.volume_ml` in `goods.json` with
-  water ice at 1.5 m³/t so volume binds on ice-heavy loads (P6). Why: at the pasted 0.5/1/0.5 m³/t a
-  120 m³ hold can never bind and is dead UI.
-- **Q-18-22 The queue's verb and limits.** Default: `+ship/orders` and `+ship/order …` (`+orders` is
-  mush-propagation's); 16 orders, 32 log lines; no repeating plans in the slice (the daily login re-files
-  two or three lines). Alternatives: `+plan` as a bare verb if it is unregistered in the production
-  composition (it appears only in a housing test); `+voyage`; a capped `/repeat <n>` later (unattended
-  repeats also drain finite stock).
-- **Q-18-23 Station scope.** Default: 13 + 12 rooms; the six freight rooms behind berth-marker locks
-  pruned to P-F; restricted rooms stay hidden on `+atlas` even to berth holders. Alternatives: all fifteen
-  rooms per station now (adds marker locks, marker sync, the `+move` fix and `ExitDef` fail text to IC1);
-  a third access level visible to whoever the lock admits.
-- **Q-18-24 The Warrant and standing orders.** Default: the queue is the pilot's signed **sailing
-  plan**, filed at the port counter; the port's clerks and berth execute its sales, loading and
-  departure under the pilot's signature, the Class 0 drive ROM only flies the cleared route (doc 17
-  §9, D-UM-32; the Warrant forbids it to contract or sign, 11 §2), and every log line names the pilot
-  as liable principal. One fiction in both documents (18a's Bridge pane and port rooms already tell
-  it). Alternative: the queue limited to departures, sales interactive only.
-- **Q-18-25 The six rooms.** Default: Airlock, Central Passage, Bridge, Crew Compartment, Cargo Hold,
-  Engineering Access, plus the unwalkable Hold Stowage; plain names with the hull named by the `look`
-  status line. Alternatives: five rooms (drop Engineering Access); hull-prefixed room names (a rename
-  must rewrite them); a separate galley.
-- **Q-18-26 Fuel reserve.** Default: no minimum; the remainder is shown on `+ship/plan`. Alternative:
-  refuse a departure under 10 % of the burn in reserve.
-- **Q-18-27 The charter's rent.** Default: a 1-minor rent on `EconomicClock::Manual` (never due) plus
-  the stale-page exemption in IC6. Alternative: an S economy change making `LeaseSpec.rent` optional with
-  a lease marker.
-- **Q-18-28 Where the queue may be edited.** Default: aboard the hull, or anywhere in the port area where
-  it is docked; readable from anywhere. Alternative: anywhere, through the relay (doc 15).
-- **Q-18-29 Kasei's capital as a Ceres Clearing facility (11 §4.3).** Default: plain treasury
-  capitalization now. Alternative: an applier-keyed Clearing→Kasei post plus a Manual-clock debt record;
-  but `create_obligation` admits only an Object actor on the debit account (`api.rs:1984,2012-2017`), so
-  the debt record needs a keyed `create_system_obligation` variant (08a) first.
-- **Q-18-30 The Trust as a separate org.** Default: yes (`coop_trust`, `ChapterOf` the Co-op in the
-  faction cut), so eight leases do not consume the Co-op's 16 issuer slots. Alternative: charters issued
-  by the Co-op itself, with the pool capped and the Co-op's own hauling contracts counted against it.
-- **Q-18-31 Who releases a lapsed player listing's hold.** Default: the `tacsim.port` tick, acting as
-  the listing holder through IC5's actor swap (the executor pattern), one release per fire keyed by the
-  derived reservation id, verified by pull (IC8) — because the release is the custodian's authoritative
-  submission and the GOD lapse sweep may not stage it (the IC0 cut note; `tick.rs:28-37`).
-  Alternatives: the seller withdraws by hand and the sweep only pages (IC0's state today); a
-  mush-market-owned release on the economy's carve-out lane (an engine change, M). Why: the swap
-  already exists for the stock and order arms and a port ask never holds, so only player listings
-  are touched.
+- **Q-18-32 A bulky Stickney export, so the return leg is also a balance.** Default: yes,
+  `industrial_parts` "yard fittings, crated" at 2,300 L/t, Stickney Yards ask 400, Co-op bid 560 at
+  Ceres (D-18-40; a vendor, a sixth signatory, P11 in the port entry, 3.1M of Co-op capital; zero new
+  NPCs, orgs or rooms). Alternatives: the return stays alloys-only and mass-bound (the m³ line reads
+  slack on half the legs; the buyout slips to day 17); another bulky export (habitat consumables from
+  the Yard Commissary) on the same numbers. Why: R7 says "from station to station"; alloys alone use 30
+  of 120 m³ and the return has no decision.
+- **Q-18-33 Which price breaks the outbound 100/100 margin tie.** Default: Kasei's metals bid 300 →
+  280 (vertex 20 + 80; outbound net 5,390; day 15). Alternatives: Kasei's ice bid 200 → 220 (outbound
+  6,890; the buyout on day 13 with fittings at 560, too easy against the accepted 90,000; day 15 with
+  fittings at 540 but a return ratio of 1.17 near the band's edge); Occator's ice ask 100 → 90 (moves the
+  share reference). Why: it keeps every reference and share term unchanged, touches 20 t a leg, and sits
+  at 1.25 inside 1–3.5.
+- **Q-18-34 Should `+ship/plan` or the queue solve the best mix for the captain?** Default: no;
+  `+ship/plan` shows room by mass and by volume per good, the affordable tonnage and each queued buy's
+  clamp and bound; the captain strikes the balance. Alternatives: `+ship/plan best` as printed advice;
+  a `buy <a>,<b> balance` order the clamp solves. Why: the owner calls the balance "part of the trick";
+  a solver turns it into a button; an advisor fits a later NPC or unit-mind product.
+- **Q-18-35 R3 against R9: how does the daily passage survive a moving sky?** At nominal cruise a coast
+  Dray makes the full Ceres–Stickney outbound in under 24 h only while Ceres–Mars ≤ ~1.6 AU, about 16 %
+  of the 3.18-yr synodic cycle; at the worst season ~65 h. Default (at P-A, a data change behind the
+  tagged law): the Dray's drive becomes a low-thrust flip law tuned so a brimmed 421 t hull's worst
+  season is about 22–24 h and its best 12–13 h (about 0.07 g with exhaust near 10,000 km/s: a burn of
+  7–13 % of departure mass; the lore cost is that a hauler sustaining 0.07 g for a day with 3 % c exhaust
+  is no longer doc 11 §7's "slow, efficient" Dray against the Vigil's torch, and 18a's "two to three
+  weeks" holds only by coincidence). Alternatives: a seasonal coast Dray (multi-day passages for weeks at
+  a time; the queue copes, a session may find the ship under way); coast with a cruise choice (fuel
+  buys time; the 80 t tank caps a full hold at roughly 2.7 AU for a sub-day passage, about 40 % of the
+  cycle); a slower sky (Q-18-37). Why: R3 is the spine of the career, and 1A rejected simulated
+  ephemerides for exactly this "long non-opportunity"; the owner is re-opening that trade knowingly.
+- **Q-18-36 Kirkwood's orbit (re-presented; Draft 0.3's default rested on a wrong number).** The
+  slice's legs (0.741 + 0.561 AU) put Kirkwood at about 2.06 AU and 135°, inside the 10° Ceres–Mars gap
+  at the epoch, and at rate 0 that is all the slice needs; the orbit matters only at P-A. An
+  independent 2.06 AU orbit (Draft 0.3's default, "on the lane about 70 IC days per cycle") is in fact
+  on the lane once in roughly 40–110 years — a via-Kirkwood season is a three-body alignment whose
+  offset walks 138° per synodic cycle (§3-Q (4)) — so the Co-op's "transfer node", the Republic
+  pickets, P4's "every corridor ship passes Kirkwood" and 18a's job board all break the day the sky
+  moves, and the engine would have to re-author the depot's orbit: the R9 regret. **Default,
+  recommended: Kirkwood on Ceres's own orbit, trailing by a few degrees** (2.766 AU; 3° astern is
+  0.145 AU, about two hours at cruise): the Ceres–Kirkwood leg is a constant short hop, Kirkwood–Mars
+  is the seasonal chord, every Ceres-bound ship passes it, and via-Kirkwood is a steady ~9 % detour
+  over direct (at the epoch 0.145 + 1.267 ≈ 1.41 AU against 1.293) that the depot's propellant and the
+  pickets make worth taking. Its costs: lane pack v2 re-authors the legs and the slice's 0.741/0.561
+  split is replaced rather than kept (a full outbound about 21 h at rate 24 and a brimmed hull about
+  24 h at the epoch sky, so R3's bound is tighter and Q-18-35 bites sooner), and doc 11's "inner edge
+  of the Belt" becomes Ceres's outer harbour. Alternatives: keep the independent 2.06 AU orbit, with
+  lane pack v2 listing direct routes and the pickets reading routes actually flown (the depot is a
+  Belt-edge waypoint that is sometimes on the way; the fiction above is rewritten); a powered or cycler
+  depot with authored elements as a lore lever (no stable point exists between two bodies on different
+  orbits, so it is a fuel budget the fiction must pay). Co-orbiting at 2.06 AU is physically
+  impossible. Until ruled, IC2 authors Kirkwood at its epoch position with a placeholder period and
+  nothing reads its orbit (D-18-48 provisional).
+- **Q-18-37 The sky rate under world rate 24.** Default: 1000 (real motion), so the sky's date is the
+  IC date, which real data requires; the corridor's season turns about every 48 real days and Pallas's
+  latitude cycle about every 35. Alternative: a separate slower sky clock (e.g. 250, a ~194-real-day
+  cycle), a second calendar every surface would have to explain.
+- **Q-18-38 The engine's sky data.** Default: Keplerian element sets fitted from JPL Horizons at era
+  epochs (per-body `epoch_ic`, sets valid ±5 IC years), validated against a ~58 KB quarterly golden table
+  for 2340–2400; a few hundred bytes per body, self-referenced in any world, and Kirkwood is fictional and
+  needs elements anyway. Alternative: belter-charts-style packed daily vectors as a content pack (higher
+  fidelity; ~219 KB per body per 25 years; a 2340–2365 window lasts about 228 real days from IC 2350 at
+  rate 24); or both, vectors as a near-window cross-check.
+- **Q-18-39 How far the position-driven price policy reaches.** Default: a capped once-per-IC-day
+  reach premium on demand-side bids plus emergency Wanted bids for life-support goods when a port's reach
+  crosses a threshold, funded from the org's finite capital (doc 10 7A); quotes stay frozen and the
+  programme's reference follows the moved ask (D-18-24), so the lay stays a margin share under the
+  policy. Alternatives: premiums only; emergency contracts only; no policy (the sky moves only time
+  and fuel). Why: "Pallas might be willing to pay more for emergency supplies when awkward" is a demand
+  signal tied to reach, and finite capital keeps R4.
+- **Q-18-40 Solar keep-out.** Default: a **cost, never a closure** — a chord passing inside 0.3 AU
+  takes a detour penalty in the planner, so a conjunction-season direct route loses to via-Kirkwood or
+  a waypoint, and a P-A validator rule keeps at least one non-refusable route in every port's list per
+  destination; because `choose_route` picks only from the port's list (§4.8) and the kept 1A rule says
+  transfer conditions modify routes rather than closing destinations, a planner that refused the only
+  listed route would close a port for a season. Alternatives: refuse the chord outright (sound only
+  with the validator rule); ignore it (the planner's distance is an abstraction anyway).
+- **Q-18-41 Coast under the rocket equation: does mass slow the cruise or grow the burn?** The slice
+  flies the laden law (a 142 t payload 1.79× slower at the same 105‰ burn) and calls both doctrine
+  (§4.4); under the rocket equation a fixed burn fraction is one Δv and one cruise whatever the mass.
+  Default (at P-A, data behind the tagged law): keep the laden law — a thrust-limited hauler accepts a
+  slower cruise — and keep the burn a doctrine fraction, so every slice figure and 18a's "a week longer
+  on a full hold" survive and `exhaust_kms` is documentation. Alternative: the physical coast — the
+  burn from `exhaust_kms` and the cruise constant, so a full hold costs propellant rather than hours
+  (the laden law dropped; passages lose their load-dependence, which T1 would have to re-read as
+  fuel-dependence). Why it is the owner's: it decides what "slow, efficient" means for a Dray.
 
 ---
 
@@ -1980,7 +2556,37 @@ Each open question has a recommended default; "as recommended" builds §5 as wri
 13. The stale-contract page: until IC6's exemption lands, any test that keeps a lease Active for seven
     real days pages; recovery and housing leases have the same latent defect today.
 14. Doc drift a builder will hit, as Draft 0.1's risk 11, plus `e7r2.rs:327-328` ("exactly
-    extraction's"), `custody.rs:212-220`, and 10b §3.11's issue/retire note, which is withdrawn.
+    extraction's"), `custody.rs:212-220`, and 10b §3.11's issue/retire note, which is withdrawn; and
+    the frozen-sky texts until §10's amendments land (doc 11 §2/§5 "Kirkwood on the lane", 18a's "two to
+    three weeks", doc 10 1A's rejection of ephemerides, `route.rs:231`, `commands.rs:435`).
+15. **R3 against R9 (Draft 0.3).** A coast Dray at nominal cruise makes a sub-day full-load passage
+    for only about 16 % of the Ceres–Mars cycle (circular bounds). Until Q-18-35 is ruled, no gate, test
+    or help text may encode "every passage < 24 h" (D-18-50), and R1's "two weeks of good runs" and
+    D-18-27's sizing hold only in a good season.
+16. **The vertex is a band, not a point, and cash-bound loads depend on order sequence.** An ice bid
+    below 180 or a concentrate bid above 300 tips the outbound to a corner — once P-A's prices move, that
+    is the play; the risk is a fixture, NPC line, help text or test that hard-codes 20/80 or 55/45 (IC8's
+    LP test derives them). The clamp acts order by order, so a captain who files alloys before fittings
+    when short, or re-uses yesterday's 49/55 orders with full funds (5,630 against 7,740), gets a worse
+    load; `trade.md` and `+ship/plan`'s per-order bound make it legible. `fill` over-bunkers a cash-bound
+    leg by a few tonnes (about 200 cr once).
+17. **Delegation-gated reads and money pooling.** The Draw backstop and the executor read sibling pools
+    inside an `ActionTxn`; a refused read poisons it (`action_state.rs:2043-2068`): the market is a
+    delegate, tacsim needs IC5's before IC11, `read_pool` surfaces errors, never zeros. The Co-op pays
+    about 25,200 per full return against 3.1M and Freeport Works' 7,000 t intake binds at about 127
+    returns; two season budgets drain together, so risk 9's path (P5) matters twice over.
+18. **The sky seam.** `sky_rev` on every plan and the ticket freeze keep a committed passage independent
+    of `dray.json`, the sky config and f64 drift (the slice's Circular distance delegates to
+    `separation_km`, so no new rounding path). Three "rate" knobs (world, the inert `[tacsim.time].rate`,
+    the sky rate) invite operator error once the sky moves; P-A collapses the sky knob to `constant |
+    real`. Whether the burn's prepare can read the pack and sky is unverified, so the plan is the action's
+    input and the prepare recomputes only burn and crew-days from its seconds. A planner without
+    intercept would understate tangential legs at P-A; IC9's rate-1000 test is the only guard. Kirkwood
+    customs (P4) assumes every corridor ship passes Kirkwood, true under Q-18-36's lane-tied default and
+    false for decades at a time on an independent 2.06 AU orbit once direct routes exist. The coast
+    law's laden multiplier and its flat burn contradict each other under the rocket equation (Q-18-41);
+    both are data behind one seam, so the slice pre-empts nothing. belter-charts bundles The Expanse's
+    canon; only public JPL data is imported.
 
 **Refused, deliberately.**
 
@@ -1997,8 +2603,14 @@ Each open question has a recommended default; "as recommended" builds §5 as wri
   backing; a takeable storefront item; a static exit to a specific hull or to the last station visited;
   gangway exits, `BerthLink`, berth slots and berth-holder markers (P-G, P-F).
 - Stations, billets, helm seats and a seat-reach re-check (P2); a live-seat departure gate.
-- Payload-independent passage time (T1 is applied); volume capacity, a minimum fuel reserve, passengers
-  and a manifest beyond the tenant (reserved berth); port fees, Kirkwood customs or holds (P4).
+- Payload-independent passage time (T1 is applied); a minimum fuel reserve, passengers and a manifest
+  beyond the tenant (reserved berth); port fees, Kirkwood customs or holds (P4).
+- A mass-only hold, a fixed-field stowage schema, a "fullness" figure that collapses mass and volume,
+  a stored best mix, or a verb that solves the balance for the captain (R7; Q-18-34).
+- Moving the sky in the slice; authored seconds read as a passage time; a route-level distance read as
+  the flown path; a pricing trait, a chart or a light-lag caller before P-A; any gate, test or help text
+  asserting a passage bound outside the constant sky; belter-charts' code wholesale or The Expanse's
+  canon locations and names (R9; D-18-42..51).
 - Capacity or locality checked only on the market leg as the final shape (P-H); rewriting exit locks per
   crew change (D-E5-4).
 - Reusing the `tacsim.corridor` id or editing the corridor fixtures or the starter packs; a Luna port, a
@@ -2011,11 +2623,45 @@ Each open question has a recommended default; "as recommended" builds §5 as wri
 ## 10. Supersessions and amendments owed
 
 - **README.** The doc 18 row becomes:
-  `| [18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md) | **The trade run, the first IC vertical slice (Draft 0.2, 2026-10-15, at c87d78f7; D-18-1..38 under stated defaults, Q-18-13..30 open, six closed by the owner's rulings R1–R6)**: a pilot walks from Limbo into Ceres Freeport, signs the Belt Carriers' Cooperative's First Captain programme (a chartered Co-op Dray under \`Encumbrance::Lease\`, a 25,000 cr stake, a quarter of the trading margin to the Co-op inside every sale, a 90,000 cr buyout two weeks of good runs away), loads metals, ice, reaction mass and provisions into a six-room Dray's hold from finite receipted stock, queues the captain's orders and logs off; the ship burns, flies the pinned Ceres–Kirkwood–Stickney lane in about twenty hours at rate 24, docks itself, and the queue sells to Kasei, buys and departs again at the pilot's hour; the verified map A–P, the design (backer, interior, goods, the captain's day, stations, pipeline), the Dray definition, fourteen cuts (IC0 landed at c87d78f7; IC9 first flight; IC10 closes the loop; IC11 the first daily-loop cut), the two-day story test |`
-  and a new row follows it:
-  `| [18a-trade-run-stations-and-ship.md](18a-trade-run-stations-and-ship.md) | **The trade run's places (content brief, Draft 0.1, 2026-10-15)**: Ceres Freeport (13 rooms, three decks) and Stickney Yards (12 rooms, two decks) room by room with themes, details, exits, items, the NPC cast with voices and fallbacks, lore pools and ambience; the Dray's six-room interior and its stowage in the same voice; how the brief becomes atlas packs (decks as floors, locks, wall features, the \`port.dock\` seed, the port entry's room references, the validator tests); the names proposed for Q-18-12 |`
-- **README "Superseded decisions".** No new row yet; on Q-18-6 a row for D-14-35 as decided.
-- **14b §3 / 14-spatial-implementation-plan.md:1321.** D-14-35 status and wording (Q-18-6).
+  `| [18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md) | **The trade run, the first IC vertical slice (Draft 0.3, 2026-10-15, at 1fc40d01; D-18-1..51, every Draft 0.2 default binding under the owner's rulings R1–R9, Q-18-21 reversed, Q-18-32..41 open)**: a pilot walks from Limbo into Ceres Freeport, signs the Belt Carriers' Cooperative's First Captain programme (a chartered Co-op Dray under \`Encumbrance::Lease\`, a 25,000 cr stake, a quarter of the trading margin to the Co-op inside every sale, a 90,000 cr buyout two weeks of good runs away), loads a hold that binds on 100 t **and** 120 m³ — 20 t of concentrate that weighs it out and 80 t of ice that cubes it out, the balance being the trick of the run — plus reaction mass and provisions from finite receipted stock, queues the captain's orders and logs off; the ship burns, flies the Ceres–Kirkwood–Stickney lane in about twenty hours at rate 24 under the slice's constant sky, docks itself, and the queue sells to Kasei, buys crated yard fittings and alloy stock and departs again at the pilot's hour; the verified map A–R, the design (backer, interior, goods and the capacity function, the passage planner over the sky at departure, the queue, stations, pipeline, the sky seam and the astronomy engine's brief as post-slice cut P-A), the Dray definition, fourteen cuts (IC0 landed at c87d78f7; IC9 first flight; IC10 closes the loop; IC11 the first daily-loop cut), the two-day story test |`
+  and the 18a row becomes:
+  `| [18a-trade-run-stations-and-ship.md](18a-trade-run-stations-and-ship.md) | **The trade run's places (content brief, Draft 0.1 revised with doc 18 Draft 0.3, 2026-10-15)**: Ceres Freeport (13 rooms, three decks) and Stickney Yards (12 rooms, two decks) room by room with themes, details, exits, items, the NPC cast with voices and fallbacks, lore pools and ambience; the Dray's six-room interior and its stowage in the same voice, its hold read in tonnes and cubic metres; the Yard's crated fittings and the Co-op's bid for them; how the brief becomes atlas packs (decks as floors, locks, wall features, the \`port.dock\` seed, the port entry's room references, the validator tests); the names accepted under Q-18-12 |`
+- **README "Superseded decisions".** The stale lead "Five choices" (seven are listed) becomes
+  "Eight choices", and item 8 is added: **The sky will move, after the first IC slice.** Doc 10 §22 T17's
+  frozen sky ("no body moves", `rate = 0` the ruling) and 1A's rejection of simulated ephemerides are
+  superseded (owner, 2026-10-15, doc 18 R9). After the trade-run slice an astronomy engine (cut P-A)
+  moves real three-dimensional bodies on the IC calendar, so route distances, durations, fuel and prices
+  depend on when and where a ship sails. Until then the slice flies a **constant sky** through the same
+  seams the engine will use — one sky query, one passage planner whose output every departure freezes
+  (T1, load-bearing again) — and no slice figure is an invariant. 1A's travel scales and compression and
+  "transfer conditions modify routes, never close destinations" stand. A row for D-14-35 as decided
+  (Q-18-6, binding) is added beside it.
+- **Doc 10 §22 T17.** The amendment of §4.8, verbatim: the heading gains "amended 2026-10-15: the
+  constant sky of the first slice, superseded after it by the astronomy engine"; the 2026-09-09 text is
+  kept; the amendment paragraph is appended.
+- **Doc 10 1A.** Honoured for its scales, compression and "modify routes, never close destinations"; its
+  rejection of simulated ephemerides is superseded after the slice (R9); the Draft 0.1 three-day
+  amendment stays withdrawn.
+- **Doc 14 §3.8 S7 / `tacsim/src/config.rs:76-82` / `mushd.toml.example:190-192` /
+  `deploy/instance/mushd.toml.tmpl:218-220`.** The sky's epoch moves from server config to the pack's
+  bodies (`BodyDef.epoch_ic`, D-18-48), as doc 10 T17 originally said; the knob is documented as "sky
+  motion" and collapses to `constant | real` at P-A.
+- **14b §3 / 14-spatial-implementation-plan.md:1321.** D-14-35 decided as two records with a hard
+  boundary (Q-18-6, binding), with the wording that the drawn `spacecraft` connection is a **projection**
+  of the ephemeris at the epoch that no verb traverses and no code reads as a travel path.
+- **Doc 15.** §3.5's lag table is already written in moving-sky ranges; a note that at P-A R5 reads
+  `Sky` positions and a ship's frozen plan legs, and D-15-11 is honoured with the route's light distance
+  taken from the plan.
+- **Doc 11.** §2 (the 2320s row) and §5 (§1 never mentions Kirkwood): Kirkwood Depot's orbit is
+  Q-18-36's — on Ceres's orbit a few degrees astern under the recommended default ("at the inner edge
+  of the Belt" becomes "Ceres's outer harbour"), or an independent ~2.06 AU orbit that is on the lane
+  once in decades — and the wording waits on the ruling; §7 the Dray's hold binds on 100 t and 120 m³
+  and its drive is a tagged coast law whose season-dependence is Q-18-35 and whose laden law is
+  doctrine (Q-18-41); §4.5 the Co-op buys crated yard fittings for its fleet and the Kirkwood tank farm;
+  §4 Stickney Yards sells them.
+- **18a.** The hold, slate and Bridge readouts in tonnes and cubic metres; the departures board (C14)
+  and the Dray lore line (§1.5) say "in a good season"; P08/P11, P15 and C08 carry the fittings; a sixth
+  signatory (revised with this draft).
 - **Doc 06 §7.5.** A note that the boundary rule is built in IC4 as written (member rooms; staff not
   exempt), and that `InteriorSpaceRecord.rooms` has a writer.
 - **10b §3.11.** The Draft 0.1 note on issue/retire is **withdrawn**; port listings draw from seeded,
@@ -2027,9 +2673,9 @@ Each open question has a recommended default; "as recommended" builds §5 as wri
   Q-18-31); `transfer_marked`; the `page_stale_contracts`
   lease exemption; and the options a keyed `create_system_obligation` variant and an optional
   `LeaseSpec.rent` (Q-18-27, Q-18-29).
-- **Doc 10 1A.** Honoured as written; the Draft 0.1 three-day amendment is withdrawn.
-- **Doc 10 7A.** Nothing; finite capitalization stands.
-- **Doc 10 T1.** Applied in IC9; the "deferred, not denied" note of Draft 0.1 is closed.
+- **Doc 10 7A.** Nothing; finite capitalization stands (P-A's emergency bids draw on it too).
+- **Doc 10 T1.** Applied in IC9 through the planner; its freeze is load-bearing again (the ticket
+  freezes the whole passage plan); the "deferred, not denied" note of Draft 0.1 is closed.
 - **Doc 10 C2A–C4A / §18.1; doc 17 F3 row.** The note that `+ship/undock` bypasses the station-channel
   gate until P2 now cites R3 (an offline departure cannot wait on a live seat).
 - **16c.** The hauler class filter and the custody-seam refusal test; the `@journey` "(staff)" help.
@@ -2041,8 +2687,8 @@ Each open question has a recommended default; "as recommended" builds §5 as wri
   nothing to pilots" (never "lends to governments", which §4.8 does not say); §4.3 that Kasei's
   reaction-mass price is Republic-posted and its ice intake serves Phobos's volatiles demand, not the
   propellant line; §5 a note that
-  Kirkwood is a seeded body at 2.06 AU; §4.10 that Pallas has a body entry; §7 the Dray's scale (240 t
-  dry, 100 t hold) and the Class 0 ROM.
+  Kirkwood is a seeded body whose orbit is Q-18-36's; §4.10 that Pallas has a body entry; §7 the
+  Dray's scale (240 t dry, 100 t and 120 m³ hold) and the Class 0 ROM.
 - **Doc 14 §2.6.** Three starter packs and seventeen rooms; §3.3's mode filter true once `spacecraft`
   leaves `SELF_MODES`. **D-14-5 / 14a 5A** (carrier interiors get local frames) is not foreclosed by the
   interior template: the six rooms can take a local atlas frame later.
@@ -2050,8 +2696,14 @@ Each open question has a recommended default; "as recommended" builds §5 as wri
 - **In-code doc comments:** as Draft 0.1, plus `mush-market/tests/e7r2.rs:327-328` ("exactly
   extraction's": work-order delivery also mints), `mush-sim/src/custody.rs:212-220` (withdrawal leaves
   location at "the space object itself" is false under the member projection), `mush-sim/src/data.rs:832-835`
-  ("reserved" no longer).
-- **Help topics.** New: `ports.md`, `ships.md`, `coop.md`, `orders.md`, `trade.md`. Amend as Draft 0.1
+  ("reserved" no longer); and for R9 (IC2): `tacsim/src/commands.rs:435` ("the sky is frozen at the
+  campaign epoch" → "constant sky at epoch <date> (T17)"), `mush-sim/src/route.rs:223-231` ("a frozen sky
+  has no departure windows" → "a constant sky has no departure windows; the planner computes per
+  departure"), `route.rs:347,559,777,842` ("frozen" → "constant"), `tacsim/src/ephemeris.rs:5` (the
+  circular, coplanar model as the e = i = 0 case).
+- **Help topics.** New: `ports.md`, `ships.md` (the hold's two limits; passage time by load and, later,
+  season), `coop.md`, `orders.md`, `trade.md` (why you carry both; buy the bulky good first when cash
+  is short). Amend as Draft 0.1
   listed (`getting-started`, `chargen`, `travel`, `atlas`, `spatial`, `cockpit`, `npc`, `intel`, `faction`,
   `chronicle`, `clocks`); in-code `@journey` "(staff)", `@agent` fields, `+market` price lines;
   `mush-market/tests/ic0.rs:19-21`, `mush-server/tests/e7r2_proving_loop.rs:35` and
@@ -2061,87 +2713,108 @@ Each open question has a recommended default; "as recommended" builds §5 as wri
   step per hull per fire, verify by pull) beside the typed-action posture at `:976-979`; the rate-24
   deploy line.
 
-**Draft 0.1 review fold (2026-10-15, three lenses).** Unchanged from Draft 0.1 and kept for the record:
-F-1 (lane duration to the owner), F-2 (finite funding), F-3 (keyless obligation), F-4 (route scaling),
-F-5 (Occator's prices), F-6 (per-round-trip economics), F-7 (no core), F-8 (the helm bypass), F-9
-(arrival narration), F-10 (play rate), F-11 (`assignment`), F-12 (mint cap), F-13 (IC7 size), F-14 (the
-Warrant signatory). Several are now moot under the rulings (F-1 by Q-18-2b's answer; F-6 by R2; F-8 by
-D-18-23) and are listed so a reader of Draft 0.1 can see what moved.
+**Draft 0.1 review fold (2026-10-15, three lenses).** F-1..F-14, unchanged from Draft 0.1 and kept for
+the record in its text at `8a32734a`; F-1, F-6 and F-8 are moot under the rulings.
 
 **Draft 0.2 fold (2026-10-15; the owner's rulings R1–R6 and the second review).** By ruling: **R1**
-(charter, buyout as an aspiration) replaced D-18-10 with D-18-21/25 and added IC13; **R2** (a
-corporation invests on a profit-sharing basis) replaced D-18-5/6/7 with D-18-21/24, deleted
-`+credit/advance` and P1, and chose the Co-op through a programme Trust; **R3** (under a day, offline,
-a daily 30–60 minute session) replaced D-18-17 with D-18-30, added the queue (D-18-31/32, IC11), the
-tick skeleton (D-18-33, IC5), the readiness gate and the rate-24 deploy line (Q-18-16), and re-justified
-D-18-23; **R4** (finite seeded stock) replaced D-18-15 with D-18-26/27, withdrew the E7 pin amendment,
-and sized the seed to a cohort; **R5** (a five- or six-room ship) replaced D-18-8 with D-18-22 and
-D-18-29 (the pasted 100 t scale over 2,800 t), kept D-18-18's verbs (D-18-34), and added IC4; **R6**
-(the stations and their flavour) produced 18a and D-18-35, with the owner's fifteen-room grids pruned
-to 13 + 12 and the freight decks named as P-F. By review graft: the executor's buy clamp and `fill`; the
-Fact-gated bid payout; the receipt family as the mint guard; the Draw's seller-side source projection;
-the contract-keyed lot leg; the lapsed-hold release (moved to the port tick as the holder, Q-18-31);
-the separate Trust org; the `look` status line, per-room gauges and named hulls; the watch-log framing
-and the passenger rule; the NPC voices; the lane pack's fresh id. Corrections to Draft 0.1 found by the
-J–P map are listed per beat in §3; the one tree claim Draft 0.1 got wrong that the rulings did not
-touch — `tacsim.corridor` v1 as a new pack id — is D-18-36. Not applied: the fiction lens's net lay and
-15-room stations (Q-18-13, Q-18-23 carry them); the one-lane design's `Registered` hull endpoints (the
-store space keeps the custody locality chain).
+replaced D-18-10 with D-18-21/25 and added IC13; **R2** replaced D-18-5/6/7 with D-18-21/24, deleted
+`+credit/advance` and P1, and chose the Co-op through a programme Trust; **R3** replaced D-18-17 with
+D-18-30, added the queue (D-18-31/32, IC11), the tick skeleton (D-18-33, IC5), the readiness gate and
+the rate-24 deploy line, and re-justified D-18-23; **R4** replaced D-18-15 with D-18-26/27 and withdrew
+the E7 pin amendment; **R5** replaced D-18-8 with D-18-22/29, kept D-18-18's verbs (D-18-34) and added
+IC4; **R6** produced 18a and D-18-35 with the freight decks named as P-F. By review graft: the buy clamp
+and `fill`, the Fact-gated payout, the receipt family, the Draw's source projection, the contract-keyed
+lot leg, the lapsed-hold release on the port tick, the separate Trust, the `look` status line and
+gauges, the watch-log framing, the NPC voices, the lane pack's fresh id (D-18-36). Not applied: the net
+lay and 15-room stations (Q-18-13, Q-18-23); `Registered` hull endpoints.
 
 **Draft 0.2 review fold (2026-10-15, three lenses: tree audit, rulings and fiction, tester and
-buildability), applied in place, by finding.** *Tree audit:* (A-1) the passive-domain narrowing was
-half true — `open_passive_domain` refuses while eight windows are open (`window.rs:205-206`) though a
-passive domain takes no slot; §3-P, §4.4 and risk 1 re-cited, IC3 gains the guard skip and the
-eight-windows kept-world test. (A-2) The §4.4 "content test pins `base_s = distance_km / coast_km_s`"
-did not exist (`coast_km_s` nowhere; `LegDefWire` has no distance; `distance_km` is per route); §4.4
-and IC2 now say IC2 **adds** `lane_legs_pin_t17` from sky distances. (A-3) IC0 had landed as
-`c87d78f7`, HEAD, not "in flight": header, §2, §5, IC0 row, D-18-2, risk 12 and the README row
-restated; shifted cites re-pinned (`trade.rs:573/246/515/701-716`, `commands.rs:2605-2614/3428`,
-`commands.rs:524-539`, `lot.rs` +78 marked); the Draft 0.1 IC5 → Draft 0.2 IC7 mapping added to §5
-(the cut note is the IC0 session's and is not edited here). (A-4) `contract.rs:1361` was
-`apply_split`'s doc comment, not a zero-rent check; §4.1 now cites `api.rs:1731/1978`, says the
-activation path is unverified and keeps the 1-minor rent as belt-and-braces. (A-5) The 70 t return is
-17.75 h by the doc's own law, not 17.0; §2, §4.2, §4.4, §6 and D-18-30 corrected, arrival 13:15 UTC.
-(A-6) `items.rs:46-52` is `mush-core/src/commands/items.rs` (no atlas `items.rs`); §3-O and 18a §0.2
-re-cited with `apply.rs:1205-1262`. (A-7) 18a §0.1's "twenty-five rooms" summed to thirty-two.
-(A-8) `mushd.toml.tmpl` is `deploy/instance/mushd.toml.tmpl` (three cites). *Rulings and fiction:*
-(F-1) three fictions for the queue's executor (doc 18's ROM contracting; 18a's ROM "contracts for
-nothing"; 18a's berth and dockmaster) became one — the signed sailing plan executed by the port under
-the pilot's signature, the ROM only flying (§4.4, Q-18-24, D-18-31, §7 Honours). (F-2) Ceres reaction
-mass (40) below water (100) contradicted 18a's "costs more than the water", and Kasei's 200 ice bid
-against its 60 propellant ask had no chain; the numbers stand, the lore now reads crude fraction vs
-refined water and Kasei's ice bid as Phobos's volatiles demand with a Republic-posted propellant
-price (§4.3; 18a §1.5; §10 doc 11). (F-3) The Freeport Exchange was not in doc 11 §4 and its Warrant
-signatory was Occator's factor; it is now defined (the Council's commodity floor, the claims'
-concentrate), has its own factor (18a: Søndergaard-Achebe), Qureshi signs Occator only, the §4.1
-"lends to governments" misquote is corrected and §10 adds the doc 11 entry. (F-4) The Yard Commissary's
-ask had no signatory and P09 no NPC: the storekeeper (18a: Okonkwo-Steyn) added, `signatory` made
-required, thirteen NPCs. (F-5) 18a put `+ship/leave` in the gallery (C01, the harbourmaster's clerk) and
-in the airlock; the airlock wins, as doc 18 had it. (F-6) The applier's bumped-`issue` top-up built
-Q-18-19's alternative; under the default it now refuses and pages (§4.3, §4.7, D-18-26). (F-7) 18a's
-room details and NPC speech exposed the OOC rate ("a day of the captain's time", "the rate", "the
-real one"); stripped to IC time, with the real-time ETA kept on the OOC-facing renders (§4.4). (F-8)
-§1's R2 restatement and D-18-24 now say the default shares margin, not net profit. (F-9) §2 and §6
-typed exit words 18a never authored (`concourse ; registry`, `pressure`, `arrivals` from C08,
-`airlock` from the crew compartment, `gallery` from P12); rewritten to 18a's aliases, with IC12
-walking every path. (F-10) The Dray JSON put the airlock aft and 18a forward; the JSON now says
-forward and is named the authority. (F-11) "7 of 8 free" and "FPC-D-0403" were wrong on a fresh world
-(`next_loaner`'s `min_by_key` charters 0401 and all eight are laid up), and `hull_names[0]` was
-pre-named Salt Moth; transcripts read 8 of 8 and 0401, `hull_names` are laid-up names (*Slack Water*
-first) replaced at enrolment, the bench remembers another hull. (F-12) Ceres read as one g against
-doc 10 §3; 18a §1.1 now says the Hub is a spun ring. (F-13) `+credit`'s "owed" column was the loan
-era's; posted, held, available only. *Tester and buildability:* (B-1) IC7's lapse-sweep release arm
-was a GOD-sweep authoritative submission, which the tick-cadence rule and the IC0 cut note forbid;
-moved to IC8 as a port-tick arm acting as the holder (D-18-26, Q-18-31, §10 08a). (B-2) IC8 depended
-on IC5's provider and tick without listing it; IC5 added to IC8 and IC9, and §5 names IC8 as the
-lanes' join. (B-3) `+coop/enrol`'s readiness gate at IC6 needed IC8's pools (a cycle) and "test
-world" was undefined; the gate now grows per cut and `test_world` is a composition flag (§4.7, IC3,
-IC6, IC12). (B-4) The `fill` top-up at Ceres was 40 t/1,600 against a 4 t remainder (37 t/1,480), the
-Stickney `fill` bought 21 crew-days against a 19-day return, and the crew-day rule was stated two ways;
-one rule (occupants × Σ ceil(leg days)), cash 20.00 at Stickney and 15,630 on day 3. (B-5) The lanes
-were not file-disjoint (tacsim's `composition/mod.rs`, `lib.rs`/`commands.rs`, mush-economy); §5 now
-says so and sequences IC5's registration first in its own file. (B-6) IC11 at M was the estimate the
-schedule would miss; sized L with the a/b split named. (B-7) `+coop/statement` was read at Stickney
-and aboard while 18a bound it to C05; §4.1 and 18a C05 now say `+coop` and `+coop/statement` read
-anywhere. Not applied: re-pricing the chain (F-2's option a; it re-runs every money figure for no
-mechanism gain) and editing `18-cut-notes.md` (the IC0 session's file).
+buildability), applied in place by finding; the finding-by-finding record is Draft 0.2's text at
+`1fc40d01` §10.** In short: *tree audit* A-1..A-8 (the passive-domain guard and IC3's skip; IC2 adds
+the sky leg test rather than citing one; IC0 landed, cites re-pinned and the IC5→IC7 mapping; the
+zero-rent check unverified; the 70 t return 17.75 h; three path and file cites corrected); *rulings and
+fiction* F-1..F-13 (one fiction for the queue, the signed sailing plan; the price chain read as crude
+fraction, volatiles demand and a Republic-posted propellant price; the Freeport Exchange defined with
+its own factor; the commissary's signatory; `+ship/leave` in the airlock; the bumped-`issue` top-up
+refused; IC time only in room text; margin not net; exit words rewritten to 18a's aliases; the airlock
+forward; 8 of 8 and 0401 on a fresh world; a spun ring; `+credit` without "owed"); *tester and
+buildability* B-1..B-7 (the lapsed-hold release moved to the port tick; IC5 listed under IC8/IC9; the
+readiness gate growing per cut with `test_world` a composition flag; one crew-day rule; the lanes'
+shared files named; IC11 sized L; `+coop/statement` readable anywhere). Not applied: re-pricing the
+chain and editing `18-cut-notes.md`.
+
+**Draft 0.3 fold (2026-10-15; the owner's second-round rulings R7–R9, two designs and their judges).**
+By ruling: **R7** (volume beside mass) replaced D-18-28 with the capacity function over doc 06 D3's
+measure map, re-authored the packed volumes so each leg has a whole-tonne vertex (D-18-39), added the
+sixth good and the Stickney Yards vendor with a sixth signatory (D-18-40), rewrote `fill` and the clamp
+over both limits (D-18-41), moved Kasei's metals bid to 280, resized D-18-27 and restated D-18-25's
+timeline (day 15; Draft 0.2's own set reproduced as day 17), re-ran §2, §4.1, §4.2, §6 and 18a's hold
+text, shrank P6 to the census index and struck "volume capacity" from the refusals; **R8** (every other
+default accepted) made D-18-21..38 binding and closed Q-18-3..31 in one line each, with Q-18-6's
+`spacecraft` removal promoted to a sky prerequisite in IC1; **R9** (the sky will move after the slice)
+added §3-Q, §4.8 and D-18-42..51 — the `Sky` enum, `plan_passage` with the ticket freezing its whole
+output (T1 load-bearing again), the coast rate as drive data under a tagged law, per-body epochs at a
+real date, routes as a list, no passage bound as an invariant, belter-charts as inspiration only — the
+T17 amendment and README item 8, the P-A brief in six sub-cuts and Q-18-35..40. By judge: the sky
+design's derive-at-load of `base_s` and its 100 s filing quantum were scaled back to authored seconds
+checked against the sky (the engine stops reading them; it deletes nothing); the dual-meaning
+`distance_km` kept as the chord, relabelled; the burn prepare recomputes burn and crew-days from the
+plan's seconds rather than trusting its input; a `PortPricing` trait dropped from the slice;
+`sky_rev` as a `DefinitionDigest`; the 110 KB figure corrected to positions only (219 KB for state
+vectors); the epoch supersession moved from doc 10 to doc 14 S7/config; the "no convenient date" risk
+replaced by the 70-days-per-cycle constraint; "xtask" replaced by a committed script. The volume
+design's alloys-bid edge (421, not 452), second cash-bound return (96 t = 45 + 51), the LP test's cut
+(IC8, not IC2), the 181,000 ≥ 180,680 slip and "about 4,000 to spare" were corrected; goods rows became
+an open measure map like the compartments; a Draw refused at prepare returns its escrow with no page;
+the locker's two limits carry a consistency rule; `admits` is one enum. Not applied: a solver verb
+(Q-18-34), the ice-bid alternative (Q-18-33), a Flip Dray in the slice (Q-18-35 is the owner's), and
+editing `18-cut-notes.md`.
+
+**Draft 0.3 review fold (2026-10-15, two lenses: tree and numbers; rulings and fiction), applied in
+place by finding, each confirmed against the tree before it was folded.** *Blocking:* **Kirkwood's
+orbit** — the "70 IC days per 3.18-yr cycle" was the Ceres–Mars two-body alignment; a via-Kirkwood
+season is three-body and its offset walks 138° a cycle, so an independent 2.06 AU depot is on the lane
+once in roughly 40–110 years: §3-Q (4) carries the arithmetic, the §4.8 regrets row and risk 18 the
+consequence, Q-18-36 is re-presented with the lane-tied default (Kirkwood on Ceres's orbit a few
+degrees astern, a ~9 % detour, the slice's leg split replaced at v2) and the honest costs, D-18-48's
+orbit is provisional on it, IC2 authors Kirkwood at its epoch position with a placeholder period, and
+the doc 11 cite is §2/§5 (§1 never names Kirkwood). *Should-fix:* **the frozen reference** — the one
+slice decision P-A-4's price policy would have undone: `reference_major` becomes a `reference` map of
+origin listings read live at settlement (§4.1, the port entry, D-18-24, D-18-49, §4.8, P-A-4, Q-18-39,
+IC8), only the share permille and the buyout freeze at signing, the residual is `trade.md`'s;
+**mean vs true longitude** — Ceres' equation of centre reaches 9° and its radius ±0.22 AU (±30 % on a
+0.741 AU leg), so the lane pack authors true longitudes and heliocentric distances from the Horizons
+script, P-A-1 keeps `orbit_au`/`phase_deg_at_epoch` exact at the epoch with `a_au` and the mean anomaly
+as optional Kepler fields, P-A-6's golden test reads "identical at the epoch, drifting after it", and
+lane v2 re-authors `base_s` (IC2's test retires with v1; D-18-48, §4.8 row 7, IC2); **the coast
+law** — the laden multiplier and the flat 105‰ contradict each other under the rocket equation
+(a fixed fraction is one Δv and one cruise; at 3,700 km/s exhaust a 115 km/s cruise burns ~6 %), so
+`kms` is stated as the unladen cruise, the laden law and the 105‰ as doctrine, P-A-2's `exhaust_kms`
+as reproducing 105‰ unladen only, and the cruise-vs-burn choice is **Q-18-41** (§4.4, the regrets row,
+D-18-45, risk 18); **the Dray `note`** — 1,316 bytes against `MAX_NOTE_BYTES` 1,024, refused by
+`UnitSpec::check` at load: cut to 991 bytes, the rationale in §4.2's prose, and IC2's pin decodes
+`dray.json` through `UnitSpec::check`; **Stickney's geometry** — the Yard Concourse touched neither
+the harbourmaster nor the observation gallery it opens onto (`geometry.portal_gap` is an error and the
+applier refuses the exit, aborting a first-boot apply) and five exitless seams were unwalled (Ceres
+C08|C10; Stickney P03|P05, P03|P08, P09|P11, P11|P12): 18a §0.4 re-boxes Stickney's middle and bottom
+rows so P04 [125,130]–[185,155] shares an edge with P05, P08, P11 and P12, the wall lists in 18a §0.4
+and §4.5 are complete (Ceres six, Stickney seven), and IC1's validate-clean test carries an adjacency
+check over the authored boxes; **the hold's hard-coded 20/80** — 18a's Cargo Hold detail stored the
+vertex D-18-39 forbids, so the load cells, the passage slate and the Bridge HOLD display are
+`look_rendered` gauge lines from `interior.gauges` (now a pool → rooms map in §4.2's JSON) and no pack
+text carries a load; **painted prices** — 18a's C08 chit board, P07 intake board, P08 boards and P11
+fittings card carried 560/280/200/400 beside LookRendered items, stale the first time P-A-4 or a
+re-price moves a line: the numerals are struck from details and two NPC lines, the boards carry the
+figures, and C08 and P11 gain LookRendered items; **Q-18-13 presented as live** in the header, §4.1
+and D-18-24 — closed under R8 in all three ("Rested on Q-18-13; binding"). *Nits:* 144 objects per
+eight hulls (18 each: the applier opens `forward` and `back` as two exit objects), not ~115; the
+gross-share example re-run on Draft 0.3's figures (250‰ of 21,600 is 5,400 against a 5,390 margin);
+`Body.epoch_ic` and `phase_mdeg_at` advancing from the body's own epoch added to IC2 with a unit test,
+since a wire-only `BodyDef.epoch_ic` would leave IC9's rate-1000 test unwritable; 18a's "proposal"
+framing of names and numbers and doc 18's two residual lines made binding under R8 (18a §4 retitled
+"Names (Q-18-12, accepted 2026-10-15)"); the one-house-one-signatory rule attributed to this slice
+under the Warrant's principle (11 §2 says only that every automated act has a liable principal) and
+P-A-4's writes given each org's officer of record as signatory; Q-18-40's keep-out made a detour cost
+with a validator rule keeping a non-refusable route per destination, because the kept 1A rule forbids
+closing a destination and `choose_route` picks only from the list. Skipped: nothing; every finding
+reproduced. Open questions are now Q-18-32 to Q-18-41.

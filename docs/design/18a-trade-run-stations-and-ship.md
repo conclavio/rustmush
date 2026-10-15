@@ -4,7 +4,8 @@
 [18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md) Draft 0.2 (§4.5, §4.6, D-18-35). It
 is the room-by-room text of Ceres Freeport, Stickney Yards and the Dray-class hauler's interior, with
 the NPC cast, the lore pools and the ambience, written for the pack author. Every name below doc 11's
-principals is a proposal under Q-18-12; every number is a proposal under the decisions of doc 18 §7;
+principals is binding under R8 (Q-18-12, "names ok", owner 2026-10-15); every number is bound by the
+decisions of doc 18 §7, themselves binding under R8;
 every tree claim is file:line at `8a32734a` (or at `c87d78f7`, IC0 landed, where marked). The two
 flavour briefs the second review produced are carried here faithfully; where the review's judges
 disagreed on the room lists the reconciliation is stated in §0.3. Revised the same day with the
@@ -12,7 +13,12 @@ Draft 0.2 review fold (doc 18 §10 lists the findings): the Exchange's own facto
 storekeeper (thirteen NPCs; every listing signed by its own house), `+ship/leave` in the airlock only,
 the laid-up hull names, the airlock forward, Ceres' spun ring, IC time only in room text and NPC
 speech, and the one fiction for the sailing plan (the port executes the captain's signed plan; the
-ROM only flies).
+ROM only flies). **Revised with doc 18 Draft 0.3** (the owner's second-round rulings R7–R9): the
+Dray's hold reads tonnes **and** cubic metres against both its limits (100 t, 120 m³) in the Cargo
+Hold, the Central Passage's slate and the Bridge; the Yard's crated fittings (`industrial_parts`) are
+sold from the `YARD — SPARES` cage, signed by the Stickney service clerk and wanted by the Co-op at Ceres
+(a sixth signatory); Kasei bids 280 for concentrate; and every passage timing in a room or a mouth is
+"in a good season", because the sky will move after the slice (doc 18 §4.8).
 
 ## 0. Purpose, and how this brief becomes packs
 
@@ -118,17 +124,30 @@ structure the same. Public Deck (floor 1): C05 [110,165]–[140,190]; C06 [140,1
 [210,125]. Freight Deck (floor 0): C14 [110,140]–[140,165]; C15 [140,140]–[175,165] (restricted, under
 C04). Office Deck (floor 2): C16 [110,165]–[175,190] over C05/C06. Cross-deck: C03↔C14 public stair at
 (125,150), dz −6; C14→C15 hatch on their shared edge (staff, hidden); C05↔C16 ladder at (125,180), dz
-+4.5 (staff, hidden). Wall features on the exitless public seams: C02|C10 (x=140), C01|C10 and C01|C08
-(y=125), C05|C06 (x=140), C06|C09 (x=175). Budget target 13, maximum 16.
++4.5 (staff, hidden). Wall features on the exitless public seams, all six of them: C02|C10 (x=140),
+C08|C10 (x=175, y 125–140: the Chandlery's wall onto the Slack Line), C01|C10 and C01|C08 (y=125),
+C05|C06 (x=140), C06|C09 (x=175). Budget target 13, maximum 16.
 
 **Stickney**, neighborhood footprint [[100,80],[210,190]], site "Yard Rim" [[110,90],[200,180]]. Public
 Deck (floor 1, z 7): P05 [110,155]–[132,180]; P08 [132,155]–[155,180]; P11 [155,155]–[177,180]; P12
-[177,155]–[200,180]; P03 [110,130]–[140,155]; P04 [140,130]–[170,155] (circulation); P09 [170,130]–
-[200,155]; P02 [110,115]–[140,130]; P10 [140,115]–[170,130]; P01 [110,100]–[200,115]. Freight Deck (floor
-0): P07 [110,150]–[140,180]; P15 [140,150]–[170,180] (restricted, under P08). Cross-deck: P08↔P07 public
-stair at (136,165), dz −7; P07→P15 hatch on their shared edge (staff, hidden). Walls: P05|P08, P08|P11,
-P02|P10, P01|P10, P09|P12. Budget target 12, maximum 16. Stickney has no Limbo door; P01's `port.dock`
-seeds its topology.
+[177,155]–[200,180]; P03 [110,130]–[125,155]; P04 [125,130]–[185,155] (circulation: the one wide
+corridor along the rim, 60 m, so that it shares an edge with every desk it opens onto — P05 on
+x 125–132, P08 on 132–155, P11 on 155–177, P12 on 177–185); P09 [185,130]–[200,155]; P02 [110,115]–
+[125,130]; P10 [125,115]–[185,130]; P01 [110,100]–[200,115]. Freight Deck (floor 0): P07 [110,150]–
+[140,180]; P15 [140,150]–[170,180] (restricted, under P08). Cross-deck: P08↔P07 public stair at
+(136,165), dz −7 (inside both P08 and P07); P07→P15 hatch on their shared edge (staff, hidden). Walls,
+all seven exitless seams: P05|P08 (x=132), P08|P11 (x=155), P11|P12 (x=177), P03|P05 (y=155,
+x 110–125), P09|P12 (y=155, x 185–200), P02|P10 (x=125), P01|P10 (y=115, x 125–185). Budget target
+12, maximum 16. Stickney has no Limbo door; P01's `port.dock` seeds its topology.
+
+**The adjacency rule, checked, not trusted.** A plain `door` between two footprints that share no edge
+is `geometry.portal_gap`, an **error** (`validate.rs:1808-1840`), and the applier refuses the exit
+outright ("the footprints of A and B do not touch; give portal.at or portal.distance_m",
+`apply.rs:1453-1457`), which on a boot pack aborts the first apply; and two public rooms that share an
+edge with no exit between them are open floor on `+map` unless walled. The boxes above were cut so
+that every door shares an edge and every exitless seam is in the wall list (the first draft's P04
+[140,130]–[170,155] touched neither P05 nor P12, and five seams were unwalled); IC1's validate-clean
+test runs an adjacency check over the authored boxes so the next re-box cannot regress it.
 
 ---
 
@@ -404,8 +423,9 @@ yard-time at Phobos. The line has been there a while.
 *Purpose.* The Freeport Exchange: the concentrate ask, Occator's volatiles and reaction-mass asks, the
 alloy bid (Freeport Works), the price board; `+market/list` defaults to this venue. Two houses, two
 signatories: the Exchange's factor (Søndergaard-Achebe) is the Warrant signatory of the Exchange's ask
-and Freeport Works' bid, the Occator factor (Qureshi-Mbeki) of Occator's two asks — under the Warrant
-an officer of one house cannot be the liable principal of another's offers (doc 11 §2). The
+and Freeport Works' bid, the Occator factor (Qureshi-Mbeki) of Occator's two asks — a slice rule in
+the Warrant's spirit (doc 11 §2 says only that every automated act has a liable principal and nothing
+automated may sign): an officer of one house is never the liable principal of another's offers. The
 berth-locked freight stair to the bonded hall is a visible, closed background until P-F.
 
 *Short.* The commodity floor: a price board over a long counter, and the smell of wet metal.
@@ -427,7 +447,7 @@ STAIR: BONDED HALL, BERTH HOLDERS ONLY. Cargo does not come up this way; it goes
 the hold by the transfer junction. The door is for people with paper. **stamp pads** — Two sets: the
 Exchange's factor countersigns every lot sold off the Exchange's lines, Occator's factor every lot off
 Occator's; both pads are worn to the backing. A notice: EVERY OFFER ON THIS BOARD HAS A SIGNATORY,
-AND THE SIGNATORY IS THE HOUSE'S OWN. Under the Warrant, it must be.
+AND THE SIGNATORY IS THE HOUSE'S OWN. The port's rule, in the Warrant's spirit.
 
 *Exits.* `Concourse <W>;w;west;concourse` → C04 (open arch); `Tycho <N>;n;north;tycho;agency` → C09
 (door); `Chandlery <S>;s;south;chandlery;stores` → C08 (door).
@@ -452,6 +472,11 @@ THE DAYS. The Exchange is north.
 
 *Details.* **cases** — Ten crew-days to the case: food, potable stores, scrubber cartridges. Four kilos a
 crew-day, the stencil says, and a hundredth of a cubic metre, so the captain can do the arithmetic.
+**chit board** — WANTED — YARD FITTINGS, CRATED — THE BID THIS CYCLE, PER TONNE, ON THE CHIT — CO-OP
+FLEET STORES, in the chandler's hand with the Co-op's linked hands under it; the figure is the chit's
+own and is rewritten when the Co-op rewrites it: the Co-op buys the Yard's pressure fittings, ducting
+and tank sections for its Drays and the Kirkwood tank farm, and a Dray back from Stickney sells them
+here (`+market/sell`). Under it, smaller: CRATED MEANS CRATED. THEY CUBE OUT BEFORE THEY WEIGH OUT.
 **bunkering counter** — Occator's. REACTION MASS BY THE TONNE, LOADED AT THE BERTH ON YOUR SCHEDULE. An
 order here is a line on the loading schedule; the berth does the loading whether or not the captain is
 awake. **loading schedules** — Clipboard sheets, one per hull: what loads, when, from which hall. The
@@ -461,7 +486,9 @@ it has, not what it can print.
 
 *Exits.* `Exchange <N>;n;north;exchange;out` → C07 (door).
 
-*Items.* loading-schedule clipboard (details; the `+ship/plan` hint); provisions case (display; desc).
+*Items.* chit board (LookRendered: the Co-op's fittings bid with its intake remaining — the one place
+the figure is written); loading-schedule clipboard (details; the `+ship/plan` hint); provisions case
+(display; desc).
 
 #### C09 Tycho Mutual Agency — Public Deck
 
@@ -536,8 +563,9 @@ bunkering, stores. The light is sodium orange, the air smells of hydraulic fluid
 is wet in the corner. A heavy door marked FREIGHT, BERTH HOLDERS stays shut.
 
 *Details.* **departures board** — HULL / BERTH / FOR / CLEARANCE / ARRIVES. Stickney Yards by Kirkwood is
-most of the column. A laden Dray makes it in two to three weeks; the board gives the hour of clearance
-and the day the harbourmaster at the far end expects the hull. **sailing-plan forms** — DEPART AT. LOAD:
+most of the column. A laden Dray makes it in two to three weeks in a good season, and the board's
+small print says the season is good; it gives the hour of clearance and the day the harbourmaster at
+the far end expects the hull. **sailing-plan forms** — DEPART AT. LOAD:
 WHAT, FROM WHERE, WHEN. BUNKER. STORES. SELL AT DESTINATION: WHAT, NOT UNDER. CREW OF RECORD. SIGNED.
 A filed plan is the captain's signed instrument: the berth loads and bunkers it, the Exchange's and
 Kasei's clerks settle its sales against the captain's lines, and the dockmaster clears the hull at its
@@ -759,7 +787,9 @@ consigns the Belt claims' metal concentrate under the Exchange's mark and buys a
 corridor as Freeport Works; its factor is the officer of record for both lines (doc 18 §4.3). **The
 Dray** — "Slow, efficient, unarmed. Cannot outrun a Vigil; can choose a burn that makes the intercept
 cost more propellant than the Guard wants to spend" (11 §7); Ceres to Stickney by Kirkwood is two to
-three weeks under load, a week longer on a full hold than on an empty one. **Kirkwood pickets** — the Republic "from
+three weeks under load in a good season, a week longer on a full hold than on an empty one; its hold is
+rated for a hundred tonnes and a hundred and twenty cubic metres, and a captain who fills one and not
+the other is leaving money at the berth. **Kirkwood pickets** — the Republic "from
 2347 stations customs pickets at Kirkwood, 'customs assertion'" (11 §2); a picket's transponder asks a
 passing Dray for its manifest; so far it asks.
 
@@ -800,7 +830,8 @@ when a hull takes power from the cradle, and steady.
 
 `region.stickney_yards` (surface region, body `phobos`) + `neighborhood.stickney_yards`; structure "Yard
 Rim", Freight Deck index 0 (z 0 m) and Public Deck index 1 (z 7 m). Twelve rooms, two decks, no Limbo
-door: reachable only by flight. Every number and name below is a proposal under Q-18-12 unless cited.
+door: reachable only by flight. Every name below is binding under R8 (Q-18-12, "names ok") and every
+number under doc 18 §7 unless cited.
 
 ### 2.1 Theme (`neighborhood.stickney_yards`; the 2350 base on `region.stickney_yards`)
 
@@ -1042,9 +1073,11 @@ remaining intake for the cycle and what it pays, line by line. Warehouse air blo
 drier, sharp with hydraulic fluid — and somewhere beyond the bars a dolly alarm chirps and stops. The
 exchange is up the stair; a hatch in the back wall is stencilled YARD PERSONNEL.
 
-*Details.* **intake board** — CONCENTRATE — per t — intake remaining. WATER ICE — per t — intake
-remaining. FUNDS: a figure Kasei does not hide, because it is the figure that decides whether a hull
-gets paid today. **assay scales** — A bench of grade scales and a core sampler. A lot's grade is read
+*Details.* **intake board** — CONCENTRATE — the bid, per tonne — intake remaining. WATER ICE — the bid,
+per tonne — intake remaining; the figures are the board's own (it is what `+market/list` prints here)
+and change when Kasei says so. The concentrate line has been painted over once, downward; the refinery
+is water-starved and bids the ice up and the ore down, and the clerk will say so if asked. FUNDS: a figure Kasei does not hide,
+because it is the figure that decides whether a hull gets paid today. **assay scales** — A bench of grade scales and a core sampler. A lot's grade is read
 here and written on the manifest; the price is per tonne of what the scales say, not what the seller
 says. **barred window** — The bonded hall: racked pallets under yellow lamps, tracked dollies, a manifest
 clerk on a tether, and a freight door at the far end with a berth number beside it. No public way in.
@@ -1076,8 +1109,13 @@ up the well — and smells of machine oil. The concourse is out; receiving is do
 
 *Details.* **price board** — ALLOY STOCK, STRUCTURAL — per t — remaining. PROPELLANT, DRIVE — per t —
 remaining. The figures are Kasei's and change when Kasei says so; `+market/list` has them to the credit.
-**bids board** — KASEI METALS BUYS: concentrate, water ice, with the intake left this cycle. Under it,
-contractors' chits: a tonne of alloy offcuts wanted, a Hod seat to Isidis offered. **stair well** — A
+Below Kasei's lines, in the Yard's own stencil: YARD FITTINGS, CRATED — PER TONNE, THE YARD'S FIGURE —
+STICKNEY YARDS — SIGNED AT THE SERVICE COUNTER, with a chalked note beside it, CRATED: 2.3 CUBES TO THE
+TONNE. A Dray captain who reads both boards sees the return run's arithmetic: alloy stock fills the
+rating, fittings fill the bay, and the hull that leaves with both full pays best. **bids board** —
+KASEI METALS BUYS: concentrate and water ice, the bid per tonne beside each line with the intake left
+this cycle; the figures are the board's own, never the paint's. Under it, contractors' chits: a tonne
+of alloy offcuts wanted, a Hod seat to Isidis offered. **stair well** — A
 rung stair in a railed well, seven metres down to the Freight Deck, with a handline beside the rungs for
 those who prefer to float it. RECEIVING COUNTER — PUBLIC; the arrow is green. **floor** — Pallet scoring
 in the alloy, in parallel lines from the well to the door. Freight used to come up this way. Now it does
@@ -1086,7 +1124,8 @@ not, and the lines are a record.
 *Exits.* `Concourse <C>;c;concourse;out` → P04 (door); `Receiving Stair <RS>;rs;receiving;kasei;down;d`
 → P07 (stair, `portal.at` + dz −7; return `Exchange Stair <ES>;es;exchange;up;u`).
 
-*Items.* price board (LookRendered: Kasei's asks); bids board (LookRendered: Kasei's bids with remaining
+*Items.* price board (LookRendered: Kasei's asks and the Yard's fittings ask, which draws from
+`item.yard_spares` in P15 and is signed at P11); bids board (LookRendered: Kasei's bids with remaining
 intake).
 
 #### P09 Yard Commissary — Public Deck
@@ -1146,7 +1185,10 @@ sheet beside it for crews who settle on payday.
 *Purpose.* Hull information; the Yard's new-Dray price card as the buyout comparator under R1 (the
 pasted 120,000cr is the balance reference; owning a hull is the two-weeks-of-good-runs aspiration); a
 future refit contact with no repair promise; Tycho Mutual's Phobos agent merged here (doc 11 §4.7 places
-an agent at Phobos). The service clerk NPC.
+an agent at Phobos); **the Yard's crated-fittings ask** (doc 18 §4.3, D-18-40: `industrial_parts` at
+the Yard's posted ask, 400cr/t at seed, from the `YARD — SPARES` cage in P15), with the service clerk NPC as its Warrant signatory — the
+Stickney Yards vendor's one line, read at this counter and on the P08 board. The port entry lists this
+room as `yard`.
 
 *Short.* A yard counter with a rack of hull cards and a window onto a drydock.
 
@@ -1163,15 +1205,20 @@ to yard-time. The card is the figure a charter pilot measures a career against. 
 KASEI. One line reads ENQUIRE and that is the refit queue; no date is promised on it. **hull cards** — A
 card per class with a profile drawing and a dry mass. The Dray's reads "slow, efficient, unarmed"; the
 Vigil's reads "fast, expensive, visible from a long way off", which is the Yard quoting the Guard's own
-brochure. **window** — A cradle, a hull with its drive section open, three workers on tethers and one
-supervisor who is not. The work is slow. It is always slow, and it is always going on. **insurer's
-mark** — TYCHO MUTUAL ASSURANCE & SALVAGE — AGENT IN ATTENDANCE. Renewals, claims, the Re-float Program by
+brochure. **fittings card** — YARD FITTINGS, CRATED — PER TONNE, THE FIGURE ON THE CARD THIS CYCLE —
+REMAINING — pressure fittings, ducting and tank sections, Stickney build, crated with dunnage for the
+Belt run. In pen under it: "2.3 cubes to the tonne. Your problem, captain." The Yard's one line of
+trade, signed by the clerk; the card is the listing (LookRendered), `+market/list` shows it and
+`+market/quote` draws it into a docked hull. **window** — A cradle, a hull with its drive
+section open, three workers on tethers and one supervisor who is not. The work is slow. It is always
+slow, and it is always going on. **insurer's mark** — TYCHO MUTUAL ASSURANCE & SALVAGE — AGENT IN ATTENDANCE. Renewals, claims, the Re-float Program by
 referral to Kirkwood. The agent shares the counter and the clerk's patience.
 
 *Exits.* `Concourse <C>;c;concourse;out` → P04 (door).
 
-*Items.* Dray price card (the buyout comparator); yard-time board (detail only); hull card rack (detail;
-five readable cards).
+*Items.* fittings card (LookRendered: the Stickney Yards ask with its remaining stock — the one place
+the figure is written); Dray price card (the buyout comparator, a programme figure); yard-time board
+(detail only); hull card rack (detail; five readable cards).
 
 #### P12 Yard Observation Gallery — Public Deck
 
@@ -1227,7 +1274,9 @@ tagged with a date and an initial.
 
 *Items.* `item.kasei_manifold` (the storefront container backing Kasei's vendor vault: the warehouse pools
 for the concentrate and water-ice bids and the alloy and propellant stock); `item.commissary_locker`
-(backing the Yard Commissary's vault); `item.yard_spares` (an empty container; the P-F expansion anchor).
+(backing the Yard Commissary's vault); `item.yard_spares` (the storefront container backing the Stickney
+Yards vendor's vault: the crated-fittings stock, 5,400 t at seed, drawn by the ask signed at P11; the
+P-F expansion anchor moves to a fourth, empty cage).
 
 ### 2.4 The cast
 
@@ -1253,30 +1302,37 @@ receiving counter for eleven years and has signed for every tonne that came thro
 Warrant means his name is on it. Honest about the intake left and the money left, because both are on
 the board behind him and he dislikes being asked twice. *Speech:* short declaratives; numbers before
 nouns; "Grade first. Then price."; looks at the scales when he talks, not at the seller. *Knows:*
-Kasei's bids (metal concentrate and water ice, the price per tonne, the intake remaining this cycle and
-the funded balance); that `+market/list` shows the bid and `+market/sell <listing>=<qty>` sells into it
-from a docked hull's hold; that Kasei sells alloy stock and propellant upstairs at the exchange; that the
+Kasei's bids (concentrate and water ice per tonne as the board posts them this cycle, the intake
+remaining and the funded balance; that the refinery is water-starved, which is why the ice bid stands and the ore
+bid came down); that `+market/list` shows the bid and `+market/sell <listing>=<qty>` sells into it
+from a docked hull's hold; that Kasei sells alloy stock and propellant upstairs at the exchange and the
+Yard sells crated fittings from the service counter, "which cube out before they weigh out"; that the
 refinery turns water ice into propellant and concentrate into alloy stock. *Does not know:* Kasei's debt
 terms with Ceres Clearing (he knows there is a debt; everyone does); who signed a lot at Ceres beyond the
 name on its manifest; anything about the Guard's pickets. *Fallback:* "We buy concentrate and ice.
 +market/list, then +market/sell. The grade is what the scales say." / "Intake left and funds left are on
-the board. When either reads zero, so do I."
+the board. When either reads zero, so do I." / "Ice we need. Ore we can wait for. The board says which."
 
 **Wren Castillo-Haugen** — `npc.castillo_haugen`, P11 Stickney Service Counter, minor (service),
-interface `help`. Stickney Yards service clerk; also sits the Tycho Mutual agent's chair at the same
-counter. *Persona:* yard-weary, dry, competent; has heard every version of "can you just look at it" and
+interfaces `help`, `market`. Stickney Yards service clerk and the Warrant signatory of the Yard's one
+listing, the crated-fittings ask (doc 18 §4.3; signs only Stickney Yards' offer, never Tycho's business,
+as the Warrant requires); also sits the Tycho Mutual agent's chair at the same counter. *Persona:* yard-weary, dry, competent; has heard every version of "can you just look at it" and
 answers all of them with the board. Knows every hull class the Yard builds by its dry mass and its
 faults. Holds the Tycho agent's referral book as a second job and resents it exactly enough to be funny
 about it. *Speech:* flat, patient, with a long pause before "no"; quotes the price card as if it were
 scripture and the refit queue as if it were weather. *Knows:* the five classes the Yard builds and their
 profiles; that the Dray is "slow, efficient, unarmed" and cannot outrun a Vigil; the new-Dray price
 (120,000cr) and that it is the figure a charter pilot measures a buyout against; that yard-time is a
-reservation, not a cargo, and the refit queue has no promised date; Tycho's part: renewals and claims
-here, the Re-float Program by referral to Assessor Adeyemi at Kirkwood. *Does not know:* whether any
-particular hull can be repaired, or when; the Guard's cradle reservations beyond the word RESERVED; the
-Yard's books, or the golden share's terms. *Fallback:* "Hull information, yard-time, Tycho renewals.
-Repairs: the board says ENQUIRE, and it means it. +ship tells you what you fly." / "New Dray, a hundred
-and twenty thousand. Used ones exist. Ask Tycho, who is also me, on Tuesdays."
+reservation, not a cargo, and the refit queue has no promised date; the fittings ask (the card's figure
+per tonne, crated, "two point three cubes to the tonne, so it's your problem, captain"; that the Co-op at Ceres
+wants them for the fleet and the tank farm; that `+market/quote` draws them into a docked hull);
+Tycho's part: renewals and claims here, the Re-float Program by referral to Assessor Adeyemi at
+Kirkwood. *Does not know:* whether any particular hull can be repaired, or when; the Guard's cradle
+reservations beyond the word RESERVED; the Yard's books, or the golden share's terms; what the Co-op
+pays. *Fallback:* "Hull information, yard-time, fittings by the crate, Tycho renewals. Repairs: the
+board says ENQUIRE, and it means it. +ship tells you what you fly." / "New Dray, a hundred and twenty
+thousand. Used ones exist. Ask Tycho, who is also me, on Tuesdays." / "Fittings, the figure on the card,
+by the tonne. Crated, so they cube out; that's your problem, captain. +market/list."
 
 **Pavla Adeyinka-Rusk** — `npc.adeyinka_rusk`, P05 Harbourmaster's Office, extra. Harbourmaster's clerk:
 berth status, sailing plans, the captain's minutiae. *Persona:* the harbourmaster's clerk, which is to
@@ -1406,22 +1462,28 @@ precedent (`travel.rs:2673-2695`): "Aboard the *Salt Moth* (FPC-D-0401), docked 
 the OOC-facing surfaces that speak real time; room text never does). **Orientation and authority:**
 the airlock is **forward** of the Central Passage and the Crew Compartment **aft**; doc 18 §4.2's
 `interior.exits` JSON is the authority and §3.1 below matches it alias for alias. Each room's gauges read the same pools
-`+ship/hold` reads (the cargo load cells in the hold, the tank gauges in engineering, the locker tally
-in the crew compartment), so the ship tells the pilot where they are and how they stand without a verb.
+`+ship/hold` reads (the cargo load cells in the hold, in tonnes and cubic metres against both limits;
+the tank gauges in engineering; the locker tally in the crew compartment; and all three on the Central
+Passage's manifest slate and the Bridge's displays), so the ship tells the pilot where they are and how
+they stand without a verb. **Every such readout is a `look_rendered` line from `interior.gauges`**
+(doc 18 §4.2's JSON, a pool → rooms map), rendered from the pools when the room is looked at; no
+`RoomDef.details` text aboard carries a load, a tank level or a tally, because a detail is static pack
+text and would read the same on every hull for ever (doc 18 D-18-39 forbids a stored 20/80 anywhere).
 Walking between rooms is ordinary exit traversal under the boundary rule; the only ways on and off are
 `+ship/board` in a berth gallery and `+ship/leave` in the Airlock, docked. Under way nothing crosses.
 Theme: the Freeport's base and vocabulary, plus the ship's own: lock, hatch, ladder well, couch, ROM,
-manifest slate, load cells, tankage, reaction mass, bunk, still, crew-day, tally.
+manifest slate, load cells, tankage, reaction mass, bunk, still, crew-day, tally, packed volume, cube,
+rated.
 
 ### 3.1 The rooms
 
 | id | Room | Kind | Exits | What the pilot sees of the compartments |
 |---|---|---|---|---|
 | `airlock` | Airlock | walkable; the space object | inner hatch → passage | the outer door's seal light reads the berth's state |
-| `passage` | Central Passage | walkable | airlock, up → bridge, aft → crew, down → hold | the manifest slate: cargo by good |
+| `passage` | Central Passage | walkable | airlock, up → bridge, aft → crew, down → hold | the manifest slate: cargo by good, in t and m³ |
 | `bridge` | Bridge | walkable | down → passage | course, tank, locker and hold readouts; the status line |
 | `crew` | Crew Compartment | walkable | out → passage | the stores locker's tally (crew-days) |
-| `hold` | Cargo Hold | walkable | up → passage, down → engineering | the load cells: tonnes by good against 100 t |
+| `hold` | Cargo Hold | walkable | up → passage, down → engineering | the load cells: tonnes and cubic metres by good against 100 t and 120 m³ |
 | `engineering` | Engineering Access | walkable | up → hold | the tank gauges: reaction mass against 80 t, the reserve after the planned burn |
 | `stowage` | Hold Stowage | store; no exits; the vault backing | — | not a place anyone walks |
 
@@ -1451,7 +1513,7 @@ Station-normal, ship-normal, and a hand-painted line between them that somebody 
 #### Central Passage
 
 *Purpose.* The spine; ladders up to the Bridge and down to the Hold, a hatch aft to the Crew
-Compartment; the manifest slate (cargo by good from the hold pools).
+Compartment; the manifest slate (cargo by good from the hold pools, in tonnes and cubic metres).
 
 *Short.* A low spine of grab-rails and cable trays, hatches opening off it.
 
@@ -1461,8 +1523,9 @@ Cargo tie-points stud the deck along the whole length. The hum of the drive is f
 handrails more than heard, and the air moves with a steady draught from the scrubbers. A manifest
 slate is clipped by the bridge ladder, its figures the hold's own.
 
-*Details.* **manifest slate** — The hold's contents by good, in tonnes, and the tank and the locker
-under a line; the slate reads what `+ship/hold` reads. **tie-points** — Recessed rings every metre, for
+*Details.* **manifest slate** — The hold's contents by good, in tonnes and in cubic metres, two columns
+with the hold's two limits at their feet, and the tank and the locker under a line; the slate reads what
+`+ship/hold` reads. **tie-points** — Recessed rings every metre, for
 the day the passage is cargo too. **cable trays** — Power, data, air, in colour-banded runs; a tag on
 each says which deck plate to lift.
 
@@ -1487,7 +1550,8 @@ berth clamps settling.
 
 *Details.* **displays** — COURSE: the route, the leg, the ETA in IC and real time, docked or under way.
 TANKAGE: reaction mass aboard and the burn the plan needs. STORES: crew-days against the passage.
-HOLD: tonnes by good. BERTH: the gallery's name, or SEALED. **ROM pane** — CLASS 0. It flies a filed
+HOLD: tonnes and cubic metres by good against both limits, FULL lit under whichever reads it, or both.
+BERTH: the gallery's name, or SEALED. **ROM pane** — CLASS 0. It flies a filed
 sailing plan to the second and contracts for nothing; the signature on the plan is the captain's, and
 under the Warrant so is the liability. **sailing plan** — A paper copy of `+ship/orders`, the orders
 numbered, the departure hour circled. **checklist** — BEFORE CLEARANCE: tank ≥ burn. Locker ≥ days.
@@ -1521,20 +1585,28 @@ old, with one name circled and no reason given.
 
 #### Cargo Hold
 
-*Purpose.* A walkable catwalk among the bulk bins; the load-cell panel shows the cargo pool's tonnes by
-good against the hold's 100 t. Never a vault backing (the stowage behind the frames is).
+*Purpose.* A walkable catwalk among the bulk bins; the load-cell panel shows the cargo pool's tonnes and
+cubic metres by good against the hold's 100 t and 120 m³ (doc 18 §4.3, D-18-28 as replaced by R7).
+Never a vault backing (the stowage behind the frames is).
 
 *Short.* A tall, cold bay of bins and lashing rails, lit blue, the load cells glowing by the hatch.
 
 *Desc.* A tall, cold bay of bulk bins, canister racks and lashing rails under blue work light, crossed by
 a catwalk from the deck hatch to the engineering ladder. The load cells' readout glows on the forward
-bulkhead: tonnes by good, and the hold's limit under them. Frost forms on the ice canisters and nowhere
-else; the concentrate bins are dusted grey. The air is dry and tastes of metal, and every footfall on
-the catwalk rings down into the stowage frames below. The passage is up; engineering is down.
+bulkhead: tonnes and cubic metres by good, and the hold's two limits under them. Frost forms on the ice
+canisters and nowhere else; the concentrate bins are dusted grey; yard crates, when there are any, take
+the bay the bins leave. The air is dry and tastes of metal, and every footfall on the catwalk rings
+down into the stowage frames below. The passage is up; engineering is down.
 
-*Details.* **load cells** — METALS, VOLATILES, ALLOY STOCK in tonnes, a total, and LIMIT 100 t. The
-figures are the cargo pool's own. **bins** — Strapped bulk containers in stowage frames, numbered;
-behind them the racks nobody walks, where the cargo physically is. **lashing rails** — Rated and
+*Details.* **load cells** — One line per good the hold accepts, tonnes and cubic metres side by side,
+a TOTAL line under them and LIMIT 100 t / 120 m³ under that, with FULL lit under whichever limit reads
+it, or both; cubic metres to a tenth, truncated, never rounded up. The figures are the cargo pool's
+own, rendered when the room is looked at (the `cargo` gauge of `interior.gauges`, a `look_rendered`
+line, not this text), so no two hulls and no two days read alike and nothing here carries a load.
+**bins** — Strapped bulk containers in stowage frames, numbered; behind them the racks
+nobody walks, where the cargo physically is. **racks** — The canister racks fill before the bins weigh
+out: ice runs out of room, concentrate runs out of rating. **crates** — Yard crates, mostly air and
+dunnage; four of them fill a bay a single bin of concentrate outweighs. **lashing rails** — Rated and
 stencilled; a captain who overloads the hold will not get past the rail, and the cells say so first.
 **frost** — On the water-ice canisters only. It is how a crew tells ice from concentrate in the dark.
 
@@ -1571,8 +1643,9 @@ pools live here. Not walkable, so no person can become vault custody. Its desc e
 `@vault/show`.
 
 *Desc.* The bulk bins, the tankage and the stores locker behind the hold's frames and the compartment
-bulkheads: racks, pipes and sealed cases, reached by panels and hoses, not by hatches. Not a place anyone
-walks.
+bulkheads: racks, pipes and sealed cases, reached by panels and hoses, not by hatches. The frames are
+the volume: a hundred and twenty cubic metres of rated bay behind the cells, which is the second limit
+the load cells read beside the hundred tonnes. Not a place anyone walks.
 
 ### 3.2 What the pilot sees
 
@@ -1587,9 +1660,9 @@ contents by projection; its occupants are invisible from outside.
 
 ---
 
-## 4. Names proposed (for Q-18-12)
+## 4. Names (Q-18-12, accepted 2026-10-15)
 
-All replaceable; "names ok" or replacements.
+Accepted "names ok" under R8 (doc 18 §8); binding.
 
 - **Hulls** (the Trust's pool of eight, registry marks FPC-D-0401 to FPC-D-0408; the Freeport Registry's
   Belt mirror), by their **laid-up** names: *Slack Water* (0401, the hull the first pilot on a fresh
@@ -1600,22 +1673,23 @@ All replaceable; "names ok" or replacements.
   Halvorsen (Ceres Clearing teller, C06); Rosalind Qureshi-Mbeki (Occator factor and Warrant signatory
   of Occator's offers, C07); Margit Søndergaard-Achebe (the Freeport Exchange's factor and signatory of
   the Exchange's ask and Freeport Works' bid, C07); Dov Akintola (Co-op chandler and signatory of the
-  provisions ask, C08); Corin Mbatha (Tycho Mutual agent, C09, Draft 0.1's name); Yusra "Ma" Petrossian
+  provisions ask and the Co-op's yard-fittings bid, C08); Corin Mbatha (Tycho Mutual agent, C09, Draft 0.1's name); Yusra "Ma" Petrossian
   (the Slack Line's barkeep, C10). Principals from doc 11: Tomasz Wen, Eskil Varga, Halvard Ndiaye,
   Ludmila Osei-Ferrante, Dagny Holm (C16), Matthias Kalu (C05).
 - **Stickney cast** (six): Petty Officer Teodora Ilunga-Brandt (Orbital Guard customs, P03); Jonas
   Achterberg-Nkemelu (Kasei receiving clerk and signatory, P07); Wren Castillo-Haugen (Stickney service
-  clerk and Tycho's chair, P11); Pavla Adeyinka-Rusk (harbourmaster's clerk, P05); Hanne Okonkwo-Steyn
+  clerk, signatory of the Yard's crated-fittings ask, and Tycho's chair, P11); Pavla Adeyinka-Rusk (harbourmaster's clerk, P05); Hanne Okonkwo-Steyn
   (Yard Commissary storekeeper and signatory, P09); Dmitri "Mitya" Abubakar-Lange (the Shift Board's
   cook, P10). Principals from doc 11: Priya Castellanos, Ruaridh Tanaka, Teodor Bask (P15). Thirteen
-  NPCs in all; every listing in the slice has a signatory of its own house.
+  NPCs in all, six of them signatories; every listing in the slice has a signatory of its own house.
 - **Places**: the Freeport Hub (Ceres' structure), the Yard Rim (Stickney's), the Slack Line, the Shift
   Board, the Port Authority Gallery, the Yard Maintenance Spine.
 - **Institutions and ids**: the Co-op First Captain Trust (`coop_trust`); the First Captain programme
   (`coop.first_captain`); the Freeport Exchange / Freeport Works (`freeport_exchange`; new to doc 11
   §4, the Port Council's commodity floor, doc 18 §10); Yard Commissary
-  (`yard_commissary`); `system:tacsim.treasury`; `tacsim.registry`; the lane pack
-  `tacsim.lane.ceres_phobos`; the drive class `coast_hauler`.
+  (`yard_commissary`); Stickney Yards as a vendor (`stickney_yards`, the crated-fittings ask from
+  `item.yard_spares`); the good `industrial_parts` "yard fittings, crated"; `system:tacsim.treasury`;
+  `tacsim.registry`; the lane pack `tacsim.lane.ceres_phobos`; the drive class `coast_hauler`.
 - **Verbs**: `+coop`, `+coop/enrol`, `+coop/statement`, `+coop/buyout`, `+coop/release`; `+ship`,
   `+ship/board`, `+ship/leave`, `+ship/hold`, `+ship/plan`, `+ship/undock`, `+ship/orders`,
   `+ship/order`; `+credit`; `+ic`; staff `@coop/revoke`, `@tacsim/port status`.
