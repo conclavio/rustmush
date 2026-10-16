@@ -1366,7 +1366,7 @@ mod tests {
         let refused = tacsim_config(&claiming).expect_err("the lane's id is the game's");
         assert!(
             refused.starts_with(&format!(
-                "[tacsim] {lane}: declares tacsim.lane.ceres_phobos@1, which <built-in \
+                "[tacsim] {lane}: declares tacsim.lane.ceres_phobos@2, which <built-in \
                  tacsim/content/lane/ceres_phobos.json> already declares"
             )),
             "{refused}"

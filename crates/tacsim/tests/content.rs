@@ -2487,7 +2487,7 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "dc5cae81692853bca737049009e4fb9d768ea045b22789f6e2bf5c2786078583";
+const DRAY_DIGEST: &str = "da86f3899788dd9b2ff3141fbf97a5243cb1746b489276173c67dff26caf49fa";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
@@ -2621,7 +2621,7 @@ fn ic2_the_dray_is_pinned_and_checks() {
     assert_eq!(
         logistics.drive.law,
         DriveLaw::Coast {
-            kms: 205,
+            kms: 226,
             burn_permille: 105
         }
     );

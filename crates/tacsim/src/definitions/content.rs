@@ -556,13 +556,23 @@ pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.js
 
 /// **The lane pack's id** (doc 18 cut IC2; doc 18 §4.8, D-18-48).
 ///
-/// v1 grows its `port` entries in place at IC3 and its pin is re-blessed there,
-/// keeping version 1, because no world has applied it (pre-launch; dev1 has
-/// never seen it). **A persisted world — the local all-in-one `mushd` included —
-/// that booted the IC2 bytes must be wiped, or have its
-/// `tacsim:pack:tacsim.lane.ceres_phobos@1` row removed, before it boots IC3**,
-/// or `boot_reconcile` refuses the boot (`lib.rs`, the published-digest gate).
+/// **A published version is never mutated** (the store's rule,
+/// `boot_reconcile`): IC2's v1 was published to every enabled world that booted
+/// it, so cut IC3 publishes **v2** (the routes re-timed for the Dray's re-fitted
+/// 226 km/s cruise, and the two `port` entries) and cut IC8 will publish v3 (the
+/// vendors). A world that latched v1 keeps v1's ledger row and takes v2 by
+/// `@atlas/pack plan tacsim.lane.ceres_phobos` / `@atlas/pack apply` — the boot
+/// pass applies only never-latched packs (`mush-content/src/module.rs`). Address
+/// lane symbols by ([`LANE_PACK`], version), never by bare id:
+/// `TacsimStore::resolve` picks a bare id across loaded packs, and the lane
+/// shares `sol`, `ceres`, `mars` and `ceres_freeport` with the corridor
+/// fixtures. Only [`LANE_VERSION`] is a game source; v1's bytes are no longer
+/// compiled in.
 pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
+/// **The lane version this server ships** (doc 18 cut IC3): v2. The port
+/// readiness report (`crate::port::readiness`) reads the latched version
+/// against it, and every test that names the lane's version reads it here.
+pub const LANE_VERSION: u32 = 2;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

@@ -27,8 +27,11 @@
 //!   kernel's non-exit move shape (`go_home`'s: the veto chain, the move, the
 //!   narration, the room, then `Moved`). It writes no document.
 //!
-//! The port table is local to this cut ([`PORTS`]); cut IC3's `port` pack entries
-//! (their `area`, `rooms.arrivals` and `gallery`) replace it. The onboarding gate
+//! The port table is local to this module ([`PORTS`]). Cut IC3 kept it beside the
+//! lane's `port` pack entries rather than reading them (lead ruling L10), and pins
+//! its agreement with them — venue, name, area and arrival room — by
+//! `crates/tacsim/tests/ports.rs`'s `ic3_the_ic_return_table_agrees_with_the_port_entries`.
+//! The onboarding gate
 //! (`sheet/onboarding.rs`) is a `CommandGate` and is untouched: it already refuses
 //! the door and `+ic` to an unapproved character, the one through its exit rule and
 //! the other because the verb is off its allowlist.
@@ -45,8 +48,9 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use crate::commands::NOT_ENABLED;
 use crate::store::TacsimStore;
 
-/// One IC port the IC-return rule knows (doc 18 §4.5, D-18-3). Cut IC3's `port`
-/// entries replace this table (their `area`, `rooms.arrivals` and `gallery`).
+/// One IC port the IC-return rule knows (doc 18 §4.5, D-18-3). Cut IC3 kept this
+/// table (lead ruling L10) and pins its agreement with the lane's `port` entries
+/// (venue, name, area, arrival) by test.
 #[derive(Debug, PartialEq, Eq)]
 pub struct IcPort {
     /// The port entry's venue id: `ceres` or `stickney`. The stamp's marker is

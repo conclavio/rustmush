@@ -85,6 +85,29 @@ through the economy module's own path.
 """
 
 [[site]]
+path = "crates/tacsim/src/port/apply.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+Doc 18 cut IC3: a port entry's org takes its org id and root-scope id from
+`org`'s monotonic allocators so both are created in ONE `CreateOrg` op — the
+write is the allocator bump; the record itself is created through `org`'s own
+operation (`mush_org::submit`). The site refuses when the slot is absent.
+"""
+
+[[site]]
+path = "crates/tacsim/src/port/apply.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 18 cut IC3: the treasury and each org account take their id from
+`economy`'s account allocator before `mush_economy::open_account` opens them
+through the economy module's own path.
+"""
+
+[[site]]
 path = "crates/mush-server/src/boot.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

@@ -1,0 +1,1933 @@
+//! **Doc 18 cut IC3 acceptance — ports, orgs, capital and readiness** (doc 18
+//! §4.1, §4.4, §4.7; D-18-14, D-18-20, D-18-25, D-18-27, D-18-47; lead rulings
+//! L0–L16 of the IC3 brief).
+//!
+//! Lane v2's two `port` entries are applied once, under the content latch, by
+//! the `PortApplier`: one passive domain per port presenting in the station's
+//! berth gallery, the System treasury in `tacsim.credit`, the nine institutions
+//! as real orgs with scoped accounts, and their capital as one-shot treasury
+//! obligations of at most 800,000 cr that settle on the economy's next sweep.
+//! Every act is recorded in a fail-closed port map. This file boots that on the
+//! production composition (with the pilot sheet, as `mush_server::boot` composes
+//! it), sweeps it, reboots it, updates it, corrupts it, crowds it with windows,
+//! upgrades a world from lane v1, reads the readiness report and `+credit`, and
+//! refuses every port entry the applier could not bind.
+//!
+//! No test here asserts a passage duration (D-18-50).
+
+mod support;
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
+
+use mush_content::ContentState;
+use mush_core::{Audience, CanonicalId, GOD, ObjId};
+use mush_economy::{AccountId, AccountStatus, EconomyConfig, EconomyStore, InstrumentId};
+use mush_org::{OrgStore, PrincipalId};
+use mush_proto::OutputEvent;
+use mush_sim::data::{DomainRecord, SpatialState};
+use mush_testkit::{TestWorld, fold_module_ops};
+use smol_str::SmolStr;
+use tacsim::config::PackSource;
+use tacsim::definitions::content::{LANE_JSON, LANE_PACK, LANE_VERSION};
+use tacsim::pack::{PackEntry, PackError, load_pack, rules_pack_of};
+use tacsim::port::apply::room_by_key;
+use tacsim::port::{PortDef, PortMap, PortMapState, room_key, tranches};
+use tacsim::{TacsimConfig, TacsimStore};
+
+use support::ground::{UNSIGNED, sign};
+
+// ---------------------------------------------------------------------------
+// The rig
+// ---------------------------------------------------------------------------
+
+fn config() -> TacsimConfig {
+    TacsimConfig {
+        enabled: true,
+        ..TacsimConfig::default()
+    }
+}
+
+fn cid(word: &str) -> CanonicalId {
+    CanonicalId::new(word).expect("a canonical id")
+}
+
+fn lane_id() -> CanonicalId {
+    cid(LANE_PACK)
+}
+
+/// How a test roster is composed.
+#[derive(Clone)]
+struct Roster {
+    /// The economy block the composition is handed.
+    economy: EconomyConfig,
+    /// Whether the pilot sheet composes (production does).
+    sheet: bool,
+    /// Whether the layer is a test world's (`tacsim_test_world_module`).
+    test_world: bool,
+    /// A shelf replacing the atlas module's compiled one (test 4's v3).
+    shelf: Option<Vec<mush_content::Pack>>,
+}
+
+impl Roster {
+    /// The production roster: `mush_server::boot::game_modules`' shape, the
+    /// sheet included.
+    fn production() -> Roster {
+        Roster {
+            economy: EconomyConfig::default(),
+            sheet: true,
+            test_world: false,
+            shelf: None,
+        }
+    }
+
+    /// `tests/lane.rs`'s shape: no sheet, so the credit comes from the
+    /// applier's own `ensure_instrument` (L9), and a spawned player walks.
+    fn bare() -> Roster {
+        Roster {
+            sheet: false,
+            ..Roster::production()
+        }
+    }
+
+    fn test_world() -> Roster {
+        Roster {
+            test_world: true,
+            ..Roster::production()
+        }
+    }
+
+    fn with_shelf(mut self, shelf: Vec<mush_content::Pack>) -> Roster {
+        self.shelf = Some(shelf);
+        self
+    }
+
+    fn modules(&self) -> Vec<Box<dyn mush_core::GameModule>> {
+        self.modules_with(config(), true)
+    }
+
+    /// The roster, with the lane's game sources on or off (test 7 boots v1 as
+    /// an operator seed with them off).
+    fn modules_with(
+        &self,
+        cfg: TacsimConfig,
+        game_content: bool,
+    ) -> Vec<Box<dyn mush_core::GameModule>> {
+        use tacsim::composition as comp;
+
+        let llm = Arc::new(
+            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+                .expect("a disabled LLM service composes"),
+        );
+        let onboarding = mush_core::OnboardingConfig::default();
+        let game = tacsim::GameEconomyConfig::default();
+        let mut mods = comp::server_modules_with(
+            mush_weather::WeatherConfig::default(),
+            self.economy.clone(),
+            mush_atlas::AtlasConfig::default(),
+            &onboarding,
+            &game,
+            comp::recovery_policy(&cfg.recovery),
+        );
+        if let Some(shelf) = &self.shelf {
+            let at = mods
+                .iter()
+                .position(|m| m.name() == mush_atlas::NS)
+                .expect("the atlas composes");
+            mods[at] = Box::new(
+                mush_atlas::AtlasModule::with_config(mush_atlas::AtlasConfig::default())
+                    .with_shelf(shelf.clone()),
+            );
+        }
+        mods.push(comp::worldgen_module_with(
+            Arc::clone(&llm),
+            mush_worldgen::WorldgenConfig::default(),
+        ));
+        mods.push(comp::npc_module_with(
+            comp::npc_agent_adapter(),
+            &mush_config::config::NpcCfg::default(),
+        ));
+        if self.sheet {
+            mods.extend(comp::sheet_modules(&onboarding, &game));
+        }
+        if self.test_world {
+            mods.push(comp::tacsim_test_world_module(cfg, game_content));
+        } else {
+            mods.push(comp::tacsim_module_with(cfg, game_content));
+        }
+        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        mods
+    }
+}
+
+/// No module write was refused for its namespace (a refused write is silent
+/// until a reboot).
+fn no_refused_writes(tw: &TestWorld) {
+    let refused = tw.world().refused_namespace_writes();
+    assert!(refused.is_empty(), "refused namespace writes: {refused:?}");
+}
+
+fn boot(roster: &Roster) -> TestWorld {
+    let tw = TestWorld::with_modules(roster.modules());
+    no_refused_writes(&tw);
+    tw
+}
+
+fn reboot(
+    tw: TestWorld,
+    roster: &Roster,
+    store: HashMap<SmolStr, mush_core::ModuleBootData>,
+) -> TestWorld {
+    let tw = tw
+        .reboot_into(roster.modules(), store)
+        .expect("the reboot boots");
+    no_refused_writes(&tw);
+    tw
+}
+
+fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
+    tw.seen_by(events, who).join("\n")
+}
+
+fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
+    let events = tw.run(who, line);
+    said(tw, &events, who)
+}
+
+fn store(tw: &TestWorld) -> &TacsimStore {
+    tw.world()
+        .module_state::<TacsimStore>()
+        .expect("tacsim state")
+}
+
+fn economy(tw: &TestWorld) -> &EconomyStore {
+    tw.world()
+        .module_state::<EconomyStore>()
+        .expect("economy state")
+}
+
+fn orgs(tw: &TestWorld) -> &OrgStore {
+    tw.world().module_state::<OrgStore>().expect("org state")
+}
+
+fn spatial(tw: &TestWorld) -> &SpatialState {
+    tw.world()
+        .module_state::<SpatialState>()
+        .expect("sim state")
+}
+
+fn credit() -> InstrumentId {
+    InstrumentId::new(tacsim::CREDIT).expect("the credit id")
+}
+
+/// The port map of one lane entry, which must be readable.
+fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+    match store(tw).port_map(&lane_id(), &cid(entry)) {
+        PortMapState::Present(map) => map.clone(),
+        other => panic!("{entry}'s map: {other:?}"),
+    }
+}
+
+/// The lane v2 port entries, decoded from the shipped bytes.
+fn ports_of(json: &str) -> Vec<(CanonicalId, PortDef)> {
+    let pack = load_pack(json).expect("the lane verifies");
+    pack.entries()
+        .iter()
+        .filter_map(|(id, entry)| match entry {
+            PackEntry::Port(def) => Some((id.clone(), def.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run every deferred atlas composite off-loop and re-enter it, as the world
+/// task does (`tests/harness.rs`'s `finish_composites`).
+fn finish_composites(tw: &mut TestWorld, effects: &[mush_core::Effect]) {
+    let jobs: Vec<(u64, String)> = effects
+        .iter()
+        .filter_map(|e| match e {
+            mush_core::Effect::ModuleAsync {
+                module,
+                correlation,
+                payload,
+                ..
+            } if module.as_str() == mush_atlas::NS => Some((*correlation, payload.clone())),
+            _ => None,
+        })
+        .collect();
+    for (correlation, payload) in jobs {
+        let outcome = mush_atlas::run_async(&payload);
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        tw.engine_mut().step(
+            mush_core::Inbound::Apply(mush_core::WorldCommand::ModuleAsyncDone {
+                module: mush_atlas::NS.into(),
+                actor: GOD,
+                correlation,
+                payload: outcome,
+            }),
+            &mut out,
+            &mut fx,
+        );
+    }
+}
+
+/// The lane's latched version on this world.
+fn lane_latch(tw: &TestWorld) -> Option<u32> {
+    tw.world()
+        .module_state::<ContentState>()
+        .and_then(|c| c.latches.applied(&lane_id()))
+        .map(mush_content::Applied::version)
+}
+
+/// What a port apply must never move: orgs, accounts, obligations, domains and
+/// journal entries.
+#[derive(Debug, PartialEq, Eq)]
+struct Counts {
+    orgs: usize,
+    accounts: usize,
+    obligations: usize,
+    domains: usize,
+    journal: u64,
+}
+
+fn counts(tw: &TestWorld) -> Counts {
+    Counts {
+        orgs: orgs(tw).state().orgs().count(),
+        accounts: economy(tw).snapshot().accounts().count(),
+        obligations: economy(tw).snapshot().obligations().count(),
+        domains: spatial(tw).domains.len(),
+        journal: economy(tw).journal_len(),
+    }
+}
+
+/// Both port maps as they stand in RAM.
+fn maps(tw: &TestWorld) -> Vec<PortMap> {
+    store(tw).port_maps().cloned().collect()
+}
+
+/// The port-map documents a batch wrote, by key.
+fn map_docs(ops: &[mush_core::ModuleOp]) -> BTreeMap<String, serde_json::Value> {
+    ops.iter()
+        .filter_map(|op| match &op.op {
+            mush_core::ModuleWrite::JsonSet { key, value }
+                if key.starts_with(tacsim::port::PORT_MAP_PREFIX) =>
+            {
+                Some((key.to_string(), value.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// One economy sweep at `now + secs`: the sweep fires once per call (the
+/// `crates/mush-economy/tests/e4b1.rs` `sweep_at` shape).
+fn sweep(tw: &mut TestWorld, secs: i64) {
+    let t = tw.world().now().saturating_add(secs);
+    tw.set_now(t);
+    let _ = tw.fire_due(t.saturating_mul(1000));
+}
+
+/// The live world rate.
+fn world_rate(tw: &TestWorld) -> u32 {
+    tw.world()
+        .world_timeline()
+        .epochs()
+        .last()
+        .map(|epoch| epoch.rate)
+        .expect("a time generation")
+}
+
+/// Put the world at `rate` through `@tacsim/time` (which refuses re-typing the
+/// live rate).
+fn set_rate(tw: &mut TestWorld, rate: u32) {
+    if world_rate(tw) != rate {
+        let out = run(tw, GOD, &format!("@tacsim/time rate={rate}"));
+        assert_eq!(world_rate(tw), rate, "{out}");
+    }
+}
+
+fn report(tw: &mut TestWorld) -> String {
+    run(tw, GOD, "@tacsim/port status")
+}
+
+/// The lane's bytes as JSON, edited by `edit`, at `version`, re-signed.
+fn lane_variant(version: u32, edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = serde_json::json!(version);
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    edit(&mut doc);
+    sign(&serde_json::to_string_pretty(&doc).expect("serializes"))
+}
+
+fn content_pack(json: &str) -> mush_content::Pack {
+    mush_content::load_pack(json).expect("the variant verifies")
+}
+
+/// Lane v3 (test-only data): both port entries touched — `ceres_port`'s
+/// dormancy 8 days and `yard_commissary`'s faction `freeport`.
+fn lane_v3(edit: impl FnOnce(&mut serde_json::Value)) -> mush_content::Pack {
+    content_pack(&lane_variant(3, |doc| {
+        doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"] =
+            serde_json::json!(8);
+        doc["entries"]["stickney_port"]["def"]["orgs"][2]["faction"] =
+            serde_json::json!("freeport");
+        edit(doc);
+    }))
+}
+
+/// `@atlas/pack plan` then `@atlas/pack apply <fingerprint>` on the lane.
+fn plan_and_apply(tw: &mut TestWorld) -> (String, String) {
+    let plan = run(tw, GOD, &format!("@atlas/pack plan {LANE_PACK}"));
+    let fingerprint = plan
+        .split("@atlas/pack apply ")
+        .nth(1)
+        .map(|rest| rest.split_whitespace().next().unwrap_or("").to_owned())
+        .unwrap_or_default();
+    let apply = run(tw, GOD, &format!("@atlas/pack apply {fingerprint}"));
+    (plan, apply)
+}
+
+/// The sum of every authored capital over the decoded lane, major units.
+fn total_capital() -> u64 {
+    ports_of(LANE_JSON)
+        .iter()
+        .flat_map(|(_, def)| def.orgs.iter().map(|org| org.capital_major))
+        .sum()
+}
+
+/// The number of tranches the authored capital needs.
+fn total_tranches() -> usize {
+    ports_of(LANE_JSON)
+        .iter()
+        .flat_map(|(_, def)| def.orgs.iter().map(|org| tranches(org.capital_major).len()))
+        .sum()
+}
+
+// ---------------------------------------------------------------------------
+// 1. The domains
+// ---------------------------------------------------------------------------
+
+/// **Both ports open one passive domain each into their berth galleries**
+/// (doc 18 §4.7 part a; lens 4).
+#[test]
+fn ic3_boot_opens_two_passive_domains_into_the_galleries() {
+    let mut tw = boot(&Roster::production());
+    let placed = tw
+        .world()
+        .module_state::<ContentState>()
+        .and_then(|c| c.latches.applied(&lane_id()))
+        .map(mush_content::Applied::placed)
+        .expect("the lane is latched");
+    for (entry, def) in ports_of(LANE_JSON) {
+        let map = port_map(&tw, entry.as_str());
+        let host = placed.get(&def.location).copied().expect("the place room");
+        let gallery = room_by_key(
+            tw.world(),
+            &room_key(&def.area, &def.gallery).expect("the gallery key"),
+        )
+        .expect("the gallery resolves");
+        assert!(
+            tw.world()
+                .has_marker(gallery, mush_atlas::def::PORT_DOCK_MARKER),
+            "{entry}'s gallery carries port.dock"
+        );
+        assert_eq!(map.host, Some(host.0), "{entry}");
+        assert_eq!(map.presentation, Some(gallery.0), "{entry}");
+        let domain: &DomainRecord = spatial(&tw)
+            .domains
+            .get(&mush_sim::data::DomainId(map.domain.expect("a domain")))
+            .expect("the domain record");
+        assert_eq!(domain.host, host, "{entry}");
+        assert_eq!(domain.presentation_location, gallery, "{entry}");
+        assert!(domain.window.is_none(), "{entry}'s domain is passive");
+    }
+    assert_eq!(
+        mush_sim::windows(tw.world()).count(),
+        0,
+        "no window was opened"
+    );
+    let out = run(&mut tw, GOD, "@domain");
+    for place in ["Ceres Freeport", "Stickney Yards"] {
+        assert!(
+            out.lines()
+                .any(|line| line.contains(&format!("host {place} "))
+                    && line.contains("presents in Visiting Berth Gallery")),
+            "{place}:\n{out}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2. The orgs and their capital
+// ---------------------------------------------------------------------------
+
+/// **The nine institutions are created, and one sweep settles their capital**
+/// (doc 18 §4.7 parts b–c, D-18-14, D-18-27; lens 1). The total is derived from
+/// the decoded entries, never typed in.
+#[test]
+fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
+    let mut tw = boot(&Roster::production());
+    let list = run(&mut tw, GOD, "@org/list");
+    let ports = ports_of(LANE_JSON);
+    let treasury = port_map(&tw, "ceres_port").treasury.expect("a treasury");
+    assert_eq!(
+        port_map(&tw, "stickney_port").treasury,
+        Some(treasury),
+        "two ports naming one treasury share one account"
+    );
+    let snapshot = economy(&tw).snapshot();
+    let tre = snapshot.account(AccountId(treasury)).expect("the treasury");
+    assert_eq!(
+        tre.owner,
+        PrincipalId::System(
+            mush_org::SystemPrincipalId::new("tacsim.treasury").expect("a principal")
+        )
+    );
+    assert_eq!(tre.instrument, credit());
+    assert!(tre.scope.is_none());
+    let mut obligations = 0;
+    for (entry, def) in &ports {
+        let map = port_map(&tw, entry.as_str());
+        for org in &def.orgs {
+            assert!(list.contains(&org.name), "{}:\n{list}", org.name);
+            let row = map.orgs.get(&org.id).expect("a map row");
+            let record = orgs(&tw)
+                .state()
+                .org(mush_org::OrgId(row.org))
+                .expect("the org exists");
+            assert_eq!(record.name.as_str(), org.name);
+            assert_eq!(record.root_scope.0, row.root_scope);
+            let scope = orgs(&tw)
+                .state()
+                .scope(mush_org::OrgScopeId(row.root_scope))
+                .expect("the root scope exists");
+            assert_eq!(scope.org, record.id);
+            assert!(scope.parent.is_none(), "{} has its root scope", org.id);
+            let scoped: Vec<_> = snapshot
+                .accounts_of(&PrincipalId::Organization(mush_org::OrgId(row.org)))
+                .filter(|a| a.status == AccountStatus::Active && a.instrument == credit())
+                .collect();
+            assert_eq!(scoped.len(), 1, "{}", org.id);
+            let account = scoped[0];
+            assert_eq!(Some(account.id.0), row.account);
+            assert_eq!(account.scope.map(|s| s.0), Some(row.root_scope));
+            assert_eq!(account.credit, mush_economy::CreditPolicy::forbid());
+            let want = tranches(org.capital_major);
+            assert_eq!(row.capital.len(), want.len(), "{}", org.id);
+            for (tranche, major) in row.capital.iter().zip(&want) {
+                let o = snapshot
+                    .obligation(mush_economy::ObligationId(tranche.obligation))
+                    .expect("the obligation");
+                assert_eq!(o.debit_account, AccountId(treasury));
+                assert_eq!(o.credit_account, account.id);
+                assert_eq!(o.amount.minor(), i64::try_from(*major).expect("fits") * 100);
+                assert!(matches!(o.status, mush_economy::ObligationStatus::Active));
+                assert_eq!(o.periods_settled, 0);
+                obligations += 1;
+            }
+        }
+    }
+    assert_eq!(obligations, total_tranches());
+    assert_eq!(snapshot.obligations().count(), total_tranches());
+    let before = report(&mut tw);
+    assert!(
+        before.contains("ceres_port org coop: Belt Carriers' Cooperative, org #"),
+        "{before}"
+    );
+    assert!(
+        before.contains(": 0 of 4 tranches settled. [pending]"),
+        "{before}"
+    );
+
+    sweep(&mut tw, 3_600);
+    let snapshot = economy(&tw).snapshot();
+    for (entry, def) in &ports {
+        let map = port_map(&tw, entry.as_str());
+        for org in &def.orgs {
+            let row = map.orgs.get(&org.id).expect("a map row");
+            for tranche in &row.capital {
+                let o = snapshot
+                    .obligation(mush_economy::ObligationId(tranche.obligation))
+                    .expect("the obligation");
+                assert!(
+                    matches!(o.status, mush_economy::ObligationStatus::Satisfied),
+                    "{}: {:?}",
+                    org.id,
+                    o.status
+                );
+            }
+            let account = snapshot
+                .account(AccountId(row.account.expect("an account")))
+                .expect("the account");
+            assert_eq!(
+                account.posted_balance.minor(),
+                i64::try_from(org.capital_major).expect("fits") * 100,
+                "{}",
+                org.id
+            );
+        }
+    }
+    let treasury_balance = snapshot
+        .account(AccountId(treasury))
+        .expect("the treasury")
+        .posted_balance
+        .minor();
+    assert_eq!(
+        treasury_balance,
+        -(i64::try_from(total_capital()).expect("fits") * 100)
+    );
+    assert_eq!(treasury_balance, -820_000_000, "8,200,000.00cr at v2");
+    set_rate(&mut tw, 24);
+    let after = report(&mut tw);
+    assert!(!after.contains("[pending]"), "{after}");
+    assert!(
+        after.contains("ceres_port org freeport_exchange: Freeport Exchange, org #")
+            && after.contains("capital 4000000.00cr: 5 of 5 tranches settled. [ready]"),
+        "{after}"
+    );
+    assert!(
+        after.ends_with("Ready: every binding above is in place."),
+        "{after}"
+    );
+}
+
+/// **The applier ensures the credit without the sheet** (L9): on `tests/lane.rs`'s
+/// sheet-less roster both ports bind and one sweep settles them, with
+/// `tacsim.credit` made by the applier's own `ensure_instrument`.
+#[test]
+fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
+    let mut tw = boot(&Roster::bare());
+    assert!(economy(&tw).snapshot().instrument(&credit()).is_some());
+    let ceres = port_map(&tw, "ceres_port");
+    let stickney = port_map(&tw, "stickney_port");
+    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 9);
+    sweep(&mut tw, 3_600);
+    let snapshot = economy(&tw).snapshot();
+    let treasury = snapshot
+        .account(AccountId(ceres.treasury.expect("a treasury")))
+        .expect("the treasury");
+    assert_eq!(
+        treasury.posted_balance.minor(),
+        -(i64::try_from(total_capital()).expect("fits") * 100)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 3. A second boot
+// ---------------------------------------------------------------------------
+
+/// **A second boot posts nothing** (doc 18 §4.7 "Idempotency"; lens 2).
+#[test]
+fn ic3_a_second_boot_posts_nothing() {
+    let roster = Roster::production();
+    let mut tw = boot(&roster);
+    sweep(&mut tw, 3_600);
+    let before = counts(&tw);
+    let before_maps = maps(&tw);
+    let before_latches: Vec<(String, u32, String)> = tw
+        .world()
+        .module_state::<ContentState>()
+        .expect("content")
+        .latches
+        .all()
+        .map(|l| (l.pack().to_string(), l.version(), l.digest().to_hex()))
+        .collect();
+    let objects = tw.world().iter().count();
+    let ops = tw.take_module_ops();
+    let docs = map_docs(&ops);
+    let folded = fold_module_ops(ops);
+    let mut tw = reboot(tw, &roster, folded);
+    assert_eq!(counts(&tw), before);
+    assert_eq!(maps(&tw), before_maps);
+    let latches: Vec<(String, u32, String)> = tw
+        .world()
+        .module_state::<ContentState>()
+        .expect("content")
+        .latches
+        .all()
+        .map(|l| (l.pack().to_string(), l.version(), l.digest().to_hex()))
+        .collect();
+    assert_eq!(latches, before_latches);
+    assert_eq!(tw.world().iter().count(), objects, "no new object");
+    // The documents a reboot reads back are the ones the first boot wrote, and
+    // the second boot writes none.
+    assert_eq!(docs.len(), 2, "{:?}", docs.keys().collect::<Vec<_>>());
+    for map in maps(&tw) {
+        let written = docs.get(map.key().as_str()).expect("a document");
+        assert_eq!(&serde_json::to_value(&map).expect("encodes"), written);
+    }
+    let again = tw.take_module_ops();
+    assert!(
+        map_docs(&again).is_empty(),
+        "the second boot wrote a port map"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. An update
+// ---------------------------------------------------------------------------
+
+/// **An update reuses every map row and refuses drift** (doc 18 §4.7; L4, L16).
+#[test]
+fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
+    let v3 = lane_v3(|_| {});
+    let roster = Roster::production().with_shelf(vec![v3]);
+    let mut tw = boot(&roster);
+    sweep(&mut tw, 3_600);
+    let snapshot_counts = counts(&tw);
+    let snapshot_maps = maps(&tw);
+    let _ = tw.take_module_ops();
+
+    let (plan, apply) = plan_and_apply(&mut tw);
+    assert!(
+        plan.contains(&format!(
+            "Plan for {LANE_PACK}@3: 0 create, 2 update, 0 retire, 10 unchanged"
+        )),
+        "{plan}"
+    );
+    for entry in ["ceres_port", "stickney_port"] {
+        assert!(
+            plan.lines()
+                .any(|line| line.contains("update") && line.contains(&format!("{entry} (port)"))),
+            "{entry}:\n{plan}"
+        );
+    }
+    assert!(
+        apply.contains(&format!(
+            "Applied {LANE_PACK}@3: 0 created, 2 updated, 0 retired, 10 unchanged."
+        )),
+        "{apply}\n{plan}"
+    );
+    assert!(!apply.contains("STOPPED"), "{apply}");
+    assert_eq!(lane_latch(&tw), Some(3));
+    assert_eq!(counts(&tw), snapshot_counts, "the update made nothing");
+    assert_eq!(maps(&tw), snapshot_maps);
+    let ops = tw.take_module_ops();
+    assert!(map_docs(&ops).is_empty(), "the update rewrote a port map");
+    no_refused_writes(&tw);
+    // v3 is shelved, not loaded: the report reads the shipped v2 and the maps.
+    set_rate(&mut tw, 24);
+    let out = report(&mut tw);
+    assert!(
+        out.contains(&format!(
+            "lane: {LANE_PACK}@3 applied; this server ships @2 and does not load @3. [flagged]"
+        )),
+        "{out}"
+    );
+    assert!(out.contains("  ceres_port domain: #"), "{out}");
+    assert!(
+        !out.contains("[missing]") && !out.contains("[pending]"),
+        "{out}"
+    );
+
+    // Drift, each on a fresh copy of the post-sweep world: the same boot and
+    // sweep (deterministic, so the same ids), folded and rebooted.
+    for (name, variant, words) in [
+        (
+            "v3' (coop capital 3,200,000)",
+            lane_v3(|doc| {
+                doc["entries"]["ceres_port"]["def"]["orgs"][1]["capital_major"] =
+                    serde_json::json!(3_200_000);
+            }),
+            ["coop", "capital"],
+        ),
+        (
+            "v3'' (Kasei Metals renamed)",
+            lane_v3(|doc| {
+                doc["entries"]["stickney_port"]["def"]["orgs"][0]["name"] =
+                    serde_json::json!("Kasei Metals & Ores");
+            }),
+            ["kasei", "rename"],
+        ),
+        (
+            // A top-up whose tranches EXTEND the recorded ones: 4,000,000 is
+            // five of 800,000 and 4,800,000 is six, the first five the same.
+            // Refused by the recorded capital, not by a tranche mismatch.
+            "v3''' (freeport_exchange capital 4,800,000)",
+            lane_v3(|doc| {
+                doc["entries"]["ceres_port"]["def"]["orgs"][3]["capital_major"] =
+                    serde_json::json!(4_800_000);
+            }),
+            ["freeport_exchange", "capital"],
+        ),
+    ] {
+        let roster = Roster::production().with_shelf(vec![variant]);
+        let mut fresh = boot(&roster);
+        sweep(&mut fresh, 3_600);
+        let folded = fold_module_ops(fresh.take_module_ops());
+        let mut tw = reboot(fresh, &roster, folded);
+        let before = counts(&tw);
+        let before_maps = maps(&tw);
+        let (_plan, apply) = plan_and_apply(&mut tw);
+        for word in words {
+            assert!(apply.contains(word), "{name}: {word}:\n{apply}");
+        }
+        assert!(!apply.contains("Applied "), "{name}:\n{apply}");
+        assert_eq!(lane_latch(&tw), Some(2), "{name}");
+        assert_eq!(counts(&tw), before, "{name}");
+        assert_eq!(maps(&tw), before_maps, "{name}");
+        assert_eq!(before_maps, snapshot_maps, "{name}");
+    }
+}
+
+/// **A later version's new org is created and capitalized, and every recorded
+/// row stands** (doc 18 §4.7, L4: "a new org in a later version is created and
+/// capitalized normally"). Test-only data: a tenth institution on Stickney.
+#[test]
+fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
+    const NEW_CAPITAL: u64 = 900_000;
+    let v3 = lane_v3(|doc| {
+        doc["entries"]["stickney_port"]["def"]["orgs"]
+            .as_array_mut()
+            .expect("the orgs")
+            .push(serde_json::json!({
+                "id": "phobos_tender",
+                "name": "Phobos Tug & Tender",
+                "capital_major": NEW_CAPITAL,
+                "faction": "republic"
+            }));
+    });
+    let roster = Roster::production().with_shelf(vec![v3]);
+    let mut tw = boot(&roster);
+    sweep(&mut tw, 3_600);
+    let before = counts(&tw);
+    let ceres = port_map(&tw, "ceres_port");
+    let stickney = port_map(&tw, "stickney_port");
+    let _ = tw.take_module_ops();
+
+    let (plan, apply) = plan_and_apply(&mut tw);
+    assert!(
+        apply.contains(&format!(
+            "Applied {LANE_PACK}@3: 0 created, 2 updated, 0 retired, 10 unchanged."
+        )),
+        "{apply}\n{plan}"
+    );
+    let want = tranches(NEW_CAPITAL);
+    let after = counts(&tw);
+    assert_eq!(after.orgs, before.orgs + 1, "one org");
+    assert_eq!(after.accounts, before.accounts + 1, "one scoped account");
+    assert_eq!(after.obligations, before.obligations + want.len());
+    assert_eq!(after.domains, before.domains, "no domain");
+    assert_eq!(
+        after.journal, before.journal,
+        "nothing posts before a sweep"
+    );
+    assert_eq!(port_map(&tw, "ceres_port"), ceres, "the ceres map stands");
+    let now = port_map(&tw, "stickney_port");
+    assert_eq!(now.domain, stickney.domain);
+    assert_eq!(now.treasury, stickney.treasury);
+    for (id, row) in &stickney.orgs {
+        assert_eq!(
+            now.orgs.get(id),
+            Some(row),
+            "{id}'s row is reused as it was"
+        );
+    }
+    let row = now.orgs.get(&cid("phobos_tender")).expect("the new row");
+    assert_eq!(row.capital_major, NEW_CAPITAL);
+    let record = orgs(&tw)
+        .state()
+        .org(mush_org::OrgId(row.org))
+        .expect("the new org");
+    assert_eq!(record.name.as_str(), "Phobos Tug & Tender");
+    let account = economy(&tw)
+        .snapshot()
+        .account(AccountId(row.account.expect("an account")))
+        .expect("the account")
+        .clone();
+    assert_eq!(account.scope.map(|s| s.0), Some(row.root_scope));
+    assert_eq!(account.credit, mush_economy::CreditPolicy::forbid());
+    assert_eq!(row.capital.len(), want.len());
+    for (tranche, major) in row.capital.iter().zip(&want) {
+        let o = economy(&tw)
+            .snapshot()
+            .obligation(mush_economy::ObligationId(tranche.obligation))
+            .expect("the obligation")
+            .clone();
+        assert_eq!(
+            o.debit_account,
+            AccountId(now.treasury.expect("a treasury"))
+        );
+        assert_eq!(o.credit_account, account.id);
+        assert_eq!(o.amount.minor(), i64::try_from(*major).expect("fits") * 100);
+    }
+    let docs = map_docs(&tw.take_module_ops());
+    assert_eq!(
+        docs.keys().collect::<Vec<_>>(),
+        vec![&now.key().to_string()],
+        "only the stickney map is written"
+    );
+    no_refused_writes(&tw);
+    sweep(&mut tw, 3_600);
+    let balance = economy(&tw)
+        .snapshot()
+        .account(account.id)
+        .expect("the account")
+        .posted_balance
+        .minor();
+    assert_eq!(balance, i64::try_from(NEW_CAPITAL).expect("fits") * 100);
+}
+
+/// **An apply that stopped part way is completed by the next one** (L3, L4):
+/// the world is rebuilt as if the first pass had stopped before the Exchange's
+/// fifth tranche — the map row without it and its obligation never made. The
+/// recorded capital equals the authored one, so the next apply makes exactly
+/// that tranche and nothing else.
+#[test]
+fn ic3_a_map_that_stopped_part_way_is_completed() {
+    let v3 = lane_v3(|_| {});
+    let roster = Roster::production().with_shelf(vec![v3]);
+    let mut tw = boot(&roster);
+    let full = port_map(&tw, "ceres_port");
+    let exchange = cid("freeport_exchange");
+    let row = full.orgs.get(&exchange).expect("the row").clone();
+    let last = row.capital.last().expect("a tranche").clone();
+    assert_eq!(last.n, 4, "the Exchange's fifth tranche");
+    let mut partial = full.clone();
+    partial
+        .orgs
+        .get_mut(&exchange)
+        .expect("the row")
+        .capital
+        .pop();
+    let mut folded = fold_module_ops(tw.take_module_ops());
+    let key = ceres_key();
+    let doc = folded
+        .get_mut(tacsim::NS)
+        .and_then(|data| data.kv.iter_mut().find(|(k, _)| k.as_str() == key))
+        .expect("the ceres map document");
+    doc.1 = serde_json::to_value(&partial).expect("encodes");
+    let gone = mush_economy::obligation_doc_key(mush_economy::ObligationId(last.obligation));
+    let economy_kv = &mut folded
+        .get_mut(mush_economy::NS)
+        .expect("the economy's documents")
+        .kv;
+    let held = economy_kv.len();
+    economy_kv.retain(|(k, _)| *k != gone);
+    assert_eq!(
+        economy_kv.len() + 1,
+        held,
+        "the obligation document is gone"
+    );
+    let mut tw = reboot(tw, &roster, folded);
+    let out = report(&mut tw);
+    assert!(
+        out.contains(&format!(
+            "  ceres_port org freeport_exchange: Freeport Exchange, org #{}, account #{}; 4 of 5 \
+             capital tranches are created. [missing]",
+            row.org,
+            row.account.expect("an account")
+        )),
+        "{out}"
+    );
+    let before = counts(&tw);
+
+    let (plan, apply) = plan_and_apply(&mut tw);
+    assert!(
+        apply.contains(&format!(
+            "Applied {LANE_PACK}@3: 0 created, 2 updated, 0 retired, 10 unchanged."
+        )),
+        "{apply}\n{plan}"
+    );
+    let after = counts(&tw);
+    assert_eq!(after.obligations, before.obligations + 1, "one tranche");
+    assert_eq!(after.orgs, before.orgs);
+    assert_eq!(after.accounts, before.accounts);
+    assert_eq!(after.domains, before.domains);
+    let now = port_map(&tw, "ceres_port");
+    let done = now.orgs.get(&exchange).expect("the row");
+    assert_eq!(done.capital.len(), 5);
+    assert_eq!(
+        done.capital[..4],
+        row.capital[..4],
+        "the made tranches stand"
+    );
+    assert_eq!(done.capital[4].n, 4);
+    assert_eq!(done.capital[4].amount_minor, 80_000_000);
+    for (id, other) in &full.orgs {
+        if *id != exchange {
+            assert_eq!(now.orgs.get(id), Some(other), "{id}");
+        }
+    }
+    sweep(&mut tw, 3_600);
+    let balance = economy(&tw)
+        .snapshot()
+        .account(AccountId(row.account.expect("an account")))
+        .expect("the account")
+        .posted_balance
+        .minor();
+    assert_eq!(balance, 400_000_000, "4,000,000.00cr, once");
+}
+
+/// **A tranche no sweep will settle is missing, not pending** (doc 18 §4.7's
+/// report): a cancelled capital obligation is out of the due pool, so the
+/// report names it instead of telling staff to wait for a sweep.
+#[test]
+fn ic3_a_cancelled_tranche_reads_missing_not_pending() {
+    let mut tw = boot(&Roster::production());
+    let map = port_map(&tw, "stickney_port");
+    let kasei = map.orgs.get(&cid("kasei")).expect("kasei's row");
+    let obligation = kasei.capital[0].obligation;
+    let out = run(&mut tw, GOD, &format!("@obligation/cancel #{obligation}"));
+    assert!(out.contains("cancelled"), "{out}");
+    sweep(&mut tw, 3_600);
+    let out = report(&mut tw);
+    assert!(
+        out.contains(&format!(
+            "  stickney_port org kasei: Kasei Metals, org #{}, account #{}; capital obligation \
+             #{obligation} is cancelled, and no sweep will settle it. [missing]",
+            kasei.org,
+            kasei.account.expect("an account")
+        )),
+        "{out}"
+    );
+    assert!(!out.contains("[pending]"), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("Not ready: ")), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// 5. A corrupt map
+// ---------------------------------------------------------------------------
+
+/// The corrupt map document's key.
+fn ceres_key() -> String {
+    tacsim::port::port_map_key(&lane_id(), &cid("ceres_port")).to_string()
+}
+
+/// **A corrupt port map refuses re-creation** (doc 18 §4.7; lens 3).
+#[test]
+fn ic3_a_corrupt_port_map_refuses_re_creation() {
+    // (a) A kept world whose map rots.
+    let v3 = lane_v3(|_| {});
+    let roster = Roster::production().with_shelf(vec![v3]);
+    let mut tw = boot(&roster);
+    let mut folded = fold_module_ops(tw.take_module_ops());
+    let key = ceres_key();
+    let slot = folded
+        .get_mut(tacsim::NS)
+        .and_then(|data| data.kv.iter_mut().find(|(k, _)| k.as_str() == key))
+        .expect("the ceres map document");
+    slot.1 = serde_json::json!({ "schema": "x" });
+    let mut tw = reboot(tw, &roster, folded);
+    assert!(matches!(
+        store(&tw).port_map(&lane_id(), &cid("ceres_port")),
+        PortMapState::Unreadable
+    ));
+    let out = report(&mut tw);
+    assert!(
+        out.contains(&format!(
+            "  ceres_port: its port map {key} is unreadable. [missing]"
+        )),
+        "{out}"
+    );
+    let before = counts(&tw);
+    let (_plan, apply) = plan_and_apply(&mut tw);
+    assert!(apply.contains(&key), "{apply}");
+    assert!(apply.contains("never re-created"), "{apply}");
+    assert_eq!(lane_latch(&tw), Some(2));
+    assert_eq!(counts(&tw), before, "nothing was made");
+
+    // (b) A fresh store carrying only that corrupt document refuses the first
+    // boot of the lane before any of its entries mutates.
+    let mut boot_data: HashMap<SmolStr, mush_core::ModuleBootData> = HashMap::new();
+    boot_data
+        .entry(SmolStr::new(tacsim::NS))
+        .or_default()
+        .kv
+        .push((SmolStr::new(&key), serde_json::json!({ "schema": "x" })));
+    let (world, registry) = mush_testkit::boot_world();
+    let mut engine =
+        mush_core::Engine::with_modules(world, registry, Roster::production().modules())
+            .expect("the roster composes");
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    let refused = engine
+        .modules_loaded(boot_data, &mut out, &mut fx)
+        .expect_err("the first boot of the lane is refused")
+        .to_string();
+    assert!(
+        refused.contains(&format!("content: first-boot pack {LANE_PACK}@2 refused: ")),
+        "{refused}"
+    );
+    assert!(refused.contains(&key), "{refused}");
+    assert_nothing_bound(&engine.world);
+}
+
+/// **A frozen economy refuses the lane before anything is made** (doc 18 §4.7;
+/// the check phase decides everything decidable before a write). A kept world
+/// on the IC1 boot list (no lane) whose economy freezes at the next boot — a
+/// drifted account projection, `mush-economy`'s own boot integrity rule — takes
+/// the lane for the first time: `create_system_obligation` would answer
+/// `EconomyFrozen` while `open_account` would not, so without the check the
+/// apply would open the domain, the treasury, an org and its account and then
+/// stop at the first tranche.
+#[test]
+fn ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made() {
+    use tacsim::definitions::content::{boot_packs, station_packs};
+
+    let mut old = mush_atlas::starter::packs().expect("the starter packs");
+    old.extend(boot_packs().expect("the game packs"));
+    old.extend(station_packs().expect("the station packs"));
+    let mut tw = TestWorld::with_modules(support::roster_booting(config(), old));
+    no_refused_writes(&tw);
+    assert_eq!(lane_latch(&tw), None);
+    let pat = tw.spawn_player("Pat");
+    for line in [
+        "@instrument/register gold=2".to_owned(),
+        "@account/system faucet=gold".to_owned(),
+        format!("@account/open #{}=gold", pat.0),
+    ] {
+        let _ = run(&mut tw, GOD, &line);
+    }
+    let gold = InstrumentId::new("gold").expect("an id");
+    let account_of = |tw: &TestWorld, owner: &PrincipalId| -> AccountId {
+        economy(tw)
+            .snapshot()
+            .accounts_of(owner)
+            .find(|a| a.instrument == gold)
+            .map(|a| a.id)
+            .expect("the account")
+    };
+    let faucet = account_of(
+        &tw,
+        &PrincipalId::System(mush_org::SystemPrincipalId::new("faucet").expect("a principal")),
+    );
+    let held = account_of(&tw, &PrincipalId::Object(pat));
+    let out = run(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {}={} 100", faucet.0, held.0),
+    );
+    assert_eq!(
+        economy(&tw)
+            .snapshot()
+            .account(held)
+            .expect("the account")
+            .posted_balance
+            .minor(),
+        100,
+        "{out}"
+    );
+    let mut folded = fold_module_ops(tw.take_module_ops());
+    let doc_key = format!("account:{}", held.0);
+    let doc = folded
+        .get_mut(mush_economy::NS)
+        .and_then(|data| data.kv.iter_mut().find(|(k, _)| k.as_str() == doc_key))
+        .expect("the account document");
+    doc.1["posted_balance"] = serde_json::json!(999);
+
+    let world = tw.into_engine().world;
+    let (_, registry) = mush_testkit::boot_world();
+    let mut engine =
+        mush_core::Engine::with_modules(world, registry, Roster::production().modules())
+            .expect("the roster composes");
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    let refused = engine
+        .modules_loaded(folded, &mut out, &mut fx)
+        .expect_err("the first boot of the lane is refused")
+        .to_string();
+    assert!(
+        engine
+            .world
+            .module_state::<EconomyStore>()
+            .expect("economy state")
+            .is_frozen(),
+        "the drifted projection froze the economy"
+    );
+    assert!(
+        refused.contains(&format!("content: first-boot pack {LANE_PACK}@2 refused: ")),
+        "{refused}"
+    );
+    assert!(refused.contains("the economy is frozen"), "{refused}");
+    assert_nothing_bound(&engine.world);
+}
+
+/// No org, no port account, no port domain: the lane refused before its first
+/// write (the starter, proving-ground and station packs applied before it, so
+/// objects and their domains do exist).
+fn assert_nothing_bound(w: &mush_core::World) {
+    let orgs = w.module_state::<OrgStore>().expect("org state");
+    assert_eq!(orgs.state().orgs().count(), 0, "no org was created");
+    let economy = w.module_state::<EconomyStore>().expect("economy state");
+    let treasury = PrincipalId::System(
+        mush_org::SystemPrincipalId::new("tacsim.treasury").expect("a principal"),
+    );
+    assert!(
+        !economy
+            .snapshot()
+            .accounts()
+            .any(|a| a.instrument == credit()
+                && (a.owner == treasury || matches!(a.owner, PrincipalId::Organization(_)))),
+        "no port account was opened"
+    );
+    assert_eq!(economy.snapshot().obligations().count(), 0, "no obligation");
+    let spatial = w.module_state::<SpatialState>().expect("sim state");
+    for domain in spatial.domains.values() {
+        let host = mush_core::output::display_name(w, domain.host);
+        assert!(
+            host != "Ceres Freeport" && host != "Stickney Yards",
+            "a port domain was opened on {host}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6. Eight windows
+// ---------------------------------------------------------------------------
+
+/// **A kept world with eight windows open at restart still applies the lane**
+/// (doc 18 §4.4, §9 risk 1; lens 5). One window is opened by GOD's
+/// `@atlas/window open`; its sim domain document is cloned under seven fresh
+/// domain ids on seven other station rooms in the folded store, with the sim
+/// allocator bumped past them.
+#[test]
+fn ic3_a_kept_world_with_eight_windows_open_still_applies_the_lane() {
+    use tacsim::definitions::content::{CERES_PACK, STICKNEY_PACK, boot_packs, station_packs};
+
+    // The IC1 boot list: starter, proving ground, stations — no lane.
+    let mut old = mush_atlas::starter::packs().expect("the starter packs");
+    old.extend(boot_packs().expect("the game packs"));
+    old.extend(station_packs().expect("the station packs"));
+    let mut tw = TestWorld::with_modules(support::roster_booting(config(), old));
+    no_refused_writes(&tw);
+    assert_eq!(lane_latch(&tw), None);
+    let room = |tw: &TestWorld, pack: &str, entry: &str| -> ObjId {
+        mush_atlas::travel::latched_object(
+            tw.world(),
+            &mush_atlas::RecordKey::new(cid(pack), cid(entry)),
+        )
+        .unwrap_or_else(|| panic!("{pack}.{entry} is latched"))
+    };
+    let first = room(&tw, CERES_PACK, "room.c07_exchange");
+    let (events, effects) = tw.run_with_effects(GOD, &format!("@atlas/window open #{}", first.0));
+    let opened = said(&tw, &events, GOD);
+    finish_composites(&mut tw, &effects);
+    assert_eq!(mush_sim::windows(tw.world()).count(), 1, "{opened}");
+    let window_id = mush_sim::windows(tw.world())
+        .next()
+        .map(|(id, _)| id)
+        .expect("the window");
+    let sim_doc = serde_json::to_value(spatial(&tw).domains.get(&window_id).expect("its record"))
+        .expect("encodes");
+    let hosts = [
+        room(&tw, CERES_PACK, "room.c08_chandlery"),
+        room(&tw, CERES_PACK, "room.c14_dockmaster"),
+        room(&tw, STICKNEY_PACK, "room.p03_customs"),
+        room(&tw, STICKNEY_PACK, "room.p05_harbourmaster"),
+        room(&tw, STICKNEY_PACK, "room.p07_receiving"),
+        room(&tw, STICKNEY_PACK, "room.p08_exchange"),
+        room(&tw, STICKNEY_PACK, "room.p09_commissary"),
+    ];
+    let next = spatial(&tw).next_domain_id;
+    let mut folded = fold_module_ops(tw.take_module_ops());
+    // The atlas's own window document (the composite landed), cloned beside the
+    // sim's: the atlas closes, at boot, every sim window it holds no composited
+    // entry for (`mush_atlas::window::hydrate`'s orphans).
+    let atlas_key = mush_atlas::window::window_key(window_id.0);
+    let atlas_doc = folded
+        .get(mush_atlas::NS)
+        .and_then(|data| data.kv.iter().find(|(k, _)| *k == atlas_key))
+        .map(|(_, v)| v.clone())
+        .expect("the atlas window document");
+    for (offset, host) in hosts.iter().enumerate() {
+        let id = next + u64::try_from(offset).expect("small");
+        let mut doc = sim_doc.clone();
+        doc["id"] = serde_json::json!(id);
+        doc["host"] = serde_json::json!(host.0);
+        doc["presentation_location"] = serde_json::json!(host.0);
+        folded
+            .entry(SmolStr::new(mush_sim::NS))
+            .or_default()
+            .kv
+            .push((SmolStr::new(format!("domain:{id}")), doc));
+        let mut entry = atlas_doc.clone();
+        entry["domain"] = serde_json::json!(id);
+        folded
+            .entry(SmolStr::new(mush_atlas::NS))
+            .or_default()
+            .kv
+            .push((mush_atlas::window::window_key(id), entry));
+    }
+    let sim = folded.entry(SmolStr::new(mush_sim::NS)).or_default();
+    let bumped = next + u64::try_from(hosts.len()).expect("small");
+    match sim
+        .kv
+        .iter_mut()
+        .find(|(k, _)| k.as_str() == mush_sim::data::META_KEY)
+    {
+        Some(meta) => meta.1["next_domain_id"] = serde_json::json!(bumped),
+        None => sim.kv.push((
+            SmolStr::new(mush_sim::data::META_KEY),
+            serde_json::json!({ "next_domain_id": bumped }),
+        )),
+    }
+
+    let mut tw = reboot(tw, &Roster::production(), folded);
+    assert_eq!(
+        mush_sim::windows(tw.world()).count(),
+        mush_sim::MAX_WINDOWS,
+        "eight windows are open"
+    );
+    assert_eq!(lane_latch(&tw), Some(LANE_VERSION), "the lane applied");
+    for entry in ["ceres_port", "stickney_port"] {
+        let map = port_map(&tw, entry);
+        let domain = spatial(&tw)
+            .domains
+            .get(&mush_sim::data::DomainId(map.domain.expect("a domain")))
+            .expect("the port's domain");
+        assert_eq!(
+            domain.status,
+            mush_sim::data::DomainStatus::Active,
+            "{entry}"
+        );
+    }
+    assert_eq!(mush_sim::windows(tw.world()).count(), mush_sim::MAX_WINDOWS);
+    // Another passive domain still opens; a ninth window does not.
+    let spare = room(&tw, CERES_PACK, "room.c06_clearing");
+    let out = run(
+        &mut tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.domain", spare.0),
+    );
+    let out = format!(
+        "{out}\n{}",
+        run(
+            &mut tw,
+            GOD,
+            &format!("@domain/create #{}=sim.passive", spare.0)
+        )
+    );
+    assert!(out.contains("Created domain #"), "{out}");
+    let ninth = room(&tw, STICKNEY_PACK, "room.p11_service");
+    let (events, _) = tw.run_with_effects(GOD, &format!("@atlas/window open #{}", ninth.0));
+    let out = said(&tw, &events, GOD);
+    assert!(out.contains("windows are open already"), "{out}");
+    assert_eq!(mush_sim::windows(tw.world()).count(), mush_sim::MAX_WINDOWS);
+}
+
+// ---------------------------------------------------------------------------
+// 7. A world on lane v1
+// ---------------------------------------------------------------------------
+
+/// Lane v1's bytes, rebuilt from v2: the ports dropped, IC2's four seconds.
+fn lane_v1_json() -> String {
+    lane_variant(1, |doc| {
+        let entries = doc["entries"].as_object_mut().expect("entries");
+        entries.remove("ceres_port");
+        entries.remove("stickney_port");
+        doc["entries"]["ceres_stickney"]["def"]["legs"][0]["base_s"] = serde_json::json!(592_332);
+        doc["entries"]["ceres_stickney"]["def"]["legs"][1]["base_s"] = serde_json::json!(454_177);
+        doc["entries"]["stickney_ceres"]["def"]["legs"][0]["base_s"] = serde_json::json!(454_177);
+        doc["entries"]["stickney_ceres"]["def"]["legs"][1]["base_s"] = serde_json::json!(592_332);
+    })
+}
+
+/// **A world on lane v1 takes v2 by the shelf** (L0b; lens 7).
+#[test]
+fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
+    use tacsim::composition as comp;
+
+    let v1 = lane_v1_json();
+    // An operator seed with the game sources off, applied by a content module
+    // whose boot list ends with it.
+    let mut cfg = config();
+    cfg.seeds.push(PackSource {
+        name: "ops/lane_v1.json".to_owned(),
+        bytes: v1.clone(),
+    });
+    let mut mods = Roster::bare().modules_with(cfg, false);
+    mods.pop();
+    let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
+    packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
+    packs.push(content_pack(&v1));
+    let mut appliers = mush_content::Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
+    tacsim::register_appliers(&mut appliers).expect("tacsim appliers");
+    mods.push(Box::new(
+        mush_content::ContentModule::new()
+            .with_appliers(appliers)
+            .with_boot_packs(packs),
+    ));
+    let tw = TestWorld::with_modules(mods);
+    no_refused_writes(&tw);
+    assert_eq!(lane_latch(&tw), Some(1));
+    assert!(
+        store(&tw).published_digest(&lane_id(), 1).is_some(),
+        "the v1 ledger row"
+    );
+    let placed_v1 = tw
+        .world()
+        .module_state::<ContentState>()
+        .and_then(|c| c.latches.applied(&lane_id()))
+        .map(mush_content::Applied::placed)
+        .expect("v1 placed");
+
+    let mut tw = tw;
+    let folded = fold_module_ops(tw.take_module_ops());
+    let mut next = reboot(tw, &Roster::production(), folded);
+    {
+        assert_eq!(
+            lane_latch(&next),
+            Some(1),
+            "the boot pass never upgrades a latch"
+        );
+        assert!(store(&next).published_digest(&lane_id(), 1).is_some());
+        assert!(store(&next).published_digest(&lane_id(), 2).is_some());
+        for entry in ["ceres_port", "stickney_port"] {
+            assert!(matches!(
+                store(&next).port_map(&lane_id(), &cid(entry)),
+                PortMapState::Absent
+            ));
+        }
+        let out = report(&mut next);
+        for line in [
+            format!(
+                "lane: {LANE_PACK}@1 applied; this server ships @2. Take it with @atlas/pack \
+                 plan {LANE_PACK}. [flagged]"
+            ),
+            "  ceres_port: not applied. [missing]".to_owned(),
+            "  stickney_port: not applied. [missing]".to_owned(),
+        ] {
+            assert!(out.lines().any(|l| l == line), "{line}\n{out}");
+        }
+        assert!(
+            out.lines().any(
+                |l| l.starts_with("sky: constant (rate 0), epoch 2351-05-13, rev ")
+                    && l.ends_with(" [ready]")
+            ),
+            "{out}"
+        );
+        assert!(out.lines().any(|l| l.starts_with("Not ready: ")), "{out}");
+        let plan = run(&mut next, GOD, &format!("@atlas/pack plan {LANE_PACK}"));
+        assert!(
+            plan.contains(&format!(
+                "Plan for {LANE_PACK}@2: 2 create, 2 update, 0 retire, 8 unchanged"
+            )),
+            "{plan}"
+        );
+        for (entry, step) in [
+            ("ceres_stickney (route)", "update"),
+            ("stickney_ceres (route)", "update"),
+            ("ceres_port (port)", "create"),
+            ("stickney_port (port)", "create"),
+        ] {
+            assert!(
+                plan.lines().any(|l| l.contains(step) && l.contains(entry)),
+                "{entry}:\n{plan}"
+            );
+        }
+        let (_, apply) = plan_and_apply(&mut next);
+        assert!(
+            apply.contains(&format!(
+                "Applied {LANE_PACK}@2: 2 created, 2 updated, 0 retired, 8 unchanged."
+            )),
+            "{apply}"
+        );
+        assert_eq!(lane_latch(&next), Some(2));
+        let placed_v2 = next
+            .world()
+            .module_state::<ContentState>()
+            .and_then(|c| c.latches.applied(&lane_id()))
+            .map(mush_content::Applied::placed)
+            .expect("v2 placed");
+        assert_eq!(placed_v2, placed_v1, "the three place rooms keep their ids");
+        for entry in ["ceres_port", "stickney_port"] {
+            let _ = port_map(&next, entry);
+        }
+        let out = report(&mut next);
+        assert!(
+            out.contains(&format!(
+                "lane: {LANE_PACK}@2 applied; this server ships @2. [ready]"
+            )),
+            "{out}"
+        );
+        no_refused_writes(&next);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. The readiness report
+// ---------------------------------------------------------------------------
+
+/// **The readiness report lists every binding and flags the rate** (doc 18
+/// §4.7; L14, L15; lens 6).
+#[test]
+fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
+    let mut tw = boot(&Roster::production());
+    set_rate(&mut tw, 24);
+    let out = report(&mut tw);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.first(), Some(&"Port readiness:"), "{out}");
+    let lane_pack = load_pack(LANE_JSON).expect("the lane verifies");
+    let sky = tacsim::Sky::from_pack(&lane_pack, &tacsim::EphemerisConfig::default());
+    let rev: String = sky
+        .revision()
+        .expect("a revision")
+        .to_hex()
+        .chars()
+        .take(12)
+        .collect();
+    let treasury = port_map(&tw, "ceres_port").treasury.expect("a treasury");
+    let mut want = vec![
+        format!("lane: {LANE_PACK}@2 applied; this server ships @2. [ready]"),
+        format!("sky: constant (rate 0), epoch 2351-05-13, rev {rev} [ready]"),
+        "world rate: 24 IC seconds per real second. [ready]".to_owned(),
+        format!("treasury: system:tacsim.treasury, account #{treasury}. [ready]"),
+    ];
+    for (entry, def) in ports_of(LANE_JSON) {
+        let map = port_map(&tw, entry.as_str());
+        let refs: BTreeSet<&str> = std::iter::once(def.gallery.as_str())
+            .chain(def.rooms.values().map(String::as_str))
+            .chain(def.programme.iter().map(|p| p.office.as_str()))
+            .collect();
+        want.push(format!(
+            "  {entry} rooms: {n} of {n} resolved; the gallery carries port.dock. [ready]",
+            n = refs.len()
+        ));
+        let place = if entry.as_str() == "ceres_port" {
+            "Ceres Freeport"
+        } else {
+            "Stickney Yards"
+        };
+        want.push(format!(
+            "  {entry} domain: #{} on {place}, presents in Visiting Berth Gallery. [ready]",
+            map.domain.expect("a domain")
+        ));
+        for org in &def.orgs {
+            let row = map.orgs.get(&org.id).expect("a row");
+            want.push(format!(
+                "  {entry} org {}: {}, org #{}, account #{}, capital {}.00cr: 0 of {} tranches \
+                 settled. [pending]",
+                org.id,
+                org.name,
+                row.org,
+                row.account.expect("an account"),
+                org.capital_major,
+                tranches(org.capital_major).len()
+            ));
+        }
+        if let Some(programme) = &def.programme {
+            let org = def
+                .orgs
+                .iter()
+                .find(|o| o.id == programme.org)
+                .expect("the programme org");
+            let row = map.orgs.get(&programme.org).expect("a row");
+            want.push(format!(
+                "  {entry} programme {}: {}, account #{}, floor {}.00cr, stake {}.00cr for each of \
+                 {} hulls. [ready]",
+                programme.id,
+                org.name,
+                row.account.expect("an account"),
+                programme.floor_major,
+                programme.stake_major,
+                programme.pool
+            ));
+        }
+    }
+    let total = want.len();
+    want.push(format!(
+        "Not ready: 9 of {total} lines are pending, missing or flagged."
+    ));
+    assert_eq!(
+        &lines[1..],
+        want.iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        "{out}"
+    );
+
+    // The rate: flagged off 24 on a real world.
+    set_rate(&mut tw, 4);
+    let out = report(&mut tw);
+    assert!(
+        out.contains("world rate: 4 IC seconds per real second; play runs at 24. [flagged]"),
+        "{out}"
+    );
+    // A player is refused; a bad argument gets the usage line.
+    let pilot = tw.spawn_player("Pilot");
+    assert!(run(&mut tw, pilot, "@tacsim/port status").contains("Permission denied."));
+    assert!(run(&mut tw, GOD, "@tacsim/port foo").contains("Usage: @tacsim/port status"));
+
+    // A test world at 3600 is ready on the rate.
+    let mut test = boot(&Roster::test_world());
+    assert!(store(&test).test_world());
+    set_rate(&mut test, 3_600);
+    let out = report(&mut test);
+    assert!(
+        out.contains("world rate: 3600 IC seconds per real second (test world). [ready]"),
+        "{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. +credit
+// ---------------------------------------------------------------------------
+
+/// **`+credit` reads posted, held and available** (doc 18 §4.1; L12). On the
+/// sheet-less roster, so a spawned pilot walks through the Limbo door.
+#[test]
+fn ic3_credit_reads_posted_held_and_available() {
+    let mut tw = boot(&Roster::bare());
+    let pilot = tw.spawn_player("Pilot");
+    assert_eq!(
+        run(&mut tw, pilot, "+credit"),
+        "No credit account is open in your name."
+    );
+    let out = run(
+        &mut tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", pilot.0),
+    );
+    let account = economy(&tw)
+        .snapshot()
+        .accounts_of(&PrincipalId::Object(pilot))
+        .map(|a| a.id)
+        .next()
+        .unwrap_or_else(|| panic!("the pilot's account: {out}"));
+    run(&mut tw, GOD, "@account/system test.faucet=tacsim.credit");
+    let faucet = economy(&tw)
+        .snapshot()
+        .accounts()
+        .find(|a| {
+            a.owner
+                == PrincipalId::System(
+                    mush_org::SystemPrincipalId::new("test.faucet").expect("a principal"),
+                )
+        })
+        .map(|a| a.id)
+        .expect("the faucet");
+    let out = run(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={account} 2500000"),
+    );
+    let line = tacsim::port::credit::credit_line("25000.00cr", "0.00cr", "25000.00cr");
+    assert_eq!(run(&mut tw, pilot, "+credit"), line, "{out}");
+    // From a station room alike.
+    let _ = run(&mut tw, pilot, "c");
+    let here = tw.world().get(pilot).and_then(|o| o.location);
+    assert!(
+        here.is_some_and(|room| tacsim::ic_return::port_of_room(tw.world(), room).is_some()),
+        "the pilot stands in a port"
+    );
+    assert_eq!(run(&mut tw, pilot, "+credit"), line);
+    // The pilot never sees an org account.
+    assert!(!run(&mut tw, pilot, "+credit").contains("root"));
+
+    // A disabled layer.
+    let off = Roster::bare();
+    let mut cfg = config();
+    cfg.enabled = false;
+    let mut tw = TestWorld::with_modules(off.modules_with(cfg, false));
+    let pilot = tw.spawn_player("Pilot");
+    assert_eq!(
+        run(&mut tw, pilot, "+credit"),
+        "TacSim is not enabled on this server."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 10. Refusals
+// ---------------------------------------------------------------------------
+
+/// The refusal of a lane variant, through the strict loader.
+fn refusal(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    let json = lane_variant(2, edit);
+    let through_loader = load_pack(&json).err().map(|e| e.to_string());
+    let through_decode = mush_content::parse_pack(&json)
+        .map_err(PackError::from)
+        .and_then(rules_pack_of)
+        .err()
+        .map(|e| e.to_string());
+    assert_eq!(through_loader, through_decode, "one rule set, two doors");
+    through_loader.unwrap_or_else(|| "accepted".to_owned())
+}
+
+/// One mutation of the lane's JSON.
+type Edit = Box<dyn FnOnce(&mut serde_json::Value)>;
+
+/// **Every port entry the applier could not bind is refused at load, naming
+/// the entry and the rule** (doc 18 §4.7; D-18-20, D-18-25, D-18-47).
+#[test]
+fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
+    use serde_json::json;
+
+    assert_eq!(refusal(|_| {}), "accepted");
+    let cases: Vec<(&str, Edit, Vec<&str>)> = vec![
+        (
+            "a vendor without signatory",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"] = json!([{
+                    "org": "occator",
+                    "storefront": "neighborhood.ceres_freeport.room.c07_exchange",
+                    "agent": "npc.someone"
+                }]);
+            }),
+            vec!["ceres_port", "signatory"],
+        ),
+        (
+            "routes as a bare string",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["routes"] = json!("ceres_stickney");
+            }),
+            vec!["ceres_port", "expected a map"],
+        ),
+        (
+            "an empty route list",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["routes"] = json!({ "stickney": [] });
+            }),
+            vec!["port entry ceres_port", "routes.stickney", "1..=8"],
+        ),
+        (
+            "a route from elsewhere",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["routes"] =
+                    json!({ "stickney": ["stickney_ceres"] });
+            }),
+            vec![
+                "port entry ceres_port",
+                "stickney_ceres",
+                "not ceres_freeport",
+            ],
+        ),
+        (
+            "a routes key that is no other port's venue",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["routes"] =
+                    json!({ "mars": ["ceres_stickney"] });
+            }),
+            vec![
+                "port entry ceres_port",
+                "mars",
+                "not the venue of another port",
+            ],
+        ),
+        (
+            "a room role outside PORT_ROOM_ROLES",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["rooms"]["bar"] =
+                    json!("neighborhood.ceres_freeport.room.c07_exchange");
+            }),
+            vec!["port entry ceres_port", "`bar`", "port room role"],
+        ),
+        (
+            "a gallery outside the area",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["gallery"] =
+                    json!("neighborhood.stickney_yards.room.p01_berth_gallery");
+            }),
+            vec![
+                "port entry ceres_port",
+                "gallery",
+                "is not in the port's area",
+            ],
+        ),
+        (
+            "a programme org not in orgs",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["programme"]["org"] = json!("kasei");
+            }),
+            vec![
+                "port entry ceres_port",
+                "org kasei",
+                "not one of this port's orgs",
+            ],
+        ),
+        (
+            "the floor and stakes over the capital",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["programme"]["stake_major"] = json!(30_000);
+            }),
+            vec![
+                "port entry ceres_port",
+                "floor_major + pool × stake_major is 290000",
+            ],
+        ),
+        (
+            "hull names that are not the pool",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["programme"]["pool"] = json!(7);
+            }),
+            vec!["port entry ceres_port", "hull_names must name 7 hulls"],
+        ),
+        (
+            "a reference to provisions",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["programme"]["reference"]["provisions"] =
+                    json!("ceres_port/occator");
+            }),
+            vec!["port entry ceres_port", "provisions", "not a trade good"],
+        ),
+        (
+            "a reference to nobody",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["programme"]["reference"]["metals"] =
+                    json!("stickney_port/nobody");
+            }),
+            vec!["port entry ceres_port", "stickney_port/nobody"],
+        ),
+        (
+            "an org id repeated across the ports",
+            Box::new(|doc| {
+                let orgs = doc["entries"]["stickney_port"]["def"]["orgs"]
+                    .as_array_mut()
+                    .expect("orgs");
+                orgs.push(json!({
+                    "id": "coop", "name": "Another Co-op", "capital_major": 1, "faction": "republic"
+                }));
+            }),
+            vec![
+                "port entry stickney_port",
+                "org coop",
+                "also authored by port ceres_port",
+            ],
+        ),
+    ];
+    for (name, edit, words) in cases {
+        let refused = refusal(edit);
+        for word in words {
+            assert!(refused.contains(word), "{name}: {word}:\n{refused}");
+        }
+    }
+    // One whole message, verbatim.
+    let refused = refusal(|doc| {
+        doc["entries"]["ceres_port"]["def"]["orgs"][1]["capital_major"] = json!(0);
+    });
+    assert!(
+        refused.ends_with(
+            "port entry ceres_port: org coop: capital_major must be 1..=100000000, not 0"
+        ),
+        "{refused}"
+    );
+    // A port in a rules pack is misplaced: a port instantiates.
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("JSON");
+    let port = doc["entries"]["ceres_port"].clone();
+    doc["manifest"]["id"] = json!("test.rules.port");
+    doc["manifest"]["kind"] = json!("rules_definition");
+    doc["manifest"]["version"] = json!(1);
+    doc["manifest"]["digest"] = json!(UNSIGNED);
+    doc["entries"] = json!({ "ceres_port": port });
+    let json = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let refused = load_pack(&json).expect_err("a port in a rules pack");
+    assert!(
+        matches!(&refused, PackError::WrongKindEntry { id, entry: "port", kind: "rules" } if id == "ceres_port"),
+        "{refused}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 11. The mint cap
+// ---------------------------------------------------------------------------
+
+/// The composed economy config on `roster`'s world.
+fn cap_of(roster: &Roster, instrument: &str) -> u64 {
+    let tw = boot(roster);
+    let id = InstrumentId::new(instrument).expect("an instrument id");
+    economy(&tw).config().cap_major(&id)
+}
+
+/// **A mint cap below a tranche refuses the lane before anything is made**
+/// (D-18-14; L13; doc 18 §4.7 "Config flips").
+#[test]
+fn ic3_a_mint_cap_below_a_tranche_refuses_the_lane_before_anything_is_made() {
+    assert_eq!(
+        cap_of(&Roster::bare(), tacsim::CREDIT),
+        1_000_000,
+        "contributed"
+    );
+    for global in [50_000, 2_000_000] {
+        let roster = Roster {
+            economy: EconomyConfig {
+                mint_obligation_cap_major: global,
+                ..EconomyConfig::default()
+            },
+            ..Roster::bare()
+        };
+        let tw = boot(&roster);
+        let config = economy(&tw).config();
+        assert_eq!(
+            config.cap_major(&credit()),
+            1_000_000,
+            "the contribution overrides a global {global} for the credit"
+        );
+        assert_eq!(
+            config.cap_major(&InstrumentId::new("other.coin").expect("an id")),
+            global,
+            "another instrument keeps the global"
+        );
+    }
+    let mut economy_cfg = EconomyConfig::default();
+    economy_cfg.instruments.insert(
+        tacsim::CREDIT.to_owned(),
+        mush_economy::InstrumentCaps {
+            mint_obligation_cap_major: 500_000,
+        },
+    );
+    let roster = Roster {
+        economy: economy_cfg,
+        ..Roster::bare()
+    };
+    let (world, registry) = mush_testkit::boot_world();
+    let mut engine = mush_core::Engine::with_modules(world, registry, roster.modules())
+        .expect("the roster composes");
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    let refused = engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .expect_err("the lane is refused")
+        .to_string();
+    assert_eq!(
+        engine
+            .world
+            .module_state::<EconomyStore>()
+            .expect("economy")
+            .config()
+            .cap_major(&credit()),
+        500_000,
+        "the operator's per-instrument value stands"
+    );
+    assert!(
+        refused.contains(
+            "a capital tranche is 800000 cr but this world's mint cap for tacsim.credit is 500000 \
+             cr; set [economy.instruments.\"tacsim.credit\"].mint_obligation_cap_major to at \
+             least 800000"
+        ),
+        "{refused}"
+    );
+    assert_nothing_bound(&engine.world);
+}
+
+// ---------------------------------------------------------------------------
+// 12. The IC-return table
+// ---------------------------------------------------------------------------
+
+/// **`ic_return::PORTS` agrees with the port entries** (L10).
+#[test]
+fn ic3_the_ic_return_table_agrees_with_the_port_entries() {
+    let pack = load_pack(LANE_JSON).expect("the lane verifies");
+    let ports = ports_of(LANE_JSON);
+    assert_eq!(ports.len(), tacsim::ic_return::PORTS.len(), "two and two");
+    for row in &tacsim::ic_return::PORTS {
+        let matching: Vec<&(CanonicalId, PortDef)> = ports
+            .iter()
+            .filter(|(_, def)| def.venue.as_str() == row.id)
+            .collect();
+        assert_eq!(matching.len(), 1, "{}", row.id);
+        let (_, def) = matching[0];
+        assert_eq!(def.area.as_str(), row.area, "{}", row.id);
+        let label = match pack.entry(&def.location) {
+            Some(PackEntry::Location(place)) => place.label.clone(),
+            other => panic!("{}: {other:?}", row.id),
+        };
+        assert_eq!(label, row.name, "{}", row.id);
+        let arrival = def.rooms.get(&cid("arrivals")).unwrap_or(&def.gallery);
+        let entry = room_key(&def.area, arrival).expect("in the area").entry;
+        assert_eq!(entry.as_str(), row.arrival, "{}", row.id);
+    }
+}

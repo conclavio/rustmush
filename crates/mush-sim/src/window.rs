@@ -187,11 +187,15 @@ pub fn open_window(ctx: &mut Ctx<'_>, open: OpenWindow) -> Result<DomainId, Stri
 ///
 /// The host gains `sim.domain` if it lacks it, exactly as [`open_window`] does.
 ///
+/// **A passive domain holds no window and no active-domain slot** (`window:
+/// None`, uncounted by [`windows`]), so [`MAX_WINDOWS`] does not bound it (doc
+/// 18 §4.4, §9 risk 1; cut IC3): a kept world whose matches hold every window
+/// at restart still opens its ports' domains. [`open_window`] keeps its guard.
+///
 /// # Errors
 ///
 /// A message when the host is gone or going, the host already has a domain,
-/// [`MAX_WINDOWS`] are open, the presentation object is not a live room, or the
-/// allocator is spent.
+/// the presentation object is not a live room, or the allocator is spent.
 pub fn open_passive_domain(
     ctx: &mut Ctx<'_>,
     host: ObjId,
@@ -201,9 +205,6 @@ pub fn open_passive_domain(
         let st = state(ctx.w)?;
         if let Some(d) = st.domain_of_host(host) {
             return Err(format!("that host already has domain #{}", d.id));
-        }
-        if windows(ctx.w).count() >= MAX_WINDOWS {
-            return Err(format!("{MAX_WINDOWS} windows are open already"));
         }
     }
     if ctx

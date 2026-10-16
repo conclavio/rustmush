@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 1,
+    "version": 2,
     "kind": "campaign_seed",
-    "digest": "d8074b883e92746e054e45070e62477d661a0535773b77b5ef2b245bdacea678",
+    "digest": "3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0",
     "requires": []
   },
   "entries": {
@@ -101,11 +101,11 @@
         "legs": [
           {
             "to": "kirkwood_depot",
-            "base_s": 592332
+            "base_s": 537293
           },
           {
             "to": "stickney_yards",
-            "base_s": 454177
+            "base_s": 411975
           }
         ],
         "drive_class": "coast_hauler",
@@ -120,15 +120,90 @@
         "legs": [
           {
             "to": "kirkwood_depot",
-            "base_s": 454177
+            "base_s": 411975
           },
           {
             "to": "ceres_freeport",
-            "base_s": 592332
+            "base_s": 537293
           }
         ],
         "drive_class": "coast_hauler",
         "propellant": 0
+      }
+    },
+    "ceres_port": {
+      "kind": "port",
+      "def": {
+        "location": "ceres_freeport",
+        "venue": "ceres",
+        "area": "neighborhood.ceres_freeport",
+        "gallery": "neighborhood.ceres_freeport.room.c01_berth_gallery",
+        "rooms": {
+          "arrivals": "neighborhood.ceres_freeport.room.c03_arrivals",
+          "registry": "neighborhood.ceres_freeport.room.c05_registry",
+          "clearing": "neighborhood.ceres_freeport.room.c06_clearing",
+          "exchange": "neighborhood.ceres_freeport.room.c07_exchange",
+          "chandlery": "neighborhood.ceres_freeport.room.c08_chandlery",
+          "dockmaster": "neighborhood.ceres_freeport.room.c14_dockmaster",
+          "spine": "neighborhood.ceres_freeport.room.c15_maintenance"
+        },
+        "treasury": "tacsim.treasury",
+        "orgs": [
+          { "id": "ceres_clearing", "name": "Ceres Clearing", "capital_major": 50000, "faction": "freeport" },
+          { "id": "coop", "name": "Belt Carriers' Cooperative", "capital_major": 3100000, "faction": "freeport" },
+          { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport" },
+          { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
+          { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport" },
+          { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" }
+        ],
+        "programme": {
+          "id": "coop.first_captain",
+          "org": "coop_trust",
+          "office": "neighborhood.ceres_freeport.room.c05_registry",
+          "floor_major": 50000,
+          "unit": "tacsim.unit.dray",
+          "issuer": "tacsim.registry",
+          "pool": 8,
+          "registry_prefix": "FPC-D-04",
+          "hull_names": [ "Slack Water", "Cold Comfort", "Ninth Ledger", "Patience Wen", "Kirkwood Lamp", "Long Division", "Dry Season", "Tally Ho" ],
+          "stake_major": 25000,
+          "share_permille": 250,
+          "reference": {
+            "metals": "ceres_port/freeport_exchange",
+            "volatiles": "ceres_port/occator",
+            "structural_alloys": "stickney_port/kasei",
+            "industrial_parts": "stickney_port/stickney_yards"
+          },
+          "buyout_major": 90000,
+          "dormancy_real_days": 7,
+          "per_account": 1
+        },
+        "routes": { "stickney": [ "ceres_stickney" ] }
+      }
+    },
+    "stickney_port": {
+      "kind": "port",
+      "def": {
+        "location": "stickney_yards",
+        "venue": "stickney",
+        "area": "neighborhood.stickney_yards",
+        "gallery": "neighborhood.stickney_yards.room.p01_berth_gallery",
+        "rooms": {
+          "customs": "neighborhood.stickney_yards.room.p03_customs",
+          "harbourmaster": "neighborhood.stickney_yards.room.p05_harbourmaster",
+          "receiving": "neighborhood.stickney_yards.room.p07_receiving",
+          "exchange": "neighborhood.stickney_yards.room.p08_exchange",
+          "commissary": "neighborhood.stickney_yards.room.p09_commissary",
+          "yard": "neighborhood.stickney_yards.room.p11_service",
+          "spine": "neighborhood.stickney_yards.room.p15_maintenance"
+        },
+        "treasury": "tacsim.treasury",
+        "orgs": [
+          { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic" },
+          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic" },
+          { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic" }
+        ],
+        "routes": { "ceres": [ "stickney_ceres" ] }
       }
     }
   }

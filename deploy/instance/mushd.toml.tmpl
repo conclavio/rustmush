@@ -167,6 +167,12 @@ idempotency_window_secs = 2592000
 idempotency_window_max = 1000000
 stale_contract_age_secs = 604800
 
+# Doc 18 (D-18-14, D-18-27): the corridor's ports capitalize their institutions by one-shot treasury
+# obligations of at most 800,000 cr each, so the credit's own ceiling is 1,000,000. The game contributes
+# this when it is absent; it is written out because it is a policy.
+[economy.instruments."tacsim.credit"]
+mint_obligation_cap_major = 1000000
+
 [weather]
 flavor_variants = 10
 

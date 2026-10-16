@@ -8,6 +8,7 @@
 //! | `tacsim:pin:{subject}` | pin | **skipped loudly**. A lost pin does **not** float its subject onto a newer version: resolution refuses, naming the pack, because §3.1 invariant (i)'s whole point is that a published contract's assumptions never shift underneath it |
 //! | `tacsim:tutorial:{account}` | per-account | **skipped loudly**; that account reads its hints again (16b cut AH.1: `crate::match_::tutorial`) |
 //! | `tacsim:mindsrc:{sha256}` | immutable source | **skipped loudly** when its `sha256` disagrees with its key or its bytes do not hash to it (17b cut M3.3; doc 17 §13). The **key still counts**: the boot never rewrites a document under a key it holds, so a tampered stock source stays unreadable rather than silently replaced, and a scripted seal naming it refuses its resume by name (`crate::match_::resume`) |
+//! | `tacsim:port:{pack}/{entry}` | applier map (doc 18 cut IC3) | **skipped loudly, and the key still bars re-creation**: the entry's next apply refuses before any write, naming the key, and `@tacsim/port status` reports the map unreadable; repair is a staff act on the document (doc 18 §4.7) |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -237,6 +238,23 @@ pub struct TacsimStore {
     /// rule this loader applies to packs and seeds): [`put_mind_source`] never
     /// writes under one of them, so an immutable document is never rewritten.
     pub(crate) mind_source_keys: BTreeSet<[u8; 32]>,
+    /// **Doc 18 cut IC3** — `tacsim:port:{pack}/{entry}`: what each port
+    /// entry's applier made ([`crate::port::PortMap`]), keyed `(pack, entry)`.
+    /// Persisted, like the arena rosters, because which org and which
+    /// obligations a port made is a fact about *this* world that only the apply
+    /// that made them knows — and it is the sole dedup (the economy does not
+    /// dedup obligations).
+    pub(crate) port_maps: BTreeMap<(CanonicalId, CanonicalId), crate::port::PortMap>,
+    /// **Every `(pack, entry)` a `tacsim:port:` key claimed**, readable or not
+    /// (the R8 rule): a claimed key with no readable body is
+    /// [`crate::port::PortMapState::Unreadable`] and is never re-created.
+    pub(crate) port_map_keys: BTreeSet<(CanonicalId, CanonicalId)>,
+    /// **Doc 18 cut IC3 (§4.7; lead ruling L15)** — whether this world is an
+    /// in-process test engine's (`composition::tacsim_test_world_module`). RAM
+    /// only: never persisted and never a config key, so a production world can
+    /// never be one. It relaxes the readiness report's world-rate line and
+    /// nothing else.
+    pub(crate) test_world: bool,
 }
 
 impl TacsimStore {
@@ -260,6 +278,40 @@ impl TacsimStore {
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.cfg.enabled
+    }
+
+    /// **Whether this world is a test world** (doc 18 cut IC3; lead ruling L15):
+    /// set only by `composition::tacsim_test_world_module`, so false on every
+    /// production roster.
+    #[must_use]
+    pub fn test_world(&self) -> bool {
+        self.test_world
+    }
+
+    /// **One port entry's map** (doc 18 cut IC3): absent, readable, or a key
+    /// whose body did not read — the last is never re-created.
+    #[must_use]
+    pub fn port_map(
+        &self,
+        pack: &CanonicalId,
+        entry: &CanonicalId,
+    ) -> crate::port::PortMapState<'_> {
+        let key = (pack.clone(), entry.clone());
+        match self.port_maps.get(&key) {
+            Some(map) => crate::port::PortMapState::Present(map),
+            None if self.port_map_keys.contains(&key) => crate::port::PortMapState::Unreadable,
+            None => crate::port::PortMapState::Absent,
+        }
+    }
+
+    /// Every readable port map, in `(pack, entry)` order.
+    pub fn port_maps(&self) -> impl Iterator<Item = &crate::port::PortMap> {
+        self.port_maps.values()
+    }
+
+    /// Every `(pack, entry)` a port map key claims, readable or not.
+    pub(crate) fn port_map_claims(&self) -> impl Iterator<Item = &(CanonicalId, CanonicalId)> {
+        self.port_map_keys.iter()
     }
 
     /// **The sealed mind source under `digest`** (17b cut M3.3; doc 17 §13),
@@ -1013,6 +1065,42 @@ pub(crate) fn install_mind_source(store: &mut TacsimStore, source: &str) -> Opti
     Some(digest)
 }
 
+/// **Install one port map into RAM and queue its whole document** — the single
+/// write path of `tacsim:port:{pack}/{entry}` (doc 18 cut IC3; L3). The
+/// `PortApplier` calls it immediately after every act, inside the apply's one
+/// batch, so the map and the acts it names commit together.
+///
+/// Like [`put_seed`], the one `else` arm that must not drop the write: a map is
+/// the sole dedup of what a port made, and a dropped map would let the next
+/// apply mint the capital twice. The serialize failure is structurally
+/// unreachable (ids, integers and maps keyed by canonical ids); if it ever
+/// happened, it pages and writes a minimal `{schema, pack, entry}` body so **the
+/// key still exists** — which loads as unreadable and bars re-creation.
+pub(crate) fn put_port_map(ctx: &mut Ctx<'_>, map: &crate::port::PortMap) {
+    let key = map.key();
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        let index = (map.pack.clone(), map.entry.clone());
+        store.port_map_keys.insert(index.clone());
+        store.port_maps.insert(index, map.clone());
+    }
+    let value = match serde_json::to_value(map) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                "tacsim: a port map did not serialize; a minimal document is written so the key \
+                 still bars re-creating what this port made. Repair the document by hand."
+            );
+            serde_json::json!({
+                "schema": map.schema,
+                "pack": map.pack.to_string(),
+                "entry": map.entry.to_string(),
+            })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 /// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
 ///
 /// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
@@ -1184,6 +1272,15 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             };
             store.mind_source_keys.insert(digest);
             load_mind_source(&mut store, key, rest, digest, value);
+        } else if let Some(rest) = key.strip_prefix(crate::port::PORT_MAP_PREFIX) {
+            // Doc 18 cut IC3. The claim is the KEY's (the R8 rule): a map that
+            // will not read still bars re-creating what its port made.
+            let Some((pack, entry)) = crate::port::map::split_key_tail(rest) else {
+                tracing::warn!(%key, "tacsim: a port map has an unreadable key; skipped");
+                continue;
+            };
+            store.port_map_keys.insert((pack.clone(), entry.clone()));
+            load_port_map(&mut store, key, &pack, &entry, value);
         } else if key == META_KEY {
             load_meta(&mut store, value);
         }
@@ -1287,6 +1384,34 @@ fn load_mind_source(
         Err(error) => tracing::warn!(
             %key, %error,
             "tacsim: a mind source did not parse; skipped (the key still bars a rewrite)"
+        ),
+    }
+}
+
+/// **One `tacsim:port:` document** (doc 18 cut IC3): held only when it decodes
+/// and its `pack` and `entry` are its key's (the identity rule, DL-07);
+/// anything else is skipped loudly and the key stays claimed, so the port map
+/// reads [`crate::port::PortMapState::Unreadable`].
+fn load_port_map(
+    store: &mut TacsimStore,
+    key: &str,
+    pack: &CanonicalId,
+    entry: &CanonicalId,
+    value: &serde_json::Value,
+) {
+    match serde_json::from_value::<crate::port::PortMap>(value.clone()) {
+        Ok(map) if &map.pack == pack && &map.entry == entry => {
+            store.port_maps.insert((pack.clone(), entry.clone()), map);
+        }
+        Ok(_) => tracing::error!(
+            %key,
+            "tacsim: a port map disagrees with its own key; skipped (the key still bars \
+             re-creation; repair the document by hand)"
+        ),
+        Err(error) => tracing::error!(
+            %key, %error,
+            "tacsim: a port map did not parse; skipped (the key still bars re-creation; repair \
+             the document by hand)"
         ),
     }
 }

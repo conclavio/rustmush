@@ -641,3 +641,74 @@ fn asset_verbs_never_touch_stations_and_station_verbs_never_touch_title() {
     // The unit also did not move (title is not custody).
     assert_eq!(loc(&tw, fx.atlas), Some(fx.field));
 }
+
+// ---- doc 18 cut IC3: a passive domain is not a window ------------------------
+
+/// **A passive domain opens while every window is open** (doc 18 §4.4, §9 risk
+/// 1; cut IC3): `open_passive_domain` writes `window: None` and `windows()`
+/// never counts it, so `MAX_WINDOWS` no longer bounds it. Eight window records
+/// are installed straight into the sim's slot (this rig composes no atlas to
+/// open one through), then `@domain/create … = sim.passive` on a ninth room
+/// succeeds and the window count is unchanged.
+#[test]
+fn ic3_a_passive_domain_opens_with_every_window_open() {
+    use mush_sim::{
+        DomainClock, DomainRecord, DomainStatus, MAX_WINDOWS, WindowBox, WindowOpener, WindowRec,
+        passive_definition_ref,
+    };
+
+    let mut tw = boot();
+    let rooms: Vec<ObjId> = (0..=MAX_WINDOWS)
+        .map(|n| {
+            tw.world_mut()
+                .create(ObjKind::Room, &format!("Room {n}"), GOD, None)
+                .expect("a room")
+        })
+        .collect();
+    {
+        let st = tw
+            .world_mut()
+            .module_state_mut::<SpatialState>()
+            .expect("sim state");
+        for host in rooms.iter().take(MAX_WINDOWS) {
+            let id = st.alloc_domain_id().expect("an id");
+            st.domains.insert(
+                id,
+                DomainRecord {
+                    id,
+                    host: *host,
+                    driver: passive_definition_ref(),
+                    status: DomainStatus::Active,
+                    clock: DomainClock::Passive,
+                    presentation_location: *host,
+                    revision: 1,
+                    window: Some(WindowRec {
+                        region: SmolStr::new("region.test"),
+                        surfaces: Vec::new(),
+                        bbox: WindowBox {
+                            x0: 0,
+                            y0: 0,
+                            x1: 1_000,
+                            y1: 1_000,
+                        },
+                        cell_cm: 100,
+                        composited_from: Vec::new(),
+                        features_seen: 0,
+                        opened_by: WindowOpener::Staff { by: GOD },
+                        revision: 1,
+                    }),
+                },
+            );
+        }
+    }
+    assert_eq!(mush_sim::windows(tw.world()).count(), MAX_WINDOWS);
+    let spare = *rooms.last().expect("the ninth room");
+    ok(&mut tw, &format!("@behavior/add #{}=sim.domain", spare.0));
+    let out = ok(&mut tw, &format!("@domain/create #{}=sim.passive", spare.0));
+    assert!(out.contains("Created domain #"), "{out}");
+    assert_eq!(
+        mush_sim::windows(tw.world()).count(),
+        MAX_WINDOWS,
+        "a passive domain holds no window"
+    );
+}

@@ -1213,3 +1213,609 @@ production roster with `tacsim_module_with(cfg, true)` and `content_module_with(
 `crates/tacsim/tests/content.rs` `dray_spec()` and `refusal(&spec)`;
 `crates/tacsim/tests/stations.rs` `production_roster_with_starter(cfg)` now on
 `tacsim_module_with(cfg, true)`.
+
+## IC3
+
+**Ports, orgs, capital and readiness** (doc 18 §5, the IC3 row and paragraph), built 2026-10-16 on
+main at 484647bc. One commit, pushed to origin/main.
+
+### What landed
+
+1. **Lane v2 and the cruise re-fit** (`crates/tacsim/content/lane/ceres_phobos.json`,
+   `content/units/dray.json`, `content/sky/fetch_horizons.py`, `src/definitions/content.rs`). The
+   lane is republished as `tacsim.lane.ceres_phobos` **v2** (same id, same file): the manifest at
+   version 2, v1's ten entries byte-for-byte except the four leg seconds — `ceres_stickney` 537,293
+   then 411,975 s, `stickney_ceres` 411,975 then 537,293 s, each `ceil(km / 226)` of IC2's chords
+   121,428,001 and 93,106,232 km at 2351-05-13 — plus the two `port` entries of item 3. Digest
+   `3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0`, re-signed through
+   `tests/lane.rs`'s `TACSIM_WRITE_CONTENT=1` mode. The Dray flies `coast {kms 226, burn_permille
+   105}` (lead ruling L0a), nothing else in the file moved, version 1 kept (a fielded extension pack
+   with no ledger row), digest `da86f3899788dd9b2ff3141fbf97a5243cb1746b489276173c67dff26caf49fa`;
+   the Horizons script's `COAST_KMS = 226` with the ruling in its comment. `pub const LANE_VERSION:
+   u32 = 2` beside `LANE_PACK`, whose doc now states the version rule (L0b): a published version is
+   never mutated; a world that latched v1 keeps v1's ledger row and takes v2 by `@atlas/pack plan` /
+   `apply`, because the boot pass applies only never-latched packs; lane symbols are addressed by
+   (`LANE_PACK`, version), never by bare id; only v2's bytes are compiled in. For the record (no
+   test asserts a duration, D-18-50): legs 0.812 / 0.622 AU at 2351-05-13; unladen 537,293 + 411,975
+   s; a full outbound (142,184 kg) about 959,362 + 735,601 s, 19.62 h, 21 crew-days; a brimmed hull
+   (180,680 kg) about 1,073,637 + 823,222 s, 21.95 h, 23 crew-days, at rate 24 on the constant sky.
+2. **The `port` kind** (`crates/tacsim/src/port/def.rs`, new; `src/pack.rs`; `src/port/mod.rs`).
+   `PortDef { location, venue, area, gallery, rooms: BTreeMap<CanonicalId, String>, treasury, orgs:
+   Vec<PortOrgDef>, programme: Option<ProgrammeDef>, vendors: Vec<VendorDef> (schema only;
+   `signatory` required, no serde default), routes: BTreeMap<CanonicalId, Vec<CanonicalId>> }` with
+   `PortOrgDef { id, name, capital_major, faction }`, `ProgrammeDef` (fifteen fields, D-18-25),
+   `VendorDef`/`StockRowDef`/`AskDef`/`BidDef` (`as` → `as_name`), all `deny_unknown_fields`,
+   integers only; the constants `PORT_ROOM_ROLES: [&str; 12]`, `MAX_PORT_ORGS` 16, `MAX_PORT_ROUTES`
+   8, `MAX_PORT_VENDORS` 16, `MAX_VENDOR_ROWS` 16, `MAX_PORT_CAPITAL_MAJOR` 100,000,000,
+   `MAX_TRANCHE_MAJOR` 800,000 (D-18-14), `PORT_MINT_CAP_MAJOR` 1,000,000, `MAX_PROGRAMME_POOL` 16,
+   `MAX_REGISTRY_PREFIX_BYTES` 16, `MAX_DORMANCY_REAL_DAYS` 365. `tranches(capital_major)` is greedy
+   800,000 chunks, remainder last (3,100,000 → `[800000, 800000, 800000, 700000]`). `room_key(area,
+   reference)` is the one split rule (L2): `"<area>." + entry`, refused outside the port's area.
+   `PortDef::check(&self) -> Result<(), String>` returns the detail only (orgs 1..=16 and unique,
+   labels ≤ 120 bytes, capital 1..=100,000,000, every room reference by `room_key`, every `rooms`
+   key a role word, `treasury` and `issuer` canonical `SystemPrincipalId`s, routes non-empty and ≤ 8
+   with no repeat, the programme's bounds and `floor_major + pool × stake_major ≤ its org's
+   capital_major` in checked arithmetic, the vendors' shape). `check_ports(entries) -> Result<(),
+   (CanonicalId, String)>` spans the pack: `location` a `location` entry, venues and locations
+   unique, org ids unique across ports, every `routes` key another port's venue and every listed id
+   a `route` from this location to that one (D-18-47), every programme `reference` a trade good
+   (family, no `consumable`) naming `<port entry>/<org>` of this pack (L8). In `pack.rs`:
+   `PackEntry::Port(PortDef)`, label `"port"`, a no-op `check` arm (the id is out of scope there),
+   `from_content` running `def.check()` per port entry and `check_ports` after the symbol checks,
+   both wrapped as the new `PackError::PortRefused { port, detail }` (`"port entry {port}:
+   {detail}"`); `OWNED_KINDS: [&str; 16]`; a port in a `rules_definition` pack is `WrongKindEntry`
+   (a port instantiates, D-18-20); `load_pack` split into `pub fn rules_pack_of(Pack) ->
+   Result<RulesPack, PackError>` (decode + every rule, no digest compare) and the digest half.
+   `@tacsim/pack show` summarizes a port as `port <venue> at <location>, <n> orgs`
+   (`src/commands.rs`).
+3. **The two port entries** (in the lane): `ceres_port` (location `ceres_freeport`, venue `ceres`,
+   area `neighborhood.ceres_freeport`, gallery C01, seven rooms, treasury `tacsim.treasury`, six
+   orgs — Ceres Clearing 50,000, Belt Carriers' Cooperative **3,100,000** (L6; D-18-27/D-18-40),
+   Co-op First Captain Trust 250,000, Freeport Exchange 4,000,000, Occator Water & Propellant
+   50,000, Tycho Mutual Assurance & Salvage 50,000 (`concord`) — the First Captain programme exactly
+   as doc 18 §4.7 writes it, `routes: { "stickney": ["ceres_stickney"] }`) and `stickney_port`
+   (location `stickney_yards`, venue `stickney`, gallery P01, seven rooms, orgs Kasei Metals
+   600,000, Stickney Yards 50,000, Yard Commissary 50,000, all `republic`, `routes: { "ceres":
+   ["stickney_ceres"] }`). No `vendors` (IC8's v3). Nine orgs, sixteen tranches, 8,200,000 cr; no
+   test types the total.
+4. **The port map** (`crates/tacsim/src/port/map.rs`, new; `src/store.rs`). `PORT_MAP_PREFIX =
+   "tacsim:port:"`, `PORT_MAP_SCHEMA = 1`, `port_map_key(pack, entry)` →
+   `tacsim:port:{pack}/{entry}`; `PortMap { schema, pack, entry, domain: Option<u64>, host:
+   Option<u32>, presentation: Option<u32>, treasury: Option<u64>, orgs: BTreeMap<CanonicalId,
+   PortOrgRow> }`; `PortOrgRow { org, root_scope, capital_major, account: Option<u64>, capital:
+   Vec<TrancheRow> }` — **`capital_major` is the authored capital the row was created for, written
+   once with the org** (the reviewers' must-fix); `TrancheRow { n, obligation, amount_minor }`;
+   `PortMapState::{Absent, Present(&PortMap), Unreadable}`. `TacsimStore` gains `port_maps`,
+   `port_map_keys` (every key claimed, readable or not), `test_world`; `port_map(pack, entry)` (a
+   claimed key with no body reads `Unreadable`), `port_maps()`, `test_world()`, crate-private
+   `port_map_claims()`; `put_port_map(ctx, &PortMap)` is the single write path — RAM install plus
+   one `JsonSet` of the whole document, and if serialization ever failed it pages and still writes
+   `{schema, pack, entry}` so the key exists. `store::load` has a `tacsim:port:` branch: the tail
+   split on its one `/` (an unsplittable tail is skipped loudly), the key claim recorded, the body
+   decoded under the identity rule (`pack`/`entry` must equal the key's; anything else is skipped
+   loudly and stays `Unreadable`). The module-doc table gains the row: skipped loudly, **and the key
+   still bars re-creation**.
+5. **`PortApplier`, parts a–c** (`crates/tacsim/src/port/apply.rs`, new; registered fifth in
+   `src/content.rs`'s `register_appliers`, kind `port`, phase 11). `room_by_key(w, &RecordKey)`
+   resolves a room by `RoomGeo.key` in `AtlasState.records.roomgeo`, live, a Room, not `GOING` (L1:
+   the latch table is `mem::take`n during every apply, so `latched_object` is never used). `check`
+   runs `rules_pack_of(pack.clone())` then the preflight, in this order: a non-empty `vendors` list
+   refused; the TacsimStore, EconomyStore, OrgStore and SpatialState layers present; the map
+   readable (an `Unreadable` map refuses naming the key and logs at `error!`); every room reference
+   resolves and the gallery carries `port.dock`; then every drift against a present map —
+   presentation, domain (Active, host, presentation), treasury (Active, owned by `System(treasury)`,
+   in `tacsim.credit`), per recorded org: still authored, org exists, account exists, every
+   obligation exists, name unchanged, and `capital_drift` — then the mint cap against the largest
+   tranche still to create, then the frozen economy when any tranche is still to create.
+   `capital_drift(authored, row, scale)` answers `Changed { recorded }` on any difference from
+   `row.capital_major` (so 4,000,000 → 4,800,000 is refused although its five recorded rows match),
+   `Inconsistent { recorded }` when the rows are not distinct indices of `tranches(recorded)` with
+   that tranche's amount, else `None` and the unrecorded indices are completed. `put` (create and
+   update alike, both `Ok(None)`) re-runs the preflight, then (0) host = `placed[location]` (a live
+   Room) with host drift refused, gallery by `room_by_key`, the present map or `PortMap::new`; (a)
+   with no recorded domain, a host already carrying one is refused (never adopted) else
+   `mush_sim::open_passive_domain(ctx, host, gallery)` recorded and written; (b)
+   `crate::economy::ensure_instrument` create-only (L9), then the treasury adopted as the lowest-id
+   Active `tacsim.credit` account of `PrincipalId::System(treasury)` or opened in the
+   `@account/system` shape (name `"tacsim.treasury"`, `CreditPolicy::unbounded()`, scope `None`),
+   recorded and written — two ports naming one treasury share one account; (c) per org in authored
+   order: `alloc_org`/`alloc_scope` and one `OrgMutationPlan::of(vec![CreateOrg { org, root }])`
+   through `mush_org::submit` with action `org.create` and detail `{port, org, name}` (the
+   `mush-faction/src/econ.rs` shape), the row recorded with `capital_major`; the scoped account in
+   `open_root_account`'s shape (owner `Organization(org)`, scope the root, name `"<org name>/root"`,
+   `CreditPolicy::forbid()`); then per `(n, major)` of `tranches(capital_major)` with no recorded
+   row `n`, `create_system_obligation` from the treasury to the org account, amount `major ×
+   10^scale` checked, `EconomicSchedule::new(RealUtc, ctx.w.now(), None, 1)` (one-shot),
+   `GracePolicy::default()`, `cause: Ruleset { namespace: "tacsim.port" }`, the row written after
+   each. The applier submits nothing authoritative and moves no money; the capital settles on the
+   next sweep. `retire_check` is `Ok(())`; `retire` logs at `info!` and writes nothing (the map is
+   kept).
+6. **Passive opens skip the window guard** (`crates/mush-sim/src/window.rs`). The
+   `windows(ctx.w).count() >= MAX_WINDOWS` refusal is deleted from `open_passive_domain` (the
+   `domain_of_host` refusal stays; `open_window` keeps its guard); the summary and `# Errors` doc
+   now say a passive domain holds no window and no active-domain slot, so `MAX_WINDOWS` does not
+   bound it (doc 18 §4.4, §9 risk 1). Proven in mush-sim's own rig (`tests/custody.rs`
+   `ic3_a_passive_domain_opens_with_every_window_open`: eight window records installed into
+   `SpatialState`, `@domain/create … =sim.passive` succeeds, the count stays 8) and in
+   `tests/ports.rs` test 6.
+7. **The composition** (`crates/tacsim/src/lib.rs`, `src/composition/mod.rs`,
+   `deploy/instance/mushd.toml.tmpl`, `mushd.toml.example`). `TacsimRuleset.test_world` (false in
+   every constructor) with `#[must_use] with_test_world(self, bool)`, handed to the slot in
+   `register` **and** to the `loaded` store in `on_world_loaded` before `*slot = loaded`;
+   `tacsim_test_world_module(cfg, game_content)` for in-process test engines only (L15;
+   `game_modules` never calls it). `server_modules_with` now takes `mut economy` and contributes
+   `instruments["tacsim.credit"] = InstrumentCaps { mint_obligation_cap_major: 1_000_000 }` with
+   `or_insert` — an operator's per-instrument value stands, the global
+   `[economy].mint_obligation_cap_major` no longer applies to the credit once contributed, and the
+   cap is per instrument, not per faucet (the doc comment says all three). The template gains the
+   `[economy.instruments."tacsim.credit"]` stanza verbatim after `[economy]`; the example declares
+   the same table live (deviation 1 below).
+8. **`+credit`** (`crates/tacsim/src/port/credit.rs`, new; registered in `src/commands.rs` inside
+   its own `classify_commands(ReadOnly)` … `classify_commands(LegacyPostImage)` bracket,
+   `ArgShape::None`, `CREDIT_HELP` verbatim). TacSim off → `TacSim is not enabled on this server.`;
+   the actor's own account (Active, `PrincipalId::Object(actor)`, `tacsim.credit`, unscoped, lowest
+   id) absent → `No credit account is open in your name.`; else `Credit: <posted> posted, <held>
+   held, <available> available.` through `mush_economy::money` (`25000.00cr`);
+   `Account::available()` `None` → `Your account's balance cannot be read right now.` and an
+   `error!` naming the account. `credit_line` and `own_account` are public. No argument form (L12).
+9. **The readiness report and `@tacsim/port status`** (`crates/tacsim/src/port/readiness.rs`, new;
+   `src/commands.rs`). `Binding::{Lane, Sky, Rate, Treasury, Map, Rooms, Domain, Org, Programme}`,
+   `LineState::{Ready, Pending, Missing, Flagged}` with `word()`, `ReadinessLine { port, binding,
+   state, text }`, `Readiness { lines }` with `is_ready`, `not_ready`, `summary`, `render`;
+   `PLAY_RATE = 24`; `readiness(w)` is a pure read. The report's lane pack is the latched version
+   when loaded, else the shipped `LANE_VERSION`, else none (an exact `(id, version)` lookup, never
+   `resolve`); port entries come from it plus any map whose entry it does not author (lines from the
+   map alone, capital from `row.capital_major`). Lines in order with the brief's exact texts: the
+   lane line (Ready at `LANE_VERSION`; Flagged `… Take it with @atlas/pack plan …` when older;
+   Flagged `… and does not load @{v}` when newer and not loaded; Missing when not latched); the sky
+   line `sky: constant (rate 0), epoch 2351-05-13, rev <12 hex>` (epoch = the first port's location
+   body; Flagged `rev unavailable` on a revision error; Missing `sky: no lane pack is loaded on this
+   server.`); the rate line (Ready at 24, Ready `(test world)` elsewhere in a test world, Flagged
+   `…; play runs at 24.` otherwise, Missing with no time generation); one treasury line per distinct
+   treasury named; per port the map line (`{entry}: its port map {key} is unreadable.` / `{entry}:
+   not applied.`), the rooms line (`{n} of {m} resolved` over distinct references), the domain line,
+   one line per org (L14: Ready when every tranche is Satisfied; Pending only while every unsettled
+   tranche is Active or in Grace; Missing naming the org not created, the org missing, the account
+   not open, an obligation gone, `{r} of {t} capital tranches are created`, or a tranche that is
+   `cancelled|delinquent|suspended, and no sweep will settle it`), and the programme line; last
+   `Ready: every binding above is in place.` or `Not ready: {k} of {n} lines are pending, missing or
+   flagged.`. `@tacsim`'s switches gain `port`; `port_cmd` is `require_enabled` then
+   `require_staff`, `status` or empty renders (`Port readiness:`, each `"{text} [{word}]"`, port
+   lines indented two spaces, the summary), anything else `Usage: @tacsim/port status`; the help
+   line appended.
+10. **`ic_return::PORTS` kept** (`crates/tacsim/src/ic_return.rs`; L10): both doc lines now say IC3
+    kept the table and pins its agreement with the port entries — venue, name, area, arrival — by
+    test 12.
+11. **Gates and stanzas** (`crates/mush-contract-tests/legacy-handlers.toml`,
+    `state-slot-owners.toml`): the `+credit` stanza in byte order, `read-only`, with the brief's
+    note; the `@tacsim` note refreshed (not joined) with the fifth switch; `PINNED_BASELINE` 97
+    unchanged. Two `state-slot-owners` rows for `crates/tacsim/src/port/apply.rs` (`OrgStore` →
+    `org`, `EconomyStore` → `economy`: the allocator bump only; the record is created through the
+    owner's own op).
+12. **Tests** (`crates/tacsim/tests/ports.rs`, new, 17 tests; unit tests in `def.rs`, `map.rs`,
+    `apply.rs`, `credit.rs`, `readiness.rs`; `mush-sim/tests/custody.rs`;
+    `mush-server/tests/boot_parity.rs`). The production roster composes `server_modules_with` +
+    worldgen + npc + `sheet_modules` + `tacsim_module_with(cfg, true)` + `content_module_with(true,
+    true)` exactly as `mush_server::boot::game_modules` does; one sheet-less roster for L9; a
+    test-world roster; the shelf route for v3 replaces the atlas module at its index. Every
+    `boot`/`reboot` asserts `refused_namespace_writes` is empty. The twelve brief tests plus:
+    `ic3_the_applier_ensures_the_credit_without_the_sheet`,
+    `ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row` (a tenth test-only org on
+    Stickney: one org, one account, two obligations, every existing row byte-identical, only the
+    Stickney map written), `ic3_a_map_that_stopped_part_way_is_completed` (the Exchange's fifth
+    tranche row and obligation document removed before any sweep; the report reads `4 of 5 capital
+    tranches are created. [missing]`; the next apply makes exactly one obligation, n=4, 80,000,000
+    minor; the balance settles to 400,000,000 once),
+    `ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made`,
+    `ic3_a_cancelled_tranche_reads_missing_not_pending`. Test 4 carries three drift variants (coop
+    3,200,000; Kasei renamed; freeport_exchange 4,800,000 — the prefix-extending top-up). Test 8
+    compares the whole 18-line report line for line. `boot_parity` asserts both port maps, nine orgs
+    and `test_world() == false` on the real split boot. The mushd `@domain` assertions in
+    `arena_story.rs` and `observer_rule.rs` read the whole answer (`ask_whole`) and assert both port
+    domain lines present and the muster absent.
+
+### Deferred, and why
+
+**Lead rulings taken by the planner** (recorded here so the owner sees them):
+
+- **L0a — The cruise is 226 km/s** (D-18-45 makes the coast rate drive data): at 205 the real-date
+  legs broke R3's "under a day" for a brimmed hull (24.2 h); at 226 every doc 18 §4.4 figure holds
+  within 1 %. Overrides D-18-29's 205; **owner-critical**, below.
+- **L0b — Lane v2, never v1 in place**: overrides IC2's R1. A published version is never mutated
+  (`boot_reconcile`), and the boot pass never upgrades a latched pack
+  (`mush-content/src/module.rs:143-150` — the tree wins over §4.7's "applies at ANY boot", true only
+  of never-latched ids). A v1-latched world keeps v1's ledger row and takes v2 by the shelf
+  (`@atlas/pack plan` / `apply`; ports create, routes update, places and bodies unchanged — test 7).
+- **L1 — Rooms resolve by `RoomGeo.key`, never the latch** (the tree wins over doc 18 §4.5/§4.7 and
+  18a §0.2's "through the latch"): `with_state` empties the latch slot during every apply.
+- **L2 — The reference split rule**: every `<pack>.<entry>` in a port entry is `"<area>." + entry`;
+  a reference outside the port's area is refused.
+- **L3 — The map is one typed whole document per port entry**, version-agnostic, persisted after
+  every act in the apply's one batch (the `ArenaRoster` pattern); the lead note's row names
+  `content.capital/<pack>/<entry>/<org>` are the fields `orgs[org].capital[n]` of this document.
+- **L4 — Update never re-capitalizes, renames or re-hosts**; a new org in a later version is created
+  and capitalized; a changed `faction` is accepted and writes nothing; a map row whose org, account
+  or obligation is gone is refused naming the org and the key, never re-created. **The rename half
+  is a tree-wins deviation from §4.7**'s "Update rewrites … names … in place": `mush-org` has no
+  rename op (`plan.rs`, `CreateOrg` only); renames are P5. Owner-critical, below.
+- **L5 — `PortApplier` lives in `port/apply.rs`**, registered from `content.rs` at phase 11 (doc 18
+  named `content.rs`).
+- **L6 — The Co-op's capital is 3,100,000 in v2**, not §4.7's sample 50,000 with a bump at IC8: a
+  later version can never re-capitalize (L4; D-18-27, D-18-40).
+- **L7 — The `vendors` schema lands now, empty in v2**; the applier refuses a non-empty list until
+  IC8, which owns the semantics and may amend the schema.
+- **L8 — `reference` is checked for shape now**; "that org has an ask for the good" is IC8's.
+- **L9 — The applier ensures `tacsim.credit` create-only** before opening accounts (several rosters
+  compose no sheet module).
+- **L10 — `ic_return::PORTS` stays**, pinned to the entries by test 12.
+- **L11 — `@org/list` is unchanged**; "shows the orgs and capital" reads as `@org/list` shows the
+  orgs, `@tacsim/port status` their capital. Owner-critical, below.
+- **L12 — `+credit` takes no argument** (staff read others through `@account/show`).
+- **L13 — The mint cap is contributed by the composition and written into the template and
+  example.** Owner-critical, below.
+- **L14 — One readiness line per org** (the worst state of org, account, capital); the report is
+  typed so IC6 gates on states, never text.
+- **L15 — `test_world` is a `TacsimRuleset` builder flag**, set only by `tacsim_test_world_module`;
+  it relaxes only the rate line.
+- **L16 — The `faction` word is carried, validated as a canonical id and read by nothing** until the
+  faction cut; the Stickney three are `republic`.
+
+**Owner-critical defaults taken, carried to the owner:**
+
+- **The 226 km/s re-fit (L0a)** overrides D-18-29's binding 205 km/s. The alternative is IC2's
+  cut-note option (i): the 2354-06-09 season at 205 km/s — one data swap (the epochs, `kms` back to
+  205) plus a lane v3. A world that booted IC2 keeps lane v1's row and takes whichever ships by the
+  shelf.
+- **Org renames refused on a port update (L4)**, against §4.7's stated update semantics, because
+  `mush-org` has no rename op and adding one is outside the slice.
+- **`@org/list` shows the orgs, not their capital (L11)**: re-reads the IC3 row's verify criterion;
+  a balance column would give mush-org an economy read it does not have.
+- **The contributed `tacsim.credit` cap (L13)** supersedes dev1's rendered global
+  `[economy].mint_obligation_cap_major = 50000` for this one instrument, and because the cap is per
+  instrument, every `tacsim.credit` faucet obligation — including a staff `@market/vendor … fund
+  faucet=tacsim.treasury` drip once the market composes (IC7/IC8) — shares the 1,000,000 cr ceiling.
+  The alternative (template-only, no code contribution) would make dev1's next boot refuse the lane
+  until the config is edited.
+
+**Builder's and fixer's decisions beyond the brief:**
+
+- The preflight also refuses when the `TacsimStore` slot is absent (the map could not be read and a
+  re-apply could mint twice). `put` re-runs the whole preflight so no refusal can follow a partial
+  write of the same entry; the drift checks run before the cap and the freeze so a changed capital
+  is reported as drift, never as a cap problem.
+- **The frozen-economy refusal** (`{id}: the economy is frozen on this world, so {n} capital
+  tranche(s) cannot be issued; nothing is applied while it is frozen`) fires only when a tranche
+  remains to be created, so a fully applied, write-free re-apply on a frozen world is still allowed.
+- **The partial-apply completion path**: only when the recorded `capital_major` equals the authored
+  one are the unrecorded tranche indices completed; a mismatch of rows against `tranches(recorded)`
+  is `Inconsistent` (a damaged map, never re-issued). There is no production path to a partial apply
+  now that both the cap and the freeze refuse in `check`, so the completion test synthesizes the
+  state (one map row and its obligation document removed in the folded store).
+- `PORT_MAP_SCHEMA` stays 1 although `PortOrgRow` gained the required `capital_major` (pre-launch;
+  no port map exists outside test runs; a body without it loads as `Unreadable`, fail-closed).
+- Treasury adoption takes the lowest-id Active `System(treasury)` account in `tacsim.credit`, scoped
+  or not; the report's treasury line uses the same rule and defaults to `tacsim.treasury` when no
+  port entry is loaded. System principal ids must already be canonical (`SystemPrincipalId::new(s)`
+  equal to `s`); nothing is case-folded on the wire.
+- The sky line's epoch is the first port entry's location body, falling back to the first place on a
+  body, then the config epoch. In the rooms line `m` counts distinct references (the office that
+  repeats the registry counts once: 8 of 8 for both ports). A map present whose entry the report's
+  pack does not author gets a domain line plus org lines from the map alone, capital from
+  `row.capital_major`. The disabled-layer `+credit` refusal comes from the handler itself through
+  `TacsimStore::enabled`.
+
+**Deviations from the brief:**
+
+1. **`mushd.toml.example` declares `[economy.instruments."tacsim.credit"]` live, not as two
+   commented lines**:
+   `shipped_configs::the_shipped_example_and_the_deployed_template_declare_the_same_sections`
+   requires the example and the template to declare the same section headers, and a commented header
+   failed it. The value equals the contributed one.
+2. **Test 6 did not open eight windows by verb**: one window was opened with GOD's `@atlas/window
+   open #<C07>` and its composite finished; its sim `domain:<id>` document **and** its atlas
+   `window:<id>` document were cloned under seven fresh ids on seven other station rooms in the
+   folded store, with the sim meta `next_domain_id` bumped (the atlas closes, at boot, every sim
+   window it holds no composited entry for).
+3. **Tests 9 and 11 run on the sheet-less roster** (test 9 because the onboarding gate refuses an
+   unapproved character at the Limbo door; test 11 needs no sheet), as does the L9 test; every other
+   `ports.rs` test runs the production roster with the sheet.
+4. `@domain/create` needs `@behavior/add #<room>=sim.domain` first (existing, unchanged); test 6 and
+   the mush-sim test both do it.
+5. Test 10's bare-string `routes` case: the serde decode error names the entry and "expected a map",
+   not the field name.
+
+**Left as notes, not fixed (honestly small):** host drift and an already-hosted domain are refused
+in `put`, not `check` (`check` is not handed `placed`; a lane retire-then-re-apply latches with an
+anomaly rather than refusing clean); the drift preflight checks a recorded org account for existence
+only, not Active/owner/scope/instrument; at the authored bounds (~2,000 tranches per entry) the
+whole map is rewritten after every tranche in one batch; `PORT_MINT_CAP_MAJOR`'s doc comment
+(def.rs:79) reads backwards; test 9's disabled-layer boot skips `no_refused_writes`; `+credit`'s
+verb path never has held > 0 and its "never sees an org account" assertion cannot fail; test 11 uses
+the bare roster where the brief said production; test 4's drift words are loose (`coop`/`capital`,
+`kasei`/`rename`); no test exercises the map identity rule or an unsplittable key tail; test 1's
+gallery oracle is `room_by_key`, the function under test (mitigated by the marker and name checks).
+
+**Deferred to named cuts:** the eight Drays, interior instantiation, titling, `berths`,
+`Transition::Members` — IC4 (`PortApplier` part f; the hulls readiness line); the action provider,
+typed families, the `tacsim.port` tick — IC5; `+coop`, `+coop/enrol`, `+coop/statement`, `+ship`,
+the readiness **gate** and the floor check — IC6; market seams — IC7; vendors, vaults, clerks,
+grants, stock rows, Wanted docs, the goods catalog load (part d–e), the pools/listings lines, the
+"reference org has an ask" check, lane v3 — IC8; `plan_passage`, `choose_route`, `via=` — IC9; help
+topics, the full report and its gate, threading `test_world` into a mush-server boot path — IC12;
+buyout, dormancy, release — IC13; org renames, top-ups, restock — never in the slice (P5). IC2's
+carry-forward that each `reference_major` equals the authored origin ask still waits on listings
+(IC8). Deploying anything and `@tacsim/time rate=24` on dev1 are the owner's.
+
+### Pins re-blessed
+
+- **`tacsim.lane.ceres_phobos`**: version 1 → **2** and digest
+  `d8074b883e92746e054e45070e62477d661a0535773b77b5ef2b245bdacea678` →
+  `3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0`, in the pack's own `digest`
+  field and `crates/tacsim/tests/lane.rs` `LANE_DIGEST` (re-signed through the test's
+  `TACSIM_WRITE_CONTENT=1` mode, never by hand). Reason: lane v2 — the four leg seconds re-timed for
+  226 km/s (L0a) and the two `port` entries (What landed, item 3); a published version is never
+  mutated (L0b), so v1's row is history and v2 is a new pin.
+- **`tacsim.pack.dray`**: digest `dc5cae81692853bca737049009e4fb9d768ea045b22789f6e2bf5c2786078583`
+  → `da86f3899788dd9b2ff3141fbf97a5243cb1746b489276173c67dff26caf49fa` in the pack and
+  `crates/tacsim/tests/content.rs` `DRAY_DIGEST`; the asserted law `kms: 205` → `kms: 226` at
+  `ic2_the_dray_is_pinned_and_checks`. Reason: the cruise re-fit (L0a); version 1 kept because the
+  Dray is a fielded extension pack with no ledger row, so no boot gate reads its version.
+- **`tests/lane.rs`, each the behaviour the brief changes** (old → new): the module doc and the
+  `LANE_DIGEST` doc from the in-place rule (R1) to the version rule (L0b);
+  `ic2_the_lane_pack_is_pinned` `manifest.version() == 1` → `== LANE_VERSION` and `== 2`, the entry
+  list gains `("ceres_port","port")` and `("stickney_port","port")` ("the twelve entries"), and four
+  new `base_s` assertions (537,293 / 411,975 and 411,975 / 537,293); `lane_legs_derive_at_epoch`'s
+  bodiless-place check `derived_legs(…, 205)` → `226` (its 100 s tolerance and logic unchanged,
+  D-18-45); `one_drive_class_one_law` `kms: 205` → `226` and `dray_copy(205)` → `dray_copy(226)`
+  (`dray_copy(300)` stays the refused one); `ic2_an_operator_seed_cannot_claim_the_lane_id`
+  `…ceres_phobos@1, which ` → `@2, which `;
+  `ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky` `applied.version() == 1` → `==
+  LANE_VERSION` and `"tacsim.lane.ceres_phobos@1 [seed]"` → `@2 [seed]` (`placed.len() == 3`
+  unchanged: ports place no object).
+- **`tests/stations.rs`**: `" {LANE_PACK}@1 ("` → `@2 (` (:420) and `after.get(LANE_PACK) ==
+  Some(1)` → `Some(2)` (:938, not listed by the brief but the same lane-version pin).
+  **`mush-server/tests/boot_parity.rs`**: `store.pack(&lane, 1)` → `LANE_VERSION` and the latch
+  `Some(1)` → `Some(LANE_VERSION)`, plus the new port-map, nine-org and `test_world` assertions.
+  **`mush-server/src/config_ext.rs`** test: `declares tacsim.lane.ceres_phobos@1` → `@2`.
+- **Incidental moves allowed by the brief's section 6**: `mushd/tests/arena_story.rs` `say(&mut god,
+  "@domain", "No domains.")` and `mushd/tests/observer_rule.rs` `ask(&mut god, "@domain", "No
+  domains.")` — the old assertions pinned a world-wide domain count of zero, and the two port
+  domains now exist on every roster that composes `content_module_with(_, true)`. Both are now
+  `ask_whole(&mut god, "@domain")` asserting `host Stickney Yards presents in Visiting Berth
+  Gallery` and `host Ceres Freeport presents in …` present and the muster line absent on the whole
+  answer (stronger than the slice-to-first-needle the builder first wrote, which depended on
+  domain-id order). No replay hash, mind-lane hash, `harness_baseline` or other digest moved; the
+  tacsim harness, replay and minds suites pass unchanged.
+- **`legacy-handlers.toml`**: the `+credit` stanza added in byte order (`read-only`, the brief's
+  note); the `@tacsim` stanza's note refreshed with the fifth switch (not joined). `PINNED_BASELINE`
+  stays **97** (no new primary verb on the legacy lane). **`state-slot-owners.toml`**: two rows for
+  `crates/tacsim/src/port/apply.rs` — `OrgStore` owner `org`, `EconomyStore` owner `economy` — the
+  allocator bump only; the records are created through `mush_org::submit` and
+  `mush_economy::open_account`. `TacsimStore` writes stay row-free (same crate).
+- **Unmoved, as the brief requires**: the panic budgets (`Option`/`Result` throughout; no
+  `unwrap`/`expect`/`panic!`/indexing in the new non-test code), `module-ns-owners.toml` (no refused
+  namespace write on any `ports.rs` boot or reboot), the restriction-lints census, the
+  composition-edge pin (no new crate edge), the starter and station digests, `GOODS_DIGEST`, every
+  shipped `DefinitionRef`, `tacsim.core` and both corridor fixture digests, and the CI gated-test
+  inventory.
+
+### How it was verified
+
+**Reviewed, not run, by the judge** (read-only; no cargo): the whole uncommitted diff at base
+484647bc and the six new files, against the brief, doc 18 §4.1/§4.4/§4.7/§5 and D-18-14/20/21/25/27;
+`mush-content/src/apply.rs`'s check-before-mutate loop, `mush-sim/src/window.rs`'s remaining
+`open_passive_domain` body, `mush-economy`'s `is_frozen` and the six `ObligationStatus` variants,
+`tacsim/src/economy.rs`'s `ensure_instrument`, `ic_return::PORTS` and the mushd `ask_whole` helpers
+were read to confirm the fixes are what the reports say.
+
+**Three lenses** (correctness, conformance, tests) on the builder's tree agreed on one must-fix
+defect — the "consistent prefix" rule let a later version top up an org whose recorded capital was a
+multiple of 800,000 (Freeport Exchange 4,000,000 → 4,800,000), against L4 and D-18-27 — plus two
+should-fixes (a frozen economy was not refused in `check`, so an apply would open the domain,
+treasury, an org and its account before `create_system_obligation` answered `EconomyFrozen`; a
+cancelled/delinquent/suspended tranche read "pending"), two test should-fixes (the mushd absence
+checks depended on domain-id order; test 4 never exercised the update body creating anything), and
+notes. The fixer took every must-fix and should-fix: `PortOrgRow.capital_major` + `capital_drift`
+(unit test over 4,800,000 / 4,500,000 / 3,200,000 / 800,000 against five matching rows; test 4's v3‴
+variant; a mutation check — with the `Changed` arm disabled, `cargo test -p tacsim --test ports
+ic3_an_update_reuses` → `test result: FAILED. 0 passed; 1 failed`, restored afterwards); the
+frozen-economy preflight with its test; `stuck_word` with its test; `ask_whole` in both mushd files;
+the new-org and partial-completion tests. No repair pass was needed.
+
+**Builder's pre-fix gate** (every brief command green): `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim
+--test lane ic2_the_lane_pack_is_pinned` → `ok. 1 passed` (printed `LANE_DIGEST = "3f7e1a96…"`); `…
+--test content ic2_the_dray_is_pinned_and_checks` → `ok. 1 passed` (`DRAY_DIGEST = "da86f389…"`);
+`cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` →
+`Finished` (exit 0); `cargo test -p mush-config --test shipped_configs` first failed on the
+section-drift test and passed after deviation 1 (`ok. 12 passed`); `cargo test -p mushd
+--no-fail-fast` first exit 101 on `arena_story` and `observer_rule`'s "No domains." (the section-6
+incidental moves), then `ok. 1 passed` / `ok. 32 passed`.
+
+**Final gate after the fixer, 21 steps, all pass** (logs under the run's
+`scratchpad/cuts/IC3/gate1/`):
+
+- `cargo fmt --all -- --check` → exit 0, no diff.
+- `cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+  debuginfo] target(s) in 0.67s`` (exit 0, fingerprint-cached, no warnings).
+- `cargo test -p tacsim --lib` → `test result: ok. 861 passed; 0 failed; 0 ignored`.
+- `cargo test -p tacsim --test ports` → `test result: ok. 17 passed; 0 failed`; `--test lane` → `ok.
+  8 passed`; `--test stations` → `ok. 13 passed`; `--test content` → `ok. 29 passed`; `--test
+  capacity` → `ok. 15 passed`.
+- `cargo test -p mush-sim --lib` → `ok. 34 passed`; `cargo test -p mush-sim --test custody` → `ok.
+  11 passed`.
+- `cargo test -p mush-server --test boot_parity` → `ok. 18 passed`; `cargo test -p mush-server --lib
+  config_ext` → `ok. 13 passed; … 280 filtered out`.
+- `cargo test -p mush-config --test shipped_configs` → `ok. 12 passed`.
+- `cargo test -p mush-contract-tests` → 29 `ok` lines, aggregate 127 passed; 0 failed; 8 ignored
+  (state_slot_owners `ok. 4 passed`, legacy_handler_allowlist `ok. 4 passed`, panic budget,
+  module-ns owners, restriction lints, help commands, CI inventory all ok).
+- `cargo test -p tacsim --no-fail-fast` → 38 `ok` lines, aggregate 2058 passed; 0 failed; 12 ignored
+  (cockpit `ok. 180 passed`, match_lifecycle `ok. 136 passed`; harness, replay and minds unchanged).
+- `cargo test -p mush-server --no-fail-fast` → 29 `ok` lines, 445 passed; 0 failed; 2 ignored.
+- `cargo test -p mushd --no-fail-fast` → 44 `ok` lines, 243 passed; 0 failed; 1 ignored (arena_story
+  `ok. 1 passed` in 82.27s, observer_rule `ok. 32 passed` in 40.17s).
+- `cargo test -p mush-bot` → 22 `ok` lines, 704 passed; 0 failed; 5 ignored (run twice, both exit
+  0).
+- `cargo test --workspace --exclude mush-bot --no-fail-fast` → first run exit 101, 383 result lines,
+  7211 passed; **1 failed**; 92 ignored.
+
+**The one flake, identified:** `mushd --test arena_story ::
+two_pilots_walk_in_fight_and_one_tank_is_destroyed` failed at `arena_story.rs:1151` in the workspace
+sweep only — `poll_whole(WEAPONSTATUS, "Locked on")` returned a snapshot where "Locked on BA, 68% to
+hit." was present but the weapon rows did not yet print their band and to-hit (a race between the
+lock line and the per-weapon projection, `WeaponRow::render` in `tacsim/src/match_/cockpit.rs`)
+while the box ran 32 rustc + 12–23 link.exe at 100 % CPU. IC3 touches neither
+`crates/tacsim/src/match_` nor `crates/mushd/src`; its only edit to that file is the `@domain`
+assertion at step (4), which ran and passed before the failure point. The same test passed in the
+per-package run (the `mushd` step above) and three times alone afterwards (76.36 s, 69.70 s, and
+88.79 s on the exact workspace-feature-unified binary `arena_story-8aef5d71ff49236a.exe`).
+`arena_story` is not on the known load-sensitive list; only its gateway twin `arena_story_split` is
+— it evidently also races under a saturated box. The `panicked at
+crates\mush-server\src\process_fault.rs:197:9` line in the sweep is the injected fault inside a
+passing fault test. No LNK1104, no hung binaries, no timeouts; the working tree was not modified by
+the gate.
+
+### Surface for the next cuts
+
+**Pack and lane** — `tacsim::definitions::content::LANE_VERSION: u32 = 2` beside `LANE_PACK`;
+`LANE_JSON` is v2 (digest `3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0`, twelve
+entries; `ceres_stickney` legs 537,293 then 411,975 s, `stickney_ceres` 411,975 then 537,293 s; port
+entries `ceres_port` and `stickney_port`); IC8's v3 is a new version with a new pin, never v2
+re-signed. `tacsim.pack.dray` digest
+`da86f3899788dd9b2ff3141fbf97a5243cb1746b489276173c67dff26caf49fa`, law `coast {kms 226,
+burn_permille 105}`, version 1. `tacsim::pack::PackEntry::Port(tacsim::port::PortDef)` (label
+`"port"`, seed-only: in a `rules_definition` pack `PackError::WrongKindEntry { id, entry: "port",
+kind: "rules" }`); `PackError::PortRefused { port: String, detail: String }` displayed `port entry
+{port}: {detail}`; `pub fn tacsim::pack::rules_pack_of(mush_content::Pack) -> Result<RulesPack,
+PackError>` (decode + every rule, no digest compare); `OWNED_KINDS: [&str; 16]` ending `"port"`.
+
+**`tacsim::port`** (re-exports from `def`, `map`, `readiness`; `apply` and `credit` as public
+modules) — `PortDef { location: CanonicalId, venue: CanonicalId, area: CanonicalId, gallery: String,
+rooms: BTreeMap<CanonicalId, String>, treasury: String, orgs: Vec<PortOrgDef>, programme:
+Option<ProgrammeDef> (default, skip if None), vendors: Vec<VendorDef> (default, skip if empty),
+routes: BTreeMap<CanonicalId, Vec<CanonicalId>> }`; `PortOrgDef { id, name: String, capital_major:
+u64, faction: CanonicalId }`; `ProgrammeDef { id, org, office: String, floor_major, unit, issuer:
+String, pool: u32, registry_prefix: String, hull_names: Vec<String>, stake_major, share_permille:
+u32, reference: BTreeMap<CanonicalId, String>, buyout_major, dormancy_real_days: u32, per_account:
+u32 }`; `VendorDef { org, storefront: String, agent: CanonicalId, signatory: String (required),
+stock: Vec<StockRowDef>, asks: Vec<AskDef>, bids: Vec<BidDef> (each default) }`; `StockRowDef {
+good, qty: u64, grade: u8, issue: u32 }`; `AskDef { good, price_major: u64 }`; `BidDef { good,
+price_major, intake: u64, as_name: Option<String> (serde "as") }`; all `Clone, Debug, PartialEq, Eq,
+Serialize, Deserialize`, `deny_unknown_fields`. Constants: `PORT_ROOM_ROLES: [&str; 12]` = arrivals,
+registry, clearing, exchange, chandlery, dockmaster, spine, customs, harbourmaster, receiving,
+commissary, yard; `MAX_PORT_ORGS` 16, `MAX_PORT_ROUTES` 8, `MAX_PORT_VENDORS` 16, `MAX_VENDOR_ROWS`
+16 (usize); `MAX_PORT_CAPITAL_MAJOR` 100_000_000, `MAX_TRANCHE_MAJOR` 800_000, `PORT_MINT_CAP_MAJOR`
+1_000_000 (u64); `MAX_PROGRAMME_POOL` 16 (u32), `MAX_REGISTRY_PREFIX_BYTES` 16,
+`MAX_DORMANCY_REAL_DAYS` 365. `pub fn tranches(capital_major: u64) -> Vec<u64>`; `pub fn
+room_key(area: &CanonicalId, reference: &str) -> Result<mush_atlas::RecordKey, String>` (error
+texts: `` `<ref>` is not in the port's area `<area>` `` / `` `<ref>` does not name an entry of
+`<area>` ``); `impl PortDef { pub fn check(&self) -> Result<(), String> }` (detail only, e.g. `org
+coop: capital_major must be 1..=100000000, not 0`); `pub fn check_ports(&BTreeMap<CanonicalId,
+PackEntry>) -> Result<(), (CanonicalId, String)>`.
+
+**The port map** — `PORT_MAP_PREFIX = "tacsim:port:"`, `PORT_MAP_SCHEMA: u16 = 1`,
+`port_map_key(pack, entry) -> SmolStr` (`tacsim:port:{pack}/{entry}`); `PortMap { schema: u16, pack,
+entry, domain: Option<u64>, host: Option<u32>, presentation: Option<u32>, treasury: Option<u64>,
+orgs: BTreeMap<CanonicalId, PortOrgRow> }` with `PortMap::new(pack, entry)` and `key()`; `PortOrgRow
+{ org: u64, root_scope: u64, capital_major: u64, account: Option<u64>, capital: Vec<TrancheRow> }` —
+`capital_major` is the authored capital the row was created for, written with the org, and the one
+number a later apply compares against; `TrancheRow { n: u32, obligation: u64, amount_minor: i64 }`;
+`PortMapState<'a> { Absent, Present(&'a PortMap), Unreadable }`. `TacsimStore::port_map(&self, pack,
+entry) -> PortMapState<'_>`, `port_maps() -> impl Iterator<Item = &PortMap>`, `test_world() ->
+bool`; crate-private `put_port_map(ctx, &PortMap)` (the single write path) and `port_map_claims()`.
+Stored under the identity rule: a body whose `pack`/`entry` disagree with its key, or that will not
+parse, loads as `Unreadable` and bars re-creation.
+
+**`PortApplier`** (`tacsim::port::apply::PortApplier`, kind `port`, phase 11; `pub fn room_by_key(w:
+&World, key: &RecordKey) -> Option<ObjId>`; crate-private `room_references(&PortDef) -> Vec<&str>`
+(gallery, rooms in map order, office), `capital_drift(authored_major, &PortOrgRow, scale) ->
+Option<CapitalDrift::{Changed { recorded }, Inconsistent { recorded }}>`). Preflight order: vendors,
+layers, map readability, rooms, gallery marker, drift (presentation, domain, treasury, per org:
+authored, exists, account, obligations, name, capital), mint cap over the largest still-to-create
+tranche, frozen economy when any tranche is still to create. `create`/`update` both run `put` and
+return `Ok(None)`; `retire_check` `Ok(())`; `retire` logs, writes nothing, keeps the map. What it
+makes: the treasury account named `"tacsim.treasury"`, owner
+`PrincipalId::System("tacsim.treasury")`, `CreditPolicy::unbounded()`, scope `None`; per org
+`Organization { name, aliases [], Active, hidden false, charter "", root_scope }` + root `OrgScope`
+named `"root"` in one `CreateOrg`, audit `org.create` detail `{port: "<pack>/<entry>", org, name}`;
+the account `"<org name>/root"`, owner `Organization(org)`, scope `Some(root)`,
+`CreditPolicy::forbid()`; each tranche an `ObligationSpec` treasury → org account, amount `major ×
+10^scale`, `EconomicSchedule::new(RealUtc, now, None, 1)`, `GracePolicy::default()`,
+`notify_on_success: false`, `cause: Ruleset { namespace: "tacsim.port" }`. Refusal texts (each
+prefixed `{id}: `): `port vendors are not applied by this server yet`; `the port map {key} is
+unreadable; it is never re-created — repair or delete the document by hand`; `the room {ref} is not
+on this world (no room carries its RoomGeo)`; `the gallery {ref} does not carry port.dock`; `a
+capital tranche is {t} cr but this world's mint cap for tacsim.credit is {cap} cr; set
+[economy.instruments."tacsim.credit"].mint_obligation_cap_major to at least {t}`; `the economy is
+frozen on this world, so {n} capital tranche(s) cannot be issued; nothing is applied while it is
+frozen`; `org {org} is in the port map {key} but no longer authored; orgs are never retired by a
+port update`; `org {org} in the port map {key} names org #{n}, which does not exist; it is never
+re-created — repair the map by hand` (account and obligation variants); `org {org} is named {live}
+on this world but {authored} in the pack; this server cannot rename an org`; `org {org} capital
+{authored} cr differs from the {recorded} cr already issued; a port update never re-capitalizes`;
+`org {org}'s tranche rows in the port map {key} are not the tranches of its {recorded} cr; they are
+never re-issued — repair the map by hand`; `{host} already hosts domain #{d}, which this port's map
+does not name`; the presentation/domain/host re-host refusals end `a port update never re-hosts its
+domain`. Lane first-boot refusals surface as `content: first-boot pack tacsim.lane.ceres_phobos@2
+refused: …`.
+
+**Readiness** (`tacsim::port::readiness`) — `Binding::{Lane, Sky, Rate, Treasury, Map, Rooms,
+Domain, Org, Programme}`, `LineState::{Ready, Pending, Missing, Flagged}` + `word()`, `ReadinessLine
+{ port: Option<CanonicalId>, binding, state, text }`, `Readiness { lines }` with `is_ready()`,
+`not_ready()`, `summary()`, `render() -> Vec<String>`; `pub fn readiness(&World) -> Readiness`;
+`PLAY_RATE: u32 = 24`. IC6 gates on `is_ready()` / the typed states, never on text. Texts: `lane:
+tacsim.lane.ceres_phobos@{v} applied; this server ships @2.` (Ready) / `… ships @2. Take it with
+@atlas/pack plan tacsim.lane.ceres_phobos.` (Flagged, older) / `… ships @2 and does not load @{v}.`
+(Flagged, newer unloaded) / `lane: tacsim.lane.ceres_phobos is not applied on this world.`
+(Missing); `sky: constant (rate 0), epoch 2351-05-13, rev <12 hex>` (`moving (rate {r})` when
+non-zero; `rev unavailable` Flagged; `sky: no lane pack is loaded on this server.` Missing); `world
+rate: {r} IC seconds per real second.` / `… (test world).` / `…; play runs at 24.` (Flagged) /
+`world rate: this world has no time generation.` (Missing); `treasury: system:{t}, account #{a}.` /
+`treasury: no account is open for system:{t}.`; per port `{entry}: its port map {key} is
+unreadable.` / `{entry}: not applied.`; `{entry} rooms: {n} of {m} resolved; the gallery carries
+port.dock.` / `…; unresolved: {refs}.` / `…; the gallery does not carry port.dock.`; `{entry}
+domain: #{d} on {host}, presents in {gallery}.` / `{entry} domain: none is recorded in {key}.` /
+`#{d} is not active on this world.` / `#{d} is hosted on {name}, not the room its map names.` /
+`#{d} presents in {name}, not the gallery.`; `{entry} org {id}: {name}, org #{o}, account #{a},
+capital {money}: {s} of {t} tranches settled.` (Ready/Pending) / `{entry} org {id}: {name}; the org
+is not created.` / `…; org #{o} does not exist.` / `…, org #{o}; its account is not open.` / `…,
+account #{a}; capital obligation #{x} does not exist.` / `…; {r} of {t} capital tranches are
+created.` / `…; capital obligation #{x} is {cancelled|delinquent|suspended}, and no sweep will
+settle it.` (all Missing); `{entry} programme {pid}: {org name}, account #{a}, floor {money}, stake
+{money} for each of {pool} hulls.` / `{entry} programme {pid}: {org name} has no account open.`;
+last `Ready: every binding above is in place.` / `Not ready: {k} of {n} lines are pending, missing
+or flagged.`. Money renders through `mush_economy::render_amount` (`4000000.00cr`).
+
+**Verbs** — `@tacsim/port [status]` (staff; `require_enabled` then `require_staff` → `Permission
+denied.`; `Port readiness:` header, `"{text} [{word}]"` per line with port lines indented two
+spaces, the summary; any other argument `Usage: @tacsim/port status` =
+`tacsim::commands::PORT_USAGE`). `+credit` (`tacsim::port::credit`: `CREDIT_VERB`, `CREDIT_HELP`,
+`NO_ACCOUNT = "No credit account is open in your name."`, `UNREADABLE = "Your account's balance
+cannot be read right now."`, `pub fn credit_line(posted, held, available) -> String` = `Credit: {p}
+posted, {h} held, {a} available.`, `pub fn own_account(&World, ObjId) -> Option<&Account>`;
+ReadOnly, `ArgShape::None`; disabled layer → `TacSim is not enabled on this server.`).
+Legacy-handler stanza `+credit` (read-only); `@tacsim` note refreshed; `PINNED_BASELINE` 97.
+
+**Composition and config** — `TacsimRuleset::with_test_world(self, bool) -> TacsimRuleset`;
+`tacsim::composition::tacsim_test_world_module(cfg, game_content) -> Box<dyn GameModule>` (test
+engines only); `server_modules_with(weather, mut economy, atlas, onboarding, game, recovery)`
+inserts `instruments["tacsim.credit"] = InstrumentCaps { mint_obligation_cap_major: 1_000_000 }`
+only when absent; `EconomyConfig::cap_major(tacsim.credit)` is 1,000,000 on every roster through it
+unless an operator per-instrument value is given. Template and example both declare
+`[economy.instruments."tacsim.credit"] mint_obligation_cap_major = 1000000`.
+`state-slot-owners.toml` carries the two `port/apply.rs` rows (`OrgStore`/`org`,
+`EconomyStore`/`economy`).
+
+**mush-sim** — `open_passive_domain(ctx, host, presentation)` refuses only a gone/going host, a host
+that already has a domain, a presentation that is not a live room, or a spent allocator; it is no
+longer bounded by `MAX_WINDOWS`. `open_window` keeps its guard.
+
+**Test rig patterns later cuts can copy** (`crates/tacsim/tests/ports.rs`): `Roster::{production,
+bare, test_world}` + `with_shelf` (replace the atlas module at its index with
+`AtlasModule::with_config(default).with_shelf(vec![pack])` for a shelf-applied version;
+`AtlasConfig.packs` would be shadowed by the compiled v2); `sweep(tw, secs)` (set_now + fire_due);
+`plan_and_apply`; `lane_variant(version, edit)` re-signed with `support::ground::sign`; `counts()`
+over orgs/accounts/obligations/domains/journal; `map_docs(ops)`; `assert_nothing_bound(&World)`; a
+refused first boot through `Engine::with_modules` + `modules_loaded` hands back `engine.world`;
+`mush_economy::obligation_doc_key(ObligationId)` and `account:{id}` for folded-store surgery. Every
+boot asserts `refused_namespace_writes()` is empty.

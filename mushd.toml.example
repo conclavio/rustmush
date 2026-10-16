@@ -121,6 +121,8 @@ starter_area = true                # (S1) apply the shipped starter area — the
 # idempotency_window_secs = 2592000 # (W2) how long a posted key stays in RAM: a cache, every key is on
 #                                  #      disk forever (doc 13); 30 days
 # idempotency_window_max = 1000000 # (W2) at most this many keys in RAM, whichever bound is smaller
+[economy.instruments."tacsim.credit"]     # (doc 18 IC3, D-18-14) the credit's own faucet ceiling; the game
+mint_obligation_cap_major = 1000000       #      contributes 1,000,000 when absent (port capital tranches <= 800,000)
 
 [weather]                          # (M10) weather LLM flavor top-up
 # The deterministic Markov weather machine is unaffected by this; only the

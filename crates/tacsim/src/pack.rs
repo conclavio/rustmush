@@ -231,6 +231,13 @@ pub enum PackEntry {
     /// **16b cut C.2 (C3)** — one arena: the window, its zones, its waypoints
     /// and the stock units its applier makes (doc 16 §3.2, §4).
     Arena(crate::definitions::ArenaDef),
+    /// **Doc 18 cut IC3** — one port of the trade-run corridor (doc 18 §4.7,
+    /// D-18-20): the domain its station presents in, the treasury and the
+    /// institutions it capitalizes, the programme and the routes out. Applied
+    /// by `crate::port::apply::PortApplier`; **seed-only**, because a port
+    /// instantiates (a domain, orgs, accounts, obligations) exactly as an arena
+    /// does.
+    Port(crate::port::PortDef),
 }
 
 impl PackEntry {
@@ -253,6 +260,7 @@ impl PackEntry {
             PackEntry::Core(_) => "core",
             PackEntry::Resolution(_) => "resolution",
             PackEntry::Arena(_) => "arena",
+            PackEntry::Port(_) => "port",
         }
     }
 
@@ -287,6 +295,9 @@ impl PackEntry {
             PackEntry::Core(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Resolution(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Arena(def) => def.check(&def.label).map_err(definition_error)?,
+            // Checked in `from_content`'s per-entry loop, where the entry id is
+            // in scope (doc 18 cut IC3).
+            PackEntry::Port(_) => {}
             PackEntry::Commodity(def) => {
                 if too_long(&def.label) {
                     return Err(PackError::LabelTooLong {
@@ -913,8 +924,9 @@ fn is_unbanded(value: &u8) -> bool {
 /// module's, applied through the content module (S9.1).
 ///
 /// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight; 17b cut M3.1
-/// the fifteenth, `core` (doc 17 §9).
-pub const OWNED_KINDS: [&str; 15] = [
+/// the fifteenth, `core` (doc 17 §9); doc 18 cut IC3 the sixteenth, `port`
+/// (doc 18 §4.7).
+pub const OWNED_KINDS: [&str; 16] = [
     "commodity",
     "recipe",
     "route",
@@ -930,6 +942,7 @@ pub const OWNED_KINDS: [&str; 15] = [
     "core",
     "resolution",
     "arena",
+    "port",
 ];
 
 /// One definition refusal as a pack refusal (16b cut C.2).
@@ -1142,6 +1155,14 @@ impl RulesPack {
                 }
                 other => other,
             })?;
+            // Doc 18 cut IC3: a port's own bounds, with its entry id named once
+            // around the detail (`PortDef::check` names the field and the rule).
+            if let PackEntry::Port(def) = entry {
+                def.check().map_err(|detail| PackError::PortRefused {
+                    port: id.to_string(),
+                    detail,
+                })?;
+            }
             // A rules pack instantiates nothing and a seed pack defines no rules.
             // Q6A's whole distinction is that one is re-pinned and diffed while
             // re-running the other would duplicate a mine, so an entry on the wrong
@@ -1153,7 +1174,9 @@ impl RulesPack {
             // applier makes the room, the domain and the stock tanks of
             // doc 16 §3.3, and re-running it would duplicate them exactly as
             // re-running a mine would — so it belongs on the seed side. 17b cut
-            // M3.1's `core` is a rules kind with the sensor.
+            // M3.1's `core` is a rules kind with the sensor. Doc 18 cut IC3's
+            // `port` instantiates too (a domain, orgs, accounts, obligations;
+            // D-18-20), so it is seed-side with the arena.
             let misplaced = matches!(
                 (manifest.kind(), entry),
                 (
@@ -1163,6 +1186,7 @@ impl RulesPack {
                         | PackEntry::Deposit(_)
                         | PackEntry::Facility(_)
                         | PackEntry::Arena(_)
+                        | PackEntry::Port(_)
                 ) | (
                     PackKind::CampaignSeed,
                     PackEntry::Commodity(_)
@@ -1237,6 +1261,12 @@ impl RulesPack {
                 }
             }
         }
+        // Doc 18 cut IC3 (§4.7, D-18-47): the rules that span the pack's ports —
+        // their places, venues, org ids, routes and programme references.
+        crate::port::check_ports(&entries).map_err(|(port, detail)| PackError::PortRefused {
+            port: port.to_string(),
+            detail,
+        })?;
         Ok(RulesPack { pack, entries })
     }
 
@@ -1409,7 +1439,31 @@ pub fn load_pack(bytes: &str) -> Result<RulesPack, PackError> {
     // decodes and checks the entries it owns. The entries are checked BEFORE the
     // digest is compared, so a refusal names the rule a pack breaks — a band, a
     // kind, an unknown key — rather than the signature it also lacks (B11).
-    let pack = mush_content::parse_pack(bytes)?;
+    let pack = rules_pack_of(mush_content::parse_pack(bytes)?)?;
+    let computed = pack.computed_digest()?;
+    let declared = pack.manifest().digest();
+    if computed != declared {
+        return Err(PackError::DigestMismatch {
+            declared: declared.to_hex(),
+            computed: computed.to_hex(),
+        });
+    }
+    Ok(pack)
+}
+
+/// **The decode half of [`load_pack`]** (doc 18 cut IC3): decode the entries
+/// this crate owns and run every pack rule over them — `RulesPack::from_content`,
+/// so every entry's bounds, the kind rule, the symbol checks and the ports'
+/// cross-entry rules — **without** the digest compare. The content latch hands
+/// an applier a [`mush_content::Pack`] that was digest-verified when it was
+/// loaded; `crate::port::apply::PortApplier::check` runs the same rules on it
+/// before anything mutates.
+///
+/// # Errors
+///
+/// [`PackError::EntryDecode`] for an owned entry that will not decode, and
+/// whatever `RulesPack::from_content` refuses.
+pub fn rules_pack_of(pack: mush_content::Pack) -> Result<RulesPack, PackError> {
     let mut entries = BTreeMap::new();
     for (id, raw) in pack.entries() {
         // S9.1 (D-14-33): a campaign-seed pack also carries the atlas's entries
@@ -1427,16 +1481,7 @@ pub fn load_pack(bytes: &str) -> Result<RulesPack, PackError> {
             })?;
         entries.insert(id.clone(), entry);
     }
-    let pack = RulesPack::from_content(pack, entries)?;
-    let computed = pack.computed_digest()?;
-    let declared = pack.manifest().digest();
-    if computed != declared {
-        return Err(PackError::DigestMismatch {
-            declared: declared.to_hex(),
-            computed: computed.to_hex(),
-        });
-    }
-    Ok(pack)
+    RulesPack::from_content(pack, entries)
 }
 
 /// Resolve a pack's `requires` against everything loaded, failing **closed**.
@@ -1796,6 +1841,17 @@ pub enum PackError {
         declared: u32,
         /// What it actually named.
         placed: usize,
+    },
+    /// **Doc 18 cut IC3** — a `port` entry broke one of its own bounds
+    /// (`PortDef::check`) or a rule that spans the pack's ports
+    /// (`crate::port::check_ports`). The entry is named once, here; the detail
+    /// names the field and the rule.
+    #[error("port entry {port}: {detail}")]
+    PortRefused {
+        /// The port entry's pack-local id.
+        port: String,
+        /// The field and the rule.
+        detail: String,
     },
     /// The shared canonical encoder refused.
     #[error("a pack could not be canonically encoded: {detail}")]

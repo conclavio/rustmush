@@ -1,23 +1,26 @@
 //! **Doc 18 cut IC2 acceptance — the lane and the sky seam** (doc 18 §4.4, §4.8;
 //! D-18-43, D-18-45, D-18-48; lead rulings R1–R5 of the IC2 brief).
 //!
-//! `tacsim.lane.ceres_phobos@1` places Ceres, Mars and Pallas at their true
+//! `tacsim.lane.ceres_phobos@2` places Ceres, Mars and Pallas at their true
 //! heliocentric longitudes and distances on one real date (2351-05-13 on the
 //! game calendar, fetched by `content/sky/fetch_horizons.py`) and Kirkwood on
 //! the Ceres–Mars chord at 2.06 AU; its two routes' `base_s` are the legs that
-//! sky derives at the Dray's 205 km/s. This file pins the pack, derives its legs
+//! sky derives at the Dray's 226 km/s (doc 18 cut IC3's re-fitted cruise, lead
+//! ruling L0a). This file pins the pack, derives its legs
 //! back from the sky (retired with lane v1 at P-A), checks the circular sky's
 //! two readings against each other, holds a body at its own epoch, proves the
 //! optional sky field moves no fixture, holds one drive class to one law, keeps
 //! an operator file off the lane's id, and boots the lane on the production
 //! composition and reads it through `@corridor/show`.
 //!
-//! **The in-place rule (lead ruling R1).** v1 grows its `port` entries in place
-//! at IC3 and its pin is re-blessed there, keeping version 1, because no world
-//! has applied it (pre-launch; dev1 has never seen it). **A persisted world —
-//! the local all-in-one `mushd` included — that booted the IC2 bytes must be
-//! wiped, or have its `tacsim:pack:tacsim.lane.ceres_phobos@1` row removed,
-//! before it boots IC3**, or `boot_reconcile` refuses the boot.
+//! **The version rule (doc 18 cut IC3, lead ruling L0b).** A published version
+//! is never mutated (the store's rule, `boot_reconcile`): IC2's v1 was published
+//! to every enabled world that booted it, so IC3 publishes v2 (the routes
+//! re-timed for 226 km/s, and the two `port` entries) and IC8 will publish v3
+//! (the vendors). A world that latched v1 keeps v1's ledger row and takes v2 by
+//! `@atlas/pack plan tacsim.lane.ceres_phobos` / `@atlas/pack apply` — the boot
+//! pass applies only never-latched packs. Lane symbols are addressed by
+//! (`LANE_PACK`, version), never by bare id. Only v2 is a game source.
 //!
 //! No test here asserts a passage duration (D-18-50): the legs are the sky's
 //! output, never an invariant.
@@ -33,7 +36,8 @@ use mush_core::{CanonicalId, GOD, ObjId, ObjKind};
 use mush_testkit::{TestWorld, fold_module_ops};
 use tacsim::config::{LoadedPack, PackSource};
 use tacsim::definitions::content::{
-    DRAY_JSON, LANE_JSON, LANE_PACK, LANE_ROUTE_BACK, LANE_ROUTE_OUT, game_seed_sources,
+    DRAY_JSON, LANE_JSON, LANE_PACK, LANE_ROUTE_BACK, LANE_ROUTE_OUT, LANE_VERSION,
+    game_seed_sources,
 };
 use tacsim::definitions::{Catalog, DriveLaw};
 use tacsim::pack::{PackEntry, RouteEntry, RulesPack, load_pack};
@@ -44,11 +48,9 @@ use tacsim::{
 
 use support::ground::{UNSIGNED, sign};
 
-/// **The lane's pin.** v1 grows its `port` entries in place at IC3 and this pin
-/// is re-blessed there, keeping version 1 (lead ruling R1): a persisted world
-/// that booted these bytes must be wiped, or have its
-/// `tacsim:pack:tacsim.lane.ceres_phobos@1` row removed, before it boots IC3.
-const LANE_DIGEST: &str = "d8074b883e92746e054e45070e62477d661a0535773b77b5ef2b245bdacea678";
+/// **The lane's pin**, v2 (doc 18 cut IC3): a new version beside v1's ledger
+/// row, never v1 re-signed in place (lead ruling L0b). IC8's v3 is pinned anew.
+const LANE_DIGEST: &str = "3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -144,10 +146,11 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 // The pin
 // ---------------------------------------------------------------------------
 
-/// **The lane is pinned** (doc 18 cut IC2; R1, R4): a campaign seed at version
-/// 1 requiring nothing, exactly the ten entries — the `sol` region, four bodies,
-/// three places, two routes — and no `port` yet; every body carries the same
-/// `epoch_ic`, which is 2351-05-13 on the game calendar.
+/// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b): a campaign
+/// seed at version 2 requiring nothing, exactly the twelve entries — the `sol`
+/// region, four bodies, three places, two routes re-timed for 226 km/s and the
+/// two ports; every body carries the same `epoch_ic`, which is 2351-05-13 on the
+/// game calendar.
 #[test]
 fn ic2_the_lane_pack_is_pinned() {
     let relative = "lane/ceres_phobos.json";
@@ -172,7 +175,8 @@ fn ic2_the_lane_pack_is_pinned() {
     let pack = lane();
     let manifest = pack.manifest();
     assert_eq!(manifest.id().as_str(), LANE_PACK);
-    assert_eq!(manifest.version(), 1);
+    assert_eq!(manifest.version(), LANE_VERSION);
+    assert_eq!(manifest.version(), 2);
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
     assert_eq!(
@@ -192,6 +196,7 @@ fn ic2_the_lane_pack_is_pinned() {
         vec![
             ("ceres".to_owned(), "body".to_owned()),
             ("ceres_freeport".to_owned(), "location".to_owned()),
+            ("ceres_port".to_owned(), "port".to_owned()),
             ("ceres_stickney".to_owned(), "route".to_owned()),
             ("kirkwood".to_owned(), "body".to_owned()),
             ("kirkwood_depot".to_owned(), "location".to_owned()),
@@ -199,9 +204,10 @@ fn ic2_the_lane_pack_is_pinned() {
             ("pallas".to_owned(), "body".to_owned()),
             ("sol".to_owned(), "region".to_owned()),
             ("stickney_ceres".to_owned(), "route".to_owned()),
+            ("stickney_port".to_owned(), "port".to_owned()),
             ("stickney_yards".to_owned(), "location".to_owned()),
         ],
-        "the ten entries, and no port (IC3 adds those in place)"
+        "the twelve entries: v1's ten and the two ports"
     );
     let epochs: Vec<Option<i64>> = bodies(&pack).iter().map(|(_, def)| def.epoch_ic).collect();
     assert_eq!(epochs.len(), 4);
@@ -246,6 +252,29 @@ fn ic2_the_lane_pack_is_pinned() {
                 "port".into(),
                 Some("mars".into())
             ),
+        ]
+    );
+    // The four leg seconds, `ceil(km / 226)` of IC2's chords at the epoch
+    // (doc 18 cut IC3, L0a).
+    let seconds = |id: &str| -> Vec<(String, u32)> {
+        route_of(&pack, id)
+            .legs
+            .iter()
+            .map(|leg| (leg.to.to_string(), leg.base_s))
+            .collect()
+    };
+    assert_eq!(
+        seconds(LANE_ROUTE_OUT),
+        vec![
+            ("kirkwood_depot".to_owned(), 537_293),
+            ("stickney_yards".to_owned(), 411_975)
+        ]
+    );
+    assert_eq!(
+        seconds(LANE_ROUTE_BACK),
+        vec![
+            ("kirkwood_depot".to_owned(), 411_975),
+            ("ceres_freeport".to_owned(), 537_293)
         ]
     );
     for id in [LANE_ROUTE_OUT, LANE_ROUTE_BACK] {
@@ -296,7 +325,7 @@ fn lane_legs_derive_at_epoch() {
     }
     let bare = RulesPack::new(pack.manifest().clone(), entries).expect("the pack builds");
     let route = route_of(&bare, LANE_ROUTE_OUT);
-    let refused = derived_legs(&bare, route, 205).expect_err("a bodiless place is refused");
+    let refused = derived_legs(&bare, route, 226).expect_err("a bodiless place is refused");
     assert!(refused.contains("kirkwood_depot"), "{refused}");
 }
 
@@ -511,7 +540,7 @@ fn one_drive_class_one_law() {
     assert_eq!(
         fielded.drive_for_class(&cid("coast_hauler")),
         Some(&DriveLaw::Coast {
-            kms: 205,
+            kms: 226,
             burn_permille: 105
         })
     );
@@ -526,7 +555,7 @@ fn one_drive_class_one_law() {
     }
     assert!(refused.contains("one class, one law"), "{refused}");
 
-    let same = Catalog::build_fielded(&[dray_copy(205)], tacsim::NS)
+    let same = Catalog::build_fielded(&[dray_copy(226)], tacsim::NS)
         .expect("the same law twice is one law");
     assert_eq!(same.drives, fielded.drives);
 }
@@ -550,7 +579,7 @@ fn ic2_an_operator_seed_cannot_claim_the_lane_id() {
     let refused = verify_sources_with(&cfg, &game_seed_sources())
         .expect_err("the operator file collides with the lane");
     assert!(
-        refused.starts_with("[tacsim] ops/lane.json: declares tacsim.lane.ceres_phobos@1, which "),
+        refused.starts_with("[tacsim] ops/lane.json: declares tacsim.lane.ceres_phobos@2, which "),
         "{refused}"
     );
     assert!(
@@ -683,8 +712,8 @@ fn expected_lines(id: &str, placed: &BTreeMap<CanonicalId, ObjId>) -> Vec<String
 /// IC2; §4.8, D-18-45; reviewer F4).
 ///
 /// On the production composition with the game on and both corridor fixtures as
-/// operator seeds: the content latch holds the lane at version 1 with three
-/// placed rooms; `@corridor/show` on both lane routes, as a player, prints two
+/// operator seeds: the content latch holds the lane at version 2 with three
+/// placed rooms (doc 18 cut IC3: the ports place no object); `@corridor/show` on both lane routes, as a player, prints two
 /// legs, the drive class and propellant, the chord line ending
 /// `constant sky at epoch 2351-05-13 (T17).` and each leg's authored seconds and
 /// derived AU, and never "frozen"; GOD's `@tacsim/pack list` lists the lane
@@ -704,7 +733,7 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
         .module_state::<ContentState>()
         .and_then(|c| c.latches.applied(&cid(LANE_PACK)))
         .expect("the lane is latched");
-    assert_eq!(applied.version(), 1);
+    assert_eq!(applied.version(), LANE_VERSION);
     let placed = applied.placed();
     assert_eq!(placed.len(), 3, "{placed:?}");
     for (symbol, room) in &placed {
@@ -781,7 +810,7 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
     let out = tw.seen_by(&events, GOD).join("\n");
     for (line, digest) in [
         (
-            "tacsim.lane.ceres_phobos@1 [seed]",
+            "tacsim.lane.ceres_phobos@2 [seed]",
             lane().manifest().digest().to_hex(),
         ),
         ("tacsim.core@1 [rules]", CORE_DIGEST.to_owned()),

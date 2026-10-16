@@ -14,6 +14,10 @@
 //! The content latch is the one latch: a re-applied version updates in place
 //! (the room keeps its id; the records their keys, revision up), a retired
 //! pack takes its records back and leaves the rooms standing.
+//!
+//! **Doc 18 cut IC3**: a `port` entry is applied by
+//! [`crate::port::apply::PortApplier`] (phase 11, after the places and the
+//! routes): the port's domain, the treasury, the institutions and their capital.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -69,8 +73,8 @@ const DEFINITION_KINDS: [&str; 12] = [
     "resolution",
 ];
 
-/// Register this crate's appliers: places, routes, arenas, and the definition
-/// kinds.
+/// Register this crate's appliers: places, routes, arenas, the definition
+/// kinds and (doc 18 cut IC3) ports.
 ///
 /// # Errors
 ///
@@ -79,7 +83,8 @@ pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
     appliers.register(crate::NS, Arc::new(PlaceApplier))?;
     appliers.register(crate::NS, Arc::new(RouteApplier))?;
     appliers.register(crate::NS, Arc::new(ArenaApplier))?;
-    appliers.register(crate::NS, Arc::new(DefinitionApplier))
+    appliers.register(crate::NS, Arc::new(DefinitionApplier))?;
+    appliers.register(crate::NS, Arc::new(crate::port::apply::PortApplier))
 }
 
 /// A kind id from one of this crate's static kind words; `None` only if the

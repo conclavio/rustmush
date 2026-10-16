@@ -573,8 +573,8 @@ async fn the_starter_area_boots_once_and_is_durable() {
 #[tokio::test]
 async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     use tacsim::definitions::content::{
-        CERES_PACK, CERES_ROOMS, LANE_PACK, LANE_ROUTE_OUT, STATION_SOURCES, STICKNEY_PACK,
-        STICKNEY_ROOMS,
+        CERES_PACK, CERES_ROOMS, LANE_PACK, LANE_ROUTE_OUT, LANE_VERSION, STATION_SOURCES,
+        STICKNEY_PACK, STICKNEY_ROOMS,
     };
 
     let mut cfg = stock_config("ic1");
@@ -602,13 +602,37 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .expect("the tacsim module composed");
         let lane = CanonicalId::new(LANE_PACK).expect("a canonical id");
         assert!(
-            store.pack(&lane, 1).is_some(),
-            "{LANE_PACK}@1 is loaded by the store"
+            store.pack(&lane, LANE_VERSION).is_some(),
+            "{LANE_PACK}@{LANE_VERSION} is loaded by the store"
         );
         let route = CanonicalId::new(LANE_ROUTE_OUT).expect("a canonical id");
         assert!(
             store.route_in_world(&engine.world, &route).is_some(),
             "{LANE_ROUTE_OUT} materializes on the booted world"
+        );
+        // Doc 18 cut IC3: the split boot bound both ports — their maps, the
+        // nine institutions — and a production roster is never a test world.
+        for entry in ["ceres_port", "stickney_port"] {
+            let entry = CanonicalId::new(entry).expect("a canonical id");
+            assert!(
+                matches!(
+                    store.port_map(&lane, &entry),
+                    tacsim::port::PortMapState::Present(_)
+                ),
+                "{entry}'s port map exists"
+            );
+        }
+        let orgs = engine
+            .world
+            .module_state::<mush_org::OrgStore>()
+            .expect("the org module composed")
+            .state()
+            .orgs()
+            .count();
+        assert_eq!(orgs, 9, "the nine port institutions");
+        assert!(
+            !store.test_world(),
+            "the production roster is no test world"
         );
     };
 
@@ -639,10 +663,10 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     for (pack, _) in STATION_SOURCES {
         assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
     }
-    // Doc 18 cut IC2: and the lane, at version 1 (was nine latches).
+    // Doc 18 cut IC2: and the lane, at version 2 since cut IC3 (was nine latches).
     assert_eq!(
         after.get(LANE_PACK).map(|l| l.0),
-        Some(1),
+        Some(LANE_VERSION),
         "{LANE_PACK}: {after:?}"
     );
     assert_eq!(after.len(), 10);

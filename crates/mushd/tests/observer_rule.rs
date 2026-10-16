@@ -1231,9 +1231,17 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert!(seen.contains(NOT_A_UNIT), "{seen}");
     let seen = ask(&mut god, &format!("@spatial #{red}"), NOT_SPATIAL).await;
     assert!(seen.contains(NOT_SPATIAL), "{seen}");
-    // The muster is the only domain this world has, so the listing is empty — and
-    // `@domain/status` on it answers the sentence a domain that never existed gets.
-    let seen = ask(&mut god, "@domain", "No domains.").await;
+    // The muster is absent from the listing — only the two port domains of doc 18
+    // cut IC3 remain (was "No domains.") — and `@domain/status` on it answers the
+    // sentence a domain that never existed gets. The listing is read WHOLE (to the
+    // sentinel), so the absence holds whatever order the domain ids come in.
+    let seen = ask_whole(&mut god, "@domain").await;
+    for place in ["Stickney Yards", "Ceres Freeport"] {
+        assert!(
+            seen.contains(&format!("host {place} presents in Visiting Berth Gallery")),
+            "{place}:\n{seen}"
+        );
+    }
     assert!(
         !seen.contains(&format!("host {MUSTER}")),
         "`@domain` still lists the muster:\n{seen}"

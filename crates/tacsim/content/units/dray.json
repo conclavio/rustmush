@@ -3,7 +3,7 @@
     "id": "tacsim.pack.dray",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "dc5cae81692853bca737049009e4fb9d768ea045b22789f6e2bf5c2786078583",
+    "digest": "da86f3899788dd9b2ff3141fbf97a5243cb1746b489276173c67dff26caf49fa",
     "requires": []
   },
   "entries": {
@@ -89,7 +89,7 @@
           "berths": 2,
           "occupant_allowance_kg": 100,
           "payload_ceiling_kg": 181000,
-          "drive": { "class": "coast_hauler", "law": { "coast": { "kms": 205, "burn_permille": 105 } } }
+          "drive": { "class": "coast_hauler", "law": { "coast": { "kms": 226, "burn_permille": 105 } } }
         },
         "interior": {
           "space": "airlock",

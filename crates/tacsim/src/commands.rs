@@ -1,7 +1,8 @@
 //! **The `@tacsim` surface** (B4, B6; §3.1's command list).
 //!
 //! One primary verb, entered in the pinned rule-1 allowlist in the same commit
-//! (08i §4). Three switches: `pack`, `seed`, `pin`.
+//! (08i §4). Three switches: `pack`, `seed`, `pin` — and since E7r1 `time`, and
+//! doc 18 cut IC3 `port` (the staff readiness report).
 //!
 //! # Disclosure
 //!
@@ -73,7 +74,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@tacsim".into(),
             shape: ArgShape::EqPair,
-            switches: ["pack", "seed", "pin", "time"]
+            switches: ["pack", "seed", "pin", "time", "port"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -99,7 +100,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/pin <subject>=              (staff) remove that subject's pin.\n\
                    @tacsim/pin list                    (staff) every pin this world carries.
                    @tacsim/time show                   the live world-time generation, its rate,                    the generations left, and each subsystem's declared catch-up policy.
-                   @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each subsystem's                    declared policy for it. It is one attributed act on the kernel's own                    timeline: no second timeline is created and no earlier fact is reinterpreted."
+                   @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each subsystem's                    declared policy for it. It is one attributed act on the kernel's own                    timeline: no second timeline is created and no earlier fact is reinterpreted.
+                   @tacsim/port status                 (staff) the port readiness report: every binding the port entries made — rooms, domains, orgs, accounts and capital — with the lane, the sky and the world rate."
                 .into(),
             ..CommandSpec::default()
         },
@@ -129,6 +131,23 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(corridor_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 18 cut IC3 (§4.1): `+credit`, a ReadOnly group of its own ----
+    //
+    // The `@corridor` bracket's pattern: the class is declared before the
+    // `reg.command` and the module default restored right after. A pure read of
+    // the actor's own account in the economy snapshot: no document, no post, no
+    // submission, and no argument, so it reads no other account.
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+    reg.command(
+        CommandSpec {
+            name: crate::port::credit::CREDIT_VERB.into(),
+            shape: ArgShape::None,
+            help: crate::port::credit::CREDIT_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::credit::credit_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
@@ -195,6 +214,8 @@ fn tacsim_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         pin_cmd(ctx)
     } else if ctx.switches.has("time") {
         time_cmd(ctx)
+    } else if ctx.switches.has("port") {
+        port_cmd(ctx)
     } else {
         pack_cmd(ctx)
     }
@@ -360,6 +381,26 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
         mush_core::MAX_WORLD_TIMELINE_EPOCHS.saturating_sub(ctx.w.world_timeline().epochs().len()),
         mush_core::MAX_WORLD_TIMELINE_EPOCHS
     ));
+    lines(ctx, rows);
+    Ok(())
+}
+
+// ---- Doc 18 cut IC3 — `@tacsim/port status`, the readiness report ----------
+
+/// The one usage line of `@tacsim/port`.
+pub const PORT_USAGE: &str = "Usage: @tacsim/port status";
+
+/// `@tacsim/port [status]` (doc 18 §4.7; staff): the port readiness report
+/// ([`crate::port::readiness`]), a pure read of the port maps, the economy, org
+/// and sim state and the live rate. Writes nothing.
+fn port_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_enabled(ctx)?;
+    require_staff(ctx)?;
+    let lhs = ctx.args.lhs().trim().to_owned();
+    if !(lhs.is_empty() || lhs.eq_ignore_ascii_case("status")) {
+        return Err(CmdError::msg(PORT_USAGE));
+    }
+    let rows = crate::port::readiness(ctx.w).render();
     lines(ctx, rows);
     Ok(())
 }
@@ -852,6 +893,13 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 def.cell_cm,
                 def.tanks.len(),
                 def.waypoints.nodes.len()
+            ),
+            // Doc 18 cut IC3: a port is its venue, its place and its institutions.
+            PackEntry::Port(def) => format!(
+                "port {} at {}, {} orgs",
+                def.venue,
+                def.location,
+                def.orgs.len()
             ),
         };
         rows.push(format!("  {entry_id} ({}) {detail}", entry.label()));

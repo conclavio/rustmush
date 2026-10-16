@@ -1014,7 +1014,20 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         "not a tactical unit",
     )
     .await;
-    say(&mut god, "@domain", "No domains.").await;
+    // Doc 18 cut IC3: the two port domains stand beside it (was "No domains."),
+    // and the muster's is still absent. Read WHOLE (to the sentinel), so the
+    // absence holds whatever order the domain ids come in.
+    let seen = ask_whole(&mut god, "@domain").await;
+    for place in ["Stickney Yards", "Ceres Freeport"] {
+        assert!(
+            seen.contains(&format!("host {place} presents in Visiting Berth Gallery")),
+            "{place}:\n{seen}"
+        );
+    }
+    assert!(
+        !seen.contains("host The Proving Ground"),
+        "`@domain` still lists the muster:\n{seen}"
+    );
 
     // -----------------------------------------------------------------
     // (5) Drive toward each other until the sensor pass finds something.

@@ -109,12 +109,32 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
 #[must_use]
 pub fn server_modules_with(
     weather: mush_weather::WeatherConfig,
-    economy: mush_economy::EconomyConfig,
+    mut economy: mush_economy::EconomyConfig,
     atlas: mush_atlas::AtlasConfig,
     onboarding: &mush_core::OnboardingConfig,
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
 ) -> Vec<Box<dyn GameModule>> {
+    // Doc 18 cut IC3 (D-18-14; §4.7 "Config flips"): the corridor's ports
+    // capitalize their institutions by one-shot treasury obligations of at most
+    // 800,000 cr each, so the credit's own mint ceiling is contributed here as a
+    // per-instrument override of 1,000,000 cr — on the precedent of
+    // `mush_server::config_ext::economy_config_with`'s contributed cadences —
+    // **when the operator declared no per-instrument value for
+    // `tacsim.credit`**. An operator's `[economy.instruments."tacsim.credit"]`
+    // value stands (and one below a needed tranche refuses the lane before
+    // anything is made). The global `[economy].mint_obligation_cap_major` does
+    // NOT apply to `tacsim.credit` once this is contributed
+    // (`EconomyConfig::cap_major` prefers the instrument override). The cap is
+    // per instrument, not per faucet, so every `tacsim.credit` faucet obligation
+    // — including a staff `@market/vendor … fund faucet=tacsim.treasury` drip
+    // once the market composes — gets the 1,000,000 cr ceiling.
+    economy
+        .instruments
+        .entry(crate::economy::CREDIT.to_owned())
+        .or_insert(mush_economy::InstrumentCaps {
+            mint_obligation_cap_major: crate::port::PORT_MINT_CAP_MAJOR,
+        });
     // The issuer is registered when the WoD ruleset is configured **and** its housing
     // knob is on. `issue_title` refuses an issuer that is not on both the economy's
     // list and `HousingModule::with_issuer`, so the two are computed once, here, and
@@ -666,6 +686,19 @@ pub fn tacsim_module(cfg: crate::TacsimConfig) -> Box<dyn GameModule> {
 #[must_use]
 pub fn tacsim_module_with(cfg: crate::TacsimConfig, game_content: bool) -> Box<dyn GameModule> {
     Box::new(crate::TacsimRuleset::with_game_content(cfg, game_content))
+}
+
+/// [`tacsim_module_with`] as a **test world's** (doc 18 cut IC3; lead ruling
+/// L15): the readiness report accepts a world rate other than 24 there. For the
+/// in-process test engines only; the production roster
+/// (`mush_server::boot::game_modules`) never calls it, so dev1 can never be a
+/// test world (doc 18 §4.7).
+#[must_use]
+pub fn tacsim_test_world_module(
+    cfg: crate::TacsimConfig,
+    game_content: bool,
+) -> Box<dyn GameModule> {
+    Box::new(crate::TacsimRuleset::with_game_content(cfg, game_content).with_test_world(true))
 }
 
 /// **The game's unit catalog** (16b cut C.2), built from the content compiled

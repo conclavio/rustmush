@@ -415,9 +415,9 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     for (name, _) in STATION_SOURCES {
         assert!(out.contains(&format!(" {name}@1 (")), "{name}:\n{out}");
     }
-    // Doc 18 cut IC2: and the lane after them.
+    // Doc 18 cut IC2: and the lane after them (at version 2 since cut IC3).
     assert!(
-        out.contains(&format!(" {LANE_PACK}@1 (")),
+        out.contains(&format!(" {LANE_PACK}@2 (")),
         "{LANE_PACK}:\n{out}"
     );
 }
@@ -934,8 +934,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     for (name, _) in STATION_SOURCES {
         assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
     }
-    // Doc 18 cut IC2: the lane at version 1 too (was nine latches).
-    assert_eq!(after.get(LANE_PACK).map(|l| l.0), Some(1), "{LANE_PACK}");
+    // Doc 18 cut IC2: the lane too (was nine latches), at version 2 since cut IC3.
+    assert_eq!(after.get(LANE_PACK).map(|l| l.0), Some(2), "{LANE_PACK}");
     assert_eq!(after.len(), 10);
     assert_eq!(
         location(&tw, walker),

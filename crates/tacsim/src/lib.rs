@@ -138,9 +138,10 @@ pub mod match_;
 /// through its [`arena::mind::MindRunner`] seam.
 pub mod minds;
 pub mod pack;
-/// Doc 18 cut IC2: **the trade run's port code** — so far the pure capacity
-/// function a hull's stowage compartments are checked through (doc 18
-/// §4.2–§4.4, D-18-28 as replaced by R7).
+/// Doc 18 cut IC2: **the trade run's port code** — the pure capacity function a
+/// hull's stowage compartments are checked through (doc 18 §4.2–§4.4, D-18-28 as
+/// replaced by R7); and since cut IC3 the `port` pack entry, its applier and map,
+/// the readiness report and `+credit` (doc 18 §4.1, §4.7).
 pub mod port;
 pub mod record;
 pub mod seed;
@@ -350,6 +351,12 @@ pub struct TacsimRuleset {
     cfg: TacsimConfig,
     /// The verified packs, or the host-facing message that names the failing file.
     loaded: Result<Vec<LoadedPack>, String>,
+    /// **Doc 18 cut IC3 (§4.7; lead ruling L15)** — whether this layer runs in an
+    /// in-process test engine: false in every constructor, set only by
+    /// [`TacsimRuleset::with_test_world`] (through
+    /// `composition::tacsim_test_world_module`), handed to the slot as
+    /// `TacsimStore::test_world`. RAM only, never a config key.
+    test_world: bool,
 }
 
 impl TacsimRuleset {
@@ -379,7 +386,20 @@ impl TacsimRuleset {
             Vec::new()
         };
         let loaded = verify_sources_with(&cfg, &game);
-        TacsimRuleset { cfg, loaded }
+        TacsimRuleset {
+            cfg,
+            loaded,
+            test_world: false,
+        }
+    }
+
+    /// **This layer as a test world's** (doc 18 cut IC3; lead ruling L15): the
+    /// readiness report then accepts a world rate other than 24. The production
+    /// roster (`mush_server::boot::game_modules`) never calls it.
+    #[must_use]
+    pub fn with_test_world(mut self, on: bool) -> TacsimRuleset {
+        self.test_world = on;
+        self
     }
 
     /// The layer, off.
@@ -458,6 +478,7 @@ impl GameModule for TacsimRuleset {
         // allowlist tripwire see `@tacsim` in a default composition.
         let mut slot = TacsimStore {
             cfg: self.cfg.clone(),
+            test_world: self.test_world,
             ..TacsimStore::default()
         };
         slot.install_packs(packs);
@@ -560,6 +581,9 @@ impl GameModule for TacsimRuleset {
         let mut loaded = store::load(&kv, self.cfg.clone());
         loaded.install_packs(packs);
         loaded.reindex();
+        // Doc 18 cut IC3: the test-world flag is RAM only, so the loaded slot
+        // takes it from the layer, never from a document.
+        loaded.test_world = self.test_world;
         let Some(slot) = ctx.w.module_state_mut::<TacsimStore>() else {
             return Err(ModError::msg("tacsim: no module state"));
         };
