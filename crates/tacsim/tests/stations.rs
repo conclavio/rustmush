@@ -44,7 +44,7 @@ use mush_testkit::{TestWorld, fold_module_ops, fold_module_ops_into};
 use serde_json::Value;
 use tacsim::TacsimConfig;
 use tacsim::definitions::content::{
-    CERES_PACK, CERES_REGION_PACK, CERES_ROOMS, STATION_SOURCES, STICKNEY_PACK,
+    CERES_PACK, CERES_REGION_PACK, CERES_ROOMS, LANE_PACK, STATION_SOURCES, STICKNEY_PACK,
     STICKNEY_REGION_PACK, STICKNEY_ROOMS, boot_packs, station_packs,
 };
 use tacsim::ic_return::{self, PORTS};
@@ -136,7 +136,9 @@ fn production_roster_with_starter(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::G
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module(cfg));
+    // Doc 18 cut IC2 (lead ruling R2): the production composition loads the game's
+    // seed packs (the lane) on the same switch the content latch's boot list rides.
+    mods.push(comp::tacsim_module_with(cfg, true));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }
@@ -378,8 +380,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         .collect();
     want.extend(ids(&boot_packs().expect("the game packs")));
     want.extend(STATION_SOURCES.iter().map(|(name, _)| (*name).to_string()));
+    // Doc 18 cut IC2: the lane after the stations (the game's seven boot packs).
+    want.push(LANE_PACK.to_string());
     assert_eq!(ids(&full), want);
-    assert_eq!(full.len(), 9);
+    assert_eq!(full.len(), 10);
     // Region packs require nothing; each neighborhood requires its region at 1.
     for pack in &full[5..] {
         let requires: Vec<(String, u32)> = pack
@@ -392,6 +396,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             CERES_REGION_PACK | STICKNEY_REGION_PACK => assert!(requires.is_empty()),
             CERES_PACK => assert_eq!(requires, vec![(CERES_REGION_PACK.to_string(), 1)]),
             STICKNEY_PACK => assert_eq!(requires, vec![(STICKNEY_REGION_PACK.to_string(), 1)]),
+            // Doc 18 cut IC2: the lane requires nothing.
+            LANE_PACK => assert!(requires.is_empty()),
             other => panic!("unexpected {other}"),
         }
     }
@@ -401,6 +407,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     for (name, _) in STATION_SOURCES {
         assert!(!starter_only.iter().any(|p| p == name));
     }
+    assert!(!starter_only.iter().any(|p| p == LANE_PACK), "nor the lane");
     // On the production roster the shelf lists all four, latched.
     let mut tw = booted();
     let events = tw.run(GOD, "@atlas/pack list");
@@ -408,6 +415,11 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     for (name, _) in STATION_SOURCES {
         assert!(out.contains(&format!(" {name}@1 (")), "{name}:\n{out}");
     }
+    // Doc 18 cut IC2: and the lane after them.
+    assert!(
+        out.contains(&format!(" {LANE_PACK}@1 (")),
+        "{LANE_PACK}:\n{out}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -922,7 +934,9 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     for (name, _) in STATION_SOURCES {
         assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
     }
-    assert_eq!(after.len(), 9);
+    // Doc 18 cut IC2: the lane at version 1 too (was nine latches).
+    assert_eq!(after.get(LANE_PACK).map(|l| l.0), Some(1), "{LANE_PACK}");
+    assert_eq!(after.len(), 10);
     assert_eq!(
         location(&tw, walker),
         Some(ooc),

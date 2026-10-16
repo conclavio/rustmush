@@ -731,11 +731,26 @@ pub enum UnitClass {
     /// A small unmanned platform: a sight and no gun (`drone_mk1`). W2's word,
     /// capped at one a side by default.
     Drone,
+    /// **A cargo hull** (doc 18 cut IC2; doc 18 §4.2 schema addition (1),
+    /// D-18-29): the Dray. Excluded from arena class caps; never fielded —
+    /// [`UnitClass::fieldable`] is false, so the lobby never offers one,
+    /// `Arena::new` refuses one at the custody seam and the class-cap config
+    /// refuses the word. [`UnitClass::read`] still knows it.
+    Hauler,
 }
 
 impl UnitClass {
     /// Every class, in the enum's (and the `BTreeMap`'s) order.
-    pub const ALL: [UnitClass; 3] = [UnitClass::Armour, UnitClass::Walker, UnitClass::Drone];
+    ///
+    /// Doc 18 cut IC2 appends [`UnitClass::Hauler`], so [`UnitClass::parse`]
+    /// and [`UnitClass::read`] know the word; the arena's doors ask
+    /// [`UnitClass::fieldable`].
+    pub const ALL: [UnitClass; 4] = [
+        UnitClass::Armour,
+        UnitClass::Walker,
+        UnitClass::Drone,
+        UnitClass::Hauler,
+    ];
 
     /// The class word, as content and the operator's config write it.
     #[must_use]
@@ -744,6 +759,18 @@ impl UnitClass {
             UnitClass::Armour => "armour",
             UnitClass::Walker => "walker",
             UnitClass::Drone => "drone",
+            UnitClass::Hauler => "hauler",
+        }
+    }
+
+    /// **Whether an arena may field this class** (doc 18 cut IC2; doc 18 §4.2
+    /// schema addition (1), D-18-29): false for [`UnitClass::Hauler`] only —
+    /// excluded from arena class caps; never fielded.
+    #[must_use]
+    pub const fn fieldable(self) -> bool {
+        match self {
+            UnitClass::Armour | UnitClass::Walker | UnitClass::Drone => true,
+            UnitClass::Hauler => false,
         }
     }
 
@@ -768,6 +795,8 @@ impl UnitClass {
             (UnitClass::Walker, false) => "walkers",
             (UnitClass::Drone, true) => "drone",
             (UnitClass::Drone, false) => "drones",
+            (UnitClass::Hauler, true) => "hauler",
+            (UnitClass::Hauler, false) => "haulers",
         }
     }
 
@@ -843,6 +872,20 @@ pub struct UnitSpec {
     /// not name (`"flier"`) is refused at decode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<UnitClass>,
+    /// **The hull's logistics** (doc 18 cut IC2; doc 18 §4.2 schema additions
+    /// (2), D-18-29): dry mass, the stowage compartments as measure maps, the
+    /// berths, the payload rail and the drive. Read by tacsim's port code only;
+    /// `bind()` ignores it, so declaring it moves no `DefinitionRef`, and absent
+    /// it serialises nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logistics: Option<crate::definitions::LogisticsDef>,
+    /// **The hull's walkable interior** (doc 18 cut IC2; doc 18 §4.2 schema
+    /// additions (2); 18a §3; lead ruling R6): the rooms, exits and gauges the
+    /// hull template instantiates. Requires [`UnitSpec::logistics`]. Read by
+    /// tacsim's port code only; `bind()` ignores it, so no `DefinitionRef`
+    /// moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interior: Option<crate::definitions::InteriorDef>,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -1184,6 +1227,7 @@ impl UnitSpec {
         self.check_bands(entry)?;
         self.check_heat(entry)?;
         self.check_mobility(entry)?;
+        self.check_logistics(entry)?;
         if self.sensor_height_cm == 0 || self.sensor_height_cm > MAX_SENSOR_HEIGHT_CM {
             return Err(DefinitionError::value(
                 entry,
@@ -1191,6 +1235,34 @@ impl UnitSpec {
                     "sensor_height_cm is 1 to {MAX_SENSOR_HEIGHT_CM}; {} is not",
                     self.sensor_height_cm
                 ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// **The logistics and the interior** (doc 18 cut IC2; doc 18 §4.2; lead
+    /// ruling R15): a hauler declares its logistics, an interior requires them,
+    /// and each block re-runs its own bounds.
+    fn check_logistics(&self, entry: &str) -> Result<(), DefinitionError> {
+        match (&self.logistics, &self.interior) {
+            (Some(logistics), interior) => {
+                logistics.check(entry)?;
+                if let Some(interior) = interior {
+                    interior.check(entry, logistics)?;
+                }
+            }
+            (None, Some(_)) => {
+                return Err(DefinitionError::value(
+                    entry,
+                    "an interior requires logistics",
+                ));
+            }
+            (None, None) => {}
+        }
+        if self.class == Some(UnitClass::Hauler) && self.logistics.is_none() {
+            return Err(DefinitionError::value(
+                entry,
+                "a hauler declares its logistics",
             ));
         }
         Ok(())

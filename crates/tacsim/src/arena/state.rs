@@ -3851,6 +3851,20 @@ pub enum ArenaError {
         /// The configured cap.
         cap: u32,
     },
+    /// **Doc 18 cut IC2** (doc 18 §4.2 schema addition (1), D-18-29) — a side
+    /// was handed a unit whose class no arena fields (a `hauler`).
+    ///
+    /// The lobby never offers one (`fieldable_ids`); the custody seam is the last
+    /// door (D-16 custody), so a staff `@arena/start` or a fixture that checks one
+    /// out is refused here before anything is built. The sentence names a side
+    /// and a class word, both public, and no object.
+    #[error("the {team} side fields a {class}, which no arena fields")]
+    UnfieldableClass {
+        /// The side's word.
+        team: &'static str,
+        /// The class word ([`UnitClass::as_str`]).
+        class: &'static str,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -4707,6 +4721,16 @@ impl Arena {
         // refused before anything else is built — the invariant the staff
         // `@arena/start` path meets here and the lobby's `SIM UNIT` meets at the
         // choice. A class the map does not name is uncapped.
+        //
+        // **Doc 18 cut IC2** (doc 18 §4.2, D-18-29): first, a class no arena
+        // fields at all — the first such unit in id order — is refused outright;
+        // a hauler is never capped, it is never fielded.
+        if let Some(state) = states.iter().find(|state| !state.class.fieldable()) {
+            return Err(ArenaError::UnfieldableClass {
+                team: state.team.as_str(),
+                class: state.class.as_str(),
+            });
+        }
         let mut fielded: BTreeMap<(Team, UnitClass), u32> = BTreeMap::new();
         for state in &states {
             let count = fielded.entry((state.team, state.class)).or_insert(0);
@@ -7160,6 +7184,40 @@ mod tests {
             .err()
             .map(|error| error.to_string()),
             Some("the red side fields 2 of class armour; a side fields at most 1".to_owned())
+        );
+    }
+
+    /// **Doc 18 cut IC2** (doc 18 §4.2, D-18-29): a hauler at the custody seam
+    /// is refused before anything is built — a hauler on red beside a blue tank,
+    /// under the default caps (which name no hauler), answers
+    /// `UnfieldableClass` with its sentence; the class is refused outright, not
+    /// counted against a cap.
+    #[test]
+    fn ic2_arena_new_refuses_a_hauler() {
+        use crate::arena::test_support::hauler;
+        let default_caps: Vec<(UnitClass, u32)> = ArenaConfig::default()
+            .max_units_by_class
+            .into_iter()
+            .collect();
+        let Err(error) = capped(
+            vec![
+                hauler(ObjId(4), Team::Red, pose(500, 500)),
+                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+            ],
+            &default_caps,
+        ) else {
+            panic!("a hauler opened an arena");
+        };
+        assert_eq!(
+            error,
+            ArenaError::UnfieldableClass {
+                team: "red",
+                class: "hauler",
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "the red side fields a hauler, which no arena fields"
         );
     }
 

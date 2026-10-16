@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mush_core::{CanonicalId, Ctx, ModuleOp, ModuleWrite, ObjId, Outbox, World};
 use mush_sim::{DistanceLaw, DriveProfile, LegDef, RouteDef};
 
-use crate::ephemeris::Ephemeris;
+use crate::sky::Sky;
 use smol_str::SmolStr;
 
 use crate::config::{LoadedPack, TacsimConfig};
@@ -494,6 +494,19 @@ impl TacsimStore {
         if let Some(def) = self.route(id) {
             return Some(def.clone());
         }
+        self.latched_route(w, id).map(|(def, _, _)| def)
+    }
+
+    /// The content-latch half of [`TacsimStore::route_in_world`]: the newest
+    /// loaded version this world applied whose places the latch placed and whose
+    /// route materializes, with the pack and the symbolic entry it came from. One
+    /// candidate rule, so [`TacsimStore::route_source`] can never name a pack
+    /// other than the one the route was materialized from (doc 18 cut IC2).
+    fn latched_route(
+        &self,
+        w: &World,
+        id: &CanonicalId,
+    ) -> Option<(RouteDef, &RulesPack, &RouteEntry)> {
         let mut candidates: Vec<(&(CanonicalId, u32), &LoadedPack)> = self
             .loaded
             .iter()
@@ -510,15 +523,54 @@ impl TacsimStore {
             let Some(PackEntry::Route(route)) = loaded.pack.entry(id) else {
                 continue;
             };
-            let sky = Ephemeris::from_pack(&loaded.pack, &self.cfg.time.ephemeris);
+            // Doc 18 cut IC2 (D-18-43): the pack's own sky, through the one seam.
+            let sky = Sky::from_pack(&loaded.pack, &self.cfg.time.ephemeris);
             match materialize_route(id, route, &placed, None, &loaded.pack, &sky) {
-                Ok(def) => return Some(def),
+                Ok(def) => return Some((def, &loaded.pack, route)),
                 Err(detail) => {
                     tracing::warn!(route = %id, pack = %pack, version, %detail, "tacsim: a route could not be materialized against the content latch");
                 }
             }
         }
         None
+    }
+
+    /// **Where a materialized route came from** (doc 18 cut IC2): the loaded pack
+    /// and the symbolic route entry behind `def` — a legacy routes-index entry
+    /// that holds exactly `def` (the version `resolve` picks first, then any
+    /// other, so `@corridor/show <id> <version>` is answered from its own pack),
+    /// else the content-latch candidate [`TacsimStore::route_in_world`] would
+    /// materialize, and only when what it materializes is `def` itself. A pack
+    /// that cannot have produced `def` is never named, so `@corridor/show` never
+    /// annotates one pack's legs with another pack's sky.
+    #[must_use]
+    pub fn route_source(&self, w: &World, def: &RouteDef) -> Option<(&RulesPack, &RouteEntry)> {
+        let id = def.id();
+        let entry_of = |pack: &CanonicalId, version: u32| {
+            let loaded = self.loaded.get(&(pack.clone(), version))?;
+            match loaded.pack.entry(id) {
+                Some(PackEntry::Route(route)) => Some((&loaded.pack, route)),
+                _ => None,
+            }
+        };
+        if let Ok((pack, version)) = self.resolve(id)
+            && self.routes.get(&(pack.clone(), version, id.clone())) == Some(def)
+            && let Some(found) = entry_of(&pack, version)
+        {
+            return Some(found);
+        }
+        if let Some(found) = self
+            .routes
+            .iter()
+            .rev()
+            .filter(|((_, _, route), held)| route == id && *held == def)
+            .find_map(|((pack, version, _), _)| entry_of(pack, *version))
+        {
+            return Some(found);
+        }
+        self.latched_route(w, id)
+            .filter(|(materialized, _, _)| materialized == def)
+            .map(|(_, pack, route)| (pack, route))
     }
 
     /// Per latch, how many of its placed objects this world no longer has (S3).
@@ -726,8 +778,9 @@ impl TacsimStore {
                 continue;
             };
             let gone = self.missing.get(&key);
-            // S7 (T17): the pack's own sky, under the campaign's epoch and rate.
-            let sky = Ephemeris::from_pack(&loaded.pack, &self.cfg.time.ephemeris);
+            // S7 (T17): the pack's own sky, under the campaign's epoch and rate —
+            // through the sky seam since doc 18 cut IC2 (D-18-43).
+            let sky = Sky::from_pack(&loaded.pack, &self.cfg.time.ephemeris);
             for (id, entry) in loaded.pack.entries() {
                 let PackEntry::Route(route) = entry else {
                     continue;
@@ -764,7 +817,7 @@ fn materialize_route(
     placed: &BTreeMap<CanonicalId, ObjId>,
     gone: Option<&BTreeSet<CanonicalId>>,
     pack: &RulesPack,
-    sky: &Ephemeris,
+    sky: &Sky,
 ) -> Result<RouteDef, String> {
     let place = |symbol: &CanonicalId| -> Result<ObjId, String> {
         if gone.is_some_and(|set| set.contains(symbol)) {
@@ -801,15 +854,26 @@ fn materialize_route(
     .map_err(|e| e.to_string())?;
     // S7 (T17): a route between two bodies' places carries the distance the sky
     // pinned at the epoch; a route within one body's places carries none.
+    //
+    // Doc 18 cut IC2 (D-18-43, D-18-45: "the direct chord at the epoch"): the pin
+    // asks the sky seam at the origin body's own epoch, both instants equal. A
+    // body without `epoch_ic` falls back to the config epoch, so every fixture
+    // pins bit-identically to the old `pinned_km`; a lane body pins at its own
+    // epoch, the instant `@corridor/show` prints as the date beside it, so the km
+    // and the date agree under any sky rate (pinning at the config epoch would,
+    // at a non-zero rate, rewind a lane body to IC 0 from the date printed next
+    // to the figure).
     let body_of = |symbol: &CanonicalId| match pack.entry(symbol) {
         Some(PackEntry::Location(place)) => place.body.clone(),
         _ => None,
     };
     if let (Some(a), Some(b)) = (body_of(&route.from), body_of(&route.to))
         && a != b
-        && let Some(km) = sky.pinned_km(&a, &b)
     {
-        return Ok(def.pinned(km, (a, b)));
+        let e = sky.epoch_of(&a).unwrap_or_else(|| sky.config_epoch());
+        if let Some(km) = sky.distance_km(&a, e, &b, e) {
+            return Ok(def.pinned(km, (a, b)));
+        }
     }
     Ok(def)
 }

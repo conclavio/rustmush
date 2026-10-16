@@ -1,18 +1,23 @@
-//! **S7 (doc 10 T17) — the campaign ephemeris: the frozen sky.**
+//! **S7 (doc 10 T17) — the campaign ephemeris: the constant sky** (as amended
+//! by doc 18 R9 and doc 10 §22's T17 amendment; doc 18 §4.8, D-18-48).
 //!
-//! The solar system is not a coordinate map. It is a fixed constellation of
-//! places, and the distance between two of them is computed **once**, from real
-//! orbital geometry at the campaign's chosen epoch — circular, coplanar orbits,
-//! each body an orbit radius and a phase at the epoch — and pinned into the
-//! connection. No body moves; no transfer window opens or closes; Titan is the
-//! same distance from Saturn on the day a character moves there as it is a year
-//! later.
+//! The solar system is not a coordinate map. It is a constellation of places,
+//! each body a circular, coplanar orbit — a heliocentric distance and a longitude
+//! at an epoch — and the distance between two of them is the law of cosines over
+//! those numbers. A fixture body is placed at the configured campaign epoch; a
+//! lane body (doc 18 cut IC2) carries its own `epoch_ic`, the real date whose
+//! true longitude and distance it was authored from, and is held there.
 //!
-//! `rate = 0` is the ruling and the default. The knob exists so a campaign that
-//! wants a moving sky can have one *coherently*: every distance is derived from
-//! the same body positions at the same instant, so every pair sharing a body
-//! changes together and no pair can contradict another. That is the E lens's
-//! property, and it holds by construction rather than by bookkeeping.
+//! `rate = 0` is the default and holds every body at its authored phase (the
+//! constant sky): Titan is the same distance from Saturn on the day a character
+//! moves there as it is a year later, and a route's pinned chord is the chord on
+//! any IC day. The knob exists so a campaign that wants a moving sky can have one
+//! *coherently*: every distance is derived from the same body positions at the
+//! same instant, so every pair sharing a body changes together and no pair can
+//! contradict another. That is the E lens's property, and it holds by
+//! construction rather than by bookkeeping. Every production distance asks
+//! [`crate::sky::Sky`] (D-18-43); the methods here are its circular model and
+//! the fixtures' own readings.
 //!
 //! Every number is an integer of fixed scale — micro-AU, milli-days,
 //! milli-degrees — except the last step, the law of cosines, which is evaluated
@@ -40,7 +45,8 @@ pub const MAX_PERIOD_MDAYS: u64 = 1_000_000_000_000;
 const MDEG_TURN: i128 = 360_000;
 
 /// One body of the sky: a circular, coplanar orbit and where on it the body
-/// stood at the campaign epoch.
+/// stood at its epoch — its own `epoch_ic` when it has one, else the campaign
+/// epoch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Body {
     /// Orbit radius, micro-AU.
@@ -49,6 +55,9 @@ pub struct Body {
     pub period_mdays: u64,
     /// Heliocentric longitude at the epoch, milli-degrees in `0..360_000`.
     pub phase_mdeg: i64,
+    /// **Doc 18 cut IC2 (§4.8, D-18-48)** — the IC instant the phase is at, or
+    /// `None` for the configured campaign epoch.
+    pub epoch_ic: Option<i64>,
 }
 
 impl From<&BodyDef> for Body {
@@ -57,6 +66,7 @@ impl From<&BodyDef> for Body {
             orbit_uau: def.orbit_uau,
             period_mdays: def.period_mdays,
             phase_mdeg: def.phase_mdeg,
+            epoch_ic: def.epoch_ic,
         }
     }
 }
@@ -99,13 +109,15 @@ impl Ephemeris {
         sky
     }
 
-    /// The epoch, IC seconds.
+    /// The configured campaign epoch, IC seconds on the game calendar: the
+    /// instant for a body without its own `epoch_ic`.
     #[must_use]
     pub fn epoch(&self) -> i64 {
         self.epoch
     }
 
-    /// Permille of the real sky's motion per IC second; 0 is frozen.
+    /// Permille of the real sky's motion per IC second; 0 holds every body at
+    /// its authored phase (the constant sky).
     #[must_use]
     pub fn rate_permille(&self) -> u32 {
         self.rate_permille
@@ -129,8 +141,10 @@ impl Ephemeris {
     }
 
     /// A body's heliocentric longitude at IC time `t`, milli-degrees in
-    /// `0..360_000`. With the sky frozen this is the authored phase whatever `t`
-    /// is; otherwise the phase advances by `rate` of the real sky's motion.
+    /// `0..360_000`. At rate 0 this is the authored phase whatever `t` is;
+    /// otherwise the phase advances by `rate` of the real sky's motion, measured
+    /// from the body's own `epoch_ic` (doc 18 cut IC2, D-18-48) or, without
+    /// one, from the configured campaign epoch.
     #[must_use]
     pub fn phase_mdeg_at(&self, id: &CanonicalId, t: i64) -> Option<i64> {
         let body = self.body(id)?;
@@ -143,7 +157,7 @@ impl Ephemeris {
         if period_ms == 0 {
             return None;
         }
-        let elapsed = i128::from(t).checked_sub(i128::from(self.epoch))?;
+        let elapsed = i128::from(t).checked_sub(i128::from(body.epoch_ic.unwrap_or(self.epoch)))?;
         let advance = elapsed
             .checked_mul(i128::from(self.rate_permille))?
             .checked_mul(MDEG_TURN)?
@@ -162,8 +176,9 @@ impl Ephemeris {
         Some(separation_km(body_a.orbit_uau, body_b.orbit_uau, delta))
     }
 
-    /// The pinned distance: the distance at the epoch, which with the sky frozen
-    /// is the distance on any IC day.
+    /// The pinned distance: the distance at the configured epoch, which at rate
+    /// 0 is the distance on any IC day. Fixtures and tests only (D-18-43):
+    /// production pins through [`crate::sky::Sky::distance_km`].
     #[must_use]
     pub fn pinned_km(&self, a: &CanonicalId, b: &CanonicalId) -> Option<u64> {
         self.distance_km_at(a, b, self.epoch)
@@ -213,6 +228,7 @@ mod tests {
                 orbit_uau: 1_000_000,
                 period_mdays: 365_250,
                 phase_mdeg: 300_000,
+                epoch_ic: None,
             },
         )
         .with_body(
@@ -221,6 +237,7 @@ mod tests {
                 orbit_uau: 1_524_000,
                 period_mdays: 686_980,
                 phase_mdeg: 130_000,
+                epoch_ic: None,
             },
         )
         .with_body(
@@ -229,6 +246,7 @@ mod tests {
                 orbit_uau: 2_766_000,
                 period_mdays: 1_681_600,
                 phase_mdeg: 140_000,
+                epoch_ic: None,
             },
         )
     }

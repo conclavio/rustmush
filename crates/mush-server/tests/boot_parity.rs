@@ -573,7 +573,8 @@ async fn the_starter_area_boots_once_and_is_durable() {
 #[tokio::test]
 async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     use tacsim::definitions::content::{
-        CERES_PACK, CERES_ROOMS, STATION_SOURCES, STICKNEY_PACK, STICKNEY_ROOMS,
+        CERES_PACK, CERES_ROOMS, LANE_PACK, LANE_ROUTE_OUT, STATION_SOURCES, STICKNEY_PACK,
+        STICKNEY_ROOMS,
     };
 
     let mut cfg = stock_config("ic1");
@@ -590,6 +591,26 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
                 .map(|l| (l.pack().to_string(), (l.version(), l.digest().to_hex())))
                 .collect()
         };
+    // Doc 18 cut IC2 (lead ruling R2): the real boot's `tacsim_module_with`
+    // switch loads the lane into `TacsimStore.loaded` beside the latch that
+    // applied its rooms, so the lane route materializes on this world — the
+    // latch alone (from `content_module_with`) would leave it unresolvable.
+    let lane_resolves = |engine: &mush_core::Engine| {
+        let store = engine
+            .world
+            .module_state::<TacsimStore>()
+            .expect("the tacsim module composed");
+        let lane = CanonicalId::new(LANE_PACK).expect("a canonical id");
+        assert!(
+            store.pack(&lane, 1).is_some(),
+            "{LANE_PACK}@1 is loaded by the store"
+        );
+        let route = CanonicalId::new(LANE_ROUTE_OUT).expect("a canonical id");
+        assert!(
+            store.route_in_world(&engine.world, &route).is_some(),
+            "{LANE_ROUTE_OUT} materializes on the booted world"
+        );
+    };
 
     // (a) The game off, the starter on: three latches.
     let booted = boot::build_engine(&cfg, &store, &quarantine)
@@ -618,7 +639,14 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     for (pack, _) in STATION_SOURCES {
         assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
     }
-    assert_eq!(after.len(), 9);
+    // Doc 18 cut IC2: and the lane, at version 1 (was nine latches).
+    assert_eq!(
+        after.get(LANE_PACK).map(|l| l.0),
+        Some(1),
+        "{LANE_PACK}: {after:?}"
+    );
+    assert_eq!(after.len(), 10);
+    lane_resolves(&on.engine);
     let atlas = on
         .engine
         .world
@@ -648,6 +676,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
         "nothing applied twice"
     );
     assert_eq!(latches(&again.engine), after);
+    lane_resolves(&again.engine);
     drop(again);
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
 }

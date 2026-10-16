@@ -138,6 +138,10 @@ pub mod match_;
 /// through its [`arena::mind::MindRunner`] seam.
 pub mod minds;
 pub mod pack;
+/// Doc 18 cut IC2: **the trade run's port code** — so far the pure capacity
+/// function a hull's stowage compartments are checked through (doc 18
+/// §4.2–§4.4, D-18-28 as replaced by R7).
+pub mod port;
 pub mod record;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
@@ -151,6 +155,9 @@ pub mod seed;
 /// `"tacsim"`, so storage and the wire are `sheet:tacsim` and `tacsim.sheet`.
 /// [`sheet`]'s own docs carry the whole argument.
 pub mod sheet;
+/// Doc 18 cut IC2: **the sky seam** — the one query every distance asks
+/// (doc 18 §4.8, D-18-43, D-18-48).
+pub mod sky;
 pub mod store;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
@@ -176,6 +183,7 @@ pub use pack::{
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedOutcome, SeedPlan};
+pub use sky::{PosKm, Sky, SkyError, epoch_date};
 // 16b cut R-b (R4). The sheet ruleset is deliberately NOT re-exported as
 // `TacsimRuleset`: that name is this crate's packs-and-seed layer, and the two
 // are different modules with different namespaces (see [`sheet`]).
@@ -198,6 +206,26 @@ pub use store::{MAX_PINS, NS, PACK_PAGE, ResolveError, TacsimStore};
 /// digest is not its content's, whose `requires` is unsatisfied, or that collides with
 /// another file on `(id, version)`.
 pub fn verify_sources(cfg: &TacsimConfig) -> Result<Vec<LoadedPack>, String> {
+    verify_sources_with(cfg, &[])
+}
+
+/// **[`verify_sources`] over the game's own seed sources too** (doc 18 cut IC2;
+/// lead ruling R2): `game` — the lane, from
+/// [`definitions::content::game_seed_sources`], when the composition root switches
+/// the game content on — is read **first**, then the operator's sources, so an
+/// operator file colliding with a game pack on `(id, version)` is the one the
+/// collision message names as the offender. [`MAX_CONFIGURED_PACKS`] counts the
+/// operator's sources only (the game's are not configured); the collision,
+/// `requires` and cycle checks run over all of them; the returned list is keyed by
+/// `(id, version)`, so the reading order changes nothing else.
+///
+/// # Errors
+///
+/// As [`verify_sources`].
+pub fn verify_sources_with(
+    cfg: &TacsimConfig,
+    game: &[PackSource],
+) -> Result<Vec<LoadedPack>, String> {
     use std::collections::BTreeMap;
 
     let configured = cfg.packs.len().saturating_add(cfg.seeds.len());
@@ -208,7 +236,7 @@ pub fn verify_sources(cfg: &TacsimConfig) -> Result<Vec<LoadedPack>, String> {
         ));
     }
     let mut loaded: BTreeMap<(mush_core::CanonicalId, u32), LoadedPack> = BTreeMap::new();
-    for source in cfg.sources() {
+    for source in game.iter().chain(cfg.sources()) {
         let pack = pack::load_pack(&source.bytes)
             .map_err(|error| format!("[tacsim] {}: {error}", source.name))?;
         let key = (pack.manifest().id().clone(), pack.manifest().version());
@@ -333,7 +361,24 @@ impl TacsimRuleset {
     /// crate existed.
     #[must_use]
     pub fn with_config(cfg: TacsimConfig) -> TacsimRuleset {
-        let loaded = verify_sources(&cfg);
+        TacsimRuleset::with_game_content(cfg, false)
+    }
+
+    /// **The layer with the game's own seed packs** (doc 18 cut IC2; lead ruling
+    /// R2): `game_content` true loads
+    /// [`definitions::content::game_seed_sources`] (the lane) ahead of the
+    /// operator's packs, so the store holds the lane whose places the content
+    /// latch applies. The composition root passes the same boolean it hands
+    /// `content_module_with`, so the loaded packs and the applied boot list move
+    /// together.
+    #[must_use]
+    pub fn with_game_content(cfg: TacsimConfig, game_content: bool) -> TacsimRuleset {
+        let game = if game_content {
+            definitions::content::game_seed_sources()
+        } else {
+            Vec::new()
+        };
+        let loaded = verify_sources_with(&cfg, &game);
         TacsimRuleset { cfg, loaded }
     }
 

@@ -8545,13 +8545,13 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     assert_eq!(stock.arenas.len(), 1, "one arena");
 
     // The fielded catalog: eleven unit schemas since 16b cut AE.3's drone (ten
-    // at AE.1), and no stock identity moved.
+    // at AE.1), twelve since doc 18 cut IC2's Dray, and no stock identity moved.
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        11,
-        "the line tank, doc 16 section 9's five, the range's target, the three chassis and \
-         16b cut AE.3's drone"
+        12,
+        "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
+         16b cut AE.3's drone and doc 18 cut IC2's Dray"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10051,10 +10051,12 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
             "tacsim.ammunition.missile_round".to_owned(),
         ]
     );
+    // Doc 18 cut IC2: twelve with the Dray (was eleven).
     assert_eq!(
         fielded.specs.len(),
-        11,
-        "no unit schema of its own: the ten AE.1 left and 16b cut AE.3's drone"
+        12,
+        "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone and doc 18 cut \
+         IC2's Dray"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10862,12 +10864,13 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
 
     // The fielded catalog: eleven unit schemas, and nothing fielded before the
     // drone moved — the same references as the eight earlier tables give alone.
+    // Doc 18 cut IC2: twelve with the Dray (was eleven).
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        11,
-        "the line tank, doc 16 section 9's five, the range's target, the three chassis and \
-         the drone"
+        12,
+        "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
+         the drone and the Dray"
     );
     let earlier: Vec<(&str, &str)> = [
         content::EXTENSIONS.as_slice(),
@@ -10928,11 +10931,18 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
         vec!["drone_mk1"],
         "the drone alone declares its class"
     );
+    // Doc 18 cut IC2: the Dray declares `hauler`, a bucket of its own.
+    assert_eq!(
+        classes.get(&UnitClass::Hauler).cloned().unwrap_or_default(),
+        vec!["dray"],
+        "the Dray alone is a hauler"
+    );
+    let dray_key = CanonicalId::new(content::DRAY).expect("a canonical id");
     for (id, spec) in &fielded.specs {
         assert_eq!(
             spec.class.is_some(),
-            *id == drone_key,
-            "{id}: only the drone writes a class word"
+            *id == drone_key || *id == dray_key,
+            "{id}: only the drone and the Dray write a class word"
         );
     }
 

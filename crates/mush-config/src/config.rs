@@ -45,8 +45,8 @@
 //! | `[tacsim].space_pulse_ms` | `6000` | parsed, **inert** until E7 cut 8 |
 //! | `[tacsim.time].rate` | `0` | parsed, **inert** until E7 cuts 4/8/11 — campaign rate *policy*. It **never seeds the world timeline**: generation 1 comes from `[game]` |
 //! | `[tacsim.time].catch_up_*` | `""` | parsed, **inert** — the per-subsystem catch-up policies of cuts 4/6/8/9 |
-//! | `[tacsim.time.ephemeris].epoch` | `0` | S7 (doc 10 T17): the campaign epoch the packs' body phases are stated at, IC seconds since the Unix epoch |
-//! | `[tacsim.time.ephemeris].rate` | `0` | S7: permille of the real sky's motion per IC second. **0 is the ruling**: the sky is frozen and every pinned distance holds on any IC day |
+//! | `[tacsim.time.ephemeris].epoch` | `0` | S7 (doc 10 T17): the campaign epoch a body without its own `epoch_ic` has its phase stated at, IC seconds on the game calendar (`mush_core::CivilDate`: 365-day years, year 0 at IC 0) |
+//! | `[tacsim.time.ephemeris].rate` | `0` | S7: permille of the real sky's motion per IC second. **0 is the default**: it holds every body at its authored phase (the constant sky; doc 18 §4.8) and every pinned distance holds on any IC day |
 //! | `[tacsim.recovery].enabled` | `false` | E7 residue pass 1 (R4): the recovery provider. Disabled, `@recovery` still registers and answers "not enabled" |
 //! | `[tacsim.recovery].pool_account` | `0` | the provider's budget account. **Never minted into** — a subsidy is an ordinary staff-authored system obligation, outside this block |
 //! | `[tacsim.recovery].pool_floor` | `0` | the balance the pool may not be granted below: *funded, never infinite* |
@@ -920,15 +920,18 @@ pub struct TacsimTimeCfg {
     pub ephemeris: EphemerisCfg,
 }
 
-/// `[tacsim.time.ephemeris]` — the frozen sky (doc 10 T17; 14-spatial-implementation-plan
-/// §3.8). `rate = 0` is the ruling and the default; `deny_unknown_fields` for the
-/// same reason as [`TacsimTimeCfg`].
+/// `[tacsim.time.ephemeris]` — the constant sky (doc 10 T17 as amended by doc 18
+/// §4.8; 14-spatial-implementation-plan §3.8). `rate = 0` is the ruling and the
+/// default; `deny_unknown_fields` for the same reason as [`TacsimTimeCfg`].
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EphemerisCfg {
-    /// The epoch the packs' phases are stated at, IC seconds since the Unix epoch.
+    /// The epoch a body without its own `epoch_ic` has its phase stated at, IC
+    /// seconds on the game calendar (`mush_core::CivilDate`: 365-day years, year 0
+    /// at IC 0).
     pub epoch: i64,
-    /// Permille of the real sky's motion per IC second; 0 is frozen.
+    /// Permille of the real sky's motion per IC second; 0 holds every body at its
+    /// authored phase (the constant sky).
     pub rate: u32,
 }
 

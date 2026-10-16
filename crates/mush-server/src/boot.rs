@@ -339,7 +339,10 @@ pub fn game_modules(
              no stock tanks are applied, so the simulator centre cannot start a match"
         );
     }
-    mods.push(modules::tacsim_module(tacsim));
+    // Doc 18 cut IC2 (lead ruling R2): the same switch loads the game's own seed
+    // packs (the lane) into the store, so `TacsimStore`'s loaded packs and the
+    // content latch's boot list below move together.
+    mods.push(modules::tacsim_module_with(tacsim, tacsim_enabled));
     // S1: the content module LAST of all — its boot pass applies the starter packs
     // through the atlas's and the NPC module's appliers, which must have hydrated
     // their own slots first (`on_world_loaded` runs in list order). Zero LLM calls:

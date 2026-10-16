@@ -48,9 +48,11 @@ use mush_core::module::{ModError, Registrar};
 use mush_core::{ArgShape, CanonicalId, CmdError, CommandSpec, Ctx, ObjId, World};
 use smol_str::SmolStr;
 
+use crate::ephemeris::AU_KM;
 use crate::pack::{PackEntry, PackKind};
 use crate::record::PinRecord;
 use crate::seed::{self, SeedError};
+use crate::sky::{Sky, epoch_date};
 use crate::store::{MAX_PINS, PACK_PAGE, TacsimStore, del_pin, persist_meta, put_pin};
 
 /// The one existence-hiding refusal. Identical for "never published", "not loaded"
@@ -427,24 +429,83 @@ fn corridor_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         route.drive_class(),
         route.propellant()
     )];
-    // Bounded by `mush_sim::MAX_LEGS`, which the wire re-checks on load, so the walk
-    // is bounded on records the definition could possibly hold.
-    // S7 (T17): the sky's pin, when the corridor crosses between bodies.
+    // Doc 18 cut IC2 (§4.8, D-18-43): the pack's own sky through the one seam,
+    // and the symbolic route behind the materialized one, so each leg can name its
+    // two bodies and the distance between them at the epoch.
+    let (sky, entry) = {
+        let store = store(ctx)?;
+        match store.route_source(ctx.w, &route) {
+            Some((pack, entry)) => (
+                Some(Sky::from_pack(pack, &store.config().time.ephemeris)),
+                Some((pack.clone(), entry.clone())),
+            ),
+            None => (None, None),
+        }
+    };
+    // S7 (T17): the sky's pin, when the corridor crosses between bodies — the
+    // direct chord at the epoch (D-18-45), dated on the game calendar at the
+    // origin body's own epoch, the instant the pin was taken at.
     if let (Some(km), Some((a, b))) = (route.distance_km(), route.bodies()) {
+        let epoch = sky
+            .as_ref()
+            .and_then(|sky| sky.epoch_of(a))
+            .unwrap_or(store(ctx)?.config().time.ephemeris.epoch);
         rows.push(format!(
-            "  pinned at {km} km between {a} and {b}: the sky is frozen at the campaign epoch."
+            "  direct chord at the epoch: {km} km ({} AU) between {a} and {b}; constant sky at \
+             epoch {} (T17).",
+            au_text(km),
+            epoch_date(epoch)
         ));
     }
+    // The body each symbolic place stands on, from the route's own pack.
+    let body_of = |symbol: &CanonicalId| -> Option<CanonicalId> {
+        let (pack, _) = entry.as_ref()?;
+        match pack.entry(symbol) {
+            Some(PackEntry::Location(place)) => place.body.clone(),
+            _ => None,
+        }
+    };
+    // Bounded by `mush_sim::MAX_LEGS`, which the wire re-checks on load, so the walk
+    // is bounded on records the definition could possibly hold.
+    let mut from_place: Option<CanonicalId> = entry.as_ref().map(|(_, e)| e.from.clone());
     for (index, leg) in route.legs().iter().enumerate() {
-        rows.push(format!(
-            "  leg {}: -> #{} ({}s unladen)",
-            index.saturating_add(1),
-            leg.to().0,
-            leg.base_s()
-        ));
+        let to_place: Option<CanonicalId> = entry
+            .as_ref()
+            .and_then(|(_, e)| e.legs.get(index))
+            .map(|leg| leg.to.clone());
+        let n = index.saturating_add(1);
+        let (to, secs) = (leg.to().0, leg.base_s());
+        // Doc 18 cut IC2: a leg between two bodies says how far apart they stand
+        // at the origin body's epoch; any other leg reads as it always did.
+        let between = match (
+            sky.as_ref(),
+            from_place.as_ref().and_then(&body_of),
+            to_place.as_ref().and_then(&body_of),
+        ) {
+            (Some(sky), Some(a), Some(b)) if a != b => sky
+                .epoch_of(&a)
+                .and_then(|t| sky.distance_km(&a, t, &b, t))
+                .map(|km| (a, b, km)),
+            _ => None,
+        };
+        rows.push(match between {
+            Some((a, b, km)) => format!(
+                "  leg {n}: -> #{to} ({secs}s unladen); {a} to {b}, {} AU at the epoch.",
+                au_text(km)
+            ),
+            None => format!("  leg {n}: -> #{to} ({secs}s unladen)"),
+        });
+        from_place = to_place;
     }
     lines(ctx, rows);
     Ok(())
+}
+
+/// Kilometres as astronomical units to three decimals, rounded half up in
+/// integer arithmetic (doc 18 cut IC2's `@corridor/show` lines).
+fn au_text(km: u64) -> String {
+    let milli = (u128::from(km) * 1_000 + u128::from(AU_KM) / 2) / u128::from(AU_KM);
+    format!("{}.{:03}", milli / 1_000, milli % 1_000)
 }
 
 fn corridor_rules(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

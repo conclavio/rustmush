@@ -46,6 +46,8 @@ pub mod ammunition;
 pub mod arena;
 pub mod content;
 pub mod core;
+pub mod goods;
+pub mod logistics;
 pub mod resolution;
 pub mod resources;
 pub mod sensor;
@@ -67,6 +69,11 @@ use crate::pack::PackEntry;
 pub use ammunition::AmmunitionDef;
 pub use arena::{ArenaBuildError, ArenaDef, arena_map_within_bound, from_pack};
 pub use core::CoreDef;
+pub use goods::{Consumable, GoodClass, GoodDef, GoodsTable, MeasureDef};
+pub use logistics::{
+    BerthsSlotDef, DriveDef, DriveLaw, InteriorDef, InteriorExitDef, InteriorRoomDef,
+    InteriorRoomKind, LogisticsDef, StowageDef,
+};
 pub use resolution::ResolutionDef;
 pub use resources::ResourceTable;
 pub use sensor::SensorDef;
@@ -241,6 +248,11 @@ pub struct Catalog {
     /// Every minted reference, by entry id — the exact identity a persisted
     /// unit and a result record point at.
     pub references: BTreeMap<CanonicalId, DefinitionRef>,
+    /// **The drive table** (doc 18 cut IC2; Q-18-5 binding, D-18-45): drive
+    /// class → the one law it flies under, indexed over the fielded unit
+    /// definitions that declare `logistics`. Read through
+    /// [`Catalog::drive_for_class`].
+    pub drives: BTreeMap<CanonicalId, DriveLaw>,
 }
 
 impl Catalog {
@@ -376,13 +388,22 @@ impl Catalog {
             }
         }
 
+        // (2b) Doc 18 cut IC2 (Q-18-5, D-18-45): one drive class, one law. The
+        // drive table is the index over the fielded definitions, walked in id
+        // order so the refusal names the same pair on every boot; a second unit
+        // flying a class under the same law is accepted.
+        let drives = drive_table(&units)?;
+
         // (3) Mint, in dependency order.
         let mut scratch = DefinitionRegistryBuilder::new();
         let mut minter = Minter {
             scratch: &mut scratch,
             owner: &owner,
         };
-        let mut out = Catalog::default();
+        let mut out = Catalog {
+            drives,
+            ..Catalog::default()
+        };
         let mut schemas: BTreeMap<&'static str, DefinitionRef> = BTreeMap::new();
         for (id, payload) in schema_payloads() {
             let descriptor = unit::descriptor("schema", id, 1, payload, Vec::new())
@@ -530,6 +551,14 @@ impl Catalog {
             out.arenas.insert(id.clone(), sourced.def.clone());
         }
         Ok(out)
+    }
+
+    /// **The law a drive class flies under** (doc 18 cut IC2; Q-18-5, D-18-45):
+    /// the drive table is the index over the fielded definitions, so a class no
+    /// loaded hull declares answers `None`.
+    #[must_use]
+    pub fn drive_for_class(&self, class: &CanonicalId) -> Option<&DriveLaw> {
+        self.drives.get(class)
     }
 
     /// **The STOCK game's definitions: [`content::SOURCES`], plus whatever
@@ -746,6 +775,40 @@ fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
             }),
         ),
     ]
+}
+
+/// **The drive table** (doc 18 cut IC2; D-18-45): every unit with `logistics`,
+/// in id order, its drive class → its law, refusing a class already flown under
+/// a different law and naming both units.
+fn drive_table(
+    units: &BTreeMap<CanonicalId, Sourced<UnitSpec>>,
+) -> Result<BTreeMap<CanonicalId, DriveLaw>, DefinitionError> {
+    let mut drives: BTreeMap<CanonicalId, (DriveLaw, &CanonicalId)> = BTreeMap::new();
+    for (id, sourced) in units {
+        let Some(logistics) = &sourced.def.logistics else {
+            continue;
+        };
+        let drive = &logistics.drive;
+        match drives.get(&drive.class) {
+            Some((law, _)) if *law == drive.law => {}
+            Some((law, first)) => {
+                return Err(DefinitionError::value(
+                    id.as_str(),
+                    format!(
+                        "drive class `{}` is already flown under {law} by `{first}`; one class, one law",
+                        drive.class
+                    ),
+                ));
+            }
+            None => {
+                drives.insert(drive.class.clone(), (drive.law, id));
+            }
+        }
+    }
+    Ok(drives
+        .into_iter()
+        .map(|(class, (law, _))| (class, law))
+        .collect())
 }
 
 /// Insert one entry, refusing an id two packs both declare.

@@ -67,17 +67,21 @@ pub const MAX_CONFIGURED_PACKS: usize = 64;
 /// code. Nothing in cut 1 reads a field of this struct; it exists so an operator can
 /// write the block once and cuts 4, 8 and 11 find it already parsed.
 /// **S7 (doc 10 T17)** — `[tacsim.time.ephemeris]`: the campaign's chosen epoch and
-/// the rate its sky moves at. **`rate = 0` is the ruling and the default**: every
-/// body's phase is the one the pack authored at the epoch, for ever, so a distance
-/// pinned at load is the distance on any IC day. The knob exists so a campaign that
-/// wants a moving sky can have one coherently (every pair sharing a body changes
-/// together); this campaign does not.
+/// the rate its sky moves at — T17's constant sky as amended by doc 18 R9 (doc 18
+/// §4.8, doc 10 §22's amendment). **`rate = 0` is the default**: it holds every body
+/// at its authored phase (the constant sky), so a distance pinned at load is the
+/// distance on any IC day. `epoch` is the instant for a body without its own
+/// `epoch_ic`; a lane body (doc 18 cut IC2, D-18-48) carries the real date its
+/// numbers were read for. The knob exists so a campaign that wants a moving sky can
+/// have one coherently (every pair sharing a body changes together).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EphemerisConfig {
-    /// The epoch, IC seconds since the Unix epoch: the instant the packs' phases
-    /// are stated at. Only a nonzero rate ever reads it.
+    /// The epoch, IC seconds on the game calendar (`mush_core::CivilDate`:
+    /// 365-day years, year 0 at IC 0): the instant a body without its own
+    /// `epoch_ic` has its phase stated at. Only a nonzero rate ever reads it.
     pub epoch: i64,
-    /// Permille of the real sky's motion per IC second; 0 is frozen.
+    /// Permille of the real sky's motion per IC second; 0 holds every body at
+    /// its authored phase (the constant sky).
     pub rate: u32,
 }
 
@@ -1370,6 +1374,16 @@ impl ArenaConfig {
         // **16b cut AE.3** (doc 16 §2 W2): zero forbids the class on this
         // server; past the arena's own unit bound a cap caps nothing.
         for (class, cap) in &self.max_units_by_class {
+            // **Doc 18 cut IC2** (reviewer F10): a class no arena fields has no
+            // cap to set — the typed path fixtures build by hand gets the same
+            // door, and the same sentence, as the host's word parser.
+            if !class.fieldable() {
+                return Err(format!(
+                    "[tacsim.arena.max_units_by_class] names a class that is not armour, \
+                     walker or drone: {}",
+                    class.as_str()
+                ));
+            }
             between(
                 &format!("[tacsim.arena.max_units_by_class].{}", class.as_str()),
                 0,
@@ -1737,6 +1751,25 @@ pub struct LoadedPack {
 #[cfg(test)]
 mod tests {
     use super::{ArenaConfig, CommandConfig};
+
+    /// **Doc 18 cut IC2** (reviewer F10): a cap on the hauler — a class no arena
+    /// fields — is refused by the typed path with the host parser's own
+    /// sentence; the default still validates.
+    #[test]
+    fn ic2_arena_config_refuses_a_hauler_cap() {
+        use crate::definitions::UnitClass;
+        assert_eq!(ArenaConfig::default().validate(), Ok(()));
+        let mut cfg = ArenaConfig::default();
+        cfg.max_units_by_class.insert(UnitClass::Hauler, 1);
+        assert_eq!(
+            cfg.validate(),
+            Err(
+                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                 drone: hauler"
+                    .to_owned()
+            )
+        );
+    }
 
     /// **16b cut Z.1** (16c N6): `[tacsim.arena].squad_size` ships at four, takes
     /// both edges of `1..=16`, and refuses either side of them in Q.7's sentence.

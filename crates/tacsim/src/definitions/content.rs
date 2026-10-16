@@ -95,14 +95,41 @@
 //! |---|---|---|---|
 //! | `units/drone_mk1.json` | `tacsim.pack.drone_mk1` | rules | never |
 //!
+//! **Doc 18 cut IC2** adds the trade run's hull — the Dray, class `hauler`,
+//! carrying `logistics` and `interior` (doc 18 §4.2, D-18-29) — as
+//! [`EXTENSIONS_HAULER`], a tenth, fielded last and never fielded in an arena:
+//!
+//! | file | pack | kind | applied |
+//! |---|---|---|---|
+//! | `units/dray.json` | `tacsim.pack.dray` | rules | never |
+//!
+//! # The trade run's lane (doc 18 cut IC2)
+//!
+//! [`LANE_SOURCES`] is the 2350 game's one campaign-seed pack of its own:
+//!
+//! | file | pack | kind | applied |
+//! |---|---|---|---|
+//! | `lane/ceres_phobos.json` | `tacsim.lane.ceres_phobos` | seed | the content latch, after the stations |
+//!
+//! the `sol` region, Ceres, Mars, Pallas and Kirkwood at their true longitudes on
+//! one real date (doc 18 §4.8, D-18-48; the numbers come from
+//! `content/sky/fetch_horizons.py`), the three places and the two routes. It is
+//! the one game pack that is both **loaded** into the [`crate::store::TacsimStore`]
+//! (through [`game_seed_sources`], so its routes materialize) and **applied** by
+//! the content latch (through [`lane_packs`], so its places are rooms), and both
+//! are switched by the one `game_content` boolean the composition root passes
+//! (lead ruling R2). `goods.json` beside it is a typed document, not a pack; see
+//! [`super::goods`].
+//!
 //! # And what is **fielded**
 //!
 //! **16b cut Q.8** answers X.1 deviation 1's open question — *whether the
 //! extensions join the shipped catalog* — with **yes for the game, and no for
-//! the stock game**. [`fielded_sources`] is [`sources`] followed by all nine
+//! the stock game**. [`fielded_sources`] is [`sources`] followed by all ten
 //! extension tables in `requires` order — doc 16 §9's five, since 16b cut O.3
 //! the range's target, since 16b cut AE.2 the two weapons, since 16b cut
-//! AE.1 the three chassis, and since 16b cut AE.3 the drone — and
+//! AE.1 the three chassis, since 16b cut AE.3 the drone, and since doc 18 cut
+//! IC2 the Dray (in the catalog, never in an arena) — and
 //! [`super::Catalog::build_fielded`] is what the three production sites build
 //! from, so `SIM UNIT` can offer a pilot a biped or a scout car, `@unit/create`
 //! can name a laser tank on a shipped server, and `SIM RANGE` can field a
@@ -496,6 +523,87 @@ pub const DRONE_MK1: &str = "tacsim.unit.drone_mk1";
 pub const EXTENSIONS_DRONE: [(&str, &str); 1] =
     [("tacsim/content/units/drone_mk1.json", DRONE_MK1_JSON)];
 
+/// `crates/tacsim/content/units/dray.json` (doc 18 cut IC2).
+pub const DRAY_JSON: &str = include_str!("../../content/units/dray.json");
+
+/// The Dray's pack id.
+pub const DRAY_PACK: &str = "tacsim.pack.dray";
+
+/// **The Dray** (doc 18 cut IC2; doc 18 §4.2, D-18-29): the Stickney-built bulk
+/// hauler a First Captain charters — 240 t dry, a 100 t / 120 m³ hold, an
+/// 80 t tank, a 120 crew-day locker, two berths, a `coast_hauler` drive — class
+/// `hauler`, so never fielded in an arena.
+pub const DRAY: &str = "tacsim.unit.dray";
+
+/// **The trade run's hull, one unit schema and no weapon, ammunition or sensor
+/// row of its own** (doc 18 cut IC2; doc 18 §4.2, D-18-29).
+///
+/// A table of its **own**, for the reason [`EXTENSIONS_BIPED`] gives: its
+/// acceptance states the whole of what it adds (one unit schema, class
+/// `hauler`, carrying `logistics` and `interior`) and no earlier table's count
+/// moves. It requires nothing, so it could go anywhere; it is fielded **last**,
+/// after [`EXTENSIONS_DRONE`], so every earlier table keeps its place. It is
+/// fielded into the catalog (the drive table, the port code and the hull
+/// template read it there) and **never fielded in an arena**:
+/// `crate::definitions::UnitClass::fieldable` is false for a hauler, so the
+/// lobby never offers one, `Arena::new` refuses one and the class-cap config
+/// refuses the word.
+pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.json", DRAY_JSON)];
+
+// ---------------------------------------------------------------------------
+// The trade run's lane (doc 18 §4.4, §4.8; cut IC2)
+// ---------------------------------------------------------------------------
+
+/// **The lane pack's id** (doc 18 cut IC2; doc 18 §4.8, D-18-48).
+///
+/// v1 grows its `port` entries in place at IC3 and its pin is re-blessed there,
+/// keeping version 1, because no world has applied it (pre-launch; dev1 has
+/// never seen it). **A persisted world — the local all-in-one `mushd` included —
+/// that booted the IC2 bytes must be wiped, or have its
+/// `tacsim:pack:tacsim.lane.ceres_phobos@1` row removed, before it boots IC3**,
+/// or `boot_reconcile` refuses the boot (`lib.rs`, the published-digest gate).
+pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
+/// `crates/tacsim/content/lane/ceres_phobos.json`.
+pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
+/// The lane as one source, in apply order.
+pub const LANE_SOURCES: [(&str, &str); 1] = [("tacsim/content/lane/ceres_phobos.json", LANE_JSON)];
+/// The outbound route: Ceres Freeport by Kirkwood Depot to Stickney Yards.
+pub const LANE_ROUTE_OUT: &str = "ceres_stickney";
+/// The return route: Stickney Yards by Kirkwood Depot to Ceres Freeport.
+pub const LANE_ROUTE_BACK: &str = "stickney_ceres";
+
+/// The lane pack, loaded and digest-verified (doc 18 cut IC2). The production
+/// boot list appends it after [`station_packs`] when `[tacsim].enabled`, and the
+/// atlas shelves it after them.
+///
+/// # Errors
+///
+/// A message naming the file when the shipped pack does not verify — a build
+/// error, since `crates/tacsim/tests/lane.rs` pins its digest.
+pub fn lane_packs() -> Result<Vec<mush_content::Pack>, String> {
+    LANE_SOURCES
+        .iter()
+        .map(|(name, json)| {
+            mush_content::load_pack(json).map_err(|error| format!("{name}: {error}"))
+        })
+        .collect()
+}
+
+/// **The game's own seed sources** (doc 18 cut IC2; lead ruling R2): the lane,
+/// named `<built-in …>`, which [`crate::verify_sources_with`] reads ahead of the
+/// operator's files when the game content is on, so the store loads the lane
+/// whose places the content latch applies and its routes materialize.
+#[must_use]
+pub fn game_seed_sources() -> Vec<PackSource> {
+    LANE_SOURCES
+        .iter()
+        .map(|(name, bytes)| PackSource {
+            name: format!("<built-in {name}>"),
+            bytes: (*bytes).to_string(),
+        })
+        .collect()
+}
+
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.
 #[must_use]
@@ -575,8 +683,12 @@ pub fn sources() -> Vec<PackSource> {
 /// **16b cut AE.3** appends a ninth, [`EXTENSIONS_DRONE`], last: it requires
 /// only the stock sight, and last moves no earlier table.
 ///
+/// **Doc 18 cut IC2** appends a tenth, [`EXTENSIONS_HAULER`], last: the Dray
+/// requires nothing, and last moves no earlier table. It is in the catalog and
+/// never in an arena (class `hauler`; doc 18 §4.2, D-18-29).
+///
 /// Named `<built-in …>` like [`sources`], and not `<extension …>` like
-/// [`extension_sources_of`]: through this route the nine are shipped content
+/// [`extension_sources_of`]: through this route the ten are shipped content
 /// and not an operator's file, and the name is what a refusal quotes.
 #[must_use]
 pub fn fielded_sources() -> Vec<PackSource> {
@@ -591,6 +703,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_ORDNANCE.as_slice(),
         EXTENSIONS_CHASSIS.as_slice(),
         EXTENSIONS_DRONE.as_slice(),
+        EXTENSIONS_HAULER.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

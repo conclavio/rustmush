@@ -764,6 +764,18 @@ pub(crate) mod test_support {
         .sealed()
     }
 
+    /// **A hauler** (doc 18 cut IC2): [`tank`] whose rules blob declares
+    /// `"class": "hauler"`, so `Arena::new` reads it as
+    /// [`crate::definitions::UnitClass::Hauler`] and refuses it at the custody
+    /// seam.
+    pub(crate) fn hauler(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+        CustodyUnit {
+            unit: tactical_unit_with(id, serde_json::json!({ "class": "hauler" })),
+            ..tank(id, team, pose)
+        }
+        .sealed()
+    }
+
     /// **The shipped sensor's numbers**, as the arena carries them
     /// (`content/sensors/visual_mk1.json`).
     pub(crate) fn visual() -> SensorProfile {

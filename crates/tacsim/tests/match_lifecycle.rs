@@ -1615,6 +1615,33 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
     );
 }
 
+/// **`SIM UNIT` never offers a hauler** (doc 18 cut IC2; doc 18 §4.2 schema
+/// addition (1), D-18-29): the Dray is in the fielded catalog for the port code
+/// and never in a lobby. The bare list is exactly the one
+/// `q8_sim_unit_lists_selects_and_clears_a_choice` pins — unchanged by the Dray,
+/// which is the proof — and naming it answers the unknown-type line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ic2_sim_unit_never_offers_a_hauler() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit");
+    assert!(
+        said.contains(
+            "Fieldable units: biped_mk1, biped_mk2, drone_mk1, heavy_mk1, line_tank, \
+             line_tank_eccm, line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, \
+             target_mk1. Yours: line_tank."
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("dray"), "{said}");
+    let said = rig.say(0, "sim unit dray");
+    assert!(
+        said.contains("No such unit type: dray. SIM UNIT lists them."),
+        "{said}"
+    );
+    assert_eq!(rig.centre().slots[0].unit_type, None, "and nothing moved");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn q8_sim_unit_refuses_an_unknown_type_no_slot_and_a_wrong_state() {
     let mut rig = Rig::boot(2);

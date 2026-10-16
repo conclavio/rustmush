@@ -213,8 +213,10 @@ catch_up_production = ""
 catch_up_fronts = ""
 catch_up_domains = ""
 
-# Body phases are authored at this campaign epoch (IC Unix seconds). A rate of
-# zero freezes the sky; nonzero rates are permille of real motion per IC second.
+# Body phases without their own epoch_ic are authored at this campaign epoch, IC
+# seconds on the game calendar (mush_core::CivilDate: 365-day years, year 0 at
+# IC 0). A rate of zero holds every body at its authored phase (the constant
+# sky); nonzero rates are permille of real motion per IC second.
 [tacsim.time.ephemeris]
 epoch = 0
 rate = 0

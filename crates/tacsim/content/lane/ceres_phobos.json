@@ -1,0 +1,135 @@
+{
+  "manifest": {
+    "id": "tacsim.lane.ceres_phobos",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "d8074b883e92746e054e45070e62477d661a0535773b77b5ef2b245bdacea678",
+    "requires": []
+  },
+  "entries": {
+    "sol": {
+      "kind": "region",
+      "def": {
+        "name": "Sol",
+        "kind": "system",
+        "extent": [
+          [
+            -10.0,
+            -10.0
+          ],
+          [
+            10.0,
+            10.0
+          ]
+        ],
+        "datum_m": 0.0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 800,
+          "seed": 1
+        },
+        "ground_resolution_cm": 1000
+      }
+    },
+    "ceres": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 2.866568,
+        "period_days": 1681.861,
+        "phase_deg_at_epoch": 281.654,
+        "epoch_ic": 74152540800
+      }
+    },
+    "mars": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 1.445443,
+        "period_days": 687.034,
+        "phase_deg_at_epoch": 276.24,
+        "epoch_ic": 74152540800
+      }
+    },
+    "pallas": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 2.482328,
+        "period_days": 1686.144,
+        "phase_deg_at_epoch": 190.512,
+        "epoch_ic": 74152540800
+      }
+    },
+    "kirkwood": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 2.06,
+        "period_days": 1080.0,
+        "phase_deg_at_epoch": 279.506,
+        "epoch_ic": 74152540800
+      }
+    },
+    "ceres_freeport": {
+      "kind": "location",
+      "def": {
+        "label": "Ceres Freeport",
+        "role": "port",
+        "body": "ceres"
+      }
+    },
+    "kirkwood_depot": {
+      "kind": "location",
+      "def": {
+        "label": "Kirkwood Depot",
+        "role": "depot",
+        "body": "kirkwood"
+      }
+    },
+    "stickney_yards": {
+      "kind": "location",
+      "def": {
+        "label": "Stickney Yards",
+        "role": "port",
+        "body": "mars"
+      }
+    },
+    "ceres_stickney": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "stickney_yards",
+        "legs": [
+          {
+            "to": "kirkwood_depot",
+            "base_s": 592332
+          },
+          {
+            "to": "stickney_yards",
+            "base_s": 454177
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "stickney_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "stickney_yards",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "kirkwood_depot",
+            "base_s": 454177
+          },
+          {
+            "to": "ceres_freeport",
+            "base_s": 592332
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    }
+  }
+}

@@ -528,3 +528,688 @@ disposition in the code rather than from the reports.
 `production_roster_with_starter(cfg)` (the production roster ending in `content_module_with(true,
 true)`, sheet left out), `obj(tw, pack, entry)`, `latches(tw)`; `crates/mush-atlas/tests/travel.rs`
 `modules_shelved(packs, shelf)`.
+
+## IC2
+
+**The Dray, the goods table, the lane and the sky seam** (doc 18 §5, the IC2 row and paragraph),
+built 2026-10-15 on main at 07232d09. One commit, pushed to origin/main.
+
+### What landed
+
+1. **The logistics and interior schema** (`crates/tacsim/src/definitions/logistics.rs`, new; `pub
+   mod logistics` and the re-exports in `definitions/mod.rs`). `LogisticsDef { dry_mass_t, stowage:
+   BTreeMap<CanonicalId, StowageDef>, berths, occupant_allowance_kg, payload_ceiling_kg, drive:
+   DriveDef }`, `StowageDef { accepts, limits }` (doc 06 D3's measure map, `MASS_KG = "si.mass_kg"`,
+   `VOLUME_L = "si.volume_l"`), `DriveDef { class, law }`, the externally tagged `DriveLaw::Coast {
+   kms, burn_permille }` (`Display`: `coast {kms 205, burn_permille 105}`), `InteriorDef { space,
+   store, berths_slot, rooms, exits, gauges }`, `InteriorRoomDef` with optional
+   `short_desc`/`desc`/`details` (lead ruling R6), `InteriorRoomKind`, `InteriorExitDef`,
+   `BerthsSlotDef`; all integer, `deny_unknown_fields`. Every bound is a named constant
+   (`MAX_DRY_MASS_T` 1,000,000, `MAX_COMPARTMENTS` 8, `MAX_COMPARTMENT_KEYS` 8, `MAX_BERTHS` 16,
+   `MAX_OCCUPANT_ALLOWANCE_KG` 1,000, `MAX_COAST_KMS` 299,792, `MAX_BURN_PERMILLE` 1,000,
+   `MIN_INTERIOR_ROOMS` 2, `MAX_INTERIOR_ROOMS` 16, `MAX_INTERIOR_EXITS` 32,
+   `MAX_INTERIOR_SHORT_DESC_BYTES` 256, `MAX_INTERIOR_DESC_BYTES` 4,096, `MAX_INTERIOR_DETAILS` 32,
+   `MAX_DETAIL_NAME_BYTES` 64, `MAX_DETAIL_TEXT_BYTES` 2,048 — the atlas's `check_details` rules by
+   value, no atlas edge). `LogisticsDef::check` refuses by sentence: the bounds, a compartment with
+   no tags or no limits, a zero limit, a compartment that does not limit `si.mass_kg` ("every
+   compartment says what it weighs"), a coast outside `1..=299792` km/s or a burn outside
+   `1..=1000`‰, and a ceiling below `payload_floor_kg()` = Σ mass limits + berths × allowance
+   (180,680 for the Dray; checked arithmetic). `InteriorDef::check` refuses duplicate rooms, a
+   non-walkable `space`, a non-store `store`, two stores, an exit touching the store ("a store has
+   no exits"), an exit naming a non-walkable room or joining a room to itself, not exactly two names
+   or an empty display name, two exits on one unordered pair, an alias leaving one room twice
+   (`names[0]` leaves `from`, `names[1]` leaves `to`), a walkable room unreachable from `space`,
+   `berths_slot.maximum_items != logistics.berths`, a gauge naming no compartment or a non-walkable
+   room.
+2. **`UnitSpec.logistics` / `UnitSpec.interior`** (`definitions/unit.rs`), optional, `default` +
+   `skip_serializing_if`, after `class` and before `note`; `UnitSpec::check` calls `check_logistics`
+   (an interior requires logistics; `class: hauler` requires logistics). `bind()` never reads
+   either, so no shipped `DefinitionRef` moved (proven by
+   `ic2_the_dray_is_a_hauler_and_binds_class_zero`). **`UnitClass::Hauler`** (word `hauler`, nouns
+   hauler/haulers) appended to `ALL` (now 4) so `parse` and `read` know it, and `pub const fn
+   fieldable(self) -> bool`, false for `Hauler` alone.
+3. **One class, one law** (`definitions/mod.rs`): `Catalog.drives: BTreeMap<CanonicalId, DriveLaw>`,
+   `Catalog::drive_for_class`, and `drive_table` walked in id order between the cross-reference step
+   and minting, refusing "`<second>`: drive class `<c>` is already flown under `<law>` by `<first>`;
+   one class, one law" and accepting the same law twice (Q-18-5, D-18-45).
+4. **The Dray** (`crates/tacsim/content/units/dray.json`, new): `tacsim.pack.dray` v1
+   `rules_definition`, `requires: []`, entry `tacsim.unit.dray` exactly doc 18 §4.2's JSON (class
+   `hauler`; 240 t dry; cargo `{si.mass_kg 100000, si.volume_l 120000}` accepting `stow.bulk`;
+   propellant `{si.mass_kg 80000}`; provisions `{si.mass_kg 480, si.volume_l 1200}`; 2 berths at 100
+   kg; ceiling 181,000; `coast_hauler` / `coast {kms 205, burn_permille 105}`; the seven rooms, five
+   exit pairs and three gauges name for name; the 991-byte note) plus 18a §3.1's *Short.*, *Desc.*
+   and every *Details.* item transcribed verbatim onto `interior.rooms[]` with the markdown stripped
+   and wraps joined, only two detail keys folded under the IC1 carry-forward (`builder's plate` →
+   `builders plate`, `tie-points` → `tie points`; `ROM pane` keeps its capitals). Wired in
+   `definitions/content.rs` as `DRAY_JSON`, `DRAY_PACK`, `DRAY`, `EXTENSIONS_HAULER` (the tenth
+   table, fielded last, in the catalog and never in an arena), appended in `fielded_sources`; the
+   module doc's tables extended. Digest
+   `dc5cae81692853bca737049009e4fb9d768ea045b22789f6e2bf5c2786078583`, pinned in `tests/content.rs`
+   `DRAY_DIGEST` and decoded there through `UnitSpec::check`, so a note over `MAX_NOTE_BYTES` fails
+   the cut, never a boot.
+5. **The hauler kept out of every arena path.** `match_/lobby.rs` `fieldable_ids` filters on
+   `spec.class_of().fieldable()` (`SIM UNIT` never lists `dray`; `sim unit dray` answers "No such
+   unit type: dray. SIM UNIT lists them."); `arena/state.rs` `ArenaError::UnfieldableClass { team,
+   class }` ("the {team} side fields a {class}, which no arena fields"), returned in `Arena::new`
+   for the first unfieldable unit in id order, after the duplicate check and before the class-cap
+   loop; `mush-server/src/config_ext.rs` `class_caps` filters `UnitClass::parse(word)` on
+   `fieldable()` with the AE.3 sentence unchanged; `tacsim/src/config.rs` `ArenaConfig::validate`
+   refuses a non-fieldable key with the same sentence before `between` (reviewer F10).
+   `arena/mod.rs` `test_support::hauler`.
+6. **The goods table** (`crates/tacsim/content/market/goods.json`,
+   `crates/tacsim/src/definitions/goods.rs`, new; re-exported from `definitions` as `Consumable,
+   GoodClass, GoodDef, GoodsTable, MeasureDef`). A strict typed document, not a pack (lead ruling
+   R12; the `resources.json` precedent), version 1: the `measures` registry (`si.mass_kg` kg "mass",
+   `si.volume_l` L "packed volume") and the six rows in doc 18 §4.3's order — metals 1,000 kg/400 L
+   ref 200; volatiles 1,000/1,400 ref 100; structural_alloys 1,000/300 ref 400; industrial_parts
+   1,000/2,300 ref 400; propellant 1,000/1,000 `stow.propellant` consumable propellant ref 40;
+   provisions (no family, class `ship_supply`, unit `crew_day`) 4 kg/10 L `stow.provisions`
+   consumable provisions ref 10 — each note stating the role and per-unit figures and never a mix
+   (D-18-39). `GoodsTable::load` refuses version 0, the measure and goods bounds (`MAX_MEASURES` 8,
+   `MAX_GOODS` 32), duplicates, a registry without `si.mass_kg`, a family-less trade row ("a trade
+   good names its family"), a family outside `FAMILIES`, an unregistered row measure, a per-unit of
+   0 or over `MAX_PER_UNIT = u64::MAX / MAX_POOL_QUANTITY`, a unit over `MAX_UNIT_BYTES` 16, a
+   reference over `MAX_REFERENCE_MAJOR` 1,000,000,000; row errors name `goods.json: <id>`.
+   `check_stowage(entry, &LogisticsDef)`: every limit key registered, every accepted tag carried by
+   some good, every stowed good carrying every limited measure ("`<good>` is stowed in `<c>`, which
+   limits `<m>`, and declares no `<m>`"), and the locker rule (one tag, one good, two or more limits
+   agree on the unit count: 480/4 = 1,200/10). `catalog_entries()` derives one lot-represented,
+   stackable, legal `mush_market::CatalogEntry` per row through its own wire (ruleset `tacsim`, pack
+   `GOODS_PACK = "tacsim.goods"`, the table's version, the label, `baseline` = reference × 100 at
+   `CREDIT_SCALE` — display only, never charged, as `GoodDef.reference_major`'s doc says; tags =
+   class word plus family). `goods_digest` under `GOODS_DIGEST_DOMAIN = "tacsim.goods.v1"`,
+   `goods_table()`; digest `bc28e435bcef2717a4122c4a2b2c9d648a6292d1445bcdfa8f9bbb9271a6d4d9` pinned
+   in `tests/content.rs` `GOODS_DIGEST`.
+7. **The capacity function** (`crates/tacsim/src/port/mod.rs`, `crates/tacsim/src/port/capacity.rs`,
+   new; `pub mod port` in `lib.rs`). Pure, checked `u64` throughout: `Compartment { id, accepts,
+   limits }` with `from_stowage`; `Load`; `CapacityError::{UnknownGood, NotAccepted, MissingMeasure,
+   Overflow}` (thiserror sentences); `CapacityRefusal { compartment, bound, fits, room }`;
+   `Admission::{Admitted, Refused, Error}` (one enum, so no caller can `?` past a refusal); `load`,
+   `admits` (qty 0 admitted with the current load; `bound` = every limited measure the after-load
+   exceeds, in map order, mass before volume; `room` = limit − load saturating), `max_more` (the
+   minimum over limits of `room / per_unit`, naming every measure that attains it; a compartment
+   limiting nothing answers `u64::MAX`), `format_m3` (tenths, truncated) and `format_tonnes` (whole,
+   truncated). No refusal sentence is rendered here (IC8's).
+8. **The sky seam.** `pack.rs`: `BodyDef.epoch_ic: Option<i64>`, `MAX_EPOCH_IC = 1_000_000_000_000`,
+   the wire field `default` + `skip_serializing_if`, `Serialize` writing it only when present,
+   `from_authored(orbit_au, period_days, phase_deg, epoch_ic)` refusing "a body's epoch_ic is out of
+   range". `ephemeris.rs`: `Body.epoch_ic`, carried by `From<&BodyDef>`; `phase_mdeg_at` measures
+   elapsed time from `body.epoch_ic.unwrap_or(self.epoch)`; the module and method docs reworded to
+   T17's constant sky as amended. `crates/tacsim/src/sky.rs` (new; `pub mod sky`, root re-exports
+   `PosKm, Sky, SkyError, epoch_date`): `SKY_DIGEST_DOMAIN = "tacsim.sky.v1"`, `PosKm`,
+   `Sky::Circular(Ephemeris)` with `from_pack`, `model`, `config_epoch`, `epoch_of` (a body's
+   `epoch_ic`, else the config epoch), `position_km` (z = 0; no production caller, D-18-43),
+   `distance_km(a, ta, b, tb)` = the same `separation_km` call `distance_km_at` makes (no second
+   rounding path), `revision() -> Result<DefinitionDigest, SkyError>` (lead ruling R9) over model,
+   epoch, rate and every body's four numbers; `epoch_date(ic) -> "YYYY-MM-DD"` on
+   `mush_core::CivilDate` (lead ruling R3). `store.rs`: `materialize_route` takes `&Sky` and pins
+   `sky.distance_km(&a, e, &b, e)` with `e = epoch_of(a)` falling back to the config epoch (every
+   fixture bit-identical to the old `pinned_km`; a lane body at its own epoch, the instant printed
+   beside the figure, under any rate); `route_in_world` and `reindex_routes` build `Sky::from_pack`;
+   the content-latch half of `route_in_world` is now the private `latched_route` (one candidate
+   rule: applied, placed, materializes) and the new `pub fn route_source(&World, &RouteDef) ->
+   Option<(&RulesPack, &RouteEntry)>` answers the legacy routes-index entry holding exactly `def`
+   (the version `resolve` picks, then any other), else the latch candidate only when what it
+   materializes equals `def`, else `None` — so `@corridor/show` can never annotate one pack's legs
+   with another's sky (correctness F1, fixed and tested with a forged route and with corridor@1
+   beside the lane).
+9. **The Horizons script** (`crates/tacsim/content/sky/fetch_horizons.py`, new): Python stdlib only,
+   prints one JSON object, writes nothing, no test runs it. It fetches daily heliocentric
+   ecliptic-J2000 vectors for Ceres (`DES=2000001;`) and Mars (`499`) over 2350-01-01..2352-12-31,
+   takes the dates whose true longitudes are within 11°, picks the Ceres–Mars chord minimum under
+   the circular model's own formula (ties to the earlier date; lead ruling R4), fetches Pallas
+   (`DES=2000002;`) and the osculating periods at that date, places Kirkwood on the straight
+   Ceres–Mars segment at exactly 2.06 AU by bisection (placeholder period 1,080 d, Q-18-36),
+   computes `epoch_ic` on the game calendar, derives both legs exactly as the Rust does (uau/mdeg
+   rounding, `separation_km`, `ceil(km/205)`), prints the laden hours at rate 24 for 142,184 kg and
+   180,680 kg and the crew-days, plus the owner's two alternatives (`next_season`,
+   `kms_matching_d18_30`), and falls back offline to Kepler propagation from full osculating element
+   sets at JD 2579876.5. **Its result** (source `horizons`; the offline run picks the same date and
+   fields): 2351-05-13, `epoch_ic` 74,152,540,800, Δλ 5.413°, qualifying season
+   2351-04-29..2351-06-22; Ceres r 2.866568 AU λ 281.654° P 1681.861 d; Mars 1.445443 / 276.24 /
+   687.034; Pallas 2.482328 / 190.512 / 1686.144; Kirkwood 2.06 / 279.506 / 1080 (placeholder);
+   chord 214,534,234 km (1.4341 AU); legs 121,428,001 km (0.8117 AU) → 592,332 s and 93,106,232 km
+   (0.6224 AU) → 454,177 s. At world rate 24: 142,184 kg → 1,057,637 + 810,955 s, 21.63 h, 23
+   crew-days; 180,680 kg → 1,183,617 + 907,552 s, 24.2 h, 25 crew-days.
+10. **The lane pack** (`crates/tacsim/content/lane/ceres_phobos.json`, new):
+    `tacsim.lane.ceres_phobos` v1 `campaign_seed`, `requires: []`, ten entries and no `port` (IC3
+    adds those in place): `sol` (the fixture's region def verbatim), bodies `ceres`, `mars`,
+    `pallas`, `kirkwood` at the figures above with one `epoch_ic`, locations `ceres_freeport`
+    ("Ceres Freeport", port, ceres), `kirkwood_depot` ("Kirkwood Depot", depot, kirkwood),
+    `stickney_yards` ("Stickney Yards", port, mars), routes `ceres_stickney` (legs → kirkwood_depot
+    592,332 s, → stickney_yards 454,177 s) and `stickney_ceres` (454,177 then 592,332), both
+    `coast_hauler`, `propellant 0`, no hazard, interdiction or controller. Digest
+    `d8074b883e92746e054e45070e62477d661a0535773b77b5ef2b245bdacea678`, pinned in `tests/lane.rs`
+    `LANE_DIGEST`. Wired in `definitions/content.rs` as `LANE_PACK` (its doc carries the in-place
+    and wipe rule), `LANE_JSON`, `LANE_SOURCES`, `LANE_ROUTE_OUT`/`LANE_ROUTE_BACK`, `lane_packs()`,
+    `game_seed_sources()` (named `<built-in …>`).
+11. **The game-packs list and the one switch** (lead ruling R2). `lib.rs`: `verify_sources_with(cfg,
+    game)` — the game's sources read first so a colliding operator file is the offender the existing
+    message names, `MAX_CONFIGURED_PACKS` counting the operator's only; `verify_sources(cfg)` =
+    `verify_sources_with(cfg, &[])`; `TacsimRuleset::with_game_content(cfg, bool)` (`with_config` =
+    false). `composition/mod.rs`: `tacsim_module_with(cfg, game_content)`; `boot_pack_list` appends
+    `lane_packs()` after `station_packs()` (the game's seven boot packs; docs updated);
+    `atlas_module` shelves the lane after the stations on the degrade-and-log rule.
+    `mush-server/src/boot.rs`: `modules::tacsim_module_with(tacsim, tacsim_enabled)`, so
+    `TacsimStore.loaded` and the latch's boot list move together. `mush-server/src/config_ext.rs`:
+    the host preflight calls `verify_sources_with(&typed, &game)` with `game_seed_sources()` when
+    `typed.enabled` (reviewer F3), so `--check-config`, the host check and the module cannot
+    disagree.
+12. **`@corridor/show` on the constant sky** (`commands.rs`): the chord line is now `  direct chord
+    at the epoch: {km} km ({au} AU) between {a} and {b}; constant sky at epoch {date} (T17).`
+    (`au_text`: AU to three decimals, half up in integer arithmetic; the date =
+    `epoch_date(sky.epoch_of(a))` from the route's own pack via `route_source`, else the config
+    epoch) and a leg between two bodies reads `  leg {n}: -> #{obj} ({secs}s unladen); {from} to
+    {to}, {au} AU at the epoch.` with the distance from `Sky::distance_km` at the origin body's
+    epoch; any other leg, the header and the refusal are unchanged; "frozen" appears nowhere. On the
+    booted game world: `Corridor ceres_stickney: #202 -> #204, 2 legs, drive class coast_hauler,
+    propellant 0. Held by unclaimed.` / `  direct chord at the epoch: 214534234 km (1.434 AU)
+    between ceres and mars; constant sky at epoch 2351-05-13 (T17).` / `  leg 1: -> #203 (592332s
+    unladen); ceres to kirkwood, 0.812 AU at the epoch.` / `  leg 2: -> #204 (454177s unladen);
+    kirkwood to mars, 0.622 AU at the epoch.`
+13. **Wording, comments only, no value moved**: `mush-sim/src/route.rs` (`RouteDef` "a constant sky
+    has no departure windows; the planner computes per departure", `RouteDefWire.distance_km` "the
+    direct chord between the endpoint bodies at the epoch, never the flown path … read by nothing in
+    the slice", `pinned`, `DistanceLaw` and `route_duration_at` docs), `tacsim/src/config.rs`
+    `EphemerisConfig` (the constant sky; `epoch` in IC seconds on the game calendar for a body
+    without its own `epoch_ic`; rate 0 holds every body at its authored phase),
+    `mush-config/src/config.rs` (the table cell and `EphemerisCfg`), `mushd.toml.example` and
+    `deploy/instance/mushd.toml.tmpl` (`[tacsim.time.ephemeris]` comments),
+    `tacsim/tests/ephemeris.rs`'s module doc.
+14. **Tests** (`crates/tacsim/tests/lane.rs` and `capacity.rs` new; `content.rs`,
+    `match_lifecycle.rs`, `stations.rs`, `mush-server/tests/boot_parity.rs`, and unit tests in
+    `sky.rs`, `arena/state.rs`, `config.rs`, `config_ext.rs`): `lane.rs` —
+    `ic2_the_lane_pack_is_pinned` (re-sign mode, the ten entries, one `epoch_ic` = 2351-05-13, the
+    places, the routes), `lane_legs_derive_at_epoch` (both routes walked as body pairs at the
+    origin's epoch with `kms` from the fielded drive table, within 100 s; a bodiless
+    `kirkwood_depot` refused by name), `sky_circular_agrees_with_the_law_of_cosines` (rate 1000 and
+    0, ±1 year, every pair and a mixed-instant pair within 2 km, z = 0),
+    `body_epoch_holds_its_phase_at_that_instant` (lane bodies at their own epoch and one period
+    later; corridor@1's Mars still advances from the config epoch),
+    `fixture_digests_unmoved_by_optional_sky_fields` (F6 branch B: every fixture body re-encodes
+    exactly as authored with no `epoch_ic` key, the three declared digests are the e7r1/e7r2 pins
+    and equal the computed ones, both corridor packs still rebuild to their pins; `tacsim.core@1`
+    does not rebuild at base because `formation` entries re-encode `allowed`/`required_support`,
+    unrelated to bodies), `one_drive_class_one_law`,
+    `ic2_an_operator_seed_cannot_claim_the_lane_id`, and
+    `ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky` (the production roster with
+    `tacsim_module_with(cfg, true)`: the lane latched with three rooms; the chord pin equal to the
+    sky's at the lane epoch; `route_source` is the lane and `None` for a forged route; both routes'
+    `@corridor/show` as a player matched line for line against lines built from the pack, its sky
+    and the placed rooms; GOD's `@tacsim/pack list` with the four packs and their pinned digests; a
+    second boot over the folded store creating no object and moving no latch; corridor@1 seeded
+    afterwards pins exactly `pinned_km` with its own pack as source; a rate-1000 world pins the same
+    chord). `capacity.rs` — the five validator tests and the ten capacity tests over the shipped
+    table and the Dray's compartments (volume binds on ice and fittings, mass on alloys and
+    concentrate; 86 t of ice refused on volume with fits 85; 19 + 81 on volume alone with mass
+    exactly at the rating; 101 t of alloys on mass; 20 + 81 on both; two loads that meet both limits
+    exactly then nothing more fits; no more ice by volume after 19 + 80; the tank mass-only and the
+    locker both at 120; errors are not refusals; the formatters truncate). `content.rs` —
+    `ic2_the_dray_is_pinned_and_checks`, `ic2_a_dray_note_past_the_bound_fails_the_load` (1,025
+    bytes refused), `ic2_the_dray_is_a_hauler_and_binds_class_zero`,
+    `ic2_an_interior_refuses_what_the_template_cannot_build` (six mutations plus the two
+    missing-logistics refusals), `ic2_logistics_refuses_a_rail_below_the_stowage_maxima` (180,679
+    refused, 180,680 accepted, `kms 0`, a weightless compartment), `ic2_the_goods_table_is_pinned`.
+    `match_lifecycle.rs` `ic2_sim_unit_never_offers_a_hauler`; `arena/state.rs`
+    `ic2_arena_new_refuses_a_hauler`; `config.rs` `ic2_arena_config_refuses_a_hauler_cap`;
+    `config_ext.rs` `ic2_a_hauler_cap_is_refused` and
+    `ic2_an_operator_seed_claiming_the_lane_refuses_at_the_host` (through `tacsim_config`, the
+    operator file named as the offender; a mutation reverting the preflight fails it);
+    `boot_parity.rs` gains `lane_resolves` on the real split boot (`TacsimStore::pack(lane, 1)` and
+    `route_in_world(ceres_stickney)` at steps (b) and (c); a mutation reverting `boot.rs` to
+    `tacsim_module` fails it at :604); `sky.rs`'s three unit tests.
+
+**Found by review and fixed in the same cut:** `route_source`'s first fallback returned the first
+applied candidate without the placed/materializes check or any comparison against the def it was
+handed, so `@corridor/show` could print one pack's legs under another pack's bodies and date; the
+host preflight's switch and the production `tacsim_module_with` switch were each proven by no test
+(reverting either left the suite green); the `@corridor/show` leg lines were matched as two
+fragments; and the "frozen"/"Unix seconds" rewording had missed the deploy template, `EphemerisCfg`,
+three `route.rs` sites and the ephemeris test's module doc.
+### Deferred, and why
+
+**Lead rulings taken by the planner** (recorded here so the owner sees them):
+
+- **R1 — Lane pack shape across cuts.** v1 ships without `port` entries; IC3 adds them to the same
+  v1 and re-blesses the pin, keeping version 1, because no world has applied it (pre-launch; dev1
+  has never seen it). Consequence, in `LANE_PACK`'s doc and `lane.rs`'s pin: **a persisted world —
+  the local all-in-one `mushd` included — that booted the IC2 bytes must be wiped, or have its
+  `tacsim:pack:tacsim.lane.ceres_phobos@1` row removed, before it boots IC3**, or `boot_reconcile`'s
+  digest gate refuses the boot; **never deploy IC2 without IC3**. If a persisted world must survive,
+  IC3 bumps the lane to v2 instead.
+- **R2 — The game-packs list is a composition-root switch, not `cfg.enabled`.** Keying it on
+  `[tacsim].enabled` would load the lane into every fixture world (`fixture::config()` is enabled)
+  and move e7c1's pinned pack counts; it rides the same `game_content` boolean as
+  `content_module_with`, with the host preflight (`config_ext.rs`) passing the same game sources on
+  `typed.enabled` (reviewer F3), so `--check-config`, the host check and the module cannot disagree.
+- **R3 — The calendar: the tree wins over doc 18 §4.8.** `epoch_ic` is
+  `mush_core::CivilDate::parse(date).to_ic_seconds()` (365-day years, year 0 at IC 0: 2351-05-13 →
+  74,152,540,800), what `time` shows players and what `[game].ic_epoch` parses through; Horizons is
+  queried for the same Y-M-D label (Gregorian, 00:00 TDB); `epoch_date` renders through `CivilDate`.
+  Doc 18 §4.8's "the IC clock is Unix seconds … 2350-01-01 = 11,991,628,800" paragraph needs
+  correcting at the next doc revision (the builder may not edit `docs/design/`).
+- **R4 — The date, made deterministic.** Within 2350–2352, among dates with Ceres's and Mars's true
+  longitudes within 11°, the one minimizing the Ceres–Mars chord, ties to the earlier; the offline
+  fallback uses full osculating element sets (the lead note's a/e/i-only values cannot place a
+  body).
+- **R5 — The leg seconds: an override of D-18-30 and of the IC2 row's acceptance, pending the
+  owner** (carried below).
+- **R6 — Interior room text rides `interior.rooms[]`** (optional `short_desc`/`desc`/`details`) so
+  IC4 instantiates from the template alone; doc 18's JSON stays valid; two detail keys folded per
+  the IC1 carry-forward (`builders plate`, `tie points`).
+- **R7 — `DriveLaw` lives in `definitions/logistics.rs`** (the decoder needs it now); doc 18 §4.8
+  sketches it in `port/passage.rs`, which IC9 builds against this type.
+- **R8 — Ids are `CanonicalId`** for measures, stowage tags, compartments and goods (doc 18 §4.3
+  wrote `SmolStr`).
+- **R9 — `Sky::revision` returns `Result`** (the canonical encoder is fallible; no panic, no
+  sentinel).
+- **R10 — Hauler exclusion at four doors with one sentence** (`fieldable_ids`, `Arena::new`,
+  `class_caps`, `ArenaConfig::validate`); `UnitClass::read` still knows the word.
+- **R11 — `materialize_route` asks `Sky::distance_km` at the origin body's own epoch** (reviewer F4;
+  bit-identical for fixtures); the atlas drawing stays an `Ephemeris` projection at the config epoch
+  (D-18-49).
+- **R12 — `goods.json` is a typed document, not a pack**; canonical digest under `tacsim.goods.v1`;
+  the catalog rows carry ruleset `tacsim`, pack `tacsim.goods`, lot, baseline = the origin ask in
+  minor units, **display only**; loading them is IC8's.
+- **R13–R16** — pins in `tests/content.rs` (Dray, goods) and `tests/lane.rs` (lane); the lane joins
+  the boot list (seven game packs) and the atlas shelf after the stations; a hauler declares
+  logistics, an interior requires logistics, every compartment limits `si.mass_kg`, the ceiling is
+  checked against the stowage maxima plus occupants; location labels "Ceres Freeport", "Kirkwood
+  Depot", "Stickney Yards".
+- **F6 branch B** (the fixture re-encode property): checked at base first — `tacsim.core@1` does not
+  rebuild from its typed entries (`formation` re-encodes `allowed` and `required_support`, defaults
+  unrelated to bodies), the two corridor packs do; the test asserts every fixture body re-encodes
+  exactly as authored plus the declared-digest pins, and keeps the rebuild assertion for the packs
+  that carry bodies.
+- **Test rosters (reviewer F8)**: only `stations.rs`'s production roster and `lane.rs`'s boot roster
+  switched to `tacsim_module_with(cfg, true)`; every other roster composing `content_module_with(_,
+  true)` beside plain `tacsim_module` is left as a **known, harmless divergence** (its latch applies
+  the lane's three rooms and two connections while its store does not load the pack, so
+  `route_in_world` answers `None`): tacsim `cockpit.rs`, `match_lifecycle.rs`, `reset.rs`,
+  `resolution.rs`, `deliberation.rs`, `harness.rs`, `match_/centre.rs`; mushd `sim_*`, `front_door`,
+  `observer_rule`, `arena_story`, `typeahead`; `mush-bot/tests/support/arena.rs`. No dbref,
+  object-count or room-count assertion moved in any suite the gate ran.
+- **The capacity test names 20 + 80 and 55 + 45** (`ic2_a_balanced_load_meets_both_limits_exactly`)
+  under the brief's carve-out from D-18-39: it tests that both limits are met exactly and that
+  nothing more fits, asserts nothing about optimality, and does not move with prices. The owner may
+  hold D-18-39's letter; the remedy is to derive the whole-tonne vertex from `goods.json` and the
+  hold by §4.3's integrality rule inside the test.
+- Also taken: the refusal sentences (the brief gave none; goods row errors name `goods.json: <id>`);
+  `Copy` on `DriveLaw`, `InteriorRoomKind`, `GoodClass`, `Consumable`; `payload_floor_kg` and
+  `InteriorDef::room` as public helpers; `GOODS_JSON` in `goods.rs`; the store-exit check runs
+  before the walkable check so an exit into the store gets its own sentence; `route_source` prefers
+  the legacy entry `resolve` picks, then any legacy entry holding the def, then the latch candidate;
+  `Arena::new`'s `UnfieldableClass` after the duplicate check and before the cap.
+
+**Owner-critical defaults taken, carried to the owner:**
+
+- **The lane's leg figures (R5).** The real-date sky at 2351-05-13 and 205 km/s gives legs of about
+  0.812 / 0.622 AU and `base_s` 592,332 + 454,177 s, **overriding D-18-30's binding 540,800 +
+  409,200 s ("a brimmed hull lands in 22 h") and the IC2 row's own acceptance values (0.741 / 0.561
+  AU)** under D-18-42 (every slice figure is the sky's output) and D-18-48 (true positions on a real
+  date). At rate 24 a full outbound (142,184 kg) takes about 21.63 h and 23 crew-days (was 19.63 h /
+  21), a brimmed hull (180,680 kg) about 24.2 h (was 22 h), **which breaks §4.4's two-hour slack at
+  the constant sky**. No qualifying real date from 2349 to 2362 reaches D-18-30's figures;
+  2351-05-13 is the nearest. No IC2 test, help text, comment or pack note asserts a duration
+  (D-18-50). IC9's `plan_passage_reproduces_the_slice_figures` pins re-derive from the pack (about
+  1,057,637 + 810,955 s, 23 crew-days at 142,184 kg today). **The owner's ready alternatives, each a
+  one-file swap printed by the script and carried by no pack:** (i) `next_season` — 2354-06-09,
+  `epoch_ic` 74,249,481,600, Δλ −0.443°, season 2354-04-10..2354-08-05: Ceres 2.556792 AU / 154.049°
+  / 1681.67 d, Mars 1.666119 / 154.492 / 687.007, Pallas 2.694352 / 22.581 / 1684.092, Kirkwood 2.06
+  / 154.249 / 1080; chord 133,264,169 km (0.8908 AU); legs 74,328,688 km (0.4969 AU) → 362,579 s and
+  58,935,482 km (0.394 AU) → 287,491 s; 142,184 kg → 647,402 + 513,329 s, 13.43 h, 14 crew-days;
+  180,680 kg → 724,517 + 574,474 s, 15.03 h, 16 crew-days (the offline fallback gives 2354-06-08,
+  approximate); (ii) `kms_matching_d18_30` — the same 2351-05-13 fields at a coast rate of 226 km/s:
+  `base_s` 537,293 / 411,975; 142,184 kg → 959,362 + 735,601 s, 19.62 h, 21 crew-days; 180,680 kg →
+  1,073,637 + 823,222 s, 21.95 h, 23 crew-days — D-18-30's seconds and crew-days within 1 %, at the
+  cost of D-18-29's 205 km/s. **Owner's call.**
+- **Kirkwood's orbit (Q-18-36).** Authored at 2.06 AU on the Ceres–Mars chord at the epoch (λ
+  279.506°) with a placeholder `period_days` 1,080; inert at rate 0; nothing reads its orbit
+  (D-18-48 provisional). The owner rules on it for P-A (the recommended default there puts Kirkwood
+  on Ceres's own orbit a few degrees astern, which re-authors the legs in lane v2).
+- **Doc 18 §4.8's calendar paragraph** reads IC seconds as Unix/Gregorian; the tree's `CivilDate`
+  wins (R3); the paragraph is corrected at the next doc revision.
+- **18a interior text that reads as author meta-text, shipped verbatim and flagged for the owner and
+  IC12:** Cargo Hold `load cells` — "(the cargo gauge of interior.gauges, a look_rendered line, not
+  this text)", "nothing here carries a load", and "LIMIT 100 t / 120 m³"; Central Passage `manifest
+  slate` — "the slate reads what +ship/hold reads"; Bridge `sailing plan` — "A paper copy of
+  +ship/orders"; Bridge `displays` — "the ETA in IC and real time"; Engineering `tank gauges` —
+  "against 80 t"; the Hold Stowage desc's "a hundred and twenty cubic metres … beside the hundred
+  tonnes". These are the hull's authored limits, never loads (D-18-39 holds); amend 18a and the pack
+  together.
+
+**Stopped and reported, not improvised:** none; every brief item is built.
+
+**Deferred to named cuts:**
+
+- **IC3**: the `port` entries in the same v1 and the pin re-blessed (R1); address lane symbols by
+  (`LANE_PACK`, 1), never through a bare `TacsimStore::resolve` — the lane shares `sol`, `ceres`,
+  `mars` and `ceres_freeport` with the corridor fixtures, and `resolve` picks across packs by
+  version number; a test that each `reference_major` equals the authored origin ask, or retire the
+  field once listings exist (carried from reviewer F11; IC3/IC8).
+- **IC4 / IC9 (reviewer F9)**: once loaded and latched the lane is resolvable through
+  `TacsimRouteCatalog::resolve` (`composition/sim_routes.rs`), so mush-sim's `@journey/plan|depart`
+  would fly it at the authored `base_s` under mush-sim's own duration rule — unreachable in IC2 (no
+  hull until IC4); **IC9 must make `plan_passage → depart(leg_s)` the only path for a lane route, or
+  refuse lane routes on the manual `@journey` arm.** IC9 also bounds or checks the laden
+  denominator: `payload_ceiling_kg` and the stowage limits are bounded from below only, so an
+  operator hull may declare a ceiling near `u64::MAX` (checked `u128` or refuse).
+- **IC8**: the refusal sentences from `CapacityRefusal`'s fields; the LP test deriving both
+  vertices; loading `catalog_entries()` through `api::load_pack`.
+- **IC12**: the meta-text above; `help travel`'s "its length is the pinned distance" reworded once
+  the drawing follows the sky.
+- **P-A**: the atlas drawing (`content.rs` `position_gm`) still projects at the config epoch, so
+  under a non-zero rate a lane body is drawn at a phase unrelated to the chord and date
+  `@corridor/show` prints (harmless at rate 0); `Sky::Kepler`/`Tabulated`; lane v2 re-authoring
+  every `base_s` and retiring `lane_legs_derive_at_epoch`.
+
+**Known edges left as they are:**
+
+- **Pre-existing, found by this cut, outside its scope and untested:** content-latch rows written by
+  `@tacsim/seed <pack> commit` (for `tacsim.core` and `tacsim.corridor`) did not survive
+  `fold_module_ops` + `reboot_into` in the testkit while the boot packs' rows did; the lane boot
+  test seeds corridor@1 after its second boot for that reason. Likely cause (correctness lens):
+  `seed::apply` persists `content` and `atlas` namespace ops under tacsim's module identity with no
+  `persist_delegation` declared. Reproduce at base with a seed → fold → reboot test and file it
+  before IC3/IC4 rely on staff-seeded packs surviving a restart.
+- Pre-existing, now reachable through the lane: `@corridor/show|rules|domain <id>@<version>` ignores
+  the version on the content-latch fallback (`corridor_of` → `route_in_world`, the newest applied
+  version), so `ceres_stickney@9` answers the v1 corridor.
+- Fixture routes under the default config print `constant sky at epoch 0000-01-01 (T17).` and gain
+  an AU suffix on a cross-body leg; e7r1/e7r2 assert only "not refused" there.
+- `mush-config` `EphemerisCfg` still says "`rate = 0` is the ruling and the default" where tacsim's
+  `EphemerisConfig` and `ephemeris.rs` now say "the default" (D-18-42 rules it for the slice); test
+  fn names `a_frozen_sky_holds_its_phases_on_any_day` and
+  `with_the_sky_frozen_a_distance_is_identical_across_any_ic_span` keep the word (renaming moves the
+  gated-test inventory).
+- Cosmetic: `ic2_the_dray_is_a_hauler_and_binds_class_zero`'s doc says "the ten other unit schemas"
+  and asserts eleven; `class_caps`' `fieldable` filter is redundant with `ArenaConfig::validate` and
+  the host test cannot tell the two doors apart; the catalog-rows test checks the class tag but not
+  the family tag or `legality`; the show output's chord line is asserted up to "between " (the body
+  pair is pinned on the `RouteDef`); `route_source`'s legacy-index branch has no test;
+  `stations.rs`'s "and the lane after them" comment asserts presence, not order.
+- The raw Horizons JSON (`horizons.json`, `horizons_offline.json`) lives in the run's scratchpad,
+  not in the tree; every figure it yields is recorded above.
+
+### Pins re-blessed
+
+- **New digest pins**, version 1, each in the pack's own `digest` field (the lane and the Dray;
+  signed through the tests' `TACSIM_WRITE_CONTENT=1` re-sign mode, never by hand) and in a test
+  constant: `tacsim.pack.dray` `dc5cae81692853bca737049009e4fb9d768ea045b22789f6e2bf5c2786078583`
+  (`crates/tacsim/tests/content.rs` `DRAY_DIGEST`); the goods table's canonical digest under
+  `tacsim.goods.v1` `bc28e435bcef2717a4122c4a2b2c9d648a6292d1445bcdfa8f9bbb9271a6d4d9` (`content.rs`
+  `GOODS_DIGEST`; a typed document, so no manifest field); `tacsim.lane.ceres_phobos`
+  `d8074b883e92746e054e45070e62477d661a0535773b77b5ef2b245bdacea678` (`crates/tacsim/tests/lane.rs`
+  `LANE_DIGEST`). Reason: new content; the Dray pin decodes through `UnitSpec::check` so an
+  over-long note or a bad interior fails the cut, never a boot; the lane pin is re-blessed in place
+  at IC3 (R1).
+- **Moved assertions, each the behaviour the brief changes and nothing else** (old → new):
+  `tests/content.rs` `q8_the_fielded_sources_…` `stock.len() + 19` → `+ 20` (the Dray, the twentieth
+  extension file); `m3_every_shipped_chassis_binds_its_core` 11 rows → 12 with `(content::DRAY,
+  None)` (no core); `e1_the_ranges_the_shipped_machines_fight_at` `catalog.specs.len()` 11 → 12,
+  plus a new assertion that the fieldable subset is 11 and the arena loop runs over
+  `class_of().fieldable()` specs (the reach table unchanged); `tests/definitions.rs`
+  `FIELDED_EXTRAS` `[&str; 10]` → `[&str; 11]` with `content::DRAY`; `tests/extensions.rs` ae1/ae2
+  `fielded.specs.len()` 11 → 12, ae3 11 → 12 with a `Hauler` bucket `["dray"]` and "only the drone
+  writes a class word" → "only the drone and the Dray"; the four `Body { … }` literals gain
+  `epoch_ic: None` (`src/ephemeris.rs` ×3, `tests/ephemeris.rs:58`); `tests/stations.rs`
+  `production_roster_with_starter` `tacsim_module(cfg)` → `tacsim_module_with(cfg, true)`,
+  `ic1_the_boot_list_and_the_shelf_…` `want.push(LANE_PACK)`, `full.len()` 9 → 10, the `LANE_PACK =>
+  requires.is_empty()` arm, the lane absent from `starter_only`, the shelf containing `
+  tacsim.lane.ceres_phobos@1 (`; `ic1_a_kept_world_takes_the_stations_at_its_next_boot`
+  `after.len()` 9 → 10 plus the lane latch at v1; `mush-server/tests/boot_parity.rs`
+  `ic1_a_kept_world_…_switched_on` `after.len()` 9 → 10 plus the lane latch at v1 and the
+  `lane_resolves` check on the real boot; the host preflight (`config_ext.rs`) now passing the game
+  sources on `typed.enabled`. No assertion was weakened or deleted.
+- **Unmoved, as the brief requires**: `tests/content.rs` `DIGESTS` and `PACK_FILES` (`SOURCES`
+  untouched); every extension pin in `extensions.rs`; `LINE_TANK_DIGEST` and every shipped
+  `DefinitionRef` (asserted equal before and after the Dray); the fixture digests `db270263…`,
+  `6ad21275…`, `f89b7310…` (asserted declared = computed, and every fixture body re-encoding
+  byte-identically with no `epoch_ic` key); `mush-atlas/tests/starter.rs` and `tests/stations.rs`
+  `PINNED`; the pinned `SIM UNIT` list at `match_lifecycle.rs:1563-1569`; the panic budgets (the new
+  non-test code has no unwrap/expect/index/panic; `Sky::revision` is a `Result`); the
+  restriction-lints census (only `#[allow(clippy::cast_*)]` on f64 conversions, as `ephemeris.rs`
+  already does); `state-slot-owners.toml`; `module-ns-owners.toml`; `legacy-handlers.toml` and
+  `PINNED_BASELINE` 97 (no new verb; `@corridor` exists); the composition-edge pin (no `Cargo.toml`
+  change); the CI gated-test inventory (no ignored or network test; the two `frozen` test fn names
+  kept for that reason); `help-commands-allowlist.toml`. No gate file is in the diff;
+  `mush-contract-tests` ran green twice.
+### How it was verified
+
+On Windows at the working tree over 07232d09 with the cut uncommitted, the gate runner's round 1
+(logs under the run's `scratchpad/cuts/IC2/gate1/`, 22 steps), every command first time, no reruns:
+
+- `cargo fmt --all -- --check` (twice): exit 0, no output.
+- `cargo clippy --workspace --all-targets -- -D warnings` (twice): ``Finished `dev` profile
+  [unoptimized + debuginfo] target(s) in 25.33s`` / `0.62s`, exit 0 (the builder's first run failed
+  on one `collapsible_if` in a test; fixed before the gate).
+- `cargo test -p tacsim --test lane`: `test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0
+  filtered out; finished in 1.57s`.
+- `cargo test -p tacsim --test capacity`: `test result: ok. 15 passed; 0 failed; 0 ignored; 0
+  measured; 0 filtered out; finished in 0.12s`.
+- `cargo test -p tacsim --test content`: `test result: ok. 29 passed; 0 failed; 0 ignored; 0
+  measured; 0 filtered out; finished in 0.82s` (`DIGESTS` unmoved).
+- `cargo test -p tacsim --test definitions`: `ok. 25 passed`; `--test extensions`: `ok. 88 passed`;
+  `--test ephemeris`: `ok. 8 passed`; `--test stations`: `ok. 13 passed; … finished in 1.56s`;
+  `--test match_lifecycle`: `ok. 136 passed; … finished in 25.69s`.
+- `cargo test -p tacsim --test s9_corridor --test e7c1 --test e7r1 --test e7r2`: `ok. 38 passed` /
+  `ok. 21 passed` / `ok. 5 passed` / `ok. 6 passed`, 0 failed.
+- `cargo test -p tacsim --lib`: `test result: ok. 854 passed; 0 failed; 0 ignored; 0 measured; 0
+  filtered out; finished in 3.61s`.
+- `cargo test -p tacsim --no-fail-fast`: 37 binaries, every one ok, 0 failed (lib 854, cockpit 180,
+  match_lifecycle 136, minds 89, extensions 88, deliberation 43, resolution 42, e7c1 38, content 29,
+  definitions 25, harness 24 with 9 ignored, e7r1 21, reset 17, capacity 15, stations 13, lane 8,
+  ephemeris 8, …).
+- `cargo test -p mush-server --lib config_ext`: `test result: ok. 13 passed; 0 failed; 0 ignored; 0
+  measured; 280 filtered out; finished in 0.05s`.
+- `cargo test -p mush-server --test boot_parity`: `test result: ok. 18 passed; 0 failed; 0 ignored;
+  0 measured; 0 filtered out; finished in 2.04s`.
+- `cargo test -p mush-contract-tests` (twice): 29 binaries, all ok, 0 failed (`restriction_lints`
+  `ok. 11 passed`, `panic_budget` `ok. 7 passed`, `ci_gated_test_inventory` `ok. 6 passed; 8
+  ignored`, `state_slot_owners` `ok. 4 passed`, `module_ns_owners` `ok. 3 passed`,
+  `legacy_handler_allowlist` `ok. 4 passed`).
+- `cargo test -p mushd --test sim_units --test sim_lobby --test observer_rule --test front_door`:
+  `front_door` `ok. 3 passed` (2.07s), `observer_rule` `ok. 32 passed` (36.95s), `sim_lobby` `ok. 13
+  passed` (10.75s), `sim_units` `ok. 8 passed` (9.46s) — the load-sensitive paint-timing suites held
+  first time.
+- `cargo test --workspace --exclude mush-bot --no-fail-fast`: exit 0; 382 `test result:` lines,
+  every one `ok.`; aggregate 7187 passed, 0 failed, 92 ignored; about 60 minutes, about 45 of them
+  compiling and linking test binaries under heavy memory pressure (about 130 MB of 64 GB free, 22
+  link.exe and 25 rustc live). The one panic message in the log is
+  `mush-server/src/process_fault.rs:197`'s armed world-turn fault in `ws01_s8_server_worker`, whose
+  binary reported ok.
+- `cargo test -p mush-bot` (on its own line): 22 binaries, all ok, 0 failed (lib 469, `arena_lane`
+  87, `e2e` 49, `arena_contract` 16, `arena_e2e` 9 in 192.76s, `playtesting` 9 in 127.01s; 5 ignored
+  as before).
+- Signing: `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test content ic2_` printed the Dray and
+  goods digests; `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test lane
+  ic2_the_lane_pack_is_pinned` → `ok. 1 passed`; then the pin runs green.
+- The Horizons script: `python -I crates/tacsim/content/sky/fetch_horizons.py` → exit 0, source
+  `horizons` (the figures in "What landed" 9); `--offline` → the same chosen date and fields, next
+  season 2354-06-08 marked approximate.
+- `git status` after the sweep matched the starting set exactly (26 modified, 10 untracked): no test
+  rewrote content or digests.
+
+Flakes: none; no LNK1104, no hung binary, no rerun.
+
+Lenses: a correctness review (one should-fix, `route_source`'s mismatched candidate rule; six notes,
+three of them pre-existing gaps the lane now reaches), a conformance review (the Dray compared to
+doc 18 §4.2 byte for byte and every room's text to 18a §3.1 by script after markdown stripping, the
+lane's fields to the saved Horizons output, a 35-item checklist; one should-fix, the sibling
+"frozen"/"Unix seconds" sites; seven notes), and a tests review (three should-fixes on untested
+production wiring and fragment matching; seven notes). The fixer took all five, none rebutted, and
+mutation-checked the two wiring tests (`boot.rs` reverted to `tacsim_module` → `boot_parity` FAILED
+at :604; the preflight reverted to `verify_sources` → the new `config_ext` test FAILED; both files
+restored byte for byte), then re-ran fmt, clippy, lane/ephemeris/stations, config_ext, boot_parity,
+the tacsim and contract sweeps, mush-sim's lib and the four mushd suites before the gate. The judge
+re-read the whole diff and every new file against the brief, doc 18 §5's IC2 row, §4.2–4.4, §4.8, §3
+beats D/N/Q/R, D-18-13/28/29/30/39/40/42/43/45/48/50 and Q-18-36, recomputed `epoch_ic`, the chord's
+AU, both legs' `base_s` and the `au_text` rounding by hand, and verified each disposition in the
+code rather than from the reports.
+
+### Surface for the next cuts
+
+**tacsim definitions (`tacsim::definitions`)**
+
+- `pub mod logistics` (re-exported from `definitions`: `LogisticsDef, StowageDef, DriveDef,
+  DriveLaw, InteriorDef, InteriorRoomDef, InteriorRoomKind, InteriorExitDef, BerthsSlotDef`).
+  `LogisticsDef { pub dry_mass_t: u32, pub stowage: BTreeMap<CanonicalId, StowageDef>, pub berths:
+  u32, pub occupant_allowance_kg: u32, pub payload_ceiling_kg: u64, pub drive: DriveDef }` with `pub
+  fn payload_floor_kg(&self) -> Option<u64>` and `pub fn check(&self, entry: &str) -> Result<(),
+  DefinitionError>`; `StowageDef { pub accepts: BTreeSet<CanonicalId>, pub limits:
+  BTreeMap<CanonicalId, u64> }`; `DriveDef { pub class: CanonicalId, pub law: DriveLaw }`;
+  `#[derive(Copy)] pub enum DriveLaw { Coast { kms: u32, burn_permille: u32 } }` (externally tagged
+  `{"coast": {...}}`; `Display` = `coast {kms 205, burn_permille 105}`) — IC9's `port/passage.rs`
+  builds `HullDrive`/`passage_burn` against this type; `InteriorDef { pub space, pub store, pub
+  berths_slot: BerthsSlotDef, pub rooms: Vec<InteriorRoomDef>, pub exits: Vec<InteriorExitDef>, pub
+  gauges: BTreeMap<CanonicalId, Vec<CanonicalId>> }` with `pub fn room(&self, id) ->
+  Option<&InteriorRoomDef>` and `pub fn check(&self, entry, logistics: &LogisticsDef)`;
+  `InteriorRoomDef { pub id, pub name: String, pub kind: InteriorRoomKind, pub short_desc: String,
+  pub desc: String, pub details: BTreeMap<String, String> }` (the last three serde-defaulted);
+  `#[derive(Copy)] InteriorRoomKind::{Walkable, Store}`; `InteriorExitDef { pub from, pub to, pub
+  names: Vec<String> }` (`names[0]` leaves `from`, `names[1]` leaves `to`); `BerthsSlotDef { pub id,
+  pub maximum_items: u32 }`. Constants at `tacsim::definitions::logistics::`: `MASS_KG =
+  "si.mass_kg"`, `VOLUME_L = "si.volume_l"`, `MAX_DRY_MASS_T`, `MAX_COMPARTMENTS`,
+  `MAX_COMPARTMENT_KEYS`, `MAX_BERTHS`, `MAX_OCCUPANT_ALLOWANCE_KG`, `MAX_COAST_KMS`,
+  `MAX_BURN_PERMILLE`, `MIN_INTERIOR_ROOMS`, `MAX_INTERIOR_ROOMS`, `MAX_INTERIOR_EXITS`,
+  `MAX_INTERIOR_SHORT_DESC_BYTES`, `MAX_INTERIOR_DESC_BYTES`, `MAX_INTERIOR_DETAILS`,
+  `MAX_DETAIL_NAME_BYTES`, `MAX_DETAIL_TEXT_BYTES`. IC4 instantiates the hull from
+  `UnitSpec.interior` alone (rooms in authored order, `space` = the airlock, `store` = the stowage
+  room with no exits, `berths_slot` = the occupancy compartment, `gauges` = compartment id → rooms
+  that render its `look_rendered` line in IC6).
+- `UnitSpec { …, pub logistics: Option<LogisticsDef>, pub interior: Option<InteriorDef>, pub note }`
+  (both after `class`, serde-defaulted, never read by `bind()`). `UnitClass::Hauler` (word `hauler`;
+  in `ALL`, now `[UnitClass; 4]`) and `pub const fn fieldable(self) -> bool` (false for `Hauler`
+  only).
+- `Catalog.drives: BTreeMap<CanonicalId, DriveLaw>` and `pub fn drive_for_class(&self, class:
+  &CanonicalId) -> Option<&DriveLaw>`; `Catalog::build_fielded(&[],
+  tacsim::NS).drive_for_class("coast_hauler") == Some(&DriveLaw::Coast { kms: 205, burn_permille:
+  105 })`. A second fielded unit flying one class under a different law refuses `Catalog::build*`
+  with "drive class `<c>` is already flown under `<law>` by `<first>`; one class, one law".
+- `pub mod goods` (re-exported from `definitions`: `Consumable, GoodClass, GoodDef, GoodsTable,
+  MeasureDef` **only**; `GOODS_JSON`, `GOODS_PACK = "tacsim.goods"`, `GOODS_DIGEST_DOMAIN =
+  "tacsim.goods.v1"`, `MAX_MEASURES`, `MAX_GOODS`, `MAX_UNIT_BYTES`, `MAX_PER_UNIT`,
+  `MAX_REFERENCE_MAJOR`, `pub fn goods_digest(bytes: &str) -> Result<DefinitionDigest,
+  DefinitionError>` and `pub fn goods_table() -> Result<GoodsTable, DefinitionError>` are at
+  `tacsim::definitions::goods::`). `GoodsTable { pub version: u32, pub measures: Vec<MeasureDef>,
+  pub goods: Vec<GoodDef> }` with `load(name, bytes)`, `good(&id) -> Option<&GoodDef>`,
+  `is_measure(&id)`, `check_stowage(entry, &LogisticsDef)`, `catalog_entries() ->
+  Result<Vec<mush_market::CatalogEntry>, DefinitionError>` (ruleset `tacsim`, code = the good id,
+  pack `tacsim.goods`, `definition_version` = the table's version, `name` = label, `baseline` =
+  reference × 100 minor (display only), legal, lot, stackable, tags = class word plus family — IC8
+  loads these through `api::load_pack`). `GoodDef { pub id, pub label, pub family:
+  Option<CanonicalId>, pub class: GoodClass, pub ledger_unit: SmolStr, pub quote_unit: SmolStr, pub
+  measures: BTreeMap<CanonicalId, u64>, pub stowage: CanonicalId, pub consumable:
+  Option<Consumable>, pub reference_major: u64, pub note }` with `per_unit(&measure) -> Option<u64>`
+  and `mass_kg_per_unit() -> Option<u64>` (the burn/payload accessor). `GoodClass::{Trade,
+  ShipSupply}` with `as_str()` (`trade`/`ship_supply`); `Consumable::{Propellant, Provisions}`. The
+  shipped rows: `metals` (1,000 kg / 400 L, `stow.bulk`, ref 200), `volatiles` (1,000 / 1,400,
+  `stow.bulk`, 100), `structural_alloys` (1,000 / 300, `stow.bulk`, 400), `industrial_parts` (1,000
+  / 2,300, `stow.bulk`, 400), `propellant` (1,000 / 1,000, `stow.propellant`, consumable propellant,
+  40), `provisions` (4 kg / 10 L per `crew_day`, `stow.provisions`, consumable provisions, no
+  family, class `ship_supply`, 10).
+- `tacsim::definitions::content`: `DRAY_JSON`, `DRAY_PACK = "tacsim.pack.dray"`, `DRAY =
+  "tacsim.unit.dray"`, `EXTENSIONS_HAULER: [(&str, &str); 1]` (the tenth table in
+  `fielded_sources`); `LANE_PACK = "tacsim.lane.ceres_phobos"`, `LANE_JSON`, `LANE_SOURCES: [(&str,
+  &str); 1]`, `LANE_ROUTE_OUT = "ceres_stickney"`, `LANE_ROUTE_BACK = "stickney_ceres"`, `pub fn
+  lane_packs() -> Result<Vec<mush_content::Pack>, String>`, `pub fn game_seed_sources() ->
+  Vec<PackSource>` (named `<built-in tacsim/content/lane/ceres_phobos.json>`). The Dray's
+  compartments are `cargo` (accepts `stow.bulk`; limits `si.mass_kg` 100,000, `si.volume_l`
+  120,000), `propellant` (`stow.propellant`; 80,000 kg), `provisions` (`stow.provisions`; 480 kg,
+  1,200 L); rooms `airlock`, `passage`, `bridge`, `crew`, `hold`, `engineering` (walkable) and
+  `stowage` (store); gauges cargo → hold/passage/bridge, propellant → engineering/passage/bridge,
+  provisions → crew/passage/bridge.
+
+**The capacity function (`tacsim::port::capacity`)** — `Compartment { pub id, pub accepts:
+BTreeSet<CanonicalId>, pub limits: BTreeMap<CanonicalId, u64> }` with
+`Compartment::from_stowage(&id, &StowageDef)`; `pub type Load = BTreeMap<CanonicalId, u64>`;
+`CapacityError::{UnknownGood { good }, NotAccepted { good, compartment }, MissingMeasure { good,
+measure }, Overflow}` (thiserror); `CapacityRefusal { pub compartment, pub bound: Vec<CanonicalId>,
+pub fits: u64, pub room: Load }`; `Admission::{Admitted(Load), Refused(CapacityRefusal),
+Error(CapacityError)}`; `pub fn load(&GoodsTable, &Compartment, contents: &BTreeMap<CanonicalId,
+u64>) -> Result<Load, CapacityError>`; `pub fn admits(.., add: (&CanonicalId, u64)) -> Admission`
+(`bound` in the limit map's order, mass before volume); `pub fn max_more(.., good) -> Result<(u64,
+Vec<CanonicalId>), CapacityError>`; `pub fn format_m3(litres: u64) -> String` (`120_400` →
+`"120.4"`, truncated); `pub fn format_tonnes(kg: u64) -> String`. IC7/IC8's `CapacityProvider` maps
+endpoint → hull → stowage → `compartment_for` → `admits`; IC8 renders the refusal sentences from
+`CapacityRefusal`'s fields; `tacsim::port` is where IC5's `port_tick.rs` and IC9's `passage.rs` go
+as separate files.
+
+**The sky (`tacsim::sky`, root re-exports `PosKm, Sky, SkyError, epoch_date`; `SKY_DIGEST_DOMAIN =
+"tacsim.sky.v1"` at `tacsim::sky::`)** — `#[derive(Copy)] PosKm { pub x: i64, pub y: i64, pub z: i64
+}`; `enum Sky { Circular(Ephemeris) }` with `from_pack(&RulesPack, &EphemerisConfig) -> Sky`,
+`model() -> &'static str` (`"circular"`), `config_epoch() -> i64`, `epoch_of(&body) -> Option<i64>`
+(`epoch_ic`, else the config epoch), `position_km(&body, t_ic) -> Option<PosKm>` (z = 0),
+`distance_km(&a, ta, &b, tb) -> Option<u64>` (the one query; IC9's `plan_passage` calls it per leg
+with `t0`/`t1`), `revision() -> Result<DefinitionDigest, SkyError>` (IC9's `PassagePlan.sky_rev`;
+IC12's readiness line); `SkyError::Encoding(String)`; `pub fn epoch_date(ic_s: i64) -> String`
+(`YYYY-MM-DD` on `mush_core::CivilDate`). `tacsim::pack::BodyDef.epoch_ic: Option<i64>`,
+`tacsim::pack::MAX_EPOCH_IC: i64 = 1_000_000_000_000`, `BodyDef::from_authored(orbit_au,
+period_days, phase_deg, epoch_ic: Option<i64>)`; `tacsim::ephemeris::Body.epoch_ic: Option<i64>`;
+`Ephemeris::phase_mdeg_at` counts from a body's own epoch. The calendar is `mush_core::CivilDate`
+(365-day years, year 0 at IC 0): the lane's `epoch_ic` 74,152,540,800 is 2351-05-13.
+
+**The store and the command** — `TacsimStore::route_source(&self, w: &World, def: &RouteDef) ->
+Option<(&RulesPack, &RouteEntry)>` (the loaded pack and symbolic route that produced exactly `def`:
+the legacy index entry `resolve` picks, then any legacy entry holding the def, then the
+content-latch candidate `route_in_world` would materialize, only when it materializes to `def`; else
+`None`); `route_in_world` unchanged in behaviour. `materialize_route` pins `RouteDef.distance_km` as
+the direct chord at the origin body's own epoch (the config epoch for a body without `epoch_ic`);
+IC9 plans over the symbolic `RouteEntry` and the sky, never from `distance_km` or `base_s`.
+`@corridor/show` lines as printed on the game world: `Corridor ceres_stickney: #<from> -> #<to>, 2
+legs, drive class coast_hauler, propellant 0. Held by unclaimed.` / `  direct chord at the epoch:
+214534234 km (1.434 AU) between ceres and mars; constant sky at epoch 2351-05-13 (T17).` / `  leg 1:
+-> #<kirkwood_depot> (592332s unladen); ceres to kirkwood, 0.812 AU at the epoch.` / `  leg 2: ->
+#<stickney_yards> (454177s unladen); kirkwood to mars, 0.622 AU at the epoch.`
+
+**Wiring** — `tacsim::verify_sources_with(cfg: &TacsimConfig, game: &[PackSource]) ->
+Result<Vec<LoadedPack>, String>` (`verify_sources(cfg)` = `verify_sources_with(cfg, &[])`; the
+game's sources are read first and not counted against `MAX_CONFIGURED_PACKS`);
+`TacsimRuleset::with_game_content(cfg, game_content: bool)` (`with_config(cfg)` = false);
+`tacsim::composition::tacsim_module_with(cfg, game_content: bool) -> Box<dyn GameModule>`
+(`tacsim_module(cfg)` = false); `boot_pack_list(starter_area, game_content)` = starter three, then
+`boot_packs()`, `station_packs()`, `lane_packs()` (the game's seven boot packs); `atlas_module`
+shelves the lane after the stations; `mush_server::boot::game_modules` passes `tacsim_enabled` to
+both `tacsim_module_with` and `content_module_with`; `mush-server` `config_ext::tacsim_config`
+verifies the game sources beside the operator's when `enabled`. The production latch holds
+`tacsim.lane.ceres_phobos@1` with three placed rooms (`ceres_freeport`, `kirkwood_depot`,
+`stickney_yards`, the corridor's domain hosts IC3 ties to the berth galleries) and two connections;
+`TacsimStore.loaded` holds the pack, so `route_in_world(ceres_stickney)` and `(stickney_ceres)`
+answer on every enabled production world and `boot_reconcile` writes
+`tacsim:pack:tacsim.lane.ceres_phobos@1`.
+
+**Lane pack entry ids (version 1, to be grown in place by IC3)**: region `sol`; bodies `ceres`,
+`mars`, `pallas`, `kirkwood` (all `epoch_ic` 74,152,540,800); locations `ceres_freeport` (port,
+ceres), `kirkwood_depot` (depot, kirkwood), `stickney_yards` (port, mars); routes `ceres_stickney`,
+`stickney_ceres` (`coast_hauler`, `propellant 0`, legs 592,332 / 454,177 s). **IC3 must address
+these by (`LANE_PACK`, 1)** — `ceres`, `mars`, `sol` and `ceres_freeport` are also ids in the
+corridor fixtures, and `TacsimStore::resolve` picks across packs by version. Digests: Dray
+`dc5cae81692853bca737049009e4fb9d768ea045b22789f6e2bf5c2786078583`, goods
+`bc28e435bcef2717a4122c4a2b2c9d648a6292d1445bcdfa8f9bbb9271a6d4d9`, lane
+`d8074b883e92746e054e45070e62477d661a0535773b77b5ef2b245bdacea678`.
+
+**Arena doors** — `tacsim::arena::state::ArenaError::UnfieldableClass { team: &'static str, class:
+&'static str }` ("the {team} side fields a {class}, which no arena fields"), returned by
+`Arena::new` before the class-cap check; `tacsim::arena::test_support::hauler(id, team, pose)`
+(crate-private); `ArenaConfig::validate` and the host's `class_caps` both refuse `hauler` with
+"[tacsim.arena.max_units_by_class] names a class that is not armour, walker or drone: hauler".
+
+**For IC4 and IC9**: once loaded and latched the lane is resolvable through
+`TacsimRouteCatalog::resolve` (`composition/sim_routes.rs`), so mush-sim's `@journey/plan|depart`
+would fly it at the authored `base_s` under mush-sim's own duration rule; unreachable until IC4
+gives a hull. **IC9 must make `plan_passage → depart(leg_s)` the only path for a lane route, or
+refuse lane routes on the manual `@journey` arm.** IC9's reproduction pins re-derive from this pack
+(about 1,057,637 + 810,955 s and 23 crew-days at 142,184 kg; a brimmed hull about 24.2 h at rate 24)
+unless the owner swaps the date or the coast rate. `payload_ceiling_kg` is bounded from below only;
+IC9's laden arithmetic must be checked.
+
+**Test fixtures later cuts copy**: `crates/tacsim/tests/lane.rs` `production_roster(cfg)` (the
+production roster with `tacsim_module_with(cfg, true)` and `content_module_with(true, true)`),
+`lane_config(ephemeris)` (`fixture::config()` plus both corridor fixtures as operator seeds),
+`expected_lines(id, placed)`, `latches(tw)`, `live_objects(tw)`, `derived_legs(pack, route, kms)`,
+`dray_copy(kms)` (the Dray re-signed as an operator pack through `support::ground::sign`);
+`crates/tacsim/tests/capacity.rs` `dray()`, `compartment(id)`, `contents(&[(good, qty)])`,
+`edited(|doc| …)` and `row(doc, id)` (the goods document with one row changed);
+`crates/tacsim/tests/content.rs` `dray_spec()` and `refusal(&spec)`;
+`crates/tacsim/tests/stations.rs` `production_roster_with_starter(cfg)` now on
+`tacsim_module_with(cfg, true)`.

@@ -582,27 +582,44 @@ pub struct LocationDef {
 }
 
 /// **S7 (doc 10 T17)** — one body of the campaign ephemeris: a circular, coplanar
-/// orbit and where on it the body stood at the campaign epoch.
+/// orbit and where on it the body stood at its epoch.
 ///
-/// Authored as `{ orbit_au, period_days, phase_deg_at_epoch }` in JSON numbers;
-/// held as integers of fixed scale (micro-AU, milli-days, milli-degrees) so the
-/// pack stays `Eq` and every derived distance is a function of integers up to the
-/// last step. The wire refuses a non-finite, non-positive or oversized orbit or
-/// period and a non-finite phase; a phase is taken modulo a turn.
+/// Authored as `{ orbit_au, period_days, phase_deg_at_epoch, epoch_ic? }` in JSON
+/// numbers; held as integers of fixed scale (micro-AU, milli-days, milli-degrees)
+/// so the pack stays `Eq` and every derived distance is a function of integers up
+/// to the last step. The wire refuses a non-finite, non-positive or oversized orbit
+/// or period, a non-finite phase and an out-of-range `epoch_ic`; a phase is taken
+/// modulo a turn.
+///
+/// **Doc 18 cut IC2 (§4.8, D-18-48)**: a lane body carries the **true
+/// heliocentric longitude and distance at `epoch_ic`** — the real date its
+/// numbers were read for — and the sky holds it there; a body without one (every
+/// fixture body) is placed at the configured campaign epoch, exactly as before.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BodyDef {
-    /// Orbit radius, micro-AU; `1..=MAX_ORBIT_UAU`.
+    /// Orbit radius (the heliocentric distance at the epoch), micro-AU;
+    /// `1..=MAX_ORBIT_UAU`.
     pub orbit_uau: u64,
     /// Orbital period, milli-days; `1..=MAX_PERIOD_MDAYS`.
     pub period_mdays: u64,
     /// Heliocentric longitude at the epoch, milli-degrees in `0..360_000`.
     pub phase_mdeg: i64,
+    /// **Doc 18 cut IC2 (§4.8, D-18-48)** — the IC instant whose calendar date
+    /// the body's true longitude and heliocentric distance were taken for (IC
+    /// seconds on the game calendar, `mush_core::CivilDate`); `None` and the
+    /// config epoch governs. `|epoch_ic| <= MAX_EPOCH_IC`. Skipped on the wire
+    /// when absent, so no fixture's re-encoding moves.
+    pub epoch_ic: Option<i64>,
 }
 
 /// The largest orbit a pack may author, micro-AU (100 000 AU).
 pub const MAX_ORBIT_UAU: u64 = 100_000_000_000;
 /// The longest period a pack may author, milli-days (a billion days).
 pub const MAX_PERIOD_MDAYS: u64 = 1_000_000_000_000;
+/// The farthest a body's `epoch_ic` may sit from IC 0, seconds (doc 18 cut IC2):
+/// about 31,700 game years either side, far past any campaign and far inside
+/// every elapsed-time product `Ephemeris::phase_mdeg_at` takes in `i128`.
+pub const MAX_EPOCH_IC: i64 = 1_000_000_000_000;
 
 /// The authored form of a [`BodyDef`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -611,6 +628,8 @@ struct BodyDefWire {
     orbit_au: f64,
     period_days: f64,
     phase_deg_at_epoch: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    epoch_ic: Option<i64>,
 }
 
 impl Serialize for BodyDef {
@@ -620,6 +639,8 @@ impl Serialize for BodyDef {
             orbit_au: self.orbit_uau as f64 / 1_000_000.0,
             period_days: self.period_mdays as f64 / 1_000.0,
             phase_deg_at_epoch: self.phase_mdeg as f64 / 1_000.0,
+            // Written only when present (`skip_serializing_if`).
+            epoch_ic: self.epoch_ic,
         };
         wire.serialize(serializer)
     }
@@ -628,8 +649,13 @@ impl Serialize for BodyDef {
 impl<'de> Deserialize<'de> for BodyDef {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<BodyDef, D::Error> {
         let wire = BodyDefWire::deserialize(deserializer)?;
-        BodyDef::from_authored(wire.orbit_au, wire.period_days, wire.phase_deg_at_epoch)
-            .map_err(serde::de::Error::custom)
+        BodyDef::from_authored(
+            wire.orbit_au,
+            wire.period_days,
+            wire.phase_deg_at_epoch,
+            wire.epoch_ic,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
@@ -639,7 +665,8 @@ impl BodyDef {
     /// # Errors
     ///
     /// A message naming the field, for a non-finite, non-positive or oversized
-    /// orbit or period, or a non-finite phase.
+    /// orbit or period, a non-finite phase, or an `epoch_ic` past
+    /// [`MAX_EPOCH_IC`] either side of zero.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -649,6 +676,7 @@ impl BodyDef {
         orbit_au: f64,
         period_days: f64,
         phase_deg: f64,
+        epoch_ic: Option<i64>,
     ) -> Result<BodyDef, String> {
         let scaled = |name: &str, value: f64, scale: f64, max: u64| -> Result<u64, String> {
             if !value.is_finite() || value <= 0.0 {
@@ -665,12 +693,16 @@ impl BodyDef {
         if !phase_deg.is_finite() {
             return Err("a body's phase_deg_at_epoch is a number".to_string());
         }
+        if epoch_ic.is_some_and(|epoch| epoch.unsigned_abs() > MAX_EPOCH_IC.unsigned_abs()) {
+            return Err("a body's epoch_ic is out of range".to_string());
+        }
         let turn = 360_000.0_f64;
         let mdeg = (phase_deg * 1_000.0).round().rem_euclid(turn);
         Ok(BodyDef {
             orbit_uau,
             period_mdays,
             phase_mdeg: mdeg as i64,
+            epoch_ic,
         })
     }
 }

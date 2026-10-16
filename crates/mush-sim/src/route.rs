@@ -228,7 +228,8 @@ impl<'de> Deserialize<'de> for LegDef {
 /// is the distance the campaign ephemeris computed for the route's body pair at the
 /// epoch and pinned, with `bodies` the pair it came from; `None` is a route the sky
 /// says nothing about (both ends on one body, or no ephemeris). The unapplied
-/// `alignment_band` of E7 cut 6 is gone: a frozen sky has no departure windows.
+/// `alignment_band` of E7 cut 6 is gone: a constant sky has no departure
+/// windows; the planner computes per departure (doc 18 §4.8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(into = "RouteDefWire")]
 pub struct RouteDef {
@@ -259,9 +260,11 @@ pub struct RouteDefWire {
     pub endpoints: (ObjId, ObjId),
     /// The ordered legs; `1..=MAX_LEGS` of them.
     pub legs: Vec<LegDefWire>,
-    /// **S7** — the ephemeris's pinned distance for the body pair, kilometres.
-    /// Skipped when the sky says nothing, so a route stored before S7 re-enters
-    /// unpinned and an unpinned route encodes no key at all.
+    /// **S7** — the direct chord between the endpoint bodies at the epoch,
+    /// kilometres, never the flown path; the passage plan's per-leg distances
+    /// are the truth; read by nothing in the slice (doc 18 §4.8). Skipped when
+    /// the sky says nothing, so a route stored before S7 re-enters unpinned and
+    /// an unpinned route encodes no key at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distance_km: Option<u64>,
     /// **S7** — the body pair the pinned distance came from.
@@ -344,7 +347,7 @@ impl RouteDef {
 
     /// **S7** — pin the distance the ephemeris computed for this route's body pair.
     ///
-    /// The pin is a fact about the frozen sky, not a term of the definition's
+    /// The pin is a fact about the constant sky, not a term of the definition's
     /// identity: a pack's digest covers the authored legs, and the pin is derived
     /// from the pack's bodies at load, the same every load (T17).
     #[must_use]
@@ -556,8 +559,8 @@ impl RouteCatalogState {
 /// A torch drive accelerates the whole way, so its time grows with the square root
 /// of the distance; a coasting transfer's grows with the distance. The law is what
 /// [`route_duration_at`] applies when the sky is asked at a distance other than the
-/// one the route's legs were authored for; with the sky frozen (`rate = 0`) that
-/// never happens and the authored times stand.
+/// one the route's legs were authored for; under the constant sky (`rate = 0`)
+/// that never happens and the authored times stand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DistanceLaw {
@@ -839,8 +842,8 @@ pub fn route_duration(
 /// that time under the drive's [`DistanceLaw`] for another distance of the same
 /// pair — a torch route's time scales with the square root of the ratio, a
 /// coasting one's with the ratio. An unpinned route, a pin of zero and an equal
-/// distance all answer exactly what [`route_duration`] does, so with the sky frozen
-/// (`rate = 0`) the two never disagree. Pure and integer for the same reason.
+/// distance all answer exactly what [`route_duration`] does, so under the constant
+/// sky (`rate = 0`) the two never disagree. Pure and integer for the same reason.
 ///
 /// # Errors
 ///

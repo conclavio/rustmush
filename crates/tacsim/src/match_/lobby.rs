@@ -1597,6 +1597,12 @@ pub(crate) fn type_word(w: &World, id: &str) -> String {
 /// instantiate" rather than "something a pack mentioned". A definition that is
 /// loaded but ambiguous across owners or versions is not offered, because
 /// `refit_unit` could not act on the word either.
+///
+/// **Doc 18 cut IC2** (doc 18 §4.2 schema addition (1), D-18-29): nor is a unit
+/// whose class no arena fields — the Dray, class `hauler`, is in the catalog for
+/// the port code and never in a lobby, so `SIM UNIT` never lists it and
+/// `SIM UNIT dray` answers the unknown-type line ([`resolve_unit_type`] reads
+/// this list).
 fn fieldable_ids(w: &World, reg: &mush_core::cmd::Registry) -> Vec<mush_core::CanonicalId> {
     let Some(definitions) = reg.definitions() else {
         return Vec::new();
@@ -1613,6 +1619,12 @@ fn fieldable_ids(w: &World, reg: &mush_core::cmd::Registry) -> Vec<mush_core::Ca
                 .units
                 .get_current(id.as_str(), definitions)
                 .is_some()
+        })
+        .filter(|id| {
+            catalog
+                .specs
+                .get(*id)
+                .is_some_and(|spec| spec.class_of().fieldable())
         })
         .cloned()
         .collect()

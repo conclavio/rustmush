@@ -1,4 +1,4 @@
-//! **S7 (doc 10 T17) — the frozen sky, under the E lens.**
+//! **S7 (doc 10 T17) — the constant sky, under the E lens.**
 //!
 //! Can any path make a distance change while `rate = 0`? Can two routes disagree
 //! about one pair? The sky here is the corridor fixture's — Earth, Mars and Ceres
@@ -59,6 +59,7 @@ fn the_corridor_pack_carries_its_sky() {
             orbit_uau: 1_524_000,
             period_mdays: 686_980,
             phase_mdeg: 130_000,
+            epoch_ic: None,
         })
     );
 }

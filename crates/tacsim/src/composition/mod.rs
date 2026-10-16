@@ -653,7 +653,19 @@ pub fn sheet_modules(
 /// composition.
 #[must_use]
 pub fn tacsim_module(cfg: crate::TacsimConfig) -> Box<dyn GameModule> {
-    Box::new(crate::TacsimRuleset::with_config(cfg))
+    Box::new(crate::TacsimRuleset::with_game_content(cfg, false))
+}
+
+/// [`tacsim_module`] with the game's own seed packs (doc 18 cut IC2; lead ruling
+/// R2): `game_content` true loads the lane
+/// ([`crate::definitions::content::game_seed_sources`]) into the store ahead of
+/// the operator's packs. The production composition passes the same boolean it
+/// hands [`content_module_with`] (`[tacsim].enabled`), so `TacsimStore`'s loaded
+/// packs and the content latch's boot list are switched together and the lane's
+/// routes materialize over the places the latch applied.
+#[must_use]
+pub fn tacsim_module_with(cfg: crate::TacsimConfig, game_content: bool) -> Box<dyn GameModule> {
+    Box::new(crate::TacsimRuleset::with_game_content(cfg, game_content))
 }
 
 /// **The game's unit catalog** (16b cut C.2), built from the content compiled
@@ -711,6 +723,13 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         Ok(stations) => shelf.extend(stations),
         Err(error) => tracing::error!(%error, "atlas: the station packs did not load"),
     }
+    // Doc 18 cut IC2: the lane after the stations, on the same degrade-and-log
+    // rule (pinned in `crates/tacsim/tests/lane.rs`) — a tacsim seed pack on the
+    // shelf, as the arena is.
+    match crate::definitions::content::lane_packs() {
+        Ok(lane) => shelf.extend(lane),
+        Err(error) => tracing::error!(%error, "atlas: the lane pack did not load"),
+    }
     Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
 }
 
@@ -739,13 +758,16 @@ pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String>
 }
 
 /// The production boot list, in apply order (doc 18 §4.7): the starter area's three
-/// when `starter_area`, then — when `game_content` — the proving ground's two and
-/// the four station packs.
+/// when `starter_area`, then — when `game_content` — the proving ground's two, the
+/// four station packs and (doc 18 cut IC2) the lane: the game's **seven** boot
+/// packs.
 ///
 /// The stations are game content: they ride `game_content` (`[tacsim].enabled`),
-/// whatever `[game].starter_area` says, and come last because nothing earlier names
-/// them and the IC door's Limbo end needs no pack. A world latched on the old list
-/// (dev1: the starter's three and the proving ground's two) takes the four at its
+/// whatever `[game].starter_area` says, and come after the proving ground because
+/// nothing earlier names them and the IC door's Limbo end needs no pack. The lane
+/// comes after the stations (its places are the corridor's domain hosts, which
+/// cut IC3 ties to the stations' berth galleries). A world latched on the old list
+/// (dev1: the starter's three and the proving ground's two) takes the rest at its
 /// next boot — the latch applies every boot pack it has never latched, at any boot
 /// (`mush-content/src/module.rs:100-152`).
 ///
@@ -763,12 +785,14 @@ pub fn boot_pack_list(
     if game_content {
         packs.extend(crate::definitions::content::boot_packs()?);
         packs.extend(crate::definitions::content::station_packs()?);
+        packs.extend(crate::definitions::content::lane_packs()?);
     }
     Ok(packs)
 }
 
 /// [`content_module`] with the game's own boot packs (**16b cut C.2, C3**; the
-/// game's six boot packs since doc 18 cut IC1 — [`boot_pack_list`]).
+/// game's six boot packs since doc 18 cut IC1 and seven since cut IC2 —
+/// [`boot_pack_list`]).
 ///
 /// `game_content` is `[tacsim].enabled`: `true` appends the two packs that
 /// instantiate the proving ground — the atlas region carrying its ground, then
@@ -810,8 +834,9 @@ pub fn content_module_with(
     // 16b cut C.2 adds the `arena` kind to the same registration.
     crate::register_appliers(&mut appliers).map_err(|e| format!("tacsim appliers: {e}"))?;
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
-    // Doc 18 cut IC1: then the four station packs after the proving ground's two
-    // (the game's six boot packs), from the one list the tests read too.
+    // Doc 18 cut IC1: then the four station packs after the proving ground's two,
+    // and (cut IC2) the lane after them — the game's seven boot packs — from the
+    // one list the tests read too.
     let packs = boot_pack_list(starter_area, game_content)?;
     if !packs.is_empty() {
         module = module.with_boot_packs(packs);

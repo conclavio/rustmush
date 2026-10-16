@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "measures": [
+    { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
+    { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
+  ],
+  "goods": [
+    {
+      "id": "metals",
+      "label": "metal concentrate",
+      "family": "metals",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 400 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 200,
+      "note": "Ceres's export and the Kasei refinery's input. Binned at about 2.5 t to the cubic metre, a tonne packs to 400 L, so it weighs out before it cubes out."
+    },
+    {
+      "id": "volatiles",
+      "label": "water ice",
+      "family": "volatiles",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 1400 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 100,
+      "note": "Occator's water, bound for Phobos. Solid ice in insulated canisters packs to 1,400 L a tonne, so it cubes out before it weighs out."
+    },
+    {
+      "id": "structural_alloys",
+      "label": "structural alloy stock",
+      "family": "structural_alloys",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 300 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 400,
+      "note": "Kasei's output, banded bar and plate: the dense return cargo, 300 L a tonne."
+    },
+    {
+      "id": "industrial_parts",
+      "label": "yard fittings, crated",
+      "family": "industrial_parts",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 2300 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 400,
+      "note": "Pressure fittings, ducting and tank sections for the Co-op fleet and the Kirkwood tank farm, crated with dunnage at about 0.43 t to the cubic metre: the bulky return cargo, 2,300 L a tonne."
+    },
+    {
+      "id": "propellant",
+      "label": "reaction mass",
+      "family": "propellant",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 1000 },
+      "stowage": "stow.propellant",
+      "consumable": "propellant",
+      "reference_major": 40,
+      "note": "Burned at departure. Tank-rated: the tank limits mass only, so its 1,000 L a tonne is never summed against a hold."
+    },
+    {
+      "id": "provisions",
+      "label": "voyage provisions",
+      "family": null,
+      "class": "ship_supply",
+      "ledger_unit": "crew_day",
+      "quote_unit": "crew_day",
+      "measures": { "si.mass_kg": 4, "si.volume_l": 10 },
+      "stowage": "stow.provisions",
+      "consumable": "provisions",
+      "reference_major": 10,
+      "note": "One crew-day a unit, 4 kg and 10 L, ten to the case; a passage burns its occupants times each leg's whole IC days."
+    }
+  ]
+}

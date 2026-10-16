@@ -464,9 +464,15 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     typed.sensors.validate()?;
     typed.harness.validate()?;
     // Verify here, at the host, so the boot fails with the file's name in the message.
-    // The check is pure and the module repeats it at wiring; two evaluations of a pure
-    // function over the same bytes cannot disagree.
-    tacsim::verify_sources(&typed)?;
+    // The check is pure and the module repeats it at wiring over the same operator
+    // sources and the same game seed sources (the lane, when the layer is on — the
+    // switch boot.rs passes to `tacsim_module_with`), so the two cannot disagree.
+    let game = if typed.enabled {
+        tacsim::definitions::content::game_seed_sources()
+    } else {
+        Vec::new()
+    };
+    tacsim::verify_sources_with(&typed, &game)?;
     Ok(typed)
 }
 
@@ -539,12 +545,16 @@ fn class_caps(
 ) -> Result<std::collections::BTreeMap<tacsim::definitions::UnitClass, u32>, String> {
     let mut caps = tacsim::config::ArenaConfig::default().max_units_by_class;
     for (word, cap) in written {
-        let class = tacsim::definitions::UnitClass::parse(word).ok_or_else(|| {
-            format!(
-                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+        // Doc 18 cut IC2: `hauler` is a class word `UnitClass::parse` knows and no
+        // arena fields, so it names no cap either (doc 18 §4.2, D-18-29).
+        let class = tacsim::definitions::UnitClass::parse(word)
+            .filter(|class| class.fieldable())
+            .ok_or_else(|| {
+                format!(
+                    "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
                  drone: {word}"
-            )
-        })?;
+                )
+            })?;
         caps.insert(class, *cap);
     }
     Ok(caps)
@@ -1299,6 +1309,70 @@ mod tests {
             std::collections::BTreeMap::from([(UnitClass::Armour, 0), (UnitClass::Drone, 0)]),
             "0 is legal and forbids the class; the header spelling maps the same"
         );
+    }
+
+    /// **Doc 18 cut IC2** (doc 18 §4.2, D-18-29): `hauler` is a class word the
+    /// enum knows and no arena fields, so a cap on it refuses the boot with the
+    /// unknown-word sentence, through the real mapper.
+    #[test]
+    fn ic2_a_hauler_cap_is_refused() {
+        let Err(error) = tacsim_config(&tacsim_cfg(
+            "[tacsim.arena]\nmax_units_by_class = { hauler = 1 }\n",
+        )) else {
+            panic!("a hauler cap mapped");
+        };
+        assert_eq!(
+            error.to_string(),
+            "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+             drone: hauler"
+        );
+    }
+
+    /// **Doc 18 cut IC2 (lead ruling R2, reviewer F3): the host preflight
+    /// verifies the operator's files beside the game's seed sources.**
+    ///
+    /// With the layer on, an operator seed that declares the lane's own
+    /// `(id, version)` refuses the boot at the host, naming the operator's file
+    /// as the offender and the built-in lane as the first declarer — the message
+    /// `--check-config` prints — instead of passing here and failing later as a
+    /// composition error without the file's name. The same layer with no such
+    /// file verifies the game sources clean.
+    #[test]
+    fn ic2_an_operator_seed_claiming_the_lane_refuses_at_the_host() {
+        let dir = std::env::temp_dir().join(format!(
+            "ic2-lane-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let lane = dir.join("lane.json");
+        std::fs::write(&lane, tacsim::definitions::content::LANE_JSON).expect("writes");
+        let lane = lane.display().to_string();
+
+        let on = TacsimCfg {
+            enabled: true,
+            ..TacsimCfg::default()
+        };
+        tacsim_config(&on).expect("the game's seed sources verify on their own");
+
+        let claiming = TacsimCfg {
+            enabled: true,
+            seed_paths: vec![lane.clone()],
+            ..TacsimCfg::default()
+        };
+        let refused = tacsim_config(&claiming).expect_err("the lane's id is the game's");
+        assert!(
+            refused.starts_with(&format!(
+                "[tacsim] {lane}: declares tacsim.lane.ceres_phobos@1, which <built-in \
+                 tacsim/content/lane/ceres_phobos.json> already declares"
+            )),
+            "{refused}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **16b cut Q.7: every value rule refuses by name, through the real

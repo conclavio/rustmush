@@ -465,11 +465,26 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
 
     let catalog =
         tacsim::definitions::Catalog::build_fielded(&[], "tacsim").expect("the fielded content");
+    // Doc 18 cut IC2: the fielded catalog holds the Dray too, which no arena
+    // fields (class `hauler`; `Arena::new` refuses it). The eleven an arena can
+    // field are every spec whose class is fieldable — the same eleven as before.
     assert_eq!(
         catalog.specs.len(),
-        11,
+        12,
         "the shipped unit schemas: the line tank, doc 16 §9's five extensions, \
-         the range's target, 16b cut AE.1's three chassis and 16b cut AE.3's drone"
+         the range's target, 16b cut AE.1's three chassis, 16b cut AE.3's drone and \
+         doc 18 cut IC2's Dray"
+    );
+    let fieldable: Vec<(&mush_core::CanonicalId, &tacsim::definitions::UnitSpec)> = catalog
+        .specs
+        .iter()
+        .filter(|(_, spec)| spec.class_of().fieldable())
+        .collect();
+    assert_eq!(
+        fieldable.len(),
+        11,
+        "the shipped unit schemas an arena fields: the line tank, doc 16 §9's five \
+         extensions, the range's target, 16b cut AE.1's three chassis and 16b cut AE.3's drone"
     );
     let definition = stock_definition(&SmolStr::new_static(STAND_IN)).expect("the stand-in window");
     let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
@@ -479,7 +494,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
     // One of each, two cells apart so no two share a cell (doc 16 §3.4 step 5).
     let mut names: Vec<String> = Vec::new();
     let mut units = Vec::new();
-    for (at, (entry, spec)) in catalog.specs.iter().enumerate() {
+    for (at, (entry, spec)) in fieldable.iter().copied().enumerate() {
         let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
         let binding = catalog
             .bindings
@@ -1022,12 +1037,13 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
         9,
         "nine shipped packs, the cores pack among them"
     );
+    // Doc 18 cut IC2: and the Dray, a twentieth, last (was `+ 19`).
     assert_eq!(
         fielded.len(),
-        stock.len() + 19,
-        "nine shipped packs and nineteen extension files: doc 16 section 9's ten, \
+        stock.len() + 20,
+        "nine shipped packs and twenty extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
-         16b cut AE.1's three chassis and 16b cut AE.3's drone"
+         16b cut AE.1's three chassis, 16b cut AE.3's drone and doc 18 cut IC2's Dray"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
@@ -2229,7 +2245,9 @@ fn m3_every_shipped_chassis_binds_its_core() {
     /// The core a chassis fits: its id, its section and its class.
     type Fitted<'a> = Option<(&'a str, &'a str, CoreClass)>;
     let line = Some((content::CORE_LINE, "turret", CoreClass::II));
-    let expected: [(&str, Fitted<'_>); 11] = [
+    // Doc 18 cut IC2: twelve with the Dray, which fits no core (Class 0, the
+    // drive ROM) — was eleven.
+    let expected: [(&str, Fitted<'_>); 12] = [
         (content::LINE_TANK, line),
         (content::LINE_TANK_LASER, line),
         (content::LINE_TANK_THERMAL, line),
@@ -2256,6 +2274,7 @@ fn m3_every_shipped_chassis_binds_its_core() {
             Some((content::CORE_DOCTRINE, "body", CoreClass::I)),
         ),
         (content::TARGET_MK1, None),
+        (content::DRAY, None),
     ];
     assert_eq!(fielded.specs.len(), expected.len(), "every fielded chassis");
     for (entry, fitted) in expected {
@@ -2460,4 +2479,670 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
             .row(tacsim::arena::mind::STOCK_RATED_CLASS)
             .ops
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC2 — the Dray and the goods table
+// ---------------------------------------------------------------------------
+
+/// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
+/// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
+const DRAY_DIGEST: &str = "dc5cae81692853bca737049009e4fb9d768ea045b22789f6e2bf5c2786078583";
+
+/// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
+/// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
+/// `TACSIM_WRITE_CONTENT=1` and copied here by hand.
+const GOODS_DIGEST: &str = "bc28e435bcef2717a4122c4a2b2c9d648a6292d1445bcdfa8f9bbb9271a6d4d9";
+
+/// A canonical id, for the tests below.
+fn cid(word: &str) -> mush_core::CanonicalId {
+    mush_core::CanonicalId::new(word).expect("a canonical id")
+}
+
+/// The shipped Dray's authored spec, decoded through `load_pack` (so through
+/// `UnitSpec::check`).
+fn dray_spec() -> tacsim::definitions::UnitSpec {
+    let pack = tacsim::pack::load_pack(content::DRAY_JSON).expect("the Dray verifies");
+    match pack.entry(&cid(content::DRAY)) {
+        Some(tacsim::pack::PackEntry::Unit(spec)) => spec.clone(),
+        other => panic!("the Dray's entry is a unit: {other:?}"),
+    }
+}
+
+/// The refusal `spec.check` gives, as its sentence.
+fn refusal(spec: &tacsim::definitions::UnitSpec) -> String {
+    spec.check(content::DRAY)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "accepted".to_owned())
+}
+
+/// **The Dray is pinned, and its authored numbers are doc 18 §4.2's** (doc 18
+/// cut IC2; D-18-29). `load_pack` runs `UnitSpec::check`, so the note's 1,024-byte
+/// bound and every logistics and interior rule fail this test and never a boot.
+#[test]
+fn ic2_the_dray_is_pinned_and_checks() {
+    use tacsim::definitions::{DriveLaw, InteriorRoomKind, MAX_NOTE_BYTES, UnitClass};
+
+    let relative = "units/dray.json";
+    if writing() {
+        let path = content_dir().join(relative);
+        let raw = std::fs::read_to_string(&path).expect("the content file exists");
+        let declared = mush_content::parse_pack(&raw)
+            .expect("the pack parses")
+            .manifest()
+            .digest()
+            .to_hex();
+        let signed = sign(&raw.replace(&declared, UNSIGNED));
+        std::fs::write(&path, &signed).expect("the content file is writable");
+        let digest = mush_content::parse_pack(&signed)
+            .expect("the signed pack parses")
+            .manifest()
+            .digest()
+            .to_hex();
+        println!("    const DRAY_DIGEST: &str = \"{digest}\";");
+        return;
+    }
+    let pack = tacsim::pack::load_pack(content::DRAY_JSON)
+        .unwrap_or_else(|error| panic!("{relative} does not verify: {error}"));
+    assert_eq!(pack.manifest().id().as_str(), content::DRAY_PACK);
+    assert_eq!(pack.manifest().version(), 1);
+    assert!(
+        pack.manifest().requires().is_empty(),
+        "the Dray requires nothing"
+    );
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        DRAY_DIGEST,
+        "the Dray's digest moved; re-review the content and re-pin it"
+    );
+    let spec = dray_spec();
+    assert!(
+        spec.note.len() <= MAX_NOTE_BYTES,
+        "the note is {} bytes",
+        spec.note.len()
+    );
+    assert_eq!(spec.class, Some(UnitClass::Hauler));
+    assert_eq!(spec.class_of(), UnitClass::Hauler);
+
+    let logistics = spec
+        .logistics
+        .as_ref()
+        .expect("the Dray declares logistics");
+    assert_eq!(logistics.dry_mass_t, 240);
+    let compartment = |id: &str| {
+        let def = logistics
+            .stowage
+            .get(&cid(id))
+            .unwrap_or_else(|| panic!("the {id} compartment"));
+        (
+            def.accepts
+                .iter()
+                .map(|tag| tag.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            def.limits
+                .iter()
+                .map(|(measure, limit)| (measure.as_str().to_owned(), *limit))
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(logistics.stowage.len(), 3);
+    assert_eq!(
+        compartment("cargo"),
+        (
+            vec!["stow.bulk".to_owned()],
+            vec![
+                ("si.mass_kg".to_owned(), 100_000),
+                ("si.volume_l".to_owned(), 120_000)
+            ]
+        )
+    );
+    assert_eq!(
+        compartment("propellant"),
+        (
+            vec!["stow.propellant".to_owned()],
+            vec![("si.mass_kg".to_owned(), 80_000)]
+        )
+    );
+    assert_eq!(
+        compartment("provisions"),
+        (
+            vec!["stow.provisions".to_owned()],
+            vec![
+                ("si.mass_kg".to_owned(), 480),
+                ("si.volume_l".to_owned(), 1_200)
+            ]
+        )
+    );
+    assert_eq!(logistics.berths, 2);
+    assert_eq!(logistics.occupant_allowance_kg, 100);
+    assert_eq!(logistics.payload_ceiling_kg, 181_000);
+    assert_eq!(logistics.drive.class.as_str(), "coast_hauler");
+    assert_eq!(
+        logistics.drive.law,
+        DriveLaw::Coast {
+            kms: 205,
+            burn_permille: 105
+        }
+    );
+
+    let interior = spec
+        .interior
+        .as_ref()
+        .expect("the Dray declares an interior");
+    assert_eq!(interior.space.as_str(), "airlock");
+    assert_eq!(interior.store.as_str(), "stowage");
+    assert_eq!(interior.berths_slot.id.as_str(), "berths");
+    assert_eq!(interior.berths_slot.maximum_items, 2);
+    let rooms: Vec<(&str, &str, InteriorRoomKind)> = interior
+        .rooms
+        .iter()
+        .map(|room| (room.id.as_str(), room.name.as_str(), room.kind))
+        .collect();
+    assert_eq!(
+        rooms,
+        vec![
+            ("airlock", "Airlock", InteriorRoomKind::Walkable),
+            ("passage", "Central Passage", InteriorRoomKind::Walkable),
+            ("bridge", "Bridge", InteriorRoomKind::Walkable),
+            ("crew", "Crew Compartment", InteriorRoomKind::Walkable),
+            ("hold", "Cargo Hold", InteriorRoomKind::Walkable),
+            (
+                "engineering",
+                "Engineering Access",
+                InteriorRoomKind::Walkable
+            ),
+            ("stowage", "Hold Stowage", InteriorRoomKind::Store),
+        ],
+        "doc 18's seven rooms, in its order"
+    );
+    // 18a section 3's text rides the template (lead ruling R6): every walkable
+    // room a short desc, a desc and details; the store a desc and nothing else.
+    for room in &interior.rooms {
+        assert!(!room.desc.is_empty(), "{} has its desc", room.id);
+        match room.kind {
+            InteriorRoomKind::Walkable => {
+                assert!(
+                    !room.short_desc.is_empty(),
+                    "{} has its short desc",
+                    room.id
+                );
+                assert!(!room.details.is_empty(), "{} has its details", room.id);
+            }
+            InteriorRoomKind::Store => {
+                assert!(room.short_desc.is_empty() && room.details.is_empty());
+            }
+        }
+    }
+    let exits: Vec<(&str, &str, Vec<&str>)> = interior
+        .exits
+        .iter()
+        .map(|exit| {
+            (
+                exit.from.as_str(),
+                exit.to.as_str(),
+                exit.names.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        exits,
+        vec![
+            (
+                "airlock",
+                "passage",
+                vec![
+                    "Inner Hatch <I>;inner;in;passage",
+                    "Airlock <A>;airlock;lock;forward"
+                ]
+            ),
+            (
+                "passage",
+                "bridge",
+                vec!["Bridge <U>;bridge;up;u", "Passage <D>;passage;down;d"]
+            ),
+            (
+                "passage",
+                "crew",
+                vec![
+                    "Crew Compartment <C>;crew;galley;bunks;aft",
+                    "Passage <P>;passage;out;forward"
+                ]
+            ),
+            (
+                "passage",
+                "hold",
+                vec!["Cargo Hold <H>;hold;down;d", "Passage <U>;passage;up;u"]
+            ),
+            (
+                "hold",
+                "engineering",
+                vec![
+                    "Engineering <E>;engineering;eng;down;d",
+                    "Hold <H>;hold;up;u"
+                ]
+            ),
+        ],
+        "doc 18's five exit pairs, name for name"
+    );
+    let gauges: Vec<(&str, Vec<&str>)> = interior
+        .gauges
+        .iter()
+        .map(|(gauge, rooms)| (gauge.as_str(), rooms.iter().map(|r| r.as_str()).collect()))
+        .collect();
+    assert_eq!(
+        gauges,
+        vec![
+            ("cargo", vec!["hold", "passage", "bridge"]),
+            ("propellant", vec!["engineering", "passage", "bridge"]),
+            ("provisions", vec!["crew", "passage", "bridge"]),
+        ]
+    );
+}
+
+/// **A note past the bound fails the load, not the boot** (doc 18 cut IC2; doc
+/// 18 §4.2): the shipped JSON with its note padded to 1,025 bytes and re-signed
+/// in memory is refused by `load_pack` with the note's sentence.
+#[test]
+fn ic2_a_dray_note_past_the_bound_fails_the_load() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(content::DRAY_JSON).expect("the Dray is JSON");
+    let note = doc
+        .pointer("/entries/tacsim.unit.dray/def/note")
+        .and_then(serde_json::Value::as_str)
+        .expect("the note")
+        .to_owned();
+    let padded = format!("{note}{}", " ".repeat(1_025 - note.len()));
+    assert_eq!(padded.len(), 1_025);
+    *doc.pointer_mut("/entries/tacsim.unit.dray/def/note")
+        .expect("the note") = serde_json::Value::String(padded);
+    *doc.pointer_mut("/manifest/digest").expect("the digest") =
+        serde_json::Value::String(UNSIGNED.to_owned());
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("the pack serializes"));
+    let Err(error) = tacsim::pack::load_pack(&signed) else {
+        panic!("a 1,025-byte note loaded");
+    };
+    assert!(
+        error.to_string().contains("a note is at most 1024 bytes"),
+        "{error}"
+    );
+}
+
+/// **The Dray is a hauler, fits no core, and moved nothing fielded before it**
+/// (doc 18 cut IC2; doc 18 §4.2 schema additions (1) and (2), D-18-29): the
+/// fielded catalog carries it, its class is `Hauler` off the spec and off the
+/// bound unit, it fits no core (Class 0, the drive ROM), and every reference the
+/// fielded catalog held before it joined — the ten other unit schemas, every
+/// weapon, sensor, ammunition and core — is the same `DefinitionRef`, because
+/// `bind()` never reads `logistics` or `interior`.
+#[test]
+fn ic2_the_dray_is_a_hauler_and_binds_class_zero() {
+    use tacsim::arena::core::read_core;
+    use tacsim::config::LoadedPack;
+    use tacsim::definitions::UnitClass;
+
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let key = cid(content::DRAY);
+    let spec = fielded.specs.get(&key).expect("the Dray is fielded");
+    assert_eq!(spec.class_of(), UnitClass::Hauler);
+    assert!(
+        !spec.class_of().fieldable(),
+        "a hauler is never fielded in an arena"
+    );
+    let binding = fielded.bindings.get(&key).expect("its binding");
+    let unit = tacsim::definitions::to_tactical_unit(spec, binding, ObjId(41))
+        .unwrap_or_else(|why| panic!("the Dray instantiates: {why}"));
+    assert_eq!(UnitClass::read(&unit), UnitClass::Hauler);
+    assert_eq!(
+        unit.rules().data().get("class"),
+        Some(&serde_json::json!("hauler")),
+        "the declared word rides the blob"
+    );
+    assert_eq!(spec.cores().count(), 0, "the Dray fits no core");
+    assert_eq!(read_core(&unit), None, "Class 0, the drive ROM alone");
+
+    // Nothing fielded before the Dray moved: the catalog the nine earlier
+    // extension tables give beside the stock game holds the same references.
+    let earlier: Vec<(&str, &str)> = [
+        content::EXTENSIONS.as_slice(),
+        content::EXTENSIONS_BIPED.as_slice(),
+        content::EXTENSIONS_THERMAL.as_slice(),
+        content::EXTENSIONS_ECM.as_slice(),
+        content::EXTENSIONS_ECCM.as_slice(),
+        content::EXTENSIONS_TARGET.as_slice(),
+        content::EXTENSIONS_ORDNANCE.as_slice(),
+        content::EXTENSIONS_CHASSIS.as_slice(),
+        content::EXTENSIONS_DRONE.as_slice(),
+    ]
+    .concat();
+    let operator: Vec<LoadedPack> = content::extension_sources_of(&earlier)
+        .iter()
+        .map(|source| LoadedPack {
+            pack: tacsim::pack::load_pack(&source.bytes)
+                .unwrap_or_else(|error| panic!("{}: {error}", source.name)),
+            source: source.name.clone(),
+        })
+        .collect();
+    let before = Catalog::build_game(&operator, tacsim::NS).expect("the earlier content binds");
+    assert_eq!(
+        before.specs.len(),
+        11,
+        "the eleven the fielded catalog held"
+    );
+    assert!(!before.specs.contains_key(&key));
+    assert_eq!(
+        fielded.specs.len(),
+        before.specs.len() + 1,
+        "the Dray, and only it"
+    );
+    for (id, reference) in &before.references {
+        assert_eq!(
+            fielded.references.get(id),
+            Some(reference),
+            "{id} moved when the Dray loaded; a persisted unit points at it"
+        );
+    }
+    assert_eq!(fielded.weapons.len(), before.weapons.len());
+    assert_eq!(fielded.sensors.len(), before.sensors.len());
+    assert_eq!(fielded.ammunition.len(), before.ammunition.len());
+    assert_eq!(fielded.cores.len(), before.cores.len());
+}
+
+/// **An interior refuses what the hull template cannot build** (doc 18 cut IC2;
+/// doc 18 §4.2, 18a §3): from the shipped Dray, one mutation per rule, each
+/// refused with its own sentence.
+#[test]
+fn ic2_an_interior_refuses_what_the_template_cannot_build() {
+    use tacsim::definitions::{InteriorExitDef, InteriorRoomKind};
+
+    let base = dray_spec();
+    assert_eq!(refusal(&base), "accepted", "the shipped Dray checks");
+    let mutate = |change: &dyn Fn(&mut tacsim::definitions::InteriorDef)| {
+        let mut spec = base.clone();
+        change(spec.interior.as_mut().expect("the interior"));
+        refusal(&spec)
+    };
+
+    // A walkable room no exit reaches.
+    let lost = mutate(&|interior| {
+        interior
+            .exits
+            .retain(|exit| exit.to.as_str() != "engineering");
+    });
+    assert!(
+        lost.contains("interior room `engineering` cannot be reached from `airlock`"),
+        "{lost}"
+    );
+    // An exit into the store.
+    let store = mutate(&|interior| {
+        interior.exits.push(InteriorExitDef {
+            from: cid("passage"),
+            to: cid("stowage"),
+            names: vec![
+                "Stowage <S>;stowage".to_owned(),
+                "Passage;passage".to_owned(),
+            ],
+        });
+    });
+    assert!(
+        store.contains(
+            "the exit `passage` -> `stowage` touches the store `stowage`; a store has no exits"
+        ),
+        "{store}"
+    );
+    // A duplicate alias out of the passage: the crew hatch answering `up`.
+    let alias = mutate(&|interior| {
+        if let Some(exit) = interior
+            .exits
+            .iter_mut()
+            .find(|exit| exit.to.as_str() == "crew")
+            && let Some(name) = exit.names.first_mut()
+        {
+            *name = "Crew Compartment <C>;crew;up".to_owned();
+        }
+    });
+    assert!(
+        alias.contains("the alias `up` leaves `passage` twice"),
+        "{alias}"
+    );
+    // A second store.
+    let second = mutate(&|interior| {
+        if let Some(room) = interior
+            .rooms
+            .iter_mut()
+            .find(|room| room.id.as_str() == "engineering")
+        {
+            room.kind = InteriorRoomKind::Store;
+        }
+    });
+    assert!(
+        second.contains("an interior has one store room; `engineering` and `stowage` are both"),
+        "{second}"
+    );
+    // The berths slot disagreeing with the berths.
+    let berths = mutate(&|interior| interior.berths_slot.maximum_items = 3);
+    assert!(
+        berths.contains("berths_slot.maximum_items is 3 and logistics.berths is 2; they agree"),
+        "{berths}"
+    );
+    // A gauge naming a compartment the hull does not have.
+    let gauge = mutate(&|interior| {
+        interior.gauges.insert(cid("ballast"), vec![cid("hold")]);
+    });
+    assert!(
+        gauge.contains("the gauge `ballast` names no logistics.stowage compartment"),
+        "{gauge}"
+    );
+    // And an interior without logistics, and a hauler without them.
+    let mut bare = base.clone();
+    bare.logistics = None;
+    assert!(refusal(&bare).contains("an interior requires logistics"));
+    bare.interior = None;
+    assert!(refusal(&bare).contains("a hauler declares its logistics"));
+}
+
+/// **The payload rail sits at or above the stowage maxima plus the occupants**
+/// (doc 18 cut IC2; doc 18 §4.2: 100,000 + 80,000 + 480 + 2 × 100 = 180,680),
+/// and a drive and a compartment are bounded by their own rules.
+#[test]
+fn ic2_logistics_refuses_a_rail_below_the_stowage_maxima() {
+    use tacsim::definitions::DriveLaw;
+
+    let base = dray_spec();
+    let with = |change: &dyn Fn(&mut tacsim::definitions::LogisticsDef)| {
+        let mut spec = base.clone();
+        change(spec.logistics.as_mut().expect("the logistics"));
+        refusal(&spec)
+    };
+    let low = with(&|logistics| logistics.payload_ceiling_kg = 180_679);
+    assert!(
+        low.contains(
+            "logistics.payload_ceiling_kg 180679 is below the stowage mass limits plus the \
+             occupants, 180680"
+        ),
+        "{low}"
+    );
+    assert_eq!(
+        with(&|logistics| logistics.payload_ceiling_kg = 180_680),
+        "accepted",
+        "the floor itself is a legal rail"
+    );
+    let still = with(&|logistics| {
+        logistics.drive.law = DriveLaw::Coast {
+            kms: 0,
+            burn_permille: 105,
+        };
+    });
+    assert!(
+        still.contains("drive `coast_hauler` coasts at 1 to 299792 km/s; 0 is not"),
+        "{still}"
+    );
+    let weightless = with(&|logistics| {
+        if let Some(cargo) = logistics.stowage.get_mut(&cid("cargo")) {
+            cargo.limits.remove(&cid("si.mass_kg"));
+        }
+    });
+    assert!(
+        weightless.contains(
+            "compartment `cargo` does not limit si.mass_kg; every compartment says what it weighs"
+        ),
+        "{weightless}"
+    );
+}
+
+/// **The goods table is pinned** (doc 18 cut IC2; doc 18 §4.3): its canonical
+/// digest under `tacsim.goods.v1`, the six rows in the table's order with their
+/// per-unit figures, and the cross-check against the Dray the fielded catalog
+/// holds.
+#[test]
+fn ic2_the_goods_table_is_pinned() {
+    use tacsim::definitions::goods::{GOODS_JSON, goods_digest, goods_table};
+    use tacsim::definitions::{Consumable, GoodClass};
+
+    let digest = goods_digest(GOODS_JSON)
+        .expect("the table digests")
+        .to_hex();
+    if writing() {
+        println!("    const GOODS_DIGEST: &str = \"{digest}\";");
+        return;
+    }
+    assert_eq!(
+        digest, GOODS_DIGEST,
+        "goods.json moved; re-review the content and re-pin it"
+    );
+    let table = goods_table().expect("the shipped goods table loads");
+    assert_eq!(table.version, 1);
+    let measures: Vec<(&str, &str, &str)> = table
+        .measures
+        .iter()
+        .map(|m| (m.id.as_str(), m.unit.as_str(), m.word.as_str()))
+        .collect();
+    assert_eq!(
+        measures,
+        vec![
+            ("si.mass_kg", "kg", "mass"),
+            ("si.volume_l", "L", "packed volume")
+        ]
+    );
+    type Row<'a> = (
+        &'a str,
+        &'a str,
+        Option<&'a str>,
+        GoodClass,
+        &'a str,
+        u64,
+        u64,
+        &'a str,
+        Option<Consumable>,
+        u64,
+    );
+    let rows: Vec<Row<'_>> = table
+        .goods
+        .iter()
+        .map(|good| {
+            (
+                good.id.as_str(),
+                good.label.as_str(),
+                good.family.as_ref().map(|f| f.as_str()),
+                good.class,
+                good.ledger_unit.as_str(),
+                good.per_unit(&cid("si.mass_kg")).unwrap_or(0),
+                good.per_unit(&cid("si.volume_l")).unwrap_or(0),
+                good.stowage.as_str(),
+                good.consumable,
+                good.reference_major,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "metals",
+                "metal concentrate",
+                Some("metals"),
+                GoodClass::Trade,
+                "t",
+                1_000,
+                400,
+                "stow.bulk",
+                None,
+                200
+            ),
+            (
+                "volatiles",
+                "water ice",
+                Some("volatiles"),
+                GoodClass::Trade,
+                "t",
+                1_000,
+                1_400,
+                "stow.bulk",
+                None,
+                100
+            ),
+            (
+                "structural_alloys",
+                "structural alloy stock",
+                Some("structural_alloys"),
+                GoodClass::Trade,
+                "t",
+                1_000,
+                300,
+                "stow.bulk",
+                None,
+                400
+            ),
+            (
+                "industrial_parts",
+                "yard fittings, crated",
+                Some("industrial_parts"),
+                GoodClass::Trade,
+                "t",
+                1_000,
+                2_300,
+                "stow.bulk",
+                None,
+                400
+            ),
+            (
+                "propellant",
+                "reaction mass",
+                Some("propellant"),
+                GoodClass::Trade,
+                "t",
+                1_000,
+                1_000,
+                "stow.propellant",
+                Some(Consumable::Propellant),
+                40
+            ),
+            (
+                "provisions",
+                "voyage provisions",
+                None,
+                GoodClass::ShipSupply,
+                "crew_day",
+                4,
+                10,
+                "stow.provisions",
+                Some(Consumable::Provisions),
+                10
+            ),
+        ],
+        "doc 18 section 4.3's six rows, in its order"
+    );
+    for good in &table.goods {
+        assert_eq!(good.ledger_unit, good.quote_unit, "{}", good.id);
+        assert_eq!(good.mass_kg_per_unit(), good.per_unit(&cid("si.mass_kg")));
+    }
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let dray = fielded
+        .specs
+        .get(&cid(content::DRAY))
+        .and_then(|spec| spec.logistics.as_ref())
+        .expect("the Dray's logistics");
+    table
+        .check_stowage(content::DRAY, dray)
+        .expect("the goods table fits the Dray's stowage");
 }
