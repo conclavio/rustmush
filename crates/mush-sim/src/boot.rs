@@ -600,6 +600,7 @@ pub(crate) fn load_boot(
             st.spaces.insert(sid, rec);
         }
     }
+    drop_invalid_members(&mut st, ctx.w);
     st.derived = rebuild(&st);
 
     // Reconcile projections (idempotent, record-driven).
@@ -831,4 +832,153 @@ fn validate_live(ctx: &ModuleCtx<'_>, st: &SpatialState, rec: &PlacementRecord) 
         }
     }
     None
+}
+
+/// **The member rooms boot refuses** (doc 18 §4.2 (c), cut IC4; lead ruling
+/// L5): for every space, in key order, with a non-empty `rooms`, the rooms
+/// other than the space object that `Transition::Members` would refuse — dead,
+/// not a Room, another space's object, a domain host, a live presentation room,
+/// already kept by an earlier space — and any beyond
+/// [`crate::data::MAX_SPACE_ROOMS`] (the space first, then id order). **The
+/// space object is never named**, whatever its kind: the atlas's pods are
+/// Thing-object spaces whose fresh shell is `rooms {pod}`. Pure, so the boot
+/// pages exactly what this returns. Uses the indexes as rebuilt before the
+/// pass (domains do not change in it).
+pub(crate) fn invalid_members(
+    st: &SpatialState,
+    w: &mush_core::World,
+) -> Vec<(ObjId, Vec<(ObjId, &'static str)>)> {
+    let gone = |id: ObjId| w.get(id).is_none_or(|o| o.flags.contains(Flags::GOING));
+    let mut kept_elsewhere: BTreeSet<ObjId> = BTreeSet::new();
+    let mut out = Vec::new();
+    for (space, rec) in &st.spaces {
+        if rec.rooms.is_empty() {
+            continue; // legacy single-room record: untouched, unpaged
+        }
+        // The space object always counts as the first of the cap.
+        let mut kept = 1_usize;
+        let mut dropped: Vec<(ObjId, &'static str)> = Vec::new();
+        for &r in rec.rooms.iter().filter(|&&r| r != *space) {
+            let reason = if gone(r) {
+                Some("the room does not exist")
+            } else if w.get(r).map(|o| o.kind) != Some(mush_core::ObjKind::Room) {
+                Some("not a room")
+            } else if st.spaces.contains_key(&r) {
+                Some("an interior space of its own")
+            } else if st.derived.domain_by_host.contains_key(&r) {
+                Some("hosts a domain")
+            } else if st.derived.presentation_of.get(&r).is_some_and(|ds| {
+                ds.iter().any(|d| {
+                    st.domains
+                        .get(d)
+                        .is_some_and(|rec| rec.status != DomainStatus::Retired)
+                })
+            }) {
+                Some("the presentation room of a live domain")
+            } else if kept_elsewhere.contains(&r) {
+                Some("already a room of an earlier interior space")
+            } else if kept >= crate::data::MAX_SPACE_ROOMS {
+                Some("over the interior space room cap")
+            } else {
+                None
+            };
+            match reason {
+                Some(reason) => dropped.push((r, reason)),
+                None => {
+                    kept += 1;
+                    kept_elsewhere.insert(r);
+                }
+            }
+        }
+        if !dropped.is_empty() {
+            out.push((*space, dropped));
+        }
+    }
+    out
+}
+
+/// Boot's member pass (cut IC4; lead ruling L5): every room
+/// [`invalid_members`] names is dropped **in RAM only** — the stored document
+/// is never rewritten, staff repair it — and paged. An occupant standing in a
+/// dropped room then projects to the space object and the reconcile that
+/// follows moves it there: fail closed into the airlock. A space whose
+/// non-empty `rooms` lacks its own live object gets it back (unpaged).
+fn drop_invalid_members(st: &mut SpatialState, w: &mush_core::World) {
+    for (space, dropped) in invalid_members(st, w) {
+        let Some(rec) = st.spaces.get_mut(&space) else {
+            continue;
+        };
+        for (room, _) in &dropped {
+            rec.rooms.remove(room);
+        }
+        let rooms: Vec<String> = dropped
+            .iter()
+            .map(|(room, reason)| format!("{room} ({reason})"))
+            .collect();
+        tracing::error!(
+            space = %space,
+            dropped = %rooms.join(", "),
+            runbook = %format!(
+                "repair the {} document by hand or @spatial/unspace the space",
+                crate::data::space_key(space)
+            ),
+            "sim: invalid member rooms dropped at boot (in RAM only; the document is unchanged)"
+        );
+    }
+    for (space, rec) in &mut st.spaces {
+        if !rec.rooms.is_empty()
+            && !rec.rooms.contains(space)
+            && w.get(*space)
+                .is_some_and(|o| !o.flags.contains(Flags::GOING))
+        {
+            rec.rooms.insert(*space);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::rebuild;
+    use mush_core::{ObjKind, World};
+
+    fn space(object: ObjId, rooms: &[ObjId]) -> InteriorSpaceRecord {
+        InteriorSpaceRecord {
+            object,
+            anchor: SpaceAnchor::Unanchored,
+            compartments: BTreeMap::new(),
+            rooms: rooms.iter().copied().collect(),
+            egresses: BTreeMap::new(),
+        }
+    }
+
+    /// Cut IC4, A9 test 6b: the "no page" proof — boot pages exactly what
+    /// `invalid_members` returns, and it never names the space object, a
+    /// Thing pod included.
+    #[test]
+    fn ic4_invalid_members_spares_the_space_object() {
+        let mut w = World::new_minimal();
+        let god = mush_core::GOD;
+        let pod = w
+            .create(ObjKind::Thing, "Pod", god, Some(mush_core::LIMBO))
+            .expect("pod");
+        let lock = w.create(ObjKind::Room, "Lock", god, None).expect("lock");
+        let spine = w.create(ObjKind::Room, "Spine", god, None).expect("spine");
+        let store = w.create(ObjKind::Room, "Store", god, None).expect("store");
+
+        let mut st = SpatialState::new(mush_core::LIMBO);
+        st.spaces.insert(pod, space(pod, &[pod]));
+        st.spaces.insert(lock, space(lock, &[lock, spine]));
+        st.spaces.insert(store, space(store, &[store]));
+        st.derived = rebuild(&st);
+        assert!(invalid_members(&st, &w).is_empty());
+
+        // A space listing another space's object names that room and why.
+        st.spaces.insert(lock, space(lock, &[lock, spine, store]));
+        st.derived = rebuild(&st);
+        assert_eq!(
+            invalid_members(&st, &w),
+            vec![(lock, vec![(store, "an interior space of its own")])]
+        );
+    }
 }

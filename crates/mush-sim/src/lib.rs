@@ -60,11 +60,11 @@ pub use custody::InteriorCustodyProvider;
 pub use data::{
     CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord,
     DomainStatus, EgressSpec, GeometryFn, HeldPlacement, HostAssignments, HostMounts, HostStations,
-    InteriorSpaceRecord, MAX_GRANTED_CHANNELS, MAX_SEATS_PER_UNIT, MAX_SPATIAL_DEPTH,
-    MetricGeometry, MountId, MountSpec, NS, PASSIVE_DRIVER, PlacementRecord, Pose, Presence,
-    ResolveFn, RoomResolver, RulesValue, SlotId, SpaceAnchor, SpatialCounterError, SpatialParent,
-    SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo, WindowBox,
-    WindowGeometry, WindowOpener, WindowPin, WindowRec, WindowSurface, cgen_key,
+    InteriorSpaceRecord, MAX_GRANTED_CHANNELS, MAX_SEATS_PER_UNIT, MAX_SPACE_ROOMS,
+    MAX_SPATIAL_DEPTH, MetricGeometry, MountId, MountSpec, NS, PASSIVE_DRIVER, PlacementRecord,
+    Pose, Presence, ResolveFn, RoomResolver, RulesValue, SlotId, SpaceAnchor, SpatialCounterError,
+    SpatialParent, SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo,
+    WindowBox, WindowGeometry, WindowOpener, WindowPin, WindowRec, WindowSurface, cgen_key,
     passive_definition_ref, passive_rules_value,
 };
 pub use deployed::{DeployedMark, DeployedUnits, UnitDeployed, refuse_if_deployed};
@@ -102,10 +102,10 @@ pub use station::{
 };
 pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
 pub use window::{
-    MAX_WINDOWS, OpenWindow, arc_between, close_window, metric_between, open_passive_domain,
-    open_window, participants, place, place_interior, pose_of, raw_participants,
-    register_room_resolver, register_window_arc, register_window_geometry, unplace, update_window,
-    window_of, windows,
+    MAX_WINDOWS, OpenWindow, arc_between, close_window, declare_compartment, metric_between,
+    open_passive_domain, open_window, participants, place, place_interior, pose_of,
+    raw_participants, register_room_resolver, register_window_arc, register_window_geometry,
+    unplace, update_window, window_of, windows,
 };
 
 /// Module configuration.
@@ -247,8 +247,9 @@ fn state(w: &World) -> Option<&SpatialState> {
 /// Player-driven egress is a later cut. Staff are not exempt (design §7.5).
 struct PlacementGate;
 
-fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
-    let st = state(w)?;
+/// The held and quarantined arms of the gate, which win before every other
+/// (the member arm of [`move_reason`] included).
+fn held_or_quarantined(st: &SpatialState, w: &World, obj: ObjId) -> Option<String> {
     if let Some(held) = st.held_placement(obj) {
         return Some(format!(
             "{} has a held unreadable placement ({}); staff must repair or migrate it.",
@@ -262,6 +263,35 @@ fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
             mush_core::output::display_name(w, obj)
         ));
     }
+    None
+}
+
+/// The carrier a multi-room space rides (its `MovingObject` host), else the
+/// space object itself — the name the aboard sentence and the egress refusal
+/// give (cut IC4).
+pub(crate) fn aboard_host(st: &SpatialState, space: ObjId) -> ObjId {
+    match st.spaces.get(&space).map(|s| &s.anchor) {
+        Some(crate::data::SpaceAnchor::MovingObject { host }) => *host,
+        _ => space,
+    }
+}
+
+/// Whether `space` is a multi-room interior (lead ruling L3: `rooms.len() >
+/// 1`; a legacy empty `rooms` is single-room).
+pub(crate) fn is_multi_room(st: &SpatialState, space: ObjId) -> bool {
+    st.spaces.get(&space).is_some_and(|s| s.rooms.len() > 1)
+}
+
+fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
+    let st = state(w)?;
+    if let Some(reason) = held_or_quarantined(st, w, obj) {
+        return Some(reason);
+    }
+    parent_reason(st, w, obj)
+}
+
+/// The by-parent arm of the gate (after held and quarantined).
+fn parent_reason(st: &SpatialState, w: &World, obj: ObjId) -> Option<String> {
     match st.parent_of(obj) {
         SpatialParent::Direct { domain, .. } => {
             // S4: a domain with a window is walkable ground — its participants
@@ -273,6 +303,16 @@ fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
             Some(format!(
                 "{} is placed in domain #{domain}; it moves only through the simulation, or staff recovery (@spatial).",
                 mush_core::output::display_name(w, obj)
+            ))
+        }
+        // Cut IC4 (doc 18 §4.2 (a)): aboard a multi-room interior the
+        // sentence says where the occupant MAY go; a single-room space keeps
+        // the original sentence byte for byte.
+        SpatialParent::Interior { space, .. } if is_multi_room(st, space) => {
+            let host = mush_core::output::display_name(w, aboard_host(st, space));
+            Some(format!(
+                "{} is aboard {host}; it moves only between {host}'s rooms, or leaves through the simulation or staff recovery (@spatial).",
+                mush_core::output::display_name(w, obj),
             ))
         }
         SpatialParent::Interior { space, .. } => Some(format!(
@@ -294,10 +334,10 @@ impl EventHook for PlacementGate {
         &self,
         ctx: &HookReadContext<'_>,
         actor: ObjId,
-        _exit: Option<ObjId>,
-        _dest: ObjId,
+        exit: Option<ObjId>,
+        dest: ObjId,
     ) -> Result<(), RichText> {
-        match gate_reason(ctx.world(), actor) {
+        match move_reason(ctx.world(), actor, exit, dest) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
         }
@@ -357,6 +397,40 @@ fn gate_reason(w: &World, obj: ObjId) -> Option<String> {
         .or_else(|| placed_or_quarantined(w, obj))
 }
 
+/// **The destination-aware movement veto** (doc 06 §7.5's boundary rule; doc
+/// 18 §4.2 (a), D-18-22, cut IC4). In order: (1) the journeying arm; (2) a
+/// held placement; (3) quarantine; (4) **the member arm** — an actor placed
+/// `Interior` in a space that walks an EXIT (`exit.is_some()`) into one of
+/// that space's member rooms is allowed, and writes no placement; (5) the
+/// by-parent refusal. `home`, `@teleport` and every other exit-less move pass
+/// `exit: None`, so they stay refused for every occupant, staff included
+/// (design §7.5: staff are not exempt). No condition on the actor's current
+/// room or on the space's size: an exit into a member is the whole test.
+/// [`gate_reason`] (and so `carry_attempt`) has no member arm: carrying a
+/// placed object is not walking.
+fn move_reason(w: &World, actor: ObjId, exit: Option<ObjId>, dest: ObjId) -> Option<String> {
+    if let Some(reason) = w
+        .module_state::<journey::JourneyBook>()
+        .and_then(|book| journey::journeying_reason(book, w, actor))
+    {
+        return Some(reason);
+    }
+    let st = state(w)?;
+    if let Some(reason) = held_or_quarantined(st, w, actor) {
+        return Some(reason);
+    }
+    if exit.is_some()
+        && let SpatialParent::Interior { space, .. } = st.parent_of(actor)
+        && st
+            .spaces
+            .get(&space)
+            .is_some_and(|s| s.rooms.contains(&dest))
+    {
+        return None;
+    }
+    parent_reason(st, w, actor)
+}
+
 /// The structural destroy veto (design D4/D8), independent of bindings.
 struct StructuralDestroyGate;
 
@@ -411,6 +485,18 @@ impl DestroyGate for StructuralDestroyGate {
             return Err(format!(
                 "{} is an interior space; @spatial/unspace it first.",
                 name(w, target)
+            ));
+        }
+        // Cut IC4 (doc 18 §4.2 (c)): a member room is part of its space's
+        // interior; destroying it would strand whoever walks it. The space
+        // object's self-entry (L4) is the arm above.
+        if let Some(space) = st.derived.member_of.get(&target)
+            && *space != target
+        {
+            return Err(format!(
+                "{} is a room of the interior space {}; @spatial/unspace that space first.",
+                name(w, target),
+                name(w, *space)
             ));
         }
         if let Some(spaces) = st.derived.anchored_spaces.get(&target) {
@@ -551,6 +637,14 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         .unwrap_or_default();
     let dependents: Vec<ObjId> = st.children_of(obj).iter().copied().collect();
     let was_placed = st.placements.contains_key(&obj);
+    // Cut IC4: the space this husk was a member room of (never its own
+    // self-entry), handled last by `drop_destroyed_member`.
+    let member_space: Option<ObjId> = st
+        .derived
+        .member_of
+        .get(&obj)
+        .copied()
+        .filter(|space| *space != obj);
     // Units this actor (if it is one) crews — its seats die with it.
     let actor_seats: Vec<ObjId> = st
         .derived
@@ -731,6 +825,70 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     // must also stop granting control).
     for actor in crew_refresh {
         links::refresh_actor_links(ctx.w, actor);
+    }
+    if let Some(space) = member_space {
+        drop_destroyed_member(ctx, obj, space);
+    }
+}
+
+/// **The programmatic-destroy backstop for a member room** (doc 18 §4.2 (c),
+/// cut IC4). The destroy gate refuses `@destroy` of a member, but a
+/// programmatic destroy skips it: the husk leaves its space's `rooms` (the
+/// record re-persisted, the indexes rebuilt), and then the walkers fail closed
+/// into the space. `World::destroy` has already sent the dead room's contents
+/// to their homes (or Limbo), so a walker who stood in it is outside the ship
+/// while still placed `Interior` in the space; every such occupant whose
+/// location now disagrees with its projection (the space object) is moved
+/// there, as boot reconcile does. Afterwards `verify_projections` is empty.
+fn drop_destroyed_member(ctx: &mut Ctx<'_>, room: ObjId, space: ObjId) {
+    let Some(s) = ctx.w.module_state_mut::<SpatialState>() else {
+        return;
+    };
+    let Some(rec) = s.spaces.get_mut(&space) else {
+        return;
+    };
+    if !rec.rooms.remove(&room) {
+        return;
+    }
+    let rec = rec.clone();
+    s.derived = graph::rebuild(s);
+    data::persist_space(ctx.out, &rec);
+    tracing::warn!(
+        room = %room,
+        space = %space,
+        "sim: a destroyed member room left its interior space"
+    );
+    let moves: Vec<(ObjId, ObjId)> = match state(ctx.w) {
+        Some(st) => st
+            .children_of(space)
+            .iter()
+            .copied()
+            .filter(|&c| {
+                matches!(st.parent_of(c), SpatialParent::Interior { space: sp, .. } if sp == space)
+            })
+            .filter_map(|c| {
+                let dest = graph::project(st, ctx.w, c)?;
+                (ctx.w.get(c).and_then(|o| o.location) != Some(dest)).then_some((c, dest))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    for (c, dest) in moves {
+        match ctx.w.move_to(c, dest) {
+            Ok(_) => tracing::warn!(
+                object = %c,
+                space = %space,
+                destroyed = %room,
+                "sim: an occupant of a destroyed member room failed closed into its space"
+            ),
+            Err(error) => tracing::error!(
+                object = %c,
+                space = %space,
+                destroyed = %room,
+                %error,
+                "sim: could not return an occupant of a destroyed member room to its space"
+            ),
+        }
     }
 }
 

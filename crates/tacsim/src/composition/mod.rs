@@ -164,6 +164,15 @@ pub fn server_modules_with(
     // `industry_title_issuer()` or the verb refuses loudly. It is unconditional:
     // `mush-industry` composes on every ruleset.
     issuers.push(mush_industry::industry_title_issuer());
+    // Doc 18 cut IC4 (§4.2 schema addition 3, §4.7 part f): the registry that
+    // titles programme hulls at the lane's apply. Unconditional, like industry's:
+    // the port applier runs wherever the lane does. `issue_title` refuses an
+    // issuer not on this list, and the applier preflights its programme's
+    // `issuer` against it (`EconomyStore::is_title_issuer`), so a typo in the
+    // lane is a loud refusal before any hull is made.
+    issuers.extend(mush_org::SystemPrincipalId::new(
+        crate::port::hull::REGISTRY_ISSUER,
+    ));
     let issuer = housing_on.then(housing_title_issuer);
     let market_issuer = market_on.then(market_title_issuer);
     // E7 cut 3 B1: the composition root's own wire between two modules whose

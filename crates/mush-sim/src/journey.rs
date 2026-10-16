@@ -1107,6 +1107,16 @@ fn step(ctx: &mut Ctx<'_>, root: ObjId, now: &ClockStamp, source: Source) -> Ste
         book.journeys.insert(root, advanced);
     }
     if let Some(leg) = crossed {
+        // Cut IC4 (doc 18 §4.2 (e)): the crew aboard hear the boundary — the
+        // waypoint just reached and the leg now flown (`target + 1` of
+        // `total`). The cursor is the idempotency key here too: this branch
+        // runs once per boundary.
+        let line = RichText::new()
+            .span(name_span(ctx.w, root))
+            .text(" passes ")
+            .span(name_span(ctx.w, leg.to()))
+            .text(format!(". Leg {} of {total}.", target.saturating_add(1)));
+        narrate_aboard(ctx, root, &line);
         raise_interception(ctx, root, &leg, now);
     }
     Step::Worked
@@ -1416,9 +1426,53 @@ fn apply_arrival(
                 },
             );
         }
+        // Cut IC4 (doc 18 §4.2 (e)): the same line to every room aboard, under
+        // exactly the arrival narrative's conditions (lead ruling L7).
+        let line = RichText::new()
+            .span(name_span(ctx.w, root))
+            .text(" arrives, and the passage ends.");
+        narrate_aboard(ctx, root, &line);
     }
     raise_onboard_scene_floors(ctx, root, arrival_at);
     Step::Worked
+}
+
+/// **Every room aboard a carrier** (cut IC4; doc 18 §4.2 (e)): for every space
+/// in the carrier's subtree (bounded by [`MAX_CARRIER_SUBTREE`]), its object and
+/// its member rooms, deduplicated and sorted. The one walker shared by the
+/// onboard scene-floor raise and the aboard narration (lead ruling L7).
+fn onboard_rooms(st: &SpatialState, root: ObjId) -> Vec<ObjId> {
+    let mut set: BTreeSet<ObjId> = BTreeSet::new();
+    for o in st.subtree_truncated(root, MAX_CARRIER_SUBTREE) {
+        if let Some(space) = st.spaces.get(&o) {
+            set.insert(space.object);
+            set.extend(space.rooms.iter().copied());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Send one narrative line to every room aboard `root` (cut IC4; doc 18 §4.2
+/// (e)), excluding nobody: the crew walking a multi-room interior hear the
+/// carrier's passage wherever they stand. mush-sim's generic lines; the trade
+/// run's flavoured ones are a ruleset's (lead ruling L6).
+fn narrate_aboard(ctx: &mut Ctx<'_>, root: ObjId, text: &RichText) {
+    let rooms = match ctx.w.module_state::<SpatialState>() {
+        Some(st) => onboard_rooms(st, root),
+        None => return,
+    };
+    for room in rooms {
+        ctx.out.to_room_from(
+            room,
+            Vec::new(),
+            root,
+            OutputEvent::Narrative {
+                kind: NarrativeKind::Emit,
+                actor: None,
+                text: text.clone(),
+            },
+        );
+    }
 }
 
 /// Raise every onboard scene's IC floor to the arrival stamp through E6b's one
@@ -1432,14 +1486,7 @@ fn raise_onboard_scene_floors(ctx: &mut Ctx<'_>, root: ObjId, at: i64) {
         let Some(st) = ctx.w.module_state::<SpatialState>() else {
             return;
         };
-        let mut set: BTreeSet<ObjId> = BTreeSet::new();
-        for o in st.subtree_truncated(root, MAX_CARRIER_SUBTREE) {
-            if let Some(space) = st.spaces.get(&o) {
-                set.insert(space.object);
-                set.extend(space.rooms.iter().copied());
-            }
-        }
-        set.into_iter().collect()
+        onboard_rooms(st, root)
     };
     if rooms.is_empty() {
         return;

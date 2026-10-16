@@ -634,6 +634,29 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             !store.test_world(),
             "the production roster is no test world"
         );
+        // Doc 18 cut IC4: the Ceres map records the programme's eight hulls,
+        // each titled to the Co-op First Captain Trust.
+        let ceres = CanonicalId::new("ceres_port").expect("a canonical id");
+        let tacsim::port::PortMapState::Present(map) = store.port_map(&lane, &ceres) else {
+            panic!("ceres_port's port map is readable");
+        };
+        assert_eq!(map.hulls.len(), 8, "the eight programme hulls");
+        let trust = map
+            .orgs
+            .get(&CanonicalId::new("coop_trust").expect("a canonical id"))
+            .map(|row| mush_org::PrincipalId::Organization(mush_org::OrgId(row.org)))
+            .expect("the Trust's map row");
+        let economy = engine
+            .world
+            .module_state::<mush_economy::EconomyStore>()
+            .expect("the economy composed");
+        for row in &map.hulls {
+            let owner = economy
+                .snapshot()
+                .asset(mush_core::ObjId(row.hull))
+                .map(|asset| asset.title_owner.clone());
+            assert_eq!(owner.as_ref(), Some(&trust), "{} is the Trust's", row.mark);
+        }
     };
 
     // (a) The game off, the starter on: three latches.

@@ -949,9 +949,12 @@ impl EconomyStore {
     pub(crate) fn observers(&self) -> crate::observer::ObserverTable {
         self.observers.clone()
     }
-    /// Whether `issuer` was registered as a title issuer at wiring (E4c).
+    /// Whether `issuer` was registered as a title issuer at wiring (E4c). Public
+    /// so a ruleset's content applier preflights its issuer before any write
+    /// (doc 18 §4.7 part f, cut IC4), instead of learning of a typo from
+    /// `issue_title`'s refusal after objects exist.
     #[must_use]
-    pub(crate) fn is_title_issuer(&self, issuer: &mush_org::SystemPrincipalId) -> bool {
+    pub fn is_title_issuer(&self, issuer: &mush_org::SystemPrincipalId) -> bool {
         self.title_issuers.contains(issuer)
     }
     /// The wiring-frozen canon outcome kinds (an `Arc` clone — cheap), so a

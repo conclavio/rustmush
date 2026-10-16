@@ -146,12 +146,23 @@ impl CustodyProvider for InteriorCustodyProvider {
     /// exists (empty) from registration onward, so a `Some(false)` from a
     /// registered-but-unbooted module is a real risk: the server's module order
     /// (sim before economy) is what makes it impossible.
+    ///
+    /// **A multi-room space is never a backing** (cut IC4; doc 18 §4.2 (d)):
+    /// its member rooms are walked by people, and the bay principle above
+    /// ([`interior_contents`]: a space's custody is what is placed in it) would
+    /// then count a walker as vault custody. A hull's hold is a separate
+    /// single-room store space; only a record with at most one room answers
+    /// `Some(true)`.
     fn backing_valid(&self, w: &World, backing: &CustodyRef) -> Option<bool> {
         let CustodyRef::SpatialInterior(space) = backing else {
             return None;
         };
         let st = w.module_state::<SpatialState>()?;
-        Some(st.spaces.contains_key(space) && live(w, *space) && !st.is_quarantined(*space))
+        Some(
+            st.spaces.get(space).is_some_and(|s| s.rooms.len() <= 1)
+                && live(w, *space)
+                && !st.is_quarantined(*space),
+        )
     }
 
     fn contents(&self, w: &World, backing: &CustodyRef) -> Option<Vec<ObjId>> {

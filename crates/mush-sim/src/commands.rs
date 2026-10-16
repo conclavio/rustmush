@@ -11,8 +11,7 @@ use crate::data::{
     MountSpec, PASSIVE_DRIVER, Pose, RECOVERY_LOG, RulesValue, SlotId, SpaceAnchor,
     SpatialCounterError, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
     checked_domain_revision, checked_placement_revision, passive_rules_value, persist_assignments,
-    persist_control_gen, persist_del, persist_domain, persist_mounts, persist_space,
-    persist_stations, space_key,
+    persist_control_gen, persist_del, persist_domain, persist_mounts, persist_stations, space_key,
 };
 use crate::domain::{
     self, ActivationBook, DomainSummary, MAX_ACTIVE_DOMAINS, PromotionTrigger, QUIET_BOUNDARY,
@@ -1041,22 +1040,9 @@ fn spatial_slot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .map_err(|_| CmdError::msg("Max must be a number."))
         })
         .transpose()?;
-    let rec = {
-        let s = st_mut(ctx);
-        let sp = s
-            .spaces
-            .get_mut(&space)
-            .ok_or_else(|| CmdError::msg("That is not an interior space."))?;
-        sp.compartments.insert(
-            slot.clone(),
-            CapacitySpec {
-                maximum_items: max,
-                ..Default::default()
-            },
-        );
-        sp.clone()
-    };
-    persist_space(ctx.out, &rec);
+    // The one compartment writer (cut IC4, lead ruling L1): the parser stays
+    // here, the write is `window::declare_compartment`.
+    crate::window::declare_compartment(ctx, space, slot.clone(), max).map_err(CmdError::msg)?;
     info(
         ctx,
         format!(
@@ -2151,8 +2137,19 @@ fn spatial_detach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// Player-facing `egress` / `disembark`: leave the interior you are in.
 pub(crate) fn egress_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    if !matches!(st(ctx).parent_of(ctx.actor), SpatialParent::Interior { .. }) {
+    let SpatialParent::Interior { space, .. } = st(ctx).parent_of(ctx.actor) else {
         return Err(CmdError::msg("You are not inside anything."));
+    };
+    // Cut IC4 (doc 18 §4.2 (d)): egress from a multi-room interior would
+    // strand the actor on the carrier's passive domain; the ship's own verb
+    // puts them out through the lock. Staff `@spatial/egress` is recovery
+    // and stays.
+    if crate::is_multi_room(st(ctx), space) {
+        let host = display_name(ctx.w, crate::aboard_host(st(ctx), space));
+        return Err(CmdError::msg(format!(
+            "You cannot egress from {host}; use +ship/leave in the {}.",
+            display_name(ctx.w, space)
+        )));
     }
     let actor = ctx.actor;
     let parent = egress_parent(ctx, actor, None)?;

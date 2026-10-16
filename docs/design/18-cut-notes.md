@@ -1819,3 +1819,482 @@ over orgs/accounts/obligations/domains/journal; `map_docs(ops)`; `assert_nothing
 refused first boot through `Engine::with_modules` + `modules_loaded` hands back `engine.world`;
 `mush_economy::obligation_doc_key(ObligationId)` and `account:{id}` for folded-store surgery. Every
 boot asserts `refused_namespace_writes()` is empty.
+
+## IC4
+
+**Walking aboard: the boundary rule and the hull template** (doc 18 §5, the IC4 row and paragraph),
+built 2026-10-16 on main at ea52634d, minus the contract walk of the Dray's exit words, which rests
+on an owner ruling. One commit, pushed to origin/main.
+
+### What landed
+
+1. **One interior-space record governs several walkable rooms** (`crates/mush-sim/src/data.rs`,
+   `transition.rs`, `graph.rs`, `lib.rs`). `MAX_SPACE_ROOMS = 16` is re-exported;
+   `InteriorSpaceRecord.rooms` is documented as the member set (empty on a legacy record, which
+   stays single-room, L3); `Derived.member_of` maps every member to its space and the space object
+   to itself (L4), filled by `rebuild` in key order, first wins, and checked by `verify_indexes`
+   with the rest of `Derived`. `Transition::Members { space, rooms }` is a pure plan
+   (`plan_members`) refusing, in order, a dead or unrecorded space, a set without the space, more
+   than 16, and for each other room: dead, not a Room, a space of its own, a domain host, a live
+   domain's presentation room, a member of another space; then the removal of a room an occupant
+   stands in (`"{r} still holds {name}; move them first"`); on success `set_spaces` with the
+   record's `rooms` replaced, no projections, and the audit `{"op":"members","space","rooms"}` on
+   the recovery ledger. `Transition::Space` refuses a member before `live` (`"{space} is a room of
+   interior space {owner}; it cannot be a space itself"`). `SpatialError::Members(String)` renders
+   as its sentence.
+2. **Projection keeps a walker where it walked** (`crates/mush-sim/src/graph.rs` `project`): the
+   Interior arm answers the occupant's current location when the space's `rooms` lists it, else the
+   space object, resolved on `cur` so an exposed mount riding an occupant follows the occupant. Boot
+   reconcile and every `CarrierMove`/`Place` projection bundle therefore leave a walker in its
+   member room (hulls test 6, members test 5: a reboot keeps the walker in the Bridge/Deck with no
+   `placement:` write; a walker standing outside the members at boot lands in the lock).
+3. **The destination-aware gate** (`crates/mush-sim/src/lib.rs` `move_reason`): journeying, held,
+   quarantined, then the member arm — an `Interior`-placed actor with `exit.is_some()` whose `dest`
+   is in its own space's `rooms` is allowed and writes nothing — then the by-parent refusal. `home`,
+   `@teleport`, `+ic` and `@dig/teleport` pass no exit and stay refused for everyone, GOD included.
+   `gate_reason` (so `carry_attempt`) has no member arm. The multi-room aboard sentence is `"{name}
+   is aboard {host}; it moves only between {host}'s rooms, or leaves through the simulation or staff
+   recovery (@spatial)."` with host the `MovingObject` anchor, else the space; a single-room space
+   keeps the old sentence byte for byte. The gate was split into `held_or_quarantined`,
+   `parent_reason`, and the crate-private `aboard_host` and `is_multi_room`.
+4. **A member cannot be destroyed or made a space, and a programmatic destroy fails closed**
+   (`crates/mush-sim/src/lib.rs`): the destroy gate's member arm (`"{room} is a room of the interior
+   space {space}; @spatial/unspace that space first."`); `on_obj_destroyed` captures the husk's
+   `member_of` space and `drop_destroyed_member` removes it from `rooms`, rebuilds, persists the
+   space, warns, and moves every `Interior` child of that space whose location disagrees with its
+   projection back into the space object (`World::destroy` had sent them home or to Limbo), `warn!`
+   per move, `error!` on failure; `verify_projections` is empty afterwards (members test 7).
+5. **The custody and egress guards** (`crates/mush-sim/src/custody.rs`, `commands.rs`):
+   `backing_valid` answers `Some(true)` only for a record with at most one room (the bay principle:
+   a walked room never backs a vault); the player `egress`/`disembark` in a multi-room space answer
+   `"You cannot egress from {host}; use +ship/leave in the {space}."`; staff `@spatial/egress` is
+   untouched.
+6. **`pub fn declare_compartment(ctx, space, slot, maximum_items) -> Result<(), String>`**
+   (`crates/mush-sim/src/window.rs`, re-exported): the `@spatial/slot` write without its parser;
+   `spatial_slot` now calls it (one writer, L1). `"That is not an interior space."` for a room
+   without a record.
+7. **Boot drops invalid members in RAM and pages** (`crates/mush-sim/src/boot.rs`): the pure
+   `pub(crate) fn invalid_members(st, w) -> Vec<(space, Vec<(room, reason)>)>` applies the plan's
+   per-room tests only to `r != space`, keeps at most 16 (the space first, then id order) and never
+   names the space object whatever its kind, so the atlas's Thing pods boot silent (unit test
+   `ic4_invalid_members_spares_the_space_object`, members test 6a); `drop_invalid_members`, after
+   the dangling-anchor pass and before the reconcile rebuild, removes them from the RAM record only,
+   pages with `tracing::error!` naming the space, every room and its reason, plus `runbook = "repair
+   the space:<id> document by hand or @spatial/unspace the space"`, and re-inserts a missing live
+   space object unpaged. A walker standing in a dropped room then projects to the space and
+   reconcile moves it there (members test 6: no `space:` write, the walker in Lock).
+8. **Narration aboard** (`crates/mush-sim/src/journey.rs`): `onboard_rooms(st, root)` (every space
+   in the carrier's bounded subtree, its object and its `rooms`, deduplicated and sorted) is shared
+   by the scene-floor raise and the new `narrate_aboard`; at an intermediate boundary every room
+   aboard hears `"{root} passes {waypoint}. Leg {n} of {m}."` (`n = target + 1`), and inside the
+   arrival's `!already` block `"{root} arrives, and the passage ends."` — `NarrativeKind::Emit`,
+   `actor: None`, through `to_room_from(room, [], root)` (members test 10).
+9. **`EconomyStore::is_title_issuer` is `pub`** (`crates/mush-economy/src/module.rs`), `#[must_use]`
+   kept, so a ruleset's applier preflights its issuer before any write. Nothing else in mush-economy
+   moved.
+10. **The port map's hull rows** (`crates/tacsim/src/port/map.rs`): `PortMap.hulls: Vec<HullRow>`
+    with `#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so a map without hulls encodes
+    byte-identically to IC3's and `PORT_MAP_SCHEMA` stays 1 (L9); `HullRow { n, mark, hull, rooms:
+    BTreeMap<CanonicalId, u32>, exits: Vec<u32> }`, `deny_unknown_fields`, objects only — unit,
+    spaces, members, compartment, placement and title are read from their owners; the space and the
+    store are `rooms[interior.space]` and `rooms[interior.store]`. Re-exported from `tacsim::port`.
+11. **`PortApplier` part (f)** (`crates/tacsim/src/port/hull.rs`, new; wired from `apply.rs` after
+    part c, L8). `REGISTRY_ISSUER = "tacsim.registry"`, `HULL_DETAIL_PREFIX = "tacsim:detail:"`,
+    `HULL_SPACING_CM = 10_000`, `registry_mark(prefix, n)` = `{prefix}{n+1:02}`. `preflight(reg, w,
+    pack, id, def, map) -> Result<usize, String>` refuses, each prefixed `"{id}: "`, a
+    programme-less entry whose map records hulls, units/TacSim/economy not composed, a unit without
+    `logistics` + `interior` or without a binding, an issuer that is not a registered title issuer,
+    any exit segment that is a kernel command, a berths id that is not a `SlotId`, and every drift
+    against the recorded rows (`n >= pool` "never retired", a mark not `registry_mark(prefix, n)`
+    "never re-issued", a recorded hull/room/exit not live "never re-created — repair the map by
+    hand", a room the template does not author, more exits than `2 × pairs` "exits are never
+    retired"); it answers the rows absent plus the recorded hulls without an asset, which `apply.rs`
+    adds to the frozen-economy refusal (`"… so {to_make} capital tranche(s) and {h} hull title(s)
+    cannot be issued; …"`, IC3's sentence kept exactly when `h == 0`). `lay_up(ctx, id, programme,
+    &mut map, domain, gallery)` runs per hull in pool order (so *Slack Water*'s Thing has the lowest
+    id, L12), the map written after every object (L11): (1) the Thing named from `hull_names`, owner
+    the applying actor, alias the mark, in the gallery; (2) `create_unit` from the bound spec, only
+    for a hull no `UnitStore.units` entry and no `records` claim names; (3) the seven Rooms, then on
+    every pass `dress` (name when it differs, `desc` and the tree's `short_desc` attribute removed
+    when blank, every `tacsim:detail:*` attribute removed and the template's details rewritten under
+    `fold_detail_keyword`); (4) the five exit pairs in `open_exit`'s shape (first segment the name,
+    the rest aliases, `link_exit`, `ObjCreated`), index `2i`/`2i+1`, each only when the row's
+    `exits.len()` equals its index; (5) the store and (6) the airlock as spaces anchored
+    `MovingObject { host: hull }` through `attach sim.interior` + `Transition::Space` only when
+    unrecorded, then `Transition::Members` with the six walkable rooms when the set differs and
+    `declare_compartment(berths, Some(2))` when the cap differs; (7) `mush_sim::place` `Direct` at
+    `(0, n × 10,000 cm)` with the passive posture only when the hull has no placement record, a held
+    one included; (8) `issue_title` to `Organization(coop_trust)` at the Trust's root scope under
+    the issuer, no catalog, only when the hull has no asset record. `put`'s doc, the module doc,
+    `retire_check`'s comment and `retire`'s log now name the hulls (they stand on retire; the leased
+    refusal is IC6's).
+12. **The issuer and the detail shelf** (`crates/tacsim/src/composition/mod.rs`, `lib.rs`):
+    `tacsim.registry` joins the title issuers unconditionally beside industry's;
+    `TacsimRuleset::register` claims attribute namespace `tacsim` and detail prefix `tacsim:detail:`
+    before `commands::register`, so `look builders plate` in a hull's Airlock reads the template
+    (hulls test 2).
+13. **The hulls readiness line** (`crates/tacsim/src/port/readiness.rs`, `hull.rs` `hull_line`):
+    `Binding::Hulls` after the programme line, the first failing check — `{k} of {pool} are made.`,
+    `{mark} (#{obj}) does not exist.`, `{mark}'s interior is incomplete.` (a template room missing,
+    fewer than `2 × pairs` exits, or the airlock or store record absent), `{mark} is not titled to
+    {org name}.`, `{mark} is not laid up at a port.` (not `Direct` on a domain some port map
+    records) — else `{pool} of {pool} made, titled to {org name} and laid up.` IC6 reads the typed
+    state (L17).
+14. **Tests.** `crates/mush-sim/tests/members.rs` (new, 11): the plan's refusals, persistence and
+    index across a reboot, walking with no placement write, every other way off (non-member exit,
+    `home` with home set to a member, the player's and GOD's `@teleport` to a non-member and to a
+    member room with JUMP_OK set so the gate answers, a single-room occupant walking an exit into
+    another space's member), projection across a reboot, the boot drop, the Thing pod, the destroy
+    and space gates with the backstop, custody and egress, `declare_compartment`, narration aboard;
+    the rig keeps one ordered op log of the engine's `take_module_ops()` and the `Deferred::Persist`
+    ops of its throwaway outboxes (F4). `crates/mush-sim/src/boot.rs` unit test 6b.
+    `crates/tacsim/src/port/hull.rs` unit test on `registry_mark`. `crates/tacsim/tests/hulls.rs`
+    (new, 15): the eight Drays row by row (marks, names, ascending ids, owner GOD, alias, C01, the
+    Ceres domain, the unit, seven rooms, ten exits with names/aliases/source/destination, both
+    spaces, members, berths 2, the title and scope, Stickney empty, `look` in C01), the room text
+    and `look <detail>`, `@asset/show`, lens 1 (ten moves, zero placement writes, the revision
+    unchanged), lens 2 (`o`, `s`, `c`, `home`, `+ic` as `Sys`, the player's and GOD's `@teleport`,
+    `egress`, `disembark`), lens 3 (the reboot), the berths cap, the member gates on the records,
+    the vault backings, the second boot, the grown pool (+18 objects, +1 title, the eight rows
+    byte-identical), the held-document skip (correctness F1), the four drift refusals, the readiness
+    line, the issuer. `crates/tacsim/tests/ports.rs` test 8 expects the hulls line (+1) and the
+    frozen-economy test checks the `8 hull title(s)` sentence and no *Slack Water* Thing;
+    `crates/mush-server/tests/boot_parity.rs` checks the Ceres map's eight hulls each titled to the
+    Trust.
+
+**Found by review and fixed in the same cut:** on a kept world, a hull whose `placement:` or `unit:`
+document boot had held stopped the whole lane apply partway through (`Transition::Place` and
+`create_unit` refuse a held object); `place_and_title` and step 2 now count a held placement and any
+`UnitStore.records` claim as "already there" and skip the hull
+(`ic4_a_held_hull_document_is_skipped_not_refused`). The member arm's `exit.is_some()` and own-space
+clauses had no test that failed without them, and the player `@teleport` steps were
+`perm::can_teleport` refusals, not the gate's; both fixed in the tests.
+
+### Deferred, and why
+
+**Lead rulings taken by the planner** (recorded here so the owner sees them):
+
+- **L1 — One new mush-sim function only**: `Transition::Members` and `pub declare_compartment` (doc
+  18 §4.2 schema additions); a space is declared the way `mush-atlas::apply::make_interior` does it
+  (attach `sim.interior` + `mush_sim::run(Transition::Space)`); no `declare_space`/`declare_members`
+  wrappers; `@spatial/slot` delegates to `declare_compartment`.
+- **L2 — No `@spatial/members` staff switch**: members are content-owned; staff recovery is
+  `@spatial/unspace`; tests reach the transition through `plan`/`apply`/`run`.
+- **L3 — The gate's member arm**: Interior-placed actor, `exit.is_some()`, `dest` in its own space's
+  `rooms`, after the journeying, held and quarantined arms; `carry_attempt` unchanged (a carry of a
+  multi-room occupant answers the new aboard sentence through `placed_or_quarantined`, intended);
+  "multi-room" means `rooms.len() > 1`, a legacy empty `rooms` is single-room.
+- **L4 — `member_of` maps the space object to itself**; the destroy and `Space` arms exclude the
+  self-entry.
+- **L5 — Boot drops invalid members in RAM only, pages, never rewrites the document** (§4.2 (c); the
+  held-placement precedent: staff repair the raw document). The space object is never dropped or
+  paged whatever its kind (the atlas's Thing pods; first-review F1).
+- **L6 — The engine sentences** (the aboard refusal, the egress refusal, the two narration lines)
+  are mush-sim's generic lines in the voice of the existing ones; the trade run's flavoured
+  narration is IC9's. **Owner-critical**, below.
+- **L7 — Narration rides the existing arrival conditions** (inside `!already`, no `Source` gate) and
+  one `onboard_rooms` walker shared with the scene-floor raise.
+- **L8 — Part (f) lives in `port/hull.rs`**, called from `put` after part c; IC8 inserts d–e before
+  it.
+- **L9 — The map records objects only** (`HullRow { n, mark, hull, rooms, exits }`), the space and
+  store derived from `rooms`; `PORT_MAP_SCHEMA` stays 1, `hulls` skipped when empty (IC3's
+  precedent).
+- **L10 — Update semantics**: a later apply creates missing rows, re-dresses rooms, never renames a
+  hull (IC6 owns the rename), never re-places a hull with any placement record, never re-titles one
+  with any asset record; a shrunk pool, a changed prefix, a recorded object gone, an unauthored room
+  or excess exits is refused as drift before any write. Against §4.7's "Update rewrites names in
+  place" for hulls, by the IC3 L4 precedent.
+- **L11 — The map is written after every object created** (about 150 whole-map rewrites in the one
+  first-boot batch).
+- **L12 — Registry mark = prefix + two-digit `n + 1`**, the Thing's alias and the row; hulls made in
+  pool order so 0401's Thing id is the lowest (IC6's `next_loaner`).
+- **L13 — Title** to `Organization(coop_trust)` at the Trust's root scope, no catalog, issuer
+  `tacsim.registry` registered unconditionally (industry's precedent), preflighted through
+  `is_title_issuer` made `pub`.
+- **L14 — Room text on tacsim's own shelf**: `desc`, the tree's `short_desc`, details on namespace
+  `tacsim` with prefix `tacsim:detail:`, never atlas's; `dray.json` not edited, its pin unmoved. The
+  re-dress runs only inside a lane apply, so hull room text follows `dray.json` only through one
+  (IC6's meta-text strip must bump the lane or ride IC8's v3).
+- **L15 — Exits** follow `open_exit`'s shape with the kernel-verb refusal preflighted; the
+  `exit_command_words` half is **stopped**, below.
+- **L16 — Laid-up pose** `(0, n × 10,000 cm)`, passive posture; the hull Thing has no description.
+  **Owner-critical**, below.
+- **L17 — One readiness line per programme port**, `Binding::Hulls`, "laid up" = `Direct` on a
+  domain a port map records; IC9 adds under way; IC6 reads the state, never the text.
+- **L18 — No lane bump.** Part (f) runs only inside the lane's apply, so a world that latched v2
+  under IC3 gets its hulls at IC8's v3 or a wipe; dev1 never booted IC1–IC3. **Owner-critical**,
+  below. Consequence: IC3 reviewer F9 is now reachable, staff only — a staff `@journey/depart` on
+  one of the eight `Direct`-placed hulls flies the lane at the authored `base_s`; IC9's to close, no
+  code changed for it here.
+- **L19 — Tests in two new files**, each with its own copy of the minimal rig; `ports.rs` edited
+  only where C7 says.
+
+**Owner-critical defaults taken, carried to the owner:**
+
+- **The engine sentences (L6)**: the aboard refusal `"{name} is aboard {host}; it moves only between
+  {host}'s rooms, or leaves through the simulation or staff recovery (@spatial)."`, the egress
+  refusal `"You cannot egress from {host}; use +ship/leave in the {space}."` (true only once IC6
+  lands `+ship/leave`), and the narration `"{root} passes {waypoint}. Leg {n} of {m}."` / `"{root}
+  arrives, and the passage ends."` are player-facing text doc 18 does not give verbatim; the
+  fiction's voice is the owner's.
+- **The hull Thing has no gallery description (L16)**: 18a authors none; `look` in C01 lists the
+  eight names only.
+- **No lane bump (L18)**: changes when hulls appear on any kept world; nothing deployed is affected.
+
+**Stopped and reported, not improvised** (an owner ruling): **C7's `exit_command_words.rs` walk of
+the Dray's exit segments is not landed.** The template's `airlock → passage` pair carries `names[1]
+= "Airlock <A>;airlock;lock;forward"` (`dray.json:186`), so every hull's Central Passage has an exit
+aliased `lock`, and `lock` is tacsim's cockpit verb LOCK (`cockpit.rs:222`) — the production walk
+found `(tacsim.unit.dray/airlock-passage, lock, lock)`, which is not in `DECIDED`, and the brief
+says to STOP on a module-verb collision. The builder reverted the file so the gate stays green. Two
+options for the owner: a DECIDED row with its reason (LOCK means nothing outside a seated cockpit,
+and no seat exists aboard a Dray, D-18-23 — the F.4 `board` precedent), or a renamed alias in a new
+`tacsim.pack.dray` version with the pin re-blessed. Either way the prepared extension
+(`load_pack(DRAY_JSON)` → `PackEntry::Unit` → `.interior.exits`, entry id
+`tacsim.unit.dray/<from>-<to>`) lands after; the apply-time `hull::preflight` checks kernel words
+only.
+
+**Builder's and fixer's decisions beyond the brief:**
+
+- `lay_up(ctx, id, programme, &mut map, domain, gallery)` drops the brief's `pack` and `def`
+  arguments (`pack` is `map.pack`, `def` was unused) to stay under clippy's argument count without
+  an `#[allow]`; steps 1–6 are `lay_up_one` over a `HullPlan`, 7–8 `place_and_title`, run per hull
+  in pool order.
+- `hull_line` lives `pub(crate)` in `hull.rs` and also requires `exits.len() == 2 × pairs` for
+  "complete"; its existence check walks the hull, then its rooms, then its exits and names the first
+  gone object.
+- `declare_space` skips an existing record entirely (no `space:` rewrite on a re-apply); members and
+  berths are written only when they differ.
+- A hull is skipped at step 2 when `UnitStore.units` has it OR any `UnitStore.records` row claims it
+  by `key_object` or `object`, and at step 7 when `SpatialState.placements` has it OR
+  `held_placement` is `Some` (correctness F1): a held, unreadable document is still the hull's
+  record, staff's to repair, never shadowed and never a mid-pass refusal; the readiness line then
+  reads that hull as not laid up.
+- The berths `SlotId` is converted in `preflight` and again in `lay_up` (both fallible, same
+  refusal; `put` re-runs preflight anyway) rather than converted once and handed on.
+- Boot's drop reasons are fixed strings: `the room does not exist`, `not a room`, `an interior space
+  of its own`, `hosts a domain`, `the presentation room of a live domain`, `already a room of an
+  earlier interior space`, `over the interior space room cap`.
+- The arrival aboard-line is inside `!already` but outside the existing `if let Some(to)` guard;
+  harmless, since a successful `CarrierMove` always leaves the root a location.
+
+**Left as notes, not fixed (honestly small):** hull exits are recorded by position with a count
+check only, so the Dray template's `interior.exits` are **append-only** — a later version that
+reorders or inserts a pair would duplicate the last pair's exits and still read complete; the hulls
+readiness line goes Missing for any hull not Trust-titled and `Direct` at a port, so IC6's gate must
+read "the programme was made" (or IC9 must add the leased and under-way arms) or the first lease
+would refuse every later enrolment; `Transition::Members` does not refuse a vault-backing space,
+LIMBO, the recovery room or the in-transit room as members (no production caller can reach it);
+boot's RAM-only drop becomes permanent on the next `persist_space` of that record; the `rooms` field
+doc says "written only by `Transition::Members`" while `drop_destroyed_member` also writes it; the
+player-side `s`/`c`/`home` steps in hulls test 5 assert only the location; the laid-up pose spacing,
+four of the six readiness states, four of boot's seven drop reasons and the ninth hull's spaces,
+placement and title owner in the grown-pool test are not asserted; "no reconcile warning" in members
+test 5 is proven by the unchanged location and the absence of writes, not by log capture; the hull
+Thing's owner is `ctx.actor` (GOD at boot and on `@atlas/pack apply`).
+
+**Deferred to named cuts:** `+ship`, `+ship/board`, `+ship/leave`, `+ship/hold`, the `look` status
+line and the per-room gauges, the meta-text strip, the hull rename at enrolment, the hold vault on
+the stowage, `+coop`/`+coop/enrol`/`+coop/statement`, the lease, the operate gate, the readiness
+**gate** and the leased refusal in `retire_check` — IC6; the action provider, the typed families and
+the `tacsim.port` tick — IC5; the market seams — IC7; vendors, vaults, stock, the goods catalog
+load, lane v3 — IC8; `plan_passage`, the burn, `+ship/undock`, departure and docking, the flavoured
+narration, the readiness line's under-way arm, `+travel/status` aboard, refusing exits into anchored
+interiors at apply time — IC9. Never in the slice: a destination seal, a seat-reach re-check,
+stations, `BerthLink`, gangway exits, a Moved observer (P-G/P2), berth slots (P-F), the under-way
+inventory seal (P-H). Deploying anything is the owner's.
+
+### Pins re-blessed
+
+- **`crates/tacsim/tests/ports.rs`
+  `ic3_the_readiness_report_lists_every_binding_and_flags_the_rate`**: the expected report gains
+  `  ceres_port hulls: 8 of 8 made, titled to Co-op First Captain Trust and laid up. [ready]` after
+  the Ceres programme line, so `total` (= `want.len()`) moves 18 → 19 and the "9 pending" count is
+  unchanged. Reason: the new readiness line (C7).
+- **`crates/tacsim/tests/ports.rs`
+  `ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made`**: additive — the refusal now also
+  contains `capital tranche(s) and 8 hull title(s) cannot be issued` and no Thing named *Slack
+  Water* exists; no earlier assertion changed.
+- **`crates/mush-server/tests/boot_parity.rs`
+  `ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on`**: additive inside
+  `lane_resolves` — the Ceres map records eight hull rows, each asset titled to
+  `Organization(coop_trust)`.
+- **Unmoved:** every panic budget (no `unwrap`/`expect`/`panic!`/indexing added outside
+  `#[cfg(test)]`); `legacy-handlers.toml` (`PINNED_BASELINE` 97; no new verb — `@spatial`, `egress`
+  and `@tacsim/port` keep their specs); `state-slot-owners.toml` (every write goes through the
+  owner's function: `mush_sim::run`, `place`, `declare_compartment`, `create_unit`, `issue_title`);
+  `module-ns-owners.toml`; the composition-edge pin (the tacsim →
+  mush-sim/mush-economy/mush-tactics/mush-org/mush-atlas edges already exist); the restriction-lints
+  census (no `#[allow]` added in `src/`); every content digest (`tacsim.pack.dray`, lane v2, goods,
+  starter, stations, corridor fixtures) and every shipped `DefinitionRef`; the replay, mind-lane and
+  `harness_baseline` hashes (hull units reached no match world); the CI gated-test inventory;
+  `exit_command_words.rs` and its two `DECIDED` rows (the Dray walk is the stopped item above);
+  `PORT_MAP_SCHEMA` 1; no IC3 first-boot object or journal count moved; `e7c6` (68) and `placement`
+  (31) green with no assertion changed.
+
+### How it was verified
+
+**Reviewed, not run, by the judge** (read-only; no cargo): the whole uncommitted diff at base
+ea52634d (18 modified files, 789 insertions, 73 deletions; the three new files
+`mush-sim/tests/members.rs`, `tacsim/src/port/hull.rs`, `tacsim/tests/hulls.rs` read in full)
+against the brief, doc 18 §4.2, §4.7 part f, D-18-22/23/29/34 and §3 beats C, D and J; the gate
+order and sentences, the projection arm, the backstop, the boot pass, the applier's steps and the
+readiness line checked line by line; `git diff -U0` on the touched tests removes no line; the
+`lock`/LOCK collision confirmed at `dray.json:186` and `cockpit.rs:222`; `exit_command_words.rs`
+confirmed unmodified.
+
+**Three lenses** (correctness, conformance, tests) on the builder's tree agreed on no must-fix.
+Correctness's one should-fix (a held `placement:` or `unit:` document refused the apply partway
+through) and tests' two should-fixes (the member arm's narrowing clauses untested; the player
+`@teleport` steps were permission refusals) were fixed by the fixer with mutation checks (each
+reverted clause fails the new assertions; `lib.rs` restored byte for byte). Conformance's should-fix
+(the C7 contract walk) is the owner item above, correctly deferred.
+
+**Builder's pre-fix gate** (every brief command green): mush-sim members 11, lib 35, placement 31,
+e7c6 68, custody 11, whole crate 293; mush-atlas 163; mush-economy 533; tacsim hulls 14, ports 17,
+content 29 (digest pins unmoved), lane 8, stations 13, lib 862, whole crate 2073;
+mush-contract-tests 127 after reverting the Dray walk (the walk itself failed on
+`("tacsim.unit.dray/airlock-passage", "lock", "lock")`); mush-server boot_parity 18; mushd 243;
+mush-bot 704; `cargo fmt --all -- --check` exit 0; `cargo clippy --workspace --all-targets -- -D
+warnings` exit 0.
+
+**Final gate after the fixer, 24 steps, all pass on the first attempt** (logs under the run's
+`scratchpad/cuts/IC4/gate1/step01..24.log`): `cargo fmt --all -- --check` → exit 0, no output;
+`cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+debuginfo] target(s) in 1.76s``, exit 0; `cargo test -p mush-sim --test members` → `test result: ok.
+11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s`; `--lib` → ok, 35
+passed; `--test placement` → ok, 31 passed; `--test e7c6` → ok, 68 passed; `--test custody` → ok, 11
+passed; `cargo test -p mush-sim --no-fail-fast` → 14 binaries ok, 293 passed, 0 failed; `cargo test
+-p mush-atlas --no-fail-fast` → 16 binaries ok, 163 passed; `cargo test -p mush-economy
+--no-fail-fast` → 13 binaries ok, 533 passed; `cargo test -p tacsim --test hulls` → `test result:
+ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.30s`; `--test ports` →
+ok, 17 passed; `--test content` → ok, 29 passed; `--test lane` → ok, 8 passed; `--test stations` →
+ok, 13 passed; `--lib` → ok, 862 passed; `cargo test -p mush-contract-tests` → 29 binaries ok, 127
+passed, 0 failed, 8 ignored (twice, identical); `cargo test -p mush-server --test boot_parity` →
+`test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s`;
+`cargo test -p tacsim --no-fail-fast` → 39 binaries ok, 2074 passed, 0 failed, 12 ignored; `cargo
+test -p mushd --no-fail-fast` → 44 binaries ok, 243 passed, 0 failed, 1 ignored (15m35s build);
+`cargo test -p mush-bot` → 22 binaries ok, 704 passed, 0 failed, 5 ignored (twice); `cargo test
+--workspace --exclude mush-bot --no-fail-fast` → 385 binaries, every one `test result: ok.`, 7240
+passed, 0 failed, 92 ignored, exit 0 (37m33s).
+
+**No flake this run:** no `LNK1104`, no hung binary, no rerun. The workspace log's one panic line
+(`process_fault.rs:197 WS01-S8 armed world-turn fault`) is `ws01_s8_server_worker` arming its own
+fault, and that binary passed; the "running for over 60 seconds" warnings
+(`parse_operator_soup_never_panics`, mushd `arena_story` at 69.5 s, `ae2_a_missile_in_flight_…`) all
+passed. The IC3 flake (`arena_story`) did not recur.
+
+### Surface for the next cuts
+
+**mush-sim (`mush_sim`, root re-exports)**
+
+- `pub const MAX_SPACE_ROOMS: usize = 16` (`data.rs`, re-exported). `InteriorSpaceRecord.rooms:
+  BTreeSet<ObjId>` is the member set; empty on a legacy record (single-room); when non-empty the
+  space object is among them. "Multi-room" everywhere (the aboard sentence, `backing_valid`,
+  `egress`) means `rooms.len() > 1`.
+- `Derived.member_of: BTreeMap<ObjId, ObjId>` — room → the space whose `rooms` lists it; the space
+  object maps to itself; `verify_indexes` checks it.
+- `Transition::Members { space: ObjId, rooms: BTreeSet<ObjId> }` through `mush_sim::run` / `plan` /
+  `apply`; refusals in order: `NoSuchObject(space)` / `NoSuchSpace(space)`, `Members("{space} must
+  be a room of its own interior space")`, `Members("an interior space holds at most 16 rooms; {n}
+  were named")`, per other room `NoSuchObject(r)` / `Members("{r} is not a room")` / `"{r} is an
+  interior space of its own"` / `"{r} hosts domain #{d}"` / `"{r} is the presentation room of domain
+  #{d}"` / `"{r} is already a room of interior space {other}"`, then `Members("{r} still holds
+  {display_name}; move them first")`; plans `set_spaces` only, audit
+  `{"op":"members","space":id,"rooms":[ids]}`. Ids display as `#n`. `Transition::Space` on a member:
+  `Members("{space} is a room of interior space {owner}; it cannot be a space itself")`.
+  `SpatialError::Members(String)` renders as `"{0}"`. A space is declared as before: attach
+  `sim.interior` + `run(Transition::Space)` (the `make_interior` shape); `declare_space` in
+  `tacsim::port::hull` is crate-private.
+- `pub fn declare_compartment(ctx: &mut Ctx<'_>, space: ObjId, slot: SlotId, maximum_items:
+  Option<u32>) -> Result<(), String>` (`window.rs`): writes `compartments[slot] = CapacitySpec {
+  maximum_items, ..Default::default() }` and persists; `"That is not an interior space."` without a
+  record; `"the simulation module is not composed"` otherwise. `@spatial/slot` calls it.
+- `graph::project`: `Interior` → the occupant's current location when the space's `rooms` contains
+  it, else the space object.
+- The movement gate (`MoveAttempt` hook): journeying → held → quarantined → **member arm** (allowed
+  when `exit.is_some()` and `dest` is in the actor's own space's `rooms`; no placement write) →
+  by-parent. `CarryAttempt` has no member arm. Multi-room aboard sentence: `"{name} is aboard
+  {host}; it moves only between {host}'s rooms, or leaves through the simulation or staff recovery
+  (@spatial)."` (host = the `MovingObject` anchor, else the space); single-room keeps `"{name} is
+  inside {space}; it leaves only through the simulation, or staff recovery (@spatial)."`. `+ic`
+  delivers it as `Sys`.
+- Destroy gate on a member: `"{room} is a room of the interior space {space}; @spatial/unspace that
+  space first."`. A programmatic destroy of a member drops it from `rooms`, persists the space, and
+  moves every `Interior` child of that space whose location disagrees with its projection into the
+  space object.
+- `InteriorCustodyProvider::backing_valid` = `Some(rooms.len() <= 1 && live && !quarantined)`;
+  `@vault/create a=interior:<airlock>` is refused, `interior:<stowage>` accepted.
+- Player `egress`/`disembark` inside a multi-room space: `"You cannot egress from {host}; use
+  +ship/leave in the {space}."`; staff `@spatial/egress` unchanged.
+- Boot: `pub(crate) fn invalid_members(st, w) -> Vec<(ObjId, Vec<(ObjId, &'static str)>)>`; the drop
+  is RAM-only, paged with `tracing::error!` (`space`, `dropped`, `runbook`); a dropped room's
+  occupant projects to the space and reconcile moves it there. Any later `persist_space` of that
+  record (a compartment write, a re-anchor, a destroyed member, a lane re-apply) makes the drop
+  durable.
+- Narration aboard (`journey.rs`): `onboard_rooms(st, root)` is private; at an intermediate boundary
+  every room aboard receives `OutputEvent::Narrative { kind: Emit, actor: None, text: "{root} passes
+  {leg.to()}. Leg {target+1} of {total}." }` and at arrival (inside `!already`) `"{root} arrives,
+  and the passage ends."`, both via `to_room_from(room, [], root)`. IC9's flavoured lines are
+  additional, not replacements.
+
+**mush-economy** — `pub fn is_title_issuer(&self, issuer: &mush_org::SystemPrincipalId) -> bool` on
+`EconomyStore`, `#[must_use]`.
+
+**tacsim (`tacsim::port`)**
+
+- `PortMap.hulls: Vec<HullRow>` (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`);
+  `PORT_MAP_SCHEMA` stays 1. `pub struct HullRow { pub n: u32, pub mark: String, pub hull: u32, pub
+  rooms: BTreeMap<CanonicalId, u32>, pub exits: Vec<u32> }`, `deny_unknown_fields`, re-exported as
+  `tacsim::port::HullRow`. The airlock is `rooms["airlock"]` (`interior.space`), the stowage
+  `rooms["stowage"]` (`interior.store`); walkable rooms `airlock`, `passage`, `bridge`, `crew`,
+  `hold`, `engineering`; exits pair i at `2i` (names[0], from → to) and `2i+1` (names[1], to →
+  from), **append-only** in the template. Rows are in pool order; *Slack Water* is `hulls[0]` with
+  the lowest Thing id (IC6's `next_loaner`); the Stickney map has no rows.
+- `tacsim::port::hull`: `pub const REGISTRY_ISSUER: &str = "tacsim.registry"`; `pub const
+  HULL_DETAIL_PREFIX: &str = "tacsim:detail:"`; `pub const HULL_SPACING_CM: i64 = 10_000`; `pub fn
+  registry_mark(prefix: &str, n: u32) -> String` (`FPC-D-0401` for `("FPC-D-04", 0)`); `pub(crate)
+  fn preflight(reg, w, pack, id, def, map: Option<&PortMap>) -> Result<usize, String>` (the count of
+  hulls this pass would title); `pub(crate) fn lay_up(ctx, id, programme, map: &mut PortMap, domain:
+  DomainId, gallery: ObjId) -> Result<(), String>`; `pub(crate) fn hull_line(w, store, entry, def,
+  map) -> Option<(LineState, String)>`.
+- Each hull Thing: owner = the applying actor (GOD at boot and on `@atlas/pack apply`), name from
+  `hull_names`, alias the mark, location C01 by projection, `tactics.unit` bound from
+  `tacsim.unit.dray`, placed `Direct` on the Ceres port domain at `(0, n × 10,000 cm)` with the
+  passive posture, no description, titled `EconomicAsset { title_owner: Organization(coop_trust
+  org), scope: Some(the Trust's root scope) }` under `tacsim.registry`, no catalog entry. Its
+  airlock record: `anchor: MovingObject { host: hull }`, `rooms` = the six walkable rooms,
+  `compartments["berths"].maximum_items == Some(2)`; the stowage record: the same anchor, `rooms
+  {stowage}`. Room text: `desc`, `short_desc` (`mush_atlas::def::SHORT_DESC_ATTR`) and details under
+  `tacsim:detail:{fold_detail_keyword(key)}`, re-dressed on every lane apply only.
+- Update semantics (L10): a re-apply creates nothing; a grown pool creates only the new hulls; a
+  hull with any placement record (held included) is never re-placed; one with any asset record is
+  never re-titled; the Thing is never renamed (IC6 renames at enrolment; the mark stays); exits are
+  never re-made; refused as drift before any write: a row `n >= pool`, a mark ≠ `registry_mark`, a
+  recorded object not live, an unauthored room, more than `2 × pairs` exits, hulls on a
+  programme-less entry. A frozen economy refuses with `"{id}: the economy is frozen on this world,
+  so {to_make} capital tranche(s) and {h} hull title(s) cannot be issued; nothing is applied while
+  it is frozen"` when `h > 0`.
+- `preflight` in `PortApplier` now takes `reg: &mush_core::Registry` (both `check` and `put` pass
+  `ctx.reg`). `retire_check` still `Ok(())`; hulls stand on retire.
+- Readiness: `Binding::Hulls` after the programme line, one per programme port: Missing `"{entry}
+  hulls: {k} of {pool} are made."` / `"{mark} (#{obj}) does not exist."` / `"{mark}'s interior is
+  incomplete."` / `"{mark} is not titled to {org name}."` / `"{mark} is not laid up at a port."`
+  (not `Direct` on a domain any port map records); Ready `"{entry} hulls: {pool} of {pool} made,
+  titled to {org name} and laid up."`. IC6 reads the `LineState`; note a leased or under-way hull
+  turns it Missing until IC9's arm lands.
+- Composition: the title issuers are housing (if on), market (if on), industry, and
+  `tacsim.registry` (unconditional). `TacsimRuleset::register` claims attribute namespace `tacsim`
+  and detail prefix `tacsim:detail:`.
+- Content: `tacsim.pack.dray` and the lane v2 digests are unmoved; `dray.json` is not edited. The
+  Airlock exit alias `lock` collides with the cockpit verb LOCK and awaits the owner's ruling before
+  `exit_command_words.rs` walks the Dray.
+
+**Test rig patterns later cuts copy**: `crates/mush-sim/tests/members.rs` (the ordered op log
+draining `tw.take_module_ops()` and the throwaway `Outbox`'s `Deferred::Persist` ops around direct
+`plan`/`apply`/`emit_world_event`; `reboot_with(kv, setup)` recreating walkers before
+`modules_loaded`; `fold_kv_ops`, `doc`/`doc_mut`, `listed_rooms`); `crates/tacsim/tests/hulls.rs`
+(`Roster::{production, bare}` + `with_shelf`, `ceres_map`, `hull_rooms(row)`, `aboard(tw) -> (pilot,
+row)` placing a spawned participant in *Slack Water*'s berths, `placement_writes(ops)`,
+`lane_v3`/`plan_and_apply`, the held-document corruption of a folded store before `reboot`,
+`destroy(tw, obj)` for a programmatic destroy).

@@ -1,10 +1,11 @@
-//! **The `PortApplier`** (doc 18 cut IC3; doc 18 §4.7 parts a–c, D-18-14,
-//! D-18-20, D-18-27; lead rulings L1, L3–L6, L9).
+//! **The `PortApplier`** (doc 18 cut IC3; doc 18 §4.7 parts a–c and f, D-18-14,
+//! D-18-20, D-18-27; lead rulings L1, L3–L6, L9; cut IC4's L8–L18 for part f).
 //!
 //! A `port` entry is applied once, under the content latch, by this applier —
 //! registered from `crate::content::register_appliers` at **phase 11**, after
-//! the places (5) and the routes (6) of its own pack. It does three things and
-//! nothing else:
+//! the places (5) and the routes (6) of its own pack. It does four things and
+//! nothing else (parts d–e, the vendors and their stock, are cut IC8's and go
+//! in before f):
 //!
 //! - **(a) the domain** — ONE passive domain per port, hosted on the lane's
 //!   location room and presenting in the station's berth gallery (the room
@@ -15,7 +16,10 @@
 //! - **(c) the institutions** — each a real `mush-org` org with a root scope
 //!   and one scoped `tacsim.credit` account, capitalized by one-shot
 //!   `create_system_obligation` tranches of at most 800,000 cr
-//!   ([`crate::port::tranches`]).
+//!   ([`crate::port::tranches`]);
+//! - **(f) the hulls** (cut IC4) — for an entry whose `programme` names a pool,
+//!   each hull laid up from the programme unit's `interior` template in the
+//!   berth gallery and titled to the programme org ([`crate::port::hull`]).
 //!
 //! Every act is recorded in the port map ([`crate::port::PortMap`]) written
 //! **immediately after** it, in the apply's one batch — the sole dedup, since
@@ -37,8 +41,10 @@
 //! (`capital_drift`). A new org in a later version is created and
 //! capitalized; a changed `faction` word is accepted and writes nothing; a map
 //! row whose org, account or obligation is gone from its owner's store is
-//! refused, never re-created.
-//! Retire leaves everything standing.
+//! refused, never re-created. Hulls re-apply by map row, never by name: a grown
+//! pool makes only the new hulls, and a shrunk pool, a changed prefix or a
+//! recorded object gone is refused as drift (cut IC4, L10).
+//! Retire leaves everything standing, the hulls included.
 
 use std::collections::BTreeMap;
 
@@ -201,9 +207,11 @@ impl PortApplier {
     /// **Every refusal that can be decided before anything mutates** (doc 18
     /// §4.7; L1, L4): the layers, the map's readability, the rooms and the
     /// gallery's marker, the mint cap against the largest tranche still to be
-    /// made, and every drift of the authored entry against a present map.
+    /// made, every drift of the authored entry against a present map, and (cut
+    /// IC4) every hull refusal of [`crate::port::hull::preflight`].
     #[allow(clippy::too_many_lines)]
     fn preflight(
+        reg: &mush_core::Registry,
         w: &World,
         pack: &CanonicalId,
         id: &CanonicalId,
@@ -285,6 +293,9 @@ impl PortApplier {
                 map,
             )?;
         }
+        // The hulls (cut IC4, part f): the template, the issuer, the exit words
+        // and every hull drift, and how many hulls this pass would title.
+        let hulls_to_title = crate::port::hull::preflight(reg, w, pack, id, def, map)?;
         // The mint cap (D-18-14): the largest tranche still to be created. The
         // drift rule above makes every recorded row's capital the authored one,
         // so what is still to be created is exactly the unrecorded indices.
@@ -320,11 +331,20 @@ impl PortApplier {
         // first tranche — the "mutates, then refuses" the check phase exists to
         // prevent. Every org a pass still has to make has a tranche to make
         // (capital is at least 1), so "a tranche is still to be created" is
-        // exactly "this pass writes to the economy".
-        if to_make > 0 && economy.is_frozen() {
+        // exactly "this pass writes to the economy". A hull title is an economy
+        // write too (cut IC4): `issue_title` refuses on a frozen economy, after
+        // the hull's objects exist.
+        if (to_make > 0 || hulls_to_title > 0) && economy.is_frozen() {
+            if hulls_to_title == 0 {
+                return Err(format!(
+                    "{id}: the economy is frozen on this world, so {to_make} capital tranche(s) \
+                     cannot be issued; nothing is applied while it is frozen"
+                ));
+            }
             return Err(format!(
-                "{id}: the economy is frozen on this world, so {to_make} capital tranche(s) \
-                 cannot be issued; nothing is applied while it is frozen"
+                "{id}: the economy is frozen on this world, so {to_make} capital tranche(s) and \
+                 {hulls_to_title} hull title(s) cannot be issued; nothing is applied while it is \
+                 frozen"
             ));
         }
         Ok(())
@@ -475,9 +495,10 @@ impl PortApplier {
         Ok(def)
     }
 
-    /// **The apply** (create and update alike): parts a–c in order, the map
-    /// written after every act. Makes no object of its own (the host room is
-    /// the `location` entry's), so it answers `Ok(None)`.
+    /// **The apply** (create and update alike): parts a–c and f in order, the
+    /// map written after every act. It answers `Ok(None)`: the hulls are
+    /// recorded in the port map, not in the latch (the host room is the
+    /// `location` entry's).
     #[allow(clippy::too_many_lines)]
     fn put(
         ctx: &mut Ctx<'_>,
@@ -490,7 +511,7 @@ impl PortApplier {
         let def = PortApplier::decode(id, entry)?;
         // The same answers `check` gave before the apply touched anything; asked
         // again so a refusal here can never follow a partial write of this entry.
-        PortApplier::preflight(ctx.w, &pack_id, id, &def)?;
+        PortApplier::preflight(ctx.reg, ctx.w, &pack_id, id, &def)?;
         // (0) The host, the gallery, the map.
         let host = placed
             .get(&def.location)
@@ -750,6 +771,17 @@ impl PortApplier {
                 put_port_map(ctx, &map);
             }
         }
+
+        // (f) The hulls (cut IC4; L8): after the institutions, because the
+        // title goes to the programme org part c made in this same pass. Cut
+        // IC8's parts d–e go in before this.
+        if let Some(programme) = &def.programme {
+            let domain = map
+                .domain
+                .map(mush_sim::data::DomainId)
+                .ok_or_else(|| format!("{id}: no domain is recorded"))?;
+            crate::port::hull::lay_up(ctx, id, programme, &mut map, domain, gallery)?;
+        }
         Ok(None)
     }
 }
@@ -781,7 +813,7 @@ impl EntryApplier for PortApplier {
         let Some(PackEntry::Port(def)) = rules.entry(id) else {
             return Err(format!("{id}: not a port entry"));
         };
-        PortApplier::preflight(ctx.w, pack.manifest().id(), id, def)
+        PortApplier::preflight(ctx.reg, ctx.w, pack.manifest().id(), id, def)
     }
 
     fn create(
@@ -816,7 +848,8 @@ impl EntryApplier for PortApplier {
         _existing: Option<ObjId>,
         _placed: &BTreeMap<CanonicalId, ObjId>,
     ) -> Result<(), String> {
-        // No hulls (IC4) and no vendors (IC8) yet: nothing a retire would orphan.
+        // Hulls stand on retire (doc 18 §4.7); the refusal while a hull is
+        // leased is IC6's. No vendors (IC8) yet.
         Ok(())
     }
 
@@ -832,8 +865,8 @@ impl EntryApplier for PortApplier {
         // nothing; the map is kept so a later apply reuses every row.
         tracing::info!(
             %pack, %id,
-            "tacsim: a port entry retired; its domain, orgs, accounts and obligations stand and \
-             its port map is kept"
+            "tacsim: a port entry retired; its domain, orgs, accounts, obligations and hulls \
+             stand and its port map is kept"
         );
         Ok(())
     }

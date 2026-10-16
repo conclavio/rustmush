@@ -4,6 +4,10 @@
 //! **applied** with the projection moves first (the only fallible step,
 //! already validated), followed by infallible slot mutation, index rebuild,
 //! and persistence. A refused transition mutates nothing.
+//!
+//! The transitions: `Place`, `Unplace`, `Quarantine`, `Space`, `Members` (cut
+//! IC4: the walkable member rooms of a multi-room interior, doc 18 §4.2 (c)),
+//! `Retire` and `CarrierMove`.
 
 use std::collections::BTreeSet;
 
@@ -135,6 +139,11 @@ pub enum SpatialError {
     /// The domain is still referenced.
     #[error("domain #{0} is still referenced by {1} placement(s)/space(s); clear them first")]
     DomainReferenced(DomainId, usize),
+    /// A member declaration (or a space over a member) the boundary rule
+    /// refuses (doc 18 §4.2 (c), cut IC4). The sentence names the room and
+    /// the rule it breaks.
+    #[error("{0}")]
+    Members(String),
     /// The authoritative recovery audit append could not be prepared. This is
     /// checked before any world or spatial mutation.
     #[error("recovery ledger append refused: {0}")]
@@ -174,11 +183,29 @@ pub enum Transition {
         reason: String,
     },
     /// Define or re-anchor an interior space, creating the record if absent.
+    /// Refused for a room that is already a member of another space (cut
+    /// IC4): a member is walked, never itself a space.
     Space {
         /// The space (a room carrying `sim.interior`).
         space: ObjId,
         /// The new anchor.
         anchor: SpaceAnchor,
+    },
+    /// **Declare the walkable member rooms of a multi-room interior** (doc 06
+    /// §7.5's boundary rule; doc 18 §4.2 (c), cut IC4). A pure plan over an
+    /// existing space record: `rooms` replaces the record's `rooms`. Every
+    /// member is a live Room; the space itself is a member; no member is
+    /// another space, a domain host, a live presentation room or a member of
+    /// another space; at most [`crate::data::MAX_SPACE_ROOMS`]; no room an
+    /// occupant stands in is removed. Nothing moves and no placement is
+    /// written: an occupant placed `Interior` in the space walks the members'
+    /// exits under the movement gate's member arm and projects to the member
+    /// it stands in.
+    Members {
+        /// The space (an existing interior-space record).
+        space: ObjId,
+        /// Its member rooms, the space object among them.
+        rooms: BTreeSet<ObjId>,
     },
     /// Retire a domain (must be unreferenced).
     Retire {
@@ -443,6 +470,93 @@ fn carrier_seal(
     carrier_seal_with(st, w, obj, parent_obj, None)
 }
 
+/// Plan [`Transition::Members`] (doc 18 §4.2 (c), cut IC4): refuse, in this
+/// order, a dead or unrecorded space, a set without the space, a set over
+/// [`crate::data::MAX_SPACE_ROOMS`], any other member that is dead, not a Room,
+/// a space of its own, a domain host, a live presentation room or a member of
+/// another space, and the removal of a member an occupant stands in. Pure.
+fn plan_members(
+    st: &SpatialState,
+    w: &World,
+    space: ObjId,
+    rooms: &BTreeSet<ObjId>,
+    plan: &mut Plan,
+) -> Result<(), SpatialError> {
+    live(w, space)?;
+    let record = st
+        .spaces
+        .get(&space)
+        .ok_or(SpatialError::NoSuchSpace(space))?;
+    if !rooms.contains(&space) {
+        return Err(SpatialError::Members(format!(
+            "{space} must be a room of its own interior space"
+        )));
+    }
+    if rooms.len() > crate::data::MAX_SPACE_ROOMS {
+        return Err(SpatialError::Members(format!(
+            "an interior space holds at most {} rooms; {} were named",
+            crate::data::MAX_SPACE_ROOMS,
+            rooms.len()
+        )));
+    }
+    for &r in rooms.iter().filter(|&&r| r != space) {
+        live(w, r)?;
+        if w.get(r).map(|o| o.kind) != Some(mush_core::ObjKind::Room) {
+            return Err(SpatialError::Members(format!("{r} is not a room")));
+        }
+        if st.spaces.contains_key(&r) {
+            return Err(SpatialError::Members(format!(
+                "{r} is an interior space of its own"
+            )));
+        }
+        if let Some(d) = st.derived.domain_by_host.get(&r) {
+            return Err(SpatialError::Members(format!("{r} hosts domain #{d}")));
+        }
+        if let Some(d) = st.derived.presentation_of.get(&r).and_then(|ds| {
+            ds.iter().find(|d| {
+                st.domains
+                    .get(d)
+                    .is_some_and(|rec| rec.status != DomainStatus::Retired)
+            })
+        }) {
+            return Err(SpatialError::Members(format!(
+                "{r} is the presentation room of domain #{d}"
+            )));
+        }
+        if let Some(other) = st.derived.member_of.get(&r)
+            && *other != space
+        {
+            return Err(SpatialError::Members(format!(
+                "{r} is already a room of interior space {other}"
+            )));
+        }
+    }
+    // No occupied member removed: an occupant standing in a room the new set
+    // drops would project to the space object, i.e. be teleported by a
+    // content write. Staff move them first.
+    for &r in record.rooms.difference(rooms) {
+        let standing = st.children_of(space).iter().copied().find(|&c| {
+            matches!(st.parent_of(c), SpatialParent::Interior { space: s, .. } if s == space)
+                && w.get(c).and_then(|o| o.location) == Some(r)
+        });
+        if let Some(c) = standing {
+            return Err(SpatialError::Members(format!(
+                "{r} still holds {}; move them first",
+                mush_core::output::display_name(w, c)
+            )));
+        }
+    }
+    let mut rec = record.clone();
+    rec.rooms = rooms.clone();
+    plan.audit = serde_json::json!({
+        "op": "members",
+        "space": space.0,
+        "rooms": rooms.iter().map(|r| r.0).collect::<Vec<_>>(),
+    });
+    plan.set_spaces.push(rec);
+    Ok(())
+}
+
 pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, SpatialError> {
     let mut plan = Plan::default();
     match t {
@@ -592,6 +706,17 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
         }
         Transition::Space { space, anchor } => {
             let space = *space;
+            // Cut IC4 (doc 18 §4.2 (c)): a member room is walked, never itself
+            // a space — two records claiming one room would make its occupants'
+            // projection ambiguous. The space object's self-entry (lead ruling
+            // L4) is not a membership of another space.
+            if let Some(owner) = st.derived.member_of.get(&space)
+                && *owner != space
+            {
+                return Err(SpatialError::Members(format!(
+                    "{space} is a room of interior space {owner}; it cannot be a space itself"
+                )));
+            }
             live(w, space)?;
             // The base record: keep an existing one's compartments/rooms, or a
             // fresh Unanchored shell whose sole room is the space itself.
@@ -660,6 +785,9 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             rec.anchor = anchor.clone();
             plan.audit = serde_json::json!({ "op": "space", "space": space.0, "anchor": serde_json::to_value(anchor).unwrap_or_default() });
             plan.set_spaces.push(rec);
+        }
+        Transition::Members { space, rooms } => {
+            plan_members(st, w, *space, rooms, &mut plan)?;
         }
         Transition::Retire { domain } => {
             let d = st

@@ -1,7 +1,8 @@
 //! **The port map** (doc 18 cut IC3; doc 18 §4.7 "Idempotency"; lead ruling L3):
 //! the `PortApplier`'s record of everything it made for one port entry — the
-//! domain, the treasury account, and per institution its org, root scope,
-//! account and every capital tranche obligation.
+//! domain, the treasury account, per institution its org, root scope,
+//! account and every capital tranche obligation, and (cut IC4) per programme
+//! hull the Thing, its rooms and its exits.
 //!
 //! One whole typed document per port entry, `tacsim:port:{pack}/{entry}`,
 //! **version-agnostic**: lane v2 writes it and lane v3 (cut IC8) reuses it. It is
@@ -69,6 +70,11 @@ pub struct PortMap {
     pub treasury: Option<u64>,
     /// Per authored org id, what part c made for it.
     pub orgs: BTreeMap<CanonicalId, PortOrgRow>,
+    /// The programme's hulls (part f, cut IC4), in pool order. Skipped when
+    /// empty, so a map with no hulls encodes byte-identically to cut IC3's and
+    /// [`PORT_MAP_SCHEMA`] stays 1 (lead ruling L9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hulls: Vec<HullRow>,
 }
 
 impl PortMap {
@@ -84,6 +90,7 @@ impl PortMap {
             presentation: None,
             treasury: None,
             orgs: BTreeMap::new(),
+            hulls: Vec::new(),
         }
     }
 
@@ -129,6 +136,30 @@ pub struct TrancheRow {
     pub obligation: u64,
     /// The amount, minor units of `tacsim.credit`.
     pub amount_minor: i64,
+}
+
+/// **One programme hull** (doc 18 §4.7 part f; cut IC4): the objects the
+/// applier made for it, in the order made. Title, unit, spaces, members,
+/// compartment and placement are their owners' records and are read there,
+/// never copied here (lead ruling L9: one writer per authority). The hull's
+/// interior space and store are `rooms[interior.space]` and
+/// `rooms[interior.store]` (doc 18 §4.7's `hulls{hull, space, store, rooms,
+/// exits}`, derived rather than duplicated).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HullRow {
+    /// The pool index, from 0 (`registry_mark(prefix, n)`).
+    pub n: u32,
+    /// The registry mark (`FPC-D-0401`), the Thing's alias; never re-issued.
+    pub mark: String,
+    /// The hull Thing, `ObjId.0`.
+    pub hull: u32,
+    /// Interior room id → `ObjId.0`, every room made so far (all seven when
+    /// complete).
+    pub rooms: BTreeMap<CanonicalId, u32>,
+    /// The exits made so far, `ObjId.0`, in template order: pair i is `2i`
+    /// (names[0]) and `2i+1` (names[1]).
+    pub exits: Vec<u32>,
 }
 
 /// **What the store holds under one port entry's key** — the three answers the

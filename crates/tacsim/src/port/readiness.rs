@@ -6,8 +6,9 @@
 //! rate, the treasury, and per port its map, rooms, domain, institutions (each
 //! with its account and capital) and programme. `@tacsim/port status` renders
 //! it; cut IC6 gates `+coop/enrol` on [`Readiness::is_ready`] and reads the
-//! typed [`LineState`]s, never the text; cuts IC4 and IC8 add their own lines
-//! (the hulls; the pools and listings).
+//! typed [`LineState`]s, never the text. Cut IC4's hulls line has landed
+//! ([`Binding::Hulls`], computed by `crate::port::hull::hull_line`); cut IC8
+//! adds its own (the pools and listings).
 //!
 //! **The report's lane pack** is the latched version when this server loads it,
 //! else the shipped [`LANE_VERSION`] when loaded, else none — always an exact
@@ -57,6 +58,9 @@ pub enum Binding {
     Org,
     /// One port's programme.
     Programme,
+    /// One port's programme hulls (cut IC4): made, interior complete, titled
+    /// to the programme org and laid up at a port.
+    Hulls,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -709,6 +713,13 @@ fn port_lines(
                 ),
             ),
         }
+    }
+
+    // ---- the hulls (cut IC4) ----
+    if let Some((state, text)) =
+        def.and_then(|def| crate::port::hull::hull_line(w, store, entry, def, map))
+    {
+        report.push(port, Binding::Hulls, state, text);
     }
 }
 

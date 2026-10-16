@@ -139,7 +139,8 @@ fn unplaced_projection(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId
 }
 
 /// Where `obj`'s `Obj.location` must be for its placement (design D1):
-/// Direct → the domain's presentation room; Interior → the space; Attached
+/// Direct → the domain's presentation room; Interior → the occupant's current
+/// room when it is a member of the space, else the space (cut IC4); Attached
 /// exposed → the host's projected location (falling back to the host's actual
 /// location); Attached suppressed → the host itself; Unplaced → the recovery
 /// room when quarantined, the in-transit room while under way, else `None`
@@ -164,7 +165,25 @@ pub fn project(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
                 }
                 return Some(d.presentation_location);
             }
-            SpatialParent::Interior { space, .. } => return Some(space),
+            SpatialParent::Interior { space, .. } => {
+                // Cut IC4 (doc 06 §7.5; doc 18 §4.2 (b)): an occupant standing
+                // in one of the space's member rooms stays there, so boot
+                // reconcile and every carrier move or re-placement leave a
+                // walker where they walked; anyone else (placed from outside,
+                // or standing in a room the space no longer lists) falls back
+                // to the space object — entrants arrive through the lock.
+                // `cur` is the object whose Interior placement is resolved, so
+                // an exposed mount riding an occupant follows the occupant.
+                if let Some(loc) = w.get(cur).and_then(|o| o.location)
+                    && st
+                        .spaces
+                        .get(&space)
+                        .is_some_and(|s| s.rooms.contains(&loc))
+                {
+                    return Some(loc);
+                }
+                return Some(space);
+            }
             SpatialParent::Attached { host, .. } => {
                 if presence(st, cur) == Some(Presence::DerivedExposed) {
                     // Follow the host's projection; if the host has none, its
@@ -227,6 +246,13 @@ pub fn rebuild(st: &SpatialState) -> Derived {
                     .insert(s.object);
             }
             SpaceAnchor::Unanchored => {}
+        }
+        // Cut IC4 (doc 18 §4.2 (c)): room → the space listing it, the space
+        // object mapping to itself. Key order and first-wins keep this
+        // deterministic; `Transition::Members` and boot's member pass make a
+        // collision impossible.
+        for room in &s.rooms {
+            d.member_of.entry(*room).or_insert(s.object);
         }
     }
     // Locality and projection need the children index above, but only the

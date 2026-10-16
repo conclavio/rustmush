@@ -1141,6 +1141,19 @@ fn ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made() {
         "{refused}"
     );
     assert!(refused.contains("the economy is frozen"), "{refused}");
+    // Cut IC4: the pass would also title the eight programme hulls, and says
+    // so; no hull Thing was made.
+    assert!(
+        refused.contains("capital tranche(s) and 8 hull title(s) cannot be issued"),
+        "{refused}"
+    );
+    assert!(
+        !engine
+            .world
+            .iter()
+            .any(|o| o.kind == mush_core::ObjKind::Thing && o.name == "Slack Water"),
+        "no hull was made"
+    );
     assert_nothing_bound(&engine.world);
 }
 
@@ -1525,6 +1538,12 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 programme.floor_major,
                 programme.stake_major,
                 programme.pool
+            ));
+            // Cut IC4: the programme's hulls line follows its programme line.
+            want.push(format!(
+                "  {entry} hulls: {pool} of {pool} made, titled to {} and laid up. [ready]",
+                org.name,
+                pool = programme.pool
             ));
         }
     }

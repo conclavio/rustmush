@@ -339,6 +339,42 @@ pub fn place_interior(
     .map_err(|e| e.to_string())
 }
 
+/// **Declare (or re-declare) a compartment on an interior space** (doc 18 §4.2
+/// schema addition 4, cut IC4): `compartments[slot] = { maximum_items, .. }`,
+/// persisted. The `@spatial/slot` write without the parser — that verb calls
+/// this, so there is one compartment writer (lead ruling L1). Occupancy above a
+/// lowered cap is not evicted; the cap refuses the next placement
+/// (`transition::resolve_parent`).
+///
+/// # Errors
+///
+/// `"That is not an interior space."` when `space` has no record, or the
+/// simulation module is not composed.
+pub fn declare_compartment(
+    ctx: &mut Ctx<'_>,
+    space: ObjId,
+    slot: crate::data::SlotId,
+    maximum_items: Option<u32>,
+) -> Result<(), String> {
+    let rec = {
+        let st = state_mut(ctx.w)?;
+        let rec = st
+            .spaces
+            .get_mut(&space)
+            .ok_or_else(|| "That is not an interior space.".to_string())?;
+        rec.compartments.insert(
+            slot,
+            crate::data::CapacitySpec {
+                maximum_items,
+                ..Default::default()
+            },
+        );
+        rec.clone()
+    };
+    crate::data::persist_space(ctx.out, &rec);
+    Ok(())
+}
+
 /// Release `obj` from its window, leaving it in the room it resolved to.
 ///
 /// # Errors

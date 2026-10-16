@@ -32,6 +32,11 @@ static PASSIVE_DEFINITION_REF: OnceLock<DefinitionRef> = OnceLock::new();
 pub const MAX_SPATIAL_DEPTH: usize = 8;
 /// The recovery audit ledger's log id (design §12.1 "audited").
 pub const RECOVERY_LOG: &str = "recovery";
+/// Bound on one interior space's member rooms (doc 06 §7.5's boundary rule;
+/// doc 18 §4.2 (c) "at most 16", cut IC4). `Transition::Members` refuses a
+/// larger set and boot keeps at most this many (the space first, then id
+/// order), so a hand-edited document can never grow a space's room walk.
+pub const MAX_SPACE_ROOMS: usize = 16;
 
 // ----------------------------------------------------------------------
 // Ids
@@ -829,8 +834,15 @@ pub struct InteriorSpaceRecord {
     /// Named compartments with capacity.
     #[serde(default)]
     pub compartments: BTreeMap<SlotId, CapacitySpec>,
-    /// Member rooms of a multi-room interior (reserved for cut 2's boundary
-    /// rule; the space object itself is always a member).
+    /// The walkable member rooms of a multi-room interior (doc 06 §7.5's
+    /// boundary rule; doc 18 §4.2, cut IC4): an occupant placed `Interior` in
+    /// this space may walk an exit into any of them without a placement
+    /// write, and projects to the one it stands in. Written only by
+    /// `Transition::Members` (and `Transition::Space`'s fresh shell, which is
+    /// `{object}`); when non-empty the space object is always among them.
+    /// Empty on a legacy single-room record, which the gate, `backing_valid`
+    /// and `egress` treat as single-room (lead ruling L3). At most
+    /// [`MAX_SPACE_ROOMS`].
     #[serde(default)]
     pub rooms: BTreeSet<ObjId>,
     /// Egresses by id.
@@ -1027,6 +1039,11 @@ pub struct Derived {
     /// the fallback re-source iterate THIS, so their scan cost is bounded by the
     /// actor's own billets, never a walk of every unit's whole `seats` map.
     pub seats_by_actor: BTreeMap<ObjId, BTreeSet<(ObjId, StationId)>>,
+    /// Member room → the interior space whose `rooms` lists it (doc 18 §4.2
+    /// (c), cut IC4). The space object maps to itself (lead ruling L4); the
+    /// destroy gate and `Transition::Space` exclude that self-entry.
+    /// `verify_indexes` checks it with the rest of `Derived`.
+    pub member_of: BTreeMap<ObjId, ObjId>,
 }
 
 /// The module's state slot: the durable records, the allocator, the recovery

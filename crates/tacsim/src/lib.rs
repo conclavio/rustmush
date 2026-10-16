@@ -488,6 +488,12 @@ impl GameModule for TacsimRuleset {
         // Standard Doctrine and its six presets. A test rig installs another
         // through `match_::holdings::install_holdings`.
         reg.state(match_::holdings::HoldingsSeam::production());
+        // Doc 18 cut IC4 (lead ruling L14): hull rooms are not atlas rooms, so
+        // their details live on tacsim's own attribute shelf, and `look
+        // <detail>` finds them through the registered prefix (16b cut D.5's
+        // prefix rule: a module points `look` only at a namespace it owns).
+        reg.attr_namespace("tacsim")?;
+        reg.detail_prefix(crate::port::hull::HULL_DETAIL_PREFIX)?;
         commands::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
         // One validator per kind first — `Registrar::definition` admits nothing

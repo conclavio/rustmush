@@ -18,11 +18,20 @@
 //! - [`readiness`] — the readiness report `@tacsim/port status` renders and
 //!   cut IC6 gates `+coop/enrol` on;
 //! - [`credit`] — `+credit`, the pilot's own account.
+//!
+//! **Doc 18 cut IC4** makes the programme's hulls places people stand in:
+//!
+//! - [`hull`] — `PortApplier` part (f): each hull Thing, its unit, its seven
+//!   rooms and five exit pairs from the Dray's `interior` template, the store
+//!   and airlock spaces with the airlock's member rooms and berths, the laid-up
+//!   placement and the title under `tacsim.registry`; and the readiness
+//!   report's hulls line.
 
 pub mod apply;
 pub mod capacity;
 pub mod credit;
 pub mod def;
+pub mod hull;
 pub mod map;
 pub mod readiness;
 
@@ -30,5 +39,7 @@ pub use def::{
     AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,
     ProgrammeDef, StockRowDef, VendorDef, check_ports, room_key, tranches,
 };
-pub use map::{PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, TrancheRow, port_map_key};
+pub use map::{
+    HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, TrancheRow, port_map_key,
+};
 pub use readiness::{Binding, LineState, Readiness, ReadinessLine, readiness};
