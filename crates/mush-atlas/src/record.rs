@@ -465,6 +465,11 @@ pub struct NeighborhoodRec {
     /// The theme staff or a pack set here (S2b); `None` inherits the tier above.
     #[serde(default)]
     pub theme: Option<crate::theme::Theme>,
+    /// Doc 18 §4.5 / 18a §1.6: the pack's ambient lines, verbatim. No player surface
+    /// reads them in cut IC1; the emitter cut does. Skipped when empty, so a record
+    /// without ambience serializes byte-identically to one written before the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ambience: Vec<String>,
     /// Revision.
     pub revision: u64,
 }
@@ -481,6 +486,18 @@ impl NeighborhoodRec {
             theme.validate().map_err(RecordError::Value)?;
         }
         check_word("neighborhood.setting", &self.setting)?;
+        check_count(
+            "neighborhood.ambience",
+            self.ambience.len(),
+            crate::def::MAX_AMBIENCE_LINES,
+        )?;
+        for line in &self.ambience {
+            check_text(
+                "neighborhood.ambience",
+                line,
+                crate::def::MAX_AMBIENCE_LINE_BYTES,
+            )?;
+        }
         self.footprint
             .to_cm()
             .map_err(|source| RecordError::Geometry {

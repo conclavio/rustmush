@@ -525,3 +525,99 @@ fn the_plan_prints_the_findings_and_apply_refuses_a_blocking_one() {
         .count();
     assert_eq!(rooms, 0, "nothing was applied");
 }
+
+// ---- doc 18 cut IC1: room markers (D-18-19) ------------------------------------
+
+/// A neighborhood east of the block whose two public rooms are joined to each
+/// other and to nothing reachable — no Limbo exit, no access point — with
+/// `markers` on the Gallery. The shape of Stickney Yards (no foot route).
+fn dock_doc(markers: Value) -> Value {
+    json!({
+        "manifest": { "id": "neighborhood.dock", "version": 1, "kind": "neighborhood", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 }] },
+        "entries": {
+            "neighborhood": { "kind": "neighborhood", "def": {
+                "region": "region.town", "locality": "locality.town", "name": "The Dock",
+                "setting": "station", "footprint": [[220, 0], [400, 0], [400, 200], [220, 200]],
+                "room_budget": { "target": 2, "maximum": 2 } } },
+            "room.gallery": { "kind": "room", "def": { "name": "Gallery", "surface": "ground",
+                "kind": "indoor", "footprint": { "rect": [[230, 10], [260, 40]] },
+                "markers": markers } },
+            "room.hall": { "kind": "room", "def": { "name": "Hall", "surface": "ground",
+                "kind": "indoor", "footprint": { "rect": [[260, 10], [290, 40]] } } },
+            "exit.gallery_hall": { "kind": "exit", "def": { "from": "room.gallery", "to": "room.hall",
+                "names": ["Hall <H>;h;hall", "Gallery <G>;g;gallery"] } }
+        }
+    })
+}
+
+#[test]
+fn ic1_a_port_dock_marker_seeds_the_topology() {
+    let tw = town();
+    // Without the marker: joined to each other, reached from nothing.
+    let bare = signed(dock_doc(json!([])));
+    let findings = validate(&bare, &context(&tw, &bare));
+    let unreachable: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == "topology.unreachable")
+        .filter_map(|f| f.entry.clone())
+        .collect();
+    assert_eq!(
+        unreachable,
+        vec!["room.gallery".to_string(), "room.hall".to_string()],
+        "{findings:#?}"
+    );
+    // With `port.dock` on the Gallery: the Gallery is a seed, the Hall is reached
+    // through it, and the pack validates with zero errors.
+    let docked = signed(dock_doc(json!(["port.dock"])));
+    let findings = validate(&docked, &context(&tw, &docked));
+    assert!(errors(&findings).is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn ic1_an_unknown_room_marker_is_refused() {
+    // The validator: `schema.marker`, for a word outside the registry and for a
+    // marker named twice.
+    let tw = town();
+    let typo = signed(dock_doc(json!(["port.dok"])));
+    let findings = validate(&typo, &context(&tw, &typo));
+    assert!(
+        errors(&findings).contains(&"schema.marker".to_string()),
+        "{findings:#?}"
+    );
+    let twice = signed(dock_doc(json!(["port.dock", "port.dock"])));
+    let findings = validate(&twice, &context(&tw, &twice));
+    assert!(
+        errors(&findings).contains(&"schema.marker".to_string()),
+        "{findings:#?}"
+    );
+
+    // The applier: a boot pack bypasses the validator, so this is the applier's
+    // own refusal — the boot aborts naming the marker, and no Gallery was made.
+    let (world, registry) = mush_testkit::boot_world();
+    let mut engine = mush_core::Engine::with_modules(
+        world,
+        registry,
+        modules(Vec::new(), vec![region(), block(), typo]),
+    )
+    .expect("the modules register");
+    let error = engine
+        .modules_loaded(
+            std::collections::HashMap::new(),
+            &mut mush_core::Outbox::new(),
+            &mut mush_core::Effects::new(),
+        )
+        .expect_err("an unknown marker refuses the apply");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown room marker \"port.dok\""),
+        "{error}"
+    );
+    let galleries = engine
+        .world
+        .iter()
+        .filter(|o| o.kind == ObjKind::Room && o.name == "Gallery")
+        .count();
+    assert_eq!(galleries, 0, "the refused room was never written");
+}

@@ -2,10 +2,10 @@
 //! connections, applied through the content latch — one row per pack id, a
 //! newer version an update in place, rooms kept; an orbital site lies in no
 //! neighborhood and rasterizes nothing; a corridor's length is the sky's pin;
-//! a journey under way when its corridor is re-applied ends where it stands.
+//! and (doc 18 cut IC1, Q-18-6) no player verb travels a corridor connection —
+//! its `spacecraft` mode is the atlas's projection of a carrier route.
 
 use mush_atlas::record::RecordKey;
-use mush_atlas::travel::JourneyState;
 use mush_atlas::{AtlasModule, AtlasState};
 use mush_content::{Appliers, ContentModule, ContentState};
 use mush_core::{CanonicalId, GOD, ObjId, ObjKind};
@@ -220,37 +220,64 @@ fn a_second_version_updates_in_place_and_keeps_the_rooms() {
     assert!(again.contains("already been applied"), "{again}");
 }
 
+/// **Doc 18 cut IC1** (Q-18-6, binding; D-18-49): no player verb flies the
+/// atlas's drawn corridor. A corridor connection's mode is the atlas's projection
+/// of a carrier route; travel between stations is `mush_sim::CarrierJourney`.
+/// This replaces S9.1's atlas-journey test, which pinned exactly the path the
+/// cut deletes (`options_from_corridor_room`), and is written against the
+/// constant so renaming the mode cannot reopen it.
 #[test]
-fn a_journey_under_way_ends_where_it_stands_when_its_corridor_is_reapplied() {
+fn no_player_verb_traverses_a_spacecraft_connection() {
     let mut tw = lot();
     seed(&mut tw, 1);
     let placed = placed(&tw, 1);
     let ceres = placed[&CanonicalId::new("ceres_extraction").unwrap()];
     let pilot = tw.spawn_player("Pilot");
     tw.world_mut().move_to(pilot, ceres).unwrap();
-    // The pilot leaves along the corridor by the atlas's own verb: a corridor
-    // room lies in no neighborhood, and its ways out are the connections that
-    // name it (S9.1).
-    let events = tw.run(pilot, "+travel Phobos Yard");
-    let out = tw.seen_by(&events, pilot).join("\n");
-    assert!(
-        !out.contains("You know no way") && !out.contains("No way to"),
-        "the corridor is a way out of the site: {out}"
-    );
-    let state = atlas(&tw).travel.journey_of(pilot).map(|j| j.state.clone());
-    assert!(
-        matches!(state, Some(JourneyState::UnderWay)),
-        "the pilot is under way along the corridor: {state:?}"
-    );
-    // The corridor is re-applied under the journey.
-    seed(&mut tw, 2);
-    tw.set_now(10);
-    tw.fire_due(10 * 1000);
-    let state = atlas(&tw).travel.journey_of(pilot).map(|j| j.state.clone());
-    assert!(
-        matches!(state, Some(JourneyState::Aborted) | None),
-        "the journey ended where it stood: {state:?}"
-    );
+    tw.world_mut().move_to(GOD, ceres).unwrap();
+    // A player and staff standing in the corridor's room are both refused, and no
+    // atlas journey starts.
+    for who in [pilot, GOD] {
+        let events = tw.run(who, "+travel Phobos Yard");
+        let out = tw.seen_by(&events, who).join(
+            "
+",
+        );
+        assert!(
+            out.contains("You know no way to \"Phobos Yard\" from here."),
+            "{out}"
+        );
+        assert!(atlas(&tw).travel.journey_of(who).is_none(), "{out}");
+        assert_eq!(tw.world().get(who).and_then(|o| o.location), Some(ceres));
+    }
+    // The mode is not a self mode, and no corridor connection offers a way out
+    // of either of its endpoint rooms, to a player or to staff.
+    assert!(!mush_atlas::travel::SELF_MODES.contains(&tacsim::CORRIDOR_MODE));
+    let st = atlas(&tw);
+    let corridors: Vec<_> = st
+        .records
+        .connections
+        .values()
+        .filter(|c| c.modes.iter().any(|m| m == tacsim::CORRIDOR_MODE))
+        .collect();
+    assert!(!corridors.is_empty(), "the seed drew its corridor");
+    for conn in corridors {
+        for room in [conn.endpoints.0.room, conn.endpoints.1.room]
+            .into_iter()
+            .flatten()
+        {
+            for (who, staff) in [(pilot, false), (GOD, true)] {
+                let options = mush_atlas::travel::options_from(st, who, room, staff);
+                assert!(
+                    options.is_empty(),
+                    "{} offers a way out of #{}: {:?}",
+                    conn.key,
+                    room.0,
+                    options.iter().map(|o| &o.place_name).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
 }
 
 #[test]

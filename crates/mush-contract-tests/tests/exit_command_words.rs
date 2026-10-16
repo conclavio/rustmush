@@ -15,7 +15,11 @@
 //! means anything.
 //!
 //! That leniency is what this file makes visible. It walks every `;`-separated
-//! segment of every shipped exit against every verb a **module** registered in
+//! segment of every shipped exit — the starter lot's three packs and, since doc 18
+//! cut IC1, the trade run's four station packs
+//! (`tacsim::definitions::content::station_packs`), whose Limbo door `c` and
+//! twenty-three room exits boot on every production world with `[tacsim].enabled`
+//! — against every verb a **module** registered in
 //! the production composition, and pins the overlap to the exact two rows F.4
 //! decided to keep. The next one — an exit called `sim` in the Simulator Lobby
 //! would swallow `SIM` — fails here and is ruled on by a person, which is the
@@ -57,10 +61,13 @@ const DECIDED: [(&str, &str, &str); 2] = [
 ];
 
 /// Every `;`-separated segment of every shipped exit, folded, as
-/// `(entry id, segment)` — the same walk pack apply's check makes.
+/// `(entry id, segment)` — the same walk pack apply's check makes. The starter
+/// lot's packs, then the station packs (doc 18 cut IC1).
 fn shipped_exit_segments() -> Vec<(String, String)> {
     let mut rows = Vec::new();
-    for pack in starter::packs().expect("the shipped packs load") {
+    let mut packs = starter::packs().expect("the shipped packs load");
+    packs.extend(tacsim::definitions::content::station_packs().expect("the station packs load"));
+    for pack in packs {
         for (id, entry) in pack.entries() {
             if entry.kind().as_str() != "exit" {
                 continue;

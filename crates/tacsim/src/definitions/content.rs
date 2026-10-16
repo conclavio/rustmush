@@ -158,6 +158,46 @@ pub const PROVING_GROUND_PACK: &str = "tacsim.pack.proving_ground";
 /// The arena definition the shipped content declares.
 pub const PROVING_GROUND: &str = "tacsim.arena.proving_ground";
 
+// ---------------------------------------------------------------------------
+// The trade run's two IC stations (doc 18 §4.5, §4.7; cut IC1)
+// ---------------------------------------------------------------------------
+
+/// Ceres' region pack: the body, the 2350 base theme, the port locality.
+pub const CERES_REGION_PACK: &str = "region.ceres_freeport";
+/// Ceres Freeport: thirteen rooms on three decks of the Freeport Hub, the Limbo
+/// door `exit.limbo_arrivals` into Port Watch Arrivals (D-18-3), the cast, the
+/// lore pools and the ambience (18a §1).
+pub const CERES_PACK: &str = "neighborhood.ceres_freeport";
+/// Stickney's region pack (Phobos).
+pub const STICKNEY_REGION_PACK: &str = "region.stickney_yards";
+/// Stickney Yards: twelve rooms on two decks of the Yard Rim, no foot route —
+/// its Visiting Berth Gallery carries `port.dock` (D-18-19), 18a §2.
+pub const STICKNEY_PACK: &str = "neighborhood.stickney_yards";
+/// `crates/tacsim/content/atlas/region.ceres_freeport.json`.
+pub const CERES_REGION_JSON: &str = include_str!("../../content/atlas/region.ceres_freeport.json");
+/// `crates/tacsim/content/atlas/neighborhood.ceres_freeport.json`.
+pub const CERES_JSON: &str = include_str!("../../content/atlas/neighborhood.ceres_freeport.json");
+/// `crates/tacsim/content/atlas/region.stickney_yards.json`.
+pub const STICKNEY_REGION_JSON: &str =
+    include_str!("../../content/atlas/region.stickney_yards.json");
+/// `crates/tacsim/content/atlas/neighborhood.stickney_yards.json`.
+pub const STICKNEY_JSON: &str =
+    include_str!("../../content/atlas/neighborhood.stickney_yards.json");
+/// The four station packs in `requires` order (doc 18 §4.5, §4.7): each region
+/// before its neighborhood, Ceres before Stickney — Stickney's NPCs draw the
+/// `corridor_trade` and `tycho` pools Ceres' pack authors (each lore tag is
+/// owned by exactly one pack).
+pub const STATION_SOURCES: [(&str, &str); 4] = [
+    (CERES_REGION_PACK, CERES_REGION_JSON),
+    (CERES_PACK, CERES_JSON),
+    (STICKNEY_REGION_PACK, STICKNEY_REGION_JSON),
+    (STICKNEY_PACK, STICKNEY_JSON),
+];
+/// The rooms Ceres Freeport's pack makes (18a §1.3).
+pub const CERES_ROOMS: usize = 13;
+/// The rooms Stickney Yards' pack makes (18a §2.3).
+pub const STICKNEY_ROOMS: usize = 12;
+
 /// The unit schema the shipped content declares.
 pub const LINE_TANK: &str = "tacsim.unit.line_tank";
 
@@ -581,4 +621,23 @@ pub fn boot_packs() -> Result<Vec<mush_content::Pack>, String> {
     .iter()
     .map(|(name, json)| mush_content::load_pack(json).map_err(|error| format!("{name}: {error}")))
     .collect()
+}
+
+/// The station packs, loaded and digest-verified, in apply order
+/// ([`STATION_SOURCES`]). They are the 2350 game's content: the production boot
+/// list appends them after [`boot_packs`] when `[tacsim].enabled` (doc 18 §4.7),
+/// and the atlas shelves them always. [`boot_packs`] itself stays the proving
+/// ground's two, because the arena fixtures `pop()` the arena off its end.
+///
+/// # Errors
+///
+/// A message naming the pack when a shipped pack does not verify — a build error,
+/// since `crates/tacsim/tests/stations.rs` pins all four digests.
+pub fn station_packs() -> Result<Vec<mush_content::Pack>, String> {
+    STATION_SOURCES
+        .iter()
+        .map(|(name, json)| {
+            mush_content::load_pack(json).map_err(|error| format!("{name}: {error}"))
+        })
+        .collect()
 }

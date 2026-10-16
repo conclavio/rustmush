@@ -257,6 +257,12 @@ pub struct NeighborhoodDef {
     /// A theme for this place and what lies within it (S2b).
     #[serde(default)]
     pub theme: Option<crate::theme::Theme>,
+    /// Doc 18 §4.5 / 18a §1.6: ambient lines for the place, verbatim, one per element.
+    /// Stored on the neighborhood record; no player surface reads them in this cut (an
+    /// emitter is a later cut). At most [`MAX_AMBIENCE_LINES`], each non-blank and at
+    /// most [`MAX_AMBIENCE_LINE_BYTES`].
+    #[serde(default)]
+    pub ambience: Vec<String>,
 }
 
 fn default_representation() -> Representation {
@@ -388,6 +394,62 @@ pub struct RoomDef {
     /// Object flags to set: `outdoors`, `sheltered`, `dark`, `safe`.
     #[serde(default)]
     pub flags: Vec<String>,
+    /// Doc 18 D-18-19: functional markers on the room, from [`ROOM_MARKERS`]. The
+    /// applier sets each as an **object marker** on the room (persisted with it, no
+    /// record field) and clears every registered marker the pack does not list, so an
+    /// update rewrites exactly the pack's markers, as it does details.
+    #[serde(default)]
+    pub markers: Vec<String>,
+    /// The room's one-line description (18a's *Short.* line), written to the room
+    /// attribute `short_desc` — the tree's one-line lane (worldgen writes it; the NPC
+    /// module's turn and scene views read it before `desc`,
+    /// `mush-npc/src/module.rs:632,2705`). Blank removes the attribute, as a blank
+    /// `desc` does (doc 18 §4.5).
+    #[serde(default)]
+    pub short_desc: String,
+}
+
+/// The room markers a pack may declare (doc 18 D-18-19). `port.dock`: the room a
+/// carrier reaches — the validator's topology seed (a station with no foot route is
+/// reached by ship, never by an exit) and, from cut IC3, a port domain's presentation
+/// room. The registry is closed: the applier refuses, and the validator reports
+/// `schema.marker` for, any other word. None of these is registered with `@set`, so a
+/// player can never forge one on a room (doc 18 §3-A correction 2).
+pub const ROOM_MARKERS: [&str; 1] = ["port.dock"];
+/// See [`ROOM_MARKERS`].
+pub const PORT_DOCK_MARKER: &str = "port.dock";
+/// The most bytes [`RoomDef::short_desc`] holds: one line, for maps and glances.
+pub const MAX_SHORT_DESC_BYTES: usize = 256;
+/// The room attribute [`RoomDef::short_desc`] is written to: the tree's existing
+/// one-line lane (`mush-worldgen/src/generate.rs:324`), not a new name.
+pub const SHORT_DESC_ATTR: &str = "short_desc";
+/// The most lines [`NeighborhoodDef::ambience`] holds.
+pub const MAX_AMBIENCE_LINES: usize = 24;
+/// The most bytes one ambience line holds.
+pub const MAX_AMBIENCE_LINE_BYTES: usize = 512;
+
+/// Why a room's marker list is refused (doc 18 D-18-19): a word outside
+/// [`ROOM_MARKERS`], or one named twice. The applier and the validator share it so
+/// the plan and the apply give the same answer.
+///
+/// # Errors
+///
+/// The offending marker, in words.
+pub fn check_room_markers(markers: &[String]) -> Result<(), String> {
+    let mut seen: Vec<&str> = Vec::with_capacity(markers.len());
+    for marker in markers {
+        let m = marker.as_str();
+        if !ROOM_MARKERS.contains(&m) {
+            return Err(format!(
+                "unknown room marker {m:?} (a room may carry {ROOM_MARKERS:?})"
+            ));
+        }
+        if seen.contains(&m) {
+            return Err(format!("room marker {m:?} is listed twice"));
+        }
+        seen.push(m);
+    }
+    Ok(())
 }
 
 impl RoomDef {

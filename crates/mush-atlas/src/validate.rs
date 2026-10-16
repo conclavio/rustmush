@@ -14,7 +14,8 @@
 //! eight rules of doc 14 §4.3, as codes:
 //!
 //! 1. **schema** — `schema.kind`, `schema.decode`, `schema.pack`, `schema.requires`,
-//!    `schema.reference`, `schema.site_pack`.
+//!    `schema.reference`, `schema.site_pack`, `schema.marker` (a room marker outside
+//!    the closed registry, or one named twice; doc 18 D-18-19).
 //! 2. **geometry** — `geometry.outside` (a footprint leaves its neighborhood, site or
 //!    structure), `geometry.site_overlap`, `geometry.room_overlap`,
 //!    `geometry.portal_gap`, `geometry.floors`, `geometry.feature`.
@@ -1277,6 +1278,24 @@ impl Run<'_> {
                 }
             }
         }
+        // Doc 18 D-18-19: a room's markers come from the closed registry, once each —
+        // the applier refuses the same lists with the same words.
+        let marker_problems: Vec<(CanonicalId, String)> = rooms
+            .iter()
+            .filter_map(|(id, room)| {
+                crate::def::check_room_markers(&room.markers)
+                    .err()
+                    .map(|e| (id.clone(), e))
+            })
+            .collect();
+        for (id, problem) in marker_problems {
+            self.error(
+                "schema.marker",
+                Some(&id),
+                problem,
+                format!("name each marker once, from {:?}", crate::def::ROOM_MARKERS),
+            );
+        }
         let structures: Vec<(CanonicalId, String)> = self
             .decoded
             .structures
@@ -1956,13 +1975,22 @@ impl Run<'_> {
         }
 
         // Seeds: Limbo, the world's rooms (applied and already validated), and the
-        // rooms at the neighborhood's access points.
+        // rooms at the neighborhood's access points, and the rooms marked `port.dock` —
+        // reached by carrier, doc 18 D-18-19 (a station with no foot route, Stickney,
+        // is reached by ship and never by an exit).
         let mut seeds: Vec<Node> = vec![Node::Limbo];
         seeds.extend(
             touched
                 .iter()
                 .filter(|n| matches!(n, Node::World(_)))
                 .cloned(),
+        );
+        seeds.extend(
+            self.decoded
+                .rooms
+                .iter()
+                .filter(|(_, d)| d.markers.iter().any(|m| m == crate::def::PORT_DOCK_MARKER))
+                .map(|(id, _)| Node::Own(id.clone())),
         );
         if let Some(nb) = &nb {
             let points: Vec<PointCm> = self

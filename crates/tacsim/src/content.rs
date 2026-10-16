@@ -40,7 +40,9 @@ pub const GM_PER_KM: f64 = 1.0e-6;
 /// purposes) wants a box that is not degenerate at its centimetre grain.
 pub const SITE_HALF_GM: f64 = 0.5;
 
-/// The mode word a corridor carries: what travels it.
+/// The mode word of a corridor connection: the atlas's projection of a carrier
+/// route. No player verb travels it (doc 18 D-18-49, Q-18-6); travel is
+/// `mush_sim::CarrierJourney`.
 pub const CORRIDOR_MODE: &str = "spacecraft";
 
 /// The kinds a pack carries that make no object of their own.

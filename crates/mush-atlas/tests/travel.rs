@@ -164,6 +164,11 @@ fn hollow() -> String {
 }
 
 fn modules(packs: Vec<String>) -> Vec<Box<dyn GameModule>> {
+    modules_shelved(packs, Vec::new())
+}
+
+/// [`modules`], with `shelf` on the atlas's shelf for `@atlas/pack plan`/`apply`.
+fn modules_shelved(packs: Vec<String>, shelf: Vec<String>) -> Vec<Box<dyn GameModule>> {
     let mut appliers = Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -173,7 +178,14 @@ fn modules(packs: Vec<String>) -> Vec<Box<dyn GameModule>> {
         .collect();
     vec![
         Box::new(mush_npc::NpcModule::new()),
-        Box::new(AtlasModule::new()),
+        Box::new(
+            AtlasModule::new().with_shelf(
+                shelf
+                    .iter()
+                    .map(|p| parse_pack(p).expect("shelf pack parses"))
+                    .collect(),
+            ),
+        ),
         Box::new(
             ContentModule::new()
                 .with_appliers(appliers)
@@ -895,6 +907,94 @@ fn s9_stakeout_lists_what_a_road_out_of_here_passes() {
     // From the patch there is no road out: the road is what passes here.
     let out = run(&mut tw, alice, "+travel East End");
     assert!(out.contains("no way"), "{out}");
+}
+
+/// The region at version 2: the Valley Road's last leg is longer, so the road's
+/// record is updated (its revision moves up) under any journey along it.
+fn region_v2() -> String {
+    let mut doc: Value = serde_json::from_str(&region_pack()).expect("the region parses");
+    doc["manifest"]["version"] = json!(2);
+    doc["entries"]["connection.road"]["def"]["legs"][2]["base_s"] = json!(90);
+    signed(doc)
+}
+
+/// Doc 18 cut IC1 moved this lens here from `tacsim/tests/s9_corridor.rs`, whose
+/// copy flew a corridor by atlas `+travel` (the path Q-18-6 removes): a journey
+/// carries the revision of the way it set off on, and a re-applied way ends it
+/// where it stands (`travel.rs` "the way changed under it").
+#[test]
+fn s10_a_journey_under_way_ends_where_it_stands_when_its_road_is_reapplied() {
+    let mut tw = TestWorld::with_modules(modules_shelved(
+        vec![region_pack(), west(), east(), hollow()],
+        vec![region_v2()],
+    ));
+    tw.set_now(T0);
+    let _ = tw.fire_due(T0 * 1000);
+    let west_gate = room(&tw, "West Gate");
+    let alice = player(&mut tw, "Alice", west_gate);
+    let out = run(&mut tw, alice, "+travel East End");
+    assert!(out.contains("You set off"), "{out}");
+    let revision_of = |tw: &TestWorld| {
+        atlas(tw)
+            .records
+            .connections
+            .iter()
+            .find(|(k, _)| {
+                k.pack.as_str() == "region.test" && k.entry.as_str() == "connection.road"
+            })
+            .map(|(_, c)| c.revision)
+    };
+    let before = revision_of(&tw).expect("the road is applied");
+    assert_eq!(
+        journey_of(&tw, alice).map(|j| j.applied_revision),
+        Some(before)
+    );
+    // Past the first checkpoint, on the road.
+    let _ = tick_at(&mut tw, T0 + 61);
+    assert_eq!(journey_of(&tw, alice).map(|j| j.cursor), Some(1));
+
+    // The road is re-applied under the journey.
+    let events = tw.run(GOD, "@atlas/pack plan region.test");
+    let planned = seen(&tw, &events, GOD);
+    let fingerprint = planned
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("fingerprint "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| {
+            panic!(
+                "no fingerprint in:
+{planned}"
+            )
+        })
+        .to_string();
+    let applied = run(&mut tw, GOD, &format!("@atlas/pack apply {fingerprint}"));
+    assert!(
+        applied.contains("Applied"),
+        "{planned}
+{applied}"
+    );
+    assert!(
+        revision_of(&tw).is_some_and(|r| r > before),
+        "the re-applied road's revision moved up"
+    );
+
+    // The next tick ends the journey where it stands: on the road, at the
+    // checkpoint it last passed, and says why.
+    let events = tick_at(&mut tw, T0 + 62);
+    let told = seen(&tw, &events, alice);
+    assert!(
+        told.contains("Your journey ends at First Milestone (the way changed under it)."),
+        "{told}"
+    );
+    assert!(journey_of(&tw, alice).is_none(), "the journey is retired");
+    assert_eq!(
+        loc(&tw, alice),
+        Some(transit_room(&tw)),
+        "stopped on the road"
+    );
+    // And no later tick walks it on along the stale route.
+    let _ = tick_at(&mut tw, T0 + 400);
+    assert_eq!(loc(&tw, alice), Some(transit_room(&tw)));
 }
 
 // ---------------------------------------------------------------------------

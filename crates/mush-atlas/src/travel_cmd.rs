@@ -159,7 +159,7 @@ fn cmd_travel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let options = {
         let st = state(ctx)?;
-        options_from(st, ctx.w, actor, here, staff)
+        options_from(st, actor, here, staff)
     };
     if raw.is_empty() {
         return list_options(ctx, here, &options);
@@ -956,7 +956,7 @@ pub(crate) fn journey_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             };
             let options = {
                 let st = state(ctx)?;
-                options_from(st, ctx.w, actor, here, true)
+                options_from(st, actor, here, true)
             };
             let candidates: Vec<&TravelOption> = options
                 .iter()

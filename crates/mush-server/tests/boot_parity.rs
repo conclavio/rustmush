@@ -564,6 +564,94 @@ async fn the_starter_area_boots_once_and_is_durable() {
     let _ = std::fs::remove_dir_all(&off.server.data_dir);
 }
 
+/// **Doc 18 cut IC1** (§4.7): a world that booted with the game off — the
+/// starter's three packs latched, nothing of tacsim's — is switched on over the
+/// SAME store, as dev1's kept world takes a new binary: the real split boot
+/// applies the proving ground's two packs and the four station packs it has
+/// never latched, leaves the starter latches' digests where they were, and a
+/// third boot over that store applies nothing at all.
+#[tokio::test]
+async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
+    use tacsim::definitions::content::{
+        CERES_PACK, CERES_ROOMS, STATION_SOURCES, STICKNEY_PACK, STICKNEY_ROOMS,
+    };
+
+    let mut cfg = stock_config("ic1");
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let quarantine = spool(&cfg);
+    let latches =
+        |engine: &mush_core::Engine| -> std::collections::BTreeMap<String, (u32, String)> {
+            engine
+                .world
+                .module_state::<mush_content::ContentState>()
+                .expect("the content module composed")
+                .latches
+                .all()
+                .map(|l| (l.pack().to_string(), (l.version(), l.digest().to_hex())))
+                .collect()
+        };
+
+    // (a) The game off, the starter on: three latches.
+    let booted = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("a fresh world boots with the starter area");
+    let starter = latches(&booted.engine);
+    assert_eq!(starter.len(), 3, "{starter:?}");
+    let objects = booted.engine.world.iter().count();
+    drop(booted);
+
+    // (b) The same store, the game switched on.
+    enable_tacsim(&mut cfg);
+    let on = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("a kept world boots the game's packs without refusal");
+    let after = latches(&on.engine);
+    for (pack, latch) in &starter {
+        assert_eq!(after.get(pack), Some(latch), "{pack} moved");
+    }
+    for pack in [
+        tacsim::definitions::content::PROVING_GROUND_ATLAS_PACK,
+        tacsim::definitions::content::PROVING_GROUND_PACK,
+    ] {
+        assert!(after.contains_key(pack), "{pack} applied: {after:?}");
+    }
+    for (pack, _) in STATION_SOURCES {
+        assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
+    }
+    assert_eq!(after.len(), 9);
+    let atlas = on
+        .engine
+        .world
+        .module_state::<mush_atlas::AtlasState>()
+        .expect("the atlas composed");
+    let in_pack = |pack: &str| {
+        atlas
+            .records
+            .roomgeo
+            .values()
+            .filter(|g| g.neighborhood.pack.as_str() == pack)
+            .count()
+    };
+    assert_eq!(in_pack(CERES_PACK), CERES_ROOMS);
+    assert_eq!(in_pack(STICKNEY_PACK), STICKNEY_ROOMS);
+    let switched = on.engine.world.iter().count();
+    assert!(switched > objects);
+    drop(on);
+
+    // (c) A third boot of (b)'s config over the same store creates nothing.
+    let again = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("a third boot over the same store");
+    assert_eq!(
+        again.engine.world.iter().count(),
+        switched,
+        "nothing applied twice"
+    );
+    assert_eq!(latches(&again.engine), after);
+    drop(again);
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
+
 // ---- 2: the layer really composes -----------------------------------------
 
 /// A booted split engine holds the TacSim layer, enabled, with the operator's

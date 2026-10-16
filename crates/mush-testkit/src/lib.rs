@@ -362,6 +362,45 @@ impl TestWorld {
         self.engine.modules_loaded(boot, &mut out, &mut fx)
     }
 
+    /// A restart into a **different** composition over this world's objects and
+    /// `boot` — a new binary over a kept store (doc 18 §4.7: dev1).
+    ///
+    /// [`Engine::with_modules`] over this world with a fresh [`boot_world`]
+    /// registry (its slots are installed fresh over the world's, the scheduler is
+    /// empty), then [`TestWorld::try_modules_loaded`] with `boot` — typically
+    /// [`fold_module_ops`] of every batch drained since the first boot. A real
+    /// restart has no sessions, so every connection is dropped first; God is
+    /// reconnected afterwards, as [`TestWorld::with_modules`] connects him.
+    ///
+    /// # Errors
+    ///
+    /// Whatever a module's boot refused (a refused first apply of a boot pack
+    /// aborts a boot), or a registration collision in `modules`.
+    pub fn reboot_into(
+        self,
+        modules: Vec<Box<dyn GameModule>>,
+        boot: HashMap<SmolStr, ModuleBootData>,
+    ) -> Result<TestWorld, mush_core::ModError> {
+        let mut world = self.engine.world;
+        let connected: Vec<ObjId> = world
+            .iter()
+            .map(|o| o.id)
+            .filter(|id| world.is_connected(*id))
+            .collect();
+        for id in connected {
+            world.set_connected(id, false);
+        }
+        let (_, registry) = boot_world();
+        let engine = Engine::with_modules(world, registry, modules)?;
+        let mut tw = TestWorld {
+            engine,
+            next_conn: self.next_conn,
+        };
+        tw.try_modules_loaded(boot)?;
+        tw.connect(GOD);
+        Ok(tw)
+    }
+
     /// Render exactly what `viewer` would have received from `events`,
     /// resolving audiences against current world state: their own actor
     /// events, room events for the room they are in (unless excluded), and
@@ -437,6 +476,72 @@ impl Default for TestWorld {
     fn default() -> Self {
         TestWorld::new()
     }
+}
+
+/// Fold a drained write batch into per-namespace boot data **the way the store
+/// would** (doc 18 cut IC1's kept-world proof):
+///
+/// - `JsonSet` / `Del` go to `kv`, last write wins (a `Del` removes the key,
+///   and, type-agnostic like the store's, a stream at that key too);
+/// - `StreamAppend { key, value, maxlen }` appends to `streams[key]` with a
+///   synthesized, monotonic id (`"{n}-0"`, `n` counting per stream across every
+///   fold into this map), then trims the stream's head so it keeps at most
+///   `maxlen` entries;
+/// - finally [`ModuleBootData::normalize`] runs on every namespace, so `log:`
+///   chunk keys reach `ledger` as they do from a real store.
+///
+/// Folding batches one after another into the same map is the cumulative store:
+/// the boot data for a second reboot is the fold of EVERY batch drained since
+/// the first boot. A `log:` chunk a later batch re-sets replaces the one an
+/// earlier fold already moved into `ledger` (a store holds one document per
+/// key), and a `Del` of one removes it there too, so folding stays idempotent.
+pub fn fold_module_ops_into(boot: &mut HashMap<SmolStr, ModuleBootData>, ops: Vec<ModuleOp>) {
+    for ModuleOp { ns, op } in ops {
+        let data = boot.entry(ns).or_default();
+        match op {
+            mush_core::ModuleWrite::JsonSet { key, value } => {
+                data.ledger.retain(|(k, _)| *k != key);
+                match data.kv.iter_mut().find(|(k, _)| *k == key) {
+                    Some(slot) => slot.1 = value,
+                    None => data.kv.push((key, value)),
+                }
+            }
+            mush_core::ModuleWrite::Del { key } => {
+                // The store's `Del` is type-agnostic (Redis DEL;
+                // `mush-store/src/memory.rs` "Del must destroy the stream"):
+                // it removes the JSON document or the stream at the key, and a
+                // stream appended to afterwards is a new one numbered from 1.
+                data.kv.retain(|(k, _)| *k != key);
+                data.ledger.retain(|(k, _)| *k != key);
+                data.streams.remove(&key);
+            }
+            mush_core::ModuleWrite::StreamAppend { key, value, maxlen } => {
+                let stream = data.streams.entry(key).or_default();
+                let last = stream
+                    .last()
+                    .and_then(|(id, _)| id.split('-').next())
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .unwrap_or(0);
+                stream.push((format!("{}-0", last.saturating_add(1)), value));
+                let keep = usize::try_from(maxlen).unwrap_or(usize::MAX);
+                if stream.len() > keep {
+                    let drop = stream.len() - keep;
+                    stream.drain(..drop);
+                }
+            }
+        }
+    }
+    for data in boot.values_mut() {
+        data.normalize();
+    }
+}
+
+/// [`fold_module_ops_into`] over an empty map.
+#[must_use]
+pub fn fold_module_ops(ops: Vec<ModuleOp>) -> HashMap<SmolStr, ModuleBootData> {
+    let mut boot = HashMap::new();
+    fold_module_ops_into(&mut boot, ops);
+    boot
 }
 
 /// A modeled view of the single `WriteBatch` a command produced — the dirty
@@ -706,6 +811,230 @@ fn dump(events: &[(Audience, OutputEvent)]) -> String {
 mod tests {
     use super::*;
     use mush_proto::{ExitRef, Span};
+
+    // ---- doc 18 cut IC1: the store-faithful fold and the reboot -----------------
+
+    fn set(ns: &str, key: &str, value: serde_json::Value) -> ModuleOp {
+        ModuleOp {
+            ns: SmolStr::new(ns),
+            op: mush_core::ModuleWrite::JsonSet {
+                key: SmolStr::new(key),
+                value,
+            },
+        }
+    }
+
+    fn del(ns: &str, key: &str) -> ModuleOp {
+        ModuleOp {
+            ns: SmolStr::new(ns),
+            op: mush_core::ModuleWrite::Del {
+                key: SmolStr::new(key),
+            },
+        }
+    }
+
+    fn append(ns: &str, key: &str, n: u32, maxlen: u32) -> ModuleOp {
+        ModuleOp {
+            ns: SmolStr::new(ns),
+            op: mush_core::ModuleWrite::StreamAppend {
+                key: SmolStr::new(key),
+                value: serde_json::json!({ "n": n }),
+                maxlen,
+            },
+        }
+    }
+
+    fn kv_of(
+        boot: &HashMap<SmolStr, ModuleBootData>,
+        ns: &str,
+    ) -> Vec<(String, serde_json::Value)> {
+        let mut kv: Vec<_> = boot
+            .get(ns)
+            .map(|d| {
+                d.kv.iter()
+                    .map(|(k, v)| (k.to_string(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        kv.sort_by(|a, b| a.0.cmp(&b.0));
+        kv
+    }
+
+    #[test]
+    fn fold_keeps_streams_and_moves_ledger_chunks() {
+        let boot = fold_module_ops(vec![
+            set("toy", "a", serde_json::json!(1)),
+            set("toy", "b", serde_json::json!(2)),
+            set("toy", "a", serde_json::json!(3)),
+            del("toy", "b"),
+            set("toy", "log:main:0", serde_json::json!({ "chunk": 0 })),
+            append("toy", "tape", 1, 2),
+            append("toy", "tape", 2, 2),
+            append("toy", "tape", 3, 2),
+            append("toy", "gone", 1, 8),
+            append("toy", "gone", 2, 8),
+            del("toy", "gone"),
+            append("toy", "again", 1, 8),
+            del("toy", "again"),
+            append("toy", "again", 7, 8),
+        ]);
+        let data = boot.get("toy").expect("the namespace");
+        // A Del destroys a stream as the store's does (type-agnostic), and a
+        // stream appended to after its Del is a new one, numbered from 1.
+        assert!(!data.streams.contains_key("gone"), "Del kept the stream");
+        assert_eq!(
+            data.streams.get("again").map(|s| s
+                .iter()
+                .map(|(id, v)| (id.as_str(), v.clone()))
+                .collect::<Vec<_>>()),
+            Some(vec![("1-0", serde_json::json!({ "n": 7 }))])
+        );
+        // Last write wins; a Del removes the key; the chunk is not in kv.
+        assert_eq!(
+            kv_of(&boot, "toy"),
+            vec![("a".to_string(), serde_json::json!(3))]
+        );
+        // The chunk reached `ledger`, as text.
+        assert_eq!(data.ledger.len(), 1);
+        assert_eq!(
+            data.ledger.first().map(|(k, _)| k.as_str()),
+            Some("log:main:0")
+        );
+        // The stream kept its order, with monotonic ids, trimmed to `maxlen`.
+        let tape = data.streams.get("tape").expect("the stream");
+        assert_eq!(
+            tape.iter()
+                .map(|(id, v)| (id.as_str(), v.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("2-0", serde_json::json!({ "n": 2 })),
+                ("3-0", serde_json::json!({ "n": 3 }))
+            ]
+        );
+    }
+
+    #[test]
+    fn fold_into_is_cumulative() {
+        let first = vec![
+            set("toy", "a", serde_json::json!(1)),
+            set("toy", "log:main:0", serde_json::json!({ "chunk": 0 })),
+            append("toy", "tape", 1, 8),
+            set("other", "x", serde_json::json!("x")),
+        ];
+        let second = vec![
+            set("toy", "a", serde_json::json!(2)),
+            set("toy", "log:main:0", serde_json::json!({ "chunk": 1 })),
+            append("toy", "tape", 2, 8),
+            del("other", "x"),
+        ];
+        let mut stepped = fold_module_ops(first.clone());
+        fold_module_ops_into(&mut stepped, second.clone());
+        let mut all = first;
+        all.extend(second);
+        let whole = fold_module_ops(all);
+        for ns in ["toy", "other"] {
+            assert_eq!(kv_of(&stepped, ns), kv_of(&whole, ns), "{ns}");
+            let ledger = |b: &HashMap<SmolStr, ModuleBootData>| {
+                b.get(ns).map(|d| d.ledger.clone()).unwrap_or_default()
+            };
+            assert_eq!(ledger(&stepped), ledger(&whole), "{ns}");
+            let streams = |b: &HashMap<SmolStr, ModuleBootData>| {
+                b.get(ns).map(|d| {
+                    let mut s: Vec<_> = d.streams.clone().into_iter().collect();
+                    s.sort_by(|a, b| a.0.cmp(&b.0));
+                    s
+                })
+            };
+            assert_eq!(streams(&stepped), streams(&whole), "{ns}");
+        }
+        // One chunk document per key, the later one.
+        let toy = stepped.get("toy").expect("toy");
+        assert_eq!(toy.ledger.len(), 1);
+        assert!(
+            toy.ledger
+                .first()
+                .is_some_and(|(_, text)| text.contains('1'))
+        );
+    }
+
+    /// A toy module: `toynote <text>` persists one document, and its boot reads
+    /// that document back into its slot.
+    struct Toy;
+
+    #[derive(Clone, Default)]
+    struct ToyNote(Option<serde_json::Value>);
+
+    impl GameModule for Toy {
+        fn name(&self) -> &'static str {
+            "toy"
+        }
+
+        fn register(
+            &mut self,
+            reg: &mut mush_core::Registrar<'_>,
+        ) -> Result<(), mush_core::ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            reg.state(ToyNote::default());
+            reg.command(
+                mush_core::CommandSpec {
+                    name: "toynote".into(),
+                    shape: mush_core::ArgShape::Raw,
+                    help: "toynote <text>".into(),
+                    ..mush_core::CommandSpec::default()
+                },
+                std::sync::Arc::new(|ctx: &mut mush_core::Ctx<'_>| {
+                    let text = ctx.args.raw().to_string();
+                    ctx.persist(ModuleOp {
+                        ns: SmolStr::new("toy"),
+                        op: mush_core::ModuleWrite::JsonSet {
+                            key: SmolStr::new("note"),
+                            value: serde_json::json!(text),
+                        },
+                    });
+                    Ok(())
+                }),
+            )?;
+            Ok(())
+        }
+
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut mush_core::ModuleCtx<'_>,
+            data: ModuleBootData,
+        ) -> Result<(), mush_core::ModError> {
+            let note = data
+                .kv
+                .iter()
+                .find(|(k, _)| k == "note")
+                .map(|(_, v)| v.clone());
+            if let Some(slot) = ctx.state_mut::<ToyNote>() {
+                slot.0 = note;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reboot_into_keeps_a_toy_modules_document() {
+        let mut tw = TestWorld::with_modules(vec![Box::new(Toy)]);
+        let alice = tw.spawn_player("Alice");
+        let _ = tw.run(GOD, "toynote kept");
+        let boot = fold_module_ops(tw.take_module_ops());
+        let tw = tw
+            .reboot_into(vec![Box::new(Toy)], boot)
+            .expect("the reboot boots");
+        assert_eq!(
+            tw.world()
+                .module_state::<ToyNote>()
+                .and_then(|n| n.0.clone()),
+            Some(serde_json::json!("kept"))
+        );
+        // The world's objects are the world's: Alice is still there, God is
+        // connected again and nobody else is.
+        assert!(tw.world().get(alice).is_some());
+        assert!(tw.world().is_connected(GOD));
+        assert!(!tw.world().is_connected(alice));
+    }
 
     fn say(actor: &str, text: &str) -> OutputEvent {
         OutputEvent::Narrative {

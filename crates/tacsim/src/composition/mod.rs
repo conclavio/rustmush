@@ -703,6 +703,14 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         // loads the same bytes) says so again in its own words.
         Err(error) => tracing::error!(%error, "atlas: the game's boot packs did not load"),
     }
+    // Doc 18 cut IC1 (§4.7): the trade run's four station packs, after the proving
+    // ground, on the same degrade-and-log rule (pinned in
+    // `crates/tacsim/tests/stations.rs`). Shelved always, so a standing world takes a
+    // newer station version by hand exactly as it takes a newer arena.
+    match crate::definitions::content::station_packs() {
+        Ok(stations) => shelf.extend(stations),
+        Err(error) => tracing::error!(%error, "atlas: the station packs did not load"),
+    }
     Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
 }
 
@@ -730,7 +738,37 @@ pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String>
     content_module_with(starter_area, false)
 }
 
-/// [`content_module`] with the game's own boot packs (**16b cut C.2, C3**).
+/// The production boot list, in apply order (doc 18 §4.7): the starter area's three
+/// when `starter_area`, then — when `game_content` — the proving ground's two and
+/// the four station packs.
+///
+/// The stations are game content: they ride `game_content` (`[tacsim].enabled`),
+/// whatever `[game].starter_area` says, and come last because nothing earlier names
+/// them and the IC door's Limbo end needs no pack. A world latched on the old list
+/// (dev1: the starter's three and the proving ground's two) takes the four at its
+/// next boot — the latch applies every boot pack it has never latched, at any boot
+/// (`mush-content/src/module.rs:100-152`).
+///
+/// # Errors
+///
+/// A shipped pack that does not verify (every one is digest-pinned).
+pub fn boot_pack_list(
+    starter_area: bool,
+    game_content: bool,
+) -> Result<Vec<mush_content::Pack>, String> {
+    let mut packs = Vec::new();
+    if starter_area {
+        packs.extend(mush_atlas::starter::packs().map_err(|e| format!("starter packs: {e}"))?);
+    }
+    if game_content {
+        packs.extend(crate::definitions::content::boot_packs()?);
+        packs.extend(crate::definitions::content::station_packs()?);
+    }
+    Ok(packs)
+}
+
+/// [`content_module`] with the game's own boot packs (**16b cut C.2, C3**; the
+/// game's six boot packs since doc 18 cut IC1 — [`boot_pack_list`]).
 ///
 /// `game_content` is `[tacsim].enabled`: `true` appends the two packs that
 /// instantiate the proving ground — the atlas region carrying its ground, then
@@ -772,13 +810,9 @@ pub fn content_module_with(
     // 16b cut C.2 adds the `arena` kind to the same registration.
     crate::register_appliers(&mut appliers).map_err(|e| format!("tacsim appliers: {e}"))?;
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
-    let mut packs = Vec::new();
-    if starter_area {
-        packs.extend(mush_atlas::starter::packs().map_err(|e| format!("starter packs: {e}"))?);
-    }
-    if game_content {
-        packs.extend(crate::definitions::content::boot_packs()?);
-    }
+    // Doc 18 cut IC1: then the four station packs after the proving ground's two
+    // (the game's six boot packs), from the one list the tests read too.
+    let packs = boot_pack_list(starter_area, game_content)?;
     if !packs.is_empty() {
         module = module.with_boot_packs(packs);
     }

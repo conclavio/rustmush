@@ -110,6 +110,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+ic"
+category = "legacy-post-image"
+family = "tacsim.ic_return"
+note = "doc 18 cut IC1 (section 4.5, D-18-3): the IC-return rule's verb. It writes NO document: it moves the actor to the arrival room of the port their unregistered tacsim.last_port.<port> object marker names (Ceres when none), through the kernel's non-exit move path (the MoveAttempt chain, then the Moved observers), and refuses in a port room. The stamp is written by a tacsim Moved observer on a move out of a port room to a room outside every port, never by this verb; the door it pairs with is a MoveAttempt hook on exit.limbo_arrivals. No authority, no prepared mechanic. Future family: the last-port stamp as a typed per-character record."
+
+[[handler]]
 name = "+intel"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"

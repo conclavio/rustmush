@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "id": "region.ceres_freeport",
+    "version": 1,
+    "kind": "region",
+    "digest": "80b18bc047d703b5c6f2899155d4f914b68a190ab73a0e5695ffbaab6a4f83f0",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Ceres Freeport is the Belt's commercial port and the start of the trade run: the place that holds the water, the propellant, the Belt's bank and the Registry's Belt mirror, and has no army at all (doc 11 §3.3, \"institutional in name, mercantile in practice; rich; unarmed\"). It is a freight port first. Everything a visitor walks through is bolted onto a working water-and-propellant terminal: the public rooms are bright, signposted and worn, the freight rooms behind them are loud, and the Port Council's power is exercised, as doc 11 puts it, as paperwork. The Freeport holds the station de jure and de facto through the Port Watch; its docks are run in practice by the people who work them, and the Belt Squadron's cruiser sits at a berth nobody on the public deck can see."
+  },
+  "entries": {
+    "region.ceres_freeport": {
+      "kind": "region",
+      "def": {
+        "name": "Ceres",
+        "kind": "surface",
+        "body": "ceres",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.ceres_freeport": {
+      "kind": "locality",
+      "def": {
+        "region": "region.ceres_freeport",
+        "name": "Ceres Freeport",
+        "kind": "port",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            0
+          ],
+          [
+            400,
+            400
+          ],
+          [
+            0,
+            400
+          ]
+        ]
+      }
+    }
+  }
+}

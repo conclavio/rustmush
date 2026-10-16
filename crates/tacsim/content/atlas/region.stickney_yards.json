@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "id": "region.stickney_yards",
+    "version": 1,
+    "kind": "region",
+    "digest": "07e25b41e8e66f29e6d26773472f3783216f3c8d8967f5f2c091075047eeb2b1",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Stickney Yards is the Republic of Mars's shipyard on Phobos, built into the rim of Stickney crater in the 2340s when \"the Republic makes Phobos a real yard\" (doc 11 §2). It builds the Vigil cutters, Hod landers, Anvil mechs, Cairn GCVs and the Dray-class haulers the whole corridor flies (11 §7), and it sells yard-time, which is a reservation and not a cargo (doc 10 §4, T4). Beside the yard sits the corridor's one refinery, Kasei Metals, turning the Belt's water ice into propellant and its metal concentrate into structural alloy stock (11 §4.3). That is the whole reason a Dray comes here: Ceres has the water and the concentrate, Phobos needs them, and Kasei pays. Phobos holds nothing down. Every corridor is strung with handlines, every bench has a tether loop, and the two decks are painted conventions: a Public Deck along the crater rim with its viewports and counters, and a Freight Deck beneath it where the bonded hall, the tank galleries and the transfer junction do the actual work out of sight."
+  },
+  "entries": {
+    "region.stickney_yards": {
+      "kind": "region",
+      "def": {
+        "name": "Phobos",
+        "kind": "surface",
+        "body": "phobos",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.stickney_yards": {
+      "kind": "locality",
+      "def": {
+        "region": "region.stickney_yards",
+        "name": "Stickney Yards",
+        "kind": "port",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            0
+          ],
+          [
+            400,
+            400
+          ],
+          [
+            0,
+            400
+          ]
+        ]
+      }
+    }
+  }
+}

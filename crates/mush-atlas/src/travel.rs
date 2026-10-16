@@ -87,7 +87,13 @@ pub const DEFAULT_DWELL_FLOOR_S: u32 = 30;
 /// The default `[atlas].real_cap_s.<mode>` for `foot`, `car`, `transit` and `bus`.
 pub const DEFAULT_REAL_CAP_S: u32 = 180;
 /// The modes a character travels by with no object of their own (doc 14 §3.3).
-pub const SELF_MODES: [&str; 4] = ["foot", "car", "transit", "spacecraft"];
+///
+/// `spacecraft` is not one of them (doc 18 D-18-49, Q-18-6, binding): a corridor
+/// connection's `spacecraft` mode is the atlas's **projection** of the simulation's
+/// carrier routes, drawn so `+atlas` and the travel view can show the lane, and no
+/// player verb travels it. Travel between stations is `mush_sim::CarrierJourney`
+/// (D-18-16), a hull under way on the placement graph.
+pub const SELF_MODES: [&str; 3] = ["foot", "car", "transit"];
 /// The modes `real_cap_s` defaults for.
 pub const CAPPED_MODES: [&str; 4] = ["foot", "car", "transit", "bus"];
 /// The most seconds a service vehicle dwells at a stop.
@@ -2929,15 +2935,13 @@ pub struct TravelOption {
 /// The destinations `who` may travel to from `room`: every active connection out of
 /// the room's neighborhood whose far side is public or known, by a mode `who` has.
 #[must_use]
-pub fn options_from(
-    st: &AtlasState,
-    w: &World,
-    who: ObjId,
-    room: ObjId,
-    staff: bool,
-) -> Vec<TravelOption> {
+pub fn options_from(st: &AtlasState, who: ObjId, room: ObjId, staff: bool) -> Vec<TravelOption> {
+    // A room in no neighborhood — an orbital or system site's room on a corridor
+    // (S9.1) — has no atlas way out: its connections are the projection of carrier
+    // routes, which no player verb travels (doc 18 D-18-49, Q-18-6). The S9.1 path that
+    // let `+travel` fly a corridor from such a room is deleted, not filtered.
     let Some(nb) = st.records.neighborhood_of_room(room) else {
-        return options_from_corridor_room(st, w, room, staff);
+        return Vec::new();
     };
     let mut out = Vec::new();
     for conn in st.records.connections_in(&nb.region) {
@@ -2993,62 +2997,6 @@ pub fn options_from(
             way_name: conn.name.clone(),
             modes,
             leaves_from,
-            route,
-        });
-    }
-    out
-}
-
-/// S9.1: the ways out of a room that lies in no neighborhood — an orbital or
-/// system site's room, whose connections name it as their endpoint's `room`.
-/// The far end is named by its room, the option's `place` is the way itself.
-fn options_from_corridor_room(
-    st: &AtlasState,
-    w: &World,
-    room: ObjId,
-    staff: bool,
-) -> Vec<TravelOption> {
-    let mut out = Vec::new();
-    for conn in st.records.connections.values() {
-        if conn.status != ConnectionStatus::Active {
-            continue;
-        }
-        let (heading, far) = if conn.endpoints.0.room == Some(room) {
-            (Heading::Forward, &conn.endpoints.1)
-        } else if conn.endpoints.1.room == Some(room) {
-            if conn.direction == Direction::OneWay {
-                continue;
-            }
-            (Heading::Reverse, &conn.endpoints.0)
-        } else {
-            continue;
-        };
-        let Some(far_room) = far.room else {
-            continue;
-        };
-        if !(staff || conn.visibility == Visibility::Public) {
-            continue;
-        }
-        let modes: Vec<String> = conn
-            .modes
-            .iter()
-            .filter(|m| SELF_MODES.contains(&m.as_str()))
-            .cloned()
-            .collect();
-        if modes.is_empty() {
-            continue;
-        }
-        let Ok(route) = resolve_connection(&st.records, conn, heading) else {
-            continue;
-        };
-        out.push(TravelOption {
-            connection: conn.key.clone(),
-            heading,
-            place: conn.key.clone(),
-            place_name: mush_core::output::display_name(w, far_room),
-            way_name: conn.name.clone(),
-            modes,
-            leaves_from: room,
             route,
         });
     }

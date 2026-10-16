@@ -117,6 +117,9 @@ pub mod deliberation;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
+/// Doc 18 cut IC1: **the IC-return rule** — the Limbo door's `MoveAttempt` veto,
+/// the last-port stamp and `+ic` (doc 18 §4.5, D-18-3).
+pub mod ic_return;
 /// 16b cut T.3: **the match** — doc 16 §3.8's lifecycle, the persisted match-id
 /// counter, the RAM record of a match while it runs, the two custody transitions
 /// (`Boarding → Running` and the one check-in at `Ended | Aborted | Void`), the
@@ -486,6 +489,10 @@ impl GameModule for TacsimRuleset {
         // reads and throws its account's switch whether or not the layer is on,
         // and `tutorial::hint` itself refuses to say a line while it is off.
         match_::tutorial::register(reg)?;
+        // Doc 18 cut IC1 (§4.5, D-18-3): the IC-return rule — `+ic`, the door's
+        // `MoveAttempt` veto and the last-port stamp. Unconditional like its
+        // neighbours; `+ic` itself refuses while the layer is off.
+        ic_return::register(reg)?;
         Ok(())
     }
 

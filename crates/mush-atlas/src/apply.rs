@@ -38,8 +38,8 @@ use crate::background::background;
 use crate::cells::{Cell, Cells};
 use crate::def::{
     CheckpointDef, ConnectionDef, ExitDef, FeatureDef, HeightfieldDef, HookDef, ItemDef,
-    LocalityDef, NeighborhoodDef, PortalAt, RegionDef, Resolver, RoomDef, SecretDef, SiteDef,
-    StructureDef, SurfaceDef,
+    LocalityDef, NeighborhoodDef, PortalAt, RegionDef, Resolver, RoomDef, SHORT_DESC_ATTR,
+    SecretDef, SiteDef, StructureDef, SurfaceDef,
 };
 use crate::geom::{Point3, PointCm, RectCm, Shape, cm, metres};
 use crate::module::{ATTR_NS, AtlasState, DETAIL_PREFIX, del_doc, put_doc};
@@ -685,6 +685,22 @@ fn create_entry(
             let locality = resolver
                 .record(&def.locality, "locality")
                 .map_err(|e| format!("{id}: locality: {e}"))?;
+            // Doc 18 §4.5 / 18a §1.6: the ambient lines, refused before any write when
+            // over their bounds or blank (the record's `validate` says the same last).
+            if def.ambience.len() > crate::def::MAX_AMBIENCE_LINES {
+                return Err(format!(
+                    "{id}: more than {} ambience lines",
+                    crate::def::MAX_AMBIENCE_LINES
+                ));
+            }
+            for line in &def.ambience {
+                check_text(
+                    "neighborhood.ambience",
+                    line,
+                    crate::def::MAX_AMBIENCE_LINE_BYTES,
+                )
+                .map_err(|e| format!("{id}: {e}"))?;
+            }
             let previous = state.records.neighborhoods.get(&key).cloned();
             let rec = NeighborhoodRec {
                 key: key.clone(),
@@ -716,6 +732,8 @@ fn create_entry(
                     .theme
                     .clone()
                     .or_else(|| previous.as_ref().and_then(|p| p.theme.clone())),
+                // Exactly the pack's lines: a version without them clears the list.
+                ambience: def.ambience,
                 revision: revision_after(previous.map(|p| p.revision)),
             };
             rec.validate().map_err(|e| format!("{id}: {e}"))?;
@@ -1082,7 +1100,16 @@ fn create_room(
     check_text("room.name", &def.name, MAX_NAME_BYTES).map_err(|e| format!("{id}: {e}"))?;
     check_optional_text("room.desc", &def.desc, MAX_TEXT_BYTES)
         .map_err(|e| format!("{id}: {e}"))?;
+    // 18a's *Short.* line (doc 18 §4.5): one line, bounded, before any write.
+    check_optional_text(
+        "room.short_desc",
+        &def.short_desc,
+        crate::def::MAX_SHORT_DESC_BYTES,
+    )
+    .map_err(|e| format!("{id}: {e}"))?;
     check_details(id, &def.details)?;
+    // Doc 18 D-18-19: the closed marker registry, refused before any mutation.
+    crate::def::check_room_markers(&def.markers).map_err(|e| format!("{id}: {e}"))?;
     let kind = def.room_kind();
     let mut flags = parse_flags(&def.flags, &ROOM_FLAGS).map_err(|e| format!("{id}: {e}"))?;
     if kind == crate::record::RoomKind::Outdoor && !flags.contains(Flags::SHELTERED) {
@@ -1177,6 +1204,34 @@ fn create_room(
         all_flags,
     )
     .map_err(|e| format!("{id}: {e}"))?;
+    // The one-line description, on the tree's existing `short_desc` attribute, written
+    // exactly as `dress` writes `desc` (rooms only: items share `dress` and have no
+    // such line). A starter room carries none, and removing an absent attribute is a
+    // no-op, so the starter packs apply byte-identically.
+    if def.short_desc.trim().is_empty() {
+        ctx.w
+            .remove_attr(room, SHORT_DESC_ATTR)
+            .map_err(|e| format!("{id}: {e}"))?;
+    } else {
+        ctx.w
+            .set_attr(
+                room,
+                SHORT_DESC_ATTR,
+                Attr::text(def.short_desc.as_str(), GOD),
+            )
+            .map_err(|e| format!("{id}: {e}"))?;
+    }
+    // Doc 18 D-18-19: exactly the pack's markers, as object markers on the room. Every
+    // registered marker the def does not list is cleared, so a version that drops one
+    // takes it off.
+    for marker in crate::def::ROOM_MARKERS {
+        let wanted = def.markers.iter().any(|m| m == marker);
+        if ctx.w.has_marker(room, marker) != wanted {
+            ctx.w
+                .set_marker(room, marker, wanted)
+                .map_err(|e| format!("{id}: {e}"))?;
+        }
+    }
     let previous = state.records.roomgeo.get(&room).map(|g| g.revision);
     let geo = RoomGeo {
         room,

@@ -18,6 +18,12 @@ The basics, in the order you will want them:
   page <who>=<msg> Send a private message to anyone online.
   QUIT             Disconnect cleanly.
 
+Into the story: from Limbo, the door "c" takes an approved character into
+the 2350 corridor, at Ceres Freeport's arrivals hall. The game remembers the
+port you last stood in when you step out to Limbo or the OOC area; if that
+port can only be reached by ship, the door will not take you, and `+ic`
+takes you back to it.
+
 Getting help:
 
   help             List every command and every prose topic.
