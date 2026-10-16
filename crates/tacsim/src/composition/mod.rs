@@ -638,6 +638,10 @@ fn econ_observers() -> Vec<Arc<dyn mush_economy::EconomyObserver>> {
         // state — and turns a settlement into the trade-tape row the safe public
         // projection folds, a cancellation or expiry back into stock.
         Arc::new(mush_market::MarketObserver),
+        // Doc 18 §4.1 (cut IC6): a staff-ended charter is seen — a Co-op lease
+        // reaching a terminal state folds its enrolment into `revoked` and
+        // tells the pilot. It no-ops on a roster without the TacSim layer.
+        Arc::new(crate::port::coop::CoopObserver),
     ]
 }
 

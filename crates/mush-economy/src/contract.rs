@@ -2328,6 +2328,29 @@ pub fn contract_encumbrance(c: &EconomicContract, from: &PrincipalId) -> Encumbr
     }
 }
 
+/// Whether `c` is lease-shaped: its issuer pledges collateral of their own and the
+/// terms create an obligation — what `offer_lease` builds and `contract_encumbrance`
+/// reads as a lease (doc 18 §4.1, cut IC6).
+///
+/// **One predicate** (doc 18 cut IC6): `page_stale_contracts` exempts a live
+/// lease-shaped contract, and `end_lease`'s key match (`owns_lease`) is this shape
+/// plus its key-specific checks, so "what a lease is" is decided in one place.
+#[must_use]
+pub fn is_lease_shaped(c: &EconomicContract) -> bool {
+    let deliverables = &c.consent.terms.deliverables;
+    let issuer = principal_key(&c.issuer);
+    let pledged = deliverables.iter().any(|d| {
+        matches!(
+            d,
+            Deliverable::Collateral { from, .. } if principal_key(from) == issuer
+        )
+    });
+    let rented = deliverables
+        .iter()
+        .any(|d| matches!(d, Deliverable::Obligation { .. }));
+    pledged && rented
+}
+
 /// The `AssetOp::Release`s that take this contract's own claims back off the assets
 /// that really carry them.
 ///
@@ -3581,5 +3604,76 @@ mod tests {
                 parties: vec![&a],
             },
         );
+    }
+
+    // ---- doc 18 cut IC6: the lease shape ----
+
+    /// A contract whose only fields that matter are the issuer and the deliverables.
+    fn shaped(issuer: PrincipalId, deliverables: Vec<Deliverable>) -> EconomicContract {
+        let (_, mut consent) = golden_surface();
+        consent.terms.deliverables = deliverables;
+        EconomicContract {
+            id: ContractId(1),
+            issuer,
+            name: SmolStr::new("lease"),
+            consent,
+            consent_hash: [0; 32],
+            acceptances: Vec::new(),
+            satisfied: Vec::new(),
+            escrow: Vec::new(),
+            state: ContractState::Active,
+            settle_attempts: 0,
+            created_at: 0,
+            amendments: 0,
+            generation_started_at: 0,
+            disputed_at: None,
+            canon_published: None,
+            roster_locked: false,
+            deposits: Vec::new(),
+            agreements: Vec::new(),
+            pending: None,
+            roles: ContractRoles::default(),
+            revision: 1,
+        }
+    }
+
+    /// Doc 18 §4.1 / cut IC6: a lease is the issuer's own collateral plus an
+    /// obligation — both, and the collateral must be the issuer's.
+    #[test]
+    fn ic6_lease_shape_is_issuer_collateral_plus_an_obligation() {
+        let lessor = PrincipalId::Organization(mush_org::OrgId(7));
+        let tenant = PrincipalId::Object(ObjId(42));
+        let collateral = |from: &PrincipalId| Deliverable::Collateral {
+            object: ObjId(500),
+            from: from.clone(),
+        };
+        let obligation = Deliverable::Obligation {
+            template: Box::new(ObligationTemplate {
+                debtor: tenant.clone(),
+                creditor: lessor.clone(),
+                debit_account: AccountId(3),
+                credit_account: AccountId(4),
+                amount: Amount::from_minor(1),
+                schedule: EconomicSchedule::new(EconomicClock::Manual, i64::MAX, None, 1),
+                grace: GracePolicy::default(),
+                notify_on_success: false,
+            }),
+        };
+        assert!(is_lease_shaped(&shaped(
+            lessor.clone(),
+            vec![collateral(&lessor), obligation.clone()]
+        )));
+        // Collateral pledged by a party who is not the issuer.
+        assert!(!is_lease_shaped(&shaped(
+            lessor.clone(),
+            vec![collateral(&tenant), obligation.clone()]
+        )));
+        // Collateral without an obligation.
+        assert!(!is_lease_shaped(&shaped(
+            lessor.clone(),
+            vec![collateral(&lessor)]
+        )));
+        // An obligation without collateral.
+        assert!(!is_lease_shaped(&shaped(lessor, vec![obligation])));
     }
 }

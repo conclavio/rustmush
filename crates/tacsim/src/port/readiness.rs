@@ -255,21 +255,7 @@ pub fn readiness(w: &World) -> Readiness {
     report.push(None, Binding::Lane, state, text);
 
     // The report's lane pack: the latched version when loaded, else the shipped.
-    let pack: Option<&RulesPack> = latched
-        .and_then(|v| store.pack(&lane, v))
-        .or_else(|| store.pack(&lane, LANE_VERSION))
-        .map(|loaded| &loaded.pack);
-    let ports: Vec<(CanonicalId, &PortDef)> = pack
-        .map(|pack| {
-            pack.entries()
-                .iter()
-                .filter_map(|(id, entry)| match entry {
-                    PackEntry::Port(def) => Some((id.clone(), def)),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let (pack, ports) = report_ports(store, w);
 
     // ---- the sky ----
     match pack {
@@ -390,6 +376,37 @@ pub fn readiness(w: &World) -> Readiness {
         port_lines(&mut report, w, store, map_pack, entry, None);
     }
     report
+}
+
+/// **The report's lane pack and its port entries** (doc 18 §4.7; factored out
+/// by cut IC6 so `+coop`, `+ship` and the look hook resolve the ports exactly as
+/// the report does): the latched version when this server loads it, else the
+/// shipped [`LANE_VERSION`] when loaded, else none — an exact `(id, version)`
+/// lookup, never `TacsimStore::resolve` — and its `port` entries in pack order.
+pub(crate) fn report_ports<'a>(
+    store: &'a TacsimStore,
+    w: &World,
+) -> (Option<&'a RulesPack>, Vec<(CanonicalId, &'a PortDef)>) {
+    let Ok(lane) = CanonicalId::new(LANE_PACK) else {
+        return (None, Vec::new());
+    };
+    let pack: Option<&RulesPack> = store
+        .applied_in(w, &lane)
+        .and_then(|v| store.pack(&lane, v))
+        .or_else(|| store.pack(&lane, LANE_VERSION))
+        .map(|loaded| &loaded.pack);
+    let ports: Vec<(CanonicalId, &PortDef)> = pack
+        .map(|pack| {
+            pack.entries()
+                .iter()
+                .filter_map(|(id, entry)| match entry {
+                    PackEntry::Port(def) => Some((id.clone(), def)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (pack, ports)
 }
 
 /// The lowest-id Active `tacsim.credit` account `system:<treasury>` holds.

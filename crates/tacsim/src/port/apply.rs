@@ -99,7 +99,7 @@ fn credit() -> Result<InstrumentId, String> {
 
 /// The credit's minor-unit scale on this world: the registered instrument's, or
 /// the game's own [`CREDIT_SCALE`] before it is registered.
-fn credit_scale(w: &World) -> u8 {
+pub(crate) fn credit_scale(w: &World) -> u8 {
     w.module_state::<EconomyStore>()
         .and_then(|store| {
             InstrumentId::new(CREDIT)
@@ -109,7 +109,7 @@ fn credit_scale(w: &World) -> u8 {
 }
 
 /// `major` in the credit's minor units at `scale`, checked.
-fn minor_of(major: u64, scale: u8) -> Option<i64> {
+pub(crate) fn minor_of(major: u64, scale: u8) -> Option<i64> {
     let factor = 10_i64.checked_pow(u32::from(scale))?;
     i64::try_from(major).ok()?.checked_mul(factor)
 }
@@ -786,6 +786,43 @@ impl PortApplier {
     }
 }
 
+/// **The leased-hull retire refusal's text** (doc 18 §4.7; cut IC6).
+#[must_use]
+pub(crate) fn leased_refusal(id: &CanonicalId, mark: &str) -> String {
+    format!(
+        "{id}: hull {mark} is chartered to a pilot; a port with a leased hull cannot be retired"
+    )
+}
+
+/// **Whether `(pack, id)` may retire** (doc 18 §4.7 "retire_check refuses while
+/// a hull is leased"; cut IC6): refused when any hull row of its port map
+/// carries a live lease from one of the map's institutions (the programme's
+/// Trust is one of them). An absent or unreadable map records no hull, so it
+/// refuses nothing here.
+fn retire_refusal(w: &World, pack: &CanonicalId, id: &CanonicalId) -> Result<(), String> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Ok(());
+    };
+    let PortMapState::Present(map) = store.port_map(pack, id) else {
+        return Ok(());
+    };
+    let lessors: Vec<PrincipalId> = map
+        .orgs
+        .values()
+        .map(|row| PrincipalId::Organization(OrgId(row.org)))
+        .collect();
+    for row in &map.hulls {
+        let hull = ObjId(row.hull);
+        if lessors
+            .iter()
+            .any(|lessor| crate::port::coop::trust_lease_on(w, lessor, hull).is_some())
+        {
+            return Err(leased_refusal(id, &row.mark));
+        }
+    }
+    Ok(())
+}
+
 impl EntryApplier for PortApplier {
     fn kinds(&self) -> Vec<CanonicalId> {
         CanonicalId::new(PORT_KIND).into_iter().collect()
@@ -842,15 +879,19 @@ impl EntryApplier for PortApplier {
 
     fn retire_check(
         &self,
-        _ctx: &Ctx<'_>,
-        _pack: &CanonicalId,
-        _id: &CanonicalId,
+        ctx: &Ctx<'_>,
+        pack: &CanonicalId,
+        id: &CanonicalId,
         _existing: Option<ObjId>,
         _placed: &BTreeMap<CanonicalId, ObjId>,
     ) -> Result<(), String> {
-        // Hulls stand on retire (doc 18 §4.7); the refusal while a hull is
-        // leased is IC6's. No vendors (IC8) yet.
-        Ok(())
+        // Hulls stand on retire (doc 18 §4.7). Doc 18 §4.7 "retire_check
+        // refuses while a hull is leased" (cut IC6, deferred here by IC4): a
+        // port with a chartered hull is not retired out from under its pilot.
+        // The lessor is read from the map's own org rows — every institution
+        // the port made, the programme's Trust among them — so the check needs
+        // no pack version to name the programme org. No vendors (IC8) yet.
+        retire_refusal(ctx.w, pack, id)
     }
 
     fn retire(
@@ -942,5 +983,17 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// Doc 18 §4.7 / cut IC6: the leased-hull retire refusal names the entry
+    /// and the mark.
+    #[test]
+    fn ic6_the_leased_retire_refusal_names_the_hull() {
+        let id = CanonicalId::new("ceres_port").expect("id");
+        assert_eq!(
+            leased_refusal(&id, "FPC-D-0401"),
+            "ceres_port: hull FPC-D-0401 is chartered to a pilot; a port with a leased hull \
+             cannot be retired"
+        );
     }
 }

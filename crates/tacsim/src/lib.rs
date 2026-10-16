@@ -368,6 +368,11 @@ pub struct TacsimRuleset {
     /// quantity delegate (`composition::server_modules_with_tacsim`). `None` on a
     /// roster that did not: the port tick's every pool read then refuses.
     inventory: Option<mush_inventory::InventoryHandleCell>,
+    /// **Doc 18 cut IC6** — the compiled-in goods table, parsed once, here,
+    /// and handed to the slot at `register` and again at `on_world_loaded`
+    /// (which rebuilds the slot from the store). RAM only, never persisted;
+    /// `None` only on a build fault, and every gauge then reads dark.
+    goods: Option<std::sync::Arc<crate::definitions::GoodsTable>>,
 }
 
 impl TacsimRuleset {
@@ -397,11 +402,26 @@ impl TacsimRuleset {
             Vec::new()
         };
         let loaded = verify_sources_with(&cfg, &game);
+        // Doc 18 cut IC6: the goods table is parsed once, here (every other
+        // constructor comes through this one); `tests/content.rs` pins it, so
+        // an error is a build fault.
+        let goods = match crate::definitions::goods::goods_table() {
+            Ok(table) => Some(std::sync::Arc::new(table)),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "tacsim: the compiled-in goods table does not load; the ship gauges will read \
+                     dark"
+                );
+                None
+            }
+        };
         TacsimRuleset {
             cfg,
             loaded,
             test_world: false,
             inventory: None,
+            goods,
         }
     }
 
@@ -502,6 +522,7 @@ impl GameModule for TacsimRuleset {
         let mut slot = TacsimStore {
             cfg: self.cfg.clone(),
             test_world: self.test_world,
+            goods: self.goods.clone(),
             ..TacsimStore::default()
         };
         slot.install_packs(packs);
@@ -594,6 +615,10 @@ impl GameModule for TacsimRuleset {
         // test world also the probe. Registered unconditionally like its
         // neighbours: the tick returns at once while the layer is off.
         port_tick::register(reg, self.test_world, self.inventory.as_ref())?;
+        // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
+        // gauges. Registered unconditionally like its neighbours; the hook
+        // itself returns nothing while the layer is disabled.
+        port::ship::register_hooks(reg)?;
         Ok(())
     }
 
@@ -619,6 +644,9 @@ impl GameModule for TacsimRuleset {
         // Doc 18 cut IC3: the test-world flag is RAM only, so the loaded slot
         // takes it from the layer, never from a document.
         loaded.test_world = self.test_world;
+        // Doc 18 cut IC6: the goods table is RAM only, like the test-world
+        // flag; the loaded slot takes it from the layer.
+        loaded.goods = self.goods.clone();
         let Some(slot) = ctx.w.module_state_mut::<TacsimStore>() else {
             return Err(ModError::msg("tacsim: no module state"));
         };

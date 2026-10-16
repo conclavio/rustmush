@@ -78,6 +78,12 @@ category = "read-only"
 note = "E7 cut 7 (10b 3.7, Q16A): the contacts this actor's platform holds. One observer's picture is invisible to every other observer; the filter is the holder principal and no argument widens it. Writes nothing, and names NO future family: contacts are K6's ContactState, owned by mush-tactics."
 
 [[handler]]
+name = "+coop"
+category = "legacy-post-image"
+family = "tacsim.coop"
+note = "doc 18 cut IC6 (section 4.1, D-18-6/21/23/24/25): the First Captain programme. +coop and +coop/statement are pure reads (the programme block, the free-hull rule, the actor's own enrolment and account). +coop/enrol, at the programme office only, is ONE command and ONE batch: the economy's own API opens the pilot's unscoped tacsim.credit account if absent, offer_lease + accept_contract (as the pilot) make the Trust's lease (1-minor Manual rent), an org-actor post keyed tacsim.backer.stake/<lease> moves the stake, create_vault opens the hold on the hull's store space; tacsim writes one bounded whole-document tacsim:coop:<gateway account> enrolment (deny_unknown_fields, identity rule, an unreadable one bars that account) and renames the hull Thing. The operate gate reads the live lease, never the document; a tacsim EconomyObserver folds a terminal lease into revoked. No authoritative submission. Future family: the enrolment as a typed per-account record."
+
+[[handler]]
 name = "+credit"
 category = "read-only"
 note = "doc 18 cut IC3 (section 4.1): the wallet, a port of the retired +nuyen. A pure read of the actor's own unscoped tacsim.credit account in the economy snapshot -- posted, held and available through the one amount render; no document, no post, no submission; no argument, so it reads no other account."
@@ -222,6 +228,12 @@ note = "E7 cut 10 (10b 3.10 B4/B5/B8): proxy seats. /offer, /list, /accept and /
 name = "+sheet"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+ship"
+category = "legacy-post-image"
+family = "tacsim.ship"
+note = "doc 18 cut IC6 (section 4.2, D-18-23/34): the chartered hull. +ship and +ship/hold are pure reads (the live lease, the hull's placement, the hold vault's pools through tacsim's inventory delegation). +ship/board, in the gallery where the tenant's hull is docked, places the actor Interior in the hull's airlock space (mush_sim::place_interior, the berths cap); +ship/leave, in that airlock while docked, unplaces (keep) and moves the actor to the gallery, emitting Moved, and writes the unregistered tacsim.last_port.<port> marker. No document; no authoritative submission. Future family: the last-port stamp and the boarding audit as a typed per-character record."
 
 [[handler]]
 name = "+stakeout"

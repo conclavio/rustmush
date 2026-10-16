@@ -2776,3 +2776,496 @@ accepted a Thing principal on the rig's offer/resolve/prepare/install path
 **Test rig patterns later cuts copy:** `crates/tacsim/tests/port_tick.rs` (`wired`, `unwired`, `boot`
 with the offer-key ring, `offline_player`, `fire`, `drain_tacsim`, `land_one`, `mark`,
 `disconnect`) is the shape IC8's and IC9's tests copy.
+
+## IC6
+
+**The Co-op programme and boarding** (doc 18 §5, the IC6 row and paragraph), built 2026-10-16 on
+main at 10b89d58. A pilot becomes a First Captain in one command, the live lease is the operate
+gate, and the chartered pilot boards, leaves and reads the hull's hold. One commit, pushed to
+origin/main.
+
+### What landed
+
+1. **Live leases are never "stale"** (`crates/mush-economy/src/contract.rs`, `src/contract_live.rs`,
+   `src/sweep.rs`, `src/lib.rs`). One predicate, `pub fn is_lease_shaped(c) -> bool` beside
+   `contract_encumbrance` (issuer collateral plus an Obligation), re-exported in alphabetical place;
+   the private `owns_lease` is now that shape plus its two key-specific checks (this lessor, these
+   premises), behaviour unchanged; `page_stale_contracts` gains one filter after the state filter,
+   `!(Active && is_lease_shaped)`, with the doc 18 §4.1 comment. Housing and recovery leases are
+   exempted by the same line. A `ReadyToSettle` or escrowed `Draft` lease still pages.
+2. **The enrolment document and the goods cache** (`crates/tacsim/src/store.rs`, `src/lib.rs`).
+   `TacsimStore` gains `enrolments: BTreeMap<AccountId, Enrolment>`, `enrolment_keys:
+   BTreeSet<SmolStr>` (every `tacsim:coop:` key seen, readable or not) and `goods:
+   Option<Arc<GoodsTable>>`; accessors `enrolment_state(account) -> EnrolmentState` (Present /
+   Unreadable when the key is claimed with no body / Absent), `enrolment_of(pilot)`,
+   `enrolment_for_lease(u64)`, `enrolments()`, `goods()`; `pub(crate) put_enrolment` as the single
+   write path on `put_port_map`'s pattern (RAM install, one whole-document `JsonSet`, a minimal
+   `{schema, account}` body on the structurally unreachable serialize failure so the key still bars
+   re-enrolment); a `tacsim:coop:` load arm (strict decode, `Enrolment::check`, the identity rule
+   `enrolment_key(e.account) == key`; any failure skipped loudly, the key kept); the module-doc
+   table row. The goods table is parsed **once** in `TacsimRuleset::with_game_content` into the new
+   private field `goods`, handed to the slot in `register` and again in `on_world_loaded` next to
+   `test_world` (the first review's must-fix F1), never re-parsed on a look or a verb.
+3. **The enabling edits** (`crates/tacsim/src/port/{apply,hull,readiness,def}.rs`). `credit_scale`,
+   `minor_of`, `template`, `berths_slot` are `pub(crate)`; `hull_spec(store, programme) ->
+   Option<(&InteriorDef, &LogisticsDef)>`; `report_ports(store, w) -> (Option<&RulesPack>,
+   Vec<(CanonicalId, &PortDef)>)` factored out of `readiness` byte-identically (`ports.rs` test 8's
+   report did not move); `PortDef::check` refuses `per_account != 1` ("per_account must be 1; this
+   server keeps one enrolment per gateway account (D-18-25)"); the shipped lane says 1, so no digest
+   moved.
+4. **`port/coop.rs` (new): the programme's records and rules.** `EnrolmentStatus { Active,
+   BuyoutPending, Graduated, Revoked }` (snake_case), the strict `Enrolment` record
+   (`deny_unknown_fields`, the three IC10 counters `#[serde(default)]`, `check()`),
+   `EnrolmentState<'_>`, `enrolment_key(account) = "tacsim:coop:{canonical_hash}"`,
+   `stake_key(lease) = tacsim.backer.stake/<id>`, `ProgrammePort { pack, entry, def, programme, map
+   }` with `trust()`, `trust_account()`, `trust_scope()`, `programme_port(w)` through
+   `report_ports`, `port_name(def)`, `trust_lease_on(w, trust, hull)` (`live_lease_on`'s shape on
+   `is_lease_shaped`), `Charter { contract, hull }` and **`live_charter(w, pilot)`, the operate gate
+   (D-18-23): an Active Trust lease naming the pilot and pledging a programme hull, lowest id, never
+   the document**; `hull_is_free` (`next_loaner`'s rule plus docked at the programme port and no
+   vault on the stowage), `free_hulls`, `enrol_gate` (Lane, Rate, Map, Rooms, Domain, Org,
+   Programme, Hulls must be Ready), `check_hull_name` (trim/collapse, 1..=32 bytes, the charset, a
+   leading letter, not any programme hull's current name or mark, ASCII case-insensitive).
+5. **The readiness hulls line's leased and under-way arms, and the leased retire refusal**
+   (`crates/tacsim/src/port/hull.rs`, `port/apply.rs`). `hull_line` counts `free`, `leased` (with
+   each tenant's `display_name`, `nobody` for a lease with no object tenant) and `under_way`; the
+   Ready text is **unchanged** when nothing is leased or under way, else `"{entry} hulls: {pool} of
+   {pool} made and titled to {org}; {free} laid up and free, {k} leased ({mark} to {tenant}, …)[,
+   {u} under way]."`, still Ready. `retire_check` calls the new `retire_refusal`: any hull row with
+   a `trust_lease_on` from any of the map's org rows refuses `"{id}: hull {mark} is chartered to a
+   pilot; a port with a leased hull cannot be retired"` (`leased_refusal`, unit-pinned).
+6. **`+coop`, `+coop/enrol`, `+coop/statement`** (`crates/tacsim/src/port/coop.rs`,
+   `src/commands.rs`). `+coop` anywhere: the registrar's line, the Terms line (live
+   stake/share/buyout, the 120,000.00cr new-Dray comparator), `Drays free: {free} of {pool}.`, then
+   the charter line **with the live lease first**: the enrolment for that lease (`Your charter: the
+   {name} ({mark}); buyout {frozen}. +coop/statement reads your lay.`), `CHARTER_BOOKS_DARK` when
+   the lease stands but the document does not read, else by gateway account through the private
+   `account_books` (`ENROLLED_ONCE` for an alt on an enrolled account; `… has ended.` when Revoked;
+   the new `CHARTER_NOT_IN_FORCE` for an Active document with no live lease, e.g. disputed;
+   `BOOKS_UNREADABLE`; or the `Enrol at the {office} in {port}: …` invitation). `+coop/enrol <name>`
+   at the office only: every check in the brief's order before the first write (usage, office,
+   gateway account fail-closed, one enrolment ever by document and by live lease, the readiness
+   gate, the name, the free hull, the capital at `available − stake ≥ floor`, **a frozen economy
+   refused with FAILED before any write**, every resolution), then account if absent → vault id →
+   `offer_lease` (name `First Captain charter, {mark}`, the Trust's root scope, rent 1 minor Manual
+   `next_due = i64::MAX`) → `accept_contract` as the pilot and a re-read requiring `Active` → **the
+   stake post last** (org actor, `tacsim.backer.stake/<lease>`, two zero-sum lines) → `create_vault`
+   `{mark} hold` on `SpatialInterior(stowage)` → `set_name` and the `desc` under the hull's own
+   owner when absent → `put_enrolment`. A refusal after the offer ends the lease through
+   `end_lease`; **every FAILED past the first write pins the deferred queue**
+   (`failed_after_writes`) so the residue L16 names is the same in RAM and on disk. The reply:
+   `Ceres Clearing opens account #N in your name.` (when opened here), `The Co-op charters you
+   {mark}, laid up as the {laid_up}, now the {name}, cradled at the {gallery}.`, `{stake} staked to
+   you. Buyout {buyout}. Ilse Oduya-Brandt countersigns.` `+coop/statement` anywhere: five lines
+   from the frozen terms and counters; the Cash line is a whole sentence on each branch; `Charter:
+   in force.` only when `live_charter` names the enrolment's lease, else `ended.` (Revoked) or `not
+   in force.` Both verbs registered after the `+credit` bracket under `LegacyPostImage` with
+   `COOP_HELP`.
+7. **`CoopObserver`** (`crates/tacsim/src/port/coop.rs`, `src/composition/mod.rs`): the exhaustive
+   `MarketObserver` match; on `ContractChanged { Settled | Cancelled | Expired }` an `Active`
+   enrolment for that lease is written back `Revoked` through `put_enrolment` and the pilot told
+   `The Co-op has ended your charter of the {name} ({mark}).` through `port_tick::notify`; wired
+   into `econ_observers()` after the market's; a no-op on rosters without the layer.
+8. **Pool reads from a hook** (`crates/tacsim/src/port_tick.rs`): `read_pool`'s tail factored into
+   the private `pool_value`; new `pub fn read_pool_in(&HookReadContext, EndpointRef, &CanonicalId)
+   -> Result<u64, PoolReadError>` with the same rule (absent = 0, a refusal never 0).
+9. **`port/gauges.rs` (new): the pure renders** over `capacity::load`/`max_more` with the exact
+   item-9 texts: `compartment_words` (cargo/HOLD, tank/TANKAGE, locker/STORES), `room_instrument`
+   (Load cells, Manifest slate, Displays, Locker tally, Tank gauges, else Gauges), `measures_line`
+   (`100/100 t · 120.0/120 m³[ · FULL: mass and packed volume]`), `goods_list`, `single_summary`
+   (`42/80 t`, `21/120 crew-days`), `ship_hold_line` (doc 18 §2 step 5's `Hold: cargo 0/100 t ·
+   0.0/120 m³ · tank 0/80 t · locker 0/120 crew-days.`), `room_lines` (the load-cell body with every
+   accepted good, zeros included, TOTAL/LIMIT/FULL; the single-good sentence; the summary rooms),
+   `hold_lines` (`+ship/hold`), `DARK`, the `Reading` alias. FULL names every limited measure whose
+   load ≥ its limit.
+10. **`port/ship.rs` (new): `+ship`, `/hold`, `/board`, `/leave` and the look hook.** `HullView`,
+    `hull_view`, `hull_of_room`, `Berth::{Docked, UnderWay, Elsewhere}`, `berth_of`, `hold_vault(w,
+    &HullView)`, `status_line` (18a §3's form with the mark: `Aboard the {name} ({mark}), docked at
+    {port}.` / `under way.` / `.`). `+ship` prints doc 18 §2 step 5's form `{name} (Dray): docked
+    {port}, {gallery}.` (`SHIP_DOCKED`/`SHIP_UNDER_WAY`/`SHIP_ELSEWHERE`), the hold line
+    (`HOLD_DARK` on a read error) and `Programme: {n} sale{s}; buyout {frozen}.` (`SHIP_BOOKS_DARK`
+    when the document does not read while the lease stands). `+ship/board` (already aboard → at a
+    gallery → the live lease → not under way → cradled at THIS gallery → `place_interior(airlock,
+    berths)`), with `You cycle the lock into the {name}.`, the gallery's and the Airlock's
+    third-person lines, `show_room` and `Moved`. `+ship/leave` (aboard a programme hull's airlock
+    space → standing in the Airlock, else `You can only leave by the {airlock}.` → docked, else
+    `UNDER_WAY_LOCK`/`LEAVE_SEALED` → `unplace(keep)` + `move_to(gallery)`, the three lines,
+    `show_room`, `Moved`, and **the gallery's port stamped through `ic_return::stamp`**);
+    placement-gated, not lease-gated (L7). `ShipLook` on `LookRendered`: nothing while the store is
+    absent or the layer disabled; else the status line, then the room's `interior.gauges`
+    compartments rendered from the hold vault's pools through `read_pool_in` (no vault → zeros; an
+    error → `{Instrument}: dark.`). `register_hooks` called from `register` after
+    `port_tick::register`.
+11. **The gates** (`crates/mush-contract-tests/legacy-handlers.toml`, `state-slot-owners.toml`): the
+    `+coop` (`tacsim.coop`) and `+ship` (`tacsim.ship`) `legacy-post-image` stanzas in byte order,
+    `PINNED_BASELINE` 97; the `port/coop.rs` `EconomyStore` row (owner `economy`) and the
+    `tests/coop.rs` `AccountOracle` row (owner `sim`).
+12. **Tests** (`crates/tacsim/tests/coop.rs`, 16; `crates/mush-economy/tests/e4b1.rs`, 1; unit tests
+    in `contract.rs`, `apply.rs`, `def.rs`, `coop.rs` ×5, `gauges.rs` ×6). The rig composes
+    `server_modules_with_tacsim` + the wired test-world layer (`Roster::bare`, `bare_real`,
+    `.disabled()`, `.freezable()` with a test-only `Latch` module on the e4c/e7c9 precedent), a
+    `MapOracle` into `mush_sim::AccountOracle`, `seed_pool` with the lot id as a parameter and the
+    typed post-images replayed through `Engine::hydrate_action_state` across a reboot, and asserts
+    no refused namespace writes at every boot. The sixteen prove: lens 1 in full (reply, `+credit`,
+    the lease's parties/deliverables/rent schedule, `Encumbrance::Lease`, the stake transaction and
+    both balances, the vault, the hull's name/alias/desc under its own owner, every enrolment field,
+    the four `+coop` lines, the five statement lines, the exact hulls line); one enrolment per
+    account including an alt and the alt's `+coop`; the refusals before any write; the rate-4
+    closure on the production layer; the ninth pilot with the Trust at exactly its floor; the
+    capital floor; board/leave with both sides' narration, the Stickney re-placement and a non-port
+    domain; the leave stamp isolated in both directions plus the door pass; no stale page after
+    eight days; staff cancel → Revoked, the notice, the gate, `Charter: ended.`, the closed-account
+    Cash line; the look status line exactly once and first in every room, the laid-up hull's zero
+    block, and silence after a config-off reboot; the gauges line for line after boot; the charter,
+    name, board and load cells after a reboot, then an Unreadable document (`+ship` dark programme
+    line, board still works, `CHARTER_BOOKS_DARK`, `BOOKS_UNREADABLE` twice, another account
+    enrols); the leased retire refusal through `@atlas/pack retire` with an unleased control; a
+    frozen economy refused before any write and the thaw; a disputed lease not in force in `+coop`,
+    the statement and the gate.
+
+### Deferred, and why
+
+**Lead rulings taken by the planner** (L1–L21 of the IC6 brief, recorded here so the owner sees
+them):
+
+- **L1 — The readiness gate**: `+coop/enrol` passes when every Lane, Rate, Map, Rooms, Domain, Org,
+  Programme and Hulls line is Ready (§4.7 "orgs capitalized", so all nine org lines); Sky and
+  Treasury are not gated; IC8 adds pools and listings.
+- **L2 — The hulls line reads "the programme was made"**: a leased hull counts as leased, an
+  under-way one as under way, neither Missing; the Ready text is unchanged while nothing is leased
+  or under way (`ports.rs` test 8 did not move). The under-way arm is code-reviewed here and first
+  exercised by IC9.
+- **L3 — Rent 1 minor on the Manual clock, `next_due = i64::MAX`** (D-18-21; Q-18-27's answer). The
+  code admits a zero rent: `offer_lease` runs only `check_structure` + `check_offerable`, and
+  `create_lease_obligations` writes the obligation directly; so the 1-minor rent and Q-18-27's
+  optional-rent change are belt-and-braces and the owner may drop the latter.
+- **L4 — The hold vault is opened at enrolment** on `CustodyRef::SpatialInterior(stowage)`, owner
+  `Object(pilot)`, named `{mark} hold`.
+- **L5 — One enrolment per gateway account, ever, keyed by the account**
+  (`tacsim:coop:{canonical_hash}`, the tutorial precedent); an unreadable document bars only its own
+  account; `per_account` must be 1.
+- **L6 — Enrolment order and atomicity**: every check first; account → vault id → offer → accept →
+  post last → vault record, rename, document; a refusal after the offer ends the lease through
+  `end_lease`; past the post nothing is fallible.
+- **L7 — `+ship/leave` is gated on placement only** (aboard, in the Airlock, docked), not on the
+  live lease, so a revoked tenant or a staff-placed occupant is never stranded (IC4's `egress`
+  refusal points here). **An owner item**; see below.
+- **L8 — The operate gate is `live_charter`** (D-18-23): an Active Trust lease naming the pilot and
+  pledging a programme hull; never the document. `+ship`, `+ship/hold`, `+ship/board`, `+coop`'s
+  charter line and the statement's "in force" use it; the free-hull rule uses the non-terminal
+  `trust_lease_on`.
+- **L9 — The free-hull rule** adds docked at the programme port and no hold vault on the stowage to
+  `next_loaner`'s rule, so a staff-revoked hull (its hold owned by the old pilot) leaves the pool
+  until IC13's recall re-homes it. The readiness line still counts it "laid up and free"; the two
+  counts differ by design until IC13.
+- **L10 — The hull description** is one template line written at enrolment when the hull has none,
+  under the hull's own owner (D-18-22), no pack change.
+- **L11 — The gauges are data-driven** from `interior.gauges` and the goods table with two
+  template-id word tables in code (built as the functions `compartment_words` and `room_instrument`,
+  not constants); `dray.json` is not edited; burn and reserve lines are IC9's.
+- **L12 — Command classes are per verb**: `+coop` and `+ship` both `LegacyPostImage`; the stanzas
+  say which switches read.
+- **L13 — Money renders through `mush_economy::money`** (`25000.00cr`), the tree over doc 18's
+  `25,000.00cr` prose.
+- **L14 — `+coop/buyout`, `/release`, `@coop/revoke`, `+ship/plan`, `/undock`, `/orders`, `/order`
+  are not registered**; the kernel's own refusal answers them.
+- **L15 — The leave stamp** is `+ship/leave`'s own `ic_return::stamp`; the door-pass re-stamp is
+  IC1's `IcReturnStamp`, pinned by test 8, not rebuilt.
+- **L16 — The economy's own lease notices** ("Lease #N has been offered to you", "Contract #N is
+  active") reach the pilot during `+coop/enrol` and are left alone; FAILED therefore says "your
+  charter was not signed". The residue of a post-offer failure (an opened empty `tacsim.credit`
+  account and a Cancelled lease record) is now **durable** because the fixer pins the deferred
+  queue; before that fix it existed only in RAM until the next reboot, with its ids handed out
+  again. A frozen economy now leaves no residue at all.
+- **L17 — The observer folds `Settled | Cancelled | Expired`**; `Expired` is a harmless superset of
+  §4.1's two.
+- **L18 — The status line carries the mark** (18a §3's form), where doc 18 §2 step 8 and §6 omit it;
+  the mark tells eight identical interiors apart. An owner text.
+- **L19 — `+ship`'s first line is doc 18 §2 step 5's form**, with the gallery's full room name
+  `Visiting Berth Gallery` (step 5 abbreviates it) and rendered as three lines, not one run. A
+  deviation and an owner text.
+- **L20 — IC6 lands before IC7** against §5's "mush-economy touches IC7 before IC6"; the edits are
+  disjoint (`contract.rs`'s one new function, the private `owns_lease`, `sweep.rs`'s one filter,
+  `lib.rs`'s re-export list). IC7 rebases on these lines if it touches them.
+- **L21 — Unreadable enrolment beside a live charter: the lease wins** (D-18-23).
+  `+ship`/`/hold`/`/board` keep working; `+ship`'s programme line and `+coop`'s charter line go
+  dark; `+coop/statement` and `+coop/enrol` answer `BOOKS_UNREADABLE`.
+
+**Fixer rulings beyond the brief, taken as the tree's rule:** `+coop`'s charter line and
+`+coop/statement`'s Charter line read the gateway account's books and the live lease, never the
+character's document alone (an alt on an enrolled account reads `ENROLLED_ONCE`; a disputed lease
+reads `CHARTER_NOT_IN_FORCE` / `Charter: not in force.`); `plan_enrolment` reads
+`EconomyStore::is_frozen()` before the first write; `failed_after_writes` pins the deferred queue on
+the `mush_economy::post` / `mush_canon::commit` precedent.
+
+**Builder decisions recorded:** `retire_check`'s lessors are every org row of the port map, not the
+programme org alone (the check has no `PortDef`; the Trust is among the rows, same result today);
+`hold_vault` takes `&HullView` (the stowage's template id is the interior's); `ProgrammePort` is
+`Clone` not `Copy`; a compartment accepting zero or several goods renders multi-good; readings
+insert only non-zero quantities; a pre-existing `tacsim.credit` account is reused and the "opens
+account" line omitted; the test rig replays the typed inventory post-images through
+`Engine::hydrate_action_state` across a reboot and keeps a cumulative folded store; no log names an
+enrolment key (its tail is the account's canonical hash, the tutorial loader's rule); test 14 goes
+through the real `@atlas/pack retire` path; the brief's FULL example (52 t of fittings) is
+arithmetically wrong (2,300 L/t × 52 = 119,600 L < 120,000), so the "load ≥ limit" rule is kept and
+`FULL: packed volume` is proven with 40 t fittings + 20 t ice = 120,000 L.
+
+**Owner-critical defaults taken** (each rewordable or reversible; none changes a number the owner
+set):
+
+1. **D-18-34 read as board-only for the lease gate (L7).** Proposed amendment for the owner to
+   accept or reject: *"D-18-34 Boarding by verb. `+ship/board` in the gallery and `+ship/leave` in
+   the airlock (and nowhere else, in both documents); board is gated on the live lease and the
+   hull's placement, leave on the hull's placement alone, so a pilot whose charter ends aboard can
+   always step ashore; real gangway exits are P-G."*
+2. **`+ship`'s first line** uses step 5's form with the gallery's full name as three lines (L19);
+   **the status line carries the mark** in 18a's form, not doc 18 §2 step 8's (L18).
+3. **The 1-minor Manual rent** kept although zero would be admitted (L3).
+4. **A staff-revoked hull leaves the pool until IC13** (L9): its hold vault, owned by the old pilot,
+   stands.
+5. **The player-facing texts this cut wrote** (all rewordable): `REGISTRAR_LINE` (doc 18's own), the
+   three enrol reply lines, `NAME_USAGE`, `NO_ACCOUNT_MATCH`, `ENROLLED_ONCE`, `BOOKS_UNREADABLE`
+   (which says "staff have been told" while only a log backs it), `NOT_OPEN`, `BAD_NAME`,
+   `NAME_TAKEN`, `NO_HULL`, `NO_CAPITAL`, `FAILED`, `NO_CHARTER`, `CHARTER_BOOKS_DARK`,
+   `CHARTER_NOT_IN_FORCE`, `ALREADY_ABOARD`, `BOARD_WHERE`, `NOT_HERE`, `UNDER_WAY_LOCK`,
+   `LOCK_STUCK`, `LEAVE_NOT_ABOARD`, `LEAVE_WHERE`, `LEAVE_SEALED`, `SHIP_BOOKS_DARK`, `HOLD_DARK`,
+   the board/leave narration, the revocation notice, the statement lines (`Charter: in force. /
+   ended. / not in force.`, the two Cash sentences), the gauge words, `HULL_DESC_TEMPLATE`,
+   `COOP_HELP`, `SHIP_HELP`, the readiness hulls-line wording including `nobody`.
+6. **The failed-enrolment residue** (L16): a post-offer failure leaves an opened empty account and a
+   Cancelled lease record, durably, and the pilot may already have seen the economy's lease-offered
+   notice; acceptable or not is the owner's call.
+
+**Deviations from doc 18 recorded:** L18, L19, L20 above; and **the gauge fixtures store the 20/80
+vertex** that D-18-39's letter forbids any test to store. The brief's lens 7 mandated those
+quantities, the tests assert a FULL-both reading and never optimality, and IC8's LP test still
+derives the vertex; the owner may prefer a non-vertex load in the gauge fixtures.
+
+**Residuals named for later cuts:** `page_stale_contracts` exempts by shape alone, so a player-built
+Active contract with issuer collateral, an obligation and escrow is no longer paged (narrow to
+`escrow.is_empty()` if money sitting still must page); `+coop/enrol` writes the `Enrolment` without
+its own `check()` (a staff rename of a laid-up Dray over 120 bytes makes an `Unreadable` document
+after the next reboot); `hull_line` would count a hull both `free` and `under way` if IC9 ever
+leaves the root Direct on a port domain while `under_way` (close with `None if laid_up && !moving`);
+`+ship/leave` unplaces before `move_to`, so a `move_to` failure leaves the placement gone behind
+LOCK_STUCK (practically unreachable; `home` then works); the deferred-queue pin and the `end_lease`
+unwind are reviewed in code only, nothing in the slice forcing a post-offer failure; test gaps: the
+notice assertion in test 10 is a disjunction although the pilot is connected, the revocation is
+asserted in RAM only, the `enrol_gate` unit test shuts on 3 of 8 bindings, no
+ReadyToSettle/escrowed-Draft paging control, no test of the `live_charter` second guard,
+`load_enrolment`'s identity rule, the reused-account branch or the FAILED path; the surface's
+refusal order lists NO_CAPITAL before FAILED but a misconfigured world (scale overflow, no economy,
+no Trust account) answers FAILED first. Nothing under `docs/design/` was edited by the build; this
+note is the committer's.
+
+### Pins re-blessed
+
+- **`crates/mush-contract-tests/legacy-handlers.toml`**: two new non-baseline `legacy-post-image`
+  stanzas, `+coop` (family `tacsim.coop`, after `+contacts`) and `+ship` (family `tacsim.ship`,
+  after `+sheet`), in byte order, each naming doc 18 §4.1/§4.2 and its decisions, which switches are
+  reads, and a future typed family (`+ic`'s wording). `PINNED_BASELINE` stays **97**;
+  `legacy_handler_allowlist` 4 passed.
+- **`crates/mush-contract-tests/state-slot-owners.toml`**: two new rows.
+  `crates/tacsim/src/port/coop.rs` / `World::module_state_mut` / `EconomyStore` / owner `economy`
+  (the pilot's account and hold vault take their ids from the economy's allocators before
+  `open_account` / `create_vault` write them, the `port/apply.rs` precedent; the site refuses when
+  the slot is absent), and `crates/tacsim/tests/coop.rs` / `AccountOracle` / owner `sim` (the
+  enrolment rule is per gateway account, fail-closed on an unmapped character; the rig installs a
+  fixed oracle on the `match_lifecycle.rs` precedent). `state_slot_owners` 4 passed; the tests reach
+  no other foreign slot through `module_state_mut`.
+- **Unmoved, and shown unmoved by the green runs:** every panic budget (no
+  `unwrap`/`expect`/`panic!`/indexing outside `#[cfg(test)]` in the new code; `panic_budget` 7
+  passed); `module-ns-owners.toml` (tacsim writes its own namespace through `push_op`, the observer
+  included; economy and sim writes go through their owners' functions); the restriction-lints census
+  (11 passed); the composition-edge pin (no new crate edge: tacsim →
+  mush-economy/mush-sim/mush-inventory/mush-org already existed); every content digest (lane v2,
+  `tacsim.pack.dray`, goods, stations, starter: `content.rs` 29, `stations.rs` 13, `lane.rs` 8, no
+  pack edited, `per_account` already 1); `ports.rs` test 8's readiness report (the hulls Ready text
+  unchanged with nothing leased; `report_ports` byte-identical to the inline code it replaced);
+  `boot_parity` 18 passed (the roster golden and `!test_world`); the CI gated-test inventory (no
+  `#[ignore]` or env gate added); `ci_gated_test_inventory` 6, `typed_state_lens` 6,
+  `action_state_republish` 6, `hex_vocabulary` 2 passed. The `def.rs` unit test keeps its
+  `per_account = 0` assertion and gains `= 2`; no existing assertion anywhere was changed or
+  removed.
+
+### How it was verified
+
+**The gate runner's sixteen steps**, on Windows at the working tree over base 10b89d58 (the
+builder's and the fixer's passes folded in), all green on the first attempt, no reruns, no
+`LNK1104`, no hang; `git status` identical before and after (17 modified, 4 untracked), so no test
+rewrote a golden:
+
+- `cargo fmt --all -- --check` → exit 0, no output (twice: before and after the fixer's pass).
+- `cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+  debuginfo] target(s)``, exit 0, 0 warnings (twice; the builder's first run flagged one
+  `clone_on_copy`, the fixer's one `large_enum_variant` on `Books`, both fixed).
+- `cargo test -p mush-economy --lib` → `test result: ok. 36 passed; 0 failed; 0 ignored`.
+- `cargo test -p mush-economy --test e4b1 --test e4c --test e4b2` → e4b1 `ok. 83 passed`; e4b2 `ok.
+  117 passed`; e4c `ok. 44 passed` (the deadline-less non-lease control `e6s1_s7_…` still pages).
+- `cargo test -p tacsim --lib` → `test result: ok. 886 passed; 0 failed; 0 ignored; 0 measured; 0
+  filtered out; finished in 3.84s`.
+- `cargo test -p tacsim --test coop` → `test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured;
+  0 filtered out; finished in 2.11s`.
+- `cargo test -p tacsim --test ports --test hulls --test port_tick --test lane --test stations
+  --test content --test capacity` → capacity 15, content 29, hulls 15, lane 8, port_tick 15, ports
+  17, stations 13 passed; 0 failed in each.
+- `cargo test -p mush-contract-tests` (twice) → lib 31 passed; every one of the 30 binaries `test
+  result: ok`, 0 failed (`legacy_handler_allowlist` 4, `state_slot_owners` 4, `panic_budget` 7,
+  `restriction_lints` 11, `module_ns_owners` 3, `ci_gated_test_inventory` 6, `help_commands` 4);
+  `scale_harness` `6 passed; 8 ignored` is pre-existing.
+- `cargo test -p mush-server --test boot_parity --test e6a_alerts` → `ok. 18 passed` / `ok. 6
+  passed`.
+- `cargo test -p mush-housing --no-fail-fast` → lib 1, e5a 54, e5b 81, s2b_site 1, doc-tests 0
+  passed; 0 failed (the housing lease producer under the stale exemption).
+- `cargo test -p mush-campaign --no-fail-fast` → lib 54, e7c10 58, e7c11 15, e7c9 85, e7r1 28, e7r2
+  5 passed; 0 failed (the recovery lease producer).
+- `cargo test --workspace --exclude mush-bot --no-fail-fast` → 387 `test result:` lines, every one
+  `ok`: **7,298 passed; 0 failed; 92 ignored**; exit 0 (about 20 minutes of it a full test-profile
+  rebuild and link). `mushd arena_story` (69.82 s), `arena_story_split` (46.32 s) and the
+  `parse_operator_soup_never_panics` proptest drew libtest's over-60-s notice under full load and
+  passed; none of the brief's load-sensitive suites flaked.
+- `cargo test -p mush-bot` → lib 469 passed; every binary ok (`arena_e2e` 9 passed in 202.94 s,
+  `playtesting` 9 in 124.53 s, `e2e` 49); 0 failed.
+
+**Mutation checks reported by the builder and the fixer** (not re-run by the judge): the stale-page
+filter disabled → `ic6_a_live_lease_is_never_paged_as_stale` and coop test 9 both fail; the frozen
+guard disabled → test 15 fails "a frozen refusal wrote something", accounts 11 vs 10.
+
+**The judge's lenses** (read-only, no cargo): the whole diff and all four new files read against the
+brief, doc 18 §4.1, §4.2, §5 and D-18-6/21/23/24/25/34/39; every reviewer finding re-checked in the
+code (correctness F1/F2 fixed and pinned, conformance F1 fixed and pinned, tests T1–T4 fixed; F3–F6
+and T5–T10 stand as the residuals above); the builder's surface list and the fixer's
+`surface_changes` checked against the code; no existing assertion weakened (every removed diff line
+is production code); `report_ports` compared line by line with the inline code it replaced;
+`owns_lease`'s new form shown equivalent; `retire_check` shown preflighted on every entry by
+`mush-content/src/apply.rs:676`; the FULL arithmetic confirmed (fittings 2,300 L/t). Flakes
+identified: none.
+
+### Surface for the next cuts
+
+**mush-economy (re-exported at the crate root)**
+
+- `pub fn is_lease_shaped(c: &EconomicContract) -> bool`: issuer collateral plus an Obligation;
+  `page_stale_contracts` exempts `Active && is_lease_shaped`; `owns_lease` (private) is this plus
+  `issuer == lessor` and `Collateral{premises, lessor}`.
+
+**`tacsim::port::coop` (re-exported from `tacsim::port`: `Charter, Enrolment, EnrolmentState,
+EnrolmentStatus, ProgrammePort, live_charter, programme_port`)**
+
+- Constants: `COOP_VERB = "+coop"`, `COOP_HELP`, `COOP_PREFIX = "tacsim:coop:"`, `ENROLMENT_SCHEMA:
+  u16 = 1`, `STAKE_KEY_NAMESPACE = "tacsim.backer.stake"`, `MAX_HULL_NAME_BYTES = 32`,
+  `REGISTRAR_LINE`, `COUNTERSIGN = "Ilse Oduya-Brandt"`, `ACCOUNT_OPENER = "Ceres Clearing"`,
+  `NEW_DRAY_MAJOR: u64 = 120_000`, `HULL_DESC_TEMPLATE` (`{mark}`); the refusal/status texts
+  `NOT_OPEN_HERE`, `NAME_USAGE`, `NO_ACCOUNT_MATCH`, `ENROLLED_ONCE`, `BOOKS_UNREADABLE`,
+  `NOT_OPEN`, `BAD_NAME`, `NAME_TAKEN`, `NO_HULL`, `NO_CAPITAL`, `FAILED`, `NO_CHARTER`,
+  `CHARTER_BOOKS_DARK` (`{name}`, `{mark}`), `CHARTER_NOT_IN_FORCE` (`{name}`, `{mark}`).
+- `pub enum EnrolmentStatus { Active, BuyoutPending, Graduated, Revoked }` (snake_case on the wire;
+  IC13 writes the middle two).
+- `pub struct Enrolment { schema: u16, account: mush_core::AccountId, pilot: ObjId, programme:
+  CanonicalId, pack: CanonicalId, entry: CanonicalId, hull: ObjId, mark: String, laid_up_name:
+  String, name: String, lease: u64, vault: u64, credit_account: u64, stake_minor: i64,
+  share_permille: u32, buyout_minor: i64, enrolled_at: i64, status: EnrolmentStatus,
+  #[serde(default)] sales: u32, #[serde(default)] margin_minor: i64, #[serde(default)] shares_minor:
+  i64 }`: `deny_unknown_fields`; `check()` (schema 1; mark/name/laid_up_name 1..=120 bytes; stake
+  and buyout > 0; share ≤ 1000; the counters ≥ 0). **IC10 folds
+  `sales`/`margin_minor`/`shares_minor` through `store::put_enrolment`; IC13 writes
+  `BuyoutPending`/`Graduated`.**
+- `pub enum EnrolmentState<'a> { Absent, Present(&'a Enrolment), Unreadable }`.
+- `pub fn enrolment_key(AccountId) -> SmolStr` (`tacsim:coop:{canonical_hash}`; never log it); `pub
+  fn stake_key(ContractId) -> IdempotencyKey`.
+- `pub struct ProgrammePort<'a> { pack: CanonicalId, entry: CanonicalId, def: &'a PortDef,
+  programme: &'a ProgrammeDef, map: &'a PortMap }` (Clone, Debug) with `trust() ->
+  Option<PrincipalId>`, `trust_account() -> Option<AccountId>`, `trust_scope() ->
+  Option<OrgScopeId>`; `pub fn programme_port(&World) -> Option<ProgrammePort<'_>>` (the first port
+  entry in `report_ports` order with a programme and a Present map under `LANE_PACK`); `pub fn
+  port_name(&PortDef) -> String`.
+- `pub fn trust_lease_on(&World, &PrincipalId, ObjId) -> Option<&EconomicContract>` (non-terminal,
+  issuer the trust, `Collateral{hull, trust}`, lease-shaped).
+- `pub struct Charter { contract: ContractId, hull: ObjId }` (Copy); **`pub fn live_charter(&World,
+  pilot: ObjId) -> Option<Charter>`, the operate gate (D-18-23): Active, issued by the Trust, the
+  pilot a party, pledging a programme-map hull; lowest id; never reads the document.** IC9's undock,
+  IC11's queue and every executed step gate on it.
+- `pub fn hull_is_free(&World, &ProgrammePort, &HullRow) -> bool`; `pub fn free_hulls(&World,
+  &ProgrammePort<'a>) -> Vec<&'a HullRow>` (ascending hull id).
+- `pub fn enrol_gate(&Readiness) -> Result<(), &ReadinessLine>` (Lane, Rate, Map, Rooms, Domain,
+  Org, Programme, Hulls must be Ready). **IC8 adds its pools/listings bindings here.**
+- `pub fn check_hull_name(&World, &ProgrammePort, &str) -> Result<String, &'static str>`.
+- `pub struct CoopObserver` (an `EconomyObserver`, composed in `econ_observers()` after the
+  market's; folds `Settled | Cancelled | Expired` on an Active enrolment to `Revoked` and notifies).
+  **IC13's buyout observer extends its `revoke` arm (BuyoutPending → Graduated on Settled).**
+- `pub(crate) fn name_of(&World, ObjId) -> String`.
+
+**`tacsim::port::gauges` (pure)**
+
+- `pub const DARK = "dark"`; `pub type Reading = (CanonicalId, Compartment, BTreeMap<CanonicalId,
+  u64>)`.
+- `compartment_words(&CanonicalId) -> (String, String)`, `room_instrument(&CanonicalId) -> &'static
+  str`, `measures_line(goods, comp, contents, with_full) -> Result<String, CapacityError>`,
+  `goods_list(..) -> String`, `single_summary(..) -> Result<String, CapacityError>`,
+  `ship_hold_line(goods, &[Reading]) -> Result<String, CapacityError>`, `room_lines(room_tid, goods,
+  shown: &[Reading]) -> Result<Vec<String>, CapacityError>`, `hold_lines(name, mark, goods,
+  &[Reading]) -> Result<Vec<String>, CapacityError>`. **IC9 adds the burn and reserve lines beside
+  these; IC9's `+ship/plan` reuses `measures_line` for the two slacks.**
+
+**`tacsim::port::ship`**
+
+- Constants: `SHIP_VERB = "+ship"`, `SHIP_HELP`, `HULL_CLASS = "Dray"`, `STATUS_DOCKED = "Aboard the
+  {name} ({mark}), docked at {port}."`, `STATUS_UNDER_WAY = "Aboard the {name} ({mark}), under
+  way."` (**IC9 appends the leg and ETA**), `STATUS_ELSEWHERE`, `SHIP_DOCKED = "{name} ({class}):
+  docked {port}, {gallery}."`, `SHIP_UNDER_WAY`, `SHIP_ELSEWHERE`, `SHIP_BOOKS_DARK`, `HOLD_DARK`,
+  `ALREADY_ABOARD`, `BOARD_WHERE`, `NOT_HERE` (`{name}`), `UNDER_WAY_LOCK` (`{name}`), `LOCK_STUCK`,
+  `LEAVE_NOT_ABOARD`, `LEAVE_WHERE` (`{airlock}`), `LEAVE_SEALED` (`{name}`).
+- `pub struct HullView<'a> { port: ProgrammePort<'a>, row: &'a HullRow, interior: &'a InteriorDef,
+  logistics: &'a LogisticsDef }` with `hull()`, `room(&CanonicalId)`, `airlock()`, `stowage()`; `pub
+  fn hull_view(&World, ObjId) -> Option<HullView<'_>>`; `pub fn hull_of_room(&World, room: ObjId) ->
+  Option<(HullView<'_>, CanonicalId)>`.
+- `pub enum Berth<'a> { Docked { map: &'a PortMap, def: &'a PortDef }, UnderWay, Elsewhere }`
+  (Copy); `pub fn berth_of(&World, ObjId) -> Berth<'_>`.
+- `pub fn hold_vault(&World, &HullView) -> Option<VaultId>`; `pub fn status_line(&World, &HullView)
+  -> String`.
+- `pub struct ShipLook` (an `EventHook`, `look_rendered` only); `pub fn register_hooks(&mut
+  Registrar) -> Result<(), ModError>` (called from `TacsimRuleset::register` after
+  `port_tick::register`).
+- `+ship` (`ArgShape::None`, switches `board`, `leave`, `hold`); **IC9 adds `plan` and `undock`,
+  IC11 `orders` and `order`, to this spec's switch list and `ship_cmd`'s dispatch.**
+
+**`tacsim::port_tick`**
+
+- `pub fn read_pool_in(&HookReadContext<'_>, EndpointRef, &CanonicalId) -> Result<u64,
+  PoolReadError>`: `read_pool`'s rule from a hook (absent = 0, a refusal never 0).
+
+**`tacsim::store` / `TacsimStore`**
+
+- Fields `pub(crate) enrolments`, `enrolment_keys`, `goods`; `pub fn enrolment_state(AccountId) ->
+  EnrolmentState<'_>`, `enrolment_of(ObjId) -> Option<&Enrolment>`, `enrolment_for_lease(u64) ->
+  Option<&Enrolment>`, `enrolments() -> impl Iterator<Item = &Enrolment>`, `goods() ->
+  Option<&GoodsTable>` (the one read; never re-parse `goods.json`); `pub(crate) fn
+  put_enrolment(&mut Ctx, &Enrolment)`, the single write path.
+- `TacsimRuleset.goods: Option<Arc<GoodsTable>>` (private; parsed once in `with_game_content`,
+  copied into the slot in `register` and `on_world_loaded`). **Any new RAM-only slot field must be
+  copied at both sites.**
+
+**`tacsim::port` (crate-private helpers later cuts reuse)**
+
+- `apply::credit_scale(&World) -> u8`, `apply::minor_of(u64, u8) -> Option<i64>`,
+  `apply::leased_refusal(&CanonicalId, &str) -> String`; `hull::template`, `hull::berths_slot`,
+  `hull::hull_spec(store, programme) -> Option<(&InteriorDef, &LogisticsDef)>`;
+  `readiness::report_ports(store, w) -> (Option<&RulesPack>, Vec<(CanonicalId, &PortDef)>)`.
+- `PortDef::check` refuses `per_account != 1`.
+- The readiness hulls line with anything leased or under way: `"{entry} hulls: {pool} of {pool} made
+  and titled to {org}; {free} laid up and free, {k} leased ({mark} to {tenant}, …)[, {u} under
+  way]."`, state Ready; `free` = laid up with no Trust lease (a revoked hull with its old hold vault
+  still counts here, not in `free_hulls`).
+
+**Gates and facts later cuts depend on:** `legacy-handlers.toml` has `+coop` (`tacsim.coop`) and
+`+ship` (`tacsim.ship`) stanzas; `PINNED_BASELINE` 97; `state-slot-owners.toml` has the
+`port/coop.rs` `EconomyStore` and `tests/coop.rs` `AccountOracle` rows; `panic_budget/tacsim.txt`
+unchanged at 5; no pack version or digest moved (lane still v2, `per_account: 1`).
+
+**Test rig patterns later cuts copy** (`crates/tacsim/tests/coop.rs`): `Roster::{bare, bare_real}` +
+`.disabled()` + `.freezable()` (the test-only `Latch` module with `@econfreeze`), `MapOracle` into
+`mush_sim::AccountOracle`, `boot`/`boot_unsettled`/`sweep`, `reboot_with(rig, roster, edit)` folding
+module ops and replaying the typed inventory post-images through `Engine::hydrate_action_state`,
+`pilot`/`pilot_on`, `enrol`, `enrolled()` (one chartered pilot, *Salt Moth*, FPC-D-0401),
+`seed_pool(rig, vault, good, qty, LotId)`, `seed_outbound`, `hold_vault`, `replace_hull`,
+`placement`, `has_block`, `counts`, `lease_of`, `trust_account`, `set_rate`.

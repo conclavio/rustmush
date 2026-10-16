@@ -1,0 +1,1733 @@
+//! **Doc 18 cut IC6 acceptance — the Co-op programme and boarding** (doc 18
+//! §4.1, §4.2 "The airlock and the berth" and "Compartments", §4.7; D-18-6,
+//! D-18-21, D-18-23, D-18-24, D-18-25, D-18-34, D-18-39; 18a §1.3 C01/C05 and
+//! §3; lead rulings L1–L21 of the IC6 brief).
+//!
+//! A pilot at the Registry & Co-op Desk types `+coop/enrol Salt Moth` and, in
+//! one command and one batch, becomes a First Captain: an account opened by
+//! Ceres Clearing, the Trust's lowest-id free Dray leased (1 minor on the
+//! Manual clock), the stake posted by the Trust keyed by the lease, the hold
+//! vault on the hull's stowage, the hull renamed with its mark kept, and one
+//! enrolment document per gateway account, ever. The operate gate is the live
+//! lease: a staff cancel revokes the charter and every verb reads it. The
+//! tenant boards from the gallery where the hull is cradled and leaves by the
+//! airlock while docked; the hull rooms' `look` names the hull and the port and
+//! reads the hold's pools at look time.
+//!
+//! Composed on the composition root (`server_modules_with_tacsim` and the
+//! wired test-world layer; `Roster::bare`, no sheet, so a spawned player types
+//! and walks). No test here asserts a passage duration (D-18-50).
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+
+use mush_core::{
+    AccountId, AccountIdentity, ActionStateBootRecord, Audience, CanonicalId, GOD, LIMBO,
+    ModuleWrite, ObjId,
+};
+use mush_economy::{
+    ContractId, ContractState, CustodyRef, Deliverable, EconomicClock, EconomyConfig, EconomyStore,
+    Encumbrance, EscalationSubject, ObligationCause, ObligationStatus,
+};
+use mush_inventory::{EndpointRef, Grade, InventoryHandles, LotId};
+use mush_org::{OrgId, PrincipalId};
+use mush_proto::OutputEvent;
+use mush_testkit::{TestWorld, fold_module_ops_into};
+use smol_str::SmolStr;
+use tacsim::definitions::content::{LANE_JSON, LANE_PACK};
+use tacsim::pack::{PackEntry, load_pack};
+use tacsim::port::apply::room_by_key;
+use tacsim::port::coop::{
+    BAD_NAME, BOOKS_UNREADABLE, CHARTER_NOT_IN_FORCE, ENROLLED_ONCE, EnrolmentState,
+    EnrolmentStatus, FAILED, NAME_TAKEN, NAME_USAGE, NO_ACCOUNT_MATCH, NO_CAPITAL, NO_HULL,
+    NOT_OPEN, REGISTRAR_LINE, enrol_gate, enrolment_key, stake_key,
+};
+use tacsim::port::{HullRow, PortDef, PortMap, PortMapState, readiness, room_key};
+use tacsim::port_tick::pending_notices;
+use tacsim::{TacsimConfig, TacsimStore};
+
+// ---------------------------------------------------------------------------
+// The rig (hulls.rs's, one file-local copy)
+// ---------------------------------------------------------------------------
+
+fn cid(word: &str) -> CanonicalId {
+    CanonicalId::new(word).expect("a canonical id")
+}
+
+fn lane_id() -> CanonicalId {
+    cid(LANE_PACK)
+}
+
+/// How a test roster is composed.
+#[derive(Clone)]
+struct Roster {
+    /// The test world's layer (`tacsim_test_world_module_wired`), or the
+    /// production one (`tacsim_module_wired`).
+    test_world: bool,
+    /// `[tacsim].enabled`.
+    enabled: bool,
+    /// Compose the test-only [`Latch`] (the whole-economy freeze seam).
+    freezable: bool,
+}
+
+impl Roster {
+    /// No sheet, the test world's layer.
+    fn bare() -> Roster {
+        Roster {
+            test_world: true,
+            enabled: true,
+            freezable: false,
+        }
+    }
+
+    /// No sheet, the production layer (the rate refusal).
+    fn bare_real() -> Roster {
+        Roster {
+            test_world: false,
+            enabled: true,
+            freezable: false,
+        }
+    }
+
+    /// The same roster with the layer switched off by config.
+    fn disabled(mut self) -> Roster {
+        self.enabled = false;
+        self
+    }
+
+    /// The same roster with the test-only freeze seam.
+    fn freezable(mut self) -> Roster {
+        self.freezable = true;
+        self
+    }
+
+    fn modules(&self) -> Vec<Box<dyn mush_core::GameModule>> {
+        use tacsim::composition as comp;
+
+        let llm = Arc::new(
+            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+                .expect("a disabled LLM service composes"),
+        );
+        let onboarding = mush_core::OnboardingConfig::default();
+        let game = tacsim::GameEconomyConfig::default();
+        let cfg = TacsimConfig {
+            enabled: self.enabled,
+            ..TacsimConfig::default()
+        };
+        let (mut mods, inventory) = comp::server_modules_with_tacsim(
+            mush_weather::WeatherConfig::default(),
+            EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &onboarding,
+            &game,
+            comp::recovery_policy(&cfg.recovery),
+        );
+        mods.push(comp::worldgen_module_with(
+            Arc::clone(&llm),
+            mush_worldgen::WorldgenConfig::default(),
+        ));
+        mods.push(comp::npc_module_with(
+            comp::npc_agent_adapter(),
+            &mush_config::config::NpcCfg::default(),
+        ));
+        if self.test_world {
+            mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
+        } else {
+            mods.push(comp::tacsim_module_wired(cfg, true, inventory));
+        }
+        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        if self.freezable {
+            mods.push(Box::new(Latch));
+        }
+        mods
+    }
+}
+
+/// A test-only module carrying the seam `e4c` and `e7c9` use for the same job:
+/// the whole-economy latch has a staff CLEAR (`@econ/unfreeze`) and no staff
+/// set, so this drives it the way boot's recovery pass does. It impersonates no
+/// production module.
+#[derive(Default)]
+struct Latch;
+
+impl mush_core::GameModule for Latch {
+    fn name(&self) -> &'static str {
+        "tacsim_test_latch"
+    }
+    fn register(
+        &mut self,
+        reg: &mut mush_core::module::Registrar<'_>,
+    ) -> Result<(), mush_core::module::ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        reg.command(
+            mush_core::CommandSpec {
+                name: "@econfreeze".into(),
+                shape: mush_core::ArgShape::Raw,
+                help: "test: set the whole-economy latch".into(),
+                ..mush_core::CommandSpec::default()
+            },
+            Arc::new(
+                |ctx: &mut mush_core::Ctx<'_>| -> Result<(), mush_core::CmdError> {
+                    mush_economy::set_economy_frozen(ctx, true);
+                    Ok(())
+                },
+            ),
+        )?;
+        Ok(())
+    }
+}
+
+/// A fixed gateway-account oracle (`match_lifecycle.rs`'s precedent).
+#[derive(Default)]
+struct MapOracle(Mutex<BTreeMap<ObjId, AccountId>>);
+
+impl AccountIdentity for MapOracle {
+    fn account_of(&self, character: ObjId) -> Option<AccountId> {
+        self.0.lock().ok()?.get(&character).copied()
+    }
+}
+
+/// A booted world and its oracle.
+struct Rig {
+    tw: TestWorld,
+    oracle: Arc<MapOracle>,
+    roster: Roster,
+    /// The cumulative store: every module write since the first boot, folded
+    /// the way the store folds them.
+    store: HashMap<SmolStr, mush_core::ModuleBootData>,
+    /// The typed-state documents the seeded pools wrote (`(ns, key)` → value),
+    /// hydrated into the engine after a reboot as the server's boot does.
+    typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
+}
+
+fn no_refused_writes(tw: &TestWorld) {
+    let refused = tw.world().refused_namespace_writes();
+    assert!(refused.is_empty(), "refused namespace writes: {refused:?}");
+}
+
+fn install_oracle(tw: &mut TestWorld, oracle: &Arc<MapOracle>) {
+    *tw.world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") = mush_sim::AccountOracle::new(oracle.clone());
+}
+
+/// Boot `roster` without settling the capital.
+fn boot_unsettled(roster: Roster) -> Rig {
+    let mut tw = TestWorld::with_modules(roster.modules());
+    no_refused_writes(&tw);
+    let oracle = Arc::new(MapOracle::default());
+    install_oracle(&mut tw, &oracle);
+    Rig {
+        tw,
+        oracle,
+        roster,
+        store: HashMap::new(),
+        typed: BTreeMap::new(),
+    }
+}
+
+/// One economy sweep `secs` on (`ports.rs`'s).
+fn sweep(tw: &mut TestWorld, secs: i64) {
+    let t = tw.world().now().saturating_add(secs);
+    tw.set_now(t);
+    let _ = tw.fire_due(t.saturating_mul(1000));
+}
+
+/// Boot `roster` and sweep once so the capital settles; the desk is open.
+fn boot(roster: Roster) -> Rig {
+    let mut rig = boot_unsettled(roster);
+    sweep(&mut rig.tw, 120);
+    assert!(
+        enrol_gate(&readiness(rig.tw.world())).is_ok(),
+        "the desk is not open after the first sweep:\n{}",
+        readiness(rig.tw.world()).render().join("\n")
+    );
+    rig
+}
+
+/// Fold every write since boot and reboot `rig` into its roster (or
+/// `roster`), re-installing the oracle.
+fn reboot_with(
+    rig: Rig,
+    roster: Roster,
+    edit: impl FnOnce(&mut HashMap<SmolStr, mush_core::ModuleBootData>),
+) -> Rig {
+    let Rig {
+        mut tw,
+        oracle,
+        mut store,
+        typed,
+        ..
+    } = rig;
+    fold_module_ops_into(&mut store, tw.take_module_ops());
+    edit(&mut store);
+    let mut tw = tw
+        .reboot_into(roster.modules(), store.clone())
+        .expect("the reboot boots");
+    no_refused_writes(&tw);
+    tw.engine_mut()
+        .hydrate_action_state(
+            typed
+                .iter()
+                .map(|((ns, key), value)| {
+                    ActionStateBootRecord::new(ns.clone(), key.clone(), value.clone())
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("the typed state hydrates");
+    install_oracle(&mut tw, &oracle);
+    Rig {
+        tw,
+        oracle,
+        roster,
+        store,
+        typed,
+    }
+}
+
+fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
+    tw.seen_by(events, who).join("\n")
+}
+
+fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
+    let events = tw.run(who, line);
+    said(tw, &events, who)
+}
+
+fn store(tw: &TestWorld) -> &TacsimStore {
+    tw.world()
+        .module_state::<TacsimStore>()
+        .expect("tacsim state")
+}
+
+fn economy(tw: &TestWorld) -> &EconomyStore {
+    tw.world()
+        .module_state::<EconomyStore>()
+        .expect("economy state")
+}
+
+fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+    match store(tw).port_map(&lane_id(), &cid(entry)) {
+        PortMapState::Present(map) => map.clone(),
+        other => panic!("{entry}'s map: {other:?}"),
+    }
+}
+
+fn ceres_map(tw: &TestWorld) -> PortMap {
+    port_map(tw, "ceres_port")
+}
+
+fn port_def(entry: &str) -> PortDef {
+    let pack = load_pack(LANE_JSON).expect("the lane verifies");
+    match pack.entry(&cid(entry)) {
+        Some(PackEntry::Port(def)) => def.clone(),
+        other => panic!("{entry} is a port entry: {other:?}"),
+    }
+}
+
+/// A station room by its pack-local name, in `entry`'s area.
+fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
+    let def = port_def(entry);
+    let key = room_key(&def.area, &format!("{}.{local}", def.area)).expect("a room key");
+    room_by_key(tw.world(), &key).expect("the room is on this world")
+}
+
+fn c01(tw: &TestWorld) -> ObjId {
+    station_room(tw, "ceres_port", "room.c01_berth_gallery")
+}
+
+fn c03(tw: &TestWorld) -> ObjId {
+    station_room(tw, "ceres_port", "room.c03_arrivals")
+}
+
+fn c05(tw: &TestWorld) -> ObjId {
+    station_room(tw, "ceres_port", "room.c05_registry")
+}
+
+fn p01(tw: &TestWorld) -> ObjId {
+    station_room(tw, "stickney_port", "room.p01_berth_gallery")
+}
+
+fn hull_rooms(row: &HullRow) -> BTreeMap<&str, ObjId> {
+    row.rooms
+        .iter()
+        .map(|(id, obj)| (id.as_str(), ObjId(*obj)))
+        .collect()
+}
+
+fn location(tw: &TestWorld, obj: ObjId) -> Option<ObjId> {
+    tw.world().get(obj).and_then(|o| o.location)
+}
+
+fn name(tw: &TestWorld, obj: ObjId) -> String {
+    tw.world()
+        .get(obj)
+        .map(|o| o.name.clone())
+        .expect("an object")
+}
+
+fn attr_text(tw: &TestWorld, obj: ObjId, attr: &str) -> Option<String> {
+    tw.world()
+        .attr(obj, attr)
+        .and_then(|a| a.as_text().map(str::to_owned))
+}
+
+/// A gateway account.
+fn account(name: &str, seed: i64) -> AccountId {
+    AccountId::mint(name, seed).expect("an account id")
+}
+
+/// `@teleport` (as GOD) `who` to `room`.
+fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
+    let _ = run(tw, GOD, &format!("@teleport #{}=#{}", who.0, room.0));
+    assert_eq!(location(tw, who), Some(room), "the teleport landed");
+}
+
+/// A pilot on `account`, standing at the Registry & Co-op Desk.
+fn pilot_on(rig: &mut Rig, who: &str, account: AccountId) -> ObjId {
+    let pilot = rig.tw.spawn_player(who);
+    if let Ok(mut map) = rig.oracle.0.lock() {
+        map.insert(pilot, account);
+    }
+    let desk = c05(&rig.tw);
+    teleport(&mut rig.tw, pilot, desk);
+    pilot
+}
+
+/// A pilot on an account of their own (`{who}Acct`, `seed`).
+fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
+    pilot_on(rig, who, account(&format!("{who}Acct"), seed))
+}
+
+/// The Trust's programme account.
+fn trust_account(tw: &TestWorld) -> mush_economy::AccountId {
+    let def = port_def("ceres_port");
+    let org = def.programme.expect("a programme").org;
+    mush_economy::AccountId(
+        ceres_map(tw).orgs[&org]
+            .account
+            .expect("the Trust has an account"),
+    )
+}
+
+fn trust(tw: &TestWorld) -> PrincipalId {
+    let def = port_def("ceres_port");
+    let org = def.programme.expect("a programme").org;
+    PrincipalId::Organization(OrgId(ceres_map(tw).orgs[&org].org))
+}
+
+fn balance(tw: &TestWorld, account: mush_economy::AccountId) -> i64 {
+    economy(tw)
+        .snapshot()
+        .account(account)
+        .expect("the account")
+        .posted_balance
+        .minor()
+}
+
+/// The pilot's own tacsim.credit account.
+fn own_account(tw: &TestWorld, pilot: ObjId) -> Option<mush_economy::AccountId> {
+    tacsim::port::credit::own_account(tw.world(), pilot).map(|a| a.id)
+}
+
+/// What one enrolment wrote, counted.
+#[derive(Debug, PartialEq, Eq)]
+struct Counts {
+    contracts: usize,
+    accounts: usize,
+    vaults: usize,
+    transactions: usize,
+    enrolments: usize,
+}
+
+fn counts(tw: &TestWorld) -> Counts {
+    let snap = economy(tw).snapshot();
+    Counts {
+        contracts: snap.contracts().count(),
+        accounts: snap.accounts().count(),
+        vaults: snap.vaults().count(),
+        transactions: economy(tw).transactions().count(),
+        enrolments: store(tw).enrolments().count(),
+    }
+}
+
+/// The pilot's live lease.
+fn lease_of(tw: &TestWorld, pilot: ObjId) -> ContractId {
+    tacsim::port::live_charter(tw.world(), pilot)
+        .expect("a live charter")
+        .contract
+}
+
+/// Enrol `pilot` (at the desk) as `ship`; the reply.
+fn enrol(rig: &mut Rig, pilot: ObjId, ship: &str) -> String {
+    run(&mut rig.tw, pilot, &format!("+coop/enrol {ship}"))
+}
+
+/// Seed `qty` of `good` into `vault`'s pool through `lot` (`port_tick.rs`'s
+/// mint-origin-then-dissolve, the lot a parameter).
+fn seed_pool(rig: &mut Rig, vault: mush_economy::VaultId, good: &str, qty: u64, lot: LotId) {
+    let endpoint = EndpointRef(vault);
+    let good = cid(good);
+    let tw = &mut rig.tw;
+    let families = tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    for step in 0..2 {
+        let engine = tw.engine_mut();
+        let prepared = {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory transaction");
+            if step == 0 {
+                families
+                    .mint_origin(
+                        &mut txn,
+                        endpoint,
+                        &good,
+                        qty,
+                        Grade::new(2).expect("grade"),
+                        mush_economy::ExternalRef {
+                            provider: "test".into(),
+                            kind: "seed".into(),
+                            id: lot.0.to_string().into(),
+                            revision: None,
+                        },
+                        lot,
+                    )
+                    .map(|_| ())
+                    .expect("seed mints one origin lot");
+            } else {
+                families
+                    .dissolve(&mut txn, endpoint, lot)
+                    .map(|_| ())
+                    .expect("the seed lot dissolves");
+            }
+            txn.prepare().expect("prepares")
+        };
+        let (ops, install) = prepared.into_parts();
+        engine.install_prepared_action(install).expect("installs");
+        // The typed post-images a server would persist and hydrate at boot.
+        for op in ops {
+            match op.op {
+                ModuleWrite::JsonSet { key, value } => {
+                    rig.typed.insert((op.ns, key), value);
+                }
+                ModuleWrite::Del { key } => {
+                    rig.typed.remove(&(op.ns, key));
+                }
+                ModuleWrite::StreamAppend { .. } => {}
+            }
+        }
+    }
+}
+
+/// The hold vault on a row's stowage.
+fn hold_vault(tw: &TestWorld, row: &HullRow) -> mush_economy::VaultId {
+    let stowage = hull_rooms(row)["stowage"];
+    economy(tw)
+        .snapshot()
+        .vault_by_backing(&CustodyRef::SpatialInterior(stowage))
+        .expect("the hold vault")
+        .id
+}
+
+/// The outbound load of lens 7: 20 t metals, 80 t ice, 42 t propellant, 21
+/// crew-days of provisions.
+fn seed_outbound(rig: &mut Rig, row: &HullRow) {
+    let vault = hold_vault(&rig.tw, row);
+    seed_pool(rig, vault, "metals", 20, LotId(1));
+    seed_pool(rig, vault, "volatiles", 80, LotId(2));
+    seed_pool(rig, vault, "propellant", 42, LotId(3));
+    seed_pool(rig, vault, "provisions", 21, LotId(4));
+}
+
+const LOAD_CELLS: [&str; 8] = [
+    "Load cells:",
+    "  metal concentrate: 20 t · 8.0 m³",
+    "  water ice: 80 t · 112.0 m³",
+    "  structural alloy stock: 0 t · 0.0 m³",
+    "  yard fittings, crated: 0 t · 0.0 m³",
+    "  TOTAL: 100 t · 120.0 m³",
+    "  LIMIT: 100 t · 120 m³",
+    "  FULL: mass and packed volume",
+];
+
+const SUMMARY_BODY: [&str; 3] = [
+    "  HOLD 20 t metal concentrate, 80 t water ice; 100/100 t · 120.0/120 m³ · FULL: mass and \
+     packed volume",
+    "  TANKAGE 42/80 t",
+    "  STORES 21/120 crew-days",
+];
+
+/// `out` contains `block`, line for line, contiguously.
+fn has_block(out: &str, block: &[&str]) -> bool {
+    out.contains(&block.join("\n"))
+}
+
+/// A fresh rig with one enrolled pilot (`Pilot`, *Salt Moth*, FPC-D-0401).
+fn enrolled() -> (Rig, ObjId) {
+    let mut rig = boot(Roster::bare());
+    let who = pilot(&mut rig, "Pilot", 1);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+    (rig, who)
+}
+
+// ---------------------------------------------------------------------------
+// 1. Enrol once
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
+    let mut rig = boot(Roster::bare());
+    let trust_acct = trust_account(&rig.tw);
+    let trust_before = balance(&rig.tw, trust_acct);
+    assert_eq!(trust_before, 25_000_000, "the Trust holds its 250,000.00cr");
+    let who = pilot(&mut rig, "Pilot", 1);
+    assert_eq!(own_account(&rig.tw, who), None);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    let acct = own_account(&rig.tw, who).expect("an account was opened");
+    for line in [
+        format!("Ceres Clearing opens account #{} in your name.", acct.0),
+        "The Co-op charters you FPC-D-0401, laid up as the Slack Water, now the Salt Moth, \
+         cradled at the Visiting Berth Gallery."
+            .to_owned(),
+        "25000.00cr staked to you. Buyout 90000.00cr. Ilse Oduya-Brandt countersigns.".to_owned(),
+    ] {
+        assert!(out.contains(&line), "missing {line:?} in:\n{out}");
+    }
+    // +credit.
+    let credit = run(&mut rig.tw, who, "+credit");
+    assert!(
+        credit.contains("Credit: 25000.00cr posted, 0.00cr held, 25000.00cr available."),
+        "{credit}"
+    );
+    // The lease.
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let hull = ObjId(row.hull);
+    let lease = lease_of(&rig.tw, who);
+    let trust = trust(&rig.tw);
+    let contract = economy(&rig.tw)
+        .snapshot()
+        .contract(lease)
+        .expect("the lease")
+        .clone();
+    assert_eq!(contract.state, ContractState::Active);
+    assert_eq!(contract.issuer, trust);
+    assert_eq!(
+        contract.consent.parties,
+        vec![trust.clone(), PrincipalId::Object(who)]
+    );
+    let deliverables = &contract.consent.terms.deliverables;
+    assert_eq!(deliverables.len(), 2);
+    assert!(matches!(
+        &deliverables[0],
+        Deliverable::Collateral { object, from } if *object == hull && *from == trust
+    ));
+    let Deliverable::Obligation { template } = &deliverables[1] else {
+        panic!("the second deliverable is the rent: {deliverables:?}");
+    };
+    assert_eq!(template.amount.minor(), 1);
+    assert_eq!(template.schedule.clock, EconomicClock::Manual);
+    assert_eq!(template.schedule.next_due, i64::MAX);
+    let rent = economy(&rig.tw)
+        .snapshot()
+        .obligations()
+        .find(|o| o.cause == ObligationCause::Contract(lease))
+        .expect("the rent obligation")
+        .clone();
+    assert_eq!(rent.status, ObligationStatus::Active);
+    assert_eq!(rent.amount.minor(), 1);
+    // The hull's asset carries the Lease.
+    let asset = economy(&rig.tw)
+        .snapshot()
+        .asset(hull)
+        .expect("the hull's asset")
+        .clone();
+    assert_eq!(asset.title_owner, trust, "the title stays the Trust's");
+    assert!(
+        asset
+            .encumbrances
+            .iter()
+            .any(|e| matches!(e, Encumbrance::Lease { contract, .. } if *contract == lease)),
+        "{:?}",
+        asset.encumbrances
+    );
+    // The stake: one transaction under the lease's key, 2,500,000 minor.
+    let key = stake_key(lease);
+    assert_eq!(key.namespace, "tacsim.backer.stake");
+    assert_eq!(key.key, lease.0.to_string());
+    let stakes: Vec<_> = economy(&rig.tw)
+        .transactions()
+        .filter(|t| t.idempotency == key)
+        .collect();
+    assert_eq!(stakes.len(), 1, "one stake transaction");
+    assert_eq!(balance(&rig.tw, acct), 2_500_000);
+    assert_eq!(balance(&rig.tw, trust_acct), trust_before - 2_500_000);
+    // The hold vault.
+    let stowage = hull_rooms(&row)["stowage"];
+    let vault = economy(&rig.tw)
+        .snapshot()
+        .vault_by_backing(&CustodyRef::SpatialInterior(stowage))
+        .expect("the hold vault")
+        .clone();
+    assert_eq!(vault.owner, PrincipalId::Object(who));
+    assert_eq!(vault.name, "FPC-D-0401 hold");
+    // The hull: renamed, the mark kept, described under its own owner.
+    assert_eq!(name(&rig.tw, hull), "Salt Moth");
+    assert!(
+        tw_aliases(&rig.tw, hull).iter().any(|a| a == "FPC-D-0401"),
+        "{:?}",
+        tw_aliases(&rig.tw, hull)
+    );
+    assert_eq!(
+        attr_text(&rig.tw, hull, "desc").as_deref(),
+        Some(
+            "A Dray-class bulk hauler, FPC-D-0401, cradled with its umbilicals slack: blunt, \
+             grey and webbed with reaction-mass hoses."
+        )
+    );
+    let hull_owner = rig.tw.world().get(hull).expect("the hull").owner;
+    assert_eq!(
+        rig.tw.world().attr(hull, "desc").expect("a desc").owner,
+        hull_owner,
+        "the description is the hull owner's, never the pilot's"
+    );
+    assert_ne!(hull_owner, who);
+    // The enrolment document.
+    let account_id = account("PilotAcct", 1);
+    let e = match store(&rig.tw).enrolment_state(account_id) {
+        EnrolmentState::Present(e) => e.clone(),
+        other => panic!("the enrolment: {other:?}"),
+    };
+    assert_eq!(e.pilot, who);
+    assert_eq!(e.hull, hull);
+    assert_eq!(e.mark, "FPC-D-0401");
+    assert_eq!(e.laid_up_name, "Slack Water");
+    assert_eq!(e.name, "Salt Moth");
+    assert_eq!(e.lease, lease.0);
+    assert_eq!(e.vault, vault.id.0);
+    assert_eq!(e.credit_account, acct.0);
+    assert_eq!(e.stake_minor, 2_500_000);
+    assert_eq!(e.share_permille, 250);
+    assert_eq!(e.buyout_minor, 9_000_000);
+    assert_eq!(e.status, EnrolmentStatus::Active);
+    assert_eq!((e.sales, e.margin_minor, e.shares_minor), (0, 0, 0));
+    assert_eq!(e.programme, cid("coop.first_captain"));
+    assert_eq!(e.entry, cid("ceres_port"));
+    // `+coop` now.
+    let terms = run(&mut rig.tw, who, "+coop");
+    let registrar = format!("The registrar says, \"{REGISTRAR_LINE}\"");
+    assert!(
+        has_block(
+            &terms,
+            &[
+                registrar.as_str(),
+                "Terms: a 25000.00cr stake; 250‰ of trading margin over the Co-op's reference \
+                 prices; buyout 90000.00cr, fixed at signing (a new Dray from the Yard is \
+                 120000.00cr); one enrolment per pilot, ever.",
+                "Drays free: 7 of 8.",
+                "Your charter: the Salt Moth (FPC-D-0401); buyout 90000.00cr. +coop/statement \
+                 reads your lay.",
+            ]
+        ),
+        "{terms}"
+    );
+    // `+coop/statement`, in force: the frozen terms, zero counters and the
+    // staked cash.
+    let statement = run(&mut rig.tw, who, "+coop/statement");
+    assert!(
+        has_block(
+            &statement,
+            &[
+                "Statement: the Salt Moth (FPC-D-0401), First Captain programme.",
+                "  Terms: stake 25000.00cr; 250‰ of trading margin; buyout 90000.00cr.",
+                "  Sales: 0; margin 0.00cr; Co-op share paid 0.00cr.",
+                "  Cash: 25000.00cr available; the buyout is 90000.00cr.",
+                "  Charter: in force.",
+            ]
+        ),
+        "{statement}"
+    );
+    // The readiness hulls line learns the leased arm and stays ready.
+    let report = run(&mut rig.tw, GOD, "@tacsim/port status");
+    assert!(
+        report.contains(
+            "ceres_port hulls: 8 of 8 made and titled to Co-op First Captain Trust; 7 laid up and \
+             free, 1 leased (FPC-D-0401 to Pilot). [ready]"
+        ),
+        "{report}"
+    );
+    assert!(enrol_gate(&readiness(rig.tw.world())).is_ok());
+}
+
+/// The aliases of `obj`.
+fn tw_aliases(tw: &TestWorld, obj: ObjId) -> Vec<String> {
+    tw.world()
+        .get(obj)
+        .map(|o| o.aliases.iter().map(ToString::to_string).collect())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// 2. One enrolment per gateway account, ever
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_a_second_enrolment_from_the_same_account_is_refused_for_ever() {
+    let (mut rig, who) = enrolled();
+    let before = counts(&rig.tw);
+    let again = enrol(&mut rig, who, "Second Wind");
+    assert!(again.contains(ENROLLED_ONCE), "{again}");
+    assert_eq!(counts(&rig.tw), before);
+    // A second character on the same gateway account.
+    let alt = pilot_on(&mut rig, "Alt", account("PilotAcct", 1));
+    let alt_out = enrol(&mut rig, alt, "Second Wind");
+    assert!(alt_out.contains(ENROLLED_ONCE), "{alt_out}");
+    assert_eq!(counts(&rig.tw), before);
+    assert_eq!(own_account(&rig.tw, alt), None, "nothing was opened");
+    // `+coop` reads the books by gateway account: the alt is told the account
+    // is on them, never invited to an enrolment the desk refuses.
+    let alt_terms = run(&mut rig.tw, alt, "+coop");
+    assert!(alt_terms.contains(ENROLLED_ONCE), "{alt_terms}");
+    assert!(!alt_terms.contains("Enrol at"), "{alt_terms}");
+    // A pilot on another account is chartered the next hull.
+    let other = pilot(&mut rig, "Other", 2);
+    let out = enrol(&mut rig, other, "Second Wind");
+    assert!(
+        out.contains(
+            "The Co-op charters you FPC-D-0402, laid up as the Cold Comfort, now the \
+                      Second Wind"
+        ),
+        "{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 3. The refusals before any write
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_enrol_refuses_away_from_the_desk_and_without_its_prerequisites() {
+    // Before the first sweep the capital is pending: the desk is not open.
+    let mut rig = boot_unsettled(Roster::bare());
+    let early = pilot(&mut rig, "Early", 9);
+    let before = counts(&rig.tw);
+    let out = enrol(&mut rig, early, "Salt Moth");
+    assert!(out.contains(NOT_OPEN), "{out}");
+    assert_eq!(counts(&rig.tw), before);
+
+    let mut rig = boot(Roster::bare());
+    let who = pilot(&mut rig, "Pilot", 1);
+    let before = counts(&rig.tw);
+    // Away from the desk.
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(
+        out.contains("Enrolment is signed at the Registry & Co-op Desk in Ceres Freeport."),
+        "{out}"
+    );
+    // `+coop` anywhere invites the unenrolled to the desk.
+    let terms = run(&mut rig.tw, who, "+coop");
+    assert!(
+        terms.contains(
+            "Enrol at the Registry & Co-op Desk in Ceres Freeport: +coop/enrol <a name for your \
+             ship>."
+        ),
+        "{terms}"
+    );
+    let desk = c05(&rig.tw);
+    teleport(&mut rig.tw, who, desk);
+    // No name.
+    let out = run(&mut rig.tw, who, "+coop/enrol");
+    assert!(out.contains(NAME_USAGE), "{out}");
+    // A bad name.
+    for bad in [
+        "2nd Wind",
+        "Salt/Moth",
+        "A name far too long for any registry",
+    ] {
+        let out = enrol(&mut rig, who, bad);
+        assert!(out.contains(BAD_NAME), "{bad}: {out}");
+    }
+    // A taken name: a laid-up hull's, any case; and a mark.
+    for taken in ["Cold Comfort", "cold comfort", "FPC-D-0405"] {
+        let out = enrol(&mut rig, who, taken);
+        assert!(out.contains(NAME_TAKEN), "{taken}: {out}");
+    }
+    // An unmapped character.
+    let stranger = rig.tw.spawn_player("Stranger");
+    teleport(&mut rig.tw, stranger, desk);
+    let out = enrol(&mut rig, stranger, "Salt Moth");
+    assert!(out.contains(NO_ACCOUNT_MATCH), "{out}");
+    assert_eq!(counts(&rig.tw), before, "a refusal wrote something");
+    assert_eq!(own_account(&rig.tw, who), None);
+}
+
+// ---------------------------------------------------------------------------
+// 4. The rate gate on a production layer
+// ---------------------------------------------------------------------------
+
+/// The live world rate.
+fn world_rate(tw: &TestWorld) -> u32 {
+    tw.world()
+        .world_timeline()
+        .epochs()
+        .last()
+        .map(|epoch| epoch.rate)
+        .expect("a world-time generation")
+}
+
+/// Open one rate generation at `rate` when the live one differs (`ports.rs`'s).
+fn set_rate(tw: &mut TestWorld, rate: u32) {
+    if world_rate(tw) != rate {
+        let out = run(tw, GOD, &format!("@tacsim/time rate={rate}"));
+        assert_eq!(world_rate(tw), rate, "{out}");
+    }
+}
+
+#[test]
+fn ic6_the_desk_closes_at_a_play_world_rate_other_than_24() {
+    let mut rig = boot_unsettled(Roster::bare_real());
+    sweep(&mut rig.tw, 120);
+    set_rate(&mut rig.tw, 4);
+    let who = pilot(&mut rig, "Pilot", 1);
+    let before = counts(&rig.tw);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains(NOT_OPEN), "{out}");
+    assert_eq!(counts(&rig.tw), before);
+    set_rate(&mut rig.tw, 24);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// 5–6. The pool and the capital
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_the_ninth_pilot_finds_no_dray_free() {
+    let mut rig = boot(Roster::bare());
+    let names = [
+        "Salt Moth",
+        "Grey Heron",
+        "Iron Kettle",
+        "Blue Tern",
+        "Late Lark",
+        "Red Vane",
+        "Low Tide",
+        "Night Owl",
+    ];
+    for (n, ship) in names.iter().enumerate() {
+        let seed = i64::try_from(n).expect("small") + 1;
+        let who = pilot(&mut rig, &format!("Pilot{seed}"), seed);
+        let out = enrol(&mut rig, who, ship);
+        let mark = format!("FPC-D-04{seed:02}");
+        assert!(
+            out.contains(&format!("The Co-op charters you {mark},")),
+            "{ship}: {out}"
+        );
+    }
+    let trust_acct = trust_account(&rig.tw);
+    assert_eq!(
+        balance(&rig.tw, trust_acct),
+        5_000_000,
+        "the Trust is at its floor"
+    );
+    let before = counts(&rig.tw);
+    let ninth = pilot(&mut rig, "Ninth", 99);
+    let out = enrol(&mut rig, ninth, "Last Chance");
+    assert!(out.contains(NO_HULL), "{out}");
+    assert_eq!(counts(&rig.tw), before);
+    assert_eq!(balance(&rig.tw, trust_acct), 5_000_000);
+    let terms = run(&mut rig.tw, ninth, "+coop");
+    assert!(terms.contains("Drays free: 0 of 8."), "{terms}");
+}
+
+#[test]
+fn ic6_capital_at_the_floor_refuses_the_stake() {
+    let mut rig = boot(Roster::bare());
+    let trust_acct = trust_account(&rig.tw);
+    let treasury =
+        mush_economy::AccountId(ceres_map(&rig.tw).treasury.expect("the treasury account"));
+    // Leave 74,999.99cr: one stake would breach the 50,000.00cr floor.
+    let drain = balance(&rig.tw, trust_acct) - 7_499_999;
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay {}={} {drain}", trust_acct.0, treasury.0),
+    );
+    assert_eq!(balance(&rig.tw, trust_acct), 7_499_999, "{out}");
+    let who = pilot(&mut rig, "Pilot", 1);
+    let before = counts(&rig.tw);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains(NO_CAPITAL), "{out}");
+    assert_eq!(counts(&rig.tw), before);
+    assert_eq!(own_account(&rig.tw, who), None);
+}
+
+// ---------------------------------------------------------------------------
+// 7–8. Boarding and leaving
+// ---------------------------------------------------------------------------
+
+/// The domain a port map records.
+fn domain_of(tw: &TestWorld, entry: &str) -> u64 {
+    port_map(tw, entry).domain.expect("a domain")
+}
+
+/// GOD re-places `hull` onto domain `domain`.
+fn replace_hull(tw: &mut TestWorld, hull: ObjId, domain: u64) {
+    let out = run(
+        tw,
+        GOD,
+        &format!("@spatial/place/domain #{}={domain}", hull.0),
+    );
+    assert!(out.contains("Placed"), "{out}");
+}
+
+fn placement(tw: &TestWorld, obj: ObjId) -> mush_sim::data::SpatialParent {
+    tw.world()
+        .module_state::<mush_sim::data::SpatialState>()
+        .expect("sim state")
+        .parent_of(obj)
+}
+
+#[test]
+fn ic6_board_and_leave_only_by_the_tenant_and_only_docked() {
+    let (mut rig, who) = enrolled();
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let hull = ObjId(row.hull);
+    let rooms = hull_rooms(&row);
+    let gallery = c01(&rig.tw);
+    // An onlooker in the gallery, and a visitor GOD placed in the Airlock.
+    let other = pilot(&mut rig, "Other", 2);
+    teleport(&mut rig.tw, other, gallery);
+    let visitor = rig.tw.spawn_player("Visitor");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.participant", visitor.0),
+    );
+    assert!(!out.contains("denied"), "{out}");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@spatial/place/interior #{}=#{},berths",
+            visitor.0, rooms["airlock"].0
+        ),
+    );
+    assert!(out.contains("Placed"), "{out}");
+    assert_eq!(location(&rig.tw, visitor), Some(rooms["airlock"]));
+    // The tenant boards from C01; each side of the lock sees its own line.
+    teleport(&mut rig.tw, who, gallery);
+    let events = rig.tw.run(who, "+ship/board");
+    let out = said(&rig.tw, &events, who);
+    assert!(
+        out.contains("You cycle the lock into the Salt Moth."),
+        "{out}"
+    );
+    assert!(
+        !out.contains("Pilot cycles"),
+        "the actor is excluded:\n{out}"
+    );
+    let seen = said(&rig.tw, &events, other);
+    assert!(
+        seen.contains("Pilot cycles through the lock into the Salt Moth."),
+        "the gallery:\n{seen}"
+    );
+    assert!(!seen.contains("comes aboard"), "the gallery:\n{seen}");
+    let seen = said(&rig.tw, &events, visitor);
+    assert!(
+        seen.contains("Pilot comes aboard through the outer door."),
+        "the Airlock:\n{seen}"
+    );
+    assert!(!seen.contains("cycles through"), "the Airlock:\n{seen}");
+    assert_eq!(location(&rig.tw, who), Some(rooms["airlock"]));
+    assert!(matches!(
+        placement(&rig.tw, who),
+        mush_sim::data::SpatialParent::Interior { space, slot: Some(ref slot) }
+            if space == rooms["airlock"] && slot.as_str() == "berths"
+    ));
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(out.contains("You are already aboard."), "{out}");
+    // A non-tenant in C01 is refused.
+    let out = run(&mut rig.tw, other, "+ship/board");
+    assert!(out.contains("You hold no charter."), "{out}");
+    assert_eq!(location(&rig.tw, other), Some(gallery));
+    // Leave from the Central Passage is refused, naming the room.
+    let _ = run(&mut rig.tw, who, "in");
+    assert_eq!(location(&rig.tw, who), Some(rooms["passage"]));
+    let out = run(&mut rig.tw, who, "+ship/leave");
+    assert!(out.contains("You can only leave by the Airlock."), "{out}");
+    assert_eq!(location(&rig.tw, who), Some(rooms["passage"]));
+    let _ = run(&mut rig.tw, who, "airlock");
+    assert_eq!(location(&rig.tw, who), Some(rooms["airlock"]));
+    // Leave from the Airlock lands in C01, unplaced; each side of the lock
+    // sees its own line.
+    let events = rig.tw.run(who, "+ship/leave");
+    let out = said(&rig.tw, &events, who);
+    assert!(
+        out.contains("You cycle the lock out into the Visiting Berth Gallery."),
+        "{out}"
+    );
+    assert!(
+        !out.contains("Pilot comes ashore"),
+        "the actor is excluded:\n{out}"
+    );
+    let seen = said(&rig.tw, &events, visitor);
+    assert!(
+        seen.contains("Pilot cycles out through the outer door."),
+        "the Airlock:\n{seen}"
+    );
+    assert!(!seen.contains("comes ashore"), "the Airlock:\n{seen}");
+    let seen = said(&rig.tw, &events, other);
+    assert!(
+        seen.contains("Pilot comes ashore from the Salt Moth."),
+        "the gallery:\n{seen}"
+    );
+    assert!(!seen.contains("cycles out"), "the gallery:\n{seen}");
+    assert_eq!(location(&rig.tw, who), Some(gallery));
+    assert!(matches!(
+        placement(&rig.tw, who),
+        mush_sim::data::SpatialParent::Unplaced
+    ));
+    let out = run(&mut rig.tw, who, "+ship/leave");
+    assert!(out.contains("You are not aboard a Dray."), "{out}");
+    // The tenant's board from C03 is refused.
+    let arrivals = c03(&rig.tw);
+    teleport(&mut rig.tw, who, arrivals);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(
+        out.contains("You board from the berth gallery where your Dray is cradled."),
+        "{out}"
+    );
+    // The hull at Stickney: C01 refuses, P01 boards.
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    replace_hull(&mut rig.tw, hull, stickney);
+    teleport(&mut rig.tw, who, gallery);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(
+        out.contains("The Salt Moth is not cradled at this gallery."),
+        "{out}"
+    );
+    let stickney_gallery = p01(&rig.tw);
+    teleport(&mut rig.tw, who, stickney_gallery);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(
+        out.contains("You cycle the lock into the Salt Moth."),
+        "{out}"
+    );
+    assert_eq!(location(&rig.tw, who), Some(rooms["airlock"]));
+    // The hull on a non-port domain: leave refused, the tenant still aboard.
+    let field = rig
+        .tw
+        .world_mut()
+        .create(mush_core::ObjKind::Room, "Open Field", GOD, None)
+        .expect("a room");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.domain", field.0),
+    );
+    assert!(!out.contains("denied"), "{out}");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@domain/create #{}=sim.passive", field.0),
+    );
+    let domain = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::data::SpatialState>()
+        .expect("sim")
+        .domain_of_host(field)
+        .map(|d| d.id.0)
+        .unwrap_or_else(|| panic!("a domain on the field: {out}"));
+    replace_hull(&mut rig.tw, hull, domain);
+    let out = run(&mut rig.tw, who, "+ship/leave");
+    assert!(
+        out.contains("The Salt Moth is not at a berth; the lock stays sealed."),
+        "{out}"
+    );
+    assert_eq!(location(&rig.tw, who), Some(rooms["airlock"]));
+}
+
+#[test]
+fn ic6_the_stamp_follows_leave_and_the_ceres_door() {
+    let (mut rig, who) = enrolled();
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let hull = ObjId(row.hull);
+    let gallery = c01(&rig.tw);
+    let stickney_gallery = p01(&rig.tw);
+    let marks = |tw: &TestWorld| {
+        (
+            tw.world().has_marker(who, "tacsim.last_port.ceres"),
+            tw.world().has_marker(who, "tacsim.last_port.stickney"),
+        )
+    };
+    // Boarding is a `Moved` out of a port room into a room in no port, so
+    // IC1's `IcReturnStamp` stamps the boarder: Ceres.
+    teleport(&mut rig.tw, who, gallery);
+    let _ = run(&mut rig.tw, who, "+ship/board");
+    assert_eq!(
+        marks(&rig.tw),
+        (true, false),
+        "IC1's observer stamped the board"
+    );
+    // The hull re-placed onto Stickney with the tenant aboard: no `Moved` out
+    // of a port room happens on the leave (its `from` is the airlock), so only
+    // `+ship/leave`'s own stamp can set Stickney and clear Ceres.
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    replace_hull(&mut rig.tw, hull, stickney);
+    let _ = run(&mut rig.tw, who, "+ship/leave");
+    assert_eq!(location(&rig.tw, who), Some(stickney_gallery));
+    assert_eq!(
+        marks(&rig.tw),
+        (false, true),
+        "+ship/leave stamped Stickney"
+    );
+    // The reverse. First carry a Ceres stamp into P01 (the C03 door pass,
+    // IC1's observer; a teleport between port rooms, or out of Limbo, stamps
+    // nothing), so the board at P01 has something to flip.
+    let arrivals = c03(&rig.tw);
+    teleport(&mut rig.tw, who, arrivals);
+    assert_eq!(
+        marks(&rig.tw),
+        (false, true),
+        "a port-to-port move stamps nothing"
+    );
+    let _ = run(&mut rig.tw, who, "x");
+    assert_eq!(location(&rig.tw, who), Some(LIMBO));
+    assert_eq!(marks(&rig.tw), (true, false), "the door pass stamped Ceres");
+    teleport(&mut rig.tw, who, stickney_gallery);
+    assert_eq!(
+        marks(&rig.tw),
+        (true, false),
+        "a move out of Limbo stamps nothing"
+    );
+    let _ = run(&mut rig.tw, who, "+ship/board");
+    assert_eq!(location(&rig.tw, who), Some(hull_rooms(&row)["airlock"]));
+    assert_eq!(
+        marks(&rig.tw),
+        (false, true),
+        "IC1's observer stamped the board out of P01"
+    );
+    let ceres = domain_of(&rig.tw, "ceres_port");
+    replace_hull(&mut rig.tw, hull, ceres);
+    let _ = run(&mut rig.tw, who, "+ship/leave");
+    assert_eq!(location(&rig.tw, who), Some(gallery));
+    assert_eq!(marks(&rig.tw), (true, false), "+ship/leave stamped Ceres");
+    // The door pass: out of C03 to Limbo stamps Ceres (IC1's observer).
+    let _ = run(&mut rig.tw, who, "+ship/board");
+    replace_hull(&mut rig.tw, hull, stickney);
+    let _ = run(&mut rig.tw, who, "+ship/leave");
+    assert_eq!(marks(&rig.tw), (false, true));
+    let arrivals = c03(&rig.tw);
+    teleport(&mut rig.tw, who, arrivals);
+    let _ = run(&mut rig.tw, who, "x");
+    assert_eq!(location(&rig.tw, who), Some(LIMBO));
+    assert_eq!(marks(&rig.tw), (true, false), "the door pass stamped Ceres");
+}
+
+// ---------------------------------------------------------------------------
+// 9–10. The lease over time, and a staff cancel
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_eight_simulated_days_raise_no_stale_contract_page() {
+    let (mut rig, who) = enrolled();
+    let lease = lease_of(&rig.tw, who);
+    sweep(&mut rig.tw, 8 * 86_400 + 1);
+    let paged = economy(&rig.tw)
+        .escalations()
+        .filter(|e| e.subject == EscalationSubject::Contract(lease))
+        .count();
+    assert_eq!(paged, 0, "the live lease was paged as stale");
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .contract(lease)
+            .expect("the lease")
+            .state,
+        ContractState::Active
+    );
+}
+
+#[test]
+fn ic6_staff_cancel_revokes_the_charter_and_the_gate_reads_the_lease() {
+    let (mut rig, who) = enrolled();
+    let lease = lease_of(&rig.tw, who);
+    let events = rig.tw.run(GOD, &format!("@contract/cancel #{}", lease.0));
+    let told = said(&rig.tw, &events, who);
+    let notice = "The Co-op has ended your charter of the Salt Moth (FPC-D-0401).";
+    assert!(
+        told.contains(notice)
+            || pending_notices(rig.tw.world(), who)
+                .iter()
+                .any(|n| n == notice),
+        "the pilot was not told: {told}"
+    );
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .contract(lease)
+            .expect("the lease")
+            .state,
+        ContractState::Cancelled
+    );
+    let e = store(&rig.tw)
+        .enrolment_of(who)
+        .expect("the enrolment")
+        .clone();
+    assert_eq!(e.status, EnrolmentStatus::Revoked);
+    assert_eq!(tacsim::port::live_charter(rig.tw.world(), who), None);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(out.contains("You hold no charter."), "{out}");
+    let ended = "Your charter of the Salt Moth (FPC-D-0401) has ended.";
+    let out = run(&mut rig.tw, who, "+ship");
+    assert!(out.contains(ended), "{out}");
+    let out = run(&mut rig.tw, who, "+coop");
+    assert!(out.contains(ended), "{out}");
+    // The revoked hull's hold still stands (L9): seven free.
+    assert!(out.contains("Drays free: 7 of 8."), "{out}");
+    let statement = run(&mut rig.tw, who, "+coop/statement");
+    assert!(statement.contains("Charter: ended."), "{statement}");
+    // With the rent cancelled, staff empty and close the pilot's account: the
+    // statement's cash line says so in a sentence of its own.
+    let acct = own_account(&rig.tw, who).expect("the pilot's account");
+    let trust_acct = trust_account(&rig.tw);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay {}={} 2500000", acct.0, trust_acct.0),
+    );
+    assert_eq!(balance(&rig.tw, acct), 0, "{out}");
+    let out = run(&mut rig.tw, GOD, &format!("@account/close {}", acct.0));
+    assert_eq!(own_account(&rig.tw, who), None, "{out}");
+    let statement = run(&mut rig.tw, who, "+coop/statement");
+    assert!(
+        statement.contains("  Cash: no account is open; the buyout is 90000.00cr."),
+        "{statement}"
+    );
+    let desk = c05(&rig.tw);
+    teleport(&mut rig.tw, who, desk);
+    let out = enrol(&mut rig, who, "Second Wind");
+    assert!(out.contains(ENROLLED_ONCE), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// 11–12. The look hook and the gauges
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_look_names_the_hull_and_the_port() {
+    let (mut rig, who) = enrolled();
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let rooms = hull_rooms(&row);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let _ = run(&mut rig.tw, who, "+ship/board");
+    let status = "Aboard the Salt Moth (FPC-D-0401), docked at Ceres Freeport.";
+    // Walk every walkable room and look.
+    for (step, room) in [
+        (None, "airlock"),
+        (Some("in"), "passage"),
+        (Some("bridge"), "bridge"),
+        (Some("passage"), "passage"),
+        (Some("crew"), "crew"),
+        (Some("passage"), "passage"),
+        (Some("hold"), "hold"),
+        (Some("eng"), "engineering"),
+    ] {
+        if let Some(step) = step {
+            let _ = run(&mut rig.tw, who, step);
+        }
+        assert_eq!(location(&rig.tw, who), Some(rooms[room]), "{room}");
+        let out = run(&mut rig.tw, who, "look");
+        assert_eq!(out.matches(status).count(), 1, "{room}:\n{out}");
+        // The status line precedes every gauge line.
+        let at = out.find(status).expect("the status line");
+        for label in [
+            "Load cells:",
+            "Manifest slate:",
+            "Displays:",
+            "Locker tally:",
+            "Tank gauges:",
+        ] {
+            if let Some(gauge) = out.find(label) {
+                assert!(at < gauge, "{room}: {label} before the status line:\n{out}");
+            }
+        }
+    }
+    // A laid-up hull: *Cold Comfort*, GOD placed in its airlock.
+    let laid_up = ceres_map(&rig.tw).hulls[1].clone();
+    let cold = hull_rooms(&laid_up);
+    let other = rig.tw.spawn_player("Visitor");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.participant", other.0),
+    );
+    assert!(!out.contains("denied"), "{out}");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@spatial/place/interior #{}=#{},berths",
+            other.0, cold["airlock"].0
+        ),
+    );
+    assert!(out.contains("Placed"), "{out}");
+    let out = run(&mut rig.tw, other, "look");
+    assert!(
+        out.contains("Aboard the Cold Comfort (FPC-D-0402), docked at Ceres Freeport."),
+        "{out}"
+    );
+    for label in [
+        "Load cells:",
+        "Manifest slate:",
+        "Displays:",
+        "Locker tally:",
+        "Tank gauges:",
+    ] {
+        assert!(!out.contains(label), "the Airlock shows a gauge:\n{out}");
+    }
+    let _ = run(&mut rig.tw, other, "in");
+    let _ = run(&mut rig.tw, other, "bridge");
+    assert_eq!(location(&rig.tw, other), Some(cold["bridge"]));
+    let out = run(&mut rig.tw, other, "look");
+    assert!(
+        has_block(
+            &out,
+            &[
+                "Aboard the Cold Comfort (FPC-D-0402), docked at Ceres Freeport.",
+                "Displays:",
+                "  HOLD empty; 0/100 t · 0.0/120 m³",
+                "  TANKAGE 0/80 t",
+                "  STORES 0/120 crew-days",
+            ]
+        ),
+        "{out}"
+    );
+    // A kept world that turns the layer off keeps its hull rooms, and the
+    // hook says nothing.
+    let bridge = cold["bridge"];
+    let roster = rig.roster.clone().disabled();
+    let mut rig = reboot_with(rig, roster, |_| {});
+    assert!(rig.tw.world().get(bridge).is_some(), "the hull room stands");
+    teleport(&mut rig.tw, GOD, bridge);
+    let out = run(&mut rig.tw, GOD, "look");
+    // The look rendered the room itself ...
+    let bridge_name = name(&rig.tw, bridge);
+    assert!(out.contains(&bridge_name), "the Bridge rendered:\n{out}");
+    let desc = attr_text(&rig.tw, bridge, "desc").expect("the Bridge has a description");
+    assert!(
+        out.contains(&desc),
+        "the Bridge's description rendered:\n{out}"
+    );
+    // ... and only the hook went quiet.
+    assert!(!out.contains("Aboard the"), "{out}");
+    assert!(!out.contains("Displays:"), "{out}");
+}
+
+#[test]
+fn ic6_the_gauges_read_the_hold_pools() {
+    let (mut rig, who) = enrolled();
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let rooms = hull_rooms(&row);
+    seed_outbound(&mut rig, &row);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let _ = run(&mut rig.tw, who, "+ship/board");
+    let status = "Aboard the Salt Moth (FPC-D-0401), docked at Ceres Freeport.";
+    // The Airlock: the status line and no gauge.
+    let out = run(&mut rig.tw, who, "look");
+    assert!(out.contains(status), "{out}");
+    for label in [
+        "Load cells:",
+        "Manifest slate:",
+        "Displays:",
+        "Locker tally:",
+        "Tank gauges:",
+    ] {
+        assert!(!out.contains(label), "the Airlock shows a gauge:\n{out}");
+    }
+    let mut passage: Vec<&str> = vec![status, "Manifest slate:"];
+    passage.extend(SUMMARY_BODY);
+    let mut bridge: Vec<&str> = vec![status, "Displays:"];
+    bridge.extend(SUMMARY_BODY);
+    let mut hold: Vec<&str> = vec![status];
+    hold.extend(LOAD_CELLS);
+    for (step, room, block) in [
+        ("in", "passage", passage),
+        ("bridge", "bridge", bridge),
+        ("passage", "passage", Vec::new()),
+        (
+            "crew",
+            "crew",
+            vec![
+                status,
+                "Locker tally: voyage provisions, 21 of 120 crew-days.",
+            ],
+        ),
+        ("passage", "passage", Vec::new()),
+        ("hold", "hold", hold),
+        (
+            "eng",
+            "engineering",
+            vec![status, "Tank gauges: reaction mass, 42 of 80 t."],
+        ),
+    ] {
+        let _ = run(&mut rig.tw, who, step);
+        assert_eq!(location(&rig.tw, who), Some(rooms[room]), "{room}");
+        if block.is_empty() {
+            continue;
+        }
+        let out = run(&mut rig.tw, who, "look");
+        assert!(has_block(&out, &block), "{room}:\n{out}");
+    }
+    // `+ship` and `+ship/hold`.
+    let out = run(&mut rig.tw, who, "+ship");
+    assert!(
+        has_block(
+            &out,
+            &[
+                "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
+                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 21/120 crew-days.",
+                "Programme: 0 sales; buyout 90000.00cr.",
+            ]
+        ),
+        "{out}"
+    );
+    let out = run(&mut rig.tw, who, "+ship/hold");
+    assert!(
+        has_block(
+            &out,
+            &[
+                "Hold of the Salt Moth (FPC-D-0401):",
+                "  HOLD",
+                "    metal concentrate: 20 t · 8.0 m³",
+                "    water ice: 80 t · 112.0 m³",
+                "    structural alloy stock: 0 t · 0.0 m³",
+                "    yard fittings, crated: 0 t · 0.0 m³",
+                "    TOTAL: 100 t · 120.0 m³",
+                "    LIMIT: 100 t · 120 m³",
+                "    FULL: mass and packed volume",
+                "  TANKAGE reaction mass, 42 of 80 t",
+                "  STORES voyage provisions, 21 of 120 crew-days",
+            ]
+        ),
+        "{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 13. A reboot, and an unreadable enrolment
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_the_charter_survives_a_reboot() {
+    let (mut rig, who) = enrolled();
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let rooms = hull_rooms(&row);
+    let hull = ObjId(row.hull);
+    seed_outbound(&mut rig, &row);
+    let roster = rig.roster.clone();
+    let mut rig = reboot_with(rig, roster, |_| {});
+    let _ = rig.tw.connect(who);
+    assert!(matches!(
+        store(&rig.tw).enrolment_state(account("PilotAcct", 1)),
+        EnrolmentState::Present(e) if e.pilot == who
+    ));
+    assert_eq!(name(&rig.tw, hull), "Salt Moth");
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(
+        out.contains("You cycle the lock into the Salt Moth."),
+        "{out}"
+    );
+    let _ = run(&mut rig.tw, who, "in");
+    let _ = run(&mut rig.tw, who, "hold");
+    assert_eq!(location(&rig.tw, who), Some(rooms["hold"]));
+    let out = run(&mut rig.tw, who, "look");
+    assert!(
+        has_block(&out, &LOAD_CELLS),
+        "the goods cache did not survive:\n{out}"
+    );
+    let _ = run(&mut rig.tw, who, "passage");
+    let _ = run(&mut rig.tw, who, "airlock");
+    let _ = run(&mut rig.tw, who, "+ship/leave");
+    assert_eq!(location(&rig.tw, who), Some(gallery));
+
+    // Corrupt the chartered pilot's enrolment document and reboot.
+    let key = enrolment_key(account("PilotAcct", 1));
+    let roster = rig.roster.clone();
+    let mut rig = reboot_with(rig, roster, |folded| {
+        let doc = folded
+            .get_mut(tacsim::NS)
+            .and_then(|data| data.kv.iter_mut().find(|(k, _)| *k == key))
+            .expect("the enrolment document");
+        doc.1 = serde_json::json!({ "schema": 1, "nonsense": true });
+    });
+    let _ = rig.tw.connect(who);
+    assert!(matches!(
+        store(&rig.tw).enrolment_state(account("PilotAcct", 1)),
+        EnrolmentState::Unreadable
+    ));
+    // The gate is the lease: `+ship` renders its first two lines, then dark.
+    let out = run(&mut rig.tw, who, "+ship");
+    assert!(
+        has_block(
+            &out,
+            &[
+                "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
+                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 21/120 crew-days.",
+                "Programme: the Co-op's books cannot be read.",
+            ]
+        ),
+        "{out}"
+    );
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(
+        out.contains("You cycle the lock into the Salt Moth."),
+        "{out}"
+    );
+    let _ = run(&mut rig.tw, who, "+ship/leave");
+    let out = run(&mut rig.tw, who, "+coop");
+    assert!(
+        out.contains(
+            "Your charter: the Salt Moth (FPC-D-0401); the Co-op's books for your account cannot \
+             be read right now."
+        ),
+        "{out}"
+    );
+    let out = run(&mut rig.tw, who, "+coop/statement");
+    assert!(out.contains(BOOKS_UNREADABLE), "{out}");
+    let desk = c05(&rig.tw);
+    teleport(&mut rig.tw, who, desk);
+    let out = enrol(&mut rig, who, "Second Wind");
+    assert!(out.contains(BOOKS_UNREADABLE), "{out}");
+    // Another account still enrols.
+    let other = pilot(&mut rig, "Other", 2);
+    let out = enrol(&mut rig, other, "Second Wind");
+    assert!(out.contains("now the Second Wind"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// 14. Retirement refused while a hull is leased
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_a_port_with_a_leased_hull_refuses_retirement() {
+    let (mut rig, _who) = enrolled();
+    let out = run(&mut rig.tw, GOD, &format!("@atlas/pack retire {LANE_PACK}"));
+    assert!(
+        out.contains(
+            "ceres_port: hull FPC-D-0401 is chartered to a pilot; a port with a leased hull \
+             cannot be retired"
+        ),
+        "{out}"
+    );
+    assert!(
+        store(&rig.tw)
+            .applied_in(rig.tw.world(), &lane_id())
+            .is_some()
+    );
+    // The control: with no hull leased, the port's own retire check refuses
+    // nothing.
+    let mut idle = boot(Roster::bare());
+    let out = run(
+        &mut idle.tw,
+        GOD,
+        &format!("@atlas/pack retire {LANE_PACK}"),
+    );
+    assert!(!out.contains("chartered to a pilot"), "{out}");
+    assert!(out.contains(&format!("Retired {LANE_PACK}")), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// 15. A frozen economy refuses enrolment before any write
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_a_frozen_economy_refuses_enrolment_before_any_write() {
+    let mut rig = boot(Roster::bare().freezable());
+    let who = pilot(&mut rig, "Pilot", 1);
+    let _ = run(&mut rig.tw, GOD, "@econfreeze");
+    assert!(economy(&rig.tw).is_frozen(), "the latch is set");
+    let before = counts(&rig.tw);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains(FAILED), "{out}");
+    // No account was opened in RAM ahead of the offer's frozen refusal.
+    assert_eq!(counts(&rig.tw), before, "a frozen refusal wrote something");
+    assert_eq!(own_account(&rig.tw, who), None);
+    assert!(!out.contains("Ceres Clearing opens account"), "{out}");
+    // After the thaw the same pilot enrols, and the account is opened then.
+    let out = run(&mut rig.tw, GOD, "@econ/unfreeze");
+    assert!(!economy(&rig.tw).is_frozen(), "{out}");
+    let out = enrol(&mut rig, who, "Salt Moth");
+    let acct = own_account(&rig.tw, who).expect("an account was opened");
+    assert!(
+        out.contains(&format!(
+            "Ceres Clearing opens account #{} in your name.",
+            acct.0
+        )),
+        "{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16. A disputed lease is not in force, whatever the document says
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ic6_a_disputed_lease_is_not_in_force() {
+    let (mut rig, who) = enrolled();
+    let lease = lease_of(&rig.tw, who);
+    let out = run(&mut rig.tw, who, &format!("@contract/dispute #{}", lease.0));
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .contract(lease)
+            .expect("the lease")
+            .state,
+        ContractState::Disputed,
+        "{out}"
+    );
+    // The observer folds only an ended lease: the document stays Active.
+    assert_eq!(
+        store(&rig.tw).enrolment_of(who).map(|e| e.status),
+        Some(EnrolmentStatus::Active)
+    );
+    assert_eq!(tacsim::port::live_charter(rig.tw.world(), who), None);
+    // `+coop` and `+coop/statement` read the lease, not the document.
+    let terms = run(&mut rig.tw, who, "+coop");
+    assert!(
+        terms.contains(
+            &CHARTER_NOT_IN_FORCE
+                .replace("{name}", "Salt Moth")
+                .replace("{mark}", "FPC-D-0401")
+        ),
+        "{terms}"
+    );
+    assert!(!terms.contains("Enrol at"), "{terms}");
+    let statement = run(&mut rig.tw, who, "+coop/statement");
+    assert!(
+        statement.contains("  Charter: not in force."),
+        "{statement}"
+    );
+    assert!(!statement.contains("Charter: in force."), "{statement}");
+    // The operate gate agrees.
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(out.contains("You hold no charter."), "{out}");
+}

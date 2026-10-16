@@ -108,6 +108,18 @@ through the economy module's own path.
 """
 
 [[site]]
+path = "crates/tacsim/src/port/coop.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 18 cut IC6: the pilot's account and hold vault take their ids from
+`economy`'s allocators before `mush_economy::open_account` / `create_vault`
+write them through the economy module's own path — the `port/apply.rs`
+precedent. The site refuses when the slot is absent.
+"""
+
+[[site]]
 path = "crates/mush-server/src/boot.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -245,6 +257,19 @@ section 3.8), and an unmapped character is refused fail-closed. The oracle is
 boot-hydrated by the host from the store, which a `TestWorld` has none of, so
 this harness installs the same map `mush_server::boot` installs — the one row
 that makes every claim in the file a claim about accounts.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/coop.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 18 cut IC6: the First Captain enrolment rule is per gateway account (one
+enrolment per account, ever, D-18-25) and an unmapped character is refused
+fail-closed. The oracle is boot-hydrated by the host from the store, which a
+`TestWorld` has none of, so the rig installs a fixed map — the
+`match_lifecycle.rs` precedent.
 """
 
 [[site]]

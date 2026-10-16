@@ -493,8 +493,14 @@ impl PortDef {
                 programme.dormancy_real_days
             ));
         }
-        if programme.per_account == 0 {
-            return Err(format!("programme {pid}: per_account must be at least 1"));
+        // Doc 18 cut IC6 (D-18-25, lead ruling L5): one `tacsim:coop:{account}`
+        // document per gateway account holds one enrolment, so the programme can
+        // promise exactly one.
+        if programme.per_account != 1 {
+            return Err(format!(
+                "programme {pid}: per_account must be 1; this server keeps one enrolment per \
+                 gateway account (D-18-25)"
+            ));
         }
         // D-18-25: the floor plus a stake for every hull fits inside the
         // programme org's capital (50,000 + 8 × 25,000 = 250,000 at v2).
@@ -790,6 +796,8 @@ mod tests {
         assert!(programme(&|p| p.share_permille = 1_001).contains("share_permille"));
         assert!(programme(&|p| p.dormancy_real_days = 366).contains("dormancy_real_days"));
         assert!(programme(&|p| p.per_account = 0).contains("per_account"));
+        // Doc 18 cut IC6: exactly one, never more.
+        assert!(programme(&|p| p.per_account = 2).contains("per_account must be 1"));
         assert!(programme(&|p| p.stake_major = 0).contains("at least 1"));
         assert!(programme(&|p| p.issuer = String::new()).contains("issuer"));
         assert!(

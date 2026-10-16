@@ -86,7 +86,7 @@ fn live(w: &World, obj: u32) -> bool {
 
 /// The programme unit's interior template and its binding's instantiation
 /// shape, or the refusal naming what is missing.
-fn template<'a>(
+pub(crate) fn template<'a>(
     store: &'a TacsimStore,
     programme: &ProgrammeDef,
 ) -> Result<(&'a InteriorDef, &'a mush_tactics::UnitSpec), String> {
@@ -107,9 +107,20 @@ fn template<'a>(
     Ok((interior, &binding.spec))
 }
 
+/// **The programme unit's interior template and logistics block** (doc 18 cut
+/// IC6), both present: what the Co-op's free-hull rule, `+ship` and the gauges
+/// read. `None` when the unit carries either block no longer.
+pub(crate) fn hull_spec<'a>(
+    store: &'a TacsimStore,
+    programme: &ProgrammeDef,
+) -> Option<(&'a InteriorDef, &'a crate::definitions::LogisticsDef)> {
+    let spec = store.definitions().specs.get(&programme.unit)?;
+    Some((spec.interior.as_ref()?, spec.logistics.as_ref()?))
+}
+
 /// The berths compartment's simulation slot id, converted once (a template id
 /// `SlotId::new` refuses is a preflight refusal, never an `expect`).
-fn berths_slot(
+pub(crate) fn berths_slot(
     programme: &ProgrammeDef,
     interior: &InteriorDef,
 ) -> Result<mush_sim::SlotId, String> {
@@ -674,9 +685,16 @@ pub(crate) fn hull_line(
         .orgs
         .get(&programme.org)
         .map(|row| PrincipalId::Organization(OrgId(row.org)));
-    // The domains some port map records: "laid up" is `Direct` on one of them
-    // (cut IC9 adds the under-way arm).
+    // The domains some port map records: "laid up" is `Direct` on one of them.
+    // Doc 18 cut IC6 (lead ruling L2): an under-way hull counts as under way
+    // (cut IC9's planner path first exercises the arm), a leased one as
+    // leased, and neither is Missing — the line reads "the programme was
+    // made", never "every hull idle", so the first lease never closes the desk.
     let port_domains: BTreeSet<u64> = store.port_maps().filter_map(|m| m.domain).collect();
+    let journeys = w.module_state::<mush_sim::JourneyBook>();
+    let mut free = 0_usize;
+    let mut under_way = 0_usize;
+    let mut leased: Vec<String> = Vec::new();
     for row in &map.hulls {
         let mark = &row.mark;
         let gone = std::iter::once(row.hull)
@@ -711,17 +729,65 @@ pub(crate) fn hull_line(
         if !titled {
             return missing(format!("{mark} is not titled to {org_name}."));
         }
+        let hull = ObjId(row.hull);
+        let moving = journeys.is_some_and(|book| book.under_way(hull));
         let laid_up = spatial.is_some_and(|st| {
-            matches!(st.parent_of(ObjId(row.hull)),
+            matches!(st.parent_of(hull),
                 SpatialParent::Direct { domain, .. } if port_domains.contains(&domain.0))
         });
-        if !laid_up {
+        if !moving && !laid_up {
             return missing(format!("{mark} is not laid up at a port."));
         }
+        if moving {
+            under_way = under_way.saturating_add(1);
+        }
+        let lease = trust
+            .as_ref()
+            .and_then(|trust| crate::port::coop::trust_lease_on(w, trust, hull));
+        match lease {
+            Some(lease) => {
+                // The tenant: the first object party that is not the issuer.
+                let tenant = lease
+                    .consent
+                    .parties
+                    .iter()
+                    .find_map(|party| match party {
+                        PrincipalId::Object(obj) if *party != lease.issuer => Some(*obj),
+                        _ => None,
+                    })
+                    .map_or_else(
+                        || "nobody".to_owned(),
+                        |obj| mush_core::output::display_name(w, obj),
+                    );
+                leased.push(format!("{mark} to {tenant}"));
+            }
+            None if laid_up => free = free.saturating_add(1),
+            None => {}
+        }
     }
+    if leased.is_empty() && under_way == 0 {
+        return Some((
+            LineState::Ready,
+            format!("{entry} hulls: {pool} of {pool} made, titled to {org_name} and laid up."),
+        ));
+    }
+    let leases = if leased.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", leased.join(", "))
+    };
+    let under = if under_way > 0 {
+        format!(", {under_way} under way")
+    } else {
+        String::new()
+    };
     Some((
         LineState::Ready,
-        format!("{entry} hulls: {pool} of {pool} made, titled to {org_name} and laid up."),
+        format!(
+            "{entry} hulls: {pool} of {pool} made and titled to {org_name}; {free} laid up and \
+             free, {} leased{leases}{under}.",
+            leased.len()
+        ),
     ))
 }
 

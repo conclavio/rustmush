@@ -631,7 +631,41 @@ pub fn read_pool(
     };
     let key = mush_inventory::pool_key(endpoint, commodity)
         .map_err(|error| PoolReadError::Key(error.to_string()))?;
-    match ctx.action_state(&inventory.pools, &key) {
+    pool_value(ctx.action_state(&inventory.pools, &key))
+}
+
+/// **One pool's balance, read from a hook** (doc 18 cut IC6: the ship gauges'
+/// `look_rendered`): [`read_pool`]'s rule exactly — [`PortHandles`] from the
+/// hook's world (`Unwired` when absent), the pool key, and this module's own
+/// typed-state lens (`HookReadContext::action_state`, stamped with the hook's
+/// module). An absent pool is 0; a refusal is never 0.
+///
+/// # Errors
+///
+/// [`PoolReadError`], as its variants say.
+pub fn read_pool_in(
+    hook: &mush_core::HookReadContext<'_>,
+    endpoint: mush_inventory::record::EndpointRef,
+    commodity: &CanonicalId,
+) -> Result<u64, PoolReadError> {
+    let Some(inventory) = hook
+        .world()
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+    else {
+        return Err(PoolReadError::Unwired);
+    };
+    let key = mush_inventory::pool_key(endpoint, commodity)
+        .map_err(|error| PoolReadError::Key(error.to_string()))?;
+    pool_value(hook.action_state(&inventory.pools, &key))
+}
+
+/// The lens's answer as a balance: absent is 0, a scalar that does not fit
+/// `u64` is corrupt, and a refusal is mapped, never 0.
+fn pool_value(
+    found: Result<Option<&mush_core::BoundedScalar>, ModuleActionStateReadError>,
+) -> Result<u64, PoolReadError> {
+    match found {
         Ok(None) => Ok(0),
         Ok(Some(scalar)) => u64::try_from(scalar.current()).map_err(|_| PoolReadError::Corrupt),
         Err(error) => Err(pool_read_error(&error)),

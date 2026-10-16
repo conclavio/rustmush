@@ -150,6 +150,44 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::credit::credit_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 18 cut IC6 (§4.1, §4.2; D-18-23, D-18-34): `+coop` and `+ship` ----
+    //
+    // Under the module's `LegacyPostImage` class (lead ruling L12: a class is
+    // per verb, and each verb carries a writing switch). `+coop` and
+    // `+coop/statement` are pure reads; `+coop/enrol` is ONE command and ONE
+    // batch through the economy's own API (account, lease, stake, vault) plus
+    // tacsim's one enrolment document and the hull's rename. `+ship` and
+    // `+ship/hold` are pure reads; `+ship/board` and `+ship/leave` are
+    // placement verbs through mush-sim (leave also writes the last-port
+    // marker). None submits anything authoritative.
+    reg.command(
+        CommandSpec {
+            name: crate::port::coop::COOP_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["enrol", "statement"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::coop::COOP_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::coop::coop_cmd),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: crate::port::ship::SHIP_VERB.into(),
+            shape: ArgShape::None,
+            switches: ["board", "leave", "hold"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::ship::SHIP_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::ship::ship_cmd),
+    )?;
     Ok(())
 }
 

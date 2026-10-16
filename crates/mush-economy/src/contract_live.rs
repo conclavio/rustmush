@@ -4746,22 +4746,19 @@ pub fn end_lease(
 /// Whether `c` is the lease `key` describes: issued by the lessor, pledging exactly
 /// these premises as the lessor's collateral, and creating an obligation — the shape
 /// [`offer_lease`] builds and [`crate::contract_encumbrance`] reads as a lease.
+///
+/// Doc 18 cut IC6: the shape itself is [`crate::contract::is_lease_shaped`] (one
+/// predicate); only the key-specific checks — this lessor, these premises — live here.
 fn owns_lease(c: &EconomicContract, key: &LeaseKey) -> bool {
-    if principal_key(&c.issuer) != principal_key(&key.lessor) {
-        return false;
-    }
-    let deliverables = &c.consent.terms.deliverables;
-    let pledged = deliverables.iter().any(|d| {
-        matches!(
-            d,
-            Deliverable::Collateral { object, from }
-                if *object == key.premises && principal_key(from) == principal_key(&key.lessor)
-        )
-    });
-    let rented = deliverables
-        .iter()
-        .any(|d| matches!(d, Deliverable::Obligation { .. }));
-    pledged && rented
+    crate::contract::is_lease_shaped(c)
+        && principal_key(&c.issuer) == principal_key(&key.lessor)
+        && c.consent.terms.deliverables.iter().any(|d| {
+            matches!(
+                d,
+                Deliverable::Collateral { object, from }
+                    if *object == key.premises && principal_key(from) == principal_key(&key.lessor)
+            )
+        })
 }
 
 // ---- the programmatic contract seams (E6a step 1, 08f §2 item 4) -------------

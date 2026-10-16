@@ -30,16 +30,34 @@
 //!
 //! Doc 18 cut IC5 — [`families`]: the stock-issue receipt and the departure
 //! ticket, with the `PassagePlan` they freeze; [`crate::port_tick`] is the tick.
+//!
+//! **Doc 18 cut IC6** — the Co-op's First Captain programme and boarding:
+//!
+//! - [`coop`] — `+coop`, `+coop/enrol` and `+coop/statement`; the enrolment
+//!   document (one per gateway account, ever, D-18-25), the operate gate
+//!   ([`live_charter`]: the live lease, never the document, D-18-23), the
+//!   free-hull rule and the observer that folds a staff-ended lease;
+//! - [`gauges`] — the pure gauge renders over the capacity function (no pack
+//!   text carries a load, D-18-39);
+//! - [`ship`] — `+ship`, `+ship/hold`, `+ship/board` and `+ship/leave`
+//!   (D-18-34), and the hull rooms' status line and gauges on `look`.
 
 pub mod apply;
 pub mod capacity;
+pub mod coop;
 pub mod credit;
 pub mod def;
 pub mod families;
+pub mod gauges;
 pub mod hull;
 pub mod map;
 pub mod readiness;
+pub mod ship;
 
+pub use coop::{
+    Charter, Enrolment, EnrolmentState, EnrolmentStatus, ProgrammePort, live_charter,
+    programme_port,
+};
 pub use def::{
     AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,
     ProgrammeDef, StockRowDef, VendorDef, check_ports, room_key, tranches,

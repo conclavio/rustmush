@@ -1618,6 +1618,15 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
                         | crate::contract::ContractState::ReadyToSettle
                 )
             })
+            // Doc 18 §4.1 / cut IC6: a live lease ends when somebody says it ends —
+            // its one staff attestation, `end_lease`, or a staff cancel. It has no
+            // deadline and no condition progress by design, so seven quiet days are not
+            // a fault. This exempts housing and recovery leases too, which shared the
+            // defect. A `ReadyToSettle` or escrowed `Draft` lease still pages.
+            .filter(|c| {
+                !(c.state == crate::contract::ContractState::Active
+                    && crate::contract::is_lease_shaped(c))
+            })
             // A draft with no escrow is not somebody's money sitting still; it is
             // collected on the TTL and says nothing to staff.
             .filter(|c| {

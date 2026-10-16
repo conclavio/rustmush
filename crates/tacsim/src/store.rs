@@ -10,6 +10,7 @@
 //! | `tacsim:mindsrc:{sha256}` | immutable source | **skipped loudly** when its `sha256` disagrees with its key or its bytes do not hash to it (17b cut M3.3; doc 17 §13). The **key still counts**: the boot never rewrites a document under a key it holds, so a tampered stock source stays unreadable rather than silently replaced, and a scripted seal naming it refuses its resume by name (`crate::match_::resume`) |
 //! | `tacsim:port:{pack}/{entry}` | applier map (doc 18 cut IC3) | **skipped loudly, and the key still bars re-creation**: the entry's next apply refuses before any write, naming the key, and `@tacsim/port status` reports the map unreadable; repair is a staff act on the document (doc 18 §4.7) |
 //! | `tacsim:notice:{obj}` | per-character queue (doc 18 cut IC5: `crate::port_tick`'s reconnect notices) | **dropped loudly** for that character; the key bars nothing, and the next notice rewrites it |
+//! | `tacsim:coop:{account}` | per-gateway-account enrolment (doc 18 cut IC6: `crate::port::coop`) | **skipped loudly, and the key still bars re-enrolment**: that account's `+coop/enrol` refuses, and staff repair the document; the operate gate never reads it (it reads the live lease) |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -263,6 +264,23 @@ pub struct TacsimStore {
     /// character through [`push_op`]; a corrupt document is dropped loudly for that
     /// character and bars nothing.
     pub(crate) notices: BTreeMap<ObjId, crate::port_tick::NoticeQueue>,
+    /// **Doc 18 cut IC6** (§4.1, D-18-25; lead ruling L5) —
+    /// `tacsim:coop:{account}`: each gateway account's enrolment in the First
+    /// Captain programme ([`crate::port::coop::Enrolment`]), keyed by the
+    /// immutable account id, never by a character: one enrolment per account,
+    /// ever. The account ledger and the frozen terms — the operate gate never
+    /// reads it (it reads the live lease, D-18-23).
+    pub(crate) enrolments: BTreeMap<mush_core::AccountId, crate::port::coop::Enrolment>,
+    /// **Every `tacsim:coop:` key seen at load or written**, readable or not
+    /// (the R8 rule): a claimed key with no readable body is
+    /// [`crate::port::coop::EnrolmentState::Unreadable`] and still bars that
+    /// account's re-enrolment.
+    pub(crate) enrolment_keys: BTreeSet<SmolStr>,
+    /// **Doc 18 cut IC6** — the compiled-in goods table, parsed once by the
+    /// layer (`TacsimRuleset`) and handed to the slot at `register` and again
+    /// at `on_world_loaded`. RAM only, never persisted; `None` only on a build
+    /// fault, and every gauge then reads dark.
+    pub(crate) goods: Option<std::sync::Arc<crate::definitions::GoodsTable>>,
 }
 
 impl TacsimStore {
@@ -317,6 +335,51 @@ impl TacsimStore {
     /// Every readable port map, in `(pack, entry)` order.
     pub fn port_maps(&self) -> impl Iterator<Item = &crate::port::PortMap> {
         self.port_maps.values()
+    }
+
+    /// **One gateway account's enrolment** (doc 18 cut IC6; lead ruling L5):
+    /// absent, readable, or a key whose body did not read — the last still bars
+    /// that account's `+coop/enrol`.
+    #[must_use]
+    pub fn enrolment_state(
+        &self,
+        account: mush_core::AccountId,
+    ) -> crate::port::coop::EnrolmentState<'_> {
+        match self.enrolments.get(&account) {
+            Some(e) => crate::port::coop::EnrolmentState::Present(e),
+            None if self
+                .enrolment_keys
+                .contains(&crate::port::coop::enrolment_key(account)) =>
+            {
+                crate::port::coop::EnrolmentState::Unreadable
+            }
+            None => crate::port::coop::EnrolmentState::Absent,
+        }
+    }
+
+    /// The readable enrolment whose `pilot` is `pilot` (a scan, bounded by the
+    /// enrolments).
+    #[must_use]
+    pub fn enrolment_of(&self, pilot: ObjId) -> Option<&crate::port::coop::Enrolment> {
+        self.enrolments.values().find(|e| e.pilot == pilot)
+    }
+
+    /// The readable enrolment whose lease is `lease` (`ContractId.0`).
+    #[must_use]
+    pub fn enrolment_for_lease(&self, lease: u64) -> Option<&crate::port::coop::Enrolment> {
+        self.enrolments.values().find(|e| e.lease == lease)
+    }
+
+    /// Every readable enrolment, in account order.
+    pub fn enrolments(&self) -> impl Iterator<Item = &crate::port::coop::Enrolment> {
+        self.enrolments.values()
+    }
+
+    /// **The goods table** (doc 18 cut IC6): the layer's parse, the one read the
+    /// gauges and `+ship` make. `None` only on a build fault.
+    #[must_use]
+    pub fn goods(&self) -> Option<&crate::definitions::GoodsTable> {
+        self.goods.as_deref()
     }
 
     /// Every `(pack, entry)` a port map key claims, readable or not.
@@ -1111,6 +1174,36 @@ pub(crate) fn put_port_map(ctx: &mut Ctx<'_>, map: &crate::port::PortMap) {
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install an enrolment into RAM and queue its document** (doc 18 cut IC6) —
+/// the single write path, [`put_port_map`]'s exact pattern: the RAM install
+/// (the record and its key), then one whole-document `JsonSet`. The serialize
+/// failure is structurally unreachable; if it ever happened, it logs and writes
+/// a minimal `{schema, account}` body so **the key still exists** — which loads
+/// as unreadable and still bars that account's re-enrolment.
+pub(crate) fn put_enrolment(ctx: &mut Ctx<'_>, e: &crate::port::coop::Enrolment) {
+    let key = crate::port::coop::enrolment_key(e.account);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.enrolment_keys.insert(key.clone());
+        store.enrolments.insert(e.account, e.clone());
+    }
+    let value = match serde_json::to_value(e) {
+        Ok(value) => value,
+        Err(error) => {
+            // Never the key: its tail is the account's canonical hash.
+            tracing::error!(
+                pilot = e.pilot.0, %error,
+                "tacsim: an enrolment did not serialize; a minimal document is written so the key \
+                 still bars re-enrolment. Repair the document by hand."
+            );
+            serde_json::json!({
+                "schema": e.schema,
+                "account": e.account,
+            })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 /// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
 ///
 /// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
@@ -1291,6 +1384,12 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             };
             store.port_map_keys.insert((pack.clone(), entry.clone()));
             load_port_map(&mut store, key, &pack, &entry, value);
+        } else if key.starts_with(crate::port::coop::COOP_PREFIX) {
+            // Doc 18 cut IC6 (lead ruling L5). The claim is the KEY's (the R8
+            // rule): an enrolment that will not read still bars its account's
+            // re-enrolment, and staff repair the document.
+            store.enrolment_keys.insert(SmolStr::new(key));
+            load_enrolment(&mut store, key, value);
         } else if key.starts_with(crate::port_tick::NOTICE_PREFIX) {
             // Doc 18 cut IC5 (lead ruling L10). A queue that will not read costs
             // that character its queued notices and nothing else: the key bars
@@ -1460,6 +1559,35 @@ fn load_port_map(
             %key, %error,
             "tacsim: a port map did not parse; skipped (the key still bars re-creation; repair \
              the document by hand)"
+        ),
+    }
+}
+
+/// One `tacsim:coop:{account}` body (doc 18 cut IC6): decoded strictly, checked,
+/// and held to the identity rule (`enrolment_key(e.account)` is its key). Any
+/// failure skips it loudly; its key, already recorded, keeps it `Unreadable`.
+/// **No warning names the key or the account**: the key's tail is the account's
+/// canonical hash, and `AccountId`'s contract is that it never reaches a journal
+/// (the `tacsim:tutorial:` loader's rule).
+fn load_enrolment(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
+    let enrolment = serde_json::from_value::<crate::port::coop::Enrolment>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|e| e.check().map(|()| e))
+        .and_then(|e| {
+            if crate::port::coop::enrolment_key(e.account) == key {
+                Ok(e)
+            } else {
+                Err("the enrolment disagrees with its own key".to_owned())
+            }
+        });
+    match enrolment {
+        Ok(e) => {
+            store.enrolments.insert(e.account, e);
+        }
+        Err(error) => tracing::warn!(
+            %error,
+            "tacsim: an enrolment document is unreadable; skipped (its key still bars that \
+             account's re-enrolment; repair the document by hand)"
         ),
     }
 }

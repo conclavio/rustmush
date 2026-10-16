@@ -5145,3 +5145,57 @@ fn vf_r10_a_cadence_no_longer_declared_goes_back_to_the_legacy_schema() {
     assert_eq!(after.position, cadence.position);
     assert_eq!(after.generation, cadence.generation);
 }
+
+// ======================================================================
+// ---- doc 18 cut IC6: a live lease is never "stale" ----
+// ======================================================================
+
+/// Doc 18 §4.1 / cut IC6: a live lease has no deadline and no condition progress by
+/// design — it ends when somebody says it ends — so `page_stale_contracts` exempts an
+/// `Active` lease-shaped contract. Swept past the configured age and again eight days
+/// on, it opens no escalation whose subject is the lease, and it is still `Active`.
+/// (`e4c.rs`'s `e6s1_s7_a_deadline_less_live_contract_pages_at_the_configured_age` is
+/// the control: a live non-lease still pages.)
+#[test]
+fn ic6_a_live_lease_is_never_paged_as_stale() {
+    let (mut tw, vf) = boot_probe_with(EconomyConfig {
+        stale_contract_age_secs: 3_600,
+        ..Default::default()
+    });
+    let now = 1_000;
+    tw.set_now(now);
+    let r = rig(&mut tw, 10_000_000);
+    let flat = thing(&mut tw, "flat");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", flat.0, r.quinn.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vf/lease Lease=#{} #{} #{} {} {}",
+            r.quinn.0, r.pat.0, flat.0, r.pat_acct, r.quinn_acct
+        ),
+    );
+    let id = vf.lease().expect("the lease was offered");
+    ok(&mut tw, r.pat, &format!("@contract/accept {id}"));
+    assert_eq!(
+        snap(&tw).contract(id).expect("the lease").state,
+        ContractState::Active
+    );
+    for t in [now + 3_600 + 1_000, now + 8 * 86_400] {
+        sweep_at(&mut tw, t);
+        let paged = store(&tw)
+            .escalations()
+            .filter(|e| e.subject == EscalationSubject::Contract(id))
+            .count();
+        assert_eq!(paged, 0, "a live lease was paged as stale at {t}");
+        assert_eq!(
+            snap(&tw).contract(id).expect("the lease").state,
+            ContractState::Active,
+            "the lease did not stay live at {t}"
+        );
+    }
+}
