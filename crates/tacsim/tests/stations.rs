@@ -120,7 +120,9 @@ fn production_roster_with_starter(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::G
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
+    // Doc 18 cut IC5: `tacsim` the third quantity delegate, the inventory cell
+    // handed to the layer below.
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -138,7 +140,7 @@ fn production_roster_with_starter(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::G
     ));
     // Doc 18 cut IC2 (lead ruling R2): the production composition loads the game's
     // seed packs (the lane) on the same switch the content latch's boot list rides.
-    mods.push(comp::tacsim_module_with(cfg, true));
+    mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }

@@ -143,6 +143,10 @@ pub mod pack;
 /// replaced by R7); and since cut IC3 the `port` pack entry, its applier and map,
 /// the readiness report and `+credit` (doc 18 §4.1, §4.7).
 pub mod port;
+/// Doc 18 cut IC5: **the port tick** — the `tacsim.port` pull tick every port arm
+/// runs on, its actor swap, and the reconnect notices (doc 18 §4.3, §4.4, D-18-32,
+/// D-18-33).
+pub mod port_tick;
 pub mod record;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
@@ -355,8 +359,15 @@ pub struct TacsimRuleset {
     /// in-process test engine: false in every constructor, set only by
     /// [`TacsimRuleset::with_test_world`] (through
     /// `composition::tacsim_test_world_module`), handed to the slot as
-    /// `TacsimStore::test_world`. RAM only, never a config key.
+    /// `TacsimStore::test_world`. RAM only, never a config key. It relaxes the
+    /// readiness report's world rate and registers the port tick's probe (doc 18
+    /// cut IC5).
     test_world: bool,
+    /// **Doc 18 cut IC5 (D-18-33; lead ruling L2)** — `mush-inventory`'s handle
+    /// cell, handed over by the composition root that also names `tacsim` a
+    /// quantity delegate (`composition::server_modules_with_tacsim`). `None` on a
+    /// roster that did not: the port tick's every pool read then refuses.
+    inventory: Option<mush_inventory::InventoryHandleCell>,
 }
 
 impl TacsimRuleset {
@@ -390,15 +401,27 @@ impl TacsimRuleset {
             cfg,
             loaded,
             test_world: false,
+            inventory: None,
         }
     }
 
     /// **This layer as a test world's** (doc 18 cut IC3; lead ruling L15): the
-    /// readiness report then accepts a world rate other than 24. The production
-    /// roster (`mush_server::boot::game_modules`) never calls it.
+    /// readiness report then accepts a world rate other than 24, and registers the
+    /// port tick's probe (doc 18 cut IC5). The production roster
+    /// (`mush_server::boot::game_modules`) never calls it.
     #[must_use]
     pub fn with_test_world(mut self, on: bool) -> TacsimRuleset {
         self.test_world = on;
+        self
+    }
+
+    /// **The inventory handle cell** (doc 18 cut IC5; lead ruling L2).
+    ///
+    /// Composition-root data, like `IndustryModule::with_inventory`: a capability;
+    /// the authority is the delegation in `server_modules_with_tacsim`.
+    #[must_use]
+    pub fn with_inventory(mut self, cell: mush_inventory::InventoryHandleCell) -> TacsimRuleset {
+        self.inventory = Some(cell);
         self
     }
 
@@ -565,6 +588,12 @@ impl GameModule for TacsimRuleset {
         // `MoveAttempt` veto and the last-port stamp. Unconditional like its
         // neighbours; `+ic` itself refuses while the layer is off.
         ic_return::register(reg)?;
+        // Doc 18 cut IC5 (§4.3, §4.4, D-18-32, D-18-33): the port tick — the two
+        // typed families, the crate's one `action` and one `outcome` validator,
+        // `PortHandles`, the `tacsim.port` tick and the reconnect notices; in a
+        // test world also the probe. Registered unconditionally like its
+        // neighbours: the tick returns at once while the layer is off.
+        port_tick::register(reg, self.test_world, self.inventory.as_ref())?;
         Ok(())
     }
 

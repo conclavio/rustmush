@@ -423,7 +423,9 @@ pub fn production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
     };
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
+    // Doc 18 cut IC5: `tacsim` the third quantity delegate, the inventory cell
+    // handed to the layer below.
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -440,7 +442,7 @@ pub fn production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
         &mush_config::config::NpcCfg::default(),
     ));
     mods.extend(comp::sheet_modules(&onboarding, &game));
-    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::tacsim_module_wired(cfg, false, inventory));
     // `[game].starter_area` off: the arena's ground is in a region of its own and
     // the shipped lot would only add rooms no window must anchor on.
     mods.push(comp::content_module_with(false, true).expect("the content module composes"));
@@ -777,7 +779,9 @@ pub fn roster_booting(
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
+    // Doc 18 cut IC5: `tacsim` the third quantity delegate, the inventory cell
+    // handed to the layer below.
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -793,7 +797,7 @@ pub fn roster_booting(
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::tacsim_module_wired(cfg, false, inventory));
     let mut appliers = mush_content::Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");

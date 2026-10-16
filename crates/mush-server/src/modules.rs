@@ -1904,8 +1904,14 @@ mod tests {
     /// exactly the same terms — a market-owned action's prepare drives the same
     /// exported verbs under `mush_market::listing_holder` — and the two properties this
     /// test exists for are unchanged: the delegation is still **one-directional** (a
-    /// delegate cannot write back), and the whole production composition still carries
+    /// delegate cannot write back), and a roster without the TacSim layer still carries
     /// **only** the delegations named here, so a third one cannot arrive unnoticed.
+    ///
+    /// **Doc 18 cut IC5** (D-18-33): the third one arrived, noticed — but only on a
+    /// roster that composes the TacSim layer (`server_modules_with_tacsim`). This
+    /// roster is `server_modules_with` alone, which still carries exactly the two;
+    /// the game roster's three are pinned by
+    /// [`ic5_wiring_tacsim_is_the_third_quantity_delegate_on_the_game_roster`].
     #[test]
     fn e7c3_wiring_the_quantity_delegation_is_declared_and_narrow() {
         use mush_testkit::TestWorld;
@@ -1950,9 +1956,60 @@ mod tests {
         assert_eq!(
             families.delegations(),
             vec![(inventory.clone(), industry), (inventory, market)],
-            "exactly two delegations in the whole production composition, both from \
-             `inventory` outward"
+            "a roster without the TacSim layer carries exactly the two delegations, both \
+             from `inventory` outward"
         );
+    }
+
+    /// **Doc 18 cut IC5 — the composition-edge pin** (D-18-33; §4.4 "Offline
+    /// execution" prerequisite). The production roster both binaries boot
+    /// (`crate::boot::game_modules`) composes the TacSim layer, so `mush-inventory`
+    /// names `tacsim` its THIRD quantity delegate there — and nowhere else: the
+    /// delegation travels with the layer (`server_modules_with_tacsim`). It is
+    /// one-directional like the other two, and the three grantees are strangers.
+    #[test]
+    fn ic5_wiring_tacsim_is_the_third_quantity_delegate_on_the_game_roster() {
+        use mush_testkit::TestWorld;
+        let llm = std::sync::Arc::new(
+            mush_llm::LlmService::builder()
+                .global_enabled(false)
+                .build(),
+        );
+        let roster = crate::boot::game_modules(&mush_config::config::Config::default(), &llm)
+            .expect("the default config composes the game roster");
+        let tw = TestWorld::with_modules(roster);
+        let families = tw
+            .engine()
+            .registry
+            .state_families()
+            .expect("the composed state-family registry");
+        let inventory = mush_core::OwnerId::new("inventory").expect("owner");
+        let industry = mush_core::OwnerId::new("industry").expect("owner");
+        let market = mush_core::OwnerId::new("market").expect("owner");
+        let tacsim = mush_core::OwnerId::new("tacsim").expect("owner");
+        assert_eq!(
+            families.delegations(),
+            vec![
+                (inventory.clone(), industry.clone()),
+                (inventory.clone(), market.clone()),
+                (inventory.clone(), tacsim.clone()),
+            ],
+            "the game roster carries exactly three delegations, all from `inventory` outward"
+        );
+        assert!(
+            families.delegates(&inventory, &tacsim),
+            "inventory delegates its families to tacsim on the game roster"
+        );
+        assert!(
+            !families.delegates(&tacsim, &inventory),
+            "and the delegation is NOT symmetric"
+        );
+        for other in [&industry, &market] {
+            assert!(
+                !families.delegates(&tacsim, other) && !families.delegates(other, &tacsim),
+                "tacsim and {other:?} are strangers in both directions"
+            );
+        }
     }
 
     /// E5c-C231 (look-back fold), re-pointed by 16b cut R-b: the

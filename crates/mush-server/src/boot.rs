@@ -258,8 +258,10 @@ pub async fn stop_ledger_archive(job: Option<JoinHandle<()>>) {
 /// registration order, which is the order hooks and observers fire in and the
 /// order `on_world_loaded` runs in, so it is load-bearing:
 ///
-/// 1. the built-ins ([`modules::server_modules_with`]) first, with org before
-///    economy and sim before economy — see that function;
+/// 1. the built-ins ([`modules::server_modules_with_tacsim`]) first, with org
+///    before economy and sim before economy — see that function — and (doc 18
+///    cut IC5, D-18-33) `tacsim` named `mush-inventory`'s third quantity
+///    delegate, returning the inventory cell the layer is handed;
 /// 2. the M7 worldgen module after the built-ins;
 /// 3. the NPC agent module, grounded by the pilot sheet through the generic
 ///    grounding adapter;
@@ -273,7 +275,7 @@ pub async fn stop_ledger_archive(job: Option<JoinHandle<()>>) {
 /// an unreadable, oversized or digest-mismatched pack must fail the boot naming
 /// the file before any module runs (10b §3.1 invariant (iv)), and only the host
 /// can fail a boot. E7 residue pass 1 (R4): `[tacsim.recovery]` reaches
-/// `mush-campaign` — which composes INSIDE [`modules::server_modules_with`] —
+/// `mush-campaign` — which composes INSIDE [`modules::server_modules_with_tacsim`] —
 /// through this root's own mapping and never through a crate edge, so the policy
 /// has to exist before the built-ins are built. The split half passed
 /// `RecoveryConfig::default()` there until WS04-S2, and composed no TacSim layer
@@ -299,7 +301,10 @@ pub fn game_modules(
     // boot error). It decides the housing and market title issuers.
     let game = config_ext::tacsim_economy_config(&config.tacsim)?;
     let contributed: Vec<(&str, mush_economy::DeclaredCadence)> = Vec::new();
-    let mut mods = modules::server_modules_with(
+    // Doc 18 cut IC5 (D-18-33, §4.4): the built-ins of a roster that composes the
+    // TacSim layer — `mush-inventory` names `tacsim` its third quantity delegate,
+    // and the inventory handle cell comes back for the layer below.
+    let (mut mods, inventory) = modules::server_modules_with_tacsim(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config_with(&config.economy, &contributed)?,
         atlas,
@@ -342,7 +347,13 @@ pub fn game_modules(
     // Doc 18 cut IC2 (lead ruling R2): the same switch loads the game's own seed
     // packs (the lane) into the store, so `TacsimStore`'s loaded packs and the
     // content latch's boot list below move together.
-    mods.push(modules::tacsim_module_with(tacsim, tacsim_enabled));
+    // Doc 18 cut IC5: handed the inventory cell (`tacsim_module_wired`, which takes
+    // no test-world flag: production is never a test world, IC3 L15).
+    mods.push(modules::tacsim_module_wired(
+        tacsim,
+        tacsim_enabled,
+        inventory,
+    ));
     // S1: the content module LAST of all — its boot pass applies the starter packs
     // through the atlas's and the NPC module's appliers, which must have hydrated
     // their own slots first (`on_world_loaded` runs in list order). Zero LLM calls:

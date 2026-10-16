@@ -2298,3 +2298,481 @@ draining `tw.take_module_ops()` and the throwaway `Outbox`'s `Deferred::Persist`
 row)` placing a spawned participant in *Slack Water*'s berths, `placement_writes(ops)`,
 `lane_v3`/`plan_and_apply`, the held-document corruption of a folded store before `reboot`,
 `destroy(tw, obj)` for a programmatic destroy).
+
+## IC5
+
+**Tacsim's authoritative plumbing and the port tick** (doc 18 §5, the IC5 row and paragraph), built
+2026-10-16 on main at 3c9cded5. The shared machinery every later port arm stands on, and no arm
+itself. One commit, pushed to origin/main.
+
+### What landed
+
+1. **Tacsim is `mush-inventory`'s third quantity delegate, and the delegation travels with the
+   layer** (`crates/tacsim/src/composition/mod.rs`). The body of `server_modules_with` moved into
+   the private `compose_server_modules(.., tacsim_delegate: bool) -> (Vec<Box<dyn GameModule>>,
+   InventoryHandleCell)`; the delegates list is `["industry", "market"]` plus `crate::NS` when the
+   flag is set. `server_modules_with` keeps its exact signature and behaviour (the roster WITHOUT
+   the TacSim layer, so the dozens of arena rosters that compose it without the layer are not
+   refused by the freeze's `UnknownOwner`, `action_state.rs:815-833`). New:
+   `server_modules_with_tacsim` (the same six arguments, returning the roster and the cell),
+   `tacsim_module_wired(cfg, game_content, inventory)` with **no test-world flag** (IC3 L15:
+   production can never be a test world), and `tacsim_test_world_module_wired`. Three of
+   `MAX_STATE_FAMILY_DELEGATES = 4` are now used.
+2. **The layer holds the cell** (`crates/tacsim/src/lib.rs`). `TacsimRuleset` gains `inventory:
+   Option<InventoryHandleCell>` (`None` in `with_game_content`) and `with_inventory(cell)` —
+   composition-root data like `IndustryModule::with_inventory`, a capability whose authority is the
+   delegation. `register` gains one line after `ic_return::register`: `port_tick::register(reg,
+   self.test_world, self.inventory.as_ref())?`, unconditional like its neighbours. `pub mod
+   port_tick` is registered at the crate root per doc 18 §5's lane note.
+3. **The production roster composes it** (`crates/mush-server/src/boot.rs`). `game_modules` calls
+   `server_modules_with_tacsim` and pushes `tacsim_module_wired(tacsim, tacsim_enabled,
+   inventory)`; nothing else in it changed, the content module stays last, and `boot_parity`'s
+   roster golden and its `!test_world` fact are unmoved. `crates/mushd/src/boot.rs` is untouched
+   (its `mushd_delegates_the_composition_root` tripwire still passes).
+4. **The two production typed families, declared as data** (`crates/tacsim/src/port/families.rs`,
+   new; re-exported from `tacsim::port`). `tacsim.port_stock`: `StockReceipt { pack, entry, org,
+   good, issue, qty, grade, vault, lot, clerk }` keyed by `StockIssueId`, a `CanonicalHash` over
+   `{pack, entry, org, good, issue}` in domain `tacsim.stock_issue_id.v1` (version 1, 1024 bytes),
+   whose `key_text` is 64 lowercase hexadecimal digits and whose `lot_id` is its first 8 bytes
+   big-endian (§4.3 "LotId derived from the issue id"); `check` holds `qty` to
+   `1..=MAX_LOT_QUANTITY`, a valid `Grade`, and `lot` equal to its own issue's. `tacsim.ticket`:
+   `Ticket { hull, route, route_pack, route_version, unit_definition, manifest, payload_kg, plan,
+   order, attempt, burned_at, launched }` keyed by `TicketId { hull, seq }` (`"{hull.0}:{seq}"`,
+   §4.4's `"ticket": "5011:9"`, strictly parsed); the ticket carries the whole `PassagePlan {
+   route, law, depart_ic, sky_rev, legs: Vec<LegPlan>, total_s, burn_t, crew_days }` and `LegPlan {
+   to, body, dist_km, secs, t0, t1 }` of §4.8 (D-18-46), with `check` enforcing
+   1..=`mush_sim::MAX_LEGS` contiguous legs, `secs > 0`, `t1 == t0 + secs`, `legs[0].t0 ==
+   depart_ic`, `total_s == last.t1 - depart_ic > 0`, `plan.route == route`, `attempt >= 1`, and
+   `burn_t <= tank` and `crew_days <= locker` (a plan that could not have come from the burn never
+   hydrates). `Manifest { cargo, tank, locker, occupants }` records the hold BEFORE the burn's
+   debit; at most 16 goods, none zero, 1..=16 occupants. Every record is `deny_unknown_fields`.
+   Both families register unconditionally through one suffix pattern (`{value}.v1`,
+   `.decode_json.v1`, `.checks.v1`, `.json.v1`), ids built with `map_err`, never `expect`.
+   `PortFamilies` and `PortHandles { families, inventory: Option<InventoryFamilies>, probe }` are
+   published in module state by the tick's `register`.
+5. **The provider machinery, and the one validator per kind** (`crates/tacsim/src/port_tick.rs`,
+   new). `register` follows the inventory provider's interleaved order: the families; in a test
+   world the probe family `tacsim.port_probe`; ONE `outcome` validator (`exact_validator` over
+   `outcome_descriptors(test_world)`) and those definitions; ONE `action` validator over
+   `action_descriptors(probe_outcome)`, whose entries reference the outcome's exact
+   `DefinitionRef`; the definitions and, in a test world, the probe provider; `PortHandles`;
+   `PortTickState`; the `tacsim.port` tick; the `Connected` hook. The two descriptor lists are where
+   IC8's `tacsim_port_stock` and IC9's `tacsim.port.burn` append; in production both are empty.
+   Production composes no tacsim action provider: **IC8's `tacsim_port_stock` is tacsim's first
+   production provider; IC5 landed the provider machinery** (lead ruling L4).
+6. **The `tacsim.port` tick skeleton** (`port_tick.rs`; Coarse, 5 s). The fire returns at once while
+   the layer is off (no cursor move, `last_fire` untouched); collects the agents as the union over
+   the arms (an id belongs to one arm, a duplicate is logged and the first keeps it); prunes `owed`
+   and `warned`; walks the pure campaign `rotation` from the cursor with `visited <= 64` and
+   `worked <= 16` checked before each visit; moves the cursor past the last visited agent (a
+   deferral never moves it); and takes its RAM slot with `mem::take` for the fire, writing it back
+   whole. `Step::{Idle, Worked, Submitted, Deferred, Refused}`; `step` dispatches an exhaustive
+   `match` over `enum Arm { Probe }`, where IC8, IC9 and IC11 add variants ahead of the probe.
+   `PortFireStats` and `last_fire(&World)` report each fire.
+7. **The swap and the turn rule** (`port_tick.rs` `Fire`, `SwapRefused`, `arbitrate`). `Fire::turn`
+   refuses `God` (the principal is GOD) and `Gone` (the agent or principal is absent or `GOING`),
+   then the pure `arbitrate`: a principal that already acted this fire records the agent as its
+   debt if none is recorded and answers `AlreadyActed`; a recorded debt to another agent answers
+   `Owed`. `Fire::as_principal` runs ONE closed call with `ctx.actor = principal` and restores it
+   (the `mush-npc` and `seed.rs` precedent), counting the principal as acted whether or not the
+   call submitted. `settle` drops any debt owed to an agent that acted, idled or was refused, so
+   service passes around a principal's due agents in cyclic id order and none waits more than k
+   sweeps (lead ruling L8). **Nothing in the tick calls `ctx.submit_authoritative` outside a closure
+   passed to `as_principal`**, so GOD never submits.
+8. **Reading inventory pools through the delegation** (`port_tick::read_pool`).
+   `PoolReadError::{Unwired, Key, Unreadable, Corrupt}`; the read goes only through
+   `ctx.action_state(&inventory.pools, &key)`, an absent pool is 0, and every lens refusal
+   (`Unavailable`, `UnownedContext`, `ForeignOwner`, `State`) maps to `Unreadable` through the
+   exhaustive `pool_read_error`, never to 0 (doc 18 §9 risk 17).
+9. **The probe, a test world's only arm** (`port_tick.rs`; lead ruling L3). `ProbeAgent {
+   principal, pool, remaining, next_issue }`, `enlist_probe` (refused outside a test world, without
+   a probe action, or past 256 agents), `ProbeKey`/`ProbeMark` in the test-only family
+   `tacsim.port_probe`, the action `tacsim_port_probe` → outcome `tacsim_port_probe_result`,
+   idempotency key `tacsim.port.probe/{agent.0}/{issue}`. The step refuses a gone agent, idles at
+   `remaining == 0`, takes its turn, reads the pool (a refused read uses no turn and submits
+   nothing), submits inside the swap, advances `next_issue` (checked), and notifies the principal.
+   `ProbeProvider` validates exactly `agent`/`issue`/`seen`, offers only to an enlisted principal
+   as `SelfActor`, refuses a replayed `(agent, issue)` with `Conflict` at prepare (the replay guard
+   IC8's receipt copies), inserts the mark and names the principal the eligible witness. Its one
+   `probe_error` helper holds the file's only `.expect`.
+10. **The bounded reconnect-notice store** (`port_tick.rs`; `crates/tacsim/src/store.rs`). One
+    document per PLAYER at `tacsim:notice:{obj.0}` (`notice_key`, and the strict inverse
+    `notice_key_owner` — the numeric field, never `ObjId`'s `#`-prefixed Display), `NoticeQueue {
+    schema: 1, who, lines }` of at most 32 `NoticeLine { at, text }` of at most 240 bytes cut on a
+    char boundary, newlines flattened, FIFO, no de-duplication. `notify` tells a connected player
+    at once over `sys_to_actor(.., "tacsim", ..)` and otherwise `queue_notice`s, which serializes
+    before it mutates RAM or writes, covers players only (a Thing principal such as IC8's clerk
+    gets a debug trace), and logs a serialization failure instead of panicking. `ReconnectNotices`
+    renders `"While you were off watch:"` then the lines in order on `Connected`, whether or not
+    the layer is on, then `Del`s the document. `TacsimStore` gains `notices`; `load` gains the
+    `tacsim:notice:` arm through `notice_key_owner`, `load_notice_queue` decoding, checking and
+    holding the identity rule (`queue.who` is the key's), with any failure a `tracing::error!` that
+    drops that character's queue and bars nothing; the table at the head gets its row, and the
+    `test_world` docs now say it also registers the probe.
+11. **The composition-edge pin** (`crates/mush-server/src/modules.rs`, tests only).
+    `ic5_wiring_tacsim_is_the_third_quantity_delegate_on_the_game_roster` composes
+    `boot::game_modules` under the default config and asserts exactly `inventory → {industry,
+    market, tacsim}`, one-directional, tacsim a stranger to industry and market in both directions.
+    `e7c3_wiring_the_quantity_delegation_is_declared_and_narrow` keeps every assertion value; its
+    message and doc now say "a roster without the TacSim layer carries exactly the two".
+12. **Every test roster that claims production shape composes it**
+    (`crates/tacsim/tests/{ports,hulls,lane,stations,definitions}.rs`, `tests/support/mod.rs`
+    `production_roster` and `roster_booting`): `server_modules_with_tacsim` plus
+    `tacsim_module_wired` or `tacsim_test_world_module_wired`, each roster's `game_content` and
+    content switches kept (`g = false` where it used `tacsim_module(cfg)`). None had to be
+    reverted; every suite passed unchanged.
+13. **Comments re-pointed at the post-IC5 constructors** (`boot.rs` `game_modules` doc and its R4
+    paragraph, `config_ext.rs`, `tests/boot_parity.rs`, `composition/mod.rs`
+    `server_modules_with`'s doc, `tests/ports.rs` `Roster.test_world`), and `Fire`'s doc now states
+    the one-act guarantee is per tacsim fire, not per drain (see Deferred).
+
+**Tests added.** `port/families.rs`: `ic5_stock_issue_id_is_stable_and_names_its_parts` (the golden
+`1c6b17275ecaeac34f09a75be41768970921acb2b29b65c0b86dc5acb9c8ff4d` for
+`("tacsim.lane.ceres_phobos", "ceres_port", "kasei", "metals", 1)`, each part names the id,
+uppercase refused, the lot is the first 8 bytes), `ic5_stock_receipt_wire_is_strict`,
+`ic5_ticket_wire_is_strict_and_the_plan_checks` (the slice-shaped ticket 965,623 + 730,645 s / burn
+41 / 21 crew-days round-trips; an unknown field refused at the ticket, manifest, plan and leg; all
+thirteen `check` refusals the brief lists), `ic5_ticket_id_key_text_is_strict`. `port_tick.rs`:
+rotation, cursor, `ic5_agents_sharing_a_principal_take_turns` (a, b, c, a, b, c over six fires; an
+idling debtor drops the debt; another principal is never deferred), the foreign-owner map, notice
+key round-trip (`#5`, `05`, empty and `-1` refused), newest-32, char-boundary clamp, strict wire.
+`crates/tacsim/tests/port_tick.rs` (new, 15 tests on the composition root with the ic0 land path): a
+probe lands as its player principal and as a **Thing** principal (IC8's clerk shape; no notice
+written for the Thing); two agents in one fire do not void each other; agents sharing a principal
+alternate lo, hi, lo with `deferred: 1`; GOD and a destroyed principal are refused twice over;
+`seen == 42` through a real `@vault/create` vault and a rooted pool; an unwired layer refuses the
+read and submits nothing; the budgets (20 agents: 16/16/16 then 4 of 20 visited; 70 agents: 64
+visited 0 worked, then 6 of 64); a disabled layer fires nothing; production registers no probe and
+both families under `tacsim`; the replay refused with the provider's own `Conflict` at prepare;
+notices survive a kept-world reboot, render once with the heading first and a `Del`, and a real
+second `Connected` (after ConnDown + SessionGone, with the room's "has connected." as the positive
+control) renders nothing; a connected principal is told live with no document written and exactly
+one non-GOD submission; a corrupt document is dropped for that character only; and test 15, 22
+agents under a biting budget: `(submitted 16, deferred 1)` each fire, the exact per-fire sets of the
+brief's table, every agent marked by the end of fire 2, s1/s2/s1 alternating, no fan-out line.
+Every test drains through `drain_tacsim`, which asserts no kept tacsim submission has actor `#1`.
+
+### Deferred, and why
+
+**Lead rulings taken by the planner** (recorded here so the owner sees them):
+
+- **L1 — The delegation travels with the layer.** `mush-inventory` names `tacsim` only on a roster
+  that composes the TacSim layer (`server_modules_with_tacsim`, which `boot::game_modules` uses),
+  never inside `server_modules_with`: the state-family freeze refuses a delegation to an uncomposed
+  owner (`action_state.rs:815-833`) and dozens of arena rosters compose the built-ins without the
+  layer. Doc 18's "tacsim joins `with_quantity_delegates`" (row IC5; §4.4) is honoured where it
+  matters, in production and every roster that claims production shape.
+- **L2 — The cell reaches the layer at composition, not at runtime.** `TacsimRuleset::with_inventory`
+  holds the `InventoryHandleCell` and `PortHandles` publishes the families, because IC8's and IC9's
+  providers need inventory's families at `register` (§4.2 "families cloned at composition"); a
+  runtime read of `InventoryHandles` cannot serve a provider.
+- **L3 — The probe is a test-world registration with its own test-only family, not `cfg(test)`,
+  and production has no test-world switch.** `cfg(test)` would hide it from integration tests that
+  must drive the composition root; a fake receipt or ticket would bend the production wire.
+  `tacsim_module_wired` takes no flag; `boot_parity` pins `!test_world`.
+- **L4 — "IC5's provider"** (doc 18 §5's IC5 paragraph "Register the provider"; IC8's row "on IC5's
+  provider") **is read as the registration machinery**: the one `action` and one `outcome`
+  validator built from two descriptor lists, `PortHandles`, the two families and the swap. **No
+  tacsim action provider is composed in production after IC5; IC8's `tacsim_port_stock` is
+  tacsim's first.** A provider with no operation would be meaningless.
+- **L5 — Family ids are doc 18's names verbatim**; the stock key is the issue id's 64 hexadecimal
+  digits, the ticket key `{hull.0}:{seq}` per §4.4's orders example, `seq` minted by IC9.
+- **L6 — `PassagePlan` and `LegPlan` live in `port/families.rs`**, not §4.8's `passage.rs`: the
+  ticket's wire must exist before its writer (D-18-46); IC9's `port/passage.rs` imports them.
+  "Where tacsim's definitions live" is read as the `port` module (`port/def.rs`);
+  `crate::definitions` is the content-pack registry and holds no typed families.
+- **L7 — The ticket's "definition digest" (§4.2) is `unit_definition`**, the hull's fielded
+  unit-definition digest whose drive law the burn used; the route is pinned by `route_pack` +
+  `route_version` (published versions are immutable), not by this digest. The manifest records
+  quantities BEFORE the burn's debit, the plan carries the debit; `order: None` for a live undock;
+  `attempt >= 1`. Recorded here so IC9 does not re-open it.
+- **L8 — One swapped call per actor per fire, with round-robin debts** (`owed`, the pure
+  `arbitrate` + `settle`), replacing the brief's revision-1 "cursor to the first deferred agent",
+  which starved agents whenever a budget bit. The campaign cursor rule is kept (past the last
+  visited; deferrals never move it).
+- **L9 — The cursor, debts, warned set and stats are RAM-only**: a few dozen agents, a restart costs
+  one fire, a persisted cursor would be a write every 5 s.
+- **L10 — Notices live in `TacsimStore`**, one document per PLAYER, no de-duplication (housing's
+  dedup answers a ladder's retries this store does not have), rendered regardless of
+  `[tacsim].enabled`, `Del` on render; a non-player principal's line is dropped with a debug trace;
+  a corrupt document is dropped loudly and its key bars nothing.
+- **L11 — Panic budget +1** for the single `probe_error` helper, the idiom of every provider in the
+  tree; `queue_notice` logs instead.
+- **L12 — The tick registers unconditionally and returns at once while the layer is off.**
+
+**Builder decisions recorded:** `step` takes `&mut PortTickState` and the `Arm` beyond the brief's
+signature (the probe arm mutates its records); the slot is `mem::take`n for the fire and written back
+whole (nothing during the fire reads it; `project_offer` reads it at landing, after); `turn` checks
+both the agent and the principal for `Gone`; a refused read uses no turn; `Step::Worked` carries
+`#[allow(dead_code)]` until IC8's first pull-verifying arm returns it; the integration rig installs
+an offer-key ring at boot (the `ic0.rs` rig) because landing fails without one.
+
+**Residuals for IC8/IC9/IC11, named here so they are not lost:**
+
+1. **The one-act ledger is per tacsim fire, not per drain.** `Engine::fire_due` dispatches every due
+   `@wait` line as its actor and every other module tick into one outbox before its one
+   `drain_deferred` (`engine.rs:3213-3263`), so a principal's own `@wait` command, or another
+   module's swapped tick, due in the same slice fans out with an arm's submission and the engine
+   voids both ("That command tried to submit more than one authoritative action; nothing was
+   staged."). An arm's step recovers by pull (D-18-32); the player's `@wait` command is the
+   collateral. Closing it needs a core seam that asks the outbox whether an actor already has a
+   deferred submission.
+2. **`Step::Submitted` means "deferred to the drain", not "admitted"**: the drain can still drop it
+   as back-pressure or void it as fan-out, so a real arm verifies completion by pull on a later fire
+   and **notifies only on the pull-verified result, never at `Submitted`** — the probe's "was
+   staged." line at deferral is the wrong pattern for a production arm.
+3. **Reverse back-pressure**: while a tick-queued submission for a connected pilot sits in the
+   64-slot engine queue, the pilot's own next authoritative command is refused with "Your earlier
+   action is still committing; try again in a moment." (`engine.rs:4066-4074`); IC9/IC11 decide
+   whether to skip connected pilots with a pending submit (`engine.queued_authoritative_actors`) or
+   document the message.
+4. The engine's best-effort "Queued." line still reaches a connected principal when the tick submits
+   for them.
+5. A destroyed character's `tacsim:notice:{obj}` document is never dropped (ObjIds are not recycled,
+   so it leaks to no one).
+6. An agent whose principal stays refused is logged once per boot but stays in its arm's set until
+   the arm drops it.
+7. IC8's receipt prepare must re-derive or validate `(pack, entry, org, good, issue)` from the clerk
+   actor and authoritative state, not trust the invocation's parameters as the probe does.
+8. A family validator sees only the value, so `Ticket.hull` cannot be checked against
+   `TicketId.hull` nor a receipt's `issue_id()` against its key; IC8/IC9 writers should derive the
+   key from the value and re-check on read, and `families.rs:19-21`'s "both gates" sentence
+   overclaims by that much.
+
+**Out of this cut, by the brief:** three production-claiming rosters outside item 1.6's list were
+left as they were and now differ from `game_modules` by the delegation and the cell —
+`crates/tacsim/src/match_/centre.rs` `whole_centre()`,
+`crates/mush-contract-tests/tests/legacy_handler_allowlist.rs` `production_modules()`,
+`crates/mush-server/tests/e7r2_proving_loop.rs` `boot()`; no assertion is wrong today; migrate or
+relabel them in IC8. The arena unit rosters (`cockpit`, `harness`, `match_lifecycle`, `resolution`,
+`reset`, `deliberation`, `extensions`) compose no delegation and no cell by design: the probe refuses
+and the tick is idle there.
+
+**Test gaps carried forward:** no pin that `game_modules` hands the layer a FILLED cell
+(`PortHandles.inventory.is_some()` is asserted on the rig's copy of the roster, not on
+`game_modules`); `store::load`'s identity-rule, `check`-failure and bad-key branches are untested
+(only the serde failure is); an empty loaded queue is removed from RAM but its document is never
+`Del`'d (only a hand-edited document reaches this); the Thing-principal proof covers the rig's
+offer/resolve/prepare/install path, not the world task's `command_ingress` and durable preflight —
+IC8 should land one Thing-principal tick submission through `CommandSubmitDriver`.
+
+**Owner-critical defaults taken: none.** The cut adds no content, price, name, verb or fiction;
+nothing under `docs/design/` was edited by the build (this note is the committer's).
+
+### Pins re-blessed
+
+- **`panic_budget/tacsim.txt` 4 → 5**, blessed with `PANIC_BUDGET_BLESS=1 cargo test -p
+  mush-contract-tests --test panic_budget`: the one new production panic site is
+  `port_tick::probe_error`'s `.expect` on `ActionError::new` over a static message, the bounded
+  idiom of every provider in the tree (`mush-sim/src/handoff.rs:228-241`). Nothing else panics:
+  `queue_notice` maps a serialization failure to `tracing::error!`, every descriptor id is built
+  with `map_err`, every arithmetic step is checked, and the walk uses `saturating_add`. The bless
+  also lowered `panic_budget/mush-tactics.txt` 54 → 50 (pre-existing slack, not this cut's); that
+  file was reverted and the gate still passes with mush-tactics at 54.
+- **The composition-edge pin** (`mush-server/src/modules.rs`):
+  `e7c3_wiring_the_quantity_delegation_is_declared_and_narrow` keeps every asserted value (the
+  `server_modules_with` roster still has exactly the two delegations); only its message moved from
+  "exactly two delegations in the whole production composition, both from `inventory` outward" to
+  "a roster without the TacSim layer carries exactly the two delegations, both from `inventory`
+  outward", because the production composition now carries three — pinned by the new
+  `ic5_wiring_tacsim_is_the_third_quantity_delegate_on_the_game_roster`.
+- **Unmoved, and shown unmoved by the full `mush-contract-tests` run (29 binaries ok),
+  `boot_parity` (18 ok) and `mushd --test boot_composition` (6 ok):** `boot_parity`'s roster golden
+  and its `!test_world` fact; the legacy-handler baseline (97; no verb); `module-ns-owners.toml`
+  (reads of delegated families need no persist delegation); `state-slot-owners.toml`
+  (`enlist_probe`'s and `queue_notice`'s slot reaches are inside the owning crate); the
+  restriction-lints census (`dead_code` is not a denied tacsim lint); the typed-state-lens pin;
+  `ci_gated_test_inventory` (no `#[ignore]` or env gate added); `provider_rng_policy` (no RNG in
+  `port_tick.rs`); `action_state_republish` (no `install_prepared_action(` in `src/`);
+  `hex_vocabulary`; every content digest pin (`tacsim/tests/content.rs` 29 ok; no atlas content
+  touched); the `mushd_delegates_the_composition_root` tripwire (no new name contains a forbidden
+  needle).
+
+### How it was verified
+
+**The gate runner's sixteen steps**, on Windows at the working tree over base 3c9cded5, all green on
+the first attempt, no reruns, no `LNK1104`:
+
+- `cargo fmt --all -- --check` → exit 0, no output (run twice, before and after the fixer's pass).
+- `cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+  debuginfo] target(s)``, exit 0, 0 warnings (twice).
+- `cargo test -p tacsim --lib` → `test result: ok. 874 passed; 0 failed; 0 ignored; 0 measured; 0
+  filtered out; finished in 3.86s`.
+- `cargo test -p tacsim --test port_tick` → `test result: ok. 15 passed; 0 failed; 0 ignored; 0
+  measured; 0 filtered out; finished in 1.89s`.
+- `cargo test -p tacsim --test ports --test hulls --test lane --test stations --test definitions
+  --test composition_edges --test content` → composition_edges 2, content 29, definitions 25, hulls
+  15, lane 8, ports 17, stations 13, each `test result: ok … 0 failed`.
+- `cargo test -p tacsim --test match_lifecycle --test cockpit` → cockpit `ok. 180 passed; 0 failed
+  … 34.76s`; match_lifecycle `ok. 136 passed; 0 failed … 26.34s` (both compose the migrated
+  `support/mod.rs` rosters).
+- `cargo test -p mush-server --lib modules::` → `test result: ok. 31 passed; 0 failed; 0 ignored; 0
+  measured; 263 filtered out; finished in 0.79s` (includes `e7c3_wiring_…` and `ic5_wiring_…`).
+- `cargo test -p mush-server --test boot_parity --test market_issuer` → boot_parity `ok. 18 passed;
+  0 failed … 2.19s`; market_issuer `ok. 4 passed; 0 failed … 0.60s`.
+- `cargo test -p mush-server --test e7r2_proving_loop` → `test result: ok. 6 passed; 0 failed …
+  0.27s`.
+- `cargo test -p mush-contract-tests` → 29 result lines, all ok, 0 failed (run twice; the
+  panic-budget binary `ok. 7 passed` with tacsim at 5 and mush-tactics at 54).
+- `cargo test -p mushd --test boot_composition` → `test result: ok. 6 passed; 0 failed … 2.07s`.
+- `cargo test --workspace --exclude mush-bot --no-fail-fast` → exit 0, 386 `test result:` lines all
+  ok, aggregate passed=7268 failed=0 ignored=92; among them mush_server lib `ok. 292 passed; 0
+  failed; 2 ignored`, boot_parity 18, boot_composition 6, tacsim lib 874, hulls 15, port_tick 15,
+  ports 17.
+- `cargo test -p mush-bot` → exit 0, 22 result lines all ok, aggregate passed=704 failed=0
+  ignored=5.
+
+The builder's first run failed only in `panic_budget` with "tacsim: 5 production panic sites, budget
+4 (+1)", the expected raise, then blessed. **Environment note:** the workspace step sat about 24
+minutes in `Compiling mush-gateway` with ~29 `link.exe` processes paging a 64 GB box to 1–3 MB free;
+it finished in 69 minutes inside the 90-minute timeout. This is linker memory pressure from cargo's
+default parallel link jobs, not the cut. No flake was identified in any step.
+
+**Three review lenses** (correctness, conformance, tests) found no must-fix defect; their nine
+should-fix findings reduced to five distinct issues (the per-drain overclaim in `Fire`'s doc, test
+11 accepting any landing failure, test 13 not draining, test 12's second connect never running the
+hook, stale constructor comments), all fixed and re-run green, each verified in the tree by the
+judge. The judge also re-traced test 15's three-fire walk by hand against
+`arbitrate`/`settle_debts`/`next_cursor` (it matches the brief's table), confirmed the only non-test
+panic site added is `probe_error`'s, confirmed the store load arm cannot be captured by an earlier
+prefix, and confirmed `docs/design/` and `crates/mushd/` are untouched. Not run separately:
+`crates/mush-atlas/tests/starter.rs` (no atlas content touched; it ran inside the workspace sweep).
+
+### Surface for the next cuts
+
+**Composition (`tacsim::composition`, glob re-exported by `mush_server::modules`)**
+
+- `pub fn server_modules_with(weather, economy, atlas, onboarding: &OnboardingConfig, game:
+  &GameEconomyConfig, recovery) -> Vec<Box<dyn GameModule>>` — unchanged; delegates `[industry,
+  market]`; the roster WITHOUT the TacSim layer.
+- `pub fn server_modules_with_tacsim(same six) -> (Vec<Box<dyn GameModule>>,
+  mush_inventory::InventoryHandleCell)` — delegates `[industry, market, tacsim]`; the production
+  root's spelling; the cell is filled by `mush-inventory`'s own `register`, so any module composed
+  after it finds it filled.
+- `pub fn tacsim_module_wired(cfg: TacsimConfig, game_content: bool, inventory:
+  InventoryHandleCell) -> Box<dyn GameModule>` — no test-world flag.
+- `pub fn tacsim_test_world_module_wired(cfg, game_content, inventory) -> Box<dyn GameModule>` —
+  also registers the probe.
+- `TacsimRuleset::with_inventory(self, InventoryHandleCell) -> TacsimRuleset`.
+- `tacsim_module`, `tacsim_module_with`, `tacsim_test_world_module` still exist for rosters that
+  compose no delegation (the probe then refuses and the tick is idle).
+
+**`tacsim::port::families` (every name re-exported from `tacsim::port`)**
+
+- `PORT_STOCK_FAMILY = "tacsim.port_stock"`, `TICKET_FAMILY = "tacsim.ticket"`, `MAX_MANIFEST_GOODS:
+  usize = 16`, `MAX_TICKET_OCCUPANTS: u32 = 16`.
+- `LegPlan { to: CanonicalId, body: CanonicalId, dist_km: u64, secs: u32, t0: i64, t1: i64 }`.
+- `PassagePlan { route: CanonicalId, law: CanonicalId, depart_ic: i64, sky_rev: DefinitionDigest,
+  legs: Vec<LegPlan>, total_s: i64, burn_t: u64, crew_days: u32 }`; `check()`: 1..=`mush_sim::MAX_LEGS`
+  (32) legs, `legs[0].t0 == depart_ic`, every `secs > 0` and `t1 == t0 + secs`, contiguous,
+  `total_s == last.t1 - depart_ic > 0`.
+- `Manifest { cargo: BTreeMap<CanonicalId, u64>, tank: u64, locker: u64, occupants: u32 }`;
+  `check()`: ≤ 16 goods, no zero quantity, 1..=16 occupants. Quantities are BEFORE the burn's
+  debit.
+- `Ticket { hull: ObjId, route: CanonicalId, route_pack: CanonicalId, route_version: u32,
+  unit_definition: DefinitionDigest, manifest: Manifest, payload_kg: u64, plan: PassagePlan, order:
+  Option<u32>, attempt: u32, burned_at: i64, launched: bool }`; `check()`: plan and manifest checks,
+  `plan.route == route`, `attempt >= 1`, `plan.burn_t <= manifest.tank`, `u64::from(plan.crew_days)
+  <= manifest.locker`. `unit_definition` is the hull's fielded unit-definition digest (L7); the
+  route is pinned by `route_pack` + `route_version`; `order: None` for a live undock.
+- `TicketId { hull: ObjId, seq: u32 }` (Copy, Ord, Hash): `key_text() -> String` =
+  `"{hull.0}:{seq}"`; `parse(&str) -> Option<TicketId>` strict (one `:`, unsigned decimal, no
+  leading zero but `0`, each side fits `u32`). `seq` is IC9's to mint.
+- `StockIssueId(CanonicalHash)` (Copy, Ord, Hash; no serde): `derive(pack, entry, org, good:
+  &CanonicalId, issue: u32) -> Result<StockIssueId, String>` over domain `tacsim.stock_issue_id.v1`,
+  version 1, 1024 bytes; `key_text() -> String` (64 lowercase hexadecimal digits); `parse(&str) ->
+  Option<StockIssueId>` strict; `lot_id() -> mush_inventory::record::LotId` (first 8 bytes,
+  big-endian). **Golden pin later cuts must not move:** `("tacsim.lane.ceres_phobos", "ceres_port",
+  "kasei", "metals", 1)` → `1c6b17275ecaeac34f09a75be41768970921acb2b29b65c0b86dc5acb9c8ff4d`.
+- `StockReceipt { pack, entry, org, good: CanonicalId, issue: u32, qty: u64, grade: u8, vault:
+  mush_economy::VaultId, lot: u64, clerk: ObjId }`; `issue_id() -> Result<StockIssueId, String>`;
+  `check()`: `qty` in `1..=MAX_LOT_QUANTITY`, `Grade::new(grade)` ok, `lot ==
+  issue_id().lot_id().0`.
+- Every record derives `Clone, Debug, PartialEq, Eq, Serialize, Deserialize` with
+  `#[serde(deny_unknown_fields)]`.
+- `PortFamilies { port_stock: StateFamilyHandle<StockIssueId, StockReceipt>, tickets:
+  StateFamilyHandle<TicketId, Ticket> }` (Clone, Debug).
+- `PortHandles { families: PortFamilies, inventory: Option<mush_inventory::InventoryFamilies>,
+  probe: Option<StateFamilyHandle<ProbeKey, ProbeMark>> }` (Clone, Debug), published in module
+  state by `port_tick::register`; read with `w.module_state::<PortHandles>()`.
+- Crate-private helpers IC8/IC9 reuse: `families::family_descriptor(family, key_schema,
+  value_stem) -> Result<StateFamilyDescriptor, ModError>` (the suffix pattern `{stem}.v1` /
+  `.decode_json.v1` / `.checks.v1` / `.json.v1`, version 1), `families::strict_decimal_u32(&str) ->
+  Option<u32>`, `families::canonical(&str) -> Result<CanonicalId, ModError>`,
+  `families::register(reg) -> Result<PortFamilies, ModError>`.
+- Descriptor ids: `tacsim.port_stock` key schema `tacsim.stock_issue_id.v1`, value
+  `tacsim.port_stock.v1`; `tacsim.ticket` key `tacsim.ticket_id.v1`, value `tacsim.ticket.v1`;
+  `tacsim.port_probe` (test world only) key `tacsim.port_probe_key.v1`, value
+  `tacsim.port_probe.v1`.
+
+**`tacsim::port_tick`**
+
+- `PORT_TICK = "tacsim.port"`, `PORT_TICK_PERIOD = Duration::from_secs(5)` (Coarse),
+  `MAX_AGENTS_VISITED_PER_FIRE: usize = 64`, `MAX_AGENTS_WORKED_PER_FIRE: usize = 16`,
+  `MAX_PROBE_AGENTS: usize = 256`.
+- `pub fn register(reg: &mut Registrar<'_>, test_world: bool, inventory:
+  Option<&InventoryHandleCell>) -> Result<(), ModError>`. **Where IC8/IC9 extend:** the private `fn
+  outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError>` and `fn
+  action_descriptors(probe_outcome: Option<&DefinitionRef>) -> Result<Vec<DefinitionDescriptor>,
+  ModError>` are the two lists; registered refs are collected by id into `BTreeMap<String,
+  DefinitionRef>` after each `reg.definition`, and a provider is registered with
+  `reg.action_provider(action_ref, provider)` after both validators. There is exactly one
+  `definition_validator` per kind for the crate; a second call is a registration conflict. **Where
+  arms extend:** `enum Arm { Probe }` (add variants ahead of `Probe`), `fn step(ctx, &mut
+  PortTickState, &mut Fire, agent, principal, Arm) -> Step`, and the agent collection in `walk`
+  (`offer(agent, principal, arm)`; an agent id belongs to one arm, a duplicate is logged and the
+  first keeps it).
+- `pub struct PortTickState` (RAM only, private fields: cursor, last_fire, owed, warned,
+  probe_action, probes; `Default`).
+- `pub struct PortFireStats { visited, worked, submitted, deferred, refused: u32 }` (Copy, Default,
+  Eq); `pub fn last_fire(&World) -> Option<PortFireStats>` (`None` before the first fire that found
+  the layer on).
+- Crate-private, for the arms: `pub(crate) enum Step { Idle, Worked, Submitted, Deferred, Refused }`
+  (`worked` counts `Worked` and `Submitted`); `pub(crate) struct Fire` with `turn(&mut self,
+  &World, agent, principal) -> Result<(), SwapRefused>`, `as_principal<R>(&mut self, &mut
+  Ctx<'_>, agent, principal, impl FnOnce(&mut Ctx<'_>) -> R) -> Result<R, SwapRefused>` (the ONLY
+  place the tick acts as anyone; every `submit_authoritative` goes inside its closure),
+  `settle(&mut self, agent, Step)`; `pub(crate) enum SwapRefused { God, Gone, AlreadyActed, Owed
+  }`; `pub(crate) fn arbitrate(&BTreeSet<ObjId>, &mut BTreeMap<ObjId, ObjId>, agent, principal) ->
+  Result<(), SwapRefused>`. A `Submitted` step is deferred to the drain, not admitted: verify by
+  pull on a later fire and notify only then.
+- `pub enum PoolReadError { Unwired, Key(String), Unreadable(String), Corrupt }`; `pub fn
+  read_pool(&Ctx<'_>, mush_inventory::record::EndpointRef, &CanonicalId) -> Result<u64,
+  PoolReadError>` — only through `ctx.action_state(&inventory.pools, &key)`; an absent pool is
+  `Ok(0)`; never 0 on a refusal.
+- Probe (test world only): `pub struct ProbeAgent { principal: ObjId, pool: Option<(EndpointRef,
+  CanonicalId)>, remaining: u32, next_issue: u32 }`; `pub fn enlist_probe(&mut World, agent: ObjId,
+  ProbeAgent) -> Result<(), &'static str>`; `pub struct ProbeKey { agent: ObjId, issue: u32 }` with
+  `key_text()` = `"{agent.0}:{issue}"`; `pub struct ProbeMark { agent, principal: ObjId, issue:
+  u32, seen: u64 }` with `check()`; `PROBE_ACTION = "tacsim_port_probe"` (payload
+  `{"subject":"self_actor","targets":0,"family":"tacsim.port_probe","test_only":true}`, references
+  `[probe_outcome]`), `PROBE_OUTCOME = "tacsim_port_probe_result"` (payload
+  `{"fields":["actor","agent","issue","seen"]}`), `PROBE_FAMILY = "tacsim.port_probe"`; idempotency
+  key `tacsim.port.probe/{agent.0}/{issue}`; notice text `"Probe {issue} for #{agent.0} was
+  staged."`.
+- Reconnect notices: `NOTICE_PREFIX = "tacsim:notice:"`, `NOTICE_SCHEMA: u16 = 1`,
+  `MAX_NOTICE_LINES: usize = 32`, `MAX_NOTICE_BYTES: usize = 240`, `NOTICE_HEADING = "While you were
+  off watch:"`; `pub fn notice_key(ObjId) -> SmolStr` (`"tacsim:notice:{who.0}"`) and `pub fn
+  notice_key_owner(&str) -> Option<ObjId>` (strict decimal; `#`, leading zero, sign refused); `pub
+  struct NoticeLine { at: i64, text: String }`; `pub struct NoticeQueue { schema: u16, who: ObjId,
+  lines: Vec<NoticeLine> }` with `new(who)`, `push(at, &str)` (newlines flattened, clamped on a char
+  boundary, FIFO) and `check()`; `pub fn notify(&mut Ctx<'_>, who: ObjId, text: &str)` (live if
+  connected, else queued); `pub fn queue_notice(&mut Ctx<'_>, who, text)` (PLAYERS ONLY, not GOING;
+  writes the whole document through `store::push_op` as `JsonSet` at `notice_key(who)`; no
+  `.expect`); `pub fn pending_notices(&World, who) -> Vec<String>`; `pub struct ReconnectNotices`
+  (`EventHook`, `connected` only; heading then lines over `sys_to_actor(who, "tacsim", ..)`, then
+  `Del`).
+- `TacsimStore.notices: pub(crate) BTreeMap<ObjId, NoticeQueue>`, hydrated by `store::load`'s
+  `tacsim:notice:` arm (decode, `check`, identity rule `queue.who == key id`; any failure dropped
+  loudly for that character; the key bars nothing).
+
+**Pins and facts later cuts depend on:** the production roster carries exactly `inventory →
+{industry, market, tacsim}` (`ic5_wiring_tacsim_is_the_third_quantity_delegate_on_the_game_roster`);
+`server_modules_with` alone still carries two (`e7c3_wiring_…`); production registers no
+`tacsim_port_probe` definition and no probe family; `panic_budget/tacsim.txt` is 5; the kernel
+accepted a Thing principal on the rig's offer/resolve/prepare/install path
+(`ic5_a_thing_principal_lands`), the world-task ingress not yet exercised.
+
+**Test rig patterns later cuts copy:** `crates/tacsim/tests/port_tick.rs` (`wired`, `unwired`, `boot`
+with the offer-key ring, `offline_player`, `fire`, `drain_tacsim`, `land_one`, `mark`,
+`disconnect`) is the shape IC8's and IC9's tests copy.

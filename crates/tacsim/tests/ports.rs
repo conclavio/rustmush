@@ -63,7 +63,7 @@ struct Roster {
     economy: EconomyConfig,
     /// Whether the pilot sheet composes (production does).
     sheet: bool,
-    /// Whether the layer is a test world's (`tacsim_test_world_module`).
+    /// Whether the layer is a test world's (`tacsim_test_world_module_wired`).
     test_world: bool,
     /// A shelf replacing the atlas module's compiled one (test 4's v3).
     shelf: Option<Vec<mush_content::Pack>>,
@@ -121,7 +121,9 @@ impl Roster {
         );
         let onboarding = mush_core::OnboardingConfig::default();
         let game = tacsim::GameEconomyConfig::default();
-        let mut mods = comp::server_modules_with(
+        // Doc 18 cut IC5: the production roster's built-ins, with `tacsim` the third
+        // quantity delegate and the inventory cell handed to the layer below.
+        let (mut mods, inventory) = comp::server_modules_with_tacsim(
             mush_weather::WeatherConfig::default(),
             self.economy.clone(),
             mush_atlas::AtlasConfig::default(),
@@ -151,9 +153,13 @@ impl Roster {
             mods.extend(comp::sheet_modules(&onboarding, &game));
         }
         if self.test_world {
-            mods.push(comp::tacsim_test_world_module(cfg, game_content));
+            mods.push(comp::tacsim_test_world_module_wired(
+                cfg,
+                game_content,
+                inventory,
+            ));
         } else {
-            mods.push(comp::tacsim_module_with(cfg, game_content));
+            mods.push(comp::tacsim_module_wired(cfg, game_content, inventory));
         }
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mods

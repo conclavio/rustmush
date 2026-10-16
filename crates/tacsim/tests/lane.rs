@@ -593,7 +593,8 @@ fn ic2_an_operator_seed_cannot_claim_the_lane_id() {
 // ---------------------------------------------------------------------------
 
 /// The production roster as `mush_server::boot` composes it with the game on —
-/// `tacsim_module_with(cfg, true)` and `content_module_with(true, true)` — a copy
+/// `tacsim_module_wired(cfg, true, inventory)` (doc 18 cut IC5) and
+/// `content_module_with(true, true)` — a copy
 /// of `tests/stations.rs`'s `production_roster_with_starter` (an integration test
 /// cannot import another).
 fn production_roster(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
@@ -605,7 +606,7 @@ fn production_roster(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -621,7 +622,7 @@ fn production_roster(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module_with(cfg, true));
+    mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }

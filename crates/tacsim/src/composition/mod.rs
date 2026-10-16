@@ -99,9 +99,12 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
 /// flavor-variant sizing), the `[economy]` knobs (E4's mint bound on a ruleset's
 /// faucet-funded obligations), `[onboarding]`'s start rooms (E5b's reserved-room
 /// list), and `[wod.economy]` (E5c: whether the housing title issuer is registered at
-/// all, plus any extra reserved rooms the ruleset names). `main.rs` uses this so
-/// those sections in `mushd.toml` actually reach their modules; every other caller
-/// (tests) takes the crate defaults via [`server_modules`].
+/// all, plus any extra reserved rooms the ruleset names). The production root
+/// (`mush_server::boot::game_modules`) builds the same list through
+/// [`server_modules_with_tacsim`] (doc 18 cut IC5), which adds only the `tacsim`
+/// quantity delegation and the cell, so those sections in `mushd.toml` reach their
+/// modules; this function is the roster WITHOUT the TacSim layer, and every other
+/// caller (tests) takes the crate defaults via [`server_modules`].
 ///
 /// `game` is `[tacsim.economy]` (16b cut R-b): whether the housing and market title
 /// issuers are registered at all, and the extra reserved rooms. It replaces the
@@ -109,12 +112,52 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
 #[must_use]
 pub fn server_modules_with(
     weather: mush_weather::WeatherConfig,
-    mut economy: mush_economy::EconomyConfig,
+    economy: mush_economy::EconomyConfig,
     atlas: mush_atlas::AtlasConfig,
     onboarding: &mush_core::OnboardingConfig,
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
 ) -> Vec<Box<dyn GameModule>> {
+    compose_server_modules(weather, economy, atlas, onboarding, game, recovery, false).0
+}
+
+/// [`server_modules_with`] for a roster that ALSO composes the TacSim layer (doc 18 cut IC5,
+/// D-18-33, §4.4 "Offline execution" prerequisite): `mush-inventory` names `tacsim` its third
+/// quantity delegate, and the returned cell is the one the layer must be handed
+/// ([`tacsim_module_wired`] / [`tacsim_test_world_module_wired`]). A delegation naming an owner
+/// the roster does not compose refuses the composition (`StateFamilyRegistryError::UnknownOwner`),
+/// so the delegation travels with the layer and never with `server_modules_with`.
+#[must_use]
+pub fn server_modules_with_tacsim(
+    weather: mush_weather::WeatherConfig,
+    economy: mush_economy::EconomyConfig,
+    atlas: mush_atlas::AtlasConfig,
+    onboarding: &mush_core::OnboardingConfig,
+    game: &crate::economy::GameEconomyConfig,
+    recovery: mush_campaign::RecoveryConfig,
+) -> (
+    Vec<Box<dyn GameModule>>,
+    mush_inventory::InventoryHandleCell,
+) {
+    compose_server_modules(weather, economy, atlas, onboarding, game, recovery, true)
+}
+
+/// The one body of [`server_modules_with`] and [`server_modules_with_tacsim`] (doc 18 cut
+/// IC5): `tacsim_delegate` adds [`crate::NS`] to `mush-inventory`'s quantity delegates, and
+/// the returned cell is the roster's inventory handle cell (filled by `mush-inventory`'s own
+/// `register`, so any module composed after it finds it filled).
+fn compose_server_modules(
+    weather: mush_weather::WeatherConfig,
+    mut economy: mush_economy::EconomyConfig,
+    atlas: mush_atlas::AtlasConfig,
+    onboarding: &mush_core::OnboardingConfig,
+    game: &crate::economy::GameEconomyConfig,
+    recovery: mush_campaign::RecoveryConfig,
+    tacsim_delegate: bool,
+) -> (
+    Vec<Box<dyn GameModule>>,
+    mush_inventory::InventoryHandleCell,
+) {
     // Doc 18 cut IC3 (D-18-14; §4.7 "Config flips"): the corridor's ports
     // capitalize their institutions by one-shot treasury obligations of at most
     // 800,000 cr each, so the credit's own mint ceiling is contributed here as a
@@ -179,6 +222,14 @@ pub fn server_modules_with(
     // order it already fixes. `mush-inventory` fills it while registering;
     // `mush-industry`, composed after it, takes the handles out.
     let inventory_handles: mush_inventory::InventoryHandleCell = Arc::default();
+    // Doc 18 cut IC5 (D-18-33; §4.4 "Offline execution" prerequisite): the
+    // quantity delegates. `tacsim` joins only on a roster that composes the TacSim
+    // layer ([`server_modules_with_tacsim`]): the state-family freeze refuses a
+    // delegation naming an owner the roster does not compose (`UnknownOwner`).
+    let mut delegates: Vec<&'static str> = vec!["industry", "market"];
+    if tacsim_delegate {
+        delegates.push(crate::NS);
+    }
     // `[onboarding]`'s two start rooms plus Limbo (E5b fold H4), extended by whatever
     // the ruleset knows is never somebody's living room (E5b's handoff to E5c).
     let reserved: Vec<mush_core::ObjId> = [
@@ -189,7 +240,7 @@ pub fn server_modules_with(
     .into_iter()
     .chain(game.reserved_rooms.iter().copied())
     .collect();
-    vec![
+    let modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_canon::CanonModule::new()),
         // D1: explicit-only privileges and their audit ledger (`@privilege`).
@@ -430,7 +481,14 @@ pub fn server_modules_with(
                 // under `mush_market::listing_holder(ListingId)` — which is
                 // `mush_industry::wo_holder`'s shape. No `InventoryVerb` is
                 // added and no `ENGINE_OWNED_RESERVATIONS` entry is registered.
-                .with_quantity_delegates(["industry", "market"])
+                //
+                // **Doc 18 cut IC5 (§4.4, D-18-33) adds `"tacsim"` as the THIRD,
+                // on the roster that composes it** ([`server_modules_with_tacsim`],
+                // which `mush_server::boot::game_modules` uses): the port tick reads
+                // pools through its own `Ctx::action_state`, and IC8's stock arm and
+                // IC9's burn will write through the same exported verbs in one
+                // bundle. Three of `MAX_STATE_FAMILY_DELEGATES = 4` are then used.
+                .with_quantity_delegates(delegates)
                 // ---- E7r2 P2: the wreck oracle, hosted HERE ----
                 //
                 // `mush-inventory → {core, economy}` and nothing else, pinned by
@@ -541,9 +599,10 @@ pub fn server_modules_with(
                 .with_delivery(Vec::new())
                 // E7r2 P1 (§15.5 (b′)): `IndustryModule::with_inventory`'s shape
                 // exactly. It carries a **capability**; the authority to write with it
-                // is `with_quantity_delegates(["industry", "market"])` above, and
-                // without that name the very first `settle_sale` would answer
-                // `ActionStateError::OwnerMismatch`. Unwired is fail-closed: no lot
+                // is `with_quantity_delegates(["industry", "market"])` above (with
+                // `"tacsim"` third on a roster that composes the TacSim layer, doc
+                // 18 cut IC5, §4.4, D-18-33), and without that name the very first
+                // `settle_sale` would answer `ActionStateError::OwnerMismatch`. Unwired is fail-closed: no lot
                 // action registers and `@market/vendor stock` refuses a
                 // lot-represented good byte-identically to E6c.
                 .with_inventory(Arc::clone(&inventory_handles));
@@ -559,7 +618,8 @@ pub fn server_modules_with(
             }
         }),
         Box::new(mush_script::ScriptModule::new()),
-    ]
+    ];
+    (modules, Arc::clone(&inventory_handles))
 }
 
 /// The economy observer table this server freezes at wiring (16b cut R-b: the one
@@ -698,7 +758,8 @@ pub fn tacsim_module_with(cfg: crate::TacsimConfig, game_content: bool) -> Box<d
 }
 
 /// [`tacsim_module_with`] as a **test world's** (doc 18 cut IC3; lead ruling
-/// L15): the readiness report accepts a world rate other than 24 there. For the
+/// L15): the readiness report accepts a world rate other than 24 there, and
+/// (doc 18 cut IC5) the port tick registers its probe action. For the
 /// in-process test engines only; the production roster
 /// (`mush_server::boot::game_modules`) never calls it, so dev1 can never be a
 /// test world (doc 18 §4.7).
@@ -708,6 +769,33 @@ pub fn tacsim_test_world_module(
     game_content: bool,
 ) -> Box<dyn GameModule> {
     Box::new(crate::TacsimRuleset::with_game_content(cfg, game_content).with_test_world(true))
+}
+
+/// The TacSim layer with the inventory handle cell (doc 18 cut IC5): the production roster's
+/// spelling. NO test-world flag: production can never be a test world (IC3 L15).
+#[must_use]
+pub fn tacsim_module_wired(
+    cfg: crate::TacsimConfig,
+    game_content: bool,
+    inventory: mush_inventory::InventoryHandleCell,
+) -> Box<dyn GameModule> {
+    Box::new(crate::TacsimRuleset::with_game_content(cfg, game_content).with_inventory(inventory))
+}
+
+/// [`tacsim_module_wired`] as a **test world's** (IC3 L15; doc 18 cut IC5): the readiness
+/// report's relaxed world rate, and the port tick's probe action. For the in-process test
+/// engines only; `mush_server::boot::game_modules` never calls it.
+#[must_use]
+pub fn tacsim_test_world_module_wired(
+    cfg: crate::TacsimConfig,
+    game_content: bool,
+    inventory: mush_inventory::InventoryHandleCell,
+) -> Box<dyn GameModule> {
+    Box::new(
+        crate::TacsimRuleset::with_game_content(cfg, game_content)
+            .with_inventory(inventory)
+            .with_test_world(true),
+    )
 }
 
 /// **The game's unit catalog** (16b cut C.2), built from the content compiled

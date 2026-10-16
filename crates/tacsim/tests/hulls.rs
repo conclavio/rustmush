@@ -99,7 +99,9 @@ impl Roster {
         let onboarding = mush_core::OnboardingConfig::default();
         let game = tacsim::GameEconomyConfig::default();
         let cfg = config();
-        let mut mods = comp::server_modules_with(
+        // Doc 18 cut IC5: the production built-ins, `tacsim` the third quantity
+        // delegate, the inventory cell handed to the layer.
+        let (mut mods, inventory) = comp::server_modules_with_tacsim(
             mush_weather::WeatherConfig::default(),
             EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
@@ -128,7 +130,7 @@ impl Roster {
         if self.sheet {
             mods.extend(comp::sheet_modules(&onboarding, &game));
         }
-        mods.push(comp::tacsim_module_with(cfg, true));
+        mods.push(comp::tacsim_module_wired(cfg, true, inventory));
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mods
     }

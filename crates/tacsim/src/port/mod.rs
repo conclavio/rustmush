@@ -5,8 +5,9 @@
 //! checked through, everywhere a load is asked about: the market lot leg's
 //! pre-check and the Draw prepare (cuts IC7/IC8), `+ship/plan` and
 //! `+ship/hold`, the room gauges (IC6) and the queue's buy clamp and `fill`
-//! (IC11). The port tick (cut IC5, `port_tick.rs`) and the passage planner
-//! (cut IC9, `passage.rs`) are separate files beside it (doc 18 §5).
+//! (IC11). The port tick (cut IC5, [`crate::port_tick`], at the crate root per
+//! doc 18 §5's lane note) and the passage planner (cut IC9, `passage.rs`) are
+//! separate files (doc 18 §5).
 //!
 //! **Doc 18 cut IC3** binds the corridor's ports into the world:
 //!
@@ -26,11 +27,15 @@
 //!   and airlock spaces with the airlock's member rooms and berths, the laid-up
 //!   placement and the title under `tacsim.registry`; and the readiness
 //!   report's hulls line.
+//!
+//! Doc 18 cut IC5 — [`families`]: the stock-issue receipt and the departure
+//! ticket, with the `PassagePlan` they freeze; [`crate::port_tick`] is the tick.
 
 pub mod apply;
 pub mod capacity;
 pub mod credit;
 pub mod def;
+pub mod families;
 pub mod hull;
 pub mod map;
 pub mod readiness;
@@ -38,6 +43,10 @@ pub mod readiness;
 pub use def::{
     AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,
     ProgrammeDef, StockRowDef, VendorDef, check_ports, room_key, tranches,
+};
+pub use families::{
+    LegPlan, Manifest, PassagePlan, PortFamilies, PortHandles, StockIssueId, StockReceipt, Ticket,
+    TicketId,
 };
 pub use map::{
     HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, TrancheRow, port_map_key,

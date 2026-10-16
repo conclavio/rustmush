@@ -9,6 +9,7 @@
 //! | `tacsim:tutorial:{account}` | per-account | **skipped loudly**; that account reads its hints again (16b cut AH.1: `crate::match_::tutorial`) |
 //! | `tacsim:mindsrc:{sha256}` | immutable source | **skipped loudly** when its `sha256` disagrees with its key or its bytes do not hash to it (17b cut M3.3; doc 17 §13). The **key still counts**: the boot never rewrites a document under a key it holds, so a tampered stock source stays unreadable rather than silently replaced, and a scripted seal naming it refuses its resume by name (`crate::match_::resume`) |
 //! | `tacsim:port:{pack}/{entry}` | applier map (doc 18 cut IC3) | **skipped loudly, and the key still bars re-creation**: the entry's next apply refuses before any write, naming the key, and `@tacsim/port status` reports the map unreadable; repair is a staff act on the document (doc 18 §4.7) |
+//! | `tacsim:notice:{obj}` | per-character queue (doc 18 cut IC5: `crate::port_tick`'s reconnect notices) | **dropped loudly** for that character; the key bars nothing, and the next notice rewrites it |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -253,8 +254,15 @@ pub struct TacsimStore {
     /// in-process test engine's (`composition::tacsim_test_world_module`). RAM
     /// only: never persisted and never a config key, so a production world can
     /// never be one. It relaxes the readiness report's world-rate line and
-    /// nothing else.
+    /// registers the port tick's probe (doc 18 cut IC5), and nothing else.
     pub(crate) test_world: bool,
+    /// **Doc 18 cut IC5** (§4.4 "Failure handling"; lead ruling L10) —
+    /// `tacsim:notice:{obj}`: each player's queued reconnect notices
+    /// ([`crate::port_tick::NoticeQueue`]), rendered once on `Connected` and then
+    /// deleted. Persisted on the IC3 pattern: one whole-document post-image per
+    /// character through [`push_op`]; a corrupt document is dropped loudly for that
+    /// character and bars nothing.
+    pub(crate) notices: BTreeMap<ObjId, crate::port_tick::NoticeQueue>,
 }
 
 impl TacsimStore {
@@ -281,8 +289,10 @@ impl TacsimStore {
     }
 
     /// **Whether this world is a test world** (doc 18 cut IC3; lead ruling L15):
-    /// set only by `composition::tacsim_test_world_module`, so false on every
-    /// production roster.
+    /// set only by `composition::tacsim_test_world_module` (and, since doc 18 cut
+    /// IC5, `composition::tacsim_test_world_module_wired`), so false on every
+    /// production roster. It relaxes the readiness report's world-rate line and
+    /// registers the port tick's probe (doc 18 cut IC5), and nothing else.
     #[must_use]
     pub fn test_world(&self) -> bool {
         self.test_world
@@ -1281,6 +1291,15 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             };
             store.port_map_keys.insert((pack.clone(), entry.clone()));
             load_port_map(&mut store, key, &pack, &entry, value);
+        } else if key.starts_with(crate::port_tick::NOTICE_PREFIX) {
+            // Doc 18 cut IC5 (lead ruling L10). A queue that will not read costs
+            // that character its queued notices and nothing else: the key bars
+            // nothing, the next `queue_notice` rewrites it, and boot writes nothing.
+            let Some(who) = crate::port_tick::notice_key_owner(key) else {
+                tracing::error!(%key, "tacsim: a reconnect-notice document has an unreadable key; skipped");
+                continue;
+            };
+            load_notice_queue(&mut store, key, who, value);
         } else if key == META_KEY {
             load_meta(&mut store, value);
         }
@@ -1288,6 +1307,35 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
     }
     store.reindex();
     store
+}
+
+/// One `tacsim:notice:{obj}` body (doc 18 cut IC5): decoded, checked, and held to
+/// the identity rule (`queue.who` is the key's character). Any failure drops that
+/// character's queue loudly and nothing else.
+fn load_notice_queue(store: &mut TacsimStore, key: &str, who: ObjId, value: &serde_json::Value) {
+    let queue = serde_json::from_value::<crate::port_tick::NoticeQueue>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|queue| queue.check().map(|()| queue))
+        .and_then(|queue| {
+            if queue.who == who {
+                Ok(queue)
+            } else {
+                Err(format!(
+                    "the queue names #{}, not its key's #{}",
+                    queue.who.0, who.0
+                ))
+            }
+        });
+    match queue {
+        Ok(queue) => {
+            store.notices.insert(who, queue);
+        }
+        Err(error) => tracing::error!(
+            %key, %error,
+            "tacsim: a reconnect-notice document is unreadable; that character's queued notices \
+             are dropped"
+        ),
+    }
 }
 
 fn load_pack_row(

@@ -62,7 +62,9 @@ fn roster(sheet: bool) -> Vec<Box<dyn mush_core::GameModule>> {
     let cfg = enabled();
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
+    // Doc 18 cut IC5: `tacsim` the third quantity delegate, the inventory cell
+    // handed to the layer below.
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -81,7 +83,7 @@ fn roster(sheet: bool) -> Vec<Box<dyn mush_core::GameModule>> {
     if sheet {
         mods.extend(comp::sheet_modules(&onboarding, &game));
     }
-    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::tacsim_module_wired(cfg, false, inventory));
     // `[game].starter_area` off: the lot is not what this cut ships, and the
     // arena's ground is in a region of its own.
     mods.push(comp::content_module_with(false, true).expect("the content module composes"));

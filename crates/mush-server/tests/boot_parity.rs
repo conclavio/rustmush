@@ -591,7 +591,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
                 .map(|l| (l.pack().to_string(), (l.version(), l.digest().to_hex())))
                 .collect()
         };
-    // Doc 18 cut IC2 (lead ruling R2): the real boot's `tacsim_module_with`
+    // Doc 18 cut IC2 (lead ruling R2): the real boot's `tacsim_module_wired`
     // switch loads the lane into `TacsimStore.loaded` beside the latch that
     // applied its rooms, so the lane route materializes on this world — the
     // latch alone (from `content_module_with`) would leave it unresolvable.

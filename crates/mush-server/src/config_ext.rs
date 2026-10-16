@@ -466,7 +466,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring over the same operator
     // sources and the same game seed sources (the lane, when the layer is on — the
-    // switch boot.rs passes to `tacsim_module_with`), so the two cannot disagree.
+    // switch boot.rs passes to `tacsim_module_wired`), so the two cannot disagree.
     let game = if typed.enabled {
         tacsim::definitions::content::game_seed_sources()
     } else {
