@@ -5,9 +5,10 @@ Draft 0.1, 2026-10-17, initially checked at `1137c373` and rebased onto
 This is the next implementation sequence for [doc 17](17-unit-minds.md): finish the
 rule language and the behavior deferred from M5, then deliver M6's authoring,
 proving and debugging tools. [17b](17b-unit-minds-implementation-plan.md) remains
-the programme's build ledger. M5rules' implementation and Windows gate are
+the programme's build ledger. M5rules is accepted at `e93a4a1c`; its implementation
+and passing Windows/Linux gates are
 recorded in [17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17);
-Linux verification is in progress before acceptance. Later scratch preparation
+the cut has not been deployed. Later scratch preparation
 is not a landed milestone.
 
 The owner requested this plan through M6 on 2026-10-17 and deferred M7 until a

@@ -1014,10 +1014,11 @@ See [16b](16b-combat-implementation-plan.md).
 
 ## 11. Supersessions and amendments
 
-**M5rules — implemented on the working branch, integration gate pending
-(2026-10-17; not landed).** [Doc 17 §24](17-unit-minds.md#24-amendments-as-built)
-records the full contract; this is not a completed gate or a revision of the
-historical results below.
+**M5rules — accepted at `e93a4a1c` (2026-10-17; not deployed).**
+[Doc 17 §24](17-unit-minds.md#24-amendments-as-built) records the full contract;
+[17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17)
+records the passing Windows and Linux gates. Historical results below remain
+unchanged; M5r and M6 are separate gates.
 
 - **§3.5, §3.6 and §5: canonical native rules.** Fire, conditional hold and lock
   actions share one ordered table bounded by the installed core's slots. Fire and

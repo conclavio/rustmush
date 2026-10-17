@@ -410,8 +410,8 @@ wire string `not_reflex` is kept until `Controller::Reflex` is deleted (§17), w
 
 ## 5. The shot decision and the fire law (P1)
 
-The M5rules changes in this section are implemented on the working branch as of
-2026-10-17, pending the integration gate; they are not a landed milestone. The
+The M5rules changes in this section are accepted at `e93a4a1c` on 2026-10-17,
+after the Windows and Linux gates recorded in [17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17). The
 bounded native surface is recorded in §24 and [17d §2](17d-unit-minds-through-m6-plan.md#2-m5rules-native-station-rules).
 
 This section is the weapons station's. A hull without one — a miner, a hauler, a builder, an unarmed
@@ -1803,10 +1803,11 @@ weapons, after which the slot and cadence measures of M1b are re-run. The Ceres 
 Each cut that builds part of this document records here what it built differently and why, in the
 form of doc 16 §11, and a region map's sim task records here any divergence from §2's arena facts.
 
-**M5rules — implemented on the working branch, integration gate pending
-(2026-10-17; not landed).** This amendment records the current implementation of
-[17d §2](17d-unit-minds-through-m6-plan.md#2-m5rules-native-station-rules), not a
-completed gate or a replacement for the historical cut records below.
+**M5rules — accepted at `e93a4a1c` (2026-10-17; not deployed).** This amendment
+records the completed implementation of
+[17d §2](17d-unit-minds-through-m6-plan.md#2-m5rules-native-station-rules).
+The Windows and Linux evidence is in [17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17);
+historical cut records below remain unchanged. M5r and M6 are separate gates.
 
 - **§3–5 and §9: one ordered native table.** `Rule::{Fire, HoldFire, Lock}` shares
   the installed core's bounded slots. Fire/hold admission and removal use Fire
