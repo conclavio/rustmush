@@ -333,7 +333,16 @@ The classic problem: someone `say`s while you're mid-typing. The SSH writer task
 - **UTF-8**: assume yes (2026); `LANG`/`LC_ALL` sniffing only to *disable* (fall back to ASCII art borders).
 - **Resize**: `window_change_request` updates `ClientCaps` via `ArcSwap`; renderer uses width for wrapping/`WHO` columns.
 - **Keepalive**: russh server config `keepalive_interval = 30s`, `keepalive_max = 3` (server-initiated `keepalive@openssh.com`), plus `inactivity_timeout` off (idlers welcome). Detect half-open links → detach → linkdead grace.
-- **No PTY requested** (e.g. `ssh host command`, scripts): reject exec requests; require shell+pty in v1. Revisit for a future API/bot mode.
+- **No PTY requested**: reject exec requests except the M6 authoring allow-list,
+  exactly `mind push`, `mind pull`, or `mind check`. These require a successfully
+  verified public-key authentication and an explicitly selected character owned
+  by that account. One bounded typed JSON request arrives on stdin followed by
+  EOF; structured results and an exit status use stdout. The matching authoring
+  service enforces byte limits, operation allow-lists, current ownership, stale
+  edit checks and cancellation. Password sessions remain interactive only. No
+  shell commands, arbitrary paths, forwarding or general subsystem are enabled.
+  See [the M6 plan](17d-unit-minds-through-m6-plan.md#13-command-and-transport-boundaries)
+  and `help mindcraft`.
 
 ### 5.7 ANSI renderer (`ansi` crate)
 

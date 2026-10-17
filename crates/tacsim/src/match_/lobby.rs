@@ -174,6 +174,7 @@ pub struct Slot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindChoice {
+    pub saved: Option<super::draft_holdings::SavedChoice>,
     /// The mind's name as its holding spells it (`Standard Doctrine`).
     pub mind: SmolStr,
     /// The profiles, canonical spellings, first flies first; empty is Line
@@ -183,11 +184,24 @@ pub struct MindChoice {
 }
 
 impl MindChoice {
+    pub(super) fn resolve(&self, w: &World, actor: ObjId) -> Option<HeldMind> {
+        holdings::resolve_choice(w, actor, &self.mind, self.saved.as_ref())
+    }
+
     /// **How every line spells it**: `Standard Doctrine (Sniper, Line)`, and
     /// `Standard Doctrine (Line)` for Line alone.
     #[must_use]
     pub fn words(&self) -> String {
-        mind_words(&self.mind, &self.profiles)
+        let name = self.saved.as_ref().map_or_else(
+            || self.mind.to_string(),
+            |saved| match saved.selection {
+                mush_roll::Selection::Pin { revision } => {
+                    format!("draft:{} @{}", self.mind, revision.key.number)
+                }
+                mush_roll::Selection::Follow { .. } => format!("draft:{} @latest", self.mind),
+            },
+        );
+        mind_words(&name, &self.profiles)
     }
 }
 
@@ -217,6 +231,18 @@ pub struct FillChoice {
     /// The mind and its one profile (empty is Line).
     pub choice: MindChoice,
 }
+
+/// A side lead's chosen execution ceiling for unclaimed AI-filled pods.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FillClass {
+    pub team: Team,
+    pub lead: AccountId,
+    pub class: CoreClass,
+}
+
+#[path = "lobby_caps.rs"]
+mod caps;
 
 impl Slot {
     /// Whether this slot is seated — the question the `Boarding → Running`
@@ -349,6 +375,10 @@ pub struct Centre {
     /// it always wrote.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill_minds: Vec<FillChoice>,
+    /// Lead-owned AI caps. Live records retain them; a lead change clears the
+    /// departing lead's choice. Selection itself remains a volatile lobby.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_classes: Vec<FillClass>,
     /// **Humans on both sides: only Standard Doctrine flies** (17b cut M5.2;
     /// doc 17 §21's Q-UM-15 at its default, the owner's OQ-5; the design
     /// note's C-7 and item 11). Decided ONCE, at `SIM START` ([`start`]),
@@ -467,6 +497,11 @@ impl Centre {
                     .iter()
                     .any(|(side, lead)| *side == fill.team && *lead == account),
             });
+            self.fill_classes.retain(|cap| {
+                leads
+                    .iter()
+                    .any(|(team, lead)| *team == cap.team && *lead == cap.lead)
+            });
         }
     }
 
@@ -491,6 +526,8 @@ impl Centre {
 /// Why a `SIM` verb refused. Every variant is exactly the line the player sees.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SimError {
+    #[error("{reason}")]
+    MindAdmission { reason: String },
     /// This world has no simulator centre (no OOC pack at version 4).
     #[error("This server has no simulator centre.")]
     NoCentre,
@@ -607,6 +644,15 @@ pub enum SimError {
     /// centre and only the *set* is gated, so this is the sentence for the set.
     #[error("Only a side's lead or staff can set the AI fill.")]
     NotLeadForAi,
+    /// A class cap belongs to the side's current lead, including on staff accounts.
+    #[error("Only your side's lead can set its AI class cap.")]
+    NotLeadForAiClass,
+    /// Admission may not disclose an opposing character's chosen source or card.
+    #[error("The other side's roster cannot be sealed; its lead must review its choices.")]
+    OtherSideCannotSeal,
+    /// A teammate's selected source/profile is not the caller's to inspect.
+    #[error("Another hull cannot be sealed; its pilot or side lead must review its choices.")]
+    OtherHullCannotSeal,
     /// **`SIM MODE <word>` from somebody who leads no side** (16b cut O.1): the
     /// mode is a match-wide setting, and a match-wide setting is the lead's or
     /// staff's, as `SIM AI`'s is.
@@ -711,23 +757,11 @@ pub enum SimError {
         /// `[tacsim.arena].max_units_by_class` for that class.
         cap: u32,
     },
-    /// **`SIM UNIT <type>` or `SIM MIND …` past the side's half of the
-    /// centre's compute pool** (17b cut M3.5; doc 17 §9, D-UM-36: *`SIM MIND`
-    /// and `SIM UNIT` check at choice time … refused with the arithmetic*),
-    /// said in the pool's sentence ([`crate::match_::pool::PoolRefusal`], the
-    /// owner's OQ-11 wording since 17b cut M5.1). **17b cut M5.1**: every
-    /// claimed hull of the side loads its class — the class its chosen mind
-    /// seals at, else `[tacsim.minds].fill_class`, seated or not — so the
-    /// later of `SIM UNIT` and `SIM MIND` is the one refused (doc 17 §12).
-    /// The question is the side AFTER the change — the hull's new class
-    /// beside every other hull's — unless the change lowers the hull's load,
-    /// which is never refused (17b cut M5.1's review): a side that an
-    /// unchecked claim or `SIM AI <n>` has put past its half refuses every
-    /// `SIM UNIT` and `SIM MIND` of it that keeps or raises a hull's load,
-    /// `SIM MIND none` back to `fill_class` included, until a claim is given
-    /// up or the fill lowered.
-    /// At the stock constants it cannot refuse (twelve Class III a side fit,
-    /// `crate::match_::pool`'s head); an operator's lowered pool reaches it.
+    /// A prospective roster exceeds its side's compute half. Every claimed
+    /// and fill hull loads its actual capped class in slot order. Claims,
+    /// chassis, mind, fill size, mode and class choices are checked before
+    /// publication. A strictly decreasing repair of an oversized roster is
+    /// permitted when neither side's load nor the hull count grows.
     #[error("{0}")]
     Pool(crate::match_::pool::PoolRefusal),
     /// **`SIM MIND <word>` naming no mind the character holds** (17b cut
@@ -1373,11 +1407,9 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
         }
     }
     let index = {
-        let book = ctx
-            .w
-            .module_state_mut::<MatchBook>()
-            .ok_or(SimError::Unavailable)?;
-        let centre = book.centre_mut();
+        let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+        let mut next = previous.clone();
+        let centre = &mut next;
         if !matches!(centre.state, MatchState::Idle | MatchState::Selection) {
             return Err(SimError::WrongState {
                 state: centre.state.as_str(),
@@ -1422,6 +1454,8 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
         if !centre.leads.iter().any(|(side, _)| *side == team) {
             centre.leads.push((team, account));
         }
+        caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+        super::selection_refs::publish_centre(ctx, next)?;
         index
     };
     let name = display_name(ctx.w, actor);
@@ -1489,6 +1523,7 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let emptied = centre.slots.is_empty();
         (held.team, held.index, held.is_seated(), emptied)
     };
+    super::selection_refs::reconcile(ctx);
     // **16b cut F.1**: the seat goes with the slot.
     //
     // `EXIT` and `SIM LEAVE` were exact opposites and each kept half of what the
@@ -1529,6 +1564,34 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         crate::match_::reset_stock_tanks(ctx, &std::collections::BTreeSet::new());
     } else {
         unfit_slot(ctx, team, index);
+    }
+    // Giving a slot back never depends on admission. A new lead loses the
+    // prior lead's private fill choices; that may raise the replacement load.
+    // Recompute the remaining selection and tell its leads if it needs repair.
+    // Boarding instead proceeds through the actual sealed checkout below.
+    let review = centre(ctx.w)
+        .filter(|centre| centre.state == MatchState::Selection)
+        .map(|centre| {
+            centre
+                .leads
+                .iter()
+                .filter_map(|(team, account)| {
+                    let pilot = centre
+                        .slots
+                        .iter()
+                        .find(|slot| slot.team == *team && slot.account == *account)?
+                        .pilot;
+                    caps::admit(ctx.w, centre, pilot).is_err().then_some(pilot)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for pilot in review {
+        ctx.out.sys_to_actor(
+            pilot,
+            NOTICE_CATEGORY,
+            "The roster changed; its class or compute admission needs review before SIM START.",
+        );
     }
     let name = display_name(ctx.w, actor);
     announce(
@@ -1809,9 +1872,8 @@ fn fill_pods(
 /// [`SimError::TooManyProfiles`], [`SimError::UnderFloor`],
 /// [`SimError::ProfilePair`]) — and **17b cut M3.5** (doc 17 §9, D-UM-36)
 /// [`SimError::Pool`], the centre's compute pool at the choice with the
-/// arithmetic, the caller's hull at its own class: its mind's, else
-/// `[tacsim.minds].fill_class` (17b cut M5.1; at the stock constants it
-/// cannot refuse, `crate::match_::pool`'s head).
+/// arithmetic over the complete prospective roster, each hull at its actual
+/// capped class. At stock constants this cannot refuse (`crate::match_::pool`).
 pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
     let actor = ctx.actor;
     require_layer(ctx.w)?;
@@ -1919,47 +1981,23 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
             return Err(SimError::ClassCap { class, cap });
         }
     }
-    // **17b cut M5.1** (doc 17 §12: *the later of `SIM UNIT` and `SIM MIND`
-    // is the one refused*): the slot's standing mind, fitted to the NEW
-    // chassis — over-class, the profile count at the class it would seal
-    // at, the floor on an armed chassis — so the arithmetic printed below is
-    // the new chassis's. A standing choice the pilot no longer holds is left
-    // to the check-out (`SimError::MindNotHeld`) and loads `fill_class`
-    // here, as an unchosen slot does.
-    //
-    // **17b cut M3.5** (doc 17 §9, D-UM-36): then the pool, at the choice —
-    // the caller's hull at its OWN class (its mind's, else
-    // `[tacsim.minds].fill_class`: 17b cut M5.1 counts a seated hull as
-    // check-out admits it) against what the side's other hulls speak for
-    // (`pool_at_slot`), under the pool of the most units this centre can
-    // field. At the stock constants it cannot refuse; an operator's lowered
-    // pool reaches it.
-    if let Some(minds_cfg) = minds_config(ctx.w) {
-        let class = match held.mind.as_ref() {
-            Some(choice) => {
-                let holdings = holdings::held_by(ctx.w, held.pilot);
-                match holdings::resolve(&holdings, &choice.mind) {
-                    Some(mind) => fit_on_chassis(ctx.w, chosen.as_str(), mind, &choice.profiles)?,
-                    None => minds_cfg.fill_class,
-                }
-            }
-            None => minds_cfg.fill_class,
-        };
-        pool_at_slot(ctx.w, held.team, held.index, class)?;
-    }
+    // Validate the complete prospective roster before recording the chassis:
+    // original rating versus governed core, then capped profiles and pool.
+    // A lost holding refuses here as it will at checkout.
     let spelling = type_word(ctx.w, chosen.as_str());
     let stored =
         (authored.as_deref() != Some(chosen.as_str())).then(|| SmolStr::new(chosen.as_str()));
     {
-        let book = ctx
-            .w
-            .module_state_mut::<MatchBook>()
-            .ok_or(SimError::Unavailable)?;
-        let centre = book.centre_mut();
-        let Some(slot) = centre.slots.iter_mut().find(|slot| slot.account == account) else {
-            return Err(SimError::NoSlotToField);
-        };
+        let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+        let mut next = previous.clone();
+        let slot = next
+            .slots
+            .iter_mut()
+            .find(|slot| slot.account == account)
+            .ok_or(SimError::NoSlotToField)?;
         slot.unit_type = stored;
+        caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+        super::selection_refs::publish_centre(ctx, next)?;
     }
     announce(
         ctx,
@@ -1972,22 +2010,9 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
     Ok(())
 }
 
-/// **The pool at the choice** (17b cut M3.5; doc 17 §9, D-UM-36) — what
-/// [`unit_type`] and [`mind`] ask last ([`pool_at_slot`] gathers the loads):
-/// the caller's hull's load at `mine` against what the side's other loads
-/// speak for — its other claimed slots, each at its own class (17b cut M5.1:
-/// its chosen mind's, else `[tacsim.minds].fill_class`, seated or not), AND,
-/// since 17b cut M4.3, its unclaimed pods under the AI fill at the fill's
-/// chosen class or `fill_class` — under the pool of `per_side` pods a side,
-/// both sides (`centre::fieldable_per_side`: the most units the centre can
-/// field, so the smallest pool any match of it runs under). **A choice that
-/// adds nothing is never refused** (`would think 0` is never said): `None`
-/// is admitted under any pool, which no lobby caller passes since 17b cut
-/// M5.1; the arithmetic is the same one check-out's last gate does.
-///
-/// # Errors
-///
-/// [`SimError::Pool`] with the arithmetic.
+/// Historical arithmetic fixture. Production admission uses `caps` with the
+/// complete prospective roster and each hull's actual sealed class.
+#[cfg(test)]
 fn pool_at_the_choice(
     cfg: &MindsConfig,
     per_side: u8,
@@ -2037,7 +2062,7 @@ pub enum MindRequest {
         mind: String,
         /// Whether an `@<rev>` pin was written (refused: no revisions are
         /// kept before 17b cut M6).
-        revision: bool,
+        revision: Option<String>,
         /// The profiles' words, as typed, in order; empty is Line alone.
         profiles: Vec<String>,
     },
@@ -2076,8 +2101,13 @@ impl MindRequest {
             None => (rest, None),
         };
         let (mind, revision) = match head.split_once('@') {
-            Some((mind, _)) => (mind.trim(), true),
-            None => (head.trim(), false),
+            Some((mind, pin))
+                if !pin.trim().is_empty() && pin.len() <= 64 && !pin.contains('@') =>
+            {
+                (mind.trim(), Some(pin.trim().to_owned()))
+            }
+            Some(_) => return Err(MindUsage::Mind),
+            None => (head.trim(), None),
         };
         if mind.is_empty() {
             return Err(MindUsage::Mind);
@@ -2180,18 +2210,6 @@ pub(crate) fn core_of_type(w: &World, id: &str) -> Option<(CoreClass, bool)> {
     catalog.cores.get(core).map(|def| (def.class, def.governed))
 }
 
-/// **Whether one unit type carries a weapon** (17b cut M5.1; C-23: the odds
-/// floor binds only a hull with a weapons station) — the spec's weapon
-/// components, read as [`side_fields_a_gun`] reads them.
-pub(crate) fn armed_of_type(w: &World, id: &str) -> bool {
-    let Ok(key) = mush_core::CanonicalId::new(id) else {
-        return false;
-    };
-    w.module_state::<crate::TacsimStore>()
-        .and_then(|store| store.definitions().specs.get(&key).cloned())
-        .is_some_and(|spec| spec.weapons().next().is_some())
-}
-
 /// **The unit type one slot fields**: its choice, else its pod's authored
 /// type.
 fn effective_type(w: &World, slot: &Slot) -> Option<SmolStr> {
@@ -2201,16 +2219,16 @@ fn effective_type(w: &World, slot: &Slot) -> Option<SmolStr> {
 }
 
 /// **The class `held` would be sealed at on `chassis`** — the seal's own rule
-/// (`crate::match_::seal::seal_for`): `min(rated, core, fill_class)`, and
+/// (`crate::match_::seal::seal_for`): `min(rated, core, class_cap)`, and
 /// Class 0 on a chassis with no core.
 fn sealed_class(
     w: &World,
     held: &HeldMind,
     chassis: Option<&str>,
-    fill_class: CoreClass,
+    class_cap: CoreClass,
 ) -> CoreClass {
     match chassis.and_then(|id| core_of_type(w, id)) {
-        Some((core, _)) => held.rated.min(core).min(fill_class),
+        Some((core, _)) => held.rated.min(core).min(class_cap),
         None => CoreClass::Zero,
     }
 }
@@ -2267,13 +2285,14 @@ fn profile_lawful(
 /// seal's own predicate, `crate::match_::seal::seal_for`), the profile count at the
 /// class it would seal at (OQ-3), and each profile's card ([`profile_lawful`],
 /// the floor on an armed chassis only, C-23) — answering that class.
-/// [`fit_mind`] adds the pool; `SIM AI MIND` asks this alone for each pod its
+/// `caps` adds the pool; `SIM AI MIND` asks this alone for each pod its
 /// side's fill may take.
 fn fit_on_chassis(
     w: &World,
     chassis: &str,
     held: &HeldMind,
     profiles: &[SmolStr],
+    class_cap: CoreClass,
 ) -> Result<CoreClass, SimError> {
     let minds_cfg = minds_config(w).unwrap_or_default();
     let reflex = configs(w)
@@ -2291,41 +2310,120 @@ fn fit_on_chassis(
             core,
         });
     }
-    let class = sealed_class(w, held, Some(chassis), minds_cfg.fill_class);
+    let class = sealed_class(w, held, Some(chassis), class_cap);
+    let weapons = rule_weapons_of_type(w, chassis)?;
+    let mut channels = vec![
+        crate::arena::state::Channel::Helm,
+        crate::arena::state::Channel::Sensors,
+    ];
+    if !weapons.is_empty() {
+        channels.push(crate::arena::state::Channel::Fire);
+    }
+    if class == CoreClass::Zero {
+        crate::arena::profile_seal::SealedCards::prepare(
+            crate::arena::runtime_card::rom_definition(&reflex, minds_cfg.odds_floor_permille)
+                .map_err(|e| SimError::MindAdmission {
+                    reason: e.to_string(),
+                })?,
+            &[],
+            &minds_cfg.classes.row(CoreClass::Zero),
+            &weapons,
+            &channels,
+            minds_cfg.odds_floor_permille,
+        )
+        .map_err(|e| SimError::MindAdmission {
+            reason: e.to_string(),
+        })?;
+        return Ok(class);
+    }
     let most = minds_cfg.classes.row(class).profiles;
     if profiles.len() > usize::from(most) {
         return Err(SimError::TooManyProfiles {
             mind: held.name().to_owned(),
             class,
             most,
-            rom: core.is_none().then(|| type_word(w, chassis)),
+            rom: None,
         });
     }
-    let armed = armed_of_type(w, chassis);
-    if profiles.is_empty() {
-        profile_lawful("Line", &reflex, minds_cfg.odds_floor_permille, armed)?;
+    if held.definition.is_none() {
+        if profiles.is_empty() {
+            profile_lawful(
+                "Line",
+                &reflex,
+                minds_cfg.odds_floor_permille,
+                !weapons.is_empty(),
+            )?;
+        }
+        for profile in profiles {
+            profile_lawful(
+                profile,
+                &reflex,
+                minds_cfg.odds_floor_permille,
+                !weapons.is_empty(),
+            )?;
+        }
     }
-    for profile in profiles {
-        profile_lawful(profile, &reflex, minds_cfg.odds_floor_permille, armed)?;
-    }
+    let stock_profiles = if held.definition.is_none() {
+        profiles
+            .iter()
+            .map(|name| {
+                crate::arena::card::preset(name, &reflex)
+                    .map(|card| (name.clone(), card))
+                    .ok_or_else(|| SimError::MindAdmission {
+                        reason: "unknown stock profile".into(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![]
+    };
+    let terms = crate::match_::seal::SealTerms {
+        authored: held.definition.clone(),
+        selected_profiles: profiles.to_vec(),
+        classes: minds_cfg.classes,
+        rom_cfg: reflex.clone(),
+        card: crate::arena::card::line(&reflex),
+        identity: held.identity.clone(),
+        rated: held.rated,
+        engine_for_minds: held.engine,
+        odds_floor_permille: minds_cfg.odds_floor_permille,
+        profiles: stock_profiles,
+        ..crate::match_::seal::SealTerms::fixture()
+    };
+    crate::match_::seal::prepare_cards(&terms, class, &weapons, &channels).map_err(|e| {
+        SimError::MindAdmission {
+            reason: e.to_string(),
+        }
+    })?;
     Ok(class)
 }
 
-/// **The fit at the choice** (17b cut M5.1; the design note's M5.1 item 4):
-/// [`fit_on_chassis`], then the pool for side `team`'s slot `index` at the
-/// class it answered ([`pool_at_slot`]) — so `SIM MIND` and `SIM UNIT` ask
-/// the same questions and "the later … is the one refused" (doc 17 §12).
-fn fit_mind(
+/// Exact immutable component ids and full ammunition capacities for admission.
+fn rule_weapons_of_type(
     w: &World,
-    team: Team,
-    index: u8,
-    chassis: &str,
-    held: &HeldMind,
-    profiles: &[SmolStr],
-) -> Result<CoreClass, SimError> {
-    let class = fit_on_chassis(w, chassis, held, profiles)?;
-    pool_at_slot(w, team, index, class)?;
-    Ok(class)
+    id: &str,
+) -> Result<Vec<crate::arena::rules::RuleWeapon>, SimError> {
+    let key = mush_core::CanonicalId::new(id).map_err(|_| SimError::Unavailable)?;
+    let catalog = w
+        .module_state::<crate::TacsimStore>()
+        .ok_or(SimError::Unavailable)?
+        .definitions();
+    let spec = catalog.specs.get(&key).ok_or(SimError::Unavailable)?;
+    let mut out = Vec::new();
+    for component in &spec.components {
+        if let crate::definitions::unit::ComponentRole::Weapon { weapon, .. } = &component.role {
+            let def = catalog.weapons.get(weapon).ok_or(SimError::Unavailable)?;
+            let ammo = catalog
+                .ammunition
+                .get(&def.ammunition)
+                .ok_or(SimError::Unavailable)?;
+            out.push(crate::arena::rules::RuleWeapon {
+                id: component.id.as_str().into(),
+                rounds_max: ammo.count_per_load,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// **The presets of `held` that `chassis` may seal** (17b cut M5.1) — the
@@ -2341,9 +2439,15 @@ fn fits(w: &World, chassis: &str, held: &HeldMind) -> Option<(u8, Vec<SmolStr>)>
         .presets
         .iter()
         .filter(|preset| {
-            fit_on_chassis(w, chassis, held, std::slice::from_ref(*preset))
-                .map(|sealed| class = Some(sealed))
-                .is_ok()
+            fit_on_chassis(
+                w,
+                chassis,
+                held,
+                std::slice::from_ref(*preset),
+                minds_config(w).unwrap_or_default().max_class,
+            )
+            .map(|sealed| class = Some(sealed))
+            .is_ok()
         })
         .cloned()
         .collect();
@@ -2354,27 +2458,6 @@ fn fits(w: &World, chassis: &str, held: &HeldMind) -> Option<(u8, Vec<SmolStr>)>
         .profiles;
     let listed = u8::try_from(lawful.len()).unwrap_or(u8::MAX);
     Some((most.min(listed), lawful))
-}
-
-/// **The class one claimed slot's hull is admitted at** (17b cut M5.1): the
-/// class its chosen mind would seal at on its chassis, else `fill_class` —
-/// seated or not, the class check-out admits it at
-/// (`crate::match_::pool::admitted_class`). A choice the pilot no longer holds
-/// is left to the check-out and counts as unchosen.
-fn slot_class(w: &World, slot: &Slot, fill_class: CoreClass) -> CoreClass {
-    slot.mind
-        .as_ref()
-        .and_then(|choice| {
-            let held = holdings::held_by(w, slot.pilot);
-            let mind = holdings::resolve(&held, &choice.mind)?;
-            Some(sealed_class(
-                w,
-                mind,
-                effective_type(w, slot).as_deref(),
-                fill_class,
-            ))
-        })
-        .unwrap_or(fill_class)
 }
 
 /// **The mind a side's fill choice names, resolved** (17b cut M5.1): against
@@ -2392,7 +2475,7 @@ fn fill_held(w: &World, centre: &Centre, fill: &FillChoice) -> Option<HeldMind> 
                 .iter()
                 .find(|slot| slot.team == fill.team && slot.account == account)?
                 .pilot;
-            holdings::resolve(&holdings::held_by(w, pilot), &fill.choice.mind).cloned()
+            fill.choice.resolve(w, pilot)
         }
     }
 }
@@ -2446,7 +2529,8 @@ fn substituted_pilots(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> Ve
         let Some(choice) = slot.mind.as_ref() else {
             continue;
         };
-        if holdings::resolve(&holdings::held_by(w, slot.pilot), &choice.mind)
+        if choice
+            .resolve(w, slot.pilot)
             .is_some_and(|held| !held.is_doctrine())
             && !pilots.contains(&slot.pilot)
         {
@@ -2489,94 +2573,21 @@ fn substituted_pilots(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> Ve
 pub const HUMANS_ON_THE_OTHER_SIDE: &str =
     "Humans on the other side: your fill and any released hull fly Standard Doctrine.";
 
-/// **Every class side `team` would field, but slot `except`'s** (17b cut
-/// M5.1): its claimed slots at their own class ([`slot_class`]) and, under
-/// the AI fill and no range, the pods the fill would add ([`fill_pods`]) at
-/// the fill's chosen class on each pod's chassis, else `fill_class`.
-fn side_classes(
-    w: &World,
-    centre: &Centre,
-    team: Team,
-    except: Option<u8>,
-    fill_class: CoreClass,
-) -> Vec<CoreClass> {
-    let mut classes: Vec<CoreClass> = centre
-        .slots
-        .iter()
-        .filter(|slot| slot.team == team && Some(slot.index) != except)
-        .map(|slot| slot_class(w, slot, fill_class))
-        .collect();
-    if let Some((_, match_cfg, _)) = configs(w)
-        && match_cfg.ai_fill
-        && centre.mode != MatchMode::Range
-    {
-        let fielded: Vec<ObjId> = centre
-            .slots
-            .iter()
-            .filter(|slot| slot.team == team)
-            .filter_map(|slot| centre::tank_for_slot(w, team, slot.index))
-            .collect();
-        let held = centre
-            .fill_minds
-            .iter()
-            .find(|fill| fill.team == team)
-            .and_then(|fill| fill_held(w, centre, fill));
-        for (index, _) in fill_pods(w, centre, &match_cfg, team, &fielded) {
-            classes.push(match &held {
-                Some(held) => sealed_class(
-                    w,
-                    held,
-                    authored_unit_type(w, team, index).as_deref(),
-                    fill_class,
-                ),
-                None => fill_class,
-            });
-        }
-    }
-    classes
-}
-
-/// **The pool at the choice for one slot** (17b cut M5.1; doc 17 §9,
-/// D-UM-36): side `team`'s slot `index` at `class` against every other hull
-/// of the side ([`side_classes`]), through [`pool_at_the_choice`]. Nothing to
-/// refuse on a world with no `[tacsim.minds]` or no centre. **A change that
-/// lowers the slot's load is never refused** (17b cut M5.1's review, D-R2): a
-/// side that an unchecked claim or `SIM AI <n>` has put past its half may
-/// still move down — a mind chosen on a chassis with no core (400 for 1,500)
-/// — while a change that keeps or raises the load (`SIM MIND none` back to
-/// `fill_class` included) is asked of the side after it, so the later of `SIM
-/// UNIT` and `SIM MIND` stays the one refused (doc 17 §12).
-fn pool_at_slot(w: &World, team: Team, index: u8, class: CoreClass) -> Result<(), SimError> {
-    use crate::match_::pool::load_of;
-    let (Some(minds_cfg), Some(centre)) = (minds_config(w), centre(w)) else {
-        return Ok(());
-    };
-    if let Some(slot) = centre
-        .slots
-        .iter()
-        .find(|slot| slot.team == team && slot.index == index)
-        && load_of(&minds_cfg.classes, Some(class))
-            < load_of(
-                &minds_cfg.classes,
-                Some(slot_class(w, slot, minds_cfg.fill_class)),
-            )
-    {
-        return Ok(());
-    }
-    let others = side_classes(w, centre, team, Some(index), minds_cfg.fill_class);
-    pool_at_the_choice(
-        &minds_cfg,
-        centre::fieldable_per_side(w),
-        others.into_iter().map(Some),
-        Some(class),
-    )
-}
-
 /// **The profiles of one choice, resolved against `held`** (17b cut M5.1;
 /// OQ-3): each a preset it carries, case-folded, in its canonical spelling,
 /// none twice; a list that is Line alone is stored empty.
 fn resolve_profiles(held: &HeldMind, words: &[String]) -> Result<Vec<SmolStr>, SimError> {
     let mut profiles: Vec<SmolStr> = Vec::with_capacity(words.len());
+    if words.is_empty() && held.definition.is_some() {
+        return held
+            .presets
+            .first()
+            .cloned()
+            .map(|first| vec![first])
+            .ok_or_else(|| SimError::MindAdmission {
+                reason: "saved mind has no opening profile".into(),
+            });
+    }
     for word in words {
         let profile = held.preset(word).ok_or_else(|| SimError::NoSuchProfile {
             mind: held.name().to_owned(),
@@ -2592,6 +2603,7 @@ fn resolve_profiles(held: &HeldMind, words: &[String]) -> Result<Vec<SmolStr>, S
     }
     if let [only] = profiles.as_slice()
         && only == "Line"
+        && held.definition.is_none()
     {
         profiles.clear();
     }
@@ -2707,14 +2719,27 @@ fn mind_read_lines(w: &World, actor: ObjId, state: MatchState, slot: Option<&Slo
         }
     }
     if let (Some(minds_cfg), Some(centre)) = (minds_config(w), centre(w)) {
-        use crate::match_::pool::{load_of, pool_for};
-        let spoken = side_classes(w, centre, slot.team, None, minds_cfg.fill_class)
-            .into_iter()
-            .map(|class| load_of(&minds_cfg.classes, Some(class)))
-            .fold(0_u64, u64::saturating_add);
-        let units = usize::from(centre::fieldable_per_side(w)).saturating_mul(2);
-        let half = pool_for(&minds_cfg, units) / 2;
-        lines.push(pool_line(slot.team, half, spoken));
+        match caps::preview_visible(w, centre, Some(slot.team), Some(actor)) {
+            Ok(rows) => {
+                if let Some(row) = rows
+                    .iter()
+                    .find(|row| row.team == slot.team && row.index == slot.index)
+                {
+                    lines.push(format!(
+                        "Your mind will seal at Class {}.",
+                        row.class.as_str()
+                    ));
+                }
+                let spoken = rows
+                    .iter()
+                    .filter(|row| row.team == slot.team)
+                    .map(|row| minds_cfg.classes.ceiling_per_s(row.class))
+                    .sum();
+                let half = crate::match_::pool::pool_for(&minds_cfg, rows.len()) / 2;
+                lines.push(pool_line(slot.team, half, spoken));
+            }
+            Err(error) => lines.push(format!("Seal preview unavailable: {error}")),
+        }
     }
     lines
 }
@@ -2736,12 +2761,11 @@ fn mind_read_lines(w: &World, actor: ObjId, state: MatchState, slot: Option<&Slo
 /// [`SimError::NoRevisions`], a mind the character does not hold
 /// [`SimError::NoSuchMind`] (posting nothing), a profile it does not carry
 /// [`SimError::NoSuchProfile`], one named twice [`SimError::ProfileTwice`];
-/// then the fit (`fit_mind`): [`SimError::OverClass`],
+/// then the fit (`fit_on_chassis`): [`SimError::OverClass`],
 /// [`SimError::TooManyProfiles`], [`SimError::ProfilePair`],
 /// [`SimError::UnderFloor`] (an armed chassis only) and [`SimError::Pool`].
-/// `none` clears the choice, and is held to the pool too: the default loads
-/// `fill_class`, which may be more than a chosen mind on a chassis with no
-/// core.
+/// `none` clears the choice and rechecks the roster using the default mind
+/// at its actual capped class on this chassis.
 ///
 /// **Every reply is the actor's alone** (`sys_to_actor`): nothing about a
 /// choice is announced (doc 17 §12's fog; `SIM UNIT`'s announce is what this
@@ -2788,26 +2812,27 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
         });
     }
     let (stored, reply) = match chosen {
-        None => {
-            let fill_class = minds_config(ctx.w).map_or(CoreClass::I, |cfg| cfg.fill_class);
-            pool_at_slot(ctx.w, slot.team, slot.index, fill_class)?;
-            (None, MIND_CLEARED.to_owned())
-        }
+        None => (None, MIND_CLEARED.to_owned()),
         Some((word, revision, profiles)) => {
-            if revision {
-                return Err(SimError::NoRevisions);
-            }
-            let held = holdings::held_by(ctx.w, slot.pilot);
-            let mind = holdings::resolve(&held, &word).ok_or_else(|| SimError::NoSuchMind {
-                word: word.trim().to_owned(),
-            })?;
-            let profiles = resolve_profiles(mind, &profiles)?;
+            let mind = holdings::choose(ctx.w, slot.pilot, &word, revision.as_deref()).map_err(
+                |error| SimError::MindAdmission {
+                    reason: error.to_string(),
+                },
+            )?;
+            let profiles = resolve_profiles(&mind, &profiles)?;
             let chassis = effective_type(ctx.w, &slot).ok_or(SimError::NoUnit {
                 team: slot.team.as_str(),
                 index: slot.index,
             })?;
-            fit_mind(ctx.w, slot.team, slot.index, &chassis, mind, &profiles)?;
+            fit_on_chassis(
+                ctx.w,
+                &chassis,
+                &mind,
+                &profiles,
+                minds_config(ctx.w).unwrap_or_default().max_class,
+            )?;
             let choice = MindChoice {
+                saved: mind.saved.clone(),
                 mind: mind.identity.mind.clone(),
                 profiles,
             };
@@ -2816,19 +2841,15 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
         }
     };
     {
-        let book = ctx
-            .w
-            .module_state_mut::<MatchBook>()
-            .ok_or(SimError::Unavailable)?;
-        let Some(held) = book
-            .centre_mut()
-            .slots
+        let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+        let mut next = previous.clone();
+        next.slots
             .iter_mut()
             .find(|held| held.account == account)
-        else {
-            return Err(SimError::NoSlotToField);
-        };
-        held.mind = stored;
+            .ok_or(SimError::NoSlotToField)?
+            .mind = stored;
+        caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+        super::selection_refs::publish_centre(ctx, next)?;
     }
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, reply);
     Ok(())
@@ -2989,23 +3010,20 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
     let (stored, reply) = match chosen {
         None => (None, fill_line(team, None)),
         Some((word, revision, profiles)) => {
-            if revision {
-                return Err(SimError::NoRevisions);
-            }
-            let held = match lead_pilot {
-                Some(pilot) => holdings::resolve(&holdings::held_by(ctx.w, pilot), &word)
-                    .cloned()
-                    .ok_or_else(|| SimError::NoSuchMind {
-                        word: word.trim().to_owned(),
-                    })?,
-                None => {
-                    let doctrine = HeldMind::doctrine();
-                    if !holdings::names(&doctrine, &word) {
-                        return Err(SimError::StaffHoldNoMinds);
+            let held =
+                match lead_pilot {
+                    Some(pilot) => holdings::choose(ctx.w, pilot, &word, revision.as_deref())
+                        .map_err(|error| SimError::MindAdmission {
+                            reason: error.to_string(),
+                        })?,
+                    None => {
+                        let doctrine = HeldMind::doctrine();
+                        if revision.is_some() || !holdings::names(&doctrine, &word) {
+                            return Err(SimError::StaffHoldNoMinds);
+                        }
+                        doctrine
                     }
-                    doctrine
-                }
-            };
+                };
             if profiles.len() > 1 {
                 return Err(SimError::FillOneProfile);
             }
@@ -3014,10 +3032,17 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
                 configs(ctx.w).map_or(1, |(_, match_cfg, _)| slots_per_side(ctx.w, &match_cfg));
             for index in 1..=per_side {
                 if let Some(chassis) = authored_unit_type(ctx.w, team, index) {
-                    fit_on_chassis(ctx.w, &chassis, &held, &profiles)?;
+                    fit_on_chassis(
+                        ctx.w,
+                        &chassis,
+                        &held,
+                        &profiles,
+                        caps::fill_cap(ctx.w, centre(ctx.w).ok_or(SimError::Unavailable)?, team),
+                    )?;
                 }
             }
             let choice = MindChoice {
+                saved: held.saved.clone(),
                 mind: held.identity.mind.clone(),
                 profiles,
             };
@@ -3029,13 +3054,14 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
             (Some(FillChoice { team, by, choice }), reply)
         }
     };
-    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-        let centre = book.centre_mut();
-        centre.fill_minds.retain(|fill| fill.team != team);
-        if let Some(fill) = stored {
-            centre.fill_minds.push(fill);
-        }
+    let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+    let mut next = previous.clone();
+    next.fill_minds.retain(|fill| fill.team != team);
+    if let Some(fill) = stored {
+        next.fill_minds.push(fill);
     }
+    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    super::selection_refs::publish_centre(ctx, next)?;
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, reply);
     Ok(())
 }
@@ -3236,6 +3262,11 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // ones that chose something — a pod with no choice on it is put back to its
     // authored type here, which is what stops a stale refit reaching the next
     // claimant or the AI fill.
+    caps::admit(
+        ctx.w,
+        centre(ctx.w).ok_or(SimError::Unavailable)?,
+        ctx.actor,
+    )?;
     fit_fielded_units(ctx)?;
     let match_id = crate::match_::allocate_id(ctx).map_err(|_| SimError::Unavailable)?;
     let deadline = ctx
@@ -3968,6 +3999,7 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                 centre.state = MatchState::Running;
                 centre.board_deadline_ms = None;
             }
+            super::selection_refs::reconcile(ctx);
             tracing::info!(match_id = match_id.0, "tacsim: match entered Running");
             // **16b cut Z.4 (16c `N8`)**: the sides' nets, here and not in
             // `start` — staff `@arena/start` shares `start`, and nothing inside it
@@ -4032,11 +4064,7 @@ pub fn seal_line(seal: &crate::arena::mind::MindSeal, substituted: bool) -> Opti
     if seal.mind.is_empty() {
         return None;
     }
-    let profiles: Vec<SmolStr> = seal
-        .profiles
-        .iter()
-        .map(|profile| profile.name.clone())
-        .collect();
+    let profiles: Vec<SmolStr> = seal.profile_set().names().map(SmolStr::new).collect();
     let why = if substituted {
         ", for humans on the other side"
     } else {
@@ -4180,7 +4208,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         .unwrap_or_default();
     // 17b cut M5.1: the class a chosen mind is admitted at is capped here, as
     // the seal caps it (`seal_for`'s `min(rated, core, class_cap)`).
-    let fill_class = minds_config(ctx.w).map_or(CoreClass::I, |cfg| cfg.fill_class);
+    let minds_cfg = minds_config(ctx.w).unwrap_or_default();
     {
         let Some(centre) = centre(ctx.w) else {
             return Err(SimError::Unavailable);
@@ -4226,8 +4254,13 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                         slot: index,
                         opening: openings.get(&(team, index)).copied(),
                         // 17b cut M5.1: a target chooses no mind, so the pool
-                        // admits it by the fill rule (`fill_class`).
-                        mind_class: None,
+                        // admits the default at its actual capped class.
+                        mind_class: Some(sealed_class(
+                            ctx.w,
+                            &HeldMind::doctrine(),
+                            authored_unit_type(ctx.w, team, index).as_deref(),
+                            caps::fill_cap(ctx.w, centre, team),
+                        )),
                     });
                     minds.insert(tank, SealChoice::unchosen());
                 }
@@ -4246,9 +4279,8 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
             // slot's choice resolved against the holdings seam — a mind its
             // pilot no longer holds is `SimError::MindNotHeld`, naming the
             // slot and never the mind — into the side's `minds` and, for a
-            // slot that chose, the class its mind seals at on the fitted
-            // chassis (`Fielded::mind_class`); an unchosen hull is admitted
-            // by the fill rule. Since 17b cut M5.2 the check-out seals each
+            // slot, the class its mind seals at on the fitted
+            // chassis (`Fielded::mind_class`), including an unchosen default. Since 17b cut M5.2 the check-out seals each
             // hull with its entry (`crate::match_::start`).
             let mut units: Vec<crate::match_::Fielded> = Vec::new();
             let mut minds: BTreeMap<ObjId, SealChoice> = BTreeMap::new();
@@ -4256,42 +4288,14 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                 let Some(unit) = slot.unit else {
                     continue;
                 };
-                let (mind_class, choice) = match &slot.mind {
-                    None => (None, SealChoice::unchosen()),
-                    Some(choice) => {
-                        let held =
-                            holdings::resolve(&holdings::held_by(ctx.w, slot.pilot), &choice.mind)
-                                .cloned()
-                                .ok_or(SimError::MindNotHeld {
-                                    team: team.as_str(),
-                                    index: Some(slot.index),
-                                })?;
-                        // **17b cut M5.2** (Q-UM-15, the owner's OQ-5): with
-                        // humans on both sides a non-Doctrine choice is
-                        // sealed as Standard Doctrine on Line (the fallback
-                        // preset: no configuration exists, critic G10).
-                        let choice = if centre.doctrine_only && !held.is_doctrine() {
-                            SealChoice {
-                                held: HeldMind::doctrine(),
-                                profiles: Vec::new(),
-                                chose: true,
-                                substituted: true,
-                            }
-                        } else {
-                            SealChoice {
-                                held,
-                                profiles: choice.profiles.clone(),
-                                chose: true,
-                                substituted: false,
-                            }
-                        };
-                        let chassis =
-                            fitted_type(ctx.w, unit).or_else(|| effective_type(ctx.w, slot));
-                        let class =
-                            sealed_class(ctx.w, &choice.held, chassis.as_deref(), fill_class);
-                        (Some(class), choice)
-                    }
-                };
+                let choice = caps::slot_choice(ctx.w, centre, slot)?;
+                let chassis = fitted_type(ctx.w, unit).or_else(|| effective_type(ctx.w, slot));
+                let mind_class = Some(sealed_class(
+                    ctx.w,
+                    &choice.held,
+                    chassis.as_deref(),
+                    minds_cfg.max_class,
+                ));
                 units.push(crate::match_::Fielded {
                     unit,
                     slot: slot.index,
@@ -4356,22 +4360,15 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                     // 16b cut Q.1: an AI-filled pod carries its own index too, so
                     // a machine in red pod 3 is `RC`, exactly as a pilot in that
                     // pod would be.
-                    let (mind_class, choice) = match &fill {
-                        None => (None, SealChoice::unchosen()),
-                        Some(choice) => {
-                            let chassis = fitted_type(ctx.w, tank)
-                                .or_else(|| authored_unit_type(ctx.w, team, index));
-                            (
-                                Some(sealed_class(
-                                    ctx.w,
-                                    &choice.held,
-                                    chassis.as_deref(),
-                                    fill_class,
-                                )),
-                                choice.clone(),
-                            )
-                        }
-                    };
+                    let choice = fill.clone().unwrap_or_else(SealChoice::unchosen);
+                    let chassis =
+                        fitted_type(ctx.w, tank).or_else(|| authored_unit_type(ctx.w, team, index));
+                    let mind_class = Some(sealed_class(
+                        ctx.w,
+                        &choice.held,
+                        chassis.as_deref(),
+                        caps::fill_cap(ctx.w, centre, team),
+                    ));
                     units.push(crate::match_::Fielded {
                         unit: tank,
                         slot: index,
@@ -4460,6 +4457,7 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
         centre.board_deadline_ms = None;
         dropped
     };
+    super::selection_refs::reconcile(ctx);
     for (pilot, team, index) in &dropped {
         let name = display_name(ctx.w, *pilot);
         announce(
@@ -4621,11 +4619,107 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
     if size < claimed {
         return Err(SimError::AiBelowSide { claimed });
     }
-    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-        book.centre_mut().ai_side_size = Some(size);
-    }
+    let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+    let mut next = previous.clone();
+    next.ai_side_size = Some(size);
+    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    super::selection_refs::publish_centre(ctx, next)?;
     announce(ctx, format!("AI fill set to {size} a side."));
     Ok(())
+}
+
+/// Read or set the caller's side's AI execution ceiling. Only the current lead
+/// may set it; staff authority does not impersonate a side's lead.
+///
+/// # Errors
+/// The usual centre, fill, state and lead refusals, or the prospective roster's
+/// class/profile/pool admission refusal. No rejected change is published.
+pub fn ai_class(ctx: &mut Ctx<'_>, chosen: Option<CoreClass>) -> Result<(), SimError> {
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, ctx.actor)?;
+    let account = account_of(ctx.w, ctx.actor)?;
+    let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    if !match_cfg.ai_fill {
+        return Err(SimError::AiOff);
+    }
+    let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+    if previous.mode == MatchMode::Range {
+        return Err(SimError::AiOnRange);
+    }
+    let team = previous
+        .slot_of_account(account)
+        .map(|slot| slot.team)
+        .ok_or(SimError::NoSlot)?;
+    let cfg = minds_config(ctx.w).unwrap_or_default();
+    let Some(class) = chosen else {
+        let cap = caps::fill_cap(ctx.w, &previous, team);
+        ctx.out.sys_to_actor(ctx.actor, NOTICE_CATEGORY,
+            format!("{}'s AI class cap is {}; operator maximum {}. Each mind still respects its rating and core.",
+                side_word(team), cap.as_str(), cfg.max_class.as_str()));
+        return Ok(());
+    };
+    if previous.state != MatchState::Selection {
+        return Err(SimError::WrongState {
+            state: previous.state.as_str(),
+        });
+    }
+    if !previous.leads_side(team, account) {
+        return Err(SimError::NotLeadForAiClass);
+    }
+    let mut next = previous.clone();
+    next.fill_classes.retain(|cap| cap.team != team);
+    next.fill_classes.push(FillClass {
+        team,
+        lead: account,
+        class,
+    });
+    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    let effective = cfg.fill_cap(Some(class));
+    super::selection_refs::publish_centre(ctx, next)?;
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        NOTICE_CATEGORY,
+        format!(
+            "{}'s AI class cap is now {} (chosen {}, operator maximum {}).",
+            side_word(team),
+            effective.as_str(),
+            class.as_str(),
+            cfg.max_class.as_str()
+        ),
+    );
+    Ok(())
+}
+
+/// The same cap selected by the lobby preview, reread at actual check-out.
+pub(crate) fn checkout_class_cap(w: &World, team: Team, unit: ObjId, seated: bool) -> CoreClass {
+    let cfg = minds_config(w).unwrap_or_default();
+    let centre = centre(w);
+    if seated
+        || centre.is_some_and(|centre| {
+            centre.slots.iter().any(|slot| {
+                slot.team == team
+                    && (slot.unit == Some(unit)
+                        || centre::tank_for_slot(w, team, slot.index) == Some(unit))
+            })
+        })
+    {
+        cfg.max_class
+    } else {
+        centre.map_or_else(
+            || cfg.fill_cap(None),
+            |centre| caps::fill_cap(w, centre, team),
+        )
+    }
+}
+
+/// Bounded preview used by integration fixtures without checking a match out.
+#[doc(hidden)]
+pub fn class_preview_for_tests(w: &World) -> Result<Vec<(Team, u8, CoreClass)>, SimError> {
+    caps::preview(w, centre(w).ok_or(SimError::Unavailable)?).map(|rows| {
+        rows.into_iter()
+            .map(|row| (row.team, row.index, row.class))
+            .collect()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -4813,13 +4907,12 @@ pub fn mode(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
             arena: label,
         });
     }
-    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-        let centre = book.centre_mut();
-        centre.mode = chosen;
-        // 16b cut O.3: leaving a range takes its count with it (the invariant on
-        // `Centre::range_targets`).
-        centre.range_targets = None;
-    }
+    let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+    let mut next = previous.clone();
+    next.mode = chosen;
+    next.range_targets = None;
+    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    super::selection_refs::publish_centre(ctx, next)?;
     announce(ctx, announcement);
     Ok(())
 }
@@ -4928,11 +5021,12 @@ pub fn range(ctx: &mut Ctx<'_>, count: Option<u8>) -> Result<(), SimError> {
     if count < 1 || count > cap {
         return Err(SimError::RangeCount { max: cap });
     }
-    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-        let centre = book.centre_mut();
-        centre.mode = MatchMode::Range;
-        centre.range_targets = Some(count);
-    }
+    let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
+    let mut next = previous.clone();
+    next.mode = MatchMode::Range;
+    next.range_targets = Some(count);
+    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    super::selection_refs::publish_centre(ctx, next)?;
     announce(
         ctx,
         format!(
@@ -5312,6 +5406,7 @@ fn to_idle(ctx: &mut Ctx<'_>) {
     if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
         *book.centre_mut() = Centre::default();
     }
+    super::selection_refs::reconcile(ctx);
 }
 
 /// **The centre's half of an ended match** — called from
@@ -5435,11 +5530,13 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
             // 17b cut M5.1: and the fills' mind choices, which belonged to the
             // match that was set up (a slot's choice goes with `slots`).
             centre.fill_minds.clear();
+            centre.fill_classes.clear();
             // 17b cut M5.2: and Q-UM-15's rule, decided at that match's
             // `SIM START`.
             centre.doctrine_only = false;
         }
     }
+    super::selection_refs::reconcile(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -6014,6 +6111,47 @@ mod tests {
             released_by_resume: false,
             mind: None,
         }
+    }
+
+    #[test]
+    fn m6_lead_class_caps_round_trip_and_do_not_pass_to_a_new_lead() {
+        let mut centre = Centre {
+            state: MatchState::Selection,
+            slots: vec![
+                slot(Team::Red, 1, 1),
+                slot(Team::Red, 2, 2),
+                slot(Team::Blue, 1, 3),
+            ],
+            leads: vec![(Team::Red, account(1)), (Team::Blue, account(3))],
+            fill_classes: vec![
+                FillClass {
+                    team: Team::Red,
+                    lead: account(1),
+                    class: CoreClass::II,
+                },
+                FillClass {
+                    team: Team::Blue,
+                    lead: account(3),
+                    class: CoreClass::Zero,
+                },
+            ],
+            ..Centre::default()
+        };
+        let encoded = serde_json::to_value(&centre).expect("centre serializes");
+        let restored: Centre = serde_json::from_value(encoded).expect("live centre decodes");
+        assert_eq!(restored.fill_classes, centre.fill_classes);
+        centre.resettle_leads();
+        assert_eq!(centre.fill_classes.len(), 2);
+        centre.slots.retain(|slot| slot.account != account(1));
+        centre.resettle_leads();
+        assert!(centre.leads_side(Team::Red, account(2)));
+        assert_eq!(centre.fill_classes.len(), 1);
+        assert_eq!(centre.fill_classes[0].team, Team::Blue);
+        let default = serde_json::to_value(Centre::default()).expect("default serializes");
+        assert!(
+            default.get("fill_classes").is_none(),
+            "unchosen records keep their old shape"
+        );
     }
 
     #[test]

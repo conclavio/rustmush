@@ -753,3 +753,27 @@ fn legacy_respond_decodes_with_an_empty_epoch_for_engine_rejection() {
             .unwrap();
     assert!(matches!(command, ClientCommand::Respond { epoch, .. } if epoch.is_empty()));
 }
+
+#[test]
+fn mind_bulk_is_a_closed_bounded_read_request() {
+    let request = ClientCommand::Req {
+        id: 7,
+        q: Query::MindBulk {
+            run: Some(12),
+            page: Some(2),
+        },
+    };
+    roundtrip(&request);
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        json!({
+            "t":"req", "d":{"id":7,"q":{"t":"mind_bulk","d":{"run":12,"page":2}}}
+        })
+    );
+    roundtrip(&Query::MindBulk {
+        run: None,
+        page: None,
+    });
+    assert!(serde_json::from_value::<Query>(json!({"t":"mind_bulk","d":{"page":65536}})).is_err());
+    assert!(serde_json::from_value::<Query>(json!({"t":"mind_bulk","d":{"run":-1}})).is_err());
+}

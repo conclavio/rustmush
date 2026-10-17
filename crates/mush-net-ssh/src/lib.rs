@@ -47,6 +47,7 @@ mod editor;
 mod hooks;
 mod hostkey;
 mod line;
+mod mind_exec;
 mod server;
 pub mod tui;
 mod welcome;

@@ -166,6 +166,42 @@ fn composed_delegations() -> BTreeSet<Row> {
 // The cases
 // ---------------------------------------------------------------------------
 
+/// M6 structured requests, private trace and proving queries remain declared
+/// game services. BENCH is a push-only feed, with commands on its own verb.
+#[test]
+fn m6_author_services_are_registered_under_the_game_owner() {
+    let engine = production_engine("tacsim");
+    assert_eq!(
+        engine
+            .registry
+            .invoke_handler("mind")
+            .map(|(owner, _)| owner.as_str()),
+        Some("tacsim")
+    );
+    for feed in ["arena.mind", "mind.bulk", "mind.bench"] {
+        let row = engine
+            .registry
+            .panel_feeds()
+            .iter()
+            .find(|(name, _)| name.as_str() == feed);
+        assert_eq!(
+            row.map(|(_, owner)| owner.as_str()),
+            Some("tacsim"),
+            "{feed}"
+        );
+    }
+    for query in ["arena.mind", "mind.bulk"] {
+        assert_eq!(
+            engine
+                .registry
+                .query_handler(query)
+                .map(|(owner, _)| owner.as_str()),
+            Some("tacsim"),
+            "{query}"
+        );
+    }
+}
+
 /// **Ownership resolves.** Composition records `namespace -> owning module`
 /// for the whole roster: a module's name is its namespace, so every module
 /// claims one, and nothing claims a namespace no module composed.

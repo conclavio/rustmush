@@ -246,7 +246,84 @@ pub struct ClockState {
     last_engaged_signal_ms: Option<i64>,
 }
 
+/// Complete synthetic replay timebase. Live restart still uses ClockState and
+/// reanchors to its new process; replay restores the recorded wall/floor state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayClock {
+    state: ClockState,
+    last_wall_ms: Option<i64>,
+    lagged: bool,
+    pinned: Option<Tempo>,
+    floor_ms: Option<u32>,
+    floor_at_last_wake: Option<u32>,
+    floor_changed: bool,
+}
+
 impl Clock {
+    /// The captured manual-clock anchor; private forks preserve the whole clock.
+    pub(crate) fn replay_wall_ms(&self) -> Option<i64> {
+        self.last_wall_ms
+    }
+
+    /// Capture every clock field. A new field must explicitly choose its replay
+    /// semantics here; an ordinary snapshot's wall reset is deliberately separate.
+    #[must_use]
+    pub fn replay_state(&self) -> ReplayClock {
+        let Self {
+            tempo,
+            tempo_since_ms,
+            last_alert_signal_ms,
+            last_engaged_signal_ms,
+            last_wall_ms,
+            lagged,
+            pinned,
+            floor_ms,
+            floor_at_last_wake,
+            floor_changed,
+        } = *self;
+        ReplayClock {
+            state: ClockState {
+                tempo,
+                tempo_since_ms,
+                last_alert_signal_ms,
+                last_engaged_signal_ms,
+            },
+            last_wall_ms,
+            lagged,
+            pinned,
+            floor_ms,
+            floor_at_last_wake,
+            floor_changed,
+        }
+    }
+
+    /// Restore a private replay's explicit timebase without a fresh wall anchor.
+    #[must_use]
+    pub fn from_replay(state: ReplayClock) -> Self {
+        let ReplayClock {
+            state,
+            last_wall_ms,
+            lagged,
+            pinned,
+            floor_ms,
+            floor_at_last_wake,
+            floor_changed,
+        } = state;
+        Self {
+            tempo: state.tempo,
+            tempo_since_ms: state.tempo_since_ms,
+            last_alert_signal_ms: state.last_alert_signal_ms,
+            last_engaged_signal_ms: state.last_engaged_signal_ms,
+            last_wall_ms,
+            lagged,
+            pinned,
+            floor_ms,
+            floor_at_last_wake,
+            floor_changed,
+        }
+    }
+
     /// A clock in [`Tempo::Quiet`] that has never seen a signal or a wall
     /// reading.
     #[must_use]
@@ -1014,5 +1091,33 @@ mod tests {
         let (dt, lagged) = resumed.advance(9_000_500, &cfg);
         assert_eq!((dt, lagged), (500, false));
         assert!(!resumed.lagged());
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn replay_keeps_all_clock_fields_and_live_restart_still_resets_them() {
+        let original = Clock {
+            tempo: Tempo::Alert,
+            tempo_since_ms: 12_000,
+            last_alert_signal_ms: Some(15_000),
+            last_engaged_signal_ms: Some(9_000),
+            last_wall_ms: Some(21_003),
+            lagged: true,
+            pinned: Some(Tempo::Quiet),
+            floor_ms: Some(5_000),
+            floor_at_last_wake: Some(10_000),
+            floor_changed: true,
+        };
+        let document = serde_json::to_vec(&original.replay_state()).expect("encode");
+        let recorded = serde_json::from_slice(&document).expect("decode");
+        assert_eq!(Clock::from_replay(recorded), original);
+        let restarted = Clock::from_state(original.to_state());
+        assert_eq!(restarted.last_wall_ms, None);
+        assert_eq!(restarted.floor_ms, None);
+        assert_ne!(restarted, original);
     }
 }

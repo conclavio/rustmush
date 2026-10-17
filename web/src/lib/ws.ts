@@ -38,7 +38,7 @@
 // The class takes injectable seams (WebSocket factory, RNG) so the vitest
 // suite can drive it without a browser or a server.
 
-import type { ClientCaps, ClientCommand, Envelope, OutputEvent, Query } from "./proto";
+import type { ClientCaps, ClientCommand, Envelope, OutputEvent, Query, InvokeRequest } from "./proto";
 
 /** Discriminant of an [`OutputEvent`] — `"narrative"`, `"channel"`, … */
 export type EventType = OutputEvent["t"];
@@ -262,6 +262,14 @@ export class WsClient {
   req(q: Query): number | null {
     const id = this.#nextReqId++;
     return this.send({ t: "req", d: { id, q } }) ? id : null;
+  }
+
+  /** Connection-local mutation service; shares the query correlation namespace. */
+  invoke(request: InvokeRequest): number | null {
+    const encoded = JSON.stringify({ t: "invoke", d: { id: this.#nextReqId, request } });
+    if (new TextEncoder().encode(encoded).length > 272 * 1024) return null;
+    const id = this.#nextReqId++;
+    return this.send({ t: "invoke", d: { id, request } }) ? id : null;
   }
 
   /**

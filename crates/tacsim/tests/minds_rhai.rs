@@ -60,6 +60,7 @@ use mush_tactics::{
 use serde_json::Value as Json;
 use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
+use tacsim::arena::CardChange;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
 use tacsim::arena::index::range_between;
@@ -88,7 +89,6 @@ use tacsim::arena::stock_mind::{
     NativeStockMind, Weights, best_hostile, cell_point, health_permille, line_to, view_ranges,
 };
 use tacsim::arena::weapons::WeaponBand;
-use tacsim::arena::{CardChange, StockCard};
 use tacsim::arena_task::MatchId;
 use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
 use tacsim::deliberation::order::RangeBand;
@@ -622,7 +622,9 @@ struct Kept {
     view: Arc<MindView>,
     memory: Vec<u8>,
     map: Arc<ArenaDefinition>,
-    card: StockCard,
+    card: tacsim::arena::runtime_card::RuntimeCard,
+    program: tacsim::arena::profile_rules::BoundProgram,
+    profile_token: tacsim::arena::profile_runtime::ProfileToken,
     result: ThinkResult,
 }
 
@@ -641,6 +643,8 @@ impl Kept {
             memory: &self.memory,
             map: &self.map,
             card: &self.card,
+            program: &self.program,
+            profile_token: self.profile_token,
         }
     }
 
@@ -709,6 +713,8 @@ impl MindRunner for Recorded {
                 memory: job.memory.to_vec(),
                 map: Arc::clone(job.map),
                 card: job.card.clone(),
+                program: job.program.clone(),
+                profile_token: job.profile_token,
                 result: result.clone(),
             });
         }
@@ -1174,7 +1180,9 @@ struct Moment {
     frame: Frame,
     ranges: BTreeMap<tacsim::arena::state::ContactId, u64>,
     map: Arc<ArenaDefinition>,
-    card: StockCard,
+    card: tacsim::arena::runtime_card::RuntimeCard,
+    program: tacsim::arena::profile_rules::BoundProgram,
+    profile_token: tacsim::arena::profile_runtime::ProfileToken,
 }
 
 /// **The view and the frame of `unit` now**: the view off one clone
@@ -1213,7 +1221,9 @@ fn moment(arena: &Arena, wall: i64, unit: ObjId) -> Moment {
         frame,
         ranges,
         map: Arc::clone(&arena.definition),
-        card: arena.minds.get(&unit).expect("a mind row").card.clone(),
+        card: arena.profiles[&unit].card.clone(),
+        program: arena.profiles[&unit].program.clone(),
+        profile_token: arena.profiles[&unit].token(),
     }
 }
 
@@ -1430,6 +1440,8 @@ fn parity_at(moment: &Moment, unit: ObjId) -> Exercised {
                 memory: &[],
                 map: &moment.map,
                 card: &moment.card,
+                program: &moment.program,
+                profile_token: moment.profile_token,
             };
             let result = runner.think(&job);
             assert_eq!(
@@ -2581,6 +2593,8 @@ fn m2_every_fault_has_its_word_and_three_drop_the_hull() {
     // The baseline: M2.2's overflow path, the strikes as the Rhai run's.
     let speed = IntentKind::Speed { cms: 300 };
     let baseline = replay(&kept, |kept| ThinkResult {
+        diagnostics: None,
+        rule_sample: None,
         intents: vec![speed.clone(); MIND_INTENTS_MAX + 1],
         memory: kept.memory.clone(),
         fault: None,
@@ -2780,7 +2794,8 @@ fn kernels_by_hand(view: &MindView, def: &ArenaDefinition) -> Memory {
 
 /// The kernels script's answer on one view.
 fn kernels_on(runner: &RhaiRunner, view: &Arc<MindView>, arena: &Arena) -> Memory {
-    let card = arena.minds.get(&RED).expect("red's row").card.clone();
+    let runtime = &arena.profiles[&RED];
+    let card = runtime.card.clone();
     let result = runner.think(&ThinkJob {
         unit: RED,
         think_seq: 0,
@@ -2793,6 +2808,8 @@ fn kernels_on(runner: &RhaiRunner, view: &Arc<MindView>, arena: &Arena) -> Memor
         memory: &[],
         map: &arena.definition,
         card: &card,
+        program: &runtime.program,
+        profile_token: runtime.token(),
     });
     assert_eq!(result.fault, None, "{:?}", result.trace);
     decode_memory(&result.memory)
@@ -3016,7 +3033,7 @@ fn m2_the_card_type_reads_the_card_the_arena_holds() {
         } else {
             &rearguard
         };
-        assert_eq!(&think.card, card, "think {}", think.think_seq);
+        assert_eq!(think.card.stock(), Some(card), "think {}", think.think_seq);
         let memory = think.memory_out();
         assert_eq!(
             mem(&memory, "withdraw"),
@@ -3034,7 +3051,11 @@ fn m2_the_card_type_reads_the_card_the_arena_holds() {
         MemValue::Int(700)
     );
     assert_eq!(
-        rig.arena.minds.get(&RED).map(|state| state.card.clone()),
+        rig.arena
+            .profiles
+            .get(&RED)
+            .and_then(|runtime| runtime.card.stock())
+            .cloned(),
         Some(rearguard)
     );
 }
@@ -3238,11 +3259,8 @@ fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
         let t1 = NativeStockMind::with(&arena.arena_cfg.reflex);
         for unit in [RED, RED2] {
             let view = Arc::new(arena.clone().mind_view(unit).expect("a view"));
-            let card = arena
-                .minds
-                .get(&unit)
-                .map(|mind| mind.card.clone())
-                .expect("a mind row");
+            let runtime = &arena.profiles[&unit];
+            let card = runtime.card.clone();
             let job = ThinkJob {
                 unit,
                 think_seq: 0,
@@ -3256,6 +3274,8 @@ fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
                 memory: &[],
                 map: &arena.definition,
                 card: &card,
+                program: &runtime.program,
+                profile_token: runtime.token(),
             };
             let native = t1.think(&job);
             let rhai = t2.think(&job);
@@ -3764,7 +3784,8 @@ fn classed_field(
 fn think_on_row(arena: &mut Arena, source: &str, memory: &[u8]) -> ThinkResult {
     let profile = arena.mind_profile(RED);
     let view = Arc::new(arena.mind_view(RED).expect("red's view"));
-    let card = arena.minds.get(&RED).expect("red's row").card.clone();
+    let runtime = &arena.profiles[&RED];
+    let card = runtime.card.clone();
     rhai(arena, source).think(&ThinkJob {
         unit: RED,
         think_seq: 0,
@@ -3777,6 +3798,8 @@ fn think_on_row(arena: &mut Arena, source: &str, memory: &[u8]) -> ThinkResult {
         memory,
         map: &arena.definition,
         card: &card,
+        program: &runtime.program,
+        profile_token: runtime.token(),
     })
 }
 
@@ -3861,7 +3884,8 @@ fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
     let runner = rhai(&three, spin);
     let profile = three.mind_profile(RED);
     let view = Arc::new(three.mind_view(RED).expect("red's view"));
-    let card = three.minds.get(&RED).expect("red's row").card.clone();
+    let runtime = &three.profiles[&RED];
+    let card = runtime.card.clone();
     let job = |profile| ThinkJob {
         unit: RED,
         think_seq: 0,
@@ -3874,6 +3898,8 @@ fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
         memory: &[],
         map: &three.definition,
         card: &card,
+        program: &runtime.program,
+        profile_token: runtime.token(),
     };
     assert_eq!(runner.think(&job(&profile)).fault, None, "III's 4,500");
     let spent = runner.take_stats();
@@ -4301,11 +4327,14 @@ fn m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_ca
         let carried = row.pending.take().expect("the carried answer");
         let profile = control.mind_profile(GATE_UNIT);
         let view = Arc::new(control.mind_view(GATE_UNIT).expect("the resumed view"));
-        let (memory, card) = control
+        let memory = control
             .minds
             .get(&GATE_UNIT)
-            .map(|state| (state.memory.clone(), state.card.clone()))
-            .expect("the row");
+            .expect("the row")
+            .memory
+            .clone();
+        let runtime = &control.profiles[&GATE_UNIT];
+        let card = runtime.card.clone();
         let fresh = control.mind_runner.think(&ThinkJob {
             unit: GATE_UNIT,
             think_seq: carried.think_seq,
@@ -4318,6 +4347,8 @@ fn m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_ca
             memory: &memory,
             map: &control.definition,
             card: &card,
+            program: &runtime.program,
+            profile_token: runtime.token(),
         });
         assert_eq!(fresh.fault, None);
         assert!(
@@ -4329,6 +4360,7 @@ fn m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_ca
             row.pending = Some(tacsim::arena::mind::PendingThink {
                 intents: fresh.intents,
                 memory: fresh.memory,
+                rule_sample: fresh.rule_sample,
                 ..carried
             });
         }
@@ -4629,6 +4661,8 @@ fn m3_three_injected_faults_drop_a_unit_to_the_rom() {
     let kept = recorded.kept();
     let speed = IntentKind::Speed { cms: 300 };
     let baseline = replay(&kept, |kept| ThinkResult {
+        diagnostics: None,
+        rule_sample: None,
         intents: vec![speed.clone(); MIND_INTENTS_MAX + 1],
         memory: kept.memory.clone(),
         fault: None,

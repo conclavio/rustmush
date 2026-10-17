@@ -143,6 +143,9 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
                 w.finish_inline();
             }
         }
+        // Private structured authoring replies are consumed by web/TUI or the
+        // narrow SSH exec pump. Never dump source into the scrolling stream.
+        OutputEvent::InvokeResult { .. } => {}
         // Transport keepalive: nothing to show.
         OutputEvent::Ping { .. } => {}
         // Web-resume acknowledgement: structured-transport only (the WS

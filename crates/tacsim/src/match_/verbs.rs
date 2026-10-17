@@ -1287,27 +1287,27 @@ pub fn arena_command(
 }
 
 // ---------------------------------------------------------------------------
-// 17b cut M1b.5: `@mind/set`, the owner's lever on a mind's card
+// 17b cut M1b.5: `@mind/live`, the owner's lever on a mind's card
 // ---------------------------------------------------------------------------
 
-/// `@mind/set`'s usage, after the `Usage: ` prefix.
-pub const MIND_SET_USAGE: &str = "@mind/set <unit>[=<preset> | =<slider> <value>]";
+/// `@mind/live`'s usage, after the `Usage: ` prefix.
+pub const MIND_SET_USAGE: &str = "@mind/live <unit>[=<preset> | =<slider> <value>]";
 
-/// **`@mind/set`** — **17b cut M1b.5** (doc 17 §11, §22's M1b: *an
-/// owner-facing `@mind/set` on T1*; D-UM-17 as amended, D-UM-43, D-UM-44): set
+/// **`@mind/live`** — **17b cut M1b.5** (doc 17 §11, §22's M1b: *an
+/// owner-facing `@mind/live` on T1*; D-UM-17 as amended, D-UM-43, D-UM-44): set
 /// a preset or one slider on a [`Controller::Mind`] hull of a running match,
 /// and read its card back. Staff only (the verb's gate, as `@arena`'s); the
 /// pilot's own `MIND` verb (17b cut M5.4) reads the hull's seal from the seat
 /// and switches among its sealed profiles, never a slider. Three forms:
 ///
-/// * `@mind/set <unit>` — the read-back: a head naming the card AND where the
+/// * `@mind/live <unit>` — the read-back: a head naming the card AND where the
 ///   world's knowledge of it comes from (the check-out, the tape, an offer not
 ///   yet on the tape, or nothing since a resume), then the card's five section
 ///   lines
 ///   ([`crate::arena::StockCard::read_back`]);
-/// * `@mind/set <unit>=<preset>` — one of [`crate::arena::PRESETS`],
+/// * `@mind/live <unit>=<preset>` — one of [`crate::arena::PRESETS`],
 ///   case-folded;
-/// * `@mind/set <unit>=<slider> <value>` — one slider, validated here by
+/// * `@mind/live <unit>=<slider> <value>` — one slider, validated here by
 ///   [`crate::arena::StockCard::set`] on a scratch card (the mirror's known
 ///   card, else Line on this server's doctrine) — refused by name with the
 ///   range, the step or the choices, never clamped — and, for `min_odds`,
@@ -1369,7 +1369,7 @@ pub fn mind_set(ctx: &mut Ctx<'_>, arena_cfg: &crate::config::ArenaConfig) -> Re
     }
     if mirror.controllers.get(&unit) != Some(&Controller::Mind) {
         return Err(CmdError::msg(format!(
-            "@mind/set: #{} is not flown by a mind.",
+            "@mind/live: #{} is not flown by a mind.",
             unit.0
         )));
     }
@@ -1408,7 +1408,7 @@ pub fn mind_set(ctx: &mut Ctx<'_>, arena_cfg: &crate::config::ArenaConfig) -> Re
             // doctrine pair on this doctrine (Rearguard over a fight_home_pct
             // above 70) is refused by name, as the arena refuses it.
             if let Err(error) = card.pair(shown) {
-                return Err(CmdError::msg(format!("@mind/set: {error}.")));
+                return Err(CmdError::msg(format!("@mind/live: {error}.")));
             }
             scratch = card;
             (CardChange::Preset(SmolStr::new(shown)), shown.to_owned())
@@ -1428,13 +1428,13 @@ pub fn mind_set(ctx: &mut Ctx<'_>, arena_cfg: &crate::config::ArenaConfig) -> Re
             {
                 let floor = mirror.odds_floor_permille / 10;
                 return Err(CmdError::msg(format!(
-                    "@mind/set: min_odds is {floor}% to 95% in steps of 5; {floor}% is the \
+                    "@mind/live: min_odds is {floor}% to 95% in steps of 5; {floor}% is the \
                      Compact floor (it is {value})."
                 )));
             }
             if let Err(error) = scratch.set(&slider, value) {
                 return Err(CmdError::msg(format!(
-                    "@mind/set: {error} (it is {value})."
+                    "@mind/live: {error} (it is {value})."
                 )));
             }
             (
@@ -1486,9 +1486,9 @@ pub fn mind_set(ctx: &mut Ctx<'_>, arena_cfg: &crate::config::ArenaConfig) -> Re
     Ok(())
 }
 
-/// `@mind/set`'s refusal for a word that is neither a preset nor a slider.
+/// `@mind/live`'s refusal for a word that is neither a preset nor a slider.
 fn unknown_card_word(word: &str) -> CmdError {
-    CmdError::msg(format!("@mind/set: no slider or preset named \"{word}\"."))
+    CmdError::msg(format!("@mind/live: no slider or preset named \"{word}\"."))
 }
 
 /// **The read-back of `unit`'s card** (17b cut M1b.5): the head — `(as checked

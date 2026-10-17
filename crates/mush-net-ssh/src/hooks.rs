@@ -145,6 +145,16 @@ pub trait SshHooks: Send + Sync {
     /// One completed input line from a connected (in-game) connection.
     fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()>;
 
+    /// Closed module request; results use this physical connection's event queue.
+    fn invoke(
+        &self,
+        _conn: u64,
+        _id: u64,
+        _request: mush_proto::InvokeRequest,
+    ) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
     /// A read-only world query on behalf of a connected connection — the SSH
     /// side of the structured `Inbound::Query` path (milestone M15). The
     /// transport uses it to refresh TUI widgets (e.g. the WHO rail submits

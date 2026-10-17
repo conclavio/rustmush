@@ -13,6 +13,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  mind-author-acceptance:
+    name: M6 author story and fresh external pilot comparison
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # The runner records one clean revision/run identity, checks independent
+      # bot dependencies, executes both real targets, then compares their frozen
+      # contexts and intervals. Exact inventory-owned child commands:
+      # cargo test -p mush-bot --test arena_mind_author_story -- --ignored --nocapture
+      # cargo test -p mush-bot --test arena_mind_port_rate -- --ignored --nocapture
+      - name: Validate acceptance artifact comparison
+        run: python -B scripts/test_mind_port_acceptance.py
+      - name: Complete author story and fresh thirty-match external comparison
+        run: python scripts/mind_port_acceptance.py run target/m6-acceptance-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m6-author-acceptance
+          path: target/m6-acceptance-evidence/
+  mind-full-replay:
+    name: M6 full-duration Class III replay
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Recompute all thinks and substeps for twenty-four Class III hulls over 900 seconds
+        run: cargo test -p tacsim --lib m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep -- --ignored --nocapture
   test:
     strategy:
       fail-fast: false

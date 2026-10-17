@@ -1338,3 +1338,64 @@ fn m3_a_memory_past_a_lowered_cap_keeps_its_keys_and_admits_none() {
         "from nothing, 33 is past the cap as before"
     );
 }
+
+/// Cache churn bounds retained ASTs without invalidating a live runner, and
+/// touching a cached seal keeps it through the next insertion.
+#[test]
+fn m6_cache_is_bounded_lru_and_eviction_keeps_a_held_ast_executable() {
+    let sandbox = sandbox();
+    let source = "fn think(a,b) { this.answer = 42; }";
+    let held = sandbox.compile(source, digest_of(source), ABI).unwrap();
+    let mut newest = None;
+    let mut oldest_retained = None;
+    for n in 0..mush_mind::MAX_CACHED_MINDS {
+        let text = format!("fn think(a,b) {{ this.answer = {}; }}", n + 1000);
+        newest = Some(sandbox.compile(&text, digest_of(&text), ABI).unwrap());
+        if n == 0 {
+            oldest_retained = newest.clone();
+        }
+        assert!(sandbox.cached() <= mush_mind::MAX_CACHED_MINDS);
+    }
+    let newest = newest.unwrap();
+    let text = format!(
+        "fn think(a,b) {{ this.answer = {}; }}",
+        mush_mind::MAX_CACHED_MINDS - 1 + 1000
+    );
+    let touched = sandbox.compile(&text, digest_of(&text), ABI).unwrap();
+    assert!(Arc::ptr_eq(&touched, &newest));
+    // Touch the OLDEST remaining cache entry, not an already newest one. A
+    // FIFO implementation would evict this entry at the insertion below.
+    let oldest_text = "fn think(a,b) { this.answer = 1000; }";
+    let touched_oldest = sandbox
+        .compile(oldest_text, digest_of(oldest_text), ABI)
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        oldest_retained.as_ref().unwrap(),
+        &touched_oldest
+    ));
+    let extra = "fn think(a,b) { this.extra = true; }";
+    sandbox.compile(extra, digest_of(extra), ABI).unwrap();
+    assert!(Arc::ptr_eq(
+        &touched_oldest,
+        &sandbox
+            .compile(oldest_text, digest_of(oldest_text), ABI)
+            .unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &newest,
+        &sandbox.compile(&text, digest_of(&text), ABI).unwrap()
+    ));
+    assert_eq!(sandbox.cached(), mush_mind::MAX_CACHED_MINDS);
+    let recompiled = sandbox.compile(source, digest_of(source), ABI).unwrap();
+    assert!(!Arc::ptr_eq(&held, &recompiled), "oldest entry was evicted");
+    let (answer, _) = think_with(
+        &sandbox,
+        &held,
+        vec![Dynamic::UNIT, Dynamic::UNIT],
+        b"{}",
+        &CLASS_I,
+        ROOMY,
+        20,
+    );
+    assert_eq!(answer.unwrap().memory, br#"{"answer":42}"#);
+}

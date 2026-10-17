@@ -1159,58 +1159,250 @@ pub(crate) fn put_tutorial(
     );
 }
 
-/// **Store one mind source, content-addressed** (17b cut M3.3; doc 17 §13) —
-/// the single write path of `tacsim:mindsrc:<sha256>`: its digest computed
-/// from its own bytes, installed into RAM and its whole document queued on the
-/// module's own lane, **only when this world holds no document under that
-/// key** (readable or not): a source is immutable and never rewritten.
-/// Answers whether it wrote. `TacsimRuleset::on_world_loaded` calls it for the
-/// stock mind's source at every boot, so the first boot writes it and every
-/// later one finds it.
+/// Source-owner bound, separate from the authored-library 32 KiB limit. The
+/// shipped open Standard source is larger than an authored library entry.
+pub const MAX_STORED_MIND_SOURCE_BYTES: usize = 128 * 1024;
+const MAX_SOURCE_ABI_BYTES: usize = 128;
+
+/// An opaque source-owner publication prepared without mutating RAM. Its bytes,
+/// expected key state and serialized operation cannot be edited by a caller.
+#[derive(Debug)]
+pub struct MindSourceToken {
+    digest: [u8; 32],
+    source: String,
+    existed: bool,
+    operations: Vec<ModuleOp>,
+}
+
+fn source_error(message: impl Into<String>) -> mush_roll::RollError {
+    mush_roll::RollError::Invalid {
+        field: "mind source".into(),
+        message: message.into(),
+    }
+}
+
+fn valid_source_shape(source: &str, abi: &str) -> bool {
+    source.len() <= MAX_STORED_MIND_SOURCE_BYTES
+        && !abi.is_empty()
+        && abi.len() <= MAX_SOURCE_ABI_BYTES
+        && !abi.chars().any(char::is_control)
+}
+
+impl mush_roll::SourceAdapter for TacsimStore {
+    type Token = MindSourceToken;
+
+    fn prepare_source(
+        &self,
+        source: &str,
+        abi: &str,
+    ) -> Result<mush_roll::PreparedSource<MindSourceToken>, mush_roll::RollError> {
+        if !valid_source_shape(source, abi) {
+            return Err(source_error(
+                "source or ABI exceeds the source-owner bounds",
+            ));
+        }
+        let digest = mush_roll::source_digest(source);
+        let bytes = *digest.as_bytes();
+        let existed = self.mind_source_keys.contains(&bytes);
+        if existed && self.mind_source(&bytes) != Some(source) {
+            return Err(mush_roll::RollError::Quarantined(
+                mindsrc_key(&bytes).to_string(),
+            ));
+        }
+        if !existed && self.mind_sources.contains_key(&bytes) {
+            return Err(source_error(
+                "source exists without its immutable key claim",
+            ));
+        }
+        // Even the first publication is fully serialized before any RAM changes.
+        let operations = if existed {
+            Vec::new()
+        } else {
+            let record = MindSourceRecord {
+                sha256: digest.to_hex(),
+                abi: abi.to_owned(),
+                bytes: source.to_owned(),
+            };
+            let value =
+                serde_json::to_value(&record).map_err(|error| source_error(error.to_string()))?;
+            vec![ModuleOp {
+                ns: NS.into(),
+                op: ModuleWrite::JsonSet {
+                    key: mindsrc_key(&bytes),
+                    value,
+                },
+            }]
+        };
+        Ok(mush_roll::PreparedSource {
+            digest,
+            token: MindSourceToken {
+                digest: bytes,
+                source: source.to_owned(),
+                existed,
+                operations: operations.clone(),
+            },
+            operations,
+        })
+    }
+
+    fn read_source(
+        &self,
+        digest: mush_core::DefinitionDigest,
+    ) -> Result<&str, mush_roll::RollError> {
+        self.mind_source(digest.as_bytes()).ok_or_else(|| {
+            mush_roll::RollError::Quarantined(mindsrc_key(digest.as_bytes()).to_string())
+        })
+    }
+}
+
+impl TacsimStore {
+    /// Check this immediately before publication, while owning the synchronous
+    /// world operation. A claimed unreadable document is never repaired here.
+    pub(crate) fn check_mind_source(
+        &self,
+        token: &MindSourceToken,
+    ) -> Result<(), mush_roll::RollError> {
+        let claimed = self.mind_source_keys.contains(&token.digest);
+        if claimed && self.mind_source(&token.digest) != Some(token.source.as_str()) {
+            return Err(mush_roll::RollError::Quarantined(
+                mindsrc_key(&token.digest).to_string(),
+            ));
+        }
+        if claimed != token.existed || (!claimed && self.mind_sources.contains_key(&token.digest)) {
+            return Err(mush_roll::RollError::StaleOperation);
+        }
+        Ok(())
+    }
+
+    /// Infallible half of an already checked publication. The caller owns the
+    /// world operation: no other source operation can interleave after checking.
+    fn apply_mind_source(&mut self, token: MindSourceToken) {
+        if !token.existed {
+            self.mind_source_keys.insert(token.digest);
+            self.mind_sources.insert(token.digest, token.source);
+        }
+    }
+}
+
+/// Publish one fully prepared source + revision in the current world operation.
+/// Both owners and persistence authority are checked before either RAM owner
+/// changes. Roll's callback only copies serialized operations and cannot mutate
+/// the source store, so the source token remains valid after Roll publication.
+/// All work afterward is infallible application and queuing of the one batch.
+/// This must be the command's final fallible action: an enclosing handler error
+/// discards deferred writes but cannot roll back these already published owners.
+pub(crate) fn publish_mind_revision(
+    ctx: &mut Ctx<'_>,
+    prepared: mush_roll::PreparedSave<MindSourceToken>,
+) -> Result<mush_roll::RevisionRef, mush_roll::RollError> {
+    if prepared.revision().key.character != ctx.actor {
+        return Err(mush_roll::RollError::Missing);
+    }
+    if let Some(module) = &ctx.module
+        && (module != NS || ctx.reg.persist_delegation(module, mush_roll::NS).is_none())
+    {
+        return Err(source_error(
+            "combined save lacks tacsim-to-roll persistence authority",
+        ));
+    }
+    let (change, source, revision) = prepared.into_parts();
+    if source.digest.as_bytes() != &source.token.digest
+        || source.operations != source.token.operations
+    {
+        return Err(source_error("prepared source operation changed"));
+    }
+    ctx.w
+        .module_state::<mush_roll::RollStore>()
+        .ok_or(mush_roll::RollError::Missing)?
+        .check_prepared(&change)?;
+    ctx.w
+        .module_state::<TacsimStore>()
+        .ok_or(mush_roll::RollError::Missing)?
+        .check_mind_source(&source.token)?;
+    let mut operations = source.operations;
+    ctx.w
+        .module_state_mut::<mush_roll::RollStore>()
+        .expect("checked roll slot remains installed during this operation")
+        .publish_with(change, |roll_ops| operations.extend_from_slice(roll_ops))?;
+    ctx.w
+        .module_state_mut::<TacsimStore>()
+        .expect("checked source slot remains installed during this operation")
+        .apply_mind_source(source.token);
+    for operation in operations {
+        ctx.persist(operation);
+    }
+    Ok(revision)
+}
+
+/// Audit after all owners hydrate and before commands can prune revisions.
+/// Bad source/revision documents remain untouched and quarantine their library
+/// references. Source bytes are deliberately not collected in M6.1: older kept
+/// match results do not yet expose a complete source-reference index.
+pub(crate) fn audit_mind_revisions(ctx: &mut Ctx<'_>) -> Result<(), mush_roll::RollError> {
+    let Some(roll) = ctx.w.module_state::<mush_roll::RollStore>() else {
+        // Small rigs may compose TacSim alone; production always composes Roll.
+        return Ok(());
+    };
+    let sources = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .ok_or(mush_roll::RollError::Missing)?;
+    let audit = roll.prepare_source_audit(&crate::minds::authoring::RevisionRules, sources)?;
+    let roll = ctx
+        .w
+        .module_state_mut::<mush_roll::RollStore>()
+        .expect("checked roll slot remains installed during this operation");
+    roll.apply_source_audit(audit)?;
+    for (key, reason) in roll.quarantine() {
+        tracing::error!(%key, %reason, "tacsim: mind revision quarantined; collection disabled");
+    }
+    Ok(())
+}
+
+/// Store an immutable stock source. Preparation and serialization precede RAM
+/// publication; a corrupt claimed key is refused and never silently repaired.
+/// Returns whether a new document was queued.
 pub(crate) fn put_mind_source(ctx: &mut Ctx<'_>, source: &str) -> bool {
-    let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {
+    use mush_roll::SourceAdapter as _;
+    let Some(store) = ctx.w.module_state::<TacsimStore>() else {
         return false;
     };
-    // 17b cut M5.1: the RAM half is `install_mind_source`, which the holdings
-    // seam's test provider is installed through too; the document is this
-    // function's alone.
-    let Some(digest) = install_mind_source(store, source) else {
+    let prepared = match store.prepare_source(source, crate::minds::MIND_ABI) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            tracing::error!(%error, "tacsim: immutable stock source refused");
+            return false;
+        }
+    };
+    if prepared.operations.is_empty() {
         return false;
-    };
-    let record = MindSourceRecord {
-        sha256: crate::arena::digest_text(&digest),
-        abi: crate::minds::MIND_ABI.to_owned(),
-        bytes: source.to_owned(),
-    };
-    let key = mindsrc_key(&digest);
-    let Ok(value) = serde_json::to_value(&record) else {
-        tracing::error!(%key, "tacsim: a mind source did not serialize");
+    }
+    let store = ctx
+        .w
+        .module_state_mut::<TacsimStore>()
+        .expect("source slot remains installed during this operation");
+    if let Err(error) = store.check_mind_source(&prepared.token) {
+        tracing::error!(%error, "tacsim: stock source publication refused");
         return false;
-    };
-    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+    }
+    store.apply_mind_source(prepared.token);
+    for operation in prepared.operations {
+        ctx.persist(operation);
+    }
     true
 }
 
-/// **One mind source into this world's RAM map, content-addressed** (17b cut
-/// M5.1; doc 17 §13) — the RAM half of [`put_mind_source`], split out of it:
-/// the text's SHA-256 computed from its own bytes and the text installed
-/// under it, **only when this world holds no source under that digest**
-/// (readable or not — the immutability rule `put_mind_source` keeps). Answers
-/// the digest it installed under, or `None` when it installed nothing.
-///
-/// It queues no document. [`put_mind_source`] calls it and then queues the
-/// document; `crate::match_::holdings::install_holdings` calls it alone, for a
-/// test rig's scripted fixture mind (an integration rig has no `Ctx` to put a
-/// document with), so `crate::minds::source_lookup` finds a fixture's source
-/// exactly as it finds a stored one.
+/// RAM-only fixture source installation. Production writes always use the fully
+/// serialized prepared-source path; the holdings fixture seam has no Ctx.
 pub(crate) fn install_mind_source(store: &mut TacsimStore, source: &str) -> Option<[u8; 32]> {
-    use sha2::{Digest as _, Sha256};
-    let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
-    if store.mind_source_keys.contains(&digest) {
+    use mush_roll::SourceAdapter as _;
+    let prepared = store.prepare_source(source, crate::minds::MIND_ABI).ok()?;
+    if prepared.operations.is_empty() {
         return None;
     }
-    store.mind_source_keys.insert(digest);
-    store.mind_sources.insert(digest, source.to_owned());
+    store.check_mind_source(&prepared.token).ok()?;
+    let digest = *prepared.digest.as_bytes();
+    store.apply_mind_source(prepared.token);
     Some(digest)
 }
 
@@ -1681,26 +1873,44 @@ fn load_mind_source(
     value: &serde_json::Value,
 ) {
     use sha2::{Digest as _, Sha256};
-    match serde_json::from_value::<MindSourceRecord>(value.clone()) {
-        Ok(record) if record.sha256 != tail => tracing::warn!(
+    // Inspect borrowed fields before copying any part of the document. This is
+    // the same closed three-string shape as MindSourceRecord, but decoding an
+    // owned record first would clone an unbounded corrupt source or unknown
+    // subtree before the source-owner limits could reject it.
+    let record = value.as_object().filter(|record| record.len() == 3);
+    let fields = record.and_then(|record| {
+        Some((
+            record.get("sha256")?.as_str()?,
+            record.get("abi")?.as_str()?,
+            record.get("bytes")?.as_str()?,
+        ))
+    });
+    let Some((sha256, abi, source)) = fields else {
+        tracing::warn!(
+            %key,
+            "tacsim: a mind source did not parse; skipped (the key still bars a rewrite)"
+        );
+        return;
+    };
+    if !valid_source_shape(source, abi) {
+        tracing::warn!(
+            %key,
+            "tacsim: mind source exceeds owner bounds; skipped (the key still bars a rewrite)"
+        );
+    } else if sha256 != tail {
+        tracing::warn!(
             %key,
             "tacsim: a mind source disagrees with its own key; skipped (the key still bars a \
              rewrite)"
-        ),
-        Ok(record) if <[u8; 32]>::from(Sha256::digest(record.bytes.as_bytes())) != digest => {
-            tracing::warn!(
-                %key,
-                "tacsim: a mind source's bytes do not hash to its key; skipped (the key still \
-                 bars a rewrite)"
-            );
-        }
-        Ok(record) => {
-            store.mind_sources.insert(digest, record.bytes);
-        }
-        Err(error) => tracing::warn!(
-            %key, %error,
-            "tacsim: a mind source did not parse; skipped (the key still bars a rewrite)"
-        ),
+        );
+    } else if <[u8; 32]>::from(Sha256::digest(source.as_bytes())) != digest {
+        tracing::warn!(
+            %key,
+            "tacsim: a mind source's bytes do not hash to its key; skipped (the key still \
+             bars a rewrite)"
+        );
+    } else {
+        store.mind_sources.insert(digest, source.to_owned());
     }
 }
 
@@ -1872,5 +2082,488 @@ mod tests {
             serde_json::from_value(value).expect("and re-enters through its wire");
         assert_eq!(back, record);
         assert_eq!(back.objects() as usize, crate::pack::MAX_SEED_OBJECTS);
+    }
+
+    use mush_roll::SourceAdapter as _;
+
+    #[test]
+    fn m6_source_preparation_is_read_only_and_reboot_preserves_exact_bytes() {
+        let mut store = TacsimStore::default();
+        let source = "fn think() { `literal\r\nbytes` }\n";
+        let prepared = store
+            .prepare_source(source, crate::minds::MIND_ABI)
+            .unwrap();
+        assert!(store.mind_source_keys.is_empty());
+        assert!(store.mind_sources.is_empty());
+        assert_eq!(prepared.operations.len(), 1);
+        let digest = *prepared.digest.as_bytes();
+        let document = match &prepared.operations[0].op {
+            ModuleWrite::JsonSet { key, value } => (key.clone(), value.clone()),
+            _ => panic!("source preparation only writes one immutable document"),
+        };
+        store.check_mind_source(&prepared.token).unwrap();
+        store.apply_mind_source(prepared.token);
+        assert_eq!(store.mind_source(&digest), Some(source));
+        let rebooted = load(&[document], TacsimConfig::default());
+        assert_eq!(rebooted.mind_source(&digest), Some(source));
+        assert!(
+            rebooted
+                .prepare_source(source, "later-abi")
+                .unwrap()
+                .operations
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn m6_claimed_corrupt_source_refuses_without_repair_or_ram_publication() {
+        let source = "fn think() { () }";
+        let digest = mush_roll::source_digest(source);
+        let key = mindsrc_key(digest.as_bytes());
+        let bad = serde_json::json!({
+            "sha256": digest.to_hex(), "abi": crate::minds::MIND_ABI,
+            "bytes": "tampered bytes",
+        });
+        let store = load(&[(key.clone(), bad)], TacsimConfig::default());
+        assert!(store.mind_source_keys.contains(digest.as_bytes()));
+        assert!(!store.has_mind_source(digest.as_bytes()));
+        assert!(
+            matches!(store.prepare_source(source, crate::minds::MIND_ABI),
+            Err(mush_roll::RollError::Quarantined(ref got)) if got == key.as_str())
+        );
+        assert!(store.mind_sources.is_empty());
+    }
+
+    #[test]
+    fn m6_source_boot_rejects_oversized_or_malformed_documents_without_releasing_the_key() {
+        let source = "fn think() { () }";
+        let digest = mush_roll::source_digest(source);
+        let key = mindsrc_key(digest.as_bytes());
+        let valid = serde_json::json!({
+            "sha256": digest.to_hex(), "abi": crate::minds::MIND_ABI,
+            "bytes": source,
+        });
+        for (field, malformed) in [
+            (
+                "bytes",
+                serde_json::json!("x".repeat(MAX_STORED_MIND_SOURCE_BYTES + 1)),
+            ),
+            (
+                "abi",
+                serde_json::json!("a".repeat(MAX_SOURCE_ABI_BYTES + 1)),
+            ),
+            ("abi", serde_json::json!("bad\nabi")),
+            (
+                "sha256",
+                serde_json::json!("f".repeat(MAX_STORED_MIND_SOURCE_BYTES + 1)),
+            ),
+            // Both a wrong-type known field and an unknown subtree must be
+            // rejected without copying the subtree into an owned record.
+            (
+                "bytes",
+                serde_json::json!({"nested": "x".repeat(MAX_STORED_MIND_SOURCE_BYTES + 1)}),
+            ),
+            (
+                "unknown",
+                serde_json::json!({"nested": "x".repeat(MAX_STORED_MIND_SOURCE_BYTES + 1)}),
+            ),
+        ] {
+            let mut document = valid.clone();
+            document[field] = malformed;
+            let store = load(&[(key.clone(), document)], TacsimConfig::default());
+            assert!(
+                store.mind_source_keys.contains(digest.as_bytes()),
+                "{field}"
+            );
+            assert!(store.mind_sources.is_empty(), "{field}");
+            assert!(
+                matches!(
+                    store.read_source(digest),
+                    Err(mush_roll::RollError::Quarantined(_))
+                ),
+                "{field}"
+            );
+            assert!(
+                matches!(
+                    store.prepare_source(source, crate::minds::MIND_ABI),
+                    Err(mush_roll::RollError::Quarantined(_))
+                ),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn m6_source_boot_accepts_exact_byte_bounds_including_json_escaping() {
+        // The source-owner limit is decoded UTF-8 bytes, not JSON's escaped
+        // document size. A NUL needs six encoded bytes but one source byte.
+        let source = "\0".repeat(MAX_STORED_MIND_SOURCE_BYTES);
+        let abi = "a".repeat(MAX_SOURCE_ABI_BYTES);
+        let prepared = TacsimStore::default()
+            .prepare_source(&source, &abi)
+            .unwrap();
+        let digest = prepared.digest;
+        let document = match &prepared.operations[0].op {
+            ModuleWrite::JsonSet { key, value } => (key.clone(), value.clone()),
+            _ => panic!("source preparation only writes one immutable document"),
+        };
+        let store = load(&[document], TacsimConfig::default());
+        assert_eq!(store.read_source(digest).unwrap(), source);
+        assert!(store.mind_source_keys.contains(digest.as_bytes()));
+        assert!(
+            store
+                .prepare_source(&source, &abi)
+                .unwrap()
+                .operations
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn m6_source_bound_admits_open_standard_and_rejects_oversize_before_hash_or_write() {
+        let store = TacsimStore::default();
+        assert!(crate::minds::content::STANDARD_RHAI.len() > mush_roll::MAX_SOURCE_BYTES);
+        assert!(
+            store
+                .prepare_source(crate::minds::content::STANDARD_RHAI, crate::minds::MIND_ABI)
+                .is_ok()
+        );
+        assert!(
+            store
+                .prepare_source(&"x".repeat(MAX_STORED_MIND_SOURCE_BYTES + 1), "abi")
+                .is_err()
+        );
+        assert!(
+            store
+                .prepare_source("x", &"a".repeat(MAX_SOURCE_ABI_BYTES + 1))
+                .is_err()
+        );
+        assert!(store.mind_sources.is_empty());
+        assert!(store.mind_source_keys.is_empty());
+    }
+
+    #[test]
+    fn m6_stale_source_token_cannot_rewrite_an_intervening_publication() {
+        let mut store = TacsimStore::default();
+        let stale = store.prepare_source("source", "abi").unwrap();
+        let winner = store.prepare_source("source", "abi").unwrap();
+        store.check_mind_source(&winner.token).unwrap();
+        store.apply_mind_source(winner.token);
+        assert_eq!(
+            store.check_mind_source(&stale.token),
+            Err(mush_roll::RollError::StaleOperation)
+        );
+        assert!(
+            store
+                .prepare_source("source", "abi")
+                .unwrap()
+                .operations
+                .is_empty()
+        );
+    }
+
+    /// A minimal source owner for the integration transaction tests. Semantic
+    /// validation belongs to authoring::RevisionRules's independent tests.
+    struct SourceModule;
+    impl mush_core::GameModule for SourceModule {
+        fn name(&self) -> &'static str {
+            NS
+        }
+        fn register(
+            &mut self,
+            reg: &mut mush_core::Registrar<'_>,
+        ) -> Result<(), mush_core::ModError> {
+            reg.state(TacsimStore::default());
+            Ok(())
+        }
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut mush_core::ModuleCtx<'_>,
+            data: mush_core::ModuleBootData,
+        ) -> Result<(), mush_core::ModError> {
+            *ctx.state_mut::<TacsimStore>().expect("source owner slot") =
+                load(&data.kv, TacsimConfig::default());
+            Ok(())
+        }
+        fn on_all_loaded(
+            &mut self,
+            ctx: &mut mush_core::ModuleCtx<'_>,
+        ) -> Result<(), mush_core::ModError> {
+            audit_mind_revisions(ctx).map_err(|error| mush_core::ModError::msg(error.to_string()))
+        }
+    }
+    fn transaction_engine(delegate: bool) -> mush_core::Engine {
+        mush_core::Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![
+                Box::new(SourceModule),
+                Box::new(mush_roll::RollModule::with_writers(delegate.then_some(NS))),
+            ],
+        )
+        .unwrap()
+    }
+    fn transaction_draft() -> mush_roll::WorkingCopy {
+        mush_roll::WorkingCopy {
+            source: "fn think(view, card) {}".into(),
+            envelope: mush_roll::Envelope {
+                schema: serde_json::json!({"sections": []}),
+                presets: serde_json::json!({}),
+                profiles: serde_json::json!({"Default": {}}),
+                rules: serde_json::json!({}),
+                declared_class: "I".into(),
+                mind_abi: crate::minds::MIND_ABI.into(),
+            },
+        }
+    }
+    fn create_transaction_draft(engine: &mut mush_core::Engine, actor: ObjId) -> Vec<ModuleOp> {
+        let roll = engine
+            .world
+            .module_state_mut::<mush_roll::RollStore>()
+            .unwrap();
+        let change = roll
+            .prepare_create(actor, "test", transaction_draft())
+            .unwrap();
+        let mut ops = Vec::new();
+        roll.publish_with(change, |batch| ops.extend_from_slice(batch))
+            .unwrap();
+        ops
+    }
+    fn prepare_transaction(
+        engine: &mush_core::Engine,
+        actor: ObjId,
+    ) -> mush_roll::PreparedSave<MindSourceToken> {
+        let roll = engine.world.module_state::<mush_roll::RollStore>().unwrap();
+        roll.prepare_save(
+            actor,
+            "test",
+            roll.mind(actor, "test").unwrap().base(),
+            "notes",
+            None,
+            &crate::minds::authoring::RevisionRules,
+            engine.world.module_state::<TacsimStore>().unwrap(),
+        )
+        .unwrap()
+    }
+    fn publish_transaction(
+        engine: &mut mush_core::Engine,
+        actor: ObjId,
+        prepared: mush_roll::PreparedSave<MindSourceToken>,
+    ) -> (Result<mush_roll::RevisionRef, mush_roll::RollError>, Outbox) {
+        let mut out = Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let result = publish_mind_revision(&mut ctx, prepared);
+        (result, out)
+    }
+
+    #[test]
+    fn m6_combined_save_publishes_both_owners_in_one_batch_and_survives_reload() {
+        let actor = ObjId(10);
+        let mut engine = transaction_engine(true);
+        let mut operations = create_transaction_draft(&mut engine, actor);
+        let prepared = prepare_transaction(&engine, actor);
+        let expected = prepared.revision();
+        let source = prepared.source().digest;
+        assert!(
+            engine
+                .world
+                .module_state::<TacsimStore>()
+                .unwrap()
+                .mind_sources
+                .is_empty()
+        );
+        assert!(
+            engine
+                .world
+                .module_state::<mush_roll::RollStore>()
+                .unwrap()
+                .mind(actor, "test")
+                .unwrap()
+                .latest()
+                .is_none()
+        );
+        let (saved, mut out) = publish_transaction(&mut engine, actor, prepared);
+        let saved = saved.unwrap();
+        assert_eq!(
+            saved, expected,
+            "the published revision keeps its prepared identity"
+        );
+        let batch: Vec<_> = out
+            .take_deferred()
+            .into_iter()
+            .map(|deferred| match deferred {
+                mush_core::Deferred::Persist(op) => op,
+                _ => panic!("the transaction only queues durable writes"),
+            })
+            .collect();
+        assert_eq!(batch.iter().filter(|op| op.ns == NS).count(), 1);
+        assert!(batch.iter().any(|op| op.ns == mush_roll::NS));
+        assert!(
+            engine
+                .world
+                .module_state::<TacsimStore>()
+                .unwrap()
+                .has_mind_source(source.as_bytes())
+        );
+        assert_eq!(
+            engine
+                .world
+                .module_state::<mush_roll::RollStore>()
+                .unwrap()
+                .revision(actor, saved.key)
+                .unwrap()
+                .source(),
+            source,
+            "the opaque save binds the revision to the prepared source"
+        );
+        operations.extend(batch);
+        let mut disk: BTreeMap<(SmolStr, SmolStr), serde_json::Value> = BTreeMap::new();
+        for operation in operations {
+            match operation.op {
+                ModuleWrite::JsonSet { key, value } => {
+                    disk.insert((operation.ns, key), value);
+                }
+                _ => panic!("create/save need no removals"),
+            }
+        }
+        let docs = |namespace: &str| -> Vec<_> {
+            disk.iter()
+                .filter(|((ns, _), _)| ns == namespace)
+                .map(|((_, key), value)| (key.clone(), value.clone()))
+                .collect()
+        };
+        let reloaded_sources = load(&docs(NS), TacsimConfig::default());
+        let mut reloaded_roll = mush_roll::RollStore::load(&mush_core::ModuleBootData {
+            kv: docs(mush_roll::NS),
+            ..Default::default()
+        })
+        .unwrap();
+        let audit = reloaded_roll
+            .prepare_source_audit(&crate::minds::authoring::RevisionRules, &reloaded_sources)
+            .unwrap();
+        reloaded_roll.apply_source_audit(audit).unwrap();
+        assert!(reloaded_roll.quarantine().is_empty());
+        assert_eq!(
+            reloaded_roll
+                .revision(actor, saved.key)
+                .unwrap()
+                .reference(),
+            saved
+        );
+        assert!(reloaded_roll.revision(ObjId(11), saved.key).is_err());
+        assert_eq!(
+            reloaded_sources.read_source(source).unwrap(),
+            transaction_draft().source
+        );
+
+        // Real module hydration: the source owner runs before Roll's loader,
+        // but on_all_loaded audits only after both have hydrated. A corrupt
+        // immutable source quarantines its revision without repairing disk or
+        // granting permission to prune references.
+        for corrupt in [false, true] {
+            let mut source_docs = docs(NS);
+            if corrupt {
+                source_docs[0].1["bytes"] = serde_json::json!("tampered");
+            }
+            let mut boot = std::collections::HashMap::new();
+            boot.insert(
+                SmolStr::new_static(NS),
+                mush_core::ModuleBootData {
+                    kv: source_docs.clone(),
+                    ..Default::default()
+                },
+            );
+            boot.insert(
+                SmolStr::new_static(mush_roll::NS),
+                mush_core::ModuleBootData {
+                    kv: docs(mush_roll::NS),
+                    ..Default::default()
+                },
+            );
+            let mut engine = transaction_engine(true);
+            engine
+                .modules_loaded(boot, &mut Outbox::new(), &mut mush_core::Effects::default())
+                .unwrap();
+            let roll = engine.world.module_state::<mush_roll::RollStore>().unwrap();
+            assert_eq!(roll.quarantine().is_empty(), !corrupt);
+            assert_eq!(roll.revision(actor, saved.key).is_ok(), !corrupt);
+            if corrupt {
+                assert!(roll.prepare_prune(128).is_err());
+            }
+            assert!(
+                engine.take_module_ops().is_empty(),
+                "boot must not rewrite either owner"
+            );
+            let store = engine.world.module_state::<TacsimStore>().unwrap();
+            assert!(store.mind_source_keys.contains(source.as_bytes()));
+            assert_eq!(store.has_mind_source(source.as_bytes()), !corrupt);
+        }
+    }
+
+    #[test]
+    fn m6_combined_save_stale_roll_or_source_and_missing_authority_leave_both_owners_unchanged() {
+        for failure in ["roll", "source", "authority", "actor"] {
+            let actor = ObjId(10);
+            let mut engine = transaction_engine(failure != "authority");
+            create_transaction_draft(&mut engine, actor);
+            let prepared = prepare_transaction(&engine, actor);
+            let digest = prepared.source().digest;
+            if failure == "roll" {
+                let roll = engine
+                    .world
+                    .module_state_mut::<mush_roll::RollStore>()
+                    .unwrap();
+                let change = roll
+                    .prepare_create(actor, "other", transaction_draft())
+                    .unwrap();
+                roll.publish_with(change, |_| {}).unwrap();
+            } else if failure == "source" {
+                // A source was independently published between prepare and commit.
+                let store = engine.world.module_state_mut::<TacsimStore>().unwrap();
+                install_mind_source(store, &transaction_draft().source).unwrap();
+            }
+            let source_before = engine
+                .world
+                .module_state::<TacsimStore>()
+                .unwrap()
+                .mind_sources
+                .clone();
+            let key_before = engine
+                .world
+                .module_state::<TacsimStore>()
+                .unwrap()
+                .mind_source_keys
+                .clone();
+            let publish_actor = if failure == "actor" { ObjId(11) } else { actor };
+            let (result, out) = publish_transaction(&mut engine, publish_actor, prepared);
+            assert!(result.is_err(), "{failure}");
+            assert!(out.deferred().is_empty(), "{failure}");
+            let store = engine.world.module_state::<TacsimStore>().unwrap();
+            assert_eq!(store.mind_sources, source_before, "{failure}");
+            assert_eq!(store.mind_source_keys, key_before, "{failure}");
+            assert_eq!(
+                store.has_mind_source(digest.as_bytes()),
+                failure == "source"
+            );
+            assert!(
+                engine
+                    .world
+                    .module_state::<mush_roll::RollStore>()
+                    .unwrap()
+                    .mind(actor, "test")
+                    .unwrap()
+                    .latest()
+                    .is_none()
+            );
+        }
     }
 }

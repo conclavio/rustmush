@@ -10,11 +10,54 @@
 //! The digest is the caller's (the seal's `source_sha256`, doc 17 §13): this
 //! crate hashes nothing and trusts that one digest names one source.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, PoisonError};
 
 use rhai::AST;
 
 use crate::engine::Sandbox;
+
+/// Maximum strong entries in each sandbox's execution cache. Active runners
+/// retain their own immutable Arc after eviction; checks use disposable sandboxes.
+pub const MAX_CACHED_MINDS: usize = 256;
+
+type Key = (Digest, &'static str);
+
+/// Bounded LRU retention, separate from a runner's execution lifetime.
+#[derive(Default)]
+pub(crate) struct Cache {
+    entries: BTreeMap<Key, Arc<Compiled>>,
+    order: VecDeque<Key>,
+}
+impl Cache {
+    fn get(&mut self, key: &Key) -> Option<Arc<Compiled>> {
+        let hit = Arc::clone(self.entries.get(key)?);
+        self.order.retain(|old| old != key);
+        self.order.push_back(*key);
+        Some(hit)
+    }
+    fn insert(&mut self, key: Key, value: Arc<Compiled>) -> Arc<Compiled> {
+        // Another compiler may have filled this miss while we parsed.
+        if let Some(hit) = self.get(&key) {
+            return hit;
+        }
+        while self.entries.len() >= MAX_CACHED_MINDS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                // Defensive invariant recovery stays bounded and preserves all
+                // runner-owned Arcs. No partial AST is ever returned.
+                self.entries.clear();
+            }
+        }
+        self.order.push_back(key);
+        self.entries.insert(key, Arc::clone(&value));
+        value
+    }
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 /// **A mind source's digest** (doc 17 §13): the 32 bytes of its SHA-256,
 /// computed by the caller.
@@ -61,7 +104,8 @@ impl Sandbox {
     /// keyed `(digest, abi)`. A hit answers the stored [`Arc`]; a miss
     /// compiles `source` on the sandbox's engine, requires a script function
     /// `think` of two parameters, **clears the top-level statements** and
-    /// stores the result.
+    /// stores the result in the bounded least-recently-used cache. Eviction
+    /// releases only cache ownership; active runners retain their compiled AST.
     ///
     /// Clearing the statements is the rule, not a saving: the think IS the
     /// function. A top-level statement would never run anyway
@@ -88,7 +132,7 @@ impl Sandbox {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&key)
         {
-            return Ok(Arc::clone(hit));
+            return Ok(hit);
         }
         let mut ast = self
             .engine
@@ -103,7 +147,15 @@ impl Sandbox {
         ast.clear_statements();
         let compiled = Arc::new(Compiled { ast, digest, abi });
         let mut asts = self.asts.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(Arc::clone(asts.entry(key).or_insert(compiled)))
+        Ok(asts.insert(key, compiled))
+    }
+
+    /// Actual parser location after a failed compile. No execution or cache entry.
+    #[must_use]
+    pub fn compile_error_position(&self, source: &str) -> Option<(usize, usize)> {
+        let error = self.engine.compile(source).err()?;
+        let position = error.position();
+        position.line().zip(position.position())
     }
 
     /// **How many compiled minds the cache holds.**
@@ -113,5 +165,26 @@ impl Sandbox {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .len()
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_position_tests {
+    use super::*;
+    #[test]
+    fn parser_position_is_actual_and_does_not_populate_execution_cache() {
+        let sandbox = Sandbox::new(&crate::EngineLimits::default(), |_| {});
+        let source = "fn think(view, card) {\n    let x = ;\n}\n";
+        let (line, column) = sandbox
+            .compile_error_position(source)
+            .expect("actual parse location");
+        assert_eq!(line, 2);
+        assert!(column > 0);
+        assert_eq!(sandbox.cached(), 0);
+        assert_eq!(
+            sandbox.compile_error_position("fn think(view, card) {}"),
+            None
+        );
+        assert_eq!(sandbox.cached(), 0);
     }
 }

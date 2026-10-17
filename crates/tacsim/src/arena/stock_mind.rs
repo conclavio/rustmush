@@ -755,6 +755,15 @@ impl MindRunner for NativeStockMind {
     /// and it IS the stand-in a dropped hull falls back to); it answers no
     /// fault and no trace.
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        let Some(card) = job.card.stock() else {
+            return ThinkResult {
+                fault: Some(super::mind::ThinkFault {
+                    cause: "profile".into(),
+                }),
+                memory: job.memory.to_vec(),
+                ..ThinkResult::default()
+            };
+        };
         let mut memory = StockMemory::from(&decode_memory(job.memory));
         let intents = self.decide(
             job.view,
@@ -763,10 +772,12 @@ impl MindRunner for NativeStockMind {
             job.view.objective.as_ref(),
             job.t_ms,
             job.lands_ms,
-            job.card,
+            card,
             job.profile.slots,
         );
         ThinkResult {
+            rule_sample: None,
+            diagnostics: None,
             intents,
             memory: encode_memory(&Memory::from(memory)),
             fault: None,
@@ -3527,6 +3538,8 @@ mod tests {
         mg.id = SmolStr::new("machine_gun");
         mg.mount_section = SmolStr::new("hull");
         red.weapons.push(mg);
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("seal the complete initial weapon rack");
         let mut arena = field(vec![red, line_tank(BLUE, Team::Blue, pose(20_500, 40_500))]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));

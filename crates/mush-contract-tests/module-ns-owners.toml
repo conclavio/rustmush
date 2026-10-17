@@ -318,3 +318,17 @@ exact digest exactly as create_unit does, encodes before it mutates, and \
 touches no placement, station, billet or roster entry. tacsim still spells no \
 tactics key.
 """
+
+# 17d M6: the neutral library owner declares the game-owned workflow writes.
+[[delegation]]
+writer = "tacsim"
+ns = "roll"
+declared_by = "roll"
+reason = """
+RollModule::with_writers declares this pair only when the production roster also
+composes TacSim. Author edits and combined immutable-source/revision saves, lobby
+pins and sealed match references, proving roots and ephemeral bench roots all
+publish opaque Roll-prepared changes through its owned API. Serialization and
+stale checks precede publication; TacSim queues only owner-produced Roll writes
+with the related TacSim writes. Revision pruning keeps immutable source bytes.
+"""

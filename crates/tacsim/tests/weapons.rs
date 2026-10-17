@@ -2001,6 +2001,34 @@ fn i3_a_place_under_a_round_in_flight_is_refused_at_three_cadences() {
 /// millisecond, and every line of the two tapes but the tempo's own is the same.
 #[test]
 fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
+    fn pulse_sliced(
+        mut arena: Arena,
+        wall: i64,
+        intents: &[Intent],
+        bytes: &mut Vec<u8>,
+        sliced: bool,
+    ) -> (Arena, StepOutput) {
+        let output = if sliced {
+            let mut work = tacsim::arena::step::OwnedPulse::new(arena, wall, &[], intents);
+            loop {
+                let cost = work.next_simulation_ms();
+                let progress = work.advance();
+                assert_eq!(cost, progress.simulated_ms);
+                if progress.done {
+                    break;
+                }
+            }
+            let (returned, output) = work.finish().unwrap_or_else(|_| panic!("complete pulse"));
+            arena = returned;
+            output
+        } else {
+            arena.step(wall, &[], intents)
+        };
+        for chunk in &output.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        (arena, output)
+    }
     let beam = WeaponSummary {
         id: SmolStr::new("laser"),
         muzzle_speed_cms: 0,
@@ -2019,7 +2047,7 @@ fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
         ),
     ];
     let mut tapes = Vec::new();
-    for no_time in [false, true] {
+    for (no_time, sliced) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut arena = arena_of(
             vec![
                 scout(RED, Team::Red, centre(5, 8), vec![beam.clone()]),
@@ -2035,11 +2063,13 @@ fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
         if no_time {
             pulse(&mut arena, wall + 500, &[], &mut bytes);
             assert_eq!(arena.now_ms, 1_500, "the floored wake ends on the lattice");
-            let out = pulse(&mut arena, wall + 600, &fire, &mut bytes);
+            let (returned, out) = pulse_sliced(arena, wall + 600, &fire, &mut bytes, sliced);
+            arena = returned;
             assert_eq!(arena.now_ms, 1_500, "a wake inside a substep moves no time");
             assert_eq!(out.substeps, 1, "the phase-4 drain, and nothing else");
         } else {
-            let out = pulse(&mut arena, wall + 500, &fire, &mut bytes);
+            let (returned, out) = pulse_sliced(arena, wall + 500, &fire, &mut bytes, sliced);
+            arena = returned;
             assert_eq!(arena.now_ms, 1_500);
             assert_eq!(out.substeps, 3, "two substeps and the phase-4 drain");
         }
@@ -2076,11 +2106,12 @@ fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
             .collect();
         tapes.push(tape);
     }
-    assert_eq!(
-        tapes.first(),
-        tapes.get(1),
-        "the pulse the beam was fired in decided its outcome"
-    );
+    for tape in &tapes[1..] {
+        assert_eq!(
+            &tapes[0], tape,
+            "pulse timing or yielding changed the original pinned beam outcome"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

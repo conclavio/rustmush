@@ -253,6 +253,16 @@ pub trait WebHooks: Send + Sync {
     /// One command line from a connected (in-game) connection.
     fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()>;
 
+    /// Closed module request; results use this physical connection's event queue.
+    fn invoke(
+        &self,
+        _conn: u64,
+        _id: u64,
+        _request: mush_proto::InvokeRequest,
+    ) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
     /// A panel-hydration request; the correlated
     /// [`Reply`](mush_proto::OutputEvent::Reply) arrives via the event
     /// stream (`conn`'s `tx`), not as a return value.

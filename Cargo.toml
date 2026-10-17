@@ -140,6 +140,8 @@ mush-script = { path = "crates/mush-script" }
 # the engine builder, the op-and-fee budget, canonical memory, the AST cache.
 # `mush-mind -> {rhai}` only: no `mush-script` edge (its engine reads a wall clock).
 mush-mind = { path = "crates/mush-mind" }
+# 17d M6.1: character-owned drafts and immutable executable revisions.
+mush-roll = { path = "crates/mush-roll" }
 mush-llm = { path = "crates/mush-llm" }
 mush-worldgen = { path = "crates/mush-worldgen" }
 mush-npc = { path = "crates/mush-npc" }

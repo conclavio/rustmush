@@ -41,7 +41,6 @@ use sha2::digest::common::hazmat::{SerializableState, SerializedState};
 use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 
-use crate::arena::card::StockCard;
 use crate::arena::clock::Tempo;
 use crate::arena::core::CoreClass;
 use crate::arena::mind::SortieId;
@@ -527,7 +526,7 @@ pub enum EventKind {
         reason: SmolStr,
     },
     /// **A mind's card changed** (17b cut M1b.5; doc 17 §11, §22's M1b,
-    /// D-UM-43): a staff `@mind/set` landed on the arena's OWN row of a
+    /// D-UM-43): a staff `@mind/live` landed on the arena's OWN row of a
     /// [`crate::arena::state::Controller::Mind`] hull at the start of the
     /// pulse after it was offered (`Arena::apply_mind_cards`, phase 2's head),
     /// under phase 2's one hash — or (**17b cut M5.2**; doc 17 §11, D-UM-44)
@@ -538,10 +537,9 @@ pub enum EventKind {
     /// Read back to staff, and to the hull's own pilot in their report (17b
     /// cut M5.6).
     ///
-    /// It carries **the whole card as applied**, so the tape alone says what
-    /// the mind was flying — or, after a seat's switch, will fly — from that
-    /// millisecond on; the registry's read-back is written from this line
-    /// (`crate::arena_bridge`'s `on_chunk`), never from a world-side copy.
+    /// It carries the exact immutable card/program key. The complete payload is
+    /// shared in the captured arena catalog; the own-hull frame publishes the
+    /// selected active card and program for authorized readback.
     /// Never said to a pilot as it lands.
     MindCard {
         /// The hull.
@@ -552,8 +550,13 @@ pub enum EventKind {
         /// The sliders the change moved, in doc 17 §11's order (empty for a
         /// change that moved none).
         changed: Vec<SmolStr>,
-        /// The card, whole, as the row now holds it.
-        card: StockCard,
+        /// Exact immutable card/program identity; payload is in the arena catalog.
+        card: crate::arena::runtime_card::ProfileKey,
+        /// Derived compatibility view for the staff stock-slider mirror. Custom
+        /// cards without the complete stock fields have no such view. The key
+        /// above remains the authoritative full card/program identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stock: Option<super::card::StockCard>,
     },
     /// **A card change the arena refused** (17b cut M1b.5): every
     /// [`crate::arena::card::CardChange`] the arena takes leaves a line, this
@@ -1419,15 +1422,11 @@ mod tests {
                 unit: ObjId(4),
                 name: SmolStr::new("Sniper, edited (min_odds 70)"),
                 changed: vec![SmolStr::new_static("min_odds")],
-                card: {
-                    let mut card = crate::arena::card::preset(
-                        "sniper",
-                        &crate::config::ReflexConfig::default(),
-                    )
-                    .expect("sniper");
-                    card.min_odds_permille = 700;
-                    card
+                card: crate::arena::runtime_card::ProfileKey {
+                    definition: mush_core::DefinitionDigest::from_bytes([0xab; 32]),
+                    index: 0,
                 },
+                stock: None,
             },
             EventKind::MindCardRefused {
                 unit: ObjId(9),

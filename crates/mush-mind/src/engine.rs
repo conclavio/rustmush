@@ -11,9 +11,8 @@
 //! clock, no file, no module, no `eval`.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use rhai::module_resolvers::DummyModuleResolver;
 use rhai::packages::{
@@ -22,7 +21,7 @@ use rhai::packages::{
 };
 use rhai::{Engine, EvalAltResult, FLOAT, INT};
 
-use crate::cache::{Compiled, Digest};
+use crate::cache::Cache;
 use crate::memory::Limits;
 use crate::{budget, trace};
 
@@ -113,7 +112,7 @@ pub struct Sandbox {
     pub(crate) engine: Engine,
     /// One compiled mind per `(source digest, MIND_ABI)` (D-UM-27): 300 hulls
     /// on 300 differently tuned cards compile once.
-    pub(crate) asts: Mutex<BTreeMap<(Digest, &'static str), Arc<Compiled>>>,
+    pub(crate) asts: Mutex<Cache>,
     /// **The engine's op backstop** (17b cut M3.1): `limits.max_ops_backstop`
     /// as built, which [`Sandbox::think`] refuses a think's `ops_limit` past.
     pub(crate) max_ops_backstop: u64,
@@ -221,7 +220,7 @@ impl Sandbox {
 
         Sandbox {
             engine,
-            asts: Mutex::new(BTreeMap::new()),
+            asts: Mutex::new(Cache::default()),
             max_ops_backstop: limits.max_ops_backstop,
         }
     }

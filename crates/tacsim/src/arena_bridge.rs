@@ -233,6 +233,7 @@ struct Tasks {
     live: BTreeMap<MatchId, Live>,
     staged: VecDeque<ArenaOut>,
     acks: Vec<PendingAck>,
+    bulk_acks: Vec<(u64, crate::minds::bulk::commit::CommitLatch)>,
     /// The egress capacity the table was built with (16b cut AF.3,
     /// [`ArenaTasks::capacity`]).
     capacity: usize,
@@ -264,6 +265,7 @@ impl ArenaTasks {
             live: BTreeMap::new(),
             staged: VecDeque::new(),
             acks: Vec::new(),
+            bulk_acks: Vec::new(),
             capacity: capacity.max(1),
         })))
     }
@@ -431,8 +433,23 @@ impl ArenaTasks {
     }
 
     /// Stamp every unstamped write with the serial its batch will take.
+    pub(crate) fn await_bulk_write(&self, latch: crate::minds::bulk::commit::CommitLatch) {
+        if let Ok(mut tasks) = self.0.lock() {
+            if tasks.bulk_acks.len() < 8 {
+                tasks.bulk_acks.push((0, latch));
+            } else {
+                tracing::error!("bulk durable-writer latch bound exceeded; work remains stopped");
+            }
+        }
+    }
+
     pub fn stamp_ledger_writes(&self, serial: u64) {
         if let Ok(mut tasks) = self.0.lock() {
+            for (on, _) in &mut tasks.bulk_acks {
+                if *on == 0 {
+                    *on = serial;
+                }
+            }
             for ack in &mut tasks.acks {
                 if ack.serial == 0 {
                     ack.serial = serial;
@@ -452,6 +469,18 @@ impl ArenaTasks {
             let Ok(mut tasks) = self.0.lock() else {
                 return;
             };
+            let mut bulk_ready = false;
+            tasks.bulk_acks.retain(|(serial, latch)| {
+                if *serial == 0 || *serial > high_water {
+                    return true;
+                }
+                latch.acknowledge();
+                bulk_ready = true;
+                false
+            });
+            if bulk_ready {
+                let _ = tasks.egress_tx.try_send(ArenaOut::MindBulkReady);
+            }
             let mut ready: BTreeMap<MatchId, u64> = BTreeMap::new();
             tasks.acks.retain(|ack| {
                 if ack.serial == 0 || ack.serial > high_water {
@@ -521,6 +550,8 @@ impl ArenaTasks {
 /// T.3's check-in.
 #[derive(Clone, Debug, Default)]
 pub struct MatchMirror {
+    /// Bounded RAM-only own-hull diagnostics, empty after restart.
+    pub traces: crate::arena::author_trace::TraceMirror,
     /// The tempo the last frame reported.
     pub tempo: Tempo,
     /// The highest arena timestamp any ledger event has carried.
@@ -588,7 +619,7 @@ pub struct MatchMirror {
     /// `lobby::minds_config` read `spawn_arena` captured, and at boot resume
     /// ([`resume_match`]) from the decoded arena's own field — **never** the
     /// live config, which a reload may have moved under a running match.
-    /// `@mind/set`'s `min_odds` pre-check reads it; `0` on a mirror nothing
+    /// `@mind/live`'s `min_odds` pre-check reads it; `0` on a mirror nothing
     /// opened (no match, no pre-check).
     pub odds_floor_permille: u32,
     /// **Who flies each unit, as far as the world knows** (17b cut M1b.5):
@@ -597,7 +628,7 @@ pub struct MatchMirror {
     /// `Live` is the pilot's, `Released` the mind's (every hull since 17b cut
     /// M4.3; before it the reflex controller's, or since 17b cut M3.5 the
     /// mind's for a hull whose arena carried a mind row) — exactly as
-    /// `apply_control` moves the arena's own row. `@mind/set`
+    /// `apply_control` moves the arena's own row. `@mind/live`
     /// refuses a hull that is not [`Controller::Mind`] here first; the arena refuses it again
     /// at apply (`not_mind`). Kept here because no cheaper world-side read
     /// exists: the staff picture knows the controllers only while somebody
@@ -613,7 +644,7 @@ pub struct MatchMirror {
     /// 17 §11, §22's M1b): per hull, the card, the arena millisecond and where
     /// the knowledge came from — [`CardSource::OnTape`] when `on_chunk` read a
     /// `mind_card` line (the arena's own row, as applied), [`CardSource::Sent`]
-    /// when `@mind/set` offered a change and no line for it has arrived since
+    /// when `@mind/live` offered a change and no line for it has arrived since
     /// (the verb's scratch card at the mirror's arena clock), and
     /// [`CardSource::CheckOut`] for every mind hull at [`open_match`] (its
     /// first sealed profile's card on the match's doctrine — Line for a hull
@@ -636,7 +667,7 @@ pub enum CardSource {
     CheckOut,
     /// A `mind_card` line on the tape: the card the arena applied.
     OnTape,
-    /// An offer `@mind/set` made, not yet on the tape.
+    /// An offer `@mind/live` made, not yet on the tape.
     Sent,
 }
 
@@ -1227,7 +1258,7 @@ impl ArenaRegistry {
     }
 
     /// **Record what the world knows of one mind's card** (17b cut M1b.5):
-    /// [`MatchMirror::cards`], written by `@mind/set` at an offer (`Sent`) and
+    /// [`MatchMirror::cards`], written by `@mind/live` at an offer (`Sent`) and
     /// by `on_chunk` from the tape (`OnTape`). A match this registry does not
     /// track is left alone.
     pub fn note_card(
@@ -1623,7 +1654,7 @@ pub fn open_match(
     // Read what the registry has to remember before the message is moved into the
     // task.
     let units: Vec<ObjId> = custody.units.iter().map(|unit| unit.id).collect();
-    // 17b cut M1b.5: who flies each unit at check-out, for `@mind/set`.
+    // 17b cut M1b.5: who flies each unit at check-out, for `@mind/live`.
     let controllers: BTreeMap<ObjId, Controller> = custody
         .units
         .iter()
@@ -1632,11 +1663,19 @@ pub fn open_match(
     // **17b cut M5.2** (the design note's item 10): each hull's first sealed
     // profile, the card its mind row opens on (`Arena::adopt_mind` over
     // `Arena::active_card`) — Line for a hull nobody chose a mind for.
-    let first_cards: BTreeMap<ObjId, crate::arena::StockCard> = custody
-        .units
-        .iter()
-        .map(|unit| (unit.id, unit.seal.profile_set().card(0, &arena_cfg.reflex)))
-        .collect();
+    let mut first_cards = BTreeMap::new();
+    let mut first_catalog = crate::arena::runtime_card::CardCatalog::default();
+    for unit in &custody.units {
+        let (_, card) = unit.seal.cards.admit(&mut first_catalog).map_err(|error| {
+            crate::arena::state::ArenaError::Mind {
+                unit: unit.id,
+                reason: error.to_string(),
+            }
+        })?;
+        if let Some(stock) = card.stock() {
+            first_cards.insert(unit.id, stock.clone());
+        }
+    }
     let armed: BTreeSet<ObjId> = custody
         .units
         .iter()
@@ -1790,7 +1829,7 @@ pub fn resume_match(
     let state_hash = crate::arena::hash::state_hash(&arena);
     // **17b cut M1b.5**: the resumed arena's OWN floor (captured at its
     // check-out and carried by the snapshot) and its controllers, for
-    // `@mind/set` — never the live config's floor.
+    // `@mind/live` — never the live config's floor.
     let odds_floor_permille = arena.odds_floor_permille;
     let controllers: BTreeMap<ObjId, Controller> = arena
         .units
@@ -1820,8 +1859,16 @@ pub fn resume_match(
         .unwrap_or_default()
         .workers;
     let pool = crate::minds::MindPool::shared(workers);
-    let (handle, join) = crate::arena_task::resume_arena(
-        &runtime, match_id, arena, &arena_cfg, &sources, pool, egress,
+    let tape_resume = crate::match_::mind_tape::resume(ctx, match_id, arena.tape_cursor);
+    let (handle, join) = crate::arena_task::resume_arena_recorded(
+        &runtime,
+        match_id,
+        arena,
+        &arena_cfg,
+        &sources,
+        pool,
+        egress,
+        tape_resume,
     )
     .map_err(OpenMatchError::Mind)?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
@@ -2482,6 +2529,73 @@ pub(crate) fn reseat(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId) {
 /// are taken from the staging queue.
 pub struct ArenaEgress;
 
+/// The single current-world authorization seam for line, feed and UI consumers.
+/// A requested unit/count are selectors only. No authority fact comes from a
+/// client, a subscription's cached grant or the trace payload itself.
+#[must_use]
+pub fn mind_traces(
+    w: &mush_core::World,
+    actor: ObjId,
+    unit: ObjId,
+    n: Option<usize>,
+) -> Option<Vec<crate::arena::author_trace::ThinkTrace>> {
+    if n.is_some_and(|n| !(1..=crate::arena::author_trace::THINKS).contains(&n)) {
+        return None;
+    }
+    let registry = w.module_state::<ArenaRegistry>()?;
+    let match_id = registry.match_of_unit(unit)?;
+    let record = w
+        .module_state::<crate::match_::MatchBook>()?
+        .get(match_id)?;
+    let seal = &record.minds.get(&unit)?.seal;
+    let principal = match seal.principal.as_ref() {
+        Some(crate::deliberation::order::CharacterRef::Character { id }) => Some(*id),
+        _ => None,
+    };
+    let owner = match &seal.requested.origin {
+        crate::arena::profile_seal::MindOrigin::Draft { character, .. } => Some(*character),
+        _ => None,
+    };
+    let account = w
+        .module_state::<mush_sim::AccountOracle>()
+        .and_then(|oracle| oracle.account_of(actor));
+    let fill_team = record
+        .teams
+        .iter()
+        .find(|team| team.units.contains(&unit) && !team.pilots.iter().any(|(_, own)| *own == unit))
+        .map(|team| team.team);
+    let current_fill_setter = crate::match_::lobby::centre(w)
+        .filter(|centre| centre.match_id == Some(match_id))
+        .and_then(|centre| {
+            centre.fill_minds.iter().find_map(|fill| {
+                if Some(fill.team) != fill_team {
+                    return None;
+                }
+                match fill.by {
+                    crate::match_::lobby::FillSetter::Lead(setter)
+                        if centre.leads_side(fill.team, setter) =>
+                    {
+                        Some(setter)
+                    }
+                    _ => None,
+                }
+            })
+        });
+    let access = crate::arena::author_trace::TraceAccess {
+        unit,
+        actor,
+        account,
+        connected: w.is_connected(actor) && w.has_live_conns(actor),
+        staff: mush_core::perm::has_power(w, actor, mush_core::Powers::SIM_ADMIN)
+            || mush_core::perm::has_role(w, actor, mush_core::Role::Royalty),
+        sealed_principal: principal,
+        sealed_owner: owner,
+        sealed_warrant_principal: principal,
+        current_fill_setter,
+    };
+    registry.mirror(match_id)?.traces.read(unit, n, &access)
+}
+
 impl AsyncCompletion for ArenaEgress {
     fn on_complete(&self, ctx: &mut Ctx<'_>, _correlation: u64, payload: &str) {
         // **16b cut N.2**: the module has two async re-entries now and one
@@ -2509,6 +2623,21 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
     };
     for message in tasks.take_staged(MAX_EGRESS_PER_DRAIN) {
         match message {
+            ArenaOut::MindBulkReady => {}
+            ArenaOut::Tape { match_id, write } => {
+                crate::match_::mind_tape::accept(ctx, match_id, write)
+            }
+            ArenaOut::MindTraces { match_id, updates } => {
+                if let Some(mirror) = ctx
+                    .w
+                    .module_state_mut::<ArenaRegistry>()
+                    .and_then(|registry| registry.matches.get_mut(&match_id))
+                {
+                    for update in updates {
+                        mirror.traces.apply(update);
+                    }
+                }
+            }
             ArenaOut::Frames {
                 match_id,
                 frames,
@@ -2537,6 +2666,7 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
     // the arena's `order_expired` ledger line is the record of the same fact, and
     // neither is derived from the other.
     say_expired_orders(ctx);
+    crate::minds::bulk::world::drain(ctx);
 }
 
 /// One pulse's frames: a keyframe per pilot, on the feed, through the loop's
@@ -3147,10 +3277,14 @@ fn note_cards_from_tape(ctx: &mut Ctx<'_>, match_id: MatchId, events: &[LedgerEv
                 .is_some_and(|(_, _, source)| *source == CardSource::Sent)
         };
         match &event.kind {
-            EventKind::MindCard { unit, card, .. } if !sent_after(mirror, *unit) => {
-                mirror
-                    .cards
-                    .insert(*unit, (card.clone(), event.t_ms, CardSource::OnTape));
+            EventKind::MindCard { unit, stock, .. } if !sent_after(mirror, *unit) => {
+                if let Some(card) = stock {
+                    mirror
+                        .cards
+                        .insert(*unit, (card.clone(), event.t_ms, CardSource::OnTape));
+                } else {
+                    mirror.cards.remove(unit);
+                }
             }
             EventKind::MindCardRefused { unit, .. }
                 if !sent_after(mirror, *unit) && sent(mirror, unit) =>
@@ -3215,7 +3349,7 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
         })
         .collect();
     let arena_ms = last_event_ms(&events);
-    // **17b cut M1b.5**: `@mind/set`'s read-back is written from the tape — a
+    // **17b cut M1b.5**: `@mind/live`'s read-back is written from the tape — a
     // `mind_card` line is the card the arena applied, whole, at its
     // millisecond. A `Sent` entry newer than the line (a later offer still on
     // its way) is kept; a `mind_card_refused` line drops a `Sent` entry it is
@@ -4129,6 +4263,7 @@ pub fn register(
     arena_cfg: &crate::config::ArenaConfig,
     match_cfg: &crate::config::MatchConfig,
     sensors_cfg: &crate::config::SensorsConfig,
+    minds_cfg: &crate::config::MindsConfig,
 ) -> Result<(), ModError> {
     let frames = reg.panel_feed(FRAME_FEED)?;
     // **16b cut Q.3**: the terrain feed beside it, and its handle dropped at
@@ -4145,6 +4280,7 @@ pub fn register(
     // the registry — this one is pushed, to watchers — and the manifest order
     // moves with it.
     let observers = reg.panel_feed(OBSERVER_FEED)?;
+    crate::minds::trace_feed::register(reg)?;
     reg.query_handler(MAP_FEED, Arc::new(MapQuery))?;
     reg.query_handler(REPLAY_FEED, Arc::new(ReplayQuery))?;
     reg.query_handler(OBSERVER_FEED, Arc::new(ObserverQuery))?;
@@ -4155,17 +4291,48 @@ pub fn register(
     // per module. It is the re-entry of both deferred reads the debrief makes:
     // `SIM REPORT`'s one report document and `@arena/report`'s page of the tape
     // (`crate::match_::report`).
-    reg.store_read_completion(Arc::new(crate::match_::report::ReportRead))?;
+    reg.store_read_completion(Arc::new(crate::minds::bulk::bench_service::Reads))?;
     reg.hook(mush_core::HookPoint::Connected, Arc::new(SeatFacts));
     // 16b cut K.2 (K4): the kernel's new point, and the revival that rides
     // `Connected`'s registrations above on `EventHook::revived`.
     reg.hook(mush_core::HookPoint::Linkdead, Arc::new(SeatFacts));
     reg.hook(mush_core::HookPoint::Disconnected, Arc::new(SeatFacts));
-    reg.state(ArenaRegistry::new(
-        ArenaTasks::new(egress_capacity),
-        frames,
-        observers,
-    ));
+    let tasks = ArenaTasks::new(egress_capacity);
+    let bulk_cfg = minds_cfg.bulk();
+    let bulk = crate::minds::bulk::world::BulkService::new(
+        bulk_cfg.clone(),
+        tasks.egress_sender().expect("new egress"),
+    )
+    .map_err(|e| ModError::msg(e.to_string()))?;
+    reg.state(
+        crate::minds::bulk::bench_service::BenchService::new(
+            bulk_cfg.clone(),
+            tasks.egress_sender().expect("new egress"),
+        )
+        .map_err(|e| ModError::msg(e.to_string()))?,
+    );
+    drop(reg.panel_feed(crate::minds::bulk::bench_service::FEED)?);
+    reg.state(bulk);
+    reg.state(
+        crate::minds::bulk::owner::BulkStore::new(bulk_cfg)
+            .map_err(|e| ModError::msg(e.to_string()))?,
+    );
+    reg.state(crate::minds::bulk::artifacts::Artifacts::default());
+    drop(reg.panel_feed(crate::minds::bulk::query::FEED)?);
+    reg.query_handler(
+        crate::minds::bulk::query::FEED,
+        Arc::new(crate::minds::bulk::query::BulkQuery),
+    )?;
+    reg.tick(
+        "mind-bulk-maintenance",
+        mush_core::TickCadence::Coarse(Duration::from_secs(1)),
+        Arc::new(
+            |ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>| {
+                crate::minds::bulk::world::drain(ctx)
+            },
+        ),
+    )?;
+    reg.state(ArenaRegistry::new(tasks, frames, observers));
     // 16b cut T.3: the match book beside the registry. A second slot rather than
     // three more fields on the first, because the two have different lifetimes —
     // a registry row exists only while a task does, and a `MatchRecord` outlives
@@ -4193,10 +4360,28 @@ pub fn register(
     // lifecycle, so the class moves with the switches, in the same commit as the
     // stanza note.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    reg.command(CommandSpec{
+        name:"bench".into(),shape:ArgShape::Raw,
+        help:"BENCH LOAD <run>/<game> | LOAD MATCH <match> <callsign>; STEP [n]; RUN TO <minutes:seconds>; BACK [n]; PIC; TRACE [n]; WATCH <expr>|OFF; EVAL <expr>; CLOSE. Private connection-bound replay; expressions read pic, card and mem with a separate500-op ceiling.".into(),
+        ..CommandSpec::default()
+    },Arc::new(crate::minds::bulk::bench_service::command))?;
     let (arena_cfg, match_cfg, sensors_cfg) =
         (arena_cfg.clone(), match_cfg.clone(), sensors_cfg.clone());
-    // 17b cut M1b.5: `@mind`'s own copy of the doctrine its presets read.
-    let arena_cfg_for_mind = arena_cfg.clone();
+    // One bounded author pool per composition, independent of the arena's live
+    // mind workers. Registration failure drops the service and signals shutdown.
+    let pictures = Arc::new(crate::minds::check::AuthorPictures::new(
+        arena_cfg.clone(),
+        minds_cfg.clone(),
+    ));
+    let executor = crate::minds::workshop::executor::WorkshopExecutor::new(pictures)
+        .map_err(|error| ModError::msg(error.to_string()))?;
+    let floor = u16::try_from(minds_cfg.odds_floor_permille)
+        .map_err(|_| ModError::msg("authoring Compact floor is out of range"))?;
+    let workshop = Arc::new(crate::minds::workshop::commands::WorkshopCommands::new(
+        executor,
+        arena_cfg.clone(),
+        floor,
+    ));
     reg.command(
         CommandSpec {
             name: "@arena".into(),
@@ -4268,45 +4453,9 @@ pub fn register(
             crate::match_::arena_command(ctx, &arena_cfg, &match_cfg, &sensors_cfg)
         }),
     )?;
-    // **17b cut M1b.5** (doc 17 §11, §22's M1b): the owner's lever on a mind's
-    // card, beside `@arena` and in its class — an offer into a running match's
-    // inbox, which the arena turns into a `mind_card` line on the tape.
-    reg.command(
-        CommandSpec {
-            name: "@mind".into(),
-            shape: ArgShape::EqPair,
-            switches: vec!["set".into()],
-            help: "@mind/set <unit>                    (staff) read the stock card of a unit \
-                   flown by a mind in a running match: its name and where the world learned \
-                   it (as checked out, on the tape, sent and not yet on the tape, or not read \
-                   since a resume), then its five sections; a slider the stock mind does not \
-                   read yet is marked [M2], and on a hull with no weapons the fire discipline \
-                   is shown inert.\n\
-                   @mind/set <unit>=<preset>           (staff) give it one of Standard \
-                   Doctrine's six presets: Line, Sentry, Sniper, Skirmisher, Hunter or \
-                   Rearguard.\n\
-                   @mind/set <unit>=<slider> <value>   (staff) set one slider in its own \
-                   units (band_pct 85, min_odds 60, fight_home_pct 17.5, prefer exposed). A \
-                   value out of range or off its step is refused with the range named, never \
-                   clamped, and min_odds never under the match's own Compact floor. The arena \
-                   takes a change at its next pulse and records the whole card on the tape \
-                   (mind_card), and the read-back follows the tape a chunk behind."
-                .into(),
-            ..CommandSpec::default()
-        },
-        Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
-            if !is_staff(ctx) {
-                return Err(CmdError::msg("Permission denied."));
-            }
-            if !ctx.switches.has("set") {
-                return Err(CmdError::msg(format!(
-                    "Usage: {}",
-                    crate::match_::MIND_SET_USAGE
-                )));
-            }
-            crate::match_::mind_set(ctx, &arena_cfg_for_mind)
-        }),
-    )?;
+    // One primary dispatcher: character authoring and the staff-only /live
+    // lane share a verb but retain their own authority and persistence checks.
+    workshop.register(reg)?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }
@@ -5385,6 +5534,94 @@ mod tests {
         (tw, ada, bo)
     }
 
+    #[test]
+    fn m6_trace_world_reads_recheck_connection_principal_and_current_fill_setter() {
+        use crate::arena::author_trace::TraceStore;
+        use mush_core::{AccountId, AccountIdentity};
+        struct Accounts(Vec<(ObjId, AccountId)>);
+        impl AccountIdentity for Accounts {
+            fn account_of(&self, actor: ObjId) -> Option<AccountId> {
+                self.0
+                    .iter()
+                    .find(|(id, _)| *id == actor)
+                    .map(|(_, account)| *account)
+            }
+        }
+        let (mut tw, ada, bo) = dropped_world(crate::TacsimConfig::default());
+        let ada_account = AccountId::mint("ada", 1).expect("account");
+        let bo_account = AccountId::mint("bo", 1).expect("account");
+        tw.world_mut()
+            .module_state_insert(mush_sim::AccountOracle::new(std::sync::Arc::new(Accounts(
+                vec![(ada, ada_account), (bo, bo_account)],
+            ))));
+        let mut traces = TraceStore::default();
+        for unit in [RA, RB, BA, XA] {
+            traces.record(unit, 0, 0, false, None, &[], &[], None);
+        }
+        {
+            let registry = tw
+                .world_mut()
+                .module_state_mut::<ArenaRegistry>()
+                .expect("registry");
+            registry.track(DROP_MATCH);
+            for unit in [RA, RB, BA, XA] {
+                registry.bind_unit(unit, DROP_MATCH);
+            }
+            let mirror = registry.matches.get_mut(&DROP_MATCH).expect("mirror");
+            for update in traces.take_updates(0) {
+                mirror.traces.apply(update);
+            }
+        }
+        for actor in [ada, bo, GOD] {
+            tw.world_mut().set_connected(actor, true);
+            tw.world_mut().set_live_conns(actor, 1);
+        }
+        assert!(super::mind_traces(tw.world(), ada, RB, None).is_some());
+        assert!(super::mind_traces(tw.world(), bo, RB, None).is_none());
+        assert!(super::mind_traces(tw.world(), GOD, RB, None).is_some());
+        assert!(super::mind_traces(tw.world(), ada, RB, Some(65)).is_none());
+        tw.world_mut().set_live_conns(ada, 0);
+        assert!(
+            super::mind_traces(tw.world(), ada, RB, None).is_none(),
+            "linkdead is not deliverable"
+        );
+        tw.world_mut().set_live_conns(ada, 1);
+        assert!(super::mind_traces(tw.world(), ada, RB, None).is_some());
+        {
+            let centre = tw
+                .world_mut()
+                .module_state_mut::<crate::match_::MatchBook>()
+                .expect("book")
+                .centre_mut();
+            centre.match_id = Some(DROP_MATCH);
+            centre.leads = vec![(Team::Blue, ada_account)];
+            centre.fill_minds = vec![crate::match_::lobby::FillChoice {
+                team: Team::Blue,
+                by: crate::match_::lobby::FillSetter::Lead(ada_account),
+                choice: serde_json::from_value(
+                    serde_json::json!({"mind":"Standard Doctrine","profiles":[]}),
+                )
+                .expect("choice"),
+            }];
+        }
+        assert!(super::mind_traces(tw.world(), ada, XA, None).is_some());
+        assert!(super::mind_traces(tw.world(), bo, XA, None).is_none());
+        tw.world_mut()
+            .module_state_mut::<crate::match_::MatchBook>()
+            .expect("book")
+            .centre_mut()
+            .leads = vec![(Team::Blue, bo_account)];
+        assert!(
+            super::mind_traces(tw.world(), ada, XA, None).is_none(),
+            "old fill setter lost leadership"
+        );
+        assert!(
+            super::mind_traces(tw.world(), bo, XA, None).is_none(),
+            "new lead did not set this choice"
+        );
+        assert!(super::mind_traces(tw.world(), GOD, XA, None).is_some());
+    }
+
     /// **17b cut M3.4: the warrant principal alone is told, and staff**
     /// (doc 17 §8, D-UM-32; the observer rule): over one hand-built chunk
     /// of five `mind_dropped` lines —
@@ -5600,7 +5837,7 @@ mod tests {
     /// **17b cut M1b.5** (doc 17 §11: a section that drives a station the hull
     /// lacks is shown inert with its reason): `open_match` writes the mirror's
     /// armed set from the check-out — a mind hull with a gun is in it, one with
-    /// none is not — and `@mind/set`'s read-back reads it, so the unarmed
+    /// none is not — and `@mind/live`'s read-back reads it, so the unarmed
     /// hull's fire discipline is inert and the armed one's live, both on Line
     /// `(as checked out)`. The verb's help is three entries, one line each.
     #[tokio::test]
@@ -5671,7 +5908,7 @@ mod tests {
                 })
                 .collect()
         };
-        let armed = said(&format!("@mind/set #{}", ARMED.0));
+        let armed = said(&format!("@mind/live #{}", ARMED.0));
         assert_eq!(armed.len(), 6, "{armed:?}");
         assert!(
             armed
@@ -5685,7 +5922,7 @@ mod tests {
                 .is_some_and(|line| line.starts_with("  fire discipline  min_odds 10%")),
             "{armed:?}"
         );
-        let unarmed = said(&format!("@mind/set #{}", UNARMED.0));
+        let unarmed = said(&format!("@mind/live #{}", UNARMED.0));
         assert_eq!(unarmed.len(), 6, "{unarmed:?}");
         assert_eq!(
             unarmed.get(2).map(String::as_str),
@@ -5698,13 +5935,13 @@ mod tests {
             .spec_of("@mind")
             .map(|spec| spec.help.clone())
             .expect("@mind is registered");
-        let entries: Vec<&str> = help.lines().collect();
-        assert_eq!(entries.len(), 3, "{help}");
-        for entry in entries {
-            assert!(entry.starts_with("@mind/set <unit>"), "{entry}");
-            let (_, text) = entry.split_once("(staff) ").expect("a staff entry");
-            assert!(!text.contains("  "), "a hole in the help: {entry}");
-        }
+        assert!(
+            help.lines()
+                .any(|line| line.starts_with("@mind/live <unit>") && line.contains("(staff)")),
+            "{help}"
+        );
+        assert!(help.contains("@mind/set <name>/<profile>"), "{help}");
+        assert!(help.contains("@mind/check <name>"), "{help}");
         assert!(help.contains("as checked out"), "{help}");
         let tasks = tw
             .world()
@@ -5945,5 +6182,23 @@ mod tests {
             sources.get(&stock.digest()).map(String::as_str),
             Some(STANDARD_RHAI)
         );
+    }
+}
+
+#[cfg(test)]
+mod bulk_commit_tests {
+    use super::*;
+    #[test]
+    fn a_prepaid_lease_waits_for_its_exact_durable_batch() {
+        let tasks = ArenaTasks::new(2);
+        let latch = crate::minds::bulk::commit::CommitLatch::default();
+        tasks.await_bulk_write(latch.clone());
+        tasks.ack_ledger_upto(100);
+        assert!(!latch.committed(), "an unstamped write never runs");
+        tasks.stamp_ledger_writes(101);
+        tasks.ack_ledger_upto(100);
+        assert!(!latch.committed());
+        tasks.ack_ledger_upto(101);
+        assert!(latch.committed());
     }
 }

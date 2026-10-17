@@ -457,6 +457,24 @@ fn every_production_state_slot_has_exactly_one_owner() {
              A composed slot comes from Registrar::state and carries its module; a slot \
              seeded through World::module_state_insert has no owner and is warned at boot."
         );
+        // M6's neutral library and game-owned services must not disappear
+        // while the broader roster still satisfies the minimum-size guard.
+        for (name, owner) in [
+            ("RollStore", "roll"),
+            ("TapeStore", "tacsim"),
+            ("Followers", "tacsim"),
+            ("BulkStore", "tacsim"),
+            ("BulkService", "tacsim"),
+            ("BenchService", "tacsim"),
+            ("Artifacts", "tacsim"),
+        ] {
+            let found: Vec<_> = slots
+                .iter()
+                .filter(|slot| short_name(slot.type_name) == name)
+                .collect();
+            assert_eq!(found.len(), 1, "{name} must have one production slot");
+            assert_eq!(found[0].owner.as_deref(), Some(owner), "{name} owner");
+        }
     }
     let owners = owner_map();
     assert!(

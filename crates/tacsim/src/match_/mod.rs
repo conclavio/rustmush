@@ -56,11 +56,13 @@ pub mod cockpit;
 // 17b cut M5.1 (doc 17 §15, D-UM-49; OQ-2): the holdings seam — what a
 // character may choose at the lobby, Standard Doctrine alone in production.
 // Documented by its own module doc.
+pub mod draft_holdings;
 pub mod holdings;
 pub mod lobby;
 /// 16b cut Z.4 (16c `N8`): **the side nets** — `RedNet` and `BlueNet`, comsys
 /// channels made at boot, joined at the check-out and left with the seat.
 pub(crate) mod net;
+pub(crate) mod selection_refs;
 // 16b cut I.4: the staff picture's payload, `arena.observer` — deliberately
 // its own module and never the cockpit's, which builds only what a pilot is
 // sent. Documented by its own module doc.
@@ -80,6 +82,7 @@ pub mod seal;
 // 16b cut I.1: the replay — the pure fold from the tape to one objective
 // picture of both sides, the replay documents, `SIM REPLAY` and the two queries'
 // reads. Documented by its own module doc, as `report` is.
+pub mod mind_tape;
 pub mod replay;
 // 16b cut V.3: the debrief — the pure fold from the tape to one reader's report,
 // the report documents, `SIM REPORT`, `@arena/report` and the module's store-read
@@ -751,18 +754,14 @@ pub struct Fielded {
     /// entry zone behind it. [`start`] offers it to [`opening_pose`] as the
     /// world pose, so it is held to exactly what a staff placement is held to.
     pub opening: Option<OpeningCell>,
-    /// **17b cut M3.5** (doc 17 §9, D-UM-36): the class the pool admits this
-    /// hull's mind at — `None` for the fill rule
-    /// ([`pool::admitted_class`]: `[tacsim.minds].fill_class`, seated or not,
-    /// since 17b cut M5.1), `Some` for a fixture's choice and, since 17b cut
-    /// M5.1, the class a chosen mind seals at — the slot's `SIM MIND` or the
-    /// side's `SIM AI MIND` (`lobby`'s `ready`). Read by [`start`]'s pool gate
-    /// alone; it decides no seal and no class the arena thinks at.
+    /// The lobby's preview of this hull's capped class, including unchosen
+    /// defaults. Diagnostic only: checkout charges each completed seal's
+    /// actual class rather than trusting a caller-supplied preview.
     pub mind_class: Option<crate::arena::core::CoreClass>,
 }
 
 impl Fielded {
-    /// A unit no lobby placed, admitted to the pool by the fill rule.
+    /// A unit no lobby placed, with no cached class preview.
     #[must_use]
     pub const fn unslotted(unit: ObjId) -> Fielded {
         Fielded {
@@ -912,6 +911,19 @@ pub enum StartError {
         /// What the card's schema said.
         refusal: crate::arena::card::CardError,
     },
+    /// A complete authored card or rule program failed semantic admission.
+    #[error("{callsign}'s card could not be sealed: {reason}; the match cannot start.")]
+    AuthoredCardRefused {
+        unit: ObjId,
+        callsign: String,
+        reason: String,
+    },
+    /// Exact saved revisions could not be retained before custody publication.
+    #[error("The selected mind revisions could not be retained: {reason}")]
+    MindRetention { reason: String },
+    /// Opening recovery state exceeds the captured ceiling.
+    #[error("match recovery capacity refused: {reason}")]
+    SnapshotCapacity { reason: String },
     /// **17b cut M5.2** (doc 17 §9, D-UM-41; the design note's C-24 as
     /// amended by M5.2's S1 ruling): a unit's seal refused its mind as rated
     /// above its governed core's class ([`seal::SealError::OverClass`]) — the
@@ -1007,7 +1019,8 @@ impl StartError {
                 format!("{callsign}'s mind is over its core's class")
             }
             // 17b cut M5.2 (its review): the hull, never the profile.
-            StartError::CardRefused { callsign, .. } => {
+            StartError::CardRefused { callsign, .. }
+            | StartError::AuthoredCardRefused { callsign, .. } => {
                 format!("{callsign}'s card could not be sealed")
             }
             StartError::Pool { team, refusal, .. } => format!(
@@ -1272,6 +1285,10 @@ pub fn start(
                 })
                 .collect();
             let terms = seal::SealTerms {
+                authored: choice.held.definition.clone(),
+                selected_profiles: choice.profiles.clone(),
+                classes: minds_cfg.classes,
+                rom_cfg: arena_cfg.reflex.clone(),
                 match_id,
                 principal,
                 card: crate::arena::card::line(&arena_cfg.reflex),
@@ -1282,11 +1299,10 @@ pub fn start(
                 // (`PRODUCTION_FILL_ENGINE` for Standard Doctrine, a
                 // fixture's `Scripted`).
                 engine_for_minds: choice.held.engine,
-                // 17b cut M4.1: Standard Doctrine's rating; 17b cut M4.3:
-                // capped at `[tacsim.minds].fill_class`, every hull. 17b cut
-                // M5.2: the held mind's rating.
+                // Rating is independent of the chosen cap. A claimed pilot
+                // uses the operator maximum; unclaimed fill uses its side cap.
                 rated: choice.held.rated,
-                class_cap: minds_cfg.fill_class,
+                class_cap: lobby::checkout_class_cap(ctx.w, side.team, unit, !seated.is_empty()),
                 // 17b cut M5.2: the held mind's identity.
                 identity: choice.held.identity.clone(),
                 profiles: Vec::new(),
@@ -1322,6 +1338,11 @@ pub fn start(
                     unit,
                     callsign: unsealed_callsign(ctx.w, unit, side.team, fielded.slot),
                     refusal,
+                },
+                seal::SealError::Schema(error) => StartError::AuthoredCardRefused {
+                    unit,
+                    callsign: unsealed_callsign(ctx.w, unit, side.team, fielded.slot),
+                    reason: error.to_string(),
                 },
                 // 17b cut M5.2 (C-24): the seal's backstop, named by hull.
                 seal::SealError::OverClass { rated, core } => StartError::MindOverClass {
@@ -1365,14 +1386,8 @@ pub fn start(
     // gate"), and still before the first write: the centre's compute pool
     // over every unit of the match, split evenly between the sides and
     // spoken for first-come within a side in slot order, each hull at its
-    // admitted class's ceiling (`pool::admitted_class`: the fielded unit's
-    // own — a fixture's, or since 17b cut M5.1 the class its chosen mind
-    // seals at — else `[tacsim.minds].fill_class`, seated or not: 17b cut
-    // M5.1 counts a seated hull at the class it is sealed and, released,
-    // flown at). The refused hull is named (17b cut M5.1). **At the stock
-    // pool this cannot refuse**: `TooManyUnits` above holds a side to
-    // twelve, and twelve Class III load 216,000 of a half of 238,000
-    // (`pool`'s head); twelve at the fill's Class I speak for 18,000.
+    // actual sealed class's ceiling. Caller-supplied Fielded previews cannot
+    // lower this charge. At stock constants twelve Class III hulls fit per side.
     let fielded_units: usize = sides.iter().map(|side| side.units.len()).sum();
     let compute = pool::pool_for(&minds_cfg, fielded_units);
     for side in sides {
@@ -1382,7 +1397,10 @@ pub fn start(
             .map(|fielded| {
                 pool::load_of(
                     &minds_cfg.classes,
-                    pool::admitted_class(fielded.mind_class, minds_cfg.fill_class),
+                    custody_units
+                        .iter()
+                        .find(|custody| custody.id == fielded.unit)
+                        .map(|custody| custody.seal.class),
                 )
             })
             .collect();
@@ -1402,6 +1420,38 @@ pub fn start(
             }
         })?;
     }
+
+    // Same immutable opening and recovery reserve before any checkout marker,
+    // record, revision-root publication or task spawn.
+    crate::arena::Arena::new_with_minds(
+        CustodyOut {
+            definition: definition.clone(),
+            units: custody_units.clone(),
+            pilots: pilots.clone(),
+            resolution: arena_def::resolution_for(&catalog),
+            seed: seed_for(match_id, ctx.w.now()),
+            mode,
+        },
+        arena_cfg,
+        match_cfg,
+        sensors_cfg,
+        &minds_cfg,
+    )
+    .map_err(|error| StartError::SnapshotCapacity {
+        reason: error.to_string(),
+    })?;
+
+    // All exact source/revision roots are prepared before the first world write.
+    // Nothing in checkout/open_match mutates Roll; publication after open is the
+    // final fallible step and still has an explicit exceptional rollback path.
+    let retained_minds = selection_refs::prepare_checkout(
+        ctx,
+        match_id,
+        custody_units.iter().map(|unit| &unit.seal),
+    )
+    .map_err(|error| StartError::MindRetention {
+        reason: error.to_string(),
+    })?;
 
     // (2) The record, in `Boarding`. The machine is walked, not jumped: this is
     // the state cut K's `SIM START` leaves the match in, and the transition at
@@ -1531,12 +1581,7 @@ pub fn start(
             let own = report::OwnMind {
                 chose: choice.is_some_and(|choice| choice.chose),
                 mind: unit.seal.mind.clone(),
-                profiles: unit
-                    .seal
-                    .profiles
-                    .iter()
-                    .map(|profile| profile.name.clone())
-                    .collect(),
+                profiles: unit.seal.cards.selected.names().map(SmolStr::new).collect(),
                 substituted: choice.is_some_and(|choice| choice.substituted),
             };
             (unit.id, own)
@@ -1581,6 +1626,25 @@ pub fn start(
             return Err(StartError::Open(error));
         }
     };
+
+    if let Some(prepared) = retained_minds
+        && let Err(error) = selection_refs::publish(ctx, prepared)
+    {
+        // A prepared generation should not change on this synchronous path.
+        // Still close a just-opened task before undoing custody on any refusal.
+        if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+            let tasks = registry.tasks().clone();
+            registry.untrack(match_id);
+            if let Some((handle, join)) = tasks.remove(match_id) {
+                handle.signal_stop();
+                join.abort();
+            }
+        }
+        roll_back(ctx, match_id, &checked_out);
+        return Err(StartError::MindRetention {
+            reason: error.to_string(),
+        });
+    }
 
     // **`Boarding` -> `Running`** - the trigger itself, and the last thing that
     // happens, so a refusal above never leaves a match claiming to run.
@@ -2265,6 +2329,7 @@ pub fn finish(
     // result, in this same action, on every end — a void included: a finished
     // match is never resumed, and nothing but the boot ever read them.
     record::delete_live_and_snapshot(ctx, match_id);
+    selection_refs::reconcile(ctx);
     // 16b cut K.1: and the lobby's own half of the release — the pods and the
     // slots — in this same authoritative action, with the centre left in its
     // terminal state carrying the outcome until somebody resets it.

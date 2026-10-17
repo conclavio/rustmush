@@ -294,6 +294,7 @@
 
       <section class="pane" aria-label="weapons">
         <h4 class="pt">weapons</h4>
+        {#if frame?.mind}<button type="button" onclick={() => { app.mindReadoutOpen = true; app.refreshMindTrace(); }}>Card &amp; trace</button>{/if}
         {#each view.weapons as line, i (i)}
           <p class="line">{line}</p>
         {/each}

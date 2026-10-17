@@ -3555,7 +3555,7 @@ fn m3_an_unarmed_muster_is_sealed_with_no_fire_channel() {
         (&unarmed_arena, &unarmed, "unarmed"),
     ] {
         assert_eq!(
-            arena.unit(red).map(|unit| unit.seal),
+            arena.unit(red).map(|unit| unit.seal.clone()),
             Some(seal.seal_ref()),
             "the {word} muster's arena seal"
         );
@@ -3706,7 +3706,7 @@ fn m3_a_resumed_landing_lands_the_carried_answer() {
     rig.arena.mind_runner = ScriptedMind::new(&[(
         RED,
         vec![Says {
-            memory: Some(vec![3, 1, 4]),
+            memory: Some(b"{\"fixture\":314}".to_vec()),
             ..says(0, vec![IntentKind::Startup])
         }],
     )]);
@@ -3727,7 +3727,7 @@ fn m3_a_resumed_landing_lands_the_carried_answer() {
         "the think and its millisecond"
     );
     assert_eq!(answer.intents, vec![IntentKind::Startup], "its intents");
-    assert_eq!(answer.memory, vec![3, 1, 4], "its memory");
+    assert_eq!(answer.memory, b"{\"fixture\":314}".to_vec(), "its memory");
     assert_eq!(
         answer.epochs,
         Channel::ALL.map(|channel| rig.arena.epochs.current(RED, channel)),
@@ -3768,7 +3768,11 @@ fn m3_a_resumed_landing_lands_the_carried_answer() {
         "and landed it at the landing's millisecond"
     );
     let state: MindState = resumed.arena.minds.get(&RED).cloned().unwrap_or_default();
-    assert_eq!(state.memory, vec![3, 1, 4], "the memory is the answer's");
+    assert_eq!(
+        state.memory,
+        b"{\"fixture\":314}".to_vec(),
+        "the memory is the answer's"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -6155,8 +6159,13 @@ fn m1b5_t1_reads_its_card_through_the_overlay_and_line_is_unchanged() {
     // withdrawal where M1b.4's T1 withdrew.
     let doctrine = m1b5_doctrine();
     let arena = the_j_field_on(Controller::Mind, doctrine.clone());
-    for (unit, state) in &arena.minds {
-        assert_eq!(state.card, tacsim::arena::line(&doctrine), "#{}", unit.0);
+    for unit in arena.minds.keys() {
+        assert_eq!(
+            row_card(&arena, *unit),
+            Some(tacsim::arena::line(&doctrine)),
+            "#{}",
+            unit.0
+        );
     }
     let (_, kept, _) = card_run(arena, 5_000, 30_000, &[(10_000, CardBeat::Hurt(RED, 6, 6))]);
     assert_eq!(
@@ -6268,9 +6277,9 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         serde_json::json!(["min_odds", "break_off_pct", "rally_s"])
     );
     let card: tacsim::arena::StockCard =
-        serde_json::from_value(line["card"].clone()).expect("the whole card");
+        serde_json::from_value(line["stock"].clone()).expect("the diagnostic stock adapter");
     assert_eq!(card, preset_on_field("rearguard"));
-    assert_eq!(arena.minds.get(&RED).map(|state| &state.card), Some(&card));
+    assert_eq!(row_card(&arena, RED).as_ref(), Some(&card));
     // The next think re-arms at Rearguard's 50 per cent.
     let next = arms_after(&kept, RED, 5_000);
     assert_eq!(
@@ -6336,10 +6345,7 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0].1["kind"], "mind_card_refused");
     assert_eq!(lines[0].1["reason"], "band_pct is 30 to 100 in steps of 5");
-    assert_eq!(
-        arena.minds.get(&RED).map(|state| state.card.clone()),
-        Some(preset_on_field("line"))
-    );
+    assert_eq!(row_card(&arena, RED), Some(preset_on_field("line")));
 
     // The arena's own floor, past the bound by hand.
     let mut floored = the_j_field(Controller::Mind);
@@ -6359,7 +6365,7 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0].1["reason"], "unlawful");
     assert_eq!(
-        arena.minds.get(&RED).map(|state| state.card.clone()),
+        row_card(&arena, RED),
         Some(preset_on_field("line")),
         "a card refused unlawful is never written to the row"
     );
@@ -6409,10 +6415,7 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         serde_json::json!(["band_pct", "min_odds", "reserve_pct"]),
         "Sniper is read against Line, the card the refusal kept — not Rearguard"
     );
-    assert_eq!(
-        arena.minds.get(&RED).map(|state| state.card.clone()),
-        Some(preset_on_field("sniper"))
-    );
+    assert_eq!(row_card(&arena, RED), Some(preset_on_field("sniper")));
 
     // Two changes in one pulse, in arrival order.
     let (run, _, arena) = card_run(
@@ -6457,10 +6460,7 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         ]
     );
     assert_eq!(
-        arena
-            .minds
-            .get(&RED)
-            .map(|state| state.card.min_odds_permille),
+        row_card(&arena, RED).map(|card| card.min_odds_permille),
         Some(700)
     );
 }
@@ -6527,11 +6527,7 @@ fn m1b5_an_unarmed_hull_takes_any_preset_with_its_fire_section_inert() {
         ],
         "both land, unit-id order, nothing refused"
     );
-    let card = arena
-        .minds
-        .get(&RED2)
-        .map(|state| state.card.clone())
-        .expect("the unarmed mind's row");
+    let card = row_card(&arena, RED2).expect("the unarmed mind's row");
     assert_eq!(card, preset_on_field("sniper"));
     // The read-back: the fire section inert, with its reason.
     let unarmed = arena.unit(RED2).is_some_and(|unit| unit.weapons.is_empty());
@@ -6615,7 +6611,8 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
         state.power = Power::Online;
     }
     let base = arena.mind_view(RED).expect("red's view");
-    let card = preset_on_field("line");
+    let runtime = &arena.profiles[&RED];
+    let card = runtime.card.clone();
     // 17b cut M2.6: the arena's own runner — the production stock mind the
     // (j) field opened with, or the field's twin under
     // `support::under_the_twin`.
@@ -6646,6 +6643,8 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
             memory: &bytes,
             map: &arena.definition,
             card: &card,
+            program: &runtime.program,
+            profile_token: runtime.token(),
         });
         // 17b cut M2.7: held to the native think under
         // `support::under_the_rhai_runner`.
@@ -7722,7 +7721,7 @@ fn m2_a_faulting_runner_lands_nothing_counts_a_strike_and_three_drop_the_hull() 
 /// (17b cut M2.2, the lead's ruling (b); doc 17 §11, D-UM-43): a
 /// `break_off_pct 10` staged for the armed red on Line (`break_off_pct` 35,
 /// `fight_home_pct` 17.5) is journalled `mind_card_refused` with
-/// `CardError::Pair`'s sentence — the same text `@mind/set` wraps — and the
+/// `CardError::Pair`'s sentence — the same text `@mind/live` wraps — and the
 /// row keeps Line.
 #[test]
 fn m2_the_arena_refuses_a_broken_pair_in_the_cards_own_sentence() {
@@ -7749,10 +7748,7 @@ fn m2_the_arena_refuses_a_broken_pair_in_the_cards_own_sentence() {
         "break_off_pct would put fight_home_pct 17.5 above break_off_pct 10; fight_home_pct \
          is at most break_off_pct"
     );
-    assert_eq!(
-        arena.minds.get(&RED).map(|state| state.card.clone()),
-        Some(preset_on_field("line"))
-    );
+    assert_eq!(row_card(&arena, RED), Some(preset_on_field("line")));
 }
 
 /// **The arena refuses a preset that breaks the pair, by the preset's name**
@@ -7786,10 +7782,7 @@ fn m2_the_arena_refuses_a_preset_that_breaks_the_pair_by_name() {
         "Rearguard would put fight_home_pct 75 above break_off_pct 70; fight_home_pct is at \
          most break_off_pct"
     );
-    assert_eq!(
-        arena.minds.get(&RED).map(|state| state.card.clone()),
-        Some(tacsim::arena::line(&high))
-    );
+    assert_eq!(row_card(&arena, RED), Some(tacsim::arena::line(&high)));
 }
 
 // ---------------------------------------------------------------------------
@@ -8307,6 +8300,8 @@ impl MindRunner for Handing {
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let result = self.inner.as_ref().map_or_else(
             || ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: job.memory.to_vec(),
                 fault: None,
@@ -8974,7 +8969,7 @@ fn pilot_refusals(out: &StepOutput, pilot: ObjId) -> Vec<(String, Refusal)> {
 fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
     let (mut rig, mind) = possess_field(vec![
         Says {
-            memory: Some(vec![3, 1, 4]),
+            memory: Some(b"{\"fixture\":314}".to_vec()),
             ..says(
                 0,
                 vec![IntentKind::Startup, IntentKind::Lock { contact: STRANGER }],
@@ -9002,7 +8997,11 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
     }
     let found = rig.arena.minds.get(&RED).cloned().expect("the mind's row");
     assert_eq!(found.strikes, 1, "think 1's strike");
-    assert_eq!(found.memory, vec![3, 1, 4], "think 0's memory");
+    assert_eq!(
+        found.memory,
+        b"{\"fixture\":314}".to_vec(),
+        "think 0's memory"
+    );
     assert!(found.pending.is_none());
     assert!(
         found.notices.iter().any(|notice| matches!(
@@ -9016,7 +9015,7 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
         found.notices
     );
     assert_ne!(found.seal_digest, [0; 32], "laid with the seal's digest");
-    let sealed = rig.arena.unit(RED).map(|unit| unit.seal);
+    let sealed = rig.arena.unit(RED).map(|unit| unit.seal.clone());
     // 17b cut M4.3: the possess clears the row's order and nothing else.
     let dormant = MindState {
         order: None,
@@ -9116,7 +9115,7 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
     );
     assert!(!first.dropped);
     assert_eq!(
-        rig.arena.unit(RED).map(|unit| unit.seal),
+        rig.arena.unit(RED).map(|unit| unit.seal.clone()),
         sealed,
         "a re-seat never re-seals"
     );
@@ -9160,7 +9159,7 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
         let _ = rig.pulse(&[], &[]);
     }
     assert_eq!(rig.arena.minds.get(&RED).cloned(), kept, "nothing landed");
-    assert_eq!(rig.arena.unit(RED).map(|unit| unit.seal), sealed);
+    assert_eq!(rig.arena.unit(RED).map(|unit| unit.seal.clone()), sealed);
 }
 
 /// **A dropped hull possessed then released stays dropped** (17b cut M3.5;
@@ -9773,7 +9772,11 @@ struct CardsSeen {
 impl MindRunner for CardsSeen {
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         if let Ok(mut seen) = self.seen.lock() {
-            seen.push((job.unit, job.t_ms, job.card.clone()));
+            seen.push((
+                job.unit,
+                job.t_ms,
+                job.card.stock().expect("stock fixture card").clone(),
+            ));
         }
         self.inner.think(job)
     }
@@ -9811,7 +9814,11 @@ fn active(arena: &Arena, unit: ObjId) -> Option<tacsim::arena::card::ActiveProfi
 
 /// `unit`'s row's card.
 fn row_card(arena: &Arena, unit: ObjId) -> Option<tacsim::arena::StockCard> {
-    arena.minds.get(&unit).map(|state| state.card.clone())
+    arena
+        .unit(unit)
+        .and_then(|state| arena.active_card(state))
+        .and_then(|card| card.stock())
+        .cloned()
 }
 
 /// The `mind_card` lines journalled so far, as `(t_ms, line)`.
@@ -9859,11 +9866,14 @@ fn m5_the_fill_flies_the_leads_preset() {
     let mut rig = Rig::new(profile_field(Controller::Mind, &["Sniper"]));
     let seen = cards_seen(&mut rig.arena);
     assert_eq!(
-        rig.arena
-            .unit(RED)
-            .map(|unit| unit.seal.profiles.codes().to_vec()),
-        Some(vec![2]),
-        "the sealed set, as preset codes"
+        rig.arena.unit(RED).map(|unit| unit
+            .seal
+            .profiles
+            .names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()),
+        Some(vec!["Sniper".to_owned()]),
+        "the sealed ordered names, with catalog keys retained in the seal"
     );
     assert_eq!(
         row_card(&rig.arena, RED),
@@ -9903,10 +9913,13 @@ fn m5_the_fill_flies_the_leads_preset() {
         "the Line card alone lays Line"
     );
     assert_eq!(
-        line.arena
-            .unit(RED)
-            .map(|unit| unit.seal.profiles.codes().to_vec()),
-        Some(vec![0])
+        line.arena.unit(RED).map(|unit| unit
+            .seal
+            .profiles
+            .names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()),
+        Some(vec!["Line".to_owned()])
     );
 }
 
@@ -9915,8 +9928,7 @@ fn m5_the_fill_flies_the_leads_preset() {
 /// presets alone is laid a row whose card — derived from the arena's own
 /// doctrine at the stock config, as Line always was — is byte for byte the
 /// card the seal digested (`MindSeal::card_digest`, and the set's one
-/// `SealedProfile::card_digest` for every preset but Line, whose set is
-/// written as none).
+/// complete schema/values/rules bytes and exact immutable catalog key).
 #[test]
 fn m5_the_row_card_digests_as_the_sealed_profile_for_every_preset() {
     use sha2::{Digest as _, Sha256};
@@ -9945,18 +9957,21 @@ fn m5_the_row_card_digests_as_the_sealed_profile_for_every_preset() {
             ],
             &[BLUE],
         );
-        let card = row_card(&arena, RED).expect("a mind's row");
-        let digest: [u8; 32] =
-            Sha256::digest(serde_json::to_vec(&card).expect("a card writes")).into();
-        assert_eq!(digest, seal.card_digest, "{name}: the sealed card");
-        match seal.profiles.as_slice() {
-            [] => assert_eq!(name, "Line", "only Line alone writes no set"),
-            [one] => {
-                assert_eq!(one.name, name);
-                assert_eq!(one.card_digest, digest, "{name}: the set's own digest");
-            }
-            more => panic!("{name}: one profile sealed, not {more:?}"),
-        }
+        let card = arena
+            .unit(RED)
+            .and_then(|unit| arena.active_card(unit))
+            .expect("the exact runtime card");
+        let bytes = card.canonical_bytes().expect("hydrated complete card");
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        assert_eq!(bytes, seal.card, "{name}: exact opening card bytes");
+        assert_eq!(digest, seal.card_digest, "{name}: the sealed complete card");
+        assert_eq!(seal.cards.selected.names().collect::<Vec<_>>(), vec![name]);
+        assert_eq!(seal.cards.selected.key(0), Some(card.key()));
+        assert_eq!(
+            card.stock(),
+            Some(&preset_on_field(name)),
+            "{name}: stock adapter"
+        );
     }
 }
 
@@ -9981,7 +9996,11 @@ fn m5_past_the_grace_a_pilots_hull_flies_its_sealed_profile() {
         Some(Controller::Mind)
     );
     let row = rig.arena.minds.get(&RED).expect("a mind's row");
-    assert_eq!(row.card, preset_on_field("sniper"), "the first profile");
+    assert_eq!(
+        row_card(&rig.arena, RED),
+        Some(preset_on_field("sniper")),
+        "the first profile"
+    );
     assert_eq!(
         doctrine_state_of(&row.memory),
         MachineState::Withdraw,
@@ -10033,7 +10052,7 @@ fn m5_a_profile_switch_while_seated_is_flown_at_the_release() {
     assert!(!moved.is_empty());
     assert_eq!(line["changed"], serde_json::json!(moved));
     let card: tacsim::arena::StockCard =
-        serde_json::from_value(line["card"].clone()).expect("the whole card");
+        serde_json::from_value(line["stock"].clone()).expect("the diagnostic stock adapter");
     assert_eq!(card, preset_on_field("line"));
     let released = release_red(&rig.arena);
     let _ = rig.pulse(&[released], &[]);
@@ -10245,7 +10264,7 @@ fn m5_a_second_switch_inside_ten_seconds_is_refused_profile() {
     let mut unsealed = Rig::new(profile_field(Controller::Pilot, &["Sniper", "Line"]));
     let _ = unsealed.pulse(&[], &[]);
     if let Some(unit) = unsealed.arena.unit_mut(RED) {
-        assert_eq!(unit.seal.profiles.len, 2, "the set stands");
+        assert_eq!(unit.seal.profiles.len(), 2, "the set stands");
         unit.seal.digest = tacsim::arena::mind::SealRef::none().digest;
     }
     assert_eq!(
@@ -10367,7 +10386,7 @@ fn m5_a_profile_switch_from_a_mind_or_a_slot_is_refused_channel() {
 fn m5_a_release_hands_a_non_doctrine_mind_its_own_memory() {
     for doctrine in [false, true] {
         let (mut rig, _mind) = possess_field(vec![Says {
-            memory: Some(vec![3, 1, 4]),
+            memory: Some(b"{\"fixture\":314}".to_vec()),
             ..says(0, vec![IntentKind::Startup])
         }]);
         if !doctrine && let Some(unit) = rig.arena.unit_mut(RED) {
@@ -10381,7 +10400,7 @@ fn m5_a_release_hands_a_non_doctrine_mind_its_own_memory() {
         });
         assert_eq!(
             rig.arena.minds.get(&RED).map(|state| state.memory.clone()),
-            Some(vec![3, 1, 4])
+            Some(b"{\"fixture\":314}".to_vec())
         );
         let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
         let _ = rig.pulse(
@@ -10416,7 +10435,11 @@ fn m5_a_release_hands_a_non_doctrine_mind_its_own_memory() {
         if doctrine {
             assert_eq!(memory, withdraw_seed(), "Standard Doctrine is seeded");
         } else {
-            assert_eq!(memory, vec![3, 1, 4], "its own memory, untouched");
+            assert_eq!(
+                memory,
+                b"{\"fixture\":314}".to_vec(),
+                "its own memory, untouched"
+            );
         }
     }
 }
@@ -10535,10 +10558,13 @@ fn m5_a_resume_across_a_switched_profile_reproduces_the_hash_sequence() {
         .expect("format 10 decodes");
     assert_eq!(active(&decoded, RED), Some(switched), "the active profile");
     assert_eq!(
-        decoded
-            .unit(RED)
-            .map(|unit| unit.seal.profiles.codes().to_vec()),
-        Some(vec![0, 2]),
+        decoded.unit(RED).map(|unit| unit
+            .seal
+            .profiles
+            .names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()),
+        Some(vec!["Line".to_owned(), "Sniper".to_owned()]),
         "the chosen set"
     );
     assert_eq!(

@@ -1184,8 +1184,8 @@ sortie's seal, pinned holders keep theirs; an author may withdraw a revision, on
 recalls one; a rhai bump re-runs conformance for every live revision and recalls failures with
 notice.
 
-**Private filing and the owner's licence (proposed 2026-10-04 after review, finding 5; D-UM-56 and
-D-UM-57 pending the owner, Q-UM-17).** Filing and listing are separate acts. `@mind/file
+**Private filing and the owner's licence (proposed 2026-10-04 after review, finding 5; Q-UM-17's
+parent-lapse behavior ruled by the owner 2026-10-17).** Filing and listing are separate acts. `@mind/file
 <mind>@<rev>` files a revision exactly as `/publish` does — the same conformance, the same fee to
 `system:tacsim.registry`, a charter issued to the filer, a public Roll entry whose forms offered
 read `none` — and `/publish` files the revision if it is not yet filed, then lists it. Filing is not
@@ -1203,10 +1203,11 @@ depth at most 3, the royalty cap held — and its owner's licence is **dependent
 the holder's licence to the parent line is live, its term never outrunning the parent's; the
 parent's author is paid for private use through that parent licence and for resale through the
 parent royalty. When the parent licence lapses, is sold, is revoked or its revision is recalled, the
-dependent owner's licence lapses at the same moment: the fork becomes source-sealed (its last filed
-revision still runs and seals, no new revision may be filed) until the holder holds the parent line
-again — the default; the alternatives, deleting the fork or letting it persist unlicensed, are
-Q-UM-17's. Charters are refused between characters of one account as licences are.
+dependent owner's licence lapses at the same moment: existing sealed sorties may finish, but no
+new sortie may be sealed and no new revision may be filed until the parent licence is restored.
+The fork remains source-sealed during that interval. This is the owner's 2026-10-17 Q-UM-17 ruling,
+superseding the earlier default that allowed the last filed revision to seal new sorties.
+Charters are refused between characters of one account as licences are.
 
 **Listing and sale.** A filed line is a `mush-market` listing of `Representation::Entitlement`
 under catalogue ruleset `minds`, reached through tacsim-registered `CatalogSource`,
@@ -1539,11 +1540,10 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
     transcript are dropped. **Ruled by the owner 2026-10-10 (OQ-4): the default holds** — the pilot's
     slot grammar lands in the rule-language cut right after 17b's M5 gate, not in M5 (§24).
 17. **Q-UM-17, the fate of an `open` fork whose parent licence ends** (raised 2026-10-04 after review, finding 5;
-    D-UM-56, D-UM-57). **Default:** the fork becomes source-sealed — its last filed revision still runs
-    and seals, no new revision may be filed — until the holder holds the parent line again; the
-    author's self-use runs through a free owner's licence that filing issues, and filing never lists.
-    **Alternatives:** the fork is deleted at the parent's lapse; or it persists unlicensed (which makes
-    `open` a one-time sale of the source and lets a fork outlive a sold parent).
+    D-UM-56, D-UM-57). **Ruled by the owner 2026-10-17:** finish existing sorties, but block new
+    sorties and filings until the parent licence is restored. The fork becomes source-sealed;
+    the earlier default allowing the last filed revision to seal new sorties is superseded.
+    The author's self-use runs through a free owner's licence that filing issues, and filing never lists.
 18. **Q-UM-18, the PendingTransfer parameters** (raised 2026-10-04 after review, finding 7; D-UM-40). **Default:**
     settlement at the last admitted sortie's close or at the earlier of the term's end and 3 IC days (the
     Grace length), and sorties still out keep their seats until they close so open sealed sorties never

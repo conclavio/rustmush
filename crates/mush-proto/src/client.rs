@@ -58,6 +58,16 @@ pub enum Query {
         /// Maximum number of lines to return (server-clamped).
         limit: u32,
     },
+    /// Read this character's proving runs or one bounded report page. This is
+    /// a closed read request; proving and bench actions remain commands.
+    MindBulk {
+        /// Owned proving run; absent means the bounded run list.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<u64>,
+        /// One-based report page, valid only with a run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<u16>,
+    },
     /// Subscribe to a panel feed; the server responds with a keyframe and
     /// then streams deltas.
     PanelSubscribe {
@@ -78,6 +88,13 @@ pub enum ClientCommand {
     /// SSH lines arrive here after line editing; the web input box submits
     /// here too, keeping both clients behind one parser.
     Line(String),
+    /// A closed module request, dispatched with normal mutation/persistence authority.
+    Invoke {
+        /// Client correlation id; asynchronous final results echo this id too.
+        id: u64,
+        /// Typed service request; never interpreted as command text.
+        request: crate::InvokeRequest,
+    },
     /// A panel-hydration request; the response correlates by `id`.
     Req {
         /// Client-chosen correlation id, echoed with the response.

@@ -588,13 +588,18 @@ pub fn resume_pending(ctx: &mut Ctx<'_>, pending: PendingResume) -> Result<(), R
     // (1) The ground.
     let ground = ground_for_resume(ctx, &live.record.arena, &head.definition_digest)?;
     // (2) The one decode.
-    let arena =
-        Snapshot::decode(&document, ground.as_ref().clone()).map_err(|error| match error {
+    let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
+        crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
+        |store| store.config().arena.snapshot_max_bytes,
+    );
+    let arena = Snapshot::decode_with_limit(&document, ground.as_ref().clone(), limit).map_err(
+        |error| match error {
             SnapshotError::HashMismatch { recorded, decoded } => {
                 ResumeRefusal::StateHash { recorded, decoded }
             }
             other => ResumeRefusal::Snapshot(other),
-        })?;
+        },
+    )?;
     // (2b) **17b cut M3.3** (doc 17 §13): every seal the record carries must
     // be runnable on this server — its ABI this build's, and a scripted
     // seal's source in the store. The decoded arena keeps its own seal

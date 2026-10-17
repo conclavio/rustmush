@@ -2802,9 +2802,14 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         Controller::Mind,
         tacsim::arena::doctrine::MachineState::Patrol,
     );
-    if let Some(state) = arena.minds.get_mut(&BLUE) {
-        state.card.min_odds_permille = 300;
-        state.card.stance = tacsim::arena::card::Stance::Orbit;
+    for (slider, value) in [("min_odds", "30"), ("stance", "orbit")] {
+        arena.stage_card(
+            BLUE,
+            tacsim::arena::CardChange::Set {
+                slider: slider.into(),
+                value: value.into(),
+            },
+        );
     }
     let _ = refused_now(
         &mut arena,
@@ -2812,6 +2817,9 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         vec![arm(cond("cannon", 50, aspect_mask(&[Aspect::Front])))],
     );
     assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(1));
+    let edited = arena.profiles[&BLUE].card.stock().expect("stock adapter");
+    assert_eq!(edited.min_odds_permille, 300);
+    assert_eq!(edited.stance, tacsim::arena::card::Stance::Orbit);
     arena
         .held_said
         .insert((RED, 1, contact_of(RED, BLUE)), 4_000);
@@ -2893,7 +2901,7 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     let snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
     // to 10; M5rules moves the ordered rule tree to 11, M5r motor state to 12.
-    assert_eq!(snapshot.document["format"], 12);
+    assert_eq!(snapshot.document["format"], 13);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -2901,8 +2909,14 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     assert_eq!(resumed.conditions, arena.conditions);
     assert_eq!(resumed.held_said, arena.held_said);
     assert_eq!(
-        resumed.minds.get(&BLUE).map(|state| state.card.clone()),
-        arena.minds.get(&BLUE).map(|state| state.card.clone())
+        resumed
+            .profiles
+            .get(&BLUE)
+            .map(|runtime| runtime.card.clone()),
+        arena
+            .profiles
+            .get(&BLUE)
+            .map(|runtime| runtime.card.clone())
     );
     let resumed_notices = resumed
         .minds
@@ -2985,6 +2999,8 @@ struct Scripted {
 impl MindRunner for Scripted {
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         ThinkResult {
+            diagnostics: None,
+            rule_sample: None,
             intents: self
                 .says
                 .get(&(job.unit, job.think_seq))

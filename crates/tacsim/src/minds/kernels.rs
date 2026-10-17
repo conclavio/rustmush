@@ -56,7 +56,7 @@ use super::api::{
 use super::context::{REFUSED_LIMIT, REFUSED_TYPE, REFUSED_UNKNOWN, refuse, refused, with};
 use super::fees::{
     FEE_HEALTH, FEE_HOLDS_ROW, FEE_HOSTILE_BASE, FEE_HOSTILE_ROW, FEE_LINE_TO, FEE_NAV, FEE_RAND,
-    FEE_RANGES, FEE_READ, charge, per_row,
+    FEE_RANGES, FEE_READ, FEE_SPOT, FEE_TERRAIN, charge, per_row,
 };
 use crate::arena::doctrine::{self, arc_between};
 use crate::arena::index::range_between;
@@ -201,6 +201,77 @@ fn line_to(v: &mut View, id: INT) -> Result<bool, Box<EvalAltResult>> {
         };
         Ok(line_between(&ctx.map, view.cell, row.cell))
     })?
+}
+
+/// Public map read for the local opening/ground checks. Tuple positions are
+/// [kind: public snake-case terrain label, tracked_passable: bool]. The latter
+/// is the authored tracked locomotion row, never occupancy, slope clearance,
+/// this hull's current capability, or permission to enter an enemy entry zone.
+/// At most sixteen attempts, including malformed/unavailable reads, per think.
+/// Off-map, no own cell, and beyond 320 m Chebyshev distance all answer ().
+fn terrain_at(at: Dynamic) -> Result<Dynamic, Box<EvalAltResult>> {
+    with(|ctx| {
+        charge(FEE_TERRAIN);
+        ctx.terrain_calls = ctx.terrain_calls.saturating_add(1);
+        if ctx.terrain_calls > 16 {
+            return Err(refuse(
+                ctx,
+                REFUSED_LIMIT,
+                "terrain_at is read at most sixteen times a think",
+            ));
+        }
+        Ok(())
+    })??;
+    const TEXT: &str = "terrain_at takes one [x, y] cell";
+    let values = at
+        .try_cast::<Array>()
+        .ok_or_else(|| refused(REFUSED_TYPE, TEXT))?;
+    let [x, y] = values.as_slice() else {
+        return Err(refused(REFUSED_TYPE, TEXT));
+    };
+    let x = x.as_int().map_err(|_| refused(REFUSED_TYPE, TEXT))?;
+    let y = y.as_int().map_err(|_| refused(REFUSED_TYPE, TEXT))?;
+    let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+        return Ok(Dynamic::UNIT);
+    };
+    let at = (x, y);
+    with(|ctx| {
+        let Some(here) = ctx.view.cell else {
+            return Dynamic::UNIT;
+        };
+        let far = u64::from(here.0.abs_diff(at.0).max(here.1.abs_diff(at.1)))
+            .saturating_mul(u64::from(ctx.map.terrain.cell_cm()));
+        if far > 32_000 {
+            return Dynamic::UNIT;
+        }
+        match ctx.map.terrain.get(at.0, at.1) {
+            Some(cell) => Dynamic::from_array(vec![
+                Dynamic::from(ImmutableString::from(cell.class.label())),
+                Dynamic::from_bool(cell.passable()),
+            ]),
+            None => Dynamic::UNIT,
+        }
+    })
+}
+
+/// One fixed public map-letter lookup, with no entity or observation inputs.
+/// The same alphabet and authored ordering drive the cockpit's public map.
+fn spot_cell(letter: Dynamic) -> Result<Dynamic, Box<EvalAltResult>> {
+    charge(FEE_SPOT);
+    let Some(letter) = letter.try_cast::<ImmutableString>() else {
+        return Ok(Dynamic::UNIT);
+    };
+    let [letter] = letter.as_bytes() else {
+        return Ok(Dynamic::UNIT);
+    };
+    let letter = char::from(letter.to_ascii_uppercase());
+    let Some(index) = crate::arena::state::SPOT_LETTERS
+        .iter()
+        .position(|candidate| *candidate == letter)
+    else {
+        return Ok(Dynamic::UNIT);
+    };
+    with(|ctx| cell(ctx.map.key_spots.get(index).map(|spot| (spot.x, spot.y))))
 }
 
 /// **`stand_off_cell(v, id, want_cm)`** — fee 30; `()` or a cell.
@@ -454,6 +525,8 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     });
     function!(api, "ranges", ranges);
     function!(api, "line_to", line_to);
+    function!(api, "terrain_at", terrain_at);
+    function!(api, "spot_cell", spot_cell);
     function!(api, "entry_cell", entry_cell);
     function!(api, "far_entry_cell", far_entry_cell);
     function!(api, "stand_off_cell", stand_off_cell);
@@ -508,6 +581,7 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
 #[cfg(test)]
 mod tests {
     use mush_mind::Fault;
+    use std::sync::Arc;
 
     use super::super::fees::FEE_THINK;
     use super::super::fixture::{
@@ -533,6 +607,133 @@ mod tests {
         shown(&opt(id, |id| Dynamic::from_int(contact_int(id))))
     }
 
+    #[test]
+    fn spot_cells_are_exactly_the_already_public_map_markers() {
+        let mut definition = fixture::map();
+        definition.key_spots = crate::arena::state::SPOT_LETTERS
+            .iter()
+            .enumerate()
+            .map(|(i, _)| crate::arena::state::KeySpot {
+                name: format!("Public {i}").into(),
+                x: i as u16,
+                y: 2,
+            })
+            .collect();
+        let public = crate::match_::cockpit::map_frame(
+            crate::arena_task::MatchId(1),
+            "test",
+            &definition.terrain,
+            &definition.key_spots,
+        );
+        for marker in public["spots"].as_array().unwrap() {
+            let letter = marker["letter"].as_str().unwrap();
+            let mut seen = view();
+            seen.cell = None;
+            seen.contacts.clear();
+            seen.sections.clear();
+            let mut ctx = context_on(seen);
+            ctx.map = Arc::new(definition.clone());
+            let result = eval_in(ctx, &format!("spot_cell(\"{letter}\")")).unwrap();
+            assert_eq!(
+                shown(&result),
+                format!("[{}, {}]", marker["cell"][0], marker["cell"][1])
+            );
+        }
+        for word in ["\"\"", "\"AA\"", "\"D\"", "\"?\"", "123", "()"] {
+            assert_eq!(on(&view(), &format!("spot_cell({word})")), "()");
+        }
+        // The fixture only has A; an absent valid letter is the same unavailable
+        // value as malformed input, with the same four-operation charge.
+        for word in ["\"B\"", "123"] {
+            let result = think(&format!("fn think(v,c) {{ let x=spot_cell({word}); }}"));
+            assert_eq!(result.result.unwrap().fee, FEE_THINK + FEE_SPOT);
+        }
+    }
+
+    #[test]
+    fn terrain_reads_only_authored_tracked_ground_in_a_bounded_neighborhood() {
+        use crate::arena::state::TerrainCell;
+        use mush_atlas::TerrainClass;
+
+        let mut seen = view();
+        seen.cell = Some((40, 40));
+        let mut definition = fixture::map();
+        definition.terrain = ArenaTerrain::uniform(
+            100,
+            100,
+            1_000,
+            TerrainCell {
+                class: TerrainClass::WoodsLight,
+                move_cost: 150,
+                elev_cm: 12,
+            },
+        )
+        .unwrap();
+        let read = |seen: MindView, at: &str| {
+            let mut ctx = context_on(seen);
+            ctx.map = Arc::new(definition.clone());
+            shown(&eval_in(ctx, &format!("terrain_at({at})")).unwrap())
+        };
+        assert_eq!(read(seen.clone(), "[72, 72]"), "[\"woods_light\", true]");
+        assert_eq!(read(seen.clone(), "[73, 40]"), "()");
+        assert_eq!(read(seen.clone(), "[100, 40]"), "()");
+        assert_eq!(read(seen.clone(), "[-1, 40]"), "()");
+        assert_eq!(read(seen.clone(), "[65536, 40]"), "()");
+        // Own hardware, visible entities and contact truth cannot change this
+        // public authored-map answer: none is an operand of the kernel.
+        let mut other = seen.clone();
+        other.contacts.clear();
+        other.weapons.clear();
+        other.sections.clear();
+        other.immobile = true;
+        other.lock = None;
+        assert_eq!(read(other, "[40, 40]"), read(seen.clone(), "[40, 40]"));
+        seen.cell = None;
+        assert_eq!(read(seen, "[40, 40]"), "()");
+        definition.terrain = ArenaTerrain::uniform(
+            100,
+            100,
+            1_000,
+            TerrainCell {
+                class: TerrainClass::WaterDeep,
+                move_cost: 0,
+                elev_cm: 0,
+            },
+        )
+        .unwrap();
+        let mut ctx = context_on(view());
+        ctx.map = Arc::new(definition);
+        assert_eq!(
+            shown(&eval_in(ctx, "terrain_at(v.cell)").unwrap()),
+            "[\"water_deep\", false]"
+        );
+    }
+
+    #[test]
+    fn terrain_attempts_are_charged_bounded_and_reset_for_each_think() {
+        let source = "fn think(v, c) { for n in 0..16 { let x = terrain_at([65535, 65535]); } }";
+        for _ in 0..2 {
+            let ran = think(source);
+            assert_eq!(
+                ran.result.expect("sixteen unavailable reads").fee,
+                FEE_THINK + 16 * FEE_TERRAIN
+            );
+            assert_eq!(ran.ctx.terrain_calls, 16);
+            assert_eq!(ran.ctx.refused, None);
+        }
+        let ran = think("fn think(v,c) { for n in 0..17 { let x = terrain_at([65535, 65535]); } }");
+        assert!(matches!(ran.result, Err(Fault::Type(_))));
+        assert_eq!(ran.ctx.terrain_calls, 17);
+        assert_eq!(ran.ctx.refused, Some(REFUSED_LIMIT));
+        let ran = think("fn think(v,c) { let x = terrain_at([true, 0]); }");
+        assert!(matches!(ran.result, Err(Fault::Type(_))));
+        assert_eq!(
+            ran.ctx.terrain_calls, 1,
+            "malformed attempts consume the same allowance"
+        );
+        assert_eq!(ran.ctx.refused, Some(REFUSED_TYPE));
+    }
+
     /// One call of every fee-charging kernel, and the fee each charges on the
     /// full view (three rows).
     fn calls() -> Vec<(&'static str, u64)> {
@@ -552,6 +753,8 @@ mod tests {
             ("contact(v, v.lock)", FEE_READ),
             ("ranges(v, 800, true)", FEE_RANGES),
             ("line_to(v, v.lock)", FEE_LINE_TO),
+            ("terrain_at(v.cell)", FEE_TERRAIN),
+            ("spot_cell(\"A\")", FEE_SPOT),
             ("entry_cell(v)", FEE_NAV),
             ("far_entry_cell(v)", FEE_NAV),
             ("stand_off_cell(v, v.lock, 500)", FEE_NAV),

@@ -27,6 +27,7 @@ use mush_core::{ObjId, World};
 use smol_str::SmolStr;
 use tacsim::arena::core::CoreClass;
 use tacsim::arena::mind::SealEngine;
+use tacsim::arena::profile_seal::MindOrigin;
 use tacsim::match_::holdings::{HeldMind, Holdings, SealIdentity};
 
 /// `Fixture I`'s source.
@@ -71,11 +72,16 @@ pub fn digest_hex(text: &str) -> String {
 #[must_use]
 pub fn fixture_i() -> HeldMind {
     HeldMind {
+        definition: None,
+        saved: None,
         identity: SealIdentity {
             mind: SmolStr::new_static(FIXTURE_I),
-            charter: SmolStr::new_static("Fixture"),
-            line: SmolStr::new_static("fixture_i"),
-            revision: 1,
+            origin: MindOrigin::Filed {
+                charter: SmolStr::new_static("Fixture"),
+                line: SmolStr::new_static("fixture_i"),
+                revision: 1,
+                licence: SmolStr::new_static("fixture"),
+            },
             source_sha256: digest(FIXTURE_I_RHAI),
         },
         rated: CoreClass::I,
@@ -89,11 +95,16 @@ pub fn fixture_i() -> HeldMind {
 #[must_use]
 pub fn load_iii() -> HeldMind {
     HeldMind {
+        definition: None,
+        saved: None,
         identity: SealIdentity {
             mind: SmolStr::new_static(LOAD_III),
-            charter: SmolStr::new_static("Fixture"),
-            line: SmolStr::new_static("load"),
-            revision: 1,
+            origin: MindOrigin::Filed {
+                charter: SmolStr::new_static("Fixture"),
+                line: SmolStr::new_static("load"),
+                revision: 1,
+                licence: SmolStr::new_static("fixture"),
+            },
             source_sha256: digest(LOAD_III_RHAI),
         },
         rated: CoreClass::III,

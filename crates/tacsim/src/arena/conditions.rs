@@ -586,6 +586,13 @@ pub struct ConditionTable {
     rows: BTreeMap<ObjId, Vec<Option<Rule>>>,
 }
 
+/// Opaque validated replacement, paired with one prepared profile state.
+#[derive(Clone, Debug)]
+pub struct PreparedProfileRules {
+    unit: ObjId,
+    row: Vec<Option<Rule>>,
+}
+
 impl ConditionTable {
     /// **`unit`'s row**, in slot order — as wide as the core's slots it was
     /// laid down at (17b cut M3.2), and EMPTY for a hull with no row: every
@@ -636,10 +643,20 @@ impl ConditionTable {
         cond: FireCondition,
         capacity: usize,
     ) -> Result<u8, Refusal> {
+        self.arm_avoiding(unit, cond, capacity, 0)
+    }
+
+    fn arm_avoiding(
+        &mut self,
+        unit: ObjId,
+        cond: FireCondition,
+        capacity: usize,
+        protected: u8,
+    ) -> Result<u8, Refusal> {
         let mut rule = Rule::fire_rule(cond, Vec::new());
         rule.placement(true, true);
         let mut row = self.rows.get(&unit).cloned().unwrap_or_default();
-        let n = Self::put_rule(&mut row, None, rule, capacity)?;
+        let n = Self::put_rule(&mut row, None, rule, capacity, protected)?;
         self.rows.insert(unit, row);
         Ok(n)
     }
@@ -649,6 +666,7 @@ impl ConditionTable {
         slot: Option<u8>,
         rule: Rule,
         capacity: usize,
+        protected: u8,
     ) -> Result<u8, Refusal> {
         let holds = capacity.min(crate::arena::core::MAX_CONDITION_SLOTS);
         if holds == 0 {
@@ -663,9 +681,19 @@ impl ConditionTable {
                 .iter()
                 .take(holds)
                 .position(|had| had.as_ref().is_some_and(|had| had.same_shorthand(&rule)))
-                .or_else(|| row.iter().take(holds).position(Option::is_none)),
+                .or_else(|| {
+                    row.iter()
+                        .take(holds)
+                        .enumerate()
+                        .find_map(|(index, place)| {
+                            (place.is_none() && protected & (1 << index) == 0).then_some(index)
+                        })
+                }),
         }
         .ok_or(Refusal::NoSlot)?;
+        if protected & (1 << at) != 0 {
+            return Err(Refusal::Channel);
+        }
         let place = row.get_mut(at).ok_or(Refusal::NoSlot)?;
         if place
             .as_ref()
@@ -690,6 +718,17 @@ impl ConditionTable {
         rules: &[Rule],
         capacity: usize,
     ) -> Result<Vec<u8>, Refusal> {
+        self.set_rules_avoiding(unit, slot, rules, capacity, 0)
+    }
+
+    fn set_rules_avoiding(
+        &mut self,
+        unit: ObjId,
+        slot: Option<u8>,
+        rules: &[Rule],
+        capacity: usize,
+        protected: u8,
+    ) -> Result<Vec<u8>, Refusal> {
         let Some(first) = rules.first() else {
             return Err(Refusal::Unlawful);
         };
@@ -712,7 +751,7 @@ impl ConditionTable {
             validate_rule_shape(rule)?;
             let mut rule = rule.clone();
             rule.placement(slot.is_none(), false);
-            let n = Self::put_rule(&mut row, slot, rule, capacity)?;
+            let n = Self::put_rule(&mut row, slot, rule, capacity, protected)?;
             if written.contains(&n) {
                 return Err(Refusal::Unlawful);
             }
@@ -720,6 +759,57 @@ impl ConditionTable {
         }
         self.rows.insert(unit, row);
         Ok(written)
+    }
+
+    /// Replace a complete sealed profile's ordered native rows atomically.
+    /// Both station channels may be present; this is admission, not a seat edit.
+    /// The complete profile program and its sample gate are committed alongside.
+    /// # Errors
+    /// Invalid capacity or shape; no slot changes before every row is validated.
+    pub fn replace_profile_rules(
+        &mut self,
+        unit: ObjId,
+        slots: &[Option<Rule>],
+        capacity: usize,
+    ) -> Result<(), Refusal> {
+        let prepared = Self::prepare_profile_rules(unit, slots, capacity)?;
+        self.apply_profile_rules(prepared);
+        Ok(())
+    }
+
+    /// Validate/allocate one hull's row before a multi-field profile commit.
+    /// # Errors
+    /// Invalid rule shape or capacity; no table is changed.
+    pub fn prepare_profile_rules(
+        unit: ObjId,
+        slots: &[Option<Rule>],
+        capacity: usize,
+    ) -> Result<PreparedProfileRules, Refusal> {
+        if capacity > crate::arena::core::MAX_CONDITION_SLOTS || slots.len() > capacity {
+            return Err(Refusal::NoSlot);
+        }
+        let mut row = Vec::with_capacity(capacity);
+        for rule in slots {
+            if let Some(rule) = rule {
+                validate_rule_shape(rule)?;
+                let mut rule = rule.clone();
+                rule.placement(false, false);
+                row.push(Some(rule));
+            } else {
+                row.push(None);
+            }
+        }
+        row.resize(capacity, None);
+        Ok(PreparedProfileRules { unit, row })
+    }
+
+    /// Infallible synchronous publication after all profile fields are prepared.
+    pub fn apply_profile_rules(&mut self, prepared: PreparedProfileRules) {
+        if prepared.row.iter().all(Option::is_none) {
+            self.rows.remove(&prepared.unit);
+        } else {
+            self.rows.insert(prepared.unit, prepared.row);
+        }
     }
 
     /// Remove exactly one stable slot, checking its channel at application time.
@@ -1177,10 +1267,21 @@ impl Arena {
     #[must_use]
     pub fn rule_vetoed(&self, unit: ObjId, weapon: &str, at_ms: i64) -> bool {
         let lock = self.unit(unit).and_then(|state| state.lock);
-        self.conditions.slots(unit).iter().flatten().any(|rule| {
-            matches!(rule, Rule::HoldFire { weapon: held, .. } if held == weapon)
-                && self.rule_predicates_hold(unit, rule, lock, at_ms)
-        })
+        self.conditions
+            .slots(unit)
+            .iter()
+            .enumerate()
+            .any(|(index, rule)| {
+                let Some(rule) = rule else {
+                    return false;
+                };
+                let Ok(slot) = u8::try_from(index.saturating_add(1)) else {
+                    return false;
+                };
+                self.runtime_permits(unit, slot, rule, at_ms)
+                    && matches!(rule, Rule::HoldFire { weapon: held, .. } if held == weapon)
+                    && self.rule_predicates_hold(unit, rule, lock, at_ms)
+            })
     }
 
     fn first_fire_rule(&self, unit: ObjId, at_ms: i64) -> Option<u8> {
@@ -1191,8 +1292,10 @@ impl Arena {
             .enumerate()
             .find_map(|(at, rule)| {
                 let rule = rule.as_ref()?;
+                let slot = u8::try_from(at.saturating_add(1)).ok()?;
                 let condition = rule.fire()?;
-                if rule.independent()
+                if !self.runtime_permits(unit, slot, rule, at_ms)
+                    || rule.independent()
                     || self.rule_vetoed(unit, &condition.weapon, at_ms)
                     || !self.rule_predicates_hold(unit, rule, lock, at_ms)
                     || self.warrant(unit, condition, at_ms).is_err()
@@ -1223,7 +1326,9 @@ impl Arena {
             .and_then(Option::as_ref)
             .ok_or(Held::Idle)?;
         let condition = rule.fire().ok_or(Held::Idle)?;
-        if self.rule_vetoed(unit, &condition.weapon, at_ms) {
+        if !self.runtime_permits(unit, slot, rule, at_ms)
+            || self.rule_vetoed(unit, &condition.weapon, at_ms)
+        {
             return Err(Held::Idle);
         }
         let selected = self.first_fire_rule(unit, at_ms);
@@ -1436,19 +1541,25 @@ impl Arena {
         if self.conditions.is_empty_for(unit) {
             return Vec::new();
         }
-        if self.ended.is_some() {
+        if self.ended.is_some() || self.rule_evaluation_deferred(unit, t_ms) {
             return Vec::new();
         }
         // Sensors rules own their own channel and use the normal admission
         // and lock resolver. One matching rule wins, even if its lock is already
         // held. A ready gun never invents an extra sensor event.
         if trigger != ConditionTrigger::WeaponReady {
-            let target = self
-                .conditions
-                .slots(unit)
-                .iter()
-                .flatten()
-                .find_map(|rule| self.rule_lock_target(unit, rule, t_ms));
+            let target =
+                self.conditions
+                    .slots(unit)
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, rule)| {
+                        let rule = rule.as_ref()?;
+                        let slot = u8::try_from(index.saturating_add(1)).ok()?;
+                        self.runtime_permits(unit, slot, rule, t_ms)
+                            .then(|| self.rule_lock_target(unit, rule, t_ms))
+                            .flatten()
+                    });
             if let Some(contact) = target
                 && self
                     .unit(unit)
@@ -1490,6 +1601,9 @@ impl Arena {
                 let rule = slot.as_ref()?;
                 let cond = rule.fire()?;
                 let n = u8::try_from(at.saturating_add(1)).ok()?;
+                if !self.runtime_permits(unit, n, rule, t_ms) {
+                    return None;
+                }
                 if selected.is_some() && selected != Some(n) {
                     return None;
                 }
@@ -1628,6 +1742,16 @@ impl Arena {
         arming: &Arming,
         at_ms: i64,
     ) -> Result<Option<u8>, Refusal> {
+        self.resolve_arming_avoiding(unit, arming, at_ms, 0)
+    }
+
+    fn resolve_arming_avoiding(
+        &mut self,
+        unit: ObjId,
+        arming: &Arming,
+        at_ms: i64,
+        protected: u8,
+    ) -> Result<Option<u8>, Refusal> {
         let _ = at_ms;
         match arming {
             Arming::Arm(cond) => {
@@ -1647,10 +1771,13 @@ impl Arena {
                 // and, since 17b cut M3.4, Class 0's one on a mind's hull
                 // dropped to the ROM (`Arena::arming_capacity`).
                 let capacity = self.arming_capacity(unit);
-                let n = match self.conditions.arm(unit, cond.clone(), capacity) {
+                let n = match self
+                    .conditions
+                    .arm_avoiding(unit, cond.clone(), capacity, protected)
+                {
                     // 17b cut M3.4 (D-UM-32): the ROM owns its one slot — it
                     // takes back a slot the failed mind left on another gun.
-                    Err(Refusal::NoSlot) if self.thinks_on_rom(unit) => {
+                    Err(Refusal::NoSlot) if protected == 0 && self.thinks_on_rom(unit) => {
                         self.rom_takes_slot(unit, cond, capacity)?
                     }
                     armed => armed?,
@@ -1709,7 +1836,9 @@ impl Arena {
                     }
                 }
                 let capacity = self.arming_capacity(unit);
-                let written = self.conditions.set_rules(unit, *slot, rules, capacity)?;
+                let written = self
+                    .conditions
+                    .set_rules_avoiding(unit, *slot, rules, capacity, protected)?;
                 self.forget_held_said(unit, &written);
                 Ok(written.first().copied())
             }
@@ -1723,6 +1852,104 @@ impl Arena {
                 Ok(None)
             }
         }
+    }
+
+    /// Automatic condition edits cannot rewrite the immutable authored program.
+    /// The legacy disarm-all shorthand removes its mutable rows only, so it can
+    /// coexist with a later conditional HOLD or an authored LOCK binding.
+    pub(crate) fn resolve_machine_arming(
+        &mut self,
+        unit: ObjId,
+        arming: &Arming,
+        at_ms: i64,
+    ) -> Result<Option<u8>, Refusal> {
+        let protected = |slot: u8| {
+            self.profiles.get(&unit).is_some_and(|runtime| {
+                slot.checked_sub(1).is_some_and(|index| {
+                    usize::from(index) < runtime.program.rows.len()
+                        && runtime.overridden & (1 << index) == 0
+                })
+            })
+        };
+        match arming {
+            Arming::Rules {
+                slot: Some(slot), ..
+            }
+            | Arming::Remove { slot, .. }
+                if protected(*slot) =>
+            {
+                return Err(Refusal::Channel);
+            }
+            Arming::Disarm { weapon } => {
+                let mut removable = Vec::new();
+                for (index, row) in self.conditions.slots(unit).iter().enumerate() {
+                    let Some(rule) = row else {
+                        continue;
+                    };
+                    let Ok(slot) = u8::try_from(index.saturating_add(1)) else {
+                        continue;
+                    };
+                    let matches = rule.channel() == Channel::Fire
+                        && weapon.as_ref().is_none_or(|wanted| {
+                            rule.weapon().is_some_and(|named| wanted == named)
+                        });
+                    if !matches {
+                        continue;
+                    }
+                    if protected(slot) {
+                        if weapon.is_some() {
+                            return Err(Refusal::Channel);
+                        }
+                    } else {
+                        removable.push((slot, rule.channel()));
+                    }
+                }
+                for (slot, channel) in &removable {
+                    self.conditions.remove_slot(unit, *slot, *channel)?;
+                }
+                let freed = removable
+                    .into_iter()
+                    .map(|(slot, _)| slot)
+                    .collect::<Vec<_>>();
+                self.forget_held_said(unit, &freed);
+                return Ok(None);
+            }
+            _ => {}
+        }
+        let protected = self.profiles.get(&unit).map_or(0, |runtime| {
+            let used = (1_u8 << runtime.program.rows.len().min(6)).saturating_sub(1);
+            used & !runtime.overridden
+        });
+        self.resolve_arming_avoiding(unit, arming, at_ms, protected)
+    }
+
+    /// A successful manual write takes ownership of every touched sealed slot,
+    /// even when it replaces a rule with an identical-looking expression.
+    pub(crate) fn resolve_manual_arming(
+        &mut self,
+        unit: ObjId,
+        arming: &Arming,
+        at_ms: i64,
+    ) -> Result<Option<u8>, Refusal> {
+        let before = self.conditions.slots(unit).to_vec();
+        let result = self.resolve_arming(unit, arming, at_ms)?;
+        let after = self.conditions.slots(unit);
+        if let Some(runtime) = self.profiles.get_mut(&unit) {
+            for index in 0..before.len().max(after.len()) {
+                if before.get(index) != after.get(index)
+                    && let Ok(slot) = u8::try_from(index.saturating_add(1))
+                {
+                    runtime.override_slot(slot);
+                }
+            }
+            if let Some(slot) = result {
+                runtime.override_slot(slot);
+            }
+            if let Arming::Remove { slot, .. } = arming {
+                runtime.override_slot(*slot);
+            }
+        }
+        Ok(result)
     }
 
     fn rule_contact_is_lawful(
@@ -1816,6 +2043,7 @@ impl Arena {
         {
             return;
         }
+        self.disable_profile_slots(unit, 1..=crate::arena::core::MAX_CONDITION_SLOTS as u8);
         self.conditions.clear(unit);
         self.held_said.retain(|(on, _, _), _| *on != unit);
     }
@@ -1879,6 +2107,7 @@ impl Arena {
     /// the slots are state, folded by the hash (item 3d).
     pub fn truncate_slots_to(&mut self, unit: ObjId, capacity: usize) {
         let cleared = self.conditions.truncate(unit, capacity);
+        self.disable_profile_slots(unit, cleared.iter().copied());
         self.forget_held_said(unit, &cleared);
     }
 
@@ -1887,6 +2116,7 @@ impl Arena {
     /// what `degrade_core` (the lowered class's slots) and `destroy_core`
     /// (Class 0's one) leave the hull.
     pub fn truncate_slots(&mut self, unit: ObjId) {
+        self.invalidate_rule_sample(unit);
         let capacity = self.slot_capacity(unit);
         self.truncate_slots_to(unit, capacity);
     }
@@ -1912,7 +2142,7 @@ impl Arena {
     /// hull with no core, or a core at Class 0, the hardware's slots are Class
     /// 0's already). A seated pilot (a possessed hull, 17b cut M3.5) arms on
     /// the hardware's slots.
-    fn arming_capacity(&self, unit: ObjId) -> usize {
+    pub(super) fn arming_capacity(&self, unit: ObjId) -> usize {
         let hardware = self.slot_capacity(unit);
         if self.thinks_on_rom(unit) {
             hardware.min(self.classes.row(crate::arena::core::CoreClass::Zero).slots)
@@ -3810,5 +4040,528 @@ mod tests {
             "m1b1 evaluator cost: {} held, {} fired",
             counters.cond_held, counters.cond_fires
         );
+    }
+
+    fn m6_install_program(arena: &mut Arena, rules: Vec<crate::arena::schema::AuthoredRule>) {
+        use crate::arena::runtime_card::{RuntimeProfiles, stock_definition};
+        let own = arena.unit(RED).expect("own hull");
+        let class = own.seal.class;
+        let weapons = own
+            .seal
+            .weapons
+            .iter()
+            .map(|weapon| weapon.id.clone())
+            .collect::<Vec<_>>();
+        let channels = own.seal.channels.clone();
+        let old = arena.profiles.get(&RED).expect("runtime");
+        let rom = old.rom.clone();
+        let mut definition = stock_definition(
+            &[(
+                "authored".into(),
+                old.card.stock().expect("stock fixture").clone(),
+            )],
+            class,
+        )
+        .expect("definition");
+        definition.profiles[0].rules = rules;
+        let digest = arena.cards.admit(definition).expect("catalog admission");
+        let profiles = RuntimeProfiles::bind(&arena.cards, digest, &[]).expect("profiles");
+        let runtime = crate::arena::profile_runtime::ProfileRuntime::new(
+            &arena.cards,
+            RED,
+            profiles.clone(),
+            rom,
+            &arena.classes.row(class),
+            &weapons,
+            &channels,
+            arena.odds_floor_permille,
+        )
+        .expect("runtime admission");
+        runtime
+            .program
+            .install(&mut arena.conditions, RED, arena.classes.row(class).slots)
+            .expect("complete native table");
+        arena.profiles.insert(RED, runtime);
+        let own = arena.unit_mut(RED).expect("own");
+        own.seal.profiles = profiles;
+        own.seal.doctrine = false;
+    }
+
+    fn m6_authored(rule: Rule, sampled: bool) -> crate::arena::schema::AuthoredRule {
+        crate::arena::schema::AuthoredRule {
+            rule,
+            think: if sampled {
+                vec![crate::arena::schema::ThinkPredicate::Hostiles { at_least: 1 }]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    #[test]
+    fn m6_machine_disarm_preserves_program_and_manual_edit_overrides_it() {
+        let mut arena = locked();
+        let hold = Rule::hold_rule("cannon".into(), Vec::new());
+        m6_install_program(&mut arena, vec![m6_authored(hold.clone(), true)]);
+        assert_eq!(
+            arena.resolve_machine_arming(RED, &Arming::Arm(slot("cannon", 100)), 0),
+            Ok(Some(2))
+        );
+        assert_eq!(
+            arena.resolve_machine_arming(RED, &Arming::Disarm { weapon: None }, 0),
+            Ok(None)
+        );
+        assert_eq!(
+            arena.conditions.slots(RED).first().and_then(Option::as_ref),
+            Some(&hold)
+        );
+        assert!(
+            arena
+                .conditions
+                .slots(RED)
+                .get(1)
+                .is_none_or(Option::is_none)
+        );
+        let before = arena.conditions.clone();
+        assert_eq!(
+            arena.resolve_machine_arming(
+                RED,
+                &Arming::Remove {
+                    slot: 1,
+                    channel: Channel::Fire
+                },
+                0
+            ),
+            Err(Refusal::Channel)
+        );
+        assert_eq!(
+            arena.resolve_machine_arming(
+                RED,
+                &Arming::Disarm {
+                    weapon: Some("cannon".into())
+                },
+                0
+            ),
+            Err(Refusal::Channel)
+        );
+        assert_eq!(arena.conditions, before, "refusal is atomic");
+        assert_eq!(
+            arena.resolve_manual_arming(
+                RED,
+                &Arming::Rules {
+                    slot: Some(1),
+                    rules: vec![hold.clone()]
+                },
+                0
+            ),
+            Ok(Some(1))
+        );
+        assert!(
+            arena.runtime_permits(RED, 1, &hold, 0),
+            "identical manual replacement owns its law without sampled truth"
+        );
+        assert_eq!(
+            arena.resolve_machine_arming(
+                RED,
+                &Arming::Remove {
+                    slot: 1,
+                    channel: Channel::Fire
+                },
+                0
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn m6_automatic_allocation_skips_reserved_program_holes() {
+        let mut arena = locked();
+        m6_install_program(
+            &mut arena,
+            vec![m6_authored(
+                Rule::hold_rule("cannon".into(), Vec::new()),
+                true,
+            )],
+        );
+        arena
+            .conditions
+            .remove_slot(RED, 1, Channel::Fire)
+            .expect("simulate absent native row");
+        assert_eq!(
+            arena.resolve_machine_arming(RED, &Arming::Arm(slot("cannon", 100)), 0),
+            Ok(Some(2))
+        );
+        assert!(
+            arena
+                .conditions
+                .slots(RED)
+                .first()
+                .is_some_and(Option::is_none)
+        );
+    }
+
+    fn m6_pending(arena: &mut Arena, boundary: i64, truth: Option<Vec<bool>>) {
+        use crate::arena::mind::{MindState, PendingThink};
+        use crate::arena::profile_rules::RuleSample;
+        let runtime = arena.profiles.get(&RED).expect("runtime");
+        let class = arena.unit(RED).expect("own").seal.class;
+        let period = arena.classes.row(class).think_ms;
+        let sampled_ms = boundary - arena.substep_len_ms();
+        let sample = truth.map(|truth| RuleSample {
+            program: runtime.program.digest,
+            generation: runtime.generation,
+            sampled_ms,
+            lands_ms: boundary,
+            expires_ms: boundary + period,
+            truth,
+        });
+        let pending = PendingThink {
+            think_seq: 9,
+            t_ms: sampled_ms,
+            epochs: Channel::ALL.map(|channel| arena.epochs.current(RED, channel)),
+            profile_token: runtime.token(),
+            lands_ms: boundary,
+            period_ms: period,
+            profile_class: class,
+            rule_sample: sample,
+            intents: Vec::new(),
+            memory: b"fresh".to_vec(),
+        };
+        let mut state = MindState::fresh(&arena.arena_cfg.reflex);
+        state.seal_digest = arena.unit(RED).expect("own").seal.digest;
+        state.memory = b"prior".to_vec();
+        state.pending = Some(pending);
+        arena.minds.insert(RED, state);
+        arena.unit_mut(RED).expect("own").controller = Controller::Mind;
+        arena.due.schedule(
+            boundary,
+            crate::arena::state::DueKind::MindLand {
+                unit: RED,
+                think_seq: 9,
+            },
+        );
+    }
+
+    fn m6_old_sample(arena: &mut Arena, boundary: i64, truth: Vec<bool>) -> (u64, i64) {
+        let runtime = arena.profiles.get(&RED).expect("runtime");
+        let generation = runtime.generation;
+        let period = arena.mind_profile(RED).think_ms;
+        let lands_ms = boundary - period;
+        let sample = crate::arena::profile_rules::RuleSample {
+            program: runtime.program.digest,
+            generation,
+            sampled_ms: lands_ms - arena.substep_len_ms(),
+            lands_ms,
+            expires_ms: boundary,
+            truth,
+        };
+        arena
+            .land_rule_sample(RED, Some(sample), lands_ms, period)
+            .expect("old sample");
+        (generation, lands_ms)
+    }
+
+    #[test]
+    fn m6_sampled_hold_renewal_has_no_shot_gap_and_false_releases_at_boundary() {
+        for renewed in [true, false] {
+            let mut arena = locked();
+            m6_install_program(
+                &mut arena,
+                vec![
+                    m6_authored(Rule::hold_rule("cannon".into(), Vec::new()), true),
+                    m6_authored(Rule::fire_rule(slot("cannon", 100), Vec::new()), false),
+                ],
+            );
+            let boundary = 2 * arena.mind_profile(RED).think_ms;
+            let (generation, lands) = m6_old_sample(&mut arena, boundary, vec![true, true]);
+            m6_pending(&mut arena, boundary, Some(vec![renewed, true]));
+            arena.now_ms = boundary;
+            let ammo = arena.unit(RED).expect("own").weapon_ammo("cannon");
+            let mut counters = MotorCounters::default();
+            arena.expire_rule_sample(RED, generation, lands, boundary, &mut counters);
+            assert!(
+                arena
+                    .evaluate_conditions(
+                        RED,
+                        boundary,
+                        ConditionTrigger::WeaponReady,
+                        Some("cannon"),
+                        &mut counters
+                    )
+                    .is_empty()
+            );
+            assert_eq!(
+                arena.unit(RED).expect("own").weapon_ammo("cannon"),
+                ammo,
+                "ordinary due events wait for the pending complete answer"
+            );
+            arena.mind_land(RED, 9, boundary, &mut counters);
+            assert_eq!(
+                arena.unit(RED).expect("own").weapon_ammo("cannon"),
+                ammo - u32::from(!renewed)
+            );
+            assert_eq!(arena.minds.get(&RED).expect("mind").memory, b"fresh");
+            assert!(!arena.rule_evaluation_deferred(RED, boundary));
+        }
+    }
+
+    #[test]
+    fn m6_sampled_fire_false_or_missing_never_extends_the_old_truth() {
+        for truth in [Some(vec![false]), None] {
+            let mut arena = locked();
+            m6_install_program(
+                &mut arena,
+                vec![m6_authored(
+                    Rule::fire_rule(slot("cannon", 100), Vec::new()),
+                    true,
+                )],
+            );
+            let boundary = 2 * arena.mind_profile(RED).think_ms;
+            let (generation, lands) = m6_old_sample(&mut arena, boundary, vec![true]);
+            m6_pending(&mut arena, boundary, truth);
+            arena.now_ms = boundary;
+            let ammo = arena.unit(RED).expect("own").weapon_ammo("cannon");
+            let mut counters = MotorCounters::default();
+            arena.expire_rule_sample(RED, generation, lands, boundary, &mut counters);
+            arena.mind_land(RED, 9, boundary, &mut counters);
+            let _ = arena.evaluate_conditions(
+                RED,
+                boundary,
+                ConditionTrigger::WeaponReady,
+                Some("cannon"),
+                &mut counters,
+            );
+            assert_eq!(arena.unit(RED).expect("own").weapon_ammo("cannon"), ammo);
+        }
+    }
+
+    #[test]
+    fn m6_stale_or_missing_completion_clears_hold_and_cannot_defer_forever() {
+        for missing in [false, true] {
+            let mut arena = locked();
+            m6_install_program(
+                &mut arena,
+                vec![
+                    m6_authored(Rule::hold_rule("cannon".into(), Vec::new()), true),
+                    m6_authored(Rule::fire_rule(slot("cannon", 100), Vec::new()), false),
+                ],
+            );
+            let boundary = 2 * arena.mind_profile(RED).think_ms;
+            let (generation, lands) = m6_old_sample(&mut arena, boundary, vec![true, true]);
+            m6_pending(&mut arena, boundary, Some(vec![true, true]));
+            if missing {
+                arena.awaiting.insert(RED);
+            } else {
+                arena
+                    .minds
+                    .get_mut(&RED)
+                    .expect("mind")
+                    .pending
+                    .as_mut()
+                    .expect("pending")
+                    .epochs[0] += 1;
+            }
+            arena.now_ms = boundary;
+            let ammo = arena.unit(RED).expect("own").weapon_ammo("cannon");
+            let mut counters = MotorCounters::default();
+            arena.expire_rule_sample(RED, generation, lands, boundary, &mut counters);
+            arena.mind_land(RED, 9, boundary, &mut counters);
+            assert_eq!(
+                arena.unit(RED).expect("own").weapon_ammo("cannon"),
+                ammo - 1
+            );
+            assert_eq!(arena.minds.get(&RED).expect("mind").memory, b"prior");
+            assert!(!arena.rule_evaluation_deferred(RED, boundary));
+            assert!(
+                arena
+                    .profiles
+                    .get(&RED)
+                    .expect("runtime")
+                    .lease
+                    .sample()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn m6_possession_disables_and_release_restores_the_selected_program() {
+        use crate::arena::doctrine::MachineState;
+        let mut arena = locked();
+        let fire = Rule::fire_rule(slot("cannon", 100), Vec::new());
+        m6_install_program(&mut arena, vec![m6_authored(fire.clone(), true)]);
+        arena.set_controller(RED, Controller::Mind, MachineState::Startup);
+        arena.minds.get_mut(&RED).expect("mind").memory = b"owned memory".to_vec();
+        let before = arena.profiles.get(&RED).expect("runtime").token();
+        arena.set_controller(RED, Controller::Pilot, MachineState::Startup);
+        assert!(arena.conditions.is_empty_for(RED));
+        assert!(
+            arena.hydrate_profiles().is_ok(),
+            "dormant cleared rows have explicit disable bits"
+        );
+        assert_eq!(
+            arena.resolve_manual_arming(RED, &Arming::Arm(slot("cannon", 400)), 0),
+            Ok(Some(1))
+        );
+        arena.set_controller(RED, Controller::Mind, MachineState::Startup);
+        let runtime = arena.profiles.get(&RED).expect("runtime");
+        assert!(runtime.generation > before.generation);
+        assert_eq!(runtime.overridden, 0);
+        assert_eq!(
+            arena.conditions.slots(RED).first().and_then(Option::as_ref),
+            Some(&fire)
+        );
+        assert_eq!(arena.minds.get(&RED).expect("mind").memory, b"owned memory");
+        assert!(
+            !arena.runtime_permits(RED, 1, &fire, 0),
+            "handback never restores sampled truth"
+        );
+    }
+
+    #[test]
+    fn m6_restore_requires_exact_program_bindings_and_expiry_schedule() {
+        let mut arena = locked();
+        arena
+            .unit_mut(BLUE)
+            .expect("fastest hull")
+            .mobility
+            .max_speed_cms = 19_000;
+        let fire = Rule::fire_rule(slot("cannon", 100), Vec::new());
+        m6_install_program(&mut arena, vec![m6_authored(fire, true)]);
+        arena.set_controller(
+            RED,
+            Controller::Mind,
+            crate::arena::doctrine::MachineState::Startup,
+        );
+        let boundary = 2 * arena.mind_profile(RED).think_ms;
+        let (_, lands) = m6_old_sample(&mut arena, boundary, vec![true]);
+        arena.now_ms = lands;
+        arena.hydrate_profiles().expect("valid active sample");
+        let snapshot = crate::arena::snapshot::Snapshot::encode(&arena).expect("snapshot");
+        let restored = crate::arena::snapshot::Snapshot::decode(
+            &snapshot.document,
+            (*arena.definition).clone(),
+        )
+        .expect("restore");
+        assert_eq!(
+            crate::arena::hash::state_hash(&restored),
+            crate::arena::hash::state_hash(&arena)
+        );
+        let captured_delay = restored.substep_len_ms();
+        let mut slower = restored.clone();
+        slower
+            .unit_mut(BLUE)
+            .expect("fastest hull")
+            .limits
+            .motion_disabled = true;
+        assert_ne!(slower.substep_len_ms(), captured_delay);
+        slower
+            .hydrate_profiles()
+            .expect("hardware loss does not rewrite a captured landing");
+        let mut missing_expiry = restored.clone();
+        missing_expiry.due.retain(|kind| !matches!(kind, crate::arena::state::DueKind::RuleLeaseExpired { unit, .. } if *unit == RED));
+        assert!(missing_expiry.hydrate_profiles().is_err());
+        let mut missing_rule = restored.clone();
+        missing_rule
+            .conditions
+            .remove_slot(RED, 1, Channel::Fire)
+            .expect("tamper one row");
+        assert!(missing_rule.hydrate_profiles().is_err());
+        let mut future_hit = restored;
+        future_hit.unit_mut(RED).expect("own").own_last_hit_ms = Some(lands + 1);
+        assert!(future_hit.hydrate_profiles().is_err());
+    }
+
+    #[test]
+    fn m6_actual_fault_settlement_clears_sample_and_preserves_prior_memory() {
+        use crate::arena::mind::{ThinkFault, ThinkResult};
+        let mut arena = locked();
+        m6_install_program(
+            &mut arena,
+            vec![
+                m6_authored(Rule::hold_rule("cannon".into(), Vec::new()), true),
+                m6_authored(Rule::fire_rule(slot("cannon", 100), Vec::new()), false),
+            ],
+        );
+        arena.set_controller(
+            RED,
+            Controller::Mind,
+            crate::arena::doctrine::MachineState::Startup,
+        );
+        arena.minds.get_mut(&RED).expect("mind").memory = b"prior".to_vec();
+        let at = arena.mind_profile(RED).think_ms;
+        let boundary = at + arena.substep_len_ms();
+        m6_old_sample(&mut arena, boundary, vec![true, true]);
+        arena.now_ms = at;
+        let mut counters = MotorCounters::default();
+        arena.collect_think(RED, 0, at, &mut counters);
+        let think = arena.collected.pop().expect("actual collected think");
+        let result = ThinkResult {
+            fault: Some(ThinkFault {
+                cause: "ops".into(),
+            }),
+            memory: b"must not land".to_vec(),
+            ..ThinkResult::default()
+        };
+        let settled = arena.settle_collected(&think, result);
+        assert_eq!(settled.faults, 1);
+        assert_eq!(arena.minds.get(&RED).expect("mind").memory, b"prior");
+        assert!(arena.minds.get(&RED).expect("mind").pending.is_none());
+        assert!(
+            arena
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_none()
+        );
+        assert!(!arena.due.iter().any(|event| matches!(event.kind,
+            crate::arena::state::DueKind::MindLand { unit, .. }
+            | crate::arena::state::DueKind::RuleLeaseExpired { unit, .. } if unit == RED)));
+        let ammo = arena.unit(RED).expect("own").weapon_ammo("cannon");
+        let _ = arena.evaluate_conditions(RED, at, ConditionTrigger::Landing, None, &mut counters);
+        assert_eq!(
+            arena.unit(RED).expect("own").weapon_ammo("cannon"),
+            ammo - 1,
+            "fault did not extend the previous HOLD"
+        );
+    }
+
+    #[test]
+    fn m6_sampled_lock_needs_live_truth_and_false_never_uses_the_prior_sample() {
+        let mut arena = locked();
+        arena.unit_mut(RED).expect("own").lock = None;
+        m6_install_program(
+            &mut arena,
+            vec![m6_authored(
+                Rule::lock_rule(LockSelector::Nearest, None, Vec::new()),
+                true,
+            )],
+        );
+        let boundary = 2 * arena.mind_profile(RED).think_ms;
+        let (generation, lands) = m6_old_sample(&mut arena, boundary, vec![true]);
+        let mut counters = MotorCounters::default();
+        let _ =
+            arena.evaluate_conditions(RED, lands, ConditionTrigger::Landing, None, &mut counters);
+        assert_eq!(
+            arena.unit(RED).expect("own").lock,
+            Some(id_of(RED, BLUE)),
+            "live sample permits Sensors action"
+        );
+        arena.unit_mut(RED).expect("own").lock = None;
+        m6_pending(&mut arena, boundary, Some(vec![false]));
+        arena.now_ms = boundary;
+        arena.expire_rule_sample(RED, generation, lands, boundary, &mut counters);
+        arena.mind_land(RED, 9, boundary, &mut counters);
+        assert_eq!(arena.unit(RED).expect("own").lock, None);
+        let _ = arena.evaluate_conditions(
+            RED,
+            boundary + 1,
+            ConditionTrigger::Landing,
+            None,
+            &mut counters,
+        );
+        assert_eq!(arena.unit(RED).expect("own").lock, None);
     }
 }

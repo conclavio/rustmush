@@ -58,6 +58,8 @@ mush-ruleset.workspace = true
 # re-exports it); its interpreter enters this crate in 17b cut M2.3, outside
 # `src/arena/`, whose contract test refuses the interpreter's name there.
 mush-mind.workspace = true
+# 17d M6.1: neutral character library ownership; game validation stays here.
+mush-roll.workspace = true
 
 # 16b cut R-b (R4): the one game sheet (`sheet/`). `mush-dice` is the expression
 # evaluator behind `+roll` and the `check` ability (R5 deleted `sr5`; `owod20` stays

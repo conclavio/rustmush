@@ -486,6 +486,9 @@ fn the_production_composition_carries_the_surface_the_allowlist_watches() {
         // the TacSim layer
         "@tacsim",
         "@corridor",
+        // M6's owned author workflow and private replay surface
+        "@mind",
+        "bench",
         // the NPC module, and worldgen
         "@agent",
         "@gen",

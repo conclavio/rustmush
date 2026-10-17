@@ -353,6 +353,15 @@ mod net {
         /// args, which lists the inbox. The correlation id is unused by the
         /// TUI — it routes replies by the inner event's type — so a fixed id
         /// is fine.
+        fn invoke(
+            &self,
+            conn: u64,
+            id: u64,
+            request: mush_proto::InvokeRequest,
+        ) -> BoxFuture<'_, ()> {
+            Box::pin(async move { self.core.invoke(conn, id, request).await })
+        }
+
         fn query(&self, conn: u64, name: String, args: serde_json::Value) -> BoxFuture<'_, ()> {
             Box::pin(async move {
                 let well_formed = !name.is_empty()

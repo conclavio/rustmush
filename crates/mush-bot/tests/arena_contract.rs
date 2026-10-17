@@ -231,6 +231,7 @@ fn frame() -> Frame {
         mode: tacsim::arena::state::MatchMode::Skirmish,
         objective: None,
         motor: None,
+        own_last_hit_ms: None,
         team: Team::Red,
         pose: mush_sim::data::Pose {
             x_cm: 100_000,
@@ -2566,6 +2567,7 @@ fn m5_1_the_selection_fog_reads_as_the_bot_reads_it() {
     use mush_bot::arena::lines::BoardPilot;
     use tacsim::match_::lobby::{self, MindChoice};
     let choice = MindChoice {
+        saved: None,
         mind: "Standard Doctrine".into(),
         profiles: vec!["Sniper".into(), "Line".into()],
     };
@@ -2918,13 +2920,7 @@ fn m5_2_the_profile_refusal_and_the_seal_lines_read_as_the_bot_reads_them() {
     let seal = |mind: &str, profiles: &[&str]| tacsim::arena::MindSeal {
         mind: mind.into(),
         class: tacsim::arena::core::CoreClass::I,
-        profiles: profiles
-            .iter()
-            .map(|name| tacsim::arena::SealedProfile {
-                name: (*name).into(),
-                card_digest: [0; 32],
-            })
-            .collect(),
+        cards: m6_cards(profiles),
         ..tacsim::arena::MindSeal::placeholder()
     };
     let lines = [
@@ -3322,35 +3318,23 @@ fn m5_6_the_your_mind_block_and_the_release_line_read_as_neutral_lines() {
 /// each under 120 columns.
 #[test]
 fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
-    use tacsim::arena::card::ProfileSet;
     use tacsim::arena::core::CoreClass;
     use tacsim::arena::step::FrameMind;
-    let set = |names: &[&str]| ProfileSet::of_names(names).expect("presets");
-    let sniper_line = FrameMind {
-        doctrine: true,
-        profiles: set(&["Sniper", "Line"]),
-        active: 0,
-        class: CoreClass::I,
-        core_class: CoreClass::II,
-        switch_at_ms: None,
-        off: false,
-    };
+    let sniper_line = m6_frame(&["Sniper", "Line"], 0);
     let widest = FrameMind {
-        profiles: set(&["Skirmisher", "Rearguard"]),
-        active: 1,
         switch_at_ms: Some(40_000),
-        ..sniper_line
+        ..m6_frame(&["Skirmisher", "Rearguard"], 1)
     };
     let mut neutral: Vec<String> = Vec::new();
     for (mind, armed, now_ms) in [
-        (sniper_line, true, 0),
-        (widest, false, 34_000),
-        (widest, true, 40_000),
+        (sniper_line.clone(), true, 0),
+        (widest.clone(), false, 34_000),
+        (widest.clone(), true, 40_000),
         (
             FrameMind {
                 doctrine: false,
-                profiles: ProfileSet::LINE,
-                ..sniper_line
+                name: "Field Pilot".into(),
+                ..m6_frame(&["Line"], 0)
             },
             false,
             0,
@@ -3359,7 +3343,7 @@ fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
             FrameMind {
                 off: true,
                 class: CoreClass::Zero,
-                ..sniper_line
+                ..sniper_line.clone()
             },
             true,
             0,
@@ -3368,7 +3352,7 @@ fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
             FrameMind {
                 class: CoreClass::Zero,
                 core_class: CoreClass::Zero,
-                ..sniper_line
+                ..sniper_line.clone()
             },
             false,
             0,
@@ -3376,7 +3360,7 @@ fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
         (
             FrameMind {
                 class: CoreClass::Zero,
-                ..sniper_line
+                ..sniper_line.clone()
             },
             true,
             0,
@@ -3396,7 +3380,7 @@ fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
     // The game's words, in each shape.
     for line in [
         "Mind: Standard Doctrine, sealed for this sortie; it thinks at Class I on a Class II core.",
-        "Mind: your own mind, sealed for this sortie; it thinks at Class I on a Class II core.",
+        "Mind: Field Pilot, sealed for this sortie; it thinks at Class I on a Class II core.",
         "Mind: Standard Doctrine, off for the match: the hull is on the ROM.",
         "Mind: Standard Doctrine, sealed for this sortie; with no core above Class 0, the hull is \
          on the ROM.",
@@ -3468,4 +3452,64 @@ fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
     assert!(open.status.is_none(), "a STATUS reply opened");
     assert!(!open.lock_line, "a lock line was read");
     assert!(!open.brief, "a VIEW BRIEF opened");
+}
+
+// Renderer fixtures carry actual canonical profiles and bound programs, so the
+// line contract follows the same complete card shape as a checked-out hull.
+fn m6_cards(names: &[&str]) -> tacsim::arena::profile_seal::SealedCards {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    let names = if names.is_empty() {
+        &["Line"][..]
+    } else {
+        names
+    };
+    let cfg = tacsim::config::ReflexConfig::default();
+    let selected = names
+        .iter()
+        .map(|name| {
+            (
+                (*name).into(),
+                tacsim::arena::preset(name, &cfg).expect("fixture preset"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let definition = tacsim::arena::runtime_card::stock_definition(&selected, CoreClass::III)
+        .expect("full cards");
+    let names = selected
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    tacsim::arena::profile_seal::SealedCards::prepare(
+        definition,
+        &names,
+        &ClassTable::STOCK.row(CoreClass::III),
+        &[],
+        &[
+            tacsim::arena::Channel::Helm,
+            tacsim::arena::Channel::Sensors,
+        ],
+        100,
+    )
+    .expect("sealed fixture profiles")
+}
+
+fn m6_frame(names: &[&str], active: u8) -> tacsim::arena::step::FrameMind {
+    let cards = m6_cards(names);
+    let mut catalog = tacsim::arena::runtime_card::CardCatalog::default();
+    let (profiles, _) = cards.admit(&mut catalog).expect("catalog admission");
+    let card = catalog
+        .resolve(profiles.key(active).expect("active selected key"))
+        .expect("active card");
+    tacsim::arena::step::FrameMind {
+        name: "Standard Doctrine".into(),
+        doctrine: true,
+        profiles,
+        card,
+        program: cards.programs[usize::from(active)].clone(),
+        active,
+        class: tacsim::arena::core::CoreClass::I,
+        core_class: tacsim::arena::core::CoreClass::II,
+        switch_at_ms: None,
+        off: false,
+    }
 }

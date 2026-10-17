@@ -637,6 +637,8 @@ pub fn text_of(event: &OutputEvent) -> String {
         ),
         OutputEvent::Who(entries) => who_text(entries),
         OutputEvent::Reply { id, event } => format!("[reply {id}] {}", text_of(event)),
+        // Author replies may carry source; keep it out of generic text logs.
+        OutputEvent::InvokeResult { id, .. } => format!("[invoke_result {id}]"),
         OutputEvent::Ping { nonce } => format!("[ping {nonce}]"),
         OutputEvent::Resumed { replayed } => format!("[resumed replayed={replayed}]"),
         OutputEvent::Composing { actor, active } => {

@@ -315,6 +315,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // across and banded by `validate` below. Nothing reads it until 16b
             // cut AF.2; it is here because the snapshot carries this whole block.
             snapshot_ms: cfg.arena.snapshot_ms,
+            snapshot_max_bytes: cfg.arena.snapshot_max_bytes,
+            tape_max_bytes: cfg.arena.tape_max_bytes,
+            tape_retained_max_bytes: cfg.arena.tape_retained_max_bytes,
             ledger: tacsim::config::LedgerConfig {
                 summary_ms: cfg.arena.ledger.summary_ms,
                 max_bytes: cfg.arena.ledger.max_bytes,
@@ -368,6 +371,16 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         // mapped straight across (default when the table is absent) and banded
         // by `validate` below. The arena captures it at check-out.
         minds: tacsim::config::MindsConfig {
+            proving_workers: cfg.minds.proving_workers,
+            proving_queued: cfg.minds.proving_queued,
+            proving_daily_unit_minutes: cfg.minds.proving_daily_unit_minutes,
+            proving_completed_per_character: cfg.minds.proving_completed_per_character,
+            proving_bytes_per_character: cfg.minds.proving_bytes_per_character,
+            bench_idle_ms: cfg.minds.bench_idle_ms,
+            bench_sessions: cfg.minds.bench_sessions,
+            bench_state_bytes: cfg.minds.bench_state_bytes,
+            bench_eval_ops: cfg.minds.bench_eval_ops,
+            bench_eval_result_bytes: cfg.minds.bench_eval_result_bytes,
             odds_floor_permille: cfg.minds.odds_floor_permille,
             // 17b cut M4.3 (doc 17 §9, D-UM-37): the fill's class, by its
             // word, refused by name.
@@ -376,6 +389,17 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                     format!(
                         "[tacsim.minds].fill_class must be 0, I, II or III (it is \"{}\")",
                         cfg.minds.fill_class
+                    )
+                },
+            )?,
+            // 17b cut M3.1 (doc 17 §9, D-UM-35): the class table, decoded by
+            // its own wire — an absent class or figure is the stock row's —
+            // and held by name by `validate` below.
+            max_class: tacsim::arena::core::CoreClass::parse(&cfg.minds.max_class).ok_or_else(
+                || {
+                    format!(
+                        "[tacsim.minds].max_class must be 0, I, II or III (it is \"{}\")",
+                        cfg.minds.max_class
                     )
                 },
             )?,
@@ -1155,6 +1179,9 @@ mod tests {
                 ]),
                 // 16b cut AF.1: the snapshot cadence, off its default of 5,000.
                 snapshot_ms: 2_500,
+                snapshot_max_bytes: 480 * 1024 * 1024,
+                tape_max_bytes: 64 * 1024 * 1024,
+                tape_retained_max_bytes: 128 * 1024 * 1024,
                 intents: tacsim::config::IntentsConfig {
                     max_pending_per_unit: 3
                 },
@@ -1789,6 +1816,12 @@ mod tests {
                 "[tacsim.minds].fill_class",
                 "IV",
             ),
+            (
+                "[tacsim.minds]",
+                "max_class = \"IV\"\n",
+                "[tacsim.minds].max_class",
+                "IV",
+            ),
             // 17b cut M3.5 (doc 17 §9, D-UM-36): the pool's keys are each at
             // least 1, and the floor at most the base, by name.
             (
@@ -2057,6 +2090,63 @@ mod tests {
             for needle in needles {
                 assert!(refused.contains(needle), "{body:?}: {refused}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod m6_bulk_config_tests {
+    use super::*;
+
+    #[test]
+    fn operator_bulk_limits_map_and_validate_in_the_production_config_path() {
+        let defaults = tacsim_config(&TacsimCfg::default()).expect("stock limits");
+        assert_eq!(defaults.minds, tacsim::config::MindsConfig::default());
+        let wire: mush_config::config::Config = toml::from_str(
+            r#"
+[tacsim.minds]
+proving_workers = 2
+proving_queued = 7
+proving_daily_unit_minutes = 600
+proving_completed_per_character = 10
+proving_bytes_per_character = 33554432
+bench_idle_ms = 600000
+bench_sessions = 12
+bench_state_bytes = 67108864
+bench_eval_ops = 400
+bench_eval_result_bytes = 1024
+"#,
+        )
+        .expect("operator fields decode");
+        let mapped = tacsim_config(&wire.tacsim)
+            .expect("bounded overrides")
+            .minds;
+        assert_eq!(mapped.proving_workers, 2);
+        assert_eq!(mapped.proving_queued, 7);
+        assert_eq!(mapped.proving_daily_unit_minutes, 600);
+        assert_eq!(mapped.proving_completed_per_character, 10);
+        assert_eq!(mapped.proving_bytes_per_character, 33554432);
+        assert_eq!(mapped.bench_idle_ms, 600000);
+        assert_eq!(mapped.bench_sessions, 12);
+        assert_eq!(mapped.bench_state_bytes, 67108864);
+        assert_eq!(mapped.bench_eval_ops, 400);
+        assert_eq!(mapped.bench_eval_result_bytes, 1024);
+        for field in [
+            "proving_workers",
+            "proving_queued",
+            "proving_daily_unit_minutes",
+            "proving_completed_per_character",
+            "proving_bytes_per_character",
+            "bench_idle_ms",
+            "bench_sessions",
+            "bench_state_bytes",
+            "bench_eval_ops",
+            "bench_eval_result_bytes",
+        ] {
+            let wire: mush_config::config::Config =
+                toml::from_str(&format!("[tacsim.minds]\n{field}=0\n"))
+                    .expect("syntactically valid setting");
+            assert!(tacsim_config(&wire.tacsim).is_err(), "{field}");
         }
     }
 }

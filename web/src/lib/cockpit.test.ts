@@ -105,7 +105,7 @@ describe("ordered rule summaries", () => {
     expect(ruleSummaryLines(sparse)[0]!.length).toBeLessThanOrEqual(44);
 
     const unarmed = { ...sparse, mind: {
-      name: "Standard Doctrine", profiles: ["Line"], active: 0,
+      name: "Standard Doctrine", profiles: ["Line"], active: 0, card: null, sealedRules: [],
       class: "I", core: "II", channels: ["helm", "sensors"],
       next_switch_ms: null, off: false,
     } };
@@ -1490,6 +1490,8 @@ describe("17b cut M5.5", () => {
     const frame = theFrame();
     expect(frame.mind).toEqual({
       name: "Standard Doctrine",
+      card: null,
+      sealedRules: [],
       profiles: ["Sniper", "Line"],
       active: 0,
       class: "I",
@@ -1522,6 +1524,8 @@ describe("17b cut M5.5", () => {
     });
     expect(odd).toEqual({
       name: null,
+      card: null,
+      sealedRules: [],
       profiles: ["Line", "Sniper", "Sentry", "Hunter"],
       active: 1,
       class: "II",

@@ -64,13 +64,17 @@
 
 use crate::arena::card::{CardError, PRESETS, StockCard};
 use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget, condition_is_lawful};
-use crate::arena::core::{CoreClass, read_core};
-use crate::arena::mind::{MindSeal, STOCK_RATED_CLASS, SealEngine, SealedProfile, SortieId};
+use crate::arena::core::{ClassTable, CoreClass, read_core};
+use crate::arena::mind::{MindSeal, STOCK_RATED_CLASS, SealEngine, SortieId};
+pub use crate::arena::profile_seal::MindIdentity as SealIdentity;
+use crate::arena::profile_seal::{MindOrigin, SealedCards};
+use crate::arena::runtime_card::{CardDefinition, rom_definition, stock_definition};
 use crate::arena::state::{Channel, CustodyUnit};
 use crate::arena_task::MatchId;
 use crate::config::ReflexConfig;
 use crate::deliberation::order::CharacterRef;
 use smol_str::SmolStr;
+use std::sync::Arc;
 
 /// **The stock mind's identity on a seal** — its name, charter, line and the
 /// licence a sim seal records — under the paths they had here: 17b cut M4.6a
@@ -78,52 +82,17 @@ use smol_str::SmolStr;
 /// Standard Doctrine by identity without reaching into the match half.
 pub use crate::arena::doctrine::{SEALED_CHARTER, SEALED_LICENCE, SEALED_LINE, SEALED_MIND};
 
-/// **A mind's identity on a seal** (17b cut M5.1; doc 17 §13, D-UM-46):
-/// exactly the five identity fields [`seal_for`] writes on a [`MindSeal`] —
-/// the name, the charter, the line, the revision and the source's digest.
-///
-/// What a holding names (`crate::match_::holdings::HeldMind::identity`), so a
-/// mind chosen at the lobby is the mind a seal can name. 17b cut M5.1 built
-/// it and reads it at the choice; 17b cut M5.2 puts it on the terms
-/// ([`SealTerms::identity`]), which [`seal_for`] writes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SealIdentity {
-    /// The mind's name (`Standard Doctrine`).
-    pub mind: SmolStr,
-    /// Its charter (`Registry`).
-    pub charter: SmolStr,
-    /// Its line (`standard`).
-    pub line: SmolStr,
-    /// Its revision on that line.
-    pub revision: u32,
-    /// The SHA-256 of its source's bytes — the key the source store holds it
-    /// under (`tacsim:mindsrc:<sha256>`).
-    pub source_sha256: [u8; 32],
-}
-
 impl SealIdentity {
-    /// **Standard Doctrine's identity** — [`SEALED_MIND`], [`SEALED_CHARTER`],
-    /// [`SEALED_LINE`], [`crate::minds::STOCK_VERSION`] and the shipped
-    /// source's digest ([`crate::minds::content::standard_digest`]) — the
-    /// five [`seal_for`] writes on every production seal, and under
-    /// [`SealTerms::fixture`].
+    /// Registry execution identity; personal drafts carry their own tagged origin.
     #[must_use]
-    pub fn doctrine() -> SealIdentity {
-        SealIdentity {
-            mind: SmolStr::new_static(SEALED_MIND),
-            charter: SmolStr::new_static(SEALED_CHARTER),
-            line: SmolStr::new_static(SEALED_LINE),
-            revision: crate::minds::STOCK_VERSION,
+    pub fn doctrine() -> Self {
+        Self {
+            mind: SEALED_MIND.into(),
+            origin: MindOrigin::Doctrine {
+                revision: crate::minds::STOCK_VERSION,
+            },
             source_sha256: crate::minds::content::standard_digest().0,
         }
-    }
-
-    /// **Whether this is Standard Doctrine** — by identity, the rule
-    /// [`MindSeal::seal_ref`] derives `SealRef::doctrine` by: the name, the
-    /// charter and the line are the Registry's own, whatever the revision.
-    #[must_use]
-    pub fn is_doctrine(&self) -> bool {
-        self.mind == SEALED_MIND && self.charter == SEALED_CHARTER && self.line == SEALED_LINE
     }
 }
 
@@ -164,6 +133,13 @@ pub const NO_CORE_FALLBACK: &str = "no core: the ROM";
 /// of either.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealTerms {
+    /// Authored immutable revision data; None selects the stock adapter below.
+    pub authored: Option<Arc<CardDefinition>>,
+    pub selected_profiles: Vec<SmolStr>,
+    /// Frozen match policy, including any configured reductions of core capacity.
+    pub classes: ClassTable,
+    /// Server-owned ROM defaults captured independently of the requested card.
+    pub rom_cfg: ReflexConfig,
     /// The match the sortie is minted in ([`SortieId::in_match`]).
     pub match_id: MatchId,
     /// The warrant principal: the hull's first seated pilot, else the side
@@ -303,6 +279,10 @@ impl SealTerms {
     #[must_use]
     pub fn fixture() -> SealTerms {
         SealTerms {
+            authored: None,
+            selected_profiles: Vec::new(),
+            classes: ClassTable::STOCK,
+            rom_cfg: ReflexConfig::default(),
             match_id: MatchId(0),
             principal: None,
             card: crate::arena::card::line(&ReflexConfig::default()),
@@ -367,6 +347,9 @@ impl SealTerms {
 /// **Why a seal was refused** (17b cut M3.3; D-UM-17: refuse, never clamp).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SealError {
+    /// Generic schema, profile, rule, identity or catalog refusal.
+    #[error("{0}")]
+    Schema(#[from] crate::arena::schema::SchemaError),
     /// A card breaks its own schema (its pair of survival sliders) — or
     /// (17b cut M5.2) a profile is no preset, or more than four are sealed,
     /// which no lobby choice reaches (`SIM MIND` refuses both first).
@@ -419,19 +402,19 @@ const PRESET_CHOICES: &str = "Line, Sentry, Sniper, Skirmisher, Hunter or Reargu
 /// is no preset, or more than four are sealed); and [`SealError::Unlawful`]
 /// when an armed hull's card has its `min_odds` under the floor.
 pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealError> {
-    // (1) The stations: helm and sensors on every hull, fire on an armed one.
-    let armed = !unit.weapons.is_empty();
+    let weapons = unit
+        .weapons
+        .iter()
+        .map(|w| crate::arena::rules::RuleWeapon {
+            id: w.id.clone(),
+            rounds_max: w.count_per_load,
+        })
+        .collect::<Vec<_>>();
     let mut channels = vec![Channel::Helm, Channel::Sensors];
-    if armed {
+    if !weapons.is_empty() {
         channels.push(Channel::Fire);
     }
-    // (2) The licence is `doctrine` (below); (3) the core, read live.
     let hardware = read_core(&unit.unit);
-    // **17b cut M5.2** (C-24, as its S1 ruling amended it): over-class is a
-    // governed core's class under the rating — read off the core itself, so
-    // a hull with no core (which this seal records `governed`, Class 0) is
-    // never over-class, and a governed core whose class reads 0 flies the
-    // ROM, as no core does (`lobby::fit_on_chassis` asks the same).
     if let Some(hw) = hardware.as_ref()
         && hw.governed
         && terms.rated > hw.class
@@ -442,105 +425,110 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
             core: hw.class,
         });
     }
-    let (core, core_class, governed, fallback) = match hardware {
-        Some(hardware) => (
-            Some(hardware.component),
-            hardware.class,
-            hardware.governed,
-            None,
-        ),
-        None => (
-            None,
-            CoreClass::Zero,
-            true,
+    terms.identity.validate()?;
+    let (core, core_class, governed) = match hardware {
+        Some(hw) => (Some(hw.component), hw.class, hw.governed),
+        None => (None, CoreClass::Zero, true),
+    };
+    let class = terms.rated.min(core_class).min(terms.class_cap);
+    let rom_identity = SealIdentity::doctrine();
+    let rom = SealedCards::prepare(
+        rom_definition(&terms.rom_cfg, terms.odds_floor_permille)?,
+        &[],
+        &terms.classes.row(CoreClass::Zero),
+        &weapons,
+        &channels,
+        terms.odds_floor_permille,
+    )?;
+    // Class0 is an explicit execution substitution, never a custom-card adapter.
+    let (identity, engine, cards, fallback) = if class == CoreClass::Zero {
+        (
+            rom_identity.clone(),
+            SealEngine::Native,
+            rom.clone(),
             Some(SmolStr::new_static(NO_CORE_FALLBACK)),
-        ),
+        )
+    } else {
+        let cards = prepare_cards(terms, class, &weapons, &channels)?;
+        (
+            terms.identity.clone(),
+            terms.engine_for_minds,
+            cards,
+            terms.fallback.clone(),
+        )
     };
-    // **17b cut M5.2** (Q-UM-15): a substituted seal says why — unless the
-    // hull has no core, whose ROM is what flies.
-    let fallback = fallback.or_else(|| terms.fallback.clone());
-    // (5) The cards — every profile sealed (17b cut M5.2), the Line card
-    // alone when the terms name none — each against its schema on every hull
-    // and (17b cut M5.2, C-23) against the floor on an armed hull only,
-    // refuse-not-clamp.
-    let sealed = sealed_set(terms)?;
-    for &(name, card) in &sealed {
-        card.pair(name).map_err(SealError::Card)?;
-        // 17b cut M5.1: the probe lifted into `odds_are_lawful`, the one
-        // question the lobby's choice asks too; the predicate is unchanged.
-        if armed && !odds_are_lawful(card, terms.odds_floor_permille) {
-            return Err(SealError::Unlawful {
-                floor: terms.odds_floor_permille,
-            });
-        }
-    }
-    // `StockCard` is strings, numbers and booleans: it always serialises.
-    let bytes = |card: &StockCard| serde_json::to_vec(card).unwrap_or_default();
-    let digest = |bytes: &[u8]| -> [u8; 32] {
-        use sha2::{Digest as _, Sha256};
-        Sha256::digest(bytes).into()
-    };
-    // The first profile's card flies at the release (`sealed` is never
-    // empty: the Line card alone at least).
-    let card = sealed
-        .first()
-        .map(|(_, card)| bytes(card))
-        .unwrap_or_default();
-    let card_digest = digest(&card);
-    // **17b cut M5.2** (D3, F4): the set by name with each card's digest —
-    // EMPTY exactly when it is the Line card alone, so the field is skipped
-    // and a default seal is the record it always was.
-    let profiles = match sealed.as_slice() {
-        [(name, _)] if *name == "Line" => Vec::new(),
-        set => set
-            .iter()
-            .map(|&(name, card)| SealedProfile {
-                name: SmolStr::new_static(name),
-                card_digest: digest(&bytes(card)),
-            })
-            .collect(),
-    };
-    let identity = &terms.identity;
-    Ok(MindSeal {
+    let seal = MindSeal {
         unit: unit.id,
         sortie: SortieId::in_match(terms.match_id.0, unit.id),
         core,
         core_class,
-        // 17b cut M4.1: `min(rated, core, cap)` — the terms' rating and cap,
-        // where it was `min(STOCK_RATED_CLASS, core)`.
-        class: terms.rated.min(core_class).min(terms.class_cap),
+        class,
         governed,
-        // (4) The revision — the terms' identity (17b cut M5.2): Standard
-        // Doctrine's five constants in production, so the same bytes. Its
-        // digest is the script's own bytes', which `tests/content.rs` pins
-        // equal to `STANDARD_SHA256` — the key the source store holds it
-        // under.
-        mind: identity.mind.clone(),
-        charter: identity.charter.clone(),
-        line: identity.line.clone(),
-        revision: identity.revision,
+        mind: identity.mind,
+        origin: identity.origin,
         source_sha256: identity.source_sha256,
-        card,
-        card_digest,
-        armed: Vec::new(),
-        abi: SmolStr::new_static(crate::minds::MIND_ABI),
-        licence: SmolStr::new_static(SEALED_LICENCE),
+        requested: terms.identity.clone(),
+        card: cards.opening_card.clone(),
+        card_digest: cards.opening_digest,
+        abi: crate::minds::MIND_ABI.into(),
         principal: terms.principal.clone(),
         channels,
+        weapons: weapons.clone(),
         odds_floor_permille: terms.odds_floor_permille,
         fallback,
-        // **17b cut M4.3**: every hull — a `Released` hands any hull to a
-        // mind, so a seated hull's seal names the engine the mind that takes
-        // it runs on (a fixture's reflex hull likewise, until 17b cut M4.6
-        // deleted the reflex controller). `SealEngine::Reflex` is decode-only
-        // from here: every live record an M3.3–M4.2 build wrote carries it
-        // (the M4 row's finding (6)), and no seal computes it (`SealRef::none`
-        // and `MindSeal::placeholder` still default to it, unhashed: the
-        // conventions' D8).
-        engine: terms.engine_for_minds,
-        // 17b cut M5.2: LAST, and skipped when empty.
-        profiles,
-    })
+        engine,
+        cards,
+        rom_identity,
+        rom,
+    };
+    seal.verify(&terms.classes, &weapons)?;
+    Ok(seal)
+}
+
+/// The same exact profile admission used by selection preview and checkout.
+pub fn prepare_cards(
+    terms: &SealTerms,
+    class: CoreClass,
+    weapons: &[crate::arena::rules::RuleWeapon],
+    channels: &[Channel],
+) -> Result<SealedCards, SealError> {
+    let (definition, names) = if let Some(definition) = &terms.authored {
+        if definition.declared_class != terms.rated
+            || terms.engine_for_minds != SealEngine::Scripted
+        {
+            return Err(SealError::Schema(crate::arena::schema::SchemaError {
+                field: "mind".into(),
+                message: "authored source class or engine differs from immutable revision".into(),
+            }));
+        }
+        ((**definition).clone(), terms.selected_profiles.clone())
+    } else {
+        let selected = sealed_set(terms)?;
+        for (name, card) in &selected {
+            card.pair(name).map_err(SealError::Card)?;
+            if channels.contains(&Channel::Fire)
+                && !odds_are_lawful(card, terms.odds_floor_permille)
+            {
+                return Err(SealError::Unlawful {
+                    floor: terms.odds_floor_permille,
+                });
+            }
+        }
+        let pairs = selected
+            .iter()
+            .map(|(name, card)| (SmolStr::new(name), (*card).clone()))
+            .collect::<Vec<_>>();
+        let names = pairs.iter().map(|(name, _)| name.clone()).collect();
+        (stock_definition(&pairs, terms.rated)?, names)
+    };
+    Ok(SealedCards::prepare(
+        definition,
+        &names,
+        &terms.classes.row(class),
+        weapons,
+        channels,
+        terms.odds_floor_permille,
+    )?)
 }
 
 /// **The set a seal is taken over** (17b cut M5.2): `terms.profiles` with
@@ -626,7 +614,6 @@ impl CustodyUnit {
 #[cfg(test)]
 mod tests {
     use mush_core::ObjId;
-    use smol_str::SmolStr;
 
     use super::*;
     use crate::arena::state::Controller;
@@ -690,76 +677,52 @@ mod tests {
         use crate::definitions::content::{LINE_TANK, TARGET_MK1};
         let catalog = catalog();
         let terms = terms();
-        let card = serde_json::to_vec(&terms.card).expect("a card");
-        let card_digest: [u8; 32] = {
-            use sha2::{Digest as _, Sha256};
-            Sha256::digest(&card).into()
-        };
-        // 17b cut M4.3: every controller seals the terms' engine.
-        for (controller, engine) in [
-            (Controller::Pilot, SealEngine::Native),
-            (Controller::Mind, SealEngine::Native),
-        ] {
-            let unit = checked_out(&catalog, LINE_TANK, ObjId(4), controller, &terms)
-                .expect("the line tank seals");
+        for controller in [Controller::Pilot, Controller::Mind] {
+            let unit = checked_out(&catalog, LINE_TANK, ObjId(4), controller, &terms).unwrap();
+            let seal = &unit.seal;
+            assert_eq!(seal.unit, ObjId(4));
+            assert_eq!(seal.sortie, SortieId((7_u64 << 32) | 4));
+            assert_eq!(seal.core.as_deref(), Some("core"));
             assert_eq!(
-                unit.seal,
-                MindSeal {
-                    unit: ObjId(4),
-                    sortie: SortieId((7_u64 << 32) | 4),
-                    core: Some(SmolStr::new_static("core")),
-                    core_class: CoreClass::II,
-                    class: CoreClass::I,
-                    governed: true,
-                    mind: SmolStr::new_static("Standard Doctrine"),
-                    charter: SmolStr::new_static("registry"),
-                    line: SmolStr::new_static("standard"),
-                    revision: crate::minds::STOCK_VERSION,
-                    source_sha256: crate::arena::digest_from_text(
-                        crate::minds::content::STANDARD_SHA256
-                    )
-                    .expect("the pinned digest"),
-                    card: card.clone(),
-                    card_digest,
-                    armed: Vec::new(),
-                    abi: SmolStr::new_static("rhai=1.26.0;api=3;stock=2"),
-                    licence: SmolStr::new_static("doctrine"),
-                    principal: Some(CharacterRef::Character { id: ObjId(77) }),
-                    channels: vec![Channel::Helm, Channel::Sensors, Channel::Fire],
-                    odds_floor_permille: 100,
-                    fallback: None,
-                    engine,
-                    // 17b cut M5.2: the Line card alone writes no set.
-                    profiles: Vec::new(),
-                },
-                "{controller:?}"
+                (seal.core_class, seal.class, seal.engine),
+                (CoreClass::II, CoreClass::I, SealEngine::Native)
             );
-            // The reference the arena keeps.
-            let reference = unit.seal.seal_ref();
-            assert_eq!(reference.sortie, unit.seal.sortie);
-            assert_eq!(reference.digest, unit.seal.digest());
+            assert!(seal.governed);
+            assert_eq!(seal.identity(), SealIdentity::doctrine());
+            assert_eq!(seal.requested, SealIdentity::doctrine());
+            assert_eq!(seal.rom_identity, SealIdentity::doctrine());
+            assert_eq!(seal.abi, crate::minds::MIND_ABI);
             assert_eq!(
-                (reference.core_class, reference.class, reference.engine),
-                (CoreClass::II, CoreClass::I, engine)
+                seal.principal,
+                Some(CharacterRef::Character { id: ObjId(77) })
             );
-            assert!(reference.governed && !reference.closed);
             assert_eq!(
-                reference.profiles,
-                crate::arena::card::ProfileSet::LINE,
-                "17b cut M5.2: the Line card alone"
+                seal.channels,
+                vec![Channel::Helm, Channel::Sensors, Channel::Fire]
             );
+            assert_eq!(seal.odds_floor_permille, 100);
+            assert_eq!(seal.fallback, None);
+            assert_eq!(seal.card, seal.cards.opening_card);
+            assert_eq!(seal.card_digest, seal.cards.opening_digest);
+            assert_eq!(seal.cards.selected.names().collect::<Vec<_>>(), ["Line"]);
+            assert_eq!(
+                seal.cards.definition.profiles[0].values,
+                crate::arena::runtime_card::stock_values(&terms.card).unwrap()
+            );
+            seal.verify(&terms.classes, &seal.weapons).unwrap();
+            let reference = seal.seal_ref();
+            assert_eq!(reference.digest, seal.digest());
+            assert_eq!(reference.profiles, seal.cards.selected);
+            assert_eq!(reference.rom, seal.rom.selected.key(0).unwrap());
+            assert_eq!(reference.weapons, seal.weapons);
         }
-        // The target: no core, Class 0, governed, the ROM from the start, and
-        // no weapon row — so no fire channel.
-        let target = checked_out(&catalog, TARGET_MK1, ObjId(9), Controller::Mind, &terms)
-            .expect("the target seals");
+        let target = checked_out(&catalog, TARGET_MK1, ObjId(9), Controller::Mind, &terms).unwrap();
         assert_eq!(target.seal.core, None);
-        assert_eq!(target.seal.core_class, CoreClass::Zero);
         assert_eq!(target.seal.class, CoreClass::Zero);
-        assert!(target.seal.governed);
+        assert_eq!(target.seal.engine, SealEngine::Native);
+        assert_eq!(target.seal.cards, target.seal.rom);
         assert_eq!(target.seal.fallback.as_deref(), Some("no core: the ROM"));
         assert_eq!(target.seal.channels, vec![Channel::Helm, Channel::Sensors]);
-        assert_eq!(target.seal.sortie, SortieId::in_match(7, ObjId(9)));
     }
 
     /// **17b cut M3.3**: the channel set reads the FINISHED custody — an
@@ -800,11 +763,8 @@ mod tests {
             Controller::Mind,
             &terms(),
         )
-        .expect("seals");
-        let again = seal_for(&unit, &terms()).expect("seals");
-        assert_eq!(unit.seal, again);
-        assert_eq!(unit.seal.digest(), again.digest());
-        let base = unit.seal.digest();
+        .unwrap();
+        assert_eq!(unit.seal, seal_for(&unit, &terms()).unwrap());
         let edits: Vec<(&str, Edit)> = vec![
             ("unit", Box::new(|s| s.unit = ObjId(5))),
             ("sortie", Box::new(|s| s.sortie = SortieId(1))),
@@ -812,32 +772,19 @@ mod tests {
             ("core_class", Box::new(|s| s.core_class = CoreClass::III)),
             ("class", Box::new(|s| s.class = CoreClass::II)),
             ("governed", Box::new(|s| s.governed = false)),
-            ("mind", Box::new(|s| s.mind = SmolStr::new("Sentinel"))),
-            ("charter", Box::new(|s| s.charter = SmolStr::new("author"))),
-            ("line", Box::new(|s| s.line = SmolStr::new("mine"))),
-            ("revision", Box::new(|s| s.revision += 1)),
+            ("mind", Box::new(|s| s.mind = "Sentinel".into())),
+            (
+                "origin",
+                Box::new(|s| s.origin = MindOrigin::Doctrine { revision: 99 }),
+            ),
             ("source_sha256", Box::new(|s| s.source_sha256[0] ^= 1)),
+            (
+                "requested",
+                Box::new(|s| s.requested.mind = "Requested".into()),
+            ),
             ("card", Box::new(|s| s.card.push(b' '))),
-            ("card_digest", Box::new(|s| s.card_digest[31] ^= 1)),
-            (
-                "armed",
-                Box::new(|s| {
-                    s.armed.push(FireCondition {
-                        weapon: SmolStr::new("cannon"),
-                        target: SlotTarget::BestHostile,
-                        min_permille: 100,
-                        aspects: ASPECTS_ANY,
-                        min_rounds_left: 0,
-                        min_range_m: 0,
-                        max_range_m: u32::MAX,
-                    });
-                }),
-            ),
-            (
-                "abi",
-                Box::new(|s| s.abi = SmolStr::new("rhai=1.25.0;api=1;stock=1")),
-            ),
-            ("licence", Box::new(|s| s.licence = SmolStr::new("core3"))),
+            ("card_digest", Box::new(|s| s.card_digest[0] ^= 1)),
+            ("abi", Box::new(|s| s.abi = "old".into())),
             ("principal", Box::new(|s| s.principal = None)),
             (
                 "channels",
@@ -845,52 +792,50 @@ mod tests {
                     s.channels.pop();
                 }),
             ),
+            ("weapons", Box::new(|s| s.weapons[0].rounds_max += 1)),
             (
                 "odds_floor_permille",
                 Box::new(|s| s.odds_floor_permille = 110),
             ),
             (
                 "fallback",
-                Box::new(|s| s.fallback = Some(SmolStr::new(NO_CORE_FALLBACK))),
+                Box::new(|s| s.fallback = Some("fallback".into())),
             ),
             ("engine", Box::new(|s| s.engine = SealEngine::Scripted)),
-            // 17b cut M5.2: the sealed set, written when it is more than the
-            // Line card alone.
             (
-                "profiles",
-                Box::new(|s| {
-                    s.profiles.push(crate::arena::mind::SealedProfile {
-                        name: SmolStr::new_static("Sniper"),
-                        card_digest: [3; 32],
-                    });
-                }),
+                "cards",
+                Box::new(|s| s.cards.definition.profiles[0].name = "Changed".into()),
+            ),
+            (
+                "rom_identity",
+                Box::new(|s| s.rom_identity.source_sha256[0] ^= 1),
+            ),
+            (
+                "rom",
+                Box::new(|s| s.rom.definition.profiles[0].name = "Changed".into()),
             ),
         ];
-        // 17b cut M5.2: 21 → 22, `profiles` (the seal's one new field).
-        assert_eq!(edits.len(), 22, "every field of the seal");
+        let wire = serde_json::to_value(&unit.seal).unwrap();
+        assert_eq!(
+            wire.as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            edits.iter().map(|(field, _)| *field).collect()
+        );
         for (field, edit) in edits {
             let mut moved = unit.seal.clone();
             edit(&mut moved);
-            assert_ne!(moved.digest(), base, "{field} does not move the digest");
-            // The 32-byte digests ride as 64 lowercase base-16 characters.
-            let text = serde_json::to_string(&moved).expect("a seal writes");
+            assert_ne!(moved.digest(), unit.seal.digest(), "{field}");
             assert_eq!(
-                serde_json::from_str::<MindSeal>(&text).ok(),
-                Some(moved),
-                "{field}"
+                serde_json::from_value::<MindSeal>(serde_json::to_value(&moved).unwrap()).unwrap(),
+                moved
             );
         }
-        let wire = serde_json::to_value(&unit.seal).expect("a seal writes");
-        assert_eq!(
-            wire["source_sha256"],
-            serde_json::json!(crate::minds::content::STANDARD_SHA256)
-        );
-        assert_eq!(
-            wire["card_digest"].as_str().map(str::len),
-            Some(64),
-            "{wire}"
-        );
-        let mut capital = wire.clone();
+        assert!(wire["card"].is_array());
+        assert_eq!(wire["card_digest"].as_str().unwrap().len(), 64);
+        let mut capital = wire;
         capital["source_sha256"] =
             serde_json::json!(crate::minds::content::STANDARD_SHA256.to_uppercase());
         assert!(serde_json::from_value::<MindSeal>(capital).is_err());
@@ -1054,41 +999,40 @@ mod m5_tests {
                     assert_eq!(unit.seal, MindSeal::fixture(&unit), "{entry}");
                 }
                 let text = serde_json::to_string(&unit.seal).expect("a seal writes");
-                assert!(!text.contains("profiles"), "{entry} {which}: {text}");
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(&text).unwrap()["card"].is_array()
+                );
                 got.push(format!(
                     "{entry} {which} {}",
                     crate::arena::snapshot::digest_text(&unit.seal.digest())
                 ));
             }
         }
-        // M5r API/source identities; card bytes and seal shape are unchanged.
+        // M6's reviewed pins cover full card custody, tagged identity, captured
+        // weapon facts/ROM and API 4. Standard's body is unchanged from M5r;
+        // its API header alone changes the source digest. Cross-host gates must
+        // reproduce this complete array before accepting the release.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             f43574cdf7d9db2d442579090ce24724ca0c5b89b220be2854e1b3b02ef2cb0e",
+             5d0a8af7688090e1ccb4cb8f38f2f610ecf82be8919f684cd341a79613811d8b",
             "tacsim.unit.line_tank production_fixture \
-             f43574cdf7d9db2d442579090ce24724ca0c5b89b220be2854e1b3b02ef2cb0e",
+             5d0a8af7688090e1ccb4cb8f38f2f610ecf82be8919f684cd341a79613811d8b",
             "tacsim.unit.line_tank production_principal \
-             c65378815d221daed6d5a92798442a5f167b20d84d3a0d5a088afcb3f2f83daf",
+             9f752c1b8234b565a487db0e194f264a28dc2960af6ef37892035724e1e53371",
             "tacsim.unit.heavy_mk1 fixture \
-             f4e5727194862e9d8d3bd8a7f8a7024705dbf805abfcdbacb5c437748ae238d4",
+             9bc3d03b1eafd6bf3e357b45ac44e8f83b4d26a68e55a5374015ea0089f99609",
             "tacsim.unit.heavy_mk1 production_fixture \
-             f4e5727194862e9d8d3bd8a7f8a7024705dbf805abfcdbacb5c437748ae238d4",
+             9bc3d03b1eafd6bf3e357b45ac44e8f83b4d26a68e55a5374015ea0089f99609",
             "tacsim.unit.heavy_mk1 production_principal \
-             3a98946b5cc79330f92203359d62786378cfeb6c842bd771396d1aa0be8b8645",
+             2c31c30f1a8a4b7e00b21eea89c1772e653d63186313c5c5c53e9ef054594f00",
             "tacsim.unit.target_mk1 fixture \
-             86a58d015d834ed5cb8400422050b2c70ed4993882c52904ab2d80c905736f03",
+             c0357d93bdb8e08be06819155c5cc2a4d1801afb4d22992607b32aa0a8a5f8c0",
             "tacsim.unit.target_mk1 production_fixture \
-             86a58d015d834ed5cb8400422050b2c70ed4993882c52904ab2d80c905736f03",
+             c0357d93bdb8e08be06819155c5cc2a4d1801afb4d22992607b32aa0a8a5f8c0",
             "tacsim.unit.target_mk1 production_principal \
-             0e8b6a9d941d96df94fe1c1ec33274f70c678958a26492de429e1cc9454f2eda",
+             0e3ea202b9b5bb3179245ab95357f673e13b831bf49f13a462eabc5aff5436b3",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
-    }
-
-    /// SHA-256 over a card's canonical bytes, as a seal digests it.
-    fn card_digest(card: &StockCard) -> [u8; 32] {
-        use sha2::{Digest as _, Sha256};
-        Sha256::digest(serde_json::to_vec(card).expect("a card")).into()
     }
 
     /// A preset over the default doctrine.
@@ -1111,63 +1055,26 @@ mod m5_tests {
     /// doctrine, its rating and engine the terms' own.
     #[test]
     fn m5_a_sealed_profile_is_named_with_its_card_digest_and_every_card_is_validated() {
-        use crate::arena::card::ProfileSet;
-        use crate::arena::mind::SealedProfile;
         use crate::definitions::content::LINE_TANK;
-        let unit = checked_out(LINE_TANK, ObjId(4), &SealTerms::fixture()).expect("seals");
-        assert!(
-            unit.seal.profiles.is_empty(),
-            "a default seal writes no set"
-        );
+        let unit = checked_out(LINE_TANK, ObjId(4), &SealTerms::fixture()).unwrap();
         let terms = SealTerms::fixture().with_profiles(vec![
-            (SmolStr::new("sniper"), preset("Sniper")),
-            (SmolStr::new("LINE"), preset("Line")),
+            ("sniper".into(), preset("Sniper")),
+            ("LINE".into(), preset("Line")),
         ]);
+        let seal = seal_for(&unit, &terms).unwrap();
         assert_eq!(
-            terms.card,
-            preset("Sniper"),
-            "the first's card on the terms"
+            seal.cards.selected.names().collect::<Vec<_>>(),
+            ["Sniper", "Line"]
         );
-        let seal = seal_for(&unit, &terms).expect("seals");
-        assert_eq!(
-            seal.profiles,
-            vec![
-                SealedProfile {
-                    name: SmolStr::new_static("Sniper"),
-                    card_digest: card_digest(&preset("Sniper")),
-                },
-                SealedProfile {
-                    name: SmolStr::new_static("Line"),
-                    card_digest: card_digest(&preset("Line")),
-                },
-            ]
-        );
-        assert_eq!(
-            seal.card,
-            serde_json::to_vec(&preset("Sniper")).expect("a card")
-        );
-        assert_eq!(seal.card_digest, card_digest(&preset("Sniper")));
-        assert_eq!(
-            seal.seal_ref().profiles,
-            ProfileSet {
-                len: 2,
-                codes: [2, 0, 0, 0],
-            }
-        );
-        assert_ne!(seal.digest(), unit.seal.digest(), "the set is sealed");
-        let text = serde_json::to_string(&seal).expect("a seal writes");
-        let at = |key: &str| text.find(&format!("\"{key}\":")).expect(key);
-        assert!(at("profiles") > at("engine"), "written last: {text}");
-        assert_eq!(
-            serde_json::from_str::<MindSeal>(&text).ok(),
-            Some(seal.clone())
-        );
-        // The Line card alone, named: no set, the default seal.
-        let line_alone =
-            SealTerms::fixture().with_profiles(vec![(SmolStr::new("Line"), preset("Line"))]);
+        let mut catalog = crate::arena::runtime_card::CardCatalog::default();
+        let (_, opening) = seal.cards.admit(&mut catalog).unwrap();
+        assert_eq!(opening.stock(), Some(&preset("Sniper")));
+        assert_eq!(opening.canonical_bytes().unwrap(), seal.card);
+        assert_eq!(seal.card_digest, seal.cards.opening_digest);
+        assert_ne!(seal.digest(), unit.seal.digest());
+        assert_eq!(seal.seal_ref().profiles, seal.cards.selected);
+        let line_alone = SealTerms::fixture().with_profiles(vec![("Line".into(), preset("Line"))]);
         assert_eq!(seal_for(&unit, &line_alone), Ok(unit.seal.clone()));
-        assert_eq!(unit.seal.seal_ref().profiles, ProfileSet::LINE);
-
         // Every card validated: a second off its pair, named by its preset.
         let mut unpaired = preset("Rearguard");
         unpaired.stand_min_permille = unpaired.withdraw_permille + 50;
@@ -1238,9 +1145,12 @@ mod m5_tests {
         // The identity is the terms' — its rating and engine are not.
         let identity = SealIdentity {
             mind: SmolStr::new_static("Fixture I"),
-            charter: SmolStr::new_static("Fixture"),
-            line: SmolStr::new_static("fixture_i"),
-            revision: 1,
+            origin: MindOrigin::Filed {
+                charter: "Fixture".into(),
+                line: "fixture_i".into(),
+                revision: 1,
+                licence: "test".into(),
+            },
             source_sha256: [9; 32],
         };
         let terms = SealTerms {
@@ -1249,16 +1159,7 @@ mod m5_tests {
             ..SealTerms::fixture()
         };
         let seal = seal_for(&unit, &terms).expect("seals");
-        assert_eq!(
-            SealIdentity {
-                mind: seal.mind.clone(),
-                charter: seal.charter.clone(),
-                line: seal.line.clone(),
-                revision: seal.revision,
-                source_sha256: seal.source_sha256,
-            },
-            identity
-        );
+        assert_eq!(seal.identity(), identity);
         assert!(!seal.seal_ref().doctrine, "not Standard Doctrine");
         assert_eq!(
             (seal.class, seal.engine),

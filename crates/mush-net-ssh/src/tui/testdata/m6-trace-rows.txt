@@ -1,0 +1,9 @@
+1 older thinks omitted from this bounded picture.
+Think 7 at 1000 ms | 800 ops + 5 fees | applied
+  Landed at 1020 ms
+  Kernel odds: 5 fee
+  S1 cannon fires at its lock: true
+    identified hostile: true
+  fire cannon at lock: refused: cycling
+  Trace: waiting for the gun
+  Omitted kernel_calls: 2

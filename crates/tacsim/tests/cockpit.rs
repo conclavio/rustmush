@@ -2455,12 +2455,12 @@ async fn view_follows_its_panel_with_the_line_about_what_the_window_could_not_fi
 // Re-bless with `TACSIM_BLESS=1 cargo test -p tacsim --test cockpit`.
 
 mod fixture {
+    use super::m6_frame;
     use std::path::PathBuf;
 
     use mush_core::ObjId;
     use mush_sim::data::Pose;
     use smol_str::SmolStr;
-    use tacsim::arena::card::ProfileSet;
     use tacsim::arena::clock::Tempo;
     use tacsim::arena::condition::{Condition, ConditionBand};
     use tacsim::arena::conditions::{FireCondition, Rule, SlotTarget, aspect_mask};
@@ -2546,6 +2546,7 @@ mod fixture {
             mode: tacsim::arena::state::MatchMode::Skirmish,
             objective: None,
             motor: None,
+            own_last_hit_ms: None,
             team: Team::Red,
             pose: Pose {
                 x_cm: i64::from(YOU.0) * 1_000 + 500,
@@ -2845,12 +2846,13 @@ mod fixture {
             // the line tank's Class II core and stands, dormant under the seat.
             mind: Some(FrameMind {
                 doctrine: true,
-                profiles: ProfileSet::of_names(&["Sniper", "Line"]).expect("two presets"),
+                profiles: m6_frame(&["Sniper", "Line"]).profiles,
                 active: 0,
                 class: CoreClass::I,
                 core_class: CoreClass::II,
                 switch_at_ms: None,
                 off: false,
+                ..m6_frame(&["Sniper", "Line"])
             }),
         }
     }
@@ -13113,7 +13115,7 @@ async fn ah1_the_first_frame_and_power_online_each_say_their_hint_once_after_the
     assert_eq!(ah1_hints(&rig.log[mark..], p0), Vec::<String>::new());
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 3 of 6."),
+        said.contains("Hints are on; you have read 3 of 7."),
         "boarding, panel and power: {said}"
     );
     audit_hints(&rig.log);
@@ -13145,7 +13147,7 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
     assert!(said.contains(SET_ON), "{said}");
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 6."),
+        said.contains("Hints are on; you have read 0 of 7."),
         "{said}"
     );
 
@@ -13215,7 +13217,7 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
     );
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 1 of 6."),
+        said.contains("Hints are on; you have read 1 of 7."),
         "{said}"
     );
     rig.rebind(p0, match_id, held.unit);
@@ -13253,7 +13255,7 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
     let events = rig.events_of(p2, "@tutorial");
     assert_eq!(
         rig.tw.seen_by(&events, p2),
-        vec!["Hints are on; you have read 0 of 6.".to_owned()]
+        vec!["Hints are on; you have read 0 of 7.".to_owned()]
     );
     audit_hints(&rig.log);
 }
@@ -13862,10 +13864,10 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
     // M5r adds public mode/objective, own motor result and shot origin at version 5.
-    assert_eq!(cockpit::FRAME_VERSION, 5);
+    assert_eq!(cockpit::FRAME_VERSION, 6);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(5))
+        Some(&serde_json::json!(6))
     );
     assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
     assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
@@ -14447,10 +14449,10 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     use tacsim::arena::weapons::FrameArming;
     let frame = fixture::frame();
     let payload = cockpit::status_frame(fixture::MATCH, &frame);
-    assert_eq!(cockpit::FRAME_VERSION, 5);
+    assert_eq!(cockpit::FRAME_VERSION, 6);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(5))
+        Some(&serde_json::json!(6))
     );
     assert_eq!(
         payload.pointer("/weapons/0/armed"),
@@ -16432,7 +16434,7 @@ async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
 }
 
 // ---------------------------------------------------------------------------
-// 17b cut M1b.5 — `@mind/set` and the fill controller (doc 17 §11, §22's M1b;
+// 17b cut M1b.5 — `@mind/live` and the fill controller (doc 17 §11, §22's M1b;
 // D-UM-17 as amended, D-UM-43, D-UM-44)
 // ---------------------------------------------------------------------------
 
@@ -16464,7 +16466,7 @@ fn m1b5_fill_units(rig: &Rig) -> Vec<ObjId> {
     fill
 }
 
-/// The registry's controller of `unit`, as `@mind/set` reads it.
+/// The registry's controller of `unit`, as `@mind/live` reads it.
 fn m1b5_controller(rig: &Rig, unit: ObjId) -> Option<tacsim::arena::state::Controller> {
     let match_id = rig.centre().match_id.expect("a running match");
     rig.tw
@@ -16479,7 +16481,7 @@ fn m1b5_head(said: &str) -> String {
     said.lines().next().unwrap_or_default().to_owned()
 }
 
-/// **`@mind/set` reads, sets and refuses by name** (17b cut M1b.5; doc 17 §11,
+/// **`@mind/live` reads, sets and refuses by name** (17b cut M1b.5; doc 17 §11,
 /// §22's M1b; D-UM-17 as amended, D-UM-43, D-UM-44), through the composition
 /// on a running match whose AI fill is the lab's `mind`, as staff:
 ///
@@ -16522,7 +16524,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     let id = mind.0;
 
     // The read-back, as checked out.
-    let said = rig.staff(&format!("@mind/set #{id}"));
+    let said = rig.staff(&format!("@mind/live #{id}"));
     let lines: Vec<&str> = said.lines().collect();
     assert_eq!(
         lines.first().copied(),
@@ -16544,7 +16546,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     );
 
     // A preset: sent, then on the tape.
-    let said = rig.staff(&format!("@mind/set #{id}=sniper"));
+    let said = rig.staff(&format!("@mind/live #{id}=sniper"));
     let mut lines = said.lines();
     assert_eq!(
         lines.next(),
@@ -16576,7 +16578,12 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         .find(|event| matches!(&event.kind, tacsim::arena::ledger::EventKind::MindCard { unit, .. } if *unit == mind))
         .cloned()
         .expect("the line");
-    let tacsim::arena::ledger::EventKind::MindCard { card, changed, .. } = &line.kind else {
+    let tacsim::arena::ledger::EventKind::MindCard {
+        stock: Some(card),
+        changed,
+        ..
+    } = &line.kind
+    else {
         panic!("a mind_card line");
     };
     assert_eq!(
@@ -16592,7 +16599,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         vec!["band_pct", "min_odds", "reserve_pct"]
     );
     assert_eq!(
-        m1b5_head(&rig.staff(&format!("@mind/set #{id}"))),
+        m1b5_head(&rig.staff(&format!("@mind/live #{id}"))),
         format!(
             "Mind card on #{id} ({name}): Sniper (on the tape at {} ms)",
             line.t_ms
@@ -16601,48 +16608,51 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
 
     // Refused by name.
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=band_pct 72")),
-        "@mind/set: band_pct is 30 to 100 in steps of 5 (it is 72)."
+        rig.staff(&format!("@mind/live #{id}=band_pct 72")),
+        "@mind/live: band_pct is 30 to 100 in steps of 5 (it is 72)."
     );
     // 17b cut M2.2, the lead's ruling (b): the doctrine pair, in the same wrap
     // (the card is Sniper here, whose pair is Line's: break_off 35, fight_home
     // 17.5).
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=break_off_pct 10")),
-        "@mind/set: break_off_pct would put fight_home_pct 17.5 above break_off_pct 10; \
+        rig.staff(&format!("@mind/live #{id}=break_off_pct 10")),
+        "@mind/live: break_off_pct would put fight_home_pct 17.5 above break_off_pct 10; \
          fight_home_pct is at most break_off_pct (it is 10)."
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=fight_home_pct 40")),
-        "@mind/set: fight_home_pct would put fight_home_pct 40 above break_off_pct 35; \
+        rig.staff(&format!("@mind/live #{id}=fight_home_pct 40")),
+        "@mind/live: fight_home_pct would put fight_home_pct 40 above break_off_pct 35; \
          fight_home_pct is at most break_off_pct (it is 40)."
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
-        "@mind/set: min_odds is 10% to 95% in steps of 5; 10% is the Compact floor (it is 5)."
+        rig.staff(&format!("@mind/live #{id}=min_odds 5")),
+        "@mind/live: min_odds is 10% to 95% in steps of 5; 10% is the Compact floor (it is 5)."
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=stance fast")),
-        "@mind/set: stance is hold, close, orbit, hunt or screen (it is fast)."
+        rig.staff(&format!("@mind/live #{id}=stance fast")),
+        "@mind/live: stance is hold, close, orbit, hunt or screen (it is fast)."
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=foo 1")),
-        "@mind/set: no slider or preset named \"foo\"."
+        rig.staff(&format!("@mind/live #{id}=foo 1")),
+        "@mind/live: no slider or preset named \"foo\"."
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=berserker")),
-        "@mind/set: no slider or preset named \"berserker\"."
+        rig.staff(&format!("@mind/live #{id}=berserker")),
+        "@mind/live: no slider or preset named \"berserker\"."
     );
-    let usage = "Usage: @mind/set <unit>[=<preset> | =<slider> <value>]";
+    let usage = "Usage: @mind/live <unit>[=<preset> | =<slider> <value>]";
     assert_eq!(rig.staff(&format!("@mind #{id}")), usage);
-    assert_eq!(rig.staff("@mind/set"), usage);
-    assert_eq!(rig.staff(&format!("@mind/set #{id}=min_odds 60 70")), usage);
+    assert_eq!(rig.staff("@mind/live"), usage);
+    assert_eq!(
+        rig.staff(&format!("@mind/live #{id}=min_odds 60 70")),
+        usage
+    );
     // A slider with no value, and a preset with one: the usage, never the
     // unknown sentence (each IS a slider or a preset).
-    assert_eq!(rig.staff(&format!("@mind/set #{id}=min_odds")), usage);
-    assert_eq!(rig.staff(&format!("@mind/set #{id}=sniper 5")), usage);
+    assert_eq!(rig.staff(&format!("@mind/live #{id}=min_odds")), usage);
+    assert_eq!(rig.staff(&format!("@mind/live #{id}=sniper 5")), usage);
     // A slider set: sent, and the scratch card is the tape's Sniper edited.
-    let said = rig.staff(&format!("@mind/set #{id}=MIN_ODDS 70"));
+    let said = rig.staff(&format!("@mind/live #{id}=MIN_ODDS 70"));
     assert!(
         said.starts_with(&format!(
             "Mind card on #{id}: min_odds 70 sent; the arena takes it at its next pulse.\nMind \
@@ -16658,18 +16668,18 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         Some(tacsim::arena::state::Controller::Pilot)
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{}", tank.0)),
-        format!("@mind/set: #{} is not flown by a mind.", tank.0)
+        rig.staff(&format!("@mind/live #{}", tank.0)),
+        format!("@mind/live: #{} is not flown by a mind.", tank.0)
     );
     rig.fire_conn(rig.pilot(0), mush_core::ConnTransition::Disconnected);
     // 17b cut M4.3: a released seat is a mind's — the one sealed on the hull
-    // at check-out, whose card `@mind/set` now reads and sets.
+    // at check-out, whose card `@mind/live` now reads and sets.
     assert_eq!(
         m1b5_controller(&rig, tank),
         Some(tacsim::arena::state::Controller::Mind),
         "a released seat is a mind's"
     );
-    let said = rig.staff(&format!("@mind/set #{}=sniper", tank.0));
+    let said = rig.staff(&format!("@mind/live #{}=sniper", tank.0));
     assert!(
         said.starts_with(&format!(
             "Mind card on #{}: Sniper sent; the arena takes it at its next pulse.",
@@ -16697,7 +16707,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     );
     // Not staff.
     assert_eq!(
-        rig.say(1, &format!("@mind/set #{id}=sniper")),
+        rig.say(1, &format!("@mind/live #{id}=sniper")),
         "Permission denied."
     );
 
@@ -16713,7 +16723,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         "it resumed"
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}")),
+        rig.staff(&format!("@mind/live #{id}")),
         format!(
             "Mind card on #{id} ({name}): not read since the resume \u{2014} the tape's last \
              mind_card line names it; a preset resets it."
@@ -16722,10 +16732,10 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     // The resumed mirror's floor is the decoded arena's own (100 here): the
     // verb's floor pre-check still answers, naming 10 per cent.
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
-        "@mind/set: min_odds is 10% to 95% in steps of 5; 10% is the Compact floor (it is 5)."
+        rig.staff(&format!("@mind/live #{id}=min_odds 5")),
+        "@mind/live: min_odds is 10% to 95% in steps of 5; 10% is the Compact floor (it is 5)."
     );
-    let said = rig.staff(&format!("@mind/set #{id}=rearguard"));
+    let said = rig.staff(&format!("@mind/live #{id}=rearguard"));
     assert!(
         said.starts_with(&format!("Mind card on #{id}: Rearguard sent;")),
         "{said}"
@@ -16768,19 +16778,19 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         });
     }
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
-        "@mind/set: min_odds is 10 to 95 in steps of 5 (it is 5).",
+        rig.staff(&format!("@mind/live #{id}=min_odds 5")),
+        "@mind/live: min_odds is 10 to 95 in steps of 5 (it is 5).",
         "the floor pre-check passed at the match's 5%: the slider's range answers"
     );
     assert!(
-        rig.staff(&format!("@mind/set #{id}=min_odds 10"))
+        rig.staff(&format!("@mind/live #{id}=min_odds 10"))
             .starts_with(&format!("Mind card on #{id}: min_odds 10 sent;")),
     );
     let landed = rig
         .tape_until(|event| {
             matches!(
                 &event.kind,
-                tacsim::arena::ledger::EventKind::MindCard { unit, card, .. }
+                tacsim::arena::ledger::EventKind::MindCard { unit, stock: Some(card), .. }
                     if *unit == mind && card.min_odds_permille == 100
             )
         })
@@ -16809,13 +16819,13 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         "the live block says 100 after the restart"
     );
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=min_odds 5")),
-        "@mind/set: min_odds is 10 to 95 in steps of 5 (it is 5).",
+        rig.staff(&format!("@mind/live #{id}=min_odds 5")),
+        "@mind/live: min_odds is 10 to 95 in steps of 5 (it is 5).",
         "the resumed match is held to its captured 5%, not the live 10%"
     );
 }
 
-/// **`@mind/set` refuses a preset that breaks the doctrine pair, by the
+/// **`@mind/live` refuses a preset that breaks the doctrine pair, by the
 /// preset's name** (17b cut M2.2, the lead's ruling (b): the presets
 /// pair-valid; doc 17 §11, D-UM-43, D-UM-44): on a doctrine the config admits
 /// with `fight_home` 75 under `break_off` 80, `=rearguard` — `break_off_pct`
@@ -16834,17 +16844,17 @@ async fn m2_mind_set_refuses_a_preset_that_breaks_the_pair_by_name() {
     let mind = *fill.first().expect("a fill hull");
     let id = mind.0;
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}=rearguard")),
-        "@mind/set: Rearguard would put fight_home_pct 75 above break_off_pct 70; \
+        rig.staff(&format!("@mind/live #{id}=rearguard")),
+        "@mind/live: Rearguard would put fight_home_pct 75 above break_off_pct 70; \
          fight_home_pct is at most break_off_pct."
     );
     let name = mush_core::output::display_name(rig.tw.world(), mind);
     assert_eq!(
-        m1b5_head(&rig.staff(&format!("@mind/set #{id}"))),
+        m1b5_head(&rig.staff(&format!("@mind/live #{id}"))),
         format!("Mind card on #{id} ({name}): Line (as checked out)"),
         "nothing was sent"
     );
-    let said = rig.staff(&format!("@mind/set #{id}=sniper"));
+    let said = rig.staff(&format!("@mind/live #{id}=sniper"));
     assert_eq!(
         said.lines().next(),
         Some(
@@ -16933,7 +16943,7 @@ async fn m4_3_the_fill_is_a_mind_sealed_at_fill_class() {
     // A fill hull takes a card.
     let id = fill.first().map_or(0, |unit| unit.0);
     assert!(
-        rig.staff(&format!("@mind/set #{id}"))
+        rig.staff(&format!("@mind/live #{id}"))
             .contains("Line (as checked out)"),
     );
 }
@@ -17021,10 +17031,10 @@ async fn m3_a_reclaim_re_seals_nothing() {
 /// the arena** (17b cut M3.5; doc 17 §12 "Release and possess"), over the
 /// real rig with the lab's `mind` fill: a `Live` control on a fill hull the
 /// stock mind flies (the possess) makes the mirror read the pilot's and
-/// `@mind/set` refuse it as `not flown by a mind`; the `Released` that ends
+/// `@mind/live` refuse it as `not flown by a mind`; the `Released` that ends
 /// the seat hands it back — the mirror reads `Controller::Mind` again
 /// (M3.5's `MatchMirror::minded` rule, the set 17b cut M4.6a deleted: every
-/// released hull reads its mind's since 17b cut M4.3), and `@mind/set` offers
+/// released hull reads its mind's since 17b cut M4.3), and `@mind/live` offers
 /// a preset that the arena itself applies (a `mind_card` line naming it on the
 /// tape: the arena, too, handed the hull back to its mind and not to the
 /// reflex machine). The
@@ -17046,8 +17056,8 @@ async fn m3_a_released_mind_hull_is_its_mind_s_again_on_the_mirror() {
     .expect("the possess is offered");
     assert_eq!(m1b5_controller(&rig, mind), Some(Controller::Pilot));
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}")),
-        format!("@mind/set: #{id} is not flown by a mind.")
+        rig.staff(&format!("@mind/live #{id}")),
+        format!("@mind/live: #{id} is not flown by a mind.")
     );
 
     rig.with_ctx_mut(0, |ctx| {
@@ -17059,7 +17069,7 @@ async fn m3_a_released_mind_hull_is_its_mind_s_again_on_the_mirror() {
         Some(Controller::Mind),
         "a released mind hull is its mind's"
     );
-    let said = rig.staff(&format!("@mind/set #{id}=sniper"));
+    let said = rig.staff(&format!("@mind/live #{id}=sniper"));
     assert!(
         said.starts_with(&format!(
             "Mind card on #{id}: Sniper sent; the arena takes it at its next pulse."
@@ -17151,7 +17161,8 @@ fn m5_cards(rig: &Rig, unit: ObjId) -> Vec<(i64, String, Vec<String>, tacsim::ar
                 unit: carded,
                 name,
                 changed,
-                card,
+                stock: Some(card),
+                ..
             } if *carded == unit => Some((
                 event.t_ms,
                 name.to_string(),
@@ -17163,7 +17174,7 @@ fn m5_cards(rig: &Rig, unit: ObjId) -> Vec<(i64, String, Vec<String>, tacsim::ar
         .collect()
 }
 
-/// The mirror's copy of `unit`'s card, as `@mind/set` reads it.
+/// The mirror's copy of `unit`'s card, as `@mind/live` reads it.
 fn m5_mirror_card(
     rig: &Rig,
     unit: ObjId,
@@ -17353,7 +17364,7 @@ async fn m5_mind_profile_switches_a_sealed_profile_at_most_once_in_ten_seconds()
         m1b5_controller(rig, tank) == Some(tacsim::arena::state::Controller::Mind)
     })
     .await;
-    let said = rig.staff(&format!("@mind/set #{}=band_pct 80", tank.0));
+    let said = rig.staff(&format!("@mind/live #{}=band_pct 80", tank.0));
     assert!(
         said.starts_with(&format!(
             "Mind card on #{}: band_pct 80 sent; the arena takes it at its next pulse.",
@@ -17455,12 +17466,12 @@ async fn m5_a_switch_on_a_stationary_hull_sends_one_frame_and_mind_reads_it() {
 }
 
 /// **A staff read-back follows a pilot's switch** (17b cut M5.4; doc 17 §11,
-/// D14 of the M5 design note; `@mind/set`, 17b cut M1b.5): red's hull opens
+/// D14 of the M5 design note; `@mind/live`, 17b cut M1b.5): red's hull opens
 /// the match with the world's mirror holding its first sealed profile's card
 /// — Sniper, `as checked out` at nought; its pilot switches to Line from the
 /// seat, and the switch's `mind_card` line, absorbed off the tape as a staff
 /// edit's is, leaves the mirror on Line. After `EXIT` the hull is its mind's,
-/// so staff's bare `@mind/set #<tank>` reads `Line (on the tape at N ms)`
+/// so staff's bare `@mind/live #<tank>` reads `Line (on the tape at N ms)`
 /// with Line's five sections, and a staff slider set is validated and read
 /// back on a scratch card made from Line — `Line, edited (band_pct 80)`,
 /// never Sniper — and lands on the arena's row as that very card.
@@ -17480,8 +17491,8 @@ async fn m5_a_staff_read_back_follows_a_pilots_switch() {
     );
     // A seated hull is not staff's to set.
     assert_eq!(
-        rig.staff(&format!("@mind/set #{id}")),
-        format!("@mind/set: #{id} is not flown by a mind.")
+        rig.staff(&format!("@mind/live #{id}")),
+        format!("@mind/live: #{id} is not flown by a mind.")
     );
 
     assert_eq!(
@@ -17510,7 +17521,7 @@ async fn m5_a_staff_read_back_follows_a_pilots_switch() {
     })
     .await;
     let name = mush_core::output::display_name(rig.tw.world(), tank);
-    let said = rig.staff(&format!("@mind/set #{id}"));
+    let said = rig.staff(&format!("@mind/live #{id}"));
     let mut want = vec![format!(
         "Mind card on #{id} ({name}): Line (on the tape at {t_ms} ms)"
     )];
@@ -17522,7 +17533,7 @@ async fn m5_a_staff_read_back_follows_a_pilots_switch() {
     edited
         .set("band_pct", "80")
         .expect("band_pct 80 is on Line's scale");
-    let said = rig.staff(&format!("@mind/set #{id}=band_pct 80"));
+    let said = rig.staff(&format!("@mind/live #{id}=band_pct 80"));
     let lines: Vec<&str> = said.lines().collect();
     assert_eq!(
         lines.first().copied(),
@@ -17648,7 +17659,6 @@ async fn m5_mind_reads_the_seal_and_after_a_substitution_names_what_flies() {
 ///   answers a wreck.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
-    use tacsim::arena::card::ProfileSet;
     let mut rig = Rig::boot(2);
     rig.fly().await;
 
@@ -17668,7 +17678,11 @@ async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
     // The sealed frame: every form `MIND` does not take is the usage.
     assert!(rig.frame_for(0).await, "the arena sends red its frame");
     let mind = m5_mind(&rig);
-    assert_eq!(mind.profiles, ProfileSet::LINE, "an unchosen slot's seal");
+    assert_eq!(
+        mind.profiles.names().collect::<Vec<_>>(),
+        vec!["Line"],
+        "an unchosen slot's seal"
+    );
     for form in [
         "mind profile",
         "MIND PROFILE",
@@ -17728,10 +17742,10 @@ async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
     assert_eq!(rig.say(0, "mind profile line"), wrecked);
     // … and before a switch the frame would allow; bare `MIND` still reads.
     let two = tacsim::arena::step::FrameMind {
-        profiles: ProfileSet::of_names(&["Sniper", "Line"]).expect("two presets"),
-        ..mind
+        profiles: m6_frame(&["Sniper", "Line"]).profiles,
+        ..mind.clone()
     };
-    dead.mind = Some(two);
+    dead.mind = Some(two.clone());
     rig.push_frame(0, dead.clone());
     assert_eq!(rig.say(0, "mind profile line"), wrecked);
     let mut block = cockpit::mind_lines(&two, !dead.weapons.is_empty(), 0);
@@ -18308,5 +18322,57 @@ mod m5rules_station {
                 .all(|line| line.len() <= cockpit::WATCH_COLUMNS),
             "full readback stays within the terminal floor: {said}"
         );
+    }
+}
+
+/// Build actual immutable cards for renderer fixtures; names never reconstruct runtime data.
+fn m6_frame(names: &[&str]) -> tacsim::arena::step::FrameMind {
+    use tacsim::arena::core::{ClassTable, CoreClass};
+    use tacsim::arena::profile_seal::SealedCards;
+    use tacsim::arena::runtime_card::{CardCatalog, stock_definition};
+    let cfg = tacsim::config::ReflexConfig::default();
+    let selected = names
+        .iter()
+        .map(|name| {
+            (
+                smol_str::SmolStr::new(*name),
+                tacsim::arena::preset(name, &cfg).expect("fixture preset"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let definition = stock_definition(&selected, CoreClass::III).expect("full cards");
+    let cards = SealedCards::prepare(
+        definition,
+        &[],
+        &ClassTable::STOCK.row(CoreClass::III),
+        &[],
+        &[
+            tacsim::arena::Channel::Helm,
+            tacsim::arena::Channel::Sensors,
+        ],
+        100,
+    )
+    .expect("sealed cards");
+    let mut catalog = CardCatalog::default();
+    let (_, card) = cards.admit(&mut catalog).expect("catalog admission");
+    // Retain the complete selected order for profile renderer tests.
+    let names = names
+        .iter()
+        .map(|name| smol_str::SmolStr::new(*name))
+        .collect::<Vec<_>>();
+    let profiles =
+        tacsim::arena::runtime_card::RuntimeProfiles::bind(&catalog, card.key().definition, &names)
+            .expect("selected profiles");
+    tacsim::arena::step::FrameMind {
+        name: smol_str::SmolStr::new_static("Standard Doctrine"),
+        doctrine: true,
+        profiles,
+        card,
+        program: cards.programs[0].clone(),
+        active: 0,
+        class: CoreClass::I,
+        core_class: CoreClass::II,
+        switch_at_ms: None,
+        off: false,
     }
 }

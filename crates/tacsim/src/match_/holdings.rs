@@ -48,6 +48,10 @@ pub use crate::match_::seal::SealIdentity;
 /// — its source text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldMind {
+    /// Complete immutable authored metadata; stock uses the captured adapter.
+    pub definition: Option<Arc<crate::arena::runtime_card::CardDefinition>>,
+    /// Stable character/mind and pin-or-follow provenance of a lobby choice.
+    pub saved: Option<super::draft_holdings::SavedChoice>,
     /// The five identity fields a seal writes ([`SealIdentity`]).
     pub identity: SealIdentity,
     /// The class it is rated at (D-UM-35): Standard Doctrine's
@@ -76,6 +80,8 @@ impl HeldMind {
     #[must_use]
     pub fn doctrine() -> HeldMind {
         HeldMind {
+            definition: None,
+            saved: None,
             identity: SealIdentity::doctrine(),
             rated: crate::arena::mind::STOCK_RATED_CLASS,
             engine: crate::match_::seal::PRODUCTION_FILL_ENGINE,
@@ -84,6 +90,31 @@ impl HeldMind {
                 .map(|name| SmolStr::new_static(name))
                 .collect(),
             source: None,
+        }
+    }
+
+    /// An already-resolved owned revision, with no invented licence or charter.
+    pub fn from_saved(
+        saved: super::draft_holdings::SavedMind,
+        selection: super::draft_holdings::SavedChoice,
+    ) -> Self {
+        Self {
+            identity: SealIdentity {
+                mind: saved.name,
+                origin: saved.origin,
+                source_sha256: saved.source_sha256,
+            },
+            rated: saved.rated,
+            engine: SealEngine::Scripted,
+            presets: saved
+                .definition
+                .profiles
+                .iter()
+                .map(|p| p.name.clone())
+                .collect(),
+            source: Some(saved.source),
+            definition: Some(saved.definition),
+            saved: Some(selection),
         }
     }
 
@@ -118,6 +149,16 @@ impl HeldMind {
 #[must_use]
 pub fn names(held: &HeldMind, word: &str) -> bool {
     let word = word.trim();
+    if let Some(name) = word.strip_prefix("draft:") {
+        return held.saved.is_some() && name.eq_ignore_ascii_case(held.name());
+    }
+    if held.saved.is_some()
+        && ["standard", "doctrine", "Standard Doctrine"]
+            .iter()
+            .any(|name| word.eq_ignore_ascii_case(name))
+    {
+        return false;
+    }
     if word.eq_ignore_ascii_case(held.name()) {
         return true;
     }
@@ -160,8 +201,103 @@ impl Holdings for DoctrineOnly {
     }
 }
 
+/// Production holdings: Registry doctrine and this character's valid saved heads.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OwnedMinds;
+impl Holdings for OwnedMinds {
+    fn held(&self, w: &World, character: ObjId) -> Vec<HeldMind> {
+        let mut held = vec![HeldMind::doctrine()];
+        for saved in super::draft_holdings::saved_by(w, character) {
+            let crate::arena::profile_seal::MindOrigin::Draft { mind, .. } = &saved.origin else {
+                continue;
+            };
+            let selection = super::draft_holdings::SavedChoice {
+                character,
+                mind: *mind,
+                selection: mush_roll::Selection::Follow { mind: *mind },
+            };
+            held.push(HeldMind::from_saved(saved, selection));
+        }
+        held
+    }
+}
+
+/// Resolve a stored choice by immutable owner/id, never by its old display name.
+pub fn resolve_choice(
+    w: &World,
+    actor: ObjId,
+    name: &str,
+    saved: Option<&super::draft_holdings::SavedChoice>,
+) -> Option<HeldMind> {
+    if let Some(choice) = saved {
+        let owner = w.module_state::<mush_roll::RollStore>()?;
+        let sources = w.module_state::<crate::TacsimStore>()?;
+        return choice
+            .resolve(owner, sources, actor)
+            .ok()
+            .map(|revision| HeldMind::from_saved(revision, choice.clone()));
+    }
+    resolve(&held_by(w, actor), name)
+        .filter(|held| held.saved.is_none())
+        .cloned()
+}
+
+/// Parse a personal pin under authenticated ownership. No pin or `latest` means
+/// Follow; an exact local number, named version or unambiguous digest pins it.
+pub fn choose(
+    w: &World,
+    actor: ObjId,
+    word: &str,
+    revision: Option<&str>,
+) -> Result<HeldMind, mush_roll::RollError> {
+    let owned_name = word.strip_prefix("draft:");
+    let listed = held_by(w, actor);
+    let existing = resolve(&listed, word);
+    if owned_name.is_none() && existing.is_some_and(|held| held.saved.is_none()) {
+        if revision.is_some() {
+            return Err(mush_roll::RollError::Missing);
+        }
+        return existing.cloned().ok_or(mush_roll::RollError::Missing);
+    }
+    let name = owned_name.unwrap_or(word).trim();
+    let owner = w
+        .module_state::<mush_roll::RollStore>()
+        .ok_or(mush_roll::RollError::Missing)?;
+    let sources = w
+        .module_state::<crate::TacsimStore>()
+        .ok_or(mush_roll::RollError::Missing)?;
+    let mind = owner.mind(actor, name)?;
+    let pin = match revision.map(str::trim) {
+        None => None,
+        Some(word) if word.eq_ignore_ascii_case("latest") => None,
+        Some(word) => {
+            let number = word.parse::<u64>().ok().or_else(|| {
+                mush_roll::canonical_name(word)
+                    .ok()
+                    .and_then(|name| mind.named().get(&name).copied())
+            });
+            Some(match number {
+                Some(number) => owner
+                    .revision(
+                        actor,
+                        mush_roll::RevisionKey {
+                            character: actor,
+                            mind: mind.id(),
+                            number,
+                        },
+                    )?
+                    .reference(),
+                None => owner.resolve_digest(actor, name, word)?,
+            })
+        }
+    };
+    let choice = super::draft_holdings::SavedChoice::choose(owner, actor, name, pin)?;
+    let saved = choice.resolve(owner, sources, actor)?;
+    Ok(HeldMind::from_saved(saved, choice))
+}
+
 /// **The seam's state slot** (17b cut M5.1): the provider the lobby asks,
-/// [`DoctrineOnly`] as `tacsim::register` installs it. Its provider is
+/// [`OwnedMinds`] as `tacsim::register` installs it. Its provider is
 /// private (17b cut M5.1's review): [`HoldingsSeam::production`] and
 /// [`install_holdings`] are the only ways to set it, so a provider's sources
 /// always reach the store's RAM map, and [`held_by`] is the only way to ask
@@ -170,10 +306,10 @@ impl Holdings for DoctrineOnly {
 pub struct HoldingsSeam(Arc<dyn Holdings>);
 
 impl HoldingsSeam {
-    /// The production seam: [`DoctrineOnly`].
+    /// Registry doctrine plus this character's readable immutable saved revisions.
     #[must_use]
     pub fn production() -> HoldingsSeam {
-        HoldingsSeam(Arc::new(DoctrineOnly))
+        HoldingsSeam(Arc::new(OwnedMinds))
     }
 }
 
@@ -204,13 +340,13 @@ pub fn install_holdings(w: &mut World, holdings: Arc<dyn Holdings>) {
     }
 }
 
-/// **What `character` holds, as the seam answers** — [`DoctrineOnly`]'s
-/// answer on a world with no seam installed.
+/// What `character` holds: production owned revisions plus Registry doctrine,
+/// or an explicitly installed fixture provider.
 #[must_use]
 pub fn held_by(w: &World, character: ObjId) -> Vec<HeldMind> {
     match w.module_state::<HoldingsSeam>() {
         Some(seam) => seam.0.held(w, character),
-        None => DoctrineOnly.held(w, character),
+        None => OwnedMinds.held(w, character),
     }
 }
 
@@ -265,9 +401,12 @@ mod tests {
         let held = HeldMind::doctrine();
         let identity = &held.identity;
         assert_eq!(identity.mind, crate::match_::SEALED_MIND);
-        assert_eq!(identity.charter, crate::match_::SEALED_CHARTER);
-        assert_eq!(identity.line, crate::match_::SEALED_LINE);
-        assert_eq!(identity.revision, crate::minds::STOCK_VERSION);
+        assert_eq!(
+            identity.origin,
+            crate::arena::profile_seal::MindOrigin::Doctrine {
+                revision: crate::minds::STOCK_VERSION
+            }
+        );
         assert_eq!(
             identity.source_sha256,
             crate::minds::content::standard_digest().0

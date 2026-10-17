@@ -4377,6 +4377,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         mode: tacsim::arena::state::MatchMode::Skirmish,
         objective: None,
         motor: None,
+        own_last_hit_ms: None,
         team: tacsim::arena::state::Team::Red,
         pose: mush_sim::data::Pose::at(6_500, 4_500, 0, posture),
         speed_cms: 0,

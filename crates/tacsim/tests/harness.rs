@@ -10738,12 +10738,8 @@ fn calibrate_ops_per_us(field: &MindsField) -> Calibration {
     let mut clone = arena.clone();
     let view = Arc::new(clone.mind_view(unit).expect("the hull has a view"));
     let profile = clone.classes.row(CoreClass::I);
-    let card = clone
-        .minds
-        .get(&unit)
-        .expect("the hull has a mind row")
-        .card
-        .clone();
+    let runtime = clone.profiles.get(&unit).expect("admitted runtime");
+    let card = runtime.card.clone();
     let runner = tacsim::minds::RhaiRunner::new(
         &field.arena_cfg,
         tacsim::minds::STANDARD_RHAI,
@@ -10766,6 +10762,8 @@ fn calibrate_ops_per_us(field: &MindsField) -> Calibration {
             memory: &memory,
             map: &clone.definition,
             card: &card,
+            program: &runtime.program,
+            profile_token: runtime.token(),
         };
         memory = runner.think(&job).memory;
     }
@@ -12428,7 +12426,8 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
         arena.unit_mut(red).expect("red").power = power;
         let view = Arc::new(arena.mind_view(red).expect("red's view"));
         assert_eq!(view.power, power);
-        let card = arena.minds.get(&red).expect("red's row").card.clone();
+        let runtime = arena.profiles.get(&red).expect("admitted runtime");
+        let card = runtime.card.clone();
         let job = |profile| ThinkJob {
             unit: red,
             think_seq: 0,
@@ -12441,6 +12440,8 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
             memory: &memory,
             map: &arena.definition,
             card: &card,
+            program: &runtime.program,
+            profile_token: runtime.token(),
         };
         let result = runner.think(&job(&three));
         assert_eq!(

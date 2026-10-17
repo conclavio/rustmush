@@ -20,7 +20,7 @@
 //!   choices a [`CardError::Choice`] naming them, and an unknown name
 //!   [`CardError::NoSuchSlider`]. The Compact floor is NOT a slider's range:
 //!   `min_odds` is 10 to 95 here, and the floor (`[tacsim.minds]`, captured
-//!   into each arena) is its caller's check — `@mind/set`'s off the match's
+//!   into each arena) is its caller's check — `@mind/live`'s off the match's
 //!   mirror, and the arena's own at the card's landing
 //!   (`Arena::apply_mind_cards`);
 //! * [`preset`] and [`PRESETS`] — Standard Doctrine's six named cards over
@@ -31,10 +31,10 @@
 //! * [`StockCard::as_reflex`] — **the overlay**: the doctrine with the card's
 //!   mapped terms written over it, which is what `NativeStockMind` thinks on
 //!   (`line(cfg).as_reflex(cfg) == cfg`: the anchor, by construction);
-//! * [`StockCard::read_back`] — the five section lines `@mind/set` prints, one
+//! * [`StockCard::read_back`] — the five section lines `@mind/live` prints, one
 //!   place, with the fire-discipline section inert and its reason on a hull
 //!   with no weapons station (doc 17 §11: shown inert, never refused);
-//! * [`CardChange`] — what `@mind/set` offers the arena: a change, never a
+//! * [`CardChange`] — what `@mind/live` offers the arena: a change, never a
 //!   card.
 //!
 //! **What T1 reads, and the eleven it does not** (17b's Q-M3). Through
@@ -385,12 +385,13 @@ pub enum CardError {
     },
 }
 
-/// **A change to a mind's card, as `@mind/set` offers it** (17b cut M1b.5;
+/// **A change to a mind's card, as `@mind/live` offers it** (17b cut M1b.5;
 /// doc 17 §22's M1b, D-UM-43): a change, not a card — the arena applies it
 /// to ITS OWN row at the next pulse's start (`Arena::stage_card`, then
 /// `Arena::apply_mind_cards`), so a world-side copy can never be written over
 /// a card the arena has since changed, refused or resumed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CardChange {
     /// One of [`PRESETS`], case-folded.
     Preset(SmolStr),
@@ -701,7 +702,7 @@ const SLIDERS: [Slider; 21] = [
 ];
 
 impl Slider {
-    /// The name `@mind/set` takes.
+    /// The name `@mind/live` takes.
     const fn name(self) -> &'static str {
         match self {
             Slider::Stance => "stance",
@@ -738,7 +739,7 @@ impl Slider {
     }
 }
 
-/// **Whether `name` is a slider's name** (case-folded) — what `@mind/set`
+/// **Whether `name` is a slider's name** (case-folded) — what `@mind/live`
 /// asks to tell `foo 1` (no such slider or preset) from a slider's own
 /// refusal.
 #[must_use]
@@ -1005,7 +1006,7 @@ impl StockCard {
     /// most `break_off_pct`, equal lawful — else [`CardError::Pair`] naming
     /// `named` (the slider being set, or the preset that made the card) and
     /// both values in their own units. [`StockCard::set`] reads it for the
-    /// two sliders; the preset paths (`@mind/set`'s and the arena's
+    /// two sliders; the preset paths (`@mind/live`'s and the arena's
     /// `Arena::apply_mind_cards`) read it for a [`preset`], because
     /// *Rearguard* writes `break_off_pct` 70 over a doctrine whose
     /// `fight_home_pct` the config may set as high as its own `break_off_pct`
@@ -1153,7 +1154,7 @@ impl StockCard {
     }
 
     /// **The card, read back** (17b cut M1b.5; doc 17 §11) — the five section
-    /// lines `@mind/set` prints under its head, one place: posture, fire
+    /// lines `@mind/live` prints under its head, one place: posture, fire
     /// discipline, targeting, survival and search, each slider in its own
     /// units, the eleven T1 does not read until 17b cut M2 marked `[M2]` (this
     /// module's head). The band is printed in per cent alone: the metres it

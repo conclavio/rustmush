@@ -1,0 +1,7 @@
+Gunnery [fire] / Minimum odds (odds)  [━━━━━━······] 50.0 % (500 ticks)
+Gunnery [fire] / Automatic (auto)  [x]
+Gunnery [fire] / Facing (face)  359 deg
+Gunnery [fire] / Target kind (kind)  fast
+Gunnery [fire] / Facets (facets)  front,top
+Gunnery [fire] / Contact classes (classes)  hostile,unknown
+Presets: Balanced

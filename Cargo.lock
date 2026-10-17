@@ -2648,6 +2648,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-roll"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "mush-ruleset"
 version = "0.1.0"
 dependencies = [
@@ -4612,6 +4625,7 @@ dependencies = [
  "mush-privileges",
  "mush-propagation",
  "mush-proto",
+ "mush-roll",
  "mush-ruleset",
  "mush-scenes",
  "mush-script",

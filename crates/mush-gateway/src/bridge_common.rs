@@ -1090,6 +1090,53 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// only, wrapping the query handler's event; permissions are evaluated as
     /// the connection's own actor, so a widget can never read another actor's
     /// data (invariant T3).
+    /// A closed mutation request; actor is selected exclusively by this connection.
+    pub async fn invoke(&self, conn: u64, id: u64, request: mush_proto::InvokeRequest) {
+        let conn_id = ConnId(conn);
+        let Some(actor) = self.actor_of(conn_id) else {
+            return;
+        };
+        if request.validate().is_err()
+            || self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled
+        {
+            send_event_to_conn(
+                &self.sessions,
+                conn_id,
+                OutputEvent::InvokeResult {
+                    id,
+                    result: mush_proto::InvokeResult::error(
+                        "invalid",
+                        "Invalid, oversized or rate-limited request.",
+                    ),
+                },
+            );
+            return;
+        }
+        if self
+            .link
+            .to_server_input(ToServer::Inbound(WireInbound::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            }))
+            .await
+            != InputSend::Sent
+        {
+            send_event_to_conn(
+                &self.sessions,
+                conn_id,
+                OutputEvent::InvokeResult {
+                    id,
+                    result: mush_proto::InvokeResult::error(
+                        "unavailable",
+                        "The server is busy or restarting; request was not sent.",
+                    ),
+                },
+            );
+        }
+    }
+
     pub async fn query(&self, conn: u64, id: u64, name: SmolStr, args: serde_json::Value) {
         let conn_id = ConnId(conn);
         // Interface plan I12: the narrative backlog is answered LOCALLY from the

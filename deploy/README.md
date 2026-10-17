@@ -542,6 +542,22 @@ After the first deploy of AF.3, start a match, reload once and read
 `@arena/status`'s `resumed:` line — the one check the in-memory rigs cannot
 make.
 
+**Unit minds M6 compatibility.** M6 uses snapshot format 13, live-match record
+format 2, cockpit frame 6 and gateway IPC 7. Rebuild `web/dist` and deploy the
+matching server and gateway together (`GATEWAY_RESTART=1`). Finish existing
+sorties before upgrading: older live records and snapshots are refused, with no
+in-place migration. Mind API 4 changes Standard's source identity even though its
+executable body remains stock behavior version 2. The immutable source and Roll
+records must remain available with retained seals and replay tapes. Recovery
+refuses oversized or damaged source/tape documents; unresolved tape references
+block revision pruning until a repaired boot can reconstruct their roots.
+
+The default input tape budget is 64 MiB per match and the retained tape cache is
+128 MiB. These are encoded-data bounds; the historical measurements above are
+not predictions for authored minds or large matches. See
+[the M6 plan](../docs/design/17d-unit-minds-through-m6-plan.md) for the configured
+limits and final acceptance evidence.
+
 ### The first staff login
 
 Stop the instance, then run the current `mush-server` (or all-in-one `mushd`)

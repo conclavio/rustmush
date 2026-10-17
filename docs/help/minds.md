@@ -20,9 +20,16 @@ You choose in the lobby, during selection, for the slot you hold:
                               sealed beside it to switch to.
   SIM MIND none               back to nothing chosen.
 
-Every character holds one mind, Standard Doctrine, with its six presets. A
-profile is one of those presets: the first you name is the one it flies, and
-the rest are the ones you may switch to once the match runs. Every answer is
+Every character can use Standard Doctrine with its six presets and keep a
+private library of authored minds. An authored choice uses a saved revision;
+working edits do not change it. For example:
+
+  SIM MIND Patrol@2 PROFILE Line, Cautious
+
+Without a revision, selection resolves your latest saved revision at checkout.
+Use a revision number to pin it. A profile is a saved card and its sealed
+rules: the first you name is the one it flies, and the rest are the ones you
+may switch to once the match runs. Every answer is
 said to you alone. `SIM START` closes selection, and the start of the match
 seals what you chose onto your tank, where nothing you do changes it but a
 switch between the profiles you sealed (staff can edit it; see Afterwards). If
@@ -34,9 +41,10 @@ A choice has to fit the tank, and it is refused with its reason when it does
 not:
 
 * **The class.** How many profiles a seal keeps is the class the mind thinks
-  at on your tank's core: two at Class I, which is where this server seals
-  every mind. A tank with no core above Class 0 flies the ROM, the core's own
-  fallback, and keeps one.
+  at on your tank's core: two at Class I, three at Class II, and four at
+  Class III. Standard Doctrine is Class I. Authored minds declare their class;
+  the core and the centre's pool must support it. A tank with no core above
+  Class 0 flies the ROM, the core's own fallback, and keeps one.
 * **The floor.** On a tank that carries a gun, no profile may fire at odds
   under the server's Compact floor (10% as shipped). Every preset clears 10%,
   and a hull with no gun is never asked.
@@ -99,11 +107,20 @@ seconds it answers `MIND refused. One switch in ten seconds; the next in 6 s.`
 The switch changes nothing while you fly: it is what the mind flies when you
 leave. `MIND RULES [slot]` reads your live pilot rules, separate from the sealed
 profile. `MIND RULE <slot> <rule or OFF>` replaces or removes one; `FIRE` and
-`LOCK` arm native rules (`help cockpit`). `WEAPONSTATUS` also reads their terms, and
-`MIND TRACE` says this core keeps no trace of its thinks yet. On the TUI and
-the web the same reading, shorter, is the last four rows of the weapons pane,
-and in the browser clicking a profile it is not flying puts
-`MIND PROFILE <name>` in the box, sent only when you press Enter.
+`LOCK` arm native rules (`help cockpit`). `WEAPONSTATUS` also reads their terms.
+`MIND CARD` reads the complete sealed card. `MIND TRACE` reads recent thinks:
+operations and fees, rule decisions, emitted intents, their outcomes, faults,
+and the author's bounded trace lines. A dormant mind may have no thinks yet.
+
+The TUI and browser show the short mind reading in the weapons pane and open
+the complete card, profiles, rules, and trace in a separate readout. Profile
+controls prepare `MIND PROFILE <name>` in the command box; press Enter to send.
+In the TUI's Flight page, Left/Right chooses a profile and Enter prepares it;
+a second Enter sends it. Press t for a trace read or f to follow, enter the
+hull number and optional count, and press Enter. The Trace page shows the
+permitted result; t reads once and stops following. Card fields are read-only
+in flight. A station the hull does not have is
+shown as inert, rather than promising that its settings can act.
 
 If the mind faults three times running, or its core is destroyed, the hull
 drops to the ROM for the rest of the match: you are told, and `MIND` says so.
@@ -149,12 +166,21 @@ what it flew ends where your tank was destroyed. Staff can change a hull's
 card while a match runs; if they change yours, the block names the card as it
 then read, `Sniper, edited (min_odds 70)`, as it names a switch.
 
-## Not yet
+## Authoring and proving
 
-Every mind on this server is Standard Doctrine, at Class I where the core
-allows it. A mind of your own, rules sealed on a profile, a trace of what the
-core thought, and the eleven inert terms above all come later; nothing on this
-server takes those authored features yet. Native pilot rules are available now;
-`MIND TRACE` still says that this core keeps no trace.
+Open Minds with F10 in the browser or TUI. Read `help mindcraft` to edit and save
+a mind, and `help proving` to run paired trials and inspect a replay.
 
-See also: `help simulator`, `help cockpit`.
+## Trace after release
+
+After releasing your live tank, read its permitted trace by unit number:
+
+  @mind/trace #42 3
+  @mind/trace #42 3 FOLLOW
+  @mind/trace #42 3 ONCE
+
+Counts are 1–64 thinks. Following sends changed trace pictures at most once
+per simulation second and stops when you lose permission. Traces expose your
+mind's public decisions, never another mind's source or private memory.
+
+See also: `help mindcraft`, `help proving`, `help simulator`, `help cockpit`.

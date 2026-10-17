@@ -24,6 +24,8 @@
   import NotificationTray from "./NotificationTray.svelte";
   import RequestModal from "./RequestModal.svelte";
   import LlmPanel from "./LlmPanel.svelte";
+  import MindWorkshop from "./MindWorkshop.svelte";
+  import MindReadout from "./MindReadout.svelte";
   import MailPanel from "./MailPanel.svelte";
   import RollsPanel from "./RollsPanel.svelte";
   import SceneScreen from "./SceneScreen.svelte";
@@ -108,6 +110,12 @@
 
   function onKeydown(ev: KeyboardEvent): void {
     if (ev.defaultPrevented || ev.isComposing || app.requests.current || app.screens.helpOpen || app.disconnectReason !== null) return;
+    if (ev.key === "F10" && !ev.altKey && !ev.ctrlKey && !ev.metaKey && !app.mindReadoutOpen) {
+      ev.preventDefault();
+      if (app.minds.open) app.minds.open = false; else void app.minds.show();
+      return;
+    }
+    if (app.minds.open || app.mindReadoutOpen) return;
     // Only explicit shell modifiers may leave a focused control. Bare
     // Enter, Space, Tab, arrows and typing belong to that control.
     if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && isInteractiveControl(ev.target)) return;
@@ -132,6 +140,8 @@
 </script>
 
 <svelte:window onkeydown={onKeydown} />
+<MindWorkshop minds={app.minds} prefill={line => app.focusComposer(line)} />
+<MindReadout {app} />
 
 <div class="game">
   <header>
@@ -165,6 +175,7 @@
       <span class="dot" aria-hidden="true"></span>
       {statusLabel}
     </span>
+    {#if app.session.hasPanel("arena.mind")}<button type="button" class="railbtn text" title="Mind workshop (F10)" onclick={() => void app.minds.show()}>minds</button>{/if}
     <NotificationTray {app} />
     <button
       type="button"

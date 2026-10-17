@@ -485,8 +485,13 @@ async fn pump(
                 }
                 Some(Ok(Message::Close(_))) => return,
                 Some(Ok(Message::Text(text))) => {
+                    if mush_proto::validate_invoke_json(text.as_bytes()).is_err() {
+                        close(socket, close_code::PROTOCOL, "oversized or deeply nested frame").await;
+                        return;
+                    }
                     match serde_json::from_str::<ClientCommand>(text.as_str()) {
                         Ok(ClientCommand::Line(line)) => hooks.line(conn_id, line).await,
+                        Ok(ClientCommand::Invoke { id, request }) => hooks.invoke(conn_id, id, request).await,
                         Ok(ClientCommand::Req { id, q }) => hooks.request(conn_id, id, q).await,
                         Ok(ClientCommand::Ack { commit }) => {
                             hooks.acknowledge(conn_id, commit).await;

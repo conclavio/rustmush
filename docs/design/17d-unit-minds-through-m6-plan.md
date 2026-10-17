@@ -683,3 +683,53 @@ feature is not itself the readiness criterion. Check:
 Record that checkpoint in 17b with the checked commit and test evidence. The owner's
 continuation authorization permits M7 after this checkpoint passes. No calendar delay or arbitrary quiet period is a
 substitute for this interface and correctness review.
+
+**Q-UM-17 ruled 2026-10-17:** when a derivative's parent licence is lost, existing
+sealed sorties may finish, but new sorties and filings are blocked until the
+parent licence is restored. This supersedes the earlier "still runs and seals"
+default in doc 17; the M7 design must enforce the same rule at checkout and filing.
+
+## 8. Implementation record: M6 acceptance in progress
+
+M5rules and M5r are accepted on the published branch. The M5r implementation is
+`5993ba20`; merge `f37ff334` incorporates IC11 (`26e3b1fa`) while preserving the
+published branch history. A fresh fetch on 2026-10-17 still resolves main to IC11.
+
+The M6 candidate implements character-owned drafts and immutable revisions,
+generic schema cards and sealed rules, metered stock helpers, private trace
+following, deterministic input tapes, paired proving, reference replay and private
+bench experiments, web/TUI author controls, and signed public-key SSH push/check/pull.
+Review closed library lifecycle/pruning and TUI trace/profile reachability.
+This is an implementation record, not M6 acceptance or the M7 economy checkpoint.
+
+Compatibility changes are snapshot 13, frame 6, API 4, live-match record 2 and IPC 7.
+Stock behavior remains version 2. Standard's source changes only its API header;
+its executable body is unchanged from M5r. Its new SHA-256 is
+`9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b`.
+Seals, canonical card/profile identities and state-hash inputs change deliberately;
+their pins will be recorded only after reviewed deterministic gates. Old live
+records and snapshots refuse by format rather than attempting a migration.
+
+The tape default is 64 MiB, configurable from 4 to 128 MiB. A real 24-unit Class III
+run through 900 simulated seconds completed and re-simulated all 86,376 thinks and
+3,600 substeps, including the final hash and ledger digest, using 49,509,957 bytes
+in 791 chunks. This is actual runner evidence, separate from the wide-number byte
+envelope fixture. It remains to be repeated on the final committed tree on both
+supported hosts. Timing is reported and does not determine acceptance.
+
+The first full Field Pilot checks pass all seven tests; measured maximum is 1,682
+operations plus 36 host fees within Class II's 3,000-operation ceiling. The new
+workflow owner passes 20 unit tests, two documentation tests and strict Clippy,
+including all six panic-shaped restriction lints. Linux production compilation
+passes. The full author story, paired thirty-game comparison with a fresh external
+SSH bot interval, final workspace/frontend gates, compatibility pins and independent
+review remain required before M6 acceptance and the separate M7 checkpoint.
+
+Final review added bounded boot decoding for immutable sources and replay
+documents, explicit marker reservations, and a Roll collection guard when a
+damaged retained tape leaves revision roots unknown. The guard also invalidates
+already-prepared collection and preserves known roots. The latest live-tree
+workspace/all-target Clippy gate passes after invalidating the temporary
+assembly's shared Cargo artifacts. Full tests, documentation and the committed
+revision's long acceptance runs are still in progress; earlier assembly runs
+are development evidence rather than final acceptance.

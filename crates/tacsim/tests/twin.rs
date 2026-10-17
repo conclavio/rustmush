@@ -545,16 +545,14 @@ fn play_on(
             };
             // 17b cut M2.2: wrapped once, as the arena's think arm wraps it.
             let view = Arc::new(view);
-            let (memory, card) = clone
+            let memory = clone
                 .minds
                 .get(&thought.unit)
-                .map(|state| (state.memory.clone(), state.card.clone()))
-                .unwrap_or_else(|| {
-                    (
-                        Vec::new(),
-                        tacsim::arena::card::line(&clone.arena_cfg.reflex),
-                    )
-                });
+                .expect("recorded mind row")
+                .memory
+                .clone();
+            let runtime = clone.profiles.get(&thought.unit).expect("admitted runtime");
+            let card = runtime.card.clone();
             let job = ThinkJob {
                 unit: thought.unit,
                 think_seq: thought.think_seq,
@@ -568,6 +566,8 @@ fn play_on(
                 memory: &memory,
                 map: &clone.definition,
                 card: &card,
+                program: &runtime.program,
+                profile_token: runtime.token(),
             };
             let started = Instant::now();
             let _ = timer.think(&job);

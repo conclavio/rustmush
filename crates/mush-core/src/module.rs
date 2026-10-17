@@ -1182,6 +1182,20 @@ pub trait InterfaceAbilityProvider: Send + Sync {
     ) -> Result<InterfaceReply, InterfaceError>;
 }
 
+/// A closed typed service invoked with its registering module's normal Ctx.
+/// The engine verifies a live connection before entry; asynchronous owners must
+/// retain and recheck the connection lease before applying or returning work.
+pub trait InvokeHandler: Send + Sync {
+    /// Execute one request. Persistence uses the ordinary Ctx outbox path.
+    fn invoke(
+        &self,
+        ctx: &mut Ctx<'_>,
+        conn: crate::output::ConnId,
+        id: u64,
+        request: &mush_proto::InvokeRequest,
+    ) -> mush_proto::InvokeResult;
+}
+
 /// A read-only query handler for web `Req` hydration (mail lists, channel
 /// backlogs, sheet reads), invoked by the engine's
 /// [`Inbound::Query`](crate::engine::Inbound::Query) handling (M4).
@@ -1196,6 +1210,7 @@ pub trait InterfaceAbilityProvider: Send + Sync {
 /// Handlers are **read-only by contract**: they get `&World` and must not
 /// queue persistence — a query must never mutate (that is why `@mail`
 /// *reading* stays a `Line` command: it marks messages read).
+/// Read-only panel hydration; this handler cannot queue persistence.
 pub trait QueryHandler: Send + Sync {
     /// Answer one query for `actor`.
     fn query(
@@ -1835,6 +1850,7 @@ pub struct ModuleTables {
     ticks: Vec<TickReg>,
     panel_feeds: Vec<(SmolStr, SmolStr)>,
     query_handlers: HashMap<SmolStr, (SmolStr, Arc<dyn QueryHandler>)>,
+    invoke_handlers: HashMap<SmolStr, (SmolStr, Arc<dyn InvokeHandler>)>,
     /// Canonical module owner -> its read-only recovery diagnostics.
     recovery_reporters:
         std::collections::BTreeMap<crate::mechanics::OwnerId, Arc<dyn RecoveryReporter>>,
@@ -2258,6 +2274,15 @@ impl Registry {
     #[must_use]
     pub fn panel_feeds(&self) -> &[(SmolStr, SmolStr)] {
         &self.mods.panel_feeds
+    }
+
+    /// Resolve the module owner of a closed request family.
+    #[must_use]
+    pub fn invoke_handler(&self, name: &str) -> Option<(&SmolStr, Arc<dyn InvokeHandler>)> {
+        self.mods
+            .invoke_handlers
+            .get(name)
+            .map(|(owner, h)| (owner, Arc::clone(h)))
     }
 
     /// The query handler registered under `name`, with its owning module.
@@ -3565,8 +3590,37 @@ impl<'a> Registrar<'a> {
         Ok(PanelFeedHandle { feed })
     }
 
-    /// Register a named read-only query handler (web `Req` hydration —
-    /// registry only until M4).
+    /// Register a handler for the finite typed request family.
+    pub fn invoke_handler(
+        &mut self,
+        name: &str,
+        handler: Arc<dyn InvokeHandler>,
+    ) -> Result<(), ModError> {
+        if name != "mind" {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "unknown invoke family",
+                name: name.into(),
+                owner: "core".into(),
+            });
+        }
+        let key = SmolStr::new(name);
+        if let Some((owner, _)) = self.reg.invoke_handler(name) {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "invoke handler",
+                name: key,
+                owner: owner.clone(),
+            });
+        }
+        self.reg
+            .tables_mut()
+            .invoke_handlers
+            .insert(key, (self.module.clone(), handler));
+        Ok(())
+    }
+
+    /// Register a named read-only query handler (web `Req` hydration).
     pub fn query_handler(
         &mut self,
         name: &str,

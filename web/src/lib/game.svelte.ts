@@ -68,6 +68,11 @@ import {
   type ThemeChoice,
 } from "./theme";
 import { genAcceptLine, genDiscardLine, genRetryLine } from "./worldgen";
+import { MindsStore } from "./stores/minds.svelte";
+import { MindRpcClient } from "./mind-rpc";
+import { decodeMindTrace, type MindTrace } from "./mind-trace";
+import { decodeProvingView } from "./mind-bulk";
+import { decodeBenchView } from "./mind-bench";
 import { WsClient, type EnvelopeOf, type WebSocketLike } from "./ws";
 import { parseResolutionOutcome } from "./view";
 
@@ -100,6 +105,8 @@ type PendingReq =
   | { kind: "contacts" }
   | { kind: "cockpit" }
   | { kind: "arena.map" }
+  | { kind: "arena.mind" }
+  | { kind: "mind.bulk" }
   | { kind: "arena.replay" }
   | { kind: "arena.observer" }
   | { kind: "scenes" };
@@ -110,6 +117,7 @@ const HELP_LINES = [
   "  /history        — load the page of scene history above what you see",
   "  /theme [dark|light|system] — switch theme (no argument: toggle)",
   "  /help           — this card",
+  "  /minds          — open the mind workshop (also F10)",
   "Keys while nothing has focus: 1-9 and 0 screens, Enter opens the box,",
   '  " : ; \\ open it with that trigger, / the palette, ? the key help,',
   "  a letter runs the screen's own command (the chips at the bottom),",
@@ -232,6 +240,11 @@ export class GameApp {
   genericViews = new GenericViewStore();
   requests = new RequestStore();
   notifications = new NotificationStore();
+  minds = new MindsStore((request, progress) => this.#mindRpc!.request(request, progress),
+    (run, page) => this.#req({ kind: "mind.bulk" }, { t: "mind_bulk", d: { run, page } }));
+  mindTrace = $state<MindTrace | null>(null);
+  mindReadoutOpen = $state(false);
+  #mindRpc: MindRpcClient | null = null;
 
   screen = $state<Screen>("login");
   /** The latest `scenes` keyframe (the scene screen's glance rides in
@@ -280,6 +293,7 @@ export class GameApp {
       caps: () => this.#caps(),
       onStatus: (s) => {
         this.session.status = s;
+        if (s !== "connected") this.#clearMinds();
         if (s === "closed") {
           // A clean close never reconnects on its own: nothing will answer
           // the heal's asks, so it stops with the socket (16b cut B.2).
@@ -351,6 +365,7 @@ export class GameApp {
         this.screen = "login";
       },
     });
+    this.#mindRpc = new MindRpcClient(this.client);
     this.#wire();
 
     // Boot: restore theme + credentials.
@@ -447,6 +462,7 @@ export class GameApp {
   }
 
   #resetGameState(): void {
+    this.#clearMinds();
     this.#clearUnitResync();
     // A re-attach is a FRESH VIEW, not a `/clear`: `clear()` draws the
     // backlog floor (LB-1) and `beginSegment` lifts it again for the new
@@ -493,6 +509,7 @@ export class GameApp {
   #wire(): void {
     const c = this.client;
     c.on("hello", (env) => {
+      this.#clearMinds();
       this.session.applyHello(env.d);
       this.requests.clear();
       // A hello is a new run of the world as far as this client can tell —
@@ -597,6 +614,7 @@ export class GameApp {
       this.#routeReply(env.d.event, pending ?? null, env.ts);
     });
     c.on("session_info", (env) => {
+      if (this.session.character?.id !== env.d.character.id) this.#clearMinds();
       this.session.character = env.d.character;
       this.session.account = env.d.account;
       this.session.connections = env.d.connections;
@@ -841,6 +859,8 @@ export class GameApp {
           // picture, or `p`, is the recovery.
           return;
         }
+        if (pending?.kind === "arena.mind") { this.mindTrace = null; return; }
+        if (pending?.kind === "mind.bulk") { this.minds.proving = null; this.minds.error = plainText(event.d); return; }
         if (pending?.kind === "cockpit" || pending?.kind === "arena.map") {
           // A refusal to either arena feed (16b cut Q.5): the cockpit screen
           // renders `Not in a cockpit.` / `Waiting for the arena map...` on
@@ -863,7 +883,13 @@ export class GameApp {
     pending: PendingReq | null,
     seq = 0,
   ): void {
-    if (d.feed === "narrative") {
+    if (d.feed === "arena.mind") {
+      this.mindTrace = decodeMindTrace(d.data);
+    } else if (d.feed === "mind.bulk") {
+      this.minds.proving = decodeProvingView(d.data);
+    } else if (d.feed === "mind.bench") {
+      this.minds.bench = decodeBenchView(d.data);
+    } else if (d.feed === "narrative") {
       // A narrative backlog page (interface plan I12): older room lines this
       // viewer already saw, from the server's per-viewer resume ring. Render
       // and prepend, deduped by seq against the live scrollback.
@@ -1011,7 +1037,12 @@ export class GameApp {
    * line, and there is nothing left to wait for.
    */
   #followTheCockpit(data: unknown): void {
+    const previous = this.cockpit.frame;
     const open = this.cockpit.applyFrame(data);
+    if (previous?.match !== this.cockpit.frame?.match || previous?.callsign !== this.cockpit.frame?.callsign) {
+      this.mindTrace = null;
+      this.mindReadoutOpen = false;
+    }
     // 16b cut I.2: a seat closes a replay (and dismisses its match) before the
     // cockpit opens — a pilot flying a match is shown the match.
     if (this.cockpit.seated && this.replay.open) {
@@ -1611,12 +1642,26 @@ export class GameApp {
     this.cockpit.pushReply(text);
   }
 
+  #clearMinds(): void {
+    this.#mindRpc?.clear();
+    this.minds.clear();
+    this.mindTrace = null;
+    this.mindReadoutOpen = false;
+  }
+
+  refreshMindTrace(): void {
+    this.#req({ kind: "arena.mind" }, { t: "panel_subscribe", d: { feed: "arena.mind" } });
+  }
+
   #localCommand(cmd: string): void {
     const [name, ...rest] = cmd.slice(1).split(/\s+/);
     const arg = rest.join(" ");
     switch ((name ?? "").toLowerCase()) {
       case "clear":
         this.scrollback.clear();
+        return;
+      case "minds":
+        void this.minds.show();
         return;
       case "history":
         // The same verb the TUI and line mode have had since I12 (LB-20).

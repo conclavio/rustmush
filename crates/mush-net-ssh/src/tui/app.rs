@@ -39,6 +39,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
+use super::mind_workshop::MindWorkshop;
 use super::panels::{
     ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
     PanelStore, REPLAY_FEED, UNIT_FEED,
@@ -214,6 +215,8 @@ pub struct InputResult {
     /// `hooks.respond`, `(id, choice)` (interface plan I10, D-I-21). Advisory,
     /// never idle stamps.
     pub responds: Vec<(u64, String, RespondChoice)>,
+    /// Typed mind requests; mutations are sent only after explicit Enter.
+    pub invokes: Vec<(u64, mush_proto::InvokeRequest)>,
 }
 
 /// A server-initiated request being shown as an overlay (interface plan I10).
@@ -270,7 +273,8 @@ struct PaneUi {
 
 /// A client-local command (`/clear`, `/help`, `/history`, `/notui`) the
 /// palette lists.
-const LOCAL_COMMANDS: [(&str, &str); 4] = [
+const LOCAL_COMMANDS: [(&str, &str); 5] = [
+    ("/minds", "owned mind cards, rules and source reader (F10)"),
     ("/clear", "empty the scrollback"),
     ("/help", "the key help"),
     ("/history", "load older scene history"),
@@ -331,6 +335,7 @@ pub struct TuiApp {
     channel_aliases: Vec<String>,
     palette: Option<Palette>,
     help: bool,
+    workshop: MindWorkshop,
     /// Server-initiated asks still open, OLDEST FIRST (I10). A queue, not a
     /// slot: the engine's `respond` answers the lowest open id and the web
     /// store answers `pending[0]`, so an overlay showing the newest would
@@ -402,6 +407,246 @@ fn system_clock() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
+#[cfg(test)]
+mod m6_workshop_tests {
+    use super::*;
+    use mush_proto::{
+        ClientKind, ColorDepth, InvokeRequest, InvokeResult, MindEdit, MindEditBase, MindRequest,
+        MindResponse,
+    };
+    use serde_json::json;
+
+    fn new_app() -> TuiApp {
+        TuiApp::new(ClientCaps {
+            kind: ClientKind::Ssh,
+            color: ColorDepth::Ansi16,
+            width: 120,
+            height: 34,
+            utf8: true,
+            structured: false,
+        })
+    }
+    fn key(app: &mut TuiApp, key: Key) -> InputResult {
+        let mut r = InputResult::default();
+        app.handle_key(key, &mut r);
+        r
+    }
+    fn open(app: &mut TuiApp) {
+        let r = key(app, Key::F(10));
+        assert!(r.submit.is_empty());
+        let (id, _) = r.invokes.into_iter().next().unwrap();
+        app.apply_event(&OutputEvent::InvokeResult {
+            id,
+            result: InvokeResult::Mind(MindResponse::Library {
+                names: vec!["Owned example".into()],
+            }),
+        });
+        let r = key(app, Key::Enter);
+        let (id, _) = r.invokes.into_iter().next().unwrap();
+        let draft=serde_json::from_value(json!({
+            "source":"fn think(v,c,m) { /* PRIVATE_SOURCE */ m }",
+            "schema":{"sections":[{"id":"helm","label":"Helm","station":"helm","fields":[{"id":"enabled","label":"Enabled","widget":{"kind":"toggle","default":true,"help":""}}]}]},
+            "presets":{},"profiles":{"Default":{"enabled":true}},"rules":{},"declared_class":"I","mind_abi":"tacsim.mind.v1"
+        })).unwrap();
+        app.apply_event(&OutputEvent::InvokeResult {
+            id,
+            result: InvokeResult::Mind(MindResponse::Read {
+                name: "Owned example".into(),
+                revision: None,
+                base: MindEditBase {
+                    edit: 1,
+                    revision: None,
+                },
+                draft: Box::new(draft),
+                rules_text: Default::default(),
+                rules_source: Default::default(),
+                diagnostics: vec![],
+            }),
+        });
+    }
+
+    #[test]
+    fn m6_f10_edit_and_response_pump_use_typed_requests_only() {
+        let mut app = new_app();
+        open(&mut app);
+        assert!(
+            app.scrollback.is_empty(),
+            "private read must never render to narrative"
+        );
+        assert!(key(&mut app, Key::Enter).invokes.is_empty());
+        assert!(key(&mut app, Key::Down).invokes.is_empty());
+        let r = key(&mut app, Key::Enter);
+        assert!(r.submit.is_empty());
+        let (id, InvokeRequest::Mind(request)) = r.invokes.into_iter().next().unwrap();
+        assert!(
+            matches!(request,MindRequest::Edit {base:MindEditBase {edit:1,..},edit:MindEdit::Set {value,..},..} if value=="false")
+        );
+        let queries = app.apply_event(&OutputEvent::InvokeResult {
+            id,
+            result: InvokeResult::Mind(MindResponse::Edited {
+                name: "Owned example".into(),
+                base: MindEditBase {
+                    edit: 2,
+                    revision: None,
+                },
+            }),
+        });
+        assert!(queries.is_empty());
+        assert!(matches!(
+            app.take_invokes().as_slice(),
+            [(
+                _,
+                InvokeRequest::Mind(MindRequest::Read { revision: None, .. })
+            )]
+        ));
+    }
+
+    #[test]
+    fn m6_local_minds_never_reaches_game_line_and_source_reader_keeps_enter_local() {
+        let mut app = new_app();
+        let r = app.feed_input(b"/minds\r");
+        assert!(r.submit.is_empty());
+        assert_eq!(r.invokes.len(), 1);
+        let mut app = new_app();
+        open(&mut app);
+        key(&mut app, Key::Tab);
+        key(&mut app, Key::Tab); // Card -> Rules -> Source
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(frame.contains("PRIVATE_SOURCE"));
+        let r = app.feed_input(b"zzzz\r");
+        assert!(r.submit.is_empty());
+        assert!(r.invokes.is_empty());
+        key(&mut app, Key::F(10));
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(!frame.contains("PRIVATE_SOURCE"));
+    }
+
+    #[test]
+    fn m6_flight_profile_prefill_needs_a_second_enter_and_current_seat() {
+        let mut app = new_app();
+        open(&mut app);
+        app.apply_event(&OutputEvent::Panel {
+            feed: COCKPIT_FEED.into(), kind: PanelFrameKind::Keyframe,
+            data: json!({"unit":42,"mind":{"name":"Pilot","class":"II","profiles":["Line","Careful"],"active":0}}),
+        });
+        for _ in 0..3 {
+            key(&mut app, Key::Tab);
+        } // Card -> Rules -> Source -> Flight
+        key(&mut app, Key::Right);
+        let prepared = key(&mut app, Key::Enter);
+        assert!(prepared.submit.is_empty() && prepared.invokes.is_empty());
+        assert_eq!(app.line.text(), "MIND PROFILE Careful");
+        assert_eq!(
+            key(&mut app, Key::Enter).submit,
+            vec!["MIND PROFILE Careful"]
+        );
+        key(&mut app, Key::F(10));
+        app.apply_event(&OutputEvent::Panel {
+            feed: COCKPIT_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: json!({"seated":false}),
+        });
+        let refused = key(&mut app, Key::Enter);
+        assert!(refused.submit.is_empty() && refused.invokes.is_empty());
+        assert!(
+            app.workshop.open,
+            "a cleared seat cannot prefill an old profile"
+        );
+    }
+
+    #[test]
+    fn m6_flight_waits_for_new_character_frame_even_if_old_panel_is_cached() {
+        let mut app = new_app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: COCKPIT_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: json!({"unit":42,"mind":{"name":"OLD_ACTOR_MIND","profiles":["OldProfile"]}}),
+        });
+        assert!(app.workshop.flight_current);
+        let mut manifest = app.manifest.clone();
+        manifest.character = Some("Another character".into());
+        app.set_manifest(manifest);
+        assert!(!app.workshop.flight_current);
+        key(&mut app, Key::F(10));
+        for _ in 0..4 {
+            key(&mut app, Key::Tab);
+        }
+        assert!(!super::super::frame_text(&mut app, 120, 34).contains("OLD_ACTOR_MIND"));
+        let result = key(&mut app, Key::Enter);
+        assert!(result.submit.is_empty() && result.invokes.is_empty());
+        assert_ne!(app.line.text(), "MIND PROFILE OldProfile");
+    }
+
+    #[test]
+    fn m6_trace_feed_is_private_to_workshop_and_not_retained_in_panels() {
+        let mut app = new_app();
+        open(&mut app);
+        app.apply_event(&OutputEvent::Panel {
+            feed: COCKPIT_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: json!({"unit":42,"mind":{"profiles":["Line"]}}),
+        });
+        assert!(key(&mut app, Key::Char('f')).invokes.is_empty());
+        let request = key(&mut app, Key::Enter);
+        assert!(request.submit.is_empty());
+        let (id, InvokeRequest::Mind(request)) = request.invokes.into_iter().next().unwrap();
+        assert!(matches!(
+            request,
+            MindRequest::Trace {
+                unit: 42,
+                follow: true,
+                ..
+            }
+        ));
+        let trace = json!({"available":true,"unit":42,"traces":[{"think_seq":9,"t_ms":1000,
+            "diagnostics":{"ops":12,"fees":3},"outcome":{"state":"applied"},"author":["PUBLIC_TRACE"]}]});
+        app.apply_event(&OutputEvent::InvokeResult {
+            id,
+            result: InvokeResult::Mind(MindResponse::Trace {
+                data: trace.clone(),
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: "arena.mind".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: trace,
+        });
+        assert!(app.panels.get("arena.mind").is_none());
+        assert!(app.scrollback.is_empty());
+        assert!(super::super::frame_text(&mut app, 120, 34).contains("PUBLIC_TRACE"));
+        app.apply_event(&OutputEvent::Panel {
+            feed: "arena.mind".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: json!({"available":false}),
+        });
+        assert!(!super::super::frame_text(&mut app, 120, 34).contains("PUBLIC_TRACE"));
+    }
+
+    #[test]
+    fn m6_workshop_returns_same_cockpit_frame_and_contact_budget() {
+        let mut app = new_app();
+        let cockpit: Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .unwrap();
+        app.apply_event(&OutputEvent::Panel {
+            feed: COCKPIT_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: cockpit,
+        });
+        for width in [120, 160] {
+            let before = super::super::frame_text(&mut app, width, 34);
+            key(&mut app, Key::F(10));
+            key(&mut app, Key::F(10));
+            let after = super::super::frame_text(&mut app, width, 34);
+            assert_eq!(
+                after, before,
+                "opening the overlay must not consume contact rows or alter screen selection"
+            );
+        }
+    }
+}
+
 impl TuiApp {
     /// A fresh app sized for `caps`, with the built-in screens.
     ///
@@ -456,6 +701,7 @@ impl TuiApp {
             channel_aliases: Vec::new(),
             palette: None,
             help: false,
+            workshop: MindWorkshop::default(),
             requests: VecDeque::new(),
             answering: None,
             thinking: Vec::new(),
@@ -487,6 +733,9 @@ impl TuiApp {
     /// scene screen's one-letter exits work before anything else arrives. A
     /// room the app already holds is newer than the manifest's and is kept.
     pub fn set_manifest(&mut self, manifest: TuiManifest) {
+        if self.manifest.character != manifest.character {
+            self.workshop.reset();
+        }
         if self.room.is_none()
             && let Some(view) = manifest.room.as_ref()
         {
@@ -1443,6 +1692,10 @@ impl TuiApp {
             other => other,
         };
         match event {
+            OutputEvent::InvokeResult { id, result } => {
+                self.workshop.accept(*id, result);
+                return queries; // private source never enters scrollback
+            }
             OutputEvent::Who(entries) => {
                 self.who.clone_from(entries);
                 return queries;
@@ -1465,6 +1718,7 @@ impl TuiApp {
                 // one string. The line becomes the draft instead, and comes
                 // back the next time input mode opens empty.
                 if spec.mode != InputMode::Normal {
+                    self.workshop.open = false;
                     if !self.line.is_empty() {
                         self.draft = Some(self.line.text());
                     }
@@ -1479,6 +1733,14 @@ impl TuiApp {
                 self.exit_keys = exit_keys(&view.exits);
             }
             OutputEvent::Panel { feed, kind, data } => {
+                if feed.as_str() == "arena.mind" {
+                    if *kind == PanelFrameKind::Keyframe {
+                        self.workshop.trace_feed(data);
+                    }
+                    // Private authorized diagnostics stay connection-local and
+                    // never enter the generic panel store or narrative ring.
+                    return queries;
+                }
                 // Interface plan I12: a `narrative` Delta is not a panel
                 // frame at all — it is a page of this viewer's own resume
                 // ring, answering a `narrative.backlog` query. It must never
@@ -1505,6 +1767,11 @@ impl TuiApp {
                     let asks = self.follow_the_observer(feed, data, now);
                     queries.extend(asks);
                     return queries;
+                }
+                if feed.as_str() == COCKPIT_FEED && *kind == PanelFrameKind::Keyframe {
+                    self.workshop.flight_current =
+                        data.get("unit").and_then(Value::as_u64).is_some()
+                            && data.get("seated").and_then(Value::as_bool) != Some(false);
                 }
                 match self.panels.apply_panel(feed, *kind, data, now) {
                     PanelOutcome::NeedsResync(f) => {
@@ -1667,6 +1934,7 @@ impl TuiApp {
                 return queries;
             }
             OutputEvent::Hello { panels, .. } => {
+                self.workshop.reset();
                 self.manifest.panels.clone_from(panels);
                 // 16b cut Q.4: a world restarted without its arena takes the
                 // cockpit tab with it, and the player must not be left standing
@@ -1752,9 +2020,12 @@ impl TuiApp {
                 }
             }
             OutputEvent::SessionInfo { character, .. } => {
+                // SessionInfo is an attachment boundary even when labels match.
+                self.workshop.reset();
                 self.manifest.character = Some(sanitize(&character.name));
             }
             OutputEvent::Resumed { .. } => {
+                self.workshop.reset();
                 // The mode resets on a resume (D-I-17). A pending request is
                 // gone server-side after a full re-attach (I10 is RAM-only),
                 // and its id may be reminted, so drop the overlay too.
@@ -2030,6 +2301,23 @@ impl TuiApp {
     /// Act on one decoded key (tests drive this directly).
     pub fn handle_key(&mut self, key: Key, r: &mut InputResult) {
         r.redraw = true;
+        if key != Key::Ctrl(']')
+            && self.workshop.open
+            && self.requests.is_empty()
+            && self.answering.is_none()
+            && self.input_mode == InputMode::Normal
+        {
+            let cockpit = self
+                .panels
+                .get(COCKPIT_FEED)
+                .filter(|_| self.workshop.flight_current);
+            let prefill = self.workshop.key_with_flight(key, cockpit);
+            if let Some(command) = prefill {
+                self.enter_input(Some(command));
+            }
+            r.invokes.extend(self.workshop.take_invokes());
+            return;
+        }
         match key {
             Key::Ctrl(']') => {
                 r.detach = true;
@@ -2079,6 +2367,10 @@ impl TuiApp {
             self.request_key(key, r);
             return;
         }
+        if key == Key::F(10) && self.answering.is_none() && self.input_mode == InputMode::Normal {
+            self.open_workshop(r);
+            return;
+        }
         if self.help {
             if matches!(
                 key,
@@ -2092,6 +2384,31 @@ impl TuiApp {
             Mode::Nav => self.nav_key(key, r),
             Mode::Input => self.input_key(key, r),
         }
+    }
+
+    /// Invocations queued by a response (for example authoritative read after edit).
+    pub fn take_invokes(&mut self) -> Vec<(u64, mush_proto::InvokeRequest)> {
+        self.workshop.take_invokes()
+    }
+
+    fn open_workshop(&mut self, r: &mut InputResult) {
+        self.palette = None;
+        self.help = false;
+        self.workshop.show();
+        r.invokes.extend(self.workshop.take_invokes());
+    }
+
+    fn draw_workshop(&self, frame: &mut Frame<'_>, area: Rect) {
+        if self.answering.is_some() || self.input_mode != InputMode::Normal {
+            return;
+        }
+        let flight = self
+            .panels
+            .get(COCKPIT_FEED)
+            .filter(|_| self.workshop.flight_current)
+            .filter(|v| v.get("seated").and_then(Value::as_bool) != Some(false))
+            .and_then(|v| v.get("mind"));
+        self.workshop.draw(frame, area, self.caps.utf8, flight);
     }
 
     fn nav_key(&mut self, key: Key, r: &mut InputResult) {
@@ -2510,6 +2827,7 @@ impl TuiApp {
             match local.trim() {
                 "clear" => self.local_action(LocalAction::ClearScrollback, r),
                 "help" => self.help = true,
+                "minds" => self.open_workshop(r),
                 "history" => {
                     self.request_backlog(r);
                     // `submit_line` pinned the view to the tail above, and
@@ -3221,6 +3539,7 @@ impl TuiApp {
         if self.help {
             self.draw_help(frame, area);
         }
+        self.draw_workshop(frame, area);
         // An ask the engine has already expired is never painted: it would
         // stand in front of every live one behind it (I10).
         self.evict_expired_requests(now);
@@ -3261,6 +3580,7 @@ impl TuiApp {
         if self.help {
             self.draw_help(frame, area);
         }
+        self.draw_workshop(frame, area);
         self.evict_expired_requests(now);
         if self.answering.is_none() && !self.requests.is_empty() {
             self.draw_request(frame, area);
@@ -3625,7 +3945,7 @@ impl TuiApp {
         let para =
             Paragraph::new(Line::from(Span::styled(prefix.clone(), text_style))).block(block);
         frame.render_widget(para, area);
-        if input && inner.width > 0 && inner.height > 0 {
+        if input && !self.workshop.open && inner.width > 0 && inner.height > 0 {
             let shown_cursor = match self.input_mode {
                 InputMode::NoEcho => 0,
                 _ => self.line.cursor(),
@@ -3745,6 +4065,7 @@ impl TuiApp {
                 "Enter type   \" : ; \\ speak   / palette   ^K palette   ^P mode   ^] leave",
             ),
             Line::from("In the box: Alt+key = the nav key   Esc keeps the draft   Enter stays"),
+            Line::from("F10 or /minds: owned mind cards, ordered rules and read-only source"),
             Line::from(""),
         ];
         for b in self.keys() {

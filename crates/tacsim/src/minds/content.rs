@@ -65,7 +65,7 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// Q.7's clock instead of going Patrol on its first think), mirrored in
 /// `NativeStockMind::decide` and pinned by Gate A; M2.6's was `8b3ec78c…d74996`.
 pub const STANDARD_SHA256: &str =
-    "92987a0c26bc442ef87640f026dfea16dc0934739b5788607f4d3322b24e07ab";
+    "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the
@@ -349,7 +349,8 @@ mod tests {
     ) -> Vec<IntentKind> {
         let view = Arc::new(view.clone());
         let bytes = encode_memory(&Memory::from(memory.clone()));
-        let card = card.clone();
+        let card = crate::minds::fixture::runtime_card(card.clone());
+        let program = crate::minds::fixture::empty_program();
         let job = ThinkJob {
             unit: ObjId(view.unit),
             think_seq: 1,
@@ -362,6 +363,12 @@ mod tests {
             memory: &bytes,
             map: &arena.definition,
             card: &card,
+            program: &program,
+            profile_token: crate::arena::profile_runtime::ProfileToken {
+                unit: ObjId(view.unit),
+                generation: 0,
+                key: card.key(),
+            },
         };
         let native = NativeStockMind::with(&arena.arena_cfg.reflex).think(&job);
         let rhai = rhai_on(arena).think(&job);
@@ -1417,6 +1424,8 @@ mod tests {
         );
         let bytes = encode_memory(&memory);
         let view = Arc::new(view.clone());
+        let card = crate::minds::fixture::runtime_card(card.clone());
+        let program = crate::minds::fixture::empty_program();
         let job = ThinkJob {
             unit: ObjId(view.unit),
             think_seq: 1,
@@ -1428,7 +1437,13 @@ mod tests {
             view: &view,
             memory: &bytes,
             map: &arena.definition,
-            card,
+            card: &card,
+            program: &program,
+            profile_token: crate::arena::profile_runtime::ProfileToken {
+                unit: ObjId(view.unit),
+                generation: 0,
+                key: card.key(),
+            },
         };
         let rhai = arming_alone().think(&job);
         assert_eq!(
@@ -1866,6 +1881,8 @@ mod tests {
         mg.id = SmolStr::new("machine_gun");
         mg.mount_section = SmolStr::new("hull");
         red.weapons.push(mg);
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("seal the complete initial weapon rack");
         let mut arena = field(vec![red, line_tank(BLUE, Team::Blue, pose(20_500, 40_500))]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));

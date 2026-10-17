@@ -10,8 +10,9 @@ use std::fs;
 use std::path::Path;
 
 use mush_proto::{
-    AtlasMapDelta, AtlasMapFrame, ClientCommand, Color, Envelope, OutputEvent, RoomView, Span,
-    VitalValue, VitalsFrame, WhoEntry,
+    AtlasMapDelta, AtlasMapFrame, ClientCommand, Color, Envelope, InvokeRequest, InvokeResult,
+    MindDiagnostic, MindRequest, MindResponse, OutputEvent, RoomView, Span, VitalValue,
+    VitalsFrame, WhoEntry,
 };
 use ts_rs::{Config, TS};
 
@@ -159,6 +160,7 @@ fn generated_shapes_match_wire_format() {
         r#""t": "composing""#,
         r#""t": "request""#,
         r#""t": "notice""#,
+        r#""t": "invoke_result""#,
     ] {
         assert!(
             output_event.contains(needle),
@@ -173,12 +175,48 @@ fn generated_shapes_match_wire_format() {
         r#""t": "pong""#,
         r#""t": "composing""#,
         r#""t": "respond""#,
+        r#""t": "invoke""#,
     ] {
         assert!(
             client_command.contains(needle),
             "ClientCommand missing {needle}:\n{client_command}"
         );
     }
+
+    // Owner requests and results remain distinct closed discriminated unions.
+    let invoke_request = InvokeRequest::export_to_string(&cfg).expect("InvokeRequest");
+    assert!(invoke_request.contains(r#""service": "mind", "request": MindRequest"#));
+    let invoke_result = InvokeResult::export_to_string(&cfg).expect("InvokeResult");
+    assert!(invoke_result.contains(r#""service": "mind", "result": MindResponse"#));
+    let mind_request = MindRequest::export_to_string(&cfg).expect("MindRequest");
+    for needle in [
+        r#""op": "replace""#,
+        r#""op": "check""#,
+        r#""op": "save""#,
+        r#""op": "trace""#,
+    ] {
+        assert!(
+            mind_request.contains(needle),
+            "MindRequest missing {needle}: {mind_request}"
+        );
+    }
+    let mind_response = MindResponse::export_to_string(&cfg).expect("MindResponse");
+    for needle in [
+        r#""status": "read""#,
+        r#""status": "queued""#,
+        "rules_text",
+        "rules_source",
+        "diagnostics",
+    ] {
+        assert!(
+            mind_response.contains(needle),
+            "MindResponse missing {needle}: {mind_response}"
+        );
+    }
+    let diagnostic = MindDiagnostic::export_to_string(&cfg).expect("MindDiagnostic");
+    assert!(
+        diagnostic.contains("line: number | null") && diagnostic.contains("column: number | null")
+    );
 
     // RoomView.ambient: an open map typed loosely on purpose (I1, D-I-4).
     let room_view = RoomView::export_to_string(&cfg).expect("RoomView decl");

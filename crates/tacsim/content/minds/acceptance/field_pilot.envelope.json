@@ -1,0 +1,179 @@
+{
+  "schema": {
+    "sections": [
+      {
+        "id": "pilot",
+        "label": "Field Pilot",
+        "station": "helm",
+        "fields": [
+          {
+            "id": "stance",
+            "label": "Engagement",
+            "widget": {
+              "kind": "choice",
+              "choices": [
+                "hold",
+                "orbit",
+                "close",
+                "hunt",
+                "withdraw"
+              ],
+              "default": "hold",
+              "help": "Bow-on range hold, orbit, close, hunt, or hurt-only withdraw."
+            }
+          },
+          {
+            "id": "band_m",
+            "label": "Hold band",
+            "widget": {
+              "kind": "slider",
+              "min": 150,
+              "max": 450,
+              "step": 50,
+              "default": 450,
+              "scale": 1,
+              "unit": "m",
+              "help": "Public rounded range; 50 m slack and 25 m start hysteresis."
+            }
+          },
+          {
+            "id": "sense",
+            "label": "Orbit sense",
+            "widget": {
+              "kind": "choice",
+              "choices": [
+                "auto",
+                "cw",
+                "ccw"
+              ],
+              "default": "auto",
+              "help": "Auto circles toward a public tracked course's rear; without a course it flips every twenty seconds."
+            }
+          },
+          {
+            "id": "opening",
+            "label": "Wait near entry",
+            "widget": {
+              "kind": "toggle",
+              "default": true,
+              "help": "Reserve retreat room and seek nearby cover before waiting for the first hostile."
+            }
+          },
+          {
+            "id": "follow",
+            "label": "Follow broken targets",
+            "widget": {
+              "kind": "toggle",
+              "default": true,
+              "help": "Follow earned damage and an opening track; stop short of the opposing entry."
+            }
+          },
+          {
+            "id": "reapproach",
+            "label": "Reapproach",
+            "widget": {
+              "kind": "toggle",
+              "default": false,
+              "help": "Optional two bounded back-off attempts. Shipped bot default is off."
+            }
+          },
+          {
+            "id": "forward_cms",
+            "label": "Ahead speed",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 1500,
+              "step": 100,
+              "default": 1500,
+              "scale": 100,
+              "unit": "m/s",
+              "help": "Requested speed, still bounded by the actual surviving drive."
+            }
+          },
+          {
+            "id": "reverse_cms",
+            "label": "Astern speed",
+            "widget": {
+              "kind": "slider",
+              "min": 50,
+              "max": 750,
+              "step": 50,
+              "default": 750,
+              "scale": 100,
+              "unit": "m/s",
+              "help": "Requested reverse speed, still bounded by the actual surviving drive."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "presets": {
+    "Hold": {
+      "stance": "hold",
+      "band_m": 450,
+      "sense": "auto",
+      "opening": true,
+      "follow": true,
+      "reapproach": false,
+      "forward_cms": 1500,
+      "reverse_cms": 750
+    },
+    "Orbit": {
+      "stance": "orbit",
+      "band_m": 450,
+      "sense": "auto",
+      "opening": true,
+      "follow": true,
+      "reapproach": false,
+      "forward_cms": 1500,
+      "reverse_cms": 750
+    },
+    "Close": {
+      "stance": "close",
+      "band_m": 450,
+      "sense": "auto",
+      "opening": true,
+      "follow": true,
+      "reapproach": false,
+      "forward_cms": 1500,
+      "reverse_cms": 750
+    }
+  },
+  "profiles": {
+    "Hold": {
+      "stance": "hold",
+      "band_m": 450,
+      "sense": "auto",
+      "opening": true,
+      "follow": true,
+      "reapproach": false,
+      "forward_cms": 1500,
+      "reverse_cms": 750
+    },
+    "Orbit": {
+      "stance": "orbit",
+      "band_m": 450,
+      "sense": "auto",
+      "opening": true,
+      "follow": true,
+      "reapproach": false,
+      "forward_cms": 1500,
+      "reverse_cms": 750
+    },
+    "Close": {
+      "stance": "close",
+      "band_m": 450,
+      "sense": "auto",
+      "opening": true,
+      "follow": true,
+      "reapproach": false,
+      "forward_cms": 1500,
+      "reverse_cms": 750
+    }
+  },
+  "rules": {},
+  "declared_class": "II",
+  "mind_abi": "rhai=1.26.0;api=4;stock=2"
+}

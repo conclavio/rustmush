@@ -68,7 +68,8 @@ use crate::arena::ledger::EventKind;
 use crate::arena::state::{Arena, Channel, Classification, ContactId, Controller, DueKind, Power};
 
 /// What a seat is (doc 16 §3.1's `Control`; doc 07 §1.2 for linkdead).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlState {
     /// Seated and connected.
     Live,
@@ -95,7 +96,8 @@ impl ControlState {
 
 /// **The authority message** (doc 16 §3.1): this `(unit, channel)` is now at
 /// `epoch`, and the seat is in `state`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Control {
     /// The unit the channel is over.
     pub unit: ObjId,
@@ -927,13 +929,16 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         // `Arena::adopt_mind` lays one. Latent: every mind hull is handed its
         // row at the check-out or its release, and no row is ever removed.
         if !arena.minds.contains_key(&i.unit) {
-            let card = arena.unit(i.unit).map_or_else(
-                || crate::arena::card::line(&arena.arena_cfg.reflex),
-                |state| arena.active_card(state),
+            let seal_digest = arena
+                .unit(i.unit)
+                .map_or([0; 32], |state| state.seal.digest);
+            arena.minds.insert(
+                i.unit,
+                crate::arena::mind::MindState {
+                    seal_digest,
+                    ..crate::arena::mind::MindState::fresh(&arena.arena_cfg.reflex)
+                },
             );
-            arena
-                .minds
-                .insert(i.unit, crate::arena::mind::MindState::fresh_with(card));
         }
         let Some(row) = arena.minds.get_mut(&i.unit) else {
             return IntentOutcome::Refused(Refusal::Unknown);
@@ -1137,7 +1142,7 @@ pub const PROFILE_SWITCH_MS: i64 = 10_000;
 /// cannot reach a hull a mind is flying, and staff `@arena/intent` builds no
 /// `Profile`. A standing row here is therefore always the dormant row of a
 /// seated hull (`Arena::suspend_mind`), never a flying mind's, whose card is
-/// `@mind/set`'s lane alone. 17b cut M5.4's `MIND PROFILE` forwards from the
+/// `@mind/live`'s lane alone. 17b cut M5.4's `MIND PROFILE` forwards from the
 /// helm seat only, which keeps it so. (The `af1` shape walk applies a seat's
 /// switch to a mind-flown hull directly, a state no production path reaches,
 /// to put the switched profile under the pin.)
@@ -1146,43 +1151,60 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
         return IntentOutcome::Refused(Refusal::Channel);
     }
     let now_ms = arena.now_ms;
-    let Some(state) = arena.unit(unit) else {
+    let Some(own) = arena.unit(unit) else {
         return IntentOutcome::Refused(Refusal::Unknown);
     };
-    let (seal, active) = (state.seal, state.card_profile);
-    let inside_switch_window = active
-        .switched_ms
-        .is_some_and(|at| now_ms < at.saturating_add(PROFILE_SWITCH_MS));
-    let (Some(from), Some(to)) = (seal.profiles.name(active.index), seal.profiles.name(index))
-    else {
+    let Some(runtime) = arena.profiles.get(&unit) else {
         return IntentOutcome::Refused(Refusal::Profile);
     };
-    if seal.digest == [0; 32] || index == active.index || inside_switch_window {
-        return IntentOutcome::Refused(Refusal::Profile);
-    }
-    let reflex = &arena.arena_cfg.reflex;
-    let (Some(card), Some(was)) = (
-        crate::arena::card::preset(to, reflex),
-        crate::arena::card::preset(from, reflex),
-    ) else {
+    let ids = own
+        .seal
+        .weapons
+        .iter()
+        .map(|weapon| weapon.id.clone())
+        .collect::<Vec<_>>();
+    let profile = arena.classes.row(own.seal.class);
+    let prepared = match runtime.prepare_switch(
+        &arena.cards,
+        unit,
+        index,
+        now_ms,
+        &profile,
+        &ids,
+        &own.seal.channels,
+        arena.odds_floor_permille,
+    ) {
+        Ok(prepared) => prepared,
+        Err(_) => return IntentOutcome::Refused(Refusal::Profile),
+    };
+    let Some(key) = runtime.profiles.key(index) else {
         return IntentOutcome::Refused(Refusal::Profile);
     };
-    let name = SmolStr::new(card.name_of(reflex));
-    let before = arena.minds.get(&unit).map_or(was, |row| row.card.clone());
-    let changed = card
-        .changed_from(&before)
+    let Ok(next) = arena.cards.resolve(key) else {
+        return IntentOutcome::Refused(Refusal::Profile);
+    };
+    let name = SmolStr::new(runtime.profiles.name(index).unwrap_or("profile"));
+    let changed = next
+        .values()
         .into_iter()
-        .map(SmolStr::new_static)
+        .flat_map(|values| values.keys())
+        .filter(|key| next.get(key) != runtime.card.get(key))
+        .cloned()
         .collect();
     let hash = arena.event_hash();
-    if let Some(state) = arena.unit_mut(unit) {
-        state.card_profile = crate::arena::card::ActiveProfile {
+    let Some(runtime) = arena.profiles.get_mut(&unit) else {
+        return IntentOutcome::Refused(Refusal::Profile);
+    };
+    if runtime.commit(&mut arena.conditions, prepared).is_err() {
+        return IntentOutcome::Refused(Refusal::Profile);
+    }
+    arena.constrain_profile_hardware(unit);
+    arena.cancel_profile_think(unit);
+    if let Some(own) = arena.unit_mut(unit) {
+        own.card_profile = crate::arena::card::ActiveProfile {
             index,
             switched_ms: Some(now_ms),
         };
-    }
-    if let Some(row) = arena.minds.get_mut(&unit) {
-        row.card = card.clone();
     }
     let _ = arena.ledger.append(
         now_ms,
@@ -1190,7 +1212,8 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
             unit,
             name,
             changed,
-            card,
+            card: key,
+            stock: next.stock().cloned(),
         },
         Vec::new(),
         hash,

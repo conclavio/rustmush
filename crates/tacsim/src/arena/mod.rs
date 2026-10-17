@@ -295,6 +295,8 @@
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
 
+pub(crate) mod acceptance;
+pub mod author_trace;
 pub mod card;
 pub mod catchup;
 pub mod clock;
@@ -308,22 +310,34 @@ pub mod hash;
 pub mod heat;
 pub mod horizon;
 pub mod index;
+pub mod input_tape;
 pub mod intents;
 pub mod ledger;
+pub(crate) mod memory_bound;
 pub mod mind;
+pub mod mind_seal;
 pub mod motion;
 pub mod motor;
 pub mod observer;
 pub mod path;
 pub mod perception;
+pub mod profile_rules;
+pub mod profile_runtime;
+pub mod profile_seal;
+pub(crate) mod replay_ground;
 pub mod resolution;
 pub mod rng;
 pub mod rules;
+pub(crate) mod runtime;
+pub mod runtime_card;
+pub mod schema;
 pub mod slope;
 pub mod snapshot;
+pub mod snapshot_capacity;
 pub mod state;
 pub mod step;
 pub mod stock_mind;
+pub(crate) mod trace_runtime;
 pub mod view;
 pub mod weapons;
 
@@ -376,8 +390,8 @@ pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, Ledge
 pub use mind::{
     DropCause, Landed, MIND_INTENTS_MAX, MIND_NOTICES, MIND_STRIKES_TO_DROP, MemError, MemValue,
     Memory, MindRunner, MindSeal, MindState, MindView, NoMind, PendingThink, STOCK_CONTACT_ROWS,
-    STOCK_MEMORY_LIMITS, STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SealedProfile,
-    SortieId, ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory, default_mind_runner,
+    STOCK_MEMORY_LIMITS, STOCK_RATED_CLASS, STOCK_THINK_MS, SealEngine, SealRef, SortieId,
+    ThinkFault, ThinkJob, ThinkResult, ViewContact, decode_memory, default_mind_runner,
     encode_memory, memory_check,
 };
 pub use motion::{Held, MotionOutcome, cos_fx, integrate, sin_fx};

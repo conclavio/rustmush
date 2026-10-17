@@ -1123,3 +1123,37 @@ fn broadcast_all_refuses_a_narrative() {
     mgr.attach(web, CharKey(1), "a".into());
     mgr.broadcast_all(Arc::new(narr("leak")));
 }
+
+#[test]
+fn revoked_private_mind_feed_does_not_replay_on_reconnect() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (first, mut first_rx) = web_conn(71, 8);
+    let (session, _) = mgr.attach(first, CharKey(42), "author".into());
+    mgr.send_event_to_char(CharKey(42), sys("public baseline"));
+    let baseline = first_rx.try_recv().unwrap().seq;
+    for available in [true, false] {
+        let event = OutputEvent::Panel {
+            feed: "arena.mind".into(),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: serde_json::json!({"available":available,"traces":if available { vec!["owned trace"] } else { vec![] }}),
+        };
+        assert_eq!(
+            mgr.send_to_conn(ConnId(71), Arc::new(event)),
+            SendToConn::Delivered
+        );
+    }
+    // Revocation happened before this connection disappeared. A reconnect with
+    // a cursor predating both private frames must recover neither of them.
+    mgr.detach(ConnId(71), DetachReason::Lost);
+    let (next, mut next_rx) = web_conn(72, 8);
+    let (same, _) = mgr.attach(next, CharKey(42), "author".into());
+    assert_eq!(same, session);
+    assert!(mgr.replay_since(session, baseline).unwrap().is_empty());
+    assert!(next_rx.try_recv().is_err());
+    let received = std::iter::from_fn(|| first_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        received.len(),
+        2,
+        "the original connection received trace and revocation"
+    );
+}

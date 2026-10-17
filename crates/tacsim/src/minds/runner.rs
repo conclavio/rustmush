@@ -135,8 +135,7 @@ pub struct ThinkStat {
 /// recording — the figures.
 #[derive(Debug)]
 pub struct RhaiRunner {
-    /// The sandbox the script runs on — the process's one
-    /// ([`standard_sandbox`]) unless a test built another.
+    /// The process sandbox (bounded LRU) or an explicitly disposable check sandbox.
     sandbox: Arc<Sandbox>,
     /// The script, compiled once on that sandbox under [`MIND_ABI`].
     compiled: Arc<Compiled>,
@@ -153,8 +152,8 @@ pub struct RhaiRunner {
 }
 
 impl RhaiRunner {
-    /// **A runner for `source`** on the process's one sandbox
-    /// ([`standard_sandbox`]) and the match's doctrine (`cfg.reflex`): the
+    /// A runner for `source` on the process's bounded shared sandbox and the
+    /// match's doctrine (`cfg.reflex`): the
     /// script compiled under [`MIND_ABI`] keyed by `digest` (the seal's
     /// SHA-256 of the source), the stand-in `NativeStockMind` on the same
     /// doctrine, `decide_ms` the doctrine's. A script that does not parse, or
@@ -234,7 +233,7 @@ impl RhaiRunner {
             compiled: &self.compiled,
             args: vec![
                 Dynamic::from(View(Arc::clone(job.view))),
-                Dynamic::from(Card(Arc::new(job.card.clone()))),
+                Dynamic::from(Card(job.card.clone())),
             ],
             memory: job.memory,
             limits: &limits,
@@ -273,6 +272,18 @@ fn label(ctx: &ThinkContext, fault: Option<&Fault>) -> Option<&'static str> {
 impl MindRunner for RhaiRunner {
     /// **One think** (the file head).
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+        if !job.card.is_hydrated()
+            || job.profile_token.unit != job.unit
+            || job.profile_token.key != job.card.key()
+        {
+            return ThinkResult {
+                fault: Some(ThinkFault {
+                    cause: "profile".into(),
+                }),
+                memory: job.memory.to_vec(),
+                ..ThinkResult::default()
+            };
+        }
         if job.dropped {
             let mut result = self.stand_in.think(job);
             result.trace = vec![DROPPED_LINE.to_owned()];
@@ -298,12 +309,20 @@ impl MindRunner for RhaiRunner {
         }
         match (word, result) {
             (None, Ok(outcome)) => ThinkResult {
+                diagnostics: Some(crate::arena::author_trace::ThinkDiagnostics::measured(
+                    ops, fee,
+                )),
+                rule_sample: ctx.rule_sample,
                 intents: ctx.intents,
                 memory: outcome.memory,
                 fault: None,
                 trace,
             },
             (word, _) => ThinkResult {
+                diagnostics: Some(crate::arena::author_trace::ThinkDiagnostics::measured(
+                    ops, fee,
+                )),
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: job.memory.to_vec(),
                 // A fault with no word cannot come out of `label` (an `Err`
@@ -373,7 +392,8 @@ mod tests {
             .recording();
         let seen = Arc::new(view());
         let defined = Arc::new(map());
-        let held = card();
+        let held = fixture::runtime_card(card());
+        let program = fixture::empty_program();
         let job = ThinkJob {
             unit: fixture::UNIT,
             think_seq: 3,
@@ -386,6 +406,12 @@ mod tests {
             memory: b"{\"k\":0}",
             map: &defined,
             card: &held,
+            program: &program,
+            profile_token: crate::arena::profile_runtime::ProfileToken {
+                unit: fixture::UNIT,
+                generation: 0,
+                key: held.key(),
+            },
         };
         let result = runner.think(&job);
         assert_eq!(
@@ -452,7 +478,8 @@ mod tests {
         }
         let seen = Arc::new(view());
         let defined = Arc::new(map());
-        let held = card();
+        let held = fixture::runtime_card(card());
+        let program = fixture::empty_program();
         let job = ThinkJob {
             unit: fixture::UNIT,
             think_seq: 3,
@@ -465,6 +492,12 @@ mod tests {
             memory: b"{\"k\":0}",
             map: &defined,
             card: &held,
+            program: &program,
+            profile_token: crate::arena::profile_runtime::ProfileToken {
+                unit: fixture::UNIT,
+                generation: 0,
+                key: held.key(),
+            },
         };
         let source = "fn think(v, c) { helm(5); this.k = 1; flag(); }";
         let cases: [(Flag, &str); 3] = [
@@ -487,7 +520,7 @@ mod tests {
                 compiled: &compiled,
                 args: vec![
                     Dynamic::from(View(Arc::clone(&seen))),
-                    Dynamic::from(Card(Arc::new(held.clone()))),
+                    Dynamic::from(Card(held.clone())),
                 ],
                 memory: job.memory,
                 limits: &STOCK_MEMORY_LIMITS,
@@ -551,7 +584,8 @@ mod tests {
         ));
         let seen = Arc::new(view());
         let defined = Arc::new(map());
-        let held = card();
+        let held = fixture::runtime_card(card());
+        let program = fixture::empty_program();
         let job = ThinkJob {
             unit: fixture::UNIT,
             think_seq: 3,
@@ -564,6 +598,12 @@ mod tests {
             memory: b"{\"k\":0}",
             map: &defined,
             card: &held,
+            program: &program,
+            profile_token: crate::arena::profile_runtime::ProfileToken {
+                unit: fixture::UNIT,
+                generation: 0,
+                key: held.key(),
+            },
         };
         let source = "fn think(v, c) { helm(5); this.k = 1; refuse_then_boom(); }";
         let runner = RhaiRunner::on(

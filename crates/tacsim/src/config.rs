@@ -273,6 +273,14 @@ pub struct ArenaConfig {
     /// commit after format 1 was born. `0` or `1_000..=60_000` by
     /// [`ArenaConfig::validate`].
     pub snapshot_ms: u32,
+    /// Encoded recovery-document ceiling including the escaped state string.
+    /// 16–480 MiB; admission reserves future growth. Not a normal allocation
+    /// or the harness report-only size threshold. Below Redis RESP 512 MiB.
+    pub snapshot_max_bytes: u64,
+    /// Per-match private input recording cap (4–128 MiB).
+    pub tape_max_bytes: u64,
+    /// Aggregate resident retained recordings (4–1024 MiB).
+    pub tape_retained_max_bytes: u64,
     /// The match ledger's cadence and its two hard bounds.
     pub ledger: LedgerConfig,
     /// **The reflex controller's cadence, paths and doctrine** (16b cut N.1).
@@ -292,6 +300,9 @@ impl Default for ArenaConfig {
             max_units_by_class: BTreeMap::from([(UnitClass::Drone, 1)]),
             // 16b cut AF.1: 16c N16's default, every five seconds of arena time.
             snapshot_ms: 5_000,
+            snapshot_max_bytes: 480 * 1024 * 1024,
+            tape_max_bytes: 64 * 1024 * 1024,
+            tape_retained_max_bytes: 128 * 1024 * 1024,
             ledger: LedgerConfig::default(),
             reflex: ReflexConfig::default(),
         }
@@ -690,32 +701,59 @@ impl Default for CommandConfig {
 /// block never reaches a running or a resumed match. From 17b cut M3 the
 /// classes and the pool; 17b cut M4.1 `workers`; 17b cut M4.2 `cpu_lens_ms`
 /// (the minds lane's reference figure, read by no match); **17b cut M4.3**
-/// `fill_class`, the class the AI fill and every seated hull are sealed and
-/// admitted at (the lab knob `fill_controller` of 17b cut M1b.5 is retired:
-/// the fill IS a mind, and a config still naming it refuses the boot).
+/// `fill_class`, the default ceiling for AI fill; 17d M6.2 adds `max_class`,
+/// the independent operator ceiling for pilot and fill minds. The lab knob
+/// `fill_controller` of 17b cut M1b.5 is retired:
+/// the fill is a mind, and a config still naming it refuses the boot.
 ///
 /// **This block is never carried** (the snapshot carries `match_cfg`, not
-/// this): `fill_class` is read once, at `crate::match_::start`, and moves no
+/// this): class caps are read at `crate::match_::start`, and move no
 /// snapshot format (the seal carries the class it produced).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindsConfig {
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_proving_workers")]
+    pub proving_workers: usize,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_proving_queued")]
+    pub proving_queued: usize,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_proving_daily_unit_minutes")]
+    pub proving_daily_unit_minutes: u64,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_proving_completed_per_character")]
+    pub proving_completed_per_character: usize,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_proving_bytes_per_character")]
+    pub proving_bytes_per_character: u64,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_bench_idle_ms")]
+    pub bench_idle_ms: u64,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_bench_sessions")]
+    pub bench_sessions: usize,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_bench_state_bytes")]
+    pub bench_state_bytes: u64,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_bench_eval_ops")]
+    pub bench_eval_ops: u64,
+    /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
+    #[serde(default = "default_bench_eval_result_bytes")]
+    pub bench_eval_result_bytes: usize,
     /// **The Compact floor**, per mille: a condition under it is refused
     /// `unlawful` at the landing of its arming, and a card under it is refused
     /// at the seal (17b cut M3.3). `10` to `950` in steps of `10`
     /// ([`MindsConfig::validate`]; widened from `100` by 17b cut M3.3).
     pub odds_floor_permille: u32,
-    /// **The class the AI fill is sealed and admitted at** (17b cut M4.3; doc
-    /// 17 §9, D-UM-37): the `class_cap` of every production seal — the fill's
-    /// and a seated hull's alike, so a release hands a hull to a mind of the
-    /// same class and adds no unadmitted load — and the load `match_::pool`
-    /// counts for every hull that chose no mind, seated or not (17b cut
-    /// M5.1), at `SIM UNIT`, `SIM MIND` and at check-out. The seal's class is
-    /// `min(rated, the core, this)`, and every production mind is rated `I`
-    /// (Standard Doctrine's `STOCK_RATED_CLASS`), so above
-    /// `I` it caps nothing until the cut that rates a mind above Class I; `0`
-    /// fields every hull on the drive ROM. By its word, `0`, `I`, `II` or `III`. Read once, at
-    /// `crate::match_::start` and `@arena/start`; never carried.
+    /// Operator ceiling on every selected mind. The effective class also
+    /// respects its declared rating and fitted core. Stock III.
+    #[serde(default = "default_max_class")]
+    pub max_class: crate::arena::core::CoreClass,
+    /// Default ceiling for AI fill when its side has chosen no class.
+    /// A selected pilot mind is governed by `max_class`, independently of this.
+    /// A side's fill cap and this default never raise the declared rating.
     #[serde(default = "default_fill_class")]
     pub fill_class: crate::arena::core::CoreClass,
     /// **The Compact class table** (17b cut M3.1; doc 17 §9, D-UM-35): the
@@ -777,6 +815,11 @@ const fn default_cpu_lens_ms() -> u32 {
 /// spawn a thousand threads.
 pub const MAX_MIND_WORKERS: u32 = 32;
 
+/// `max_class`' default: all classes are available to authors.
+const fn default_max_class() -> crate::arena::core::CoreClass {
+    crate::arena::core::CoreClass::III
+}
+
 /// `fill_class`' default: Class I, Standard Doctrine's rating.
 const fn default_fill_class() -> crate::arena::core::CoreClass {
     crate::arena::core::CoreClass::I
@@ -797,14 +840,56 @@ const fn default_pool_floor_ops_s() -> u64 {
     120_000
 }
 
+fn default_proving_workers() -> usize {
+    crate::minds::bulk::model::BulkConfig::default().proving_workers
+}
+fn default_proving_queued() -> usize {
+    crate::minds::bulk::model::BulkConfig::default().queued
+}
+fn default_proving_daily_unit_minutes() -> u64 {
+    crate::minds::bulk::model::BulkConfig::default().daily_unit_minutes
+}
+fn default_proving_completed_per_character() -> usize {
+    crate::minds::bulk::model::BulkConfig::default().completed_per_character
+}
+fn default_proving_bytes_per_character() -> u64 {
+    crate::minds::bulk::model::BulkConfig::default().bytes_per_character
+}
+fn default_bench_idle_ms() -> u64 {
+    crate::minds::bulk::model::BulkConfig::default().bench_idle_ms
+}
+fn default_bench_sessions() -> usize {
+    crate::minds::bulk::model::BulkConfig::default().bench_sessions
+}
+fn default_bench_state_bytes() -> u64 {
+    crate::minds::bulk::model::BulkConfig::default().bench_state_bytes
+}
+fn default_bench_eval_ops() -> u64 {
+    crate::minds::bulk::model::BulkConfig::default().eval_ops
+}
+fn default_bench_eval_result_bytes() -> usize {
+    crate::minds::bulk::model::BulkConfig::default().eval_result_bytes
+}
+
 impl Default for MindsConfig {
     fn default() -> Self {
         MindsConfig {
+            proving_workers: default_proving_workers(),
+            proving_queued: default_proving_queued(),
+            proving_daily_unit_minutes: default_proving_daily_unit_minutes(),
+            proving_completed_per_character: default_proving_completed_per_character(),
+            proving_bytes_per_character: default_proving_bytes_per_character(),
+            bench_idle_ms: default_bench_idle_ms(),
+            bench_sessions: default_bench_sessions(),
+            bench_state_bytes: default_bench_state_bytes(),
+            bench_eval_ops: default_bench_eval_ops(),
+            bench_eval_result_bytes: default_bench_eval_result_bytes(),
             // Doc 17 §5's seed value: one chance in ten, the Line preset's own
             // `min_odds`.
             odds_floor_permille: 100,
             // 17b cut M4.3: the fill at Class I.
             fill_class: default_fill_class(),
+            max_class: default_max_class(),
             // 17b cut M3.1: doc 17 §9's table.
             classes: crate::arena::core::ClassTable::STOCK,
             // 17b cut M3.5: doc 17 §9's pool (D-UM-36).
@@ -820,6 +905,30 @@ impl Default for MindsConfig {
 }
 
 impl MindsConfig {
+    pub(crate) fn bulk(&self) -> crate::minds::bulk::model::BulkConfig {
+        crate::minds::bulk::model::BulkConfig {
+            proving_workers: self.proving_workers,
+            queued: self.proving_queued,
+            daily_unit_minutes: self.proving_daily_unit_minutes,
+            completed_per_character: self.proving_completed_per_character,
+            bytes_per_character: self.proving_bytes_per_character,
+            bench_idle_ms: self.bench_idle_ms,
+            bench_sessions: self.bench_sessions,
+            bench_state_bytes: self.bench_state_bytes,
+            eval_ops: self.bench_eval_ops,
+            eval_result_bytes: self.bench_eval_result_bytes,
+        }
+    }
+    /// Operator-bounded class ceiling for a side's AI fill. An absent side
+    /// choice uses the operator's default fill class.
+    #[must_use]
+    pub fn fill_cap(
+        &self,
+        chosen: Option<crate::arena::core::CoreClass>,
+    ) -> crate::arena::core::CoreClass {
+        self.max_class.min(chosen.unwrap_or(self.fill_class))
+    }
+
     /// **Check `[tacsim.minds]`** (17b cut M1b.1, in Q.7's pattern).
     ///
     /// The floor is **10 to 950 in steps of 10**: the step because every
@@ -844,6 +953,9 @@ impl MindsConfig {
                 "[tacsim.minds].odds_floor_permille must be 10 to 950 in steps of 10 (it is {floor})"
             ));
         }
+        self.bulk()
+            .validate()
+            .map_err(|e| format!("[tacsim.minds] {e}"))?;
         self.validate_pool()?;
         // 17b cut M4.1: the think pool's workers, 1 to `MAX_MIND_WORKERS`.
         if !(1..=MAX_MIND_WORKERS).contains(&self.workers) {
@@ -1394,6 +1506,15 @@ impl ArenaConfig {
         // **16b cut AF.1** (16c N16): off, or a cadence the harness can bound — a
         // snapshot every pulse of the fastest tempo is an encode every 500 ms,
         // and one a minute apart rewinds a resumed match by up to a minute.
+        if !(16 * 1024 * 1024..=480 * 1024 * 1024).contains(&self.snapshot_max_bytes) {
+            return Err("[tacsim.arena].snapshot_max_bytes must be 16 to 480 MiB".into());
+        }
+        if !(4 * 1024 * 1024..=128 * 1024 * 1024).contains(&self.tape_max_bytes) {
+            return Err("[tacsim.arena].tape_max_bytes must be 4 to 128 MiB".into());
+        }
+        if !(4 * 1024 * 1024..=1024 * 1024 * 1024).contains(&self.tape_retained_max_bytes) {
+            return Err("[tacsim.arena].tape_retained_max_bytes must be 4 to 1024 MiB".into());
+        }
         if self.snapshot_ms != 0 && !(1_000..=60_000).contains(&self.snapshot_ms) {
             return Err(format!(
                 "[tacsim.arena].snapshot_ms must be 0 or 1000 to 60000 (it is {})",
@@ -2279,5 +2400,58 @@ mod m4_tests {
             .validate(),
             Err("[tacsim.minds].cpu_lens_ms must be at least 1 (it is 0)".to_owned())
         );
+    }
+}
+
+#[cfg(test)]
+mod m6_class_caps {
+    use super::MindsConfig;
+    use crate::arena::core::CoreClass;
+
+    #[test]
+    fn operator_and_fill_caps_are_independent_and_explicit() {
+        let stock = MindsConfig::default();
+        assert_eq!(stock.max_class, CoreClass::III);
+        assert_eq!(stock.fill_cap(None), CoreClass::I);
+        assert_eq!(stock.fill_cap(Some(CoreClass::II)), CoreClass::II);
+        let capped = MindsConfig {
+            max_class: CoreClass::I,
+            ..stock
+        };
+        assert_eq!(capped.fill_cap(Some(CoreClass::III)), CoreClass::I);
+        assert_eq!(capped.fill_cap(Some(CoreClass::Zero)), CoreClass::Zero);
+        let decoded: MindsConfig = serde_json::from_str(
+            r#"{"odds_floor_permille":100,"max_class":"II","fill_class":"0"}"#,
+        )
+        .unwrap();
+        assert_eq!(decoded.max_class, CoreClass::II);
+        assert_eq!(decoded.fill_cap(None), CoreClass::Zero);
+        assert_eq!(decoded.fill_cap(Some(CoreClass::III)), CoreClass::II);
+        assert!(
+            serde_json::from_str::<MindsConfig>(r#"{"odds_floor_permille":100,"max_class":"IV"}"#)
+                .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod recovery_capacity_tests {
+    #[test]
+    fn m6_snapshot_ceiling_refuses_unstoreable_or_too_small_values() {
+        for value in [0, 16 * 1024 * 1024 - 1, 480 * 1024 * 1024 + 1, u64::MAX] {
+            let cfg = super::ArenaConfig {
+                snapshot_max_bytes: value,
+                ..Default::default()
+            };
+            assert!(cfg.validate().unwrap_err().contains("snapshot_max_bytes"));
+        }
+        for value in [16 * 1024 * 1024, 480 * 1024 * 1024] {
+            super::ArenaConfig {
+                snapshot_max_bytes: value,
+                ..Default::default()
+            }
+            .validate()
+            .unwrap();
+        }
     }
 }

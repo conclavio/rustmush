@@ -666,6 +666,8 @@ impl MindRunner for Faulting {
             seen.push((job.unit, job.think_seq, job.t_ms));
         }
         ThinkResult {
+            diagnostics: None,
+            rule_sample: None,
             intents: Vec::new(),
             memory: job.memory.to_vec(),
             fault: Some(ThinkFault {

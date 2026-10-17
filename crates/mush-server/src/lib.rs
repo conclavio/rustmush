@@ -1618,7 +1618,9 @@ pub async fn reader_loop(
             ToServer::Inbound(wire) => {
                 if matches!(
                     wire,
-                    mush_ipc::WireInbound::Cmd { .. } | mush_ipc::WireInbound::Query { .. }
+                    mush_ipc::WireInbound::Cmd { .. }
+                        | mush_ipc::WireInbound::Query { .. }
+                        | mush_ipc::WireInbound::Invoke { .. }
                 ) {
                     tracing::error!("raw player input bypassed the version-3 custody envelope");
                     return Err(std::io::Error::new(
@@ -1675,7 +1677,7 @@ pub async fn reader_loop(
                             GatewayRequestDisposition::EphemeralFinished,
                         );
                     }
-                    GatewayInput::Cmd { .. } => {
+                    GatewayInput::Cmd { .. } | GatewayInput::Invoke { .. } => {
                         let (admission, held, bytes) =
                             admit_with_custody_snapshot(&input_claims, request);
                         match admission {

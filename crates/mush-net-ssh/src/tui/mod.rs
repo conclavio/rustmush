@@ -21,6 +21,7 @@
 pub mod app;
 mod backend;
 pub mod keys;
+mod mind_workshop;
 pub mod panels;
 pub mod render;
 pub mod replay;
@@ -72,6 +73,11 @@ impl TuiSession {
     /// queries the app wants submitted as a result (a resync, a hydration).
     pub fn apply_event(&mut self, event: &OutputEvent) -> Vec<(String, serde_json::Value)> {
         self.app.apply_event(event)
+    }
+
+    /// Typed follow-up requests queued while applying an output event.
+    pub fn take_invokes(&mut self) -> Vec<(u64, mush_proto::InvokeRequest)> {
+        self.app.take_invokes()
     }
 
     /// The timer heal's queries (16b cut B.2, `B-59`): at most one

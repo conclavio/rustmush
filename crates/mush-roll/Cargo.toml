@@ -1,0 +1,19 @@
+[package]
+name = "mush-roll"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Character-owned mind drafts, immutable revisions and explicit retention references"
+
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

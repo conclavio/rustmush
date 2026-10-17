@@ -527,6 +527,10 @@ impl GameModule for TacsimRuleset {
         };
         slot.install_packs(packs);
         reg.state(slot);
+        reg.state(
+            match_::mind_tape::TapeStore::new(self.cfg.arena.tape_retained_max_bytes)
+                .map_err(|e| ModError::msg(e.to_string()))?,
+        );
         // **17b cut M5.1** (doc 17 §15, D-UM-49; OQ-2): the holdings seam, on
         // its own slot, with the production provider — every character holds
         // Standard Doctrine and its six presets. A test rig installs another
@@ -581,6 +585,7 @@ impl GameModule for TacsimRuleset {
             &self.cfg.arena,
             &self.cfg.match_,
             &self.cfg.sensors,
+            &self.cfg.minds,
         )?;
         // 16b cut K.1: the lobby — `SIM` and the coarse tick that closes
         // boarding. Registered unconditionally beside the rest, for the same
@@ -675,6 +680,8 @@ impl GameModule for TacsimRuleset {
         boot_check_placements(ctx);
         // **16b cut AF.3**: the ledger's chunk documents and the loader's
         // floors too — a resumed match's log tail is restored from them.
+        minds::bulk::publication::hydrate(ctx, &kv, minds::bulk::world::now_ms())
+            .map_err(|e| ModError::msg(e.to_string()))?;
         boot_matches(ctx, &kv, &data.ledger, &data.omitted);
         boot_reconcile(ctx)
     }
@@ -726,6 +733,7 @@ impl GameModule for TacsimRuleset {
     /// radio. The sweep then takes anybody a restart left in a pod off their net
     /// as it gives their seat back.
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {
             tracing::debug!(
@@ -733,7 +741,11 @@ impl GameModule for TacsimRuleset {
                  without a radio"
             );
         }
+        if let Err(error) = minds::bulk::world::ready(ctx) {
+            tracing::warn!(%error, "proving content unavailable; live arena boot continues");
+        }
         match_::resume::phase_b(ctx);
+        match_::selection_refs::reconcile(ctx);
         let ejected = match_::cockpit::eject_all_at_boot(ctx);
         if !ejected.is_empty() {
             tracing::warn!(
@@ -867,6 +879,13 @@ fn boot_matches(
     // **16b cut AF.3 (16c N16)**: phase A — after the ring is filled, so a
     // restart abort it writes is remembered in its place. It answers the units
     // of the matches it will resume, which the reset below leaves alone.
+    let mut tape_keep: std::collections::BTreeSet<arena_task::MatchId> = ctx
+        .w
+        .module_state::<match_::MatchBook>()
+        .map(|book| book.history().map(|row| row.id).collect())
+        .unwrap_or_default();
+    tape_keep.extend(documents.lives.keys().copied());
+    match_::mind_tape::restore(ctx, kv, &tape_keep);
     let resumed = match_::resume::phase_a(ctx, documents, ledger, omitted);
 
     // **16b cut F.1**: and then the centre itself, whether or not any marker was

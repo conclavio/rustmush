@@ -35,7 +35,15 @@ before_seq?: number | null,
 /**
  * Maximum number of lines to return (server-clamped).
  */
-limit: number, } } | { "t": "panel_subscribe", "d": {
+limit: number, } } | { "t": "mind_bulk", "d": {
+/**
+ * Owned proving run; absent means the bounded run list.
+ */
+run?: number | null,
+/**
+ * One-based report page, valid only with a run.
+ */
+page?: number | null, } } | { "t": "panel_subscribe", "d": {
 /**
  * Panel feed id, e.g. `"wod.roll"`.
  */

@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "ground": "tacsim.arena.proving_ground",
+  "chassis": {"I": "tacsim.unit.line_tank", "II": "tacsim.unit.line_tank", "III": "tacsim.unit.heavy_mk1"},
+  "scenarios": [
+    {"name":"duel","mode":"skirmish","red":[[104,97],[104,96],[104,98],[103,97],[103,96],[103,98]],"blue":[[152,97],[152,96],[152,98],[153,97],[153,96],[153,98]]},
+    {"name":"muster","mode":"skirmish","red":[],"blue":[]},
+    {"name":"hold","mode":"hold","red":[],"blue":[]}
+  ]
+}

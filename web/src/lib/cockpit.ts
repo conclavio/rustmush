@@ -36,6 +36,8 @@
 // make this client throw. The version is not read.
 
 /** The per-pulse cockpit keyframe's feed (`tacsim::arena_bridge::FRAME_FEED`). */
+import { decodeMindCard, type MindCard } from "./mind-card";
+
 export const COCKPIT_FEED = "arena.cockpit";
 
 /** The whole arena's terrain, pulled and never pushed (`MAP_FEED`). */
@@ -290,6 +292,8 @@ export interface CockpitMind {
   /** `Standard Doctrine`, or `null` for a seal that is not Standard Doctrine
    * (the pilot's own mind, whose name the frame does not carry). */
   name: string | null;
+  card: MindCard | null;
+  sealedRules: string[];
   /** The sealed profiles, in sealed order — one to four of the six preset
    * names (`MAX_MIND_PROFILES`). */
   profiles: string[];
@@ -712,7 +716,7 @@ export function decodeMind(raw: unknown): CockpitMind | null {
   const profiles: string[] = [];
   let active = -1;
   (Array.isArray(raw.profiles) ? raw.profiles : []).forEach((entry, at) => {
-    const name = optStr(entry, 16);
+    const name = optStr(entry, 64);
     if (name === null || profiles.length >= MAX_MIND_PROFILES) {
       return;
     }
@@ -722,7 +726,9 @@ export function decodeMind(raw: unknown): CockpitMind | null {
     profiles.push(name);
   });
   return {
-    name: optStr(raw.name, 32),
+    name: optStr(raw.name, 128),
+    card: decodeMindCard(raw.card),
+    sealedRules: names(raw.sealed_rules, 2048, 6),
     profiles,
     active,
     class: clean(raw.class, "?", 8),

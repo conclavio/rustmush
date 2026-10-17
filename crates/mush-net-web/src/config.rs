@@ -83,7 +83,7 @@ impl Default for WebConfig {
             ping_interval_ms: 25_000,
             max_missed_pongs: 2,
             send_timeout_ms: 10_000,
-            max_frame_bytes: 64 * 1024,
+            max_frame_bytes: mush_proto::MAX_INVOKE_BYTES,
             metrics_enabled: false,
         }
     }

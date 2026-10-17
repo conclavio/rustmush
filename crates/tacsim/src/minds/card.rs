@@ -1,33 +1,47 @@
-//! **The card as a mind reads it** (17b cut M2.3; doc 17 §7 "Parameters", §11
-//! "The card"; D-UM-27, D-UM-28, D-UM-43; 17b §1's departure (3)).
-//!
-//! `Card` is the hull's stock card (`crate::arena::card::StockCard`) handed to
-//! every think as its second argument — read-only, never folded into the AST
-//! (D-UM-27: one AST per `(source digest, MIND_ABI)`, so three hundred hulls
-//! on three hundred differently tuned cards compile once). One getter per
-//! **stored** field, in **stored integer units**, named after doc 17 §11's
-//! slider where the units agree and after the stored figure where they do not
-//! (`band_permille` for `band_pct`, `withdraw_permille` for `break_off_pct`,
-//! `stand_min_permille` for `fight_home_pct`, `rally_ms` for `rally_s`, …): a
-//! half-percent slider cannot cross as an INT percent, and D-UM-28 forbids a
-//! FLOAT. No derived figure — `fight_home_pct`'s halves, a preset's name,
-//! the overlay `StockCard::as_reflex` builds — reaches the script; a mind
-//! derives what it needs from the stored figures, as T1 does. The enums cross
-//! as their snake-case words, the words the card's serde form and the
-//! `@mind/set` read-back use ([`CARD_FIELDS`]'s test pins them against
-//! serde's).
-
-use std::sync::Arc;
-
-use mush_mind::rhai::Dynamic;
+//! Read-only canonical card access, shared by every authored revision.
+//! One generic getter and the stock compatibility getters; no per-source engine.
 
 use super::Registrar;
-use super::api::{int, word};
-use crate::arena::card::{AspectWord, Opening, OrbitSense, Prefer, Stance, StockCard};
+use crate::arena::runtime_card::RuntimeCard;
+use crate::arena::schema::CardValue;
+use mush_mind::rhai::{Array, Dynamic, ImmutableString};
 
-/// **The card** (`Card`): the think's own copy of the hull's card.
+/// The exact hydrated card selected for this frozen think.
 #[derive(Clone, Debug)]
-pub struct Card(pub Arc<StockCard>);
+pub struct Card(pub RuntimeCard);
+
+impl Card {
+    /// Generic closed-schema access. Unknown names read unit; no fallback value.
+    pub fn value(&self, field: &str) -> Dynamic {
+        if field.len() > 64 {
+            return Dynamic::UNIT;
+        }
+        match self.0.get(field) {
+            Some(CardValue::Integer(value)) => Dynamic::from_int(*value),
+            Some(CardValue::Boolean(value)) => Dynamic::from_bool(*value),
+            Some(CardValue::Word(value)) => Dynamic::from(ImmutableString::from(value.as_str())),
+            Some(CardValue::Set(values)) => Dynamic::from_array(
+                values
+                    .iter()
+                    .map(|word| Dynamic::from(ImmutableString::from(word.as_str())))
+                    .collect::<Array>(),
+            ),
+            None => Dynamic::UNIT,
+        }
+    }
+    /// Compatibility is explicit: only a complete stock-shaped card has these
+    /// aliases. An unrelated authored schema must use its declared field names.
+    fn stock_value(&self, field: &str) -> Dynamic {
+        if self.0.stock().is_none() {
+            return Dynamic::UNIT;
+        }
+        self.value(if field == "band_permille" {
+            "engage_band_permille"
+        } else {
+            field
+        })
+    }
+}
 
 /// **The 24 getters, in `StockCard`'s field order** — pinned against the
 /// struct by `the_card_type_reads_the_24_stored_fields`.
@@ -58,128 +72,91 @@ pub const CARD_FIELDS: [&str; 24] = [
     "stop_unseen",
 ];
 
-/// A stance's word.
-const fn stance_word(stance: Stance) -> &'static str {
-    match stance {
-        Stance::Hold => "hold",
-        Stance::Close => "close",
-        Stance::Orbit => "orbit",
-        Stance::Hunt => "hunt",
-        Stance::Screen => "screen",
-    }
-}
-
-/// An orbit sense's word.
-const fn orbit_word(sense: OrbitSense) -> &'static str {
-    match sense {
-        OrbitSense::Cw => "cw",
-        OrbitSense::Ccw => "ccw",
-        OrbitSense::Auto => "auto",
-    }
-}
-
-/// An opening's word.
-const fn opening_word(opening: Opening) -> &'static str {
-    match opening {
-        Opening::Wait => "wait",
-        Opening::Search => "search",
-        Opening::Advance => "advance",
-    }
-}
-
-/// An aspect's word: `any`, `flank` or `rear`.
-const fn aspect_word(aspect: AspectWord) -> &'static str {
-    match aspect {
-        AspectWord::Any => "any",
-        AspectWord::Flank => "flank",
-        AspectWord::Rear => "rear",
-    }
-}
-
-/// A preference's word.
-const fn prefer_word(prefer: Prefer) -> &'static str {
-    match prefer {
-        Prefer::Nearest => "nearest",
-        Prefer::Exposed => "exposed",
-        Prefer::Hurt => "hurt",
-        Prefer::Balanced => "balanced",
-        Prefer::BestOdds => "best_odds",
-    }
-}
-
-/// **The card's type and its 24 getters.**
+/// Register one immutable type regardless of source/schema/profile count.
 pub(crate) fn register(api: &mut Registrar<'_>) {
     custom_type!(api, Card, "Card");
     getter!(api, "Card", "stance", |c: &mut Card| {
-        word(stance_word(c.0.stance))
+        c.stock_value("stance")
     });
     getter!(api, "Card", "band_permille", |c: &mut Card| {
-        int(c.0.engage_band_permille)
+        c.stock_value("band_permille")
     });
-    getter!(api, "Card", "close_m", |c: &mut Card| { int(c.0.close_m) });
+    getter!(api, "Card", "close_m", |c: &mut Card| {
+        c.stock_value("close_m")
+    });
     getter!(api, "Card", "orbit_sense", |c: &mut Card| {
-        word(orbit_word(c.0.orbit_sense))
+        c.stock_value("orbit_sense")
     });
     getter!(api, "Card", "turn_into_hits", |c: &mut Card| {
-        Dynamic::from_bool(c.0.turn_into_hits)
+        c.stock_value("turn_into_hits")
     });
-    getter!(api, "Card", "turn_s", |c: &mut Card| { int(c.0.turn_s) });
+    getter!(api, "Card", "turn_s", |c: &mut Card| {
+        c.stock_value("turn_s")
+    });
     getter!(api, "Card", "screen_bearing", |c: &mut Card| {
-        int(c.0.screen_bearing)
+        c.stock_value("screen_bearing")
     });
     getter!(api, "Card", "screen_arc", |c: &mut Card| {
-        int(c.0.screen_arc)
+        c.stock_value("screen_arc")
     });
     getter!(api, "Card", "opening", |c: &mut Card| {
-        word(opening_word(c.0.opening))
+        c.stock_value("opening")
     });
     getter!(api, "Card", "min_odds_permille", |c: &mut Card| {
-        int(c.0.min_odds_permille)
+        c.stock_value("min_odds_permille")
     });
     getter!(api, "Card", "aspect", |c: &mut Card| {
-        word(aspect_word(c.0.aspect))
+        c.stock_value("aspect")
     });
     getter!(api, "Card", "reserve_pct", |c: &mut Card| {
-        int(c.0.reserve_pct)
+        c.stock_value("reserve_pct")
     });
     getter!(api, "Card", "reserve_odds_pct", |c: &mut Card| {
-        int(c.0.reserve_odds_pct)
+        c.stock_value("reserve_odds_pct")
     });
     getter!(api, "Card", "prefer", |c: &mut Card| {
-        word(prefer_word(c.0.prefer))
+        c.stock_value("prefer")
     });
     getter!(api, "Card", "weight_range", |c: &mut Card| {
-        int(c.0.weight_range)
+        c.stock_value("weight_range")
     });
     getter!(api, "Card", "weight_facet", |c: &mut Card| {
-        int(c.0.weight_facet)
+        c.stock_value("weight_facet")
     });
     getter!(api, "Card", "weight_health", |c: &mut Card| {
-        int(c.0.weight_health)
+        c.stock_value("weight_health")
     });
     getter!(api, "Card", "switch_m", |c: &mut Card| {
-        int(c.0.switch_m)
+        c.stock_value("switch_m")
     });
     getter!(api, "Card", "withdraw_permille", |c: &mut Card| {
-        int(c.0.withdraw_permille)
+        c.stock_value("withdraw_permille")
     });
     getter!(api, "Card", "stand_min_permille", |c: &mut Card| {
-        int(c.0.stand_min_permille)
+        c.stock_value("stand_min_permille")
     });
     getter!(api, "Card", "rally_ms", |c: &mut Card| {
-        int(c.0.rally_ms)
+        c.stock_value("rally_ms")
     });
     getter!(api, "Card", "search_ms", |c: &mut Card| {
-        int(c.0.search_ms)
+        c.stock_value("search_ms")
     });
     getter!(api, "Card", "hunt_after_ms", |c: &mut Card| {
-        int(c.0.hunt_after_ms)
+        c.stock_value("hunt_after_ms")
     });
     getter!(api, "Card", "stop_unseen", |c: &mut Card| {
-        Dynamic::from_bool(c.0.stop_unseen)
+        c.stock_value("stop_unseen")
     });
+    method!(
+        api,
+        "Card",
+        "get",
+        |c: &mut Card, field: ImmutableString| {
+            super::fees::charge(super::fees::FEE_READ);
+            c.value(field.as_str())
+        }
+    );
 }
-
 #[cfg(test)]
 mod tests {
     use mush_mind::memory::{Value, decode};
@@ -187,6 +164,7 @@ mod tests {
     use super::super::fixture::{context_on, think_with, view};
     use super::super::registered_names;
     use super::*;
+    use crate::arena::card::StockCard;
     use crate::arena::card::{PRESETS, line, preset};
     use crate::config::ReflexConfig;
 
@@ -262,40 +240,15 @@ mod tests {
             .into_iter()
             .filter_map(|name| name.strip_prefix("Card.").map(str::to_owned))
             .collect();
-        assert_eq!(getters, CARD_FIELDS.to_vec());
+        assert_eq!(
+            getters,
+            CARD_FIELDS
+                .iter()
+                .copied()
+                .chain(["get"])
+                .collect::<Vec<_>>()
+        );
         let stored = serde_json::to_value(line(&cfg)).expect("a card serialises");
         assert_eq!(stored.as_object().map(serde_json::Map::len), Some(24));
-    }
-
-    /// Every enum word is serde's, for every value.
-    #[test]
-    fn the_card_words_are_serdes() {
-        for stance in [
-            Stance::Hold,
-            Stance::Close,
-            Stance::Orbit,
-            Stance::Hunt,
-            Stance::Screen,
-        ] {
-            assert_eq!(stance_word(stance), serde_word(&stance));
-        }
-        for sense in [OrbitSense::Cw, OrbitSense::Ccw, OrbitSense::Auto] {
-            assert_eq!(orbit_word(sense), serde_word(&sense));
-        }
-        for opening in [Opening::Wait, Opening::Search, Opening::Advance] {
-            assert_eq!(opening_word(opening), serde_word(&opening));
-        }
-        for aspect in [AspectWord::Any, AspectWord::Flank, AspectWord::Rear] {
-            assert_eq!(aspect_word(aspect), serde_word(&aspect));
-        }
-        for prefer in [
-            Prefer::Nearest,
-            Prefer::Exposed,
-            Prefer::Hurt,
-            Prefer::Balanced,
-            Prefer::BestOdds,
-        ] {
-            assert_eq!(prefer_word(prefer), serde_word(&prefer));
-        }
     }
 }

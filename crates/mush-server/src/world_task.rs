@@ -1026,7 +1026,7 @@ fn classify_inbound(msg: &Inbound) -> IngressClass {
         // admitted only where a write is, exactly like async re-entry, so a
         // Respond in a restricted mode is refused and the deadline default
         // fires later.
-        Inbound::Respond { .. } => IngressClass::AsyncApply,
+        Inbound::Respond { .. } | Inbound::Invoke { .. } => IngressClass::AsyncApply,
         Inbound::Apply(_) => IngressClass::AsyncApply,
         Inbound::Control(ControlMsg::Shutdown) => IngressClass::Shutdown,
         Inbound::Control(ControlMsg::Dump) => IngressClass::StaffMutation,
@@ -1095,7 +1095,7 @@ fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
 fn waits_in_defer_queue(msg: &WorldMsg) -> bool {
     matches!(
         msg,
-        WorldMsg::Inbound(Inbound::Cmd { .. } | Inbound::Query { .. })
+        WorldMsg::Inbound(Inbound::Cmd { .. } | Inbound::Query { .. } | Inbound::Invoke { .. })
             | WorldMsg::NameFree { .. }
             | WorldMsg::UnlinkPlayer { .. }
             | WorldMsg::InInputContext { .. }
@@ -3957,6 +3957,7 @@ impl DeferQueue {
     /// Queue a message refused `CommitPending`, or hand it back when its
     /// connection already has [`COMMAND_DEFER_DEPTH`] typed lines waiting (a
     /// typed line only) or the queue holds [`COMMAND_DEFER_CAP`] entries.
+    #[allow(clippy::result_large_err)] // Refusal returns the exact inbound message without allocating on a full queue.
     fn push_msg(&mut self, msg: WorldMsg, now: DeferInstant) -> Result<(), WorldMsg> {
         if self.entries.len() >= COMMAND_DEFER_CAP {
             return Err(msg);
@@ -5153,7 +5154,7 @@ async fn run(
                 if staged == 0 {
                     StepOutcome::Continue
                 } else {
-                    let outcome = guarded!(
+                    guarded!(
                         "engine.step/arena-egress",
                         engine.step(
                             Inbound::Apply(WorldCommand::ModuleAsyncDone {
@@ -5165,18 +5166,7 @@ async fn run(
                             &mut out,
                             &mut fx,
                         )
-                    );
-                    // The chunk writes this step queued ride the batch the
-                    // foot-of-loop flush is about to build, whose serial is one
-                    // past the current one. Stamping them here is what lets the
-                    // durable-commit high-water acknowledge them to their arenas:
-                    // a batch that is never committed is never acknowledged, the
-                    // arena's egress backs up, and doc 16 §3.1's bound voids the
-                    // match.
-                    if let Some(arenas) = arenas.as_ref() {
-                        arenas.stamp_ledger_writes(serial.saturating_add(1));
-                    }
-                    outcome
+                    )
                 }
             }
             // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
@@ -6561,6 +6551,15 @@ fn refuse_world_msg(
         WorldMsg::Inbound(Inbound::ConnUp { actor, .. }) => {
             send_sys(gateway, actor, reason.text());
         }
+        WorldMsg::Inbound(Inbound::Invoke { conn, id, .. }) => {
+            gateway.transmit(vec![(
+                SendTarget::Conn(conn),
+                Arc::new(OutputEvent::InvokeResult {
+                    id,
+                    result: mush_proto::InvokeResult::error("unavailable", reason.text()),
+                }),
+            )]);
+        }
         WorldMsg::Inbound(Inbound::Query { conn, id, .. }) => {
             // Preserve request correlation: a web/TUI query refusal is a typed
             // Reply to this connection, never an unrelated actor Sys line.
@@ -7281,6 +7280,16 @@ async fn flush_dirty(
         let detail = retention_error.to_string();
         persist::preserve_unqueued_batch(quarantine_spool, &batch, &detail).await;
         return FlushOutcome::Rejected(detail);
+    }
+    // Bind acknowledgements to the actual nonempty batch, regardless of which
+    // wake produced it. Private proving/bench precharges can originate from a
+    // command or maintenance tick with no live arena traffic at all. A rejected
+    // or uncommitted batch cannot advance the durable high-water.
+    if let Some(registry) = engine
+        .world
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+    {
+        registry.tasks().stamp_ledger_writes(*serial);
     }
     let (notify, receipt) = if durable {
         let (tx, rx) = oneshot::channel();
@@ -16232,6 +16241,83 @@ mod tests {
             health.last_write_unix.is_none(),
             "and nothing may be recorded as written"
         );
+    }
+
+    /// Commands/maintenance must bind pending acknowledgements without an
+    /// ArenaEgress wake; this also covers a queued run resumed after rollover.
+    #[tokio::test]
+    async fn generic_batches_stamp_acknowledgements_without_live_arena_traffic() {
+        struct AckModule(tacsim::arena_bridge::ArenaTasks);
+        impl GameModule for AckModule {
+            fn name(&self) -> &'static str {
+                "batch_ack_test"
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+                let frames = reg.panel_feed("batch_ack.frames")?;
+                let observers = reg.panel_feed("batch_ack.observers")?;
+                reg.state(tacsim::arena_bridge::ArenaRegistry::new(
+                    self.0.clone(),
+                    frames,
+                    observers,
+                ));
+                Ok(())
+            }
+        }
+        let tasks = tacsim::arena_bridge::ArenaTasks::new(2);
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(AckModule(tasks.clone()))],
+        )
+        .unwrap();
+        engine.world.take_dirty();
+        let (writer, mut receiver) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+        let mut serial = 40;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(40);
+        let integrity = PersistenceIntegrityLatch::new();
+        let spool = crate::quarantine::QuarantineSpool::in_memory();
+        assert!(tasks.live_ids().is_empty());
+        for expected in [41, 42] {
+            // The same unstamped table owns live-ledger and private-bulk latches.
+            // Simulate a new command/tick write; no egress message is staged.
+            tasks.note_ledger_write(tacsim::arena_task::MatchId(1), expected);
+            tasks.ack_ledger_upto(expected - 1);
+            assert_eq!(tasks.pending_ledger_acks(), 1);
+            engine
+                .world
+                .create(ObjKind::Thing, "quota write", GOD, Some(LIMBO))
+                .unwrap();
+            let outcome = flush_dirty(
+                &mut engine,
+                &writer,
+                &mut serial,
+                true,
+                &mut health,
+                &metrics,
+                &mut retained,
+                &high_water,
+                &spool,
+                &integrity,
+            )
+            .await;
+            assert!(matches!(outcome, FlushOutcome::Queued { .. }));
+            let StoreJob::Write { batch, .. } = receiver.try_recv().unwrap() else {
+                panic!("write expected");
+            };
+            assert_eq!(batch.serial, expected);
+            tasks.ack_ledger_upto(expected - 1);
+            assert_eq!(tasks.pending_ledger_acks(), 1, "queueing is not commitment");
+            high_water.store(expected, Ordering::Relaxed);
+            tasks.ack_ledger_upto(high_water.load(Ordering::Relaxed));
+            assert_eq!(
+                tasks.pending_ledger_acks(),
+                0,
+                "actual batch serial releases the acknowledgement without egress"
+            );
+        }
     }
 
     /// Interface plan I13: the exact receipt not only installs the typed

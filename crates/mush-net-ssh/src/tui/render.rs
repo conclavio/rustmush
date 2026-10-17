@@ -433,6 +433,7 @@ pub fn render_event(
         // Routed elsewhere or intentionally silent (mirrors mush_ansi): the
         // WHO rail, the input frame, the panel store, the status strip.
         OutputEvent::Who(_)
+        | OutputEvent::InvokeResult { .. }
         | OutputEvent::Panel { .. }
         | OutputEvent::Prompt(_)
         | OutputEvent::Ping { .. }
@@ -2944,8 +2945,8 @@ fn rule_summary_lines(data: &Value) -> Vec<String> {
 /// No countdown is drawn: `next_switch_ms` is absolute, and a quiet frame
 /// would leave a drawn countdown stale; line mode's `MIND` prints it off the
 /// mirror's clock. No row is selectable and no key is bound: `MIND PROFILE
-/// <name>` is typed. No card is drawn (the M5 design note's reading of OQ-8,
-/// C-22: the card's slider drawing and the rules' glyphs are M6's).
+/// <name>` is typed. F10 opens the full sealed card and all profile names;
+/// long cockpit labels explicitly truncate to preserve the contact budget.
 ///
 /// Empty when the frame carries no `mind` object — `null` on a hull no seal
 /// reached, absent from an older server and from every replay or live
@@ -2961,9 +2962,40 @@ pub fn render_cockpit_mind_tail(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     PaneRows {
         rows: mind_tail_lines(mind, ctx.utf8)
             .into_iter()
-            .map(|text| PaneRow::plain(Line::from(Span::raw(text))))
+            .map(|text| {
+                PaneRow::plain(Line::from(Span::raw(mind_tail_fit(
+                    text,
+                    ctx.pane.map(|(w, _)| usize::from(w)),
+                    ctx.utf8,
+                ))))
+            })
             .collect(),
     }
+}
+
+fn mind_tail_fit(text: String, width: Option<usize>, utf8: bool) -> String {
+    let Some(width) = width else {
+        return text;
+    };
+    if Line::from(text.as_str()).width() <= width {
+        return text;
+    }
+    let suffix = if utf8 { "… F10" } else { "... F10" };
+    if Line::from(suffix).width() > width {
+        return suffix.chars().take(width).collect();
+    }
+    let budget = width.saturating_sub(Line::from(suffix).width());
+    let mut prefix = String::new();
+    for c in text.chars() {
+        let mut candidate = prefix.clone();
+        candidate.push(c);
+        if Line::from(candidate.as_str()).width() > budget {
+            break;
+        }
+        prefix = candidate;
+    }
+    prefix.push_str(suffix);
+    prefix
 }
 
 /// The four rows of [`render_cockpit_mind_tail`] for one `mind` object, as

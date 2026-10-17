@@ -41,6 +41,8 @@ fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
     let query = prop_oneof![
         Just(Query::Who),
         Just(Query::Sheet),
+        (any::<Option<u64>>(), any::<Option<u16>>())
+            .prop_map(|(run, page)| Query::MindBulk { run, page }),
         any::<Option<String>>().prop_map(|folder| Query::MailList { folder }),
         (any::<String>(), any::<Option<u64>>(), any::<u32>()).prop_map(
             |(channel, before_seq, limit)| Query::ChannelBacklog {

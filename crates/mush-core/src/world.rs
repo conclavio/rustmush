@@ -198,6 +198,10 @@ pub struct World {
     /// every other moment (16b cut AP.4) — how `OUTPUTPREFIX` knows which
     /// connection it sets.
     dispatching_conn: Option<ConnId>,
+    // Transient engine-fed transport binding. A reconnect or actor switch gets
+    // a new lease, so delayed source-bearing replies cannot cross lifetimes.
+    connection_bindings: HashMap<ConnId, (ObjId, u64)>,
+    next_connection_lease: u64,
     /// Monotonic correlation-id source for async re-entry (treaty ruling 3).
     next_correlation: u64,
     /// Wall-clock unix seconds, fed by the driver via [`World::set_now`].
@@ -933,6 +937,30 @@ impl World {
     /// (16b cut AP.4).
     pub fn set_dispatching_conn(&mut self, conn: Option<ConnId>) {
         self.dispatching_conn = conn;
+    }
+
+    /// Fresh actor and lifetime for an attached physical connection.
+    #[must_use]
+    pub fn connection_binding(&self, conn: ConnId) -> Option<(ObjId, u64)> {
+        self.connection_bindings.get(&conn).copied()
+    }
+
+    pub(crate) fn bind_connection(&mut self, conn: ConnId, actor: ObjId) {
+        if self
+            .connection_binding(conn)
+            .is_some_and(|(bound, _)| bound == actor)
+        {
+            return;
+        }
+        self.connection_bindings.remove(&conn);
+        if let Some(next) = self.next_connection_lease.checked_add(1) {
+            self.next_connection_lease = next;
+            self.connection_bindings.insert(conn, (actor, next));
+        }
+    }
+
+    pub(crate) fn unbind_connection(&mut self, conn: ConnId) {
+        self.connection_bindings.remove(&conn);
     }
 
     /// The connection whose typed line the engine is running right now, or

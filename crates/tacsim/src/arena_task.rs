@@ -139,6 +139,8 @@
 //! consistent with the world task's own firewall: nothing a faulted turn touched
 //! reaches the store.
 
+mod tape;
+use crate::arena::input_tape::{TapeCard, TapeEvent, TapeRecorder, TapeWrite};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -227,7 +229,7 @@ pub enum ArenaMsg {
         on: bool,
     },
     /// **Staff change a mind's card** (17b cut M1b.5; doc 17 §11, §22's M1b:
-    /// `@mind/set`). A change and never a card: buffered per unit in arrival
+    /// `@mind/live`). A change and never a card: buffered per unit in arrival
     /// order (`PrePulse::cards`) and handed to the arena BEFORE the next step
     /// through `Arena::stage_card`, which applies it to the arena's own row at
     /// phase 2's head — validating it again, checking the arena's own Compact
@@ -245,6 +247,15 @@ pub enum ArenaMsg {
 /// **Arena to world** (doc 16 §3.1's last three messages, plus the end).
 #[derive(Clone, Debug)]
 pub enum ArenaOut {
+    /// Wake for an independently bounded private author worker; payload stays in its owner.
+    MindBulkReady,
+    /// Private bounded input tape, persisted on the world writer lane.
+    Tape { match_id: MatchId, write: TapeWrite },
+    /// Bounded own-hull diagnostic updates; never ledger or snapshot data.
+    MindTraces {
+        match_id: MatchId,
+        updates: Vec<crate::arena::author_trace::TraceUpdate>,
+    },
     /// One closed chunk of the match ledger, to be appended to
     /// `log:match.<id>` on the world's own writer lane.
     Ledger {
@@ -416,16 +427,19 @@ pub enum ArenaOut {
 }
 
 impl ArenaOut {
-    /// Which match this message is about.
+    /// The match this message is about, or `None` for a private-worker wake.
     #[must_use]
-    pub const fn match_id(&self) -> MatchId {
+    pub const fn match_id(&self) -> Option<MatchId> {
         match self {
-            ArenaOut::Ledger { match_id, .. }
+            ArenaOut::MindBulkReady => None,
+            ArenaOut::Tape { match_id, .. }
+            | ArenaOut::MindTraces { match_id, .. }
+            | ArenaOut::Ledger { match_id, .. }
             | ArenaOut::Frames { match_id, .. }
             | ArenaOut::Lagged { match_id }
             | ArenaOut::Deliberate { match_id, .. }
             | ArenaOut::Snapshot { match_id, .. }
-            | ArenaOut::Ended { match_id, .. } => *match_id,
+            | ArenaOut::Ended { match_id, .. } => Some(*match_id),
         }
     }
 }
@@ -599,19 +613,23 @@ pub fn spawn_arena(
     pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
 ) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), SpawnError> {
-    let mut arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
-    // 17b cut M1b.1: the floor, captured at check-out.
-    arena.odds_floor_permille = minds_cfg.odds_floor_permille;
-    // 17b cut M3.1 (doc 17 §9, D-UM-35): and the class table, the same way.
-    // `Arena::new` scheduled each mind's first think on the stock table's
-    // period; every later think reads this one.
-    arena.classes = minds_cfg.classes;
+    let seals = custody.units.iter().map(|unit| unit.seal.clone()).collect();
+    let mut arena = Arena::new_with_minds(custody, arena_cfg, match_cfg, sensors_cfg, minds_cfg)?;
     // 17b cut M3.5 (doc 17 §13): each scripted seal's runner, on the arena's
     // own doctrine — before the first think, which is a pulse away.
     install_runners(&mut arena, sources)?;
     // 16b cut V.2: read before `arena` is moved into the task below.
     let callsigns = arena.callsigns();
-    let (handle, join) = spawn(runtime, match_id, arena, arena_cfg, pool, egress, false);
+    let tape = tape::fresh(
+        &mut arena,
+        match_id,
+        seals,
+        sources,
+        arena_cfg.tape_max_bytes,
+    );
+    let (handle, join) = spawn(
+        runtime, match_id, arena, arena_cfg, pool, egress, false, tape,
+    );
     Ok((handle, join, callsigns))
 }
 
@@ -647,15 +665,34 @@ pub fn spawn_arena(
 pub fn resume_arena(
     runtime: &tokio::runtime::Handle,
     match_id: MatchId,
-    mut arena: Arena,
+    arena: Arena,
     arena_cfg: &ArenaConfig,
     sources: &BTreeMap<[u8; 32], String>,
     pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
 ) -> Result<(ArenaHandle, JoinHandle<()>), crate::minds::InstallError> {
+    resume_arena_recorded(
+        runtime, match_id, arena, arena_cfg, sources, pool, egress, None,
+    )
+}
+
+/// Production resume with the exact durable recording prefix admitted by the
+/// world owner. The compatibility entry above explicitly has no recording.
+#[allow(clippy::too_many_arguments)] // Resume keeps the existing seven inputs plus its owned recording prefix.
+pub fn resume_arena_recorded(
+    runtime: &tokio::runtime::Handle,
+    match_id: MatchId,
+    mut arena: Arena,
+    arena_cfg: &ArenaConfig,
+    sources: &BTreeMap<[u8; 32], String>,
+    pool: Arc<MindPool>,
+    egress: mpsc::Sender<ArenaOut>,
+    tape_resume: Option<crate::match_::mind_tape::ResumeTape>,
+) -> Result<(ArenaHandle, JoinHandle<()>), crate::minds::InstallError> {
     install_runners(&mut arena, sources)?;
+    let tape = tape::resumed(&mut arena, match_id, tape_resume);
     Ok(spawn(
-        runtime, match_id, arena, arena_cfg, pool, egress, true,
+        runtime, match_id, arena, arena_cfg, pool, egress, true, tape,
     ))
 }
 
@@ -686,6 +723,7 @@ fn install_runners(
 /// **The one construction both entry points share** (16b cut AF.3 factored it
 /// out of [`spawn_arena`]): the inbox, the stop signal, the task and its
 /// handle, over an arena that already exists.
+#[allow(clippy::too_many_arguments)] // Shared fresh/resume constructor carries the prepared recorder with the arena.
 fn spawn(
     runtime: &tokio::runtime::Handle,
     match_id: MatchId,
@@ -694,7 +732,9 @@ fn spawn(
     pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
     resumed: bool,
+    tape_start: tape::Start,
 ) -> (ArenaHandle, JoinHandle<()>) {
+    let (tape, tape_writes) = tape_start;
     let units = arena.units.len();
     // **16b cut AF.3**: a resumed task has already snapshotted the period its
     // arena stands in — that period's snapshot is the one it was decoded from.
@@ -732,7 +772,7 @@ fn spawn(
         inbox: inbox_rx,
         egress,
         stop: stop_rx,
-        backlog: VecDeque::new(),
+        backlog: tape_writes.into_iter().map(Outbound::Tape).collect(),
         backlog_bound,
         per_unit_bound,
         stall,
@@ -749,6 +789,8 @@ fn spawn(
         pool,
         outstanding: None,
         pool_wait_us: 0,
+        tape,
+        tape_cards: Vec::new(),
     }));
     (
         ArenaHandle {
@@ -777,6 +819,8 @@ const MAX_HELD_NOTICES: usize = 64;
 /// Everything one match's task owns. A struct rather than eight arguments
 /// because the loop and its two helpers all need most of it.
 struct Task {
+    tape: Option<TapeRecorder>,
+    tape_cards: Vec<TapeCard>,
     match_id: MatchId,
     arena: Arena,
     inbox: mpsc::Receiver<ArenaMsg>,
@@ -865,6 +909,7 @@ struct Task {
 /// the arena's snapshot, each sent as its own message in the order queued.
 #[derive(Debug)]
 enum Outbound {
+    Tape(TapeWrite),
     /// Sent as [`ArenaOut::Ledger`].
     Chunk(LedgerChunk),
     /// Sent as [`ArenaOut::Snapshot`]; at most one is ever queued.
@@ -876,6 +921,10 @@ impl Outbound {
     /// [`Arc`], since an entry leaves the queue only once the egress took it.
     fn message(&self, match_id: MatchId) -> ArenaOut {
         match self {
+            Outbound::Tape(write) => ArenaOut::Tape {
+                match_id,
+                write: write.clone(),
+            },
             Outbound::Chunk(chunk) => ArenaOut::Ledger {
                 match_id,
                 chunk: chunk.clone(),
@@ -1373,6 +1422,11 @@ async fn arena_loop(mut task: Task) {
     let base = Instant::now();
     let mut due = if task.resumed {
         let first = task.arena.resume_at(0);
+        task.record(TapeEvent::Restart {
+            hash: crate::arena::state_hash(&task.arena),
+            clock: task.arena.clock.replay_state(),
+            ledger_flushed: task.arena.ledger.flushed_upto(),
+        });
         deadline(base, first)
     } else {
         base
@@ -1428,12 +1482,14 @@ async fn arena_loop(mut task: Task) {
                     // ten-second floor is not ten seconds late (this module's
                     // head).
                     Some(ArenaMsg::Stop(reason)) => {
+                        task.record(TapeEvent::Stop { reason });
                         task.arena.stop(reason);
                         due = pulled_in(due);
                     }
                     // An acknowledgement is not an input to `step`: it only
                     // lowers the egress's depth, so it applies on arrival.
                     Some(ArenaMsg::LedgerAck { upto_chunk_seq }) => {
+                        task.record(TapeEvent::LedgerAck { through: upto_chunk_seq });
                         task.arena.ledger.mark_flushed(upto_chunk_seq);
                     }
                     // **16b cut I.3** (16c N10): nor is a staff floor. It is
@@ -1443,6 +1499,7 @@ async fn arena_loop(mut task: Task) {
                     // old wake may be a Quiet period or a floor away. The pulled
                     // pulse is quantised to the lattice like every floored one.
                     Some(ArenaMsg::TempoFloor { period_ms }) => {
+                        task.record(TapeEvent::TempoFloor { period: period_ms });
                         task.arena.clock.set_floor(period_ms);
                         due = pulled_in(due);
                     }
@@ -1450,7 +1507,7 @@ async fn arena_loop(mut task: Task) {
                     // pulse, whenever it falls, builds the picture; the
                     // deadline is left alone, because a picture is a view and
                     // the arena's cadence is not the watcher's to move.
-                    Some(ArenaMsg::Watch { on }) => apply_watch(&mut task.arena, on),
+                    Some(ArenaMsg::Watch { on }) => { task.record(TapeEvent::Watch { on }); apply_watch(&mut task.arena, on); },
                     // **17b cut M1b.5**: a card change waits for the pulse, in
                     // arrival order, like an order; the deadline is left alone.
                     Some(ArenaMsg::MindCard { unit, change }) => {
@@ -1480,6 +1537,7 @@ async fn arena_loop(mut task: Task) {
                 // before the step, whose phase 2 applies them first.
                 for (unit, changes) in waiting.take_cards() {
                     for change in changes {
+                        if task.tape.is_some() { task.tape_cards.push(TapeCard { unit, change: change.clone() }); }
                         task.arena.stage_card(unit, change);
                     }
                 }
@@ -1542,6 +1600,7 @@ impl Task {
                 return Pulse::Done;
             }
         };
+        self.record_pulse(wall_now_ms, controls, intents, &out);
         let ended = out.ended;
         // Read out of the `StepOutput` before `publish` consumes it: it is the
         // pulse's own answer to "when again", in the same wall milliseconds
@@ -1643,6 +1702,7 @@ impl Task {
     /// are discarded before the stopping pulse (its head would otherwise
     /// run their runners inline — the one that just panicked among them).
     async fn void_now(&mut self, wall_now_ms: i64, reason: &str) -> Pulse {
+        self.fail_tape(format!("host stopped the arena: {reason}"));
         tracing::error!(
             match_id = %self.match_id,
             arena_ms = self.arena.now_ms,
@@ -1699,6 +1759,7 @@ impl Task {
             Err(join) => return Err(format!("the think batch's wait did not complete: {join}")),
         };
         let settled = self.arena.deliver_answers(answers);
+        self.record_settle();
         tracing::trace!(
             match_id = %self.match_id,
             jobs,
@@ -1743,6 +1804,16 @@ impl Task {
         // last one — at most one empty message an arena second, whatever the
         // pulse rate. See [`ArenaOut::Frames`].
         let now_ms = self.arena.now_ms;
+        let updates = self.arena.trace_updates();
+        if !updates.is_empty()
+            && let Err(TrySendError::Full(ArenaOut::MindTraces { updates, .. })) =
+                self.egress.try_send(ArenaOut::MindTraces {
+                    match_id: self.match_id,
+                    updates,
+                })
+        {
+            self.arena.traces.retry_updates(&updates);
+        }
         let second = now_ms.div_euclid(1_000);
         // **16b cut I.4**: the pulse's own staff picture, else the one a full
         // egress refused last time — the newer always wins, and a held picture
@@ -1831,6 +1902,7 @@ impl Task {
     /// would then never finish — and the shutdown tail's join with it. A closed
     /// egress returns too: nothing more can be delivered.
     async fn end(&mut self, end: MatchEnd) {
+        self.finish_tape(end);
         match self.drain_backlog_waiting().await {
             Drain::Drained => {}
             Drain::Stopped => {
@@ -1882,6 +1954,23 @@ impl Task {
         // carries no units at all and the world restores every check-out snapshot.
         // The judgement is made **here**, where the reason is, rather than trusted to
         // the far end of the seam.
+        // Final transport-only flush: client feed delivery keeps its own one-
+        // second throttle, but the mirror retains the match's final decisions.
+        self.arena
+            .trace_cancel_all(crate::arena::author_trace::Cancelled::Ended);
+        let updates = self.arena.traces.finish_updates(self.arena.now_ms);
+        if !updates.is_empty()
+            && !matches!(
+                self.send_waiting(ArenaOut::MindTraces {
+                    match_id: self.match_id,
+                    updates,
+                })
+                .await,
+                Drain::Drained
+            )
+        {
+            return;
+        }
         let void = matches!(end.reason, EndReason::Void | EndReason::LedgerOverflow);
         let message = ArenaOut::Ended {
             match_id: self.match_id,
@@ -1981,7 +2070,7 @@ impl Task {
                 .and_then(|at| self.backlog.remove(at))
                 .and_then(|entry| match entry {
                     Outbound::Chunk(chunk) => Some(chunk.seq),
-                    Outbound::Snapshot(_) => None,
+                    Outbound::Snapshot(_) | Outbound::Tape(_) => None,
                 });
             tracing::error!(
                 match_id = %self.match_id,
@@ -2023,6 +2112,7 @@ impl Task {
         ) {
             return SnapshotTaken::NotDue;
         }
+        self.checkpoint_tape();
         match Snapshot::encode(&self.arena) {
             Ok(snapshot) => {
                 self.queue_snapshot(Arc::new(snapshot));
@@ -2111,6 +2201,18 @@ mod tests {
     use crate::arena::state::Team;
     use crate::arena::test_support::{arena_at_epoch, pose, tank};
     use smol_str::SmolStr;
+
+    #[test]
+    fn bulk_wake_has_no_match_identity() {
+        assert_eq!(ArenaOut::MindBulkReady.match_id(), None);
+        assert_eq!(
+            ArenaOut::Lagged {
+                match_id: MatchId(17)
+            }
+            .match_id(),
+            Some(MatchId(17))
+        );
+    }
 
     const RED: ObjId = ObjId(4);
     const BLUE: ObjId = ObjId(9);
@@ -3021,6 +3123,8 @@ mod tests {
             pool: MindPool::new(1),
             outstanding: None,
             pool_wait_us: 0,
+            tape: None,
+            tape_cards: Vec::new(),
         };
         let picture = |now_ms: i64| {
             let mut observer = task_picture();
@@ -3181,6 +3285,8 @@ mod tests {
             pool: MindPool::new(1),
             outstanding: None,
             pool_wait_us: 0,
+            tape: None,
+            tape_cards: Vec::new(),
         };
         (task, world)
     }
@@ -3201,6 +3307,7 @@ mod tests {
             .map(|entry| match entry {
                 Outbound::Chunk(chunk) => format!("c{}", chunk.seq),
                 Outbound::Snapshot(snapshot) => format!("s{}", snapshot.at_ms),
+                Outbound::Tape(_) => "tape".to_owned(),
             })
             .collect()
     }
@@ -3392,6 +3499,8 @@ mod tests {
                 }
             }
             crate::arena::mind::ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: job.memory.to_vec(),
                 fault: None,
@@ -3417,6 +3526,8 @@ mod tests {
                 std::panic::resume_unwind(Box::new("a mind runner panicked (test)"));
             }
             crate::arena::mind::ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: job.memory.to_vec(),
                 fault: None,
@@ -3467,6 +3578,8 @@ mod tests {
             pool: MindPool::new(1),
             outstanding: None,
             pool_wait_us: 0,
+            tape: None,
+            tape_cards: Vec::new(),
         };
         // The senders ride along: `Task::end` reads the stop signal, and a
         // dropped sender reads as a stopped task.

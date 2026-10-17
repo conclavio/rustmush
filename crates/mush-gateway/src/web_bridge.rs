@@ -623,6 +623,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
         })
     }
 
+    fn invoke(&self, conn: u64, id: u64, request: mush_proto::InvokeRequest) -> BoxFuture<'_, ()> {
+        Box::pin(async move { self.core.invoke(conn, id, request).await })
+    }
+
     fn request(&self, conn: u64, id: u64, q: Query) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let conn_id = ConnId(conn);
@@ -698,6 +702,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     }
                 }
                 Query::Commands => (SmolStr::new_static("commands.list"), serde_json::json!({})),
+                Query::MindBulk { run, page } => (
+                    SmolStr::new_static("mind.bulk"),
+                    serde_json::json!({ "run": run, "page": page }),
+                ),
                 Query::PanelSubscribe { feed } => {
                     if !self.panels.iter().any(|p| p.as_str() == feed.as_str()) {
                         self.direct_error_reply(

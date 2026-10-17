@@ -100,6 +100,8 @@ impl MindRunner for ScriptedMind {
             .get(&job.unit)
             .and_then(|lines| lines.iter().find(|line| line.think_seq == job.think_seq));
         ThinkResult {
+            diagnostics: None,
+            rule_sample: None,
             intents: line.map(|line| line.intents.clone()).unwrap_or_default(),
             memory: line
                 .and_then(|line| line.memory.clone())

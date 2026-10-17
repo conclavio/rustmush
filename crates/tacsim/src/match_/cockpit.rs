@@ -3161,7 +3161,7 @@ fn drive_goal(
 /// **`MIND`'s usage line** (17b cut M5.4), for a form it does not take — a
 /// word that is not `PROFILE`, `RULES` or `TRACE`, `PROFILE` with no name,
 /// `RULES` with a word after it.
-pub const MIND_USAGE: &str = "MIND [PROFILE <name>|RULES [slot]|RULE <slot> <rule or OFF>]; bare MIND reads your sealed mind.";
+pub const MIND_USAGE: &str = "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]]; bare MIND reads your sealed mind.";
 
 /// **What `MIND` says of a hull no seal reached** (17b cut M5.4): the frame
 /// carries no [`Frame::mind`]. Bare `MIND` and `MIND RULES` say it alone;
@@ -3185,9 +3185,8 @@ pub const MIND_CHANNELS_UNARMED: &str = "Channels: you hold helm and sensors (no
 /// read by `WEAPONSTATUS`.
 pub const MIND_RULES_LINE: &str = "Rules: none sealed; your own armings are under WEAPONSTATUS.";
 
-/// **The half after `MIND TRACE refused.`** (17b cut M5.4; OQ-8): the think
-/// ring a trace reads is 17b cut M6's.
-pub const MIND_NO_TRACE: &str = "This core keeps no trace of its thinks yet.";
+/// The same refusal for an unauthorized or unavailable trace.
+pub const MIND_NO_TRACE: &str = "No mind trace is available.";
 
 /// The verb word every `MIND PROFILE` refusal opens with, the intent's own
 /// ([`IntentKind::as_str`] of [`IntentKind::Profile`]) — so the cockpit's
@@ -3247,11 +3246,7 @@ pub fn next_switch_s(mind: &FrameMind, now_ms: i64) -> Option<i64> {
 #[must_use]
 pub fn mind_head_line(mind: &FrameMind) -> String {
     use crate::arena::core::CoreClass;
-    let name = if mind.doctrine {
-        crate::arena::doctrine::SEALED_MIND
-    } else {
-        "your own mind"
-    };
+    let name = mind.name.as_str();
     if mind.off {
         return format!("Mind: {name}, off for the match: the hull is on the ROM.");
     }
@@ -3336,18 +3331,33 @@ pub fn mind_lines(mind: &FrameMind, armed: bool, now_ms: i64) -> Vec<String> {
     } else {
         MIND_CHANNELS_UNARMED
     };
-    vec![
+    let count = mind.card.rules().map_or(0, <[_]>::len);
+    let rules = if count == 0 {
+        MIND_RULES_LINE.to_owned()
+    } else {
+        format!("Rules: {count} sealed on the active profile; MIND RULES reads their full terms.")
+    };
+    [
         mind_head_line(mind),
         mind_profile_line(mind, now_ms),
         channels.to_owned(),
-        MIND_RULES_LINE.to_owned(),
+        rules,
     ]
+    .iter()
+    .flat_map(|line| wrap_rule_words(line))
+    .collect()
 }
 
 /// **`MIND RULES`' line** (17b cut M5.4; OQ-4): `No rules are sealed on
 /// Sniper or Line; your own armings are under WEAPONSTATUS.`
 #[must_use]
 pub fn mind_rules_line(mind: &FrameMind) -> String {
+    let count = mind.card.rules().map_or(0, <[_]>::len);
+    if count > 0 {
+        return format!(
+            "{count} rules are sealed on the active profile; MIND RULES reads their full terms."
+        );
+    }
     let names: Vec<&str> = mind.profiles.names().collect();
     format!(
         "No rules are sealed on {}; your own armings are under WEAPONSTATUS.",
@@ -3376,20 +3386,17 @@ pub fn mind_rules_line(mind: &FrameMind) -> String {
 /// # Errors
 ///
 /// The refusal's sentence after its prefix.
-pub fn profile_switch(
-    mind: &FrameMind,
+pub fn profile_switch<'a>(
+    mind: &'a FrameMind,
     word: &str,
     now_ms: i64,
-) -> Result<(u8, &'static str), String> {
+) -> Result<(u8, &'a str), String> {
     let names: Vec<&str> = mind.profiles.names().collect();
     let code = crate::arena::card::preset_code(word);
-    let index = code.and_then(|code| {
-        mind.profiles
-            .codes()
-            .iter()
-            .position(|held| *held == code)
-            .and_then(|at| u8::try_from(at).ok())
-    });
+    let index = names
+        .iter()
+        .position(|held| held.eq_ignore_ascii_case(word))
+        .and_then(|at| u8::try_from(at).ok());
     let Some((index, name)) = index.and_then(|index| Some((index, mind.profiles.name(index)?)))
     else {
         let carries = lobby::listed(&names, "and");
@@ -3451,10 +3458,10 @@ fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
             let held = last_frame(ctx.w, seat.driver);
             let lines = match held.as_ref() {
                 None => vec![NO_FRAME_YET.to_owned()],
-                Some(held) => match held.frame.mind {
+                Some(held) => match held.frame.mind.as_ref() {
                     None => vec![NO_SEAL.to_owned()],
                     Some(mind) => mind_lines(
-                        &mind,
+                        mind,
                         !held.frame.weapons.is_empty(),
                         mind_now_ms(ctx.w, held),
                     ),
@@ -3465,13 +3472,80 @@ fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
         }
         "rules" | "rule" => station_rules(ctx, seat, rest),
         "profile" if !tail.is_empty() => mind_profile(ctx, seat, tail),
-        "trace" => Err(CockpitError::Refused(order_refused(
-            "mind trace",
-            None,
-            MIND_NO_TRACE,
-        ))),
+        "card" if tail.is_empty() => mind_card(ctx, seat),
+        "trace" => mind_trace(ctx, seat, tail),
         _ => Err(CockpitError::Usage(MIND_USAGE.to_owned())),
     }
+}
+
+fn mind_trace(ctx: &mut Ctx<'_>, seat: &Seat, tail: &str) -> Result<(), CockpitError> {
+    let count = if tail.is_empty() {
+        None
+    } else {
+        Some(
+            tail.parse::<usize>()
+                .ok()
+                .filter(|n| (1..=64).contains(n))
+                .ok_or_else(|| CockpitError::Usage(MIND_USAGE.into()))?,
+        )
+    };
+    // Authorization is independent of seat possession; a borrowed hull is not
+    // permission to inspect somebody else's retained decisions.
+    let rows = crate::arena_bridge::mind_traces(ctx.w, ctx.actor, seat.unit, count)
+        .ok_or_else(|| CockpitError::Refused(order_refused("mind trace", None, MIND_NO_TRACE)))?;
+    crate::minds::trace_feed::select(ctx, seat.unit, count, true)
+        .map_err(|said| CockpitError::Refused(order_refused("mind trace", None, &said)))?;
+    for line in crate::minds::trace_feed::lines(&rows)
+        .iter()
+        .flat_map(|line| wrap_rule_words(line))
+    {
+        ctx.out.sys_to_actor(ctx.actor, NOTICE_CATEGORY, line);
+    }
+    Ok(())
+}
+
+fn mind_card(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
+    let held =
+        last_frame(ctx.w, seat.driver).ok_or_else(|| CockpitError::Refused(NO_FRAME_YET.into()))?;
+    let mind = held
+        .frame
+        .mind
+        .as_ref()
+        .ok_or_else(|| CockpitError::Refused(NO_SEAL.into()))?;
+    let mut lines = vec![format!(
+        "Sealed card: {} / {}. Edits belong in the workshop working copy.",
+        mind.name,
+        mind.profiles.name(mind.active).unwrap_or("?")
+    )];
+    let schema = mind.card.schema();
+    if let Some(schema) = schema {
+        for section in &schema.sections {
+            let absent = section.station == Channel::Fire && held.frame.weapons.is_empty();
+            lines.push(format!(
+                "{}{}:",
+                section.label,
+                if absent { " (no station; inert)" } else { "" }
+            ));
+            for field in &section.fields {
+                if let Some(value) = mind.card.get(&field.id) {
+                    let value = serde_json::to_string(value).unwrap_or_else(|_| "?".into());
+                    lines.push(format!("  {} ({}): {value}", field.label, field.id));
+                }
+            }
+        }
+    }
+    if lines.len() == 1 {
+        lines.push("No editable card fields.".into());
+    }
+    say_and_frame(
+        ctx,
+        Some(&held),
+        lines
+            .iter()
+            .flat_map(|line| wrap_rule_words(line))
+            .collect(),
+    );
+    Ok(())
 }
 
 /// Dispatch native rules from the pilot's permitted picture. Mutation remains
@@ -3544,7 +3618,24 @@ fn station_rules(ctx: &mut Ctx<'_>, seat: &Seat, command: &str) -> Result<(), Co
     })?;
     let (arming, lines) = match parsed {
         RuleCommand::Read { slot } => {
-            let mut lines = vec!["Pilot rules (not saved in the sealed profile):".to_owned()];
+            let mut lines = Vec::new();
+            if slot.is_none()
+                && let Some(mind) = held.frame.mind.as_ref()
+            {
+                let rules = mind.card.rules().unwrap_or_default();
+                if !rules.is_empty() {
+                    lines.push("Sealed active profile rules:".to_owned());
+                    for (at, rule) in rules.iter().enumerate() {
+                        lines.extend(wrap_rule_words(&format!(
+                            "{}. {}",
+                            at + 1,
+                            crate::arena::schema::rule_words(rule)
+                        )));
+                    }
+                }
+            }
+            lines.push("Current station rules (manual changes are not saved):".to_owned());
+            let current_head = lines.len();
             for entry in held
                 .frame
                 .rules
@@ -3553,7 +3644,7 @@ fn station_rules(ctx: &mut Ctx<'_>, seat: &Seat, command: &str) -> Result<(), Co
             {
                 lines.extend(rule_read_lines(entry, &held.frame));
             }
-            if lines.len() == 1 {
+            if lines.len() == current_head {
                 lines.push(
                     if slot.is_some() {
                         "No active rule in that slot."
@@ -3612,7 +3703,12 @@ fn wrap_rule_words(words: &str) -> Vec<String> {
         if !line.is_empty() {
             line.push(' ');
         }
-        line.push_str(word);
+        for ch in word.chars() {
+            if line.len() + ch.len_utf8() > WATCH_COLUMNS {
+                lines.push(std::mem::take(&mut line));
+            }
+            line.push(ch);
+        }
     }
     if !line.is_empty() {
         lines.push(line);
@@ -3655,9 +3751,9 @@ fn mind_profile(ctx: &mut Ctx<'_>, seat: &Seat, word: &str) -> Result<(), Cockpi
     // The wreck first, as for every order — in this verb's one prefix.
     require_alive(ctx.w, seat.driver).map_err(|said| refused(&said.to_string()))?;
     let held = last_frame(ctx.w, seat.driver).ok_or_else(|| refused(NO_FRAME_YET))?;
-    let mind = held.frame.mind.ok_or_else(|| refused(NO_SEAL))?;
+    let mind = held.frame.mind.as_ref().ok_or_else(|| refused(NO_SEAL))?;
     let now_ms = mind_now_ms(ctx.w, &held);
-    let (index, name) = profile_switch(&mind, word, now_ms).map_err(|said| refused(&said))?;
+    let (index, name) = profile_switch(mind, word, now_ms).map_err(|said| refused(&said))?;
     forward_intent(ctx, seat.driver, seat.unit, IntentKind::Profile { index })?;
     ctx.out
         .sys_to_actor(actor, NOTICE_CATEGORY, profile_ack(name));
@@ -6130,7 +6226,7 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// **17b cut M5.4 kept it at 3** while adding the top-level `mind` object
 /// (doc 17 §12; F7 of the M5 design note): a field added for the person in
 /// the seat is not a version, and a mind's view never carries it.
-pub const FRAME_VERSION: u32 = 5;
+pub const FRAME_VERSION: u32 = 6;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].
@@ -6718,7 +6814,13 @@ pub fn mind_json(mind: &FrameMind, armed: bool) -> serde_json::Value {
         channels.push("fire");
     }
     serde_json::json!({
-        "name": mind.doctrine.then_some(crate::arena::doctrine::SEALED_MIND),
+        "name": mind.name,
+        "card": {
+            "schema": mind.card.schema(),
+            "values": mind.card.values(),
+        },
+        "sealed_rules": mind.card.rules().unwrap_or_default().iter()
+            .map(crate::arena::schema::rule_words).collect::<Vec<_>>(),
         "profiles": mind.profiles.names().collect::<Vec<&str>>(),
         "active": mind.active,
         "class": mind.class.as_str(),
@@ -8917,6 +9019,59 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Build actual immutable cards for renderer fixtures; names never reconstruct runtime data.
+    fn m6_frame(names: &[&str]) -> FrameMind {
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::profile_seal::SealedCards;
+        use crate::arena::runtime_card::{CardCatalog, stock_definition};
+        let cfg = crate::config::ReflexConfig::default();
+        let selected = names
+            .iter()
+            .map(|name| {
+                (
+                    SmolStr::new(*name),
+                    crate::arena::preset(name, &cfg).expect("fixture preset"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let definition = stock_definition(&selected, CoreClass::III).expect("full cards");
+        let cards = SealedCards::prepare(
+            definition,
+            &[],
+            &ClassTable::STOCK.row(CoreClass::III),
+            &[],
+            &[Channel::Helm, Channel::Sensors],
+            100,
+        )
+        .expect("sealed cards");
+        let mut catalog = CardCatalog::default();
+        let (_, card) = cards.admit(&mut catalog).expect("catalog admission");
+        // Retain the complete selected order for profile renderer tests.
+        let names = names
+            .iter()
+            .map(|name| SmolStr::new(*name))
+            .collect::<Vec<_>>();
+        let profiles = crate::arena::runtime_card::RuntimeProfiles::bind(
+            &catalog,
+            card.key().definition,
+            &names,
+        )
+        .expect("selected profiles");
+        FrameMind {
+            name: SmolStr::new_static("Standard Doctrine"),
+            doctrine: true,
+            profiles,
+            card,
+            program: cards.programs[0].clone(),
+            active: 0,
+            class: CoreClass::I,
+            core_class: CoreClass::II,
+            switch_at_ms: None,
+            off: false,
+        }
+    }
+
     use super::*;
     use crate::arena::intents::Refusal;
     // 17b cut M1a.2: the class word moved to `arena::view`, and only the
@@ -11431,17 +11586,35 @@ mod tests {
         let quoted = |said: &str| help.lines().any(|line| line.trim_start() == said);
         // (1) SIM MIND chooses; the match's start seals, in the check-out's
         // own line, which the page quotes.
-        let seal = crate::arena::mind::MindSeal {
-            mind: SmolStr::new_static("Standard Doctrine"),
-            class: crate::arena::core::CoreClass::I,
-            profiles: ["Sniper", "Line"]
-                .map(|name| crate::arena::mind::SealedProfile {
-                    name: SmolStr::new_static(name),
-                    card_digest: [0; 32],
-                })
-                .to_vec(),
-            ..crate::arena::mind::MindSeal::placeholder()
-        };
+        let mut seal = crate::arena::mind::MindSeal::placeholder();
+        seal.mind = "Standard Doctrine".into();
+        seal.class = crate::arena::core::CoreClass::I;
+        let frame = m6_frame(&["Sniper", "Line"]);
+        let cfg = crate::config::ReflexConfig::default();
+        let selected = ["Sniper", "Line"].map(|name| {
+            (
+                SmolStr::new_static(name),
+                crate::arena::preset(name, &cfg).expect("preset"),
+            )
+        });
+        let definition = crate::arena::runtime_card::stock_definition(
+            &selected,
+            crate::arena::core::CoreClass::I,
+        )
+        .expect("definition");
+        seal.cards = crate::arena::profile_seal::SealedCards::prepare(
+            definition,
+            &["Sniper".into(), "Line".into()],
+            &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
+            &[],
+            &[Channel::Helm, Channel::Sensors],
+            100,
+        )
+        .expect("cards");
+        assert_eq!(
+            seal.cards.selected.names().collect::<Vec<_>>(),
+            frame.profiles.names().collect::<Vec<_>>()
+        );
         let sealed = lobby::seal_line(&seal, false).unwrap_or_default();
         assert_eq!(
             sealed,
@@ -11471,13 +11644,13 @@ mod tests {
         // and Line at Class I on a Class II core, and the ten seconds' refusal.
         let sniper_line = FrameMind {
             doctrine: true,
-            profiles: crate::arena::card::ProfileSet::of_names(&["Sniper", "Line"])
-                .unwrap_or_else(|| panic!("two presets")),
+            profiles: m6_frame(&["Sniper", "Line"]).profiles,
             active: 0,
             class: crate::arena::core::CoreClass::I,
             core_class: crate::arena::core::CoreClass::II,
             switch_at_ms: None,
             off: false,
+            ..m6_frame(&["Sniper", "Line"])
         };
         for line in mind_lines(&sniper_line, true, 0) {
             assert!(quoted(&line), "the page quotes MIND's line: {line}");
@@ -11495,7 +11668,7 @@ mod tests {
         let switched = FrameMind {
             active: 1,
             switch_at_ms: Some(40_000),
-            ..sniper_line
+            ..sniper_line.clone()
         };
         let refusal = profile_switch(&switched, "Sniper", 34_000).map_or_else(
             |said| order_refused(profile_order(), None, &said),
@@ -11525,7 +11698,6 @@ mod tests {
     /// through [`IntentKind::as_str`].
     #[test]
     fn m5_mind_is_the_seventeenth_selector_and_its_words_are_pinned() {
-        use crate::arena::card::ProfileSet;
         use crate::arena::core::CoreClass;
         use crate::arena::perception::RefusalDetail;
         assert_eq!(COCKPIT_VERBS.len(), 17);
@@ -11548,13 +11720,13 @@ mod tests {
         );
         let sniper_line = FrameMind {
             doctrine: true,
-            profiles: ProfileSet::of_names(&["Sniper", "Line"])
-                .unwrap_or_else(|| panic!("two presets")),
+            profiles: m6_frame(&["Sniper", "Line"]).profiles,
             active: 0,
             class: CoreClass::I,
             core_class: CoreClass::II,
             switch_at_ms: None,
             off: false,
+            ..m6_frame(&["Sniper", "Line"])
         };
         assert_eq!(
             mind_head_line(&sniper_line),
@@ -11562,17 +11734,18 @@ mod tests {
              core."
         );
         let own = FrameMind {
+            name: "Field Pilot".into(),
             doctrine: false,
-            ..sniper_line
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_head_line(&own),
-            "Mind: your own mind, sealed for this sortie; it thinks at Class I on a Class II core."
+            "Mind: Field Pilot, sealed for this sortie; it thinks at Class I on a Class II core."
         );
         let off = FrameMind {
             off: true,
             class: CoreClass::Zero,
-            ..sniper_line
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_head_line(&off),
@@ -11583,6 +11756,8 @@ mod tests {
             mind_json(&sniper_line, true),
             serde_json::json!({
                 "name": "Standard Doctrine",
+                "card": {"schema": sniper_line.card.schema(), "values": sniper_line.card.values()},
+                "sealed_rules": [],
                 "profiles": ["Sniper", "Line"],
                 "active": 0,
                 "class": "I",
@@ -11595,12 +11770,14 @@ mod tests {
         let switched = FrameMind {
             active: 1,
             switch_at_ms: Some(42_000),
-            ..own
+            ..own.clone()
         };
         assert_eq!(
             mind_json(&switched, false),
             serde_json::json!({
-                "name": null,
+                "name": "Field Pilot",
+                "card": {"schema": switched.card.schema(), "values": switched.card.values()},
+                "sealed_rules": [],
                 "profiles": ["Sniper", "Line"],
                 "active": 1,
                 "class": "I",
@@ -11622,7 +11799,7 @@ mod tests {
     /// Every ordered set of one to four of the six presets — every
     /// [`crate::arena::card::ProfileSet`] a seal can hold (17b cut M5.4's
     /// width tests walk them all).
-    fn m5_every_profile_set() -> Vec<crate::arena::card::ProfileSet> {
+    fn m5_every_profile_set() -> Vec<crate::arena::runtime_card::RuntimeProfiles> {
         use crate::arena::card::{PRESETS, ProfileSet};
         let mut sets: Vec<Vec<&str>> = vec![Vec::new()];
         let mut all = Vec::new();
@@ -11640,9 +11817,7 @@ mod tests {
             all.extend(longer.iter().cloned());
             sets = longer;
         }
-        all.iter()
-            .map(|names| ProfileSet::of_names(names).unwrap_or_else(|| panic!("{names:?}")))
-            .collect()
+        all.iter().map(|names| m6_frame(names).profiles).collect()
     }
 
     /// Whether a line holds a word of sixteen hex digits — a seal or contact
@@ -11668,11 +11843,8 @@ mod tests {
     /// countdown — and [`NO_SEAL`], what a hull no seal reached reads.
     #[test]
     fn m5_the_mind_block_is_at_most_seven_lines_under_120_columns() {
-        use crate::arena::card::ProfileSet;
         use crate::arena::core::CoreClass;
-        let set = |names: &[&str]| {
-            ProfileSet::of_names(names).unwrap_or_else(|| panic!("{names:?} are presets"))
-        };
+        let set = |names: &[&str]| m6_frame(names).profiles;
         let sniper_line = FrameMind {
             doctrine: true,
             profiles: set(&["Sniper", "Line"]),
@@ -11681,6 +11853,7 @@ mod tests {
             core_class: CoreClass::II,
             switch_at_ms: None,
             off: false,
+            ..m6_frame(&["Sniper", "Line"])
         };
         // The note's block, exactly.
         assert_eq!(
@@ -11700,7 +11873,7 @@ mod tests {
             profiles: set(&["Skirmisher", "Rearguard"]),
             active: 1,
             switch_at_ms: Some(40_000),
-            ..sniper_line
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_lines(&widest, false, 34_001),
@@ -11730,7 +11903,7 @@ mod tests {
         let dropped = FrameMind {
             off: true,
             class: CoreClass::Zero,
-            ..sniper_line
+            ..sniper_line.clone()
         };
         let lines = mind_lines(&dropped, true, 0);
         assert_eq!(
@@ -11740,18 +11913,19 @@ mod tests {
         assert_eq!(lines.get(1..), mind_lines(&sniper_line, true, 0).get(1..));
         // A non-Doctrine seal names no mind.
         let own = FrameMind {
+            name: "Field Pilot".into(),
             doctrine: false,
-            ..sniper_line
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_head_line(&own),
-            "Mind: your own mind, sealed for this sortie; it thinks at Class I on a Class II core."
+            "Mind: Field Pilot, sealed for this sortie; it thinks at Class I on a Class II core."
         );
         // A hull with no core above Class 0 (`target_mk1` has none).
         let coreless = FrameMind {
             class: CoreClass::Zero,
             core_class: CoreClass::Zero,
-            ..sniper_line
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_head_line(&coreless),
@@ -11763,7 +11937,7 @@ mod tests {
         // 0".
         let capped = FrameMind {
             class: CoreClass::Zero,
-            ..sniper_line
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_head_line(&capped),
@@ -11772,17 +11946,18 @@ mod tests {
         );
         assert_eq!(
             mind_head_line(&FrameMind {
+                name: "Field Pilot".into(),
                 doctrine: false,
                 core_class: CoreClass::III,
-                ..capped
+                ..capped.clone()
             }),
-            "Mind: your own mind, sealed for this sortie at Class 0 on a Class III core: the hull \
+            "Mind: Field Pilot, sealed for this sortie at Class 0 on a Class III core: the hull \
              is on the ROM."
         );
         // The set of one every unchosen slot seals.
         let line_alone = FrameMind {
-            profiles: ProfileSet::LINE,
-            ..sniper_line
+            profiles: m6_frame(&["Line"]).profiles,
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_profile_line(&line_alone, 0),
@@ -11800,7 +11975,7 @@ mod tests {
         // Three or four: the target is the form, the others listed.
         let four = FrameMind {
             profiles: set(&["Skirmisher", "Rearguard", "Sniper", "Hunter"]),
-            ..sniper_line
+            ..sniper_line.clone()
         };
         assert_eq!(
             mind_profile_line(&four, 0),
@@ -11827,7 +12002,7 @@ mod tests {
             checked = checked.saturating_add(1);
         };
         for profiles in sets {
-            for active in 0..profiles.len {
+            for active in 0..u8::try_from(profiles.len()).expect("bounded set") {
                 for switch_at_ms in [None, Some(40_000)] {
                     // 30,001: ten seconds to go, rounded up.
                     for now_ms in [0, 30_001, 40_000] {
@@ -11835,12 +12010,13 @@ mod tests {
                         // the clock alone.
                         let mind = FrameMind {
                             doctrine: true,
-                            profiles,
+                            profiles: profiles.clone(),
                             active,
                             class: CoreClass::I,
                             core_class: CoreClass::II,
                             switch_at_ms,
                             off: false,
+                            ..m6_frame(&["Line"])
                         };
                         let mut said = vec![mind_rules_line(&mind)];
                         for word in crate::arena::card::PRESETS
@@ -11867,7 +12043,7 @@ mod tests {
                                     class,
                                     core_class,
                                     off,
-                                    ..mind
+                                    ..mind.clone()
                                 };
                                 for armed in [true, false] {
                                     let said = mind_lines(&mind, armed, now_ms);
@@ -11900,18 +12076,17 @@ mod tests {
     /// [`NO_FRAME_YET`] after the prefix read as the arena's words do.
     #[test]
     fn m5_mind_profile_refuses_off_the_frame_in_one_line() {
-        use crate::arena::card::ProfileSet;
         use crate::arena::core::CoreClass;
         let refused = |said: &str| order_refused(profile_order(), None, said);
         let mind = FrameMind {
             doctrine: true,
-            profiles: ProfileSet::of_names(&["Sniper", "Line"])
-                .unwrap_or_else(|| panic!("two presets")),
+            profiles: m6_frame(&["Sniper", "Line"]).profiles,
             active: 0,
             class: CoreClass::I,
             core_class: CoreClass::II,
             switch_at_ms: None,
             off: false,
+            ..m6_frame(&["Sniper", "Line"])
         };
         let check = |mind: &FrameMind, word: &str, now_ms: i64| {
             profile_switch(mind, word, now_ms)
@@ -11953,7 +12128,7 @@ mod tests {
         let switched = FrameMind {
             active: 1,
             switch_at_ms: Some(40_000),
-            ..mind
+            ..mind.clone()
         };
         for (now_ms, secs) in [(30_000, 10), (34_000, 6), (34_001, 6), (39_999, 1)] {
             assert_eq!(
@@ -11985,24 +12160,24 @@ mod tests {
             FrameMind {
                 off: true,
                 class: CoreClass::Zero,
-                ..mind
+                ..mind.clone()
             },
             FrameMind {
                 class: CoreClass::Zero,
                 core_class: CoreClass::Zero,
-                ..mind
+                ..mind.clone()
             },
             FrameMind {
                 class: CoreClass::Zero,
-                ..mind
+                ..mind.clone()
             },
         ] {
             assert_eq!(check(&odd, "Line", 0).map(|(index, _)| index), Ok(1));
         }
         // The set of one has nothing to switch to.
         let alone = FrameMind {
-            profiles: ProfileSet::LINE,
-            ..mind
+            profiles: m6_frame(&["Line"]).profiles,
+            ..mind.clone()
         };
         assert_eq!(
             check(&alone, "line", 0),
@@ -12024,11 +12199,11 @@ mod tests {
         );
         assert_eq!(
             order_refused("mind trace", None, MIND_NO_TRACE),
-            "MIND TRACE refused. This core keeps no trace of its thinks yet."
+            "MIND TRACE refused. No mind trace is available."
         );
         assert_eq!(
             MIND_USAGE,
-            "MIND [PROFILE <name>|RULES [slot]|RULE <slot> <rule or OFF>]; bare MIND reads your sealed mind."
+            "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]]; bare MIND reads your sealed mind."
         );
     }
 

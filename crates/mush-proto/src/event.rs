@@ -1140,6 +1140,14 @@ pub enum OutputEvent {
         event: Box<OutputEvent>,
     },
 
+    /// Connection-private result of a typed module request.
+    InvokeResult {
+        /// Original client request id, including asynchronous completion.
+        id: u64,
+        /// Bounded service result, never broadcast to an actor's other connections.
+        result: crate::InvokeResult,
+    },
+
     // -- session control --
     /// The server's answer to a
     /// [`ClientCommand::Resume`](crate::ClientCommand::Resume), sent before

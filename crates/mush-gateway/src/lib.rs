@@ -948,7 +948,9 @@ impl SocketGatewayLink {
     /// an actor to check; everything else returns `false`.
     fn is_input_exempt(&self, input: &GatewayInput) -> bool {
         let actor = match input {
-            GatewayInput::Cmd { actor, .. } | GatewayInput::Query { actor, .. } => *actor,
+            GatewayInput::Cmd { actor, .. }
+            | GatewayInput::Query { actor, .. }
+            | GatewayInput::Invoke { actor, .. } => *actor,
             GatewayInput::Action(action) => action.actor,
         };
         self.sessions.is_char_flood_exempt(char_key(actor))
@@ -1043,6 +1045,7 @@ impl SocketGatewayLink {
         let input_kind = match &input {
             GatewayInput::Cmd { .. } => "cmd",
             GatewayInput::Query { .. } => "query",
+            GatewayInput::Invoke { .. } => "invoke",
             GatewayInput::Action(_) => "action",
         };
         if depth >= input_cap as u64 {

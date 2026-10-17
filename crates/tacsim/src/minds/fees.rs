@@ -21,6 +21,8 @@
 //! | `ranges(v, band, obey)` | [`FEE_RANGES`] 2 |
 //! | `line_to(v, id)` | [`FEE_LINE_TO`] 20, at most [`super::STOCK_LINE_TO_PER_THINK`] a think |
 //! | `entry_cell`, `far_entry_cell`, `stand_off_cell`, `patrol_step`, `fall_back_to_waypoint` | [`FEE_NAV`] 30 |
+//! | `terrain_at(cell)` | [`FEE_TERRAIN`] 4, at most 16 local reads per think |
+//! | `spot_cell(letter)` | [`FEE_SPOT`] 4, fixed public key-spot lookup |
 //! | `rand(k)` | [`FEE_RAND`] 2 |
 
 use crate::arena::mind::MindView;
@@ -52,6 +54,12 @@ pub const FEE_HOLDS_ROW: u64 = 1;
 /// **`line_to`** (doc 17 §7: 20, capped per think by tier because it is a
 /// trace).
 pub const FEE_LINE_TO: u64 = 20;
+
+/// One bounded public terrain-cell lookup, including refused/unavailable attempts.
+pub const FEE_TERRAIN: u64 = 4;
+
+/// One public map-letter lookup, including invalid or absent labels.
+pub const FEE_SPOT: u64 = 4;
 
 /// **Each nav kernel** (doc 17 §7: 30) — the motor's pickers.
 pub const FEE_NAV: u64 = 30;

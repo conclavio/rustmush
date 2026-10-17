@@ -643,6 +643,12 @@ fn compose_server_modules(
                 None => m,
             }
         }),
+        // 17d M6.1: neutral authoring records load before the game audits their
+        // immutable source references in on_all_loaded. Cross-namespace writes
+        // are delegated only on rosters which also compose the TacSim owner.
+        Box::new(mush_roll::RollModule::with_writers(
+            tacsim_delegate.then_some(crate::NS),
+        )),
         Box::new(mush_script::ScriptModule::new()),
     ];
     (modules, Arc::clone(&inventory_handles))

@@ -125,7 +125,7 @@
 //!   and the thinks collected and not yet written — [`Snapshot::encode`]
 //!   refuses an arena whose `awaiting` holds a think, by name, and the decode
 //!   lays all three down empty; `pending_cards` (17b cut
-//!   M1b.5: the card changes `@mind/set` offered, applied and emptied at the next pulse's start, so
+//!   M1b.5: the card changes `@mind/live` offered, applied and emptied at the next pulse's start, so
 //!   empty between two pulses; not carried, so `SNAPSHOT_FORMAT` does not
 //!   move), `lost_designators`,
 //!   `spent_hits` and `pending_notices` (empty between two pulses — [`Snapshot::encode`]
@@ -318,7 +318,13 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// **11 since M5rules:** condition rows contain ordered typed fire, hold and
 /// Sensors rules, with stable slot identity and bounded native predicates.
 /// Format 10 is refused rather than migrated; saved in-flight matches restart.
-pub const SNAPSHOT_FORMAT: u32 = 12;
+/// **12 since M5r:** motor rows retain requested goals, outcomes and entry-zone
+/// formation state. **13 since M6:** canonical card catalogs and profile runtimes,
+/// sealed bindings, pending rule samples and schedules, own-hit stamps, the tape
+/// cursor and the captured snapshot byte limit replace the old fixed-card shape.
+/// Earlier formats, including 12 and 11, are refused by name before state decode;
+/// in-flight matches restart rather than migrating.
+pub const SNAPSHOT_FORMAT: u32 = 13;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -388,6 +394,14 @@ pub struct SnapshotHead {
 /// never a panic, and each names what it compared.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotError {
+    /// Complete encoded document, including its escaped state string.
+    #[error("snapshot needs at least {required_at_least} bytes; maximum is {limit}")]
+    Capacity {
+        /// Bytes counted before serialization stopped.
+        required_at_least: u64,
+        /// Effective encoded-document ceiling.
+        limit: u64,
+    },
     /// The document's `record` is not [`SNAPSHOT_RECORD`].
     #[error("not a snapshot document (record {found})")]
     Record {
@@ -583,6 +597,14 @@ impl Snapshot {
     /// holding any of them was not handed over between two pulses — or when a
     /// value does not serialise.
     pub fn encode(arena: &Arena) -> Result<Snapshot, SnapshotError> {
+        Self::encode_with_limit(arena, arena.arena_cfg.snapshot_max_bytes)
+    }
+
+    /// A stricter caller budget; never raises the arena's captured limit.
+    pub fn encode_with_limit(arena: &Arena, limit: u64) -> Result<Snapshot, SnapshotError> {
+        let limit = limit
+            .min(arena.arena_cfg.snapshot_max_bytes)
+            .min(super::snapshot_capacity::SNAPSHOT_MAX_BYTES);
         if !arena.lost_designators.is_empty()
             || !arena.spent_hits.is_empty()
             || !arena.pending_notices.is_empty()
@@ -601,11 +623,14 @@ impl Snapshot {
                 units: arena.awaiting.iter().copied().collect(),
             });
         }
-        let state = serde_json::to_string(&ArenaStateRef::from(arena))
-            .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
+        let state = String::from_utf8(super::snapshot_capacity::json_bytes(
+            &ArenaStateRef::from(arena),
+            limit,
+        )?)
+        .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
         let hash = state_hash(arena);
         let definition_digest = digest_text(&arena.definition.digest());
-        let document = serde_json::to_value(Document {
+        let encoded = Document {
             record: SNAPSHOT_RECORD.to_owned(),
             format: SNAPSHOT_FORMAT,
             arena: arena.definition.id.clone(),
@@ -617,8 +642,11 @@ impl Snapshot {
             state_hash: hash.to_string(),
             state_digest: state_digest(&state),
             state: Cow::Borrowed(&state),
-        })
-        .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
+        };
+        // Count the escaped outer document before allocating its state copy.
+        super::snapshot_capacity::json_len(&encoded, limit)?;
+        let document = serde_json::to_value(encoded)
+            .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
         Ok(Snapshot {
             at_ms: arena.now_ms,
             state_hash: hash,
@@ -640,6 +668,7 @@ impl Snapshot {
     /// [`SnapshotError::Malformed`] with `serde`'s message — a missing or
     /// unknown key, or a `state_hash` that is not a decimal `u64`.
     pub fn head(document: &serde_json::Value) -> Result<SnapshotHead, SnapshotError> {
+        super::snapshot_capacity::json_len(document, super::snapshot_capacity::SNAPSHOT_MAX_BYTES)?;
         read(document).map(|(head, _)| head)
     }
 
@@ -683,6 +712,22 @@ impl Snapshot {
         document: &serde_json::Value,
         definition: ArenaDefinition,
     ) -> Result<Arena, SnapshotError> {
+        Self::decode_with_limit(
+            document,
+            definition,
+            super::snapshot_capacity::SNAPSHOT_MAX_BYTES,
+        )
+    }
+
+    /// Apply the operator's current ceiling as well as the captured ceiling.
+    /// The first state scan allocates no arena collections.
+    pub fn decode_with_limit(
+        document: &serde_json::Value,
+        definition: ArenaDefinition,
+        limit: u64,
+    ) -> Result<Arena, SnapshotError> {
+        let limit = limit.min(super::snapshot_capacity::SNAPSHOT_MAX_BYTES);
+        super::snapshot_capacity::json_len(document, limit)?;
         let (head, state) = read(document)?;
         let given = digest_text(&definition.digest());
         if given != head.definition_digest {
@@ -704,9 +749,30 @@ impl Snapshot {
                 computed,
             });
         }
+        #[derive(Deserialize)]
+        struct RecordedLimit {
+            arena_cfg: LimitField,
+        }
+        #[derive(Deserialize)]
+        struct LimitField {
+            snapshot_max_bytes: u64,
+        }
+        let recorded: RecordedLimit = serde_json::from_str(&state)
+            .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
+        let recorded = recorded.arena_cfg.snapshot_max_bytes;
+        if !(super::snapshot_capacity::SNAPSHOT_MIN_BYTES
+            ..=super::snapshot_capacity::SNAPSHOT_MAX_BYTES)
+            .contains(&recorded)
+        {
+            return Err(SnapshotError::Malformed(
+                "recorded snapshot byte limit is invalid".into(),
+            ));
+        }
+        super::snapshot_capacity::json_len(document, limit.min(recorded))?;
         let parsed: ArenaState = serde_json::from_str(&state)
             .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
         let arena = parsed.into_arena(definition)?;
+        super::memory_bound::validate_arena(&arena)?;
         // `Arena::new`'s pose refusals, not `CellImpassable` (see above).
         check_poses(&arena.definition.terrain, &arena.units)?;
         let decoded = state_hash(&arena);
@@ -738,6 +804,26 @@ impl Snapshot {
             )));
         }
         Ok(arena)
+    }
+
+    /// Refuse oversized raw envelopes before allocating their JSON value.
+    /// Value-based module boot has already allocated that envelope; its entrypoint
+    /// still bounds the inner state parse before arena collections grow.
+    pub fn decode_bytes(
+        bytes: &[u8],
+        definition: ArenaDefinition,
+        limit: u64,
+    ) -> Result<Arena, SnapshotError> {
+        let limit = limit.min(super::snapshot_capacity::SNAPSHOT_MAX_BYTES);
+        if bytes.len() as u64 > limit {
+            return Err(SnapshotError::Capacity {
+                required_at_least: bytes.len() as u64,
+                limit,
+            });
+        }
+        let document = serde_json::from_slice(bytes)
+            .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
+        Self::decode_with_limit(&document, definition, limit)
     }
 
     /// **The state string's bytes** — what the snapshot costs to store, and what
@@ -835,11 +921,14 @@ struct ArenaStateRef<'a> {
     due: &'a DueHeap,
     ledger: LedgerState,
     clock: ClockState,
+    tape_cursor: Option<crate::arena::input_tape::TapeCursor>,
     seed: &'a u64,
     resolution: &'a ResolutionDef,
     pilots: &'a [Pilot],
     motors: &'a MotorTable,
     minds: &'a BTreeMap<ObjId, MindState>,
+    cards: &'a crate::arena::runtime_card::CardCatalog,
+    profiles: &'a BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
     conditions: &'a ConditionTable,
     #[serde(serialize_with = "pairs::serialize_ref")]
     held_said: &'a BTreeMap<(ObjId, u8, ContactId), i64>,
@@ -891,6 +980,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             // Re-derived (16c T-105): built over the carried units' chassis.
             chassis: _chassis,
             clock,
+            tape_cursor,
+            tape_witnesses: _tape_witnesses,
             seed,
             resolution,
             pilots,
@@ -900,6 +991,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             motors,
             // Carried (17b cut M1a.5): every unit mind's row.
             minds,
+            cards,
+            profiles,
             // Carried (17b cut M1b.1): every hull's condition slots, the
             // held-shot rows (through `pairs`) and the floor captured at
             // check-out.
@@ -913,6 +1006,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             // arena that holds any (`awaiting`, below), and the decode lays
             // all three down empty.
             awaiting: _awaiting,
+            traces: _traces,
             collected: _collected,
             unsettled: _unsettled,
             // Reset (17b cut M1b.5): the card changes waiting for the next
@@ -927,6 +1021,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             min_cost: _min_cost,
             pending,
             shots,
+            // Reset: report-only observations never enter saved execution.
+            acceptance: _acceptance,
             next_shot_seq,
             // Reset: a slot of one phase, outside between two pulses.
             action_hash: _action_hash,
@@ -968,11 +1064,14 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             due,
             ledger: ledger.to_state(),
             clock: clock.to_state(),
+            tape_cursor: *tape_cursor,
             seed,
             resolution,
             pilots,
             motors,
             minds,
+            cards,
+            profiles,
             conditions,
             held_said,
             odds_floor_permille,
@@ -1014,11 +1113,14 @@ struct ArenaState {
     due: DueHeap,
     ledger: LedgerState,
     clock: ClockState,
+    tape_cursor: Option<crate::arena::input_tape::TapeCursor>,
     seed: u64,
     resolution: ResolutionDef,
     pilots: Vec<Pilot>,
     motors: MotorTable,
     minds: BTreeMap<ObjId, MindState>,
+    cards: crate::arena::runtime_card::CardCatalog,
+    profiles: BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
     conditions: ConditionTable,
     #[serde(with = "pairs")]
     held_said: BTreeMap<(ObjId, u8, ContactId), i64>,
@@ -1060,11 +1162,14 @@ impl ArenaState {
             due,
             ledger,
             clock,
+            tape_cursor,
             seed,
             resolution,
             pilots,
             motors,
             minds,
+            cards,
+            profiles,
             conditions,
             held_said,
             odds_floor_permille,
@@ -1121,7 +1226,7 @@ impl ArenaState {
         let min_cost = CostRow::ALL.map(|row| definition.terrain.min_cost(row));
         // 17b cut M1a.5: the runner `Arena::new` opens with, by the same call.
         let mind_runner = default_mind_runner(&arena_cfg);
-        Ok(Arena {
+        let mut arena = Arena {
             // 17b cut M2.2: wrapped once, as `Arena::new` wraps it.
             definition: std::sync::Arc::new(definition),
             units,
@@ -1136,11 +1241,15 @@ impl ArenaState {
             ledger,
             index,
             clock: Clock::from_state(clock),
+            tape_cursor,
+            tape_witnesses: crate::arena::input_tape::WitnessBuffer::default(),
             seed,
             resolution,
             pilots,
             motors,
             minds,
+            cards,
+            profiles,
             conditions,
             held_said,
             odds_floor_permille,
@@ -1150,6 +1259,7 @@ impl ArenaState {
             // Reset (17b cut M4.1): laid down empty — no think awaits across
             // a snapshot (`encode` refused while one did).
             awaiting: BTreeSet::new(),
+            traces: super::author_trace::TraceStore::default(),
             collected: Vec::new(),
             unsettled: Vec::new(),
             pending_cards: BTreeMap::new(),
@@ -1160,6 +1270,7 @@ impl ArenaState {
             min_cost,
             pending,
             shots,
+            acceptance: None,
             next_shot_seq,
             action_hash: ActionHash::Outside,
             stop,
@@ -1184,7 +1295,11 @@ impl ArenaState {
             squads_expired,
             mode,
             hold,
-        })
+        };
+        arena
+            .hydrate_profiles()
+            .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
+        Ok(arena)
     }
 }
 
@@ -1296,7 +1411,7 @@ mod tests {
     ///
     /// [`UnitState`] destructured with every field named and no `..`, answering
     /// the names, so the test below can hold the encoded unit's keys to them.
-    fn every_unit_field(unit: &UnitState) -> [&'static str; 44] {
+    fn every_unit_field(unit: &UnitState) -> [&'static str; 45] {
         let UnitState {
             id: _,
             team: _,
@@ -1342,6 +1457,7 @@ mod tests {
             hits: _,
             orders_window_s: _,
             orders_in_window: _,
+            own_last_hit_ms: _,
         } = unit;
         [
             "id",
@@ -1390,6 +1506,7 @@ mod tests {
             "hits",
             "orders_window_s",
             "orders_in_window",
+            "own_last_hit_ms",
         ]
     }
 
@@ -1665,6 +1782,18 @@ mod tests {
                     think_seq: u64::MAX,
                     t_ms: 2_482,
                     epochs: [u64::MAX, 1, 2],
+                    profile_token: crate::arena::profile_runtime::ProfileToken {
+                        unit,
+                        generation: 3,
+                        key: crate::arena::runtime_card::ProfileKey {
+                            definition: mush_core::DefinitionDigest::from_bytes([1; 32]),
+                            index: 0,
+                        },
+                    },
+                    lands_ms: 2732,
+                    period_ms: 1000,
+                    profile_class: crate::arena::core::CoreClass::I,
+                    rule_sample: None,
                     intents: vec![
                         IntentKind::Lock {
                             contact: ContactId(u64::MAX),

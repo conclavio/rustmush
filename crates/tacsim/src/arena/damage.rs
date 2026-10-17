@@ -732,6 +732,9 @@ impl Arena {
             // about it (`Arena::spent_hits`).
             self.spent_hits.insert(shot.seq);
         }
+        if let Some(target) = self.unit_mut(shot.target) {
+            target.own_last_hit_ms = Some(t_ms);
+        }
         journal.push((
             t_ms,
             EventKind::Hit {
@@ -1191,6 +1194,7 @@ impl Arena {
                     // slot on a gun the hull no longer carries is a decision
                     // about nothing. The other guns' slots keep their numbers.
                     let freed = self.conditions.clear_weapons(target, &going);
+                    self.disable_profile_slots(target, freed.iter().copied());
                     self.forget_held_said(target, &freed);
                 }
             }
@@ -1297,6 +1301,7 @@ impl Arena {
         // A wreck owns no destination. Release its reservation before another
         // same-side request chooses a formation fan cell.
         self.motors.release(target);
+        self.invalidate_rule_sample(target);
         // **17b cut M1b.1** (doc 17 §5): a wreck fires nothing, so its condition
         // slots and their held-shot rows go beside its weapons and its scheduled
         // work — before the retain below takes its `WeaponReady`s off the heap.
@@ -1310,6 +1315,7 @@ impl Arena {
             // the motor's tick goes with the rest (its arm would refuse a
             // wreck anyway; the heap is what the hash and `next_due_ms` read).
             DueKind::MotorTick { unit } => *unit != target,
+            DueKind::RuleLeaseExpired { unit, .. } => *unit != target,
             // **17b cut M1a.5**: and a mind's thinks and landings — a wreck is
             // no subject of any order, its own least of all.
             DueKind::MindThink { unit, .. } | DueKind::MindLand { unit, .. } => *unit != target,
@@ -1339,6 +1345,7 @@ impl Arena {
         // carries its answer since 17b cut M3.2. The row itself stays, as a
         // wreck's reflex row stayed: what the mind remembered is still state
         // the hash folds.
+        self.trace_cancel_pending(target, super::author_trace::Cancelled::Wreck);
         if let Some(state) = self.minds.get_mut(&target) {
             state.pending = None;
         }

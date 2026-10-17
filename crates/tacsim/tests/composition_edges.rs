@@ -44,8 +44,8 @@ fn the_game_crate_depends_on_no_host_crate() {
 /// game crate and are not read.
 #[test]
 fn the_game_crates_workspace_edges_are_the_recorded_set() {
-    // 17b cut M2.2: 31 -> 32, `mush-mind` (the unit-mind sandbox; doc 17 §7).
-    const RECORDED: [&str; 32] = [
+    // 17d M6.1: 32 -> 33, `mush-roll` (character draft/revision ownership).
+    const RECORDED: [&str; 33] = [
         "mush-atlas",
         "mush-campaign",
         "mush-canon",
@@ -70,6 +70,7 @@ fn the_game_crates_workspace_edges_are_the_recorded_set() {
         "mush-privileges",
         "mush-propagation",
         "mush-proto",
+        "mush-roll",
         "mush-ruleset",
         "mush-scenes",
         "mush-script",
@@ -115,5 +116,56 @@ fn the_game_crates_workspace_edges_are_the_recorded_set() {
         "crates/tacsim/Cargo.toml's `mush-*` dependencies are not the recorded set: an \
          edge was added or removed. If it is meant, change the list in this test in the \
          same diff, so the edge is reviewed"
+    );
+}
+
+#[test]
+fn m6_production_roster_registers_the_roll_owner_and_only_the_declared_writer() {
+    use tacsim::composition;
+    let (mut modules, inventory) = composition::server_modules_with_tacsim(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        &Default::default(),
+        &Default::default(),
+        Default::default(),
+    );
+    assert_eq!(
+        modules
+            .iter()
+            .filter(|module| module.name() == mush_roll::NS)
+            .count(),
+        1
+    );
+    modules.push(composition::tacsim_module_wired(
+        Default::default(),
+        false,
+        inventory,
+    ));
+    let composition =
+        mush_core::Engine::compose_modules(mush_core::Registry::new(), modules).unwrap();
+    assert!(
+        composition
+            .registry()
+            .persist_delegation("tacsim", mush_roll::NS)
+            .is_some()
+    );
+    let engine = mush_core::Engine::from_composition(mush_core::World::new_minimal(), composition);
+    assert!(
+        engine
+            .world
+            .module_state::<mush_roll::RollStore>()
+            .is_some()
+    );
+    let neutral = mush_core::Engine::compose_modules(
+        mush_core::Registry::new(),
+        composition::server_modules(),
+    )
+    .unwrap();
+    assert!(
+        neutral
+            .registry()
+            .persist_delegation("tacsim", mush_roll::NS)
+            .is_none()
     );
 }

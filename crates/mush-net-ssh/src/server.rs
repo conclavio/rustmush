@@ -11,10 +11,10 @@
 //! `play`/`guest`/`new` are accepted with `auth_none` and land on the
 //! classic welcome screen; any other username is treated as an account
 //! name and authenticated via password or keyboard-interactive against
-//! [`SshHooks::auth_account`] (public-key auth arrives with `@sshkey` in
-//! M2/M3 and is rejected toward password until then).
+//! [`SshHooks::auth_account`], or a verified registered public key.
 //!
-//! A PTY is required; `exec`/`subsystem` requests are refused. Once a
+//! Interactive shells require a PTY. Verified public keys may use only the
+//! bounded `mind push|pull|check` JSON exec service; subsystems are refused. Once a
 //! character connects ([`SshHooks::connect_character`]), a per-connection
 //! **output pump** task consumes the bounded event queue, renders each
 //! [`OutputEvent`] through `mush-ansi` with the connection's live
@@ -299,6 +299,9 @@ impl russh::server::Server for Ingress {
                 history: HistoryCursor::default(),
             })),
             route: Route::PreAuth,
+            auth_method: AuthMethod::None,
+            exec_input: None,
+            exec_submitted: false,
             channel: None,
             pty_seen: false,
             shell_started: false,
@@ -333,6 +336,14 @@ enum Mode {
     Tui,
     /// `^D` quit confirmation; `prev` is restored on cancel.
     QuitConfirm { prev: Box<Mode> },
+}
+
+/// Only the authoritative signed-key callback records PublicKey.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthMethod {
+    None,
+    Password,
+    PublicKey,
 }
 
 /// How SSH-level auth resolved.
@@ -422,6 +433,9 @@ impl Shared {
 }
 
 struct ConnHandler {
+    auth_method: AuthMethod,
+    exec_input: Option<crate::mind_exec::ExecInput>,
+    exec_submitted: bool,
     hooks: Arc<dyn SshHooks>,
     banner: Arc<str>,
     conn_id: u64,
@@ -644,6 +658,7 @@ impl ConnHandler {
                 account,
                 characters,
             } => {
+                self.auth_method = AuthMethod::Password;
                 self.route = Route::Account {
                     account,
                     characters,
@@ -794,9 +809,11 @@ impl ConnHandler {
             }
             return Ok(());
         }
-        // Entering a screen or refreshing a pane submits read-only queries;
-        // each reply lands on the pump and repaints. Like the WHO rail, none
-        // of it stamps idle (design M15 D5).
+        // Author edits use the typed owner path; hydration stays read-only.
+        // Replies land on the pump and repaint the current view.
+        for (id, request) in result.invokes {
+            self.hooks.invoke(self.conn_id, id, request).await;
+        }
         for (name, args) in result.queries {
             self.hooks.query(self.conn_id, name, args).await;
         }
@@ -1180,6 +1197,88 @@ impl ConnHandler {
         }
     }
 
+    fn exec_error(
+        &self,
+        session: &mut Session,
+        channel: ChannelId,
+        message: &str,
+    ) -> Result<(), russh::Error> {
+        let response = mush_proto::InvokeResult::error("refused", message);
+        let bytes = exec_json(&response);
+        session.data(channel, bytes)?;
+        session.exit_status_request(channel, 2)?;
+        session.eof(channel)?;
+        session.close(channel)
+    }
+
+    async fn start_mind_exec(
+        &mut self,
+        session: &mut Session,
+        channel: ChannelId,
+        request: mush_proto::InvokeRequest,
+    ) -> Result<(), russh::Error> {
+        if self.auth_method != AuthMethod::PublicKey {
+            return self.exec_error(
+                session,
+                channel,
+                "Verified public-key authentication is required.",
+            );
+        }
+        let Route::Account {
+            account,
+            characters,
+            requested_char,
+        } = self.route.clone()
+        else {
+            return self.exec_error(
+                session,
+                channel,
+                "No owned selected character is available.",
+            );
+        };
+        let Some(character) =
+            crate::mind_exec::owned_character(&characters, requested_char.as_deref())
+        else {
+            return self.exec_error(
+                session,
+                channel,
+                "No owned selected character is available.",
+            );
+        };
+        let (tx, rx) = mpsc::channel::<Arc<OutputEvent>>(OUTPUT_BUFFER);
+        let mut caps = self.lock().caps;
+        caps.structured = true;
+        let conn = NewConn {
+            id: self.conn_id,
+            addr: self.addr,
+            caps,
+            tx,
+        };
+        self.connected.store(true, Ordering::SeqCst);
+        if self
+            .hooks
+            .connect_character(conn, &account, character.key)
+            .await
+            .is_err()
+        {
+            self.connected.store(false, Ordering::SeqCst);
+            return self.exec_error(session, channel, "Character attachment was refused.");
+        }
+        if let Some(watchdog) = self.preauth_watchdog.take() {
+            watchdog.abort();
+        }
+        spawn_exec_pump(
+            rx,
+            session.handle(),
+            channel,
+            Arc::clone(&self.hooks),
+            self.conn_id,
+            Arc::clone(&self.connected),
+        );
+        self.hooks.invoke(self.conn_id, 1, request).await;
+        Ok(())
+    }
+
     // ---- quit confirmation ----------------------------------------------
 
     async fn begin_quit_confirm(&mut self, session: &mut Session) -> Result<(), russh::Error> {
@@ -1370,6 +1469,7 @@ impl Handler for ConnHandler {
                 account,
                 characters,
             } => {
+                self.auth_method = AuthMethod::PublicKey;
                 self.route = Route::Account {
                     account,
                     characters,
@@ -1550,11 +1650,52 @@ impl Handler for ConnHandler {
     async fn exec_request(
         &mut self,
         channel: ChannelId,
-        _data: &[u8],
+        data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        // Interactive shell only (design 02 §5.6): no exec in v1.
-        session.channel_failure(channel)?;
+        let command = crate::mind_exec::MindExec::parse(data);
+        // Any exec attempt consumes this channel's one operation, even refusal.
+        // This blocks trailing data from falling back to the line editor.
+        self.exec_submitted = true;
+        if self.channel != Some(channel)
+            || self.shell_started
+            || self.pty_seen
+            || self.auth_method != AuthMethod::PublicKey
+            || command.is_none()
+        {
+            session.channel_failure(channel)?;
+            return self.exec_error(
+                session,
+                channel,
+                "Only verified public-key mind push, mind pull or mind check is available.",
+            );
+        }
+        let Route::Account {
+            characters,
+            requested_char,
+            ..
+        } = &self.route
+        else {
+            session.channel_failure(channel)?;
+            return self.exec_error(
+                session,
+                channel,
+                "No owned selected character is available.",
+            );
+        };
+        if crate::mind_exec::owned_character(characters, requested_char.as_deref()).is_none() {
+            session.channel_failure(channel)?;
+            return self.exec_error(
+                session,
+                channel,
+                "Choose an owned character with account+character.",
+            );
+        }
+        self.shell_started = true;
+        if let Some(command) = command {
+            self.exec_input = Some(crate::mind_exec::ExecInput::new(command));
+        }
+        session.channel_success(channel)?;
         Ok(())
     }
 
@@ -1576,6 +1717,21 @@ impl Handler for ConnHandler {
     ) -> Result<(), Self::Error> {
         if self.channel != Some(channel) {
             return Ok(());
+        }
+        if let Some(input) = &mut self.exec_input {
+            if let Err(message) = input.feed(data) {
+                self.exec_input = None;
+                self.exec_submitted = true;
+                return self.exec_error(session, channel, message);
+            }
+            return Ok(());
+        }
+        if self.exec_submitted {
+            return self.exec_error(
+                session,
+                channel,
+                "Only one request is permitted per exec channel.",
+            );
         }
         // In TUI mode raw bytes drive the ratatui app (input line + nav
         // hotkeys), not the line editor (design M15 D4).
@@ -1603,12 +1759,23 @@ impl Handler for ConnHandler {
     async fn channel_eof(
         &mut self,
         channel: ChannelId,
-        _session: &mut Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.channel == Some(channel) {
-            return Err(russh::Error::Disconnect);
+        if self.channel != Some(channel) {
+            return Ok(());
         }
-        Ok(())
+        if let Some(input) = self.exec_input.take() {
+            self.exec_submitted = true;
+            let request = match input.finish() {
+                Ok(request) => request,
+                Err(message) => return self.exec_error(session, channel, message),
+            };
+            return self.start_mind_exec(session, channel, request).await;
+        }
+        if self.exec_submitted {
+            return Ok(());
+        }
+        Err(russh::Error::Disconnect)
     }
 
     async fn channel_close(
@@ -1957,6 +2124,16 @@ fn spawn_output_pump(
             // locally, and a `Hello` names feeds to hydrate: ask the ordinary
             // read-only query seam after the connection lock has dropped; the
             // TUI de-duplicates resyncs until a valid replacement arrives.
+            let invokes = {
+                let mut sh = shared.lock().expect("conn state poisoned");
+                sh.tui
+                    .as_mut()
+                    .map(|t| t.take_invokes())
+                    .unwrap_or_default()
+            };
+            for (id, request) in invokes {
+                hooks.invoke(conn_id, id, request).await;
+            }
             for (name, args) in queries {
                 hooks.query(conn_id, name, args).await;
             }
@@ -2000,6 +2177,74 @@ fn spawn_output_pump(
                 "".into(),
             )
             .await;
+    });
+}
+
+// Exec output is structured only: room announcements, prompts and unrelated
+// events are never rendered into the source/diagnostic stream.
+fn exec_json(result: &mush_proto::InvokeResult) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec(&result.clone().bounded())
+        .unwrap_or_else(|_| br#"{"service":"mind","result":{"status":"error","code":"encoding","message":"Result unavailable."}}"#.to_vec());
+    bytes.push(b'\n');
+    bytes
+}
+fn spawn_exec_pump(
+    mut rx: mpsc::Receiver<Arc<OutputEvent>>,
+    handle: russh::server::Handle,
+    channel: ChannelId,
+    hooks: Arc<dyn SshHooks>,
+    conn: u64,
+    connected: Arc<AtomicBool>,
+) {
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(125);
+        let mut status = 2;
+        loop {
+            let event = match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(event)) => event,
+                _ => {
+                    let error = mush_proto::InvokeResult::error(
+                        "expired",
+                        "Authoring request expired or disconnected.",
+                    );
+                    let _ = tokio::time::timeout(
+                        WRITE_TIMEOUT,
+                        handle.data(channel, exec_json(&error)),
+                    )
+                    .await;
+                    break;
+                }
+            };
+            match event.as_ref() {
+                OutputEvent::InvokeResult { id: 1, result } => {
+                    let result = result.clone().bounded();
+                    let mush_proto::InvokeResult::Mind(response) = &result;
+                    if !matches!(
+                        tokio::time::timeout(
+                            WRITE_TIMEOUT,
+                            handle.data(channel, exec_json(&result))
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        break;
+                    }
+                    if response.is_final() {
+                        status = u32::from(!response.succeeded());
+                        break;
+                    }
+                }
+                OutputEvent::Disconnect { .. } => break,
+                _ => {}
+            }
+        }
+        let _ =
+            tokio::time::timeout(WRITE_TIMEOUT, handle.exit_status_request(channel, status)).await;
+        let _ = tokio::time::timeout(WRITE_TIMEOUT, handle.eof(channel)).await;
+        let _ = tokio::time::timeout(WRITE_TIMEOUT, handle.close(channel)).await;
+        if connected.swap(false, Ordering::SeqCst) {
+            hooks.disconnected(conn).await;
+        }
     });
 }
 

@@ -8,6 +8,7 @@
 //! SIM ABORT               call the match off (any participant, or staff)
 //! SIM STATUS              the centre, as it stands
 //! SIM AI [n]              how many units a side fields when the machines fill in
+//! SIM AI CLASS [0|I|II|III] your side's lead-owned fill class cap
 //! SIM UNIT [<type>]       which unit type your own slot fields
 //! SIM CONCEDE             give the match up for your side (its lead, while it runs)
 //! SIM HISTORY             the centre's last twenty matches, newest first
@@ -202,7 +203,7 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
 /// Whatever the centre refused, as the one line the player sees.
 pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM CONCEDE | \
-                         SIM STATUS | SIM AI [n] | SIM UNIT [type] | SIM HISTORY | \
+                         SIM STATUS | SIM AI [n] | SIM AI CLASS [0|I|II|III] | SIM UNIT [type] | SIM HISTORY | \
                          SIM REPORT [match] | SIM REPLAY <match> [<m:ss> | next | prev] \
                          [<callsign>] | SIM MODE [skirmish|hold] | SIM RANGE [<n>] | \
                          SIM MIND [<mind> [PROFILE <p>, …] | none] | \
@@ -251,6 +252,16 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let (head, tail) = rest
                 .split_once(char::is_whitespace)
                 .map_or((rest, ""), |(head, tail)| (head, tail.trim()));
+            if head.eq_ignore_ascii_case("class") {
+                let chosen = if tail.is_empty() {
+                    None
+                } else {
+                    Some(crate::arena::core::CoreClass::parse(tail).ok_or_else(|| {
+                        CmdError::msg("Which class? `SIM AI CLASS 0`, `I`, `II` or `III`.")
+                    })?)
+                };
+                return lobby::ai_class(ctx, chosen).map_err(refusal);
+            }
             if head.eq_ignore_ascii_case("mind") {
                 let request = lobby::FillRequest::parse(tail).map_err(|usage| {
                     CmdError::msg(match usage {
@@ -582,6 +593,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    SIM AI [n]          how many units a side fields when the server fills the \
                    unclaimed pods with machines. A side's lead or staff, before the \
                    match starts; bare, it reads the number.\n\
+                   SIM AI CLASS [class] the highest class your side's fill may use: 0, I, II \
+                   or III. Your side's lead sets it during selection; bare, it reads the cap. \
+                   The server's maximum, the mind's rating and the chassis core still apply.\n\
                    SIM UNIT [type]     which unit type your own slot fields. Bare, it lists \
                    what this server can field and what you are flying; with a type, your pod's \
                    tank is refitted to it when the match starts. Your own slot only, before the \

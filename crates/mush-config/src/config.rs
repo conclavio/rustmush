@@ -100,7 +100,8 @@
 //! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from its unit mind (the reflex controller until 17b cut M4.3); `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
-//! | `[tacsim.minds].fill_class` | `"I"` | **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every seated hull are sealed and admitted at — `0`, `I`, `II` or `III` by its word; the seal's class is the least of the stock rating (`I`), the core and this, so above `I` it caps nothing until the cut that rates a mind above Class I (17b cut M5.1: every mind is rated `I`; a hull that chose no mind is admitted at this, seated or not); a config still naming the retired lab knob `fill_controller` (17b cut M1b.5) refuses the boot |
+//! | `[tacsim.minds].fill_class` | `"I"` | Default AI fill class cap when its lead has selected none; pilot minds use `max_class` independently, and every seal also respects its rating and chassis core |
+//! | `[tacsim.minds].max_class` | `"III"` | Operator maximum for pilot and AI fill minds; `0`, `I`, `II` or `III` |
 //! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out; 17b cut M5.1 lets a principal choose a lawful preset with `SIM MIND`, sealed from 17b cut M5.2) |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
@@ -1020,6 +1021,14 @@ pub struct TacsimArenaCfg {
     /// lands with the snapshot's format because the snapshot carries the
     /// arena's frozen block whole.
     pub snapshot_ms: u32,
+    /// Encoded recovery-document ceiling including the escaped state string.
+    /// 16–480 MiB; admission reserves future growth. Not a normal allocation
+    /// or the harness report-only size threshold. Below Redis RESP 512 MiB.
+    pub snapshot_max_bytes: u64,
+    /// Per-match private input recording cap (4–128 MiB).
+    pub tape_max_bytes: u64,
+    /// Aggregate resident retained recordings (4–1024 MiB).
+    pub tape_retained_max_bytes: u64,
     /// `[tacsim.arena.intents]` — the per-unit intent inbox bound.
     pub intents: TacsimIntentsCfg,
     /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
@@ -1042,6 +1051,9 @@ impl Default for TacsimArenaCfg {
             max_units_by_class: BTreeMap::from([("drone".to_owned(), 1)]),
             // 16b cut AF.1: every five seconds of arena time (16c N16).
             snapshot_ms: 5_000,
+            snapshot_max_bytes: 480 * 1024 * 1024,
+            tape_max_bytes: 64 * 1024 * 1024,
+            tape_retained_max_bytes: 128 * 1024 * 1024,
             intents: TacsimIntentsCfg::default(),
             ledger: TacsimLedgerCfg::default(),
             reflex: TacsimReflexCfg::default(),
@@ -1409,15 +1421,38 @@ impl Default for TacsimCommandCfg {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimMindsCfg {
+    /// Independent proving worker threads; 1–8, separate from live minds.
+    pub proving_workers: usize,
+    /// Maximum queued private jobs; 1–128.
+    pub proving_queued: usize,
+    /// Shared account allowance per UTC day, in simulated unit-minutes.
+    pub proving_daily_unit_minutes: u64,
+    /// Retained completed proving runs per character; 1–100.
+    pub proving_completed_per_character: usize,
+    /// Retained proving bytes per character; 16–256 MiB.
+    pub proving_bytes_per_character: u64,
+    /// Private bench idle expiry; 60 seconds through 30 minutes.
+    pub bench_idle_ms: u64,
+    /// Global bench session limit; each account may hold one.
+    pub bench_sessions: usize,
+    /// Global retained bench state cap; 16–512 MiB.
+    pub bench_state_bytes: u64,
+    /// Read-only expression ceiling including fees; 1–500.
+    pub bench_eval_ops: u64,
+    /// Maximum encoded expression result; 64–4096 bytes.
+    pub bench_eval_result_bytes: usize,
     /// The Compact floor, per mille. `10` to `950` in steps of `10` (17b cut
     /// M3.3; above `100` every Line-carded check-out is refused, and 17b cut
     /// M5.1's `SIM MIND` refuses a preset under it at the choice).
     pub odds_floor_permille: u32,
-    /// **17b cut M4.3** (doc 17 §9, D-UM-37): the class the AI fill and every
-    /// seated hull are sealed and admitted at, by its word — `0`, `I`, `II`
-    /// or `III`; parsed and refused by name in
+    /// Default AI fill ceiling when the lead has selected none, by its word
+    /// — `0`, `I`, `II` or `III`; pilot minds use `max_class` independently.
+    /// Parsed and refused by name in
     /// `mush_server::config_ext::tacsim_config`. Stock `I`.
     pub fill_class: String,
+    /// Operator ceiling for every mind, independently of the AI-fill default.
+    /// Class word `0`, `I`, `II` or `III`; stock III.
+    pub max_class: String,
     /// **17b cut M3.1** (doc 17 §9, D-UM-35): `[tacsim.minds.classes.<class>]`,
     /// the Compact class table's overrides — the class word (`0`, `I`, `II`,
     /// `III`) to any of its eight figures (`think_ms`, `ops`, `rows`,
@@ -1452,8 +1487,19 @@ pub struct TacsimMindsCfg {
 impl Default for TacsimMindsCfg {
     fn default() -> Self {
         TacsimMindsCfg {
+            proving_workers: 1,
+            proving_queued: 32,
+            proving_daily_unit_minutes: 2_000,
+            proving_completed_per_character: 20,
+            proving_bytes_per_character: 64 * 1024 * 1024,
+            bench_idle_ms: 30 * 60 * 1_000,
+            bench_sessions: 64,
+            bench_state_bytes: 128 * 1024 * 1024,
+            bench_eval_ops: 500,
+            bench_eval_result_bytes: 4_096,
             odds_floor_permille: 100,
             fill_class: "I".to_owned(),
+            max_class: "III".to_owned(),
             classes: serde_json::Value::Object(serde_json::Map::new()),
             pool_base_ops_s: 500_000,
             pool_per_unit_ops_s: 1_000,
@@ -3271,5 +3317,19 @@ scene_turn_dedline_secs = 30
         assert_eq!(set.store.archive.retain_hours, 72);
         assert_eq!(set.store.archive.segment_chunks, 16);
         assert_eq!(set.store.archive.max_purge_per_pass, 4_096, "default kept");
+    }
+}
+
+#[cfg(test)]
+mod recovery_capacity_tests {
+    #[test]
+    fn m6_snapshot_ceiling_is_a_distinct_typed_operator_setting() {
+        let cfg: super::Config =
+            toml::from_str("[tacsim.arena]\nsnapshot_max_bytes = 33554432\n").unwrap();
+        assert_eq!(cfg.tacsim.arena.snapshot_max_bytes, 32 * 1024 * 1024);
+        assert_eq!(
+            super::TacsimArenaCfg::default().snapshot_max_bytes,
+            480 * 1024 * 1024
+        );
     }
 }

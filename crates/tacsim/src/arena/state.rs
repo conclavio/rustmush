@@ -354,6 +354,20 @@ impl ArenaTerrain {
         Ok(terrain)
     }
 
+    /// The immutable locomotion prices captured by a private replay. Unlike
+    /// the legacy ground digest, this includes the wheeled and legged prices.
+    pub(crate) fn replay_prices(&self) -> Option<[[u16; 3]; 18]> {
+        self.row_costs
+    }
+
+    /// Rebuild the terrain caches using the recorded prices, never today's
+    /// content table. The containing replay verifies its complete payload first.
+    pub(crate) fn with_replay_prices(mut self, prices: Option<[[u16; 3]; 18]>) -> Self {
+        self.row_costs = prices;
+        self.min_cost = self.cheapest();
+        self
+    }
+
     /// Each row's cheapest passable price over the cells, at least `1`.
     fn cheapest(&self) -> [u32; 3] {
         let mut out = [1_u32; 3];
@@ -2353,6 +2367,9 @@ pub struct UnitState {
     pub shots_fired: u32,
     /// **How many of them landed** (16b cut W.2), likewise.
     pub hits: u32,
+    /// Arena millisecond of the latest accepted hit on this hull, including a
+    /// spent section. A miss or refused mutation never changes this own fact.
+    pub own_last_hit_ms: Option<i64>,
     /// **The arena second the seat-order count below belongs to** (16b cut M.1,
     /// `T-82`): `now_ms.div_euclid(1_000)` at the last discrete order a seat gave
     /// this unit, `0` at check-out.
@@ -3359,6 +3376,15 @@ impl EpochTable {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DueKind {
+    /// Expiration of one exact sampled program lease; stale events are inert.
+    RuleLeaseExpired {
+        /// The hull whose sampled gates expire.
+        unit: ObjId,
+        /// Runtime generation captured by the lease.
+        generation: u64,
+        /// The sample's successful landing timestamp.
+        lands_ms: i64,
+    },
     /// `match.startup_ms` after `STARTUP` was accepted: power goes online.
     StartupComplete {
         /// The unit starting up.
@@ -3720,6 +3746,17 @@ pub struct MatchEnd {
 /// What can refuse an [`Arena`].
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ArenaError {
+    /// Recovery state cannot be admitted under the captured byte ceiling.
+    #[error("match recovery capacity refused: {reason}")]
+    SnapshotCapacity { reason: String },
+    /// Custody's immutable mind payload cannot be admitted for this hull.
+    #[error("unit {unit} mind cannot be admitted: {reason}")]
+    Mind {
+        /// The hull whose whole admission was refused.
+        unit: ObjId,
+        /// Bounded schema/admission reason.
+        reason: String,
+    },
     /// The terrain's dimensions and its cell vector disagree, or a dimension or
     /// the cell size is zero.
     #[error(
@@ -3944,6 +3981,8 @@ pub(crate) enum ActionHash {
 /// through a match.
 #[derive(Clone, Debug)]
 pub struct Arena {
+    /// Bounded diagnostics only; never hashed, snapshotted or used by execution.
+    pub(crate) traces: super::author_trace::TraceStore,
     /// The window and its entry zones.
     ///
     /// **17b cut M2.2** (17b's settled question (ii)): behind an `Arc`, wrapped
@@ -4050,6 +4089,8 @@ pub struct Arena {
     pub chassis: Arc<[ChassisWords]>,
     /// The adaptive tempo and the lag clamp.
     pub clock: Clock,
+    pub tape_cursor: Option<super::input_tape::TapeCursor>,
+    pub tape_witnesses: super::input_tape::WitnessBuffer,
     /// The match seed: the key of every draw.
     pub seed: u64,
     /// **The resolution table** (16b cut W.2), cloned in at check-out for the same
@@ -4082,6 +4123,10 @@ pub struct Arena {
     /// (`crate::arena::hash`, item 3c), so an arena with no mind — every match
     /// that exists — folds no byte for it; carried whole by a snapshot.
     pub minds: BTreeMap<ObjId, crate::arena::mind::MindState>,
+    /// Immutable complete card definitions, admitted once and shared by key.
+    pub cards: crate::arena::runtime_card::CardCatalog,
+    /// Per-hull active program, profile generation and sampled rule authority.
+    pub profiles: BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
     /// **Every hull's condition slots** (17b cut M1b.1; doc 17 §5, D-UM-16):
     /// the principal's shot decisions, armed on a hull of any controller
     /// (`crate::arena::conditions`' head says why here and not on a mind's row).
@@ -4151,7 +4196,7 @@ pub struct Arena {
     /// empty by the decode (an encode refuses while any think awaits).
     pub(crate) unsettled: Vec<crate::arena::mind::CollectedThink>,
     /// **The card changes waiting for the next pulse** (17b cut M1b.5; doc 17
-    /// §11, §22's M1b): per hull, in arrival order, what staff's `@mind/set`
+    /// §11, §22's M1b): per hull, in arrival order, what staff's `@mind/live`
     /// offered — handed in by the task BEFORE the step
     /// ([`Arena::stage_card`]) and applied to the arena's own rows at phase
     /// 2's head (`Arena::apply_mind_cards`), which empties it.
@@ -4216,6 +4261,8 @@ pub struct Arena {
     /// where the shot's shooter, weapon, target, predicted point and round count
     /// live — everything doc 16 §3.5's re-validation at impact reads.
     pub shots: BTreeMap<u64, Shot>,
+    /// Optional proving observations, excluded from execution state.
+    pub(crate) acceptance: Option<super::acceptance::Acceptance>,
     /// The sequence the next accepted shot takes; the first shot of a match is `1`,
     /// so `0` is available as "no shot". It is the argument of the `hit:`, `facet:`
     /// and `burst:` draw labels (doc 16 §3.5), so it never repeats within a match
@@ -4477,6 +4524,24 @@ impl Arena {
         match_cfg: &MatchConfig,
         sensors_cfg: &SensorsConfig,
     ) -> Result<Arena, ArenaError> {
+        Self::new_with_minds(
+            custody,
+            arena_cfg,
+            match_cfg,
+            sensors_cfg,
+            &crate::config::MindsConfig::default(),
+        )
+    }
+
+    /// Admit custody with the exact frozen mind limits before binding any card,
+    /// native program, slot or initial think schedule.
+    pub fn new_with_minds(
+        custody: CustodyOut,
+        arena_cfg: &ArenaConfig,
+        match_cfg: &MatchConfig,
+        sensors_cfg: &SensorsConfig,
+        minds_cfg: &crate::config::MindsConfig,
+    ) -> Result<Arena, ArenaError> {
         let CustodyOut {
             definition,
             units,
@@ -4532,6 +4597,9 @@ impl Arena {
         // the custody's own seal before the custody is consumed; journalled
         // below, in unit-id order, right after `match_started`.
         let mut sealed: Vec<(ObjId, EventKind)> = Vec::with_capacity(units.len());
+        let mut cards = crate::arena::runtime_card::CardCatalog::default();
+        let mut profiles = BTreeMap::new();
+        let mut conditions = crate::arena::conditions::ConditionTable::default();
         for mut unit in units {
             sealed.push((unit.id, unit.seal.sealed_line()));
             // **16b cut AF.1**: the heading and the window, in one function the
@@ -4607,6 +4675,48 @@ impl Arena {
             // Read once here for the reason the slope limit and the heat cells
             // are: it is a fact about the fit that nothing in a match moves.
             let fatal_sections = fatal_section_mask(&unit.unit, &unit.profile);
+            let operands = unit
+                .weapons
+                .iter()
+                .map(|weapon| crate::arena::rules::RuleWeapon {
+                    id: weapon.id.clone(),
+                    rounds_max: weapon.count_per_load,
+                })
+                .collect::<Vec<_>>();
+            let admission_error = |error: crate::arena::schema::SchemaError| ArenaError::Mind {
+                unit: unit.id,
+                reason: error.to_string(),
+            };
+            unit.seal
+                .verify(&minds_cfg.classes, &operands)
+                .map_err(admission_error)?;
+            if unit.seal.odds_floor_permille != minds_cfg.odds_floor_permille {
+                return Err(ArenaError::Mind {
+                    unit: unit.id,
+                    reason: "seal floor differs from frozen match floor".into(),
+                });
+            }
+            let runtime = crate::arena::runtime::prepare_profile_runtime(
+                &mut cards,
+                unit.id,
+                &unit.seal.cards,
+                &unit.seal.rom,
+                &minds_cfg.classes,
+                unit.seal.class,
+                &operands,
+                &unit.seal.channels,
+                minds_cfg.odds_floor_permille,
+            )
+            .map_err(admission_error)?;
+            runtime
+                .program
+                .install(
+                    &mut conditions,
+                    unit.id,
+                    minds_cfg.classes.row(unit.seal.class).slots,
+                )
+                .map_err(admission_error)?;
+            profiles.insert(unit.id, runtime);
             let weapons: Vec<WeaponSummary> = unit
                 .weapons
                 .into_iter()
@@ -4733,6 +4843,7 @@ impl Arena {
                 disabled: !entry.limits.wreck && weapons_left == 0 && entry.limits.motion_disabled,
                 shots_fired: 0,
                 hits: 0,
+                own_last_hit_ms: None,
                 // **16b cut M.1** (`T-82`): no seat has ordered anything yet.
                 orders_window_s: 0,
                 orders_in_window: 0,
@@ -4919,6 +5030,8 @@ impl Arena {
             ledger: Ledger::new(&arena_cfg.ledger),
             index,
             clock: Clock::new(),
+            tape_cursor: None,
+            tape_witnesses: super::input_tape::WitnessBuffer::default(),
             seed,
             resolution,
             pilots,
@@ -4928,17 +5041,20 @@ impl Arena {
             // 17b cut M1a.5: no mind until the adoptions below; the runner is
             // the one `snapshot.rs`' decode sets too.
             minds: BTreeMap::new(),
+            cards,
+            profiles,
             // 17b cut M1b.1: no slot, nothing said, and the default floor —
             // `spawn_arena` writes the configured one before the move.
             conditions: crate::arena::conditions::ConditionTable::default(),
             held_said: BTreeMap::new(),
-            odds_floor_permille: crate::config::MindsConfig::default().odds_floor_permille,
+            odds_floor_permille: minds_cfg.odds_floor_permille,
             // 17b cut M3.1: the stock table — `spawn_arena` writes the
             // configured table before the move. (Standard Doctrine's rating
             // is each hull's seal's since 17b cut M4.1, `UnitState::seal`.)
-            classes: crate::arena::core::ClassTable::STOCK,
+            classes: minds_cfg.classes,
             // 17b cut M4.1: no think awaits, none is collected.
             awaiting: BTreeSet::new(),
+            traces: super::author_trace::TraceStore::default(),
             collected: Vec::new(),
             unsettled: Vec::new(),
             // 17b cut M1b.5: no card change offered yet.
@@ -4950,6 +5066,7 @@ impl Arena {
             min_cost,
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),
+            acceptance: None,
             next_shot_seq: 0,
             action_hash: ActionHash::Outside,
             stop: None,
@@ -4990,6 +5107,10 @@ impl Arena {
             mode,
             hold,
         };
+        let ids = arena.units.iter().map(|unit| unit.id).collect::<Vec<_>>();
+        for unit in ids {
+            arena.constrain_profile_hardware(unit);
+        }
         // Doc 16 §3.6: one pass per unit per `sensors.pass_ms`, staggered by unit
         // id. Scheduled after the arena is built because the stagger reads the
         // sorted unit vector, and before the opening hash because the hash folds
@@ -5018,6 +5139,9 @@ impl Arena {
         for (_, line) in sealed {
             let _ = arena.ledger.append(0, line, Vec::new(), opening);
         }
+        super::snapshot_capacity::admit(&arena).map_err(|error| ArenaError::SnapshotCapacity {
+            reason: error.to_string(),
+        })?;
         Ok(arena)
     }
 

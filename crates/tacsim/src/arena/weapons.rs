@@ -1145,6 +1145,9 @@ impl Arena {
         // is the impact's to spend, because acceptance never refuses for it.
         let cover = self.fire_cover(unit, target);
         let resolution = self.resolve_shot(unit, target, weapon, range, cover);
+        if let Some(observer) = &mut self.acceptance {
+            observer.record(resolution.p_permille);
+        }
         let hash = self.event_hash();
         if let Some(state) = self.unit_mut(unit) {
             state.ready_at_ms.insert(SmolStr::new(weapon), ready_at);
@@ -2285,5 +2288,71 @@ mod tests {
         arena.resolution.p_min = 0;
         arena.resolution.p_max = 0;
         arena
+    }
+    #[test]
+    fn proving_acceptance_observer_changes_no_shot_hash_snapshot_or_ledger() {
+        fn setup(observe: bool) -> Arena {
+            let mut arena = two_scouts();
+            let id = hold(&mut arena, RED, BLUE);
+            arena.resolve_lock(RED, id, 0).expect("lock");
+            online(&mut arena, RED);
+            if observe {
+                arena.acceptance = Some(crate::arena::acceptance::Acceptance::default());
+            }
+            arena
+        }
+        let mut plain = setup(false);
+        let mut observed = setup(true);
+        assert_eq!(
+            plain.resolve_fire(RED, "cannon", 0),
+            observed.resolve_fire(RED, "cannon", 0)
+        );
+        assert_eq!(
+            crate::arena::state_hash(&plain),
+            crate::arena::state_hash(&observed)
+        );
+        assert_eq!(
+            crate::arena::Snapshot::encode(&plain)
+                .expect("snapshot")
+                .document,
+            crate::arena::Snapshot::encode(&observed)
+                .expect("snapshot")
+                .document
+        );
+        assert_eq!(plain.ledger.digest(), observed.ledger.digest());
+        assert_eq!(
+            observed
+                .acceptance
+                .as_ref()
+                .expect("enabled")
+                .buckets()
+                .iter()
+                .sum::<u32>(),
+            1
+        );
+        assert_eq!(
+            observed.resolve_fire(RED, "cannon", 0),
+            Err(Refusal::Cycling)
+        );
+        assert_eq!(
+            observed
+                .acceptance
+                .as_ref()
+                .expect("enabled")
+                .buckets()
+                .iter()
+                .sum::<u32>(),
+            1,
+            "refused fires are absent"
+        );
+        for wall in [0, 1000, 2000] {
+            plain.step_settled(wall, &[], &[]);
+            observed.step_settled(wall, &[], &[]);
+            assert_eq!(
+                crate::arena::state_hash(&plain),
+                crate::arena::state_hash(&observed)
+            );
+            assert_eq!(plain.ledger.digest(), observed.ledger.digest());
+        }
     }
 }

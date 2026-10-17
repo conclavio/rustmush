@@ -39,6 +39,7 @@ struct MockHooks {
     /// Output queues by conn id (dropping one closes that connection).
     txs: Mutex<HashMap<u64, mpsc::Sender<Arc<OutputEvent>>>>,
     lines: Mutex<Vec<(u64, String)>>,
+    invokes: Mutex<Vec<(u64, mush_proto::InvokeRequest)>>,
     /// Every read-only query the transport submitted, with its arguments —
     /// the I12 tests assert the `before_seq`/`limit` actually sent.
     queries: Mutex<Vec<(u64, String, serde_json::Value)>>,
@@ -238,6 +239,67 @@ impl SshHooks for MockHooks {
                 });
                 let _ = tx.send(ev).await;
             }
+        })
+    }
+
+    fn invoke(&self, conn: u64, id: u64, request: mush_proto::InvokeRequest) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.invokes.lock().unwrap().push((conn, request.clone()));
+            let Some(tx) = self.tx_of(conn) else {
+                return;
+            };
+            let mush_proto::InvokeRequest::Mind(request) = request;
+            use mush_proto::MindResponse;
+            let result = match request {
+                mush_proto::MindRequest::Read { name, revision } => MindResponse::Read {
+                    name,
+                    revision,
+                    base: mush_proto::MindEditBase {
+                        edit: 9,
+                        revision: Some(3),
+                    },
+                    draft: Box::new(exec_draft()),
+                    rules_text: Default::default(),
+                    rules_source: Default::default(),
+                    diagnostics: Vec::new(),
+                },
+                mush_proto::MindRequest::Replace { name, base, .. } => MindResponse::Edited {
+                    name,
+                    base: mush_proto::MindEditBase {
+                        edit: base.edit + 1,
+                        revision: base.revision,
+                    },
+                },
+                mush_proto::MindRequest::Check { .. } => {
+                    tx.send(Arc::new(OutputEvent::InvokeResult {
+                        id,
+                        result: mush_proto::InvokeResult::Mind(MindResponse::Queued { job: 12 }),
+                    }))
+                    .await
+                    .unwrap();
+                    tokio::task::yield_now().await;
+                    MindResponse::Checked {
+                        job: 12,
+                        reports: vec![],
+                        diagnostics: vec![mush_proto::MindDiagnostic {
+                            field: "source".into(),
+                            message: "syntax".into(),
+                            line: Some(2),
+                            column: Some(3),
+                        }],
+                    }
+                }
+                _ => MindResponse::Error {
+                    code: "refused".into(),
+                    message: "unsupported fixture operation".into(),
+                },
+            };
+            tx.send(Arc::new(OutputEvent::InvokeResult {
+                id,
+                result: mush_proto::InvokeResult::Mind(result),
+            }))
+            .await
+            .unwrap();
         })
     }
 
@@ -1881,4 +1943,233 @@ async fn a_room_seen_in_tui_mode_is_remembered_for_the_next_tui() {
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
+}
+
+// ---- M6 typed authoring exec: real signed handshake and chunked stdin ----
+fn exec_draft() -> mush_proto::MindDraft {
+    mush_proto::MindDraft {
+        source: "// exact\r\nfn think(view, card) {}\n".into(),
+        schema: serde_json::json!({"sections":[]}),
+        presets: serde_json::json!({}),
+        profiles: serde_json::json!({"Default":{}}),
+        rules: serde_json::json!({}),
+        declared_class: "I".into(),
+        mind_abi: "fixture".into(),
+    }
+}
+fn exec_hooks() -> Arc<MockHooks> {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "author",
+        "pw123",
+        vec![CharSummary {
+            key: 77,
+            name: "Pilot".into(),
+        }],
+    );
+    hooks.register_key("author", &public_line(TEST_PRIV));
+    hooks
+}
+async fn exec_client(
+    addr: std::net::SocketAddr,
+    user: &str,
+    key: bool,
+) -> russh::client::Handle<AcceptAll> {
+    let mut client =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .expect("connect");
+    let auth = if key {
+        client
+            .authenticate_publickey(user, signing_key(TEST_PRIV))
+            .await
+            .expect("signed key")
+    } else {
+        client
+            .authenticate_password(user, "pw123")
+            .await
+            .expect("password")
+    };
+    assert!(auth.success());
+    client
+}
+async fn exec_result(
+    channel: &mut russh::Channel<russh::client::Msg>,
+) -> (Vec<mush_proto::InvokeResult>, u32) {
+    tokio::time::timeout(STEP_TIMEOUT, async {
+        let mut bytes = Vec::new();
+        let mut status = None;
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => bytes.extend_from_slice(&data),
+                ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        let records = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).expect("only JSON, no room/ANSI output"))
+            .collect();
+        (records, status.expect("final exit status"))
+    })
+    .await
+    .expect("exec deadline")
+}
+#[tokio::test]
+async fn mind_exec_signed_key_pull_push_check_keep_exact_chunks_and_final_status() {
+    let hooks = exec_hooks();
+    let addr = start_server("mind-exec", hooks.clone()).await;
+    let client = exec_client(addr, "author+Pilot", true).await;
+    let mut channel = client.channel_open_session().await.expect("channel");
+    channel
+        .exec(true, b"mind pull".to_vec())
+        .await
+        .expect("exec");
+    let input = serde_json::to_vec(&mush_proto::MindRequest::Read {
+        name: "mine".into(),
+        revision: Some("3".into()),
+    })
+    .expect("json");
+    for chunk in input.chunks(3) {
+        channel.data(chunk).await.expect("chunk");
+    }
+    channel.eof().await.expect("stdin eof");
+    let (results, status) = exec_result(&mut channel).await;
+    assert_eq!(status, 0);
+    let Some(mush_proto::InvokeResult::Mind(mush_proto::MindResponse::Read {
+        draft,
+        revision,
+        ..
+    })) = results.last()
+    else {
+        panic!("read response");
+    };
+    assert_eq!(**draft, exec_draft());
+    assert_eq!(revision.as_deref(), Some("3"));
+    assert_eq!(
+        hooks
+            .connected_chars
+            .lock()
+            .unwrap()
+            .first()
+            .map(|(_, key)| *key),
+        Some(77)
+    );
+
+    let client = exec_client(addr, "author", true).await;
+    let mut channel = client.channel_open_session().await.expect("channel");
+    channel
+        .exec(true, b"mind push".to_vec())
+        .await
+        .expect("exec");
+    let request = mush_proto::MindRequest::Replace {
+        name: "mine".into(),
+        base: mush_proto::MindEditBase {
+            edit: 9,
+            revision: Some(3),
+        },
+        draft: Box::new(exec_draft()),
+    };
+    let bytes = serde_json::to_vec(&request).expect("json");
+    for chunk in bytes.chunks(7) {
+        channel.data(chunk).await.expect("chunk");
+    }
+    channel.eof().await.expect("eof");
+    assert_eq!(exec_result(&mut channel).await.1, 0);
+    assert!(
+        hooks
+            .invokes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, got)| got == &mush_proto::InvokeRequest::Mind(request.clone()))
+    );
+
+    let client = exec_client(addr, "author", true).await;
+    let mut channel = client.channel_open_session().await.expect("channel");
+    channel
+        .exec(true, b"mind check".to_vec())
+        .await
+        .expect("exec");
+    channel
+        .data(br#"{"op":"check","name":"mine","base":{"edit":10,"revision":3}}"#.as_slice())
+        .await
+        .expect("data");
+    channel.eof().await.expect("eof");
+    let (results, status) = exec_result(&mut channel).await;
+    assert_eq!(
+        status, 1,
+        "queued acknowledgement must not claim check success"
+    );
+    assert!(matches!(
+        results.first(),
+        Some(mush_proto::InvokeResult::Mind(
+            mush_proto::MindResponse::Queued { .. }
+        ))
+    ));
+    assert!(matches!(
+        results.last(),
+        Some(mush_proto::InvokeResult::Mind(
+            mush_proto::MindResponse::Checked { .. }
+        ))
+    ));
+    assert!(
+        hooks.lines.lock().unwrap().is_empty(),
+        "never command interpolation"
+    );
+}
+#[tokio::test]
+async fn mind_exec_rejects_password_foreign_character_unknown_command_and_oversize() {
+    for (tag, user, key, command, oversized) in [
+        ("mind-password", "author", false, "mind pull", false),
+        ("mind-foreign", "author+Other", true, "mind pull", false),
+        ("mind-shell", "author", true, "mind pull; sh", false),
+        ("mind-oversize", "author", true, "mind push", true),
+    ] {
+        let hooks = exec_hooks();
+        let addr = start_server(tag, hooks.clone()).await;
+        let client = exec_client(addr, user, key).await;
+        let mut channel = client.channel_open_session().await.expect("channel");
+        channel
+            .exec(true, command.as_bytes().to_vec())
+            .await
+            .expect("exec request");
+        if oversized {
+            // Aggregate bound applies across packets, before JSON allocation.
+            for _ in 0..=mush_proto::MAX_INVOKE_BYTES / 4096 {
+                if channel.data(vec![b'x'; 4096].as_slice()).await.is_err() {
+                    break;
+                }
+            }
+        }
+        let (_, status) = exec_result(&mut channel).await;
+        assert_ne!(status, 0);
+        assert!(hooks.invokes.lock().unwrap().is_empty());
+        assert!(hooks.connected_chars.lock().unwrap().is_empty());
+    }
+}
+#[tokio::test]
+async fn mind_exec_close_before_eof_discards_partial_source_without_invocation() {
+    let hooks = exec_hooks();
+    let addr = start_server("mind-cancel-input", hooks.clone()).await;
+    let client = exec_client(addr, "author", true).await;
+    let channel = client.channel_open_session().await.expect("channel");
+    channel
+        .exec(true, b"mind push".to_vec())
+        .await
+        .expect("exec");
+    channel
+        .data(br#"{"op":"replace","name":"mine","draft":{"source":"unfinished"#.as_slice())
+        .await
+        .expect("partial");
+    channel.close().await.expect("close");
+    client
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await
+        .expect("disconnect");
+    tokio::task::yield_now().await;
+    assert!(hooks.invokes.lock().unwrap().is_empty());
+    assert!(hooks.connected_chars.lock().unwrap().is_empty());
 }

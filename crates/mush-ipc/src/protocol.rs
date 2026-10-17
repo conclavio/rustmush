@@ -54,7 +54,8 @@ pub use mush_core::ControlMsg;
 // learns of, which is the K6 trap this cut closed, so the halves must match. The
 // same version adds `ServiceReq::UnlinkPlayer`, the compensating half of that
 // insert; it needs no further bump because no released peer has ever spoken 6.
-pub const IPC_VERSION: u32 = 6;
+// Version 7 adds closed module invokes under claim/release custody.
+pub const IPC_VERSION: u32 = 7;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -132,6 +133,17 @@ pub enum WireInbound {
         name: SmolStr,
         /// Handler-defined parameters.
         args: serde_json::Value,
+    },
+    /// Closed module request, carried under player-input custody.
+    Invoke {
+        /// Physical connection.
+        conn: u64,
+        /// Gateway-selected character.
+        actor: ObjId,
+        /// Client correlation id.
+        id: u64,
+        /// Typed service operation.
+        request: mush_proto::InvokeRequest,
     },
     /// A connection finished auth and attached to an actor ([`Inbound::ConnUp`]).
     ConnUp {
@@ -218,6 +230,17 @@ pub enum GatewayInput {
         /// Handler-defined parameters.
         args: serde_json::Value,
     },
+    /// Closed module request, carried under player-input custody.
+    Invoke {
+        /// Physical connection.
+        conn: u64,
+        /// Gateway-selected character.
+        actor: ObjId,
+        /// Client correlation id.
+        id: u64,
+        /// Typed service operation.
+        request: mush_proto::InvokeRequest,
+    },
     /// A structured action invocation for the authoritative coordinator.
     ///
     /// The connection/actor pair is transport evidence only: for a new request
@@ -253,7 +276,7 @@ impl GatewayInput {
     #[must_use]
     pub const fn conn(&self) -> u64 {
         match self {
-            Self::Cmd { conn, .. } | Self::Query { conn, .. } => *conn,
+            Self::Cmd { conn, .. } | Self::Query { conn, .. } | Self::Invoke { conn, .. } => *conn,
             Self::Action(action) => action.conn,
         }
     }
@@ -273,6 +296,14 @@ impl GatewayInput {
                     .saturating_add(name.len())
                     .saturating_add(args.len())
             }
+            Self::Invoke { request, .. } => {
+                request
+                    .validate()
+                    .map_err(|error| GatewayInputSizeError::InvalidJson(error.into()))?;
+                let bytes = serde_json::to_vec(request)
+                    .map_err(|error| GatewayInputSizeError::InvalidJson(error.to_string()))?;
+                24_usize.saturating_add(bytes.len())
+            }
             Self::Action(action) => {
                 let payload = serde_json::to_vec(&serde_json::json!({
                     "offered_action": action.offered_action,
@@ -284,10 +315,15 @@ impl GatewayInput {
                 16_usize.saturating_add(payload.len())
             }
         };
-        if bytes > MAX_GATEWAY_INPUT_BYTES {
+        let maximum = if matches!(self, Self::Invoke { .. }) {
+            mush_proto::MAX_INVOKE_BYTES.saturating_add(24)
+        } else {
+            MAX_GATEWAY_INPUT_BYTES
+        };
+        if bytes > maximum {
             return Err(GatewayInputSizeError::TooLarge {
                 actual: bytes,
-                maximum: MAX_GATEWAY_INPUT_BYTES,
+                maximum,
             });
         }
         Ok(bytes)
@@ -320,6 +356,17 @@ impl TryFrom<GatewayInput> for Inbound {
                 name,
                 args,
             }),
+            GatewayInput::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            } => Ok(Self::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            }),
             input @ GatewayInput::Action(_) => Err(input),
         }
     }
@@ -343,6 +390,17 @@ impl TryFrom<WireInbound> for GatewayInput {
                 id,
                 name,
                 args,
+            }),
+            WireInbound::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            } => Ok(Self::Invoke {
+                conn,
+                actor,
+                id,
+                request,
             }),
             lifecycle => Err(lifecycle),
         }
@@ -465,6 +523,17 @@ impl From<WireInbound> for Inbound {
                 name,
                 args,
             },
+            WireInbound::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            } => Inbound::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            },
             WireInbound::ConnUp {
                 conn,
                 actor,
@@ -530,6 +599,17 @@ impl TryFrom<Inbound> for WireInbound {
                 id,
                 name,
                 args,
+            }),
+            Inbound::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            } => Ok(WireInbound::Invoke {
+                conn,
+                actor,
+                id,
+                request,
             }),
             Inbound::ConnUp {
                 conn,

@@ -103,6 +103,8 @@ pub struct Frame {
     pub cell: Option<(u16, u16)>,
     /// The public match mode.
     pub mode: crate::arena::state::MatchMode,
+    /// Last accepted hit on this own hull, in arena time.
+    pub own_last_hit_ms: Option<i64>,
     /// Public Hold geometry, excluding ownership and capture clocks.
     pub objective: Option<crate::arena::state::HoldObjective>,
     /// This hull's requested motor goal and latest outcome.
@@ -355,12 +357,18 @@ pub struct Frame {
 /// it changes only at a switch, never with the clock. `off` is the mind row's
 /// drop to the ROM ([`crate::arena::mind::MindState::dropped`]; `false` with
 /// no row).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameMind {
+    /// Selected authored display name, retained even while captured ROM runs.
+    pub name: SmolStr,
     /// Whether the mind sealed is Standard Doctrine.
     pub doctrine: bool,
     /// The profiles sealed, the first the one that flies at the release.
-    pub profiles: crate::arena::card::ProfileSet,
+    pub profiles: crate::arena::runtime_card::RuntimeProfiles,
+    /// Complete active own-hull card, sharing the catalog's immutable cache.
+    pub card: crate::arena::runtime_card::RuntimeCard,
+    /// Complete bound native/think program, distinct from mutable current slots.
+    pub program: crate::arena::profile_rules::BoundProgram,
     /// The index into [`FrameMind::profiles`] the mind will fly.
     pub active: u8,
     /// The class the mind thinks at now ([`Arena::mind_class`]).
@@ -657,6 +665,7 @@ impl Frame {
             && self.mode == other.mode
             && self.objective == other.objective
             && self.motor == other.motor
+            && self.own_last_hit_ms == other.own_last_hit_ms
             && self.pose.x_cm == other.pose.x_cm
             && self.pose.y_cm == other.pose.y_cm
             && self.pose.z_cm == other.pose.z_cm
@@ -842,6 +851,96 @@ static STALL_SEED: AtomicU64 = AtomicU64::new(0);
 /// How long that stall lasts, milliseconds.
 static STALL_MS: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy, Debug)]
+enum PulseStage {
+    Integrate,
+    Actions,
+    Drain,
+    Finish,
+}
+struct PulseWork {
+    wall_now_ms: i64,
+    perception: PerceptionCounters,
+    reflex: MotorCounters,
+    shots_before: u64,
+    fire_intent_queued: bool,
+    dt_ms: u32,
+    clock_lagged: bool,
+    floored: bool,
+    pieces: std::vec::IntoIter<u32>,
+    ran: u32,
+    ledger_full: bool,
+    stage: PulseStage,
+}
+enum PulseProgress {
+    Running(PulseWork),
+    Done(StepOutput),
+}
+
+/// One scheduler turn. Zero-time phases still consume a turn, preventing a
+/// stream of control/ack/pulse barriers from monopolizing a bulk worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PulseSlice {
+    pub at_ms: i64,
+    pub simulated_ms: u32,
+    pub done: bool,
+}
+
+/// Private arena custody during a pulse. There is deliberately no arena/view,
+/// snapshot, mutation, or source getter while a continuation is active. Dropping
+/// this owner cancels private work; live `step` drives the identical phases.
+pub struct OwnedPulse {
+    arena: Arena,
+    progress: Option<PulseProgress>,
+}
+impl OwnedPulse {
+    pub fn new(
+        mut arena: Arena,
+        wall_now_ms: i64,
+        controls: &[Control],
+        intents: &[Intent],
+    ) -> Self {
+        let progress = arena.begin_pulse(wall_now_ms, controls, intents);
+        Self {
+            arena,
+            progress: Some(progress),
+        }
+    }
+    pub fn next_simulation_ms(&self) -> u32 {
+        match self.progress.as_ref() {
+            Some(PulseProgress::Running(work)) if matches!(work.stage, PulseStage::Integrate) => {
+                work.pieces.as_slice().first().copied().unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+    pub fn advance(&mut self) -> PulseSlice {
+        let before = self.arena.now_ms;
+        self.progress = self.progress.take().map(|progress| match progress {
+            PulseProgress::Running(work) => self.arena.continue_pulse(work),
+            done => done,
+        });
+        PulseSlice {
+            at_ms: self.arena.now_ms,
+            simulated_ms: u32::try_from(self.arena.now_ms.saturating_sub(before))
+                .unwrap_or(u32::MAX),
+            done: matches!(self.progress, Some(PulseProgress::Done(_))),
+        }
+    }
+    // An unfinished pulse returns ownership intact so the caller can resume it;
+    // boxing only that continuation would add an allocation on the yield path.
+    #[allow(clippy::result_large_err)]
+    pub fn finish(mut self) -> Result<(Arena, StepOutput), Self> {
+        match self.progress.take() {
+            Some(PulseProgress::Done(output)) => Ok((self.arena, output)),
+            progress => {
+                self.progress = progress;
+                Err(self)
+            }
+        }
+    }
+}
+
 impl Arena {
     /// **Test hook:** make the next [`Arena::step`] of *this* arena panic,
     /// once.
@@ -904,9 +1003,24 @@ impl Arena {
         controls: &[Control],
         intents: &[Intent],
     ) -> StepOutput {
+        let mut pulse = self.begin_pulse(wall_now_ms, controls, intents);
+        loop {
+            pulse = match pulse {
+                PulseProgress::Done(output) => return output,
+                PulseProgress::Running(work) => self.continue_pulse(work),
+            };
+        }
+    }
+
+    fn begin_pulse(
+        &mut self,
+        wall_now_ms: i64,
+        controls: &[Control],
+        intents: &[Intent],
+    ) -> PulseProgress {
         self.injected_fault();
         if let Some(ended) = self.ended {
-            return StepOutput {
+            return PulseProgress::Done(StepOutput {
                 ledger_chunks: Vec::new(),
                 frames: Vec::new(),
                 tempo: self.clock.tempo(),
@@ -919,10 +1033,10 @@ impl Arena {
                 deliberation: Vec::new(),
                 observer: None,
                 thinks: Vec::new(),
-            };
+            });
         }
         self.substep_hashes.clear();
-        let mut perception = PerceptionCounters::default();
+        let perception = PerceptionCounters::default();
         let mut reflex = MotorCounters::default();
         // **17b cut M4.1**: the thinks the last pulse's last substep
         // collected, when nothing delivered their answers before this step
@@ -951,7 +1065,7 @@ impl Arena {
         if let Some(stop) = self.stop {
             // 17b cut M1b.5: a stopped match takes no card change.
             self.pending_cards.clear();
-            return self.stopped(wall_now_ms, stop, intents);
+            return PulseProgress::Done(self.stopped(wall_now_ms, stop, intents));
         }
 
         // ---- phase 2: orders ----
@@ -1090,24 +1204,51 @@ impl Arena {
         };
         let length = u32::try_from(self.substep_len_ms()).unwrap_or(u32::MAX);
         let pieces = substeps(dt_ms, length);
-        // **16b cut M.2** (16c `T-10`): what ran, counted as it runs — the loop
-        // below breaks on the substep that ended the match, and the partition's
-        // length would report the pieces it never ran.
-        let mut ran: u32 = 0;
-        let mut ledger_full = false;
-        for piece in pieces {
-            ledger_full |= self.substep(piece, &mut perception, &mut reflex);
-            ran = ran.saturating_add(1);
-            // **16b cut W.2**: a substep that ended the match ends the pulse. A
-            // match is over at the arena millisecond it was won, and stepping the
-            // rest of the pulse would journal contacts expiring and summaries
-            // running after `match_ended` — lines whose count is a function of the
-            // cadence, which is exactly what doc 16 §3.1's rate independence forbids.
-            if self.ended.is_some() {
-                break;
-            }
-        }
+        PulseProgress::Running(PulseWork {
+            wall_now_ms,
+            perception,
+            reflex,
+            shots_before,
+            fire_intent_queued,
+            dt_ms,
+            clock_lagged,
+            floored,
+            pieces: pieces.into_iter(),
+            ran: 0,
+            ledger_full: false,
+            stage: PulseStage::Integrate,
+        })
+    }
 
+    /// Execute at most one original physics substep, or one bounded non-time
+    /// phase. No new pulse/barrier/clock calculation is introduced by yielding.
+    fn continue_pulse(&mut self, mut work: PulseWork) -> PulseProgress {
+        match work.stage {
+            PulseStage::Integrate => {
+                if let Some(piece) = work.pieces.next() {
+                    work.ledger_full |= self.substep(piece, &mut work.perception, &mut work.reflex);
+                    work.ran = work.ran.saturating_add(1);
+                    if self.ended.is_some() || work.pieces.len() == 0 {
+                        work.stage = PulseStage::Actions;
+                    }
+                } else {
+                    work.stage = PulseStage::Actions;
+                }
+            }
+            PulseStage::Actions => {
+                self.pulse_actions(&mut work.reflex);
+                work.stage = PulseStage::Drain;
+            }
+            PulseStage::Drain => {
+                self.pulse_drain(&mut work);
+                work.stage = PulseStage::Finish;
+            }
+            PulseStage::Finish => return PulseProgress::Done(self.finish_pulse(work)),
+        }
+        PulseProgress::Running(work)
+    }
+
+    fn pulse_actions(&mut self, reflex: &mut MotorCounters) {
         // ---- phase 4: the queued discrete actions ----
         //
         // Doc 16 §3.1: *resolve newly queued discrete actions that became legal this
@@ -1205,7 +1346,7 @@ impl Arena {
                                 at_ms,
                                 ConditionTrigger::Lock,
                                 None,
-                                &mut reflex,
+                                reflex,
                             );
                         }
                         Err(refusal) => self.stage_refusal(id, word, refusal, None),
@@ -1226,14 +1367,14 @@ impl Arena {
                     // `NoSlot` — is staged here with the arming's weapon, so it
                     // reads `FIRE cannon refused. …` as every `FIRE` refusal does.
                     IntentKind::Condition(ref arming) => {
-                        match self.resolve_arming(id, arming, at_ms) {
+                        match self.resolve_manual_arming(id, arming, at_ms) {
                             Ok(_) => {
                                 let _ = self.evaluate_conditions(
                                     id,
                                     at_ms,
                                     ConditionTrigger::Arming,
                                     None,
-                                    &mut reflex,
+                                    reflex,
                                 );
                             }
                             Err(refusal) => {
@@ -1261,7 +1402,9 @@ impl Arena {
             }
         }
         self.action_hash = ActionHash::Outside;
+    }
 
+    fn pulse_drain(&mut self, work: &mut PulseWork) {
         // ---- the phase-4 drain (16b cut M.2, 16c `B-51`) ----
         //
         // A pilot's beam flies in no time, so phase 4 schedules its impact at
@@ -1320,12 +1463,26 @@ impl Arena {
         // the next substep's, exactly as after the opening pulse, so a floored
         // pulse of no time there drains nothing (`tests/weapons.rs`'s
         // `i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it`).
-        let drains = ran > 0 || (floored && self.now_ms > 0);
+        let drains = work.ran > 0 || (work.floored && self.now_ms > 0);
         if drains && self.ended.is_none() && self.due.peek_due(self.now_ms).is_some() {
-            ledger_full |= self.substep(0, &mut perception, &mut reflex);
-            ran = ran.saturating_add(1);
+            work.ledger_full |= self.substep(0, &mut work.perception, &mut work.reflex);
+            work.ran = work.ran.saturating_add(1);
         }
+    }
 
+    fn finish_pulse(&mut self, work: PulseWork) -> StepOutput {
+        let PulseWork {
+            wall_now_ms,
+            perception,
+            reflex,
+            shots_before,
+            fire_intent_queued,
+            dt_ms,
+            clock_lagged,
+            ran,
+            mut ledger_full,
+            ..
+        } = work;
         // ---- phase 5: the pulse's own record ----
         //
         // Doc 16 §3.1's `Alert` row: *any unit holds a contact (classified or not)
@@ -2148,6 +2305,13 @@ impl Arena {
                 // under `Fallback::Notice`, and a hull that can no longer move
                 // drops it in `Arena::motor_step`). It journals nothing, so it
                 // opens no action hash.
+                DueKind::RuleLeaseExpired {
+                    unit,
+                    generation,
+                    lands_ms,
+                } => {
+                    self.expire_rule_sample(unit, generation, lands_ms, event.t_ms, reflex);
+                }
                 DueKind::MotorTick { unit } => {
                     if self.ended.is_none()
                         && self.unit(unit).is_some_and(|state| !state.limits.wreck)
@@ -2595,6 +2759,7 @@ impl Arena {
             callsign: unit.callsign,
             cell: self.definition.terrain.cell_of(&unit.pose),
             mode: self.mode,
+            own_last_hit_ms: unit.own_last_hit_ms,
             objective: self
                 .hold
                 .as_ref()
@@ -2674,13 +2839,17 @@ impl Arena {
     /// of [`crate::arena::mind::SealRef::none`], the test `apply_profile`
     /// refuses a switch on).
     fn frame_mind(&self, unit: &crate::arena::state::UnitState) -> Option<FrameMind> {
-        let seal = unit.seal;
+        let seal = &unit.seal;
         if seal.digest == [0; 32] {
             return None;
         }
+        let runtime = self.profiles.get(&unit.id)?;
         Some(FrameMind {
+            name: seal.name.clone(),
             doctrine: seal.doctrine,
-            profiles: seal.profiles,
+            profiles: runtime.profiles.clone(),
+            card: runtime.card.clone(),
+            program: runtime.program.clone(),
             active: unit.card_profile.index,
             // Both LIVE: the sealed class against the core now, and the core
             // now — never `seal.class` or `seal.core_class`.
@@ -8442,7 +8611,7 @@ mod tests {
         let Some((_, before)) = opening.frames.first().cloned() else {
             panic!("the pilot's first frame");
         };
-        let Some(mind) = before.mind else {
+        let Some(mind) = before.mind.as_ref() else {
             panic!("a sealed hull's frame carries its mind");
         };
         assert!(mind.doctrine);
@@ -8466,7 +8635,7 @@ mod tests {
         let Some((_, after)) = out.frames.first().cloned() else {
             panic!("a switch alone sends the pilot a frame");
         };
-        let Some(switched) = after.mind else {
+        let Some(switched) = after.mind.as_ref() else {
             panic!("the mind");
         };
         assert_eq!(switched.active, 1);
@@ -8480,7 +8649,7 @@ mod tests {
         assert_eq!(after.speed_cms, before.speed_cms);
         assert!(!after.same_as(&before, 1_000), "the switch is told");
         let unswitched = Frame {
-            mind: before.mind,
+            mind: before.mind.clone(),
             ..after.clone()
         };
         assert!(
@@ -8519,7 +8688,7 @@ mod tests {
         let Some(before) = arena.frame_for(A, Tempo::Quiet) else {
             panic!("a frame");
         };
-        let Some(mind) = before.mind else {
+        let Some(mind) = before.mind.as_ref() else {
             panic!("its mind");
         };
         assert_eq!(
@@ -8563,7 +8732,7 @@ mod tests {
         let Some(after) = arena.frame_for(A, Tempo::Quiet) else {
             panic!("a frame");
         };
-        let Some(degraded) = after.mind else {
+        let Some(degraded) = after.mind.as_ref() else {
             panic!("its mind");
         };
         assert_eq!(degraded.core_class, CoreClass::II, "the core as it is now");
@@ -8575,7 +8744,7 @@ mod tests {
         );
         assert!(!after.same_as(&before, 1_000), "the degrade is told");
         let undegraded = Frame {
-            mind: before.mind,
+            mind: before.mind.clone(),
             ..after.clone()
         };
         assert!(
@@ -9320,5 +9489,205 @@ mod tests {
         }
         assert!(frames >= 2, "the pilots were sent frames: {frames}");
         assert_eq!(arena.frame_sections(A), struck, "nothing else moved it");
+    }
+
+    fn m6_assert_pulse_outputs(a: &StepOutput, b: &StepOutput) {
+        assert_eq!(
+            (a.tempo, a.next_due_ms, a.lagged, a.ended, a.substeps),
+            (b.tempo, b.next_due_ms, b.lagged, b.ended, b.substeps)
+        );
+        assert_eq!(a.perception, b.perception);
+        assert_eq!(a.motor, b.motor);
+        assert_eq!(format!("{:?}", a.frames), format!("{:?}", b.frames));
+        assert_eq!(format!("{:?}", a.observer), format!("{:?}", b.observer));
+        assert_eq!(
+            format!("{:?}", a.deliberation),
+            format!("{:?}", b.deliberation)
+        );
+        assert_eq!(
+            a.ledger_chunks.iter().map(|c| &c.bytes).collect::<Vec<_>>(),
+            b.ledger_chunks.iter().map(|c| &c.bytes).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            a.thinks
+                .iter()
+                .map(|t| (t.unit, t.think_seq, t.t_ms, t.lands_ms))
+                .collect::<Vec<_>>(),
+            b.thinks
+                .iter()
+                .map(|t| (t.unit, t.think_seq, t.t_ms, t.lands_ms))
+                .collect::<Vec<_>>()
+        );
+    }
+    fn m6_sliced(
+        arena: Arena,
+        wall: i64,
+        controls: &[Control],
+        intents: &[Intent],
+    ) -> (Arena, StepOutput, usize) {
+        let mut pulse = OwnedPulse::new(arena, wall, controls, intents);
+        let mut turns = 0;
+        loop {
+            let reserved = pulse.next_simulation_ms();
+            let progress = pulse.advance();
+            turns += 1;
+            assert_eq!(
+                progress.simulated_ms, reserved,
+                "each turn advances exactly its promised native substep"
+            );
+            assert!(turns < 1000, "a bounded pulse finishes");
+            if progress.done {
+                break;
+            }
+        }
+        let (arena, output) = pulse
+            .finish()
+            .unwrap_or_else(|_| panic!("completed private pulse"));
+        (arena, output, turns)
+    }
+    #[test]
+    fn m6_owned_pulse_matches_live_zero_one_many_phases_and_profile_change() {
+        let make = || {
+            arena_at_epoch(
+                vec![m5_sealed(
+                    tank(A, Team::Red, pose(3_500, 3_500)),
+                    &["Sniper", "Line"],
+                    crate::match_::SealTerms::fixture(),
+                )],
+                1,
+            )
+        };
+        let mut live = make();
+        let mut sliced = make();
+        for wall in [0, 0, 250, 5_250, 5_250] {
+            let intents = if wall == 250 {
+                vec![Intent {
+                    unit: A,
+                    channel: Channel::Helm,
+                    epoch: 1,
+                    kind: IntentKind::Profile { index: 1 },
+                    seq: 1,
+                }]
+            } else {
+                vec![]
+            };
+            let output = live.step(wall, &[], &intents);
+            let (next, actual, turns) = m6_sliced(sliced, wall, &[], &intents);
+            sliced = next;
+            m6_assert_pulse_outputs(&output, &actual);
+            assert_eq!(
+                crate::arena::state_hash(&live),
+                crate::arena::state_hash(&sliced)
+            );
+            assert_eq!(live.substep_hashes, sliced.substep_hashes);
+            assert!(
+                turns >= 4,
+                "integration, actions, drain, final record each yield"
+            );
+        }
+        assert_eq!(live.profiles[&A].index, 1);
+    }
+    #[test]
+    fn m6_owned_pulse_matches_delayed_think_settlement_and_early_end() {
+        use crate::arena::test_support::{arena_of, cannon};
+        let make = || {
+            let units = [(A, Team::Red, 1500), (ObjId(5), Team::Blue, 6500)]
+                .into_iter()
+                .map(|(id, team, x)| {
+                    let mut unit = tank(id, team, pose(x, 3500));
+                    unit.controller = crate::arena::state::Controller::Mind;
+                    unit.weapons = vec![cannon()];
+                    unit.reseal(&crate::match_::SealTerms::fixture()).unwrap();
+                    unit
+                })
+                .collect();
+            arena_of(units)
+        };
+        let mut live = make();
+        let mut sliced = make();
+        let mut pending = false;
+        for wall in [0, 500, 1000, 1500, 5000] {
+            let expected = live.step(wall, &[], &[]);
+            pending |= !expected.thinks.is_empty();
+            let (next, actual, _) = m6_sliced(sliced, wall, &[], &[]);
+            sliced = next;
+            m6_assert_pulse_outputs(&expected, &actual);
+            assert_eq!(
+                crate::arena::state_hash(&live),
+                crate::arena::state_hash(&sliced)
+            );
+            // Deliberately leave collected work pending: the next pulse's first
+            // phase must settle it once, with identical due/event ordering.
+        }
+        assert!(pending, "fixture exercises real deferred think jobs");
+        live.stop(crate::arena::state::StopReason::Abort);
+        sliced.stop(crate::arena::state::StopReason::Abort);
+        let expected = live.step(5500, &[], &[]);
+        let (sliced, actual, _) = m6_sliced(sliced, 5500, &[], &[]);
+        m6_assert_pulse_outputs(&expected, &actual);
+        assert!(actual.ended.is_some());
+        assert_eq!(
+            crate::arena::state_hash(&live),
+            crate::arena::state_hash(&sliced)
+        );
+    }
+    #[test]
+    fn m6_owned_pulse_matches_ledger_full_termination() {
+        use crate::arena::test_support::custody;
+        use crate::config::SensorsConfig;
+        let make = || {
+            let mut cfg = ArenaConfig::default();
+            cfg.ledger.max_bytes = 1;
+            Arena::new(
+                custody(vec![tank(A, Team::Red, pose(3500, 3500))], vec![]),
+                &cfg,
+                &MatchConfig::default(),
+                &SensorsConfig::default(),
+            )
+            .unwrap()
+        };
+        let mut live = make();
+        let mut sliced = make();
+        for wall in [0, 5000] {
+            let expected = live.step(wall, &[], &[]);
+            let (next, actual, _) = m6_sliced(sliced, wall, &[], &[]);
+            sliced = next;
+            m6_assert_pulse_outputs(&expected, &actual);
+            assert_eq!(
+                crate::arena::state_hash(&live),
+                crate::arena::state_hash(&sliced)
+            );
+        }
+        assert!(live.ended.is_some());
+    }
+
+    #[test]
+    fn m6_owned_pulse_stops_at_the_original_midpulse_deadline() {
+        use crate::arena::test_support::custody;
+        use crate::config::SensorsConfig;
+        let make = || {
+            Arena::new(
+                custody(vec![tank(A, Team::Red, pose(3500, 3500))], vec![]),
+                &ArenaConfig::default(),
+                &MatchConfig {
+                    max_duration_ms: 1500,
+                    ..MatchConfig::default()
+                },
+                &SensorsConfig::default(),
+            )
+            .unwrap()
+        };
+        let mut live = make();
+        let mut sliced = make();
+        live.step(0, &[], &[]);
+        sliced.step(0, &[], &[]);
+        let expected = live.step(5000, &[], &[]);
+        let (actual_arena, actual, turns) = m6_sliced(sliced, 5000, &[], &[]);
+        assert_eq!(actual_arena.now_ms, 1500);
+        assert_eq!(actual.substeps, 6);
+        assert!(turns < 12, "no piece after the first terminal substep runs");
+        assert_eq!(actual.ended.unwrap().t_ms, 1500);
+        m6_assert_pulse_outputs(&expected, &actual);
+        assert_eq!(live.substep_hashes, actual_arena.substep_hashes);
     }
 }

@@ -2927,7 +2927,7 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
 // 17b cut M1b.5 — a card change through the task (doc 17 §11, §22's M1b)
 // ---------------------------------------------------------------------------
 
-/// The change `@mind/set <unit>=<preset>` offers.
+/// The change `@mind/live <unit>=<preset>` offers.
 fn m1b5_preset(unit: ObjId, name: &str) -> ArenaMsg {
     ArenaMsg::MindCard {
         unit,

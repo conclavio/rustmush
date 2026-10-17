@@ -94,6 +94,12 @@ pub struct ThinkContext {
     pub t_ms: i64,
     /// The think's landing millisecond (`lands_ms()`).
     pub lands_ms: i64,
+    /// Immutable profile identity and complete ordered program frozen at collection.
+    pub profile_token: crate::arena::profile_runtime::ProfileToken,
+    pub program: crate::arena::profile_rules::BoundProgram,
+    pub next_lands_ms: i64,
+    /// At most one complete sampled result; repeated helpers reuse this value.
+    pub rule_sample: Option<crate::arena::profile_rules::RuleSample>,
     /// The doctrine's think cadence, ms (`decide_ms()`): the stand's dwell is
     /// `stand_ticks() × decide_ms()`.
     pub decide_ms: u32,
@@ -103,6 +109,8 @@ pub struct ThinkContext {
     pub draws: u32,
     /// The `line_to` traces asked for so far.
     pub line_to_calls: u32,
+    /// Charged local public-terrain reads, capped independently at sixteen.
+    pub terrain_calls: u32,
     /// **The most `line_to` traces this think may ask for** (17b cut M3.1;
     /// D-UM-35's `line_to` column): the job's row's
     /// ([`ThinkJob::profile`]) — Class I's two,
@@ -139,10 +147,15 @@ impl ThinkContext {
             think_seq: job.think_seq,
             t_ms: job.t_ms,
             lands_ms: job.lands_ms,
+            profile_token: job.profile_token,
+            program: job.program.clone(),
+            next_lands_ms: job.lands_ms.saturating_add(job.profile.think_ms),
+            rule_sample: None,
             decide_ms,
             repath_ms,
             draws: 0,
             line_to_calls: 0,
+            terrain_calls: 0,
             line_to_max: job.profile.line_to,
             slots: job.profile.slots,
             intents: Vec::new(),

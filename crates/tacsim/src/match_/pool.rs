@@ -23,20 +23,15 @@
 //! OQ-11 wording since 17b cut M5.1): how much this tank would think a second,
 //! its side's half, and what is spoken for.
 //!
-//! **Who loads what** (17b cut M5.1): a hull whose slot chose a mind with
-//! `SIM MIND`, or whose side's fill the lead or staff chose one for with `SIM
-//! AI MIND`, at the class that mind seals at on its chassis — `min(rated,
-//! core, [tacsim.minds].fill_class)`, Class 0 on a chassis with no core
-//! (`crate::match_::Fielded::mind_class`); **every other hull at
-//! `fill_class`, seated or not** — Class I, 1,500 each (17b cut M4.3; Class
-//! 0's 400 before it) — because a seated hull is sealed at `fill_class` too
-//! and a release hands it to a mind of that class. Until 17b cut M5.1 a
-//! seated hull loaded nothing, the gap 17b cut M3.5 declared. A claim, `SIM
-//! AI <n>` and `SIM AI MIND` do not re-run the pool: the check-out's gate is
-//! their backstop, and none of them can refuse at the stock constants.
-//! The lead's fill class (D-UM-37) waits for the cut that rates a mind above
-//! Class I (the owner's OQ-10 (b)); a fixture may name a class on the fielded
-//! unit.
+//! **Who loads what** (17d M6.2): every hull loads the class its actual seal
+//! records, `min(rating, core, applicable cap)`, including unchosen defaults.
+//! A claimed pilot uses the operator maximum; fill uses the lesser of that
+//! maximum and its lead's selected cap (the configured fill class by default).
+//! The governed-core over-class refusal precedes either cap; coreless and
+//! Class 0 chassis retain the ROM exception. Every roster, chassis, mind,
+//! class, mode and fill-size choice re-runs prospective admission. Checkout
+//! recomputes from the completed seals before its first write. Slot release
+//! remains unconditional; a roster made invalid by release must be repaired.
 //!
 //! **At the stock constants neither gate can refuse** (declared for doc 17
 //! §24): `crate::config::MatchConfig::max_slots_per_side` is validated 1 to

@@ -22,7 +22,8 @@ pub const MAX_RULE_RANGE_M: u32 = 10_000;
 pub const MAX_RULE_SLOT: u8 = 6;
 
 /// The own-weapon facts needed to interpret a command.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuleWeapon {
     /// Canonical component id, with the same initials/prefix aliases as FIRE.
     pub id: SmolStr,

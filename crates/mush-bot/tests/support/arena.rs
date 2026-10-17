@@ -1556,10 +1556,48 @@ pub fn early_why(
 /// A refused pose is printed and recorded ([`Posed::refused`]), and the
 /// flight carries on.
 pub async fn fly_lane(plan: &LanePlan<'_>) -> Posed {
+    fly_lane_side(plan, "red").await
+}
+
+/// The same external process and front door, on either actual team. Each call
+/// boots fresh world state; paired statistical acceptance runs fifteen per side.
+pub async fn fly_lane_side(plan: &LanePlan<'_>, side: &str) -> Posed {
+    assert!(matches!(side, "red" | "blue"), "an actual arena side");
     let mut cfg = arena_config();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = plan.max_duration_ms;
+    fly_lane_configured(plan, side, cfg, false).await.0
+}
+
+/// Exact M6 acceptance configuration shared by the live external interval and
+/// private proving story. The pilot still uses only its ordinary SSH front door.
+pub fn mind_acceptance_config() -> tacsim::TacsimConfig {
+    let mut cfg = arena_config();
+    cfg.match_.startup_ms = 2_000;
+    cfg.match_.board_timeout_ms = 60_000;
+    cfg.match_.max_duration_ms = 600_000;
+    cfg.match_.unattended_ms = 0;
+    cfg.arena.snapshot_ms = 1_000;
+    cfg
+}
+
+/// Dev-only post-run evidence from the same server. Retained documents are never
+/// passed to the external bot or used to select an action.
+pub async fn fly_lane_with_config_evidence(
+    plan: &LanePlan<'_>,
+    side: &str,
+    cfg: tacsim::TacsimConfig,
+) -> (Posed, Vec<(String, serde_json::Value)>) {
+    fly_lane_configured(plan, side, cfg, true).await
+}
+async fn fly_lane_configured(
+    plan: &LanePlan<'_>,
+    side: &str,
+    cfg: tacsim::TacsimConfig,
+    evidence: bool,
+) -> (Posed, Vec<(String, serde_json::Value)>) {
+    assert!(matches!(side, "red" | "blue"));
     let rig = boot(cfg, &[("pilot", "Pilot")]).await;
     let wait = match_wait(plan.max_duration_ms);
 
@@ -1585,13 +1623,14 @@ pub async fn fly_lane(plan: &LanePlan<'_>) -> Posed {
         &rig,
         &config,
         plan.name,
-        &["--arena", "red", "--matches", &count],
+        &["--arena", side, "--matches", &count],
         plan.env,
     );
 
     // Each match's end, then the poses for the next.
     let mut heard = 0;
     let mut early = None;
+    let mut documents = Vec::new();
     while heard < plan.matches {
         let left = plan.deadline.saturating_sub(start.elapsed());
         let limit = left.min(wait);
@@ -1600,6 +1639,30 @@ pub async fn fly_lane(plan: &LanePlan<'_>) -> Posed {
                 heard += 1;
                 let ended = god.seen.get(..past - " is over (".len()).and_then(ended_id);
                 from = past;
+                if evidence {
+                    let id = ended.expect("the actual completed match number");
+                    for key in [
+                        format!("tacsim:match:{id}"),
+                        format!("tacsim:tape:{id}:head"),
+                    ] {
+                        let value = tokio::time::timeout(Duration::from_secs(20), async {
+                            loop {
+                                if let Some(value) = rig
+                                    .store
+                                    .module_json_get("tacsim", &key)
+                                    .await
+                                    .expect("evidence store")
+                                {
+                                    break value;
+                                }
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                            }
+                        })
+                        .await
+                        .expect("terminal custody and frozen tape header persist");
+                        documents.push((key, value));
+                    }
+                }
                 if heard == plan.matches {
                     break;
                 }
@@ -1645,13 +1708,16 @@ pub async fn fly_lane(plan: &LanePlan<'_>) -> Posed {
     let ends = match_ends(god.seen.get(launched..).unwrap_or(""));
     god.close().await;
     drop(rig);
-    Posed {
-        partial,
-        ends,
-        heard,
-        early,
-        refused,
-    }
+    (
+        Posed {
+            partial,
+            ends,
+            heard,
+            early,
+            refused,
+        },
+        documents,
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -451,6 +451,17 @@ pub enum Inbound {
         /// Handler-defined parameters.
         args: serde_json::Value,
     },
+    /// A finite typed module operation with ordinary mutation authority.
+    Invoke {
+        /// Physical connection, checked against the engine's current binding.
+        conn: ConnId,
+        /// Gateway-selected actor, never accepted from the request body.
+        actor: ObjId,
+        /// Client correlation id.
+        id: u64,
+        /// Closed service request.
+        request: mush_proto::InvokeRequest,
+    },
     /// A connection finished auth and attached to an actor.
     ConnUp {
         /// The new connection.
@@ -3133,6 +3144,15 @@ impl Engine {
                 self.handle_query(conn, actor, id, &name, &args, out);
                 StepOutcome::Continue
             }
+            Inbound::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            } => {
+                self.handle_invoke(conn, actor, id, &request, out);
+                StepOutcome::Continue
+            }
             Inbound::Composing {
                 conn,
                 actor,
@@ -3417,6 +3437,7 @@ impl Engine {
             tracing::warn!(%actor, conn, "ConnUp for missing actor ignored");
             return false;
         }
+        self.world.bind_connection(conn, actor);
         let prev = self.conns.insert(
             conn,
             ConnInfo {
@@ -3558,6 +3579,7 @@ impl Engine {
     fn conn_down(&mut self, conn: ConnId, actor: ObjId, reason: DisconnectKind, out: &mut Outbox) {
         // 16b cut AP.4: a connection's reply brackets end with it.
         self.world.clear_output_brackets(conn);
+        self.world.unbind_connection(conn);
         let Some(info) = self.conns.remove(&conn) else {
             tracing::debug!(conn, %actor, "ConnDown for untracked connection ignored");
             return;
@@ -3834,7 +3856,59 @@ impl Engine {
         Some((id, choice))
     }
 
-    /// outcome — success, handler refusal, unknown name — produces exactly
+    /// Dispatch a typed owner request under ordinary mutation/persistence
+    /// authority, replying only to the currently bound physical connection.
+    fn handle_invoke(
+        &mut self,
+        conn: ConnId,
+        actor: ObjId,
+        id: u64,
+        request: &mush_proto::InvokeRequest,
+        out: &mut Outbox,
+    ) {
+        if self.world.get(actor).is_none()
+            || !self
+                .world
+                .connection_binding(conn)
+                .is_some_and(|(bound, _)| bound == actor)
+        {
+            return;
+        }
+        let result = if request.validate().is_err() {
+            mush_proto::InvokeResult::error("invalid", "Invalid or oversized structured request.")
+        } else if let Some((owner, handler)) = self.registry.invoke_handler(request.service()) {
+            let owner = owner.clone();
+            self.world.set_dispatching_conn(Some(conn));
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                crate::action_state::TypedStateLens::Live(&self.action_state),
+                Some(owner.as_str()),
+            );
+            let mut ctx = Ctx {
+                w: &mut self.world,
+                actor,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out,
+                reg: &self.registry,
+                module: Some(owner.clone()),
+                typed_state,
+            };
+            let result = handler.invoke(&mut ctx, conn, id, request);
+            self.world.set_dispatching_conn(None);
+            result
+        } else {
+            mush_proto::InvokeResult::error("unavailable", "This service is unavailable.")
+        };
+        out.to_conn(
+            conn,
+            OutputEvent::InvokeResult {
+                id,
+                result: result.bounded(),
+            },
+        );
+    }
+
+    /// Every outcome — success, handler refusal, unknown name — produces exactly
     /// one `Reply` carrying the request's `id`, so the client can always
     /// correlate. A query for a missing actor is dropped (the connection is
     /// mid-teardown; treaty ruling 3 re-validation).
@@ -7534,5 +7608,105 @@ mod tests {
         assert_eq!(restarted.world.output_brackets(1), None);
         let out = typed(&mut restarted, 1, "look");
         assert!(to_conn(&out, 1).is_empty(), "{:?}", texts(&out));
+    }
+}
+
+#[cfg(test)]
+mod typed_invoke_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Handler(Arc<AtomicUsize>);
+    impl crate::module::InvokeHandler for Handler {
+        fn invoke(
+            &self,
+            ctx: &mut Ctx<'_>,
+            conn: ConnId,
+            _: u64,
+            _: &mush_proto::InvokeRequest,
+        ) -> mush_proto::InvokeResult {
+            assert_eq!(ctx.module.as_deref(), Some("test"));
+            assert_eq!(ctx.w.dispatching_conn(), Some(conn));
+            self.0.fetch_add(1, Ordering::SeqCst);
+            mush_proto::InvokeResult::Mind(mush_proto::MindResponse::Library {
+                names: vec!["owned".into()],
+            })
+        }
+    }
+    #[test]
+    fn typed_mutation_dispatch_requires_fresh_connection_actor_and_preserves_owner() {
+        let mut world = World::new_minimal();
+        let other = world
+            .create(
+                crate::ObjKind::Player,
+                "Other",
+                crate::GOD,
+                Some(crate::LIMBO),
+            )
+            .expect("other");
+        let mut registry = Registry::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        crate::module::Registrar::new(&mut registry, "test")
+            .invoke_handler("mind", Arc::new(Handler(calls.clone())))
+            .expect("handler");
+        let mut engine = Engine::new(world, registry);
+        engine.step(
+            Inbound::ConnUp {
+                conn: 42,
+                actor: crate::GOD,
+                caps_structured: true,
+                from_linkdead: false,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+        for (conn, actor, expected) in [(43, crate::GOD, 0), (42, other, 0), (42, crate::GOD, 1)] {
+            let mut out = Outbox::new();
+            engine.step(
+                Inbound::Invoke {
+                    conn,
+                    actor,
+                    id: 5,
+                    request: mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::List {}),
+                },
+                &mut out,
+                &mut Effects::new(),
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), expected);
+            if expected == 1 {
+                assert!(matches!(
+                    out.events(),
+                    [(
+                        crate::Audience::Conn(42),
+                        OutputEvent::InvokeResult { id: 5, .. }
+                    )]
+                ));
+            } else {
+                assert!(out.events().is_empty());
+            }
+            assert_eq!(engine.world.dispatching_conn(), None);
+        }
+        let before = engine.world.connection_binding(42);
+        engine.step(
+            Inbound::ConnDown {
+                conn: 42,
+                actor: crate::GOD,
+                reason: DisconnectKind::Lost,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+        assert_eq!(engine.world.connection_binding(42), None);
+        engine.step(
+            Inbound::ConnUp {
+                conn: 42,
+                actor: crate::GOD,
+                caps_structured: true,
+                from_linkdead: false,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+        assert_ne!(engine.world.connection_binding(42), before);
     }
 }

@@ -934,8 +934,8 @@ mod tests {
     }
 
     /// **17b cut M5.3 (D14)**: the same life on a hull whose sealed mind is
-    /// not Standard Doctrine — the fixture seal renamed after the seal, as
-    /// `arena::mind`'s `m4_6c_…` reads one — comes back to its pilot with the
+    /// not Standard Doctrine — an explicitly filed fixture identity rather
+    /// than a renamed doctrine identity — comes back to its pilot with the
     /// machine's word `unknown` (`Arena::machine_state`, off the seal), and the
     /// catch-up says it as the mind's own: `  The machine was flying on its own
     /// mind under no order.` The word names no mind, so a pilot whose hull a
@@ -944,13 +944,24 @@ mod tests {
     fn m5_d14_a_hull_not_on_doctrine_comes_back_flying_on_its_own_mind() {
         use crate::arena::doctrine::MachineState;
         let mut arena = arena(0);
-        let mut seal = {
+        let seal = {
             let mut red = line_tank(RED, Team::Red, pose(500, 500));
-            red.reseal(&crate::match_::SealTerms::fixture())
-                .expect("the fixture terms seal");
+            let terms = crate::match_::SealTerms {
+                identity: crate::match_::SealIdentity {
+                    mind: "Fixture I".into(),
+                    origin: crate::arena::profile_seal::MindOrigin::Filed {
+                        charter: "Fixture".into(),
+                        line: "fixture_i".into(),
+                        revision: 1,
+                        licence: "test".into(),
+                    },
+                    source_sha256: [9; 32],
+                },
+                ..crate::match_::SealTerms::fixture()
+            };
+            red.reseal(&terms).expect("the filed fixture terms seal");
             red.seal
         };
-        seal.mind = SmolStr::new("Fixture I");
         if let Some(unit) = arena.unit_mut(RED) {
             unit.seal = seal.seal_ref();
         }

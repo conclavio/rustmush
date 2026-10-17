@@ -132,16 +132,28 @@ macro_rules! custom_type {
     }};
 }
 
+#[cfg(test)]
+mod acceptance;
 pub mod api;
+pub(crate) mod authoring;
 pub mod card;
+pub(crate) mod check;
 pub mod content;
 pub mod context;
 pub mod fees;
 pub mod kernels;
+pub(crate) mod metadata;
+pub(crate) mod normalize;
 pub mod pool;
+pub mod resimulation;
+pub(crate) mod rule_samples;
 pub mod runner;
 pub mod sealed;
+pub mod starter;
 pub mod stations;
+pub(crate) mod stock;
+pub(crate) mod trace_feed;
+pub(crate) mod workshop;
 
 pub use content::{
     MindManifest, STANDARD_MANIFEST_JSON, STANDARD_RHAI, STANDARD_SHA256, source_lookup,
@@ -153,7 +165,7 @@ pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
-pub const API_VERSION: u32 = 3;
+pub const API_VERSION: u32 = 4;
 
 /// **The stock content's version** (doc 17 §13): the `stock=` part of
 /// [`MIND_ABI`]; M5r's restored Hold/motor/origin behavior is version 2.
@@ -163,7 +175,7 @@ pub const STOCK_VERSION: u32 = 2;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] — `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=3;stock=2";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=4;stock=2";
 
 /// **The stock class's op ceiling per think** (doc 17 §9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -247,6 +259,7 @@ fn register(engine: &mut Engine) -> Vec<&'static str> {
     kernels::register(&mut api);
     context::register(&mut api);
     stations::register(&mut api);
+    stock::register(&mut api);
     api.names
 }
 
@@ -392,6 +405,7 @@ pub(crate) mod fixture {
                 requested_goal: (6, 4),
                 outcome: Some(DriveOutcome::Arrived),
             }),
+            own_last_hit_ms: None,
             x_cm: 1_500,
             y_cm: 4_500,
             z_cm: 0,
@@ -685,10 +699,45 @@ pub(crate) mod fixture {
         line(&ReflexConfig::default())
     }
 
+    /// Admit exact stock fixture values through the same generic definition path.
+    pub(crate) fn runtime_card(card: StockCard) -> crate::arena::runtime_card::RuntimeCard {
+        use crate::arena::runtime_card::{CardCatalog, ProfileKey, stock_definition};
+        let mut catalog = CardCatalog::default();
+        let definition =
+            stock_definition(&[("Line".into(), card)], crate::arena::core::CoreClass::I).unwrap();
+        let definition = catalog.admit(definition).unwrap();
+        catalog
+            .resolve(ProfileKey {
+                definition,
+                index: 0,
+            })
+            .unwrap()
+    }
+
+    pub(crate) fn empty_program() -> crate::arena::profile_rules::BoundProgram {
+        crate::arena::profile_rules::BoundProgram::bind(
+            &[],
+            &[],
+            &[],
+            &crate::arena::core::ClassTable::STOCK.row(crate::arena::core::CoreClass::I),
+            0,
+        )
+        .unwrap()
+    }
+
     /// **A context for one think** over `view`: think 7 of the hull at 5,000
     /// ms, landing at 5,100, seed 42.
     pub(crate) fn context_on(view: MindView) -> ThinkContext {
+        let card = runtime_card(card());
         ThinkContext {
+            profile_token: crate::arena::profile_runtime::ProfileToken {
+                unit: UNIT,
+                generation: 0,
+                key: card.key(),
+            },
+            program: empty_program(),
+            next_lands_ms: 6_100,
+            rule_sample: None,
             view: Arc::new(view),
             map: Arc::new(map()),
             seed: 42,
@@ -700,6 +749,7 @@ pub(crate) mod fixture {
             repath_ms: 4_000,
             draws: 0,
             line_to_calls: 0,
+            terrain_calls: 0,
             line_to_max: super::STOCK_LINE_TO_PER_THINK,
             slots: crate::arena::core::ClassTable::STOCK
                 .row(crate::arena::core::CoreClass::I)
@@ -744,7 +794,7 @@ pub(crate) mod fixture {
             compiled: &compiled,
             args: vec![
                 Dynamic::from(View(view)),
-                Dynamic::from(Card(Arc::new(card))),
+                Dynamic::from(Card(runtime_card(card))),
             ],
             memory,
             limits: &STOCK_MEMORY_LIMITS,
@@ -765,6 +815,9 @@ pub(crate) mod fixture {
     /// memory).
     pub(crate) fn scratch() -> Engine {
         let mut engine = Engine::new_raw();
+        // Trusted stock modules use the same parser envelope as production.
+        // Rhai's raw default has a shallower function limit than our sandbox.
+        engine.set_max_expr_depths(48, 24);
         engine.register_global_module(LanguageCorePackage::new().as_shared_module());
         engine.register_global_module(ArithmeticPackage::new().as_shared_module());
         engine.register_global_module(LogicPackage::new().as_shared_module());
@@ -789,7 +842,7 @@ pub(crate) mod fixture {
         context::set(ctx);
         let mut scope = Scope::new();
         scope.push("v", View(view));
-        scope.push("c", Card(Arc::new(card())));
+        scope.push("c", Card(runtime_card(card())));
         let answer = scratch().eval_with_scope::<Dynamic>(&mut scope, expr);
         let _left = context::take();
         answer
@@ -819,7 +872,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=3;stock=2");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=4;stock=2");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -933,7 +986,7 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 269] = [
+    const PINNED: [&str; 279] = [
         "type View",
         "type Objective",
         "type Motor",
@@ -1123,6 +1176,7 @@ mod tests {
         "Card.search_ms",
         "Card.hunt_after_ms",
         "Card.stop_unseen",
+        "Card.get",
         "type Ranges",
         "Ranges.engage_cm",
         "Ranges.release_cm",
@@ -1142,6 +1196,8 @@ mod tests {
         "contact",
         "ranges",
         "line_to",
+        "terrain_at",
+        "spot_cell",
         "entry_cell",
         "far_entry_cell",
         "stand_off_cell",
@@ -1185,6 +1241,13 @@ mod tests {
         "arm",
         "disarm",
         "trace",
+        "stock::think",
+        "stock::rules",
+        "stock::fire_discipline",
+        "stock::best_hostile",
+        "stock::hold_band",
+        "stock::steer_to",
+        "stock::hunt",
         "clamp",
         "isqrt",
         "sleep",
@@ -1206,7 +1269,7 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 233] = [
+    const CALLS: [(&str, &str); 243] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.team", "v.team"),
@@ -1383,6 +1446,7 @@ mod tests {
         ("Card.search_ms", "c.search_ms"),
         ("Card.hunt_after_ms", "c.hunt_after_ms"),
         ("Card.stop_unseen", "c.stop_unseen"),
+        ("Card.get", "c.get(\"stance\")"),
         ("Ranges.engage_cm", "ranges(v, 800, true).engage_cm"),
         ("Ranges.release_cm", "ranges(v, 800, true).release_cm"),
         ("Ranges.stand_cm", "ranges(v, 800, true).stand_cm"),
@@ -1412,6 +1476,8 @@ mod tests {
         ("contact", "contact(v, v.lock)"),
         ("ranges", "ranges(v, 800, true)"),
         ("line_to", "line_to(v, v.lock)"),
+        ("terrain_at", "terrain_at(v.cell)"),
+        ("spot_cell", "spot_cell(\"A\")"),
         ("entry_cell", "entry_cell(v)"),
         ("far_entry_cell", "far_entry_cell(v)"),
         ("stand_off_cell", "stand_off_cell(v, v.lock, 500)"),
@@ -1458,6 +1524,13 @@ mod tests {
         ("arm", "arm(\"cannon\", \"best\", 100, 15, 0, 0, 420)"),
         ("disarm", "disarm(())"),
         ("trace", "trace(\"t\")"),
+        ("stock::think", "stock::think(v,c,#{})"),
+        ("stock::rules", "stock::rules()"),
+        ("stock::fire_discipline", "stock::fire_discipline(v,c,())"),
+        ("stock::best_hostile", "stock::best_hostile(v,c)"),
+        ("stock::hold_band", "stock::hold_band(v,c,v.lock)"),
+        ("stock::steer_to", "stock::steer_to(v,[1,1])"),
+        ("stock::hunt", "stock::hunt(v,c,#{})"),
     ];
 
     /// One call of every sandbox and package name, inside `think`.
@@ -1481,3 +1554,5 @@ mod tests {
         ("is_def_var", "is_def_var(\"x\")"),
     ];
 }
+
+pub(crate) mod bulk;

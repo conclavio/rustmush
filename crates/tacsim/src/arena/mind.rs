@@ -98,7 +98,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::card::{CardChange, PRESETS, StockCard, preset};
+use crate::arena::card::{CardChange, PRESETS, preset};
 use crate::arena::conditions::{
     ASPECTS_ANY, ConditionTrigger, FireCondition, SlotTarget, condition_is_lawful,
 };
@@ -197,12 +197,20 @@ pub struct PendingThink {
     /// so a seat that changed hands in between refuses them `Epoch`
     /// (D-UM-13).
     pub epochs: [u64; 3],
+    /// Immutable program identity and fixed sample schedule from collection.
+    pub profile_token: crate::arena::profile_runtime::ProfileToken,
+    pub lands_ms: i64,
+    pub period_ms: i64,
+    pub profile_class: crate::arena::core::CoreClass,
+    /// Complete metered sample, distinct from station intents.
+    pub rule_sample: Option<crate::arena::profile_rules::RuleSample>,
     /// **The intents**, in the order the runner emitted them (at most
     /// [`MIND_INTENTS_MAX`]: a longer answer is a fault and is never
     /// pending).
     pub intents: Vec<IntentKind>,
     /// **The memory the runner handed back** (D-UM-30): canonical bytes,
     /// written to [`MindState::memory`] at the landing.
+    #[serde(deserialize_with = "crate::arena::memory_bound::deserialize")]
     pub memory: Vec<u8>,
 }
 
@@ -353,321 +361,7 @@ impl SealEngine {
 /// [`Arena::odds_floor_permille`] is, whose `closed` moves only with a ledger
 /// line (17b cut M3.6's `sortie_closed`), which the hash folds through the
 /// ledger's sequence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SealRef {
-    /// The sortie ([`SortieId::in_match`]).
-    pub sortie: SortieId,
-    /// The seal's SHA-256 digest ([`MindSeal::digest`]; zero on [`SealRef::none`]).
-    pub digest: [u8; 32],
-    /// **The core the seal recorded** — the class fitted at check-out, which
-    /// 17b cut M3.4's cause-`core` drop keys on (a hull sealed with a core
-    /// whose core is now gone).
-    pub core_class: crate::arena::core::CoreClass,
-    /// The class the sealed mind thinks at (`min(rated, core)`).
-    pub class: crate::arena::core::CoreClass,
-    /// What flies the hull.
-    pub engine: SealEngine,
-    /// Whether the core runs under the governor (doc 17 §10).
-    pub governed: bool,
-    /// Whether the sortie is closed (17b cut M3.6's `sortie_closed` sets it,
-    /// once).
-    pub closed: bool,
-    /// **Whether the mind sealed is Standard Doctrine** (17b cut M4.6; the
-    /// conventions' D3), derived **by identity** in [`MindSeal::seal_ref`] —
-    /// the seal's `mind`, `charter` and `line` are
-    /// [`crate::arena::doctrine::SEALED_MIND`],
-    /// [`crate::arena::doctrine::SEALED_CHARTER`] and
-    /// [`crate::arena::doctrine::SEALED_LINE`] — and never off the engine
-    /// (the native stock mind and the scripted doctrine are one mind on two
-    /// engines). Not a [`MindSeal`] field: an always-written field would
-    /// move every seal's digest and so every mind hash and `mind_sealed` line
-    /// (17b cut M5.2: a field skipped when empty, as [`MindSeal::profiles`]
-    /// is, moves none). `false` on [`SealRef::none`].
-    ///
-    /// It gates the three readers of a mind's doctrine state — the tempo's
-    /// `ai_approaching` (`Arena::any_mind_approaching`), and through
-    /// [`Arena::machine_state`] the leader's `doing:` histogram and the
-    /// catch-up sentence — because a mind sealed on anything else keeps no
-    /// doctrine state of its own in its memory's `state` key: its hull reads
-    /// [`crate::arena::doctrine::MachineState::Unknown`]. Every production
-    /// seal is Standard Doctrine — `crate::match_::seal_for` writes the
-    /// identity its terms carry, and production holds no other mind before
-    /// 17b cut M6 (the owner's OQ-2) — so it reads `true` on every hull a
-    /// production match fields; a fixture's mind sealed through the holdings
-    /// seam (`Fixture I`), and the minds lane's Load III ceiling hulls renamed
-    /// after the seal, read `false`.
-    pub doctrine: bool,
-    /// **The profiles the hull was sealed with** (17b cut M5.2; doc 17 §11,
-    /// §12; the owner's OQ-3): the sealed set as codes into
-    /// [`crate::arena::card::PRESETS`], the first the one that flies at the
-    /// release; [`crate::arena::card::ProfileSet::LINE`] for a seal whose set
-    /// is the Line card alone — every default seal — and on
-    /// [`SealRef::none`]. Derived in [`MindSeal::seal_ref`] from
-    /// [`MindSeal::profiles`]; the hull's active one is
-    /// [`crate::arena::state::UnitState::card_profile`]. A per-match constant,
-    /// **never folded**, as the rest of this reference is.
-    pub profiles: crate::arena::card::ProfileSet,
-}
-
-impl SealRef {
-    /// **No seal**: sortie 0, a zero digest, Class 0 recorded and thought at,
-    /// the reflex's engine word (decode-only, unhashed: the conventions' D8),
-    /// governed, open, not doctrine, the Line card alone — what [`Arena::new`]
-    /// laid down on every unit before 17b cut M3.3 sealed them, and what a
-    /// unit no seal reached reads.
-    #[must_use]
-    pub const fn none() -> SealRef {
-        SealRef {
-            sortie: SortieId::none(),
-            digest: [0; 32],
-            core_class: crate::arena::core::CoreClass::Zero,
-            class: crate::arena::core::CoreClass::Zero,
-            engine: SealEngine::Reflex,
-            governed: true,
-            closed: false,
-            doctrine: false,
-            profiles: crate::arena::card::ProfileSet::LINE,
-        }
-    }
-}
-
-impl Default for SealRef {
-    /// [`SealRef::none`].
-    fn default() -> Self {
-        SealRef::none()
-    }
-}
-
-/// **The seal a hull is checked out under** (17b cut M3.3; doc 17 §12
-/// "Sealing", §13 "The seal"; D-UM-45, D-UM-46): one immutable record per
-/// sortie binding the hull, its core, the licence, the mind's revision and the
-/// card into one value, computed world-side at the principal's dispatch — in
-/// the arena at check-out, LAST, from the finished custody
-/// (`crate::match_::seal::seal_for`, the one computation) — and carried on
-/// [`crate::arena::state::CustodyUnit::seal`] beside `sensor`, `weapons` and
-/// `gunnery` for every unit, piloted or not, armed or not.
-///
-/// The arena keeps a reference to it ([`SealRef`], [`MindSeal::seal_ref`])
-/// on the unit's state and its digest on a mind's row
-/// ([`MindState::seal_digest`]); the world keeps it whole on
-/// `crate::match_::MatchRecord::minds`, keyed by unit.
-///
-/// **What each field holds** (production holds one mind before 17b cut M6,
-/// the owner's OQ-2): `mind` `Standard Doctrine`, `charter` `registry`, `line`
-/// `standard`, `revision` the stock version, `source_sha256` the stock
-/// script's digest — since 17b cut M5.2 the identity the terms carry
-/// (`SealTerms::identity`), which is these five in production and a
-/// fixture's own through the holdings seam — `card` the canonical bytes of
-/// the first sealed profile's card (the Line preset over the match's doctrine
-/// for a hull nobody chose a mind for), `armed` empty, `licence` `doctrine`,
-/// `channels` helm and sensors plus fire on a hull that carries a weapon row,
-/// `fallback` `no core: the ROM` on a hull with no core, `engine` the decided
-/// engine for minds on every hull since 17b cut M4.3
-/// (`SealTerms::engine_for_minds`; [`SealEngine::Reflex`] for a reflex or a
-/// piloted hull from M3.3 to M4.2), and (17b cut M5.2) `profiles` empty
-/// unless the sealed set is more than the Line card alone.
-///
-/// The two 32-byte digests are written as 64 lowercase base-16 characters
-/// ([`crate::arena::snapshot::digest_serde`]), the tree's one digest form;
-/// [`MindSeal::digest`] is SHA-256 over this record's own JSON bytes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MindSeal {
-    /// The hull.
-    pub unit: ObjId,
-    /// The sortie ([`SortieId::in_match`]).
-    pub sortie: SortieId,
-    /// The core component's id (`core` on every shipped chassis), or `None`
-    /// for a hull with no core.
-    pub core: Option<SmolStr>,
-    /// The core's class at the seal (Class 0 with no core) — what 17b cut
-    /// M3.4's cause-`core` drop keys on.
-    pub core_class: crate::arena::core::CoreClass,
-    /// The class the sealed mind thinks at: `min(its rated class, the
-    /// core's)` (17b cut M3's ruling, the plan's F4).
-    pub class: crate::arena::core::CoreClass,
-    /// Whether the core runs under the governor (doc 17 §10); `true` with no
-    /// core.
-    pub governed: bool,
-    /// The mind's name (`Standard Doctrine`).
-    pub mind: SmolStr,
-    /// The charter it was filed under (`registry`).
-    pub charter: SmolStr,
-    /// The line of revisions it belongs to (`standard`).
-    pub line: SmolStr,
-    /// The revision sealed.
-    pub revision: u32,
-    /// The SHA-256 of the sealed source — the key of the world's immutable
-    /// source store (`tacsim:mindsrc:<sha256>`).
-    #[serde(with = "crate::arena::snapshot::digest_serde")]
-    pub source_sha256: [u8; 32],
-    /// The canonical card bytes (`serde_json::to_vec` of the card validated
-    /// at the seal).
-    pub card: Vec<u8>,
-    /// SHA-256 over [`MindSeal::card`].
-    #[serde(with = "crate::arena::snapshot::digest_serde")]
-    pub card_digest: [u8; 32],
-    /// The condition slots armed at the seal: none before 17b cut M6, whose
-    /// authoring seals a profile's rules; the rule-language cut after M5
-    /// arms a pilot's slots, never a seal's.
-    pub armed: Vec<FireCondition>,
-    /// The engine ABI the mind was sealed against (`MIND_ABI`); a resume
-    /// under another is refused by name.
-    pub abi: SmolStr,
-    /// The licence the core holds, or `doctrine`.
-    pub licence: SmolStr,
-    /// **The warrant principal** (doc 17 §19): the character who chose the
-    /// mind — the hull's pilot, or the side lead for the fill — as an access
-    /// and display fact only; `None` where nobody chose (a staff match).
-    pub principal: Option<crate::deliberation::order::CharacterRef>,
-    /// The station channels the hull grants (doc 17 §12, D-UM-47).
-    pub channels: Vec<Channel>,
-    /// The Compact floor the card was validated against, per mille.
-    pub odds_floor_permille: u32,
-    /// Why the hull flies a fallback from the start, if it does: `no core:
-    /// the ROM` on a hull with no core, and (17b cut M5.2; Q-UM-15) `humans
-    /// on the other side` on a hull whose non-Doctrine choice the check-out
-    /// sealed as Standard Doctrine (`crate::match_::SealTerms::fallback`).
-    pub fallback: Option<SmolStr>,
-    /// What flies the hull.
-    pub engine: SealEngine,
-    /// **The sealed profiles, by name, each with its card's digest** (17b cut
-    /// M5.2; doc 17 §11, §12; the owner's OQ-3; the critic's D3): the set in
-    /// order, the first the one that flies at the release (whose card is
-    /// [`MindSeal::card`]) — **empty exactly when the set is the Line card
-    /// alone**. Written LAST and skipped when empty, so every default seal —
-    /// that of every hull nobody chose a mind for, every fixture seal — is the
-    /// record it was at `5f505c8` byte for byte: the same digest, the same
-    /// `seal_digest` fold and the same `mind_sealed` line (F4; pinned by
-    /// `crate::match_::seal`'s `m5_a_default_seal_digests_as_it_did_at_5f505c8`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub profiles: Vec<SealedProfile>,
-}
-
-/// **One sealed profile** (17b cut M5.2; [`MindSeal::profiles`]): its preset's
-/// name, canonically spelled (`Sniper`), and the SHA-256 of its card's
-/// canonical bytes, as [`MindSeal::card_digest`] is of the first.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SealedProfile {
-    /// The preset's name.
-    pub name: SmolStr,
-    /// SHA-256 over the card's `serde_json::to_vec` bytes.
-    #[serde(with = "crate::arena::snapshot::digest_serde")]
-    pub card_digest: [u8; 32],
-}
-
-impl MindSeal {
-    /// **SHA-256 over this record's canonical bytes** — `serde_json::to_vec`
-    /// of the whole seal, in field order. A record that does not serialise
-    /// (none can: every field is a string, a number, a list or a map with
-    /// string keys) digests as the empty input, and is never stored.
-    #[must_use]
-    pub fn digest(&self) -> [u8; 32] {
-        use sha2::{Digest as _, Sha256};
-        let bytes = serde_json::to_vec(self).unwrap_or_default();
-        Sha256::digest(&bytes).into()
-    }
-
-    /// **What the arena keeps of it** ([`SealRef`]): the sortie, the digest,
-    /// the core class, the class, the engine and the governor bit, open — and
-    /// (17b cut M4.6) the doctrine bit, by identity: this seal's `mind`,
-    /// `charter` and `line` are Standard Doctrine's
-    /// ([`crate::arena::doctrine::SEALED_MIND`], `SEALED_CHARTER`,
-    /// `SEALED_LINE`), whatever its engine — and (17b cut M5.2) the sealed
-    /// set as preset codes, [`crate::arena::card::ProfileSet::LINE`] for an
-    /// empty [`MindSeal::profiles`] (a record no `seal_for` wrote — a name that
-    /// is no preset, or more than four — reads the Line card alone too).
-    #[must_use]
-    pub fn seal_ref(&self) -> SealRef {
-        use crate::arena::doctrine::{SEALED_CHARTER, SEALED_LINE, SEALED_MIND};
-        SealRef {
-            sortie: self.sortie,
-            digest: self.digest(),
-            core_class: self.core_class,
-            class: self.class,
-            engine: self.engine,
-            governed: self.governed,
-            closed: false,
-            doctrine: self.mind == SEALED_MIND
-                && self.charter == SEALED_CHARTER
-                && self.line == SEALED_LINE,
-            profiles: self.profile_set(),
-        }
-    }
-
-    /// **The sealed set as preset codes** (17b cut M5.2): [`MindSeal::profiles`]
-    /// by name, [`crate::arena::card::ProfileSet::LINE`] for an empty one or
-    /// one no build could decode — what [`MindSeal::seal_ref`] carries on
-    /// [`SealRef::profiles`] and the check-out's mirror cards read.
-    #[must_use]
-    pub fn profile_set(&self) -> crate::arena::card::ProfileSet {
-        crate::arena::card::ProfileSet::of_names(
-            &self
-                .profiles
-                .iter()
-                .map(|profile| profile.name.as_str())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or(crate::arena::card::ProfileSet::LINE)
-    }
-
-    /// **The sortie's opening line** (17b cut M3.6; doc 17 §13, D-UM-45):
-    /// [`EventKind::MindSealed`]
-    /// off this record — never off a view of the arena — with the source as
-    /// the first sixteen base-16 characters of its SHA-256 and the card's
-    /// digest whole. [`crate::arena::state::Arena::new`] journals one per
-    /// unit, in unit-id order, right after `match_started`.
-    #[must_use]
-    pub fn sealed_line(&self) -> crate::arena::ledger::EventKind {
-        let source = crate::arena::snapshot::digest_text(&self.source_sha256);
-        crate::arena::ledger::EventKind::MindSealed {
-            unit: self.unit,
-            sortie: self.sortie,
-            mind: self.mind.clone(),
-            source: SmolStr::new(source.get(..16).unwrap_or(source.as_str())),
-            card_digest: SmolStr::new(crate::arena::snapshot::digest_text(&self.card_digest)),
-            class: self.class,
-            governed: self.governed,
-            licence: self.licence.clone(),
-            principal: self.principal.clone(),
-        }
-    }
-
-    /// **A value no seal computes**, for a custody literal built before its
-    /// seal: object 0, no sortie, empty words, zero digests, the reflex's
-    /// engine word (decode-only; the conventions' D8 keeps this default). Every
-    /// literal in the tree replaces it at once (`crate::arena::state::CustodyUnit`'s
-    /// `sealed`, `crate::match_::seal`), so no arena is ever opened on it.
-    #[must_use]
-    pub fn placeholder() -> MindSeal {
-        MindSeal {
-            unit: ObjId(0),
-            sortie: SortieId::none(),
-            core: None,
-            core_class: crate::arena::core::CoreClass::Zero,
-            class: crate::arena::core::CoreClass::Zero,
-            governed: true,
-            mind: SmolStr::default(),
-            charter: SmolStr::default(),
-            line: SmolStr::default(),
-            revision: 0,
-            source_sha256: [0; 32],
-            card: Vec::new(),
-            card_digest: [0; 32],
-            armed: Vec::new(),
-            abi: SmolStr::default(),
-            licence: SmolStr::default(),
-            principal: None,
-            channels: Vec::new(),
-            odds_floor_permille: 0,
-            fallback: None,
-            engine: SealEngine::Reflex,
-            profiles: Vec::new(),
-        }
-    }
-}
+pub use super::mind_seal::{MindSeal, SealRef};
 
 /// **The word a sortie closes with at the match's end** (17b cut M3.6; doc 17
 /// §12, §13): every sortie still open when the match ends, at any of its six
@@ -775,6 +469,7 @@ pub struct MindState {
     /// **The mind's memory** (D-UM-30): canonical bytes the runner writes and
     /// the arena never decodes. Written at the landing, so a fault keeps the
     /// old bytes.
+    #[serde(deserialize_with = "crate::arena::memory_bound::deserialize")]
     pub memory: Vec<u8>,
     /// **The notice buffer** (D-UM-8): every notice staged on the hull since
     /// the last think — the pilot's own notices, and the mind's own refusals
@@ -863,22 +558,6 @@ pub struct MindState {
     /// Carried by the snapshot; **folded into `state_hash` since 17b cut
     /// M3.6** (§13's fold list: its 32 bytes, after the drop).
     pub seal_digest: [u8; 32],
-    /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11,
-    /// D-UM-43): a stock card over the arena's own doctrine — since 17b cut
-    /// M5.2 laid down on the hull's ACTIVE sealed profile
-    /// ([`Arena::active_card`], [`MindState::fresh_with`]; the Line preset for
-    /// a default seal, byte for byte [`MindState::fresh`]). Handed to every
-    /// think ([`ThinkJob::card`]), folded inside item 3c after `strikes`, and
-    /// carried by the snapshot from format 7. The stock mind reads its fire
-    /// discipline from 17b cut M1b.2 and every mapped term through the
-    /// overlay from 17b cut M1b.5, which also gives staff the lever
-    /// (`@mind/set`). Written in two places and nowhere else: a staff
-    /// `@mind/set` landing on this row at a pulse's start
-    /// (`Arena::apply_mind_cards`), and (17b cut M5.2) a seat's `MIND
-    /// PROFILE` over a seated hull's DORMANT row in phase 2's intent loop
-    /// (`apply_profile` in `arena::intents`), so the release flies the
-    /// switched-to preset.
-    pub card: StockCard,
     /// **The doctrine's state, cached** (17b cut M4.3; the M4 row's finding
     /// (4)): `StockMemory.state` as the last landed memory decodes it
     /// ([`doctrine_state_of`]), `Startup` for an empty, absent or undecodable
@@ -909,17 +588,7 @@ impl MindState {
     /// remembered, nothing said, no order — and the Line card read off `cfg`,
     /// the arena's own doctrine (`crate::arena::card::line`).
     #[must_use]
-    pub fn fresh(cfg: &ReflexConfig) -> MindState {
-        MindState::fresh_with(crate::arena::card::line(cfg))
-    }
-
-    /// **A fresh mind's row flying `card`** (17b cut M5.2; doc 17 §11, §12):
-    /// [`MindState::fresh`] with the card the hull's active profile names —
-    /// what `Arena::adopt_mind` lays a hull with no row, the card derived
-    /// over the arena's own doctrine. [`MindState::fresh`] is this over the
-    /// Line card, byte for byte.
-    #[must_use]
-    pub fn fresh_with(card: crate::arena::card::StockCard) -> MindState {
+    pub fn fresh(_cfg: &ReflexConfig) -> MindState {
         MindState {
             think_seq: 0,
             pending: None,
@@ -932,7 +601,6 @@ impl MindState {
             strikes: 0,
             dropped: None,
             seal_digest: [0; 32],
-            card,
             doctrine_state: crate::arena::doctrine::MachineState::Startup,
         }
     }
@@ -1032,7 +700,9 @@ pub struct ThinkJob<'a> {
     /// slots are armed on, `crate::arena::stock_mind::arming_for`), and since
     /// 17b cut M1b.5 every mapped term through `StockCard::as_reflex` (the
     /// eleven `[M2]` sliders are carried and not read); `NoMind` ignores it.
-    pub card: &'a StockCard,
+    pub card: &'a super::runtime_card::RuntimeCard,
+    pub program: &'a super::profile_rules::BoundProgram,
+    pub profile_token: super::profile_runtime::ProfileToken,
 }
 
 /// **Why a think faulted** (17b cut M2.2; doc 17 §8, D-UM-31): the cause
@@ -1056,6 +726,10 @@ pub struct ThinkFault {
 /// and the runner's trace.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ThinkResult {
+    /// Bounded runtime facts only; private source is never copied into diagnostics.
+    pub diagnostics: Option<super::author_trace::ThinkDiagnostics>,
+    /// Complete metered think-term truth, published only on successful landing.
+    pub rule_sample: Option<super::profile_rules::RuleSample>,
     /// What to do, at most [`MIND_INTENTS_MAX`].
     pub intents: Vec<IntentKind>,
     /// What to remember.
@@ -1081,6 +755,8 @@ impl MindRunner for NoMind {
     /// Nothing, the memory as it came, no fault and no trace.
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         ThinkResult {
+            rule_sample: None,
+            diagnostics: None,
             intents: Vec::new(),
             memory: job.memory.to_vec(),
             fault: None,
@@ -1120,6 +796,8 @@ pub fn default_mind_runner(cfg: &ArenaConfig) -> Arc<dyn MindRunner> {
 /// few hundred bytes, a range memory of at most the row's contacts).
 #[derive(Clone, Debug)]
 pub struct CollectedThink {
+    /// Station epochs captured with this job, even if its pending row is later discarded.
+    pub epochs: [u64; 3],
     /// The hull thinking ([`ThinkJob::unit`]).
     pub unit: ObjId,
     /// The think's sequence number ([`ThinkJob::think_seq`]).
@@ -1141,7 +819,9 @@ pub struct CollectedThink {
     /// The map ([`ThinkJob::map`]).
     pub map: Arc<ArenaDefinition>,
     /// The card the mind thinks under ([`ThinkJob::card`]), by value.
-    pub card: StockCard,
+    pub card: super::runtime_card::RuntimeCard,
+    pub program: super::profile_rules::BoundProgram,
+    pub profile_token: super::profile_runtime::ProfileToken,
     /// **The runner the hull thinks on** ([`Arena::runner_for`] at
     /// collection): its own by its seal, else the arena-wide fallback.
     pub runner: Arc<dyn MindRunner>,
@@ -1177,6 +857,8 @@ impl CollectedThink {
             memory: &self.memory,
             map: &self.map,
             card: &self.card,
+            program: &self.program,
+            profile_token: self.profile_token,
         }
     }
 
@@ -1393,6 +1075,8 @@ pub struct MindView {
     pub cell: Option<(u16, u16)>,
     /// Public match mode (`mode`).
     pub mode: crate::arena::state::MatchMode,
+    /// Last accepted hit on this hull in arena time; absent before any hit.
+    pub own_last_hit_ms: Option<i64>,
     /// Public objective geometry (`objective`), never capture state.
     pub objective: Option<crate::arena::state::HoldObjective>,
     /// Its own requested drive and retained outcome (`motor`).
@@ -1586,31 +1270,12 @@ impl Arena {
         // unit's own seal reference — at check-out and at any later adoption
         // alike; a standing row keeps its own (17b cut M3.5: the dormant row's
         // digest is the one it was laid with — a re-seat never re-seals).
-        let (sealed, doctrine, card) = self.unit(unit).map_or(
-            (
-                [0; 32],
-                false,
-                crate::arena::card::line(&self.arena_cfg.reflex),
-            ),
-            |state| {
-                (
-                    state.seal.digest,
-                    state.seal.doctrine,
-                    self.active_card(state),
-                )
-            },
-        );
-        // **17b cut M5.2** (doc 17 §11, §12): a row laid down here flies the
-        // card of the hull's active profile — the sealed set's code at
-        // `card_profile.index`, derived over the arena's own doctrine as Line
-        // always was — so a fill flies its lead's preset from its first think
-        // and a released hull the profile its pilot left it on. The default
-        // set at the first profile is `card::line`, byte for byte. A standing
-        // row keeps its own card (a seat's switch wrote it, or staff's
-        // `@mind/set`).
+        let (sealed, doctrine) = self.unit(unit).map_or(([0; 32], false), |state| {
+            (state.seal.digest, state.seal.doctrine)
+        });
         let row = self.minds.entry(unit).or_insert_with(|| MindState {
             seal_digest: sealed,
-            ..MindState::fresh_with(card)
+            ..MindState::fresh(&self.arena_cfg.reflex)
         });
         // **17b cut M5.2** (the design note's item 6): the `Withdraw` seed is
         // Standard Doctrine's — a mind sealed on anything else
@@ -1635,22 +1300,14 @@ impl Arena {
             .schedule(at, DueKind::MindThink { unit, think_seq });
     }
 
-    /// **The card of a hull's active profile** (17b cut M5.2; doc 17 §11,
-    /// §12): the preset its sealed set names at
-    /// [`crate::arena::state::UnitState::card_profile`]'s index
-    /// ([`crate::arena::card::ProfileSet::name`]), over the arena's own
-    /// doctrine ([`crate::arena::card::preset`]) — Line for a hull sealed on
-    /// the Line card alone, and for an index past its set (which no switch
-    /// writes).
+    /// The exact active own-hull card from the admitted shared catalog. No
+    /// current preset or mutable library lookup occurs during execution.
     #[must_use]
     pub fn active_card(
         &self,
         state: &crate::arena::state::UnitState,
-    ) -> crate::arena::card::StockCard {
-        state
-            .seal
-            .profiles
-            .card(state.card_profile.index, &self.arena_cfg.reflex)
+    ) -> Option<&crate::arena::runtime_card::RuntimeCard> {
+        self.profiles.get(&state.id).map(|runtime| &runtime.card)
     }
 
     /// **What the machine flying `unit` is doing, as a doctrine state** (17b
@@ -1797,6 +1454,8 @@ impl Arena {
     /// activation inside the same sortie, never a new seal: nothing here
     /// touches [`crate::arena::state::UnitState::seal`].
     pub(crate) fn suspend_mind(&mut self, unit: ObjId) {
+        self.trace_cancel_pending(unit, super::author_trace::Cancelled::Controller);
+        self.invalidate_rule_sample(unit);
         if let Some(state) = self.minds.get_mut(&unit) {
             state.pending = None;
             // 17b cut M4.3: the held order goes with the seat — and (17b cut
@@ -1893,6 +1552,12 @@ impl Arena {
         // hand-over to a mind there is) seeds the doctrine's state as N.1
         // seeded the reflex's.
         if controller == Controller::Mind {
+            // M6 ownership handback restores the selected immutable program,
+            // while preserving dormant memory and the selected profile.
+            if self.restore_profile_bindings(unit).is_err() {
+                self.stop(crate::arena::state::StopReason::Void);
+                return;
+            }
             self.adopt_mind(unit, Some(state));
         }
     }
@@ -2069,6 +1734,7 @@ impl Arena {
             team: frame.team,
             cell: frame.cell,
             mode: frame.mode,
+            own_last_hit_ms: frame.own_last_hit_ms,
             objective: frame.objective,
             motor: frame.motor,
             x_cm: frame.pose.x_cm,
@@ -2194,12 +1860,18 @@ impl Arena {
         let period = profile.think_ms;
         let seed = self.seed;
         let map = Arc::clone(&self.definition);
+        let Some(runtime) = self.profiles.get(&unit) else {
+            return;
+        };
+        let card = runtime.card.clone();
+        let program = runtime.program.clone();
+        let profile_token = runtime.token();
+        self.trace_cancel_pending(unit, super::author_trace::Cancelled::Superseded);
         let Some(state) = self.minds.get_mut(&unit) else {
             return;
         };
         let dropped = state.dropped() || class == crate::arena::core::CoreClass::Zero;
         let memory = state.memory.clone();
-        let card = state.card.clone();
         state.think_seq = think_seq.saturating_add(1);
         // **17b cut M4.1**: the facts, and no answer — written at the settle
         // (`Arena::settle_collected`); a fault clears them there.
@@ -2207,6 +1879,11 @@ impl Arena {
             think_seq,
             t_ms,
             epochs,
+            profile_token,
+            lands_ms,
+            period_ms: period,
+            profile_class: class,
+            rule_sample: None,
             intents: Vec::new(),
             memory: Vec::new(),
         });
@@ -2227,7 +1904,9 @@ impl Arena {
                 think_seq: think_seq.saturating_add(1),
             },
         );
+        self.traces.begin(unit, think_seq, t_ms, dropped);
         self.collected.push(CollectedThink {
+            epochs,
             unit,
             think_seq,
             t_ms,
@@ -2239,6 +1918,8 @@ impl Arena {
             memory,
             map,
             card,
+            program,
+            profile_token,
             runner,
             substep_hash: None,
             ranges_before,
@@ -2272,6 +1953,7 @@ impl Arena {
     /// among them). The rows keep their facts; a voided match is never
     /// encoded.
     pub fn discard_outstanding(&mut self) {
+        self.trace_cancel_all(super::author_trace::Cancelled::Ended);
         self.unsettled.clear();
         self.collected.clear();
     }
@@ -2316,12 +1998,20 @@ impl Arena {
         think: &CollectedThink,
         result: ThinkResult,
     ) -> Settled {
+        self.tape_witnesses.observe(think, &result, think.epochs);
+        self.trace_complete(think, &result);
         let unit = think.unit;
         let dropped = Settled {
             dropped: 1,
             ..Settled::default()
         };
-        if self.ended.is_some() || !self.awaiting.contains(&unit) {
+        if self.ended.is_some()
+            || !self.awaiting.contains(&unit)
+            || !self
+                .profiles
+                .get(&unit)
+                .is_some_and(|runtime| runtime.accepts(think.profile_token))
+        {
             return dropped;
         }
         let Some(state) = self.minds.get_mut(&unit) else {
@@ -2347,11 +2037,28 @@ impl Arena {
         // own, or `intents` for an overflow with no fault — is what the
         // `mind_fault` line carries.
         let overflowed = result.intents.len() > MIND_INTENTS_MAX;
+        let sample_bad = result.rule_sample.as_ref().is_some_and(|sample| {
+            let mut checked = crate::arena::profile_rules::RuleLease::default();
+            sample.sampled_ms != think.t_ms
+                || checked
+                    .land(
+                        Some(sample.clone()),
+                        &think.program,
+                        think.profile_token.generation,
+                        think.lands_ms,
+                        think.lands_ms.saturating_add(think.profile.think_ms),
+                    )
+                    .is_err()
+        });
         let cause: Option<SmolStr> = result
             .fault
             .as_ref()
             .map(|fault| fault.cause.clone())
-            .or_else(|| overflowed.then(|| SmolStr::new_static(OVERFLOW_CAUSE)));
+            .or_else(|| overflowed.then(|| SmolStr::new_static(OVERFLOW_CAUSE)))
+            .or_else(|| sample_bad.then(|| SmolStr::new_static("rules")));
+        if let Some(cause) = cause.as_deref() {
+            self.traces.mark_fault(unit, think.think_seq, cause);
+        }
         let Some(state) = self.minds.get_mut(&unit) else {
             return dropped;
         };
@@ -2366,6 +2073,7 @@ impl Arena {
             if let Some(pending) = state.pending.as_mut() {
                 pending.intents = result.intents;
                 pending.memory = result.memory;
+                pending.rule_sample = result.rule_sample;
             }
             return Settled {
                 written: 1,
@@ -2395,6 +2103,7 @@ impl Arena {
         let excess = notices.len().saturating_sub(MIND_NOTICES);
         notices.drain(..excess);
         state.notices = notices;
+        self.invalidate_rule_sample(unit);
         // The landing the collection scheduled: nothing lands.
         let think_seq = think.think_seq;
         self.due.retain(|kind| {
@@ -2423,6 +2132,8 @@ impl Arena {
             hash,
         );
         if dropped_now {
+            self.traces
+                .drop_to_rom(unit, think_seq, super::author_trace::RomDrop::Strikes);
             let _ = self.ledger.append(
                 think.t_ms,
                 EventKind::MindDropped {
@@ -2434,7 +2145,9 @@ impl Arena {
                 Vec::new(),
                 hash,
             );
-            self.truncate_slots_to(unit, self.rom_slots());
+            if self.drop_runtime_to_rom(unit).is_err() {
+                self.stop(crate::arena::state::StopReason::Void);
+            }
             // 17b cut M3.1: a hull that has just dropped is on Class 0's
             // period from its next think — the one the collection scheduled
             // on the class it then had is moved when the period differs.
@@ -2512,6 +2225,7 @@ impl Arena {
                 .iter()
                 .position(|think| think.unit == answer.unit && think.think_seq == answer.think_seq)
             else {
+                self.trace_complete_late(answer.unit, answer.think_seq, &answer.result);
                 settled.dropped = settled.dropped.saturating_add(1);
                 continue;
             };
@@ -2654,7 +2368,7 @@ impl Arena {
                 // evaluation is `mind_land`'s, after every intent (17b's
                 // adversarial F5).
                 IntentKind::Condition(arming) => {
-                    self.resolve_arming(unit, arming, t_ms).map(|_| ())
+                    self.resolve_machine_arming(unit, arming, t_ms).map(|_| ())
                 }
                 // **17b cut M1a.5** (D-UM-12): the arm `Arena::order` never
                 // had. The reflex controller never switched its pod (16b cut
@@ -2742,6 +2456,10 @@ impl Arena {
         // on, in that substep or later — so this gate is the invariant made
         // explicit, not a path.
         if self.awaiting.contains(&unit) {
+            // A missing completion cannot retain sampled authority or keep
+            // condition evaluation deferred past this landing boundary.
+            self.cancel_profile_think(unit);
+            let _ = self.evaluate_conditions(unit, t_ms, ConditionTrigger::Landing, None, counters);
             return;
         }
         if self.ended.is_some()
@@ -2755,6 +2473,31 @@ impl Arena {
             return;
         };
         let Some(mut answer) = state.pending.take() else {
+            return;
+        };
+        if !self
+            .profiles
+            .get(&unit)
+            .is_some_and(|runtime| runtime.accepts(answer.profile_token))
+            || Channel::ALL
+                .iter()
+                .any(|channel| self.epochs.current(unit, *channel) != answer.epoch(*channel))
+        {
+            self.traces
+                .cancel(unit, think_seq, t_ms, super::author_trace::Cancelled::Epoch);
+            self.invalidate_rule_sample(unit);
+            let _ = self.evaluate_conditions(unit, t_ms, ConditionTrigger::Landing, None, counters);
+            return;
+        }
+        if self
+            .land_rule_sample(unit, answer.rule_sample.take(), t_ms, answer.period_ms)
+            .is_err()
+        {
+            self.traces.mark_fault(unit, think_seq, "rules");
+            let _ = self.evaluate_conditions(unit, t_ms, ConditionTrigger::Landing, None, counters);
+            return;
+        }
+        let Some(state) = self.minds.get_mut(&unit) else {
             return;
         };
         // 17b cut M4.2: the landing reached its apply — the written answer
@@ -2779,6 +2522,7 @@ impl Arena {
             IntentSource::Mind,
             counters,
         );
+        self.traces.land(unit, think_seq, t_ms, &landed);
         for (at, outcome) in landed.into_iter().enumerate() {
             let Landed::Refused(refusal) = outcome else {
                 continue;
@@ -2811,6 +2555,8 @@ impl Arena {
         if self.core_lost(unit) {
             let hash = self.event_hash();
             self.drop_for_core(unit, t_ms, hash);
+            self.traces
+                .drop_to_rom(unit, think_seq, super::author_trace::RomDrop::Core);
         }
         // 7. **17b cut M1b.1** (doc 17 §5, D-UM-16): the hull's condition slots,
         // ONCE, after every intent of the landing has landed — never after each
@@ -2819,13 +2565,6 @@ impl Arena {
         // and fire at a target the think had just dropped (17b's adversarial
         // F5). A hull with no slot returns at once.
         let _ = self.evaluate_conditions(unit, t_ms, ConditionTrigger::Landing, None, counters);
-    }
-
-    /// **The ROM's slots** (17b cut M3.4; D-UM-32): Class 0's row's `slots`
-    /// off the arena's own class table — one at the stock figures — what the
-    /// condition row is cut to at every drop.
-    fn rom_slots(&self) -> usize {
-        self.classes.row(crate::arena::core::CoreClass::Zero).slots
     }
 
     /// **The hash a think's own line carries** (17b cut M3.4; doc 16 §4's
@@ -2895,7 +2634,9 @@ impl Arena {
             Vec::new(),
             hash,
         );
-        self.truncate_slots_to(unit, self.rom_slots());
+        if self.drop_runtime_to_rom(unit).is_err() {
+            self.stop(crate::arena::state::StopReason::Void);
+        }
     }
 
     /// **A mind's standing order that has run out** (17b cut M1a.5; D-UM-15):
@@ -3036,7 +2777,7 @@ impl Arena {
     ///    `not_mind`;
     /// 2. the change is applied to a copy of the row's card — `Preset(name)`
     ///    is [`preset`] over `arena_cfg.reflex` (a name that is none is
-    ///    refused `no preset named {name}`), `Set` is [`StockCard::set`],
+    ///    refused `no preset named {name}`), `Set` is [`crate::arena::card::StockCard::set`],
     ///    validated again here (the world validated it on a scratch card; a
     ///    refusal is the `CardError`'s own sentence);
     /// 3. **the arena's own floor**: `condition_is_lawful` over a probe
@@ -3079,13 +2820,11 @@ impl Arena {
         let minded = self
             .unit(unit)
             .is_some_and(|state| state.controller == Controller::Mind);
-        let Some(before) = self
-            .minds
-            .get(&unit)
-            .filter(|_| minded)
-            .map(|state| state.card.clone())
-        else {
+        let Some(runtime) = self.profiles.get(&unit).filter(|_| minded) else {
             return refused("not_mind".to_owned());
+        };
+        let Some(before) = runtime.card.stock().cloned() else {
+            return refused("not_stock_card".to_owned());
         };
         let after = match change {
             CardChange::Preset(name) => match preset(name, &self.arena_cfg.reflex) {
@@ -3131,14 +2870,76 @@ impl Arena {
             .into_iter()
             .map(SmolStr::new_static)
             .collect();
-        if let Some(state) = self.minds.get_mut(&unit) {
-            state.card = after.clone();
+        let Some(own) = self.unit(unit) else {
+            return refused("missing_hull".to_owned());
+        };
+        let ids = own
+            .seal
+            .weapons
+            .iter()
+            .map(|weapon| weapon.id.clone())
+            .collect::<Vec<_>>();
+        let channels = own.seal.channels.clone();
+        let profile = self.classes.row(own.seal.class);
+        // A staff stock-slider change is an adapter over the active authored
+        // card. Preserve its schema, extra fields and ordered programs.
+        let active = runtime.card.key();
+        let Some(mut definition) = self.cards.definition(active.definition).cloned() else {
+            return refused("missing_card_definition".to_owned());
+        };
+        let Some(mut selected) = definition.profiles.get(usize::from(active.index)).cloned() else {
+            return refused("missing_card_profile".to_owned());
+        };
+        let values = match crate::arena::runtime_card::stock_values(&after) {
+            Ok(values) => values,
+            Err(error) => return refused(error.to_string()),
+        };
+        // The journal's human-readable stock label may include punctuation.
+        // Keep the authored profile identifier stable while changing its values.
+        selected.values.extend(values);
+        definition.profiles = vec![selected];
+        let mut catalog = self.cards.clone();
+        let key = match catalog.admit(definition) {
+            Ok(definition) => crate::arena::runtime_card::ProfileKey {
+                definition,
+                index: 0,
+            },
+            Err(error) => return refused(error.to_string()),
+        };
+        let card = match catalog.resolve(key) {
+            Ok(card) => card,
+            Err(error) => return refused(error.to_string()),
+        };
+        let Some(runtime) = self.profiles.get(&unit) else {
+            return refused("missing_runtime".to_owned());
+        };
+        let prepared = match runtime.prepare_card(
+            &catalog,
+            unit,
+            card,
+            &profile,
+            &ids,
+            &channels,
+            self.odds_floor_permille,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => return refused(error.to_string()),
+        };
+        let Some(runtime) = self.profiles.get_mut(&unit) else {
+            return refused("missing_runtime".to_owned());
+        };
+        if let Err(error) = runtime.commit(&mut self.conditions, prepared) {
+            return refused(error.to_string());
         }
+        self.cards = catalog;
+        self.constrain_profile_hardware(unit);
+        self.cancel_profile_think(unit);
         EventKind::MindCard {
             unit,
             name,
             changed,
-            card: after,
+            card: key,
+            stock: Some(after),
         }
     }
 }
@@ -3160,6 +2961,118 @@ mod tests {
         arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))])
     }
 
+    /// Seal the weapon facts before arena admission, as real custody does.
+    fn minded_with_weapons(weapons: Vec<crate::arena::state::WeaponSummary>) -> Arena {
+        let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+        red.controller = Controller::Mind;
+        red.weapons = weapons;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("armed fixture terms seal");
+        arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))])
+    }
+
+    #[test]
+    fn m6_staff_slider_preserves_authored_schema_extra_values_and_whole_rules() {
+        use crate::arena::conditions::Rule;
+        use crate::arena::profile_runtime::ProfileRuntime;
+        use crate::arena::runtime_card::RuntimeProfiles;
+        use crate::arena::schema::{AuthoredRule, CardField, CardValue, ThinkPredicate, Widget};
+
+        let mut arena = minded_with_weapons(vec![crate::arena::test_support::cannon()]);
+        let previous = arena.profiles[&RED].clone();
+        let mut definition = arena
+            .cards
+            .definition(previous.card.key().definition)
+            .expect("opening definition")
+            .clone();
+        definition.schema.sections[0].fields.push(CardField {
+            id: "author_flag".into(),
+            label: "Author flag".into(),
+            widget: Widget::Toggle {
+                default: true,
+                help: "Preserved custom value".into(),
+            },
+        });
+        definition.profiles[0]
+            .values
+            .insert("author_flag".into(), CardValue::Boolean(true));
+        definition.profiles[0].rules = vec![AuthoredRule {
+            rule: Rule::hold_rule(previous.weapons[0].clone(), Vec::new()),
+            think: vec![ThinkPredicate::Hostiles { at_least: 2 }],
+        }];
+        let expected_schema = definition.schema.clone();
+        let expected_name = definition.profiles[0].name.clone();
+        let expected_rules = definition.profiles[0].rules.clone();
+        let digest = arena.cards.admit(definition).expect("authored definition");
+        let selected = RuntimeProfiles::bind(&arena.cards, digest, &[]).expect("selection");
+        let class = arena.classes.row(arena.unit(RED).expect("hull").seal.class);
+        let runtime = ProfileRuntime::new(
+            &arena.cards,
+            RED,
+            selected.clone(),
+            previous.rom.clone(),
+            &class,
+            &previous.weapons,
+            &previous.channels,
+            arena.odds_floor_permille,
+        )
+        .expect("authored runtime");
+        arena
+            .conditions
+            .replace_profile_rules(RED, &runtime.program.native_rows(), class.slots)
+            .expect("authored rule slots");
+        arena.unit_mut(RED).expect("hull").seal.profiles = selected.clone();
+        let before = runtime.token();
+        let expected_program = runtime.program.rows.clone();
+        arena.profiles.insert(RED, runtime);
+        let memory = br#"{"author_flag":true}"#.to_vec();
+        arena.minds.get_mut(&RED).expect("mind").memory = memory.clone();
+
+        let event = arena.apply_mind_card(
+            RED,
+            &CardChange::Set {
+                slider: "min_odds".into(),
+                value: "70".into(),
+            },
+        );
+        let EventKind::MindCard {
+            card,
+            stock: Some(stock),
+            ..
+        } = event
+        else {
+            panic!("staff edit should accept a complete stock subset: {event:?}");
+        };
+        let after = &arena.profiles[&RED];
+        assert_eq!(
+            arena
+                .cards
+                .definition(after.card.key().definition)
+                .expect("edited definition")
+                .profiles[0]
+                .name,
+            expected_name
+        );
+        assert_ne!(after.token(), before);
+        assert_eq!(card, after.card.key());
+        assert_eq!(stock.min_odds_permille, 700);
+        assert_eq!(after.card.stock(), Some(&stock));
+        assert_eq!(after.card.schema(), Some(&expected_schema));
+        assert_eq!(
+            after.card.get("author_flag"),
+            Some(&CardValue::Boolean(true))
+        );
+        assert_eq!(after.card.rules(), Some(expected_rules.as_slice()));
+        assert_eq!(after.program.rows, expected_program);
+        assert_eq!(after.profiles, selected);
+        assert_eq!(after.rom, previous.rom);
+        assert_eq!(arena.minds[&RED].memory, memory);
+        assert_eq!(
+            arena.conditions.slots(RED)[0],
+            after.program.native_rows()[0]
+        );
+    }
+
     /// **`NoMind` thinks nothing** and hands the memory back as it came.
     #[test]
     fn m1a5_no_mind_answers_nothing_and_echoes_the_memory() {
@@ -3178,11 +3091,15 @@ mod tests {
             view: &Arc::new(view),
             memory: &[1, 2, 3],
             map: &arena.definition,
-            card: &crate::arena::card::line(&crate::config::ReflexConfig::default()),
+            card: &arena.profiles[&RED].card,
+            program: &arena.profiles[&RED].program,
+            profile_token: arena.profiles[&RED].token(),
         });
         assert_eq!(
             result,
             ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: vec![1, 2, 3],
                 fault: None,
@@ -3258,6 +3175,18 @@ mod tests {
             think_seq,
             t_ms,
             epochs: [0; 3],
+            profile_token: crate::arena::profile_runtime::ProfileToken {
+                unit: RED,
+                generation: 0,
+                key: crate::arena::runtime_card::ProfileKey {
+                    definition: mush_core::DefinitionDigest::from_bytes([1; 32]),
+                    index: 0,
+                },
+            },
+            lands_ms: t_ms + 250,
+            period_ms: 1000,
+            profile_class: crate::arena::core::CoreClass::I,
+            rule_sample: None,
             intents: Vec::new(),
             memory: Vec::new(),
         }
@@ -4842,6 +4771,8 @@ mod tests {
         mg.id = SmolStr::new("machine_gun");
         mg.mount_section = SmolStr::new("hull");
         red.weapons.push(mg);
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("seal the complete initial weapon rack");
         let mut arena = wide(vec![red, line_tank(BLUE, Team::Blue, pose(1_500, 21_500))]);
         arena.odds_floor_permille = 50;
         let arm = Arming::Arm(FireCondition {
@@ -5191,26 +5122,22 @@ mod tests {
         assert!(arena.units.iter().all(|unit| unit.seal.doctrine));
         // A filled seal round-trips through a snapshot — its doctrine bit the
         // opposite of the fixture's, so the carry is what the decode reads.
+        let original = arena.unit(RED).expect("own sealed hull").seal.clone();
         let filled = SealRef {
             sortie: SortieId::in_match(3, RED),
             digest: [0x5a; 32],
-            core_class: CoreClass::III,
-            class: CoreClass::II,
             engine: SealEngine::Scripted,
             governed: false,
             closed: true,
             doctrine: false,
-            // 17b cut M5.2: a chosen set (Sniper, then Line), carried as its
-            // codes.
-            profiles: crate::arena::card::ProfileSet {
-                len: 2,
-                codes: [2, 0, 0, 0],
-            },
+            name: "Authored fixture".into(),
+            ..original
         };
         let Some(red) = arena.units.iter_mut().find(|unit| unit.id == RED) else {
             panic!("red is fielded");
         };
-        red.seal = filled;
+        red.seal = filled.clone();
+        arena.minds.get_mut(&RED).expect("mind").seal_digest = filled.digest;
         let Ok(snapshot) = Snapshot::encode(&arena) else {
             panic!("an arena between pulses encodes");
         };
@@ -5243,18 +5170,18 @@ mod tests {
         );
         assert_eq!(
             red_seal.as_ref().and_then(|seal| seal.get("profiles")),
-            Some(&serde_json::json!([2, 0])),
+            Some(&serde_json::to_value(&filled.profiles).expect("profiles encode")),
             "{red_seal:?}"
         );
         let Ok(back) = Snapshot::decode(&snapshot.document, (*arena.definition).clone()) else {
             panic!("and decodes");
         };
-        assert_eq!(back.unit(RED).map(|unit| unit.seal), Some(filled));
+        assert_eq!(back.unit(RED).map(|unit| unit.seal.clone()), Some(filled));
         // 17b cut M3.3: blue carries its own custody seal (no longer `none()`),
         // whole, through the round trip.
         assert_eq!(
-            back.unit(BLUE).map(|unit| unit.seal),
-            arena.unit(BLUE).map(|unit| unit.seal)
+            back.unit(BLUE).map(|unit| unit.seal.clone()),
+            arena.unit(BLUE).map(|unit| unit.seal.clone())
         );
     }
 
@@ -5280,6 +5207,8 @@ mod tests {
             let at = usize::try_from(job.think_seq).unwrap_or(usize::MAX);
             let word = self.words.get(at).or_else(|| self.words.last()).copied();
             ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: job.memory.to_vec(),
                 fault: word.map(|word| ThinkFault {
@@ -5331,9 +5260,9 @@ mod tests {
     /// * three `mind_fault` lines at the thinks' milliseconds with their
     ///   `think_seq` and words in order, and ONE `mind_dropped { strikes,
     ///   fault: ops, ops: 1500 }` beside the third, under the third's hash;
-    /// * `dropped` is `Some(Strikes)` and the condition row is cut to Class
-    ///   0's one slot, S2's stamp gone; the next job is handed dropped at
-    ///   Class 0;
+    /// * `dropped` is `Some(Strikes)` and M6 replaces the failed program with
+    ///   the captured empty ROM program, every held stamp gone; the next job
+    ///   is handed dropped at Class 0 with a one-slot arming capacity;
     /// * a fourth fault is journalled and writes no second drop; a clean
     ///   think after it never un-drops the hull (nor clears the strikes), and
     ///   an arming of the second gun is refused `NoSlot` (the ROM's one);
@@ -5343,16 +5272,13 @@ mod tests {
     fn m3_a_faulted_think_journals_its_word_opens_no_hash_and_the_third_drops() {
         use crate::arena::core::CoreClass;
         use crate::arena::state::ActionHash;
-        let mut arena = minded();
-        if let Some(state) = arena.unit_mut(RED) {
-            state.weapons = vec![
-                crate::arena::test_support::cannon(),
-                crate::arena::state::WeaponSummary {
-                    id: SmolStr::new("gun2"),
-                    ..crate::arena::test_support::cannon()
-                },
-            ];
-        }
+        let mut arena = minded_with_weapons(vec![
+            crate::arena::test_support::cannon(),
+            crate::arena::state::WeaponSummary {
+                id: SmolStr::new("gun2"),
+                ..crate::arena::test_support::cannon()
+            },
+        ]);
         for (n, weapon) in [(1_u8, "cannon"), (2, "gun2")] {
             assert_eq!(arena.conditions.arm(RED, never(weapon), 2), Ok(n));
         }
@@ -5414,10 +5340,22 @@ mod tests {
         );
         let row = arena.minds.get(&RED).cloned().unwrap_or_default();
         assert_eq!(row.dropped, Some(DropCause::Strikes));
-        assert_eq!(arena.conditions.slots(RED).len(), 1, "the ROM's one slot");
-        assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(1));
-        assert_eq!(arena.conditions.slot_of(RED, "gun2"), None, "cut");
-        assert!(arena.held_said.is_empty(), "S2's stamp went with it");
+        assert!(
+            arena.conditions.slots(RED).is_empty(),
+            "M6 installs the captured empty ROM program; no failed-mind rule survives"
+        );
+        assert_eq!(arena.conditions.slot_of(RED, "cannon"), None);
+        assert_eq!(arena.conditions.slot_of(RED, "gun2"), None);
+        assert!(
+            arena.held_said.is_empty(),
+            "all failed-mind held stamps are gone"
+        );
+        assert_eq!(arena.arming_capacity(RED), 1, "the ROM may arm one slot");
+        assert_eq!(
+            arena.profiles[&RED].card.key(),
+            arena.profiles[&RED].rom.key()
+        );
+        assert!(arena.profiles[&RED].program.rows.is_empty());
         assert_eq!(arena.slot_capacity(RED), 2, "the hardware still holds two");
         assert_eq!(arena.mind_class(RED), CoreClass::Zero);
         assert_eq!(counters.mind_faults, 3);
@@ -5451,8 +5389,16 @@ mod tests {
         let row = arena.minds.get(&RED).cloned().unwrap_or_default();
         assert_eq!(row.dropped, Some(DropCause::Strikes));
         assert_eq!(row.strikes, MIND_STRIKES_TO_DROP);
-        // And the ROM's arming holds to its one slot: an arming of the second
-        // gun is refused `NoSlot`, never widening the row the drop cut.
+        // Its captured ROM starts unarmed. Once it arms its first gun, the
+        // second cannot widen the one-slot row, even though hardware holds two.
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &crate::arena::conditions::Arming::Arm(never("cannon")),
+                5_000,
+            ),
+            Ok(Some(1))
+        );
         assert_eq!(
             arena.resolve_arming(
                 RED,
@@ -5469,6 +5415,8 @@ mod tests {
         impl MindRunner for Overflowing {
             fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
                 ThinkResult {
+                    diagnostics: None,
+                    rule_sample: None,
                     intents: vec![IntentKind::Startup; MIND_INTENTS_MAX + 1],
                     memory: job.memory.to_vec(),
                     fault: None,
@@ -5721,9 +5669,9 @@ mod tests {
     /// **17b cut M3.4: the ROM takes back its one slot** (D-UM-32): red —
     /// Class I, the cannon its FIRST weapon and a second gun — has the
     /// failed mind's second gun in S1 and the cannon in S2 when three faults
-    /// drop it, and the drop keeps S1 (the second gun, on the failed mind's
-    /// terms). The ROM arms the hull's first weapon; its arming of the
-    /// cannon takes S1 back — the second gun's slot and its held-shot stamp
+    /// drop it. M6 clears both old rules and their held stamps at the drop.
+    /// If a later mutable row occupies S1, the ROM's arming of the hull's
+    /// first weapon takes it back — the second gun's slot and its held-shot stamp
     /// gone — where `ConditionTable::arm` alone would refuse `NoSlot` at
     /// every ROM think. An arming of the second gun (not a ROM gun) is still
     /// refused `NoSlot`, and a seated pilot's hull is never the ROM's (its
@@ -5736,10 +5684,8 @@ mod tests {
             id: SmolStr::new(id),
             ..crate::arena::test_support::cannon()
         };
-        let mut arena = minded();
-        if let Some(state) = arena.unit_mut(RED) {
-            state.weapons = vec![crate::arena::test_support::cannon(), gun("gun2")];
-        }
+        let mut arena =
+            minded_with_weapons(vec![crate::arena::test_support::cannon(), gun("gun2")]);
         for (n, weapon) in [(1_u8, "gun2"), (2, "cannon")] {
             assert_eq!(arena.conditions.arm(RED, never(weapon), 2), Ok(n));
         }
@@ -5757,8 +5703,19 @@ mod tests {
             arena.minds.get(&RED).and_then(|state| state.dropped),
             Some(DropCause::Strikes)
         );
-        assert_eq!(arena.conditions.slot_of(RED, "gun2"), Some(1), "kept");
-        assert_eq!(arena.conditions.slot_of(RED, "cannon"), None, "cut");
+        assert!(
+            arena.conditions.slots(RED).is_empty(),
+            "drop clears the failed program"
+        );
+        assert!(
+            arena.held_said.is_empty(),
+            "drop clears failed-program held stamps"
+        );
+        // A later mutable row may occupy the ROM's one slot (for example, a
+        // direct diagnostic arming). Its own first gun must still reclaim it.
+        assert_eq!(arena.conditions.arm(RED, never("gun2"), 1), Ok(1));
+        arena.held_said.insert((RED, 1, ContactId(3)), 4_000);
+        assert_eq!(arena.conditions.slot_of(RED, "gun2"), Some(1));
         // The ROM's arming of its first weapon takes S1 back.
         let rom = FireCondition {
             min_permille: 600,
@@ -5785,15 +5742,12 @@ mod tests {
             Err(Refusal::NoSlot)
         );
         // A seated pilot's hull is not the ROM's: a full row refuses.
-        let mut piloted = minded();
-        if let Some(state) = piloted.unit_mut(RED) {
-            state.controller = Controller::Pilot;
-            state.weapons = vec![
-                crate::arena::test_support::cannon(),
-                gun("gun2"),
-                gun("gun3"),
-            ];
-        }
+        let mut piloted = minded_with_weapons(vec![
+            crate::arena::test_support::cannon(),
+            gun("gun2"),
+            gun("gun3"),
+        ]);
+        piloted.unit_mut(RED).expect("pilot hull").controller = Controller::Pilot;
         for weapon in ["gun2", "gun3"] {
             assert!(
                 piloted
@@ -5953,11 +5907,10 @@ mod tests {
     }
 
     /// **17b cut M4.6c: the doctrine bit** (the conventions' D2 and D3). The
-    /// bit is derived by IDENTITY — the seal's `mind`, `charter` and `line`
-    /// are Standard Doctrine's — so renaming any one of the three clears it
-    /// and changing the engine alone does not. A hull a mind flies whose seal
-    /// is not Standard Doctrine's (here the fixture seal renamed `Load III`
-    /// after the seal, as the minds lane's ceiling hulls are) reads
+    /// bit is derived from typed immutable origin in M6; neither display text
+    /// nor the runner engine grants or revokes Standard Doctrine provenance. A hull a mind flies whose seal
+    /// is not Standard Doctrine's (here an explicit authored origin, rather
+    /// than display-name text) reads
     /// [`crate::arena::doctrine::MachineState::Unknown`] off
     /// `Arena::machine_state` whatever its cache says, raises no tempo
     /// (`any_mind_approaching` ignores its cache) and is counted in the
@@ -5982,9 +5935,17 @@ mod tests {
             change(&mut seal);
             seal.seal_ref().doctrine
         };
-        assert!(!renamed(&|s| s.mind = SmolStr::new("Load III")));
-        assert!(!renamed(&|s| s.charter = SmolStr::new("bespoke")));
-        assert!(!renamed(&|s| s.line = SmolStr::new("custom")));
+        assert!(
+            renamed(&|s| s.mind = SmolStr::new("Display name")),
+            "display text grants no provenance"
+        );
+        assert!(!renamed(&|s| s.origin =
+            crate::arena::profile_seal::MindOrigin::Filed {
+                charter: "bespoke".into(),
+                line: "custom".into(),
+                revision: 1,
+                licence: "closed".into(),
+            }));
         assert!(renamed(&|s| s.engine = SealEngine::Scripted));
         assert!(renamed(&|s| s.engine = SealEngine::Reflex));
         // A row whose cache reads `Approach`, on a doctrine seal: read.
@@ -6008,10 +5969,16 @@ mod tests {
             [0, 0, 1, 0, 0, 0, 0],
             "counted under approach"
         );
-        // The same row on a seal renamed after the seal: unknown.
+        // A display rename alone remains doctrine; tagged provenance decides.
         let mut other = approaching();
         let mut seal = sealed();
         seal.mind = SmolStr::new("Load III");
+        seal.origin = crate::arena::profile_seal::MindOrigin::Filed {
+            charter: "bespoke".into(),
+            line: "custom".into(),
+            revision: 1,
+            licence: "closed".into(),
+        };
         if let Some(unit) = other.unit_mut(RED) {
             unit.seal = seal.seal_ref();
         }

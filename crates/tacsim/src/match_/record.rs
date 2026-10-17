@@ -35,12 +35,11 @@
 //! **Readable by nobody but the boot** (doc 16 §1's observer rule, for two new
 //! surfaces). The live record holds account ids, the seed and every pilot's
 //! fold; the snapshot holds every contact id and every position. The only store
-//! reads this crate makes are `SIM REPORT`'s ([`report_key`]) and
-//! `@arena/report`'s (`mush_core::chunk_key`): one unit test below builds
-//! every key those two can build and asserts none of them is one of these, and
-//! a second scans the crate's source and pins those two as its only store
-//! reads — so a later verb that reads by key cannot reach either without a test
-//! failing.
+//! reads this crate makes are `SIM REPORT`'s ([`report_key`]),
+//! `@arena/report`'s (`mush_core::chunk_key`) and M6 BENCH's completed,
+//! character-owned immutable proving blobs. Tests below check those key spaces
+//! and pin every reader, so another by-key reader requires review before it
+//! could address either private running document.
 //!
 //! **The `LIVE_FORMAT` policy.** A later shape change to [`MatchRecord`],
 //! [`crate::match_::lobby::Centre`], [`crate::match_::lobby::Slot`],
@@ -600,6 +599,7 @@ pub fn write_result(
     reports: &[ObjId],
     replay: bool,
 ) {
+    super::mind_tape::close_incomplete(ctx, match_id, "match ended without a complete recording");
     let record = ctx
         .w
         .module_state::<super::MatchBook>()
@@ -693,6 +693,9 @@ fn remember_and_push(ctx: &mut Ctx<'_>, match_id: MatchId, value: serde_json::Va
         },
     );
     if let Some(evicted) = evicted {
+        if let Err(error) = super::mind_tape::evict(ctx, evicted.id) {
+            tracing::warn!(%error, "retired input recording remains pinned or conservatively retained");
+        }
         for unit in &evicted.reports {
             crate::store::push_op(
                 ctx.out,
@@ -809,6 +812,19 @@ fn result_document(
     if let (Some(mode), Some(object)) = (mode, document.as_object_mut()) {
         object.insert("mode".to_owned(), serde_json::Value::from(mode.as_str()));
     }
+    if let Some(record) = record {
+        let revisions =
+            super::selection_refs::revisions(record.minds.values().map(|row| &row.seal));
+        if !revisions.is_empty() {
+            document
+                .as_object_mut()
+                .expect("result is an object")
+                .insert(
+                    "mind_revisions".into(),
+                    serde_json::to_value(revisions).expect("bounded revision identities serialize"),
+                );
+        }
+    }
     document
 }
 
@@ -830,6 +846,7 @@ fn result_document(
 /// `write_result`'s document is (the same value, before the push), so `SIM
 /// HISTORY` lists a restarted match the moment the boot writes it.
 pub fn write_restart_abort(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]) {
+    super::mind_tape::close_incomplete(ctx, match_id, "match could not resume after restart");
     let value = restart_abort_document(match_id, units, ctx.w.now().saturating_mul(1_000));
     remember_and_push(ctx, match_id, value);
 }
@@ -954,12 +971,14 @@ pub const LIVE_RECORD: &str = "tacsim.live";
 /// **The live record's format** (16b cut AF.2): bumped by a shape change that
 /// is not an added `#[serde(default)]` field — this module's head has the
 /// policy — and a record of another format is refused by name.
-pub const LIVE_FORMAT: u32 = 1;
+// M6: immutable authored custody replaces the old stock-only seal/profile
+// shape. Old live records must fail the outer version check before state decode.
+pub const LIVE_FORMAT: u32 = 2;
 
 /// **What the world holds of one running match, as the boot would need it**
 /// (16b cut AF.2): the document at [`live_key`].
 ///
-/// The document is `{"record": "tacsim.live", "format": 1, "match": <n>,
+/// The document is `{"record": "tacsim.live", "format": 2, "match": <n>,
 /// "at_ms", "chunks_appended", "chunks_lost", "resumed_from_ms": null | <ms>,
 /// "state": <one JSON string>, "state_digest": <64 lowercase base-16
 /// characters>}`, where `state` is `serde_json::to_string` of the record and
@@ -2618,14 +2637,10 @@ mod tests {
     /// **16b cut AF.2 — the two documents are readable by nobody but the boot**
     /// (doc 16 §1's observer rule, for two new surfaces).
     ///
-    /// The crate's only store reads are `SIM REPORT`'s, one [`report_key`], and
-    /// `@arena/report`'s, a page of `mush_core::chunk_key`s of the match's log.
-    /// Every key those two can build, over a range of matches, units and chunks,
-    /// is one of those two shapes and is accepted by none of the four `tacsim:`
-    /// id parsers. With the scan below, which pins those two readers as the
-    /// crate's only ones, a later verb that reads by key reaches `tacsim:live:`
-    /// (account ids, the seed, every fold) or `tacsim:snapshot:` (every contact
-    /// id, every position) only by failing one of the two.
+    /// Reviewed readers use report/log keys or bounded immutable proving-blob
+    /// chunks. None can address a live match or its snapshot. BENCH separately
+    /// gates the blob reader on a complete, character-owned proving run before
+    /// requesting any key (`bench_service::completed_proving`).
     #[test]
     fn af2_no_key_a_store_read_can_build_is_a_running_matchs_document() {
         let ids = [
@@ -2650,10 +2665,43 @@ mod tests {
                 read.push(mush_core::chunk_key(&log, chunk));
             }
         }
+        use crate::minds::bulk::{
+            artifacts::{Key, Manifest, Part, Read},
+            model::{Artifact, RunId},
+        };
+        let account = mush_core::AccountId::mint("store-key-proof", 1).expect("account");
+        for id in ids.into_iter().filter(|id| *id > 0) {
+            for part in [Part::Start, Part::Result] {
+                let key = Key {
+                    account,
+                    run: RunId(id),
+                    part,
+                };
+                let reader = Read::new(Manifest {
+                    format: 1,
+                    key,
+                    artifact: Artifact {
+                        sha256: [0; 32],
+                        bytes: 100,
+                    },
+                    chunks: 2,
+                    summary: Vec::new(),
+                    context: None,
+                })
+                .expect("bounded proving reader");
+                assert_eq!(reader.keys(), vec![key.chunk(0), key.chunk(1)]);
+                read.extend(reader.keys());
+                for chunk in [2, 15, 16, 512, u16::MAX] {
+                    read.push(key.chunk(chunk));
+                }
+            }
+        }
         for key in &read {
             assert!(
-                is_report_key(key) || mush_core::parse_chunk_key(key).is_some(),
-                "{key} is neither a report key nor a chunk key"
+                is_report_key(key)
+                    || mush_core::parse_chunk_key(key).is_some()
+                    || key.starts_with("tacsim:mindbulk:blob:"),
+                "{key} is outside every reviewed read key space"
             );
             for (parser, parse) in parsers() {
                 assert_eq!(parse(key), None, "the {parser} parser accepts {key}");
@@ -2665,15 +2713,11 @@ mod tests {
         }
     }
 
-    /// **16b cut AF.2 — and those two are the crate's only store reads.** The
-    /// test above proves the keys the two readers build; this one pins the
-    /// readers: a scan of every `.rs` file under `src/`, comments stripped,
-    /// finds the store-read call exactly twice, both in `match_/report.rs`
-    /// (`request` and `request_page`). A new verb that reads the store by key —
-    /// any key, `tacsim:live:` among them — fails here and must say why its key
-    /// is not one of the two documents before this count moves.
+    /// Pin every by-key store reader. M6 adds BENCH's bounded immutable proving
+    /// artifact reader; it accepts only completed owner-scoped runs, and its
+    /// chunk key space is checked above. A future reader needs the same review.
     #[test]
-    fn af2_the_crate_reads_the_store_in_two_places_and_only_there() {
+    fn af2_the_crate_store_readers_have_reviewed_key_spaces() {
         // Built from two halves, so this file's own text is not a caller.
         let needle = concat!("read_", "store(");
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -2708,10 +2752,12 @@ mod tests {
         callers.sort();
         assert_eq!(
             callers,
-            vec![("match_/report.rs".to_owned(), 2)],
-            "the crate's store reads moved: every reader must be one of `SIM REPORT`'s or \
-             `@arena/report`'s, whose keys the test above proves are never a running match's \
-             documents"
+            vec![
+                ("match_/report.rs".to_owned(), 2),
+                ("minds/bulk/bench_service.rs".to_owned(), 1),
+            ],
+            "the crate's store reads moved: review the new reader's authorization and \
+             prove its keys cannot address running match documents before changing this inventory"
         );
     }
 
@@ -2794,6 +2840,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn m6_live_record_retains_the_leads_selected_class_cap() {
+        let mut live = af2_live();
+        let account = live.centre.leads[0].1;
+        live.centre
+            .fill_classes
+            .push(crate::match_::lobby::FillClass {
+                team: Team::Red,
+                lead: account,
+                class: crate::arena::core::CoreClass::II,
+            });
+        let document = live.to_document().expect("live cap serializes");
+        let restored = LiveRecord::from_document(&document).expect("live cap restores");
+        assert_eq!(restored.centre.fill_classes, live.centre.fill_classes);
+        assert_eq!(
+            restored.centre.fill_classes[0].class,
+            crate::arena::core::CoreClass::II
+        );
+    }
+
+    #[test]
+    fn m6_pre_authored_live_format_is_refused_before_old_state_decode() {
+        let mut document = af2_live().to_document().expect("current live record");
+        assert_eq!(LIVE_FORMAT, 2, "M6 authored custody is live format 2");
+        document["format"] = serde_json::json!(1);
+        // Deliberately not the new MindSeal/Centre shape, with an invalid digest:
+        // old outer versions must be named before either payload check runs.
+        document["state"] = serde_json::json!(
+            r#"{"minds":{"4":{"charter":"Registry","line":"standard","profiles":[0]}}}"#
+        );
+        document["state_digest"] = serde_json::json!("0".repeat(64));
+        assert_eq!(
+            LiveRecord::from_document(&document),
+            Err(LiveRecordError::Format {
+                found: 1,
+                expected: 2,
+            })
+        );
+        document["format"] = serde_json::json!(2);
+        assert!(
+            matches!(
+                LiveRecord::from_document(&document),
+                Err(LiveRecordError::DigestMismatch { .. })
+            ),
+            "current-format corruption still reaches the normal digest refusal"
+        );
+    }
+
     /// **16b cut AF.2**: a live record round-trips equal — through a JSON
     /// string, as the store would hand it back — with its keys exactly the
     /// document's, and every refusal is by name.
@@ -2861,11 +2955,11 @@ mod tests {
             matches!(other, Err(LiveRecordError::Record { .. })),
             "{other:?}"
         );
-        let format = with(&|doc| doc["format"] = serde_json::Value::from(2));
+        let format = with(&|doc| doc["format"] = serde_json::Value::from(LIVE_FORMAT + 1));
         assert_eq!(
             format,
             Err(LiveRecordError::Format {
-                found: 2,
+                found: u64::from(LIVE_FORMAT + 1),
                 expected: LIVE_FORMAT
             })
         );

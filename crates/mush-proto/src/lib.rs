@@ -14,8 +14,9 @@
 //!   `{"t": "<variant>", "d": <payload>}` so clients can route on `t` and
 //!   ignore unknown event types.
 //! - **Additive evolution.** Unknown fields are tolerated on deserialize
-//!   (serde default behavior — no `deny_unknown_fields` anywhere) and
-//!   optional fields carry `#[serde(default)]`, so new fields and new event
+//!   (serde default behavior for established event shapes), while new
+//!   authority-bearing `Invoke` payloads use a closed vocabulary. Optional
+//!   fields carry `#[serde(default)]`, so new fields and new event
 //!   kinds never break older peers. [`PROTO_VERSION`] bumps only on a
 //!   breaking change.
 //! - **Semantic text.** All player-visible prose is [`RichText`]: spans with
@@ -42,6 +43,7 @@ mod caps;
 mod client;
 mod envelope;
 mod event;
+mod invoke;
 mod receipt;
 mod text;
 
@@ -56,6 +58,11 @@ pub use event::{
     OutputEvent, PanelFrameKind, PromptSpec, RequestKind, RequestOption, RespondChoice, RoomView,
     ViewCursor, ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition, Vital, VitalRole,
     VitalState, VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
+};
+pub use invoke::{
+    InvokeRequest, InvokeResult, MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH, MAX_MIND_ENVELOPE_BYTES,
+    MAX_MIND_SOURCE_BYTES, MindDiagnostic, MindDraft, MindEdit, MindEditBase, MindLifecycle,
+    MindPictureReport, MindRequest, MindResponse, validate_invoke_json,
 };
 pub use receipt::{
     ActionStatusId, ActionStatusIdError, MAX_ACTION_STATUS_ID_BYTES,

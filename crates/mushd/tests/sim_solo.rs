@@ -1263,7 +1263,7 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
     ada.expect("Hint: LOCK").await;
     let seen = ask_whole(&mut ada, "@tutorial").await;
     assert!(
-        seen.contains("Hints are on; you have read 5 of 6."),
+        seen.contains("Hints are on; you have read 5 of 7."),
         "{seen}"
     );
 
@@ -1337,7 +1337,7 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
     teleport_to_lobby(&mut god, "Ava").await;
     let seen = ask_whole(&mut ava, "@tutorial").await;
     assert!(
-        seen.contains("Hints are on; you have read 6 of 6."),
+        seen.contains("Hints are on; you have read 6 of 7."),
         "{seen}"
     );
     assert!(
@@ -1366,7 +1366,7 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
     let (_a2, mut ada) = login_picking(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let seen = ask_whole(&mut ada, "@tutorial").await;
     assert!(
-        seen.contains("Hints are off; you have read 6 of 6."),
+        seen.contains("Hints are off; you have read 6 of 7."),
         "{seen}"
     );
     let (_g2, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;

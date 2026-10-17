@@ -534,7 +534,7 @@ struct Said {
 /// check-out's [`OwnMind`], the spans the world opened and closed, and off
 /// the tape — on the pilot's OWN hull alone — the hull's shots inside a span
 /// with their hits and kills, its card changes (`mind_card`: a seat's `MIND
-/// PROFILE`, or a staff `@mind/set`), and its drop to the ROM
+/// PROFILE`, or a staff `@mind/live`), and its drop to the ROM
 /// (`mind_dropped`). Bounded whatever the match does: one tally per weapon,
 /// the last card change and a count, one drop (the arena journals one a
 /// sortie), and one span per release — each needing `reclaim_min_ms` after
@@ -1384,7 +1384,7 @@ impl Fold {
             }
             // **17b cut M5.6** (the owner's OQ-9 (ii); D14): the pilot's own
             // hull's card changes — a seat's `MIND PROFILE`, or a staff
-            // `@mind/set` read by the card's own name (`Sniper, edited
+            // `@mind/live` read by the card's own name (`Sniper, edited
             // (min_odds 70)`) — and its drop to the ROM, by its cause word
             // alone (D17), for the `Your mind` block: never a timeline line.
             // Another hull's are not this pilot's to read.
@@ -1772,7 +1772,7 @@ impl Fold {
                 unit: id,
                 name,
                 changed,
-                card: _,
+                ..
             } => format!(
                 "{word} unit={} name=\"{name}\" changed={}",
                 unit(id),
@@ -3484,6 +3484,25 @@ mod tests {
         assert!(pilot.lines.is_empty(), "{:?}", pilot.lines);
     }
 
+    fn stock_profile_key(
+        card: &crate::arena::card::StockCard,
+    ) -> crate::arena::runtime_card::ProfileKey {
+        use crate::arena::runtime_card::{CardCatalog, ProfileKey, stock_definition};
+        let definition = stock_definition(
+            &[(SmolStr::new_static("fixture"), card.clone())],
+            crate::arena::core::CoreClass::III,
+        )
+        .expect("the report fixture is a complete stock card");
+        let mut catalog = CardCatalog::default();
+        let definition = catalog
+            .admit(definition)
+            .expect("the report fixture admits");
+        ProfileKey {
+            definition,
+            index: 0,
+        }
+    }
+
     /// **17b cut M1b.5** (doc 17 §11): the staff fold spells the card lever's
     /// two lines — the card's name and the sliders it moved, or the refusal's
     /// reason — and the pilot's fold prints neither: the change is another
@@ -3509,7 +3528,8 @@ mod tests {
                 unit: ObjId(301),
                 name: SmolStr::new("Sniper, edited (min_odds 70)"),
                 changed: vec![SmolStr::new_static("min_odds")],
-                card,
+                card: stock_profile_key(&card),
+                stock: Some(card),
             },
         )
         .at(
@@ -3904,7 +3924,7 @@ mod tests {
 
     /// **17b cut M5.6** (D14; doc 17 §11): the card changes on the pilot's own
     /// hull are read by the card's own name — a seat's `MIND PROFILE` by its
-    /// preset, a staff `@mind/set` as `StockCard::name_of` names the edited
+    /// preset, a staff `@mind/live` as `StockCard::name_of` names the edited
     /// card (`Sniper, edited (min_odds 70)`) — one by its moment, more as a
     /// count and the last on its own line; another hull's change is not this
     /// pilot's to read, and no change is ever a timeline line.
@@ -3921,7 +3941,8 @@ mod tests {
                 unit,
                 name: SmolStr::new(name),
                 changed: Vec::new(),
-                card: card.clone(),
+                card: stock_profile_key(card),
+                stock: Some(card.clone()),
             };
         let sealed = own_mind(true, &["Sniper", "Line"]);
 

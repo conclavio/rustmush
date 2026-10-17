@@ -1089,6 +1089,7 @@ pub fn state_hash(arena: &Arena) -> u64 {
     let fold = &mut fold;
     for unit in &arena.units {
         fold.bytes(&unit.id.0.to_le_bytes());
+        fold_stamp(fold, unit.own_last_hit_ms);
         fold.bytes(&unit.pose.x_cm.to_le_bytes());
         fold.bytes(&unit.pose.y_cm.to_le_bytes());
         fold.bytes(&unit.pose.z_cm.to_le_bytes());
@@ -1248,6 +1249,28 @@ pub fn state_hash(arena: &Arena) -> u64 {
     // **17b cut M1a.5** (item 3c): the unit minds, per row with no count
     // prefix — an arena with none folds no byte here (every match before 17b
     // cut M4.3; every production match since folds a row per mind).
+    // Canonical identities cover dormant definitions without serializing schemas.
+    fold.bytes(&(arena.cards.len() as u64).to_le_bytes());
+    for digest in arena.cards.digests() {
+        fold.bytes(digest.as_bytes());
+    }
+    fold.bytes(&(arena.profiles.len() as u64).to_le_bytes());
+    for (unit, runtime) in &arena.profiles {
+        fold.bytes(&unit.0.to_le_bytes());
+        fold_value(fold, &runtime.profiles);
+        fold_value(fold, &runtime.card.key());
+        fold_value(fold, &runtime.rom.key());
+        fold.bytes(runtime.program.digest.as_bytes());
+        fold.bytes(&runtime.generation.to_le_bytes());
+        fold.bytes(&[
+            runtime.index,
+            runtime.overridden,
+            u8::from(runtime.dropped),
+            u8::from(runtime.diagnostic_override),
+        ]);
+        fold_stamp(fold, runtime.switched_ms);
+        fold_value(fold, &runtime.lease);
+    }
     for (unit, mind) in &arena.minds {
         fold_mind(fold, *unit, mind);
     }
@@ -1382,6 +1405,11 @@ fn fold_mind(fold: &mut Fold, unit: mush_core::ObjId, mind: &crate::arena::mind:
             fold.bytes(&[1_u8]);
             fold.bytes(&pending.think_seq.to_le_bytes());
             fold.bytes(&pending.t_ms.to_le_bytes());
+            fold_value(fold, &pending.profile_token);
+            fold.bytes(&pending.lands_ms.to_le_bytes());
+            fold.bytes(&pending.period_ms.to_le_bytes());
+            fold_value(fold, &pending.profile_class);
+            fold_value(fold, &pending.rule_sample);
             for epoch in pending.epochs {
                 fold.bytes(&epoch.to_le_bytes());
             }
@@ -1457,7 +1485,6 @@ fn fold_mind(fold: &mut Fold, unit: mush_core::ObjId, mind: &crate::arena::mind:
     fold.bytes(&mind.seal_digest);
     // **17b cut M1b.1**: the card, its fields in declaration order — an enum as
     // its code byte, a bool as one byte, an integer little-endian.
-    fold_card(fold, &mind.card);
 }
 
 /// **A drop's cause as its one hash byte** (17b cut M3.6; item 3c): strikes
@@ -1470,34 +1497,6 @@ const fn drop_cause_code(cause: crate::arena::mind::DropCause) -> u8 {
         DropCause::Core => 2,
         DropCause::Abi => 3,
     }
-}
-
-/// **One mind's card** (17b cut M1b.1; inside item 3c of [`state_hash`], after
-/// `strikes`, the drop and the seal's digest).
-fn fold_card(fold: &mut Fold, card: &crate::arena::card::StockCard) {
-    fold.bytes(&[card.stance.code()]);
-    fold.bytes(&card.engage_band_permille.to_le_bytes());
-    fold.bytes(&card.close_m.to_le_bytes());
-    fold.bytes(&[card.orbit_sense.code(), u8::from(card.turn_into_hits)]);
-    fold.bytes(&card.turn_s.to_le_bytes());
-    fold.bytes(&card.screen_bearing.to_le_bytes());
-    fold.bytes(&card.screen_arc.to_le_bytes());
-    fold.bytes(&[card.opening.code()]);
-    fold.bytes(&card.min_odds_permille.to_le_bytes());
-    fold.bytes(&[card.aspect.code()]);
-    fold.bytes(&card.reserve_pct.to_le_bytes());
-    fold.bytes(&card.reserve_odds_pct.to_le_bytes());
-    fold.bytes(&[card.prefer.code()]);
-    fold.bytes(&card.weight_range.to_le_bytes());
-    fold.bytes(&card.weight_facet.to_le_bytes());
-    fold.bytes(&card.weight_health.to_le_bytes());
-    fold.bytes(&card.switch_m.to_le_bytes());
-    fold.bytes(&card.withdraw_permille.to_le_bytes());
-    fold.bytes(&card.stand_min_permille.to_le_bytes());
-    fold.bytes(&card.rally_ms.to_le_bytes());
-    fold.bytes(&card.search_ms.to_le_bytes());
-    fold.bytes(&card.hunt_after_ms.to_le_bytes());
-    fold.bytes(&[u8::from(card.stop_unseen)]);
 }
 
 /// **A motor row's avoided cells** (16b cut Q.7's encoding; one function since
@@ -2505,8 +2504,7 @@ mod tests {
 
     /// **17b cut M5.2: the active profile folds only off its default** (item
     /// 1's sub-item 20): a unit at [`crate::arena::card::ActiveProfile::FIRST`]
-    /// folds no byte — the arena hashes as one that never had the field
-    /// (pinned at `5f505c8`'s value, 17b cut M5.2's review) — and every other
+    /// folds no byte for this field, and every other
     /// value moves the hash, each from the base and from
     /// every other: a switch to the second profile, a switch BACK to the
     /// first (its stamp kept), a later stamp, and a stamp-less second.
@@ -2522,15 +2520,14 @@ mod tests {
                 .all(|unit| unit.card_profile == ActiveProfile::FIRST),
             "every unit checks out on its first profile"
         );
-        // The default folds nothing: the hash is the one the fold below
-        // would give with sub-item 20 skipped — two units, no byte each.
-        // 17b cut M5.2's review: pinned at the value `5f505c8` gives for the
-        // same two tanks (read on a clean `5f505c8` worktree, before the
-        // field existed), so a fold that wrote ANY byte for the default — a
-        // constant `[0]` included — fails here, not only against itself.
+        // ActiveProfile::FIRST still folds no byte for sub-item 20. M6 adds
+        // each hull's own-hit stamp and canonical catalog/runtime identities,
+        // so the complete fixture hash intentionally differs from M5r. This
+        // reviewed pin detects even a constant byte added to the default branch;
+        // the probes below continue to distinguish every nondefault value.
         assert_eq!(
-            base, 0x0588_c49e_80b6_962c,
-            "the hash of two_tanks since hash v2 (16c T-104; 5f505c8's 0x15a4_d2a7_9200_fae0 before)"
+            base, 0x99b0_6f95_df11_70eb,
+            "the M6 canonical-profile two_tanks hash (M5r: 0588c49e80b6962c)"
         );
         let probe = |profile: ActiveProfile| {
             let mut arena = two_tanks();
@@ -2774,14 +2771,27 @@ mod tests {
         let mut seen = vec![card_base];
         for (at, edit) in edits.into_iter().enumerate() {
             let mut edited = minded.clone();
-            if let Some(state) = edited.minds.get_mut(&ObjId(4)) {
-                edit(&mut state.card);
-                assert_ne!(
-                    state.card,
-                    minded.minds[&ObjId(4)].card,
-                    "edit {at} changed nothing"
-                );
-            }
+            let old = minded.profiles[&ObjId(4)]
+                .card
+                .stock()
+                .expect("stock fixture");
+            let mut card = old.clone();
+            edit(&mut card);
+            assert_ne!(&card, old, "edit {at} changed nothing");
+            let definition = crate::arena::runtime_card::stock_definition(
+                &[("edited".into(), card)],
+                crate::arena::core::CoreClass::I,
+            )
+            .expect("edited definition");
+            let digest = edited.cards.admit(definition).expect("catalog");
+            let card = edited
+                .cards
+                .resolve(crate::arena::runtime_card::ProfileKey {
+                    definition: digest,
+                    index: 0,
+                })
+                .expect("card");
+            edited.profiles.get_mut(&ObjId(4)).expect("runtime").card = card;
             let hash = state_hash(&edited);
             assert!(
                 !seen.contains(&hash),
@@ -2824,6 +2834,11 @@ mod tests {
                     think_seq: 2,
                     t_ms: 2_000,
                     epochs: [0; 3],
+                    profile_token: base.profiles[&ObjId(4)].token(),
+                    lands_ms: 2_250,
+                    period_ms: 1000,
+                    profile_class: CoreClass::I,
+                    rule_sample: None,
                     intents: Vec::new(),
                     memory: Vec::new(),
                 }),
@@ -2930,13 +2945,22 @@ mod tests {
         // class I on its class I core), so each probe is held to differ from
         // the base unit's OWN seal — not from `SealRef::none()` — and every
         // probe writes a value the base does not already hold.
-        let was = base.unit(ObjId(4)).map(|unit| unit.seal);
+        let was = base.unit(ObjId(4)).map(|unit| unit.seal.clone());
         assert_ne!(was, Some(SealRef::none()), "the fixture hull is sealed");
+        let alternate_profiles = crate::arena::runtime_card::RuntimeProfiles::bind(
+            &base.cards,
+            was.as_ref().expect("sealed hull").rom.definition,
+            &[],
+        )
+        .expect("captured ROM has a valid alternate profile binding");
+        alternate_profiles
+            .validate(&base.cards, CoreClass::Zero)
+            .expect("the alternate binding is valid, not an empty marker");
         let sealed = |change: &dyn Fn(&mut SealRef)| {
             let mut arena = base.clone();
             if let Some(unit) = arena.unit_mut(ObjId(4)) {
                 change(&mut unit.seal);
-                assert_ne!(Some(unit.seal), was, "the probe changed the seal");
+                assert_ne!(Some(unit.seal.clone()), was, "the probe changed the seal");
             }
             state_hash(&arena)
         };
@@ -2959,10 +2983,7 @@ mod tests {
             (
                 "seal.profiles",
                 sealed(&|s| {
-                    s.profiles = crate::arena::card::ProfileSet {
-                        len: 2,
-                        codes: [2, 0, 0, 0],
-                    };
+                    s.profiles = alternate_profiles.clone();
                 }),
             ),
         ] {

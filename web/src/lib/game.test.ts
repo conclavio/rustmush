@@ -1689,6 +1689,17 @@ describe("the cockpit feeds", () => {
     expect(lineTexts(app)).toContain("Locking BA.");
   });
 
+  it("a new seat clears the previous mind trace and closes its readout", () => {
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    ws.deliver(panel(4, "arena.mind", "keyframe", { schema: { id: "arena.mind", version: 1 }, available: true, unit: 7, traces: [] }));
+    app.mindReadoutOpen = true;
+    expect(app.mindTrace?.unit).toBe(7);
+    ws.deliver(panel(5, COCKPIT_FEED, "keyframe", { ...cockpitFrame(), callsign: "RB" }));
+    expect(app.mindTrace).toBeNull();
+    expect(app.mindReadoutOpen).toBe(false);
+  });
+
   it("a cleared frame empties the panel; a Sys refusal stays out of scrollback", () => {
     const { app, ws } = boot(ARENA_PANELS);
     ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
@@ -1814,7 +1825,7 @@ describe("the cockpit feeds", () => {
       "utf8",
     );
     const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
-    expect([...reached].sort()).toEqual(["cockpit", "focusComposer"]);
+    expect([...reached].sort()).toEqual(["cockpit", "focusComposer", "mindReadoutOpen", "refreshMindTrace"]);
     // And nothing on this screen sends: the five ordering verbs prefill only.
     for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
       expect(src, `CockpitScreen calls ${send}`).not.toContain(send);

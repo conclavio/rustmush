@@ -400,6 +400,8 @@ mod tests {
                 calls.push((job.unit, job.think_seq));
             }
             ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: vec![u8::try_from(job.think_seq).unwrap_or(u8::MAX)],
                 fault: None,
@@ -420,6 +422,8 @@ mod tests {
                 std::panic::resume_unwind(Box::new("a runner panicked (test)"));
             }
             ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
                 intents: Vec::new(),
                 memory: job.memory.to_vec(),
                 fault: None,

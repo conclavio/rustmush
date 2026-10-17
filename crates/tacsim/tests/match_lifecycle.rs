@@ -8360,13 +8360,13 @@ async fn ah1_the_lobby_and_boarding_hints_are_read_once_per_account_and_an_alt_r
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "an alt: {said}");
     let said = rig.say(2, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 2 of 6."),
+        said.contains("Hints are on; you have read 2 of 7."),
         "{said}"
     );
     // Pilot 0 is somebody else, and has read nothing.
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 6."),
+        said.contains("Hints are on; you have read 0 of 7."),
         "{said}"
     );
 }
@@ -8413,7 +8413,7 @@ async fn ah1_off_silences_the_unreached_and_on_does_not_rearm_the_read() {
     );
     let said = rig.say(1, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 2 of 6."),
+        said.contains("Hints are on; you have read 2 of 7."),
         "{said}"
     );
     let said = rig.say(1, "@tutorial sideways");
@@ -8438,7 +8438,7 @@ async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_li
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "boarding: {said}");
     let said = rig.say(2, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 6."),
+        said.contains("Hints are on; you have read 0 of 7."),
         "{said}"
     );
     rig.end_by_staff();
@@ -8454,7 +8454,7 @@ async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_li
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "holds a slot: {said}");
     let said = rig.say(1, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 6."),
+        said.contains("Hints are on; you have read 0 of 7."),
         "{said}"
     );
     let said = rig.say(1, "sim leave");
@@ -8472,7 +8472,7 @@ async fn ah1_the_lobby_hint_waits_for_a_claimable_centre_a_free_account_and_a_li
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "layer off: {said}");
     let said = rig.say(0, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 6."),
+        said.contains("Hints are on; you have read 0 of 7."),
         "{said}"
     );
 }
@@ -8512,7 +8512,7 @@ async fn ah1_a_hint_waits_for_a_live_connection() {
     assert_eq!(hints_in(&said), Vec::<&str>::new(), "{said}");
     let said = rig.say(1, "@tutorial");
     assert!(
-        said.contains("Hints are on; you have read 0 of 6."),
+        said.contains("Hints are on; you have read 0 of 7."),
         "{said}"
     );
     rig.tw.world_mut().set_live_conns(p1, 1);
@@ -8685,7 +8685,7 @@ async fn m3_start_writes_one_seal_per_unit_and_the_live_record_carries_them() {
             );
             assert_eq!(seal.odds_floor_permille, 100);
             assert_eq!(seal.mind.as_str(), "Standard Doctrine");
-            assert_eq!(seal.licence.as_str(), "doctrine");
+            assert_eq!(seal.origin.licence_label(), "doctrine");
             assert_eq!(seal.core_class, CoreClass::II, "a line tank's core");
             assert_eq!(seal.class, CoreClass::I);
             assert!(seal.channels.contains(&Channel::Fire));
@@ -9420,7 +9420,7 @@ async fn m3_an_unchanged_record_resumes_with_the_seal_it_was_checked_out_under()
             arena
                 .units
                 .iter()
-                .map(|unit| (unit.id, unit.seal))
+                .map(|unit| (unit.id, unit.seal.clone()))
                 .collect::<Vec<_>>(),
             arena
                 .minds
@@ -11471,10 +11471,36 @@ fn sealed_of(rig: &Rig, unit: ObjId) -> tacsim::arena::MindSeal {
         .expect("a seal per unit")
 }
 
-/// The SHA-256 of a card's canonical bytes, as a seal digests it.
-fn card_digest(card: &tacsim::arena::StockCard) -> [u8; 32] {
+/// Re-admit the full sealed definition, verify its opening canonical payload and
+/// digest, and read each selected profile's exact stock adapter in sealed order.
+fn sealed_stock_cards(seal: &tacsim::arena::MindSeal) -> Vec<(String, tacsim::arena::StockCard)> {
     use sha2::{Digest as _, Sha256};
-    Sha256::digest(serde_json::to_vec(card).expect("a card writes")).into()
+    let mut catalog = tacsim::arena::runtime_card::CardCatalog::default();
+    let (profiles, opening) = seal
+        .cards
+        .admit(&mut catalog)
+        .expect("sealed definition admits");
+    assert_eq!(opening.canonical_bytes(), Some(seal.card.as_slice()));
+    assert_eq!(
+        seal.card_digest,
+        <[u8; 32]>::from(Sha256::digest(&seal.card))
+    );
+    profiles
+        .names()
+        .enumerate()
+        .map(|(index, name)| {
+            let key = profiles
+                .key(u8::try_from(index).expect("bounded profile count"))
+                .expect("selected key");
+            let card = catalog.resolve(key).expect("selected complete profile");
+            (
+                name.to_owned(),
+                card.stock()
+                    .expect("fixture uses the full stock adapter")
+                    .clone(),
+            )
+        })
+        .collect()
 }
 
 /// The units of `team` in the running match's record.
@@ -11507,7 +11533,7 @@ fn units_of(rig: &Rig, team: Team) -> Vec<ObjId> {
 ///   match off) — the store holds it;
 /// * red's fill hull: the lead's `Standard PROFILE Hunter`, set `[Hunter]`;
 /// * blue's three fill hulls, chosen by nobody: the default seal, Standard
-///   Doctrine on Line, no set;
+///   Doctrine on Line, an explicit singleton set;
 /// * the world's mirror holds each hull's first sealed card
 ///   (`CardSource::CheckOut`): Ada's and Bo's Sniper, the fill's Hunter,
 ///   blue's Line.
@@ -11553,36 +11579,26 @@ async fn m5_check_out_seals_the_slots_choice_and_the_leads_fill() {
     assert_eq!(seal.engine, tacsim::match_::PRODUCTION_FILL_ENGINE);
     assert_eq!(seal.class, CoreClass::I);
     assert_eq!(seal.fallback, None);
-    assert_eq!(seal.card_digest, card_digest(&preset("Sniper")));
     assert_eq!(
-        seal.profiles
-            .iter()
-            .map(|profile| (profile.name.to_string(), profile.card_digest))
-            .collect::<Vec<_>>(),
+        sealed_stock_cards(&seal),
         vec![
-            ("Sniper".to_owned(), card_digest(&preset("Sniper"))),
-            ("Line".to_owned(), card_digest(&preset("Line"))),
+            ("Sniper".to_owned(), preset("Sniper")),
+            ("Line".to_owned(), preset("Line")),
         ]
     );
 
     let fixture = support::holdings::fixture_i();
     let seal = sealed_of(&rig, bo_tank);
     assert_eq!(seal.mind, fixture.identity.mind);
-    assert_eq!(seal.charter, fixture.identity.charter);
-    assert_eq!(seal.line, fixture.identity.line);
-    assert_eq!(seal.revision, fixture.identity.revision);
+    assert_eq!(seal.origin, fixture.identity.origin);
     assert_eq!(seal.source_sha256, fixture.identity.source_sha256);
     assert_eq!(seal.engine, SealEngine::Scripted, "on its own engine");
     assert_eq!((seal.core_class, seal.class), (CoreClass::II, CoreClass::I));
     assert_eq!(
-        seal.profiles
-            .iter()
-            .map(|profile| (profile.name.to_string(), profile.card_digest))
-            .collect::<Vec<_>>(),
-        vec![("Sniper".to_owned(), card_digest(&preset("Sniper")))],
+        sealed_stock_cards(&seal),
+        vec![("Sniper".to_owned(), preset("Sniper"))],
         "its chosen profile, unsubstituted"
     );
-    assert_eq!(seal.card_digest, card_digest(&preset("Sniper")));
     assert_eq!(
         rig.tw
             .world()
@@ -11612,9 +11628,10 @@ async fn m5_check_out_seals_the_slots_choice_and_the_leads_fill() {
         let seal = sealed_of(&rig, *unit);
         assert_eq!(seal.mind.as_str(), "Standard Doctrine");
         assert_eq!(
-            seal.profiles
-                .iter()
-                .map(|profile| profile.name.to_string())
+            seal.cards
+                .selected
+                .names()
+                .map(str::to_owned)
                 .collect::<Vec<_>>(),
             vec!["Hunter".to_owned()]
         );
@@ -11636,8 +11653,11 @@ async fn m5_check_out_seals_the_slots_choice_and_the_leads_fill() {
     for unit in blue {
         let seal = sealed_of(&rig, unit);
         assert_eq!(seal.mind.as_str(), "Standard Doctrine");
-        assert!(seal.profiles.is_empty(), "the default seal");
-        assert_eq!(seal.card_digest, card_digest(&preset("Line")));
+        assert_eq!(
+            sealed_stock_cards(&seal),
+            vec![("Line".to_owned(), preset("Line"))],
+            "the default seal"
+        );
         assert_eq!(
             mirror_card(&rig, unit),
             (preset("Line"), 0, CardSource::CheckOut)
@@ -12066,7 +12086,11 @@ async fn m5_humans_on_both_sides_substitute_a_non_doctrine_choice_and_say_so_onc
     assert!(!heard[1].contains("Sealed for this sortie"), "{}", heard[1]);
     let seal = sealed_of(&rig, ada_tank);
     assert_eq!(seal.mind.as_str(), "Standard Doctrine");
-    assert!(seal.profiles.is_empty(), "on Line");
+    assert_eq!(
+        seal.cards.selected.names().collect::<Vec<_>>(),
+        vec!["Line"],
+        "on Line"
+    );
     assert_eq!(
         seal.fallback.as_deref(),
         Some(tacsim::match_::HUMANS_FALLBACK)
@@ -12079,9 +12103,10 @@ async fn m5_humans_on_both_sides_substitute_a_non_doctrine_choice_and_say_so_onc
     let seal = sealed_of(&rig, fill[0]);
     assert_eq!(seal.mind.as_str(), "Standard Doctrine");
     assert_eq!(
-        seal.profiles
-            .iter()
-            .map(|profile| profile.name.to_string())
+        seal.cards
+            .selected
+            .names()
+            .map(str::to_owned)
             .collect::<Vec<_>>(),
         vec!["Sniper".to_owned()],
         "at the lead's chosen profile"
@@ -12093,7 +12118,10 @@ async fn m5_humans_on_both_sides_substitute_a_non_doctrine_choice_and_say_so_onc
     for unit in units_of(&rig, Team::Blue) {
         let seal = sealed_of(&rig, unit);
         assert_eq!(seal.fallback, None);
-        assert!(seal.profiles.is_empty());
+        assert_eq!(
+            seal.cards.selected.names().collect::<Vec<_>>(),
+            vec!["Line"]
+        );
     }
 }
 
@@ -12161,5 +12189,296 @@ async fn m5_the_seal_line_reaches_the_choosing_pilot_alone_before_good_hunting()
         assert!(!other.contains("Sealed for this sortie"), "{who}: {other}");
         assert!(!other.contains("Skirmisher"), "{who}: {other}");
         assert!(!other.contains("Rearguard"), "{who}: {other}");
+    }
+}
+
+// 17d M6.2 class admission through the real selector and shipped Class II core.
+// The authored save/seal acceptance also runs this path with the saved provider;
+// this narrow provider isolates cap, authority and roster arithmetic behavior.
+struct ClassTwoHoldings;
+
+impl tacsim::match_::holdings::Holdings for ClassTwoHoldings {
+    fn held(
+        &self,
+        _world: &mush_core::World,
+        _character: ObjId,
+    ) -> Vec<tacsim::match_::holdings::HeldMind> {
+        let mut mind = support::holdings::fixture_i();
+        mind.identity.mind = "Fixture II".into();
+        if let tacsim::arena::profile_seal::MindOrigin::Filed { line, .. } =
+            &mut mind.identity.origin
+        {
+            *line = "fixture_ii".into();
+        } else {
+            panic!("the test provider has filed fixture provenance");
+        }
+        mind.rated = tacsim::arena::core::CoreClass::II;
+        vec![
+            tacsim::match_::holdings::HeldMind::doctrine(),
+            mind,
+            support::holdings::load_iii(),
+        ]
+    }
+
+    fn sources(&self) -> Vec<Arc<str>> {
+        vec![
+            Arc::from(support::holdings::FIXTURE_I_RHAI),
+            Arc::from(support::holdings::LOAD_III_RHAI),
+        ]
+    }
+}
+
+fn class_two_provider(rig: &mut Rig) {
+    tacsim::match_::holdings::install_holdings(rig.tw.world_mut(), Arc::new(ClassTwoHoldings));
+}
+
+fn preview_class(rig: &Rig, team: Team, index: u8) -> tacsim::arena::core::CoreClass {
+    tacsim::match_::lobby::class_preview_for_tests(rig.tw.world())
+        .expect("the complete roster fits")
+        .into_iter()
+        .find(|row| row.0 == team && row.1 == index)
+        .expect("the hull is fielded")
+        .2
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m6_pilot_and_fill_caps_are_independent_and_do_not_raise_a_minds_rating() {
+    use tacsim::arena::core::CoreClass;
+    let mut cfg = config();
+    cfg.match_.ai_fill = true;
+    cfg.minds.fill_class = CoreClass::I;
+    cfg.minds.max_class = CoreClass::III;
+    let mut rig = Rig::boot_on(2, roster_with(cfg));
+    class_two_provider(&mut rig);
+    rig.say(0, "sim team red");
+    assert_eq!(
+        rig.say(0, "sim mind Fixture II"),
+        "Your slot will carry Fixture II (Line)."
+    );
+    rig.say(0, "sim ai 2");
+    assert_eq!(
+        preview_class(&rig, Team::Red, 1),
+        CoreClass::II,
+        "pilot is independent of fill default I"
+    );
+    assert_eq!(
+        preview_class(&rig, Team::Red, 2),
+        CoreClass::I,
+        "default Standard is rated I"
+    );
+    rig.say(0, "sim ai class III");
+    assert_eq!(
+        preview_class(&rig, Team::Red, 2),
+        CoreClass::I,
+        "raising a cap cannot raise Standard's rating"
+    );
+    rig.say(0, "sim ai class I");
+    assert!(rig.say(0, "sim ai mind Fixture II").contains("Fixture II"));
+    assert_eq!(preview_class(&rig, Team::Red, 2), CoreClass::I);
+    rig.say(0, "sim ai class II");
+    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::II);
+    assert_eq!(preview_class(&rig, Team::Red, 2), CoreClass::II);
+    assert_eq!(
+        preview_class(&rig, Team::Blue, 1),
+        CoreClass::I,
+        "other side keeps its own default"
+    );
+    assert!(
+        rig.say(0, "sim mind")
+            .contains("Your mind will seal at Class II.")
+    );
+    rig.say(1, "sim team red");
+    assert_eq!(
+        rig.say(1, "sim ai class 0"),
+        "Only your side's lead can set its AI class cap."
+    );
+    rig.say(0, "sim leave");
+    assert!(
+        rig.centre().fill_classes.is_empty(),
+        "the new lead does not inherit the old choice"
+    );
+    assert!(
+        rig.centre().fill_minds.is_empty(),
+        "the prior lead's mind is cleared too"
+    );
+    assert!(
+        rig.say(1, "sim ai class 0")
+            .contains("AI class cap is now 0")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m6_operator_cap_cannot_hide_over_class_and_the_rom_exception_remains() {
+    use tacsim::arena::core::CoreClass;
+    let mut cfg = config();
+    cfg.match_.ai_fill = true;
+    cfg.minds.max_class = CoreClass::I;
+    let mut rig = Rig::boot_on(1, roster_with(cfg));
+    class_two_provider(&mut rig);
+    rig.say(0, "sim team red");
+    let refused = rig.say(0, "sim mind Load III");
+    assert!(
+        refused.contains("Class III") && refused.contains("core is Class II"),
+        "{refused}"
+    );
+    rig.say(0, "sim mind Fixture II");
+    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::I);
+    rig.say(0, "sim unit target_mk1");
+    assert!(
+        rig.say(0, "sim mind Load III")
+            .starts_with("Your slot will carry")
+    );
+    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::Zero);
+    assert!(
+        rig.say(0, "sim unit line_tank")
+            .contains("core is Class II")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m6_class_and_roster_changes_refuse_before_publishing_an_oversized_pool() {
+    use tacsim::arena::core::CoreClass;
+    let mut cfg = config();
+    cfg.match_.ai_fill = true;
+    cfg.minds.pool_base_ops_s = 16_000;
+    cfg.minds.pool_per_unit_ops_s = 0;
+    cfg.minds.pool_floor_ops_s = 1;
+    let mut rig = Rig::boot_on(3, roster_with(cfg));
+    class_two_provider(&mut rig);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim mind Fixture II");
+    rig.say(0, "sim ai 2");
+    rig.say(0, "sim ai mind Fixture II");
+    let before = rig.centre();
+    let refused = rig.say(0, "sim ai class II");
+    assert!(
+        refused.contains("8,000") && refused.contains("6,000"),
+        "{refused}"
+    );
+    assert_eq!(
+        rig.centre(),
+        before,
+        "refused cap does not mutate the centre"
+    );
+    assert_eq!(preview_class(&rig, Team::Red, 2), CoreClass::I);
+    rig.say(1, "sim team red");
+    let before = rig.centre();
+    let refused = rig.say(2, "sim team red");
+    assert!(
+        refused.contains("8,000"),
+        "claim re-admits every hull: {refused}"
+    );
+    assert_eq!(
+        rig.centre(),
+        before,
+        "refused roster does not mutate the centre"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m6_a_lead_may_leave_when_losing_their_cap_makes_the_roster_too_large() {
+    use tacsim::arena::core::CoreClass;
+    let mut cfg = config();
+    cfg.match_.ai_fill = true;
+    cfg.minds.pool_base_ops_s = 16_000;
+    cfg.minds.pool_per_unit_ops_s = 0;
+    cfg.minds.pool_floor_ops_s = 1;
+    let mut rig = Rig::boot_on(2, roster_with(cfg));
+    class_two_provider(&mut rig);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim unit target_mk1");
+    rig.say(1, "sim team red");
+    rig.say(1, "sim mind Fixture II");
+    rig.say(0, "sim ai 3");
+    rig.say(0, "sim ai class 0");
+    assert_eq!(preview_class(&rig, Team::Red, 3), CoreClass::Zero);
+    let leaver = rig.pilot(0);
+    let (left, lead_heard) = rig.say_heard(0, "sim leave", 1);
+    assert!(left.contains("gives up red slot 1"), "{left}");
+    assert!(!rig.centre().slots.iter().any(|slot| slot.pilot == leaver));
+    assert!(rig.centre().fill_classes.is_empty());
+    assert!(
+        lead_heard.contains("admission needs review"),
+        "{lead_heard}"
+    );
+    assert_eq!(preview_class(&rig, Team::Red, 3), CoreClass::I);
+    let refused = rig.say(1, "sim start");
+    assert!(
+        refused.contains("8,000"),
+        "the new roster cannot check out: {refused}"
+    );
+    assert_eq!(rig.centre().state, match_::MatchState::Selection);
+    assert!(
+        rig.centre().match_id.is_none(),
+        "refusal precedes match id and pod locks"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m6_rechecking_a_teammates_lost_mind_does_not_disclose_their_choice() {
+    let mut cfg = config();
+    cfg.match_.ai_fill = true;
+    let mut rig = Rig::boot_on(2, roster_with(cfg));
+    let provider = holdings_on(&mut rig);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(0, "sim mind Fixture I");
+    provider.drop_fixture_i();
+    let before = rig.centre();
+    let refused = rig.say(1, "sim mind Standard PROFILE Hunter");
+    assert_eq!(
+        refused,
+        "Another hull cannot be sealed; its pilot or side lead must review its choices."
+    );
+    assert!(!refused.contains("Fixture"));
+    assert_eq!(
+        rig.centre(),
+        before,
+        "a failed complete preview publishes no partial choice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m6_range_targets_preview_the_refitted_rom_class_and_checkout_uses_it() {
+    use tacsim::arena::core::CoreClass;
+    let mut cfg = config();
+    cfg.minds.pool_base_ops_s = 3_200;
+    cfg.minds.pool_per_unit_ops_s = 0;
+    cfg.minds.pool_floor_ops_s = 1;
+    let mut rig = Rig::boot_on(1, roster_with(cfg));
+    rig.say(0, "sim team red");
+    // A previous fill selection has no authority over a range's target chassis.
+    god_in_the_lobby(&mut rig);
+    let selected = rig.staff("sim ai mind blue Standard PROFILE Hunter");
+    assert!(
+        selected.contains("Standard Doctrine (Hunter)"),
+        "{selected}"
+    );
+    let said = rig.say(0, "sim range 2");
+    assert!(
+        !said.contains("would think"),
+        "target ROM loads fit: {said}"
+    );
+    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::I);
+    assert_eq!(preview_class(&rig, Team::Blue, 1), CoreClass::Zero);
+    assert_eq!(preview_class(&rig, Team::Blue, 2), CoreClass::Zero);
+    rig.say(0, "sim start");
+    assert!(
+        rig.seat(0),
+        "the range checks out under the same lowered pool"
+    );
+    let id = rig.centre().match_id.expect("running range");
+    let record = rig.book().get(id).expect("range record");
+    let targets = record
+        .teams
+        .iter()
+        .find(|side| side.team == Team::Blue)
+        .expect("target side");
+    assert_eq!(targets.units.len(), 2);
+    for unit in &targets.units {
+        assert_eq!(
+            record.minds.get(unit).expect("target seal").seal.class,
+            CoreClass::Zero
+        );
     }
 }

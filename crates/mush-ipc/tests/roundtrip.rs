@@ -431,7 +431,7 @@ fn version_is_present_and_travels_in_hello() {
     // character is being made for. A v5 gateway would create characters the
     // server's account oracle never learns of, which is the trap that cut
     // closed, so the two halves must be built together.
-    assert_eq!(IPC_VERSION, 6, "the boundary protocol version is pinned");
+    assert_eq!(IPC_VERSION, 7, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -674,4 +674,49 @@ fn inbound_itself_round_trips_including_internal_arms() {
         let (got, _): (Inbound, usize) = decode_frame(&bytes).unwrap().unwrap();
         assert_eq!(got, inbound);
     }
+}
+
+#[test]
+fn typed_invoke_round_trips_under_custody_with_independent_size_limit() {
+    let request = mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::Read {
+        name: "mine".into(),
+        revision: Some("3".into()),
+    });
+    let input = GatewayInput::Invoke {
+        conn: 9,
+        actor: ObjId(7),
+        id: 44,
+        request: request.clone(),
+    };
+    assert_eq!(input.conn(), 9);
+    assert!(input.logical_bytes().is_ok());
+    round_trip_to_server(&ToServer::Inbound(WireInbound::Invoke {
+        conn: 9,
+        actor: ObjId(7),
+        id: 44,
+        request: request.clone(),
+    }));
+    let inbound = Inbound::try_from(input.clone()).expect("closed invocation");
+    assert_eq!(
+        WireInbound::try_from(inbound).expect("wire"),
+        WireInbound::Invoke {
+            conn: 9,
+            actor: ObjId(7),
+            id: 44,
+            request
+        }
+    );
+    let illegal = GatewayInput::Invoke {
+        conn: 9,
+        actor: ObjId(7),
+        id: 44,
+        request: mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::Create {
+            name: "x".repeat(mush_proto::MAX_INVOKE_BYTES),
+            from: None,
+        }),
+    };
+    assert!(
+        illegal.logical_bytes().is_err(),
+        "bounded before world dispatch"
+    );
 }
