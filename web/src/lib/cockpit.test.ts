@@ -1490,7 +1490,35 @@ describe("17b cut M5.5", () => {
     const frame = theFrame();
     expect(frame.mind).toEqual({
       name: "Standard Doctrine",
-      card: null,
+      card: {
+        sections: expect.any(Array),
+        values: {
+          aspect: "any",
+          close_m: 200,
+          engage_band_permille: 1000,
+          hunt_after_ms: 90_000,
+          min_odds_permille: 650,
+          opening: "wait",
+          orbit_sense: "auto",
+          prefer: "balanced",
+          rally_ms: 20_000,
+          reserve_odds_pct: 75,
+          reserve_pct: 30,
+          screen_arc: 120,
+          screen_bearing: 0,
+          search_ms: 60_000,
+          stance: "hold",
+          stand_min_permille: 175,
+          stop_unseen: true,
+          switch_m: 100,
+          turn_into_hits: true,
+          turn_s: 4,
+          weight_facet: 40,
+          weight_health: 30,
+          weight_range: 100,
+          withdraw_permille: 350,
+        },
+      },
       sealedRules: [],
       profiles: ["Sniper", "Line"],
       active: 0,
@@ -1500,6 +1528,35 @@ describe("17b cut M5.5", () => {
       next_switch_ms: null,
       off: false,
     });
+    // The captured schema exposes every stored Sniper value at its station;
+    // this is the real fixture's complete card, not a reconstructed preset.
+    const sections = frame.mind!.card!.sections;
+    expect(sections.map(({ id, label, station, fields }) => ({
+      id, label, station, fields: fields.map((field) => field.id),
+    }))).toEqual([
+      {
+        id: "posture", label: "Posture", station: "helm",
+        fields: ["close_m", "engage_band_permille", "opening", "orbit_sense", "screen_arc",
+          "screen_bearing", "stance", "turn_into_hits", "turn_s"],
+      },
+      {
+        id: "fire", label: "Fire discipline", station: "fire",
+        fields: ["aspect", "min_odds_permille", "reserve_odds_pct", "reserve_pct"],
+      },
+      {
+        id: "targeting", label: "Targeting", station: "sensors",
+        fields: ["prefer", "switch_m", "weight_facet", "weight_health", "weight_range"],
+      },
+      {
+        id: "survival", label: "Survival and search", station: "helm",
+        fields: ["hunt_after_ms", "rally_ms", "search_ms", "stand_min_permille", "stop_unseen",
+          "withdraw_permille"],
+      },
+    ]);
+    expect(sections.flatMap((section) => section.fields)
+      .find((field) => field.id === "min_odds_permille")?.widget).toMatchObject({
+        kind: "slider", min: 0, max: 1000, step: 1, scale: 10, unit: "%",
+      });
     // An older server (no key), a hull no seal reached (`null`), and a value
     // that is not an object: no mind, and no tail.
     const old = raw();

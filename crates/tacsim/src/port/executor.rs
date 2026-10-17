@@ -1008,7 +1008,7 @@ fn payload_of(
     Some(total)
 }
 
-/// **`+ship/plan`'s queue block** (doc 18 §4.4 "+ship/plan [<port>] (a dry run of the
+/// **`+ship/plan`'s queue block** (doc 18 §4.4 "`+ship/plan [<port>]` (a dry run of the
 /// queue against live listings, pools, funds, burn and ETA; writes nothing)"; the §5
 /// row "each buy's clamp and bound, the affordable tonnage at this board"): the orders
 /// from the cursor up to and including the first depart, each through this module's

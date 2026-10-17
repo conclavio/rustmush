@@ -77,12 +77,12 @@
 //!
 //! **Doc 18 cut IC11** — captain's orders, the first cut with the full daily loop:
 //!
-//! - [`when`] — the UTC time helper: `at=`, `until=`, the one rule for when a
+//! - [`crate::port::when`] — the UTC time helper: `at=`, `until=`, the one rule for when a
 //!   depart is due (resolved at its reach) and the OOC departure clock;
-//! - [`orders`] — the queued sailing plan (`tacsim:orders:{hull}`, D-18-31), its
+//! - [`crate::port::orders`] — the queued sailing plan (`tacsim:orders:{hull}`, D-18-31), its
 //!   closed vocabulary, its hold shapes and the verbs `+ship/orders` and
 //!   `+ship/order`;
-//! - [`executor`] — the planning core `+ship/plan` and the order arm share (the
+//! - [`crate::port::executor`] — the planning core `+ship/plan` and the order arm share (the
 //!   venue's asks and bids, the clamps and their bound words, the projection,
 //!   `fill` and the reserve, D-18-41) and the order arm the port tick drives
 //!   (D-18-32).

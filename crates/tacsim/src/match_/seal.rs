@@ -17,8 +17,9 @@
 //!
 //! 1. **The hull's loadout and stations**: the channels its stations grant —
 //!    helm and sensors on every hull, fire on one that carries a weapon row.
-//! 2. **The licence state**: `doctrine` (the OOC sim holds no licence before
-//!    17b cut M6; D-UM-49, the owner's OQ-1).
+//! 2. **The requested provenance**: Doctrine or an owned saved revision resolved
+//!    world-side. M6's OOC sim admits personal drafts without an IC licence,
+//!    payment or seat claim (D-UM-49).
 //! 3. **The core**: its component, class, governed bit and condition, read
 //!    live off the unit (`crate::arena::core::read_core`); a hull with none is
 //!    Class 0, governed, and flies the ROM from the start, which its
@@ -36,31 +37,31 @@
 //!    hull seals Class 0 on its core and flies the ROM, as no core does
 //!    (and as it did at 5f505c8). Standard Doctrine's rating I is
 //!    therefore over no core, and no production seal meets the refusal.
-//! 4. **The revision**: the mind the terms name ([`SealTerms::identity`]:
-//!    Standard Doctrine, the registry's stock line, at the stock version, in
-//!    production — the one mind production holds before 17b cut M6), its
-//!    source named by its digest alone.
-//! 5. **The cards** — since 17b cut M5.2 EVERY profile the terms seal
-//!    ([`SealTerms::profiles`]; the Line card alone when it is empty) —
-//!    each validated against the schema and the Compact floor the terms
-//!    carry — refused, never clamped (D-UM-17): a card whose pair of
+//! 4. **The revision**: the mind the terms name ([`SealTerms::identity`]), its
+//!    source named by digest. [`MindSeal::requested`] preserves that identity
+//!    even when the effective executable is the separately captured ROM.
+//! 5. **The cards**: every selected authored profile
+//!    ([`SealTerms::selected_profiles`]) or stock adapter profile
+//!    ([`SealTerms::profiles`]; the Line card alone when it is empty) is
+//!    validated against its schema, the actual class and the Compact floor —
+//!    refused, never clamped (D-UM-17). A stock card whose pair of
 //!    survival sliders does not hold is [`SealError::Card`] on every hull;
 //!    one whose `min_odds` is under the floor is [`SealError::Unlawful`] on a
 //!    hull with a weapons station only (17b cut M5.2, the design note's
 //!    C-23 and doc 17 §11's R-60: a fire section a hull cannot use is shown
 //!    inert and never refuses the seal). The first profile's card is
-//!    [`MindSeal::card`]; the set is [`MindSeal::profiles`], written LAST and
-//!    empty — skipped — when it is the Line card alone, so a default seal is
-//!    the record it always was.
+//!    [`MindSeal::card`]; [`MindSeal::cards`] carries the complete effective
+//!    definition, selected profile bindings and bound programs. Even a single
+//!    Line profile is explicit; [`MindSeal::rom`] carries the frozen fallback.
 //!
 //! The class the mind thinks at is `min(rated, core_class, class_cap)` under
 //! the terms' [`SealTerms::rated`] (Standard Doctrine's `STOCK_RATED_CLASS`)
 //! and [`SealTerms::class_cap`] (17b cut M3's ruling, the plan's F4; 17b cut
 //! M4.1 put the rating and the cap on the terms and the think side reads the
 //! seal, `Arena::mind_class`); the engine is the terms'
-//! [`SealTerms::engine_for_minds`] on every hull (17b cut M4.3), which in
-//! production is [`PRODUCTION_FILL_ENGINE`] — the native stock mind since
-//! the fill decision of 2026-10-09.
+//! [`SealTerms::engine_for_minds`] for non-ROM execution: authored revisions use
+//! the scripted engine, while default fills use [`PRODUCTION_FILL_ENGINE`].
+//! Class 0 custody captures the native ROM explicitly.
 
 use crate::arena::card::{CardError, PRESETS, StockCard};
 use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget, condition_is_lawful};

@@ -4,12 +4,15 @@
 //! The card is the parameter block a stock mind reads: Standard Doctrine's
 //! combat schema, in [`crate::config::ReflexConfig`]'s own units where a term
 //! maps onto today's machine, so that the **Line** preset on its defaults
-//! ([`line()`]) IS today's doctrine — the regression anchor. It lives on every
-//! mind's row ([`crate::arena::mind::MindState::card`]), is handed to every
-//! think ([`crate::arena::mind::ThinkJob::card`]), is folded into the state hash
-//! inside item 3c and is carried by the snapshot from format 7 — the shape
-//! landed in 17b cut M1b.1, the one cut that moved the format, so the sub-cuts
-//! that read it move nothing carried.
+//! ([`line()`]) IS today's doctrine — the regression anchor. Since M6 it is
+//! the stock adapter of the active
+//! [`RuntimeCard`](crate::arena::runtime_card::RuntimeCard), held by
+//! [`ProfileRuntime::card`](crate::arena::profile_runtime::ProfileRuntime::card)
+//! and handed to each think through [`crate::arena::mind::ThinkJob::card`].
+//! The runtime card's immutable key is hashed; snapshots carry its canonical
+//! definition in the arena catalog and hydrate the adapter before execution.
+//! Custom cards keep their own schema and values rather than acquiring a
+//! second stock-card state.
 //!
 //! **17b cut M1b.5** gives it the rest of doc 17 §11:
 //!

@@ -694,12 +694,13 @@ pub struct ThinkJob<'a> {
     /// The map: the window, its zones, its spots and its waypoint graph —
     /// the arena's own [`Arena::definition`], behind its `Arc` (17b cut M2.2).
     pub map: &'a Arc<ArenaDefinition>,
-    /// **The card the mind thinks under** (17b cut M1b.1; doc 17 §11): the
-    /// row's own [`MindState::card`]. Since 17b cut M1b.2 `NativeStockMind`
-    /// reads its fire discipline (the odds, the aspect and the reserve its
-    /// slots are armed on, `crate::arena::stock_mind::arming_for`), and since
-    /// 17b cut M1b.5 every mapped term through `StockCard::as_reflex` (the
-    /// eleven `[M2]` sliders are carried and not read); `NoMind` ignores it.
+    /// **The exact card captured for this think** (doc 17 §11): the active
+    /// [`ProfileRuntime::card`](super::profile_runtime::ProfileRuntime::card),
+    /// including its immutable key and hydrated schema, values and rules.
+    /// Stock helpers read its optional
+    /// [`RuntimeCard::stock`](super::runtime_card::RuntimeCard::stock) adapter;
+    /// authored minds read their declared values. `NoMind` ignores it. A later
+    /// profile change invalidates this job's token rather than replacing its card.
     pub card: &'a super::runtime_card::RuntimeCard,
     pub program: &'a super::profile_rules::BoundProgram,
     pub profile_token: super::profile_runtime::ProfileToken,
