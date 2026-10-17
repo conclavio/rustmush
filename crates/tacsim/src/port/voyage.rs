@@ -244,9 +244,10 @@ pub const NO_ROUTE: &str = "No passage leaves {here} for that port; {here} clear
 /// `via=` (reserved for the astronomy engine).
 pub const VIA_NOT_YET: &str =
     "A passage by a chosen waypoint is not yet offered; the planner takes the fastest route.";
-/// `at=` other than `now` (IC11 rewrites it to name `+ship/order`).
+/// `at=` other than `now` (doc 18 cut IC11, lead ruling L8: a later hour is a queued
+/// depart).
 pub const AT_NOT_YET: &str =
-    "+ship/undock leaves now; a departure at a later hour is not offered yet.";
+    "+ship/undock leaves now; to leave at a later hour, queue +ship/order depart <port> at=<time>.";
 /// The launch dry run refused: `{name}`, `{port}`.
 pub const PORT_CLOSED: &str =
     "The {name} cannot be cleared for {port} right now. Nothing was burned.";
@@ -421,7 +422,7 @@ fn waypoint_short(w: &World, obj: ObjId) -> String {
 }
 
 /// The lane's port entries with their maps.
-fn lane_ports(w: &World) -> Vec<(&PortDef, Option<&PortMap>)> {
+pub(crate) fn lane_ports(w: &World) -> Vec<(&PortDef, Option<&PortMap>)> {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Vec::new();
     };
@@ -458,7 +459,7 @@ fn port_of_host(w: &World, host: ObjId) -> Option<(String, &PortMap)> {
 }
 
 /// A venue's player-facing port name, else the venue word.
-fn venue_name(w: &World, venue: &CanonicalId) -> String {
+pub(crate) fn venue_name(w: &World, venue: &CanonicalId) -> String {
     port_of_venue(w, venue).map_or_else(|| venue.to_string(), |(name, _)| name)
 }
 
@@ -828,31 +829,36 @@ fn match_destination<'d>(dests: &'d [Destination], word: &str) -> Option<&'d Des
 }
 
 /// [`NO_ROUTE`] for a berth.
-fn no_route(here: &str, dests: &[Destination]) -> CmdError {
+fn no_route(here: &str, dests: &[Destination]) -> String {
     let list: Vec<&str> = dests.iter().map(|d| d.port.as_str()).collect();
-    CmdError::msg(
-        NO_ROUTE
-            .replace("{here}", here)
-            .replace("{list}", &list.join(", ")),
-    )
+    NO_ROUTE
+        .replace("{here}", here)
+        .replace("{list}", &list.join(", "))
 }
 
 /// The persons `Interior`-placed in `airlock` (lead ruling L12).
 fn occupants(w: &World, airlock: ObjId) -> u32 {
+    u32::try_from(souls_aboard(w, airlock).len()).unwrap_or(u32::MAX)
+}
+
+/// **Who is aboard**: the persons (players and NPCs) `Interior`-placed in `airlock`,
+/// in the placement index's order — the souls [`occupants`] counts, and (doc 18 cut
+/// IC11, lead ruling L11) a queued depart's listed passengers at filing.
+pub(crate) fn souls_aboard(w: &World, airlock: ObjId) -> Vec<ObjId> {
     let Some(st) = w.module_state::<SpatialState>() else {
-        return 0;
+        return Vec::new();
     };
-    let count = st.derived.children.get(&airlock).map_or(0, |children| {
+    st.derived.children.get(&airlock).map_or_else(Vec::new, |children| {
         children
             .iter()
+            .copied()
             .filter(|obj| {
-                w.get(**obj)
+                w.get(*obj)
                     .is_some_and(|o| matches!(o.kind, ObjKind::Player | ObjKind::Npc))
-                    && matches!(st.parent_of(**obj), SpatialParent::Interior { space, .. } if space == airlock)
+                    && matches!(st.parent_of(*obj), SpatialParent::Interior { space, .. } if space == airlock)
             })
-            .count()
-    });
-    u32::try_from(count).unwrap_or(u32::MAX)
+            .collect()
+    })
 }
 
 /// **`person` is aboard `hull`**: `Interior`-placed in the hull's airlock space
@@ -1101,7 +1107,10 @@ pub(crate) fn plan_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let dests = destinations(w, def);
         let chosen: Vec<&Destination> = match &word {
             Some(word) => {
-                vec![match_destination(&dests, word).ok_or_else(|| no_route(&here, &dests))?]
+                vec![
+                    match_destination(&dests, word)
+                        .ok_or_else(|| CmdError::msg(no_route(&here, &dests)))?,
+                ]
             }
             None => dests.iter().collect(),
         };
@@ -1126,6 +1135,24 @@ pub(crate) fn plan_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     lines.push(format!("Plan for {}:", dest.port));
                     lines.push(plan_dark(&name));
                 }
+            }
+        }
+        // Doc 18 cut IC11 (§4.4 "+ship/plan … a dry run of the queue"): the sailing
+        // plan from its cursor, through the executor's own planning core.
+        if let Berth::Docked { map, .. } = berth_of(w, charter.hull) {
+            match crate::port::orders::orders_state(w, charter.hull) {
+                crate::port::orders::OrdersState::Present(orders)
+                    if orders.author == actor && orders.cursor.is_some() =>
+                {
+                    lines.extend(crate::port::executor::plan_queue(
+                        ctx, &view, def, map, orders,
+                    ));
+                }
+                crate::port::orders::OrdersState::Unreadable => {
+                    lines.push(crate::port::orders::ORDERS_DARK.replace("{name}", &name));
+                }
+                crate::port::orders::OrdersState::Present(_)
+                | crate::port::orders::OrdersState::Absent => {}
             }
         }
         lines.push(NOTHING_WRITTEN.to_owned());
@@ -1236,15 +1263,337 @@ fn plan_block(
 
 // ---- +ship/undock ------------------------------------------------------------------
 
+/// **A departure ready to file** (doc 18 cut IC11, lead note 2j(i)): the sailing plan
+/// with its pending passage, the destination's name, the burn's key and sequence and
+/// the registered burn action — what `+ship/undock` and the order arm's depart step
+/// both write and submit.
+#[derive(Clone, Debug)]
+pub(crate) struct DepartFiling {
+    /// The sailing plan, its pending passage filed.
+    pub voyage: Voyage,
+    /// The destination port's name.
+    pub port: String,
+    /// The burn's idempotency key.
+    pub key: IdempotencyKeyText,
+    /// The burn sequence (`pending.seq`).
+    pub seq: u32,
+    /// The registered `tacsim_port_burn` action.
+    pub burn: mush_core::DefinitionRef,
+}
+
+/// **Who files the departure** (doc 18 cut IC11): a live `+ship/undock`, or a queued
+/// depart order at its attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Queued {
+    /// `+ship/undock`: `order: None, attempt: 1`, keyed `…/{hull}/undock/{seq}`.
+    Live,
+    /// A queued depart: keyed `…/{hull}/{order}/{attempt}` (doc 18 §4.4).
+    Order {
+        /// The order id.
+        order: u32,
+        /// The order's attempt.
+        attempt: u32,
+    },
+}
+
+/// **Why a departure cannot be filed, typed** (reviewer F7): the order arm matches on
+/// the kind, never on the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DepartRefusalKind {
+    /// The burn action is not registered.
+    Unwired,
+    /// The sailing plan does not read.
+    VoyageDark,
+    /// A clearance is filed already.
+    Cleared,
+    /// The hull is under way.
+    UnderWay,
+    /// The pilot is not aboard.
+    NotAboard,
+    /// The hull is at no berth.
+    NotDocked,
+    /// No route of this berth serves the destination.
+    NoRoute,
+    /// Bought goods are not aboard yet.
+    GoodsComing,
+    /// A listing holds goods in the hold.
+    ListingHolds,
+    /// A sale's goods have not left the hold yet.
+    GoodsLeaving,
+    /// The planner, the lane or the filing could not answer.
+    PlanDark,
+    /// Over the payload rail.
+    Overloaded,
+    /// The tank below the burn.
+    TankShort,
+    /// The locker below the crew-days.
+    StoresShort,
+    /// The launch dry run refused.
+    PortClosed,
+}
+
+/// A typed refusal: its kind and the line `+ship/undock` answers with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DepartRefusal {
+    /// The kind.
+    pub kind: DepartRefusalKind,
+    /// The line.
+    pub line: String,
+}
+
+impl From<DepartRefusal> for CmdError {
+    fn from(refusal: DepartRefusal) -> Self {
+        CmdError::msg(refusal.line)
+    }
+}
+
+/// A refusal of `kind` with `line`.
+fn refusal(kind: DepartRefusalKind, line: String) -> DepartRefusal {
+    DepartRefusal { kind, line }
+}
+
+/// **Every check before a departure is filed, then the filing** (doc 18 cut IC9's
+/// `+ship/undock` body, factored for IC11's depart step; lead rulings L4, L13, L14,
+/// L21, L28 of IC9, L8 of IC11): exactly the undock's refusals in its order — the
+/// burn wired, the sailing papers, the berth, the pilot aboard, the route, the goods
+/// not yet aboard, the plan, the tank and the locker, the launch dry run, the
+/// sequence, the check and the key — each typed. The plan is made **now**: the burn's
+/// prepare refuses a future `depart_ic`, so a queued `at=` is the order arm's due gate,
+/// never a future-dated plan (L8). Writes nothing.
+///
+/// # Errors
+///
+/// [`DepartRefusal`], typed.
+#[allow(clippy::too_many_lines)] // one ordered refusal list
+pub(crate) fn prepare_departure(
+    ctx: &Ctx<'_>,
+    pilot: ObjId,
+    hull: ObjId,
+    dest_word: &str,
+    queued: Queued,
+) -> Result<DepartFiling, DepartRefusal> {
+    use DepartRefusalKind as K;
+    let w: &World = ctx.w;
+    let Some(burn) = w
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.burn.clone())
+    else {
+        return Err(refusal(K::Unwired, UNDOCK_UNWIRED.to_owned()));
+    };
+    let name = name_of(w, hull);
+    let dark = || refusal(K::PlanDark, PLAN_DARK.replace("{name}", &name));
+    let last_seq = match w
+        .module_state::<TacsimStore>()
+        .map_or(VoyageState::Absent, |store| store.voyage_state(hull))
+    {
+        VoyageState::Unreadable => {
+            return Err(refusal(K::VoyageDark, VOYAGE_DARK.replace("{name}", &name)));
+        }
+        VoyageState::Present(voyage) => {
+            if let Some(pending) = &voyage.pending {
+                return Err(refusal(
+                    K::Cleared,
+                    UNDOCK_CLEARED
+                        .replace("{name}", &name)
+                        .replace("{port}", &venue_name(w, &pending.to_venue)),
+                ));
+            }
+            voyage.last_seq
+        }
+        VoyageState::Absent => 0,
+    };
+    let Some(view) = hull_view(w, hull) else {
+        let line = no_charter(w, pilot).to_string();
+        return Err(refusal(K::PlanDark, line));
+    };
+    if matches!(berth_of(w, hull), Berth::UnderWay) {
+        return Err(refusal(
+            K::UnderWay,
+            UNDOCK_UNDER_WAY.replace("{name}", &name),
+        ));
+    }
+    let Some(airlock) = view.airlock() else {
+        return Err(refusal(K::NotAboard, NOT_ABOARD.replace("{name}", &name)));
+    };
+    if !aboard(w, hull, pilot) {
+        return Err(refusal(K::NotAboard, NOT_ABOARD.replace("{name}", &name)));
+    }
+    let Berth::Docked { def, .. } = berth_of(w, hull) else {
+        return Err(refusal(K::NotDocked, NOT_DOCKED.replace("{name}", &name)));
+    };
+    let here = port_name(def);
+    let dests = destinations(w, def);
+    let dest = match_destination(&dests, dest_word)
+        .cloned()
+        .ok_or_else(|| refusal(K::NoRoute, no_route(&here, &dests)))?;
+    let port = dest.port.clone();
+    // Lead ruling L13: promised goods hold the hull.
+    if let Some(vault) = hold_vault(w, &view) {
+        match goods_pending_aboard(w, EndpointRef(vault)) {
+            Some(Pending::Quote(quote)) => {
+                return Err(refusal(
+                    K::GoodsComing,
+                    GOODS_COMING
+                        .replace("{quote}", &quote.to_string())
+                        .replace("{name}", &name),
+                ));
+            }
+            Some(Pending::Listing(listing)) => {
+                return Err(refusal(
+                    K::ListingHolds,
+                    LISTING_HOLDS
+                        .replace("{listing}", &listing.to_string())
+                        .replace("{name}", &name),
+                ));
+            }
+            Some(Pending::Sale(quote)) => {
+                return Err(refusal(
+                    K::GoodsLeaving,
+                    GOODS_LEAVING
+                        .replace("{quote}", &quote.to_string())
+                        .replace("{name}", &name),
+                ));
+            }
+            None => {}
+        }
+    }
+    let souls = occupants(w, airlock);
+    let basis = basis(ctx, &view, souls).map_err(|error| {
+        tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");
+        dark()
+    })?;
+    let plan = match plan_on(w, &basis, &dest.routes) {
+        Ok(plan) => plan,
+        Err(PlanError::Overloaded {
+            payload_kg,
+            ceiling_kg,
+        }) => {
+            return Err(refusal(
+                K::Overloaded,
+                OVERLOADED
+                    .replace("{name}", &name)
+                    .replace("{payload}", &tonnes_one_decimal(payload_kg))
+                    .replace("{ceiling}", &(ceiling_kg / 1_000).to_string()),
+            ));
+        }
+        Err(error) => {
+            tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not plan the passage");
+            return Err(dark());
+        }
+    };
+    if basis.tank < plan.burn_t {
+        return Err(refusal(
+            K::TankShort,
+            TANK_SHORT
+                .replace("{port}", &port)
+                .replace("{burn}", &plan.burn_t.to_string())
+                .replace("{tank}", &basis.tank.to_string()),
+        ));
+    }
+    if basis.locker < u64::from(plan.crew_days) {
+        return Err(refusal(
+            K::StoresShort,
+            STORES_SHORT
+                .replace("{port}", &port)
+                .replace("{days}", &plan.crew_days.to_string())
+                .replace("{have}", &basis.locker.to_string()),
+        ));
+    }
+    // Lead ruling L28 (reviewer F2): the launch, dry-run before anything is
+    // burned — the route materializes at the version the plan was made at, and
+    // mush-sim would depart it now.
+    let store = w.module_state::<TacsimStore>().ok_or_else(dark)?;
+    let Some(def_route) = store.route_in_world(w, &plan.route) else {
+        tracing::warn!(hull = hull.0, route = %plan.route, "tacsim: a departure: the planned route does not materialize");
+        return Err(dark());
+    };
+    let same_version = store.route_source(w, &def_route).is_some_and(|(pack, _)| {
+        pack.manifest().id().as_str() == LANE_PACK && pack.manifest().version() == basis.version
+    });
+    if !same_version {
+        tracing::warn!(hull = hull.0, route = %plan.route, version = basis.version, "tacsim: a departure: the route does not materialize at the plan's lane version");
+        return Err(dark());
+    }
+    if let Some(why) = mush_sim::depart_ineligible(ctx, hull, &def_route) {
+        tracing::info!(hull = hull.0, %why, "tacsim: a departure: the launch dry run refused");
+        return Err(refusal(
+            K::PortClosed,
+            PORT_CLOSED
+                .replace("{name}", &name)
+                .replace("{port}", &port),
+        ));
+    }
+    let Some(seq) = last_seq.checked_add(1) else {
+        tracing::error!(
+            hull = hull.0,
+            "tacsim: a departure: the burn sequence is exhausted"
+        );
+        return Err(dark());
+    };
+    let lane = CanonicalId::new(LANE_PACK).map_err(|_| dark())?;
+    let (order, attempt) = match queued {
+        Queued::Live => (None, 1),
+        Queued::Order { order, attempt } => (Some(order), attempt),
+    };
+    let pending = PendingVoyage {
+        seq,
+        pilot,
+        to_venue: dest.venue.clone(),
+        vault: basis.vault.0,
+        occupants: basis.occupants,
+        payload_kg: basis.payload,
+        route_pack: lane,
+        route_version: basis.version,
+        unit_definition: basis.digest,
+        plan,
+        order,
+        attempt,
+        filed_ic: basis.depart_ic,
+        filed_at: w.now(),
+    };
+    let voyage = Voyage {
+        schema: VOYAGE_SCHEMA,
+        hull,
+        last_seq,
+        pending: Some(pending),
+    };
+    if voyage.check().is_err() {
+        tracing::error!(
+            hull = hull.0,
+            "tacsim: a departure: the filed passage does not check"
+        );
+        return Err(dark());
+    }
+    let key_text = match queued {
+        Queued::Live => format!("{BURN_KEY_PREFIX}{}/undock/{seq}", hull.0),
+        Queued::Order { order, attempt } => {
+            format!("{BURN_KEY_PREFIX}{}/{order}/{attempt}", hull.0)
+        }
+    };
+    let Ok(key) = IdempotencyKeyText::parse_canonical(key_text) else {
+        tracing::error!(
+            hull = hull.0,
+            "tacsim: a departure: the burn's key did not form"
+        );
+        return Err(dark());
+    };
+    Ok(DepartFiling {
+        voyage,
+        port,
+        key,
+        seq,
+        burn,
+    })
+}
+
 /// **`+ship/undock <port>`** (doc 18 §4.4 "+ship/undock <port> (live, at=now
-/// only)"; lead rulings L4, L13, L14, L21, L28): every check before any write, in
-/// the brief's order, then the voyage document and ONE `tacsim_port_burn`
-/// submission as the actor.
+/// only)"; lead rulings L4, L13, L14, L21, L28): the usage, the charter, then every
+/// check of [`prepare_departure`] before any write, then the voyage document and ONE
+/// `tacsim_port_burn` submission as the actor.
 ///
 /// # Errors
 ///
 /// Every refusal is a [`CmdError`] line, and on every refusal nothing is written.
-#[allow(clippy::too_many_lines)] // one ordered refusal list, then two writes
 pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let raw = ctx.args.raw().to_owned();
@@ -1257,213 +1606,24 @@ pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(charter) = live_charter(ctx.w, actor) else {
         return Err(no_charter(ctx.w, actor));
     };
-    let hull = charter.hull;
-    let Some(burn_action) = ctx
-        .w
-        .module_state::<PortHandles>()
-        .and_then(|handles| handles.burn.clone())
-    else {
-        return Err(CmdError::msg(UNDOCK_UNWIRED));
+    let filing = prepare_departure(ctx, actor, charter.hull, &word, Queued::Live)?;
+    let Some(pending) = filing.voyage.pending.clone() else {
+        return Err(CmdError::msg(
+            PLAN_DARK.replace("{name}", &name_of(ctx.w, charter.hull)),
+        ));
     };
-    let name = name_of(ctx.w, hull);
-    let last_seq = match ctx
-        .w
-        .module_state::<TacsimStore>()
-        .map_or(VoyageState::Absent, |store| store.voyage_state(hull))
-    {
-        VoyageState::Unreadable => {
-            return Err(CmdError::msg(VOYAGE_DARK.replace("{name}", &name)));
-        }
-        VoyageState::Present(voyage) => {
-            if let Some(pending) = &voyage.pending {
-                return Err(CmdError::msg(
-                    UNDOCK_CLEARED
-                        .replace("{name}", &name)
-                        .replace("{port}", &venue_name(ctx.w, &pending.to_venue)),
-                ));
-            }
-            voyage.last_seq
-        }
-        VoyageState::Absent => 0,
-    };
-    let filed = {
-        let w: &World = ctx.w;
-        let Some(view) = hull_view(w, hull) else {
-            return Err(no_charter(w, actor));
-        };
-        if matches!(berth_of(w, hull), Berth::UnderWay) {
-            return Err(CmdError::msg(UNDOCK_UNDER_WAY.replace("{name}", &name)));
-        }
-        let Some(airlock) = view.airlock() else {
-            return Err(CmdError::msg(NOT_ABOARD.replace("{name}", &name)));
-        };
-        if !aboard(w, hull, actor) {
-            return Err(CmdError::msg(NOT_ABOARD.replace("{name}", &name)));
-        }
-        let Berth::Docked { def, .. } = berth_of(w, hull) else {
-            return Err(CmdError::msg(NOT_DOCKED.replace("{name}", &name)));
-        };
-        let here = port_name(def);
-        let dests = destinations(w, def);
-        let dest = match_destination(&dests, &word)
-            .cloned()
-            .ok_or_else(|| no_route(&here, &dests))?;
-        let port = dest.port.clone();
-        let dark = || CmdError::msg(PLAN_DARK.replace("{name}", &name));
-        // Lead ruling L13: promised goods hold the hull.
-        if let Some(vault) = hold_vault(w, &view) {
-            match goods_pending_aboard(w, EndpointRef(vault)) {
-                Some(Pending::Quote(quote)) => {
-                    return Err(CmdError::msg(
-                        GOODS_COMING
-                            .replace("{quote}", &quote.to_string())
-                            .replace("{name}", &name),
-                    ));
-                }
-                Some(Pending::Listing(listing)) => {
-                    return Err(CmdError::msg(
-                        LISTING_HOLDS
-                            .replace("{listing}", &listing.to_string())
-                            .replace("{name}", &name),
-                    ));
-                }
-                Some(Pending::Sale(quote)) => {
-                    return Err(CmdError::msg(
-                        GOODS_LEAVING
-                            .replace("{quote}", &quote.to_string())
-                            .replace("{name}", &name),
-                    ));
-                }
-                None => {}
-            }
-        }
-        let souls = occupants(w, airlock);
-        let basis = basis(ctx, &view, souls).map_err(|error| {
-            tracing::warn!(hull = hull.0, %error, "tacsim: +ship/undock could not read the passage's basis");
-            dark()
-        })?;
-        let plan = match plan_on(w, &basis, &dest.routes) {
-            Ok(plan) => plan,
-            Err(PlanError::Overloaded {
-                payload_kg,
-                ceiling_kg,
-            }) => {
-                return Err(CmdError::msg(
-                    OVERLOADED
-                        .replace("{name}", &name)
-                        .replace("{payload}", &tonnes_one_decimal(payload_kg))
-                        .replace("{ceiling}", &(ceiling_kg / 1_000).to_string()),
-                ));
-            }
-            Err(error) => {
-                tracing::warn!(hull = hull.0, %error, "tacsim: +ship/undock could not plan the passage");
-                return Err(dark());
-            }
-        };
-        if basis.tank < plan.burn_t {
-            return Err(CmdError::msg(
-                TANK_SHORT
-                    .replace("{port}", &port)
-                    .replace("{burn}", &plan.burn_t.to_string())
-                    .replace("{tank}", &basis.tank.to_string()),
-            ));
-        }
-        if basis.locker < u64::from(plan.crew_days) {
-            return Err(CmdError::msg(
-                STORES_SHORT
-                    .replace("{port}", &port)
-                    .replace("{days}", &plan.crew_days.to_string())
-                    .replace("{have}", &basis.locker.to_string()),
-            ));
-        }
-        // Lead ruling L28 (reviewer F2): the launch, dry-run before anything is
-        // burned — the route materializes at the version the plan was made at, and
-        // mush-sim would depart it now.
-        let store = w.module_state::<TacsimStore>().ok_or_else(dark)?;
-        let Some(def_route) = store.route_in_world(w, &plan.route) else {
-            tracing::warn!(hull = hull.0, route = %plan.route, "tacsim: +ship/undock: the planned route does not materialize");
-            return Err(dark());
-        };
-        let same_version = store.route_source(w, &def_route).is_some_and(|(pack, _)| {
-            pack.manifest().id().as_str() == LANE_PACK && pack.manifest().version() == basis.version
-        });
-        if !same_version {
-            tracing::warn!(hull = hull.0, route = %plan.route, version = basis.version, "tacsim: +ship/undock: the route does not materialize at the plan's lane version");
-            return Err(dark());
-        }
-        if let Some(why) = mush_sim::depart_ineligible(ctx, hull, &def_route) {
-            tracing::info!(hull = hull.0, %why, "tacsim: +ship/undock: the launch dry run refused");
-            return Err(CmdError::msg(
-                PORT_CLOSED
-                    .replace("{name}", &name)
-                    .replace("{port}", &port),
-            ));
-        }
-        let Some(seq) = last_seq.checked_add(1) else {
-            tracing::error!(
-                hull = hull.0,
-                "tacsim: +ship/undock: the burn sequence is exhausted"
-            );
-            return Err(dark());
-        };
-        let lane = CanonicalId::new(LANE_PACK).map_err(|_| dark())?;
-        let pending = PendingVoyage {
-            seq,
-            pilot: actor,
-            to_venue: dest.venue.clone(),
-            vault: basis.vault.0,
-            occupants: basis.occupants,
-            payload_kg: basis.payload,
-            route_pack: lane,
-            route_version: basis.version,
-            unit_definition: basis.digest,
-            plan,
-            order: None,
-            attempt: 1,
-            filed_ic: basis.depart_ic,
-            filed_at: w.now(),
-        };
-        let voyage = Voyage {
-            schema: VOYAGE_SCHEMA,
-            hull,
-            last_seq,
-            pending: Some(pending),
-        };
-        if voyage.check().is_err() {
-            tracing::error!(
-                hull = hull.0,
-                "tacsim: +ship/undock: the filed passage does not check"
-            );
-            return Err(dark());
-        }
-        (voyage, port)
-    };
-    let (voyage, port) = filed;
-    let Some(pending) = voyage.pending.clone() else {
-        return Err(CmdError::msg(PLAN_DARK.replace("{name}", &name)));
-    };
-    let Ok(key) = IdempotencyKeyText::parse_canonical(format!(
-        "{BURN_KEY_PREFIX}{}/undock/{}",
-        hull.0, pending.seq
-    )) else {
-        tracing::error!(
-            hull = hull.0,
-            "tacsim: +ship/undock: the burn's key did not form"
-        );
-        return Err(CmdError::msg(PLAN_DARK.replace("{name}", &name)));
-    };
-    put_voyage(ctx, &voyage);
+    put_voyage(ctx, &filing.voyage);
     ctx.submit_authoritative(
-        burn_action,
+        filing.burn,
         PerceivedRef::SelfActor,
         Vec::new(),
-        serde_json::json!({ "seq": pending.seq.to_string() }),
-        key,
+        serde_json::json!({ "seq": filing.seq.to_string() }),
+        filing.key,
     );
     let plan = &pending.plan;
     let arrival = plan.depart_ic.saturating_add(plan.total_s);
     let base = CLEARANCE_FILED
-        .replace("{port}", &port)
+        .replace("{port}", &filing.port)
         .replace("{burn}", &plan.burn_t.to_string())
         .replace("{days}", &plan.crew_days.to_string())
         .replace("{icdays}", &ic_days(plan.total_s));
@@ -1500,7 +1660,7 @@ pub(crate) struct Launching {
 
 /// The hull's journey departed on `route` at `depart_ic` — the launched-ness the
 /// ticket no longer carries (lead ruling L5), pulled.
-fn launched(w: &World, hull: ObjId, route: &CanonicalId, depart_ic: i64) -> bool {
+pub(crate) fn launched(w: &World, hull: ObjId, route: &CanonicalId, depart_ic: i64) -> bool {
     w.module_state::<mush_sim::JourneyBook>()
         .and_then(|book| book.get(hull))
         .is_some_and(|journey| journey.route().id() == route && journey.departed().at == depart_ic)
@@ -1553,7 +1713,7 @@ pub(crate) fn launch_prune(w: &World, state: &mut PortTickState) {
 /// Read one ticket through this module's own typed-state lens, the key
 /// re-checked (`ticket.ticket_id() == key`; the IC8 rule). `Err` when the lens
 /// refuses or the ticket names another key — never "absent".
-fn ticket_at(ctx: &Ctx<'_>, id: TicketId) -> Result<Option<Ticket>, ()> {
+pub(crate) fn ticket_at(ctx: &Ctx<'_>, id: TicketId) -> Result<Option<Ticket>, ()> {
     let handles = ctx.w.module_state::<PortHandles>().ok_or(())?;
     let found = ctx
         .action_state(&handles.families.tickets, &id)
@@ -1606,14 +1766,44 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
         }
         clear_pending(ctx, hull, pending.seq);
         state.filed_seen.remove(&hull.0);
-        let port = venue_name(ctx.w, &pending.to_venue);
-        notify(
-            ctx,
-            pending.pilot,
-            &CLEARANCE_LAPSED.replace("{port}", &port),
-        );
+        if pending.order.is_none() {
+            let port = venue_name(ctx.w, &pending.to_venue);
+            notify(
+                ctx,
+                pending.pilot,
+                &CLEARANCE_LAPSED.replace("{port}", &port),
+            );
+        } else {
+            // Doc 18 cut IC11 (reviewer F1, lead rulings L7, L12): a queued depart's
+            // lapse IS its "not admitted" — the order arm reads it by pull (Dropped)
+            // and files again under the next attempt; retries are never notified.
+            tracing::info!(
+                hull = hull.0,
+                seq = pending.seq,
+                order = pending.order,
+                attempt = pending.attempt,
+                "tacsim: a queued departure's burn was not taken up; the order arm files it again"
+            );
+        }
         return Step::Worked;
     };
+    // Doc 18 cut IC11 (IC9 residual F2, lead ruling L19): the ticket must be the
+    // filing's — the plan and every filing field — or the launch holds, flying nothing.
+    if ticket.plan != pending.plan
+        || ticket.order != pending.order
+        || ticket.attempt != pending.attempt
+        || ticket.route_pack != pending.route_pack
+        || ticket.route_version != pending.route_version
+        || ticket.unit_definition != pending.unit_definition
+    {
+        return launch_hold(
+            ctx,
+            state,
+            hull,
+            &pending,
+            "the departure ticket does not match the filed passage",
+        );
+    }
     let plan = &ticket.plan;
     if launched(ctx.w, hull, &ticket.route, plan.depart_ic) {
         clear_pending(ctx, hull, pending.seq);
@@ -1779,13 +1969,24 @@ pub(crate) fn clear_cmd(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<String, CmdErr
         )));
     }
     clear_pending(ctx, hull, pending.seq);
+    let port = venue_name(ctx.w, &pending.to_venue);
     let line = CLEARANCE_STOOD_DOWN
         .replace("{name}", &name_of(ctx.w, hull))
-        .replace("{port}", &venue_name(ctx.w, &pending.to_venue));
+        .replace("{port}", &port);
     notify(ctx, pending.pilot, &line);
+    // Doc 18 cut IC11 (reviewer F4, lead ruling L28): a queued depart stood down is
+    // recorded on its sailing plan in the same command — a stopped hold, the attempt
+    // consumed — so the order arm never mistakes it for a drop and re-files it.
+    let held = pending.order.is_some_and(|order| {
+        crate::port::executor::stand_down(ctx, hull, order, pending.attempt, &port)
+    });
+    let tail = match (pending.order, held) {
+        (Some(order), true) => format!(" The sailing plan holds at order {order}."),
+        _ => String::new(),
+    };
     Ok(format!(
         "Clearance {} for #{} stood down; the ticket, if burned, is kept as the record and \
-         nothing is refunded.",
+         nothing is refunded.{tail}",
         pending.seq, hull.0
     ))
 }

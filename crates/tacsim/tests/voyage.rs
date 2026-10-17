@@ -1988,3 +1988,58 @@ fn a_restart_between_burn_and_launch_yields_exactly_one_journey() {
     assert!(v.pending.is_none());
     assert_eq!(v.last_seq, 1);
 }
+
+// ---------------------------------------------------------------------------
+// IC9 residual F2, closed by doc 18 cut IC11
+// ---------------------------------------------------------------------------
+
+/// **A ticket that disagrees with the filed plan holds the launch** (IC9 residual
+/// F2; doc 18 cut IC11 lead ruling L19): the burn lands, then the folded sailing plan
+/// is edited so its pending plan still checks but no longer matches the ticket's —
+/// the next fires hold the launch (told once), fly nothing, and leave the ticket as
+/// it was.
+#[test]
+fn ic9_f2_a_ticket_that_disagrees_with_the_filed_plan_holds_the_launch() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let burned = ticket(&mut rig.tw, hull, pending.seq).expect("the ticket");
+    let key = voyage_key(hull);
+    let mut rig = reboot_editing(rig, Roster::default(), |folded| {
+        let doc = folded
+            .get_mut(tacsim::NS)
+            .and_then(|data| data.kv.iter_mut().find(|(k, _)| *k == key))
+            .expect("the sailing plan document");
+        let plan = &mut doc.1["pending"]["plan"];
+        let total = plan["total_s"].as_i64().expect("total_s");
+        plan["total_s"] = serde_json::json!(total + 100);
+        let legs = plan["legs"].as_array_mut().expect("legs");
+        let last = legs.last_mut().expect("a leg");
+        let secs = last["secs"].as_u64().expect("secs");
+        let t1 = last["t1"].as_i64().expect("t1");
+        last["secs"] = serde_json::json!(secs + 100);
+        last["t1"] = serde_json::json!(t1 + 100);
+    });
+    let edited = voyage(&rig.tw, hull)
+        .and_then(|v| v.pending)
+        .expect("the edited pending still checks and loads");
+    assert_ne!(edited.plan, burned.plan);
+    let held = LAUNCH_HELD
+        .replace("{name}", "Salt Moth")
+        .replace("{port}", "Stickney Yards");
+    for _ in 0..10 {
+        let _ = fire_quietly(&mut rig);
+    }
+    let told = pending_notices(rig.tw.world(), pilot);
+    assert_eq!(
+        told.iter().filter(|l| **l == held).count(),
+        1,
+        "told once: {told:?}"
+    );
+    assert!(journey(&rig.tw, hull).is_none(), "nothing flies");
+    assert_eq!(
+        ticket(&mut rig.tw, hull, pending.seq),
+        Some(burned),
+        "the ticket is untouched"
+    );
+}

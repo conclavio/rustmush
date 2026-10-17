@@ -22,8 +22,11 @@
 //!   **no pack text carries a load** (D-18-39). Doc 18 cut IC9 added the leg and
 //!   the ETA to the status line and `+ship`'s first line, the departing phase,
 //!   `+ship/plan` and `+ship/undock` (`crate::port::voyage`), and the refusal of
-//!   `+ship/board` and `+ship/leave` while a clearance is filed; the burn and
-//!   reserve gauge lines are cut IC11's (IC9 lead ruling L17).
+//!   `+ship/board` and `+ship/leave` while a clearance is filed. Doc 18 cut IC11
+//!   added `+ship/orders` and `+ship/order` (`crate::port::orders`) and the
+//!   departure hour of a queued depart on the status line and `+ship`'s first
+//!   line; the burn and reserve gauge lines go to IC12's content pass (IC11 lead
+//!   ruling L21).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -65,7 +68,14 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      <port> (or every port this berth clears for): the hold's room by mass and by packed volume, \
      the payload, the burn, the stores and the passage time. It writes nothing.\n+ship/undock \
      <port>  from aboard your Dray, docked, file the passage and take her out now; the burn is \
-     committed when the clearance is granted.";
+     committed when the clearance is granted; to leave at a later hour, queue +ship/order \
+     depart.\n+ship/orders  the sailing plan: each order, its state, the next one due (UTC, IC \
+     and real time), any hold, and the last eight lines of its log. It reads anywhere.\n\
+     +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> \
+     <qty|fill> [max=<cr>] [short=…] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh] \
+     [until=+Nh] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>  aboard \
+     your Dray, or in the port where she is docked: file and amend the sailing plan the port \
+     runs under your signature while you are off watch.";
 
 /// The programme's one hull class (cut IC8 may read it from the spec).
 pub const HULL_CLASS: &str = "Dray";
@@ -82,6 +92,10 @@ pub const STATUS_UNDER_WAY: &str =
 /// The status line while a clearance is filed (doc 18 cut IC9): `{name}`,
 /// `{mark}`, `{port}`.
 pub const STATUS_CLEARED: &str = "Aboard the {name} ({mark}), cleared for {port}.";
+/// The status line docked with a queued departure due (doc 18 cut IC11; §2 step
+/// 15): `{name}`, `{mark}`, `{port}`, `{hhmm}`, `{span}`.
+pub const STATUS_DOCKED_DEPARTS: &str =
+    "Aboard the {name} ({mark}), docked at {port}; departs {hhmm} UTC (in {span}).";
 /// The status line anywhere else.
 pub const STATUS_ELSEWHERE: &str = "Aboard the {name} ({mark}).";
 
@@ -95,6 +109,10 @@ pub const SHIP_UNDER_WAY: &str = "{name} ({class}): under way for {port}, leg {n
 /// `+ship`'s first line while a clearance is filed (doc 18 cut IC9): `{name}`,
 /// `{class}`, `{port}`.
 pub const SHIP_CLEARED: &str = "{name} ({class}): cleared for {port}; the lock is sealing.";
+/// `+ship`'s first line docked with a queued departure due (doc 18 cut IC11):
+/// `{name}`, `{class}`, `{port}`, `{gallery}`, `{hhmm}`, `{span}`.
+pub const SHIP_DOCKED_DEPARTS: &str =
+    "{name} ({class}): docked {port}, {gallery}; departs {hhmm} UTC (in {span}).";
 /// `+ship`'s first line anywhere else.
 pub const SHIP_ELSEWHERE: &str = "{name} ({class}): not at a berth.";
 /// `+ship`'s programme line when the enrolment document does not read (L21).
@@ -301,7 +319,19 @@ pub fn status_line(w: &World, view: &HullView<'_>) -> String {
         berth_of(w, view.hull()),
     ) {
         (Some(passage), _) => crate::port::voyage::status_passage_line(w, &passage),
-        (None, Berth::Docked { def, .. }) => STATUS_DOCKED.replace("{port}", &port_name(def)),
+        (None, Berth::Docked { def, .. }) => {
+            // Doc 18 cut IC11: a queued departure due names its hour.
+            match crate::port::orders::departs_at(w, view.hull()) {
+                Some(due) => STATUS_DOCKED_DEPARTS
+                    .replace("{port}", &port_name(def))
+                    .replace("{hhmm}", &crate::port::voyage::utc_hhmm(due))
+                    .replace(
+                        "{span}",
+                        &crate::port::voyage::real_span(due.saturating_sub(w.now())),
+                    ),
+                None => STATUS_DOCKED.replace("{port}", &port_name(def)),
+            }
+        }
         (None, Berth::UnderWay) => {
             STATUS_UNDER_WAY.replace(", leg {n} of {m}{astern}, ETA {hhmm} UTC", "")
         }
@@ -325,7 +355,17 @@ fn ship_line(w: &World, view: &HullView<'_>) -> String {
             let gallery = map
                 .presentation
                 .map_or_else(String::new, |g| name_of(w, ObjId(g)));
-            SHIP_DOCKED
+            // Doc 18 cut IC11: a queued departure due names its hour.
+            let template = match crate::port::orders::departs_at(w, view.hull()) {
+                Some(due) => SHIP_DOCKED_DEPARTS
+                    .replace("{hhmm}", &crate::port::voyage::utc_hhmm(due))
+                    .replace(
+                        "{span}",
+                        &crate::port::voyage::real_span(due.saturating_sub(w.now())),
+                    ),
+                None => SHIP_DOCKED.to_owned(),
+            };
+            template
                 .replace("{port}", &port_name(def))
                 .replace("{gallery}", &gallery)
         }
@@ -380,7 +420,12 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !enabled {
         return Err(CmdError::msg(NOT_ENABLED));
     }
-    if ctx.switches.has("board") {
+    // Doc 18 cut IC11: the sailing plan's read and its edits, ahead of the rest.
+    if ctx.switches.has("orders") {
+        crate::port::orders::orders_cmd(ctx)
+    } else if ctx.switches.has("order") {
+        crate::port::orders::order_cmd(ctx)
+    } else if ctx.switches.has("board") {
         board(ctx)
     } else if ctx.switches.has("plan") {
         crate::port::voyage::plan_cmd(ctx)
