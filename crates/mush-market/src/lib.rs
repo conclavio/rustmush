@@ -72,7 +72,8 @@
 //! | `api.rs` | the catalog, vendors, listings, makers, and the per-viewer page |
 //! | `trade.rs` | quotes, the buyer-as-issuer purchase, `+market/sell`, the settlement ear |
 //! | `boot.rs` | the boot reconcile against the economy's healed contracts, and the bounded sweep |
-//! | `module.rs` | [`MarketModule`], the three wiring-frozen tables, [`MarketObserver`] |
+//! | `module.rs` | [`MarketModule`], the three wiring-frozen tables, [`MarketObserver`], and doc 18 cut IC7's two market seams ([`VenueGate`] with [`Presence`], [`CapacityProvider`]) |
+//! | `facts.rs` | doc 18 cut IC7's [`MarketFactProvider`] — `market.lot.drawn`, answered from the draw-receipt mirror |
 //! | `commands.rs` | `+market` and `@market` |
 //!
 //! ## Wiring
@@ -104,6 +105,7 @@
 mod api;
 mod boot;
 mod commands;
+mod facts;
 mod ids;
 pub mod interface;
 mod lot;
@@ -122,39 +124,44 @@ pub use api::{
     register_vendor, retire_vendor, visible, withdraw_listing,
 };
 pub use boot::{
-    MAX_BOOT_DELIVERY_PAGES, MAX_LOT_RECONCILED_PER_FIRE, MAX_RECONCILED_QUOTES, MAX_SWEPT_PER_FIRE,
+    MAX_BOOT_DELIVERY_PAGES, MAX_DRAWS_MIRRORED_PER_FIRE, MAX_LOT_RECONCILED_PER_FIRE,
+    MAX_RECONCILED_QUOTES, MAX_SWEPT_PER_FIRE,
 };
+pub use facts::MarketFactProvider;
 pub use ids::{
     ListingId, MAX_MARKET_ID_BYTES, MarketId, MarketSourceId, QuoteId, VendorId, parse_u64,
 };
 pub use lot::{
     ACTION_LOT, HoldStanding, LOT_REFUSED, LotError, LotOp, MAX_LOT_ENDPOINT_CHOICES,
-    OUTCOME_ID as LOT_OUTCOME_ID, action_ref as lot_action_ref, hold_ttl_real_secs, listing_holder,
-    listing_holder_text, listing_reservation,
+    MAX_PAID_ENTRIES_PER_KIND, OUTCOME_ID as LOT_OUTCOME_ID, action_ref as lot_action_ref,
+    draw_fact_id, hold_ttl_real_secs, listing_holder, listing_holder_text, listing_reservation,
 };
 pub use module::{
-    AvailabilityProvider, CatalogSource, DeliveryOrder, DeliveryProvider, MarketModule,
-    MarketObserver, SWEEP_PERIOD_SECS, SWEEP_TAG, lot_supply,
+    AvailabilityProvider, CapacityPlan, CapacityProvider, CapacityReadError, CapacityRefusal,
+    CatalogSource, DeliveryOrder, DeliveryProvider, DrawReceipts, MAX_CAPACITY_PLAN_BYTES,
+    MarketModule, MarketObserver, Presence, SWEEP_PERIOD_SECS, SWEEP_TAG, VenueGate, VenueRefusal,
+    draw_receipts, lot_supply, venue_gate,
 };
 pub use projection::{
     DEPTH_BUCKETS, DEPTH_QUANTITY_STEP, DepthBucket, PROJECTION_VISIT, PROJECTION_WINDOW_SECS,
     Projection, is_public_seller,
 };
 pub use record::{
-    AvailabilityOutcome, AvailabilityRule, CatalogEntry, Legality, Listing, LotCommodity,
-    LotEndpoint, MAX_CATALOG_CODE_BYTES, MAX_CATALOG_ENTRIES, MAX_CATALOG_ENTRIES_PER_PACK,
-    MAX_ENTRY_NAME_BYTES, MAX_ENTRY_TAGS, MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR,
-    MAX_OPEN_QUOTES_PER_BUYER, MAX_PACK_BYTES, MAX_QUANTITY, MAX_QUOTES, MAX_SOURCES,
-    MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, MarketVisibility, ObservedRevisions, Quote,
-    RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, check_entry,
-    declared_hash,
+    AvailabilityOutcome, AvailabilityRule, CatalogEntry, DrawReceipt, FACT_LOT_DRAWN, Legality,
+    Listing, LotCommodity, LotEndpoint, LotMatter, MAX_CATALOG_CODE_BYTES, MAX_CATALOG_ENTRIES,
+    MAX_CATALOG_ENTRIES_PER_PACK, MAX_ENTRY_NAME_BYTES, MAX_ENTRY_TAGS, MAX_LISTINGS,
+    MAX_LISTINGS_PER_VENDOR, MAX_OPEN_QUOTES_PER_BUYER, MAX_PACK_BYTES, MAX_QUANTITY, MAX_QUOTES,
+    MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, MarketVisibility, ObservedRevisions,
+    PaidKind, PaidLot, Quote, RecordError, Representation, Settlement, Supply, Vendor,
+    VendorStatus, check_entry, declared_hash,
 };
 pub use store::{
     MARKET_PAGE, MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MAX_TRADES_PER_PAIR, META_KEY, MarketStore,
     NS, catalog_key, listing_key, load, owner, quote_key, source_key, vendor_key,
 };
 pub use trade::{
-    DEAL_WINDOW_SECS, MAX_LAPSED_SWEEP_PER_CALL, MAX_OPEN_SELLS_PER_VENDOR, QUOTE_TTL_LIVE,
-    QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, STALE_QUOTE, accept, accept_into, artefact_stamp,
-    is_current, quote, sell,
+    CAPACITY_UNREADABLE, DEAL_WINDOW_SECS, DRAW_SETTLE_MARGIN_SECS, DRAW_TOO_LATE,
+    DRAW_WINDOW_SECS, MAX_LAPSED_SWEEP_PER_CALL, MAX_OPEN_SELLS_PER_VENDOR, PORT_ONLY_ENDPOINT,
+    QUOTE_TTL_LIVE, QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, STALE_QUOTE, accept, accept_at,
+    accept_into, artefact_stamp, is_current, quote, restage_draw, sell,
 };

@@ -104,6 +104,142 @@ pub trait DeliveryProvider: Send + Sync + std::fmt::Debug {
     }
 }
 
+// ---- doc 18 cut IC7: the content-port seams ---------------------------------
+//
+// Three more composition-frozen hooks, in the same `with_*` shape as the tables above,
+// and game-neutral in the same way: none of them names a game, and with none installed
+// the market behaves exactly as it did before IC7. The tacsim implementations are cut
+// IC8's.
+
+/// Doc 18 §4.3 "Presence" (D-18-12 extended): how the actor is present for a trade.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Presence {
+    /// A typed verb: the actor stands at the counter (the gate judges what that means).
+    Here,
+    /// A queued order (IC11): the hull's locality and the author's lease; the room is
+    /// ignored.
+    Ship(ObjId),
+}
+
+/// A gate's refusal, in the gate's own words; rendered verbatim, nothing charged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VenueRefusal {
+    /// The line the actor reads.
+    pub line: String,
+}
+
+/// Doc 18 §4.3: the presence gate a content composition installs
+/// ([`MarketModule::with_venue_gate`]).
+///
+/// Game-neutral: it names no game. Every method is total and reads `w` only. With no
+/// gate installed the market admits every venue exactly as it did before IC7, and the
+/// `market=` / `to=` defaults are simply absent. The tacsim implementation is IC8's.
+pub trait VenueGate: Send + Sync + std::fmt::Debug {
+    /// The venue a room belongs to — the `market=` default (`venue_of_room`).
+    fn venue_of_room(&self, w: &mush_core::World, room: ObjId) -> Option<crate::MarketId>;
+    /// The endpoint a no-destination accept delivers into for `actor` at `venue` (in
+    /// IC8, the berthed hold) — the `to=` default; IC10's `from=` reads the same answer.
+    fn endpoint_for(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        venue: &crate::MarketId,
+        presence: Presence,
+    ) -> Option<mush_inventory::EndpointRef>;
+    /// May `actor` trade at `venue` (delivering into `endpoint`, when one is known)
+    /// under `presence`? `Ok` for a venue this gate does not govern.
+    ///
+    /// # Errors
+    /// The gate's own refusal line, rendered verbatim.
+    fn admit(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        venue: &crate::MarketId,
+        endpoint: Option<mush_inventory::EndpointRef>,
+        presence: Presence,
+    ) -> Result<(), VenueRefusal>;
+    /// Whether `endpoint` is governed (in IC8, a hull's hold): only a port listing
+    /// delivers there (lead note 2e).
+    fn governed(&self, w: &mush_core::World, endpoint: mush_inventory::EndpointRef) -> bool;
+    /// Whether `seller` is one of `venue`'s own port institutions (L7).
+    fn port_seller(
+        &self,
+        w: &mush_core::World,
+        venue: &crate::MarketId,
+        seller: &PrincipalId,
+    ) -> bool;
+}
+
+/// What a governed endpoint's limits are, resolved where a World exists and carried,
+/// bounded and opaque to the market, to the Draw prepare where none does (doc 18 §4.3
+/// "The capacity function"; L3).
+///
+/// The market never reads inside it: the provider that made it is the one that checks
+/// against it, and the offer carries it in its server-authenticated fixed parameters.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CapacityPlan(pub serde_json::Value);
+
+/// The largest plan, in canonical JSON bytes; a larger one refuses (fail closed).
+pub const MAX_CAPACITY_PLAN_BYTES: usize = 2_048;
+
+impl CapacityPlan {
+    /// Whether the plan is inside [`MAX_CAPACITY_PLAN_BYTES`] once serialized. A plan
+    /// that will not serialize counts as oversized, so it refuses.
+    #[must_use]
+    pub fn within_bounds(&self) -> bool {
+        serde_json::to_vec(&self.0).is_ok_and(|bytes| bytes.len() <= MAX_CAPACITY_PLAN_BYTES)
+    }
+}
+
+/// A pool the capacity rule needs could not be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapacityReadError;
+
+/// Why a capacity check refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CapacityRefusal {
+    /// It does not fit; `fits` more would, and `line` says so in the provider's words.
+    Refused {
+        /// How much more of the commodity would fit.
+        fits: u64,
+        /// The line the actor reads, verbatim.
+        line: String,
+    },
+    /// A pool the rule needs could not be read: refuse, never read as zero.
+    Unreadable,
+}
+
+/// Doc 18 §4.3 "The capacity function", the market-side hook (D-18-28 as replaced by
+/// R7), installed with [`MarketModule::with_capacity_provider`].
+///
+/// Split in two (L3) because the Draw prepare has no World: `plan` maps an endpoint to
+/// its limits where a World exists (the accept pre-check, the offer projection at
+/// drain), and `check` runs against that plan wherever the pools can be read — in the
+/// accept pre-check through the command's typed-state reader, and again as the backstop
+/// inside the Draw's own `ActionTxn`. No provider = no capacity rule. The tacsim
+/// implementation is IC8's.
+pub trait CapacityProvider: Send + Sync + std::fmt::Debug {
+    /// `None` for an ungoverned endpoint (no rule; nothing more is asked).
+    fn plan(
+        &self,
+        w: &mush_core::World,
+        endpoint: mush_inventory::EndpointRef,
+    ) -> Option<CapacityPlan>;
+    /// Would `quantity` more of `commodity` fit? `read_pool` answers the endpoint's pool
+    /// of a commodity: `Ok(0)` when absent, `Err` when unreadable (which must refuse).
+    ///
+    /// # Errors
+    /// [`CapacityRefusal`] when it does not fit or a pool could not be read.
+    fn check(
+        &self,
+        plan: &CapacityPlan,
+        commodity: &mush_core::CanonicalId,
+        quantity: u64,
+        read_pool: &mut dyn FnMut(&mush_core::CanonicalId) -> Result<u64, CapacityReadError>,
+    ) -> Result<(), CapacityRefusal>;
+}
+
 /// The market [`GameModule`].
 ///
 /// Boots **after** `mush-economy` (it validates listings against real accounts,
@@ -116,6 +252,10 @@ pub struct MarketModule {
     delivery: Vec<Arc<dyn DeliveryProvider>>,
     issuer: Option<mush_org::SystemPrincipalId>,
     inventory: Option<mush_inventory::InventoryHandleCell>,
+    /// Doc 18 §4.3 (cut IC7): the presence gate. `None` = pre-IC7 behaviour exactly.
+    venue_gate: Option<Arc<dyn VenueGate>>,
+    /// Doc 18 §4.3 (cut IC7): the capacity hook. `None` = no capacity rule.
+    capacity: Option<Arc<dyn CapacityProvider>>,
 }
 
 impl std::fmt::Debug for MarketModule {
@@ -124,6 +264,8 @@ impl std::fmt::Debug for MarketModule {
             .field("catalog_sources", &self.catalogs.len())
             .field("availability_providers", &self.availability.len())
             .field("delivery_providers", &self.delivery.len())
+            .field("venue_gate", &self.venue_gate.is_some())
+            .field("capacity_provider", &self.capacity.is_some())
             .finish()
     }
 }
@@ -188,6 +330,26 @@ impl MarketModule {
         self.inventory = Some(cell);
         self
     }
+
+    /// Freeze the **presence gate** (doc 18 §4.3 "Presence", D-18-12 extended; cut
+    /// IC7). Consulted at quote, accept and sell; it supplies the no-argument `market=`
+    /// and `to=` defaults, and it says which endpoints are governed so a non-port
+    /// listing never delivers into one. **Unwired is the pre-IC7 behaviour exactly.**
+    /// The tacsim implementation is IC8's.
+    #[must_use]
+    pub fn with_venue_gate(mut self, gate: Arc<dyn VenueGate>) -> MarketModule {
+        self.venue_gate = Some(gate);
+        self
+    }
+
+    /// Freeze the **capacity hook** (doc 18 §4.3 "The capacity function"; cut IC7).
+    /// Asked in the accept pre-check and again as the backstop inside the Draw's
+    /// prepare. **Unwired is no capacity rule.** The tacsim implementation is IC8's.
+    #[must_use]
+    pub fn with_capacity_provider(mut self, provider: Arc<dyn CapacityProvider>) -> MarketModule {
+        self.capacity = Some(provider);
+        self
+    }
 }
 
 /// The frozen tables, parked in the store so a handler can reach them.
@@ -200,7 +362,17 @@ pub(crate) struct MarketTables {
     /// E7r2 P1: cut 2's delegated handles, when the composition wired them. `None` is
     /// **fail-closed** — a lot listing is refused byte-identically to E6c.
     pub(crate) inventory: Option<mush_inventory::InventoryFamilies>,
+    /// Doc 18 cut IC7: the presence gate, when the composition installed one.
+    pub(crate) venue_gate: Option<Arc<dyn VenueGate>>,
+    /// Doc 18 cut IC7: the capacity hook, when the composition installed one.
+    pub(crate) capacity: Option<Arc<dyn CapacityProvider>>,
+    /// Doc 18 cut IC7 item 6: the market-owned draw-receipt family, registered with the
+    /// lot action (so `None` exactly when no lot supply is composed).
+    pub(crate) draws: Option<DrawReceipts>,
 }
+
+/// The draw-receipt family's handle type (doc 18 cut IC7 item 6).
+pub type DrawReceipts = mush_core::StateFamilyHandle<ContractId, crate::record::DrawReceipt>;
 
 impl std::fmt::Debug for MarketTables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -232,6 +404,16 @@ impl GameModule for MarketModule {
         // `crate::commands::register`, which is where their own `reg.command`s are —
         // the discipline that failed this very crate's 140 tests at the K merge.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // ---- doc 18 cut IC7 item 6: the draw-receipt family, before the slot ----
+        //
+        // A typed family registered only when the composition wired a lot supply (it is
+        // the lot action's own evidence), and before `reg.state` because its handle is
+        // parked in the frozen tables. The action provider itself is still registered
+        // further down, after the tick, exactly where it always was.
+        let draws = match &inventory {
+            Some(_) => Some(crate::lot::register_draws(reg)?),
+            None => None,
+        };
         reg.state(MarketStore {
             tables: MarketTables {
                 catalogs: self.catalogs.clone(),
@@ -239,6 +421,9 @@ impl GameModule for MarketModule {
                 delivery: self.delivery.clone(),
                 issuer: self.issuer.clone(),
                 inventory: inventory.clone(),
+                venue_gate: self.venue_gate.clone(),
+                capacity: self.capacity.clone(),
+                draws: draws.clone(),
             },
             ..MarketStore::default()
         });
@@ -260,8 +445,8 @@ impl GameModule for MarketModule {
         // lift's mechanic: `reserve` at `@market/vendor stock`, `settle_sale` at
         // `+market/accept`, `release` at `@market/vendor withdraw`, all on cut 2's own
         // exported verbs under `lot::listing_holder(ListingId)`.
-        if let Some(families) = &inventory {
-            crate::lot::register(reg, families)?;
+        if let (Some(families), Some(draws)) = (&inventory, draws) {
+            crate::lot::register(reg, families, draws, self.capacity.clone())?;
         }
         crate::commands::register(reg)?;
         Ok(())
@@ -329,6 +514,30 @@ pub(crate) fn title_issuer(ctx: &Ctx<'_>) -> Option<mush_org::SystemPrincipalId>
 #[must_use]
 pub fn lot_supply(w: &mush_core::World) -> Option<mush_inventory::InventoryFamilies> {
     w.module_state::<MarketStore>()?.tables.inventory.clone()
+}
+
+/// **The presence gate, when the composition installed one** (doc 18 §4.3, cut IC7).
+/// `None` is the pre-IC7 composition: every venue admitted, no defaults. The tacsim
+/// implementation is IC8's.
+#[must_use]
+pub fn venue_gate(w: &mush_core::World) -> Option<Arc<dyn VenueGate>> {
+    w.module_state::<MarketStore>()?.tables.venue_gate.clone()
+}
+
+/// **The capacity hook, when the composition installed one** (doc 18 §4.3, cut IC7).
+/// `None` is no capacity rule. The tacsim implementation is IC8's.
+#[must_use]
+pub(crate) fn capacity_provider(w: &mush_core::World) -> Option<Arc<dyn CapacityProvider>> {
+    w.module_state::<MarketStore>()?.tables.capacity.clone()
+}
+
+/// **The draw-receipt family's handle, when a lot supply is composed** (doc 18 cut IC7
+/// item 6) — public so a reader holding the engine's typed state (a readiness report,
+/// a test) can point-read one contract's receipt; it is a read capability only, since
+/// every write needs an `ActionTxn` the market's own action prepares.
+#[must_use]
+pub fn draw_receipts(w: &mush_core::World) -> Option<DrawReceipts> {
+    w.module_state::<MarketStore>()?.tables.draws.clone()
 }
 
 /// Ask the frozen sources for one pack. `None` when no source owns it.

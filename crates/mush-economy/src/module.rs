@@ -456,6 +456,10 @@ pub struct EconomyStore {
     /// The wiring-frozen party capabilities (E6b, DL-11). Empty is the E6a
     /// behaviour exactly: no principal is programmatically acceptable.
     pub(crate) party_caps: Arc<PartyCapTable>,
+    /// The composition-frozen **content** party-capability source (doc 18 §4.1/§4.7,
+    /// Q-18-10, cut IC7), asked only after `party_caps` said no. `None` is the
+    /// pre-IC7 behaviour exactly.
+    pub(crate) party_cap_source: Option<Arc<dyn crate::contract::PartyCapSource>>,
     /// The wiring-frozen canon read seam (E6b, DL-09). `None` is the pre-E6b
     /// behaviour: the RAM tail alone, and nothing across a restart.
     pub(crate) canon_evidence: crate::attest::CanonEvidenceSeam,
@@ -628,6 +632,7 @@ impl EconomyStore {
             event_depth: 0,
             canon_tail: std::collections::VecDeque::new(),
             party_caps: Arc::default(),
+            party_cap_source: None,
             canon_evidence: None,
             canon_boot_scan_done: false,
             canon_rescanning: false,
@@ -974,6 +979,12 @@ impl EconomyStore {
         self.party_caps
             .get(&crate::contract::principal_token(principal))
             .is_some_and(|caps| caps.contains(&cap))
+    }
+    /// The content party-capability source, if one was wired (doc 18 cut IC7) — an
+    /// `Arc` clone, so it can be asked after the store borrow ends.
+    #[must_use]
+    pub(crate) fn party_cap_source(&self) -> Option<Arc<dyn crate::contract::PartyCapSource>> {
+        self.party_cap_source.clone()
     }
     /// Count one refusal against `actor` (E6b, C16). Bounded by
     /// [`MAX_REFUSAL_ACTORS`]: at the cap the least recently refused actor is
@@ -1503,6 +1514,9 @@ pub struct EconomyModule {
     /// E6b (DL-11): the seventh wiring-frozen table — which organization
     /// principals may have a contract acceptance performed programmatically.
     party_caps: Arc<PartyCapTable>,
+    /// Doc 18 §4.1/§4.7 (Q-18-10, cut IC7): the content-resolved party-capability
+    /// source, consulted only after `party_caps` answered no.
+    party_cap_source: Option<Arc<dyn crate::contract::PartyCapSource>>,
 }
 
 impl EconomyModule {
@@ -1651,6 +1665,60 @@ impl EconomyModule {
         self.party_caps = Arc::new(table);
         self
     }
+
+    /// Wire the **content-resolved party-capability source** (doc 18 §4.1/§4.7,
+    /// Q-18-10, cut IC7): a game whose vendor institutions are content rows (a port's
+    /// clerk org, made by a pack) cannot name them in [`Self::with_party_caps`]'s
+    /// wiring-time ids, so this source answers the same question from the world.
+    ///
+    /// It is exactly as narrow as the frozen table it extends:
+    ///
+    /// - it is **composition-frozen** — the source itself is set at wiring; what it
+    ///   reads is content, never a command or a document a player can write;
+    /// - it is consulted **only after the table answered no**, so it can only ADD a
+    ///   principal the table did not name, never remove one;
+    /// - it grants **no money authority whatever**: the accept still runs
+    ///   `accept_core`, escrow still posts under the org account's own debit
+    ///   authority (`api.rs`'s escrow path is unchanged) and still refuses when the
+    ///   account is short;
+    /// - only [`crate::accept_contract_as`], `deliver_settled` and the
+    ///   consideration-naming rule reach it, never `@contract/accept`.
+    ///
+    /// Omitting it is the pre-IC7 behaviour exactly. The tacsim implementation is
+    /// cut IC8's.
+    #[must_use]
+    pub fn with_party_cap_source(
+        mut self,
+        source: Arc<dyn crate::contract::PartyCapSource>,
+    ) -> EconomyModule {
+        self.party_cap_source = Some(source);
+        self
+    }
+}
+
+/// **The one party-capability predicate** (E6b DL-11, extended by doc 18 §4.1/§4.7
+/// Q-18-10, cut IC7): the wiring-frozen table first ([`EconomyStore::has_party_cap`]);
+/// only when it says no is the content source asked. With no economy, `false`.
+///
+/// Every programmatic-acceptance site goes through this — `accept_contract_as`,
+/// `deliver_settled` and the consideration-naming rule — so "who may be accepted
+/// for" is decided in one place, and a source can only widen the table.
+#[must_use]
+pub(crate) fn party_cap(
+    w: &mush_core::World,
+    principal: &mush_org::PrincipalId,
+    cap: crate::contract::PartyCap,
+) -> bool {
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    if store.has_party_cap(principal, cap) {
+        return true;
+    }
+    // Clone the source out so the store borrow is not what the source reads under.
+    store
+        .party_cap_source()
+        .is_some_and(|source| source.has_cap(w, principal, cap))
 }
 
 /// The wiring-frozen party-capability table (E6b, DL-11), keyed by
@@ -1787,6 +1855,7 @@ impl GameModule for EconomyModule {
         store.title_issuers = self.title_issuers.clone();
         store.canon_outcome_kinds = self.canon_outcome_kinds.clone();
         store.party_caps = self.party_caps.clone();
+        store.party_cap_source = self.party_cap_source.clone();
         store.canon_evidence = self.canon_evidence.clone();
         // Doc 13 W2: the window's count bound, now that the config is in.
         let evicted = store.evict_window(ctx.w.now());

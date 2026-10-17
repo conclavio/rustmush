@@ -558,6 +558,65 @@ impl Supply {
     }
 }
 
+/// **What matter a lot-represented listing sells, and how it moves** (doc 18 §4.3
+/// "Asks that draw from the pool", D-18-26; cut IC7, lead note 2b).
+///
+/// The one accessor every path reads ([`crate::MarketStore::lot_matter`]), so which op
+/// a listing takes is decided in one place and never re-derived inline:
+///
+/// - [`LotMatter::Hold`] — a `Supply::Lot` listing (stocked with `endpoint=`), the
+///   player / hold-backed listing: a reservation placed at stock time, consumed whole by
+///   its one sale (`LotOp::Consume`, IC0's rules unchanged);
+/// - [`LotMatter::Draw`] — a `Supply::Stock { vault }` listing on a
+///   `Representation::Lot` catalogue entry: no reservation, the listing's quantity is the
+///   availability counter, and the matter leg transfers from the vendor's storefront pool
+///   (`LotOp::Draw`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LotMatter {
+    /// The hold-backed listing: IC0's `Supply::Lot`.
+    Hold {
+        /// The endpoint the reservation sits in.
+        endpoint: mush_inventory::EndpointRef,
+        /// The commodity's pool there.
+        commodity: mush_core::CanonicalId,
+        /// The grade the listing advertises.
+        grade: u8,
+    },
+    /// The drawn listing: `Supply::Stock` on a lot entry.
+    Draw {
+        /// The vendor's own storefront vault, as an endpoint.
+        source: mush_inventory::EndpointRef,
+        /// The catalogue code, as a commodity id.
+        commodity: mush_core::CanonicalId,
+    },
+}
+
+impl LotMatter {
+    /// The endpoint the goods leave from.
+    #[must_use]
+    pub fn source(&self) -> mush_inventory::EndpointRef {
+        match self {
+            LotMatter::Hold { endpoint, .. } => *endpoint,
+            LotMatter::Draw { source, .. } => *source,
+        }
+    }
+    /// The commodity that moves.
+    #[must_use]
+    pub fn commodity(&self) -> &mush_core::CanonicalId {
+        match self {
+            LotMatter::Hold { commodity, .. } | LotMatter::Draw { commodity, .. } => commodity,
+        }
+    }
+    /// The paid kind this matter makes (the quote's frozen terms).
+    #[must_use]
+    pub fn kind(&self) -> PaidKind {
+        match self {
+            LotMatter::Hold { .. } => PaidKind::Hold,
+            LotMatter::Draw { .. } => PaidKind::Draw,
+        }
+    }
+}
+
 /// `market:listing:{id}` — one published intention to sell (§5.2).
 ///
 /// It holds no money and reserves nothing. `quantity` decrements only at contract
@@ -838,8 +897,133 @@ pub struct Quote {
     /// The trade tape row, once that contract settled.
     #[serde(default)]
     pub settled: Option<Settlement>,
+    /// **The lot terms the money was taken for**, frozen at activation of every lot
+    /// sale of both kinds (doc 18 cut IC7), and `None` on every other quote.
+    ///
+    /// Denormalized for the reason `price` is: a `Supply::Lot` sale deletes its listing,
+    /// so nothing later may re-derive the terms from a listing. The paid-leg projection
+    /// (`lot::project_offer`) reads them, and nothing else is the authority for what a
+    /// paid matter leg may move.
+    #[serde(default)]
+    pub lot: Option<PaidLot>,
+    /// **When the market learned that a Draw's goods moved** (real `World::now()`
+    /// seconds; doc 18 cut IC7 item 7) — the mirror of the durable draw receipt the
+    /// Draw wrote in its own bundle, set only by the market sweep's mirror arm, and
+    /// `Some` only on a Draw quote. The `market.lot.drawn` fact answers from it.
+    #[serde(default)]
+    pub drawn_at: Option<i64>,
     /// Bumped by every write.
     pub revision: u64,
+}
+
+/// Which kind of paid lot leg a quote's money was taken for (doc 18 cut IC7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaidKind {
+    /// A hold-backed `Supply::Lot` sale: `LotOp::Consume`.
+    Hold,
+    /// A drawn `Supply::Stock` sale on a lot entry: `LotOp::Draw`.
+    Draw,
+}
+
+/// **The frozen terms of one paid lot sale** (doc 18 cut IC7, L4/L12), written on the
+/// quote at activation.
+///
+/// Clocks (F9): `accepted_at` and `draw_by` are **real** `World::now()` seconds — the
+/// clock of the contract's `Before { RealUtc }` and of [`crate::DEAL_WINDOW_SECS`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaidLot {
+    /// Which leg.
+    pub kind: PaidKind,
+    /// Where the goods come from (the seller's endpoint).
+    pub source: LotEndpoint,
+    /// Where they go (the buyer's endpoint).
+    pub destination: LotEndpoint,
+    /// What moves.
+    pub commodity: LotCommodity,
+    /// The advertised grade (a hold-backed sale's; zero on a Draw).
+    pub grade: u8,
+    /// When the deal came into force (real seconds).
+    pub accepted_at: i64,
+    /// The draw cutoff (real seconds): no Draw is offered, and so none is prepared,
+    /// after it (`DRAW_SETTLE_MARGIN_SECS` before the window shuts). `Some` exactly for
+    /// a Draw.
+    #[serde(default)]
+    pub draw_by: Option<i64>,
+}
+
+impl PaidLot {
+    /// The record's invariants: two distinct endpoints, and a cutoff on exactly the
+    /// Draw kind, never before the deal itself.
+    ///
+    /// # Errors
+    /// [`RecordError`] naming the broken invariant.
+    pub fn check(&self) -> Result<(), RecordError> {
+        if self.source == self.destination {
+            return Err(RecordError("a paid lot moves between two endpoints"));
+        }
+        if self.grade > mush_inventory::MAX_GRADE {
+            return Err(RecordError("a paid lot's grade is out of range"));
+        }
+        match (self.kind, self.draw_by) {
+            (PaidKind::Draw, Some(by)) if by >= self.accepted_at => Ok(()),
+            (PaidKind::Hold, None) => Ok(()),
+            (PaidKind::Draw, _) => Err(RecordError("a paid draw carries a cutoff after its deal")),
+            (PaidKind::Hold, Some(_)) => Err(RecordError("a paid hold sale carries no cutoff")),
+        }
+    }
+}
+
+/// The `market.lot.drawn` fact kind (doc 18 cut IC7, L10): true once the market has
+/// mirrored a Draw's durable receipt. Answered by [`crate::MarketFactProvider`].
+pub const FACT_LOT_DRAWN: &str = "market.lot.drawn";
+
+/// **The durable proof a Draw moved its matter** (doc 18 cut IC7 item 6), written by the
+/// Draw prepare in its own bundle under `market_lot_draws[contract]`.
+///
+/// It is the epoch-free replay guard (a second Draw for one contract finds it and
+/// refuses — the inventory applied marker's rule) and the evidence the market sweep
+/// mirrors onto the quote's `drawn_at`. `at_ic` is the IC instant of the bundle (the lot
+/// lane's fixed `now`), never a wall clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrawReceipt {
+    /// The purchase contract the Draw delivered against.
+    pub contract: ContractId,
+    /// Its quote.
+    pub quote: QuoteId,
+    /// The listing it was drawn from.
+    pub listing: ListingId,
+    /// The storefront vault.
+    pub source: VaultId,
+    /// The buyer's vault.
+    pub destination: VaultId,
+    /// The commodity id.
+    pub commodity: SmolStr,
+    /// How much moved.
+    pub quantity: u64,
+    /// Who submitted it.
+    pub actor: ObjId,
+    /// The IC second of the bundle.
+    pub at_ic: i64,
+}
+
+impl DrawReceipt {
+    /// The record's invariants (the family validator runs this).
+    ///
+    /// # Errors
+    /// The broken invariant, as text.
+    pub fn check(&self) -> Result<(), String> {
+        if self.quantity == 0 {
+            return Err("a draw receipt names a non-zero quantity".to_owned());
+        }
+        if self.source == self.destination {
+            return Err("a draw receipt moves between two vaults".to_owned());
+        }
+        if mush_core::CanonicalId::new(self.commodity.as_str()).is_err() {
+            return Err("a draw receipt names a canonical commodity id".to_owned());
+        }
+        Ok(())
+    }
 }
 
 impl Quote {
@@ -891,6 +1075,10 @@ struct QuoteWire {
     #[serde(default)]
     settled: Option<Settlement>,
     #[serde(default)]
+    lot: Option<PaidLot>,
+    #[serde(default)]
+    drawn_at: Option<i64>,
+    #[serde(default)]
     revision: u64,
 }
 
@@ -926,6 +1114,14 @@ impl TryFrom<QuoteWire> for Quote {
         if w.booked_loss.minor() < 0 {
             return Err(RecordError("a quote's booked loss is negative"));
         }
+        // Doc 18 cut IC7: the frozen lot terms re-run their own invariants on load, and
+        // the draw mirror exists only on a Draw quote.
+        if let Some(lot) = &w.lot {
+            lot.check()?;
+        }
+        if w.drawn_at.is_some() && !w.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Draw) {
+            return Err(RecordError("only a drawn sale records when it was drawn"));
+        }
         Ok(Quote {
             id: QuoteId(w.id),
             listing: ListingId(w.listing),
@@ -946,6 +1142,8 @@ impl TryFrom<QuoteWire> for Quote {
             availability: w.availability,
             contract: w.contract.map(ContractId),
             settled: w.settled,
+            lot: w.lot,
+            drawn_at: w.drawn_at,
             revision: w.revision,
         })
     }

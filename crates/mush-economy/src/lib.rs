@@ -168,7 +168,8 @@ pub use checkpoint::{
     CHECKPOINT_FORMAT, CheckpointMeta, DEFAULT_CHECKPOINT_EVERY_ENTRIES, is_checkpoint_key,
 };
 pub use contract::{
-    DepositReturn, MAX_HOME_VAULT_VISIT, PartyCap, deposit_returns, owner_home, principal_token,
+    DepositReturn, MAX_HOME_VAULT_VISIT, PartyCap, PartyCapSource, deposit_returns, owner_home,
+    principal_token,
 };
 pub use contract_live::accept_contract_as;
 pub use fold::FoldState;
@@ -249,7 +250,7 @@ pub use contract_live::{
 
 // E4c — facts, events, evidence.
 pub use attest::{MAX_CANON_CONTRACTS_VISITED, MAX_OBSERVER_SETTLEMENTS_PER_EVENT};
-pub use facts::{FactProvider, FactState, FactTable, WorldFacts};
+pub use facts::{FactProvider, FactState, FactTable, WorldFacts, has_fact_provider};
 pub use module::CANON_TAIL;
 pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable, observer_depth};
 pub use sweep::MAX_REPUBLISH_PER_SWEEP;

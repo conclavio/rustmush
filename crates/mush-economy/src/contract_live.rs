@@ -4910,11 +4910,19 @@ fn consideration_for(
     // every offer, which made a vendor's account nameable by anyone building any
     // surface — the next caller of this `pub` seam would have inherited an existence
     // oracle it never asked for.
-    let vendor = store.has_party_cap(&account.owner, crate::contract::PartyCap::Accept)
+    //
+    // Doc 18 cut IC7 (L8, F3): the order is viewable → party → capability, so the
+    // capability predicate (which may now ask a content source) is asked only when
+    // it can matter — never about a buyer naming their own account, never about an
+    // account whose owner is not a party. Same truth table as before for every
+    // table-named vendor.
+    let viewable = may_view_account(ctx.w, ctx.actor, spec.account);
+    let vendor = !viewable
         && parties
             .iter()
-            .any(|p| principal_key(p) == principal_key(&account.owner));
-    if !vendor && !may_view_account(ctx.w, ctx.actor, spec.account) {
+            .any(|p| principal_key(p) == principal_key(&account.owner))
+        && crate::module::party_cap(ctx.w, &account.owner, crate::contract::PartyCap::Accept);
+    if !viewable && !vendor {
         return Err(ContractError::NoSuchAccount(spec.account));
     }
     if account.status != AccountStatus::Active {
@@ -5157,11 +5165,7 @@ pub fn accept_contract_as(
     {
         return Err(ContractError::Infeasible("the economy is frozen"));
     }
-    if ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_none_or(|s| !s.has_party_cap(party, crate::contract::PartyCap::Accept))
-    {
+    if !crate::module::party_cap(ctx.w, party, crate::contract::PartyCap::Accept) {
         return Err(ContractError::NoStanding);
     }
     let c = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
@@ -5236,11 +5240,7 @@ pub fn deliver_settled(
     if !settled {
         return Err(ContractError::NoStanding);
     }
-    if ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_none_or(|s| !s.has_party_cap(&seller, crate::contract::PartyCap::Accept))
-    {
+    if !crate::module::party_cap(ctx.w, &seller, crate::contract::PartyCap::Accept) {
         return Err(ContractError::NoStanding);
     }
     let plan = EconomyPlan::new(

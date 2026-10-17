@@ -3269,3 +3269,482 @@ module ops and replaying the typed inventory post-images through `Engine::hydrat
 `pilot`/`pilot_on`, `enrol`, `enrolled()` (one chartered pilot, *Salt Moth*, FPC-D-0401),
 `seed_pool(rig, vault, good, qty, LotId)`, `seed_outbound`, `hold_vault`, `replace_hull`,
 `placement`, `has_block`, `counts`, `lease_of`, `trust_account`, `set_rate`.
+
+## IC7
+
+**Market seams for content ports** (doc 18 §5, the IC7 row and paragraph), built 2026-10-16 on main
+at 3bf2bc90. The six market and economy seams §4.3/§4.4 name for content ports, game-neutral, with
+test implementations only; tacsim's gate, party-cap source and capacity provider are IC8's. One
+commit, pushed to origin/main.
+
+### What landed
+
+1. **The content-resolved party-cap source** (`crates/mush-economy/src/contract.rs`,
+   `src/module.rs`, `src/contract_live.rs`, `src/lib.rs`). `pub trait PartyCapSource { fn
+   has_cap(&self, w: &World, principal: &PrincipalId, cap: PartyCap) -> bool }` beside `PartyCap`;
+   `EconomyModule::with_party_cap_source(Arc<dyn PartyCapSource>)` frozen into
+   `EconomyStore.party_cap_source` at boot beside `party_caps`; one crate-visible predicate
+   `module::party_cap(w, principal, cap)` that asks the wiring-frozen table first and the source
+   only when it said no, so a source can only add a principal and never remove one, and confers no
+   money authority (escrow still posts under the org account's own debit authority). All three
+   programmatic-acceptance sites go through it: `accept_contract_as`, `deliver_settled`, and the
+   consideration-naming rule in `consideration_for`, which is reordered viewable → party →
+   capability so the predicate is never asked about a buyer's own account or a non-party owner (same
+   truth table as before for every table-named vendor). `pub fn has_fact_provider(w, namespace) ->
+   bool` in `facts.rs`, `false` with no economy; `PartyCapSource` and `has_fact_provider`
+   re-exported.
+2. **The stale-page narrowing** (`crates/mush-economy/src/contract.rs`, `src/sweep.rs`). IC6's
+   exemption is now `pub(crate) fn exempt_from_stale_page(c) = Active && is_lease_shaped(c) &&
+   c.escrow.is_empty()`: the lead note's literal reading of the record's own escrow list, so a stale
+   entry pages rather than hides. `page_stale_contracts` filters on it with IC6's comment kept. An
+   `Active` lease holding escrow, a `ReadyToSettle` lease and an escrowed `Draft` lease all page;
+   the in-crate test `ic7_only_an_active_escrow_free_lease_is_exempt_from_the_stale_page` pins the
+   five cases on IC6's `shaped()` fixture, and both best-effort integration tests were written in
+   `tests/e4b1.rs` through the `@contract` builders (helper `escrowed_lease_draft`).
+3. **The market's three seams** (`crates/mush-market/src/module.rs`, `src/lib.rs`).
+   `Presence::{Here, Ship(ObjId)}`, `VenueRefusal { line }`, `VenueGate` with five methods
+   (`venue_of_room`, `endpoint_for`, `admit`, `governed`, `port_seller`; the fifth is L7's),
+   `CapacityPlan(serde_json::Value)` with `within_bounds()` against `MAX_CAPACITY_PLAN_BYTES =
+   2_048`, `CapacityReadError`, `CapacityRefusal::{Refused { fits, line }, Unreadable}`, and
+   `CapacityProvider::{plan(&World, EndpointRef) -> Option<CapacityPlan>, check(&plan, commodity,
+   qty, read_pool) -> Result<(), CapacityRefusal>}` (L3's split, because the Draw prepare has no
+   World). `MarketModule::with_venue_gate` / `with_capacity_provider` freeze them into
+   `MarketTables` beside the inventory handles; `Debug` reports their presence; `pub fn
+   venue_gate(w)`, `pub(crate) fn capacity_provider(w)`. Unwired is the pre-IC7 behaviour exactly;
+   the tacsim implementations are IC8's.
+4. **Draw listings** (`crates/mush-market/src/record.rs`, `src/store.rs`, `src/api.rs`,
+   `src/commands.rs`). `LotMatter::{Hold { endpoint, commodity, grade }, Draw { source, commodity
+   }}` with `source()`, `commodity()` and `kind()`, and `MarketStore::lot_matter(&Listing)` as the
+   one accessor: `Supply::Lot` is `Hold`; `Supply::Stock { vault }` on a `Representation::Lot` entry
+   whose catalogue code parses as a `CanonicalId` is `Draw`; everything else is E6c's counter
+   listing. `reindex` resolves every live listing's pool through `lot_matter` (after the catalogue
+   index) so `by_lot_pool` and the one-live-listing-per-pool rule cover both kinds, while
+   `lot_listings()` stays hold-backed only for the sweep's reconcile arm. `list_goods`'s `(Lot,
+   None, Supply::Stock { vault })` arm runs `draw_listing_precheck` before any write: the vault is
+   the vendor's own storefront, the actor `may_take` from it (else the existence-hiding
+   `NO_SUCH_LISTING`), the code is a commodity id, no live listing sits on the pool, and the
+   storefront's **available** stock (`lot::pool_available`, balance minus live holds) covers the
+   quantity, an unreadable read refusing. Nothing is staged and no TTL cap applies. `@market/vendor
+   stock #<v>=<code> …` with no `endpoint=` builds it, and the vendor org's own officer may publish
+   it as well as staff.
+5. **The accept path, the window, the cutoff and the Fact gate** (`crates/mush-market/src/trade.rs`,
+   `src/record.rs`, `src/facts.rs` new, `src/interface.rs`). `PaidKind::{Hold, Draw}` (stored
+   snake_case), `PaidLot { kind, source, destination, commodity, grade, accepted_at, draw_by }` with
+   `check()`, `Quote.lot` (the terms frozen at activation of every lot sale, both kinds) and
+   `Quote.drawn_at` (the mirror, written only by the sweep's mirror arm), both carried by
+   `QuoteWire` with the checks re-run on load. `DRAW_WINDOW_SECS = 3_600` and
+   `DRAW_SETTLE_MARGIN_SECS = 600`, both real seconds, with the margin's arithmetic in the comment.
+   `QuoteRequest.presence`; `quote` and `sell` ask the gate after the vendor-trading check and write
+   nothing on a refusal. `pub fn accept_at(ctx, quote, destination, presence)` is the one accept
+   path (`accept_into` is it with `Here`): a non-lot purchase meets the gate with no endpoint; a lot
+   purchase runs `lot_precheck`, every refusal before `offer_contract`: the named destination else
+   the gate's `endpoint_for` else the E7r2 refusal; custody and not-the-source; the gate's `admit`
+   with the endpoint; the governed rule (`PORT_ONLY_ENDPOINT` unless the matter is a Draw from a
+   `port_seller`); the capacity pre-check reading pools through `Ctx::action_state`
+   (`CAPACITY_UNREADABLE` rather than zero); and for a Draw the storefront's available stock and
+   `has_fact_provider(w, "market")`. `draw_by = accepted_at + 3_000` is computed with checked
+   arithmetic before the money. `purchase_spec` gives a Draw sale the conditions `[Before { RealUtc,
+   accepted_at + 3_600 }, Fact { market / market.lot.drawn / draw_fact_id(quote, accepted_at) }]`,
+   the same deadline and `Expiry::Refund`; every other sale is unchanged. `pub fn restage_draw(ctx,
+   quote) -> Result<Option<ContractId>, MarketError>` with its four results (`Ok(None)` not
+   re-stageable, `DRAW_TOO_LATE` past `draw_by`, the undeliverable line when nothing staged,
+   `Ok(Some)` re-staged byte-identically). `MarketFactProvider` (namespace `market`, the sixth)
+   answers `market.lot.drawn` only from `drawn_at`, with the F8 note on who can see the id.
+6. **`LotOp::Draw`, the paid-leg projection, the receipt and the contract key**
+   (`crates/mush-market/src/lot.rs`, `src/module.rs`, `src/record.rs`). The fourth op `draw` and
+   `LotOp::is_paid()`. `DrawReceipt { contract, quote, listing, source, destination, commodity,
+   quantity, actor, at_ic }` with `check()`, in the market-owned typed family `market_lot_draws`
+   (descriptors `market.lot_draw_*.v1`, key `{:016x}`, validator `check`) registered by
+   `register_draws` before `reg.state` and parked in `MarketTables.draws`; `pub type DrawReceipts`,
+   `pub fn draw_receipts(w)`. `project_offer` builds the actor's **paid legs** from their own quotes
+   (`paid_legs`): a draw entry is an open, activated Draw quote with `drawn_at` none, an `Active`
+   contract, `now <= draw_by` and a destination the actor holds, carrying the capacity plan (null
+   with no provider or an ungoverned endpoint; an oversized plan omits the entry); a consume entry
+   is an activated hold-backed quote whose contract is `Active`, `ReadyToSettle` or `Settled`,
+   unsettled first then settled newest-first; both capped at `MAX_PAID_ENTRIES_PER_KIND = 8`. The
+   fixed parameters become `{"now", "paid": {"<contract decimal>": {op, quote, listing, source,
+   destination, commodity, quantity, grade, plan}}}`; the op choices are `reserve`, `consume` (only
+   with an entry), `release`, `draw` (only with an entry); a `contract` Choice over the entries'
+   decimal ids joins the schema only when an entry exists, so a supplied `contract` from anyone else
+   is `InvalidParameters` at resolution. The Consume arm requires a consume entry and `matches_paid`
+   field for field before IC0's logic, **which closes IC0's direct-consume path** (any endpoint
+   holder could take a live hold-backed lot with no contract). `prepare_draw`: the entry, the
+   cross-check, the receipt as the epoch-free replay guard, the capacity backstop against the
+   carried plan through `families.pool` in the txn (fail closed), `families.transfer(storefront →
+   buyer)` as pool quantity with no lot, the receipt inserted in the same bundle, the outcome.
+   `LotLeg.contract`; `stage` keys a paid leg `market.lot.{op}.{contract:x}` and writes `"contract"`
+   as a decimal string, while `reserve`/`release` keep `market.lot.{op}.{listing:x}.{ic second:x}`
+   and never write it. `lot::draw_receipt` reads a receipt through `ctx.action_state` on the
+   market's own handle (owner-scoped: it answers only on the market's own tick and boot contexts).
+   `pool_balance` and `pool_available` are the command layer's pool reads.
+7. **The draw mirror and the lapsed-Draw release** (`crates/mush-market/src/boot.rs`,
+   `src/store.rs`, `src/trade.rs`). `reconcile_draws(ctx, MAX_DRAWS_MIRRORED_PER_FIRE = 64)` is a
+   third arm on the existing `market.sweep` tick (no second tick, nothing staged): it visits up to
+   64 activated, unsettled, undrawn Draw quotes round-robin from the RAM cursor
+   `MarketStore.draw_cursor` through the pure `draw_lap(undrawn, after, budget)`, which resumes
+   after the last id visited and wraps to the lowest, so a full lap over N quotes takes exactly
+   `ceil(N / 64)` fires (unit-tested at 576 → 9, 512 → 8, 100 → 2). A receipt found sets `drawn_at =
+   now` with the revision bumped; absent leaves it; unreadable leaves it and warns once per fire. It
+   is the only writer of `drawn_at`, so the Fact is behind the receipt and never ahead. The same arm
+   **releases an undrawn Draw quote whose contract is `Cancelled` or `Expired`** by calling
+   `release_quote` on the market's own context; the settlement ear `on_contract_changed` leaves such
+   a quote alone (`awaits_receipt_read`), because it runs on the emitting module's context, where
+   the owner scope refuses the market's family. **The no-relist guard** in `release_quote`: for an
+   activated Draw quote, `goods_moved` (the mirror, else the receipt; unreadable or no contract
+   counts as moved, fail closed) skips `restore_quantity`, still returns the budgets and deletes the
+   row, logs an error and opens one `BootReconciliation` escalation on the contract with the brief's
+   text and the two recommended commands.
+8. **The verbs** (`crates/mush-market/src/commands.rs`). `+market/list` with no filter word and
+   `+market/depth` with no `market=` word default to the gate's `venue_of_room` for the actor's room
+   (`gate_venue`), the pre-IC7 page otherwise. `+market/accept` parses `<quote>=<vault>` and
+   `<quote> to=<vault>` as one command (a second word must be `to`, any case; anything else is `No
+   such quote.`), with the destination defaulting to the gate's `endpoint_for`; it calls
+   `restage_draw` first: `Ok(Some)` replies "Asking again for the hand-over on contract #N. It
+   settles once the goods have moved.", `Err` refuses, `Ok(None)` falls through to `accept_at(..,
+   Here)`. `+market/quote` and the economist's `market.quote` pass `Presence::Here`. Three help
+   additions: `+market/list` ("With no filter, where you stand in a port, you see that port's
+   board."), `+market/accept` (the `to=` sentence, the berthed-hold default, "Taking up a drawn
+   quote whose goods have not moved yet asks for the hand-over again.") and `@market/vendor stock`
+   (the DRAWN listing sentence).
+9. **Tests** (`crates/mush-market/tests/ic7.rs` new, 18 tests; `crates/mush-market/src/boot.rs` one
+   unit test; `crates/mush-economy/src/contract.rs` one unit test;
+   `crates/mush-economy/tests/e4b1.rs` two tests; `crates/mush-market/tests/e7r2.rs` the four-ops
+   rename). The ic7 rig is IC0's on the production composition in miniature: org, economy with an
+   **empty** frozen table plus `TestCapSource`, `MarketFactProvider` and `MarketObserver`, inventory
+   delegating to `market`, the market with one lot entry, `TestGate` (venue `luna`, the buyer's hold
+   governed, the vendor org a port seller, `Here` admitted only in the counter room and `Ship` only
+   for one hull) and `TestCapacity` (plans for the hold only, records its last answer), plus the
+   `ic7probe` closure module and `take`/`land_submit` so one submission can be held while another
+   lands. The sixteen brief tests plus `ic7_a_draw_refused_at_its_prepare_is_restaged_and_lands` and
+   `ic7_the_party_cap_source_reaches_the_consideration_rule_and_the_delivery_seam`; every test
+   asserts no `SettlementRefused` page. Test 6 is sized at 130, not the brief's 120: at 120 the two
+   60-unit accepts take the listing to 0, `commit_quantity` deletes it and `restore_quantity` never
+   re-mints one (L1), so "restored by 60" could not be asserted; at 130 it is 10 → 70. Test 12(c)
+   gives Quinn a paid entry of her own so the forged draw fails on the `contract` choice rather than
+   a missing parameter (stronger than asked).
+10. **The pinned allowlist** (`crates/mush-contract-tests/legacy-handlers.toml`). The `+market` and
+    `@market` notes are refreshed, not joined, with an IC7 paragraph each; the category stays
+    authoritative and `PINNED_BASELINE` does not move.
+
+### Deferred, and why
+
+**Lead rulings taken by the planner** (L1–L14 of the IC7 brief, recorded here so the owner sees
+them):
+
+- **L1 — A refused Draw is made safe by a Fact gate and its escrow comes back by expiry, not a
+  cancel.** Doc 18 §4.3/§5 say a Draw refused at prepare "cancels its contract and returns the
+  escrow with no page". The tree cannot do that: nothing tells the market a submission was refused
+  (`world_task.rs` tells only the actor), a party may cancel only a `Draft`/`Offered` contract while
+  the matter leg is staged after the contract is `Active`, and the contract would otherwise settle
+  on the next economy sweep and pay for nothing (§9 risk 3). So the Draw sale's contract carries the
+  `market.lot.drawn` Fact, answered from a receipt the Draw writes in its own bundle, and expires
+  with `Expiry::Refund` and no page at `DRAW_WINDOW_SECS` when no receipt appears.
+  **Owner-critical.** Visible consequences: a refused Draw locks the buyer's cash until the hour
+  ends; the listing under-reports by the refused quantity until the expiry restores it; a listing
+  that reached zero and was deleted is not re-minted, so those tonnes sit un-listed in the
+  storefront until IC8's readiness line shows them and someone relists.
+- **L2 — `DRAW_WINDOW_SECS` = 3,600 and `DRAW_SETTLE_MARGIN_SECS` = 600 real seconds.** The cutoff
+  exists because readiness is evaluated before expiry but `Before` is false after the deadline: a
+  Draw landing in the window's last seconds would be mirrored too late, the contract would refund
+  while the goods had moved, and the listing would be restored over goods that left. No Draw is
+  projected, so none is prepared, after `draw_by` = accept + 3,000 s. With the mirror's 64 per 60 s
+  fire and the economy's 30 s sweep the Fact is true before the deadline while at most 576 undrawn
+  Draw quotes stand; past that the no-relist guard and its page are the backstop. Hold-backed sales
+  keep `DEAL_WINDOW_SECS`.
+- **L3 — The capacity hook is split `plan(&World, endpoint)` + `check(&plan, …, read_pool)`.** Doc
+  §4.3's single `check(endpoint, …)` cannot be implemented inside `prepare_authoritative`, which has
+  an `ActionTxn` and no World; the plan is resolved where a World exists and carried, bounded at 2
+  KiB, in the server-authenticated fixed parameters.
+- **L4 — The Draw's source is projected from the buyer's own paid quote, not the live listing.** Doc
+  §4.3 says `project_offer` projects the source "from the live listing"; a listing alone would let
+  any endpoint holder draw for free (submissions are untrusted). Stronger than the doc, same intent.
+- **L5 — Only the paid legs are contract-keyed.** `consume` and `draw` stage under
+  `market.lot.<op>.<contract>`; `reserve` and `release` keep the listing + IC-second key.
+- **L6 — `to=` is accepted as doc 18's spelling of the existing destination.** `<quote>=<vault>` and
+  `<quote> to=<vault>` are one command, defaulting to the gate's `endpoint_for`; IC10's sell arm
+  adds `from=`. **Owner-critical: the grammar is the owner's to confirm.**
+- **L7 — The governed rule needs a fifth gate method, `port_seller`.** Lead 2e's "refuse any
+  non-port listing into a governed endpoint" needs the gate to say who a port institution is; a
+  hold-backed `Supply::Lot` listing never qualifies.
+- **L8 — One `Option<Arc<dyn PartyCapSource>>` through one predicate at all three sites**, asked at
+  the consideration site only for a non-viewable account owned by a party of the contract, so the
+  source is never asked about a buyer's own account or a stranger.
+- **L9 — The stale narrowing is the literal `c.escrow.is_empty()`**, extracted and unit-tested; the
+  looser `qualifying_escrow` reading was dropped.
+- **L10 — The draw receipt is a market-owned typed family and the Fact a sixth namespace, `market`**
+  (D-E7-30's one namespace per crate; `sim.station.served` is the precedent). `transfer_marked` is
+  not built; it is IC10's.
+- **L11 — Draw listings are checked against the pool at publication** (available ≥ quantity,
+  unreadable refuses); the doc's equality check and drift page are IC8's readiness and report lines.
+- **L12 — IC0's direct-consume path is closed in this cut.** At HEAD any holder of an inventory
+  endpoint could submit `market_lot` op `consume` naming a live hold-backed listing's `(listing,
+  source, commodity)` and take its lot with no contract. The paid projection built here is the exact
+  mechanism that closes it, so it covers activated consume quotes too and the Consume arm requires a
+  matching entry. The hold mechanics (hold read, TTL, sold whole, the reservation, the derived lot
+  ids) are IC0's unchanged; only who may fire the consume narrows, to the buyer of a paid contract.
+  **Owner-critical: a security change to IC0's shipped lane, made under lead 2b; the default taken
+  is to close it.**
+- **L13 — "A re-staged lot leg replays as a HIT" is proven by proxy.** The market crate cannot reach
+  the driver's idempotency store. Test 9 proves the re-stage is the same request (identical key,
+  parameters, actor, action, subject and targets: every field `command_ingress` digests) after 300 s
+  have passed, and that the receipt guard refuses it if prepared anyway; the driver's own HIT is
+  pinned by `mush-server`
+  `world_task::tests::vf_r1_a_replayed_move_across_an_epoch_change_moves_nothing_twice` and
+  `vf_b12_the_first_commit_and_the_hit_read_the_same`, both run green.
+- **L14 — Hold-backed sales stay exposed to §9 risk 3.** A consume refused at prepare, or dropped by
+  back-pressure, leaves a `Before`-only contract that settles and pays the vendor for nothing; IC0's
+  live-hold reads at quote and accept bound it but do not close it. Lead 2b keeps the hold path on
+  IC0's rules, so it is not Fact-gated here and no cut is scheduled to do it. **Owner-critical: a
+  known money-for-nothing risk on a player-facing path; whether and when to close it is a priority
+  call.** The accept help now promises a re-stage only for a *drawn* quote; a hold-backed quote
+  whose consume was dropped still reads "already been taken up".
+
+**Owner-critical defaults taken** (beyond L1, L6, L12 and L14 above):
+
+- **The new player-facing texts**, none given verbatim by doc 18 or 18a, in the voice of the
+  existing market lines: `PORT_ONLY_ENDPOINT` "That endpoint takes goods only from its port's own
+  counters, so the sale was not made. Nothing was charged."; `CAPACITY_UNREADABLE` "That endpoint's
+  load cannot be read right now, so the sale was not made. Nothing was charged."; `DRAW_TOO_LATE`
+  "It is too late to ask for those goods again. The deal lapses and your payment comes back."; the
+  re-stage line "Asking again for the hand-over on contract #N. It settles once the goods have
+  moved."; the five stocking refusals ("A lot-represented good is stocked out of an inventory
+  endpoint (endpoint=<vault>) or drawn from the vendor's own storefront.", "A drawn listing sells
+  out of the vendor's own storefront vault.", "That catalogue code is not a commodity id.", "That
+  storefront holds less than that, so nothing was listed.", "That storefront's stock cannot be read
+  right now, so nothing was listed."); the three help additions; and the staff-only page "market
+  quote #q's goods were drawn but contract #c lapsed unpaid, so the listing was not restored. The
+  buyer holds the goods and the payment came back."
+
+**Decisions the builder and fixer took, recorded:**
+
+- **The receipt is read through `Ctx::action_state`, and an undrawn Draw's release moved to the
+  market's own sweep.** The builder first read the receipt through the raw typed-state lens (a
+  pattern no crate outside `mush-core` used), because the settlement ear runs on the economy's
+  context where the owner scope refuses the market's family. The fix keeps the brief's
+  `ctx.action_state` read and instead has `on_contract_changed` leave an activated, undrawn Draw
+  quote alone on `Cancelled`/`Expired` (`awaits_receipt_read`); `reconcile_draws`, on the market's
+  own tick context, checks each candidate's contract state and hands a lapsed one to
+  `release_quote`. Consequence: a refused Draw's listing comes back within one mirror lap of the
+  expiry (normally the next 60 s market sweep) rather than in the economy's own fire. The orphan
+  this could have made is not possible: the economy's only contract GC collects abandoned `Draft`s
+  (`sweep.rs` `collect_draft`), so an `Expired` contract stays in the snapshot for the arm to find.
+- **`register_draws` is a separate function** called before `reg.state`, while `lot::register` stays
+  after the tick: the only way both of the brief's placement requirements hold.
+- **`draw_receipts` is public**, in the `InventoryFamilies`/`mush-industry` handle pattern: a read
+  capability only, still owner-scoped through `Ctx::action_state`; the tests and IC8's readiness
+  line point-read receipts through the engine's store.
+- The capacity pre-check applies to both lot kinds (the governed rule already blocks hold-backed
+  sales into governed endpoints); consume entries carry `plan: null` on lead 2e's assumption that a
+  hold-backed sale never reaches a governed endpoint. **IC8 must keep `plan()` `Some` only where
+  `governed()` is true, or carry plans on consume entries.**
+- `pool_available` treats a half pool (a scalar with no book) as unreadable. The `contract` value
+  must round-trip as canonical decimal. If `stage` fails after the money is taken in `accept_at`, an
+  error is logged and nothing else happens (a Draw then expires with a refund; a hold sale is L14).
+
+**Not in this cut** (as the brief directs): tacsim's `VenueGate`, `PartyCapSource` and
+`CapacityProvider` and the wiring of them and `MarketFactProvider` into the game's root (IC8; until
+then the real roster has no Draw listing, and a composition with one but no `market` fact namespace
+refuses Draw sales before money moves); the stock mint and the clerk tick's Draw listings; the
+listing-vs-pool readiness and drift page; SOLD OUT rendering; the lapsed-hold release arm (never the
+GOD sweep); the core "actor already has a queued submission" seam `+market/accept` should consult
+before money moves (IC8 lead 2c-i); `Supply::Wanted`, `LotOp::Deliver`, `transfer_marked`, `from=`
+(IC10); the executor's `accept_at(.., Ship)` and `restage_draw` calls (IC11); a Fact gate on the
+hold path (L14, unscheduled); retention of `market_lot_draws` rows (later hygiene).
+
+**Small residuals carried forward:**
+
+- `module.rs:109`'s "Three more composition-frozen hooks" should read two (the third IC7 seam is the
+  economy's).
+- `party_cap`'s comment says the store borrow ends before the source is asked, which it does not
+  (harmless, both shared).
+- The no-relist page says the goods were drawn even on the fail-closed unreadable-receipt branch.
+- `lot_matter` re-derives Draw-ness from the live catalogue entry, so a pack reload flipping an
+  entry's representation changes an existing `Supply::Stock` listing's mechanics (money still
+  protected by the accept-time pool check and the Fact gate; packs are digest-pinned).
+- The e4b1 integration tests count any escalation on the contract rather than the stale page's kind.
+- Untested branches: the gate on `sell`, the `depth` default, the mirror across more than 64 undrawn
+  quotes in a composed world, a Draw accept refused on storefront availability, the fact provider's
+  id parsing, and the race variant where the Draw listing survives the first accept.
+
+### Pins re-blessed
+
+- **`crates/mush-market/tests/e7r2.rs`**: `e7r2_p1_the_lot_action_has_exactly_three_ops` →
+  `e7r2_p1_the_lot_action_has_exactly_four_ops`; `[Reserve, Consume, Release]` → `["reserve",
+  "consume", "release"]` becomes `[Reserve, Consume, Release, Draw]` → `["reserve", "consume",
+  "release", "draw"]`, the "exactly one market-owned action provider" assertion kept and the doc
+  comment naming the paid projection as the fourth op's authority sentence. Reason: lead note 2f;
+  IC7 adds `LotOp::Draw`. Nothing else in e7r2 moved: `e7r2_p1_no_path_in_the_market_mints` stays
+  true (the Draw is a `transfer`), the edge set gains nothing, every `ProviderRejected` carries
+  `LOT_REFUSED`, and `boot.rs` stages no submission.
+- **`crates/mush-contract-tests/legacy-handlers.toml`**: the `+market` and `@market` notes refreshed
+  (not joined) with a doc 18 cut IC7 paragraph each; category authoritative unchanged;
+  `PINNED_BASELINE` unchanged (no new primary verb).
+- **Not moved, by inspection and by the gate:** the panic budgets (no new
+  `unwrap`/`expect`/`panic!`/indexing in production; the new slices use
+  `get(..).unwrap_or_default()`, the one `unwrap_or(ContractId(0))` is a log field);
+  `state-slot-owners.toml` (the new `module_state_mut::<MarketStore>` in `boot.rs` writes the
+  market's own slot); `module-ns-owners.toml` (the `market` fact namespace is a fact provider, not a
+  module namespace); the composition-edge pin and every content digest (no tacsim, mush-sim,
+  mush-atlas or mush-server change); the restriction-lints census (green). The new typed family
+  `market_lot_draws` enters the state-family fingerprint; nothing pins it.
+- `panic_budget/*.txt`, `docs/design/*` (this note aside) and `crates/mush-server`, `mush-core`,
+  `tacsim`, `mush-sim`, `mush-atlas` show no diff against 3bf2bc90.
+
+### How it was verified
+
+Three lenses reviewed the uncommitted tree (correctness, conformance, tests) and a fixer closed all
+seven should-fix findings (R1 the mirror cursor, R2 the help/doc texts, C1 the lens read, T1–T4 the
+coverage gaps); two repair passes rebutted the gate's two environmental failures with reruns; the
+judge then re-read the whole diff and the new files against the brief and doc 18. **The final
+gate**, on Windows at the tree about to be committed, all fourteen commands green on the first run,
+no reruns (logs under the run's `cuts/IC7/gate3/`):
+
+- `cargo fmt --all -- --check` → exit 0, no output (run twice).
+- `cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+  debuginfo] target(s)``, exit 0 (run twice).
+- `cargo test -p mush-market` → lib `test result: ok. 21 passed` (incl.
+  `boot::tests::ic7_a_draw_mirror_lap_is_ceil_n_over_the_budget_fires`); e7r2 `21 passed`; ic0 `5
+  passed` (unchanged); **ic7 `test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0
+  filtered out; finished in 0.05s`**; projection_bounds `2 passed`; projection_cost `1 passed`;
+  doc-tests `0 passed; 1 ignored`.
+- `cargo test -p mush-economy` → lib `37 passed` (incl.
+  `ic7_only_an_active_escrow_free_lease_is_exempt_from_the_stale_page`); e4b1 `test result: ok. 85
+  passed; 0 failed` (IC6's test unchanged and green, the two IC7 tests added); e2a 12, e2b 33,
+  e3_verify 12, e3a 46, e3b 35, e3b2 33, e4a 83, e4b2 117, e4c 44, e7c11 1, all ok.
+- `cargo test -p mush-inventory` → e7c2 `65 passed`, e7r2 `16 passed`, all ok.
+- `cargo test -p mush-contract-tests` → 29 result lines all ok (legacy_handler_allowlist 4,
+  panic_budget 7, restriction_lints 11, state_slot_owners 4, module_ns_owners 3, typed_state_lens 6,
+  ci_gated_test_inventory 6), run twice.
+- `cargo test -p mush-server --test e7r2_proving_loop --test market_issuer` → `6 passed` and `test
+  result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.62s`.
+- `cargo test -p mush-server --lib -- vf_r1_a_replayed_move_across_an_epoch_change
+  vf_b12_the_first_commit_and_the_hit_read_the_same` → both ok; `test result: ok. 2 passed; 0
+  failed; 0 ignored; 0 measured; 292 filtered out` (the driver's HIT pins L13 leans on).
+- `cargo test -p tacsim --test coop --test economy --test port_tick` → `16 passed`, `4 passed`,
+  `test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.91s`.
+- `cargo test --workspace --exclude mush-bot --no-fail-fast` → 388 `test result:` lines all ok,
+  aggregate **7,320 passed, 0 failed, 92 ignored**, exit 0 (the `process_fault.rs:197` panic in the
+  log is the WS01-S8 injected fault its suite expects; arena_story 75.88 s, ipc_authoritative_action
+  8 passed, two_process_e2e 4 passed, scripting_e2e 1 passed).
+- `cargo test -p mush-bot` → 22 result lines all ok (lib 469, arena_lane 87, e2e 49, arena_e2e 9 in
+  210.68 s, playtesting 9), exit 0.
+
+**Mutation check** (the fixer's, reverted): disabling the Consume arm's `matches_paid` call → `test
+ic7_the_paid_legs_project_only_paid_contracts ... FAILED` at `ic7.rs:1905` (case f), so the L12
+cross-check is load-bearing.
+
+**Flakes identified, none in this cut's code:**
+
+- A `link.exe` exit `0xc0000142` (STATUS_DLL_INIT_FAILED) on the first gate's step 8 under heavy
+  parallel linking; rerun alone, 2 passed.
+- `mush-server --lib world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped`
+  failed once in the first workspace sweep and once in the second gate; run alone it fails about 10%
+  of the time both at 3bf2bc90 (4/40) and on this tree (3/40; 18/20 in the second repair), a race in
+  the 16b B.5 defer-queue shutdown rig (`db273b1c`) on a minimal world with no market or economy
+  code; `git diff 3bf2bc90 -- crates/mush-server` is empty. It passed in the final sweep; it belongs
+  on the backlog and the load-sensitive list beside `ipc_authoritative_action`.
+- `mushd --test sim_cockpit the_cockpit_verbs_are_contextual_and_the_window_is_a_map`, a TUI
+  paint-timing test on the known load-sensitive list, failed once under the sweep and passed alone
+  three times (the whole binary 12 passed in 16.27 s).
+
+### Surface for the next cuts
+
+Verified against the diff at the tree committed.
+
+**mush-economy (re-exported at the crate root)**
+
+- `pub trait PartyCapSource: Send + Sync + Debug { fn has_cap(&self, w: &World, principal:
+  &PrincipalId, cap: PartyCap) -> bool; }` (contract.rs).
+- `EconomyModule::with_party_cap_source(self, Arc<dyn PartyCapSource>) -> EconomyModule`;
+  `EconomyStore.party_cap_source: Option<Arc<..>>` (pub(crate), default None, injected at boot);
+  `pub(crate) fn module::party_cap(w, principal, cap) -> bool` (table first, then the source; false
+  with no economy) used by `accept_contract_as`, `deliver_settled` and `consideration_for`. **IC8's
+  tacsim source should answer `PartyCap::Accept` for the port institution orgs it names.**
+- `pub fn has_fact_provider(w: &World, namespace: &str) -> bool` (facts.rs).
+- `pub(crate) fn exempt_from_stale_page(c: &EconomicContract) -> bool` = Active && is_lease_shaped
+  && escrow.is_empty().
+
+**mush-market: seams (module.rs, all re-exported)**
+
+- `pub enum Presence { Here, Ship(ObjId) }` (Copy, Eq); `pub struct VenueRefusal { pub line: String
+  }`.
+- `pub trait VenueGate: Send + Sync + Debug`: `venue_of_room(&World, ObjId) -> Option<MarketId>`;
+  `endpoint_for(&World, actor: ObjId, &MarketId, Presence) -> Option<EndpointRef>`; `admit(&World,
+  actor, &MarketId, Option<EndpointRef>, Presence) -> Result<(), VenueRefusal>` (Ok for an
+  ungoverned venue); `governed(&World, EndpointRef) -> bool`; `port_seller(&World, &MarketId,
+  &PrincipalId) -> bool`.
+- `pub struct CapacityPlan(pub serde_json::Value)` with `within_bounds() -> bool`; `pub const
+  MAX_CAPACITY_PLAN_BYTES: usize = 2_048`; `pub struct CapacityReadError`; `pub enum CapacityRefusal
+  { Refused { fits: u64, line: String }, Unreadable }`.
+- `pub trait CapacityProvider: Send + Sync + Debug`: `plan(&World, EndpointRef) ->
+  Option<CapacityPlan>` (None = ungoverned; **must be Some only where the gate's `governed` is true,
+  or IC8 must carry plans on consume entries**); `check(&CapacityPlan, &CanonicalId, u64, &mut dyn
+  FnMut(&CanonicalId) -> Result<u64, CapacityReadError>) -> Result<(), CapacityRefusal>` (read_pool:
+  Ok(0) absent, Err unreadable).
+- `MarketModule::with_venue_gate(Arc<dyn VenueGate>)`, `MarketModule::with_capacity_provider(Arc<dyn
+  CapacityProvider>)`; `pub fn venue_gate(&World) -> Option<Arc<dyn VenueGate>>`; `pub(crate) fn
+  capacity_provider(&World)`.
+- `pub type DrawReceipts = StateFamilyHandle<ContractId, DrawReceipt>`; `pub fn
+  draw_receipts(&World) -> Option<DrawReceipts>` (Some exactly when a lot supply is composed).
+- `pub struct MarketFactProvider` (facts.rs; `provider() == "market"`; answers only
+  `market.lot.drawn`, revision None or Some(1), id `"{quote}/{accepted_at}"`, from
+  `Quote.drawn_at`). **IC8 wires it into `EconomyModule::with_facts`.**
+
+**mush-market: records (record.rs, re-exported)**
+
+- `LotOp::Draw` (word "draw"); `LotOp::is_paid()` true for Consume and Draw.
+- `pub enum LotMatter { Hold { endpoint: EndpointRef, commodity: CanonicalId, grade: u8 }, Draw {
+  source: EndpointRef, commodity: CanonicalId } }` with `source()`, `commodity()`, `kind() ->
+  PaidKind`; `MarketStore::lot_matter(&Listing) -> Option<LotMatter>` (the one accessor; Draw only
+  when the entry is `Representation::Lot` and the code parses as a CanonicalId).
+- `pub enum PaidKind { Hold, Draw }` (serde snake_case: "hold"/"draw"); `pub struct PaidLot { kind,
+  source: LotEndpoint, destination: LotEndpoint, commodity: LotCommodity, grade: u8, accepted_at:
+  i64 /* real */, draw_by: Option<i64> /* real; Some exactly for Draw */ }` with `check()`.
+- `Quote.lot: Option<PaidLot>` (set at activation of every lot sale, both kinds); `Quote.drawn_at:
+  Option<i64>` (real; written only by the mirror; Some only on a Draw quote).
+- `pub struct DrawReceipt { contract: ContractId, quote: QuoteId, listing: ListingId, source:
+  VaultId, destination: VaultId, commodity: SmolStr, quantity: u64, actor: ObjId, at_ic: i64 }` with
+  `check()`; family `market_lot_draws` (descriptors
+  `market.lot_draw_id.v1`/`market.lot_draw.v1`/1/`market.lot_draw.decode_json.v1`/`market.lot_draw.invariants.v1`/`market.lot_draw.json.v1`,
+  key `format!("{:016x}", contract.0)`).
+- `pub const FACT_LOT_DRAWN: &str = "market.lot.drawn"`; `pub fn draw_fact_id(QuoteId, i64) ->
+  String`.
+
+**mush-market: constants and functions (trade.rs, boot.rs, lot.rs; re-exported)**
+
+- `DRAW_WINDOW_SECS = 3_600`, `DRAW_SETTLE_MARGIN_SECS = 600` (real seconds);
+  `MAX_DRAWS_MIRRORED_PER_FIRE = 64`; `MAX_PAID_ENTRIES_PER_KIND = 8` (=
+  `MAX_OPEN_QUOTES_PER_BUYER`).
+- `PORT_ONLY_ENDPOINT`, `CAPACITY_UNREADABLE`, `DRAW_TOO_LATE` (texts as above).
+- `QuoteRequest.presence: Presence` (commands and the economist pass Here).
+- `pub fn accept_at(ctx, QuoteId, Option<EndpointRef>, Presence) -> Result<ContractId,
+  MarketError>`: **IC11's executor calls it with `Presence::Ship(hull)` and `None`** (the gate's
+  `endpoint_for` supplies the berthed hold); `accept_into` = `accept_at(.., Here)`; `accept`
+  unchanged.
+- `pub fn restage_draw(ctx, QuoteId) -> Result<Option<ContractId>, MarketError>`: Ok(None) not
+  re-stageable (not the actor's, not activated, not a Draw, drawn/settled, no contract, contract not
+  Active); Err(DRAW_TOO_LATE) past draw_by; Err(undeliverable) when stage failed; Ok(Some) re-staged
+  byte-identically. **IC11 re-stages through it.**
+- The Draw sale's contract: conditions `[Before { RealUtc, accepted_at + 3600 }, Fact { market,
+  market.lot.drawn, "{quote}/{accepted_at}", None }]`, deadline the same instant, `Expiry::Refund`.
+- Stage keys: paid legs `market.lot.{consume|draw}.{contract:x}` with parameters `{op, listing,
+  endpoint, source, commodity, quantity, grade, contract: "<decimal>"}` (nothing time-varying);
+  listing legs `market.lot.{reserve|release}.{listing:x}.{ic second:x}` with no `contract`.
+- The `market_lot` offer: fixed parameters `{"now": <ic>, "paid": {"<contract decimal>": {op, quote,
+  listing, source, destination, commodity, quantity, grade, plan}}}`; op choices `reserve`,
+  `consume` (iff a consume entry), `release`, `draw` (iff a draw entry); `contract` Choice over the
+  entries' decimal ids, `required: false`, present iff any entry. A draw entry requires `now <=
+  draw_by`; a consume entry covers Active, ReadyToSettle and Settled hold contracts.
+- `pub(crate)`: `lot::draw_receipt(ctx, ContractId) -> Result<Option<DrawReceipt>, ()>`
+  (owner-scoped through `Ctx::action_state`; answers only on the market's own contexts),
+  `lot::pool_balance` / `lot::pool_available(ctx, EndpointRef, &CanonicalId) -> Result<u64, ()>`,
+  `lot::register_draws(reg) -> Result<DrawReceipts, ModError>`, `lot::register(reg,
+  &InventoryFamilies, DrawReceipts, Option<Arc<dyn CapacityProvider>>)`,
+  `trade::awaits_receipt_read(&Quote) -> bool`, `trade::release_quote` (the no-relist guard inside),
+  `MarketStore.draw_cursor: Option<QuoteId>` (RAM only).
+
+**Behaviour IC8 and IC11 can rely on:** an undrawn Draw quote whose contract is Cancelled/Expired is
+released by `boot::reconcile_draws` on the market's 60 s sweep (not in the economy's fire); a Draw
+listing deleted at zero is never re-minted by `restore_quantity`; `+market/accept <q>` and `<q>
+to=<vault>` are one command; `+market/list`/`/depth` default to `venue_of_room` of the actor's room
+when a gate names one.

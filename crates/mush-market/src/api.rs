@@ -716,22 +716,31 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
     // The two halves must agree in **both** directions: a lot-represented entry is
     // stocked from an inventory endpoint and nothing else is, so no other
     // representation can borrow the one `Supply` arm that reserves.
-    let lot_leg = match (entry.representation, spec.source.lot()) {
-        (Representation::Lot, Some((endpoint, commodity, grade))) => {
+    //
+    // Doc 18 cut IC7 (D-18-26, lead note 2b): a lot-represented entry stocked with no
+    // `endpoint=` is a **Draw** listing — `Supply::Stock { vault }` on the vendor's own
+    // storefront, nothing reserved, the listing's quantity the availability counter,
+    // and the matter leg a transfer out of the storefront pool at activation.
+    let lot_leg = match (entry.representation, spec.source.lot(), &spec.source) {
+        (Representation::Lot, Some((endpoint, commodity, grade)), _) => {
             Some((endpoint, commodity.clone(), grade))
         }
-        (Representation::Lot, None) => {
+        (Representation::Lot, None, Supply::Stock { vault }) => {
+            draw_listing_precheck(ctx, &vendor, &spec, *vault)?;
+            None
+        }
+        (Representation::Lot, None, _) => {
             return Err(MarketError::bad(
                 "A lot-represented good is stocked out of an inventory endpoint \
-                 (endpoint=<vault>).",
+                 (endpoint=<vault>) or drawn from the vendor's own storefront.",
             ));
         }
-        (_, Some(_)) => {
+        (_, Some(_), _) => {
             return Err(MarketError::bad(
                 "Only a lot-represented good is stocked out of an inventory endpoint.",
             ));
         }
-        (_, None) => None,
+        (_, None, _) => None,
     };
     if let Some((endpoint, commodity, _)) = &lot_leg {
         // **Custody, existence-hidingly.** `mush_inventory::may_take` is E3's own
@@ -924,6 +933,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
                 commodity,
                 quantity: spec.quantity,
                 grade,
+                contract: None,
             },
         );
         if !staged {
@@ -937,6 +947,52 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         }
     }
     Ok(id)
+}
+
+/// **A Draw listing's own checks, before any write** (doc 18 cut IC7, L11): it sells
+/// out of the vendor's own storefront, which the actor may take from, under a catalogue
+/// code that is a commodity id, on a pool no other live listing sits on, and the
+/// storefront's **available** stock covers the listing (equality and drift are IC8's
+/// readiness check). An unreadable storefront refuses rather than reading as empty.
+fn draw_listing_precheck(
+    ctx: &Ctx<'_>,
+    vendor: &Vendor,
+    spec: &ListingSpec,
+    vault: mush_economy::VaultId,
+) -> Result<(), MarketError> {
+    if vault != vendor.vault {
+        return Err(MarketError::bad(
+            "A drawn listing sells out of the vendor's own storefront vault.",
+        ));
+    }
+    let endpoint = mush_inventory::EndpointRef(vault);
+    if !mush_inventory::may_take(ctx.w, ctx.actor, endpoint) {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
+        return Err(MarketError::bad(
+            "That catalogue code is not a commodity id.",
+        ));
+    };
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.lot_listing_of(endpoint, &commodity).is_some())
+    {
+        return Err(MarketError::bad(
+            "That endpoint already carries a live listing for that commodity. Withdraw \
+             it first (@market/vendor withdraw <listing>).",
+        ));
+    }
+    match crate::lot::pool_available(ctx, endpoint, &commodity) {
+        Ok(available) if available >= spec.quantity => Ok(()),
+        Ok(_) => Err(MarketError::bad(
+            "That storefront holds less than that, so nothing was listed.",
+        )),
+        Err(()) => Err(MarketError::bad(
+            "That storefront's stock cannot be read right now, so nothing was listed.",
+        )),
+    }
 }
 
 /// Whether an object is one a vendor may have title **minted** over as a side effect of
@@ -993,6 +1049,7 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
             commodity: commodity.clone(),
             quantity: listing.quantity,
             grade,
+            contract: None,
         });
     del_listing(ctx, id);
     if let Some(leg) = leg {

@@ -28,8 +28,9 @@ use smol_str::SmolStr;
 
 use crate::ids::{ListingId, MarketId, MarketSourceId, QuoteId, VendorId};
 use crate::record::{
-    CatalogEntry, Listing, MAX_CATALOG_ENTRIES, MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR, MAX_QUOTES,
-    MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, Quote, Vendor,
+    CatalogEntry, Listing, LotMatter, MAX_CATALOG_ENTRIES, MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR,
+    MAX_QUOTES, MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, Quote, Representation,
+    Supply, Vendor,
 };
 
 /// The module namespace.
@@ -142,6 +143,10 @@ pub struct MarketStore {
     pub(crate) next_quote: u64,
     pub(crate) next_vendor: u64,
     pub(crate) next_source: u64,
+    /// Doc 18 cut IC7 item 7: the draw mirror's round-robin cursor — the last quote it
+    /// visited. RAM only and never persisted (IC5's rotation idiom): a reboot starts the
+    /// rotation again from the lowest id, which costs one lap and loses nothing.
+    pub(crate) draw_cursor: Option<QuoteId>,
 }
 
 impl MarketStore {
@@ -222,7 +227,43 @@ impl MarketStore {
             .and_then(|set| set.iter().next().copied())
     }
 
-    /// Every live lot listing, for the sweep's reconcile arm. Bounded by the caller.
+    /// **What matter a listing sells, and how it moves** (doc 18 §4.3, D-18-26; cut
+    /// IC7, lead note 2b) — the one accessor, so which op a listing takes is never
+    /// re-derived inline.
+    ///
+    /// `Supply::Lot` is [`LotMatter::Hold`]; `Supply::Stock { vault }` on an entry whose
+    /// representation is `Representation::Lot` is [`LotMatter::Draw`] (commodity = the
+    /// catalogue code, which must parse as a `CanonicalId`); everything else — E6c's
+    /// counter listings — is `None`.
+    #[must_use]
+    pub fn lot_matter(&self, l: &Listing) -> Option<LotMatter> {
+        match &l.source {
+            Supply::Lot {
+                endpoint,
+                commodity,
+                grade,
+            } => Some(LotMatter::Hold {
+                endpoint: endpoint.0,
+                commodity: commodity.0.clone(),
+                grade: *grade,
+            }),
+            Supply::Stock { vault } => {
+                let entry = self.entry_of(&l.catalog)?;
+                if entry.representation != Representation::Lot {
+                    return None;
+                }
+                let commodity = mush_core::CanonicalId::new(l.catalog.code.as_str()).ok()?;
+                Some(LotMatter::Draw {
+                    source: mush_inventory::EndpointRef(*vault),
+                    commodity,
+                })
+            }
+            Supply::Market { .. } | Supply::Procurement { .. } => None,
+        }
+    }
+
+    /// Every live **hold-backed** lot listing, for the sweep's hold reconcile arm.
+    /// Bounded by the caller. A Draw listing holds no reservation, so it is not here.
     pub fn lot_listings(&self) -> impl Iterator<Item = &Listing> {
         self.live
             .iter()
@@ -399,6 +440,20 @@ impl MarketStore {
             .collect();
         self.by_pair = BTreeMap::new();
         self.by_vendor = BTreeMap::new();
+        // E7r2 P1: only a LIVE lot listing holds a pool, so only a live one is
+        // indexed — a sold-out row has already had its reservation consumed. Doc 18 cut
+        // IC7: a Draw listing (`Supply::Stock` on a lot entry) sits on its storefront
+        // pool too, so the one-live-listing-per-pool rule covers both kinds; the pools
+        // are resolved first because `lot_matter` reads the catalogue index above.
+        let pools: Vec<(mush_inventory::EndpointRef, SmolStr, ListingId)> = self
+            .listings
+            .values()
+            .filter(|l| l.quantity > 0)
+            .filter_map(|l| {
+                self.lot_matter(l)
+                    .map(|m| (m.source(), SmolStr::new(m.commodity().as_str()), l.id))
+            })
+            .collect();
         self.by_lot_pool = BTreeMap::new();
         for l in self.listings.values() {
             self.by_pair
@@ -406,16 +461,12 @@ impl MarketStore {
                 .or_default()
                 .insert(l.id);
             self.by_vendor.entry(l.vendor).or_default().insert(l.id);
-            // E7r2 P1: only a LIVE lot listing holds a pool, so only a live one is
-            // indexed — a sold-out row has already had its reservation consumed.
-            if let Some((endpoint, commodity, _)) = l.source.lot()
-                && l.quantity > 0
-            {
-                self.by_lot_pool
-                    .entry((endpoint, SmolStr::new(commodity.as_str())))
-                    .or_default()
-                    .insert(l.id);
-            }
+        }
+        for (endpoint, commodity, id) in pools {
+            self.by_lot_pool
+                .entry((endpoint, commodity))
+                .or_default()
+                .insert(id);
         }
         self.by_buyer = BTreeMap::new();
         self.by_listing = BTreeMap::new();

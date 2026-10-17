@@ -105,6 +105,17 @@ impl WorldFacts<'_> {
     }
 }
 
+/// Whether the wiring registered a fact provider for `namespace` (doc 18 §4.3, cut
+/// IC7): `false` with no economy. A module that gates money on its own fact checks
+/// this before it takes the money — the market refuses a drawn sale before any
+/// escrow when its `market` namespace is not composed, because a `Fact` nobody
+/// answers would leave the contract waiting and refunding instead of selling.
+#[must_use]
+pub fn has_fact_provider(w: &World, namespace: &str) -> bool {
+    w.module_state::<crate::module::EconomyStore>()
+        .is_some_and(|s| s.facts().iter().any(|p| p.provider() == namespace))
+}
+
 impl FactEval for WorldFacts<'_> {
     fn resolve(&self, fact: &ExternalRef) -> Option<bool> {
         self.state(fact).map(|s| s.satisfied)

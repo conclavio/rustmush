@@ -1039,6 +1039,20 @@ pub enum PartyCap {
     Accept,
 }
 
+/// Doc 18 §4.1/§4.7 (Q-18-10, cut IC7): party capabilities resolved from
+/// **content**, consulted only after the wiring-frozen table answered no.
+///
+/// It confers no money authority, exactly like the table it extends: an accept
+/// it admits still runs `accept_core`, still posts escrow under the principal's own
+/// debit authority and still refuses when the account is short. It can only ADD a
+/// principal the table did not name. Wired by
+/// [`crate::EconomyModule::with_party_cap_source`]; the tacsim implementation is
+/// cut IC8's.
+pub trait PartyCapSource: Send + Sync + std::fmt::Debug {
+    /// Whether content names `principal` as holding `cap`. Total; reads `w` only.
+    fn has_cap(&self, w: &mush_core::World, principal: &PrincipalId, cap: PartyCap) -> bool;
+}
+
 /// The owned canonical token of a principal — the key of the wiring-frozen
 /// party-capability table, because `PrincipalId` is `Hash`-but-not-`Ord` (E6b).
 #[must_use]
@@ -2349,6 +2363,20 @@ pub fn is_lease_shaped(c: &EconomicContract) -> bool {
         .iter()
         .any(|d| matches!(d, Deliverable::Obligation { .. }));
     pledged && rented
+}
+
+/// Whether `page_stale_contracts` leaves `c` alone: an `Active`, lease-shaped
+/// contract whose own escrow list is **empty** (doc 18 §4.1, cut IC6; narrowed in
+/// cut IC7, lead note 2b).
+///
+/// A live lease is supposed to sit still for months, so paging it as stale would be
+/// noise. But an `Active` lease-shaped contract that holds escrow is somebody's
+/// money sitting still, and it still pages — as does a `ReadyToSettle` one, and an
+/// escrowed `Draft` one. The test is the record's own `escrow` list (lead L9, the
+/// stricter reading): a stale entry on that list pages rather than hides.
+#[must_use]
+pub(crate) fn exempt_from_stale_page(c: &EconomicContract) -> bool {
+    c.state == ContractState::Active && is_lease_shaped(c) && c.escrow.is_empty()
 }
 
 /// The `AssetOp::Release`s that take this contract's own claims back off the assets
@@ -3675,5 +3703,56 @@ mod tests {
         )));
         // An obligation without collateral.
         assert!(!is_lease_shaped(&shaped(lessor, vec![obligation])));
+    }
+
+    /// Doc 18 cut IC7 (lead note 2b, L9): only an `Active` lease-shaped contract
+    /// with an empty escrow list is exempt from the stale page. Escrow held, a
+    /// `ReadyToSettle` state, an escrowed `Draft`, or a non-lease shape all page.
+    #[test]
+    fn ic7_only_an_active_escrow_free_lease_is_exempt_from_the_stale_page() {
+        let lessor = PrincipalId::Organization(mush_org::OrgId(7));
+        let tenant = PrincipalId::Object(ObjId(42));
+        let collateral = Deliverable::Collateral {
+            object: ObjId(500),
+            from: lessor.clone(),
+        };
+        let obligation = Deliverable::Obligation {
+            template: Box::new(ObligationTemplate {
+                debtor: tenant.clone(),
+                creditor: lessor.clone(),
+                debit_account: AccountId(3),
+                credit_account: AccountId(4),
+                amount: Amount::from_minor(1),
+                schedule: EconomicSchedule::new(EconomicClock::Manual, i64::MAX, None, 1),
+                grace: GracePolicy::default(),
+                notify_on_success: false,
+            }),
+        };
+        let lease = || shaped(lessor.clone(), vec![collateral.clone(), obligation.clone()]);
+
+        // Active, lease-shaped, no escrow: exempt.
+        assert!(exempt_from_stale_page(&lease()));
+
+        // The same holding escrow: pages.
+        let mut escrowed = lease();
+        escrowed.escrow = vec![HoldId(1)];
+        assert!(!exempt_from_stale_page(&escrowed));
+
+        // The same ReadyToSettle: pages.
+        let mut ready = lease();
+        ready.state = ContractState::ReadyToSettle;
+        assert!(!exempt_from_stale_page(&ready));
+
+        // The same Draft holding escrow: pages.
+        let mut draft = lease();
+        draft.state = ContractState::Draft;
+        draft.escrow = vec![HoldId(1)];
+        assert!(!exempt_from_stale_page(&draft));
+
+        // A non-lease Active contract: pages.
+        assert!(!exempt_from_stale_page(&shaped(
+            lessor.clone(),
+            vec![obligation.clone()]
+        )));
     }
 }

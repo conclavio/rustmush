@@ -5199,3 +5199,126 @@ fn ic6_a_live_lease_is_never_paged_as_stale() {
         );
     }
 }
+
+// ======================================================================
+// ---- doc 18 cut IC7: the exemption is a live lease holding no escrow ----
+// ======================================================================
+
+/// The lease shape through the ordinary builders (`e4b2.rs`'s lease test, line for
+/// line): Quinn pledges her own flat and is owed rent; Pat, the tenant, adds a
+/// consideration from his own wallet, so the contract carries escrow. Returns the
+/// contract, still a `Draft`.
+fn escrowed_lease_draft(tw: &mut TestWorld, r: &Rig) -> ContractId {
+    let flat = thing(tw, "flat");
+    ok(tw, GOD, &format!("@asset/title #{}=#{}", flat.0, r.quinn.0));
+    ok(tw, r.quinn, "@contract/draft Lease");
+    let id = snap(tw)
+        .contracts()
+        .map(|c| c.id)
+        .max()
+        .expect("the draft exists");
+    ok(tw, r.quinn, &format!("@contract/party {id}=#{}", r.pat.0));
+    ok(tw, r.pat, &format!("@contract/pay {id}={} 100", r.pat_acct));
+    ok(
+        tw,
+        r.quinn,
+        &format!("@contract/split {id}={} 1000‰", r.quinn_acct),
+    );
+    ok(
+        tw,
+        r.quinn,
+        &format!("@contract/remainder {id}={}", r.quinn_acct),
+    );
+    ok(
+        tw,
+        r.quinn,
+        &format!(
+            "@contract/deliver {id}=collateral #{} #{}",
+            flat.0, r.quinn.0
+        ),
+    );
+    ok(
+        tw,
+        r.quinn,
+        &format!(
+            "@contract/deliver {id}=obligation {} {} 50 every=86400",
+            r.pat_acct, r.quinn_acct
+        ),
+    );
+    ok(
+        tw,
+        r.quinn,
+        &format!("@contract/condition {id}=attest party:#{}", r.quinn.0),
+    );
+    id
+}
+
+/// Doc 18 cut IC7 (lead note 2b): IC6's exemption is narrowed to a live lease whose
+/// own escrow list is empty. An `Active` lease-shaped contract that holds escrow is
+/// somebody's money sitting still, and swept past the configured age it pages like
+/// any other.
+#[test]
+fn ic7_an_active_lease_shaped_contract_holding_escrow_still_pages() {
+    let (mut tw, _vf) = boot_probe_with(EconomyConfig {
+        stale_contract_age_secs: 3_600,
+        ..Default::default()
+    });
+    let now = 1_000;
+    tw.set_now(now);
+    let r = rig(&mut tw, 10_000);
+    let id = escrowed_lease_draft(&mut tw, &r);
+    ok(&mut tw, r.quinn, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.quinn, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.pat, &format!("@contract/accept {id}"));
+    let c = snap(&tw).contract(id).expect("the lease").clone();
+    assert_eq!(c.state, ContractState::Active);
+    assert!(mush_economy::is_lease_shaped(&c), "it is a lease");
+    assert!(!c.escrow.is_empty(), "and it holds the tenant's escrow");
+
+    sweep_at(&mut tw, now + 3_600 + 1_000);
+    let paged = store(&tw)
+        .escalations()
+        .filter(|e| e.subject == EscalationSubject::Contract(id))
+        .count();
+    assert_eq!(paged, 1, "an escrowed live lease was not paged");
+}
+
+/// Doc 18 cut IC7: an escrowed `Draft` lease-shaped contract was never exempt, and it
+/// still pages — `vf_m2_an_escrowed_deadline_less_draft_is_paged_and_then_unwound`'s
+/// shape (offered, the author's escrow placed, amended back to a draft), on a lease.
+#[test]
+fn ic7_an_escrowed_draft_lease_shaped_contract_still_pages() {
+    let (mut tw, _vf) = boot_probe_with(EconomyConfig {
+        stale_contract_age_secs: 3_600,
+        ..Default::default()
+    });
+    let now = 1_000;
+    tw.set_now(now);
+    let r = rig(&mut tw, 10_000);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {}={} 1000", r.faucet, r.quinn_acct),
+    );
+    let id = escrowed_lease_draft(&mut tw, &r);
+    // The author's own consideration, so her escrow survives the amendment.
+    ok(
+        &mut tw,
+        r.quinn,
+        &format!("@contract/pay {id}={} 300", r.quinn_acct),
+    );
+    ok(&mut tw, r.quinn, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.quinn, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.quinn, &format!("@contract/amend {id}"));
+    let c = snap(&tw).contract(id).expect("the lease").clone();
+    assert_eq!(c.state, ContractState::Draft);
+    assert!(mush_economy::is_lease_shaped(&c), "it is a lease");
+    assert_eq!(held(&tw, r.quinn_acct), 300, "the author's escrow stands");
+
+    sweep_at(&mut tw, now + 3_600 + 600);
+    let paged = store(&tw)
+        .escalations()
+        .filter(|e| e.subject == EscalationSubject::Contract(id))
+        .count();
+    assert_eq!(paged, 1, "an escrowed draft lease was not paged");
+}

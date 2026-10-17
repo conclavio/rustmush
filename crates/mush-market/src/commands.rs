@@ -61,7 +61,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             .collect(),
             help: "+market/list [legal=<class>|tag=<tag>|market=<venue>] [after=<id>]\n\
                    \x20                                 what is for sale, newest first, one \
-                   bounded page at a time. A filter you may not use simply shows nothing.\n\
+                   bounded page at a time. A filter you may not use simply shows nothing. \
+                   With no filter, where you stand in a port, you see that port's board.\n\
                    +market/show <listing>             one listing.\n\
                    +market/depth <ruleset>:<code> [market=<venue>]\n\
                    \x20                                 the PUBLIC picture of a good: last trade, \
@@ -75,7 +76,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                 take it up. You are the issuer: your \
                    escrow is placed from your own account, and the vendor accepts on its own \
                    standing. A listing sold out of an inventory endpoint is delivered INTO one, \
-                   so name a vault you may draw from.\n\
+                   so name a vault you may draw from. You may write the endpoint as \
+                   to=<vault>. Where the port knows your berthed hold, leave it off and the \
+                   goods go there. Taking up a drawn quote whose goods have not moved yet \
+                   asks for the hand-over again.\n\
                    +market/sell <obj>=<vendor>        offer something you are carrying. The \
                    vendor escrows its payment first; you then accept the contract and \
                    deposit the goods into its vault (@vault/deposit). It buys CUSTODY, so \
@@ -109,9 +113,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    [object=<obj>] [hidden] [days=<n>] [lead=<secs>]\n\
                    \x20                                 …or, for a lot-represented good, \
                    [endpoint=<vault>] [commodity=<id>] [grade=<n>] — which RESERVES that much of \
-                   the endpoint's stock until the listing sells or is withdrawn. An \
-                   organization's own officer may stock and withdraw its lot listings; \
-                   everything else here is staff.\n\
+                   the endpoint's stock until the listing sells or is withdrawn — or, for a \
+                   lot-represented good with no endpoint=, a listing DRAWN from the vendor's \
+                   own storefront pool: its quantity is the counter, nothing is reserved, and \
+                   the pool must hold at least that much. An organization's own officer may \
+                   stock and withdraw its lot listings; everything else here is staff.\n\
                    @market/vendor withdraw <listing>  take a listing down and release anything it \
                    held.\n\
                    @market/vendor retire <vendor>     stop it trading. Live contracts still settle.\n\
@@ -209,6 +215,12 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // nothing — an EMPTY LIST, never a refusal (08a decision 13).
             filter = Some(MarketFilter::parse(word));
         }
+    }
+    // Doc 18 §4.3 (cut IC7): with no filter word, a composition's presence gate names
+    // the venue of the room the actor stands in, and the page is that venue's board.
+    // No gate, or a room in no venue, is the pre-IC7 page exactly.
+    if filter.is_none() {
+        filter = gate_venue(ctx).map(MarketFilter::Market);
     }
     let page = api::visible(ctx.w, ctx.actor, filter.as_ref(), MARKET_PAGE, after);
     let mut out: Vec<String> = Vec::new();
@@ -396,8 +408,13 @@ fn show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `+market/depth <ruleset>:<code> [market=<venue>]` — **the gate's own render**.
 ///
 /// It takes the actor's name for nothing: the projection function has no viewer
-/// parameter, so this renders the same bytes for a staffer, a member and a stranger,
-/// and there is no branch anywhere in it that could differ.
+/// parameter, so for one venue this renders the same bytes for a staffer, a member and
+/// a stranger, and there is no branch anywhere in it that could differ by who asks.
+/// **Which** venue it renders, when no `market=` word names one (or the word does not
+/// parse, which has always counted as none), follows the asker's room first when a
+/// composition's presence gate names that room's venue (doc 18 §4.3, cut IC7): the
+/// bytes then vary by where the asker stands, never by who they are, and the default
+/// carries no viewer-specific data.
 fn depth(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // The whole argument (see `list`): `market=<venue>` carries its own `=`.
     let arg = ctx.args.raw().trim().to_string();
@@ -412,6 +429,10 @@ fn depth(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
     let hidden = api::hidden_seller_orgs(ctx);
+    // Doc 18 §4.3 (cut IC7): with no `market=` word, the venue of the room the actor
+    // stands in comes first, when a composition's presence gate names one — the same
+    // answer for everyone in that room, so the projection stays viewer-free.
+    let market = market.or_else(|| gate_venue(ctx));
     // With no venue named, the venue of the first **public** listing or trade of that
     // good — and, when there is none, a fixed fallback rather than a different
     // message. Both halves matter. Reading every listing here would have made the
@@ -514,6 +535,14 @@ fn default_market(
     })
 }
 
+/// The venue of the room the actor stands in, when a composition's presence gate names
+/// one (doc 18 §4.3 `venue_of_room`, cut IC7) — the `market=` default.
+fn gate_venue(ctx: &Ctx<'_>) -> Option<MarketId> {
+    let gate = crate::module::venue_gate(ctx.w)?;
+    let room = ctx.w.get(ctx.actor).and_then(|o| o.location)?;
+    gate.venue_of_room(ctx.w, room)
+}
+
 fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let lhs = ctx.args.lhs().trim().to_string();
     let rhs = ctx.args.rhs().unwrap_or_default().trim().to_string();
@@ -537,6 +566,7 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         },
         ttl_live: crate::trade::QUOTE_TTL_LIVE,
         ttl_remote: crate::trade::QUOTE_TTL_REMOTE,
+        presence: crate::module::Presence::Here,
     };
     match crate::trade::quote(ctx, &req) {
         Ok(id) => {
@@ -566,18 +596,51 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let Some(id) = parse_u64(ctx.args.lhs()).map(QuoteId) else {
+    // Doc 18 cut IC7 (L6, F12): the quote id is the first word of the left-hand side; a
+    // second word, if any, must be `to` (any case), and then the right-hand side is the
+    // destination. So `+market/accept <quote>=<vault>` (E7r2's spelling) and
+    // `+market/accept <quote> to=<vault>` (doc 18's) are one command; anything else is
+    // no such quote.
+    let lhs = ctx.args.lhs().trim().to_string();
+    let mut words = lhs.split_whitespace();
+    let Some(id) = words.next().and_then(parse_u64).map(QuoteId) else {
         return Err(refuse(ctx, NO_SUCH_QUOTE));
     };
+    let second = words.next();
+    if words.next().is_some() || second.is_some_and(|w| !w.eq_ignore_ascii_case("to")) {
+        return Err(refuse(ctx, NO_SUCH_QUOTE));
+    }
+    // ---- doc 18 cut IC7: a taken-up Draw whose goods have not moved ----
+    //
+    // Asking again re-stages the same paid leg under its contract key (D-18-32); it is
+    // the same request to the driver, so it moves nothing twice. Anything that is not a
+    // re-stageable Draw falls through to the accept and its existing answers. The
+    // success line is worded so a back-pressure line in the same step does not
+    // contradict it.
+    match crate::trade::restage_draw(ctx, id) {
+        Ok(Some(contract)) => {
+            info(
+                ctx,
+                format!(
+                    "Asking again for the hand-over on contract #{contract}. It settles once \
+                     the goods have moved."
+                ),
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(refuse_market(ctx, &e)),
+        Ok(None) => {}
+    }
     // E7r2 P1: `+market/accept <quote>=<vault>` names where a lot-represented purchase
     // is delivered. Every E6c representation ignores it, and a lot purchase that names
-    // none is refused **before any money moves**.
+    // none — and that no presence gate can place — is refused **before any money
+    // moves**.
     let destination = ctx
         .args
         .rhs()
         .and_then(|rhs| rhs.split_whitespace().next().and_then(parse_u64))
         .map(|id| mush_inventory::EndpointRef(mush_economy::VaultId(id)));
-    match crate::trade::accept_into(ctx, id, destination) {
+    match crate::trade::accept_at(ctx, id, destination, crate::module::Presence::Here) {
         Ok(contract) => {
             info(
                 ctx,
@@ -1096,8 +1159,17 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // Everything but the lot supply stays a staff act: `Supply::Stock`,
             // `Supply::Market` and `Supply::Procurement` advertise a counter against
             // the shop's own balance sheet, and the `Asset` arm MINTS TITLE as a side
-            // effect of publishing.
-            if !staff && !matches!(source, Supply::Lot { .. }) {
+            // effect of publishing. Doc 18 cut IC7: a `Supply::Stock` listing of a
+            // lot-represented good is a Draw from the vendor's own storefront pool —
+            // matter the org holds, checked against the pool by `list_goods` — so the
+            // org's officer may publish it too.
+            let drawn = matches!(source, Supply::Stock { .. })
+                && ctx
+                    .w
+                    .module_state::<MarketStore>()
+                    .and_then(|s| s.entry_of(&catalog))
+                    .is_some_and(|e| e.representation == crate::record::Representation::Lot);
+            if !staff && !matches!(source, Supply::Lot { .. }) && !drawn {
                 return Err(CmdError::msg("Permission denied."));
             }
             let days = opts

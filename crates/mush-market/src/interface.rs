@@ -111,6 +111,8 @@ impl InterfaceAbilityProvider for MarketInterface {
                     window: QuoteWindow::Live,
                     ttl_live: crate::trade::QUOTE_TTL_LIVE,
                     ttl_remote: crate::trade::QUOTE_TTL_REMOTE,
+                    // The asker stands in the room with the economist (doc 18 cut IC7).
+                    presence: crate::module::Presence::Here,
                 };
                 // The command context's actor is the asker (the NPC runtime
                 // swaps it for the call), so the quote is theirs.

@@ -67,10 +67,157 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
 /// starve the lapse sweep above it.
 pub const MAX_LOT_RECONCILED_PER_FIRE: usize = 32;
 
-/// The `Coarse` sweep tick — **two arms on one existing tick**, never a second tick.
+/// The most undrawn Draw quotes one sweep fire mirrors (doc 18 cut IC7 item 7).
+///
+/// Its own budget on records **mirrored**, so it can never starve the arms above it;
+/// the walk that finds them is bounded by the store's own `MAX_QUOTES` cap. A full lap
+/// over N undrawn Draws takes `ceil(N / 64)` fires (`draw_lap`, unit-tested). With the
+/// cutoff's 600 s margin, a 60 s market sweep and a 30 s economy sweep, the
+/// `market.lot.drawn` fact is true before a landed Draw's deadline while at most
+/// `64 × 9 = 576` undrawn Draw quotes stand
+/// (`crate::DRAW_SETTLE_MARGIN_SECS` states the arithmetic, including the economy's own
+/// per-sweep budget); past that, `release_quote`'s no-relist guard and its page are the
+/// backstop.
+pub const MAX_DRAWS_MIRRORED_PER_FIRE: usize = 64;
+
+/// The `Coarse` sweep tick — **three arms on one existing tick**, never a second tick.
 pub(crate) fn sweep_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
     sweep(ctx, MAX_SWEPT_PER_FIRE);
     reconcile_lot_holds(ctx, MAX_LOT_RECONCILED_PER_FIRE);
+    reconcile_draws(ctx, MAX_DRAWS_MIRRORED_PER_FIRE);
+}
+
+/// ---- doc 18 cut IC7: the draw mirror (item 7) ----
+///
+/// A Draw writes its durable receipt (`market_lot_draws[contract]`) in its own bundle,
+/// and a `FactProvider` reads only `&World`, so the receipt is mirrored onto the quote's
+/// `drawn_at` here — the **only** writer of `drawn_at`, which makes the
+/// `market.lot.drawn` fact behind the receipt by at most the rotation and never ahead
+/// (the inventory mirror's rule).
+///
+/// It visits up to `budget` quotes that are an activated, unsettled Draw with a contract
+/// and no `drawn_at`, round-robin from the store's RAM cursor (IC5's rotation idiom),
+/// and reads each one's receipt: found → `drawn_at = now` (real) with the revision
+/// bumped; absent → left alone; unreadable → left alone, one warning per fire. It is a
+/// third arm on the existing `SWEEP_TAG` tick and it stages nothing authoritative (a
+/// `reg.tick` runs as GOD).
+///
+/// It is also **where an undrawn Draw quote whose contract lapsed or was cancelled is
+/// released**: the settlement ear runs on the economy's context, where the owner-scoped
+/// receipt read is refused, so it leaves such a quote alone
+/// (`trade::awaits_receipt_read`) and this arm, on the market's own context, hands it to
+/// `release_quote` — which reads the receipt and restores the listing only when nothing
+/// moved. The listing therefore comes back within one lap of the expiry rather than in
+/// the economy's own fire.
+fn reconcile_draws(ctx: &mut Ctx<'_>, budget: usize) {
+    let candidates: Vec<Quote> = {
+        let Some(store) = ctx.w.module_state::<MarketStore>() else {
+            return;
+        };
+        // The undrawn Draw ids, ascending (the map's order); `MAX_QUOTES` bounds the walk.
+        let undrawn: Vec<QuoteId> = store
+            .quotes
+            .values()
+            .filter(|q| {
+                q.activated
+                    && q.settled.is_none()
+                    && q.drawn_at.is_none()
+                    && q.contract.is_some()
+                    && q.lot
+                        .as_ref()
+                        .is_some_and(|l| l.kind == crate::record::PaidKind::Draw)
+            })
+            .map(|q| q.id)
+            .collect();
+        draw_lap(&undrawn, store.draw_cursor, budget)
+            .into_iter()
+            .filter_map(|id| store.quotes.get(&id).cloned())
+            .collect()
+    };
+    let mut warned = false;
+    let mut last: Option<QuoteId> = None;
+    for q in candidates {
+        last = Some(q.id);
+        let Some(contract) = q.contract else {
+            continue;
+        };
+        // A lapsed or cancelled deal is released here, where the receipt read is the
+        // market's own (see the doc comment); nothing is mirrored onto a closed deal.
+        let state = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().contract(contract).map(|c| c.state));
+        if matches!(
+            state,
+            Some(ContractState::Cancelled | ContractState::Expired)
+        ) {
+            crate::trade::release_quote(ctx, &q);
+            continue;
+        }
+        match crate::lot::draw_receipt(ctx, contract) {
+            Ok(Some(_)) => {
+                let now = ctx.w.now();
+                crate::store::put_quote(
+                    ctx,
+                    Quote {
+                        drawn_at: Some(now),
+                        revision: q.revision.saturating_add(1),
+                        ..q
+                    },
+                );
+            }
+            Ok(None) => {}
+            Err(()) => {
+                if !warned {
+                    warned = true;
+                    tracing::warn!(
+                        quote = q.id.0,
+                        contract = contract.0,
+                        "market: a Draw's receipt could not be read; the mirror will try again"
+                    );
+                }
+            }
+        }
+    }
+    // The cursor is RAM only and never persisted. It is the last quote VISITED in every
+    // case — after a wrap, the last of the wrapped prefix — so the next fire resumes
+    // exactly where this one stopped and a full lap over N undrawn Draws takes
+    // `ceil(N / budget)` fires, never one more (resetting to `None` after a wrap would
+    // re-walk the prefix just visited and add a wasted fire to every lap, breaking the
+    // margin's arithmetic on `crate::DRAW_SETTLE_MARGIN_SECS`). Nothing visited: back to
+    // the start.
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.draw_cursor = last;
+    }
+}
+
+/// One fire's lap over the undrawn Draw ids (`undrawn`, ascending), resuming after
+/// `after` (doc 18 cut IC7 item 7): the ids past the cursor first, then — on a short lap
+/// with a cursor set — the ids from the lowest up, never one visited twice in a fire and
+/// at most `budget` in all. With the caller storing the last id returned as the next
+/// cursor, a full lap over N ids takes exactly `ceil(N / budget)` fires, which is the
+/// arithmetic `crate::DRAW_SETTLE_MARGIN_SECS` rests on (pinned by the unit test below).
+fn draw_lap(undrawn: &[QuoteId], after: Option<QuoteId>, budget: usize) -> Vec<QuoteId> {
+    let split = after.map_or(0, |c| undrawn.partition_point(|id| *id <= c));
+    let mut picked: Vec<QuoteId> = undrawn
+        .get(split..)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .take(budget)
+        .collect();
+    if picked.len() < budget && after.is_some() {
+        let left = budget.saturating_sub(picked.len());
+        picked.extend(
+            undrawn
+                .get(..split)
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .take(left),
+        );
+    }
+    picked
 }
 
 /// ---- E7r2: P1 — the arm OPEN 2's ordering owes ----
@@ -318,5 +465,55 @@ fn retire_closed_orgs(ctx: &mut Ctx<'_>) {
             "market: the organization behind a vendor is closed; retiring the shop"
         );
         let _ = crate::api::retire_vendor(ctx, id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::draw_lap;
+    use crate::ids::QuoteId;
+
+    /// Drives `draw_lap` the way `reconcile_draws` does (the cursor is the last id
+    /// visited) and returns the largest gap, in fires, between two visits of any id.
+    fn widest_gap(n: u64, budget: usize, fires: usize) -> usize {
+        let ids: Vec<QuoteId> = (1..=n).map(QuoteId).collect();
+        let mut cursor: Option<QuoteId> = None;
+        let mut seen_at: std::collections::BTreeMap<QuoteId, usize> = Default::default();
+        let mut widest = 0;
+        for fire in 0..fires {
+            let lap = draw_lap(&ids, cursor, budget);
+            assert!(lap.len() <= budget, "a fire visits at most its budget");
+            let mut unique = lap.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                lap.len(),
+                "no id is visited twice in one fire"
+            );
+            for id in &lap {
+                if let Some(prev) = seen_at.insert(*id, fire) {
+                    widest = widest.max(fire - prev);
+                }
+            }
+            cursor = lap.last().copied();
+        }
+        assert_eq!(seen_at.len() as u64, n, "every id is visited");
+        widest
+    }
+
+    /// Doc 18 cut IC7 item 7 (reviewer R1): a full lap over N undrawn Draws takes
+    /// `ceil(N / 64)` fires and never one more — at N = 576 = 64 × 9 every quote is
+    /// re-visited within 9 fires (540 s), inside the 600 s cutoff margin with the 30 s
+    /// economy sweep after it. A cursor reset after a wrap made it 10.
+    #[test]
+    fn ic7_a_draw_mirror_lap_is_ceil_n_over_the_budget_fires() {
+        assert_eq!(widest_gap(576, 64, 40), 9);
+        assert_eq!(widest_gap(512, 64, 40), 8);
+        assert_eq!(widest_gap(100, 64, 40), 2);
+        assert_eq!(widest_gap(64, 64, 10), 1);
+        assert_eq!(widest_gap(10, 64, 10), 1);
+        assert!(draw_lap(&[], Some(QuoteId(7)), 64).is_empty());
+        assert!(draw_lap(&[], None, 64).is_empty());
     }
 }

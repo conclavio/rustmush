@@ -42,9 +42,11 @@ use crate::api::{
     principal_account,
 };
 use crate::ids::{ListingId, QuoteId};
+use crate::module::{CapacityReadError, CapacityRefusal};
 use crate::record::{
-    AvailabilityRule, Listing, MAX_OPEN_QUOTES_PER_BUYER, MAX_QUOTES, MAX_TRADE_ROWS,
-    ObservedRevisions, Quote, Representation, Settlement, Supply, Vendor, declared_hash,
+    AvailabilityRule, Listing, LotCommodity, LotEndpoint, LotMatter, MAX_OPEN_QUOTES_PER_BUYER,
+    MAX_QUOTES, MAX_TRADE_ROWS, ObservedRevisions, PaidKind, PaidLot, Quote, Representation,
+    Settlement, Supply, Vendor, declared_hash,
 };
 use crate::store::{MarketStore, del_quote, persist_meta, put_listing, put_quote};
 
@@ -58,6 +60,58 @@ pub const MAX_LAPSED_SWEEP_PER_CALL: usize = 32;
 
 /// How long a purchase contract stands before its deadline lapses.
 pub const DEAL_WINDOW_SECS: i64 = 24 * 3_600;
+
+/// **How long a Draw sale's contract stands** (doc 18 cut IC7, L2), in **real** seconds.
+///
+/// A Draw sale settles only on proof its goods moved (the `market.lot.drawn` fact); one
+/// whose Draw is refused at prepare never sees that proof and expires with a refund at
+/// this window, with no page. Short enough that a refused Draw locks the buyer's cash
+/// for at most an hour (an IC day at rate 24), long enough for IC11's twelve-fire
+/// re-stage. Hold-backed and every other sale keep [`DEAL_WINDOW_SECS`].
+pub const DRAW_WINDOW_SECS: i64 = 3_600;
+
+/// **The Draw cutoff's margin** (doc 18 cut IC7, L2, F1), in **real** seconds: no Draw is
+/// offered — and so none is prepared, the driver projecting immediately before it
+/// prepares — in the last `DRAW_SETTLE_MARGIN_SECS` of the window (`PaidLot::draw_by` =
+/// accept + 3,000 s).
+///
+/// Why it exists: readiness is evaluated before expiry, but `Before` is false after the
+/// deadline, so a Draw landing in the window's last seconds would be mirrored too late,
+/// the contract would expire and refund while the goods had moved, and the listing would
+/// be restored over goods that left. The arithmetic: a Draw lands no later than
+/// `draw_by` = deadline − 600 s; the market sweep's mirror arm visits every undrawn Draw
+/// within `ceil(N / MAX_DRAWS_MIRRORED_PER_FIRE)` market sweeps of 60 s (its cursor
+/// resumes at the last quote visited, so a lap is never one fire longer), and the
+/// economy sweeps every 30 s; so the fact is true before the deadline while
+/// `N ≤ 64 × 9 = 576` undrawn Draw quotes stand (at least 72 buyers at the per-buyer cap
+/// of 8): mirrored within 9 × 60 = 540 s, settled by the next economy sweep, 570 s in
+/// all. The economy's own budget (`MAX_CONTRACTS_PER_SWEEP`, 64 contracts per 30 s
+/// fire, `mush-economy/src/sweep.rs`) counts only contracts with a step due — ready to
+/// settle or lapsed, never an `Active` contract still waiting — and it clears twice the
+/// mirror's 64 per 60 s, so the bound holds while the economy's other due work leaves
+/// it room. Past either, `release_quote`'s no-relist guard and its page are the
+/// backstop.
+pub const DRAW_SETTLE_MARGIN_SECS: i64 = 600;
+
+/// Doc 18 cut IC7 (lead note 2e): a governed endpoint takes goods only from its own
+/// port's counters.
+pub const PORT_ONLY_ENDPOINT: &str = "That endpoint takes goods only from its port's own counters, so the sale was not made. \
+     Nothing was charged.";
+
+/// Doc 18 cut IC7: the capacity pre-check could not read a pool it needs — refused,
+/// never read as zero.
+pub const CAPACITY_UNREADABLE: &str = "That endpoint's load cannot be read right now, so the sale was not made. Nothing was \
+     charged.";
+
+/// Doc 18 cut IC7: a re-stage asked for after the Draw cutoff.
+pub const DRAW_TOO_LATE: &str =
+    "It is too late to ask for those goods again. The deal lapses and your payment comes back.";
+
+/// The goods leg cannot be honoured: E6c's undeliverable line, byte for byte, now shared
+/// by the delivery pre-check, the Draw's source and fact-namespace pre-check, and a
+/// re-stage the action layer would not take.
+const UNDELIVERABLE: &str = "That cannot be delivered to you right now, so the sale was not made. \
+                             Nothing was charged.";
 
 /// The most `+market/sell` offers one seller may have standing against one vendor
 /// (independent verify fold, M9).
@@ -195,6 +249,9 @@ pub struct QuoteRequest {
     pub ttl_live: i64,
     /// The seconds a remote window lasts, from configuration.
     pub ttl_remote: i64,
+    /// How the asker is present (doc 18 §4.3, cut IC7): a typed verb is
+    /// [`Presence::Here`](crate::Presence::Here).
+    pub presence: crate::module::Presence,
 }
 
 /// **Issue a quote** (B6, B7, B8).
@@ -234,6 +291,13 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
     // one `STALE_QUOTE`, one family (independent verify fold, M4).
     if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
         return Err(MarketError::bad(STALE_QUOTE));
+    }
+    // **The presence gate** (doc 18 §4.3, cut IC7): a governed venue says in its own
+    // words why the asker cannot trade there, and no quote is written. No gate is the
+    // pre-IC7 behaviour exactly.
+    if let Some(gate) = crate::module::venue_gate(ctx.w) {
+        gate.admit(ctx.w, ctx.actor, &listing.market, None, req.presence)
+            .map_err(|r| MarketError::bad(r.line))?;
     }
     let Some(entry) = ctx
         .w
@@ -408,6 +472,8 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
             availability,
             contract: None,
             settled: None,
+            lot: None,
+            drawn_at: None,
             revision: 1,
         },
     );
@@ -517,6 +583,28 @@ pub fn accept_into(
     id: QuoteId,
     destination: Option<mush_inventory::EndpointRef>,
 ) -> Result<ContractId, MarketError> {
+    accept_at(ctx, id, destination, crate::module::Presence::Here)
+}
+
+/// **Take a quote up under a declared presence** (doc 18 §4.3, cut IC7) — the one accept
+/// path; [`accept_into`] is this with [`Presence::Here`](crate::Presence::Here), and
+/// IC11's executor calls it with `Presence::Ship(hull)`.
+///
+/// Every refusal returns before `offer_contract`, so nothing is escrowed or charged:
+/// the presence gate (its own words), the governed-endpoint rule
+/// ([`PORT_ONLY_ENDPOINT`]), the capacity pre-check (the provider's words, or
+/// [`CAPACITY_UNREADABLE`]), and for a Draw the storefront's available stock and the
+/// composed `market` fact namespace.
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`crate::refuse_market`].
+pub fn accept_at(
+    ctx: &mut Ctx<'_>,
+    id: QuoteId,
+    destination: Option<mush_inventory::EndpointRef>,
+    presence: crate::module::Presence,
+) -> Result<ContractId, MarketError> {
     let Some(mut q) = ctx
         .w
         .module_state::<MarketStore>()
@@ -564,6 +652,23 @@ pub fn accept_into(
     if !crate::api::org_may_trade(ctx.w, vendor.org) {
         return Err(MarketError::bad(STALE_QUOTE));
     }
+    // ---- doc 18 cut IC7: what matter this sells, and the presence gate ----
+    //
+    // `lot_matter` is the one accessor (a hold-backed `Supply::Lot`, a drawn
+    // `Supply::Stock` on a lot entry, or neither). A non-lot purchase meets the gate
+    // here with no endpoint; a lot purchase meets it below, once its destination is
+    // known. No gate is the pre-IC7 behaviour exactly.
+    let matter = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.lot_matter(&listing));
+    let gate = crate::module::venue_gate(ctx.w);
+    if matter.is_none()
+        && let Some(gate) = &gate
+    {
+        gate.admit(ctx.w, ctx.actor, &listing.market, None, presence)
+            .map_err(|r| MarketError::bad(r.line))?;
+    }
     // **A maker's budgets bound selling, not merely quoting** (independent verify fold,
     // M2). A quote reserves nothing (OPEN 4), so N quotes taken out against N listings
     // behind one maker each saw `volume_used`/`loss_used` at their pre-sale value, all
@@ -604,21 +709,32 @@ pub fn accept_into(
     // The destination is checked against `may_take_from_vault` — cut 2's exported
     // `may_take` — so naming a stranger's vault reads exactly like naming a vault that
     // does not exist, and the seller's own endpoint is refused because
-    // `settle_sale` writes one `lot_census` key per endpoint.
-    let destination = match listing.source.lot() {
-        Some((endpoint, _, _)) => {
-            let Some(destination) = destination else {
-                return Err(MarketError::bad(
-                    "Name the inventory endpoint this is delivered into: +market/accept \
-                     <quote>=<vault>.",
-                ));
-            };
-            if !mush_inventory::may_take(ctx.w, ctx.actor, destination) || destination == endpoint {
-                return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
-            }
-            Some(destination)
-        }
+    // `settle_sale` writes one `lot_census` key per endpoint (and a Draw from an
+    // endpoint into itself moves nothing).
+    let destination = match &matter {
+        Some(m) => Some(lot_precheck(
+            ctx,
+            &q,
+            &listing,
+            m,
+            destination,
+            gate.as_ref(),
+            presence,
+        )?),
         None => None,
+    };
+    // Doc 18 cut IC7: a Draw's cutoff, computed before any money moves so an
+    // unrepresentable instant refuses rather than taking the money for a deal whose
+    // window cannot be written (checked arithmetic, real seconds).
+    let accepted_at = ctx.w.now();
+    let draw_by = match &matter {
+        Some(LotMatter::Draw { .. }) => Some(
+            accepted_at
+                .checked_add(DRAW_WINDOW_SECS)
+                .and_then(|t| t.checked_sub(DRAW_SETTLE_MARGIN_SECS))
+                .ok_or_else(|| MarketError::bad(UNDELIVERABLE))?,
+        ),
+        Some(LotMatter::Hold { .. }) | None => None,
     };
     if let Some(why) = crate::module::cannot_deliver(ctx, &q, representation) {
         tracing::info!(
@@ -626,10 +742,7 @@ pub fn accept_into(
             why,
             "market: a purchase was refused undeliverable"
         );
-        return Err(MarketError::bad(
-            "That cannot be delivered to you right now, so the sale was not made. Nothing was \
-             charged.",
-        ));
+        return Err(MarketError::bad(UNDELIVERABLE));
     }
     let Some(buyer_account) = principal_account(ctx, &instrument, &q.buyer) else {
         return Err(MarketError::bad(
@@ -642,7 +755,8 @@ pub fn accept_into(
         &vendor,
         representation,
         buyer_account,
-        ctx.w.now(),
+        accepted_at,
+        draw_by.map(|_| (q.id, accepted_at)),
     );
     let contract = mush_economy::offer_contract(ctx, spec).map_err(MarketError::Contract)?;
     // **The link is written before either acceptance** (independent verify fold, R9a).
@@ -674,10 +788,12 @@ pub fn accept_into(
         }
     }
     // The **vendor organization accepts programmatically** through E6b's
-    // `with_party_caps` (G8). That builder grants no money authority whatever: the
-    // accept still runs `accept_core`, still places the vendor's escrow (there is
-    // none here — it owes no consideration) under the org account's own authority,
-    // and still refuses when the org cannot stand behind the deal.
+    // `with_party_caps` (G8) — or, since doc 18 cut IC7, through the composition's
+    // content-resolved party-cap source, asked only after the table said no. Neither
+    // grants any money authority whatever: the accept still runs `accept_core`, still
+    // places the vendor's escrow (there is none here — it owes no consideration) under
+    // the org account's own authority, and still refuses when the org cannot stand
+    // behind the deal.
     let vendor_principal = PrincipalId::Organization(vendor.org);
     match mush_economy::accept_contract_as(ctx, contract, &vendor_principal) {
         Ok(AcceptOutcome::Accepted { .. }) => {}
@@ -698,20 +814,36 @@ pub fn accept_into(
     // rule). The money is escrowed and the contract is in force by the time this runs,
     // so **a lot is never consumed without the money leg**: every refusal above
     // returns before it, and a settle that never activates consumes nothing.
-    if let Some((endpoint, commodity, grade)) = listing.source.lot() {
-        let destination = destination.unwrap_or(endpoint);
-        crate::lot::stage(
-            ctx,
-            &crate::lot::LotLeg {
-                op: crate::lot::LotOp::Consume,
-                listing: listing.id,
-                endpoint: destination,
-                source: endpoint,
-                commodity: commodity.clone(),
-                quantity: q.quantity,
-                grade,
+    //
+    // Doc 18 cut IC7: the terms the money was taken for are frozen on the quote first
+    // (`Quote::lot`, written by the final `put_quote` below), and the leg is built from
+    // them — `consume` for a hold-backed sale, `draw` for a drawn one — carrying the
+    // contract, so a re-stage (`restage_draw`) is byte-identical and the paid-leg
+    // projection offers it only to this buyer.
+    if let (Some(matter), Some(destination)) = (&matter, destination) {
+        let paid = PaidLot {
+            kind: matter.kind(),
+            source: LotEndpoint(matter.source()),
+            destination: LotEndpoint(destination),
+            commodity: LotCommodity(matter.commodity().clone()),
+            grade: match matter {
+                LotMatter::Hold { grade, .. } => *grade,
+                LotMatter::Draw { .. } => 0,
             },
-        );
+            accepted_at,
+            draw_by,
+        };
+        if !crate::lot::stage(ctx, &paid_leg(&q, &paid, contract)) {
+            // The money is in force and no leg was staged: a composition defect. A Draw
+            // sale then never sees its fact and expires with a refund at its window; a
+            // hold-backed one is §9 risk 3 (L14), and the log says so.
+            tracing::error!(
+                quote = q.id.0,
+                contract = contract.0,
+                "market: a paid lot leg could not be staged"
+            );
+        }
+        q.lot = Some(paid);
     }
     // **The single serialization point** (OPEN 4): the listing's quantity decrements
     // when — and only when — the contract came into force. A quote reserved nothing,
@@ -729,6 +861,159 @@ pub fn accept_into(
     q.revision = q.revision.saturating_add(1);
     put_quote(ctx, q);
     Ok(contract)
+}
+
+/// The paid lot leg one activated quote's frozen terms stage (doc 18 cut IC7): the same
+/// leg at accept and at every re-stage, so its parameters and key are byte-identical.
+fn paid_leg(q: &Quote, lot: &PaidLot, contract: ContractId) -> crate::lot::LotLeg {
+    crate::lot::LotLeg {
+        op: match lot.kind {
+            PaidKind::Hold => crate::lot::LotOp::Consume,
+            PaidKind::Draw => crate::lot::LotOp::Draw,
+        },
+        listing: q.listing,
+        endpoint: lot.destination.0,
+        source: lot.source.0,
+        commodity: lot.commodity.0.clone(),
+        quantity: q.quantity,
+        grade: lot.grade,
+        contract: Some(contract),
+    }
+}
+
+/// **A lot purchase's pre-checks, before any money moves** (E7r2 P1, extended by doc 18
+/// §4.3 in cut IC7). Returns the destination endpoint.
+///
+/// In order: the destination (the named one, else the gate's `endpoint_for`, else the
+/// E7r2 refusal); custody of it and not the source; the gate's `admit` with the
+/// endpoint; the governed-endpoint rule (lead 2e: only a Draw from one of the venue's
+/// own port institutions delivers into a governed endpoint); the capacity pre-check;
+/// and for a Draw the storefront's available stock and the composed `market` fact
+/// namespace (a Draw sale whose fact nobody answers would never settle).
+#[allow(clippy::too_many_arguments)]
+fn lot_precheck(
+    ctx: &Ctx<'_>,
+    q: &Quote,
+    listing: &Listing,
+    matter: &LotMatter,
+    destination: Option<mush_inventory::EndpointRef>,
+    gate: Option<&std::sync::Arc<dyn crate::module::VenueGate>>,
+    presence: crate::module::Presence,
+) -> Result<mush_inventory::EndpointRef, MarketError> {
+    let destination = destination
+        .or_else(|| gate.and_then(|g| g.endpoint_for(ctx.w, ctx.actor, &listing.market, presence)));
+    let Some(destination) = destination else {
+        return Err(MarketError::bad(
+            "Name the inventory endpoint this is delivered into: +market/accept \
+             <quote>=<vault>.",
+        ));
+    };
+    if !mush_inventory::may_take(ctx.w, ctx.actor, destination) || destination == matter.source() {
+        return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
+    }
+    if let Some(gate) = gate {
+        gate.admit(
+            ctx.w,
+            ctx.actor,
+            &listing.market,
+            Some(destination),
+            presence,
+        )
+        .map_err(|r| MarketError::bad(r.line))?;
+        if gate.governed(ctx.w, destination)
+            && !(matches!(matter, LotMatter::Draw { .. })
+                && gate.port_seller(ctx.w, &listing.market, &listing.seller))
+        {
+            return Err(MarketError::bad(PORT_ONLY_ENDPOINT));
+        }
+    }
+    // ---- the capacity pre-check (doc 18 §4.3 "The capacity function") ----
+    if let Some(capacity) = crate::module::capacity_provider(ctx.w)
+        && let Some(plan) = capacity.plan(ctx.w, destination)
+    {
+        if !plan.within_bounds() {
+            return Err(MarketError::bad(CAPACITY_UNREADABLE));
+        }
+        let mut read_pool = |c: &mush_core::CanonicalId| {
+            crate::lot::pool_balance(ctx, destination, c).map_err(|()| CapacityReadError)
+        };
+        match capacity.check(&plan, matter.commodity(), q.quantity, &mut read_pool) {
+            Ok(()) => {}
+            Err(CapacityRefusal::Refused { line, .. }) => return Err(MarketError::bad(line)),
+            Err(CapacityRefusal::Unreadable) => {
+                return Err(MarketError::bad(CAPACITY_UNREADABLE));
+            }
+        }
+    }
+    // ---- a Draw: the storefront holds it, and its fact can be answered ----
+    if let LotMatter::Draw { source, commodity } = matter {
+        let stocked = crate::lot::pool_available(ctx, *source, commodity)
+            .is_ok_and(|available| available >= q.quantity);
+        if !stocked || !mush_economy::has_fact_provider(ctx.w, crate::store::NS) {
+            tracing::info!(
+                quote = q.id.0,
+                stocked,
+                "market: a drawn purchase was refused undeliverable"
+            );
+            return Err(MarketError::bad(UNDELIVERABLE));
+        }
+    }
+    Ok(destination)
+}
+
+/// **Ask again for a Draw's hand-over** (doc 18 §4.4, D-18-32; cut IC7, F11): re-stage
+/// a taken-up Draw quote whose goods have not been seen to move, under the same
+/// contract key with byte-identical parameters — the same request to the driver, so a
+/// re-stage after a landing replays as a HIT and one after a refused prepare is
+/// prepared again. Public because IC11's executor re-stages through it.
+///
+/// - `Ok(None)` — not a re-stageable Draw at all (not the actor's quote, not activated,
+///   not a Draw, already drawn or settled, no contract, or the contract not `Active`):
+///   the caller falls through to [`accept_at`] and its existing answers;
+/// - `Err(DRAW_TOO_LATE)` — past the cutoff `draw_by` (real clock): the leg would not be
+///   offered at drain anyway;
+/// - `Err(<the undeliverable line>)` — the leg could not be staged;
+/// - `Ok(Some(contract))` — staged.
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`crate::refuse_market`].
+pub fn restage_draw(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<Option<ContractId>, MarketError> {
+    let Some(q) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.quote(id).cloned())
+    else {
+        return Ok(None);
+    };
+    if q.buyer != PrincipalId::Object(ctx.actor)
+        || !q.activated
+        || q.drawn_at.is_some()
+        || q.settled.is_some()
+    {
+        return Ok(None);
+    }
+    let (Some(lot), Some(contract)) = (q.lot.clone(), q.contract) else {
+        return Ok(None);
+    };
+    let (PaidKind::Draw, Some(draw_by)) = (lot.kind, lot.draw_by) else {
+        return Ok(None);
+    };
+    let active = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(contract).map(|c| c.state))
+        .is_some_and(|state| matches!(state, ContractState::Active));
+    if !active {
+        return Ok(None);
+    }
+    if ctx.w.now() > draw_by {
+        return Err(MarketError::bad(DRAW_TOO_LATE));
+    }
+    if !crate::lot::stage(ctx, &paid_leg(&q, &lot, contract)) {
+        return Err(MarketError::bad(UNDELIVERABLE));
+    }
+    Ok(Some(contract))
 }
 
 /// Take `quantity` off a listing, deleting it when it is exhausted.
@@ -845,13 +1130,47 @@ fn purchase_spec(
     representation: Representation,
     buyer_account: mush_economy::AccountId,
     now: i64,
+    draw: Option<(QuoteId, i64)>,
 ) -> ContractSpec {
     let total = q.total();
+    // Doc 18 cut IC7: a Draw sale's window is `DRAW_WINDOW_SECS` (real), and every
+    // other sale's is `DEAL_WINDOW_SECS`, exactly as before.
+    let deadline_at = match draw {
+        Some((_, accepted_at)) => accepted_at.saturating_add(DRAW_WINDOW_SECS),
+        None => now.saturating_add(DEAL_WINDOW_SECS),
+    };
     // `Procurement` carries its **lead time as a `Before` deadline** (§5.4): the
     // delivery must land inside it, and past it the row stops holding and the
     // contract's own expiry refunds. Everything else is an immediate sale whose one
     // condition is the deal window itself.
     let (conditions, deliverables) = match (&listing.source, representation, listing.object) {
+        // **A Draw sale settles only on proof the matter moved** (doc 18 §4.3, cut IC7,
+        // L1): the window, and the `market.lot.drawn` fact the market answers from the
+        // durable receipt the Draw writes in its own bundle. A Draw refused at prepare
+        // writes none, so the fact stays unsatisfied, the contract never settles, and
+        // its `Expiry::Refund` returns the escrow at the window with no page — nothing
+        // is paid for nothing (§9 risk 3, closed for the Draw).
+        _ if draw.is_some() => (
+            vec![
+                TypedCondition::Before {
+                    deadline: EconomicDeadline {
+                        clock: EconomicClock::RealUtc,
+                        at: deadline_at,
+                    },
+                },
+                TypedCondition::Fact {
+                    fact: mush_economy::ExternalRef {
+                        provider: SmolStr::new_static(crate::store::NS),
+                        kind: SmolStr::new_static(crate::record::FACT_LOT_DRAWN),
+                        id: SmolStr::new(draw.map_or_else(String::new, |(quote, at)| {
+                            crate::lot::draw_fact_id(quote, at)
+                        })),
+                        revision: None,
+                    },
+                },
+            ],
+            Vec::new(),
+        ),
         (Supply::Procurement { lead }, _, _) => {
             (vec![TypedCondition::Before { deadline: *lead }], Vec::new())
         }
@@ -925,7 +1244,7 @@ fn purchase_spec(
         evidence,
         deadline: Some(EconomicDeadline {
             clock: EconomicClock::RealUtc,
-            at: now.saturating_add(DEAL_WINDOW_SECS),
+            at: deadline_at,
         }),
         // An uncompleted purchase simply refunds: nothing was taken, so there is
         // nothing to forfeit.
@@ -976,6 +1295,18 @@ pub fn sell(
     }
     if !vendor.is_trading() {
         return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    }
+    // Doc 18 §4.3 (cut IC7): the presence gate, in its own words, before anything is
+    // escrowed. No gate is the pre-IC7 behaviour exactly.
+    if let Some(gate) = crate::module::venue_gate(ctx.w) {
+        gate.admit(
+            ctx.w,
+            seller,
+            &vendor.market,
+            None,
+            crate::module::Presence::Here,
+        )
+        .map_err(|r| MarketError::bad(r.line))?;
     }
     // The seller must actually be holding it — a world fact, not a gated one, exactly
     // as E6b's fence asks it.
@@ -1194,6 +1525,16 @@ pub(crate) fn on_contract_changed(
             crate::module::deliver(ctx, &q, contract);
         }
         K::Cancelled | K::Expired => {
+            // Doc 18 cut IC7: an activated Draw quote whose mirror has not seen its goods
+            // move can only be released after reading its durable receipt, and this ear
+            // runs on the emitting module's context (the economy's sweep, for an expiry),
+            // where `Ctx::action_state`'s owner scope refuses the market's own family. So
+            // it is left exactly as it is, and the draw mirror on the market's own sweep
+            // (`boot::reconcile_draws`) releases it within one lap, reading the receipt
+            // where the read is the market's to make.
+            if awaits_receipt_read(&q) {
+                return;
+            }
             // The goods come back, the maker's window gets its budget back, and the
             // quote is forgotten: a closed record is deleted, so a quote/cancel loop
             // mints no permanent documents.
@@ -1236,10 +1577,82 @@ pub(crate) fn stamp_settlement(
 /// a boot reconcile that runs twice cannot double-restore, because the second pass has
 /// no quote to key on. A quote whose deal never came into force gives nothing back,
 /// because nothing was taken (R9).
+///
+/// **The no-relist guard** (doc 18 cut IC7, F1 defence in depth). `on_contract_changed`
+/// and `reconcile_contracts` both unwind through here, so this is the one place a
+/// Draw's listing could be restored over goods that already left. For an activated
+/// Draw quote it first decides whether the goods moved — the mirror (`drawn_at`), else
+/// the durable receipt; an unreadable receipt counts as moved, because under-listing is
+/// safe and phantom stock is not — and when they moved it skips the restore, gives the
+/// budgets back, forgets the row, and pages once. With the cutoff this is unreachable in
+/// ordinary running; it exists for a mirror starved past the margin. The receipt read is
+/// owner-scoped, so an undrawn Draw is released only from a context the market owns (its
+/// sweep's mirror arm and its boot reconcile); the settlement ear defers it
+/// ([`awaits_receipt_read`]).
 pub(crate) fn release_quote(ctx: &mut Ctx<'_>, q: &Quote) {
     if q.activated {
-        restore_quantity(ctx, q);
+        if !goods_moved(ctx, q) {
+            restore_quantity(ctx, q);
+        } else {
+            let contract = q.contract.unwrap_or(ContractId(0));
+            tracing::error!(
+                quote = q.id.0,
+                contract = contract.0,
+                "market: a Draw's goods moved and its contract lapsed unpaid; the listing is \
+                 not restored"
+            );
+            // An activated quote always names its contract, so the page always has its
+            // subject; the arm without one only logs.
+            if let Some(contract) = q.contract {
+                mush_economy::open_escalation(
+                    ctx,
+                    mush_economy::EscalationKind::BootReconciliation,
+                    mush_economy::EscalationSubject::Contract(contract),
+                    format!(
+                        "market quote #{}'s goods were drawn but contract #{contract} lapsed \
+                         unpaid, so the listing was not restored. The buyer holds the goods and \
+                         the payment came back.",
+                        q.id
+                    ),
+                    vec![
+                        format!("@contract/show #{contract}"),
+                        format!(
+                            "@market/catalog show {}:{}",
+                            q.catalog.ruleset, q.catalog.code
+                        ),
+                    ],
+                );
+            }
+        }
         charge_budgets(ctx, q, -1);
     }
     del_quote(ctx, q.id);
+}
+
+/// Whether releasing `q` needs its durable draw receipt read (doc 18 cut IC7): an
+/// activated Draw quote whose mirror (`drawn_at`) has not yet seen its goods move. Such a
+/// quote is released only where the market's own typed state may be read — the mirror arm
+/// of its sweep and its boot reconcile — never from the settlement ear.
+pub(crate) fn awaits_receipt_read(q: &Quote) -> bool {
+    q.activated && q.drawn_at.is_none() && q.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Draw)
+}
+
+/// Whether an activated quote's goods **left the listing for good** (doc 18 cut IC7):
+/// `true` only for a Draw quote whose mirror or durable receipt says it moved — or whose
+/// receipt cannot be read, or which names no contract to read it by, both of which
+/// fail closed (under-listing is safe; phantom stock is not). Every other quote is
+/// `false`, and restores exactly as before IC7.
+fn goods_moved(ctx: &Ctx<'_>, q: &Quote) -> bool {
+    if !q.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Draw) {
+        return false;
+    }
+    if q.drawn_at.is_some() {
+        return true;
+    }
+    let Some(contract) = q.contract else {
+        // An activated quote always names its contract (the link is written before
+        // either acceptance); one that does not cannot be checked.
+        return true;
+    };
+    !matches!(crate::lot::draw_receipt(ctx, contract), Ok(None))
 }

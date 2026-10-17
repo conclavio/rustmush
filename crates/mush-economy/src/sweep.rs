@@ -1623,10 +1623,10 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             // deadline and no condition progress by design, so seven quiet days are not
             // a fault. This exempts housing and recovery leases too, which shared the
             // defect. A `ReadyToSettle` or escrowed `Draft` lease still pages.
-            .filter(|c| {
-                !(c.state == crate::contract::ContractState::Active
-                    && crate::contract::is_lease_shaped(c))
-            })
+            // Cut IC7 (lead note 2b) narrows it to a live lease whose own escrow list
+            // is empty: an `Active` lease-shaped contract holding escrow is somebody's
+            // money sitting still and pages like any other (`exempt_from_stale_page`).
+            .filter(|c| !crate::contract::exempt_from_stale_page(c))
             // A draft with no escrow is not somebody's money sitting still; it is
             // collected on the TTL and says nothing to staff.
             .filter(|c| {
