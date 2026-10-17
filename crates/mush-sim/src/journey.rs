@@ -171,6 +171,19 @@ pub enum CarrierJourneyError {
     /// The recorded diagnosis is over [`MAX_JOURNEY_ANOMALY_BYTES`].
     #[error("a journey anomaly note is too long")]
     AnomalyTooLong,
+    /// **Doc 18 cut IC9** — frozen leg times that do not name every leg of the
+    /// route, one time per leg.
+    #[error("a journey's leg times name every leg: {times} for {legs}")]
+    LegTimes {
+        /// How many legs the route declares.
+        legs: usize,
+        /// How many times were offered.
+        times: usize,
+    },
+    /// **Doc 18 cut IC9** — a frozen leg time of zero (an instantaneous
+    /// relocation, exactly what `LegDef::new` refuses for `base_s`).
+    #[error("a journey leg time is positive")]
+    ZeroLegTime,
 }
 
 /// A carrier's journey along a [`RouteDef`] — the **exempt `sim.journey`**
@@ -199,6 +212,11 @@ pub struct CarrierJourney {
     state: JourneyState,
     anomaly: Option<String>,
     applied_revision: u64,
+    /// **Doc 18 cut IC9 (§4.4, D-18-46)** — the journey's frozen leg times, one
+    /// per route leg, when a planner flew it: the passage plan's laden seconds,
+    /// which replace each leg's authored `base_s` in every boundary. `None` is
+    /// every journey before IC9 and every staff/authored departure.
+    leg_s: Option<Vec<u32>>,
 }
 
 /// The strict wire form of [`CarrierJourney`].
@@ -230,6 +248,12 @@ pub struct CarrierJourneyWire {
     /// therefore fails closed.
     #[serde(default)]
     pub applied_revision: u64,
+    /// **Doc 18 cut IC9** — the frozen leg times, when a planner flew the
+    /// journey. Absent on the wire when `None`, so a journey without them
+    /// encodes byte-identically to the pre-IC9 form; `TryFrom` re-runs
+    /// [`CarrierJourney::with_leg_times`] when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leg_s: Option<Vec<u32>>,
 }
 
 impl CarrierJourney {
@@ -303,7 +327,55 @@ impl CarrierJourney {
             state,
             anomaly,
             applied_revision: 0,
+            leg_s: None,
         })
+    }
+
+    /// **Doc 18 cut IC9 (§4.4, D-18-46, lead ruling L3)** — fly this journey on
+    /// frozen leg times: `leg_s[k]` replaces leg `k`'s authored `base_s` in
+    /// [`Self::leg_due_at`], so every boundary, the arrival, the due cursor,
+    /// interception and `@journey/show` are the planner's figures — nothing after
+    /// the burn re-reads the sky. Deliberately **not** a tenth constructor
+    /// argument (the [`Self::with_applied_revision`] precedent); unlike that one
+    /// it carries an invariant, so it is fallible and the wire re-runs it.
+    ///
+    /// # Errors
+    ///
+    /// [`CarrierJourneyError::LegTimes`] unless there is exactly one time per
+    /// route leg, and [`CarrierJourneyError::ZeroLegTime`] for a zero time.
+    pub fn with_leg_times(
+        mut self,
+        leg_s: Vec<u32>,
+    ) -> Result<CarrierJourney, CarrierJourneyError> {
+        let legs = self.route.legs().len();
+        if leg_s.len() != legs {
+            return Err(CarrierJourneyError::LegTimes {
+                legs,
+                times: leg_s.len(),
+            });
+        }
+        if leg_s.contains(&0) {
+            return Err(CarrierJourneyError::ZeroLegTime);
+        }
+        self.leg_s = Some(leg_s);
+        Ok(self)
+    }
+
+    /// **Doc 18 cut IC9** — the seconds leg `k` (0-based) is flown in: its
+    /// frozen time when the journey carries leg times, else its authored
+    /// `base_s`. `None` past the route.
+    #[must_use]
+    pub fn leg_secs(&self, k: usize) -> Option<u32> {
+        match &self.leg_s {
+            Some(times) => times.get(k).copied(),
+            None => self.route.legs().get(k).map(|leg| leg.base_s()),
+        }
+    }
+
+    /// **Doc 18 cut IC9** — the frozen leg times, if the journey carries them.
+    #[must_use]
+    pub fn leg_times(&self) -> Option<&[u32]> {
+        self.leg_s.as_deref()
     }
 
     /// Scope this record's arrival-repair claim to a placement revision
@@ -401,6 +473,14 @@ impl CarrierJourney {
             return None;
         }
         let mut at = self.departed.at;
+        // Doc 18 cut IC9: the frozen leg times, when present, are the
+        // boundaries (`with_leg_times` guarantees one per leg).
+        if let Some(times) = &self.leg_s {
+            for secs in times.iter().take(k.checked_add(1)?) {
+                at = at.checked_add(i64::from(*secs))?;
+            }
+            return Some(at);
+        }
         for leg in &legs[..=k] {
             at = at.checked_add(i64::from(leg.base_s()))?;
         }
@@ -444,6 +524,7 @@ impl From<CarrierJourney> for CarrierJourneyWire {
             state: value.state,
             anomaly: value.anomaly,
             applied_revision: value.applied_revision,
+            leg_s: value.leg_s,
         }
     }
 }
@@ -458,7 +539,8 @@ impl TryFrom<CarrierJourneyWire> for CarrierJourney {
         // then — the saving is the `LegDef` construction, not the parse.)
         let route = RouteDef::try_from(value.route)?;
         let applied_revision = value.applied_revision;
-        CarrierJourney::new(
+        let leg_s = value.leg_s;
+        let journey = CarrierJourney::new(
             value.journey,
             value.root,
             route,
@@ -469,7 +551,13 @@ impl TryFrom<CarrierJourneyWire> for CarrierJourney {
             value.state,
             value.anomaly,
         )
-        .map(|j| j.with_applied_revision(applied_revision))
+        .map(|j| j.with_applied_revision(applied_revision))?;
+        // Doc 18 cut IC9: stored leg times re-run their invariant, so a count
+        // mismatch or a zero is refused on load (and HELD at boot, R3).
+        match leg_s {
+            Some(times) => journey.with_leg_times(times),
+            None => Ok(journey),
+        }
     }
 }
 
@@ -481,6 +569,108 @@ impl<'de> Deserialize<'de> for CarrierJourney {
         let wire = CarrierJourneyWire::deserialize(deserializer)?;
         CarrierJourney::try_from(wire).map_err(serde::de::Error::custom)
     }
+}
+
+// ----------------------------------------------------------------------
+// Doc 18 cut IC9: the carrier hooks composition seam
+// ----------------------------------------------------------------------
+
+/// **Doc 18 cut IC9 (§4.2 "The helm", §4.4, lead ruling L8) — what a game layer
+/// says about a carrier's passage**, handed in at the composition root exactly as
+/// [`crate::RouteCatalog`] is (`tacsim` depends on `mush-sim`, so the other
+/// direction would be a cycle).
+///
+/// Three points and nothing else: the manual `@journey/depart` arm asks whether a
+/// departure is refused, and the tick tells the layer about a live intermediate
+/// boundary and a live first arrival so it can narrate its own lines. Every method
+/// is defaulted to today's behaviour, and an unwired composition
+/// ([`CarrierHooksState`] holding `None`) behaves exactly as before IC9.
+///
+/// **Bounded and world-only.** A hook runs inside mush-sim's tick or a command; it
+/// reads the world and writes only the outbox it is given (narration, a queued
+/// notice) — never a typed family, never a submission.
+pub trait CarrierHooks: Send + Sync {
+    /// Called by `@journey/depart` AFTER the route is resolved (`build_route`),
+    /// for every actor (staff included). `Some(why)` refuses the departure with
+    /// `why`. Never consulted by [`crate::depart`]: it guards only the manual arm,
+    /// and a game layer's own planned path calls `depart` directly.
+    fn refuse_manual_departure(
+        &self,
+        w: &World,
+        carrier: ObjId,
+        route: &RouteDef,
+    ) -> Option<String> {
+        let _ = (w, carrier, route);
+        None
+    }
+
+    /// A live (`Source::Tick`) intermediate boundary: `journey` is the advanced
+    /// record and `reached` its new cursor (legs `0..reached` flown). Returns
+    /// whether mush-sim's own generic aboard line is to be SUPPRESSED (`true`)
+    /// or kept (`false`). Never called for a boundary caught up at boot (R9:
+    /// observers composed after mush-sim have not hydrated there).
+    fn boundary(&self, ctx: &mut Ctx<'_>, journey: &CarrierJourney, reached: u32) -> bool {
+        let _ = (ctx, journey, reached);
+        false
+    }
+
+    /// A live first arrival — never on boot (R9) and **never on the crash-gap
+    /// heal re-apply** of an already-`Arrived` record (reviewer F11), so a layer's
+    /// narration and any durable notice it queues happen once per passage. Same
+    /// return meaning as [`Self::boundary`]; the outside line to the arrival room
+    /// is mush-sim's and always stays.
+    fn arrived(&self, ctx: &mut Ctx<'_>, journey: &CarrierJourney) -> bool {
+        let _ = (ctx, journey);
+        false
+    }
+}
+
+/// A newtype over `Option<Arc<dyn CarrierHooks>>` carrying the
+/// composition-installed hooks into world state (the [`crate::RouteCatalogState`]
+/// shape). `None` is an unwired composition: no refusal, no narration, the
+/// generic lines kept.
+#[derive(Clone, Default)]
+pub struct CarrierHooksState(Option<std::sync::Arc<dyn CarrierHooks>>);
+
+impl std::fmt::Debug for CarrierHooksState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CarrierHooksState")
+            .field("wired", &self.0.is_some())
+            .finish()
+    }
+}
+
+impl CarrierHooksState {
+    /// The wired hooks.
+    #[must_use]
+    pub fn new(hooks: std::sync::Arc<dyn CarrierHooks>) -> Self {
+        Self(Some(hooks))
+    }
+
+    /// No hooks.
+    #[must_use]
+    pub const fn unwired() -> Self {
+        Self(None)
+    }
+
+    /// Whether hooks are installed at all — the composition probe.
+    #[must_use]
+    pub const fn is_wired(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// The installed hooks, cloned out so a caller holding `&mut Ctx` can call
+    /// them without borrowing the world.
+    #[must_use]
+    pub fn hooks(&self) -> Option<std::sync::Arc<dyn CarrierHooks>> {
+        self.0.clone()
+    }
+}
+
+/// The installed carrier hooks, cloned out of world state (`None` when unwired).
+pub(crate) fn carrier_hooks(w: &World) -> Option<std::sync::Arc<dyn CarrierHooks>> {
+    w.module_state::<CarrierHooksState>()
+        .and_then(CarrierHooksState::hooks)
 }
 
 // ----------------------------------------------------------------------
@@ -1107,16 +1297,32 @@ fn step(ctx: &mut Ctx<'_>, root: ObjId, now: &ClockStamp, source: Source) -> Ste
         book.journeys.insert(root, advanced);
     }
     if let Some(leg) = crossed {
+        // Doc 18 cut IC9 (lead ruling L8): a live boundary is offered to the
+        // composition's carrier hooks first; a hook that narrates its own line
+        // answers whether mush-sim's generic one is suppressed. Never at boot
+        // (R9) — a boundary caught up there gets the generic line alone.
+        let suppress = match (source, carrier_hooks(ctx.w)) {
+            (Source::Tick, Some(hooks)) => {
+                let advanced = ctx
+                    .w
+                    .module_state::<JourneyBook>()
+                    .and_then(|b| b.get(root).cloned());
+                advanced.is_some_and(|j| hooks.boundary(ctx, &j, target))
+            }
+            (Source::Tick | Source::Boot, _) => false,
+        };
         // Cut IC4 (doc 18 §4.2 (e)): the crew aboard hear the boundary — the
         // waypoint just reached and the leg now flown (`target + 1` of
         // `total`). The cursor is the idempotency key here too: this branch
         // runs once per boundary.
-        let line = RichText::new()
-            .span(name_span(ctx.w, root))
-            .text(" passes ")
-            .span(name_span(ctx.w, leg.to()))
-            .text(format!(". Leg {} of {total}.", target.saturating_add(1)));
-        narrate_aboard(ctx, root, &line);
+        if !suppress {
+            let line = RichText::new()
+                .span(name_span(ctx.w, root))
+                .text(" passes ")
+                .span(name_span(ctx.w, leg.to()))
+                .text(format!(". Leg {} of {total}.", target.saturating_add(1)));
+            narrate_aboard(ctx, root, &line);
+        }
         raise_interception(ctx, root, &leg, now);
     }
     Step::Worked
@@ -1355,6 +1561,11 @@ fn apply_arrival(
 ) -> Step {
     let root = journey.root;
     let destination = journey.destination.clone();
+    // Doc 18 cut IC9 (reviewer F11): the crash-gap heal passes an
+    // already-`Arrived` record, the live path a cruising one. Captured on entry,
+    // so the carrier hooks' `arrived` runs on a first arrival only and never
+    // narrates or queues a durable notice a second time on the heal re-apply.
+    let healed = journey.state == JourneyState::Arrived;
     // Idempotent: an arrival already applied moves nothing and refuses nothing.
     let already = carrier_is_at_destination(ctx, &journey);
     // Read where it came FROM before the move, so the `Left` half of the event
@@ -1426,12 +1637,27 @@ fn apply_arrival(
                 },
             );
         }
+        // Doc 18 cut IC9 (lead ruling L8): a live first arrival is offered to
+        // the carrier hooks; `true` suppresses the generic aboard line below.
+        // Never at boot (R9) and never on the heal re-apply (F11).
+        let suppress = match (source, healed, carrier_hooks(ctx.w)) {
+            (Source::Tick, false, Some(hooks)) => {
+                let arrived = ctx
+                    .w
+                    .module_state::<JourneyBook>()
+                    .and_then(|b| b.get(root).cloned());
+                arrived.is_some_and(|j| hooks.arrived(ctx, &j))
+            }
+            (Source::Tick | Source::Boot, _, _) => false,
+        };
         // Cut IC4 (doc 18 §4.2 (e)): the same line to every room aboard, under
         // exactly the arrival narrative's conditions (lead ruling L7).
-        let line = RichText::new()
-            .span(name_span(ctx.w, root))
-            .text(" arrives, and the passage ends.");
-        narrate_aboard(ctx, root, &line);
+        if !suppress {
+            let line = RichText::new()
+                .span(name_span(ctx.w, root))
+                .text(" arrives, and the passage ends.");
+            narrate_aboard(ctx, root, &line);
+        }
     }
     raise_onboard_scene_floors(ctx, root, arrival_at);
     Step::Worked

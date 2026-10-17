@@ -133,6 +133,18 @@ pub enum DriveLaw {
     },
 }
 
+impl DriveLaw {
+    /// **The law's word** (doc 18 cut IC9, lead ruling L20): what a passage plan
+    /// records as `PassagePlan.law` (`coast`); the drive class itself is pinned by
+    /// the ticket's `unit_definition`.
+    #[must_use]
+    pub fn word(&self) -> &'static str {
+        match self {
+            DriveLaw::Coast { .. } => "coast",
+        }
+    }
+}
+
 impl fmt::Display for DriveLaw {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

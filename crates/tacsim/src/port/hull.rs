@@ -753,6 +753,9 @@ pub(crate) fn hull_line(
     let journeys = w.module_state::<mush_sim::JourneyBook>();
     let mut free = 0_usize;
     let mut under_way = 0_usize;
+    // Doc 18 cut IC9 (lead ruling L18): hulls with a filed clearance, read from
+    // the voyage pendings (World-only; the ticket is typed state).
+    let mut departing = 0_usize;
     let mut leased: Vec<String> = Vec::new();
     for row in &map.hulls {
         let mark = &row.mark;
@@ -800,31 +803,27 @@ pub(crate) fn hull_line(
         if moving {
             under_way = under_way.saturating_add(1);
         }
+        if crate::port::voyage::pending_of(w, hull).is_some() {
+            departing = departing.saturating_add(1);
+        }
         let lease = trust
             .as_ref()
             .and_then(|trust| crate::port::coop::trust_lease_on(w, trust, hull));
         match lease {
             Some(lease) => {
                 // The tenant: the first object party that is not the issuer.
-                let tenant = lease
-                    .consent
-                    .parties
-                    .iter()
-                    .find_map(|party| match party {
-                        PrincipalId::Object(obj) if *party != lease.issuer => Some(*obj),
-                        _ => None,
-                    })
-                    .map_or_else(
-                        || "nobody".to_owned(),
-                        |obj| mush_core::output::display_name(w, obj),
-                    );
+                let tenant = crate::port::coop::lease_tenant(lease).map_or_else(
+                    || "nobody".to_owned(),
+                    |obj| mush_core::output::display_name(w, obj),
+                );
                 leased.push(format!("{mark} to {tenant}"));
             }
-            None if laid_up => free = free.saturating_add(1),
+            // Doc 18 cut IC9 (the IC6 residual): a moving hull is never free.
+            None if laid_up && !moving => free = free.saturating_add(1),
             None => {}
         }
     }
-    if leased.is_empty() && under_way == 0 {
+    if leased.is_empty() && under_way == 0 && departing == 0 {
         return Some((
             LineState::Ready,
             format!("{entry} hulls: {pool} of {pool} made, titled to {org_name} and laid up."),
@@ -840,11 +839,16 @@ pub(crate) fn hull_line(
     } else {
         String::new()
     };
+    let leaving = if departing > 0 {
+        format!(", {departing} departing")
+    } else {
+        String::new()
+    };
     Some((
         LineState::Ready,
         format!(
             "{entry} hulls: {pool} of {pool} made and titled to {org_name}; {free} laid up and \
-             free, {} leased{leases}{under}.",
+             free, {} leased{leases}{under}{leaving}.",
             leased.len()
         ),
     ))

@@ -2694,8 +2694,139 @@ fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let spec = rhs_required(ctx, "@journey/depart <carrier>=<route id> <place>[:secs] …")?;
     let origin = origin_anchor(ctx, carrier)?;
     let (route, destination) = build_route(ctx, origin, &spec)?;
+    // Doc 18 cut IC9 (lead ruling L32): the composition's carrier hooks see the
+    // RESOLVED route, for every actor, staff included — a game layer refuses a
+    // route it flies only from a filed plan, and a hull it flies only that way.
+    // Authority (`denied()`) and the non-staff place-list line (inside
+    // `build_route`) still answer first.
+    if let Some(hooks) = journey::carrier_hooks(ctx.w)
+        && let Some(why) = hooks.refuse_manual_departure(ctx.w, carrier, &route)
+    {
+        return Err(CmdError::msg(why));
+    }
     refuse_unreachable_destination(ctx, carrier, &destination)?;
     let now = ctx.w.world_ic_now();
+    let legs = route.legs().len();
+    let departure = depart(ctx, carrier, route, None, now.at)?;
+    info(
+        ctx,
+        format!(
+            "{} departs on journey #{}: {} leg(s), {} record(s) aboard, due at IC {}.",
+            display_name(ctx.w, carrier),
+            departure.journey,
+            legs,
+            departure.aboard,
+            departure
+                .arrival_at
+                .map_or("(overflow — the journey will page)".to_string(), |d| d
+                    .to_string()),
+        ),
+    );
+    Ok(())
+}
+
+/// What [`depart`] put under way (doc 18 cut IC9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Departure {
+    /// The new journey's id.
+    pub journey: JourneyId,
+    /// How many placement records rode the carrier move (the root's subtree).
+    pub aboard: usize,
+    /// The absolute WorldIc arrival instant (`None` when it overflowed; the
+    /// journey pages on its first tick).
+    pub arrival_at: Option<i64>,
+}
+
+/// **Doc 18 cut IC9 (reviewer F2; §4.2 "A refused departure consumes nothing")
+/// — why `carrier` could not depart on `route` now: the exact checks [`depart`]
+/// runs first**, public so a caller can dry-run every refusal `depart` would give
+/// before it spends anything.
+///
+/// In order: [`journey_ineligible`] (gone, kind, already under way, the seal, the
+/// census, a held placement, quarantine); the carrier's origin anchor and its
+/// equality with the route's origin endpoint ([`ROUTE_NOT_FROM_HERE`]); the
+/// arrival placement at the route's destination endpoint (a domain that is not
+/// `Active`, a vault backing, a non-host); and the reachability of that placement
+/// (a carrier never comes to rest inside its own subtree or aboard another
+/// carrier under way). `None` means `depart` will not refuse on any of them.
+#[must_use]
+pub fn depart_ineligible(ctx: &Ctx<'_>, carrier: ObjId, route: &RouteDef) -> Option<String> {
+    if let Some(why) = journey_ineligible(ctx, carrier) {
+        return Some(why);
+    }
+    let (from, to) = route.endpoints();
+    match origin_anchor(ctx, carrier) {
+        Ok(origin) if origin == from => {}
+        Ok(_) => return Some(ROUTE_NOT_FROM_HERE.to_owned()),
+        Err(e) => return Some(e.to_string()),
+    }
+    let parent = match arrival_parent(ctx, to) {
+        Ok(parent) => parent,
+        Err(e) => return Some(e.to_string()),
+    };
+    refuse_unreachable_destination(ctx, carrier, &parent)
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// **Doc 18 cut IC9 — put `carrier` under way on `route`**, dated from
+/// `departed_at` and, when `leg_s` is given, flown on those frozen leg times
+/// (§4.4, D-18-46; lead ruling L3: a planned launch passes its plan's
+/// `depart_ic`, so `leg_due_at(k)` is the plan's `t1` exactly and neither a
+/// restart nor the one-tick launch latency lengthens a passage).
+///
+/// The body `@journey/depart` ran after it resolved the route, extracted whole:
+/// [`depart_ineligible`] first (its sentence is the refusal), the arrival
+/// placement re-derived, a `departed_at` in the future refused, a fresh journey
+/// id, the record in the book **before** the move (the projection reads it, D2),
+/// the one checked carrier move with its rollback, the journey and allocator
+/// documents, the links, the `Moved` world event and `" sets out."` to the room
+/// it left. It never consults [`crate::CarrierHooks::refuse_manual_departure`]:
+/// that hook guards only the manual arm, and a game layer's planned path calls
+/// this directly. It performs no authority check either — the caller is either
+/// `@journey/depart` (which checked) or a game layer's own tick acting on a
+/// passage its rules already admitted.
+///
+/// # Errors
+///
+/// Every refusal as a [`CmdError`] sentence; on any refusal nothing is written.
+pub fn depart(
+    ctx: &mut Ctx<'_>,
+    carrier: ObjId,
+    route: RouteDef,
+    leg_s: Option<Vec<u32>>,
+    departed_at: i64,
+) -> Result<Departure, CmdError> {
+    if let Some(why) = depart_ineligible(ctx, carrier, &route) {
+        return Err(CmdError::msg(why));
+    }
+    let destination = arrival_parent(ctx, route.endpoints().1)?;
+    let now = ctx.w.world_ic_now();
+    if departed_at > now.at {
+        return Err(CmdError::msg("A journey cannot depart in the future."));
+    }
+    // Validate the record (and its leg times) BEFORE the allocator moves, so a
+    // refused record spends no id.
+    let probe = CarrierJourney::new(
+        JourneyId(0),
+        carrier,
+        route.clone(),
+        destination.clone(),
+        mush_core::ClockStamp {
+            clock: now.clock.clone(),
+            at: departed_at,
+        },
+        now.clone(),
+        0,
+        JourneyState::Cruising,
+        None,
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+    if let Some(times) = leg_s.clone() {
+        probe
+            .with_leg_times(times)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+    }
     let id = ctx
         .w
         .module_state_mut::<JourneyBook>()
@@ -2706,15 +2837,23 @@ fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         carrier,
         route,
         destination,
-        now.clone(),
+        mush_core::ClockStamp {
+            clock: now.clock.clone(),
+            at: departed_at,
+        },
         now,
         0,
         JourneyState::Cruising,
         None,
     )
     .map_err(|e| CmdError::msg(e.to_string()))?;
+    let record = match leg_s {
+        Some(times) => record
+            .with_leg_times(times)
+            .map_err(|e| CmdError::msg(e.to_string()))?,
+        None => record,
+    };
     let from = ctx.w.get(carrier).and_then(|o| o.location);
-    let legs = record.route().legs().len();
     let due = record.arrival_at();
     // **The record goes into the book BEFORE the move** (E7 cut 6 fold, D2).
     // `graph::project` answers `in_transit_room` for a root the book says is
@@ -2775,17 +2914,11 @@ fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             },
         );
     }
-    info(
-        ctx,
-        format!(
-            "{} departs on journey #{id}: {legs} leg(s), {} record(s) aboard, due at IC {}.",
-            display_name(ctx.w, carrier),
-            moved.len(),
-            due.map_or("(overflow — the journey will page)".to_string(), |d| d
-                .to_string()),
-        ),
-    );
-    Ok(())
+    Ok(Departure {
+        journey: id,
+        aboard: moved.len(),
+        arrival_at: due,
+    })
 }
 
 fn journey_divert(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2888,7 +3021,9 @@ fn describe_journey(ctx: &Ctx<'_>, j: &CarrierJourney, lead: &str) -> Vec<String
             "  {mark} leg {} → {} ({}s, IC {due})",
             k + 1,
             display_name(ctx.w, leg.to()),
-            leg.base_s(),
+            // Doc 18 cut IC9: the seconds the leg is flown in — its frozen
+            // time when the journey carries leg times, else `base_s`.
+            j.leg_secs(k).unwrap_or_else(|| leg.base_s()),
         ));
     }
     lines.push(format!(

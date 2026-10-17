@@ -55,7 +55,9 @@ use mush_core::{
 };
 use mush_proto::RichText;
 
-pub use commands::{MANUAL_ROUTE_STAFF_ONLY, ROUTE_NOT_FROM_HERE};
+pub use commands::{
+    Departure, MANUAL_ROUTE_STAFF_ONLY, ROUTE_NOT_FROM_HERE, depart, depart_ineligible,
+};
 pub use custody::InteriorCustodyProvider;
 pub use data::{
     CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord,
@@ -78,18 +80,19 @@ pub use focus::{
     driving_actor, proxy_drive_of, seat_restriction,
 };
 pub use graph::{
-    effective_domain, presence, project, space_domain, verify_indexes, verify_projections,
+    anchored_space_of, effective_domain, presence, project, space_domain, verify_indexes,
+    verify_projections,
 };
 pub use journey::{
-    CarrierJourney, CarrierJourneyError, CarrierJourneyWire, JourneyBook, JourneyId, JourneyState,
-    MAX_CARRIER_JOURNEYS, MAX_CARRIER_SUBTREE, MAX_JOURNEY_ANOMALY_BYTES,
-    MAX_JOURNEYS_VISITED_PER_FIRE, MAX_JOURNEYS_WORKED_PER_FIRE, carrier_journey_key, same_place,
-    under_way_root_of,
+    CarrierHooks, CarrierHooksState, CarrierJourney, CarrierJourneyError, CarrierJourneyWire,
+    JourneyBook, JourneyId, JourneyState, MAX_CARRIER_JOURNEYS, MAX_CARRIER_SUBTREE,
+    MAX_JOURNEY_ANOMALY_BYTES, MAX_JOURNEYS_VISITED_PER_FIRE, MAX_JOURNEYS_WORKED_PER_FIRE,
+    carrier_journey_key, same_place, under_way_root_of,
 };
 pub use route::{
     CadenceId, DistanceLaw, DriveProfile, DriveProfileWire, LegDef, LegDefWire, MAX_HAZARD_BAND,
     MAX_LEGS, MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef, RouteDefError,
-    RouteDefWire, route_duration, route_duration_at,
+    RouteDefWire, laden_leg_durations, route_duration, route_duration_at,
 };
 pub use seat::{
     ControlLeaseView, MAX_LEASE_VIEW_RECORDS, MAX_STATION_SERVICE_ROWS, SeatError, SeatRequest,
@@ -139,6 +142,10 @@ pub struct SimulationModule {
     /// cut 7). `None` leaves `@journey/plan|depart <route id>` on the manual
     /// fixture-route fallback, which is exactly what it did before.
     routes: Option<Arc<dyn route::RouteCatalog>>,
+    /// Doc 18 cut IC9 (lead ruling L8): the composition-installed carrier hooks
+    /// (the manual-departure refusal and the two narration points). `None`
+    /// leaves today's behaviour: no refusal, the generic aboard lines only.
+    carrier_hooks: Option<Arc<dyn journey::CarrierHooks>>,
     /// E7c8 B1: the live pulse cadence (§7's `GROUND_PULSE_MS`/`SPACE_PULSE_MS`
     /// by default). Carried into world state at `register`, where the
     /// composition root may upgrade it from `[tacsim]`.
@@ -151,6 +158,7 @@ impl std::fmt::Debug for SimulationModule {
             .field("config", &self.config)
             .field("accounts", &self.accounts.is_some())
             .field("routes", &self.routes.is_some())
+            .field("carrier_hooks", &self.carrier_hooks.is_some())
             .finish()
     }
 }
@@ -169,6 +177,7 @@ impl SimulationModule {
             config,
             accounts: None,
             routes: None,
+            carrier_hooks: None,
             pulse: tick::PulseConfig::default(),
         }
     }
@@ -202,6 +211,16 @@ impl SimulationModule {
     #[must_use]
     pub fn with_route_catalog(mut self, routes: Arc<dyn route::RouteCatalog>) -> SimulationModule {
         self.routes = Some(routes);
+        self
+    }
+
+    /// Install the carrier hooks (doc 18 cut IC9, lead ruling L8) — the
+    /// [`Self::with_route_catalog`] shape, for the same reason: the game layer
+    /// depends on `mush-sim`, so its passage rules are handed in at the
+    /// composition root. Unwired leaves the pre-IC9 behaviour verbatim.
+    #[must_use]
+    pub fn with_carrier_hooks(mut self, hooks: Arc<dyn journey::CarrierHooks>) -> SimulationModule {
+        self.carrier_hooks = Some(hooks);
         self
     }
 }
@@ -949,6 +968,13 @@ impl GameModule for SimulationModule {
         reg.state(match self.routes.clone() {
             Some(catalog) => route::RouteCatalogState::new(catalog),
             None => route::RouteCatalogState::unwired(),
+        });
+        // Doc 18 cut IC9 (lead ruling L8): the carrier hooks, on the same
+        // shape. Unwired = no manual-departure refusal and the generic aboard
+        // lines only, which is the pre-IC9 behaviour.
+        reg.state(match self.carrier_hooks.clone() {
+            Some(hooks) => journey::CarrierHooksState::new(hooks),
+            None => journey::CarrierHooksState::unwired(),
         });
         // E7c5 B2: the world-owned ephemeral focus map — an in-RAM slot, never
         // persisted, never an `Outbox` write, never hydrated at boot. Boot

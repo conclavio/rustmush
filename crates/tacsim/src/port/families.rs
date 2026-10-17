@@ -11,7 +11,8 @@
 //!   `tacsim_port_stock`.
 //! - **`tacsim.ticket`** — one [`Ticket`] per burn, keyed by its [`TicketId`]
 //!   (D-18-11 as extended by D-18-46). Written in the burn's own bundle by IC9's
-//!   `tacsim.port.burn` and consumed by the launch arm.
+//!   `tacsim_port_burn` (`crate::port::burn`) and read by the launch arm
+//!   (`crate::port::voyage`).
 //!
 //! The ticket carries the whole [`PassagePlan`] of §4.8, **declared here as
 //! data** (lead ruling L6): IC9's `port/passage.rs` writes it, but the ticket's
@@ -188,12 +189,22 @@ impl Manifest {
 }
 
 /// D-18-11 as extended by D-18-46 (§4.2's ticket): the departure ticket, written by
-/// `tacsim.port.burn` (IC9) in the burn's own bundle and consumed by the launch arm.
+/// `tacsim_port_burn` (IC9, `crate::port::burn`) in the burn's own bundle and read by the
+/// launch arm.
+///
+/// **Doc 18 cut IC9 amended the wire** (lead rulings L5/L36; no world holds a ticket yet, so
+/// nothing migrates): `seq` was added so the key is derived from the value
+/// ([`Ticket::ticket_id`], the IC8 key rule), and `launched` was removed — a typed family is
+/// written only in a prepare and the launch is a mush-sim placement write, so no writer could
+/// ever set it; launched-ness is the hull's journey present at `plan.depart_ic`, pulled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ticket {
     /// The hull that burned.
     pub hull: ObjId,
+    /// The hull's burn sequence (minted by the voyage document, `crate::port::voyage`); with
+    /// `hull` it is the ticket's key.
+    pub seq: u32,
     /// The route it burned for; the plan's own `route`.
     pub route: CanonicalId,
     /// The route pack, pinned with `route_version` (published versions are immutable; the
@@ -217,11 +228,19 @@ pub struct Ticket {
     pub attempt: u32,
     /// The IC second of the burn.
     pub burned_at: i64,
-    /// Whether the launch arm has consumed the ticket.
-    pub launched: bool,
 }
 
 impl Ticket {
+    /// The ticket's key, derived from the value (doc 18 cut IC9; the IC8 rule: writers derive
+    /// the key from the value, readers re-check it).
+    #[must_use]
+    pub fn ticket_id(&self) -> TicketId {
+        TicketId {
+            hull: self.hull,
+            seq: self.seq,
+        }
+    }
+
     /// The plan's and the manifest's own checks; the plan follows the ticket's
     /// route; `attempt >= 1`; and the burn debits no more than the hull held
     /// (`burn_t <= tank`, `crew_days <= locker`), so a plan that could not have
@@ -252,8 +271,8 @@ impl Ticket {
 }
 
 /// The ticket's key: `{hull}:{seq}` in decimal (`hull.0`, never `ObjId`'s `#`-prefixed
-/// Display), the spelling §4.4's orders example uses (`"ticket": "5011:9"`); how `seq` is
-/// minted is cut IC9's.
+/// Display), the spelling §4.4's orders example uses (`"ticket": "5011:9"`); `seq` is minted
+/// by the hull's sailing plan (`crate::port::voyage::Voyage::last_seq`, doc 18 cut IC9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TicketId {
     /// The hull that burned.
@@ -434,6 +453,10 @@ pub struct PortHandles {
     pub inventory: Option<mush_inventory::InventoryFamilies>,
     /// The test world's probe family (`crate::port_tick`); `None` in production.
     pub probe: Option<StateFamilyHandle<crate::port_tick::ProbeKey, crate::port_tick::ProbeMark>>,
+    /// Doc 18 cut IC9: the registered `tacsim_port_burn` action (`crate::port::burn`); `Some`
+    /// exactly when its provider registered (the inventory cell filled and the burn table
+    /// built), so `+ship/undock` refuses `UNDOCK_UNWIRED` on a roster without it.
+    pub burn: Option<mush_core::DefinitionRef>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
@@ -602,6 +625,7 @@ mod tests {
         let total = b.t1 - depart;
         Ticket {
             hull: ObjId(5011),
+            seq: 9,
             route: id("ceres_phobos"),
             route_pack: id("tacsim.lane.ceres_phobos"),
             route_version: 2,
@@ -628,7 +652,6 @@ mod tests {
             order: Some(9),
             attempt: 1,
             burned_at: depart,
-            launched: false,
         }
     }
 
@@ -640,11 +663,26 @@ mod tests {
     fn ic5_ticket_wire_is_strict_and_the_plan_checks() {
         let good = ticket();
         good.check().unwrap();
+        // Doc 18 cut IC9: the key is derived from the value.
+        assert_eq!(
+            good.ticket_id(),
+            TicketId {
+                hull: ObjId(5011),
+                seq: 9
+            }
+        );
         let wire = serde_json::to_value(&good).unwrap();
         assert_eq!(
             serde_json::from_value::<Ticket>(wire.clone()).unwrap(),
             good
         );
+        // Doc 18 cut IC9: `launched` is no longer a field of the wire.
+        let mut stale = wire.clone();
+        stale
+            .as_object_mut()
+            .unwrap()
+            .insert("launched".into(), json!(false));
+        assert!(serde_json::from_value::<Ticket>(stale).is_err());
         // An unknown field at each level.
         for path in [
             vec![],

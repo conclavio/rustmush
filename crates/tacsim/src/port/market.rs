@@ -159,6 +159,15 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
     }
     let port = port_name(def);
     let name = name_of(w, hull);
+    // Doc 18 cut IC9 (lead ruling L13): a docked hull with a filed clearance is
+    // treated as under way — nothing may load into a hold whose passage is filed.
+    if crate::port::voyage::pending_of(w, hull).is_some() {
+        return Err(refusal(
+            HOLD_UNDER_WAY
+                .replace("{name}", &name)
+                .replace("{port}", &port),
+        ));
+    }
     match berth_of(w, hull) {
         Berth::Docked { def: there, .. } if there.venue == def.venue => Ok(()),
         Berth::Docked { def: there, .. } => Err(refusal(

@@ -19,8 +19,11 @@
 //! - [`ShipLook`] adds a status line to every hull room's `look` (18a §3, with
 //!   the mark, L18) and, in the rooms `interior.gauges` lists, the gauge lines
 //!   ([`crate::port::gauges`]) read from the hold's pools at look time —
-//!   **no pack text carries a load** (D-18-39). The burn, reserve, leg and ETA
-//!   lines are cut IC9's.
+//!   **no pack text carries a load** (D-18-39). Doc 18 cut IC9 added the leg and
+//!   the ETA to the status line and `+ship`'s first line, the departing phase,
+//!   `+ship/plan` and `+ship/undock` (`crate::port::voyage`), and the refusal of
+//!   `+ship/board` and `+ship/leave` while a clearance is filed; the burn and
+//!   reserve gauge lines are cut IC11's (IC9 lead ruling L17).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -58,7 +61,11 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      your programme standing. It reads anywhere.\n+ship/board  in the berth gallery where your \
      Dray is cradled, cycle its lock and go aboard.\n+ship/leave  in your Dray's Airlock while it \
      is docked, cycle out into the berth gallery.\n+ship/hold  the hold, the tank and the locker, \
-     good by good, in tonnes and cubic metres.";
+     good by good, in tonnes and cubic metres.\n+ship/plan [<port>]  a dry run of the passage to \
+     <port> (or every port this berth clears for): the hold's room by mass and by packed volume, \
+     the payload, the burn, the stores and the passage time. It writes nothing.\n+ship/undock \
+     <port>  from aboard your Dray, docked, file the passage and take her out now; the burn is \
+     committed when the clearance is granted.";
 
 /// The programme's one hull class (cut IC8 may read it from the spec).
 pub const HULL_CLASS: &str = "Dray";
@@ -66,16 +73,28 @@ pub const HULL_CLASS: &str = "Dray";
 /// **18a §3's status line, docked** (L18: with the mark): `{name}`, `{mark}`,
 /// `{port}` replaced.
 pub const STATUS_DOCKED: &str = "Aboard the {name} ({mark}), docked at {port}.";
-/// The status line under way (cut IC9 adds the leg and the ETA).
-pub const STATUS_UNDER_WAY: &str = "Aboard the {name} ({mark}), under way.";
+/// The status line under way (doc 18 cut IC9: the leg and the ETA, 18a §3's
+/// form "under way, leg 2 of 2, Kirkwood astern, ETA 15:06 UTC"): `{name}`,
+/// `{mark}`, `{n}`, `{m}`, `{astern}` (`, {short} astern` once a boundary is
+/// passed), `{hhmm}`; at world rate 0 `ETA unknown.`.
+pub const STATUS_UNDER_WAY: &str =
+    "Aboard the {name} ({mark}), under way, leg {n} of {m}{astern}, ETA {hhmm} UTC.";
+/// The status line while a clearance is filed (doc 18 cut IC9): `{name}`,
+/// `{mark}`, `{port}`.
+pub const STATUS_CLEARED: &str = "Aboard the {name} ({mark}), cleared for {port}.";
 /// The status line anywhere else.
 pub const STATUS_ELSEWHERE: &str = "Aboard the {name} ({mark}).";
 
 /// **`+ship`'s first line, docked** (doc 18 §2 step 5's form; L19): `{name}`,
 /// `{class}`, `{port}`, `{gallery}` replaced.
 pub const SHIP_DOCKED: &str = "{name} ({class}): docked {port}, {gallery}.";
-/// `+ship`'s first line under way.
-pub const SHIP_UNDER_WAY: &str = "{name} ({class}): under way.";
+/// `+ship`'s first line under way (doc 18 cut IC9): `{name}`, `{class}`,
+/// `{port}`, `{n}`, `{m}`, `{icdays}`, `{hhmm}`, `{day}`; at world rate 0 the
+/// line ends `…; arrives in {icdays} IC days.`.
+pub const SHIP_UNDER_WAY: &str = "{name} ({class}): under way for {port}, leg {n} of {m}; arrives in {icdays} IC days, about {hhmm} UTC {day}.";
+/// `+ship`'s first line while a clearance is filed (doc 18 cut IC9): `{name}`,
+/// `{class}`, `{port}`.
+pub const SHIP_CLEARED: &str = "{name} ({class}): cleared for {port}; the lock is sealing.";
 /// `+ship`'s first line anywhere else.
 pub const SHIP_ELSEWHERE: &str = "{name} ({class}): not at a berth.";
 /// `+ship`'s programme line when the enrolment document does not read (L21).
@@ -275,10 +294,18 @@ fn readings_with(
 /// current name.
 #[must_use]
 pub fn status_line(w: &World, view: &HullView<'_>) -> String {
-    let template = match berth_of(w, view.hull()) {
-        Berth::Docked { def, .. } => STATUS_DOCKED.replace("{port}", &port_name(def)),
-        Berth::UnderWay => STATUS_UNDER_WAY.to_owned(),
-        Berth::Elsewhere => STATUS_ELSEWHERE.to_owned(),
+    // Doc 18 cut IC9: a hull on passage — departing (a clearance filed) or under
+    // way (its leg and ETA) — reads its passage first.
+    let template = match (
+        crate::port::voyage::passage_of(w, view.hull()),
+        berth_of(w, view.hull()),
+    ) {
+        (Some(passage), _) => crate::port::voyage::status_passage_line(w, &passage),
+        (None, Berth::Docked { def, .. }) => STATUS_DOCKED.replace("{port}", &port_name(def)),
+        (None, Berth::UnderWay) => {
+            STATUS_UNDER_WAY.replace(", leg {n} of {m}{astern}, ETA {hhmm} UTC", "")
+        }
+        (None, Berth::Elsewhere) => STATUS_ELSEWHERE.to_owned(),
     };
     template
         .replace("{name}", &name_of(w, view.hull()))
@@ -287,6 +314,12 @@ pub fn status_line(w: &World, view: &HullView<'_>) -> String {
 
 /// `+ship`'s first line (doc 18 §2 step 5's form; L19).
 fn ship_line(w: &World, view: &HullView<'_>) -> String {
+    // Doc 18 cut IC9: departing and under way read the passage.
+    if let Some(passage) = crate::port::voyage::passage_of(w, view.hull()) {
+        return crate::port::voyage::ship_passage_line(w, &passage)
+            .replace("{name}", &name_of(w, view.hull()))
+            .replace("{class}", HULL_CLASS);
+    }
     let template = match berth_of(w, view.hull()) {
         Berth::Docked { map, def } => {
             let gallery = map
@@ -296,7 +329,10 @@ fn ship_line(w: &World, view: &HullView<'_>) -> String {
                 .replace("{port}", &port_name(def))
                 .replace("{gallery}", &gallery)
         }
-        Berth::UnderWay => SHIP_UNDER_WAY.to_owned(),
+        Berth::UnderWay => SHIP_UNDER_WAY.replace(
+            " for {port}, leg {n} of {m}; arrives in {icdays} IC days, about {hhmm} UTC {day}",
+            "",
+        ),
         Berth::Elsewhere => SHIP_ELSEWHERE.to_owned(),
     };
     template
@@ -322,7 +358,7 @@ fn narrative(text: RichText) -> OutputEvent {
 
 /// The refusal for an actor with no live charter: ended, when their enrolment
 /// was revoked, else [`NO_CHARTER`].
-fn no_charter(w: &World, actor: ObjId) -> CmdError {
+pub(crate) fn no_charter(w: &World, actor: ObjId) -> CmdError {
     let ended = w
         .module_state::<TacsimStore>()
         .and_then(|store| store.enrolment_of(actor))
@@ -346,6 +382,10 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("board") {
         board(ctx)
+    } else if ctx.switches.has("plan") {
+        crate::port::voyage::plan_cmd(ctx)
+    } else if ctx.switches.has("undock") {
+        crate::port::voyage::undock_cmd(ctx)
     } else if ctx.switches.has("leave") {
         leave(ctx)
     } else if ctx.switches.has("hold") {
@@ -373,6 +413,16 @@ fn with_readings<T>(
     };
     let readings = readings_with(goods, compartments(view), vault, &read)?;
     render(goods, &readings)
+}
+
+/// **The hull's compartment readings** through the command lens (doc 18 cut IC9:
+/// `+ship/plan` reads the same reading the gauges use, IC6's surface note).
+///
+/// # Errors
+///
+/// A pool that would not read, or the goods table absent.
+pub(crate) fn readings_of(ctx: &Ctx<'_>, view: &HullView<'_>) -> Result<Vec<Reading>, String> {
+    with_readings(ctx, view, |_, readings| Ok(readings.to_vec()))
 }
 
 /// `+ship`: three lines (doc 18 §2 step 5's form; L19, L21).
@@ -485,6 +535,14 @@ fn board(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(NO_CHARTER));
     };
     let name = name_of(ctx.w, charter.hull);
+    // Doc 18 cut IC9 (lead ruling L14; reviewer F10): while a clearance is filed
+    // the hull's people are fixed — a person boarding now would be missing from
+    // the burn's occupants and the ticket's manifest.
+    if crate::port::voyage::pending_of(ctx.w, charter.hull).is_some() {
+        return Err(CmdError::msg(
+            crate::port::voyage::LEAVE_CLEARED.replace("{name}", &name),
+        ));
+    }
     let (airlock, slot) = {
         let Some(view) = hull_view(ctx.w, charter.hull) else {
             return Err(no_charter(ctx.w, actor));
@@ -559,12 +617,19 @@ fn leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         (view.hull(), space, name_of(ctx.w, space))
     };
+    let name = name_of(ctx.w, hull);
+    // Doc 18 cut IC9 (lead ruling L14): a burned hull never launches with its
+    // pilot ashore, so nobody leaves while a clearance is filed.
+    if crate::port::voyage::pending_of(ctx.w, hull).is_some() {
+        return Err(CmdError::msg(
+            crate::port::voyage::LEAVE_CLEARED.replace("{name}", &name),
+        ));
+    }
     if ctx.w.get(actor).and_then(|o| o.location) != Some(airlock) {
         return Err(CmdError::msg(
             LEAVE_WHERE.replace("{airlock}", &airlock_name),
         ));
     }
-    let name = name_of(ctx.w, hull);
     let gallery = match berth_of(ctx.w, hull) {
         Berth::UnderWay => return Err(CmdError::msg(UNDER_WAY_LOCK.replace("{name}", &name))),
         Berth::Elsewhere => return Err(CmdError::msg(LEAVE_SEALED.replace("{name}", &name))),

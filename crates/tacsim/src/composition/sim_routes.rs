@@ -17,8 +17,8 @@
 //! already re-ran every constructor invariant when it was materialized.
 
 use crate::TacsimStore;
-use mush_core::{CanonicalId, World};
-use mush_sim::{RouteCatalog, RouteDef};
+use mush_core::{CanonicalId, Ctx, ObjId, World};
+use mush_sim::{CarrierHooks, CarrierJourney, RouteCatalog, RouteDef};
 
 /// The one route catalog, handed to `SimulationModule::with_route_catalog` at
 /// composition. Holds nothing: it reads the per-world `TacsimStore`.
@@ -35,5 +35,81 @@ impl RouteCatalog for TacsimRouteCatalog {
         world
             .module_state::<TacsimStore>()?
             .route_in_world(world, id)
+    }
+}
+
+// ---- Doc 18 cut IC9: the carrier hooks --------------------------------------------
+
+/// **Whether tacsim's flavoured aboard lines REPLACE mush-sim's generic ones** (doc
+/// 18 cut IC9, lead ruling L8): `false` keeps IC4's recorded surface — "IC9's
+/// flavoured lines are additional, not replacements" — until the owner rules; the
+/// owner's "replace" is this one token.
+pub const REPLACE_GENERIC_ABOARD_LINES: bool = false;
+
+/// **The trade run's carrier hooks** (doc 18 cut IC9; lead rulings L8, L32), handed
+/// to `SimulationModule::with_carrier_hooks` beside [`TacsimRouteCatalog`] on every
+/// roster. A no-op for anything that is not a programme hull (and on a roster
+/// without the layer, where no hull resolves).
+///
+/// - **The manual arm** (`refuse_manual_departure`, reviewer F3 — IC3's F9, IC4
+///   L18, closed on the ROUTE whatever the carrier): a route whose source pack is
+///   the lane is refused for every carrier and every actor, staff included
+///   ([`crate::port::voyage::LANE_UNPLANNED`]); a programme hull is refused on any
+///   other manual route ([`crate::port::voyage::MANUAL_DEPARTURE`]); a
+///   non-programme carrier on a non-lane route still departs for staff.
+/// - **The narration** (`boundary`, `arrived`): the flavoured line to every
+///   walkable room of the hull, and — for an absent tenant — the same line queued
+///   with its UTC prefix (lead ruling L24). World-only: no typed-state read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TacsimCarrierHooks;
+
+impl CarrierHooks for TacsimCarrierHooks {
+    fn refuse_manual_departure(
+        &self,
+        w: &World,
+        carrier: ObjId,
+        route: &RouteDef,
+    ) -> Option<String> {
+        let lane_route = w
+            .module_state::<TacsimStore>()
+            .and_then(|store| store.route_source(w, route))
+            .is_some_and(|(pack, _)| {
+                pack.manifest().id().as_str() == crate::definitions::content::LANE_PACK
+            });
+        if lane_route {
+            return Some(
+                crate::port::voyage::LANE_UNPLANNED.replace("{route}", route.id().as_str()),
+            );
+        }
+        crate::port::ship::hull_view(w, carrier).map(|_| {
+            crate::port::voyage::MANUAL_DEPARTURE
+                .replace("{name}", &crate::port::coop::name_of(w, carrier))
+        })
+    }
+
+    fn boundary(&self, ctx: &mut Ctx<'_>, journey: &CarrierJourney, reached: u32) -> bool {
+        let hull = journey.root();
+        if crate::port::ship::hull_view(ctx.w, hull).is_none() {
+            return false;
+        }
+        let Some(line) = crate::port::voyage::boundary_line(ctx.w, journey, reached) else {
+            return false;
+        };
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+        let queued = format!("{}{line}", crate::port::voyage::utc_prefix(ctx.w));
+        crate::port::voyage::tell_absent_tenant(ctx, hull, &queued);
+        REPLACE_GENERIC_ABOARD_LINES
+    }
+
+    fn arrived(&self, ctx: &mut Ctx<'_>, journey: &CarrierJourney) -> bool {
+        let hull = journey.root();
+        if crate::port::ship::hull_view(ctx.w, hull).is_none() {
+            return false;
+        }
+        let (docks, notice) = crate::port::voyage::arrival_lines(ctx.w, journey);
+        crate::port::voyage::narrate_hull(ctx, hull, &docks);
+        let notice = notice.replace("{hhmm}", &crate::port::voyage::utc_hhmm(ctx.w.now()));
+        crate::port::voyage::tell_absent_tenant(ctx, hull, &notice);
+        REPLACE_GENERIC_ABOARD_LINES
     }
 }

@@ -25,7 +25,11 @@
 //!   lapsed-hold release** (a player's lapsed lot listing released as its holder,
 //!   at most one per fire, the holder told once after the pull verification):
 //!   [`crate::port::stock`];
-//! - IC9 — the launch and dock arms (the ticket's consumer): **not yet**;
+//! - IC9 — **the launch arm** (the ticket's consumer): one agent per hull with a
+//!   filed passage, acting as nobody — the launch is a direct `mush_sim::depart`
+//!   placement write, no submission and no swap — with its pull verification and
+//!   the held-launch backoff ([`crate::port::voyage`]); the dock is mush-sim's own
+//!   arrival (`Direct` on the port's passive domain, D-18-18);
 //! - IC11 — the order arm (the queue's offline execution): **not yet**.
 //!
 //! **The probe** (lead ruling L3) is registered only in a test world: an agent
@@ -109,6 +113,7 @@ pub fn register(
     reg: &mut Registrar<'_>,
     test_world: bool,
     inventory: Option<&InventoryHandleCell>,
+    burn: Option<crate::port::burn::BurnTable>,
 ) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
     let probe = if test_world {
@@ -143,8 +148,12 @@ pub fn register(
         .get(crate::port::stock::STOCK_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the stock outcome did not register"))?;
+    let burn_outcome = outcome_refs
+        .get(crate::port::burn::BURN_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the burn outcome did not register"))?;
     // One `action` validator for the whole crate, likewise.
-    let actions = action_descriptors(&stock_outcome, probe_outcome.as_ref())?;
+    let actions = action_descriptors(&stock_outcome, &burn_outcome, probe_outcome.as_ref())?;
     reg.definition_validator(
         kind("action")?,
         crate::definitions::exact_validator(actions.clone()),
@@ -186,10 +195,31 @@ pub fn register(
             },
         )?;
     }
+    // Doc 18 cut IC9: `tacsim_port_burn` — registered only when the inventory cell
+    // is filled (its prepare debits through the delegated families) AND the drive
+    // table built (the stock precedent); the definitions register regardless.
+    let burn_action = action_refs.get(crate::port::burn::BURN_ACTION).cloned();
+    let burn_registered = match (burn_action.clone(), inventory_families.clone(), burn) {
+        (Some(action), Some(inventory), Some(table)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::port::burn::BurnProvider {
+                    action: action.clone(),
+                    outcome: burn_outcome,
+                    tickets: port_families.tickets.clone(),
+                    inventory,
+                    table,
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
     reg.state(PortHandles {
         families: port_families,
         inventory: inventory_families,
         probe,
+        burn: burn_registered,
     });
     reg.state(PortTickState::new(probe_action, stock_action));
     reg.tick(
@@ -218,16 +248,23 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
 }
 
 /// **Every `outcome` definition this crate registers** — doc 18 cut IC8's
-/// `tacsim_port_stock_result` on every roster, and the probe's in a test world.
-/// IC9's `tacsim.port.burn` adds its outcome descriptor to this list, in this same
-/// order: a second `definition_validator` call for one kind is a registration
-/// conflict, so there is exactly one validator per kind for the crate.
+/// `tacsim_port_stock_result` and cut IC9's `tacsim_port_burn_result` on every
+/// roster, and the probe's in a test world: a second `definition_validator` call
+/// for one kind is a registration conflict, so there is exactly one validator per
+/// kind for the crate.
 fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError> {
-    let mut descriptors = vec![descriptor(
-        "outcome",
-        crate::port::stock::STOCK_OUTCOME,
-        json!({ "fields": ["actor", "issue", "lot", "qty", "vault"] }),
-    )?];
+    let mut descriptors = vec![
+        descriptor(
+            "outcome",
+            crate::port::stock::STOCK_OUTCOME,
+            json!({ "fields": ["actor", "issue", "lot", "qty", "vault"] }),
+        )?,
+        descriptor(
+            "outcome",
+            crate::port::burn::BURN_OUTCOME,
+            json!({ "fields": ["actor", "burn_t", "crew_days", "hull", "seq"] }),
+        )?,
+    ];
     if test_world {
         descriptors.push(descriptor(
             "outcome",
@@ -239,12 +276,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
 }
 
 /// **Every `action` definition this crate registers**, each referencing its
-/// outcome's exact `DefinitionRef` — doc 18 cut IC8's `tacsim_port_stock` on every
-/// roster, and the probe's when its outcome is registered (a test world). IC9's
-/// `tacsim.port.burn` adds its action descriptor to this list, in this same order
-/// (one validator per kind for the crate).
+/// outcome's exact `DefinitionRef` — doc 18 cut IC8's `tacsim_port_stock` and cut
+/// IC9's `tacsim_port_burn` on every roster, and the probe's when its outcome is
+/// registered (a test world); one validator per kind for the crate.
 fn action_descriptors(
     stock_outcome: &DefinitionRef,
+    burn_outcome: &DefinitionRef,
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
@@ -258,6 +295,16 @@ fn action_descriptors(
             }),
         )?
         .with_references(vec![stock_outcome.clone()]),
+        descriptor(
+            "action",
+            crate::port::burn::BURN_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": families::TICKET_FAMILY,
+            }),
+        )?
+        .with_references(vec![burn_outcome.clone()]),
     ];
     if let Some(outcome) = probe_outcome {
         descriptors.push(
@@ -315,6 +362,20 @@ pub struct PortTickState {
     /// can never hold the head of the line; entries past their grace are pruned every
     /// fire, so the map holds at most one entry per fire of grace.
     pub(crate) release_backoff: BTreeMap<u64, u64>,
+    /// Doc 18 cut IC9: the launches awaiting their pull verification, by hull
+    /// (`ObjId.0`) — `crate::port::voyage::launch_verify` tells the pilot once.
+    pub(crate) launching: BTreeMap<u32, crate::port::voyage::Launching>,
+    /// Doc 18 cut IC9 (lead ruling L29): held launches, by hull -> the fire the
+    /// hold was raised on; the launch agent passes over each for
+    /// `crate::port::voyage::LAUNCH_GRACE_FIRES`, then retries.
+    pub(crate) launch_backoff: BTreeMap<u32, u64>,
+    /// Doc 18 cut IC9: hulls whose held launch (or unreadable ticket) has paged
+    /// staff and told the pilot this boot — once each.
+    pub(crate) launch_warned: BTreeSet<u32>,
+    /// Doc 18 cut IC9 (lead ruling L26): the fire a pending passage with no ticket
+    /// was first visited on, by hull; the grace restarts after a reboot, which is
+    /// harmless.
+    pub(crate) filed_seen: BTreeMap<u32, u64>,
 }
 
 impl PortTickState {
@@ -386,8 +447,8 @@ pub(crate) enum Step {
     Refused,
 }
 
-/// The arms, in dispatch order (one step per agent per fire, D-18-32). IC9 and
-/// IC11 add variants ahead of the probe.
+/// The arms, in dispatch order (one step per agent per fire, D-18-32). IC11 adds
+/// its variant ahead of the probe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Arm {
     /// Doc 18 cut IC8: a port's stock clerk — mint, dissolve, list
@@ -398,6 +459,12 @@ enum Arm {
     Release {
         /// The lapsed listing, `ListingId.0`.
         listing: u64,
+    },
+    /// Doc 18 cut IC9: one hull's filed passage — find its burned ticket and
+    /// launch it, lapse it, or hold it ([`crate::port::voyage::launch_step`]).
+    Launch {
+        /// The hull, `ObjId.0`.
+        hull: u32,
     },
     /// The test world's probe (lead ruling L3).
     Probe,
@@ -435,6 +502,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // first on every fire, whether or not any agent is offered. A notice pass: no
     // submission and no swap.
     crate::port::stock::release_verify(ctx, state);
+    // Doc 18 cut IC9: the launch arm's pull verification, likewise first (no
+    // submission, no swap), then its RAM pruned of every hull whose sailing plan
+    // has no pending passage any more (a launch, a lapse or a staff clear).
+    crate::port::voyage::launch_verify(ctx, state);
+    crate::port::voyage::launch_prune(ctx.w, state);
     // Doc 18 cut IC8: the stock clerks of every present lane port map whose lane
     // is latched (a retired lane seeds nothing), then at most one release agent.
     let clerks: Vec<ObjId> = ctx
@@ -455,6 +527,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
         })
         .unwrap_or_default();
     let release = crate::port::stock::release_agent(ctx.w, state);
+    let launches = crate::port::voyage::launch_agents(ctx.w, state);
     // The agents: the union over the arms, agent -> (principal, arm). An agent
     // id belongs to one arm (hull ids and clerk ids are disjoint objects); a
     // duplicate offered by a later arm is refused and logged.
@@ -478,6 +551,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // duplicate rule above and waits for the next.
     if let Some((holder, listing)) = release {
         offer(holder, holder, Arm::Release { listing });
+    }
+    // Doc 18 cut IC9: one launch agent per hull with a filed passage (agent = the
+    // hull, principal = the filing pilot), hulls in their backoff skipped.
+    for (hull, pilot) in launches {
+        offer(hull, pilot, Arm::Launch { hull: hull.0 });
     }
     if state.probe_action.is_some() {
         for (agent, probe) in &state.probes {
@@ -554,8 +632,8 @@ fn next_cursor(last_visited: Option<ObjId>, current: u32) -> u32 {
 }
 
 /// One agent's step: the arms in a fixed order, exhaustively (D-18-32: one step
-/// per agent per fire) — cut IC8's stock and release arms, then the probe; IC9 and
-/// IC11 add variants ahead of the probe. The probe arm runs only when
+/// per agent per fire) — cut IC8's stock and release arms, cut IC9's launch arm,
+/// then the probe; IC11 adds its variant ahead of the probe. The probe arm runs only when
 /// `PortTickState.probe_action` is `Some`.
 fn step(
     ctx: &mut Ctx<'_>,
@@ -570,6 +648,7 @@ fn step(
         Arm::Release { listing } => {
             crate::port::stock::release_step(ctx, state, fire, principal, listing)
         }
+        Arm::Launch { hull } => crate::port::voyage::launch_step(ctx, state, hull),
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,

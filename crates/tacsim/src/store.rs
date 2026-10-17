@@ -11,6 +11,7 @@
 //! | `tacsim:port:{pack}/{entry}` | applier map (doc 18 cut IC3) | **skipped loudly, and the key still bars re-creation**: the entry's next apply refuses before any write, naming the key, and `@tacsim/port status` reports the map unreadable; repair is a staff act on the document (doc 18 §4.7) |
 //! | `tacsim:notice:{obj}` | per-character queue (doc 18 cut IC5: `crate::port_tick`'s reconnect notices) | **dropped loudly** for that character; the key bars nothing, and the next notice rewrites it |
 //! | `tacsim:coop:{account}` | per-gateway-account enrolment (doc 18 cut IC6: `crate::port::coop`) | **skipped loudly, and the key still bars re-enrolment**: that account's `+coop/enrol` refuses, and staff repair the document; the operate gate never reads it (it reads the live lease) |
+//! | `tacsim:voyage:{hull}` | per-hull sailing plan (doc 18 cut IC9: `crate::port::voyage`) — the filed passage and the hull's burn sequence | **skipped loudly, and the key stays claimed**: that hull's `+ship/undock` refuses (its papers cannot be read) and the launch arm skips it, logged once; staff repair the document |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -281,6 +282,18 @@ pub struct TacsimStore {
     /// at `on_world_loaded`. RAM only, never persisted; `None` only on a build
     /// fault, and every gauge then reads dark.
     pub(crate) goods: Option<std::sync::Arc<crate::definitions::GoodsTable>>,
+    /// **Doc 18 cut IC9** (§4.4's lifecycle "departing", lead ruling L4) —
+    /// `tacsim:voyage:{hull}`: each programme hull's filed sailing plan
+    /// ([`crate::port::voyage::Voyage`]): the pending passage `+ship/undock`
+    /// filed, and the per-hull burn sequence it mints. Persisted on the
+    /// enrolment pattern: one whole-document post-image per hull through
+    /// [`put_voyage`].
+    pub(crate) voyages: BTreeMap<ObjId, crate::port::voyage::Voyage>,
+    /// **Every `tacsim:voyage:` key seen at load or written**, readable or not
+    /// (the R8 rule): a claimed key with no readable body is
+    /// [`crate::port::voyage::VoyageState::Unreadable`], which refuses that
+    /// hull's undock and is skipped by the launch arm (fail closed).
+    pub(crate) voyage_keys: BTreeSet<SmolStr>,
 }
 
 impl TacsimStore {
@@ -373,6 +386,27 @@ impl TacsimStore {
     /// Every readable enrolment, in account order.
     pub fn enrolments(&self) -> impl Iterator<Item = &crate::port::coop::Enrolment> {
         self.enrolments.values()
+    }
+
+    /// **One hull's sailing plan** (doc 18 cut IC9): absent, readable, or a key
+    /// whose body did not read — the last refuses that hull's undock.
+    #[must_use]
+    pub fn voyage_state(&self, hull: ObjId) -> crate::port::voyage::VoyageState<'_> {
+        match self.voyages.get(&hull) {
+            Some(voyage) => crate::port::voyage::VoyageState::Present(voyage),
+            None if self
+                .voyage_keys
+                .contains(&crate::port::voyage::voyage_key(hull)) =>
+            {
+                crate::port::voyage::VoyageState::Unreadable
+            }
+            None => crate::port::voyage::VoyageState::Absent,
+        }
+    }
+
+    /// Every readable sailing plan, in hull order.
+    pub fn voyages(&self) -> impl Iterator<Item = &crate::port::voyage::Voyage> {
+        self.voyages.values()
     }
 
     /// **The goods table** (doc 18 cut IC6): the layer's parse, the one read the
@@ -1204,6 +1238,34 @@ pub(crate) fn put_enrolment(ctx: &mut Ctx<'_>, e: &crate::port::coop::Enrolment)
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install a sailing plan into RAM and queue its document** (doc 18 cut IC9) —
+/// the single write path, [`put_enrolment`]'s exact pattern: the RAM install (the
+/// record and its key), then one whole-document `JsonSet`. The serialize failure
+/// is structurally unreachable; if it ever happened, it logs and writes a minimal
+/// `{schema, hull}` body so **the key still exists** — which loads as unreadable
+/// and refuses that hull's undock until staff repair it.
+pub(crate) fn put_voyage(ctx: &mut Ctx<'_>, voyage: &crate::port::voyage::Voyage) {
+    let key = crate::port::voyage::voyage_key(voyage.hull);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.voyage_keys.insert(key.clone());
+        store.voyages.insert(voyage.hull, voyage.clone());
+    }
+    let value = match serde_json::to_value(voyage) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                hull = voyage.hull.0, %error,
+                "tacsim: a sailing plan did not serialize; a minimal document is written so the key stays claimed. Repair the document by hand."
+            );
+            serde_json::json!({
+                "schema": voyage.schema,
+                "hull": voyage.hull,
+            })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 /// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
 ///
 /// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
@@ -1384,6 +1446,16 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             };
             store.port_map_keys.insert((pack.clone(), entry.clone()));
             load_port_map(&mut store, key, &pack, &entry, value);
+        } else if key.starts_with(crate::port::voyage::VOYAGE_PREFIX) {
+            // Doc 18 cut IC9. The claim is the KEY's (the R8 rule): a sailing plan
+            // that will not read stays claimed, so that hull's undock refuses and
+            // the launch arm skips it, until staff repair the document.
+            let Some(hull) = crate::port::voyage::voyage_key_owner(key) else {
+                tracing::warn!(%key, "tacsim: a sailing plan has an unreadable key; skipped");
+                continue;
+            };
+            store.voyage_keys.insert(SmolStr::new(key));
+            load_voyage(&mut store, key, hull, value);
         } else if key.starts_with(crate::port::coop::COOP_PREFIX) {
             // Doc 18 cut IC6 (lead ruling L5). The claim is the KEY's (the R8
             // rule): an enrolment that will not read still bars its account's
@@ -1588,6 +1660,32 @@ fn load_enrolment(store: &mut TacsimStore, key: &str, value: &serde_json::Value)
             %error,
             "tacsim: an enrolment document is unreadable; skipped (its key still bars that \
              account's re-enrolment; repair the document by hand)"
+        ),
+    }
+}
+
+/// One `tacsim:voyage:{hull}` body (doc 18 cut IC9): decoded strictly, checked,
+/// and held to the identity rule (`voyage_key(v.hull)` is its key). Any failure
+/// skips it loudly; its key, already recorded, keeps it `Unreadable`.
+fn load_voyage(store: &mut TacsimStore, key: &str, hull: ObjId, value: &serde_json::Value) {
+    let voyage = serde_json::from_value::<crate::port::voyage::Voyage>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|v| v.check().map(|()| v))
+        .and_then(|v| {
+            if crate::port::voyage::voyage_key(v.hull) == key {
+                Ok(v)
+            } else {
+                Err("the sailing plan disagrees with its own key".to_owned())
+            }
+        });
+    match voyage {
+        Ok(v) => {
+            store.voyages.insert(v.hull, v);
+        }
+        Err(error) => tracing::error!(
+            hull = hull.0,
+            %error,
+            "tacsim: a sailing plan is unreadable; skipped (its key stays claimed: that hull's +ship/undock refuses and the launch arm skips it; repair the document by hand)"
         ),
     }
 }

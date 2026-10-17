@@ -54,9 +54,23 @@
 //!   gate, the hull capacity provider and the port institutions' party caps;
 //! - [`board`] — the boards 18a names, room by room: what is left, SOLD OUT and
 //!   "not buying".
+//!
+//! **Doc 18 cut IC9** — undock and fly, the first player-runnable flight:
+//!
+//! - [`passage`] — the passage planner over the sky at departure (§4.4, §4.8):
+//!   `plan_passage`, `choose_route`, the intercept passes, the Coast burn, the
+//!   crew-day rule and the payload;
+//! - [`burn`] — `tacsim_port_burn`: the burn's prepare recomputes the payload,
+//!   the burn and the crew-days from the filed plan and the drive table it holds,
+//!   debits the tank and the locker and writes the ticket, matter first, in one
+//!   bundle (D-18-11, D-18-46);
+//! - [`voyage`] — the filed sailing plan (`tacsim:voyage:{hull}`), `+ship/plan`,
+//!   `+ship/undock`, the launch arm the port tick drives, the staff terminal for a
+//!   held launch and the passage renders.
 
 pub mod apply;
 pub mod board;
+pub mod burn;
 pub mod capacity;
 pub mod coop;
 pub mod credit;
@@ -66,14 +80,17 @@ pub mod gauges;
 pub mod hull;
 pub mod map;
 pub mod market;
+pub mod passage;
 pub mod readiness;
 pub mod ship;
 pub mod stock;
 pub mod vendor;
+pub mod voyage;
 
+pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
 pub use coop::{
-    Charter, Enrolment, EnrolmentState, EnrolmentStatus, ProgrammePort, live_charter,
-    programme_port,
+    Charter, Enrolment, EnrolmentState, EnrolmentStatus, ProgrammePort, charter_tenant,
+    live_charter, programme_port,
 };
 pub use def::{
     AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,
@@ -91,8 +108,16 @@ pub use market::{
     HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_UNDER_WAY, HoldPlan, NOT_IN_PORT, NOT_YOUR_CHARTER,
     PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate, capacity_line, governed_hold,
 };
+pub use passage::{
+    DAY_SECS, DriveLaw, HullDrive, INTERCEPT_PASSES, PlanError, choose_route, crew_days,
+    intercept_passes, passage_burn, payload_kg, plan_passage,
+};
 pub use readiness::{Binding, LineState, Readiness, ReadinessLine, readiness, readiness_in};
 pub use stock::{
     DISSOLVE_KEY_PREFIX, MAX_CLERK_ROWS, STOCK_ACTION, STOCK_KEY_PREFIX, STOCK_OUTCOME,
     STOCK_SOURCE_KIND,
+};
+pub use voyage::{
+    LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, PendingVoyage, VOYAGE_PREFIX, VOYAGE_SCHEMA, Voyage,
+    VoyageState, voyage_key, voyage_key_owner,
 };

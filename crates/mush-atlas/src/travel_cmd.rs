@@ -285,6 +285,12 @@ fn vehicle_here(ctx: &Ctx<'_>, here: ObjId) -> Option<ObjId> {
 fn travel_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let here = here_of(ctx, actor)?;
+    // Doc 18 cut IC9 (lead ruling L15): aboard a carrier under way, the passage
+    // answers first — a generic read of mush-sim's journey book, no game edge.
+    if let Some(line) = aboard_line(ctx.w, actor) {
+        say(ctx, vec![line]);
+        return Ok(());
+    }
     let line = {
         let st = state(ctx)?;
         if let Some(j) = st.travel.journey_of(actor) {
@@ -316,6 +322,44 @@ fn travel_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         None => say(ctx, vec!["You are not travelling.".to_string()]),
     }
     Ok(())
+}
+
+/// **Doc 18 cut IC9 (lead ruling L15) — `+travel/status` aboard a carrier under
+/// way**: `"You are aboard the {root}, under way: leg {n} of {m}, bound for
+/// {destination}; it arrives in {d} IC days ({about_real})."`, read from
+/// mush-sim's journey book (the root `under_way_root_of` names for the actor).
+/// `n` is the leg being flown (`min(cursor + 1, m)`), the destination the last
+/// leg's place, `d` the IC days to arrival to one decimal (truncated), and the
+/// real-time parenthesis the atlas's own `about …` render at the current rate —
+/// `while the clock is stopped` at rate 0. `None` when the actor rides nothing
+/// under way, or the record cannot answer an arrival.
+fn aboard_line(w: &mush_core::World, actor: ObjId) -> Option<String> {
+    let st = w.module_state::<mush_sim::SpatialState>()?;
+    let book = w.module_state::<mush_sim::JourneyBook>()?;
+    let root = mush_sim::under_way_root_of(st, book, actor)?;
+    let journey = book.get(root)?;
+    let legs = journey.route().legs();
+    let m = legs.len();
+    let destination = legs.last()?.to();
+    let n = usize::try_from(journey.cursor())
+        .ok()?
+        .saturating_add(1)
+        .min(m);
+    let arrival = journey.arrival_at()?;
+    let remaining = arrival.saturating_sub(w.world_ic_now().at).max(0);
+    let tenths = remaining.saturating_mul(10) / 86_400;
+    let real = if travel::rate_of(w) == 0 {
+        "while the clock is stopped".to_string()
+    } else {
+        about_real(travel::real_until(w, arrival))
+    };
+    Some(format!(
+        "You are aboard the {}, under way: leg {n} of {m}, bound for {}; it arrives in {}.{} IC days ({real}).",
+        display_name(w, root),
+        display_name(w, destination),
+        tenths / 10,
+        tenths % 10,
+    ))
 }
 
 /// A traveler standing in a transit room with a stranded position: the way, the node

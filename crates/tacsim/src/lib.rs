@@ -614,7 +614,14 @@ impl GameModule for TacsimRuleset {
         // `PortHandles`, the `tacsim.port` tick and the reconnect notices; in a
         // test world also the probe. Registered unconditionally like its
         // neighbours: the tick returns at once while the layer is off.
-        port_tick::register(reg, self.test_world, self.inventory.as_ref())?;
+        // Doc 18 cut IC9: the departure burn's provider holds the drive table built
+        // here from the fielded catalog and the layer's goods table (D-18-11).
+        port_tick::register(
+            reg,
+            self.test_world,
+            self.inventory.as_ref(),
+            port::burn::burn_table(&catalog, self.goods.clone()),
+        )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
         // itself returns nothing while the layer is disabled.

@@ -820,20 +820,73 @@ pub fn route_duration(
         .ok_or(RouteDefError::Overflow)?;
     let mut total: i64 = 0;
     for leg in &route.legs {
-        let base = i64::from(leg.base_s);
-        let scaled = base
-            .checked_mul(1_000)
-            .ok_or(RouteDefError::Overflow)?
-            .checked_div(thrust)
-            .ok_or(RouteDefError::Overflow)?;
-        let loaded = scaled
-            .checked_mul(laden)
-            .ok_or(RouteDefError::Overflow)?
-            .checked_div(capacity)
-            .ok_or(RouteDefError::Overflow)?;
+        let loaded = laden_leg_i64(i64::from(leg.base_s), thrust, capacity, laden)?;
         total = total.checked_add(loaded).ok_or(RouteDefError::Overflow)?;
     }
     Ok(total)
+}
+
+/// **The one laden step** — a leg's unladen seconds under a drive's thrust and
+/// load, exactly [`route_duration`]'s per-leg arithmetic (doc 18 cut IC9 factored it
+/// out so [`laden_leg_durations`] shares it byte for byte).
+///
+/// `base × 1000 / thrust`, then `× laden / capacity`, each step checked and each
+/// division a floor (doc 18 IC9 L1: floor, not ceil — `route_duration`'s pins
+/// hold). Any step that leaves `i64` refuses [`RouteDefError::Overflow`]; never a
+/// silent wrap.
+fn laden_leg_i64(base: i64, thrust: i64, capacity: i64, laden: i64) -> Result<i64, RouteDefError> {
+    base.checked_mul(1_000)
+        .ok_or(RouteDefError::Overflow)?
+        .checked_div(thrust)
+        .ok_or(RouteDefError::Overflow)?
+        .checked_mul(laden)
+        .ok_or(RouteDefError::Overflow)?
+        .checked_div(capacity)
+        .ok_or(RouteDefError::Overflow)
+}
+
+/// **Doc 18 §4.4/§4.8, D-18-44 — the laden time of each leg**, sky-free: it takes
+/// per-leg unladen seconds (the passage planner's `ceil(dist_km / kms)`, or a leg's
+/// authored `base_s`) and answers each leg's laden seconds under `drive` at
+/// `payload`, through the very step [`route_duration`] sums.
+///
+/// No drive-class check: the caller passes the drive it means (tacsim's planner
+/// builds the profile from the hull's own class, D-18-44). Each leg is bounded to
+/// `u32` here — a journey's frozen leg times are `u32` — while
+/// [`route_duration`]'s own contract (an `i64` sum, no per-leg bound) is unchanged.
+///
+/// # Errors
+///
+/// [`RouteDefError::NoLegs`] for an empty slice, [`RouteDefError::Overloaded`] past
+/// the drive's capacity, and [`RouteDefError::Overflow`] when any step leaves `i64`
+/// or a laden leg does not fit `u32`.
+pub fn laden_leg_durations(
+    unladen_s: &[u32],
+    drive: &DriveProfile,
+    payload: u64,
+) -> Result<Vec<u32>, RouteDefError> {
+    if unladen_s.is_empty() {
+        return Err(RouteDefError::NoLegs);
+    }
+    if payload > drive.payload_capacity {
+        return Err(RouteDefError::Overloaded {
+            payload,
+            capacity: drive.payload_capacity,
+        });
+    }
+    let thrust = i64::from(drive.thrust_permille);
+    let capacity = i64::try_from(drive.payload_capacity).map_err(|_| RouteDefError::Overflow)?;
+    let laden = i64::try_from(payload)
+        .ok()
+        .and_then(|p| capacity.checked_add(p))
+        .ok_or(RouteDefError::Overflow)?;
+    unladen_s
+        .iter()
+        .map(|s| {
+            let loaded = laden_leg_i64(i64::from(*s), thrust, capacity, laden)?;
+            u32::try_from(loaded).map_err(|_| RouteDefError::Overflow)
+        })
+        .collect::<Result<Vec<u32>, RouteDefError>>()
 }
 
 /// **S7 (doc 10 T17)** — the duration when the sky is asked at `distance_km`.
@@ -1008,6 +1061,103 @@ mod route_def_tests {
             let refused = serde_json::from_str::<RouteDef>(text).expect_err(text);
             assert!(refused.to_string().contains(needle), "{text}: {refused}");
         }
+    }
+}
+
+// ---- Doc 18 cut IC9: the per-leg laden step --------------------------------
+
+#[cfg(test)]
+mod laden_leg_tests {
+    use super::*;
+    use mush_core::CanonicalId;
+
+    fn cid(s: &str) -> CanonicalId {
+        CanonicalId::new(s).expect("a well-formed canonical id")
+    }
+
+    fn corridor() -> RouteDef {
+        RouteDef::new(
+            cid("ceres_phobos"),
+            (ObjId(10), ObjId(12)),
+            vec![
+                LegDef::new(ObjId(11), 86_400).expect("a positive leg"),
+                LegDef::new(ObjId(12), 172_800).expect("a positive leg"),
+            ],
+            cid("fusion_torch"),
+            1_200,
+        )
+        .expect("a coherent route")
+    }
+
+    /// The per-leg answers are `route_duration`'s summands: they sum to it at every
+    /// payload, and payload 0 at nominal thrust returns the unladen legs.
+    #[test]
+    fn ic9_laden_leg_durations_is_route_durations_per_leg() {
+        let route = corridor();
+        let drive = DriveProfile::new(cid("fusion_torch"), 1_000, 181_000).expect("drive");
+        let unladen = [86_400u32, 172_800];
+        assert_eq!(
+            laden_leg_durations(&unladen, &drive, 0).expect("plans"),
+            vec![86_400, 172_800]
+        );
+        for payload in [0u64, 1, 142_184, 106_176, 181_000] {
+            let legs = laden_leg_durations(&unladen, &drive, payload).expect("plans");
+            let sum: i64 = legs.iter().map(|s| i64::from(*s)).sum();
+            assert_eq!(
+                sum,
+                route_duration(&route, &drive, payload).expect("evaluates"),
+                "payload {payload}"
+            );
+        }
+        // A slower drive scales both the same way.
+        let half = DriveProfile::new(cid("fusion_torch"), 500, 1_000).expect("drive");
+        assert_eq!(
+            laden_leg_durations(&unladen, &half, 0).expect("plans"),
+            vec![172_800, 345_600]
+        );
+    }
+
+    /// Overload, overflow and an empty slice refuse; a laden leg past `u32` refuses
+    /// here while `route_duration` on the same one-leg route still answers its `i64`
+    /// value (its contract did not narrow).
+    #[test]
+    fn ic9_laden_leg_durations_refuses_overload_and_overflow() {
+        let drive = DriveProfile::new(cid("fusion_torch"), 1_000, 100).expect("drive");
+        assert_eq!(
+            laden_leg_durations(&[10], &drive, 101),
+            Err(RouteDefError::Overloaded {
+                payload: 101,
+                capacity: 100
+            })
+        );
+        assert_eq!(
+            laden_leg_durations(&[], &drive, 0),
+            Err(RouteDefError::NoLegs)
+        );
+        // A ceiling near u64::MAX: capacity leaves i64 — refused, never a wrap.
+        let vast = DriveProfile::new(cid("fusion_torch"), 1_000, u64::MAX - 1).expect("drive");
+        assert_eq!(
+            laden_leg_durations(&[10], &vast, 0),
+            Err(RouteDefError::Overflow)
+        );
+        // A laden leg past u32: u32::MAX unladen, doubled by a full load.
+        let full = DriveProfile::new(cid("fusion_torch"), 1_000, 1_000).expect("drive");
+        assert_eq!(
+            laden_leg_durations(&[u32::MAX], &full, 1_000),
+            Err(RouteDefError::Overflow)
+        );
+        let long = RouteDef::new(
+            cid("long"),
+            (ObjId(1), ObjId(2)),
+            vec![LegDef::new(ObjId(2), u32::MAX).expect("leg")],
+            cid("fusion_torch"),
+            0,
+        )
+        .expect("route");
+        assert_eq!(
+            route_duration(&long, &full, 1_000),
+            Ok(2 * i64::from(u32::MAX))
+        );
     }
 }
 

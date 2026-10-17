@@ -1457,6 +1457,22 @@ fn create_exit(
     if from == to {
         return Err(format!("{id}: an exit joins two different rooms"));
     }
+    // Doc 18 cut IC9 (lead ruling L16; D-18-22): no authored exit leads into a
+    // room aboard a hull that flies — the way in is the hull's own boarding
+    // verb, never geography that would cross a carrier's boundary mid-passage.
+    // Asked of `to`, and of `from` when the row names the way back too, before
+    // any geometry or object is touched, so a refused row creates nothing.
+    let mut ends = vec![(to, def.to.as_str())];
+    if def.names.len() == 2 {
+        ends.push((from, def.from.as_str()));
+    }
+    for (room, authored) in ends {
+        if mush_sim::anchored_space_of(ctx.w, room).is_some() {
+            return Err(format!(
+                "{id}: {authored} is a room aboard a moving hull; no exit leads into one"
+            ));
+        }
+    }
     let lock = match def.lock.as_deref().map(str::trim) {
         None | Some("") => None,
         Some("staff") => Some(

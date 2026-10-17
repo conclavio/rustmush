@@ -4207,3 +4207,433 @@ desk opens only once the ports are stocked).
 **Behaviours to depend on:** the applier makes no Draw listing (the arm lists once a pool exists); a
 retire withdraws Draws and bids and forgets the withdrawn BidRows so a re-apply posts them afresh;
 `interior.exits` are append-only by position and re-dressed on every hull update.
+
+## IC9
+
+**Undock and fly: the first player-runnable flight** (doc 18 §5, the IC9 row and paragraph), built
+2026-10-17 on main at ee1d831f. A chartered pilot aboard a docked Dray types `+ship/plan stickney`
+for a write-nothing dry run and `+ship/undock stickney` to fly. The command plans the passage over
+the sky at departure with one pure planner, files the plan in the hull's sailing plan document and
+submits one `tacsim_port_burn` as the pilot; the prepare recomputes the payload from the hold's
+pools and the burn and crew-days from the filed plan's seconds and the drive table the provider
+holds, and debits reaction mass and provisions and writes the ticket carrying the whole
+`PassagePlan` in one bundle, matter first. On the next `tacsim.port` fire the launch arm finds the
+burned ticket and calls the new `pub mush_sim::depart` directly with the plan's frozen per-leg
+seconds and its `depart_ic`, so nothing after the burn re-reads the sky or the clock. The crew hear
+the lock seal, Kirkwood Depot slide past and the docking at Stickney in every member room; arrival
+places the hull on Stickney's passive domain and `+ship/leave` lands in P01. One commit, pushed to
+origin/main.
+
+### What landed
+
+1. **The one laden step, sky-free** (`mush-sim/src/route.rs`). `route_duration`'s per-leg arithmetic
+   is factored into the private `laden_leg_i64` (`base × 1000 / thrust`, then `× laden / capacity`,
+   floor, every step checked) and `route_duration` sums it exactly as before, so its i64 contract
+   and every pin hold. `pub fn laden_leg_durations(unladen_s: &[u32], drive, payload) ->
+   Result<Vec<u32>, RouteDefError>` (D-18-44) refuses `NoLegs`, `Overloaded` and `Overflow` (any
+   step, or a leg past u32), with no class check, collected with no indexing. Re-exported from
+   `lib.rs`.
+2. **Frozen leg times on the journey** (`mush-sim/src/journey.rs`). `CarrierJourney.leg_s:
+   Option<Vec<u32>>` with a serde-defaulted, skip-if-none wire field (a journey without times
+   encodes byte-identically); a fallible `with_leg_times` (`LegTimes{legs, times}`, `ZeroLegTime`)
+   re-run by `TryFrom`, so a stored mismatch is HELD at boot; `leg_due_at` sums the frozen times
+   when present (checked), so `due_cursor`, `arrival_at`, interception and `@journey/show` inherit
+   them; `leg_secs(k)`, `leg_times()`; `describe_journey` prints the flown seconds; `reanchor` keeps
+   them (it moves the record whole).
+3. **`pub mush_sim::depart` and `depart_ineligible`** (`mush-sim/src/commands.rs`).
+   `journey_depart`'s body after `build_route` extracted whole: `depart_ineligible` =
+   `journey_ineligible` + origin anchor equality (`ROUTE_NOT_FROM_HERE`) + `arrival_parent` +
+   `refuse_unreachable_destination`; `depart(ctx, carrier, route, leg_s, departed_at) ->
+   Result<Departure{journey, aboard, arrival_at}, CmdError>` refuses the future, validates the
+   record (and its leg times) before the allocator spends an id, books before the move, moves with
+   rollback, persists, links, emits `Moved` and `" sets out."`; `journey_depart` keeps its texts and
+   calls `depart(.., None, now.at)` — `e7c6`, `e7r1` and `members` byte-identical.
+4. **The `CarrierHooks` composition seam** (`mush-sim/src/journey.rs`, `lib.rs`). `pub trait
+   CarrierHooks` (`refuse_manual_departure(w, carrier, &RouteDef)`, `boundary(ctx, &journey,
+   reached) -> bool`, `arrived(ctx, &journey) -> bool`, all defaulted), `CarrierHooksState`
+   registered beside `RouteCatalogState`, `SimulationModule::with_carrier_hooks`. The manual arm
+   asks the hook after `build_route` for every actor; `step` offers a boundary on `Source::Tick`
+   only; `apply_arrival` captures `healed` on entry and offers `arrived` only on `Tick && !healed`
+   (reviewer F11); `true` suppresses mush-sim's generic aboard line, and the outside line stays.
+5. **`anchored_space_of`** (`mush-sim/src/graph.rs`): the space a room belongs to (via `member_of`,
+   or itself) when its anchor is `MovingObject`; else `None`.
+6. **mush-atlas** (`travel_cmd.rs`, `apply.rs`). `+travel/status`'s first arm: "You are aboard the
+   {root}, under way: leg {n} of {m}, bound for {destination}; it arrives in {d} IC days
+   ({about_real})." read from mush-sim's book (L15, no game edge). `create_exit` refuses, before any
+   geometry, an exit whose `to` (or `from` when the row names the way back) is aboard a moving hull:
+   "{id}: {room} is a room aboard a moving hull; no exit leads into one".
+7. **The passage planner** (`tacsim/src/port/passage.rs`; `DriveLaw::word()` in
+   `definitions/logistics.rs`). `HullDrive{class, law, payload_ceiling_kg}`, `PlanError` (§4.8's
+   six + `ViaReserved`, `SkyUnavailable`, `Unreadable{what}`), `plan_passage` walking legs as body
+   pairs with the fixed three-pass intercept through `pub intercept_passes` and `INTERCEPT_PASSES =
+   3` (a same-body leg uses its `base_s` through the same laden step), `plan.check()` before return;
+   `choose_route` (the first unplannable listed route refuses, the least `total_s` wins, ties go to
+   the earlier, `via` → `ViaReserved`); `passage_burn` (Coast: whole tonnes,
+   `ceil((dry+payload)×‰/1e6)` in u128), `crew_days` (occupants × Σ ceil(secs/86 400)), `payload_kg`
+   (one function for the plan, undock and the prepare), `DAY_SECS`. No slice indexing anywhere.
+8. **The ticket wire and the sailing plan** (`tacsim/src/port/families.rs`, `port/voyage.rs`,
+   `store.rs`). `Ticket` gains `seq` and loses `launched`; `Ticket::ticket_id()`;
+   `PortHandles.burn`. `Voyage{schema, hull, last_seq, pending}` and `PendingVoyage{seq, pilot,
+   to_venue, vault, occupants, payload_kg, route_pack, route_version, unit_definition, plan, order,
+   attempt, filed_ic, filed_at}`, both `deny_unknown_fields`; `Voyage::check` (schema 1, `seq ==
+   last_seq + 1`, the plan checks, occupants 1..=16, attempt ≥ 1); `tacsim:voyage:{hull}` with
+   strict `voyage_key`/`voyage_key_owner`; store `voyages`/`voyage_keys`, `voyage_state` (`Absent |
+   Present | Unreadable`), `voyages()`, `put_voyage` on `put_enrolment`'s pattern, a load arm with
+   the identity rule that keeps an unreadable key claimed; the module-doc table row.
+9. **`tacsim_port_burn`** (`tacsim/src/port/burn.rs`; `port_tick.rs` `register(.., burn:
+   Option<BurnTable>)`; `lib.rs`). `BurnTable{goods, hulls by unit digest}` built by `burn_table`
+   from every fielded spec with logistics (a class with no law left out, a propellant good not
+   counted at 1,000 kg refuses the table); `hull_spec_of` shared with the verbs (L34).
+   `BurnProvider::project_offer` projects only for `burnable` (live charter → hull, a pending filed
+   by the actor, the actor aboard, the hull docked) with fixed `{now, voyage: {hull, pending}}` and
+   one `seq` Choice; `prepare_authoritative` runs in the brief's order (shape, seq, pilot, future
+   depart, hull spec, the ticket as replay guard, the payload recomputed from pool quantities =
+   filed, the ceiling, plan/law/burn/crew-days add up, tank and locker against available), then
+   writes the manifest BEFORE the debit, the two debits and the ticket in one bundle. Outcome
+   `tacsim_port_burn_result`; the action descriptor is unconditional, the provider registers only
+   with the inventory cell and the table. Key `tacsim.port.burn/{hull}/undock/{seq}`.
+10. **The launch arm and its terminal** (`tacsim/src/port/voyage.rs`, `port_tick.rs`,
+    `commands.rs`). `Arm::Launch{hull}`; `launch_verify` and `launch_prune` at the top of every
+    fire; one agent per pending hull, backoff skipped. `launch_step`: the ticket read through the
+    module lens with the key re-checked (unreadable → hold); no ticket → `Deferred` while the
+    pilot's submission is pending, else a lapse after `LAUNCH_GRACE_FIRES = 24` (`last_seq`
+    advanced, CLEARANCE_LAPSED); already launched → clear; the live lease re-checked (L31); **the
+    pilot re-checked aboard through the shared `voyage::aboard` predicate (fixer, L14)**;
+    `route_in_world` + `route_source` at the ticket's `(pack, version)`; `mush_sim::depart(..,
+    Some(leg_s), plan.depart_ic)`; the cleared voyage written in the same outbox; LOCK_SEALS to
+    every walkable room; `Launching` recorded and CLEARANCE_GRANTED told once by pull. `launch_hold`
+    pages once per hull per boot, tells the pilot LAUNCH_HELD once, backs off and keeps the pending.
+    `@tacsim/port clear #<hull>` (`PORT_USAGE` updated) stands a clearance down through `clear_cmd`:
+    the pending cleared, `last_seq` kept, the ticket kept, CLEARANCE_STOOD_DOWN to the pilot.
+11. **tacsim's carrier hooks** (`tacsim/src/composition/sim_routes.rs`, `composition/mod.rs`,
+    `port/coop.rs`, `port/hull.rs`). `TacsimCarrierHooks` wired beside the route catalog on every
+    roster: a `LANE_PACK` route refused on the manual arm for every carrier and actor
+    (LANE_UNPLANNED), a programme hull on any manual route (MANUAL_DEPARTURE); BOUNDARY (Kirkwood's
+    detail from `WAYPOINT_DETAILS`, keyed by lane place id) and DOCKS narrated to every walkable
+    room, the UTC-prefixed line / ARRIVAL_NOTICE queued for an absent tenant (`charter_tenant`,
+    factored with `lease_tenant` out of `hull_line`); `REPLACE_GENERIC_ABOARD_LINES = false`.
+12. **The verbs and the renders** (`tacsim/src/commands.rs`, `port/ship.rs`, `port/voyage.rs`,
+    `port/market.rs`, `port/hull.rs`, `port/gauges.rs`). `+ship` is `ArgShape::Raw` with switches
+    `board leave hold plan undock` in its own Authoritative bracket (L11). `+ship/plan [<port>]
+    [at=now]` renders lines 1-8 (the slack line from `gauges::measures_line` plus free amounts from
+    `capacity::load`; the room line from `compartment_for` + `max_more`; `Overloaded` replaces lines
+    4-7; it writes nothing). `+ship/undock <port>` runs every check in the brief's order — usage,
+    via/at, charter, `UNDOCK_UNWIRED`, `VOYAGE_DARK`, `UNDOCK_CLEARED`, `UNDOCK_UNDER_WAY`,
+    `NOT_ABOARD`, `NOT_DOCKED`, `NO_ROUTE`, `goods_pending_aboard` (GOODS_COMING / LISTING_HOLDS
+    over mush-market's public `quotes()` and `lot_listings()`, mush-market untouched), the plan
+    (`OVERLOADED` / `PLAN_DARK`), `TANK_SHORT`, `STORES_SHORT`, the launch dry run
+    (`route_in_world`, the lane version, `depart_ineligible` → `PORT_CLOSED`) — then `put_voyage`
+    and ONE `submit_authoritative` as the pilot, replying CLEARANCE_FILED. While filed,
+    `+ship/leave` and `+ship/board` refuse LEAVE_CLEARED and the venue gate answers HOLD_UNDER_WAY.
+    `SHIP_CLEARED`/`SHIP_UNDER_WAY` and `STATUS_CLEARED`/`STATUS_UNDER_WAY` ("…, leg {n} of {m}{,
+    Kirkwood astern}, ETA {hhmm} UTC.") read the passage first; the time helpers (`ic_days`,
+    `real_span`, `utc_hhmm`, `utc_day_word`, `civil_from_days`) are `pub(crate)` with unit tests.
+    Readiness: a moving hull is never free and ", {d} departing" is appended.
+13. **Tests** (`tacsim/tests/passage.rs` 4, `tacsim/tests/voyage.rs` 13,
+    `mush-sim/tests/leg_times.rs` 6, `mush-atlas/tests/anchored_exits.rs` 2, plus unit tests in
+    `route.rs`, `passage.rs`, `burn.rs`, `voyage.rs`, `families.rs`). The seven mandatory tests
+    under their exact names pin lane v3's figures (959,361 + 735,600 s, 41 t, 21 crew-days;
+    653,642 + 852,473 s, 37 t, 18) and the freeze across a sky change and reboots; the verify lens
+    at rate 3600 asserts the plan lines, the debits 42→1 / 21→0, the frozen `leg_s`,
+    LOCK_SEALS/Kirkwood/DOCKS in the Crew Compartment, GRANTED once, the under-way renders, the
+    venue gate and the departing count while filed, Direct on Stickney and `+ship/leave` into P01.
+    The fixer's additions: `ic9_a_pilot_moved_ashore_holds_the_launch`,
+    `ic9_an_unreadable_sailing_plan_fails_closed` (corrupt and misfiled), the replay guard and the
+    hold-changed prepare refusal, the clock-advance and unplaced-pilot checks on the burn offer, and
+    `assert_nothing_moved` asserting the exact prior voyage and no `tacsim:voyage:` op.
+14. **Gates** (`mush-contract-tests/legacy-handlers.toml`, `state-slot-owners.toml`;
+    `tacsim/tests/commerce.rs`): the `+ship` stanza moved to `authoritative` with the IC9 note, the
+    `@tacsim` stanza refreshed for `/port clear`, a `voyage.rs` AccountOracle row, and the IC8
+    venue-gate test's setup replaced with the §6 `mush_sim::depart` lines.
+
+### Deferred, and why
+
+The owner-critical defaults first, then the lead rulings the planner took, the builder's declared
+deviations, the residuals, and what later cuts inherit.
+
+**Owner-critical defaults (each a one-line change once the owner rules):**
+
+- **Generic aboard lines kept beside the flavoured ones** (L8; IC4's recorded surface "additional,
+  not replacements"). Doc 18 §6 shows only the flavoured line; `REPLACE_GENERIC_ABOARD_LINES =
+  false` in `composition/sim_routes.rs` is the one-token flip.
+- **The manual `@journey/depart` arm refuses every lane route for every carrier and actor, staff
+  included, and a programme hull on any route** (L32; closes IC3's F9 on the route). Staff keep the
+  arm for non-programme carriers on non-lane routes. A staff power is narrowed.
+- **The pilot is held aboard while a clearance is filed or a burned launch is held** (L14/L29):
+  `+ship/leave`/`+ship/board` refuse and the hold cannot load; a filed-but-unburned clearance lapses
+  after 24 fires (~2 min); a held launch lasts until staff fix the cause or run `@tacsim/port
+  clear`. There is no player abandon verb.
+- **No refund on a stood-down clearance** (L30): the burned matter is gone; the ticket is the
+  record.
+- **The two-step undock voice** (L37): CLEARANCE_FILED at once, CLEARANCE_GRANTED on the launch
+  fire's pull verification (doc 18 §6 shows "Clearance granted" as the reply). Every new line the
+  brief wrote (LANE_UNPLANNED, MANUAL_DEPARTURE, LAUNCH_HELD, CLEARANCE_STOOD_DOWN, PORT_CLOSED,
+  AT_NOT_YET, the `+ship/plan` lines, the status form) is the owner's to re-voice; the builder's own
+  wordings are "#{hull} is under way; its clearance has flown.", `UNDOCK_USAGE`, and the
+  short-clause form "(tank 39 t; 1 t short)".
+- **The listing rule** (L13): any hold-backed listing whose stock sits in the hull's hold, live or
+  lapsed, refuses undock until it is withdrawn or released.
+- **HOLD_UNDER_WAY for a docked, cleared hull** (conformance F5): the brief directs the under-way
+  text while the hull sits at the berth; a HOLD_CLEARED variant is a voice item.
+- **For IC12's docs pass** (L2/L27/L36): lane v3's figures replace doc 18's v1 figures (outbound
+  959,361 + 735,600 = 1,694,961 s, 41 t, 21 crew-days; return 653,642 + 852,473 = 1,506,115 s, 37 t,
+  18 crew-days; the boundary at ~266.5 s real at 3600, not ~268); the tank case is 39 t against a 40
+  t burn (105‰ includes the fuel's own mass, so "40 against 41" is impossible); the ticket's
+  `launched` field is gone.
+
+**Lead rulings taken** (L1-L37 of the brief, condensed): floor not ceil, `route_duration`'s exact
+step (L1); the journey departs at `plan.depart_ic` (L3); the plan reaches the prepare only through
+the filed voyage document as a server-authenticated fixed parameter, the submission naming only
+`seq` (L4); the ticket +`seq` −`launched` (L5); the names `tacsim_port_burn` /
+`tacsim_port_burn_result` / key `tacsim.port.burn/{hull}/undock/{seq}` (L6); the launch is a direct
+`mush_sim::depart`, no submission, no swap, the boot reconcile = the first fire (L7); one
+`CarrierHooks` seam, Tick-only, never on the heal re-apply (L8); Kirkwood's detail and short word as
+code data keyed by lane place id, no pack moves (L9/L35); `PlanError` + `ViaReserved`,
+`SkyUnavailable` (L10); `+ship` Authoritative and Raw (L11); occupants = persons Interior in the
+airlock space, payload = pools × mass + occupants × allowance (L12); undock waits for promised goods
+and the venue gate treats a filed hull as under way (L13); `+travel/status`'s arm is generic (L15);
+the apply-time refusal in `create_exit` through `anchored_space_of` (L16); the Engineering/Bridge
+burn-and-reserve gauge lines go to IC11 (L17); readiness reads the voyage pendings (L18); a
+whole-tonne burn, and the table refuses a non-1,000 kg propellant (L19); `PassagePlan.law` is the
+law's word (L20); the destination = a routes key or a port-name prefix, `at=now` only (L21);
+`choose_route` refuses on the first unplannable listed route (L22); the lane addressed by its
+latched version and the launch flies only that version (L23); notices only to an absent tenant,
+GRANTED through `notify` (L24); real time only on §4.4's OOC surfaces (L25); a lapse after 24 fires,
+the seq burned (L26); the launch dry-run at undock (L28); the lease re-checked at launch (L31); the
+IC8 venue-gate test reaches "under way" through `mush_sim::depart` directly (L33); `unit_definition`
+= the fielded reference's digest (L34).
+
+**The builder's declared deviations:** `PlanError::Unreadable{what}` as a ninth variant (a pool that
+will not read, or an unweighed good, cannot honestly be `Overflow`); `BurnTable`/`HullSpec` are
+`pub` with crate-private fields (`private_interfaces` under `-D warnings`); the fixed `voyage`
+parameter is nested `{hull, pending}` (`deny_unknown_fields` cannot be flattened) and `now` is the
+IC `at` integer; an unreadable ticket goes through `launch_hold` rather than a separate log-once
+path; the tank and locker are checked against `available` while the payload sums `quantity`;
+`+ship/plan` counts the pilot aboard (`max(count, 1)`), so a plan read ashore includes them. The
+fixer's addition: the launch also holds with "the pilot is no longer aboard".
+
+**Residuals (named, small):** no ticket-vs-pending cross-check before flying (a hand-repaired
+`last_seq` could re-mint a used seq); the atlas refusal fires after the framework has retired an
+existing exit pair on an UPDATE row; a held launch re-trips the tick's generic "logged once" warning
+every backoff; CLEARANCE_FILED precedes the durable receipt (a burn refused at ingress leaves a
+~2-minute LEAVE_CLEARED window); a lapse could clear a pending whose burn is staged but not
+reconciled after ~2 minutes; an `Unreadable` voyage leaves board/leave/loading open and uncounted in
+readiness; the over-rail render rounds half up ("181.0 t against 181 t" on staff-seeded loads); the
+rate-0 `+travel/status` keeps its parenthesis; `PortTickState` is RAM, so GRANTED is not told across
+a reboot and the lapse grace restarts; a boundary or arrival caught up at boot gets the generic line
+and no notice (R9); `+ship/plan` is allowed while a clearance is filed. Untested: the non-staff
+clear's denial text, the `Deferred` branch with the burn still queued, `goods_pending_aboard`'s
+terminal-contract and lapsed-listing cases, a mid-journey rate change with `leg_s`, and a one-way
+exit out of a room aboard.
+
+**Not done:** the hand-played smoke at rate 24 (no Redis for the staff bootstrap, no scripting
+client); the rate-3600 verify-lens test stands in and no log is offered. **Unowned (not in the IC9
+row):** the C01/P01 berth boards and the C14 departures board as `LookRendered` lines.
+**Inherited:** the queue, `+ship/order`, the time parser and the Engineering/Bridge gauge lines
+(IC11); selling (IC10); help topics, the readiness gate's full form, the doc 18 text fixes and the
+smoke (IC12); buyout/release/revoke (IC13); the moving sky, `via=` honoured and a route policy
+(P-A).
+
+### Pins re-blessed
+
+- **`mush-contract-tests/legacy-handlers.toml`, the `+ship` stanza**: category `legacy-post-image` →
+  `authoritative`, `family` dropped (the `+market` stanza's shape), the note rewritten to name
+  `/plan` (a pure read), `/undock` (one `tacsim:voyage:<hull>` whole-document write and exactly one
+  `tacsim_port_burn` submission) and doc 18 §4.2/§4.4, D-18-11/23/30/44/46. Reason: the ceiling rule
+  — a CommandSpec takes the class of its highest switch and `/undock` stages an authoritative
+  submission. `plan` and `undock` are switches of the existing verb, so `PINNED_BASELINE` stays
+  at 97.
+- **The `@tacsim` stanza**: REFRESHED (not joined) for the staff argument `@tacsim/port
+  clear #<hull>` on the existing `/port` switch (one voyage write and a notice; no new switch).
+  Category and family unchanged; `PINNED_BASELINE` does not move.
+- **`state-slot-owners.toml`**: a row for `crates/tacsim/tests/voyage.rs` (`World::module_state_mut`
+  → `AccountOracle`, owner `sim`), with the coop.rs/commerce.rs reason: every passage test charters
+  through `+coop/enrol`, whose rule is per gateway account and fails closed without the oracle a
+  `TestWorld` lacks.
+- **The `tacsim/src/port/families.rs` ticket fixture** (IC5's L5/L36): `launched: false` → `seq: 9`;
+  assertions added only — `ticket_id() == TicketId{5011, 9}` and a wire carrying `"launched"`
+  refused. Reason: no world holds a ticket; the key is derived from the value and no writer could
+  ever set `launched`.
+- **`tacsim/tests/commerce.rs::ic8_the_ship_presence_and_the_gate_refusals`**: setup only — GOD's
+  manual `@journey/depart #hull=ic8_fixture #gallery:100` replaced by the §6 in-test
+  `mush_sim::depart` through `support::with_ctx` on the same one-leg route; every assertion
+  including `HOLD_UNDER_WAY` unchanged; one doc-comment line added. Reason: L32 now refuses a
+  programme hull on the manual arm by design.
+- **Unmoved, asserted by the gate**: the restriction-lints census (`tacsim [0, 3, 2, 0, 0, 0]`,
+  `mush-sim [3, 35, 5, 0, 0, 0]`, `mush-atlas` zeros — no new unwrap/expect/indexing in non-test
+  code; mush-sim's one `&legs[..=k]` kept), the panic budgets, every content digest (lane v3, Dray
+  v2, goods v1 untouched), the composition-edge pin, the CI gated-test inventory (no `#[ignore]`
+  added), module-ns-owners and typed-state-lens (they enumerate nothing this cut touches), and the
+  help allowlist.
+
+### How it was verified
+
+Three lenses reviewed the uncommitted tree against the brief: a correctness lens (the burn's
+one-bundle matter-first order, the fixed-parameter plan against a submitter, the launch's atomicity
+and the Tick-only hooks, the dry-run/launch equivalence — one should-fix, the launch never
+re-checking the pilot aboard, plus six notes), a conformance lens (every brief text verbatim against
+the code, all 15 items and the 37 lead rulings against the diff, the gates — two should-fix:
+`assert_nothing_moved` checking "no pending" rather than "no voyage write", and `DAY_SECS` claimed
+re-exported but not, plus six notes) and a tests lens (five should-fix: no prepare refusal or replay
+guard exercised, the burn-offer test unable to tell the filed plan from a re-plan, the filed-hull
+venue gate and departing count untested, no fail-closed load test, the weak refusal helper; five
+notes). The fixer fixed all seven must/should-fix findings and rebutted none: `voyage::aboard` as
+the one predicate behind undock, the offer and `launch_step` (mutation-checked — with the check
+disabled `ic9_a_pilot_moved_ashore_holds_the_launch` fails 0/1), `DAY_SECS` re-exported,
+`assert_nothing_moved` asserting the exact prior voyage and no `tacsim:voyage:` op, the replay guard
+and the hold-changed refusal driven to the prepare, the clock-advance and unplaced-pilot checks on
+the offer, the venue-gate and ", 1 departing." assertions in the verify lens,
+`ic9_an_unreadable_sailing_plan_fails_closed` (corrupt and misfiled) and the `Voyage::check` unit
+cases. The judge then re-read the whole diff and every new file (verdict: ship with notes).
+
+**The gate**, 22 commands in order, all green on the first pass with no rerun, no LNK1104 and no
+hung binary; logs under the run's `cuts/IC9/gate1/`:
+
+- `cargo fmt --all -- --check` → no output, exit 0 (twice).
+- `cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+  debuginfo] target(s) in 0.66s``, exit 0, no warning lines (twice).
+- `cargo test -p mush-sim --lib route` → `test result: ok. 9 passed; 0 failed; 0 ignored; 0
+  measured; 28 filtered out`.
+- `cargo test -p mush-sim --test leg_times` → `ok. 6 passed; 0 failed`.
+- `cargo test -p mush-sim --test e7c6 --test e7r1 --test members` → `ok. 68 / 19 / 11 passed; 0
+  failed`.
+- `cargo test -p mush-sim --no-fail-fast` → lib 37 passed; custody 11, deployed 5, e7c10 18, e7c11
+  3, e7c5 34, e7c6 68, e7c8 32, e7r1 19, e7r2 2, leg_times 6, members 11, placement 31, transport 24
+  — all ok, 0 failed.
+- `cargo test -p mush-atlas --test anchored_exits` → `ok. 2 passed; 0 failed`.
+- `cargo test -p mush-atlas --no-fail-fast` → lib 51 passed; every binary ok, 0 failed.
+- `cargo test -p tacsim --lib` → `ok. 899 passed; 0 failed; finished in 3.99s`.
+- `cargo test -p tacsim --test passage --test voyage` → `passage: ok. 4 passed` / `voyage: ok. 13
+  passed; 0 failed; finished in 3.10s`.
+- `cargo test -p tacsim --test commerce --test coop --test hulls --test ports --test port_tick
+  --test capacity` → capacity 17, commerce 20, coop 18, hulls 15, port_tick 16, ports 17 passed; 0
+  failed each.
+- `cargo test -p tacsim --test lane --test stations --test content --test definitions --test
+  composition_edges --test e7c1 --test e7r1` → composition_edges 2, content 29, definitions 25, e7c1
+  38, e7r1 21, lane 8, stations 13 passed; 0 failed.
+- `cargo test -p mush-contract-tests --test restriction_lints --test legacy_handler_allowlist` →
+  `legacy_handler_allowlist: ok. 4 passed` / `restriction_lints: ok. 11 passed; 0 failed`.
+- `cargo test -p mush-contract-tests` → 29 `test result: ok.` lines, 0 failed (scale_harness 6
+  passed, 8 ignored as before) — run twice.
+- `cargo test -p mush-server --lib modules::` → `ok. 32 passed; 0 failed; 264 filtered out`.
+- `cargo test -p mush-server --test boot_parity --test e7r2_proving_loop` → `ok. 18 passed` / `ok. 6
+  passed; 0 failed`.
+- `cargo test -p mushd --test boot_composition` → `ok. 6 passed; 0 failed`.
+- `CARGO_BUILD_JOBS=8 cargo test --workspace --exclude mush-bot --no-fail-fast` → 394 `test result:`
+  lines, 394 ok, summed **7,397 passed, 0 failed, 92 ignored**; 29 minutes wall. The log's one
+  `panicked at crates\mush-server\src\process_fault.rs:197:9` line is
+  `tests::a_panicked_world_task_is_a_failure` panicking on purpose; that test passed.
+- `cargo test -p mush-bot` → lib 469 passed; arena_e2e 9, playtesting 9, e2e 49; all 22 binaries ok,
+  0 failed (ignored: arena_live_commander 1, arena_muster_rate 2, arena_win_rate 2).
+
+No flake was identified. The hand-played smoke (item 15) was not run (no Redis, no interactive
+client in the run environment) and is recorded as owed.
+
+### Surface for the next cuts
+
+**mush-sim** (verified in `route.rs`, `journey.rs`, `commands.rs`, `graph.rs`, `lib.rs`)
+
+- `pub fn laden_leg_durations(unladen_s: &[u32], drive: &DriveProfile, payload: u64) ->
+  Result<Vec<u32>, RouteDefError>` — `NoLegs` on empty, `Overloaded{payload, capacity}`, `Overflow`
+  on any step or a leg past u32; no drive-class check. `route_duration`'s contract unchanged.
+- `CarrierJourney::with_leg_times(self, Vec<u32>) -> Result<CarrierJourney, CarrierJourneyError>`
+  (`LegTimes{legs, times}`, `ZeroLegTime`); `leg_secs(&self, k: usize) -> Option<u32>`;
+  `leg_times(&self) -> Option<&[u32]>`; `CarrierJourneyWire.leg_s: Option<Vec<u32>>`
+  (`serde(default, skip_serializing_if = "Option::is_none")`);
+  `leg_due_at`/`arrival_at`/`due_cursor` read the frozen times when present.
+- `#[derive(Clone, Debug, PartialEq, Eq)] pub struct Departure { pub journey: JourneyId, pub aboard:
+  usize, pub arrival_at: Option<i64> }`.
+- `pub fn depart_ineligible(ctx: &Ctx<'_>, carrier: ObjId, route: &RouteDef) -> Option<String>`.
+- `pub fn depart(ctx: &mut Ctx<'_>, carrier: ObjId, route: RouteDef, leg_s: Option<Vec<u32>>,
+  departed_at: i64) -> Result<Departure, CmdError>` — refuses with `depart_ineligible`'s sentence,
+  then "A journey cannot depart in the future."; never consults `refuse_manual_departure`; no
+  authority check.
+- `pub trait CarrierHooks: Send + Sync { fn refuse_manual_departure(&self, &World, ObjId, &RouteDef)
+  -> Option<String>; fn boundary(&self, &mut Ctx<'_>, &CarrierJourney, reached: u32) -> bool; fn
+  arrived(&self, &mut Ctx<'_>, &CarrierJourney) -> bool }` (all defaulted; `true` suppresses the
+  generic aboard line; Tick only; `arrived` never on the heal re-apply). `pub struct
+  CarrierHooksState` (`new`, `unwired`, `is_wired`, `hooks`);
+  `SimulationModule::with_carrier_hooks(Arc<dyn CarrierHooks>)`.
+- `pub fn anchored_space_of(w: &World, room: ObjId) -> Option<ObjId>`.
+
+**mush-atlas**
+
+- `+travel/status`'s aboard arm "You are aboard the {root}, under way: leg {n} of {m}, bound for
+  {destination}; it arrives in {d} IC days ({about_real})." (rate 0: "(while the clock is
+  stopped)"); the `create_exit` refusal "{id}: {room} is a room aboard a moving hull; no exit leads
+  into one".
+
+**tacsim, the planner** (`port/passage.rs`, all re-exported at `tacsim::port`)
+
+- `HullDrive { pub class: CanonicalId, pub law: DriveLaw, pub payload_ceiling_kg: u64 }`;
+  `PlanError::{UnknownRoute{route}, UnknownDriveClass{route, expected, actual}, UnknownBody{place},
+  NoSkyLeg{place}, Overloaded{payload_kg, ceiling_kg}, Overflow, ViaReserved, SkyUnavailable,
+  Unreadable{what}}`.
+- `plan_passage(sky, pack, route, drive, dry_kg, payload_kg, occupants, depart_ic) ->
+  Result<PassagePlan, PlanError>`; `choose_route(sky, pack, routes: &[CanonicalId], drive, dry_kg,
+  payload_kg, occupants, depart_ic, via: Option<&CanonicalId>)`; `intercept_passes(sky, a, b, t0,
+  drive, payload_kg, passes) -> Result<Vec<(u64, u32)>, PlanError>`; `INTERCEPT_PASSES: usize = 3`;
+  `DAY_SECS: u32 = 86_400`.
+- `passage_burn(law, dry_kg, payload_kg, legs) -> Result<u64, PlanError>` (whole tonnes);
+  `crew_days(occupants, legs) -> Result<u32, PlanError>`; `payload_kg(goods, accepted, read: impl
+  FnMut(&CanonicalId) -> Result<u64, PlanError>, occupants, allowance_kg) -> Result<u64,
+  PlanError>`; `DriveLaw::word() -> &'static str` ("coast"); `LegPlan`, `PassagePlan` and `DriveLaw`
+  re-exported.
+
+**tacsim, the burn** (`port/burn.rs`; `tacsim::port::{BURN_ACTION, BURN_OUTCOME, BURN_KEY_PREFIX}`)
+
+- `BURN_ACTION = "tacsim_port_burn"`, `BURN_OUTCOME = "tacsim_port_burn_result"` (fields `actor,
+  burn_t, crew_days, hull, seq`), `BURN_KEY_PREFIX = "tacsim.port.burn/"` (the live key
+  `tacsim.port.burn/{hull}/undock/{seq}`; IC11 keeps `…/{order}/{attempt}`), `PROPELLANT_KG_PER_UNIT
+  = 1_000`.
+- `pub struct BurnTable`, `pub struct HullSpec` (fields crate-private); crate-private
+  `burn_table(&Catalog, Option<Arc<GoodsTable>>) -> Option<BurnTable>`, `hull_spec_of(&Catalog,
+  &GoodsTable, &CanonicalId) -> Result<(DefinitionDigest, HullSpec), String>`, `consumable_good`,
+  `burnable(w, actor) -> Option<(ObjId, PendingVoyage)>`.
+- The action descriptor `{"subject":"self_actor","targets":0,"family":"tacsim.ticket"}`. Offer fixed
+  parameters `{"now": <ic i64>, "voyage": {"hull": n, "pending": PendingVoyage}}`, one `seq` Choice;
+  a submission sends `{"seq": "<decimal>"}`.
+- `port_tick::register(reg, test_world, inventory, burn: Option<BurnTable>)`; `PortHandles.burn:
+  Option<DefinitionRef>` (`Some` exactly when the provider registered).
+
+**tacsim, the ticket and the sailing plan** (`port/families.rs`, `port/voyage.rs`; re-exported at
+`tacsim::port`)
+
+- `Ticket { hull, seq: u32, route, route_pack, route_version, unit_definition, manifest, payload_kg,
+  plan, order, attempt, burned_at }` (strict; `launched` removed), `Ticket::ticket_id() ->
+  TicketId`.
+- `VOYAGE_PREFIX = "tacsim:voyage:"`, `VOYAGE_SCHEMA: u16 = 1`, `voyage_key(ObjId) -> SmolStr`,
+  `voyage_key_owner(&str) -> Option<ObjId>` (strict decimal).
+- `Voyage { pub schema: u16, pub hull: ObjId, pub last_seq: u32, pub pending: Option<PendingVoyage>
+  }`, `PendingVoyage { seq, pilot, to_venue: CanonicalId, vault: u64, occupants: u32, payload_kg:
+  u64, route_pack, route_version: u32, unit_definition: DefinitionDigest, plan: PassagePlan, order:
+  Option<u32>, attempt: u32, filed_ic: i64, filed_at: i64 }` (both `deny_unknown_fields`; `pending`
+  always written, `null` when empty); `Voyage::check()`; `VoyageState::{Absent, Present(&Voyage),
+  Unreadable}`; `pub fn pending_of(w, hull) -> Option<&PendingVoyage>`; `LAUNCH_GRACE_FIRES: u64 =
+  24`, `LAUNCH_WATCH_FIRES: u64 = 24`.
+- Store: `voyage_state(&self, hull) -> VoyageState<'_>`, `voyages() -> impl Iterator<Item =
+  &Voyage>`, crate-private `put_voyage(ctx, &Voyage)` (the single write path; `last_seq` is the
+  per-hull seq minter IC11 reuses).
+- Crate-private helpers IC11 will call: `goods_pending_aboard(w, EndpointRef) ->
+  Option<Pending::{Quote, Listing}>`, `aboard(w, hull, person) -> bool`, `passage_of`/`Passage`, the
+  time renders `ic_days`, `real_span`, `utc_hhmm`, `utc_day_word`, `civil_from_days`, `real_until`,
+  `tonnes_one_decimal`; `launch_step`/`launch_hold`/`launch_verify`/`clear_cmd`; `narrate_hull`,
+  `tell_absent_tenant`, `boundary_line`, `arrival_lines`.
+
+**tacsim, the verbs and texts**
+
+- `+ship/plan [<port>] [at=now]`, `+ship/undock <port> [at=now]` (switches of the Authoritative
+  `+ship`, `ArgShape::Raw`); `@tacsim/port clear #<hull>` (staff; `PORT_USAGE = "Usage: @tacsim/port
+  status | @tacsim/port clear #<hull>"`).
+- Every text constant of the brief verbatim in `port::voyage` (LOCK_SEALS, BOUNDARY, DOCKS,
+  ARRIVAL_NOTICE, CLEARANCE_GRANTED, CLEARANCE_LAPSED, MANUAL_DEPARTURE, LANE_UNPLANNED,
+  LAUNCH_HELD, CLEARANCE_STOOD_DOWN, CLEARANCE_FILED, UNDOCK_UNDER_WAY, UNDOCK_CLEARED, NOT_ABOARD,
+  NOT_DOCKED, NO_ROUTE, VIA_NOT_YET, AT_NOT_YET, PORT_CLOSED, GOODS_COMING, LISTING_HOLDS,
+  OVERLOADED, TANK_SHORT, STORES_SHORT, PLAN_DARK, PLAN_UNDER_WAY, VOYAGE_DARK, UNDOCK_UNWIRED,
+  LEAVE_CLEARED, plus UNDOCK_USAGE, NOTHING_BURNED, NOTHING_WRITTEN, WAYPOINT_DETAILS,
+  WAYPOINT_SHORT) and in `port::ship` (STATUS_CLEARED, STATUS_UNDER_WAY "Aboard the {name} ({mark}),
+  under way, leg {n} of {m}{astern}, ETA {hhmm} UTC.", SHIP_CLEARED, SHIP_UNDER_WAY).
+- `tacsim::port::charter_tenant(w, hull) -> Option<ObjId>`;
+  `composition::sim_routes::{TacsimCarrierHooks, REPLACE_GENERIC_ABOARD_LINES = false}`.
+- The readiness hulls line gains ", {d} departing". No pack version moves: lane v3, Dray v2, goods
+  v1.

@@ -1197,7 +1197,9 @@ fn ic8_the_venue_gate_refuses_limbo_and_a_hull_at_another_port() {
 /// other pilot's hold); a player's `to=` accept into another pilot's hold gets the
 /// market's existence-hiding line first. The hull placed in a domain no port records is refused
 /// `HOLD_NOT_HERE`, and the hull on a journey `HOLD_UNDER_WAY` — through the gate
-/// with `Ship` and through a no-argument accept at C07 alike.
+/// with `Ship` and through a no-argument accept at C07 alike. (the hull is put under
+/// way with `mush_sim::depart` directly: since doc 18 cut IC9 the manual
+/// `@journey/depart` arm refuses a programme hull)
 #[test]
 fn ic8_the_ship_presence_and_the_gate_refusals() {
     let mut rig = stocked();
@@ -1325,11 +1327,19 @@ fn ic8_the_ship_presence_and_the_gate_refusals() {
                 .map(|d| d.host)
         })
         .expect("the Ceres domain's host");
-    let out = run(
-        &mut rig.tw,
-        GOD,
-        &format!("@journey/depart #{}=ic8_fixture #{}:100", hull.0, gallery.0),
-    );
+    let route = mush_sim::RouteDef::new(
+        mush_core::CanonicalId::new("ic8_fixture").expect("id"),
+        (open, gallery),
+        vec![mush_sim::LegDef::new(gallery, 100).expect("leg")],
+        mush_core::CanonicalId::new("manual").expect("class"),
+        0,
+    )
+    .expect("route");
+    let now = rig.tw.world().world_ic_now().at;
+    let out = support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::depart(ctx, hull, route, None, now).map(|d| format!("{d:?}"))
+    })
+    .expect("departs");
     let under_way = HOLD_UNDER_WAY
         .replace("{name}", name)
         .replace("{port}", &ceres_name);

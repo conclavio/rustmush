@@ -101,7 +101,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/pin list                    (staff) every pin this world carries.
                    @tacsim/time show                   the live world-time generation, its rate,                    the generations left, and each subsystem's declared catch-up policy.
                    @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each subsystem's                    declared policy for it. It is one attributed act on the kernel's own                    timeline: no second timeline is created and no earlier fact is reinterpreted.
-                   @tacsim/port status                 (staff) the port readiness report: every binding the port entries made — rooms, domains, orgs, accounts and capital — with the lane, the sky and the world rate."
+                   @tacsim/port status                 (staff) the port readiness report: every binding the port entries made — rooms, domains, orgs, accounts and capital — with the lane, the sky and the world rate.
+                   @tacsim/port clear #<hull>          (staff) stand down a programme hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told."
                 .into(),
             ..CommandSpec::default()
         },
@@ -159,7 +160,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // tacsim's one enrolment document and the hull's rename. `+ship` and
     // `+ship/hold` are pure reads; `+ship/board` and `+ship/leave` are
     // placement verbs through mush-sim (leave also writes the last-port
-    // marker). None submits anything authoritative.
+    // marker). None submits anything authoritative. (`+ship` moved to its own
+    // bracket below in doc 18 cut IC9.)
     reg.command(
         CommandSpec {
             name: crate::port::coop::COOP_VERB.into(),
@@ -174,11 +176,20 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::coop::coop_cmd),
     )?;
+    // ---- Doc 18 cut IC9 (§4.2, §4.4; D-18-11, D-18-23, D-18-46): `+ship`, Authoritative ----
+    //
+    // Lead ruling L11 (the ceiling rule, mush-market's precedent): a CommandSpec is
+    // one primary verb and takes the CEILING class of its switches, and
+    // `+ship/undock` stages exactly one `tacsim_port_burn` submission. The class is
+    // declared before the `reg.command` and the module default restored right
+    // after. `+ship/plan` is a pure read; `+ship/undock` writes the hull's one
+    // `tacsim:voyage:<hull>` document and submits the burn as the actor.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: crate::port::ship::SHIP_VERB.into(),
-            shape: ArgShape::None,
-            switches: ["board", "leave", "hold"]
+            shape: ArgShape::Raw,
+            switches: ["board", "leave", "hold", "plan", "undock"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -188,6 +199,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::ship::ship_cmd),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }
 
@@ -426,15 +438,39 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
 // ---- Doc 18 cut IC3 — `@tacsim/port status`, the readiness report ----------
 
 /// The one usage line of `@tacsim/port`.
-pub const PORT_USAGE: &str = "Usage: @tacsim/port status";
+pub const PORT_USAGE: &str = "Usage: @tacsim/port status | @tacsim/port clear #<hull>";
 
 /// `@tacsim/port [status]` (doc 18 §4.7; staff): the port readiness report
 /// ([`crate::port::readiness`]), a pure read of the port maps, the economy, org
 /// and sim state and the live rate. Writes nothing.
+///
+/// `@tacsim/port clear #<hull>` (doc 18 cut IC9, lead ruling L29; staff): the
+/// terminal for a held launch — an argument to the existing switch, no new
+/// switch — through `crate::port::voyage::clear_cmd` (one `tacsim:voyage:<hull>`
+/// whole-document write and a notice).
 fn port_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_enabled(ctx)?;
     require_staff(ctx)?;
     let lhs = ctx.args.lhs().trim().to_owned();
+    let mut words = lhs.split_whitespace();
+    if words
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("clear"))
+    {
+        let hull = match (words.next(), words.next()) {
+            (Some(target), None) => target
+                .strip_prefix('#')
+                .and_then(crate::port::families::strict_decimal_u32)
+                .map(ObjId),
+            _ => None,
+        };
+        let Some(hull) = hull else {
+            return Err(CmdError::msg(PORT_USAGE));
+        };
+        let reply = crate::port::voyage::clear_cmd(ctx, hull)?;
+        info(ctx, reply);
+        return Ok(());
+    }
     if !(lhs.is_empty() || lhs.eq_ignore_ascii_case("status")) {
         return Err(CmdError::msg(PORT_USAGE));
     }

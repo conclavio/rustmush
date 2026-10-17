@@ -288,9 +288,14 @@ fn compose_server_modules(
         // `@journey/depart <id>` builds the manual fixture route; wired, a
         // pack-authored id resolves to its declared legs, drive class,
         // propellant and alignment band.
+        // Doc 18 cut IC9 (lead ruling L8): the carrier hooks reach `mush-sim` the
+        // same way — the manual-departure refusal on the resolved route and the
+        // trade run's boundary and arrival narration (a no-op for anything that is
+        // not a programme hull, so every roster carries it).
         Box::new(
             mush_sim::SimulationModule::new()
-                .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog)),
+                .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
+                .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks)),
         ),
         // S1 (14-spatial-implementation-plan §3.1): the atlas — places with geometry
         // — immediately after `mush-sim`, whose placement graph S2's journeys read.

@@ -286,6 +286,19 @@ which a `TestWorld` has none of, so the rig installs the fixed account map — t
 """
 
 [[site]]
+path = "crates/tacsim/tests/voyage.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 18 cut IC9, for the coop.rs and commerce.rs rows' reason: every passage test
+charters its pilot through `+coop/enrol`, whose rule is per gateway account and
+fails closed on an unmapped character. The oracle is boot-hydrated by the host
+from the store, which a `TestWorld` has none of, so the rig installs the fixed
+account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/deliberation.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

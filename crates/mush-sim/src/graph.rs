@@ -298,6 +298,30 @@ pub fn space_domain(st: &SpatialState, space: ObjId) -> Option<DomainId> {
     }
 }
 
+/// **Doc 18 cut IC9 (lead ruling L16)** — the interior space aboard a moving
+/// object that `room` belongs to: the space whose `rooms` lists `room` (through
+/// the derived `member_of` index, cut IC4), or `room` itself when it is a space
+/// object, **when that space's anchor is [`SpaceAnchor::MovingObject`]**; `None`
+/// for a room of a fixed or unanchored interior and for a room in no space.
+///
+/// The atlas applier asks it so no authored exit ever leads into (or out of) a
+/// room aboard a hull that flies (§3-F's destination seal stays unbuilt,
+/// D-18-22). World-only and bounded: two map lookups.
+#[must_use]
+pub fn anchored_space_of(w: &World, room: ObjId) -> Option<ObjId> {
+    let st = w.module_state::<SpatialState>()?;
+    let space = st
+        .derived
+        .member_of
+        .get(&room)
+        .copied()
+        .or_else(|| st.spaces.contains_key(&room).then_some(room))?;
+    match st.spaces.get(&space)?.anchor {
+        SpaceAnchor::MovingObject { .. } => Some(space),
+        SpaceAnchor::FixedDomain { .. } | SpaceAnchor::Unanchored => None,
+    }
+}
+
 /// Recompute the indexes and compare to the maintained ones.
 pub fn verify_indexes(st: &SpatialState) -> Result<(), String> {
     let fresh = rebuild(st);

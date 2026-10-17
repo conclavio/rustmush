@@ -1,0 +1,1989 @@
+//! **Doc 18 cut IC9 acceptance — undock and fly: the first player-runnable flight**
+//! (doc 18 §4.2 "Propellant and provisions as consumables", "The helm", §4.4
+//! "Passage: the planner over the sky at departure", "Failure handling", §4.8; §2
+//! steps 9, 11, 12; D-18-11, D-18-18, D-18-23, D-18-30, D-18-44 … D-18-47, D-18-50;
+//! lead rulings L1–L37 of the IC9 brief).
+//!
+//! A chartered pilot aboard a docked Dray plans (`+ship/plan`, which writes
+//! nothing) and undocks (`+ship/undock`): the command files the plan in the hull's
+//! sailing plan and submits ONE `tacsim_port_burn` as the pilot, whose prepare
+//! debits the tank and the locker and writes the ticket carrying the whole plan.
+//! The next `tacsim.port` fire launches it through `mush_sim::depart` on the plan's
+//! frozen leg times from its own `depart_ic`; the crew hear the lock seal, the
+//! Kirkwood boundary and the docking; arrival places the hull on Stickney's
+//! passive domain and `+ship/leave` lands in P01.
+//!
+//! Composed on the composition root (`server_modules_with_tacsim` and the wired
+//! test-world layer with game content: `commerce.rs`'s `Roster::bare`, with the
+//! sky rate a parameter). Every boot asserts no namespace write was refused; every
+//! drain asserts no kept tacsim submission is GOD's. The load is derived by
+//! `support/vertex.rs` (no test stores 20/80).
+
+mod support;
+
+#[path = "support/vertex.rs"]
+mod vertex;
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+
+use mush_core::{
+    AccountId, AccountIdentity, ActionStateBootRecord, Audience, AuthoritativeSubmit, CanonicalId,
+    CommitToken, GOD, IdempotencyKey, IdempotencyScope, ModuleWrite, ObjId, ObjKind,
+    OfferExecutionContext, OfferSubmission, RequestUid, ScopedIdempotencyKey,
+};
+use mush_economy::{EconomyConfig, EconomyStore, VaultId};
+use mush_inventory::{EndpointRef, Grade, InventoryHandles, LotId};
+use mush_market::{ListingId, MarketStore, Presence, VenueGate};
+use mush_proto::OutputEvent;
+use mush_sim::{CarrierJourney, JourneyBook, SpatialParent, SpatialState};
+use mush_testkit::{TestWorld, fold_module_ops_into};
+use smol_str::SmolStr;
+use tacsim::definitions::content::{LANE_JSON, LANE_PACK};
+use tacsim::pack::{PackEntry, load_pack};
+use tacsim::port::apply::room_by_key;
+use tacsim::port::voyage::{
+    AT_NOT_YET, CLEARANCE_LAPSED, GOODS_COMING, LANE_UNPLANNED, LAUNCH_GRACE_FIRES, LAUNCH_HELD,
+    LEAVE_CLEARED, LISTING_HOLDS, MANUAL_DEPARTURE, NO_ROUTE, NOT_ABOARD, OVERLOADED, PORT_CLOSED,
+    TANK_SHORT, UNDOCK_CLEARED, UNDOCK_UNDER_WAY, VIA_NOT_YET, VOYAGE_DARK, VOYAGE_PREFIX, Voyage,
+    VoyageState, voyage_key,
+};
+use tacsim::port::{
+    HOLD_UNDER_WAY, HullRow, PortDef, PortHandles, PortMap, PortMapState, PortVenueGate, Ticket,
+    TicketId, room_key,
+};
+use tacsim::port_tick::{NOTICE_HEADING, pending_notices};
+use tacsim::{Sky, TacsimConfig, TacsimStore};
+
+// ---------------------------------------------------------------------------
+// The rig (commerce.rs's, the sky rate a parameter)
+// ---------------------------------------------------------------------------
+
+fn cid(word: &str) -> CanonicalId {
+    CanonicalId::new(word).expect("a canonical id")
+}
+
+fn lane_id() -> CanonicalId {
+    cid(LANE_PACK)
+}
+
+/// How a test roster is composed: `commerce.rs`'s `Roster::bare` (no sheet, the
+/// test world's layer, the shipped game content), with `[tacsim.time.ephemeris]`'s
+/// rate a parameter (test 4's sky change).
+#[derive(Clone, Copy, Default)]
+struct Roster {
+    sky_rate: u32,
+}
+
+impl Roster {
+    fn modules(self) -> Vec<Box<dyn mush_core::GameModule>> {
+        use tacsim::composition as comp;
+
+        let llm = Arc::new(
+            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+                .expect("a disabled LLM service composes"),
+        );
+        let onboarding = mush_core::OnboardingConfig::default();
+        let game = tacsim::GameEconomyConfig::default();
+        let mut cfg = TacsimConfig {
+            enabled: true,
+            ..TacsimConfig::default()
+        };
+        cfg.time.ephemeris.rate = self.sky_rate;
+        let (mut mods, inventory) = comp::server_modules_with_tacsim(
+            mush_weather::WeatherConfig::default(),
+            EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &onboarding,
+            &game,
+            comp::recovery_policy(&cfg.recovery),
+        );
+        mods.push(comp::worldgen_module_with(
+            Arc::clone(&llm),
+            mush_worldgen::WorldgenConfig::default(),
+        ));
+        mods.push(comp::npc_module_with(
+            comp::npc_agent_adapter(),
+            &mush_config::config::NpcCfg::default(),
+        ));
+        mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
+        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        mods
+    }
+}
+
+/// A fixed gateway-account oracle (`match_lifecycle.rs`'s precedent).
+#[derive(Default)]
+struct MapOracle(Mutex<BTreeMap<ObjId, AccountId>>);
+
+impl AccountIdentity for MapOracle {
+    fn account_of(&self, character: ObjId) -> Option<AccountId> {
+        self.0.lock().ok()?.get(&character).copied()
+    }
+}
+
+/// A booted world, its oracle and the cumulative store (`coop.rs`'s rig).
+struct Rig {
+    tw: TestWorld,
+    oracle: Arc<MapOracle>,
+    store: HashMap<SmolStr, mush_core::ModuleBootData>,
+    typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
+}
+
+fn no_refused_writes(tw: &TestWorld) {
+    let refused = tw.world().refused_namespace_writes();
+    assert!(refused.is_empty(), "refused namespace writes: {refused:?}");
+}
+
+fn install_oracle(tw: &mut TestWorld, oracle: &Arc<MapOracle>) {
+    *tw.world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") = mush_sim::AccountOracle::new(oracle.clone());
+}
+
+fn with_offer_keys(tw: &mut TestWorld) {
+    tw.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(1, [0x49; 32]).expect("an offer secret"),
+            [],
+        )
+        .expect("an offer key ring"),
+    );
+}
+
+/// Boot, settle the capital, stock both ports.
+fn stocked() -> Rig {
+    let mut tw = TestWorld::with_modules(Roster::default().modules());
+    no_refused_writes(&tw);
+    with_offer_keys(&mut tw);
+    let oracle = Arc::new(MapOracle::default());
+    install_oracle(&mut tw, &oracle);
+    let mut rig = Rig {
+        tw,
+        oracle,
+        store: HashMap::new(),
+        typed: BTreeMap::new(),
+    };
+    sweep(&mut rig.tw, 120);
+    stock(&mut rig);
+    rig
+}
+
+/// Fold every write since the first boot and reboot into `roster`.
+fn reboot_with(rig: Rig, roster: Roster) -> Rig {
+    reboot_editing(rig, roster, |_| {})
+}
+
+/// [`reboot_with`], the folded store edited first (`coop.rs`'s corrupt-document
+/// reboot).
+fn reboot_editing(
+    rig: Rig,
+    roster: Roster,
+    edit: impl FnOnce(&mut HashMap<SmolStr, mush_core::ModuleBootData>),
+) -> Rig {
+    let Rig {
+        mut tw,
+        oracle,
+        mut store,
+        typed,
+    } = rig;
+    fold_module_ops_into(&mut store, tw.take_module_ops());
+    edit(&mut store);
+    let mut tw = tw
+        .reboot_into(roster.modules(), store.clone())
+        .expect("the reboot boots");
+    no_refused_writes(&tw);
+    tw.engine_mut()
+        .hydrate_action_state(
+            typed
+                .iter()
+                .map(|((ns, key), value)| {
+                    ActionStateBootRecord::new(ns.clone(), key.clone(), value.clone())
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("the typed state hydrates");
+    with_offer_keys(&mut tw);
+    install_oracle(&mut tw, &oracle);
+    Rig {
+        tw,
+        oracle,
+        store,
+        typed,
+    }
+}
+
+/// Everything due `secs` on.
+fn sweep(tw: &mut TestWorld, secs: i64) {
+    let t = tw.world().now().saturating_add(secs);
+    tw.set_now(t);
+    let _ = tw.fire_due(t.saturating_mul(1000));
+}
+
+fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
+    tw.seen_by(events, who).join("\n")
+}
+
+fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
+    let events = tw.run(who, line);
+    said(tw, &events, who)
+}
+
+fn store(tw: &TestWorld) -> &TacsimStore {
+    tw.world()
+        .module_state::<TacsimStore>()
+        .expect("tacsim state")
+}
+
+fn economy(tw: &TestWorld) -> &EconomyStore {
+    tw.world().module_state::<EconomyStore>().expect("economy")
+}
+
+fn market(tw: &TestWorld) -> &MarketStore {
+    tw.world().module_state::<MarketStore>().expect("market")
+}
+
+fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+    match store(tw).port_map(&lane_id(), &cid(entry)) {
+        PortMapState::Present(map) => map.clone(),
+        other => panic!("{entry}'s map: {other:?}"),
+    }
+}
+
+fn port_def(entry: &str) -> PortDef {
+    let pack = load_pack(LANE_JSON).expect("the lane verifies");
+    match pack.entry(&cid(entry)) {
+        Some(PackEntry::Port(def)) => def.clone(),
+        _ => panic!("{entry} is a port entry"),
+    }
+}
+
+fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
+    let def = port_def(entry);
+    let key = room_key(&def.area, &format!("{}.{local}", def.area)).expect("a room key");
+    room_by_key(tw.world(), &key).expect("the room is on this world")
+}
+
+fn c01(tw: &TestWorld) -> ObjId {
+    station_room(tw, "ceres_port", "room.c01_berth_gallery")
+}
+
+fn c07(tw: &TestWorld) -> ObjId {
+    station_room(tw, "ceres_port", "room.c07_exchange")
+}
+
+fn p01(tw: &TestWorld) -> ObjId {
+    station_room(tw, "stickney_port", "room.p01_berth_gallery")
+}
+
+fn location(tw: &TestWorld, obj: ObjId) -> Option<ObjId> {
+    tw.world().get(obj).and_then(|o| o.location)
+}
+
+fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
+    let _ = run(tw, GOD, &format!("@teleport #{}=#{}", who.0, room.0));
+    assert_eq!(location(tw, who), Some(room), "the teleport landed");
+}
+
+/// A fresh request/commit token per landing, across the process.
+fn next_token() -> [u8; 16] {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut bytes = [0xd9_u8; 16];
+    bytes[..4].copy_from_slice(&n.to_be_bytes());
+    bytes
+}
+
+/// Drive one queued submission the way the world task does, keeping its typed
+/// post-images for a reboot (`commerce.rs`'s `land`).
+fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    let token = next_token();
+    let tw = &mut rig.tw;
+    let (action, resolved) = {
+        let engine = tw.engine();
+        let query = engine
+            .legal_action_query(
+                mush_core::PrincipalId::Object { id: submit.actor },
+                submit.actor,
+                submit.subject.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        let offers = engine
+            .project_legal_actions(&query)
+            .map_err(|error| error.to_string())?;
+        let projected = offers
+            .projected_for_action(&submit.action)
+            .ok_or_else(|| "that action is not currently offered".to_owned())?;
+        let submission = OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: Vec::new(),
+            parameters: submit.parameters.clone(),
+        };
+        let execution = OfferExecutionContext {
+            request: RequestUid::from_bytes(token),
+            principal: mush_core::PrincipalId::Object { id: submit.actor },
+            actor: submit.actor,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: mush_core::PrincipalId::Object { id: submit.actor },
+                    owner: submit.action.key().owner.clone(),
+                    namespace: CanonicalId::new(submit.action.key().id.as_str())
+                        .map_err(|_| "namespace".to_owned())?,
+                },
+                1,
+                IdempotencyKey::Request(RequestUid::from_bytes(token)),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .map_err(|error| format!("{error:?}"))?;
+        let (action, resolved, _guards) = resolved.into_authoritative_parts();
+        (action, resolved)
+    };
+    let (prepared, _) = tw
+        .engine_mut()
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes(token),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    let (ops, install) = prepared.into_parts();
+    tw.engine_mut()
+        .install_prepared_action(install)
+        .map_err(|error| format!("{error:?}"))?;
+    for op in ops {
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                rig.typed.insert((op.ns, key), value);
+            }
+            ModuleWrite::Del { key } => {
+                rig.typed.remove(&(op.ns, key));
+            }
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+/// Every queued submission of the port's lanes, dropping other modules'; asserts
+/// none kept of tacsim's is GOD's.
+fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
+    let mut kept = Vec::new();
+    while let Some(submit) = tw.engine_mut().take_authoritative_submit() {
+        let owner = submit.action.key().owner.as_str();
+        if owner == tacsim::NS {
+            assert_ne!(submit.actor, GOD, "GOD never submits from the port tick");
+        }
+        if owner == tacsim::NS || owner == "inventory" || owner == "market" {
+            kept.push(*submit);
+        }
+    }
+    kept
+}
+
+fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+    for submit in queued {
+        land(rig, submit).unwrap_or_else(|error| {
+            panic!(
+                "{} by #{} did not land: {error}",
+                submit.action.key().id,
+                submit.actor.0
+            )
+        });
+    }
+}
+
+/// Land what lands (the port's own background work on a long sweep).
+fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+    for submit in queued {
+        let _ = land(rig, submit);
+    }
+}
+
+/// One port-tick fire (6 s on), its submissions drained (not landed).
+fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let events = rig.tw.fire_due(t.saturating_mul(1_000));
+    let queued = drain(&mut rig.tw);
+    (events, queued)
+}
+
+/// One fire whose background submissions are landed where they land.
+fn fire_quietly(rig: &mut Rig) -> Vec<(Audience, OutputEvent)> {
+    let (events, queued) = fire(rig);
+    land_quietly(rig, &queued);
+    events
+}
+
+fn status(tw: &mut TestWorld) -> String {
+    run(tw, GOD, "@tacsim/port status")
+}
+
+/// **Fire and land the port tick until both ports are stocked and listed.**
+fn stock(rig: &mut Rig) {
+    for _ in 0..40 {
+        let out = status(&mut rig.tw);
+        let gated: Vec<&str> = out
+            .lines()
+            .filter(|line| {
+                line.contains(" vendor ")
+                    || line.contains(" ask ")
+                    || line.starts_with("market facts")
+            })
+            .collect();
+        if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
+            return;
+        }
+        let (_, queued) = fire(rig);
+        land_all(rig, &queued);
+    }
+    panic!("the ports were not stocked within 40 fires");
+}
+
+/// Read one typed value through an owner-stamped transaction.
+fn typed<K, V>(
+    tw: &mut TestWorld,
+    handle: &mush_core::StateFamilyHandle<K, V>,
+    key: &K,
+) -> Option<V>
+where
+    K: Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    let mut txn = tw
+        .engine_mut()
+        .action_transaction(handle)
+        .expect("a transaction");
+    txn.get(handle, key).expect("the family reads").cloned()
+}
+
+fn pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
+    let families = tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let key = mush_inventory::pool_key(EndpointRef(vault), &cid(good)).expect("a pool key");
+    typed(tw, &families.pools, &key).map_or(0, |scalar| {
+        u64::try_from(scalar.current()).expect("a non-negative pool")
+    })
+}
+
+/// A pilot on a gateway account of their own, standing at the desk.
+fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
+    let pilot = rig.tw.spawn_player(who);
+    if let Ok(mut map) = rig.oracle.0.lock() {
+        map.insert(
+            pilot,
+            AccountId::mint(&format!("{who}Acct"), seed).expect("an account id"),
+        );
+    }
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    pilot
+}
+
+/// An enrolled pilot (`Salt Moth`), standing at C07.
+fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
+    let pilot = pilot(rig, who, seed);
+    let out = run(&mut rig.tw, pilot, "+coop/enrol Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+    let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
+    let row = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|row| row.hull == charter.hull.0)
+        .expect("the hull's row");
+    let exchange = c07(&rig.tw);
+    teleport(&mut rig.tw, pilot, exchange);
+    (pilot, row)
+}
+
+/// The hold vault of a chartered hull.
+fn hold_vault(tw: &TestWorld, row: &HullRow) -> VaultId {
+    let stowage = ObjId(row.rooms[&cid("stowage")]);
+    economy(tw)
+        .snapshot()
+        .vault_by_backing(&mush_economy::CustodyRef::SpatialInterior(stowage))
+        .expect("the hold vault")
+        .id
+}
+
+fn room_of(row: &HullRow, id: &str) -> ObjId {
+    ObjId(row.rooms[&cid(id)])
+}
+
+/// Seed `qty` of `good` into `vault`'s pool through `lot` (`coop.rs`'s).
+fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+    let endpoint = EndpointRef(vault);
+    let good = cid(good);
+    let tw = &mut rig.tw;
+    let families = tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    for step in 0..2 {
+        let engine = tw.engine_mut();
+        let prepared = {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory transaction");
+            if step == 0 {
+                families
+                    .mint_origin(
+                        &mut txn,
+                        endpoint,
+                        &good,
+                        qty,
+                        Grade::new(2).expect("grade"),
+                        mush_economy::ExternalRef {
+                            provider: "test".into(),
+                            kind: "seed".into(),
+                            id: lot.0.to_string().into(),
+                            revision: None,
+                        },
+                        lot,
+                    )
+                    .map(|_| ())
+                    .expect("seed mints one origin lot");
+            } else {
+                families
+                    .dissolve(&mut txn, endpoint, lot)
+                    .map(|_| ())
+                    .expect("the seed lot dissolves");
+            }
+            txn.prepare().expect("prepares")
+        };
+        let (ops, install) = prepared.into_parts();
+        engine.install_prepared_action(install).expect("installs");
+        for op in ops {
+            match op.op {
+                ModuleWrite::JsonSet { key, value } => {
+                    rig.typed.insert((op.ns, key), value);
+                }
+                ModuleWrite::Del { key } => {
+                    rig.typed.remove(&(op.ns, key));
+                }
+                ModuleWrite::StreamAppend { .. } => {}
+            }
+        }
+    }
+}
+
+/// The both-limits cargo vertex (metals, water ice), solved from the goods table.
+fn vertex_load() -> (u64, u64) {
+    let goods = tacsim::definitions::goods::goods_table().expect("the goods table");
+    let pack = load_pack(tacsim::definitions::content::DRAY_JSON).expect("the Dray pack");
+    let Some(PackEntry::Unit(spec)) = pack.entry(&cid(tacsim::definitions::content::DRAY)) else {
+        panic!("the Dray unit");
+    };
+    let logistics = spec.logistics.as_ref().expect("the Dray's logistics");
+    let cargo = cid("cargo");
+    let def = logistics.stowage.get(&cargo).expect("the cargo hold");
+    let compartment = tacsim::port::capacity::Compartment::from_stowage(&cargo, def);
+    vertex::both_limits_vertex(&goods, &compartment, &cid("metals"), &cid("volatiles"))
+        .expect("an integral vertex")
+}
+
+/// The outbound full load: the vertex cargo, `tank` t and `locker` crew-days.
+fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64) {
+    let vault = hold_vault(&rig.tw, row);
+    let (metals, ice) = vertex_load();
+    seed_pool(rig, vault, "metals", metals, LotId(901));
+    seed_pool(rig, vault, "volatiles", ice, LotId(902));
+    if tank > 0 {
+        seed_pool(rig, vault, "propellant", tank, LotId(903));
+    }
+    if locker > 0 {
+        seed_pool(rig, vault, "provisions", locker, LotId(904));
+    }
+}
+
+/// Board from C01.
+fn board(rig: &mut Rig, pilot: ObjId) {
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot, gallery);
+    let out = run(&mut rig.tw, pilot, "+ship/board");
+    assert!(
+        out.contains("You cycle the lock into the Salt Moth."),
+        "{out}"
+    );
+}
+
+fn world_rate(tw: &TestWorld) -> u32 {
+    tw.world().world_timeline().current().rate
+}
+
+fn set_rate(tw: &mut TestWorld, rate: u32) {
+    if world_rate(tw) != rate {
+        let out = run(tw, GOD, &format!("@tacsim/time rate={rate}"));
+        assert_eq!(world_rate(tw), rate, "{out}");
+    }
+}
+
+fn ic_now(tw: &TestWorld) -> i64 {
+    tw.world().world_ic_now().at
+}
+
+/// Sweep to the first real second whose IC instant is at or past `target`,
+/// landing the port's background submissions; the events.
+fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
+    let rate = i64::from(world_rate(&rig.tw).max(1));
+    let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
+    let real = (ahead + rate - 1) / rate;
+    let t = rig.tw.world().now().saturating_add(real);
+    rig.tw.set_now(t);
+    let events = rig.tw.fire_due(t.saturating_mul(1_000));
+    let queued = drain(&mut rig.tw);
+    land_quietly(rig, &queued);
+    events
+}
+
+fn voyage(tw: &TestWorld, hull: ObjId) -> Option<Voyage> {
+    match store(tw).voyage_state(hull) {
+        VoyageState::Present(voyage) => Some(voyage.clone()),
+        VoyageState::Absent => None,
+        VoyageState::Unreadable => panic!("the sailing plan is unreadable"),
+    }
+}
+
+fn handles(tw: &TestWorld) -> PortHandles {
+    tw.world()
+        .module_state::<PortHandles>()
+        .cloned()
+        .expect("port handles")
+}
+
+fn ticket(tw: &mut TestWorld, hull: ObjId, seq: u32) -> Option<Ticket> {
+    let h = handles(tw);
+    typed(tw, &h.families.tickets, &TicketId { hull, seq })
+}
+
+fn journey(tw: &TestWorld, hull: ObjId) -> Option<CarrierJourney> {
+    tw.world()
+        .module_state::<JourneyBook>()
+        .and_then(|book| book.get(hull).cloned())
+}
+
+fn journeys(tw: &TestWorld) -> usize {
+    tw.world()
+        .module_state::<JourneyBook>()
+        .map_or(0, |book| book.journeys.len())
+}
+
+fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
+    tw.world()
+        .module_state::<SpatialState>()
+        .expect("sim")
+        .parent_of(obj)
+}
+
+fn domain_of(tw: &TestWorld, entry: &str) -> u64 {
+    port_map(tw, entry).domain.expect("a port domain")
+}
+
+/// `+ship/undock` with the queued submissions it staged.
+fn undock(rig: &mut Rig, pilot: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
+    let out = run(&mut rig.tw, pilot, line);
+    let queued = drain(&mut rig.tw);
+    (out, queued)
+}
+
+/// Whether `who` is offered the burn now.
+fn burn_offered(tw: &TestWorld, who: ObjId) -> bool {
+    let Some(action) = handles(tw).burn else {
+        return false;
+    };
+    let engine = tw.engine();
+    let Ok(query) = engine.legal_action_query(
+        mush_core::PrincipalId::Object { id: who },
+        who,
+        mush_core::PerceivedRef::SelfActor,
+    ) else {
+        return false;
+    };
+    engine
+        .project_legal_actions(&query)
+        .ok()
+        .is_some_and(|offers| offers.projected_for_action(&action).is_some())
+}
+
+fn disconnect(tw: &mut TestWorld, who: ObjId) {
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    let conns: Vec<u64> = (1..=64)
+        .filter(|conn| tw.engine().actor_of(*conn) == Some(who))
+        .collect();
+    assert!(!conns.is_empty(), "{who} holds a connection");
+    for conn in conns {
+        tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: who,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    tw.engine_mut().step(
+        mush_core::Inbound::SessionGone { actor: who },
+        &mut out,
+        &mut fx,
+    );
+}
+
+/// A chartered pilot aboard the docked *Salt Moth* with the full load, at `rate`.
+fn aboard_with_load(rate: u32, tank: u64, locker: u64) -> (Rig, ObjId, HullRow) {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    load(&mut rig, &row, tank, locker);
+    set_rate(&mut rig.tw, rate);
+    board(&mut rig, pilot);
+    (rig, pilot, row)
+}
+
+/// Undock to Stickney and land the burn; the voyage's pending plan.
+fn undock_and_burn(rig: &mut Rig, pilot: ObjId, hull: ObjId) -> tacsim::port::PendingVoyage {
+    let (out, queued) = undock(rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed for Stickney Yards"), "{out}");
+    let pending = voyage(&rig.tw, hull)
+        .and_then(|v| v.pending)
+        .expect("a filed passage");
+    assert_eq!(queued.len(), 1, "one burn: {out}");
+    assert_eq!(queued[0].actor, pilot, "the burn is the pilot's");
+    land_all(rig, &queued);
+    pending
+}
+
+// ---------------------------------------------------------------------------
+// The verify lens, end to end
+// ---------------------------------------------------------------------------
+
+/// **The verify lens** (the IC9 brief §1): plan, undock, the burn, the launch, the
+/// Kirkwood boundary and the docking heard in the Crew Compartment, the under-way
+/// renders, and `+ship/leave` into P01.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 21);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let crew = room_of(&row, "crew");
+    let _ = run(&mut rig.tw, pilot, "in");
+    let _ = run(&mut rig.tw, pilot, "crew");
+    assert_eq!(location(&rig.tw, pilot), Some(crew));
+
+    // +ship/plan stickney: lines 1–8, writing nothing.
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let plan = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    let lines: Vec<&str> = plan.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("Plan for Stickney Yards, by way of Kirkwood Depot:"),
+        "{plan}"
+    );
+    assert!(
+        lines.contains(&"Cargo: 100/100 t · 120.0/120 m³ · FULL: mass and packed volume."),
+        "line 2: {plan}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("Room on this board: ")),
+        "line 3: {plan}"
+    );
+    assert!(
+        lines.contains(&"Payload 142.2 t of 181 t."),
+        "line 4: {plan}"
+    );
+    assert!(
+        lines.contains(
+            &"Burn 41 t (tank 42 t; 1 t left). Every tonne aboard, reserve included, costs 105 kg of burn."
+        ),
+        "line 5: {plan}"
+    );
+    assert!(
+        lines.contains(&"Stores 21 crew-days (locker 21; 0 left)."),
+        "line 6: {plan}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("Passage 19.6 IC days ≈ 7 m real; arrives about ")),
+        "line 7: {plan}"
+    );
+    assert_eq!(
+        lines.last().copied(),
+        Some("Nothing was written."),
+        "{plan}"
+    );
+    assert!(
+        rig.tw
+            .take_module_ops()
+            .iter()
+            .all(|op| op.ns != tacsim::NS),
+        "the plan wrote nothing"
+    );
+    assert!(voyage(&rig.tw, hull).is_none());
+
+    // +ship/undock stickney: filed, one burn staged.
+    let (filed, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        filed.contains(
+            "Clearance filed for Stickney Yards: the plan burns 41 t of reaction mass and 21 \
+             crew-days; arrival in 19.6 IC days, about "
+        ),
+        "{filed}"
+    );
+    let pending = voyage(&rig.tw, hull)
+        .and_then(|v| v.pending)
+        .expect("the filed passage");
+    assert_eq!(pending.seq, 1);
+    assert_eq!(pending.plan.burn_t, 41);
+    assert_eq!(queued.len(), 1, "{filed}");
+    assert_eq!(queued[0].actor, pilot);
+    // The status line, departing.
+    let look = run(&mut rig.tw, pilot, "look");
+    assert!(
+        look.contains(&format!(
+            "Aboard the Salt Moth ({}), cleared for Stickney Yards.",
+            row.mark
+        )),
+        "{look}"
+    );
+    // While filed (L13, item 11): the venue gate treats the hull as under way, and
+    // the readiness hulls line counts it departing.
+    let ceres = mush_market::MarketId::new("ceres").expect("venue");
+    assert_eq!(
+        PortVenueGate
+            .admit(rig.tw.world(), pilot, &ceres, None, Presence::Ship(hull))
+            .map_err(|r| r.line),
+        Err(HOLD_UNDER_WAY.replace("{name}", "Salt Moth").replace(
+            "{port}",
+            &tacsim::port::coop::port_name(&port_def("ceres_port"))
+        )),
+        "nothing loads into a filed hold"
+    );
+    let report = status(&mut rig.tw);
+    assert!(
+        report
+            .lines()
+            .any(|line| line.contains(" hulls: ") && line.contains(", 1 departing.")),
+        "{report}"
+    );
+    land_all(&mut rig, &queued);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 1, "42 -> 1");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "21 -> 0");
+    let t = ticket(&mut rig.tw, hull, 1).expect("ticket {hull, seq 1}");
+    let secs: Vec<u32> = t.plan.legs.iter().map(|l| l.secs).collect();
+    assert_eq!(secs, vec![959_361, 735_600]);
+    assert_eq!(t.plan.total_s, 1_694_961);
+    assert_eq!(t.seq, 1);
+    assert_eq!(t.manifest.tank, 42);
+    assert_eq!(t.manifest.locker, 21);
+    assert_eq!(t.payload_kg, 142_184);
+
+    // The next tacsim.port fire launches it.
+    let events = fire_quietly(&mut rig);
+    let j = journey(&rig.tw, hull).expect("a journey");
+    assert_eq!(j.route().id().as_str(), "ceres_stickney");
+    assert_eq!(j.leg_times(), Some(&[959_361_u32, 735_600][..]));
+    assert_eq!(j.departed().at, t.plan.depart_ic);
+    let heard = said(&rig.tw, &events, pilot);
+    assert!(
+        heard.contains("The Salt Moth's lock seals. Berth clamps release; the drive lights."),
+        "{heard}"
+    );
+    assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_none());
+    // CLEARANCE_GRANTED, exactly once.
+    let mut granted = 0;
+    for _ in 0..3 {
+        let events = fire_quietly(&mut rig);
+        let heard = said(&rig.tw, &events, pilot);
+        granted += heard
+            .matches(
+                "Clearance granted. 41 t reaction mass and 21 crew-days committed; the Salt Moth \
+                 is under way for Stickney Yards, arrival in ",
+            )
+            .count();
+    }
+    assert_eq!(granted, 1, "CLEARANCE_GRANTED is told once");
+
+    // The under-way renders.
+    let ship = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        ship.contains("Salt Moth (Dray): under way for Stickney Yards, leg 1 of 2; arrives in "),
+        "{ship}"
+    );
+    let look = run(&mut rig.tw, pilot, "look");
+    let status_prefix = format!(
+        "Aboard the Salt Moth ({}), under way, leg 1 of 2, ETA ",
+        row.mark
+    );
+    assert!(look.contains(&status_prefix), "{look}");
+    let travel = run(&mut rig.tw, pilot, "+travel/status");
+    assert!(
+        travel.contains("You are aboard the Salt Moth, under way: leg 1 of 2, bound for Stickney Yards; it arrives in "),
+        "{travel}"
+    );
+    let report = status(&mut rig.tw);
+    assert!(report.contains(", 1 under way."), "{report}");
+
+    // The Kirkwood boundary.
+    let boundary = t.plan.depart_ic + 959_361;
+    let events = to_ic(&mut rig, boundary - 3_600);
+    assert!(!said(&rig.tw, &events, pilot).contains("slides past"));
+    let events = to_ic(&mut rig, boundary);
+    let heard = said(&rig.tw, &events, pilot);
+    assert!(
+        heard.contains(
+            "Kirkwood Depot slides past: the Co-op's tank farm, a Republic picket's transponder \
+             asking for your manifest. Leg 2 of 2."
+        ),
+        "{heard}"
+    );
+    let look = run(&mut rig.tw, pilot, "look");
+    assert!(
+        look.contains(&format!(
+            "Aboard the Salt Moth ({}), under way, leg 2 of 2, Kirkwood astern, ETA ",
+            row.mark
+        )),
+        "{look}"
+    );
+
+    // The docking.
+    let arrival = t.plan.depart_ic + 1_694_961;
+    let events = to_ic(&mut rig, arrival - 3_600);
+    assert!(!said(&rig.tw, &events, pilot).contains("docks at"));
+    let events = to_ic(&mut rig, arrival);
+    let heard = said(&rig.tw, &events, pilot);
+    assert!(
+        heard.contains("Salt Moth docks at Stickney Yards."),
+        "{heard}"
+    );
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    assert!(
+        matches!(parent(&rig.tw, hull), SpatialParent::Direct { domain, .. } if domain.0 == stickney),
+        "the hull is Direct on the Stickney domain"
+    );
+    let gallery = p01(&rig.tw);
+    assert_eq!(
+        location(&rig.tw, hull),
+        Some(gallery),
+        "the hull projects into P01"
+    );
+    match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
+        tacsim::port::ship::Berth::Docked { def, .. } => assert_eq!(def.venue.as_str(), "stickney"),
+        other => panic!("the hull is not docked at Stickney: {other:?}"),
+    }
+    // +ship/leave from the Airlock lands in P01, stamped Stickney.
+    let _ = run(&mut rig.tw, pilot, "passage");
+    let _ = run(&mut rig.tw, pilot, "airlock");
+    assert_eq!(location(&rig.tw, pilot), Some(room_of(&row, "airlock")));
+    let out = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(out.contains("You cycle the lock out into"), "{out}");
+    assert_eq!(location(&rig.tw, pilot), Some(gallery));
+    assert!(
+        rig.tw
+            .world()
+            .has_marker(pilot, "tacsim.last_port.stickney")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Refusals
+// ---------------------------------------------------------------------------
+
+/// What a refusal must leave untouched: no voyage write (the sailing plan is
+/// exactly `prior`, and no `tacsim:voyage:` op was emitted since the last check),
+/// no submission, the pools, no ticket.
+fn assert_nothing_moved(
+    rig: &mut Rig,
+    hull: ObjId,
+    vault: VaultId,
+    before: (u64, u64),
+    prior: Option<&Voyage>,
+    queued: &[AuthoritativeSubmit],
+) {
+    assert!(queued.is_empty(), "a refusal submits nothing");
+    assert_eq!(
+        voyage(&rig.tw, hull).as_ref(),
+        prior,
+        "the sailing plan is untouched"
+    );
+    let ops = rig.tw.take_module_ops();
+    assert!(!voyage_written(&ops), "no voyage write");
+    fold_module_ops_into(&mut rig.store, ops);
+    assert_eq!(
+        (
+            pool(&mut rig.tw, vault, "propellant"),
+            pool(&mut rig.tw, vault, "provisions")
+        ),
+        before
+    );
+    assert!(ticket(&mut rig.tw, hull, 1).is_none(), "no ticket");
+}
+
+/// **Every refusal moves nothing**, each line exact (the IC9 brief §3 item 12).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn ic9_undock_refusals_move_nothing() {
+    // Not aboard: in C01.
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    load(&mut rig, &row, 39, 21);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot, gallery);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(&NOT_ABOARD.replace("{name}", "Salt Moth")),
+        "{out}"
+    );
+    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    // `at=` a later hour; `via=`.
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney at=+2h");
+    assert!(out.contains(AT_NOT_YET), "{out}");
+    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney via=kirkwood_depot");
+    assert!(out.contains(VIA_NOT_YET), "{out}");
+    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    let out = run(&mut rig.tw, pilot, "+ship/plan stickney via=kirkwood_depot");
+    assert!(out.contains(VIA_NOT_YET), "{out}");
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock");
+    assert!(out.contains("Usage: +ship/undock <port>"), "{out}");
+    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    // The tank: the full cargo with 39 t burns 40 t (L27).
+    board(&mut rig, pilot);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &TANK_SHORT
+                .replace("{port}", "Stickney Yards")
+                .replace("{burn}", "40")
+                .replace("{tank}", "39")
+        ),
+        "{out}"
+    );
+    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    // No route.
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock pallas");
+    assert!(
+        out.contains(
+            &NO_ROUTE
+                .replace("{here}", "Ceres Freeport")
+                .replace("{list}", "Stickney Yards")
+        ),
+        "{out}"
+    );
+    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    // Overloaded: seeded past the hold's limits.
+    seed_pool(&mut rig, vault, "propellant", 41, LotId(905));
+    seed_pool(&mut rig, vault, "provisions", 99, LotId(906));
+    seed_pool(&mut rig, vault, "metals", 1, LotId(907));
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &OVERLOADED
+                .replace("{name}", "Salt Moth")
+                .replace("{payload}", "181.6")
+                .replace("{ceiling}", "181")
+        ),
+        "{out}"
+    );
+    assert_nothing_moved(&mut rig, hull, vault, (80, 120), None, &queued);
+
+    // A fresh world: the destination domain paused; then departing; then under way.
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    let out = run(&mut rig.tw, GOD, &format!("@domain/pause {stickney}"));
+    assert!(!out.contains("denied"), "{out}");
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &PORT_CLOSED
+                .replace("{name}", "Salt Moth")
+                .replace("{port}", "Stickney Yards")
+        ),
+        "{out}"
+    );
+    assert_nothing_moved(&mut rig, hull, vault, (42, 21), None, &queued);
+    let _ = run(&mut rig.tw, GOD, &format!("@domain/resume {stickney}"));
+    // Departing: a second undock before the launch fire.
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    assert_eq!(queued.len(), 1);
+    let filed = voyage(&rig.tw, hull).expect("the voyage");
+    let (out, again) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &UNDOCK_CLEARED
+                .replace("{name}", "Salt Moth")
+                .replace("{port}", "Stickney Yards")
+        ),
+        "{out}"
+    );
+    assert!(again.is_empty(), "nothing more submitted");
+    assert_eq!(
+        voyage(&rig.tw, hull),
+        Some(filed),
+        "the voyage is unchanged"
+    );
+    // While filed: +ship/leave and +ship/board refuse.
+    let airlock = room_of(&row, "airlock");
+    assert_eq!(location(&rig.tw, pilot), Some(airlock));
+    let out = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(
+        out.contains(&LEAVE_CLEARED.replace("{name}", "Salt Moth")),
+        "{out}"
+    );
+    assert_eq!(location(&rig.tw, pilot), Some(airlock));
+    // Staff take the pilot ashore by hand: their board refuses while filed.
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff took the pilot ashore").expect("unplaces")
+    });
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot, gallery);
+    let out = run(&mut rig.tw, pilot, "+ship/board");
+    assert!(
+        out.contains(&LEAVE_CLEARED.replace("{name}", "Salt Moth")),
+        "{out}"
+    );
+    // Under way: after the launch.
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let _ = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    assert!(journey(&rig.tw, hull).is_some(), "launched");
+    let vault = hold_vault(&rig.tw, &row);
+    let before = (
+        pool(&mut rig.tw, vault, "propellant"),
+        pool(&mut rig.tw, vault, "provisions"),
+    );
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(&UNDOCK_UNDER_WAY.replace("{name}", "Salt Moth")),
+        "{out}"
+    );
+    assert!(queued.is_empty());
+    assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_none());
+    assert_eq!(
+        (
+            pool(&mut rig.tw, vault, "propellant"),
+            pool(&mut rig.tw, vault, "provisions")
+        ),
+        before
+    );
+    assert!(ticket(&mut rig.tw, hull, 2).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// The held launch and its terminal
+// ---------------------------------------------------------------------------
+
+/// **A held launch pages and recovers** (reviewer F2/F10; L29, L31): a paused
+/// destination holds the burned launch (told once, no journey, the pending kept),
+/// a resumed one launches the frozen plan at its own `depart_ic`; a revoked lease
+/// holds it too, and staff stand it down with `@tacsim/port clear`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn ic9_a_held_launch_pages_and_recovers() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    let _ = run(&mut rig.tw, GOD, &format!("@domain/pause {stickney}"));
+    let held = LAUNCH_HELD
+        .replace("{name}", "Salt Moth")
+        .replace("{port}", "Stickney Yards");
+    let mut told = 0;
+    for _ in 0..30 {
+        let events = fire_quietly(&mut rig);
+        told += said(&rig.tw, &events, pilot).matches(&held).count();
+    }
+    assert_eq!(told, 1, "the pilot is told once");
+    assert!(journey(&rig.tw, hull).is_none(), "no journey while held");
+    assert_eq!(
+        voyage(&rig.tw, hull).and_then(|v| v.pending),
+        Some(pending.clone()),
+        "the pending is kept"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 1, "debited once");
+    let _ = run(&mut rig.tw, GOD, &format!("@domain/resume {stickney}"));
+    let mut granted = 0;
+    for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
+        let events = fire_quietly(&mut rig);
+        granted += said(&rig.tw, &events, pilot)
+            .matches("Clearance granted.")
+            .count();
+    }
+    let j = journey(&rig.tw, hull).expect("launched after the resume");
+    assert_eq!(
+        j.departed().at,
+        pending.plan.depart_ic,
+        "the frozen plan's own instant"
+    );
+    assert_eq!(granted, 1, "CLEARANCE_GRANTED is told once");
+    assert_eq!(
+        pool(&mut rig.tw, vault, "propellant"),
+        1,
+        "still debited once"
+    );
+
+    // A revoked lease holds the launch; staff stand it down.
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let lease = tacsim::port::live_charter(rig.tw.world(), pilot)
+        .expect("a live charter")
+        .contract;
+    let _ = run(&mut rig.tw, GOD, &format!("@contract/cancel #{}", lease.0));
+    assert!(tacsim::port::live_charter(rig.tw.world(), pilot).is_none());
+    let events = fire_quietly(&mut rig);
+    assert!(
+        said(&rig.tw, &events, pilot).contains(&held),
+        "the pilot is told"
+    );
+    assert!(
+        journey(&rig.tw, hull).is_none(),
+        "a revoked lease never flies"
+    );
+    // A non-staff clear is refused; a clear stands the clearance down.
+    let refused = run(
+        &mut rig.tw,
+        pilot,
+        &format!("@tacsim/port clear #{}", hull.0),
+    );
+    assert!(
+        voyage(&rig.tw, hull).and_then(|v| v.pending).is_some(),
+        "{refused}"
+    );
+    let events = rig.tw.run(GOD, &format!("@tacsim/port clear #{}", hull.0));
+    let staff = said(&rig.tw, &events, GOD);
+    assert!(
+        staff.contains(&format!(
+            "Clearance {} for #{} stood down; the ticket, if burned, is kept as the record and \
+             nothing is refunded.",
+            pending.seq, hull.0
+        )),
+        "{staff}"
+    );
+    assert!(
+        said(&rig.tw, &events, pilot).contains(
+            "The Salt Moth's clearance for Stickney Yards was stood down by the port. Nothing \
+             burned is returned."
+        ),
+        "the pilot is told"
+    );
+    let v = voyage(&rig.tw, hull).expect("the voyage");
+    assert!(v.pending.is_none());
+    assert_eq!(v.last_seq, pending.seq, "the sequence is kept");
+    assert!(
+        ticket(&mut rig.tw, hull, pending.seq).is_some(),
+        "the ticket is the record"
+    );
+    let out = run(&mut rig.tw, GOD, &format!("@tacsim/port clear #{}", hull.0));
+    assert!(
+        out.contains(&format!("#{} has no clearance on file.", hull.0)),
+        "{out}"
+    );
+    let out = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(!out.contains("has clearance"), "{out}");
+}
+
+/// **A burned launch never flies with its pilot ashore** (L14 at the executed
+/// step; reviewer F1): staff take the pilot off the docked hull after the burn
+/// lands; the launch holds (told once, no journey, the pending kept) until the
+/// pilot is placed back aboard, then flies the frozen plan at its own `depart_ic`.
+#[test]
+fn ic9_a_pilot_moved_ashore_holds_the_launch() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff took the pilot ashore").expect("unplaces")
+    });
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot, gallery);
+    let held = LAUNCH_HELD
+        .replace("{name}", "Salt Moth")
+        .replace("{port}", "Stickney Yards");
+    let mut told = 0;
+    for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
+        let events = fire_quietly(&mut rig);
+        told += said(&rig.tw, &events, pilot).matches(&held).count();
+    }
+    assert_eq!(told, 1, "the pilot is told once");
+    assert!(
+        journey(&rig.tw, hull).is_none(),
+        "the hull never flies without its pilot"
+    );
+    assert_eq!(
+        voyage(&rig.tw, hull).and_then(|v| v.pending),
+        Some(pending.clone()),
+        "the pending is kept"
+    );
+    // Staff put the pilot back aboard: the next backoff expiry launches.
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@spatial/place/interior #{}=#{},berths",
+            pilot.0,
+            room_of(&row, "airlock").0
+        ),
+    );
+    assert!(out.contains("Placed"), "{out}");
+    for _ in 0..(LAUNCH_GRACE_FIRES + 2) {
+        let _ = fire_quietly(&mut rig);
+    }
+    let j = journey(&rig.tw, hull).expect("launched once the pilot is aboard");
+    assert_eq!(j.departed().at, pending.plan.depart_ic);
+    assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// An unreadable sailing plan
+// ---------------------------------------------------------------------------
+
+/// Whether any of `ops` writes a `tacsim:voyage:` key.
+fn voyage_written(ops: &[mush_core::ModuleOp]) -> bool {
+    ops.iter().filter(|op| op.ns == tacsim::NS).any(|op| {
+        matches!(
+            &op.op,
+            ModuleWrite::JsonSet { key, .. } | ModuleWrite::Del { key }
+                if key.starts_with(VOYAGE_PREFIX)
+        )
+    })
+}
+
+/// One edit of a stored sailing plan's body (given another hull's id).
+type DocEdit = fn(&mut serde_json::Value, ObjId);
+
+/// **An unreadable or misfiled sailing plan fails closed** (item 7; reviewer T4):
+/// corrupted, and separately filed under another hull's key, the document reboots
+/// `Unreadable` (its key stays claimed — never `Absent`, which would re-mint seq 1
+/// over a burned ticket); `+ship/undock` answers `VOYAGE_DARK` and submits
+/// nothing; the launch arm skips the hull (no journey, no write).
+#[test]
+fn ic9_an_unreadable_sailing_plan_fails_closed() {
+    let edits: [(&str, DocEdit); 2] = [
+        ("corrupt", |doc, _| {
+            *doc = serde_json::json!({ "schema": 1, "nonsense": true });
+        }),
+        ("misfiled", |doc, other| {
+            if let Some(hull) = doc.get_mut("hull") {
+                *hull = serde_json::json!(other.0);
+            }
+        }),
+    ];
+    for (case, edit) in edits {
+        let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+        let hull = ObjId(row.hull);
+        let other = port_map(&rig.tw, "ceres_port")
+            .hulls
+            .iter()
+            .map(|r| ObjId(r.hull))
+            .find(|h| *h != hull)
+            .expect("a second hull");
+        let vault = hold_vault(&rig.tw, &row);
+        // A filed passage whose burn never lands (so a re-mint would be seq 1).
+        let (out, _dropped) = undock(&mut rig, pilot, "+ship/undock stickney");
+        assert!(out.contains("Clearance filed"), "{case}: {out}");
+        let key = voyage_key(hull);
+        let mut rig = reboot_editing(rig, Roster::default(), |folded| {
+            let doc = folded
+                .get_mut(tacsim::NS)
+                .and_then(|data| data.kv.iter_mut().find(|(k, _)| *k == key))
+                .expect("the sailing plan document");
+            edit(&mut doc.1, other);
+        });
+        assert!(
+            matches!(store(&rig.tw).voyage_state(hull), VoyageState::Unreadable),
+            "{case}: the key stays claimed"
+        );
+        assert!(
+            matches!(store(&rig.tw).voyage_state(other), VoyageState::Absent),
+            "{case}: nothing is installed under another hull"
+        );
+        let _ = rig.tw.connect(pilot);
+        let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+        assert!(
+            out.contains(&VOYAGE_DARK.replace("{name}", "Salt Moth")),
+            "{case}: {out}"
+        );
+        assert!(queued.is_empty(), "{case}: nothing submitted");
+        assert!(
+            !voyage_written(&rig.tw.take_module_ops()),
+            "{case}: the refusal writes no sailing plan"
+        );
+        for _ in 0..3 {
+            let _ = fire_quietly(&mut rig);
+        }
+        assert!(journey(&rig.tw, hull).is_none(), "{case}: no journey");
+        assert!(
+            !voyage_written(&rig.tw.take_module_ops()),
+            "{case}: the launch arm writes no sailing plan"
+        );
+        assert_eq!(pool(&mut rig.tw, vault, "propellant"), 42, "{case}");
+        assert!(ticket(&mut rig.tw, hull, 1).is_none(), "{case}: no ticket");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Goods not yet aboard
+// ---------------------------------------------------------------------------
+
+/// **Promised goods hold the hull** (L13): an accepted, undrawn Draw into the hold
+/// refuses; once it lands and mirrors, undock files; a hold-backed listing from
+/// the hold refuses.
+#[test]
+fn ic9_goods_not_yet_aboard_hold_the_hull() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
+    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    // Top up and buy ten metals at C07; the Draw stays unlanded.
+    let instrument = mush_economy::InstrumentId::new(tacsim::CREDIT).expect("credit");
+    let account = economy(&rig.tw)
+        .snapshot()
+        .accounts_of(&mush_org::PrincipalId::Object(pilot))
+        .find(|a| a.instrument == instrument)
+        .map(|a| a.id)
+        .expect("the pilot's account");
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={account} 1000000000"),
+    );
+    let metals = market(&rig.tw)
+        .lot_listing_of(
+            EndpointRef(VaultId(
+                port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")].vault,
+            )),
+            &cid("metals"),
+        )
+        .expect("the metals listing");
+    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {metals}=10"));
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = market(&rig.tw)
+        .quotes_of_buyer(&mush_org::PrincipalId::Object(pilot))
+        .map(|q| q.id)
+        .max()
+        .expect("a quote");
+    let accepted = run(&mut rig.tw, pilot, &format!("+market/accept {quote}"));
+    let draw = drain(&mut rig.tw);
+    assert_eq!(draw.len(), 1, "{accepted}");
+    board(&mut rig, pilot);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &GOODS_COMING
+                .replace("{quote}", &quote.to_string())
+                .replace("{name}", "Salt Moth")
+        ),
+        "{out}"
+    );
+    assert!(queued.is_empty());
+    // The draw lands and the market sweep mirrors it.
+    land_all(&mut rig, &draw);
+    for _ in 0..30 {
+        if market(&rig.tw)
+            .quote(quote)
+            .is_some_and(|q| q.drawn_at.is_some())
+        {
+            break;
+        }
+        let _ = fire_quietly(&mut rig);
+    }
+    assert!(
+        market(&rig.tw)
+            .quote(quote)
+            .is_some_and(|q| q.drawn_at.is_some()),
+        "mirrored"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "metals"), 10);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed for Stickney Yards"), "{out}");
+    assert_eq!(queued.len(), 1);
+    assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_some());
+
+    // A hold-backed listing from the hold.
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let vault = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault, "metals", 10, LotId(908));
+    seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
+    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    let vendor = port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")]
+        .vendor
+        .expect("a vendor");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{vendor}=tacsim:metals price=1 qty=5 days=1 endpoint={}",
+            vault.0
+        ),
+    );
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let listing: ListingId = market(&rig.tw)
+        .lot_listing_of(EndpointRef(vault), &cid("metals"))
+        .unwrap_or_else(|| panic!("the hold-backed listing: {out}"));
+    board(&mut rig, pilot);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &LISTING_HOLDS
+                .replace("{listing}", &listing.to_string())
+                .replace("{name}", "Salt Moth")
+        ),
+        "{out}"
+    );
+    assert!(queued.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The absent pilot
+// ---------------------------------------------------------------------------
+
+/// **An absent pilot reads the passage on reconnect**: the grant, the Kirkwood line
+/// and the arrival notice are queued and rendered once under the heading.
+#[test]
+fn ic9_an_absent_pilot_reads_the_passage_on_reconnect() {
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 21);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    disconnect(&mut rig.tw, pilot);
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig);
+    }
+    assert!(journey(&rig.tw, hull).is_some(), "launched");
+    let _ = to_ic(&mut rig, pending.plan.depart_ic + 959_361);
+    let _ = to_ic(&mut rig, pending.plan.depart_ic + 1_694_961);
+    let queued = pending_notices(rig.tw.world(), pilot);
+    let has = |needle: &str| queued.iter().filter(|line| line.contains(needle)).count();
+    assert_eq!(
+        has("Clearance granted. 41 t reaction mass"),
+        1,
+        "{queued:?}"
+    );
+    assert_eq!(
+        has(
+            " UTC Kirkwood Depot slides past: the Co-op's tank farm, a Republic picket's \
+             transponder asking for your manifest. Leg 2 of 2."
+        ),
+        1,
+        "{queued:?}"
+    );
+    assert_eq!(
+        has(" UTC Salt Moth docked at Stickney Yards, "),
+        1,
+        "{queued:?}"
+    );
+    let events = rig.tw.connect(pilot);
+    let lines = rig.tw.seen_by(&events, pilot);
+    assert_eq!(
+        lines.iter().filter(|l| l.contains(NOTICE_HEADING)).count(),
+        1,
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.contains("docked at Stickney Yards"))
+            .count(),
+        1
+    );
+    assert!(pending_notices(rig.tw.world(), pilot).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The lapsed clearance
+// ---------------------------------------------------------------------------
+
+/// **A clearance whose burn never lands lapses and burns nothing** (L26): the rig
+/// drops the command's submission before any drain lands it.
+#[test]
+fn ic9_a_lapsed_clearance_burns_nothing() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let (out, dropped) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    assert_eq!(dropped.len(), 1, "the burn is dropped, never landed");
+    let lapsed = CLEARANCE_LAPSED.replace("{port}", "Stickney Yards");
+    let mut told = 0;
+    for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
+        let events = fire_quietly(&mut rig);
+        told += said(&rig.tw, &events, pilot).matches(&lapsed).count();
+    }
+    assert_eq!(told, 1, "CLEARANCE_LAPSED is told once");
+    let v = voyage(&rig.tw, hull).expect("the voyage");
+    assert!(v.pending.is_none());
+    assert_eq!(v.last_seq, 1, "the sequence is burned");
+    assert!(ticket(&mut rig.tw, hull, 1).is_none(), "no ticket");
+    assert!(journey(&rig.tw, hull).is_none(), "no journey");
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 42);
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 21);
+    // A late landing of the dropped burn can no longer land.
+    assert!(
+        land(&mut rig, &dropped[0]).is_err(),
+        "the offer needs the pending"
+    );
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        voyage(&rig.tw, hull).and_then(|v| v.pending).map(|p| p.seq),
+        Some(2),
+        "a fresh undock files seq 2"
+    );
+
+    // The brief's other arm: the hold seeded between the command and the landing,
+    // so the prepare refuses "the hold changed…" and nothing burns; the clearance
+    // then lapses the same way.
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    assert_eq!(queued.len(), 1);
+    seed_pool(&mut rig, vault, "metals", 1, LotId(909));
+    let refused = land(&mut rig, &queued[0]).expect_err("the changed hold refuses the burn");
+    assert!(
+        refused.contains("the hold changed since the passage was planned; plan it again"),
+        "{refused}"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 42, "nothing burned");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 21, "nothing burned");
+    assert!(ticket(&mut rig.tw, hull, 1).is_none(), "no ticket");
+    let mut told = 0;
+    for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
+        let events = fire_quietly(&mut rig);
+        told += said(&rig.tw, &events, pilot).matches(&lapsed).count();
+    }
+    assert_eq!(told, 1, "CLEARANCE_LAPSED is told once");
+    let v = voyage(&rig.tw, hull).expect("the voyage");
+    assert!(v.pending.is_none());
+    assert_eq!(v.last_seq, 1, "the sequence is burned");
+    assert!(journey(&rig.tw, hull).is_none(), "no journey");
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 42);
+}
+
+// ---------------------------------------------------------------------------
+// The manual arm
+// ---------------------------------------------------------------------------
+
+/// **Staff cannot fly a programme hull unplanned** (L32): the lane route is
+/// refused on the manual arm for any carrier, a programme hull on any manual
+/// route; a non-programme Thing still departs a non-lane fixture route.
+#[test]
+fn ic9_staff_cannot_fly_a_programme_hull_unplanned() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let lane_unplanned = LANE_UNPLANNED.replace("{route}", "ceres_stickney");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@journey/depart #{}=ceres_stickney", hull.0),
+    );
+    assert!(out.contains(&lane_unplanned), "{out}");
+    let stickney_host = port_map(&rig.tw, "stickney_port").host.expect("a host");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@journey/depart #{}=ic9_fixture #{stickney_host}:100",
+            hull.0
+        ),
+    );
+    assert!(
+        out.contains(&MANUAL_DEPARTURE.replace("{name}", "Salt Moth")),
+        "{out}"
+    );
+    let out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("@journey/depart #{}=ceres_stickney", hull.0),
+    );
+    assert!(out.contains("Permission denied"), "{out}");
+    assert!(journey(&rig.tw, hull).is_none(), "nothing was written");
+    // A non-programme Thing on the domain the lane route sets out from.
+    let route = store(&rig.tw)
+        .route_in_world(rig.tw.world(), &cid("ceres_stickney"))
+        .expect("the lane route materializes");
+    let origin = route.endpoints().0;
+    let origin_domain = rig
+        .tw
+        .world()
+        .module_state::<SpatialState>()
+        .and_then(|st| st.domain_of_host(origin).map(|d| d.id.0))
+        .expect("the origin hosts a domain");
+    let thing = rig
+        .tw
+        .world_mut()
+        .create(ObjKind::Thing, "Lighter", GOD, Some(mush_core::LIMBO))
+        .expect("a thing");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.participant", thing.0),
+    );
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@spatial/place/domain #{}={origin_domain}", thing.0),
+    );
+    assert!(out.contains("Placed"), "{out}");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@journey/depart #{}=ceres_stickney", thing.0),
+    );
+    assert!(out.contains(&lane_unplanned), "{out}");
+    assert!(journey(&rig.tw, thing).is_none());
+    let far = rig
+        .tw
+        .world_mut()
+        .create(ObjKind::Room, "Fixture Field", GOD, None)
+        .expect("a room");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.domain", far.0),
+    );
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@domain/create #{}=sim.passive", far.0),
+    );
+    assert!(!out.contains("denied"), "{out}");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@journey/depart #{}=ic9_fixture #{}:100", thing.0, far.0),
+    );
+    assert!(out.contains("Lighter departs on journey #"), "{out}");
+    assert!(journey(&rig.tw, thing).is_some());
+}
+
+// ---------------------------------------------------------------------------
+// The burn's offer
+// ---------------------------------------------------------------------------
+
+/// **The burn offer takes no forged plan** (L4): it projects only for the filing
+/// pilot aboard (never once staff take them off the hull), a submission naming
+/// another seq is refused, the ticket's plan is the filed one even when the clock
+/// has moved on since the filing (a re-plan would carry a later `depart_ic`), and
+/// the ticket is the replay guard: the same submission landed again is refused and
+/// debits nothing.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn ic9_the_burn_offer_takes_no_forged_plan() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    assert!(
+        !burn_offered(&rig.tw, pilot),
+        "nothing filed, nothing offered"
+    );
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    let filed = voyage(&rig.tw, hull)
+        .and_then(|v| v.pending)
+        .expect("the filed passage");
+    assert!(
+        burn_offered(&rig.tw, pilot),
+        "the filing pilot aboard is offered it"
+    );
+    // A visitor GOD placed aboard is not.
+    let visitor = rig.tw.spawn_player("Visitor");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.participant", visitor.0),
+    );
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@spatial/place/interior #{}=#{},berths",
+            visitor.0,
+            room_of(&row, "airlock").0
+        ),
+    );
+    assert!(out.contains("Placed"), "{out}");
+    assert!(
+        !burn_offered(&rig.tw, visitor),
+        "a visitor aboard is not offered it"
+    );
+    // The filing pilot taken off the hull by staff is not offered it either (the
+    // offer's aboard gate), and is again once placed back aboard.
+    let airlock = room_of(&row, "airlock");
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff took the pilot ashore").expect("unplaces")
+    });
+    assert!(
+        !burn_offered(&rig.tw, pilot),
+        "the filing pilot ashore is not offered it"
+    );
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{},berths", pilot.0, airlock.0),
+    );
+    assert!(out.contains("Placed"), "{out}");
+    assert!(burn_offered(&rig.tw, pilot), "aboard again, offered again");
+    // Another seq is refused.
+    let mut forged = queued[0].clone();
+    forged.parameters = serde_json::json!({ "seq": "2" });
+    assert!(land(&mut rig, &forged).is_err(), "another seq is refused");
+    assert!(ticket(&mut rig.tw, hull, 2).is_none());
+    // The clock moves on before the burn lands (rate 1): a re-plan now would
+    // depart later than the filing.
+    let later = rig.tw.world().now().saturating_add(10);
+    rig.tw.set_now(later);
+    assert!(ic_now(&rig.tw) > filed.plan.depart_ic, "the clock moved on");
+    // The real one lands with the filed plan.
+    land_all(&mut rig, &queued);
+    let t = ticket(&mut rig.tw, hull, 1).expect("the ticket");
+    assert_eq!(t.plan, filed.plan, "the ticket's plan is the filed one");
+    assert_eq!(t.plan.depart_ic, filed.plan.depart_ic);
+    let vault = hold_vault(&rig.tw, &row);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 1, "42 -> 1");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "21 -> 0");
+    // The replay guard: the pending stands until the launch fire, so the offer
+    // still projects, and the same submission landed again (a fresh request) is
+    // refused by the ticket, debiting nothing.
+    assert!(
+        burn_offered(&rig.tw, pilot),
+        "still offered until the launch"
+    );
+    let again = land(&mut rig, &queued[0]).expect_err("a second landing is refused");
+    assert!(again.contains("that passage is already burned"), "{again}");
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 1, "debited once");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "debited once");
+    assert_eq!(
+        ticket(&mut rig.tw, hull, 1),
+        Some(t),
+        "the ticket is unchanged"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The three restart tests (doc 18 §5's mandatory 4, 5 and 7)
+// ---------------------------------------------------------------------------
+
+/// **The ticket freezes the plan across a sky change** (D-18-46): burned and
+/// launched at sky rate 0, rebooted at sky rate 1000.
+#[test]
+fn ticket_freezes_the_plan_across_a_sky_change() {
+    let (rig, ..) = sky_change_world();
+    drop(rig);
+}
+
+/// The shared world of tests 4 and 5: burned and launched at sky rate 0, rebooted
+/// at sky rate 1000; returns the rig, the pilot, the hull and the ticket.
+fn sky_change_world() -> (Rig, ObjId, ObjId, Ticket) {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let _ = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let before = ticket(&mut rig.tw, hull, 1).expect("the ticket");
+    let j = journey(&rig.tw, hull).expect("launched");
+    let due: Vec<Option<i64>> = (0..2).map(|k| j.leg_due_at(k)).collect();
+    let arrival = j.arrival_at();
+    let old_rev = before.plan.sky_rev;
+    let mut rig = reboot_with(rig, Roster { sky_rate: 1_000 });
+    assert_eq!(store(&rig.tw).config().time.ephemeris.rate, 1_000);
+    let after = ticket(&mut rig.tw, hull, 1).expect("the ticket reads back");
+    assert_eq!(after, before, "the ticket reads back identical");
+    let j = journey(&rig.tw, hull).expect("the journey reads back");
+    assert_eq!((0..2).map(|k| j.leg_due_at(k)).collect::<Vec<_>>(), due);
+    assert_eq!(j.arrival_at(), arrival);
+    let lane = store(&rig.tw)
+        .pack(&lane_id(), 3)
+        .expect("lane v3 is loaded")
+        .pack
+        .clone();
+    let new_sky = Sky::from_pack(&lane, &store(&rig.tw).config().time.ephemeris);
+    assert_eq!(after.plan.sky_rev, old_rev);
+    assert_ne!(after.plan.sky_rev, new_sky.revision().expect("a revision"));
+    (rig, pilot, hull, after)
+}
+
+/// **The journey arrives at its frozen instant across a reboot with a new sky.**
+#[test]
+fn journey_arrives_at_its_frozen_instant_across_a_reboot_with_a_new_sky() {
+    let (mut rig, _pilot, hull, t) = sky_change_world();
+    let arrival = t.plan.depart_ic + t.plan.total_s;
+    let _ = to_ic(&mut rig, arrival - 1);
+    assert_eq!(ic_now(&rig.tw), arrival - 1, "rate 1: one IC second before");
+    assert!(
+        journey(&rig.tw, hull).is_some_and(|j| j.state().is_under_way()),
+        "under way one second before"
+    );
+    let _ = to_ic(&mut rig, arrival);
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    assert!(
+        matches!(parent(&rig.tw, hull), SpatialParent::Direct { domain, .. } if domain.0 == stickney),
+        "Direct on the Stickney domain at the instant"
+    );
+    assert!(matches!(
+        tacsim::port::ship::berth_of(rig.tw.world(), hull),
+        tacsim::port::ship::Berth::Docked { def, .. } if def.venue.as_str() == "stickney"
+    ));
+}
+
+/// **A restart between the burn and the launch yields exactly one journey** (and
+/// one burn).
+#[test]
+fn a_restart_between_burn_and_launch_yields_exactly_one_journey() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    assert!(
+        journey(&rig.tw, hull).is_none(),
+        "not launched before the fire"
+    );
+    let mut rig = reboot_with(rig, Roster::default());
+    let _ = fire_quietly(&mut rig);
+    let j = journey(&rig.tw, hull).expect("the first fire launches");
+    assert_eq!(j.departed().at, pending.plan.depart_ic);
+    let id = j.id();
+    for _ in 0..5 {
+        let _ = fire_quietly(&mut rig);
+    }
+    let mut rig = reboot_with(rig, Roster::default());
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig);
+    }
+    assert_eq!(journeys(&rig.tw), 1, "one journey");
+    assert_eq!(journey(&rig.tw, hull).map(|j| j.id()), Some(id));
+    assert!(ticket(&mut rig.tw, hull, 1).is_some(), "one ticket");
+    assert!(ticket(&mut rig.tw, hull, 2).is_none());
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 1, "debited once");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "debited once");
+    let v = voyage(&rig.tw, hull).expect("the voyage");
+    assert!(v.pending.is_none());
+    assert_eq!(v.last_seq, 1);
+}

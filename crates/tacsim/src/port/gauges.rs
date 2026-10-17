@@ -23,7 +23,9 @@
 //!   table's `word` (`mass`, `packed volume`);
 //! - the instrument and compartment words are two small template-id tables in
 //!   code ([`compartment_words`], [`room_instrument`]): template ids, never pack
-//!   text (L11). The burn and reserve lines are cut IC9's.
+//!   text (L11). The burn and reserve lines are cut IC11's (doc 18 cut IC9 lead
+//!   ruling L17: the "filed plan" of 18a §3 is IC11's sailing plan); IC9's
+//!   `+ship/plan` reuses [`measures_line`] for the slacks.
 //!
 //! An error is a [`CapacityError`]; the caller renders `{Instrument}: dark.`
 //! ([`DARK`]) and logs it.
@@ -92,7 +94,7 @@ fn single_good<'a>(goods: &'a GoodsTable, comp: &Compartment) -> Option<&'a Good
 
 /// The word a quantity of `good` is counted in: `t`, `crew-days`, else the
 /// ledger unit.
-fn unit_word(good: &GoodDef) -> String {
+pub(crate) fn unit_word(good: &GoodDef) -> String {
     match good.ledger_unit.as_str() {
         "t" => "t".to_owned(),
         "crew_day" => "crew-days".to_owned(),
@@ -101,7 +103,7 @@ fn unit_word(good: &GoodDef) -> String {
 }
 
 /// The unit an unrecognised measure prints in, from the table's registry.
-fn measure_unit(goods: &GoodsTable, measure: &CanonicalId) -> String {
+pub(crate) fn measure_unit(goods: &GoodsTable, measure: &CanonicalId) -> String {
     goods
         .measures
         .iter()
@@ -110,7 +112,7 @@ fn measure_unit(goods: &GoodsTable, measure: &CanonicalId) -> String {
 }
 
 /// The word `FULL` names a measure by.
-fn measure_word(goods: &GoodsTable, measure: &CanonicalId) -> String {
+pub(crate) fn measure_word(goods: &GoodsTable, measure: &CanonicalId) -> String {
     goods
         .measures
         .iter()

@@ -397,6 +397,25 @@ pub fn trust_lease_on<'a>(
         })
 }
 
+/// **The tenant of a lease**: its first object party that is not the issuer
+/// (`hull_line`'s extraction, factored for doc 18 cut IC9).
+#[must_use]
+pub(crate) fn lease_tenant(lease: &EconomicContract) -> Option<ObjId> {
+    lease.consent.parties.iter().find_map(|party| match party {
+        PrincipalId::Object(obj) if *party != lease.issuer => Some(*obj),
+        _ => None,
+    })
+}
+
+/// **The tenant of a programme hull's live Trust lease** (doc 18 cut IC9): who the
+/// carrier hooks tell, when they are not connected, that the hull passed a waypoint
+/// or docked. `None` for a hull with no live Trust lease, or off the programme.
+#[must_use]
+pub fn charter_tenant(w: &World, hull: ObjId) -> Option<ObjId> {
+    let trust = programme_port(w)?.trust()?;
+    lease_tenant(trust_lease_on(w, &trust, hull)?)
+}
+
 /// **A live charter**: the lease and the hull it pledges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Charter {
