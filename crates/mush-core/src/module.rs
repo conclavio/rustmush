@@ -1774,6 +1774,72 @@ impl ModuleStateMap {
             .get_mut(&TypeId::of::<T>())
             .and_then(|s| s.value.downcast_mut::<T>())
     }
+
+    /// Borrow two distinct installed slots before either owner is mutated.
+    /// Missing slots and aliases return `None` without changing the map.
+    pub fn get_pair_mut<A: Any + Send, B: Any + Send>(&mut self) -> Option<(&mut A, &mut B)> {
+        let keys = [TypeId::of::<A>(), TypeId::of::<B>()];
+        if keys[0] == keys[1] {
+            return None;
+        }
+        let [Some(a), Some(b)] = self.slots.get_disjoint_mut([&keys[0], &keys[1]]) else {
+            return None;
+        };
+        Some((a.value.downcast_mut::<A>()?, b.value.downcast_mut::<B>()?))
+    }
+
+    /// Borrow three distinct installed slots as one publication precondition.
+    /// All identity and presence checks finish before any references escape.
+    pub fn get_triple_mut<A: Any + Send, B: Any + Send, C: Any + Send>(
+        &mut self,
+    ) -> Option<(&mut A, &mut B, &mut C)> {
+        let keys = [TypeId::of::<A>(), TypeId::of::<B>(), TypeId::of::<C>()];
+        if keys[0] == keys[1] || keys[0] == keys[2] || keys[1] == keys[2] {
+            return None;
+        }
+        let [Some(a), Some(b), Some(c)] =
+            self.slots.get_disjoint_mut([&keys[0], &keys[1], &keys[2]])
+        else {
+            return None;
+        };
+        Some((
+            a.value.downcast_mut::<A>()?,
+            b.value.downcast_mut::<B>()?,
+            c.value.downcast_mut::<C>()?,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod paired_state_tests {
+    use super::ModuleStateMap;
+
+    #[test]
+    fn every_slot_is_present_and_distinct_before_publication_can_begin() {
+        let mut slots = ModuleStateMap::default();
+        slots.insert(10_u32);
+        slots.insert(20_u64);
+        type Alias = u32;
+        assert!(slots.get_pair_mut::<u32, Alias>().is_none());
+        assert!(slots.get_pair_mut::<u32, i32>().is_none());
+        assert!(slots.get_triple_mut::<u32, u64, Alias>().is_none());
+        assert!(slots.get_triple_mut::<u32, u32, u64>().is_none());
+        assert!(slots.get_triple_mut::<u32, u64, u64>().is_none());
+        assert!(slots.get_triple_mut::<u32, u64, i32>().is_none());
+        assert_eq!(slots.get::<u32>(), Some(&10));
+        assert_eq!(slots.get::<u64>(), Some(&20));
+        let (a, b) = slots.get_pair_mut::<u32, u64>().expect("both owners");
+        *a += 1;
+        *b += 2;
+        slots.insert(30_i32);
+        let (c, a, b) = slots.get_triple_mut::<i32, u32, u64>().expect("all owners");
+        *c += 3;
+        *a += 4;
+        *b += 5;
+        assert_eq!(slots.get::<u32>(), Some(&15));
+        assert_eq!(slots.get::<u64>(), Some(&27));
+        assert_eq!(slots.get::<i32>(), Some(&33));
+    }
 }
 
 // ----------------------------------------------------------------------

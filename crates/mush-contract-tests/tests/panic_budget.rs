@@ -27,6 +27,9 @@
 //!   the foot of a production file is out of scope the way the compiler sees
 //!   it. `#[cfg(any(test, feature = "testkit"))]` is deliberately **in** scope:
 //!   that item compiles into a production build whenever the feature is on;
+//! - a whole source file fenced by a leading `#![cfg(test)]` inner attribute.
+//!   Out-of-line test modules carry that fence themselves; directory names or
+//!   another module's declaration alone do not exempt a file from this walk;
 //! - comments and the interiors of string, raw-string and character literals,
 //!   which a line-oriented grep cannot tell from code. The scan below blanks
 //!   them first, so a doc comment naming `unwrap()` costs nothing.
@@ -343,8 +346,40 @@ fn blank_cfg_test_items(src: &str) -> String {
 /// Every needle left in `source` once comments, literals and `#[cfg(test)]`
 /// items are gone.
 fn production_panic_sites(source: &str) -> usize {
-    let code = blank_cfg_test_items(&strip_comments_and_literals(source));
+    let stripped = strip_comments_and_literals(source);
+    if file_is_test_only(&stripped) {
+        return 0;
+    }
+    let code = blank_cfg_test_items(&stripped);
     NEEDLES.iter().map(|n| code.matches(n).count()).sum()
+}
+
+/// Only leading inner attributes can fence the complete file. Searching for the
+/// text anywhere would let a nested module hide its production siblings.
+fn file_is_test_only(stripped: &str) -> bool {
+    let mut rest = stripped.trim_start();
+    while rest.starts_with("#![") {
+        let mut depth = 1usize;
+        let Some(end) = rest.char_indices().skip(3).find_map(|(at, ch)| {
+            match ch {
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(at)
+        }) else {
+            return false;
+        };
+        let attribute: String = rest[..=end]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if attribute == "#![cfg(test)]" {
+            return true;
+        }
+        rest = rest[end + 1..].trim_start();
+    }
+    false
 }
 
 /// Every `.rs` file of one crate that a production build can reach, sorted so
@@ -809,6 +844,39 @@ fn no_profile_turns_a_world_panic_into_an_abort() {
 // The scanner's own proofs
 // ---------------------------------------------------------------------------
 
+#[test]
+fn only_a_leading_file_test_fence_exempts_an_out_of_line_module() {
+    assert_eq!(
+        production_panic_sites(
+            "//! Fixture.\n#![allow(dead_code)]\n#![ cfg ( test ) ]\nfn f() { x.unwrap(); }"
+        ),
+        0
+    );
+    assert_eq!(
+        production_panic_sites("#![cfg(any(test, feature = \"testkit\"))]\nfn f() { x.unwrap(); }"),
+        1
+    );
+    assert_eq!(
+        production_panic_sites(
+            "fn production() { x.unwrap(); }\nmod nested { #![cfg(test)] fn f() { x.expect(\"test\"); } }"
+        ),
+        2,
+        "an inner nested attribute must not exempt production siblings"
+    );
+    assert_eq!(
+        production_panic_sites("// #![cfg(test)]\nfn f() { x.unwrap(); }"),
+        1
+    );
+    assert_eq!(
+        production_panic_sites("fn f() { let text = \"#![cfg(test)]\"; x.unwrap(); }"),
+        1
+    );
+    assert_eq!(
+        production_panic_sites("#![cfg(not(test))]\nfn f() { x.unwrap(); }"),
+        1
+    );
+}
+
 /// A fixture tree, cleaned up by the caller.
 fn fixture_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -1060,6 +1128,11 @@ fn the_walk_skips_tests_benches_and_build_scripts() {
     fs::write(crate_dir.join("benches/b.rs"), "fn b() { x.unwrap(); }\n").expect("writable");
     fs::write(crate_dir.join("build.rs"), "fn main() { x.unwrap(); }\n").expect("writable");
     fs::write(crate_dir.join("src/skipped.rs"), "fn s() { x.unwrap(); }\n").expect("writable");
+    fs::write(
+        crate_dir.join("src/test_fixture.rs"),
+        "#![cfg(test)]\nfn fixture() { x.unwrap(); }\n",
+    )
+    .expect("writable");
 
     let files = scanned_files(&crate_dir, &[crate_dir.join("src/skipped.rs")]);
     let total: usize = files

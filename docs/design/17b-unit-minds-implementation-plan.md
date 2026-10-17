@@ -444,3 +444,24 @@ story and fresh external thirty-game comparison, and final independent review.
 M7 still requires its separate merged-economy checkpoint and design note. Q-UM-17
 is settled: existing sorties finish after parent-licence loss, while new sorties
 and filings wait for restoration.
+
+**Correction candidate, still unaccepted:** the first full Windows workspace
+sweep completed 401 reports with 7,752 passed, 89 failed and 93 ignored. The
+nineteen failing targets are retained in the gate log; this is not a green gate.
+The corrections restore per-channel epoch admission (one stale station must not
+discard current intents on other stations), invalidate stale sampled-rule leases,
+restore the missing-seal guard, and drain replay through same-time terminal
+settlement and ledger acknowledgement. Publication now borrows every required
+module owner before its first write. Targeted regression tests accompany these
+changes. Fixture repairs preserve privacy and gameplay assertions while using
+actual captured cores/cards and the new compatibility identities.
+
+The acceptance validator now checks exact retained start/result bytes, every
+candidate revision and complete card, all thirty actual outcomes and summed
+faults against the summary; its 21 Python tests pass. The real isolation test,
+author story and fresh external interval still await execution. Fresh Linux
+harness measurement passed; 297 of 302 deterministic fields agree and the five
+changed ledger/hash fields have been reviewed, but the final candidate must
+rerun before their pins change. No timing baseline was relaxed. A fresh fetch
+still finds IC11 `26e3b1fa` at origin/main. Subsequent Windows Cargo gates use one
+build job because concurrent MSVC linkers exhaust host memory.

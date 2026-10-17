@@ -2068,9 +2068,9 @@ fn spawn_output_pump(
 
             let mut done = false;
             let mut queries: Vec<(String, serde_json::Value)> = Vec::new();
-            let bytes = {
+            let (bytes, invokes) = {
                 let mut sh = shared.lock().expect("conn state poisoned");
-                match wake {
+                let bytes = match wake {
                     Wake::Repaint => {
                         if matches!(sh.mode, Mode::Tui) {
                             sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
@@ -2117,20 +2117,19 @@ fn spawn_output_pump(
                         }
                     }
                     Wake::Tick => Vec::new(), // handled above
-                }
+                };
+                let invokes = sh
+                    .tui
+                    .as_mut()
+                    .map(|t| t.take_invokes())
+                    .unwrap_or_default();
+                (bytes, invokes)
             };
 
             // A cursor mismatch or an unmergeable delta is never patched
             // locally, and a `Hello` names feeds to hydrate: ask the ordinary
             // read-only query seam after the connection lock has dropped; the
             // TUI de-duplicates resyncs until a valid replacement arrives.
-            let invokes = {
-                let mut sh = shared.lock().expect("conn state poisoned");
-                sh.tui
-                    .as_mut()
-                    .map(|t| t.take_invokes())
-                    .unwrap_or_default()
-            };
             for (id, request) in invokes {
                 hooks.invoke(conn_id, id, request).await;
             }

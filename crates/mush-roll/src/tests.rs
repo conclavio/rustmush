@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{ModuleBootData, ModuleOp, ModuleWrite, ObjId, mechanics::DefinitionDigest};
@@ -1033,7 +1035,7 @@ fn external_collection_guards_are_exact_bounded_additive_and_idempotent() {
     }
     assert_eq!(store.quarantine().len(), 64);
     assert_eq!(
-        store.quarantine_collection("one-more", "retained-data-unreadable"),
+        store.quarantine_collection("onemore", "retained-data-unreadable"),
         Err(RollError::Exhausted("collection guard"))
     );
     assert!(store.quarantine_collection("tacsim", "").is_err());

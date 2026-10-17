@@ -170,7 +170,11 @@ impl BoundCandidate {
             self.profile.slots,
         )
         .map_err(|_| invalid("candidate rule installation"))?;
-        let was = arena.unit(unit).ok_or(BulkError::Missing)?.controller;
+        let own = arena.unit_mut(unit).ok_or(BulkError::Missing)?;
+        let was = own.controller;
+        // This checked hull borrow is the first mutation. Cancellation and
+        // Live control handoff below use the old runtime rows, not the seal.
+        own.seal = self.seal.seal_ref();
         arena.cancel_profile_think(unit);
         // Normal control changes purge queued intents from the former epoch.
         for (channel, epoch) in epochs {
@@ -186,7 +190,6 @@ impl BoundCandidate {
             );
         }
         arena.cards = self.catalog;
-        arena.unit_mut(unit).expect("validated hull").seal = self.seal.seal_ref();
         arena.profiles.insert(unit, self.runtime);
         let mut mind = crate::arena::mind::MindState::fresh(&arena.arena_cfg.reflex);
         mind.seal_digest = self.seal.digest();

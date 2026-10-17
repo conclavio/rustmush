@@ -6226,6 +6226,11 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// **17b cut M5.4 kept it at 3** while adding the top-level `mind` object
 /// (doc 17 §12; F7 of the M5 design note): a field added for the person in
 /// the seat is not a version, and a mind's view never carries it.
+///
+/// **M5rules bumped it to 4** for the shared typed ordered-rule rows.
+/// **M5r bumped it to 5** for public objective/motor facts and own-shot origin.
+/// **M6 bumps it to 6** for generic owned-mind card values/schema, profiles and
+/// full sealed-rule readback. Source and private memory stay out of the frame.
 pub const FRAME_VERSION: u32 = 6;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
@@ -11984,6 +11989,7 @@ mod tests {
         );
 
         // Every set, every reading: the bounds.
+        let base_frame = m6_frame(&["Line"]);
         let sets = m5_every_profile_set();
         assert_eq!(
             sets.len(),
@@ -12016,7 +12022,7 @@ mod tests {
                             core_class: CoreClass::II,
                             switch_at_ms,
                             off: false,
-                            ..m6_frame(&["Line"])
+                            ..base_frame.clone()
                         };
                         let mut said = vec![mind_rules_line(&mind)];
                         for word in crate::arena::card::PRESETS

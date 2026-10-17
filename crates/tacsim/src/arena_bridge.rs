@@ -4298,18 +4298,15 @@ pub fn register(
     reg.hook(mush_core::HookPoint::Linkdead, Arc::new(SeatFacts));
     reg.hook(mush_core::HookPoint::Disconnected, Arc::new(SeatFacts));
     let tasks = ArenaTasks::new(egress_capacity);
+    let egress = tasks
+        .egress_sender()
+        .ok_or_else(|| ModError::msg("new arena task egress is unavailable"))?;
     let bulk_cfg = minds_cfg.bulk();
-    let bulk = crate::minds::bulk::world::BulkService::new(
-        bulk_cfg.clone(),
-        tasks.egress_sender().expect("new egress"),
-    )
-    .map_err(|e| ModError::msg(e.to_string()))?;
+    let bulk = crate::minds::bulk::world::BulkService::new(bulk_cfg.clone(), egress.clone())
+        .map_err(|e| ModError::msg(e.to_string()))?;
     reg.state(
-        crate::minds::bulk::bench_service::BenchService::new(
-            bulk_cfg.clone(),
-            tasks.egress_sender().expect("new egress"),
-        )
-        .map_err(|e| ModError::msg(e.to_string()))?,
+        crate::minds::bulk::bench_service::BenchService::new(bulk_cfg.clone(), egress)
+            .map_err(|e| ModError::msg(e.to_string()))?,
     );
     drop(reg.panel_feed(crate::minds::bulk::bench_service::FEED)?);
     reg.state(bulk);

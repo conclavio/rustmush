@@ -131,33 +131,27 @@ pub(crate) fn publish(
     if let Some(p) = &roll_change {
         roll.check_prepared(p).map_err(|e| invalid(e.to_string()))?;
     }
+    let (roll, store, artifacts) = ctx
+        .w
+        .module_state_triple_mut::<RollStore, BulkStore, Artifacts>()
+        .ok_or(BulkError::Missing)?;
+    let mut roll_ops = Vec::new();
     if let Some(change) = roll_change {
-        let mut roll_ops = Vec::new();
-        ctx.w
-            .module_state_mut::<RollStore>()
-            .expect("checked Roll owner")
-            .publish_with(change, |ops| roll_ops.extend_from_slice(ops))
+        roll.publish_with(change, |ops| roll_ops.extend_from_slice(ops))
             .map_err(|e| invalid(e.to_string()))?;
-        // No fallible operation remains after the first owner's publication.
-        for operation in roll_ops {
-            ctx.persist(operation);
-        }
     }
-    let lease = ctx
-        .w
-        .module_state_mut::<BulkStore>()
-        .expect("checked bulk owner")
-        .apply_checked(change);
-    let artifacts = ctx
-        .w
-        .module_state_mut::<Artifacts>()
-        .expect("checked artifact owner");
+    // All owner references were acquired before publication. No fallible
+    // lookup or operation remains after the first owner's publication.
+    let lease = store.apply_checked(change);
     for key in removals {
         artifacts.remove(key);
     }
     if let Some(blob) = blob.take() {
         artifacts.install(blob.manifest);
         writes.extend(blob.writes);
+    }
+    for operation in roll_ops {
+        ctx.persist(operation);
     }
     for op in writes {
         ctx.persist(ModuleOp {
@@ -175,17 +169,14 @@ pub(crate) fn hydrate(
     docs: &[(SmolStr, serde_json::Value)],
     now: i64,
 ) -> Result<(), BulkError> {
-    let store = ctx
+    let (store, artifacts) = ctx
         .w
-        .module_state_mut::<BulkStore>()
+        .module_state_pair_mut::<BulkStore, Artifacts>()
         .ok_or(BulkError::Missing)?;
-    for (key, value) in docs
-        .iter()
-        .filter(|(key, _)| key.starts_with("tacsim:mindbulk:account:"))
-    {
-        let suffix = key
-            .strip_prefix("tacsim:mindbulk:account:")
-            .expect("filtered prefix");
+    for (suffix, value) in docs.iter().filter_map(|(key, value)| {
+        key.strip_prefix("tacsim:mindbulk:account:")
+            .map(|suffix| (suffix, value))
+    }) {
         let account = serde_json::from_value::<AccountId>(serde_json::Value::String(suffix.into()));
         if let Ok(account) = account {
             let bytes = super::encoding::encode(value, super::model::MAX_ACCOUNT_DOCUMENT)
@@ -197,20 +188,13 @@ pub(crate) fn hydrate(
             tracing::error!("proving quota document key is unreadable");
         }
     }
-    ctx.w
-        .module_state_mut::<Artifacts>()
-        .ok_or(BulkError::Missing)?
-        .load(docs);
-    let ids = ctx
-        .w
-        .module_state::<BulkStore>()
-        .expect("checked store")
-        .account_ids();
+    artifacts.load(docs);
+    let ids = store.account_ids();
     for account in ids {
         let prepared = ctx
             .w
             .module_state::<BulkStore>()
-            .expect("checked store")
+            .ok_or(BulkError::Missing)?
             .prepare_recover(account, now)?;
         publish(ctx, prepared, &mut None, None)?;
     }

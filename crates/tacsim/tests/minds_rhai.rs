@@ -3487,34 +3487,39 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// bitmask remain unchanged. The cross-platform CI lane checks these same pins.
 /// M5r: persistent arrival and private formation continuity alter paths.
 /// Captured on Windows; the same literal corpus must pass Linux before acceptance.
+/// M6: API 4 changes Standard's metadata and sealed source identity. Canonical
+/// card/ROM identities, catalog and profile runtime state, own-hit timestamps,
+/// and captured pending-think schedules replace the former fixed-card fold.
+/// Fresh Windows and Linux measurements agree on all four complete rows below;
+/// stopping times and the float probe's 369098751 bitmask are unchanged.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         168250,
-        14440128034688845893,
-        "a4f7a1ad8d9dd2025635f3ec616538873fcefc9f9f20c92aa25f3e87d7c468a6",
-        "86be1fd53cf611b1d515c0885dfaf2f199f8af881f28f58ba1321985b2094476",
+        4167350372244564158,
+        "304b5340697f2b58dea363b4d01b67700630e82d9e05315265366897046dc826",
+        "1268fc5d180aebd43f2dc343b7526a4e935b66924fc880f3ffb8f1fae116ffd0",
     ),
     (
         2351,
         184500,
-        5130159094666486969,
-        "f9788fbf1954f79fc14b3d276694810f69fdd5121d6ff7c41ea7a86543634f6c",
-        "eb9cbcf54986863edfab08b024fa18fe84b9d9e550113df5c84be748c73545d1",
+        1964900014152180428,
+        "91884ac2c5ebb2cea1d09cf143958dfac3e854016ace862c76fb7e3062cc1288",
+        "168c29986f50717c87d6ab955f784b1532ffe3edb2cfff9c793de7691b50fae0",
     ),
     (
         2352,
         166500,
-        16233255927734374331,
-        "f4145a2dc590cfc3253f526c7ecc23d89c8cae03b244491408fd129dae7f90d4",
-        "5ae8ba07373287c75b4d5ca52ede1390632bdf329b405dcd051d671d6016898a",
+        9027361391885005948,
+        "68516927dac1017bb99d2338eef9ba67bd52dd337a9407c3e84a49909eeedd1c",
+        "5d1fa832060c94f91b55f8e7cfbd7027e2bf14bc6a3ad9a168c018abd527f635",
     ),
     (
         2350,
         900000,
-        15830171828511126067,
-        "4898d9e28bda302ebe5f4311654d62f7fbbfb2aec4e8cd8fd17e99b11f48ad6c",
-        "0c5b20a3362c1069b854387288f8aaa8d1e6fed0f845a7036fb57d3d951e1a8c",
+        5200400847644332931,
+        "6bf446e5a01bd3b97821706338dad12d3566cd21fbec2d748c4c7654cffeac2d",
+        "3d5c4a8ff59ee1ff1ba7cbdca552f7b862c2f4e002d43145d8d7c97361e569a6",
     ),
 ];
 
@@ -4740,12 +4745,11 @@ fn m3_three_injected_faults_drop_a_unit_to_the_rom() {
 /// gate's run with the arming order reversed — the failed mind's think 0
 /// arms the SECOND gun in S1 and the cannon (the hull's first weapon) in
 /// S2, and starts the hull, so the ROM's first think (4) is engaged and
-/// arms at once rather than disarming an offline hull — so the drop's cut
-/// to Class 0's one slot keeps S1 on the second gun, on the failed mind's
-/// terms, when the ROM first arms:
+/// arms at once rather than disarming an offline hull. M6 replaces the failed
+/// program with the captured ROM, clearing all old armings at the drop:
 ///
 /// * before the drop S1 is the second gun and S2 the cannon; at the drop
-///   the row is one slot, the second gun's;
+///   the row is empty, with no failed-mind rule left active;
 /// * a ROM think arms the cannon (the hull's first weapon, `arming_for`),
 ///   and from its landing on S1 is the cannon's on the ROM's own terms
 ///   (the card's odds, not the failed mind's 100%) and the second gun holds
@@ -4802,7 +4806,10 @@ fn m3_the_rom_arms_its_first_gun_where_the_failed_mind_left_another() {
         .get(drop_pulse)
         .map(|(_, row)| weapons(row))
         .expect("the drop's pulse");
-    assert_eq!(at_drop, vec![Some("gun2".to_owned())], "S1 kept at the cut");
+    assert!(
+        at_drop.is_empty(),
+        "ROM replacement clears every failed-mind arming"
+    );
     // The ROM's arming of the cannon, and its landing.
     let arms_cannon = |kept: &Kept| {
         kept.result.intents.iter().any(|intent| {
@@ -5176,9 +5183,9 @@ fn core_run(victim: CustodyUnit, cadence: i64, until: i64) -> BeatRun {
 ///    * ONE `mind_dropped { core }` on the whole tape, at 5,195, under the
 ///      landing's own hash (the `locked` line's), with no fault and no
 ///      budget;
-///    * the row, S1 the coax, S2 the cannon and S3 the bow before, is cut
-///      to the ROM's one: the cannon's slot gone with the turret
-///      (`remove_weapons` first), the bow's cut, the coax kept;
+///    * the row, S1 the coax, S2 the cannon and S3 the bow before, is cleared:
+///      M6 replaces the failed program with the captured ROM; its first fresh
+///      arming then installs the surviving coax in Class 0's one slot;
 ///    * the next think (5,945) is the ROM's — dropped, at Class 0's row,
 ///      [`DROPPED_LINE`] its trace — and the think at 4,945 was not;
 ///    * the hull's `DRIVE` goal and desired speed survive the drop: equal,
@@ -5298,16 +5305,36 @@ fn m3_destroy_core_drops_one_at_its_next_landing_at_three_cadences() {
     );
     assert_eq!(goal_before, Some((2, 14)), "the hull is driving");
     let (slots_after, goal_after, speed_after) = after.clone().expect("the pulse ending at 5,250");
-    assert_eq!(
-        slots_after,
-        vec![Some("machine_gun".to_owned())],
-        "the row cut to the ROM's one"
+    assert!(
+        slots_after.is_empty(),
+        "ROM replacement clears the failed program"
     );
     let first_rom = recorded.think(victim, 5);
     assert_eq!(first_rom.t_ms, think + STOCK_THINK_MS);
     assert!(first_rom.dropped, "the next think is the ROM's");
     assert_eq!(first_rom.profile, ClassTable::STOCK.row(CoreClass::Zero));
     assert_eq!(first_rom.result.trace, vec![DROPPED_LINE.to_owned()]);
+    assert!(
+        first_rom.result.intents.iter().any(|intent| matches!(
+            intent,
+            IntentKind::Condition(Arming::Arm(condition)) if condition.weapon == "machine_gun"
+        )),
+        "the fresh ROM arms the first surviving gun"
+    );
+    assert_eq!(
+        arena
+            .conditions
+            .slots(victim)
+            .iter()
+            .filter_map(|slot| {
+                slot.as_ref()
+                    .and_then(tacsim::arena::conditions::Rule::fire)
+                    .map(|condition| condition.weapon.as_str())
+            })
+            .collect::<Vec<_>>(),
+        vec!["machine_gun"],
+        "the fresh ROM arming lands in its one slot"
+    );
     let in_flight = recorded.think(victim, 4);
     assert_eq!(in_flight.t_ms, think);
     assert!(!in_flight.dropped, "the think in flight was the script's");

@@ -623,12 +623,15 @@ thread_local! {
 ///    reflex's decision: dropping the byte would move the hash of every match
 ///    with a motor row.
 ///
-///    **Item 3c, the unit minds** (17b cut M1a.5; doc 17 §3, §6, §8), right
-///    after item 3b: every row of [`Arena::minds`], in unit-id order and with
-///    **no count prefix** (so an arena with no mind adds no byte — every
-///    match before 17b cut M4.3, which fielded minds; every production match
-///    since folds a row per hull a mind flies, and a dormant row per hull a
-///    pilot possessed): the unit's `u32`; `think_seq` as `u64`; `pending` as
+///    **Item 3c, the unit minds and canonical profiles** (17b cut M1a.5;
+///    doc 17 §3, §6, §8), right after item 3b. M6 first folds the catalog's
+///    `u64` count and ordered definition digests, then the profile-runtime
+///    `u64` count and each unit's selected profiles, current and ROM keys,
+///    program digest, generation, index, override/drop/diagnostic bits,
+///    switch stamp and sampled-rule lease. These cover dormant definitions
+///    without serializing schemas. Then every row of [`Arena::minds`] folds
+///    in unit-id order with **no additional count prefix**: the unit's
+///    `u32`; `think_seq` as `u64`; `pending` as
 ///    `[0]`, or `[1]` then its `think_seq` `u64` and its `t_ms` `i64` (and,
 ///    since 17b cut M3.6, its answer: below); the
 ///    memory's length as `u64` then its bytes (its FNV-1a 64 digest as `u64`
@@ -653,11 +656,10 @@ thread_local! {
 ///    a ledger line of its own, so a replay that differed in one would
 ///    otherwise compare equal until the difference reached a pose.
 ///
-///    **Since 17b cut M1b.1** each row ends, after `strikes`, with **the
-///    card's bytes** ([`crate::arena::card::StockCard`], doc 17 §11): its
-///    fields in declaration order — an enum as its code byte, a bool as one
-///    byte, an integer little-endian, no separator — because the card is what
-///    a mind thinks under and a later sub-cut's runner reads it.
+///    **From 17b cut M1b.1 through M5r**, each row also folded the fixed
+///    [`crate::arena::card::StockCard`] fields. M6 removes that duplicate:
+///    complete card values/schema/rules are bound by the canonical catalog
+///    and profile-runtime identities above.
 ///
 ///    **Since 17b cut M3.6** (D-UM-23 as amended, "hashed whole"; doc 17
 ///    §13's list; the cut's one re-bless, which moved
@@ -682,6 +684,11 @@ thread_local! {
 ///    possessed hull's) folds the same bytes as any row; the in-source probe
 ///    `m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash`
 ///    moves each part.
+///
+///    **Since M6**, a present pending answer also folds its profile token,
+///    landing time, captured period/class and rule sample immediately after
+///    `t_ms`, before the epochs and answer. The row ends at `seal_digest`;
+///    its card is folded through the canonical profile runtime above.
 ///
 ///    **Since 17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22; the
 ///    fold code unchanged) a think is collected at its millisecond and its
@@ -1246,10 +1253,9 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // own, and each gates a later search.
         fold_search(fold, motor);
     }
-    // **17b cut M1a.5** (item 3c): the unit minds, per row with no count
-    // prefix — an arena with none folds no byte here (every match before 17b
-    // cut M4.3; every production match since folds a row per mind).
-    // Canonical identities cover dormant definitions without serializing schemas.
+    // M6 (item 3c): count-prefixed canonical definitions and profile runtimes,
+    // followed by the existing unprefixed mind rows. Dormant definitions affect
+    // future catalog admission, so their identities are folded too.
     fold.bytes(&(arena.cards.len() as u64).to_le_bytes());
     for digest in arena.cards.digests() {
         fold.bytes(digest.as_bytes());
@@ -1395,11 +1401,9 @@ fn fold_mind(fold: &mut Fold, unit: mush_core::ObjId, mind: &crate::arena::mind:
     use crate::deliberation::order::RangeBand;
     fold.bytes(&unit.0.to_le_bytes());
     fold.bytes(&mind.think_seq.to_le_bytes());
-    // **17b cut M3.6** (D-UM-23 as amended, "hashed whole"): the pending
-    // think's presence, `think_seq` and `t_ms` (M2's bytes), then its ANSWER —
-    // the three epochs in `Channel::ALL` order, the intents' count and each
-    // intent's canonical bytes, the new memory's length and its FNV-1a 64
-    // digest. This head's item 3c has the list.
+    // The pending think's identity, M6 profile/sample schedule, then its answer:
+    // epochs, count-prefixed intents by field walk and length-prefixed memory
+    // bytes. The complete item 3c contract is above.
     match mind.pending.as_ref() {
         Some(pending) => {
             fold.bytes(&[1_u8]);
@@ -1477,14 +1481,12 @@ fn fold_mind(fold: &mut Fold, unit: mush_core::ObjId, mind: &crate::arena::mind:
     fold.bytes(&[mind.strikes]);
     // **17b cut M3.6** (doc 17 §13's list): the drop — its presence, then the
     // cause's byte (strikes 1, core 2, abi 3) — and the seal's digest, after
-    // `strikes` and before the card.
+    // `strikes`. M6 folds the card through the canonical profile runtime.
     match mind.dropped {
         None => fold.bytes(&[0_u8]),
         Some(cause) => fold.bytes(&[1_u8, drop_cause_code(cause)]),
     }
     fold.bytes(&mind.seal_digest);
-    // **17b cut M1b.1**: the card, its fields in declaration order — an enum as
-    // its code byte, a bool as one byte, an integer little-endian.
 }
 
 /// **A drop's cause as its one hash byte** (17b cut M3.6; item 3c): strikes
@@ -2628,9 +2630,9 @@ mod tests {
         }
     }
 
-    /// **17b cut M1b.1** (items 3d, 3e, the card inside 3c): every new field
-    /// moves the hash, and an arena with none folds no byte for them — the
-    /// floor folds nothing at all.
+    /// **17b cut M1b.1** (items 3d, 3e, card identities in 3c since M6):
+    /// mutable slot/held rows and every card term move the hash. The captured
+    /// floor remains outside this fold.
     #[test]
     fn m1b1_slots_held_rows_and_the_card_move_the_hash_and_the_floor_does_not() {
         use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget};
@@ -2732,7 +2734,7 @@ mod tests {
         ] {
             assert_ne!(other, row);
         }
-        // The card, inside a mind's row: each section's terms move it.
+        // The card's canonical profile identity: each section's terms move it.
         let mut minded = base_arena.clone();
         minded
             .minds

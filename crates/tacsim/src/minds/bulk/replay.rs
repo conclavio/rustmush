@@ -313,6 +313,13 @@ impl ReplayMachine {
         self.goal = Some(goal);
         Ok(())
     }
+    fn reference_reached(&self, goal: i64) -> bool {
+        // The terminal timestamp can precede final same-time Settle/ack
+        // barriers. Only the full verified cursor completes an end target.
+        self.session.arena().is_some_and(|a| a.awaiting.is_empty())
+            && (self.picture.complete
+                || (goal < self.lease.tape.duration_ms() && self.picture.at_ms >= goal))
+    }
 }
 impl Machine for ReplayMachine {
     fn native_substep_ms(&self) -> u32 {
@@ -383,8 +390,7 @@ impl Machine for ReplayMachine {
                 terminal: None,
             });
         }
-        if self.session.arena().is_some_and(|a| a.awaiting.is_empty()) && self.picture.at_ms >= goal
-        {
+        if self.reference_reached(goal) {
             self.goal = None;
             return Ok(Turn {
                 simulation_ms: 0,
@@ -400,8 +406,7 @@ impl Machine for ReplayMachine {
             diff.install(arena);
         }
         self.refresh()?;
-        let done = self.session.arena().is_some_and(|a| a.awaiting.is_empty())
-            && (progress.at_ms >= goal || progress.complete);
+        let done = self.reference_reached(goal);
         if done {
             self.goal = None;
         }
@@ -779,6 +784,22 @@ mod settle_boundary_tests {
                 .unwrap()
                 .1,
         );
+        // These legal zero-time barriers follow the terminal Pulse. Reaching
+        // its timestamp alone must not omit their verification/effects.
+        arena.settle_inline();
+        writes.extend(
+            recorder
+                .push(TapeEvent::Settle {
+                    thinks: arena.tape_witnesses.take().unwrap(),
+                    at: arena.now_ms,
+                    hash: state_hash(&arena),
+                })
+                .unwrap(),
+        );
+        let through = arena.ledger.last_closed_seq();
+        assert!(through > 0, "the finished match has a real ledger chunk");
+        writes.extend(recorder.push(TapeEvent::LedgerAck { through }).unwrap());
+        arena.ledger.mark_flushed(through);
         writes.extend(
             recorder
                 .finish(arena.now_ms, state_hash(&arena), arena.ended.unwrap())
@@ -820,6 +841,65 @@ mod settle_boundary_tests {
             "Standard/Line",
         )
         .unwrap()
+    }
+    #[test]
+    fn terminal_target_drains_same_time_settle_and_ledger_ack_to_the_exact_cursor() {
+        let mut machine = ReplayMachine::new(tape(), ObjId(99), ObjId(4)).unwrap();
+        let end = machine.lease.tape.duration_ms();
+        let events = machine.lease.tape.event_count();
+        assert!(end > 1000);
+        machine.begin(ReplayCommand::RunTo(1000)).unwrap();
+        for _ in 0..300 {
+            if machine.step(250).unwrap().terminal == Some(Status::Complete) {
+                break;
+            }
+        }
+        assert!(machine.goal.is_none());
+        assert!(machine.picture.at_ms >= 1000 && machine.picture.at_ms < end);
+        assert!(
+            !machine.picture.complete,
+            "intermediate targets still stop early"
+        );
+        machine.begin(ReplayCommand::RunTo(end)).unwrap();
+        for _ in 0..300 {
+            let turn = machine.step(250).unwrap();
+            assert_eq!(
+                turn.terminal, None,
+                "the terminal barriers remain unpaid/unprocessed"
+            );
+            if machine.picture.event + 2 == events {
+                break;
+            }
+        }
+        assert_eq!(machine.picture.at_ms, end);
+        assert_eq!(machine.picture.event + 2, events);
+        assert!(!machine.picture.complete);
+        assert!(machine.session.arena().unwrap().awaiting.is_empty());
+        assert_eq!(machine.session.arena().unwrap().ledger.flushed_upto(), 0);
+
+        let settle = machine.step(0).unwrap();
+        assert_eq!(settle.simulation_ms, 0);
+        assert_eq!(settle.terminal, None);
+        assert_eq!(machine.picture.event + 1, events);
+        let ack = machine.step(0).unwrap();
+        assert_eq!(ack.simulation_ms, 0);
+        assert_eq!(ack.terminal, Some(Status::Complete));
+        assert_eq!(machine.picture.event, events);
+        assert_eq!(machine.picture.at_ms, end);
+        assert!(machine.picture.complete);
+        let arena = machine.session.arena().unwrap();
+        assert!(arena.ledger.flushed_upto() > 0);
+        assert_eq!(arena.ledger.flushed_upto(), arena.ledger.last_closed_seq());
+        assert_eq!(
+            machine.picture.state_hash,
+            format!("{:016x}", state_hash(arena))
+        );
+
+        machine.begin(ReplayCommand::RunTo(end)).unwrap();
+        let again = machine.step(0).unwrap();
+        assert_eq!(again.terminal, Some(Status::Complete));
+        assert_eq!(again.simulation_ms, 0);
+        assert_eq!(machine.picture.event, events);
     }
     #[test]
     fn diff_edits_wait_for_captured_pulse_jobs_and_paid_step_settles_them() {

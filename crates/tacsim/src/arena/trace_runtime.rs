@@ -325,8 +325,9 @@ mod tests {
     }
 
     #[test]
-    fn actual_epoch_loss_and_controller_cancel_survive_late_worker_faults() {
+    fn partial_epoch_refusal_and_controller_cancel_survive_late_worker_faults() {
         let mut arena = arena();
+        arena.unit_mut(OWN).expect("own").power = Power::Online;
         let think = collect(&mut arena, 0);
         arena.settle_collected(&think, answer());
         arena.epochs.raise(OWN, Channel::Helm, 1);
@@ -337,12 +338,17 @@ mod tests {
             think.lands_ms,
             &mut MotorCounters::default(),
         );
+        let landed = arena.traces.recent(OWN, None).pop().expect("landed think");
+        assert_eq!(landed.outcome, Outcome::Applied);
         assert!(matches!(
-            arena.traces.recent(OWN, None)[0].outcome,
-            Outcome::Cancelled {
-                reason: Cancelled::Epoch
-            }
+            &landed.intents[0].outcome,
+            Outcome::Refused { reason } if reason == "epoch"
         ));
+        assert!(matches!(
+            &landed.intents[1].outcome,
+            Outcome::Refused { reason } if reason == "no_lock"
+        ));
+        assert_eq!(arena.minds[&OWN].memory, b"[1]");
         let next = collect(&mut arena, 1000);
         arena.set_controller(
             OWN,

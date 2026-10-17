@@ -48,7 +48,7 @@ pub(super) fn change(
     }
     let roll = ctx
         .w
-        .module_state::<RollStore>()
+        .module_state_mut::<RollStore>()
         .ok_or(BulkError::Missing)?;
     let existing = roll.reference_keys(crate::store::NS, ReferenceKind::OpenSeal);
     let releases = releases
@@ -66,10 +66,7 @@ pub(super) fn change(
         .prepare_reference_batch(crate::store::NS, replacements, releases)
         .map_err(|e| invalid(e.to_string()))?;
     let mut ops = Vec::new();
-    ctx.w
-        .module_state_mut::<RollStore>()
-        .expect("checked owner")
-        .publish_with(prepared, |rows| ops.extend_from_slice(rows))
+    roll.publish_with(prepared, |rows| ops.extend_from_slice(rows))
         .map_err(|e| invalid(e.to_string()))?;
     for op in ops {
         ctx.persist(op);

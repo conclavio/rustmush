@@ -1938,7 +1938,12 @@ pub fn note_run(events: &[(i64, String, u64)], hashes: &[u64]) {
 pub fn note_think(unit: ObjId, t_ms: i64, result: &ThinkResult) {
     NOTES.with(|notes| {
         if let Some(notes) = notes.borrow_mut().as_mut() {
-            notes.thinks.push((unit.0, t_ms, result.clone()));
+            let mut behavior = result.clone();
+            // Rhai's measured operation/fee diagnostics have no native
+            // counterpart; every decision, rule sample and memory byte still
+            // participates in the cross-runner comparison.
+            behavior.diagnostics = None;
+            notes.thinks.push((unit.0, t_ms, behavior));
         }
     });
 }

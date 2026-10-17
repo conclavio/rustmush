@@ -78,6 +78,24 @@ must drop to captured ROM after real strikes. A final opposing-human match must
 preserve the accepted personal-draft-to-Doctrine substitution. Source is never
 accepted from a client-supplied validation flag.
 
+The story also reads the actual retained proving chunks and their hashes, opens
+the first completed proving game through public BENCH commands, and reaches its
+exact terminal cursor. This includes the stop, settlement and ledger acknowledgement
+events sharing the final timestamp; stopping at the timestamp alone is insufficient.
+It retains the reference hash and replay evidence alongside the author story.
+The exact frozen start and result bytes are retained with their manifests. Every
+candidate seal must name the first saved revision, its effective source, Class II
+and the complete original Hold card and rules; every opponent must actually select
+Line. The comparison script verifies those bytes and identities again, and
+reconciles all thirty retained game outcomes and summed faults with the summary.
+
+`crates/mush-bot/tests/arena_mind_isolation.rs` exercises one live sortie and two
+proving jobs on the same production server through separate SSH accounts. It
+checks bounded worker/queue admission, duplicate and overflow refusal, settled
+compute progress for both jobs, continued live snapshots, and cancellation with
+quota refund. Baseline and loaded STATUS latency samples are retained in
+`live-isolation.log` as `M6_LIVE_PROVING_ISOLATION` JSON; host timing is report-only.
+
 `crates/mush-bot/tests/arena_mind_port_rate.rs` launches two real external bot
 processes concurrently for fifteen unposed MUSTER matches on each side. Each has
 an independent world, store, loopback listener, host key and scratch directory;
@@ -97,8 +115,10 @@ python scripts/mind_port_acceptance.py run <new-output-directory>
 ```
 
 The script first verifies the bot's normal/build graph contains no other RustMUSH
-package. It runs the focused picture tests, production author story, then the fresh
-external interval; output directories are never overwritten. It requires matching
+package. It runs the focused picture tests, same-server isolation check, production
+author story, then the fresh external interval; output directories are never
+overwritten. Each external side saves its transcript, report, process output,
+exit status and captured documents before validation. It requires matching
 run UUID, Git revision, current port source SHA, scenario-content SHA, complete
 frozen-ground SHA, configuration SHA, chassis, opponent class/profile/source and
 startup/duration before comparing results. The embedded run records fifteen paired
@@ -121,15 +141,18 @@ side totals must agree with all thirty actual completed match outcomes.
 
 An existing completed invocation can be checked again with `compare` instead of
 `run`. Its required artifacts are `acceptance-run.json`, `author/author-story.json`,
-`author/proving-manifest.json` and `external/external-interval.json`; the result is
+`author/proving-manifest.json`, `author/proving-start-manifest.json`,
+`author/proving-start.json`, `author/proving-result.json` and
+`external/external-interval.json`; the result is
 `comparison.json`. The source and manifest must still match the tested content.
 
 ## Evidence status
 
 Candidate `34a22ac1` includes the port and production-runner checks. The seven
 Field Pilot tests pass in the fresh Linux library gate; final long acceptance is
-still pending. Validator correction `8ac8f159` passes twelve Python tests and
-enforces the outcome/fault requirements above. The production author story,
+still pending. Validator correction `8ac8f159` initially passed twelve Python
+tests and enforced the outcome/fault requirements above. The subsequent exact
+artifact and per-game reconciliation corrections pass 21 Python tests. The production author story,
 thirty-game report, win-rate comparison and new same-server isolation/proving
 replay additions are not accepted until their actual runs produce the evidence.
 

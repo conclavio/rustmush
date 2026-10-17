@@ -4262,6 +4262,57 @@ mod tests {
     }
 
     #[test]
+    fn m6_stale_station_epoch_discards_sample_but_keeps_current_channel_intents() {
+        let mut arena = locked();
+        m6_install_program(
+            &mut arena,
+            vec![m6_authored(
+                Rule::hold_rule("cannon".into(), Vec::new()),
+                true,
+            )],
+        );
+        let boundary = 2_000;
+        m6_old_sample(&mut arena, boundary, vec![true]);
+        let contact = arena.unit(RED).expect("own").lock.expect("held contact");
+        arena.unit_mut(RED).expect("own").lock = None;
+        m6_pending(&mut arena, boundary, Some(vec![true]));
+        arena
+            .minds
+            .get_mut(&RED)
+            .expect("mind")
+            .pending
+            .as_mut()
+            .expect("pending")
+            .intents = vec![
+            IntentKind::Heading { mdeg: 90_000 },
+            IntentKind::Lock { contact },
+        ];
+        let epoch = arena.epochs.current(RED, Channel::Helm) + 1;
+        arena.epochs.raise(RED, Channel::Helm, epoch);
+        arena.now_ms = boundary;
+        arena.mind_land(RED, 9, boundary, &mut MotorCounters::default());
+        assert_eq!(arena.unit(RED).expect("own").lock, Some(contact));
+        let mind = arena.minds.get(&RED).expect("mind");
+        assert_eq!(mind.memory, b"fresh");
+        assert!(mind.pending.is_none());
+        assert!(mind.notices.iter().any(|notice| matches!(
+            notice,
+            FrameNotice::Refused { order, refusal: Refusal::Epoch, .. }
+                if order == "heading"
+        )));
+        assert!(
+            arena
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_none()
+        );
+        assert!(!arena.rule_vetoed(RED, "cannon", boundary));
+    }
+
+    #[test]
     fn m6_sampled_hold_renewal_has_no_shot_gap_and_false_releases_at_boundary() {
         for renewed in [true, false] {
             let mut arena = locked();

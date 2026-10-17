@@ -18,6 +18,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "crates/tacsim/content/minds/acceptance/field_pilot.rhai"
 MANIFEST = SOURCE.with_suffix(".manifest.json")
+ENVELOPE = SOURCE.with_suffix(".envelope.json")
 
 
 def read(path):
@@ -60,6 +61,86 @@ def counts(row):
                 wilson_95=wilson(values[0], 30))
 
 
+def retained_blob(directory, filename, descriptor):
+    raw = (directory / "author" / filename).read_bytes()
+    require(0 < len(raw) <= 16 * 1024 * 1024 and len(raw) == descriptor["bytes"]
+            and list(hashlib.sha256(raw).digest()) == descriptor["sha256"],
+            f"retained {filename} bytes differ from their exact artifact")
+    return json.loads(raw)
+
+
+def selected_profile(seal, expected):
+    selected = seal["cards"]["selected"]
+    require(len(selected) == 1 and selected[0]["name"] == expected,
+            f"actual sealed selection is not {expected}")
+    index = selected[0]["key"]["index"]
+    profiles = seal["cards"]["definition"]["profiles"]
+    require(type(index) is int and 0 <= index < len(profiles)
+            and profiles[index]["name"] == expected, "sealed profile binding differs")
+    return profiles[index]
+
+
+def verify_proving_artifacts(directory, story, proving):
+    start = read(directory / "author/proving-start-manifest.json")
+    require(start["key"]["account"] == proving["key"]["account"]
+            and start["key"]["run"] == proving["key"]["run"] == 1
+            and start["key"]["part"] == "start" and proving["key"]["part"] == "result",
+            "retained proving start and result belong to different runs")
+    require(start["artifact"] == story["proving_start_artifact"]
+            and proving["artifact"] == story["proving_result_artifact"],
+            "story does not bind both retained proving artifacts")
+    frozen = retained_blob(directory, "proving-start.json", start["artifact"])
+    result = retained_blob(directory, "proving-result.json", proving["artifact"])
+    require(frozen["context"] == result["context"] == proving["context"],
+            "retained proving contexts differ")
+    games = result.get("report", {}).get("games")
+    require(type(games) is list and len(games) == 30,
+            "thirty actual retained proving game reports are required")
+    seal = story["first_seal"]
+    require(seal["requested"]["origin"]["digest"] == story["first_definition"],
+            "live seal is not the first saved definition")
+    require(seal["source_sha256"] == seal["requested"]["source_sha256"],
+            "live effective source differs from the requested source")
+    envelope = read(ENVELOPE)
+    hold = selected_profile(seal, "Hold")
+    require(seal["cards"]["definition"]["schema"] == envelope["schema"]
+            and hold["values"] == envelope["profiles"]["Hold"]
+            and hold["rules"] == envelope["rules"].get("Hold", []),
+            "live seal does not carry the exact accepted Hold card/rules")
+    require(len(frozen["games"]) == 30, "thirty actual frozen starts are required")
+    for index, game in enumerate(frozen["games"]):
+        require(game["swapped"] is (index % 2 == 1)
+                and game["seed"] == frozen["context"]["pair_seeds"][index // 2],
+                "actual frozen seed/side pairing differs")
+        actual_game = games[index]
+        require(type(actual_game.get("seed")) is int
+                and actual_game["seed"] == game["seed"]
+                and actual_game.get("swapped") is game["swapped"],
+                "actual proving game seed/side order differs from its frozen start")
+        require(actual_game.get("outcome") in ("win", "loss", "draw", "timeout"),
+                "actual proving game outcome is missing or unclassified")
+        require(type(actual_game.get("faults")) is int and 0 <= actual_game["faults"] <= 0xffffffff,
+                "actual proving game fault count must be a nonnegative integer")
+        require(len(game["seals"]) == 2, "actual proving is not 1v1")
+        candidates = [s for s in game["seals"] if s["requested"]["mind"] == "FieldPilot"]
+        require(len(candidates) == 1, "one actual Field Pilot seal is required")
+        candidate = candidates[0]
+        require(candidate["engine"] == "scripted" and candidate["class"] == "II"
+                and candidate["source_sha256"] == seal["source_sha256"]
+                and candidate["requested"] == seal["requested"]
+                and candidate["cards"] == seal["cards"]
+                and candidate["card_digest"] == seal["card_digest"],
+                "proving did not execute the first exact sealed revision/card/rules")
+        opponents = [s for s in game["seals"] if s is not candidate]
+        opponent = opponents[0]
+        actual = {"class":opponent["class"],
+                  "profile":selected_profile(opponent, "Line")["name"],
+                  "source_sha256":opponent["source_sha256"]}
+        require(actual == frozen["context"]["opponent"],
+                "actual proving opponent differs from its reported identity")
+    return games
+
+
 def compare(directory):
     run = read(directory / "acceptance-run.json")
     clean_revision(run["revision"])
@@ -82,6 +163,7 @@ def compare(directory):
     require(story["first_seal"]["requested"]["source_sha256"] == source["source_sha256"],
             "live story did not seal this exact Field Pilot source")
     require(story["first_seal"]["class"] == "II", "live story did not run Class II")
+    actual_games = verify_proving_artifacts(directory, story, proving)
     checks = story["checks"]
     require(len(checks) == 6 and sum(not r["armed"] for r in checks) == 3,
             "all six production pictures, including three unarmed cases, are required")
@@ -133,6 +215,9 @@ def compare(directory):
     pairs = [m for m in pairs if m]
     require(len(pairs) == 15 and [int(m[1]) for m in pairs] == context["pair_seeds"],
             "proving needs fifteen actual paired seeds with both outcomes")
+    require(all(game["outcome"] == pairs[index // 2][2 + index % 2].lower()
+                for index, game in enumerate(actual_games)),
+            "actual proving outcomes disagree with the retained summary")
     embedded = dict(zip(("wins", "losses", "draws", "timeouts"), map(int, totals[0].groups())))
     outcome_names = {"Win":"wins", "Loss":"losses", "Draw":"draws", "Timeout":"timeouts"}
     for outcome, name in outcome_names.items():
@@ -145,7 +230,9 @@ def compare(directory):
     require(len(fault_rows) == 1, "exact retained proving fault total is required")
     # Metrics.motor currently counts every mind in the game. Do not relabel this
     # as candidate-only or quietly discard an opponent's failures.
-    all_mind_faults = int(fault_rows[0][1])
+    all_mind_faults = sum(game["faults"] for game in actual_games)
+    require(all_mind_faults == int(fault_rows[0][1]),
+            "actual proving fault counts disagree with the retained summary")
     embedded, external_counts = counts(embedded), counts(external)
     left, right = embedded["wilson_95"], external_counts["wilson_95"]
     separate = left[1] < right[0] or right[1] < left[0]
@@ -193,6 +280,7 @@ def run(directory):
     require((workspace & runtime) == {"mush-bot"}, "standalone bot gained a RustMUSH runtime/build dependency")
     commands = [
         ("picture-check", ["cargo","test","-p","tacsim","--lib","field_pilot_","--","--nocapture"]),
+        ("live-isolation", ["cargo","test","-p","mush-bot","--test","arena_mind_isolation","--","--nocapture"]),
         ("author-story", ["cargo","test","-p","mush-bot","--test","arena_mind_author_story","--","--ignored","--nocapture"]),
         ("external-interval", ["cargo","test","-p","mush-bot","--test","arena_mind_port_rate","--","--ignored","--nocapture"]),
     ]

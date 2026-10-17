@@ -53,9 +53,10 @@ async fn field_pilot_fresh_external_muster_interval() {
     // retain deterministic red/blue ordering when collecting the evidence.
     let fly = |side: &'static str| {
         let config = config.clone();
+        let directory = directory.clone();
         async move {
             let extra = arena_rig::extra("hold", &std::collections::BTreeSet::new());
-            arena_rig::fly_lane_with_config_evidence(
+            let (flown, documents) = arena_rig::fly_lane_with_config_evidence(
                 &arena_rig::LanePlan {
                     name: side,
                     matches: 15,
@@ -69,7 +70,45 @@ async fn field_pilot_fresh_external_muster_interval() {
                 side,
                 config,
             )
-            .await
+            .await;
+            // Preserve this lane as soon as it returns, before its peer finishes
+            // or any completeness/identity assertion can reject the evidence.
+            // The rig has already removed its disposable server directory.
+            std::fs::write(
+                directory.join(format!("{side}.jsonl")),
+                &flown.partial.transcript_text,
+            )
+            .unwrap();
+            if let Some(raw) = &flown.partial.report_text {
+                std::fs::write(directory.join(format!("{side}.json")), raw).unwrap();
+            }
+            std::fs::write(
+                directory.join(format!("{side}.stdout.log")),
+                &flown.partial.stdout,
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join(format!("{side}.stderr.log")),
+                &flown.partial.stderr,
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join(format!("{side}.flight.json")),
+                serde_json::to_vec_pretty(&json!({
+                    "side":side,"exit_code":flown.partial.code,"early":flown.early,
+                    "heard":flown.heard,"ends":flown.ends,"refused":flown.refused,
+                    "report_present":flown.partial.report_text.is_some(),
+                    "report_decoded":flown.partial.report.is_some(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join(format!("{side}.documents.json")),
+                serde_json::to_vec_pretty(&documents).unwrap(),
+            )
+            .unwrap();
+            (flown, documents)
         }
     };
     let (red, blue) = tokio::join!(fly("red"), fly("blue"));
@@ -126,21 +165,22 @@ async fn field_pilot_fresh_external_muster_interval() {
                 .find(|seal| seal["unit"] == units[0])
                 .unwrap();
             assert_eq!(seal["requested"]["mind"], tacsim::match_::SEALED_MIND);
-            let opponent = json!({"class":seal["class"],"profile":"Line","source_sha256":seal["source_sha256"]});
+            let selected = seal["cards"]["selected"].as_array().unwrap();
+            assert_eq!(selected.len(), 1, "the actual opponent has one profile");
+            let profile = selected[0]["name"].as_str().unwrap();
+            assert_eq!(profile, "Line", "the actual opponent carries Line");
+            let index = selected[0]["key"]["index"].as_u64().unwrap() as usize;
+            assert_eq!(
+                seal["cards"]["definition"]["profiles"][index]["name"],
+                profile
+            );
+            let opponent = json!({"class":seal["class"],"profile":profile,"source_sha256":seal["source_sha256"]});
             if let Some(previous) = common_opponent.replace(opponent.clone()) {
                 assert_eq!(previous, opponent);
             }
             matches.push(json!({"side":side,"match":match_id,"seed":record["seed"],"ground_sha256":ground_sha,
                 "arena_definition_digest":record["arena_definition_digest"],"outcome":record["outcome"],"reason":record["reason"],
                 "arena_ms":record["arena_ms"],"ledger":record["ledger"],"opponent":opponent}));
-        }
-        std::fs::write(
-            directory.join(format!("{side}.jsonl")),
-            &flown.partial.transcript_text,
-        )
-        .unwrap();
-        if let Some(raw) = &flown.partial.report_text {
-            std::fs::write(directory.join(format!("{side}.json")), raw).unwrap();
         }
         assert!(
             flown.early.is_none(),

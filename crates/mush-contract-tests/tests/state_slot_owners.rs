@@ -26,7 +26,10 @@
 //! 2. **Cross-owner writes are baselined.** The scan reads every `.rs` file
 //!    under `crates/` and resolves each
 //!    `ctx.state_mut::<T>` / `World::module_state_mut::<T>` /
-//!    `World::module_state_insert(..)` site against the owner map. A site whose
+//!    `World::module_state_pair_mut::<A, B>` /
+//!    `World::module_state_triple_mut::<A, B, C>` /
+//!    `World::module_state_insert(..)` site against the owner map. Every generic
+//!    slot argument is checked independently. A site whose
 //!    slot belongs to a module of a DIFFERENT crate must carry a row in
 //!    `state-slot-owners.toml` saying why; so must every
 //!    `module_state_insert` site, which is the accessor that seeds a slot with
@@ -43,11 +46,11 @@
 //! fooled by a code path no test exercises, and the runtime check cannot be
 //! fooled by a crate boundary that is not a module boundary.
 //!
-//! `World::module_state_mut` and `World::module_state_insert` stay `pub`: they
+//! The single/multi-slot mutable accessors and `World::module_state_insert` stay `pub`: they
 //! are the unchecked engine accessors, carrying no module identity and doing no
 //! check. What keeps them from being the way around slot ownership is this
 //! file — a convention pinned by a scan, not an invariant enforced by the
-//! types — and both accessors say so in their own docs.
+//! types — and the accessors say so in their own docs.
 //!
 //! That matters more than it looks: `Ctx::w` is a `pub` field, so
 //! `ctx.w.module_state_mut::<T>()` is one character longer than
@@ -79,11 +82,13 @@ const ALLOWLIST: &str = "state-slot-owners.toml";
 /// so a second composition cannot arrive without widening this list.
 const RULESETS: [&str; 1] = ["tacsim"];
 
-/// The three accessors the scan knows, spelled as a row must spell them.
-const ACCESSORS: [&str; 3] = [
+/// The accessors the scan knows, spelled as a row must spell them.
+const ACCESSORS: [&str; 5] = [
     "Ctx::state_mut",
     "World::module_state_mut",
     "World::module_state_insert",
+    "World::module_state_pair_mut",
+    "World::module_state_triple_mut",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +277,34 @@ fn turbofish(rest: &str) -> Option<String> {
     Some(short_name(&rest[..end]).to_string())
 }
 
+/// Every top-level generic argument, so paired access cannot hide the foreign
+/// owner behind the first, same-crate slot. Preserve nested type arguments.
+fn turbofish_slots(rest: &str) -> Option<Vec<String>> {
+    let rest = rest.strip_prefix("::<")?;
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut slots = Vec::new();
+    for (at, ch) in rest.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            '>' => {
+                let slot = rest[start..at].trim();
+                if !slot.is_empty() {
+                    slots.push(short_name(slot).to_string());
+                }
+                return Some(slots);
+            }
+            ',' if depth == 0 => {
+                slots.push(short_name(rest[start..at].trim()).to_string());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The leading identifier of a call argument (`(NpcState::default())` →
 /// `NpcState`).
 fn first_argument(rest: &str) -> Option<String> {
@@ -294,6 +327,8 @@ fn hits_in(rel_path: &str, source: &str) -> Vec<Hit> {
     let mut hits = Vec::new();
     for (needle, accessor) in [
         ("module_state_insert", ACCESSORS[2]),
+        ("module_state_pair_mut", ACCESSORS[3]),
+        ("module_state_triple_mut", ACCESSORS[4]),
         ("module_state_mut", ACCESSORS[1]),
         ("state_mut", ACCESSORS[0]),
     ] {
@@ -311,23 +346,58 @@ fn hits_in(rel_path: &str, source: &str) -> Vec<Hit> {
                 continue;
             }
             let rest = &code[from..];
-            let slot = if accessor == ACCESSORS[2] {
+            let slots = if accessor == ACCESSORS[2] {
                 // A seeded slot's type is usually inferred from the argument.
-                turbofish(rest).or_else(|| first_argument(rest))
-            } else {
                 turbofish(rest)
+                    .or_else(|| first_argument(rest))
+                    .map(|slot| vec![slot])
+            } else {
+                turbofish_slots(rest)
             };
-            let Some(slot) = slot else { continue };
-            hits.push(Hit {
-                path: rel_path.to_string(),
-                accessor,
-                slot,
-            });
+            let Some(slots) = slots else { continue };
+            for slot in slots {
+                hits.push(Hit {
+                    path: rel_path.to_string(),
+                    accessor,
+                    slot,
+                });
+            }
         }
     }
     hits.sort();
     hits.dedup();
     hits
+}
+
+#[test]
+fn paired_and_triple_access_census_every_owner_argument() {
+    let hits = hits_in(
+        "crates/toy/src/lib.rs",
+        r"
+        world.module_state_pair_mut::<Local, foreign::Other>();
+        world.module_state_triple_mut::<one::First, two::Second, three::Third>();
+        world.module_state_pair_mut::<Local, foreign::Other>();
+        // world.module_state_pair_mut::<Ignored, AlsoIgnored>();
+    ",
+    );
+    let actual: Vec<_> = hits
+        .iter()
+        .map(|hit| (hit.accessor, hit.slot.as_str()))
+        .collect();
+    assert_eq!(
+        actual,
+        [
+            (ACCESSORS[3], "Local"),
+            (ACCESSORS[3], "Other"),
+            (ACCESSORS[4], "First"),
+            (ACCESSORS[4], "Second"),
+            (ACCESSORS[4], "Third"),
+        ]
+    );
+    assert_eq!(
+        turbofish_slots("::<Local<u32, u64>, Other>()").map(|slots| slots.len()),
+        Some(2)
+    );
 }
 
 /// Every `.rs` file under `crates/`, workspace-relative with forward slashes.

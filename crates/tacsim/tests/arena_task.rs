@@ -60,6 +60,7 @@ use mush_tactics::{
 };
 use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
+use tacsim::arena::input_tape::{TapeStatus, TapeWrite};
 use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind, Refusal};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::perception::FrameNotice;
@@ -658,7 +659,18 @@ async fn a_panic_in_step_voids_the_match_and_publishes_nothing_from_that_pulse()
             .any(|message| matches!(message, ArenaOut::Frames { .. })),
         "and no frame either: {messages:#?}"
     );
-    assert_eq!(messages.len(), 1, "the `Ended` is the only message");
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [
+                ArenaOut::Tape { write: TapeWrite::Open(_), .. },
+                ArenaOut::Tape { write: TapeWrite::Mark(mark), .. },
+                ArenaOut::Ended { .. }
+            ] if matches!(mark.status, TapeStatus::Incomplete { .. })
+        ),
+        "only the pre-pulse recording header, explicit incomplete marker and result leave: \
+         {messages:#?}"
+    );
     // 16b cut M.1 (`B-48`): the reported digest is over what LEFT the ledger —
     // nothing here, so the digest of no bytes — and not over the open chunk the
     // faulted pulse never flushed, which `log:match.<id>` could never
@@ -1369,7 +1381,8 @@ fn frames_for(messages: &[ArenaOut], pilot: ObjId) -> Vec<usize> {
 /// **`B-48`: an end waits for every chunk and the held frame, then reports the
 /// digest the log can reproduce** (16b cut M.1).
 ///
-/// A one-message egress the world does not read while the match closes several
+/// An egress with one slot after its recording header, which the world does not
+/// read while the match closes several
 /// chunks: before this cut `Task::end` offered the backlog once with `try_send`
 /// and reported `Ledger::digest()`, so the result named bytes the log never got.
 /// Now every chunk arrives, in order, then the final held `Frames`, then one
@@ -1378,8 +1391,9 @@ fn frames_for(messages: &[ArenaOut], pilot: ObjId) -> Vec<usize> {
 async fn m1_an_end_waits_for_every_chunk_and_the_held_frame_and_reports_the_logs_digest() {
     let seed = SEEDS[6].0;
     let (handle, _join, mut rx) =
-        start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 1);
-    // The opening pulse's frames take the one slot; everything after waits.
+        start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 2);
+    // The recording header and opening frames fill both slots; everything
+    // after waits, preserving the one-frame backpressure premise.
     tokio::time::sleep(Duration::from_millis(500)).await;
     // A refusal staged in a pulse the world cannot take: held, not lost.
     handle.offer(fire(RED, 1)).expect("the inbox takes a fire");
@@ -1411,9 +1425,16 @@ async fn m1_an_end_waits_for_every_chunk_and_the_held_frame_and_reports_the_logs
         ),
         "the held frame is sent before the result: {messages:#?}"
     );
-    // The opening frame took the slot, the chunks follow in order, and then the
-    // held frame and the end: nothing else interleaves.
-    assert!(matches!(messages.first(), Some(ArenaOut::Frames { .. })));
+    // The recording header is followed by the opening frame. Ledger chunks
+    // and recording checkpoints drain before the held frame and the result.
+    assert!(matches!(
+        messages.first(),
+        Some(ArenaOut::Tape {
+            write: TapeWrite::Open(_),
+            ..
+        })
+    ));
+    assert!(matches!(messages.get(1), Some(ArenaOut::Frames { .. })));
     let chunk_seqs: Vec<u64> = messages
         .iter()
         .filter_map(|message| match message {
@@ -1657,8 +1678,9 @@ async fn m1_a_pilot_is_held_at_most_sixty_four_notices() {
     let seed = SEEDS[9].0;
     let mut arena_cfg = fast_arena();
     arena_cfg.intents.max_pending_per_unit = 64;
-    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &MatchConfig::default(), 1);
-    // The opening frame takes the slot.
+    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &MatchConfig::default(), 2);
+    // The recording header and opening frame take the slots. No later frame
+    // can leave before the final collection below, so notices must merge.
     tokio::time::sleep(Duration::from_millis(100)).await;
     for seq in 1..=40 {
         handle
@@ -1678,6 +1700,13 @@ async fn m1_a_pilot_is_held_at_most_sixty_four_notices() {
         .expect("the inbox takes a stop");
     let messages = collect(&mut rx, Duration::from_millis(10_000)).await;
     assert_eq!(ended(&messages), Some(EndReason::Abort));
+    assert!(matches!(
+        messages.first(),
+        Some(ArenaOut::Tape {
+            write: TapeWrite::Open(_),
+            ..
+        })
+    ));
     let delivered: Vec<usize> = frames_for(&messages, RED_PILOT);
     assert_eq!(delivered.len(), 2, "the opening frame and the held one");
     let at = delivered.last().copied().unwrap_or(0);
@@ -2480,13 +2509,20 @@ async fn af2_a_snapshot_rides_the_egress_on_the_first_pulse_and_every_five_secon
     let (first_at, first) = taken[0];
     assert_eq!(first.at_ms, 0, "the opening pulse's");
     assert!(
-        matches!(messages.first(), Some(ArenaOut::Frames { now_ms: 0, .. })),
-        "the opening pulse's frames lead"
+        matches!(
+            messages.first(),
+            Some(ArenaOut::Tape {
+                write: TapeWrite::Open(_),
+                ..
+            })
+        ) && matches!(messages.get(1), Some(ArenaOut::Frames { now_ms: 0, .. })),
+        "the frozen recording header precedes the opening pulse's frames"
     );
     assert!(
         messages[..first_at].iter().all(|message| match message {
             ArenaOut::Frames { now_ms, .. } => *now_ms == 0,
             ArenaOut::Ledger { .. } => true,
+            ArenaOut::Tape { .. } => true,
             _ => false,
         }),
         "the opening snapshot follows the opening pulse's messages and precedes every later \
@@ -2827,8 +2863,13 @@ async fn m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume() {
         let mut custody = unseated_custody(seed);
         if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == RED) {
             unit.weapons = vec![gun.clone()];
-            unit.reseal(&tacsim::match_::SealTerms::fixture())
-                .expect("the fixture terms seal");
+        }
+        let terms = tacsim::match_::SealTerms {
+            odds_floor_permille: floor,
+            ..tacsim::match_::SealTerms::fixture()
+        };
+        for unit in &mut custody.units {
+            unit.reseal(&terms).expect("the fixture terms seal");
         }
         let (egress_tx, egress_rx) = mpsc::channel(256);
         let (handle, _join, _callsigns) = spawn_arena(

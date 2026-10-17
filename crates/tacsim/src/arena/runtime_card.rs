@@ -650,7 +650,7 @@ pub fn rom_definition(
     let mut card = super::card::line(cfg);
     card.min_odds_permille = card
         .min_odds_permille
-        .max(u16::try_from(floor).expect("floor checked at most 1000"));
+        .max(u16::try_from(floor).map_err(|_| invalid("ROM", "Compact floor exceeds 100%"))?);
     stock_definition(&[("Line".into(), card)], CoreClass::Zero)
 }
 

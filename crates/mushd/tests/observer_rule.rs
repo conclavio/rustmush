@@ -748,9 +748,9 @@ fn unseated(feed: &str) -> Value {
             "seated": false,
         }),
         // 17b cut M1a.3 bumped the cockpit frame to version 2, 17b cut M1b.3
-        // to 3, M5rules to 4, and M5r to 5 for objective/motor/origin.
+        // to 3, M5rules to 4, M5r to 5, and M6 to 6 for authored cards/rules.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 5, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 6, "retain": "latest" },
             "seated": false,
         }),
     }
@@ -759,42 +759,75 @@ fn unseated(feed: &str) -> Value {
 /// One `PanelSubscribe` over a real socket, answered by the registered query
 /// handler and correlated by `id`.
 async fn panel_query(ws: &mut Ws, id: u64, feed: &str) -> Value {
+    panel_query_seen(ws, id, feed, &mut String::new()).await
+}
+
+/// Retry only the correlated commit refusal. Every envelope, including a
+/// refused attempt, remains in the caller's privacy transcript.
+async fn panel_query_seen(ws: &mut Ws, id: u64, feed: &str, seen: &mut String) -> Value {
     let request = ClientCommand::Req {
         id,
         q: Query::PanelSubscribe { feed: feed.into() },
     };
-    ws.send(Message::Text(
-        serde_json::to_string(&request)
-            .expect("a request encodes")
-            .into(),
-    ))
-    .await
-    .expect("the socket takes a request");
-    for _ in 0..400 {
-        let env = recv_env(ws).await;
-        let OutputEvent::Reply {
-            id: answered,
-            event,
-        } = &env.event
-        else {
-            continue;
-        };
-        if *answered != id {
-            continue;
-        }
-        match event.as_ref() {
-            OutputEvent::Panel {
-                feed: answered_feed,
-                data,
-                ..
-            } => {
-                assert_eq!(answered_feed.as_str(), feed, "answered on its own feed");
-                return data.clone();
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+    for _ in 0..RETRY_BUDGET {
+        ws.send(Message::Text(
+            serde_json::to_string(&request)
+                .expect("a request encodes")
+                .into(),
+        ))
+        .await
+        .expect("the socket takes a request");
+        let mut retry = false;
+        for _ in 0..400 {
+            let env = tokio::time::timeout_at(deadline, recv_env(ws))
+                .await
+                .unwrap_or_else(|_| panic!("no reply {id} for {feed}: {seen}"));
+            seen.push_str(&serde_json::to_string(&env).expect("an envelope encodes"));
+            seen.push('\n');
+            if let OutputEvent::Ping { nonce } = &env.event {
+                ws.send(Message::Text(
+                    serde_json::to_string(&ClientCommand::Pong { nonce: *nonce })
+                        .expect("a pong encodes")
+                        .into(),
+                ))
+                .await
+                .expect("the socket takes a pong");
             }
-            other => panic!("a {feed} subscribe must answer a keyframe, got {other:?}"),
+            let OutputEvent::Reply {
+                id: answered,
+                event,
+            } = &env.event
+            else {
+                continue;
+            };
+            if *answered != id {
+                continue;
+            }
+            match event.as_ref() {
+                OutputEvent::Panel {
+                    feed: answered_feed,
+                    data,
+                    ..
+                } => {
+                    assert_eq!(answered_feed.as_str(), feed, "answered on its own feed");
+                    return data.clone();
+                }
+                other if text_of(other).contains(COMMIT_PENDING) => {
+                    retry = true;
+                    break;
+                }
+                other => panic!("a {feed} subscribe must answer a keyframe, got {other:?}"),
+            }
         }
+        assert!(retry, "no correlated reply {id} for {feed}: {seen}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "commit refusal outlasted panel deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    panic!("no reply {id} for {feed}")
+    panic!("panel {id} for {feed} was refused as transient {RETRY_BUDGET} times: {seen}")
 }
 
 /// The next `arena.cockpit` keyframe this socket is **pushed**, which is the
@@ -2221,7 +2254,16 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // Bo read the lobby's and switched them off. The bystander and the staffer
     // were teleported to the muster, never walked the lobby and flew nothing:
     // none. Every one is one of the six fixed sentences and names nothing.
-    let hints = tacsim::match_::tutorial::HINT_LINES;
+    use tacsim::match_::tutorial::HintPoint;
+    let hints = [
+        HintPoint::Lobby,
+        HintPoint::Boarding,
+        HintPoint::Panel,
+        HintPoint::Power,
+        HintPoint::Contact,
+        HintPoint::Mind,
+    ]
+    .map(HintPoint::line);
     let ada_hints = support::hints_read(&ada.seen);
     assert_eq!(
         ada_hints,
@@ -2235,6 +2277,12 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert_eq!(bo_hints, vec![hints[0].to_owned()], "Bo reads the lobby's");
     assert_eq!(support::hints_read(&cy.seen), Vec::<String>::new());
     assert_eq!(support::hints_read(&god.seen), Vec::<String>::new());
+    assert!(
+        !ada_hints
+            .iter()
+            .any(|line| line == HintPoint::MindSaved.line()),
+        "a sortie without an authored save must not trigger the author hint"
+    );
     for line in ada_hints.iter().chain(bo_hints.iter()) {
         names_nothing(line, red, blue, "a first-time hint");
         no_sixteen_digit_word(line, "a first-time hint");
@@ -2462,13 +2510,13 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "an empty scope, before detection: {cockpit}"
     );
     // **17b cut M1a.3** (doc 17 §3): the frame's own clock and a piloted
-    // hull's order, which is none; version 5 includes objective/motor/origin.
+    // hull's order, which is none; version 6 includes authored cards/rules.
     assert!(
         cockpit.get("t_ms").is_some_and(Value::is_i64),
         "the frame carries its arena millisecond: {cockpit}"
     );
     assert_eq!(cockpit.get("order"), Some(&Value::Null), "{cockpit}");
-    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(5)));
+    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(6)));
     assert_eq!(
         cockpit.get("callsign").and_then(Value::as_str),
         Some("RA"),
@@ -3625,10 +3673,42 @@ fn squeezed(raw: &str) -> String {
 /// it back in nav mode — where the next line's characters would be eaten as
 /// hotkeys (`r` opens the roll prompt, which is how this was found out).
 async fn tui_ask(term: &mut Term, line: &str) -> String {
-    let mark = term.mark();
-    term.send_line(line).await;
-    term.expect_after(mark, TUI_LAST_TANK).await;
-    squeezed(&term.seen[mark..])
+    tui_answer(term, line, TUI_LAST_TANK).await
+}
+
+/// TUI paints may replace spaces with cursor jumps. Read the complete squeezed
+/// answer and retry only an observed commit refusal, within the same
+/// deadline as an ordinary terminal expectation. Used only for read commands.
+async fn tui_answer(term: &mut Term, line: &str, needle: &str) -> String {
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+    let transcript = term.mark();
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(line).await;
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(
+                !left.is_zero(),
+                "TUI `{line}` did not answer `{needle}`: {}",
+                squeezed(&term.seen[mark..])
+            );
+            if tokio::time::timeout(
+                left.min(Duration::from_millis(100)),
+                term.expect_squeezed_after(mark, needle),
+            )
+            .await
+            .is_ok()
+            {
+                return squeezed(&term.seen[transcript..]);
+            }
+            let seen = squeezed(&term.seen[mark..]);
+            if seen.contains("pleaseretryinamoment") {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("TUI `{line}` was refused as transient {RETRY_BUDGET} times")
 }
 
 /// Everything the TUI must never say about a unit an arena holds.
@@ -5438,7 +5518,7 @@ async fn i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing() {
     cy.send_line("@tui").await;
     cy.expect_after(opened, "Cy").await;
     cy.send_line("").await;
-    cy.send_line("SIM REPLAY 1").await;
+    tui_answer(&mut cy, "SIM REPLAY 1", "Replay1\u{2014}").await;
     // Whole frames until screen 0 has opened and the document and the ground
     // have both landed on it.
     let mut cols = 120;
@@ -5528,7 +5608,7 @@ async fn i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing() {
         .await;
     }
     take_off(&mut ada, &mut bo).await;
-    cy.send_line("SIM REPLAY 2").await;
+    tui_answer(&mut cy, "SIM REPLAY 2", "Match2isstillrunning.").await;
     wait_until(
         STEP_TIMEOUT,
         "the refusal to land on the scene",
@@ -8142,39 +8222,7 @@ fn m5_mind(frame: &Value) -> Value {
 /// pilot's WebSocket carried (the bridge's pushed keyframes, every other
 /// feed, every line), not only the replies it asked for.
 async fn m5_cockpit_seen(ws: &mut Ws, id: u64, seen: &mut String) -> Value {
-    let request = ClientCommand::Req {
-        id,
-        q: Query::PanelSubscribe {
-            feed: COCKPIT_FEED.into(),
-        },
-    };
-    ws.send(Message::Text(
-        serde_json::to_string(&request)
-            .expect("a request encodes")
-            .into(),
-    ))
-    .await
-    .expect("the socket takes a request");
-    for _ in 0..400 {
-        let env = recv_env(ws).await;
-        seen.push_str(&serde_json::to_string(&env).expect("an envelope encodes"));
-        seen.push('\n');
-        let OutputEvent::Reply {
-            id: answered,
-            event,
-        } = &env.event
-        else {
-            continue;
-        };
-        if *answered != id {
-            continue;
-        }
-        let OutputEvent::Panel { data, .. } = event.as_ref() else {
-            panic!("a cockpit subscribe must answer a keyframe, got {event:?}");
-        };
-        return data.clone();
-    }
-    panic!("no reply {id} for {COCKPIT_FEED}")
+    panel_query_seen(ws, id, COCKPIT_FEED, seen).await
 }
 
 /// Every text message the socket delivers until it has been quiet for
@@ -8723,7 +8771,8 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
             && own
                 .iter()
                 .any(|line| line.starts_with("Blue's half of the centre's pool is "))
-            && own.len() == 3,
+            && own.contains(&"Your mind will seal at Class I.".to_owned())
+            && own.len() == 4,
         "Bo reads his own, and only it: {own:#?}"
     );
     let cy_own = m5_fog_answer(&ask_whole(&mut cy, "SIM MIND").await, "SIM MIND");

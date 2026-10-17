@@ -884,8 +884,22 @@ writes; it never edits Roll maps or source bytes.
 """
 
 [[site]]
+path = "crates/tacsim/src/store.rs"
+accessor = "World::module_state_pair_mut"
+slot = "RollStore"
+owner = "roll"
+reason = "M6 source+revision publication borrows Roll and TacSim together before either opaque prepared mutation; source and revision writes retain one operation batch."
+
+[[site]]
+path = "crates/tacsim/src/match_/selection_refs.rs"
+accessor = "World::module_state_pair_mut"
+slot = "RollStore"
+owner = "roll"
+reason = "M6 centre publication acquires Roll and MatchBook before its root transaction, then installs the admitted centre without a later fallible owner lookup."
+
+[[site]]
 path = "crates/tacsim/src/minds/bulk/publication.rs"
-accessor = "World::module_state_mut"
+accessor = "World::module_state_triple_mut"
 slot = "RollStore"
 owner = "roll"
 reason = """

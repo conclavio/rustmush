@@ -2965,21 +2965,21 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         tacsim::arena::state_hash(&resumed)
     );
 
-    // A format-6 document is refused by name (expected 12 since M5r; no old-format migration).
+    // A format-6 document is refused by name (expected 13 since M6; no old-format migration).
     let mut old = snapshot.document.clone();
     old["format"] = serde_json::json!(6);
     assert_eq!(
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 12
+            expected: 13
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 12
+            expected: 13
         })
     ));
 }
@@ -3047,7 +3047,12 @@ impl MindRunner for Kept {
     fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
         let result = self.inner.think(job);
         if let Ok(mut thoughts) = self.thoughts.lock() {
-            thoughts.push((job.unit, job.t_ms, (**job.view).clone(), result.clone()));
+            let mut behavior = result.clone();
+            // Interpreter operation/fee diagnostics have no native analogue.
+            // Compare every simulation input, sampled rule and author trace;
+            // return the original answer, including diagnostics, to the arena.
+            behavior.diagnostics = None;
+            thoughts.push((job.unit, job.t_ms, (**job.view).clone(), behavior));
         }
         result
     }

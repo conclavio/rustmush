@@ -311,20 +311,19 @@ impl Machine for ProvingMachine {
         }
     }
     fn step(&mut self, maximum_sim_ms: u64) -> Result<Turn, BulkError> {
-        if self.active.is_none() {
+        let Some(active) = self.active.as_mut() else {
             self.open()?;
             return Ok(Turn {
                 simulation_ms: 0,
                 result: None,
                 terminal: None,
             });
-        }
+        };
         let cadence = u64::from(self.frozen.plan.native_substep_ms);
         if maximum_sim_ms < cadence {
             return Err(invalid("proving quantum differs from captured native step"));
         }
         let remaining = tape_budget(&self.frozen.plan)?.saturating_sub(self.retained);
-        let active = self.active.as_mut().expect("checked active");
         let before = active.arena.now_ms;
         active.wall = active
             .wall
@@ -382,7 +381,6 @@ impl Machine for ProvingMachine {
             },
             None => return Err(invalid("proving completion marker missing")),
         };
-        let active = self.active.take().expect("finished active");
         let mut game = Game {
             seed,
             swapped,
@@ -407,9 +405,12 @@ impl Machine for ProvingMachine {
             odds_unobserved: 0,
         };
         let focus = if game.swapped { Team::Blue } else { Team::Red };
-        active
-            .metrics
-            .finish(&mut game, &active.operations, &active.arena, focus)?;
+        std::mem::take(&mut active.metrics).finish(
+            &mut game,
+            &active.operations,
+            &active.arena,
+            focus,
+        )?;
         game.odds_buckets = active
             .arena
             .acceptance
@@ -419,6 +420,7 @@ impl Machine for ProvingMachine {
         game.odds_unobserved = 0;
         // Guard the independently proven closed report bound before retention.
         super::encoding::encode(&game, REPORT_GAME_RESERVE as usize)?;
+        self.active = None;
         self.report.games.push(game);
         let tape = GameTape {
             game: self.index as u16,

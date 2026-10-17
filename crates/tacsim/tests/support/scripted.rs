@@ -209,7 +209,11 @@ impl MindRunner for Stock {
         // `support::under_the_rhai_runner` (a no-op outside it).
         super::note_think(job.unit, job.t_ms, &result);
         if let Ok(mut kept) = self.kept.lock() {
-            kept.push((job.unit, job.t_ms, (**job.view).clone(), result.clone()));
+            let mut behavior = result.clone();
+            // Only the comparison copy omits interpreter instrumentation;
+            // the actual answer returned to the arena retains diagnostics.
+            behavior.diagnostics = None;
+            kept.push((job.unit, job.t_ms, (**job.view).clone(), behavior));
         }
         result
     }

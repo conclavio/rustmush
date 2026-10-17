@@ -1596,11 +1596,29 @@ impl World {
         self.module_state.get_mut::<T>()
     }
 
+    /// Borrow two distinct installed slots before publishing either owner.
+    /// Like [`Self::module_state_mut`], this is an unchecked engine accessor;
+    /// every foreign type argument is covered by the state-slot owner census.
+    pub fn module_state_pair_mut<A: Any + Send, B: Any + Send>(
+        &mut self,
+    ) -> Option<(&mut A, &mut B)> {
+        self.module_state.get_pair_mut::<A, B>()
+    }
+
+    /// Borrow three distinct installed slots before publishing any owner.
+    /// Missing or aliased slots return `None`. Ownership checks are the same
+    /// census contract as [`Self::module_state_mut`], for all three arguments.
+    pub fn module_state_triple_mut<A: Any + Send, B: Any + Send, C: Any + Send>(
+        &mut self,
+    ) -> Option<(&mut A, &mut B, &mut C)> {
+        self.module_state.get_triple_mut::<A, B, C>()
+    }
+
     /// Install (or replace) the state slot for `T` directly (modules may
     /// do this from `on_world_loaded` to seed loaded state).
     ///
-    /// This is one of the two **unchecked engine accessors** (the other is
-    /// [`World::module_state_mut`]): it carries no module identity, so it
+    /// Like the single and multi-slot mutable **unchecked engine accessors**,
+    /// this carries no module identity, so it
     /// records no owner and is subject to no ownership check. A slot that
     /// only ever arrives this way has no owner at all and stays open to
     /// every module — [`Ctx::try_state_mut`](crate::cmd::Ctx::try_state_mut)

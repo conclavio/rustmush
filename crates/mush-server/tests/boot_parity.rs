@@ -245,6 +245,8 @@ fn expected_roster() -> Vec<&'static str> {
         "weather",
         "party",
         "market",
+        // M6's character-owned drafts and immutable revisions have their own owner.
+        "roll",
         "script",
         // The composition root's own two, after the built-ins.
         "worldgen",
@@ -310,6 +312,10 @@ fn expected_panels() -> Vec<&'static str> {
     // replay feed. Pushed to a match's watchers and to nobody else; its query
     // answers a watcher who resyncs.
     panels.push("arena.observer");
+    // M6 registers source-free own-mind trace, bench and proving views here.
+    panels.push("arena.mind");
+    panels.push("mind.bench");
+    panels.push("mind.bulk");
     panels.push("who");
     panels.push("legal.actions");
     panels

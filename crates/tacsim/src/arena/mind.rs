@@ -2428,9 +2428,9 @@ impl Arena {
     ///    (`SealRef::core_class` above Class 0) that is gone drops the hull to
     ///    the ROM — `dropped = Some(DropCause::Core)`, one `mind_dropped` line
     ///    (`core`, no fault, no budget) at `t_ms` under the landing's hash, the
-    ///    condition row cut to Class 0's one slot (`Arena::core_lost`,
-    ///    `Arena::drop_for_core`) — the think in flight having landed as
-    ///    thought;
+    ///    runtime replaced with the captured Class 0 ROM, clearing the failed
+    ///    program's armings (`Arena::core_lost`, `Arena::drop_for_core`) — the
+    ///    think in flight having landed as thought;
     /// 7. **17b cut M1b.1**: the hull's condition slots are evaluated ONCE, at
     ///    `t_ms`, after every intent has landed (`ConditionTrigger::Landing`),
     ///    so an arming and a lock of one think are both in force when the
@@ -2479,15 +2479,26 @@ impl Arena {
             .profiles
             .get(&unit)
             .is_some_and(|runtime| runtime.accepts(answer.profile_token))
-            || Channel::ALL
-                .iter()
-                .any(|channel| self.epochs.current(unit, *channel) != answer.epoch(*channel))
         {
-            self.traces
-                .cancel(unit, think_seq, t_ms, super::author_trace::Cancelled::Epoch);
+            self.traces.cancel(
+                unit,
+                think_seq,
+                t_ms,
+                super::author_trace::Cancelled::Superseded,
+            );
             self.invalidate_rule_sample(unit);
             let _ = self.evaluate_conditions(unit, t_ms, ConditionTrigger::Landing, None, counters);
             return;
+        }
+        // A sampled program spans stations, so any changed station invalidates
+        // the complete sample. Ordinary intents still carry independent channel
+        // epochs: a stale helm answer must not suppress a current Fire/Sensors
+        // intent or silently discard the mind's otherwise valid memory landing.
+        if Channel::ALL
+            .iter()
+            .any(|channel| self.epochs.current(unit, *channel) != answer.epoch(*channel))
+        {
+            answer.rule_sample = None;
         }
         if self
             .land_rule_sample(unit, answer.rule_sample.take(), t_ms, answer.period_ms)
@@ -2548,8 +2559,9 @@ impl Arena {
         // 6. **17b cut M3.4** (doc 17 §8, §9; D-UM-32, D-UM-34): a core the
         // seal recorded that is gone drops the hull to the ROM HERE — after the
         // think in flight has landed as thought (D-UM-9: a think is atomic, and
-        // it was taken while the core stood) and before the slots are read, so
-        // the slots are read on the ROM's one. Under the landing's own hash:
+        // it was taken while the core stood) and before the slots are read.
+        // M6 clears the failed program; a fresh ROM think arms its own gun.
+        // Under the landing's own hash:
         // `run_mind_landings` opened the lazy slot, and the drop's line takes
         // it (`Arena::event_hash`) as every line of the landing does.
         if self.core_lost(unit) {
@@ -2609,8 +2621,9 @@ impl Arena {
     /// **Drop a hull whose sealed core is gone** ([`Arena::core_lost`]; 17b
     /// cut M3.4; D-UM-32, D-UM-34), at `t_ms` under `hash` —
     /// `dropped = Some(DropCause::Core)`, ONE `mind_dropped` line (`core`, no
-    /// fault word, no budget), and the condition row cut to the ROM's one
-    /// slot. The landing arm hands it the landing's hash
+    /// fault word, no budget), and the captured ROM replaces the complete card
+    /// and rule program, clearing old armings. Its next think may arm one slot.
+    /// The landing arm hands it the landing's hash
     /// ([`Arena::event_hash`] under the lazy slot `run_mind_landings`
     /// opened), the think arm [`Arena::think_line_hash`]. Continuous orders
     /// hold — the motor's goal and the desired heading and speed are not

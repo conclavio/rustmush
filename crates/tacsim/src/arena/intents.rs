@@ -1154,6 +1154,9 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
     let Some(own) = arena.unit(unit) else {
         return IntentOutcome::Refused(Refusal::Unknown);
     };
+    if own.seal.digest == crate::arena::mind::SealRef::none().digest {
+        return IntentOutcome::Refused(Refusal::Profile);
+    }
     let Some(runtime) = arena.profiles.get(&unit) else {
         return IntentOutcome::Refused(Refusal::Profile);
     };

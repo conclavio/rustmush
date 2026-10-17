@@ -1195,7 +1195,8 @@ async fn teleport_to_lobby(god: &mut Term, name: &str) {
 ///
 /// Was "the five hints" and `5 of 5` at 16b cut AH.1; six and `5 of 6` before
 /// the end, `6 of 6` after it, since `HintPoint::Mind` (17b cut M5.6, the design
-/// note's item 2: "the sixth said after the first finished match").
+/// note's item 2: "the sixth said after the first finished match"). M6 adds a
+/// seventh point on saving an authored mind; this match never earns that point.
 ///
 /// Every wait on a hint is on a prefix narrower than the test PTY's eighty
 /// columns, and the audit is over the unwrapped transcript (`hints_read`),
@@ -1288,12 +1289,21 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
         },
     )
     .await;
+    use tacsim::match_::tutorial::HintPoint;
+    let match_points = [
+        HintPoint::Lobby,
+        HintPoint::Boarding,
+        HintPoint::Panel,
+        HintPoint::Power,
+        HintPoint::Contact,
+        HintPoint::Mind,
+    ];
     let read = support::hints_read(&ada.seen);
     assert_eq!(
         read,
-        tacsim::match_::tutorial::HINT_LINES
+        match_points
             .iter()
-            .map(|line| (*line).to_owned())
+            .map(|point| point.line().to_owned())
             .collect::<Vec<_>>(),
         "the six, once each, in order"
     );
@@ -1308,7 +1318,7 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
     // check-in (mind, 17b cut M5.6), and
     // God's lobby-only document by the lobby observer alone. The restart leg
     // below cannot prove this — the alt's switch rewrites Ada's document.
-    let every_word = tacsim::match_::tutorial::HintPoint::ALL
+    let every_word = match_points
         .iter()
         .map(|point| Value::from(point.as_str()))
         .collect::<Vec<_>>();
@@ -1331,7 +1341,7 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
     })
     .await;
 
-    // ---- the alt: the same person, who has read them all ----
+    // ---- the alt: the same person, who has read all six match hints ----
     say(&mut ada, "@newchar Ava", "created Ava").await;
     let (_v, mut ava) = login_picking(server.addr, "ada", PILOT_PASSWORD, "Ava").await;
     teleport_to_lobby(&mut god, "Ava").await;
@@ -1481,20 +1491,36 @@ async fn m5_arena_clock(god: &mut Term) -> u64 {
     clock.expect("waited for the clock")
 }
 
-/// **A preset's card digest, as the seal takes it**: SHA-256 over
-/// `serde_json::to_vec` of the preset over THIS rig's own arena doctrine
-/// (`match_::start` builds each profile's card with `card::preset(name,
-/// &arena_cfg.reflex)`), in the tape's sixty-four lower-case hex digits.
+/// **An opening preset's card digest, as the seal takes it**: SHA-256 over
+/// the complete canonical schema, values and rules for THIS rig's doctrine.
+/// The stock definition's first card supplies its schema defaults, as it does
+/// when checkout seals Sniper first or the fill's single Line profile.
 fn m5_card_digest(preset: &str) -> String {
     use sha2::{Digest as _, Sha256};
+    use tacsim::arena::core::CoreClass;
+    use tacsim::arena::runtime_card::{CardCatalog, ProfileKey, stock_definition};
     let doctrine = tacsim_config().arena.reflex;
     let card = tacsim::arena::card::preset(preset, &doctrine)
         .unwrap_or_else(|| panic!("{preset} is one of the six presets"));
-    let bytes = serde_json::to_vec(&card).expect("a card serialises");
-    Sha256::digest(&bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    let definition = stock_definition(&[(preset.into(), card)], CoreClass::I)
+        .expect("the complete stock definition is valid");
+    let mut catalog = CardCatalog::default();
+    let definition = catalog
+        .admit(definition)
+        .expect("the stock card is admitted");
+    let card = catalog
+        .resolve(ProfileKey {
+            definition,
+            index: 0,
+        })
+        .expect("the opening card is hydrated");
+    Sha256::digest(
+        card.canonical_bytes()
+            .expect("the card has canonical bytes"),
+    )
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect()
 }
 
 /// One unit's tape lines of one kind, in tape order.
@@ -1603,10 +1629,7 @@ async fn m5_a_pilot_seals_a_mind_climbs_out_and_the_tank_is_flown_by_it() {
         "SIM MIND Sentinel",
     );
     assert!(
-        said(
-            &refused,
-            "You hold no mind called Sentinel; SIM MIND lists the minds you hold."
-        ),
+        said(&refused, "No such owned mind or revision."),
         "{refused:#?}"
     );
 

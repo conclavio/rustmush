@@ -79,14 +79,28 @@ pub(crate) fn publish_centre(ctx: &mut Ctx<'_>, next: Centre) -> Result<(), SimE
         reason: error.to_string(),
     })?;
     if let Some(prepared) = prepared {
-        publish(ctx, prepared).map_err(|error| SimError::MindAdmission {
+        validate_publication(ctx).map_err(|error| SimError::MindAdmission {
             reason: error.to_string(),
         })?;
+        let (roll, book) = ctx
+            .w
+            .module_state_pair_mut::<RollStore, MatchBook>()
+            .ok_or(SimError::Unavailable)?;
+        let mut operations = Vec::new();
+        roll.publish_with(prepared, |writes| operations.extend_from_slice(writes))
+            .map_err(|error| SimError::MindAdmission {
+                reason: error.to_string(),
+            })?;
+        *book.centre_mut() = next;
+        for operation in operations {
+            ctx.persist(operation);
+        }
+    } else {
+        *ctx.w
+            .module_state_mut::<MatchBook>()
+            .ok_or(SimError::Unavailable)?
+            .centre_mut() = next;
     }
-    *ctx.w
-        .module_state_mut::<MatchBook>()
-        .expect("checked MatchBook remains installed during synchronous publication")
-        .centre_mut() = next;
     Ok(())
 }
 

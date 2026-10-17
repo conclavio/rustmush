@@ -127,7 +127,16 @@ fn tactical_unit(id: ObjId) -> TacticalUnit {
 /// [`tactical_unit`]'s one shape under any rules blob — **16b cut AE.3** reads
 /// a declared class off it (`UnitClass::read`), so a fixture can field a drone.
 fn tactical_unit_ruled(id: ObjId, rules: RulesValue) -> TacticalUnit {
-    let spec = UnitSpec {
+    tactical_unit_ruled_with_core(id, rules, None)
+}
+
+/// The same synthetic hull, optionally fitted with a real governed core.
+fn tactical_unit_ruled_with_core(
+    id: ObjId,
+    rules: RulesValue,
+    core: Option<tacsim::arena::core::CoreClass>,
+) -> TacticalUnit {
+    let mut spec = UnitSpec {
         definition: dref("unit", "tacsim.unit.line_tank"),
         sections: vec![SectionSpec {
             id: SectionId::new("hull").expect("a canonical section"),
@@ -155,6 +164,39 @@ fn tactical_unit_ruled(id: ObjId, rules: RulesValue) -> TacticalUnit {
         mobility: None,
         rules,
     };
+    if let Some(class) = core {
+        use mush_tactics::{
+            CapabilityId, CapabilityInit, CapabilityKey, CellId, ComponentId, ComponentSpec,
+            ConditionId, InstallPoint,
+        };
+        use tacsim::definitions::unit::{CORE_CAPABILITY, CORE_CLASS_CELL, CORE_RULES_SCHEMA};
+
+        let component = ComponentId::new("core").expect("a core component");
+        spec.components.push(ComponentSpec {
+            id: component.clone(),
+            definition: dref("component", "tacsim.unit.line_tank.core"),
+            install: InstallPoint::Section(SectionId::new("hull").expect("the hull section")),
+            condition: ConditionId::new("intact").expect("an intact core"),
+            cells: vec![CellSpec {
+                id: CellId::new(CORE_CLASS_CELL).expect("the class cell"),
+                min: 0,
+                max: i64::from(class.ordinal()),
+                init: i64::from(class.ordinal()),
+            }],
+            asset: None,
+        });
+        spec.capabilities.push(CapabilityInit {
+            key: CapabilityKey {
+                id: CapabilityId::new(CORE_CAPABILITY).expect("the core capability"),
+                source: Some(component),
+            },
+            rules: RulesValue::new(
+                dref("schema", CORE_RULES_SCHEMA),
+                tacsim::definitions::core::profile_payload(class, true),
+            )
+            .expect("a governed core payload"),
+        });
+    }
     TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
 }
 
@@ -5371,7 +5413,8 @@ fn af1_mind_squad_arena() -> Arena {
 /// M5.2): each its preset over the default doctrine, the first the one that
 /// flies — a chosen set, for the shape pin's walk. With none it is
 /// [`af1_mind_squad_arena`] byte for byte (the mover sealed under the
-/// fixture terms, the Line card alone).
+/// fixture terms, the Line ROM alone). M6's explicit ROM has one profile,
+/// so a chosen set also fits the mover with a real governed Class I core.
 fn af1_mind_squad_arena_sealing(profiles: &[&str]) -> Arena {
     let machine = |mut unit: CustodyUnit| {
         unit.controller = tacsim::arena::state::Controller::Mind;
@@ -5383,6 +5426,11 @@ fn af1_mind_squad_arena_sealing(profiles: &[&str]) -> Arena {
     };
     let chosen = |mut unit: CustodyUnit| {
         if !profiles.is_empty() {
+            unit.unit = tactical_unit_ruled_with_core(
+                unit.id,
+                rules(),
+                Some(tacsim::arena::core::CoreClass::I),
+            );
             let reflex = tacsim::config::ReflexConfig::default();
             let set = profiles
                 .iter()
@@ -5395,6 +5443,8 @@ fn af1_mind_squad_arena_sealing(profiles: &[&str]) -> Arena {
                 .collect();
             unit.reseal(&tacsim::match_::SealTerms::fixture().with_profiles(set))
                 .expect("the chosen set seals");
+            assert_eq!(unit.seal.class, tacsim::arena::core::CoreClass::I);
+            assert_eq!(unit.seal.cards.selected.len(), profiles.len());
         }
         unit
     };
@@ -5578,7 +5628,8 @@ fn af1_a_squadded_arena_snapshots_after_its_first_pulse() {
 /// One line per key path of a JSON value, `path: kind`, into `out`; an array is
 /// descended once, as one `[]` segment for all of its elements — so a pair's key
 /// and value, and a list whose elements differ in shape, each leave their own
-/// lines, and a list of a hundred alike leaves one set.
+/// lines, and a list of a hundred alike leaves one set. Only the canonical card
+/// catalog's content-address keys are normalized; every definition is walked.
 fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTreeSet<String>) {
     let kind = match value {
         serde_json::Value::Null => "null",
@@ -5598,11 +5649,63 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
         }
         serde_json::Value::Object(map) => {
             for (key, item) in map {
+                let key = if path == "state.cards.definitions" {
+                    "<digest>"
+                } else {
+                    key.as_str()
+                };
                 shape(item, &format!("{path}.{key}"), out);
             }
         }
         _ => {}
     }
+}
+
+#[test]
+fn af1_catalog_shape_ignores_identity_but_walks_every_definition_field() {
+    let walk = |value: &serde_json::Value| {
+        let mut paths = std::collections::BTreeSet::new();
+        shape(value, "state", &mut paths);
+        paths
+    };
+    let first = serde_json::json!({"cards":{"definitions":{
+        ("a".repeat(64)): {"schema":{"sections":[]},"profiles":[{"rate":1}]},
+        ("b".repeat(64)): {"schema":{"sections":[{"title":"Guns"}]},"rules":[{"hold":true}]}
+    }},"minds":{"4":{"memory":[]}}});
+    let mut renamed = first.clone();
+    let definitions = renamed["cards"]["definitions"].as_object_mut().unwrap();
+    let mut definition = definitions.remove(&"a".repeat(64)).unwrap();
+    definition["profiles"][0]["rate"] = serde_json::json!(7);
+    definitions.insert("c".repeat(64), definition);
+    assert_eq!(
+        walk(&first),
+        walk(&renamed),
+        "values and digests are not shape"
+    );
+    let paths = walk(&first);
+    for path in [
+        "state.cards.definitions.<digest>.schema.sections.[].title: string",
+        "state.cards.definitions.<digest>.profiles.[].rate: number",
+        "state.cards.definitions.<digest>.rules.[].hold: bool",
+        "state.minds.4.memory: array",
+    ] {
+        assert!(paths.contains(path), "missing {path}");
+    }
+    renamed["cards"]["definitions"]["c".repeat(64)]["profiles"][0]["rate"] =
+        serde_json::json!("seven");
+    assert_ne!(walk(&first), walk(&renamed), "field types remain pinned");
+    let mut other_unit = first.clone();
+    let mind = other_unit["minds"]
+        .as_object_mut()
+        .unwrap()
+        .remove("4")
+        .unwrap();
+    other_unit["minds"]["5"] = mind;
+    assert_ne!(
+        walk(&first),
+        walk(&other_unit),
+        "other map keys remain pinned"
+    );
 }
 
 /// **The structural pin**: SHA-256 of the sorted `path: kind` lines of an
@@ -5755,7 +5858,9 @@ const AF1_SHAPE_LINES: usize = 559;
 /// *This pin is structural: it moves only together with a `SNAPSHOT_FORMAT` bump
 /// and never alone, and a behaviour change never moves it (the tree at pulse
 /// zero is a function of the fixture and the shape, not of motion or
-/// perception). Two fixtures are walked, so the pin sees every path either of
+/// perception). Content-address keys in `state.cards.definitions` are normalized
+/// to `<digest>`; all definition fields and all other map keys remain pinned.
+/// Two fixtures are walked, so the pin sees every path either of
 /// them fills: [`scripted_arena`]'s bare tanks and [`af1_mind_squad_arena`]'s
 /// armed, sighted machines in two squads (since 17b cut M5.2 its mover sealed
 /// with a chosen set, [`af1_mind_squad_arena_sealing`]), given before the
@@ -5766,8 +5871,10 @@ const AF1_SHAPE_LINES: usize = 559;
 /// D21 ruling), the `Support` and the `Engage` re-keyed against classified
 /// rows laid for their landings and dropped before the walk — and a seat's
 /// profile switch on the mover:
-/// its weapons, sensors, squad rosters, the motor row's carried fields and
-/// their elements, mind rows (card, memory, strikes, drop, seal digest, four
+/// its weapons, sensors, squad rosters, the mover's fitted core component and
+/// capability, the motor row's carried fields and
+/// their elements, canonical card/profile-runtime records, mind rows (memory,
+/// strikes, drop, seal digest, four
 /// standing orders' `FrameOrder` fields — every objective's fields, the
 /// `Support`'s `of` and the `Engage`'s `target` as numbers, a `RangeBand` —
 /// the owner's STOP C `order_issuer` and STOP E's `order_charge` as
@@ -5775,8 +5882,8 @@ const AF1_SHAPE_LINES: usize = 559;
 /// `doctrine` bit and its sealed set, and each unit's active profile with a
 /// switch's stamp are under the pin.*
 ///
-/// *Its limit, read off the 556 lines (a collection empty or an option `None`
-/// at pulse zero leaves one line and none for its element): **not under it**
+/// *Its limit follows the opening fixture values (a collection empty or an
+/// option `None` leaves one line and none for its element): **not under it**
 /// are the contacts (`ShadowContact`, `SeenPose`, `OwnSighting`, `Reading`;
 /// the rows the `Support` and the `Engage` re-key against at their landings
 /// are dropped before the walk),
@@ -5790,12 +5897,15 @@ const AF1_SHAPE_LINES: usize = 559;
 /// (`HeatState`), `held` (`Held`), `lock`, `occupied_hold` (`OccupiedHold`),
 /// `thermal`, `jammer`, `eccm`, `receiver`, `slope_limit_pct`, the profile's
 /// bands and sections (`BandProfile`, `SectionProfile`) and the opaque unit's
-/// capabilities, components and mobility; on the motor row the waypoints
+/// non-core capabilities/components and mobility; on the motor row the waypoints
 /// (`waypoint`, `from_waypoint`) and `hold_retry_ms`, `None` on the one row
 /// laid here; and on a mind row (**17b cut M1a.5**) the think in flight
 /// (`PendingThink`), its buffered `FrameNotice`s (and so a carried
 /// `Refusal`, `profile` among its words since 17b cut M5.2) and its range
-/// memory's entries, all empty or `None` at pulse zero. Every objective of a
+/// memory's entries, all empty or `None` at pulse zero. M6's pending profile
+/// token/schedule/sample and a populated sampled-rule lease therefore need
+/// separate round-trip/validation tests; this structural pin alone does not
+/// cover their element shapes. Every objective of a
 /// standing order IS under it since 17b cut M5.2's D21 ruling — `Advance`'s
 /// `to`, `Engage`'s `target` and `Support`'s `of` as numbers, `Screen`'s
 /// `facing_mdeg`, and `Hold` and `Withdraw`, which carry nothing but the tag

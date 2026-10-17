@@ -18,7 +18,7 @@ use mush_core::output::ConnId;
 use mush_core::{AccountId, CmdError, Ctx, StoreReadResult, World};
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map},
     sync::{Arc, Mutex},
 };
 
@@ -29,6 +29,10 @@ struct Input {
     on_result: bool,
     correlation: u64,
     game: usize,
+}
+enum Load {
+    Work(Box<Work>),
+    Read(Box<Input>),
 }
 enum Phase {
     Reading(Box<Input>),
@@ -153,9 +157,10 @@ fn pin(
     Ok(())
 }
 fn clean(ctx: &mut Ctx<'_>, runtime: &mut Runtime, account: AccountId) -> Result<(), BulkError> {
-    let Some(row) = runtime.entries.get(&account) else {
+    let btree_map::Entry::Occupied(entry) = runtime.entries.entry(account) else {
         return Ok(());
     };
+    let row = entry.get();
     if matches!(
         row.phase,
         Phase::Preparing(_) | Phase::Evaluating { .. } | Phase::Running(_)
@@ -174,7 +179,7 @@ fn clean(ctx: &mut Ctx<'_>, runtime: &mut Runtime, account: AccountId) -> Result
     if let Some(run) = row.pin {
         pin(ctx, row.connection, run, false)?;
     }
-    let row = runtime.entries.remove(&account).expect("checked row");
+    let row = entry.remove();
     runtime.benches.close(row.connection);
     world::release_preparation(ctx.w, account);
     Ok(())
@@ -201,15 +206,12 @@ fn take_current(
     entries: &mut BTreeMap<AccountId, Entry>,
     connection: Connection,
 ) -> Result<Entry, BulkError> {
-    if !entries
-        .get(&connection.account)
-        .is_some_and(|r| r.connection == connection)
-    {
-        return Err(BulkError::Missing);
+    match entries.entry(connection.account) {
+        btree_map::Entry::Occupied(entry) if entry.get().connection == connection => {
+            Ok(entry.remove())
+        }
+        _ => Err(BulkError::Missing),
     }
-    Ok(entries
-        .remove(&connection.account)
-        .expect("checked connection"))
 }
 fn take_idle(row: &mut Entry) -> Result<Ready, BulkError> {
     match std::mem::replace(&mut row.phase, Phase::Stopped) {
@@ -237,7 +239,11 @@ fn evaluate(
     };
     let id = ticket(runtime)?;
     let account = row.connection.account;
-    world::hold_preparation(ctx.w, account)?;
+    let ready = take_idle(row)?;
+    if let Err(error) = world::hold_preparation(ctx.w, account) {
+        row.phase = Phase::Idle(ready);
+        return Err(error);
+    }
     if let Err((error, _)) = runtime.worker.submit(bench_prepare::Request {
         ticket: id,
         account,
@@ -248,9 +254,9 @@ fn evaluate(
         },
     }) {
         world::release_preparation(ctx.w, account);
+        row.phase = Phase::Idle(ready);
         return Err(error);
     }
-    let ready = take_idle(row).expect("checked idle before enqueue");
     row.phase = Phase::Evaluating { ticket: id, ready };
     Ok(())
 }
@@ -329,78 +335,75 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
             return Err(BulkError::Retention);
         }
         let parts = tail.split_whitespace().collect::<Vec<_>>();
-        let (reference, pin_run, bytes, work, input) =
-            if let [kind, id, callsign] = parts.as_slice() {
-                if !kind.eq_ignore_ascii_case("match") || callsign.len() > 32 {
-                    return Err(invalid("BENCH LOAD MATCH <match> <callsign>"));
-                }
-                let id = MatchId(id.parse().map_err(|_| invalid("match number"))?);
-                let checkout = mind_tape::checkout(ctx.w, id, connection.character)
-                    .map_err(|_| BulkError::Missing)?;
-                (
-                    ReferenceId::Match(id),
-                    None,
-                    checkout.encoded_bytes(),
-                    Some(Work::History {
-                        checkout,
-                        id,
-                        actor: connection.character,
-                        callsign: (*callsign).into(),
-                    }),
-                    None,
-                )
-            } else if let [pair] = parts.as_slice() {
-                let (run, game) = pair
-                    .split_once('/')
-                    .ok_or_else(|| invalid("BENCH LOAD <run>/<game>"))?;
-                let run = RunId(run.parse().map_err(|_| invalid("run number"))?);
-                let game = game
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|g| g.checked_sub(1))
-                    .ok_or_else(|| invalid("one-based game number"))?;
-                let owner = ctx
-                    .w
-                    .module_state::<BulkStore>()
-                    .ok_or(BulkError::Missing)?;
-                completed_proving(owner, account, connection.character, run, game)?;
-                let artifacts = ctx
-                    .w
-                    .module_state::<Artifacts>()
-                    .ok_or(BulkError::Missing)?;
-                let start = artifacts
-                    .get(Key {
-                        account,
-                        run,
-                        part: Part::Start,
-                    })?
-                    .clone();
-                let result = artifacts
-                    .get(Key {
-                        account,
-                        run,
-                        part: Part::Result,
-                    })?
-                    .clone();
-                let bytes = start.artifact.bytes.saturating_add(result.artifact.bytes);
-                (
-                    ReferenceId::Proving(run),
-                    Some(run),
-                    bytes,
-                    None,
-                    Some(Input {
-                        start: Some(Read::new(start)?),
-                        result: Some(Read::new(result)?),
-                        on_result: false,
-                        correlation: 0,
-                        game,
-                    }),
-                )
-            } else {
-                return Err(invalid(
-                    "BENCH LOAD <run>/<game> or BENCH LOAD MATCH <match> <callsign>",
-                ));
-            };
+        let (reference, pin_run, bytes, load) = if let [kind, id, callsign] = parts.as_slice() {
+            if !kind.eq_ignore_ascii_case("match") || callsign.len() > 32 {
+                return Err(invalid("BENCH LOAD MATCH <match> <callsign>"));
+            }
+            let id = MatchId(id.parse().map_err(|_| invalid("match number"))?);
+            let checkout = mind_tape::checkout(ctx.w, id, connection.character)
+                .map_err(|_| BulkError::Missing)?;
+            (
+                ReferenceId::Match(id),
+                None,
+                checkout.encoded_bytes(),
+                Load::Work(Box::new(Work::History {
+                    checkout,
+                    id,
+                    actor: connection.character,
+                    callsign: (*callsign).into(),
+                })),
+            )
+        } else if let [pair] = parts.as_slice() {
+            let (run, game) = pair
+                .split_once('/')
+                .ok_or_else(|| invalid("BENCH LOAD <run>/<game>"))?;
+            let run = RunId(run.parse().map_err(|_| invalid("run number"))?);
+            let game = game
+                .parse::<usize>()
+                .ok()
+                .and_then(|g| g.checked_sub(1))
+                .ok_or_else(|| invalid("one-based game number"))?;
+            let owner = ctx
+                .w
+                .module_state::<BulkStore>()
+                .ok_or(BulkError::Missing)?;
+            completed_proving(owner, account, connection.character, run, game)?;
+            let artifacts = ctx
+                .w
+                .module_state::<Artifacts>()
+                .ok_or(BulkError::Missing)?;
+            let start = artifacts
+                .get(Key {
+                    account,
+                    run,
+                    part: Part::Start,
+                })?
+                .clone();
+            let result = artifacts
+                .get(Key {
+                    account,
+                    run,
+                    part: Part::Result,
+                })?
+                .clone();
+            let bytes = start.artifact.bytes.saturating_add(result.artifact.bytes);
+            (
+                ReferenceId::Proving(run),
+                Some(run),
+                bytes,
+                Load::Read(Box::new(Input {
+                    start: Some(Read::new(start)?),
+                    result: Some(Read::new(result)?),
+                    on_result: false,
+                    correlation: 0,
+                    game,
+                })),
+            )
+        } else {
+            return Err(invalid(
+                "BENCH LOAD <run>/<game> or BENCH LOAD MATCH <match> <callsign>",
+            ));
+        };
         if runtime
             .entries
             .values()
@@ -437,21 +440,21 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
             closing: false,
             watches: Vec::new(),
         };
-        let result = if let Some(work) = work {
-            runtime
+        let result = match load {
+            Load::Work(work) => runtime
                 .worker
                 .submit(bench_prepare::Request {
                     ticket: id,
                     account,
-                    work,
+                    work: *work,
                 })
                 .map(|()| {
                     entry.phase = Phase::Preparing(id);
                 })
-                .map_err(|(e, _)| e)
-        } else {
-            let mut input = input.expect("one load kind");
-            read_next(ctx, &mut input).map(|()| entry.phase = Phase::Reading(Box::new(input)))
+                .map_err(|(e, _)| e),
+            Load::Read(mut input) => {
+                read_next(ctx, &mut input).map(|()| entry.phase = Phase::Reading(input))
+            }
         };
         runtime.entries.insert(account, entry);
         if let Err(error) = result {
@@ -566,8 +569,11 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
                         return Err(BulkError::Busy);
                     }
                     let id = ticket(&mut runtime)?;
-                    world::hold_preparation(ctx.w, account)?;
                     let ready = take_idle(&mut row)?;
+                    if let Err(error) = world::hold_preparation(ctx.w, account) {
+                        row.phase = Phase::Idle(ready);
+                        return Err(error);
+                    }
                     match runtime.worker.submit(bench_prepare::Request {
                         ticket: id,
                         account,
@@ -672,7 +678,11 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
                     {
                         return Err(BulkError::Retention);
                     }
-                    world::hold_preparation(ctx.w, account)?;
+                    let ready = take_idle(&mut row)?;
+                    if let Err(error) = world::hold_preparation(ctx.w, account) {
+                        row.phase = Phase::Idle(ready);
+                        return Err(error);
+                    }
                     let root = revision.map(|revision| {
                         (
                             super::bench_roots::key(account, connection.lease, id),
@@ -681,13 +691,13 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
                     });
                     if let Err(error) = super::bench_roots::change(ctx, root.clone(), Vec::new()) {
                         world::release_preparation(ctx.w, account);
+                        row.phase = Phase::Idle(ready);
                         return Err(error);
                     }
                     row.pending_root = root.map(|(key, _)| key);
                     row.pending_replace = replace;
                     row.bytes += reserve;
                     row.fork_bytes += reserve;
-                    let ready = take_idle(&mut row).expect("checked idle");
                     match runtime.worker.submit(bench_prepare::Request {
                         ticket: id,
                         account,
@@ -802,10 +812,11 @@ pub(crate) fn on_read(ctx: &mut Ctx<'_>, correlation: u64, result: StoreReadResu
         Phase::Reading(i) if i.correlation == correlation => Some(*a),
         _ => None,
     });
-    let Some(account) = found else {
+    let Some((account, mut row)) =
+        found.and_then(|account| runtime.entries.remove(&account).map(|row| (account, row)))
+    else {
         return false;
     };
-    let mut row = runtime.entries.remove(&account).expect("found read");
     let next = (|| {
         if row.closing || !authorized(ctx.w, &row) || ctx.actor != row.connection.character {
             return Err(BulkError::Missing);
@@ -884,8 +895,9 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
             }
             _ => None,
         });
-        if let Some(account) = found {
-            let mut row = runtime.entries.remove(&account).expect("found job");
+        if let Some((account, mut row)) =
+            found.and_then(|account| runtime.entries.remove(&account).map(|row| (account, row)))
+        {
             world::release_preparation(ctx.w, account);
             let valid = !row.closing
                 && authorized(ctx.w, &row)

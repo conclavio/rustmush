@@ -1311,23 +1311,15 @@ pub(crate) fn publish_mind_revision(
     {
         return Err(source_error("prepared source operation changed"));
     }
-    ctx.w
-        .module_state::<mush_roll::RollStore>()
-        .ok_or(mush_roll::RollError::Missing)?
-        .check_prepared(&change)?;
-    ctx.w
-        .module_state::<TacsimStore>()
-        .ok_or(mush_roll::RollError::Missing)?
-        .check_mind_source(&source.token)?;
+    let (roll, sources) = ctx
+        .w
+        .module_state_pair_mut::<mush_roll::RollStore, TacsimStore>()
+        .ok_or(mush_roll::RollError::Missing)?;
+    roll.check_prepared(&change)?;
+    sources.check_mind_source(&source.token)?;
     let mut operations = source.operations;
-    ctx.w
-        .module_state_mut::<mush_roll::RollStore>()
-        .expect("checked roll slot remains installed during this operation")
-        .publish_with(change, |roll_ops| operations.extend_from_slice(roll_ops))?;
-    ctx.w
-        .module_state_mut::<TacsimStore>()
-        .expect("checked source slot remains installed during this operation")
-        .apply_mind_source(source.token);
+    roll.publish_with(change, |roll_ops| operations.extend_from_slice(roll_ops))?;
+    sources.apply_mind_source(source.token);
     for operation in operations {
         ctx.persist(operation);
     }
@@ -1351,7 +1343,7 @@ pub(crate) fn audit_mind_revisions(ctx: &mut Ctx<'_>) -> Result<(), mush_roll::R
     let roll = ctx
         .w
         .module_state_mut::<mush_roll::RollStore>()
-        .expect("checked roll slot remains installed during this operation");
+        .ok_or(mush_roll::RollError::Missing)?;
     roll.apply_source_audit(audit)?;
     for (key, reason) in roll.quarantine() {
         tracing::error!(%key, %reason, "tacsim: mind revision quarantined; collection disabled");
@@ -1377,10 +1369,9 @@ pub(crate) fn put_mind_source(ctx: &mut Ctx<'_>, source: &str) -> bool {
     if prepared.operations.is_empty() {
         return false;
     }
-    let store = ctx
-        .w
-        .module_state_mut::<TacsimStore>()
-        .expect("source slot remains installed during this operation");
+    let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {
+        return false;
+    };
     if let Err(error) = store.check_mind_source(&prepared.token) {
         tracing::error!(%error, "tacsim: stock source publication refused");
         return false;

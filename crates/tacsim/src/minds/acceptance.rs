@@ -1,6 +1,8 @@
 //! Executable M6.10 acceptance of the independent public-picture pilot.
 //! Tests use the real bounded runner and the production six-picture provider.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use mush_mind::memory::{self, Value};

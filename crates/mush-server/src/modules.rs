@@ -1526,6 +1526,8 @@ mod tests {
             "weather",
             "party",
             "market",
+            // M6's character-owned draft/revision store composes before scripts.
+            "roll",
             "script",
             // The composition root's own two, after the built-ins — the pair
             // the hand-built roster never had.
@@ -2249,6 +2251,7 @@ mod tests {
                 "weather",
                 "party",
                 "market",
+                "roll",
                 "script"
             ]
         );
@@ -2303,6 +2306,7 @@ mod tests {
                 "weather",
                 "party",
                 "market",
+                "roll",
                 "script",
                 // The composition root's own two, which only `game_modules`
                 // adds.
@@ -2418,6 +2422,7 @@ mod tests {
                 "weather",
                 "party",
                 "market",
+                "roll",
                 "script",
                 "worldgen",
                 // 16b cut R-b: the one game sheet, and its rules interface.
@@ -2572,6 +2577,7 @@ mod tests {
                 "weather",
                 "party",
                 "market",
+                "roll",
                 "script",
                 // 16b cut R-b: the one game sheet, and its rules interface.
                 "pilot",

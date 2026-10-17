@@ -392,8 +392,9 @@ fn every_sim_selector_the_help_writes_is_a_registered_switch() {
 /// read with this file's own `trim_word` and `is_command_shaped`; every kept
 /// word resolves through the registry — except the word directly after `SIM`,
 /// which is one of `SIM`'s selectors and must be one of its registered switches,
-/// case-folded (`TEAM` is `team`). No allowlist row: `Hint:` and `<contact>` are
-/// not command-shaped.
+/// case-folded (`TEAM` is `team`). Slash switches use the same tokenizer and
+/// registered switch check as help pages. No allowlist row: `Hint:` and
+/// `<contact>` are not command-shaped.
 #[test]
 fn every_verb_a_hint_names_is_a_registered_verb() {
     let composition = production_composition();
@@ -405,22 +406,35 @@ fn every_verb_a_hint_names_is_a_registered_verb() {
     for line in tacsim::match_::tutorial::HINT_LINES {
         let mut after_sim = false;
         for raw in line.split_whitespace() {
-            let word = trim_word(raw);
-            if !is_command_shaped(word) {
+            let Some(token) = head_token("hint", raw) else {
                 after_sim = false;
                 continue;
-            }
+            };
+            let word = token.word.as_str();
             if after_sim {
+                assert!(
+                    token.switches.is_empty(),
+                    "{line}: a SIM selector has no slash switches"
+                );
                 assert!(
                     sim.switches.iter().any(|s| s.eq_ignore_ascii_case(word)),
                     "{line}: `{word}` after SIM is none of SIM's selectors"
                 );
             } else {
-                assert!(
-                    registry.spec_of(word).is_some(),
-                    "{line}: `{word}` is no registered verb{}",
-                    nearest(registry, word)
-                );
+                let spec = registry.spec_of(word).unwrap_or_else(|| {
+                    panic!(
+                        "{line}: `{word}` is no registered verb{}",
+                        nearest(registry, word)
+                    )
+                });
+                for switch in token.switches {
+                    assert!(
+                        spec.switches
+                            .iter()
+                            .any(|registered| registered.eq_ignore_ascii_case(&switch)),
+                        "{line}: `{word}/{switch}` names an unregistered switch"
+                    );
+                }
             }
             after_sim = word == "SIM";
             checked += 1;
@@ -429,8 +443,9 @@ fn every_verb_a_hint_names_is_a_registered_verb() {
     // SIM and TEAM twice, @tutorial, BOARD, STARTUP, VIEW, LOCK and FIRE —
     // and, since 17b cut M5.6's sixth hint, SIM and MIND (was 10 at 16b cut
     // AH.1; `MIND` after `SIM` is the `mind` selector, checked as a switch).
+    // M6's first-save hint adds @mind/prove, including its registered switch.
     assert_eq!(
-        checked, 12,
+        checked, 13,
         "the hints name the verbs they were written to name"
     );
 }

@@ -190,6 +190,38 @@ async fn document(server: &rig::Rig, key: &str) -> Value {
     .await
     .expect("deferred writer persisted document")
 }
+async fn retained_blob(server: &rig::Rig, key: &str, manifest: &Value) -> Vec<u8> {
+    let chunks = manifest["chunks"].as_u64().unwrap();
+    assert!((1..=513).contains(&chunks));
+    let mut bytes = Vec::new();
+    for index in 0..chunks {
+        let chunk = document(server, &format!("{key}:chunk:{index}")).await;
+        bytes.extend_from_slice(chunk.as_str().expect("retained UTF-8 chunk").as_bytes());
+        assert!(bytes.len() <= 16 * 1024 * 1024);
+    }
+    assert_eq!(
+        bytes.len() as u64,
+        manifest["artifact"]["bytes"].as_u64().unwrap()
+    );
+    assert_eq!(
+        json!(Sha256::digest(&bytes).to_vec()),
+        manifest["artifact"]["sha256"],
+        "evidence comes from the exact retained artifact"
+    );
+    bytes
+}
+fn selected_profile<'a>(seal: &'a Value, expected: &str) -> &'a Value {
+    let selected = seal["cards"]["selected"].as_array().unwrap();
+    assert_eq!(selected.len(), 1, "one actual selected profile");
+    assert_eq!(selected[0]["name"], expected);
+    let index = selected[0]["key"]["index"].as_u64().unwrap() as usize;
+    let profile = &seal["cards"]["definition"]["profiles"][index];
+    assert_eq!(
+        profile["name"], expected,
+        "binding resolves to its actual card"
+    );
+    profile
+}
 fn state(doc: &Value) -> Value {
     serde_json::from_str(doc["state"].as_str().expect("canonical state string")).unwrap()
 }
@@ -225,6 +257,10 @@ async fn field_pilot_complete_production_author_story() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
+    let output = std::env::var_os("M6_AUTHOR_STORY_OUT").map(std::path::PathBuf::from);
+    if let Some(directory) = &output {
+        std::fs::create_dir(directory).expect("new acceptance directory");
+    }
     let config = rig::mind_acceptance_config();
     let server = rig::boot(
         config,
@@ -345,7 +381,20 @@ async fn field_pilot_complete_production_author_story() {
     let (unit, sealed) = selected_seal(&live, "FieldPilot");
     assert_eq!(sealed["engine"], "scripted");
     assert_eq!(sealed["class"], "II");
+    assert_eq!(
+        sealed["source_sha256"],
+        sealed["requested"]["source_sha256"]
+    );
     assert_eq!(sealed["requested"]["origin"]["digest"], definition);
+    let envelope: Value = serde_json::from_str(ENVELOPE).unwrap();
+    assert_eq!(sealed["cards"]["definition"]["schema"], envelope["schema"]);
+    let hold = selected_profile(&sealed, "Hold");
+    assert_eq!(hold["values"], envelope["profiles"]["Hold"]);
+    assert_eq!(
+        hold["rules"],
+        json!([]),
+        "the accepted default has no authored rules"
+    );
     author.say("EXIT", "You climb out of").await;
     let snapshot = wait_snapshot(&server, 1, |state| {
         state["now_ms"].as_i64().is_some_and(|now| now >= 6000)
@@ -448,17 +497,83 @@ async fn field_pilot_complete_production_author_story() {
     assert_eq!(denied, Some(0));
     assert!(!observer_report.contains("Win rate"));
     let manifests = server.store.module_json_list("tacsim").await.unwrap();
-    let manifest = manifests
+    let (manifest_key, manifest) = manifests
         .iter()
         .find_map(|(key, value)| {
-            (key.contains(":mindbulk:blob:") && key.ends_with(":1:result")).then_some(value)
+            (key.contains(":mindbulk:blob:") && key.ends_with(":1:result"))
+                .then_some((key.clone(), value.clone()))
         })
-        .expect("actual retained proof manifest")
-        .clone();
+        .expect("actual retained proof manifest");
     assert!(
         manifest["context"].is_object(),
         "frozen scenario identity is retained with the result"
     );
+    let start_key = format!("{}:start", manifest_key.strip_suffix(":result").unwrap());
+    let start_manifest = document(&server, &start_key).await;
+    let start_bytes = retained_blob(&server, &start_key, &start_manifest).await;
+    let result_bytes = retained_blob(&server, &manifest_key, &manifest).await;
+    if let Some(directory) = &output {
+        // Keep exact immutable bytes before later replay/fault assertions. These
+        // artifacts contain only this isolated story's own test mind and stock.
+        std::fs::write(directory.join("proving-start.json"), &start_bytes).unwrap();
+        std::fs::write(directory.join("proving-result.json"), &result_bytes).unwrap();
+        std::fs::write(
+            directory.join("proving-start-manifest.json"),
+            serde_json::to_vec_pretty(&start_manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("proving-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+    let frozen: Value = serde_json::from_slice(&start_bytes).unwrap();
+    assert_eq!(frozen["context"], manifest["context"]);
+    let games = frozen["games"].as_array().unwrap();
+    assert_eq!(games.len(), 30);
+    for (index, game) in games.iter().enumerate() {
+        assert_eq!(game["swapped"], index % 2 == 1);
+        assert_eq!(game["seed"], frozen["context"]["pair_seeds"][index / 2]);
+        let seals = game["seals"].as_array().unwrap();
+        assert_eq!(seals.len(), 2, "actual 1v1 frozen roster");
+        let candidate = seals
+            .iter()
+            .find(|seal| seal["requested"]["mind"] == "FieldPilot")
+            .expect("actual candidate seal");
+        assert_eq!(candidate["engine"], "scripted");
+        assert_eq!(candidate["class"], "II");
+        assert_eq!(candidate["source_sha256"], sealed["source_sha256"]);
+        assert_eq!(candidate["requested"], sealed["requested"]);
+        assert_eq!(candidate["requested"]["origin"]["digest"], definition);
+        assert_eq!(
+            candidate["cards"], sealed["cards"],
+            "original immutable card and rules"
+        );
+        assert_eq!(candidate["card_digest"], sealed["card_digest"]);
+        selected_profile(candidate, "Hold");
+        let opponent = seals
+            .iter()
+            .find(|seal| seal["requested"]["mind"] == tacsim::match_::SEALED_MIND)
+            .expect("actual stock opponent seal");
+        selected_profile(opponent, "Line");
+        assert_eq!(opponent["class"], frozen["context"]["opponent"]["class"]);
+        assert_eq!(
+            opponent["source_sha256"],
+            frozen["context"]["opponent"]["source_sha256"]
+        );
+        let opening = state(&game["opening"]);
+        let actual_unit = opening["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|unit| unit["id"] == candidate["unit"])
+            .expect("candidate appears in the actual frozen opening");
+        assert_eq!(
+            actual_unit["team"],
+            if index % 2 == 1 { "blue" } else { "red" }
+        );
+    }
 
     let unit_number = unit.trim_start_matches('#').parse::<u64>().unwrap();
     let callsign = first_result["units"]
@@ -512,6 +627,68 @@ async fn field_pilot_complete_production_author_story() {
         .await;
     assert_eq!(denied, Some(0));
     assert!(!foreign_bench.contains("Bench ready"));
+    author.say("BENCH CLOSE", "Bench closed").await;
+
+    // Replay one actual retained proving game to its terminal event, through
+    // the public bench. Loading a live-sortie tape above proves a different
+    // producer and cannot stand in for this private-result custody path.
+    let proving_result: Value = serde_json::from_slice(&result_bytes).unwrap();
+    assert_eq!(proving_result["context"], frozen["context"]);
+    let first_tape = proving_result["tapes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tape| tape["game"] == 0)
+        .expect("first proving game");
+    assert_eq!(first_tape["recording"]["status"], "complete");
+    let mark = &first_tape["recording"]["mark"];
+    assert_eq!(mark["status"]["status"], "complete");
+    let replay_at = mark["status"]["at"].as_i64().unwrap();
+    let replay_events = mark["cursor"]["events"].as_u64().unwrap();
+    let replay_hash = mark["status"]["hash"].as_u64().unwrap();
+    assert!(replay_at > 0 && replay_events > 0);
+    assert_eq!(
+        proving_result["report"]["games"][0]["final_hash"],
+        replay_hash
+    );
+    author.say("BENCH LOAD 1/1", "Bench loading").await;
+    author
+        .expect(
+            "Bench ready; verified reference at 0 ms.",
+            Duration::from_secs(60),
+        )
+        .await;
+    author
+        .send(&format!("BENCH RUN TO {}", replay_at / 1000))
+        .await;
+    author
+        .expect(
+            "Bench step complete; reference hashes matched.",
+            Duration::from_secs(180),
+        )
+        .await;
+    if replay_at % 1000 != 0 {
+        // RUN TO accepts whole seconds. STEP clamps to the retained endpoint,
+        // including a fractional final second, and drains its final barriers.
+        author.send("BENCH STEP 1000").await;
+        author
+            .expect(
+                "Bench step complete; reference hashes matched.",
+                Duration::from_secs(180),
+            )
+            .await;
+    }
+    let proving_bench_pic = author
+        .say(
+            "BENCH PIC",
+            &format!("Bench picture at {replay_at} ms, event {replay_events}."),
+        )
+        .await;
+    // The public exact terminal cursor plus the successful reference-check
+    // completion establishes that every event, including final hash, replayed.
+    let proving_replay = json!({"run":1,"game":1,"at_ms":replay_at,
+        "events":replay_events,"final_hash":format!("{replay_hash:016x}"),
+        "terminal_cursor_verified":true});
     author.say("BENCH CLOSE", "Bench closed").await;
 
     // A source that compiles but faults at execution is a saved revision,
@@ -584,9 +761,7 @@ async fn field_pilot_complete_production_author_story() {
     author.say("SIM CONCEDE", "concedes").await;
     let _ = document(&server, "tacsim:match:3").await;
 
-    if let Some(directory) = std::env::var_os("M6_AUTHOR_STORY_OUT") {
-        let directory = std::path::PathBuf::from(directory);
-        std::fs::create_dir(&directory).expect("new acceptance directory");
+    if let Some(directory) = &output {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         let manifest_sha256 = Sha256::digest(&manifest_bytes)
             .iter()
@@ -597,10 +772,13 @@ async fn field_pilot_complete_production_author_story() {
             "format":1,"revision":std::env::var("M6_ACCEPTANCE_REVISION").expect("exact tested revision"),
             "run_id":std::env::var("M6_ACCEPTANCE_RUN_ID").expect("one fresh acceptance run id"),
             "proving_manifest_sha256":manifest_sha256,
+            "proving_start_artifact":start_manifest["artifact"],
+            "proving_result_artifact":manifest["artifact"],
             "started_unix_ms":started,"first_definition":definition,"second_definition":definition2,
             "finished_unix_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
             "first_seal":sealed,"substituted_seal":substituted,"checks":reports,
             "trace":trace,"bench":{"picture":bench_pic,"trace":bench_trace,"eval":bench_eval},
+            "proving_replay":proving_replay,"proving_bench_picture":proving_bench_pic,
         })).unwrap()).unwrap();
     }
     author.close().await;

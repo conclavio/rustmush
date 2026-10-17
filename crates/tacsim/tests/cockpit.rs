@@ -1250,7 +1250,7 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 5,
+            "version": 6,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -3863,7 +3863,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 5, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 6, "retain": "latest" },
             "seated": false,
         })
     );
@@ -13863,7 +13863,7 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     ))
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
-    // M5r adds public mode/objective, own motor result and shot origin at version 5.
+    // M6 adds the authored card schema, values and sealed rules at version 6.
     assert_eq!(cockpit::FRAME_VERSION, 6);
     assert_eq!(
         payload.pointer("/schema/version"),
@@ -16641,7 +16641,14 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         "@mind/live: no slider or preset named \"berserker\"."
     );
     let usage = "Usage: @mind/live <unit>[=<preset> | =<slider> <value>]";
-    assert_eq!(rig.staff(&format!("@mind #{id}")), usage);
+    // M6 gives the bare dispatcher to authoring. A live card read requires
+    // the explicit staff-only /live form, even when its argument is a dbref.
+    let author_help = rig.staff(&format!("@mind #{id}"));
+    assert!(author_help.starts_with("@mind/new <name>"), "{author_help}");
+    assert!(
+        author_help.contains(usage.trim_start_matches("Usage: ")),
+        "{author_help}"
+    );
     assert_eq!(rig.staff("@mind/live"), usage);
     assert_eq!(
         rig.staff(&format!("@mind/live #{id}=min_odds 60 70")),
@@ -17248,12 +17255,12 @@ async fn m5_mind_profile_switches_a_sealed_profile_at_most_once_in_ten_seconds()
     );
     assert_eq!(
         rig.say(0, "mind rules"),
-        "Pilot rules (not saved in the sealed profile):\nNone armed.\n\
+        "Current station rules (manual changes are not saved):\nNone armed.\n\
          [panel arena.cockpit]"
     );
     assert_eq!(
         rig.say(0, "mind trace 3"),
-        "MIND TRACE refused. This core keeps no trace of its thinks yet."
+        "MIND TRACE refused. No mind trace is available."
     );
 
     // The switch, from the seat on helm.
@@ -17672,7 +17679,7 @@ async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
     );
     assert_eq!(
         rig.say(0, "mind trace"),
-        "MIND TRACE refused. This core keeps no trace of its thinks yet."
+        "MIND TRACE refused. No mind trace is available."
     );
 
     // The sealed frame: every form `MIND` does not take is the usage.
@@ -17725,7 +17732,7 @@ async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
     assert_eq!(rig.say(0, "mind"), no_seal);
     assert_eq!(
         rig.say(0, "mind rules"),
-        "Pilot rules (not saved in the sealed profile):\nNone armed.\n[panel arena.cockpit]",
+        "Current station rules (manual changes are not saved):\nNone armed.\n[panel arena.cockpit]",
         "live pilot rules are readable independently of a sealed mind"
     );
     assert_eq!(
@@ -18202,7 +18209,7 @@ mod m5rules_station {
         assert_eq!(frame.rules[0].rule.channel(), Channel::Fire);
         assert_eq!(frame.rules[1].rule.channel(), Channel::Sensors);
         let said = rig.say(0, "MIND RULES");
-        assert!(said.contains("not saved in the sealed profile"), "{said}");
+        assert!(said.contains("manual changes are not saved"), "{said}");
         assert!(
             said.contains("holds fire") && said.contains("nearest"),
             "{said}"

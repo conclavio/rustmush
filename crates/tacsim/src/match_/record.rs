@@ -780,52 +780,97 @@ fn result_document(
             0,
         ),
     };
-    let mut document = serde_json::json!({
-        "record": "tacsim.match",
+    // Construct an object directly: later optional retained roots cannot be
+    // silently skipped because a generic Value was not an object.
+    let mut document = serde_json::Map::from_iter([
+        ("record".into(), serde_json::Value::from("tacsim.match")),
         // 16b cut V.2 added `callsign` (unit and pilot rows) and `ledger.chunks`
         // and left this at 1: a key added is not a version — the rule
         // `crate::match_::cockpit::FRAME_VERSION`'s comment states — and a reader of
         // a document without them reads the empty name and nought
         // ([`HistoryRow::from_document`]).
-        "record_version": 1,
-        "match": match_id.0,
-        "arena": arena,
-        "arena_definition_digest": arena_digest,
-        "outcome": outcome.as_str(),
-        "reason": reason_word(end.reason),
-        "teams": teams,
-        "units": units,
-        "ledger": { "log": log_id, "digest": ledger_digest, "chunks": chunks },
+        ("record_version".into(), 1.into()),
+        ("match".into(), match_id.0.into()),
+        ("arena".into(), arena.into()),
+        ("arena_definition_digest".into(), arena_digest.into()),
+        ("outcome".into(), outcome.as_str().into()),
+        ("reason".into(), reason_word(end.reason).into()),
+        ("teams".into(), serde_json::Value::Array(teams)),
+        ("units".into(), serde_json::json!(units)),
+        (
+            "ledger".into(),
+            serde_json::json!({ "log": log_id, "digest": ledger_digest, "chunks": chunks }),
+        ),
         // 16b cut M.3 (16c `T-07`): staff-only — see `write_result`.
-        "seed": seed,
-        "started_ms": started_ms,
-        "ended_ms": ended_ms,
-        "arena_ms": end.t_ms,
+        ("seed".into(), seed.into()),
+        ("started_ms".into(), started_ms.into()),
+        ("ended_ms".into(), ended_ms.into()),
+        ("arena_ms".into(), end.t_ms.into()),
         // 16b cut V.3: the units whose report documents rode this same batch.
-        "reports": reports.iter().map(|unit| unit.0).collect::<Vec<u32>>(),
+        (
+            "reports".into(),
+            serde_json::Value::Array(reports.iter().map(|unit| unit.0.into()).collect()),
+        ),
         // 16b cut I.1: whether this match's replay document rode it too.
-        "replay": replay,
-    });
+        ("replay".into(), replay.into()),
+    ]);
     // **16b cut O.1** (plan items 19, 39): the rule it was fought under — a key
     // added, not a version, by V.2's rule above. Absent reads `None`
     // ([`HistoryRow::from_document`]).
-    if let (Some(mode), Some(object)) = (mode, document.as_object_mut()) {
-        object.insert("mode".to_owned(), serde_json::Value::from(mode.as_str()));
+    if let Some(mode) = mode {
+        document.insert("mode".to_owned(), serde_json::Value::from(mode.as_str()));
     }
     if let Some(record) = record {
         let revisions =
             super::selection_refs::revisions(record.minds.values().map(|row| &row.seal));
         if !revisions.is_empty() {
-            document
-                .as_object_mut()
-                .expect("result is an object")
-                .insert(
-                    "mind_revisions".into(),
-                    serde_json::to_value(revisions).expect("bounded revision identities serialize"),
-                );
+            document.insert(
+                "mind_revisions".into(),
+                serde_json::Value::Array(
+                    revisions
+                        .into_iter()
+                        .map(revision_reference_document)
+                        .collect(),
+                ),
+            );
         }
     }
-    document
+    serde_json::Value::Object(document)
+}
+
+/// The retention wire shape uses only integer keys and a canonical digest.
+/// Build its values directly; final match publication has no fallible serializer.
+fn revision_reference_document(reference: mush_roll::RevisionRef) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([
+        (
+            "key".into(),
+            serde_json::Value::Object(serde_json::Map::from_iter([
+                ("character".into(), reference.key.character.0.into()),
+                ("mind".into(), reference.key.mind.into()),
+                ("number".into(), reference.key.number.into()),
+            ])),
+        ),
+        ("digest".into(), reference.digest.to_hex().into()),
+    ]))
+}
+
+#[cfg(test)]
+mod retained_revision_wire_tests {
+    #[test]
+    fn direct_result_reference_encoding_matches_the_owner_schema() {
+        let reference = mush_roll::RevisionRef {
+            key: mush_roll::RevisionKey {
+                character: mush_core::ObjId(42),
+                mind: u64::MAX,
+                number: 17,
+            },
+            digest: mush_core::mechanics::DefinitionDigest::from_bytes([255; 32]),
+        };
+        assert_eq!(
+            super::revision_reference_document(reference),
+            serde_json::to_value(reference).expect("owner schema")
+        );
+    }
 }
 
 /// **The `aborted(restart)` result** (16b T5, doc 16 §3.1 "Boot reconciliation").

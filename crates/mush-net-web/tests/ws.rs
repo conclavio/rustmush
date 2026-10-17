@@ -393,12 +393,15 @@ async fn mid_connection_resume_is_a_protocol_error() {
 #[tokio::test]
 async fn oversize_frame_closes_the_connection() {
     let hooks = Arc::new(MockWebHooks::new());
-    let addr = spawn_server(hooks.clone(), test_config()).await;
+    let config = test_config();
+    let cap = config.max_frame_bytes;
+    let addr = spawn_server(hooks.clone(), config).await;
     let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
     expect_hello(&recv_env(&mut ws).await);
 
-    // 80 KiB of almost-JSON blows the 64 KiB cap.
-    let big = format!("{{\"t\":\"line\",\"d\":\"{}\"}}", "x".repeat(80 * 1024));
+    // Exceed the configured transport cap even when authored-source support
+    // raises it above the ordinary line-command limit.
+    let big = format!("{{\"t\":\"line\",\"d\":\"{}\"}}", "x".repeat(cap + 1));
     ws.send(Message::Text(big.into())).await.unwrap();
 
     // The server's frame-size guard rejects this from the frame header,

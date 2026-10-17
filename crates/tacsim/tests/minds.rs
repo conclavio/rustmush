@@ -3435,8 +3435,9 @@ fn m1a5_the_production_hash_does_not_move() {
     );
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(duel.minds.len(), 4, "four minds");
-    // M5r adds persistent motor facts and the reviewed source/API
-    // identity. Keep all three encoding pins together so a declared format
+    // M6 captures full card/catalog, profile/ROM and pending-think state and
+    // advances Standard's API/source identity. Keep the encoding pins together
+    // so a declared format
     // change exposes every actual in one run; behavior assertions above remain.
     let actual = [
         first_hash,
@@ -3446,9 +3447,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0xd0ee_55ca_1865_76de),
-            Some(0x108c_a512_43c9_efb0),
-            Some(0x5585_302e_6fd5_db4c)
+            Some(0x9a92_d1a3_e3d7_284c),
+            Some(0xade7_0222_c151_7f03),
+            Some(0xd763_0ae7_1acf_63f7)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6725,19 +6726,22 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
 /// M5rules updates only the three Standard source prefixes from 102cc7d27eb411c4
 /// to 92987a0c26bc442e (the bounded complete-rule API and Standard adapter).
 /// The 50 event timestamps and every other payload byte remain identical.
+/// M6 updates those three source prefixes to 9b330c0f5ccd8610 and their card
+/// identities to the full authored schema/value/rule digest. A field-by-field
+/// comparison of all 50 fresh event rows found no other payload/time changes.
 const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"92987a0c26bc442e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"92987a0c26bc442e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"92987a0c26bc442e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         4,
@@ -7765,8 +7769,51 @@ fn m2_the_arena_refuses_a_preset_that_breaks_the_pair_by_name() {
         stand_min_permille: 750,
         ..reflex_cfg()
     };
+    // The active card is captured at custody, not reconstructed from the
+    // arena's current defaults. Seal the high pair on this fixture's hulls.
+    let high_sealed = |mut unit: CustodyUnit| {
+        unit.sensor = Some(SensorProfile {
+            max_range_cells: 10,
+            ..sight()
+        });
+        unit.reseal(&tacsim::match_::SealTerms {
+            card: tacsim::arena::line(&high),
+            rom_cfg: high.clone(),
+            ..tacsim::match_::SealTerms::fixture()
+        })
+        .expect("the high pair seals");
+        unit
+    };
+    let field = arena_on(
+        vec![
+            high_sealed(tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Mind,
+            )),
+            high_sealed(tank(
+                RED2,
+                Team::Red,
+                centre(6, 10),
+                Vec::new(),
+                Controller::Mind,
+            )),
+            presenting(high_sealed(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ))),
+        ],
+        &[BLUE],
+        high.clone(),
+    );
+    assert_eq!(row_card(&field, RED), Some(tacsim::arena::line(&high)));
     let (run, _, arena) = card_run(
-        the_j_field_on(Controller::Mind, high.clone()),
+        field,
         5_000,
         10_000,
         &[(
@@ -10048,9 +10095,12 @@ fn m5_a_profile_switch_while_seated_is_flown_at_the_release() {
     assert_eq!(*t_ms, at, "at the pulse's start");
     assert_eq!(line["unit"], RED.0);
     assert_eq!(line["name"], "Line");
-    let moved = preset_on_field("line").changed_from(&preset_on_field("sniper"));
-    assert!(!moved.is_empty());
-    assert_eq!(line["changed"], serde_json::json!(moved));
+    // Profile changes report canonical authored field names; stock slider
+    // edits retain their human-facing adapter names in their own tests.
+    assert_eq!(
+        line["changed"],
+        serde_json::json!(["engage_band_permille", "min_odds_permille", "reserve_pct"])
+    );
     let card: tacsim::arena::StockCard =
         serde_json::from_value(line["stock"].clone()).expect("the diagnostic stock adapter");
     assert_eq!(card, preset_on_field("line"));
@@ -10487,7 +10537,7 @@ fn m5_a_dormant_rows_card_follows_the_switch() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(
         lines[0].1["changed"],
-        serde_json::json!(preset_on_field("line").changed_from(&preset_on_field("sniper")))
+        serde_json::json!(["engage_band_permille", "min_odds_permille", "reserve_pct"])
     );
     let thought = seen.of(RED).len();
     let epoch = rig.arena.epochs.current(RED, Channel::Helm) + 1;
