@@ -12,6 +12,9 @@
 
 use std::collections::BTreeMap;
 
+#[path = "support/vertex.rs"]
+mod vertex;
+
 use mush_core::CanonicalId;
 use tacsim::definitions::content::DRAY;
 use tacsim::definitions::goods::{GOODS_JSON, GOODS_PACK, goods_table};
@@ -273,43 +276,57 @@ fn ic2_101_t_of_alloys_is_refused_on_mass() {
     assert_eq!(refusal.fits, 100);
 }
 
-/// **20 t of concentrate and 81 t of ice is refused on both**, and 80 more is
-/// where both bind.
+/// **One tonne past the both-limits vertex is refused on both** (doc 18 cut IC8
+/// re-derived this from data, D-18-39): with the vertex's concentrate aboard, one
+/// tonne more ice than the vertex carries breaks mass and packed volume together (mass
+/// first), and the vertex's own ice is where both bind.
 #[test]
-fn ic2_20_plus_81_is_refused_on_both() {
+fn ic2_one_past_the_vertex_is_refused_on_both() {
     let (goods, cargo) = (table(), compartment("cargo"));
-    let aboard = contents(&[("metals", 20)]);
-    let Admission::Refused(refusal) = admits(&goods, &cargo, &aboard, (&cid("volatiles"), 81))
+    let (d, b) = vertex::both_limits_vertex(&goods, &cargo, &cid("metals"), &cid("volatiles"))
+        .expect("an integral vertex");
+    let aboard = BTreeMap::from([(cid("metals"), d)]);
+    let Admission::Refused(refusal) = admits(&goods, &cargo, &aboard, (&cid("volatiles"), b + 1))
     else {
-        panic!("20 + 81 fitted");
+        panic!("one past the vertex fitted");
     };
     assert_eq!(refusal.bound, vec![mass(), volume()], "mass before volume");
     assert_eq!(
         max_more(&goods, &cargo, &aboard, &cid("volatiles")).expect("a known good"),
-        (80, vec![mass(), volume()])
+        (b, vec![mass(), volume()])
     );
 }
 
-/// **Two loads that meet both limits exactly** are admitted at 100,000 kg and
-/// 120,000 L, after which no bulk good fits. (Limits, not a recommended mix.)
+/// **Two loads that meet both limits exactly** are admitted at the hold's mass and
+/// volume limits, after which no bulk good fits. Each is solved from the goods table
+/// and the hold (`both_limits_vertex`), never typed. (Limits, not a recommended mix.)
 #[test]
 fn ic2_a_balanced_load_meets_both_limits_exactly() {
     let (goods, cargo) = (table(), compartment("cargo"));
-    for (first, second) in [
-        (("metals", 20), ("volatiles", 80)),
-        (("structural_alloys", 55), ("industrial_parts", 45)),
+    let limits = loaded(
+        cargo.limits.get(&mass()).copied().expect("a mass limit"),
+        cargo
+            .limits
+            .get(&volume())
+            .copied()
+            .expect("a volume limit"),
+    );
+    for (dense, bulky) in [
+        ("metals", "volatiles"),
+        ("structural_alloys", "industrial_parts"),
     ] {
+        let (d, b) = vertex::both_limits_vertex(&goods, &cargo, &cid(dense), &cid(bulky))
+            .expect("an integral vertex");
+        let first = (dense, d);
+        let second = (bulky, b);
         let aboard = contents(&[first]);
         assert_eq!(
             admits(&goods, &cargo, &aboard, (&cid(second.0), second.1)),
-            Admission::Admitted(loaded(100_000, 120_000)),
+            Admission::Admitted(limits.clone()),
             "{first:?} + {second:?}"
         );
         let full = contents(&[first, second]);
-        assert_eq!(
-            load(&goods, &cargo, &full).expect("a load"),
-            loaded(100_000, 120_000)
-        );
+        assert_eq!(load(&goods, &cargo, &full).expect("a load"), limits);
         for good in [
             "metals",
             "volatiles",
@@ -423,4 +440,193 @@ fn ic2_the_m3_formatter_truncates() {
     assert_eq!(format_m3(99), "0.0");
     assert_eq!(format_m3(0), "0.0");
     assert_eq!(format_tonnes(100_999), "100");
+}
+
+// ---- doc 18 cut IC8 ------------------------------------------------------------
+
+/// The lane's port entries, from the shipped lane pack.
+fn lane_ports() -> BTreeMap<String, tacsim::port::PortDef> {
+    let pack = tacsim::pack::load_pack(tacsim::definitions::content::LANE_JSON)
+        .expect("the shipped lane loads");
+    pack.entries()
+        .iter()
+        .filter_map(|(id, entry)| match entry {
+            tacsim::pack::PackEntry::Port(def) => Some((id.to_string(), def.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The posted prices make the both-limits load optimal** (doc 18 cut IC8; D-18-39,
+/// the LP test). For each leg the trade goods are those the origin port asks and the
+/// destination port bids that stow in the hold, each worth its bid less its ask. The
+/// exhaustive best whole-tonne load is unique, meets both limits exactly, is the
+/// both-limits vertex of the dense and the bulky good, strictly beats every
+/// single-good load, and sits inside the band where that is so: the bulky good earns
+/// more a tonne, and less a litre. **No quantity of a vertex is typed in this file.**
+#[test]
+fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
+    let (goods, cargo) = (table(), compartment("cargo"));
+    let ports = lane_ports();
+    for (from, to) in [
+        ("ceres_port", "stickney_port"),
+        ("stickney_port", "ceres_port"),
+    ] {
+        let origin = ports.get(from).expect("the origin port");
+        let destination = ports.get(to).expect("the destination port");
+        let mut margins: Vec<(CanonicalId, i64)> = Vec::new();
+        for ask in origin.vendors.iter().flat_map(|v| v.asks.iter()) {
+            let stows = goods
+                .good(&ask.good)
+                .is_some_and(|row| cargo.accepts.contains(&row.stowage));
+            let bid = destination
+                .vendors
+                .iter()
+                .flat_map(|v| v.bids.iter())
+                .find(|bid| bid.good == ask.good);
+            if let (true, Some(bid)) = (stows, bid) {
+                let margin = i64::try_from(bid.price_major).expect("fits")
+                    - i64::try_from(ask.price_major).expect("fits");
+                margins.push((ask.good.clone(), margin));
+            }
+        }
+        assert_eq!(
+            margins.len(),
+            2,
+            "{from} → {to} trades two hold goods: {margins:?}"
+        );
+        let litres = |good: &CanonicalId| {
+            goods
+                .good(good)
+                .and_then(|row| row.measures.get(&volume()).copied())
+                .expect("a packed volume")
+        };
+        let tonnes = |good: &CanonicalId| {
+            goods
+                .good(good)
+                .and_then(|row| row.measures.get(&mass()).copied())
+                .expect("a mass")
+        };
+        let mut sorted = margins.clone();
+        sorted.sort_by_key(|(good, _)| litres(good));
+        let ((dense, m_dense), (bulky, m_bulky)) = (sorted[0].clone(), sorted[1].clone());
+        // The band (§4.3): the bulky good earns more a tonne and less a litre.
+        assert!(m_dense < m_bulky, "{from}: {m_dense} < {m_bulky}");
+        assert_eq!(
+            tonnes(&dense),
+            tonnes(&bulky),
+            "{from}: both trade a tonne a unit"
+        );
+        assert!(
+            i128::from(m_bulky) * i128::from(litres(&dense))
+                < i128::from(m_dense) * i128::from(litres(&bulky)),
+            "{from}: the bulky good earns less per litre"
+        );
+        // The exhaustive best, and it is unique.
+        let (best, value) = vertex::best_integer_load(&goods, &cargo, &margins);
+        let quantity = |good: &CanonicalId| {
+            best.iter()
+                .find(|(g, _)| g == good)
+                .map(|(_, n)| *n)
+                .expect("the good is in the load")
+        };
+        let mut ties = 0;
+        let (cap_d, cap_b) = (
+            max_more(&goods, &cargo, &BTreeMap::new(), &dense)
+                .expect("known")
+                .0,
+            max_more(&goods, &cargo, &BTreeMap::new(), &bulky)
+                .expect("known")
+                .0,
+        );
+        for d in 0..=cap_d {
+            for b in 0..=cap_b {
+                let load_db = BTreeMap::from([(dense.clone(), d), (bulky.clone(), b)]);
+                let fits = load(&goods, &cargo, &load_db).is_ok_and(|l| {
+                    l.iter()
+                        .all(|(m, used)| cargo.limits.get(m).is_none_or(|limit| used <= limit))
+                });
+                let worth = m_dense * i64::try_from(d).expect("small")
+                    + m_bulky * i64::try_from(b).expect("small");
+                if fits && worth == value {
+                    ties += 1;
+                }
+            }
+        }
+        assert_eq!(ties, 1, "{from}: the best whole-tonne load is unique");
+        // Both limits bind exactly there.
+        let full = BTreeMap::from([
+            (dense.clone(), quantity(&dense)),
+            (bulky.clone(), quantity(&bulky)),
+        ]);
+        assert_eq!(
+            load(&goods, &cargo, &full).expect("a load"),
+            cargo.limits.clone(),
+            "{from}: both limits bind at the optimum"
+        );
+        // It is the both-limits vertex.
+        assert_eq!(
+            vertex::both_limits_vertex(&goods, &cargo, &dense, &bulky),
+            Some((quantity(&dense), quantity(&bulky))),
+            "{from}: the optimum is the vertex"
+        );
+        // It strictly beats the best single-good load.
+        let single = |good: &CanonicalId, margin: i64| {
+            let n = max_more(&goods, &cargo, &BTreeMap::new(), good)
+                .expect("known")
+                .0;
+            margin * i64::try_from(n).expect("small")
+        };
+        assert!(
+            value > single(&dense, m_dense).max(single(&bulky, m_bulky)),
+            "{from}: the mixed load beats either good alone"
+        );
+    }
+}
+
+/// **`compartment_for` maps each good to its one compartment** (doc 18 §4.3; cut IC8):
+/// the bulk goods to the hold, reaction mass to the tank, provisions to the locker; an
+/// unknown good, no accepting compartment and two accepting compartments to `None`.
+#[test]
+fn ic8_compartment_for_maps_each_good_to_its_one_compartment() {
+    let goods = table();
+    let compartments: Vec<Compartment> = ["cargo", "propellant", "provisions"]
+        .iter()
+        .map(|id| compartment(id))
+        .collect();
+    let for_good = |good: &str| {
+        tacsim::port::capacity::compartment_for(&goods, &compartments, &cid(good))
+            .map(|c| c.id.to_string())
+    };
+    for good in [
+        "metals",
+        "volatiles",
+        "structural_alloys",
+        "industrial_parts",
+    ] {
+        assert_eq!(for_good(good).as_deref(), Some("cargo"), "{good}");
+    }
+    assert_eq!(for_good("propellant").as_deref(), Some("propellant"));
+    assert_eq!(for_good("provisions").as_deref(), Some("provisions"));
+    assert_eq!(for_good("nonesuch"), None, "an unknown good");
+    let no_tank: Vec<Compartment> = compartments
+        .iter()
+        .filter(|c| c.id.as_str() != "propellant")
+        .cloned()
+        .collect();
+    assert_eq!(
+        tacsim::port::capacity::compartment_for(&goods, &no_tank, &cid("propellant")),
+        None,
+        "no compartment accepts it"
+    );
+    let mut twice = compartments.clone();
+    twice.push(Compartment {
+        id: cid("second_hold"),
+        ..compartment("cargo")
+    });
+    assert_eq!(
+        tacsim::port::capacity::compartment_for(&goods, &twice, &cid("metals")),
+        None,
+        "two compartments accept it"
+    );
 }

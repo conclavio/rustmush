@@ -31,14 +31,18 @@
 //! a player types, the contract settles on the sweep, the lot lands in the buyer's
 //! hold, and the economy's ladder holds no `SettlementRefused` page. It runs on the
 //! production composition *in miniature* rather than on this file's roster because a
-//! vendor organization's programmatic acceptance needs a party cap, and the game's
-//! root passes `with_party_caps(Vec::new())` until cut IC5's `with_party_cap_source`
-//! lands; on this roster the money leg stops at "that vendor cannot complete the
-//! sale", honestly and with nothing charged. The staff-act audit below is unchanged.
+//! vendor organization's programmatic acceptance needs a party cap. Since doc 18 cut
+//! IC8 the game's root carries the TacSim layer's party-cap source
+//! (`tacsim::port::PortPartyCaps`, through `with_party_cap_source`) on the roster that
+//! composes the layer — this one: it answers for the lane's port institutions only,
+//! so the corridor's fixture vendors here still stop at "that vendor cannot complete
+//! the sale", honestly and with nothing charged; `crates/tacsim/tests/commerce.rs` is
+//! the port's own stock → quote → accept → settle gate. The staff-act audit below is
+//! unchanged.
 
 use mush_core::{Audience, GOD, ObjId, ObjKind, Powers, Role};
 use mush_proto::OutputEvent;
-use mush_server::modules::{server_modules_with, sheet_modules, tacsim_module};
+use mush_server::modules::{server_modules_with_tacsim, sheet_modules, tacsim_module_wired};
 use mush_testkit::{TestWorld, text_of};
 
 // ---- the rig: the PRODUCTION composition, with the whole corridor -----------
@@ -49,7 +53,7 @@ fn boot() -> TestWorld {
     // selected `shadowrun` and passed `[shadowrun.economy]` into the built-ins;
     // the body below is TacSim-only and always was.
     let game = tacsim::GameEconomyConfig::default();
-    let mut modules = server_modules_with(
+    let (mut modules, inventory) = server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -58,8 +62,13 @@ fn boot() -> TestWorld {
         mush_campaign::RecoveryConfig::default(),
     );
     modules.extend(sheet_modules(&onboarding, &game));
-    // E7r2 P5: the whole Mars–Phobos–Ceres corridor, as `tacsim.corridor@2`.
-    modules.push(tacsim_module(tacsim::fixture::config_v2()));
+    // E7r2 P5: the whole Mars–Phobos–Ceres corridor, as `tacsim.corridor@2` — on
+    // the layer composed as `boot::game_modules` composes it (doc 18 cut IC8).
+    modules.push(tacsim_module_wired(
+        tacsim::fixture::config_v2(),
+        false,
+        inventory,
+    ));
     TestWorld::with_modules(modules)
 }
 

@@ -683,10 +683,18 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     ] {
         assert!(after.contains_key(pack), "{pack} applied: {after:?}");
     }
+    // Doc 18 cut IC8: `neighborhood.stickney_yards` ships at version 2 (the P11
+    // fittings card), the other three at 1.
+    let station_version = |pack: &str| if pack == STICKNEY_PACK { 2 } else { 1 };
     for (pack, _) in STATION_SOURCES {
-        assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
+        assert_eq!(
+            after.get(pack).map(|l| l.0),
+            Some(station_version(pack)),
+            "{pack}: {after:?}"
+        );
     }
-    // Doc 18 cut IC2: and the lane, at version 2 since cut IC3 (was nine latches).
+    // Doc 18 cut IC2: and the lane, at the shipped version (3 since cut IC8; was nine
+    // latches).
     assert_eq!(
         after.get(LANE_PACK).map(|l| l.0),
         Some(LANE_VERSION),

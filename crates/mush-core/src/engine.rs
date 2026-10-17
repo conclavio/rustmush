@@ -3211,6 +3211,12 @@ impl Engine {
     /// [`crate::sched::MAX_SCHEDULED_FIRES_PER_STEP`], the untouched remainder
     /// stays due and is drained by subsequent loop iterations.
     pub fn fire_due(&mut self, now_ms: i64, out: &mut Outbox, fx: &mut Effects) {
+        // Doc 18 cut IC8 (IC5's residual): tell the slice's handlers whose
+        // authoritative submission is already queued from an earlier drain,
+        // so a tick acting as a principal defers rather than drawing the
+        // back-pressure refusal ([`Outbox::authoritative_pending`]). The note
+        // is cleared after the one drain below.
+        out.note_pending_authoritative(self.authoritative_submits.keys().copied());
         for kind in self.sched.pop_due(now_ms) {
             match kind {
                 ScheduledKind::WaitCmd { actor, line } => {
@@ -3261,6 +3267,7 @@ impl Engine {
             }
         }
         self.drain_deferred(out, fx);
+        out.note_pending_authoritative([]);
     }
 
     /// One periodic (`Coarse`/`Fast`) module tick: run the handler, re-arm

@@ -284,3 +284,21 @@ pub fn format_m3(litres: u64) -> String {
 pub fn format_tonnes(kg: u64) -> String {
     (kg / 1_000).to_string()
 }
+
+/// **The one compartment a good stows in** (doc 18 §4.3 "The capacity function"; cut
+/// IC8): the compartment whose `accepts` holds the good's `stowage` tag. `None` for a
+/// good the table does not know, or when no compartment — or more than one — accepts
+/// it (an ambiguous hull is refused, never guessed at).
+#[must_use]
+pub fn compartment_for(
+    goods: &GoodsTable,
+    compartments: &[Compartment],
+    good: &CanonicalId,
+) -> Option<Compartment> {
+    let def = goods.good(good)?;
+    let mut matching = compartments
+        .iter()
+        .filter(|compartment| compartment.accepts.contains(&def.stowage));
+    let only = matching.next()?;
+    matching.next().is_none().then(|| only.clone())
+}

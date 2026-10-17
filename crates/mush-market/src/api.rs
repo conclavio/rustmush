@@ -625,6 +625,14 @@ pub struct ListingSpec {
 ///
 /// [`MarketError`]; render it with [`refuse_market`].
 pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, MarketError> {
+    // Doc 18 cut IC8 (lead ruling L14): a standing bid is posted through its own entry,
+    // never listed — refused FIRST, because a Wanted on a non-lot entry would otherwise
+    // fall to the `(_, None, _)` arm below and publish as an ordinary counter listing.
+    if spec.source.is_wanted() {
+        return Err(MarketError::bad(
+            "A standing bid is posted with post_wanted, never listed.",
+        ));
+    }
     let Some(vendor) = ctx
         .w
         .module_state::<MarketStore>()
@@ -1051,10 +1059,195 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
             grade,
             contract: None,
         });
+    // A Draw (doc 18 cut IC7) and a standing bid (cut IC8) hold no reservation, so
+    // deleting the document is the whole withdrawal and nothing is staged.
     del_listing(ctx, id);
     if let Some(leg) = leg {
         crate::lot::stage(ctx, &leg);
     }
+    Ok(())
+}
+
+// ---- doc 18 cut IC8: standing bids -----------------------------------------
+
+/// What [`post_wanted`] is asked to post (doc 18 cut IC8; §4.3 "Bids that take real
+/// lots", posted as a document only — selling into it is cut IC10's).
+#[derive(Clone, Debug)]
+pub struct WantedSpec {
+    /// The bidding vendor: its org is the listing's `seller`.
+    pub vendor: VendorId,
+    /// What it buys: a `Representation::Lot` entry whose code is a commodity id.
+    pub catalog: CatalogRef,
+    /// The bid per unit.
+    pub price: Amount,
+    /// The intake still wanted, `1..=MAX_QUANTITY` (the listing's `quantity`).
+    pub remaining: u64,
+    /// The vendor's own vault, where bought matter would be received.
+    pub vault: VaultId,
+    /// The lowest grade it takes.
+    pub min_grade: u8,
+    /// How long it stands, in real seconds (clamped to `60..=MAX_LISTING_TTL_SECS`).
+    pub ttl_secs: i64,
+}
+
+/// **Post a standing bid** (doc 18 cut IC8, lead rulings L14 and L21): a
+/// `Supply::Wanted` listing whose `seller` is the bidding org, `price` the bid per unit
+/// and `quantity` the intake still wanted. Normal-lane: it reserves nothing, escrows
+/// nothing and submits nothing (the bid's funds are read, not held — "not buying" is a
+/// render, never a refusal here).
+///
+/// Refused, before any write: a vendor that is not trading or whose org may not trade;
+/// an entry that is not `Representation::Lot` or whose code is not a commodity id; a
+/// vault that is not the vendor's own; a non-positive price, an out-of-range intake or
+/// grade floor; a second live bid of this vendor for this commodity; the listing caps.
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`refuse_market`].
+pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, MarketError> {
+    let Some(vendor) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(spec.vendor).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    };
+    if !vendor.is_trading() || !org_may_trade(ctx.w, vendor.org) {
+        return Err(MarketError::bad(
+            "That vendor is not trading, so it posts no bid.",
+        ));
+    }
+    let Some(entry) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.entry_of(&spec.catalog).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_ENTRY));
+    };
+    if entry.representation != Representation::Lot {
+        return Err(MarketError::bad(
+            "A standing bid buys a lot-represented good.",
+        ));
+    }
+    let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
+        return Err(MarketError::bad(
+            "That catalogue code is not a commodity id.",
+        ));
+    };
+    if spec.vault != vendor.vault {
+        return Err(MarketError::bad(
+            "A standing bid receives into the vendor's own storefront vault.",
+        ));
+    }
+    if spec.price.minor() <= 0 {
+        return Err(MarketError::bad("A standing bid offers a positive price."));
+    }
+    if spec.remaining == 0 || spec.remaining > crate::record::MAX_QUANTITY {
+        return Err(MarketError::bad("That is not a quantity this market buys."));
+    }
+    if spec.min_grade > mush_inventory::MAX_GRADE {
+        return Err(MarketError::bad("That grade floor is out of range."));
+    }
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.wanted_of(vendor.id, &commodity).is_some())
+    {
+        return Err(MarketError::bad(
+            "That vendor already posts a standing bid for that good.",
+        ));
+    }
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.listings_of_vendor(vendor.id) >= MAX_LISTINGS_PER_VENDOR)
+    {
+        return Err(MarketError::bad(
+            "That vendor already holds as many listings as the market allows.",
+        ));
+    }
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.listings.len() >= MAX_LISTINGS)
+    {
+        return Err(MarketError::bad("The market is full; try later."));
+    }
+    let ttl = spec.ttl_secs.clamp(60, MAX_LISTING_TTL_SECS);
+    let now = ctx.w.now();
+    let Some(id) = ctx
+        .w
+        .module_state_mut::<MarketStore>()
+        .and_then(MarketStore::alloc_listing)
+    else {
+        return Err(MarketError::bad("The listing-id allocator is exhausted."));
+    };
+    put_listing(
+        ctx,
+        Listing {
+            id,
+            seller: PrincipalId::Organization(vendor.org),
+            vendor: vendor.id,
+            market: vendor.market.clone(),
+            catalog: spec.catalog,
+            definition_version: entry.definition_version,
+            source: Supply::Wanted {
+                vault: spec.vault,
+                commodity: crate::record::LotCommodity(commodity),
+                min_grade: spec.min_grade,
+            },
+            object: None,
+            price: spec.price,
+            quantity: spec.remaining,
+            visibility: MarketVisibility::Public,
+            expires: EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: now.saturating_add(ttl),
+            },
+            revision: 1,
+        },
+    );
+    persist_meta(ctx);
+    Ok(id)
+}
+
+/// **Revise a standing bid in place** (doc 18 cut IC8): a new price and remaining
+/// intake on a live `Supply::Wanted` listing, its revision bumped. Its deadline is
+/// unchanged.
+///
+/// # Errors
+///
+/// [`MarketError::NoStanding`] when there is no such bid; [`MarketError::Bad`] for a
+/// non-positive price or an out-of-range intake.
+pub fn revise_wanted(
+    ctx: &mut Ctx<'_>,
+    id: ListingId,
+    price: Amount,
+    remaining: u64,
+) -> Result<(), MarketError> {
+    let Some(listing) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(id).cloned())
+        .filter(|l| l.source.is_wanted())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    if price.minor() <= 0 {
+        return Err(MarketError::bad("A standing bid offers a positive price."));
+    }
+    if remaining == 0 || remaining > crate::record::MAX_QUANTITY {
+        return Err(MarketError::bad("That is not a quantity this market buys."));
+    }
+    put_listing(
+        ctx,
+        Listing {
+            price,
+            quantity: remaining,
+            revision: listing.revision.saturating_add(1),
+            ..listing
+        },
+    );
     Ok(())
 }
 

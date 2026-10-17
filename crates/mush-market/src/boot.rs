@@ -313,22 +313,71 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
 ///
 /// A deadline on any clock but `RealUtc` is left to whoever owns that clock, exactly as
 /// the projection leaves it.
+///
+/// **A lapsed hold-backed listing waits for its hold** (doc 18 cut IC8, lead ruling L7;
+/// D-18-26, Q-18-31): this GOD sweep deletes a lapsed `Supply::Lot` listing only once
+/// [`crate::lot::hold_standing`] reads `Gone`. Live, Lapsed, Unreadable — anything else
+/// — keeps the document (it is already unsellable, because it has lapsed), and a kept
+/// listing is filtered out **before** the budget is taken, so it never spends
+/// `MAX_SWEPT_PER_FIRE` and cannot starve the deletion of anything else. The release is
+/// the holder's own authoritative submission, never a GOD tick's
+/// (`mush-campaign/src/tick.rs:28-37`): the TacSim layer's port tick makes it as the
+/// holder through [`crate::release_lapsed_hold`]; on a roster without a releaser the
+/// seller withdraws the listing by hand, as cut IC0 recorded. Before IC8 this sweep
+/// deleted the document and stranded the hold.
 fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     let now = ctx.w.now();
     let horizon = now.saturating_sub(crate::projection::PROJECTION_WINDOW_SECS);
-    let (listings, quotes) = {
+    // The lapsed listings, each with whether it is hold-backed, collected under the
+    // store borrow (bounded by the store's own `MAX_LISTINGS`); the hold reads need
+    // `ctx`, so they are filtered below.
+    let lapsed: Vec<(ListingId, bool)> = {
         let Some(store) = ctx.w.module_state::<MarketStore>() else {
             return 0;
         };
-        let listings: Vec<ListingId> = store
+        store
             .listings
             .values()
             .filter(|l| crate::projection::lapsed(l.expires.at, l.expires.clock, now))
-            .map(|l| l.id)
-            .take(budget)
-            .collect();
+            .map(|l| {
+                let held = matches!(
+                    store.lot_matter(l),
+                    Some(crate::record::LotMatter::Hold { .. })
+                );
+                (l.id, held)
+            })
+            .collect()
+    };
+    let listings: Vec<ListingId> = lapsed
+        .into_iter()
+        .filter(|(id, held)| {
+            if !held {
+                return true;
+            }
+            let standing = ctx
+                .w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.listing(*id))
+                .and_then(|l| crate::lot::hold_standing(ctx, l));
+            let gone = standing == Some(crate::lot::HoldStanding::Gone);
+            if !gone {
+                tracing::debug!(
+                    listing = id.0,
+                    ?standing,
+                    "market: a lapsed hold-backed listing is kept until its hold is released"
+                );
+            }
+            gone
+        })
+        .map(|(id, _)| id)
+        .take(budget)
+        .collect();
+    let quotes: Vec<QuoteId> = {
+        let Some(store) = ctx.w.module_state::<MarketStore>() else {
+            return 0;
+        };
         let left = budget.saturating_sub(listings.len());
-        let quotes: Vec<QuoteId> = store
+        store
             .quotes
             .values()
             .filter(|q| match q.settled {
@@ -343,8 +392,7 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
             })
             .map(|q| q.id)
             .take(left)
-            .collect();
-        (listings, quotes)
+            .collect()
     };
     let swept = listings.len().saturating_add(quotes.len());
     for id in listings {

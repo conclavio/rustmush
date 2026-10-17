@@ -118,7 +118,7 @@ fn measure_word(goods: &GoodsTable, measure: &CanonicalId) -> String {
         .map_or_else(|| measure.to_string(), |m| m.word.clone())
 }
 
-/// A load in `measure`: `20 t`, `8.0 m³`, else `{n} {unit}`.
+/// A load in `measure`: `29 t`, `11.6 m³`, else `{n} {unit}`.
 fn render_load(goods: &GoodsTable, measure: &CanonicalId, value: u64) -> String {
     match measure.as_str() {
         MASS_KG => format!("{} t", format_tonnes(value)),
@@ -193,7 +193,8 @@ pub fn measures_line(
 }
 
 /// **The non-zero goods**, table order, `{qty} {unit} {label}` joined `, `
-/// (`20 t metal concentrate, 80 t water ice`); `empty` when none.
+/// (`29 t metal concentrate, 61 t water ice, 10 t yard fittings, crated`);
+/// `empty` when none.
 #[must_use]
 pub fn goods_list(
     goods: &GoodsTable,
@@ -473,15 +474,18 @@ mod tests {
     #[test]
     fn ic6_the_load_cells_list_every_good_with_both_limits() {
         let goods = table();
-        let full = reading("cargo", &[("metals", 20), ("volatiles", 80)]);
+        let full = reading(
+            "cargo",
+            &[("metals", 29), ("volatiles", 61), ("industrial_parts", 10)],
+        );
         assert_eq!(
             room_lines(&cid("hold"), &goods, std::slice::from_ref(&full)).expect("reads"),
             vec![
                 "Load cells:",
-                "  metal concentrate: 20 t · 8.0 m³",
-                "  water ice: 80 t · 112.0 m³",
+                "  metal concentrate: 29 t · 11.6 m³",
+                "  water ice: 61 t · 85.4 m³",
                 "  structural alloy stock: 0 t · 0.0 m³",
-                "  yard fittings, crated: 0 t · 0.0 m³",
+                "  yard fittings, crated: 10 t · 23.0 m³",
                 "  TOTAL: 100 t · 120.0 m³",
                 "  LIMIT: 100 t · 120 m³",
                 "  FULL: mass and packed volume",
@@ -592,13 +596,16 @@ mod tests {
     fn ic6_the_summary_rooms_render_every_compartment() {
         let goods = table();
         let shown = [
-            reading("cargo", &[("metals", 20), ("volatiles", 80)]),
+            reading(
+                "cargo",
+                &[("metals", 29), ("volatiles", 61), ("industrial_parts", 10)],
+            ),
             reading("propellant", &[("propellant", 42)]),
             reading("provisions", &[("provisions", 21)]),
         ];
         let body = [
-            "  HOLD 20 t metal concentrate, 80 t water ice; 100/100 t · 120.0/120 m³ · FULL: mass \
-             and packed volume",
+            "  HOLD 29 t metal concentrate, 61 t water ice, 10 t yard fittings, crated; 100/100 t · \
+             120.0/120 m³ · FULL: mass and packed volume",
             "  TANKAGE 42/80 t",
             "  STORES 21/120 crew-days",
         ];
@@ -650,7 +657,10 @@ mod tests {
             "Hold: cargo 0/100 t · 0.0/120 m³ · tank 0/80 t · locker 0/120 crew-days."
         );
         let outbound = [
-            reading("cargo", &[("metals", 20), ("volatiles", 80)]),
+            reading(
+                "cargo",
+                &[("metals", 29), ("volatiles", 61), ("industrial_parts", 10)],
+            ),
             reading("propellant", &[("propellant", 42)]),
             reading("provisions", &[("provisions", 21)]),
         ];
@@ -663,10 +673,10 @@ mod tests {
             vec![
                 "Hold of the Salt Moth (FPC-D-0401):",
                 "  HOLD",
-                "    metal concentrate: 20 t · 8.0 m³",
-                "    water ice: 80 t · 112.0 m³",
+                "    metal concentrate: 29 t · 11.6 m³",
+                "    water ice: 61 t · 85.4 m³",
                 "    structural alloy stock: 0 t · 0.0 m³",
-                "    yard fittings, crated: 0 t · 0.0 m³",
+                "    yard fittings, crated: 10 t · 23.0 m³",
                 "    TOTAL: 100 t · 120.0 m³",
                 "    LIMIT: 100 t · 120 m³",
                 "    FULL: mass and packed volume",

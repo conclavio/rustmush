@@ -19,6 +19,9 @@
 //! and walks). No test here asserts a passage duration (D-18-50).
 
 use std::collections::{BTreeMap, HashMap};
+
+#[path = "support/vertex.rs"]
+mod vertex;
 use std::sync::{Arc, Mutex};
 
 use mush_core::{
@@ -214,6 +217,7 @@ fn install_oracle(tw: &mut TestWorld, oracle: &Arc<MapOracle>) {
 /// Boot `roster` without settling the capital.
 fn boot_unsettled(roster: Roster) -> Rig {
     let mut tw = TestWorld::with_modules(roster.modules());
+    with_offer_keys(&mut tw);
     no_refused_writes(&tw);
     let oracle = Arc::new(MapOracle::default());
     install_oracle(&mut tw, &oracle);
@@ -242,6 +246,10 @@ fn boot(roster: Roster) -> Rig {
         "the desk is not open after the first sweep:\n{}",
         readiness(rig.tw.world()).render().join("\n")
     );
+    // Doc 18 cut IC8: the gate also reads the ports' stock (Pools, Listings and
+    // MarketFacts, `readiness_in`), so the port tick is fired and landed until the
+    // stock clerks have seeded and listed every ask.
+    ensure_stocked(&mut rig);
     rig
 }
 
@@ -275,6 +283,7 @@ fn reboot_with(
                 .collect::<Vec<_>>(),
         )
         .expect("the typed state hydrates");
+    with_offer_keys(&mut tw);
     install_oracle(&mut tw, &oracle);
     Rig {
         tw,
@@ -458,9 +467,140 @@ fn lease_of(tw: &TestWorld, pilot: ObjId) -> ContractId {
         .contract
 }
 
-/// Enrol `pilot` (at the desk) as `ship`; the reply.
+/// Enrol `pilot` (at the desk) as `ship`; the reply. (The desk opens only once the
+/// ports' stock is seeded and listed — doc 18 cut IC8 — which [`boot`] sees to.)
 fn enrol(rig: &mut Rig, pilot: ObjId, ship: &str) -> String {
     run(&mut rig.tw, pilot, &format!("+coop/enrol {ship}"))
+}
+
+/// A fresh request/commit token per landing, across every test in the process.
+fn next_token() -> [u8; 16] {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut bytes = [0xc0_u8; 16];
+    bytes[..4].copy_from_slice(&n.to_be_bytes());
+    bytes
+}
+
+/// Drive one queued submission the way the world task does (`port_tick.rs`'s
+/// `land_one`), keeping its typed post-images for a later reboot.
+fn land_typed(rig: &mut Rig, submit: &mush_core::AuthoritativeSubmit) -> Result<(), String> {
+    use mush_core::{
+        CommitToken, IdempotencyKey, IdempotencyScope, OfferExecutionContext, OfferSubmission,
+        RequestUid, ScopedIdempotencyKey,
+    };
+    let token = next_token();
+    let tw = &mut rig.tw;
+    let (action, resolved) = {
+        let engine = tw.engine();
+        let query = engine
+            .legal_action_query(
+                mush_core::PrincipalId::Object { id: submit.actor },
+                submit.actor,
+                submit.subject.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        let offers = engine
+            .project_legal_actions(&query)
+            .map_err(|error| error.to_string())?;
+        let projected = offers
+            .projected_for_action(&submit.action)
+            .ok_or_else(|| "that action is not currently offered".to_owned())?;
+        let submission = OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: Vec::new(),
+            parameters: submit.parameters.clone(),
+        };
+        let execution = OfferExecutionContext {
+            request: RequestUid::from_bytes(token),
+            principal: mush_core::PrincipalId::Object { id: submit.actor },
+            actor: submit.actor,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: mush_core::PrincipalId::Object { id: submit.actor },
+                    owner: submit.action.key().owner.clone(),
+                    namespace: CanonicalId::new(submit.action.key().id.as_str())
+                        .map_err(|_| "namespace".to_owned())?,
+                },
+                1,
+                IdempotencyKey::Request(RequestUid::from_bytes(token)),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .map_err(|error| format!("{error:?}"))?;
+        let (action, resolved, _guards) = resolved.into_authoritative_parts();
+        (action, resolved)
+    };
+    let (prepared, _) = tw
+        .engine_mut()
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes(token),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    let (ops, install) = prepared.into_parts();
+    tw.engine_mut()
+        .install_prepared_action(install)
+        .map_err(|error| format!("{error:?}"))?;
+    for op in ops {
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                rig.typed.insert((op.ns, key), value);
+            }
+            ModuleWrite::Del { key } => {
+                rig.typed.remove(&(op.ns, key));
+            }
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+/// The commerce lines of `@tacsim/port status` (doc 18 cut IC8): every Pools,
+/// Listings and MarketFacts line, with whether it reads `[ready]`.
+fn commerce_ready(tw: &mut TestWorld) -> (bool, String) {
+    let out = run(tw, GOD, "@tacsim/port status");
+    let gated: Vec<&str> = out
+        .lines()
+        .filter(|line| {
+            line.contains(" vendor ") || line.contains(" ask ") || line.starts_with("market facts")
+        })
+        .collect();
+    let ready = !gated.is_empty() && gated.iter().all(|line| line.ends_with("[ready]"));
+    (ready, out)
+}
+
+/// **Fire and land the port tick until the gate's commerce lines are ready**
+/// (doc 18 cut IC8): the stock clerks mint, dissolve and list, one step a fire.
+/// Bounded; panics with the last report.
+fn ensure_stocked(rig: &mut Rig) {
+    for _ in 0..40 {
+        let (ready, _) = commerce_ready(&mut rig.tw);
+        if ready {
+            return;
+        }
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let mut queued = Vec::new();
+        while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+            let owner = submit.action.key().owner.as_str();
+            if owner == tacsim::NS || owner == "inventory" {
+                assert_ne!(submit.actor, GOD, "GOD never submits from the port tick");
+                queued.push(*submit);
+            }
+        }
+        for submit in &queued {
+            land_typed(rig, submit).expect("a port-tick submission lands");
+        }
+    }
+    let (_, out) = commerce_ready(&mut rig.tw);
+    panic!("the ports were not stocked within 40 fires:\n{out}");
 }
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (`port_tick.rs`'s
@@ -534,33 +674,89 @@ fn hold_vault(tw: &TestWorld, row: &HullRow) -> mush_economy::VaultId {
         .id
 }
 
-/// The outbound load of lens 7: 20 t metals, 80 t ice, 42 t propellant, 21
-/// crew-days of provisions.
+/// The Dray's cargo hold and the goods table, as the capacity function reads them.
+fn cargo_and_goods() -> (
+    tacsim::port::capacity::Compartment,
+    tacsim::definitions::GoodsTable,
+) {
+    let goods = tacsim::definitions::goods::goods_table().expect("the goods table");
+    let pack = load_pack(tacsim::definitions::content::DRAY_JSON).expect("the Dray pack");
+    let Some(PackEntry::Unit(spec)) = pack.entry(&cid(tacsim::definitions::content::DRAY)) else {
+        panic!("the Dray unit");
+    };
+    let logistics = spec.logistics.as_ref().expect("the Dray's logistics");
+    let cargo = cid("cargo");
+    let def = logistics.stowage.get(&cargo).expect("the cargo hold");
+    (
+        tacsim::port::capacity::Compartment::from_stowage(&cargo, def),
+        goods,
+    )
+}
+
+/// The outbound load of lens 7 (doc 18 cut IC8 re-derived it, D-18-39): the
+/// metals/ice load at both of the hold's limits, solved from the goods table, never
+/// typed — and 42 t propellant, 21 crew-days of provisions.
+fn outbound() -> (u64, u64) {
+    let (cargo, goods) = cargo_and_goods();
+    vertex::both_limits_vertex(&goods, &cargo, &cid("metals"), &cid("volatiles"))
+        .expect("an integral vertex")
+}
+
 fn seed_outbound(rig: &mut Rig, row: &HullRow) {
     let vault = hold_vault(&rig.tw, row);
-    seed_pool(rig, vault, "metals", 20, LotId(1));
-    seed_pool(rig, vault, "volatiles", 80, LotId(2));
+    let (metals, ice) = outbound();
+    seed_pool(rig, vault, "metals", metals, LotId(1));
+    seed_pool(rig, vault, "volatiles", ice, LotId(2));
     seed_pool(rig, vault, "propellant", 42, LotId(3));
     seed_pool(rig, vault, "provisions", 21, LotId(4));
 }
 
-const LOAD_CELLS: [&str; 8] = [
-    "Load cells:",
-    "  metal concentrate: 20 t · 8.0 m³",
-    "  water ice: 80 t · 112.0 m³",
-    "  structural alloy stock: 0 t · 0.0 m³",
-    "  yard fittings, crated: 0 t · 0.0 m³",
-    "  TOTAL: 100 t · 120.0 m³",
-    "  LIMIT: 100 t · 120 m³",
-    "  FULL: mass and packed volume",
-];
+/// `{t} t · {m³} m³` for `qty` tonnes of `good`.
+fn cell(good: &str, qty: u64) -> String {
+    let (_, goods) = cargo_and_goods();
+    let litres = goods
+        .good(&cid(good))
+        .and_then(|row| row.measures.get(&cid("si.volume_l")).copied())
+        .expect("a packed volume");
+    format!(
+        "{qty} t · {} m³",
+        tacsim::port::capacity::format_m3(qty * litres)
+    )
+}
 
-const SUMMARY_BODY: [&str; 3] = [
-    "  HOLD 20 t metal concentrate, 80 t water ice; 100/100 t · 120.0/120 m³ · FULL: mass and \
-     packed volume",
-    "  TANKAGE 42/80 t",
-    "  STORES 21/120 crew-days",
-];
+/// The hold's load cells over the outbound load, `indent` before each line.
+fn load_cells(indent: &str) -> Vec<String> {
+    let (metals, ice) = outbound();
+    vec![
+        format!("{indent}metal concentrate: {}", cell("metals", metals)),
+        format!("{indent}water ice: {}", cell("volatiles", ice)),
+        format!("{indent}structural alloy stock: 0 t · 0.0 m³"),
+        format!("{indent}yard fittings, crated: 0 t · 0.0 m³"),
+        format!("{indent}TOTAL: 100 t · 120.0 m³"),
+        format!("{indent}LIMIT: 100 t · 120 m³"),
+        format!("{indent}FULL: mass and packed volume"),
+    ]
+}
+
+/// The Cargo Hold's gauge block.
+fn load_cells_block() -> Vec<String> {
+    let mut out = vec!["Load cells:".to_owned()];
+    out.extend(load_cells("  "));
+    out
+}
+
+/// The passage's and the bridge's summary body.
+fn summary_body() -> Vec<String> {
+    let (metals, ice) = outbound();
+    vec![
+        format!(
+            "  HOLD {metals} t metal concentrate, {ice} t water ice; 100/100 t · 120.0/120 m³ · \
+             FULL: mass and packed volume"
+        ),
+        "  TANKAGE 42/80 t".to_owned(),
+        "  STORES 21/120 crew-days".to_owned(),
+    ]
+}
 
 /// `out` contains `block`, line for line, contiguously.
 fn has_block(out: &str, block: &[&str]) -> bool {
@@ -894,13 +1090,65 @@ fn set_rate(tw: &mut TestWorld, rate: u32) {
 fn ic6_the_desk_closes_at_a_play_world_rate_other_than_24() {
     let mut rig = boot_unsettled(Roster::bare_real());
     sweep(&mut rig.tw, 120);
+    // Doc 18 cut IC8: the ports stocked BEFORE the rate moves, so the rate is the one
+    // binding that closes the desk (fixer T1: an unstocked port would close it too).
+    ensure_stocked(&mut rig);
     set_rate(&mut rig.tw, 4);
+    let report = run(&mut rig.tw, GOD, "@tacsim/port status");
+    let closed: Vec<&str> = report
+        .lines()
+        .filter(|line| line.ends_with(']') && !line.ends_with("[ready]"))
+        .collect();
+    assert!(
+        !closed.is_empty() && closed.iter().all(|line| line.contains("world rate")),
+        "only the rate line is not ready:\n{report}"
+    );
     let who = pilot(&mut rig, "Pilot", 1);
     let before = counts(&rig.tw);
     let out = enrol(&mut rig, who, "Salt Moth");
     assert!(out.contains(NOT_OPEN), "{out}");
     assert_eq!(counts(&rig.tw), before);
     set_rate(&mut rig.tw, 24);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+}
+
+/// **The desk stays closed while the ports are unstocked** (doc 18 cut IC8, lead
+/// ruling L8; §4.7 "IC8 adds pools seeded and listings equal to pools"): with the
+/// capital settled and the rate at play, an enrol before the port tick has seeded and
+/// listed the stock is refused `NOT_OPEN` and writes nothing, and the report names
+/// the pending stock lines; once the clerks have stocked both ports it succeeds.
+#[test]
+fn ic8_the_desk_stays_closed_until_the_ports_are_stocked() {
+    let mut rig = boot_unsettled(Roster::bare());
+    sweep(&mut rig.tw, 120);
+    assert!(
+        enrol_gate(&readiness(rig.tw.world())).is_ok(),
+        "the world-only bindings are open:\n{}",
+        readiness(rig.tw.world()).render().join("\n")
+    );
+    let report = run(&mut rig.tw, GOD, "@tacsim/port status");
+    let closed: Vec<&str> = report
+        .lines()
+        .filter(|line| line.ends_with(']') && !line.ends_with("[ready]"))
+        .collect();
+    assert!(
+        !closed.is_empty()
+            && closed
+                .iter()
+                .all(|line| line.contains(" vendor ") || line.contains(" ask ")),
+        "only stock lines hold the desk:\n{report}"
+    );
+    assert!(
+        closed.iter().any(|line| line.contains(" vendor ")),
+        "a Pools line is pending:\n{report}"
+    );
+    let who = pilot(&mut rig, "Pilot", 1);
+    let before = counts(&rig.tw);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains(NOT_OPEN), "{out}");
+    assert_eq!(counts(&rig.tw), before, "a refused enrol wrote something");
+    ensure_stocked(&mut rig);
     let out = enrol(&mut rig, who, "Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
 }
@@ -1459,12 +1707,14 @@ fn ic6_the_gauges_read_the_hold_pools() {
     ] {
         assert!(!out.contains(label), "the Airlock shows a gauge:\n{out}");
     }
+    let summary = summary_body();
+    let cells = load_cells_block();
     let mut passage: Vec<&str> = vec![status, "Manifest slate:"];
-    passage.extend(SUMMARY_BODY);
+    passage.extend(summary.iter().map(String::as_str));
     let mut bridge: Vec<&str> = vec![status, "Displays:"];
-    bridge.extend(SUMMARY_BODY);
+    bridge.extend(summary.iter().map(String::as_str));
     let mut hold: Vec<&str> = vec![status];
-    hold.extend(LOAD_CELLS);
+    hold.extend(cells.iter().map(String::as_str));
     for (step, room, block) in [
         ("in", "passage", passage),
         ("bridge", "bridge", bridge),
@@ -1507,25 +1757,15 @@ fn ic6_the_gauges_read_the_hold_pools() {
         "{out}"
     );
     let out = run(&mut rig.tw, who, "+ship/hold");
-    assert!(
-        has_block(
-            &out,
-            &[
-                "Hold of the Salt Moth (FPC-D-0401):",
-                "  HOLD",
-                "    metal concentrate: 20 t · 8.0 m³",
-                "    water ice: 80 t · 112.0 m³",
-                "    structural alloy stock: 0 t · 0.0 m³",
-                "    yard fittings, crated: 0 t · 0.0 m³",
-                "    TOTAL: 100 t · 120.0 m³",
-                "    LIMIT: 100 t · 120 m³",
-                "    FULL: mass and packed volume",
-                "  TANKAGE reaction mass, 42 of 80 t",
-                "  STORES voyage provisions, 21 of 120 crew-days",
-            ]
-        ),
-        "{out}"
-    );
+    let mut want = vec![
+        "Hold of the Salt Moth (FPC-D-0401):".to_owned(),
+        "  HOLD".to_owned(),
+    ];
+    want.extend(load_cells("    "));
+    want.push("  TANKAGE reaction mass, 42 of 80 t".to_owned());
+    want.push("  STORES voyage provisions, 21 of 120 crew-days".to_owned());
+    let want: Vec<&str> = want.iter().map(String::as_str).collect();
+    assert!(has_block(&out, &want), "{out}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1559,7 +1799,13 @@ fn ic6_the_charter_survives_a_reboot() {
     assert_eq!(location(&rig.tw, who), Some(rooms["hold"]));
     let out = run(&mut rig.tw, who, "look");
     assert!(
-        has_block(&out, &LOAD_CELLS),
+        has_block(
+            &out,
+            &load_cells_block()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        ),
         "the goods cache did not survive:\n{out}"
     );
     let _ = run(&mut rig.tw, who, "passage");
@@ -1730,4 +1976,60 @@ fn ic6_a_disputed_lease_is_not_in_force() {
     teleport(&mut rig.tw, who, gallery);
     let out = run(&mut rig.tw, who, "+ship/board");
     assert!(out.contains("You hold no charter."), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC8: the enrolment checks its document before writing
+// ---------------------------------------------------------------------------
+
+/// **The enrolment checks its document before writing** (doc 18 cut IC8, lead 2d;
+/// lead ruling L18): a staff rename leaves the lowest free hull with a 130-byte name;
+/// enrolment still succeeds, with the laid-up name clamped to the document's 120-byte
+/// bound on a char boundary, and the document reloads Present after a reboot.
+#[test]
+fn ic8_enrolment_checks_its_document_before_writing() {
+    let mut rig = boot(Roster::bare());
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let hull = ObjId(row.hull);
+    // 119 ASCII bytes, then a two-byte `Å` across the 120-byte bound (bytes 119–120),
+    // so a clamp that is not on a char boundary would split it.
+    let long = format!("{}Ånd Moré Laid Up", "L".repeat(119));
+    assert!(long.len() >= 130, "{}", long.len());
+    assert!(!long.is_char_boundary(120), "the bound falls inside a char");
+    rig.tw
+        .world_mut()
+        .set_name(hull, &long)
+        .expect("staff rename the hull");
+    let who = pilot(&mut rig, "Pilot", 1);
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+    let laid_up = match store(&rig.tw).enrolment_state(account("PilotAcct", 1)) {
+        EnrolmentState::Present(e) => e.laid_up_name.clone(),
+        other => panic!("the enrolment is not present: {other:?}"),
+    };
+    assert_eq!(
+        laid_up.len(),
+        119,
+        "cut at the last char boundary at or below 120 bytes"
+    );
+    assert!(long.starts_with(&laid_up), "a prefix of the long name");
+    let roster = rig.roster.clone();
+    let rig = reboot_with(rig, roster, |_| {});
+    assert!(matches!(
+        store(&rig.tw).enrolment_state(account("PilotAcct", 1)),
+        EnrolmentState::Present(e) if e.laid_up_name == laid_up && e.pilot == who
+    ));
+}
+
+/// The durable offer-key ring a legal-action offer is signed with — the world task
+/// installs it at boot; doc 18 cut IC8's rig lands the port tick's submissions, so it
+/// installs one too (`port_tick.rs`'s rig).
+fn with_offer_keys(tw: &mut TestWorld) {
+    tw.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(1, [0x41; 32]).expect("an offer secret"),
+            [],
+        )
+        .expect("an offer key ring"),
+    );
 }

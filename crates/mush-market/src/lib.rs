@@ -118,10 +118,11 @@ mod trade;
 pub use api::{
     DEFAULT_LISTING_TTL_SECS, ListingSpec, MAX_LISTING_TTL_SECS, MarketError, MarketFilter,
     MarketPage, NO_SUCH_ENTRY, NO_SUCH_LISTING, NO_SUCH_QUOTE, NO_SUCH_SOURCE, NO_SUCH_VENDOR,
-    PackLoad, account_instrument, budget_source, create_source, fund_from_faucet, halt_source,
-    hidden_seller_orgs, is_hidden_org, is_staff, list_goods, load_pack, may_list_vendor,
-    may_view_listing, org_is_closed, org_may_trade, principal_account, refuse_market,
-    register_vendor, retire_vendor, visible, withdraw_listing,
+    PackLoad, WantedSpec, account_instrument, budget_source, create_source, fund_from_faucet,
+    halt_source, hidden_seller_orgs, is_hidden_org, is_staff, list_goods, load_pack,
+    may_list_vendor, may_view_listing, org_is_closed, org_may_trade, post_wanted,
+    principal_account, refuse_market, register_vendor, retire_vendor, revise_wanted, visible,
+    withdraw_listing,
 };
 pub use boot::{
     MAX_BOOT_DELIVERY_PAGES, MAX_DRAWS_MIRRORED_PER_FIRE, MAX_LOT_RECONCILED_PER_FIRE,
@@ -132,9 +133,10 @@ pub use ids::{
     ListingId, MAX_MARKET_ID_BYTES, MarketId, MarketSourceId, QuoteId, VendorId, parse_u64,
 };
 pub use lot::{
-    ACTION_LOT, HoldStanding, LOT_REFUSED, LotError, LotOp, MAX_LOT_ENDPOINT_CHOICES,
+    ACTION_LOT, HoldStanding, LOT_REFUSED, LapsedHold, LotError, LotOp, MAX_LOT_ENDPOINT_CHOICES,
     MAX_PAID_ENTRIES_PER_KIND, OUTCOME_ID as LOT_OUTCOME_ID, action_ref as lot_action_ref,
-    draw_fact_id, hold_ttl_real_secs, listing_holder, listing_holder_text, listing_reservation,
+    draw_fact_id, hold_ttl_real_secs, lapsed_holds, lapsed_holds_where, listing_holder,
+    listing_holder_text, listing_reservation, release_lapsed_hold,
 };
 pub use module::{
     AvailabilityProvider, CapacityPlan, CapacityProvider, CapacityReadError, CapacityRefusal,
@@ -162,6 +164,6 @@ pub use store::{
 pub use trade::{
     CAPACITY_UNREADABLE, DEAL_WINDOW_SECS, DRAW_SETTLE_MARGIN_SECS, DRAW_TOO_LATE,
     DRAW_WINDOW_SECS, MAX_LAPSED_SWEEP_PER_CALL, MAX_OPEN_SELLS_PER_VENDOR, PORT_ONLY_ENDPOINT,
-    QUOTE_TTL_LIVE, QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, STALE_QUOTE, accept, accept_at,
-    accept_into, artefact_stamp, is_current, quote, restage_draw, sell,
+    QUOTE_TTL_LIVE, QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, STALE_QUOTE, WANTED_IS_A_BID,
+    accept, accept_at, accept_into, artefact_stamp, is_current, quote, restage_draw, sell,
 };

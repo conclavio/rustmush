@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.dray",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
-    "digest": "da86f3899788dd9b2ff3141fbf97a5243cb1746b489276173c67dff26caf49fa",
+    "digest": "2f11e37f4de1f02df1f5d19aba599c4235c74307c55a6a13201e74184741cabb",
     "requires": []
   },
   "entries": {
@@ -116,7 +116,7 @@
               "short_desc": "A low spine of grab-rails and cable trays, hatches opening off it.",
               "desc": "The Dray's spine: a narrow pressurised run of grab-rails and cable trays, with a ladder well up to the bridge and a deck hatch down to the hold, the crew compartment's hatch aft and the lock forward. Cargo tie-points stud the deck along the whole length. The hum of the drive is felt through the handrails more than heard, and the air moves with a steady draught from the scrubbers. A manifest slate is clipped by the bridge ladder, its figures the hold's own.",
               "details": {
-                "manifest slate": "The hold's contents by good, in tonnes and in cubic metres, two columns with the hold's two limits at their feet, and the tank and the locker under a line; the slate reads what +ship/hold reads.",
+                "manifest slate": "The hold's contents by good, in tonnes and in cubic metres, two columns with the hold's two limits at their feet, and the tank and the locker under a line.",
                 "tie points": "Recessed rings every metre, for the day the passage is cargo too.",
                 "cable trays": "Power, data, air, in colour-banded runs; a tag on each says which deck plate to lift."
               }
@@ -128,9 +128,9 @@
               "short_desc": "Two couches before a curve of displays, the drive ROM's amber pane among them.",
               "desc": "Two acceleration couches face a curve of flat displays: course and ETA, tankage, the stores locker, the hold manifest, the berth link. The drive ROM's amber pane sits under a sealed plate and reads CLASS 0 — FLIES THE PLAN, DECIDES NOTHING. A clipboard holds a paper copy of the sailing plan, because the dockmaster likes a signature; a Co-op checklist is clipped beside the drive panel. The air is cooler here and smells of warm electronics; the only sound is the fans and, docked, the tick of the berth clamps settling.",
               "details": {
-                "displays": "COURSE: the route, the leg, the ETA in IC and real time, docked or under way. TANKAGE: reaction mass aboard and the burn the plan needs. STORES: crew-days against the passage. HOLD: tonnes and cubic metres by good against both limits, FULL lit under whichever reads it, or both. BERTH: the gallery's name, or SEALED.",
+                "displays": "COURSE: the route, the leg, the ETA, docked or under way. TANKAGE: reaction mass aboard and the burn the plan needs. STORES: crew-days against the passage. HOLD: tonnes and cubic metres by good against both limits, FULL lit under whichever reads it, or both. BERTH: the gallery's name, or SEALED.",
                 "ROM pane": "CLASS 0. It flies a filed sailing plan to the second and contracts for nothing; the signature on the plan is the captain's, and under the Warrant so is the liability.",
-                "sailing plan": "A paper copy of +ship/orders, the orders numbered, the departure hour circled.",
+                "sailing plan": "A paper copy of the sailing plan, the orders numbered, the departure hour circled.",
                 "checklist": "BEFORE CLEARANCE: tank ≥ burn. Locker ≥ days. Payload under the rail. Crew of record aboard. Plan filed. Someone has ticked every box in pen and then added \"sleep\"."
               }
             },
@@ -154,7 +154,7 @@
               "short_desc": "A tall, cold bay of bins and lashing rails, lit blue, the load cells glowing by the hatch.",
               "desc": "A tall, cold bay of bulk bins, canister racks and lashing rails under blue work light, crossed by a catwalk from the deck hatch to the engineering ladder. The load cells' readout glows on the forward bulkhead: tonnes and cubic metres by good, and the hold's two limits under them. Frost forms on the ice canisters and nowhere else; the concentrate bins are dusted grey; yard crates, when there are any, take the bay the bins leave. The air is dry and tastes of metal, and every footfall on the catwalk rings down into the stowage frames below. The passage is up; engineering is down.",
               "details": {
-                "load cells": "One line per good the hold accepts, tonnes and cubic metres side by side, a TOTAL line under them and LIMIT 100 t / 120 m³ under that, with FULL lit under whichever limit reads it, or both; cubic metres to a tenth, truncated, never rounded up. The figures are the cargo pool's own, rendered when the room is looked at (the cargo gauge of interior.gauges, a look_rendered line, not this text), so no two hulls and no two days read alike and nothing here carries a load.",
+                "load cells": "One line per good the hold accepts, tonnes and cubic metres side by side, a TOTAL line under them and a LIMIT line under that, with FULL lit under whichever limit reads it, or both; cubic metres to a tenth, truncated, never rounded up. The figures are the cargo's own and change with every lot that comes aboard or leaves.",
                 "bins": "Strapped bulk containers in stowage frames, numbered; behind them the racks nobody walks, where the cargo physically is.",
                 "racks": "The canister racks fill before the bins weigh out: ice runs out of room, concentrate runs out of rating.",
                 "crates": "Yard crates, mostly air and dunnage; four of them fill a bay a single bin of concentrate outweighs.",
@@ -169,7 +169,7 @@
               "short_desc": "A cramped, warm, loud crawlway of pump housings and tank gauges.",
               "desc": "A crawlway under the hold: pump housings, the reaction-mass feed manifold and its isolation valves, the drive's service panels behind warning stencils, and a row of tank gauges along the aft bulkhead. It is warm and loud, the drive's hum a pressure in the ears, and the air smells of lubricant and hot insulation. A stencil on the reactor shield's bulkhead says not to lean on it. The hold is up the ladder; there is no other way out.",
               "details": {
-                "tank gauges": "Reaction mass aboard against 80 t, and under it BURN FOR THE FILED PLAN and RESERVE AFTER. Carrying reserve costs reserve; the gauge does not say so, but the plan does.",
+                "tank gauges": "Reaction mass aboard against the tank's rating, and under it BURN FOR THE FILED PLAN and RESERVE AFTER. Carrying reserve costs reserve; the gauge does not say so, but the plan does.",
                 "manifold": "The feed from the tankage to the drive, with isolation valves tagged by date. The bunkering hoses connect out here, at the berth, on the schedule.",
                 "service panels": "Sealed, stencilled DRIVE — STICKNEY YARDS — NO USER-SERVICEABLE PARTS, and under it, smaller, in pen, \"ha\".",
                 "shield bulkhead": "Warm to the touch. DO NOT LEAN. Somebody has."
@@ -179,11 +179,11 @@
               "id": "stowage",
               "name": "Hold Stowage",
               "kind": "store",
-              "desc": "The bulk bins, the tankage and the stores locker behind the hold's frames and the compartment bulkheads: racks, pipes and sealed cases, reached by panels and hoses, not by hatches. The frames are the volume: a hundred and twenty cubic metres of rated bay behind the cells, which is the second limit the load cells read beside the hundred tonnes. Not a place anyone walks."
+              "desc": "The bulk bins, the tankage and the stores locker behind the hold's frames and the compartment bulkheads: racks, pipes and sealed cases, reached by panels and hoses, not by hatches. The frames are the volume: the rated bay behind the cells, the second limit the load cells read beside the tonnes. Not a place anyone walks."
             }
           ],
           "exits": [
-            { "from": "airlock", "to": "passage", "names": ["Inner Hatch <I>;inner;in;passage", "Airlock <A>;airlock;lock;forward"] },
+            { "from": "airlock", "to": "passage", "names": ["Inner Hatch <I>;inner;in;passage", "Airlock <A>;airlock;forward"] },
             { "from": "passage", "to": "bridge", "names": ["Bridge <U>;bridge;up;u", "Passage <D>;passage;down;d"] },
             { "from": "passage", "to": "crew", "names": ["Crew Compartment <C>;crew;galley;bunks;aft", "Passage <P>;passage;out;forward"] },
             { "from": "passage", "to": "hold", "names": ["Cargo Hold <H>;hold;down;d", "Passage <U>;passage;up;u"] },

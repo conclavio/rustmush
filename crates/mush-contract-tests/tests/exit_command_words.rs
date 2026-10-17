@@ -18,7 +18,9 @@
 //! segment of every shipped exit — the starter lot's three packs and, since doc 18
 //! cut IC1, the trade run's four station packs
 //! (`tacsim::definitions::content::station_packs`), whose Limbo door `c` and
-//! twenty-three room exits boot on every production world with `[tacsim].enabled`
+//! twenty-three room exits boot on every production world with `[tacsim].enabled`,
+//! and, since doc 18 cut IC8, the Dray's interior exits (laid up in every programme
+//! hull; IC4's C7, which is why the Airlock's `lock` alias went at Dray v2)
 //! — against every verb a **module** registered in
 //! the production composition, and pins the overlap to the exact two rows F.4
 //! decided to keep. The next one — an exit called `sim` in the Simulator Lobby
@@ -77,6 +79,31 @@ fn shipped_exit_segments() -> Vec<(String, String)> {
                 for segment in name.split(';').map(str::trim).filter(|s| !s.is_empty()) {
                     rows.push((id.to_string(), segment.to_lowercase()));
                 }
+            }
+        }
+    }
+    // Doc 18 cut IC8 (IC4 C7): the Dray's interior exits, laid up in every programme
+    // hull, as `tacsim.unit.dray/<from>-<to>`.
+    let dray = tacsim::pack::load_pack(tacsim::definitions::content::DRAY_JSON)
+        .expect("the Dray pack loads");
+    let unit = mush_core::CanonicalId::new(tacsim::definitions::content::DRAY).expect("the id");
+    let Some(tacsim::pack::PackEntry::Unit(spec)) = dray.entry(&unit) else {
+        panic!("the Dray pack carries the Dray unit");
+    };
+    let interior = spec
+        .interior
+        .as_ref()
+        .expect("the Dray authors an interior");
+    for exit in &interior.exits {
+        let id = format!(
+            "{}/{}-{}",
+            tacsim::definitions::content::DRAY,
+            exit.from,
+            exit.to
+        );
+        for name in &exit.names {
+            for segment in name.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                rows.push((id.clone(), segment.to_lowercase()));
             }
         }
     }

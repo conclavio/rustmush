@@ -3,9 +3,8 @@
 //!
 //! A `port` entry is applied once, under the content latch, by this applier —
 //! registered from `crate::content::register_appliers` at **phase 11**, after
-//! the places (5) and the routes (6) of its own pack. It does four things and
-//! nothing else (parts d–e, the vendors and their stock, are cut IC8's and go
-//! in before f):
+//! the places (5) and the routes (6) of its own pack. It does six things and
+//! nothing else:
 //!
 //! - **(a) the domain** — ONE passive domain per port, hosted on the lane's
 //!   location room and presenting in the station's berth gallery (the room
@@ -17,6 +16,13 @@
 //!   and one scoped `tacsim.credit` account, capitalized by one-shot
 //!   `create_system_obligation` tranches of at most 800,000 cr
 //!   ([`crate::port::tranches`]);
+//! - **(d) the goods catalog** (cut IC8) — `tacsim.goods` loaded into the market
+//!   on every apply (idempotent);
+//! - **(e) the vendors and their stock** (cut IC8) — the port's stock clerk, the
+//!   board rooms, per vendor its storefront vault, market vendor, the clerk's
+//!   `vault.withdraw` grant, its stock plan rows and its standing bids
+//!   ([`crate::port::vendor`]); the stock arm of the port tick mints, dissolves and
+//!   lists, never the applier;
 //! - **(f) the hulls** (cut IC4) — for an entry whose `programme` names a pool,
 //!   each hull laid up from the programme unit's `interior` template in the
 //!   berth gallery and titled to the programme org ([`crate::port::hull`]).
@@ -44,7 +50,12 @@
 //! refused, never re-created. Hulls re-apply by map row, never by name: a grown
 //! pool makes only the new hulls, and a shrunk pool, a changed prefix or a
 //! recorded object gone is refused as drift (cut IC4, L10).
-//! Retire leaves everything standing, the hulls included.
+//! Vendors re-apply by map row too (cut IC8): a recorded stock row is never
+//! re-issued or re-sized (Q-18-19, lead ruling L6), a recorded bid is revised in
+//! place, and a re-priced ask's Draw listing is withdrawn for the arm to relist.
+//! Retire withdraws the vendors' Draw listings and standing bids (cut IC8) and
+//! leaves everything else standing, the hulls included; a vendor with an open
+//! deal refuses it.
 
 use std::collections::BTreeMap;
 
@@ -90,6 +101,33 @@ pub fn room_by_key(w: &World, key: &RecordKey) -> Option<ObjId> {
                 o.kind == ObjKind::Room && !o.flags.contains(mush_core::Flags::GOING)
             })
         })
+}
+
+/// **Doc 18 cut IC8's vault allocator reach** (the state-slot gate): the economy's
+/// allocator, reached only here so `apply.rs`'s rows cover `crate::port::vendor`.
+///
+/// # Errors
+///
+/// When the economy is not composed or the allocator is spent.
+pub(super) fn alloc_vault_id(ctx: &mut Ctx<'_>) -> Result<mush_economy::VaultId, String> {
+    ctx.w
+        .module_state_mut::<EconomyStore>()
+        .ok_or_else(|| "the economy is not composed".to_owned())?
+        .alloc_vault()
+        .ok_or_else(|| "the vault allocator is spent".to_owned())
+}
+
+/// **Doc 18 cut IC8's grant allocator reach** (the state-slot gate): the org store's
+/// allocator, reached only here so `apply.rs`'s rows cover `crate::port::vendor`.
+///
+/// # Errors
+///
+/// When organizations are not composed.
+pub(super) fn alloc_grant_id(ctx: &mut Ctx<'_>) -> Result<mush_org::GrantId, String> {
+    ctx.w
+        .module_state_mut::<OrgStore>()
+        .map(OrgStore::alloc_grant)
+        .ok_or_else(|| "organizations are not composed".to_owned())
 }
 
 /// The `tacsim.credit` instrument id.
@@ -217,11 +255,6 @@ impl PortApplier {
         id: &CanonicalId,
         def: &PortDef,
     ) -> Result<(), String> {
-        if !def.vendors.is_empty() {
-            return Err(format!(
-                "{id}: port vendors are not applied by this server yet"
-            ));
-        }
         let Some(tacsim) = w.module_state::<TacsimStore>() else {
             return Err(format!(
                 "{id}: the TacSim layer is not composed on this world"
@@ -293,6 +326,10 @@ impl PortApplier {
                 map,
             )?;
         }
+        // The vendors (cut IC8, parts d–e): the market, the catalogue rows, the
+        // storefronts, signatories, clerk and board rooms, and every recorded
+        // stock-row and bid drift.
+        crate::port::vendor::preflight(w, id, def, map)?;
         // The hulls (cut IC4, part f): the template, the issuer, the exit words
         // and every hull drift, and how many hulls this pass would title.
         let hulls_to_title = crate::port::hull::preflight(reg, w, pack, id, def, map)?;
@@ -495,8 +532,8 @@ impl PortApplier {
         Ok(def)
     }
 
-    /// **The apply** (create and update alike): parts a–c and f in order, the
-    /// map written after every act. It answers `Ok(None)`: the hulls are
+    /// **The apply** (create and update alike): parts a–f in order, the map
+    /// written after every act; nothing is submitted. It answers `Ok(None)`: the hulls are
     /// recorded in the port map, not in the latch (the host room is the
     /// `location` entry's).
     #[allow(clippy::too_many_lines)]
@@ -772,9 +809,13 @@ impl PortApplier {
             }
         }
 
+        // (d)–(e) The goods catalog, then the vendors and their stock (cut IC8):
+        // after the institutions, because each vendor's vault and account are its
+        // org's. Normal-lane writes only; the stock arm mints and lists.
+        crate::port::vendor::put(ctx, id, &def, &mut map)?;
+
         // (f) The hulls (cut IC4; L8): after the institutions, because the
-        // title goes to the programme org part c made in this same pass. Cut
-        // IC8's parts d–e go in before this.
+        // title goes to the programme org part c made in this same pass.
         if let Some(programme) = &def.programme {
             let domain = map
                 .domain
@@ -820,7 +861,8 @@ fn retire_refusal(w: &World, pack: &CanonicalId, id: &CanonicalId) -> Result<(),
             return Err(leased_refusal(id, &row.mark));
         }
     }
-    Ok(())
+    // Doc 18 cut IC8: a vendor with an open market deal keeps the port standing.
+    crate::port::vendor::retire_refusal(w, id, map)
 }
 
 impl EntryApplier for PortApplier {
@@ -890,24 +932,39 @@ impl EntryApplier for PortApplier {
         // port with a chartered hull is not retired out from under its pilot.
         // The lessor is read from the map's own org rows — every institution
         // the port made, the programme's Trust among them — so the check needs
-        // no pack version to name the programme org. No vendors (IC8) yet.
+        // no pack version to name the programme org. Cut IC8: a vendor with an
+        // open market deal (a contract not yet settled) refuses too.
         retire_refusal(ctx.w, pack, id)
     }
 
     fn retire(
         &self,
-        _ctx: &mut Ctx<'_>,
+        ctx: &mut Ctx<'_>,
         pack: &CanonicalId,
         id: &CanonicalId,
         _existing: Option<ObjId>,
     ) -> Result<(), String> {
         // Doc 18 §4.7: "Retire withdraws asks and bids; matter, receipts, orgs,
-        // accounts and hulls stand." There are no asks or bids yet, so it writes
-        // nothing; the map is kept so a later apply reuses every row.
+        // accounts and hulls stand." Cut IC8: the vendors' Draw listings and
+        // standing bids are withdrawn (neither stages anything); any other
+        // vendor listing is left and logged. The map is kept so a later apply
+        // reuses every row — except the bid rows this retire withdrew, which
+        // it forgets so that apply posts them afresh (never "intake taken").
+        let map =
+            ctx.w
+                .module_state::<TacsimStore>()
+                .and_then(|store| match store.port_map(pack, id) {
+                    PortMapState::Present(map) => Some(map.clone()),
+                    PortMapState::Absent | PortMapState::Unreadable => None,
+                });
+        if let Some(mut map) = map {
+            crate::port::vendor::retire_listings(ctx, id, &mut map);
+        }
         tracing::info!(
             %pack, %id,
-            "tacsim: a port entry retired; its domain, orgs, accounts, obligations and hulls \
-             stand and its port map is kept"
+            "tacsim: a port entry retired; its vendors' asks and bids are withdrawn, and its \
+             domain, orgs, accounts, obligations, vaults, vendors, stock, clerk and hulls stand \
+             and its port map is kept"
         );
         Ok(())
     }

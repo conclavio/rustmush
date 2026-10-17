@@ -485,7 +485,7 @@ pub(crate) mod tests {
         };
         let onboarding = mush_core::OnboardingConfig::default();
         let game = crate::GameEconomyConfig::default();
-        let mut mods = comp::server_modules_with(
+        let (mut mods, inventory) = comp::server_modules_with_tacsim(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
@@ -501,7 +501,7 @@ pub(crate) mod tests {
             comp::npc_agent_adapter(),
             &mush_config::config::NpcCfg::default(),
         ));
-        mods.push(comp::tacsim_module(cfg));
+        mods.push(comp::tacsim_module_wired(cfg, false, inventory));
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mush_testkit::TestWorld::with_modules(mods)
     }

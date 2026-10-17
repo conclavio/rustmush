@@ -336,6 +336,17 @@ pub struct Ctx<'a> {
     pub typed_state: crate::action_state::ModuleActionState<'a>,
 }
 
+impl Ctx<'_> {
+    /// Whether `actor` already has an authoritative submission in flight —
+    /// queued in the engine by an earlier drain, or deferred in this outbox
+    /// (doc 18 cut IC8; [`Outbox::authoritative_pending`]). A tick acting as
+    /// a principal asks before it submits.
+    #[must_use]
+    pub fn authoritative_pending(&self, actor: ObjId) -> bool {
+        self.out.authoritative_pending(actor)
+    }
+}
+
 /// A command implementation. Registered as `Arc<dyn CommandHandler>`
 /// (treaty ruling 4) so modules can capture state; the blanket impl lets
 /// plain functions and closures register directly.

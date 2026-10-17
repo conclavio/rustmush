@@ -953,8 +953,10 @@ fn e7r2_p4_the_salvage_fact_is_answered_from_the_marker_and_never_from_a_status(
     );
 }
 
-/// **`with_facts` is still five namespaces.** Item 26 added a kind, never a sixth
-/// namespace, and a duplicate would panic at composition.
+/// **`with_facts` is six namespaces, one provider each.** Item 26 added a kind, never a
+/// namespace (a duplicate would panic at composition); doc 18 cut IC8 added the sixth,
+/// `market.*` (`mush_market::MarketFactProvider`), on the market's own namespace. The
+/// test keeps its name; what it guards is that salvage added no namespace.
 #[test]
 fn e7r2_p4_the_fact_provider_registers_no_sixth_namespace() {
     // The composition root lives in the game crate since 16b cut R-a (R2).
@@ -968,8 +970,8 @@ fn e7r2_p4_the_fact_provider_registers_no_sixth_namespace() {
     let body = &src[at..end];
     assert_eq!(
         body.matches("FactProvider").count(),
-        5,
-        "five providers, one per namespace: {body}"
+        6,
+        "six providers, one per namespace: {body}"
     );
     assert!(
         !body.contains("Salvage"),

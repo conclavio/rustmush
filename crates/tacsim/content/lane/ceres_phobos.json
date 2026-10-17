@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 2,
+    "version": 3,
     "kind": "campaign_seed",
-    "digest": "3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0",
+    "digest": "8d20125693884a8c6739d6dd032d858e474c015726eab54b05dccb17164d0ad4",
     "requires": []
   },
   "entries": {
@@ -178,6 +178,24 @@
           "dormancy_real_days": 7,
           "per_account": 1
         },
+        "vendors": [
+          { "org": "freeport_exchange", "storefront": "neighborhood.ceres_freeport.item.exchange_manifold",
+            "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.sondergaard",
+            "stock": [ { "good": "metals", "qty": 4000, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "metals", "price_major": 200, "boards": ["exchange"] } ],
+            "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 7000, "as": "Freeport Works", "boards": ["exchange"] } ] },
+          { "org": "occator", "storefront": "neighborhood.ceres_freeport.item.occator_manifold",
+            "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.qureshi",
+            "stock": [ { "good": "volatiles", "qty": 9600, "grade": 50, "issue": 1 },
+                       { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "volatiles", "price_major": 100, "boards": ["exchange"] },
+                       { "good": "propellant", "price_major": 40, "boards": ["exchange"] } ] },
+          { "org": "coop", "storefront": "neighborhood.ceres_freeport.item.chandlery_cage",
+            "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.akintola",
+            "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "provisions", "price_major": 10 } ],
+            "bids":  [ { "good": "industrial_parts", "price_major": 560, "intake": 5400, "boards": ["chandlery"] } ] }
+        ],
         "routes": { "stickney": [ "ceres_stickney" ] }
       }
     },
@@ -202,6 +220,24 @@
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic" },
           { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic" },
           { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic" }
+        ],
+        "vendors": [
+          { "org": "kasei", "storefront": "neighborhood.stickney_yards.item.kasei_manifold",
+            "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.achterberg",
+            "stock": [ { "good": "structural_alloys", "qty": 7000, "grade": 50, "issue": 1 },
+                       { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "structural_alloys", "price_major": 400, "boards": ["exchange"] },
+                       { "good": "propellant", "price_major": 60, "boards": ["exchange"] } ],
+            "bids":  [ { "good": "metals", "price_major": 280, "intake": 4000, "boards": ["receiving", "exchange"] },
+                       { "good": "volatiles", "price_major": 200, "intake": 9600, "boards": ["receiving", "exchange"] } ] },
+          { "org": "stickney_yards", "storefront": "neighborhood.stickney_yards.item.yard_spares",
+            "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.castillo_haugen",
+            "stock": [ { "good": "industrial_parts", "qty": 5400, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "industrial_parts", "price_major": 400, "boards": ["exchange", "yard"] } ] },
+          { "org": "yard_commissary", "storefront": "neighborhood.stickney_yards.item.commissary_locker",
+            "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.okonkwo",
+            "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ] }
         ],
         "routes": { "ceres": [ "stickney_ceres" ] }
       }

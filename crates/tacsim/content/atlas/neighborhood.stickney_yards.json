@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.stickney_yards",
-    "version": 1,
+    "version": 2,
     "kind": "neighborhood",
-    "digest": "6a2cb6004dc2c7af9aeba3f3f27b6c1619fc03ed1d83feb02270a30a30def90b",
+    "digest": "39aab74e2f7a56e2b71ee7cffcdd34168ad706fbc1317240d989d2dc95c42d42",
     "requires": [
       {
         "id": "region.stickney_yards",
@@ -519,7 +519,7 @@
         "details": {
           "Dray price card": "DRAY-CLASS BULK HAULER, NEW, STICKNEY BUILD — 120,000cr, delivery subject to yard-time. The card is the figure a charter pilot measures a career against. Under it, in pencil: \"used ones exist, ask Tycho\".",
           "hull cards": "A card per class with a profile drawing and a dry mass. The Dray's reads \"slow, efficient, unarmed\"; the Vigil's reads \"fast, expensive, visible from a long way off\", which is the Yard quoting the Guard's own brochure.",
-          "fittings card": "YARD FITTINGS, CRATED — PER TONNE, THE FIGURE ON THE CARD THIS CYCLE — REMAINING — pressure fittings, ducting and tank sections, Stickney build, crated with dunnage for the Belt run. In pen under it: \"2.3 cubes to the tonne. Your problem, captain.\" The Yard's one line of trade, signed by the clerk; the card is the listing (LookRendered), +market/list shows it and +market/quote draws it into a docked hull.",
+          "fittings card": "YARD FITTINGS, CRATED — PER TONNE — REMAINING — pressure fittings, ducting and tank sections, Stickney build, crated with dunnage for the Belt run. In pen under it: \"2.3 cubes to the tonne. Your problem, captain.\" The Yard's one line of trade, signed by the clerk; the figures under it are the Yard's own and change when the Yard says so.",
           "window": "A cradle, a hull with its drive section open, three workers on tethers and one supervisor who is not. The work is slow. It is always slow, and it is always going on."
         }
       }

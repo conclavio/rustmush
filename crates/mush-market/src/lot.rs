@@ -1334,3 +1334,129 @@ pub fn hold_ttl_real_secs(w: &mush_core::World) -> Option<i64> {
     let rate = i64::from(w.world_timeline().current().rate);
     (rate > 0).then(|| mush_inventory::RESERVATION_TTL_SECS / rate)
 }
+
+// ---- doc 18 cut IC8: the lapsed hold's release, made by its holder ----------
+
+/// **One lapsed hold-backed listing** (doc 18 cut IC8; D-18-26, Q-18-31): what a
+/// releaser needs to stage the holder's own release and to tell them afterwards.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LapsedHold {
+    /// The listing.
+    pub listing: ListingId,
+    /// The endpoint its hold sits in (the seller's own vault).
+    pub endpoint: EndpointRef,
+    /// The commodity's pool there.
+    pub commodity: CanonicalId,
+    /// How much the hold reserves (the listing's quantity).
+    pub quantity: u64,
+    /// The grade the listing advertised.
+    pub grade: u8,
+    /// The catalogue entry's name, for the holder's notice.
+    pub name: String,
+}
+
+/// **The live hold-backed listings whose `RealUtc` deadline has passed** (doc 18 cut
+/// IC8), in ascending id order, at most `limit` — the lapsed listings the market sweep
+/// keeps until their hold reads `Gone` (`boot::sweep`). A pure read of the market's
+/// documents; whether the hold is still held is the releaser's to find out, by staging.
+#[must_use]
+pub fn lapsed_holds(w: &mush_core::World, limit: usize) -> Vec<LapsedHold> {
+    lapsed_holds_where(w, limit, |_| true)
+}
+
+/// [`lapsed_holds`], keeping only the entries `keep` accepts, **filtered before the
+/// limit is taken** — so a releaser that skips some listings (an org-owned vault, a
+/// holder it has just been refused for) is never starved by a window full of them.
+/// Bounded by the store's own live set (`MAX_LISTINGS`).
+#[must_use]
+pub fn lapsed_holds_where(
+    w: &mush_core::World,
+    limit: usize,
+    mut keep: impl FnMut(&LapsedHold) -> bool,
+) -> Vec<LapsedHold> {
+    let Some(store) = w.module_state::<crate::store::MarketStore>() else {
+        return Vec::new();
+    };
+    let now = w.now();
+    store
+        .lot_listings()
+        .filter(|l| crate::projection::lapsed(l.expires.at, l.expires.clock, now))
+        .filter_map(|l| {
+            let (endpoint, commodity, grade) = l.source.lot()?;
+            Some(LapsedHold {
+                listing: l.id,
+                endpoint,
+                commodity: commodity.clone(),
+                quantity: l.quantity,
+                grade,
+                name: store
+                    .entry_of(&l.catalog)
+                    .map_or_else(|| l.catalog.code.to_string(), |e| e.name.to_string()),
+            })
+        })
+        .filter(|hold| keep(hold))
+        .take(limit)
+        .collect()
+}
+
+/// **Release a lapsed listing's hold, as its holder** (doc 18 cut IC8, lead rulings L7
+/// and L20; D-18-26, Q-18-31: never by the GOD lapse sweep). The listing must exist, be
+/// hold-backed and be lapsed, and `ctx.actor` must be able to take from its endpoint
+/// (`mush_inventory::may_take`). It stages the one `release` leg through
+/// [`stage`] **as `ctx.actor`**, keyed exactly as every release is
+/// (`market.lot.release.{listing:x}.{ic second:x}`); the reservation it releases is the
+/// derived [`listing_reservation`]. It **does not delete the document**: the market
+/// sweep deletes it once the hold reads `Gone`, which is the releaser's pull
+/// verification. A re-stage after the hold is gone is refused by `require_held` in the
+/// prepare and applies nothing twice.
+///
+/// # Errors
+///
+/// [`crate::MarketError::NoStanding`] for no such listing (or one the actor cannot take
+/// from), [`crate::MarketError::Bad`] for one that is not a lapsed hold-backed listing
+/// or when staging failed.
+pub fn release_lapsed_hold(
+    ctx: &mut mush_core::Ctx<'_>,
+    id: ListingId,
+) -> Result<(), crate::api::MarketError> {
+    let Some(listing) = ctx
+        .w
+        .module_state::<crate::store::MarketStore>()
+        .and_then(|s| s.listing(id).cloned())
+    else {
+        return Err(crate::api::MarketError::NoStanding(
+            crate::api::NO_SUCH_LISTING,
+        ));
+    };
+    let Some((endpoint, commodity, grade)) = listing.source.lot() else {
+        return Err(crate::api::MarketError::bad(
+            "That listing holds no stock, so there is nothing to release.",
+        ));
+    };
+    if !mush_inventory::may_take(ctx.w, ctx.actor, endpoint) {
+        return Err(crate::api::MarketError::NoStanding(
+            crate::api::NO_SUCH_LISTING,
+        ));
+    }
+    if !crate::projection::lapsed(listing.expires.at, listing.expires.clock, ctx.w.now()) {
+        return Err(crate::api::MarketError::bad(
+            "That listing has not lapsed; withdraw it to give its stock back.",
+        ));
+    }
+    let leg = LotLeg {
+        op: LotOp::Release,
+        listing: id,
+        endpoint,
+        source: endpoint,
+        commodity: commodity.clone(),
+        quantity: listing.quantity,
+        grade,
+        contract: None,
+    };
+    if !stage(ctx, &leg) {
+        return Err(crate::api::MarketError::bad(
+            "This server cannot move lot stock right now, so nothing was released.",
+        ));
+    }
+    Ok(())
+}

@@ -438,7 +438,7 @@ fn port_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !(lhs.is_empty() || lhs.eq_ignore_ascii_case("status")) {
         return Err(CmdError::msg(PORT_USAGE));
     }
-    let rows = crate::port::readiness(ctx.w).render();
+    let rows = crate::port::readiness_in(ctx).render();
     lines(ctx, rows);
     Ok(())
 }

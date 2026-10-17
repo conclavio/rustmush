@@ -151,6 +151,14 @@ pub struct Outbox {
     /// How much of `deferred` is **pinned** — non-truncatable by a failing
     /// handler. See [`Outbox::pin_deferred`].
     deferred_pin: usize,
+    /// The actors whose authoritative submission already sits in the
+    /// **engine's** queue from an earlier drain (doc 18 cut IC8, IC5's
+    /// residual): [`Engine::fire_due`](crate::engine::Engine::fire_due) notes
+    /// them before it pops anything and clears the note after its one
+    /// `drain_deferred`, so a tick acting as a principal can ask
+    /// [`authoritative_pending`](Self::authoritative_pending) before it
+    /// submits and defer instead of drawing the back-pressure refusal.
+    pending_authoritative: std::collections::BTreeSet<ObjId>,
 }
 
 impl Outbox {
@@ -418,6 +426,32 @@ impl Outbox {
     #[must_use]
     pub fn deferred(&self) -> &[Deferred] {
         &self.deferred
+    }
+
+    /// Replace the note of actors whose authoritative submission is already
+    /// queued in the engine (doc 18 cut IC8). Only the engine's `fire_due`
+    /// calls it: once with the engine queue's keys before it pops anything,
+    /// once with nothing after its drain.
+    pub fn note_pending_authoritative(&mut self, actors: impl IntoIterator<Item = ObjId>) {
+        self.pending_authoritative = actors.into_iter().collect();
+    }
+
+    /// Whether `actor` already has an authoritative submission in flight that
+    /// a second one would collide with (doc 18 cut IC8): either one the engine
+    /// queued on an earlier drain (the noted set), or one this outbox already
+    /// carries as a [`Deferred::AuthoritativeSubmit`] for the same actor, which
+    /// the coming drain would fan out with. A tick that acts as a principal
+    /// asks before it submits and defers on `true`.
+    ///
+    /// It does **not** see a principal's own `@wait` line that fires later in
+    /// the same `fire_due` slice than the asker; that one still fans out with
+    /// the asker's submission (the recorded residual).
+    #[must_use]
+    pub fn authoritative_pending(&self, actor: ObjId) -> bool {
+        self.pending_authoritative.contains(&actor)
+            || self.deferred.iter().any(
+                |d| matches!(d, Deferred::AuthoritativeSubmit(request) if request.actor == actor),
+            )
     }
 
     /// Pin the deferred-work queued **so far** as non-truncatable: a later
@@ -715,6 +749,50 @@ mod tests {
         let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
         let hall = w.create(ObjKind::Room, "Hall", GOD, None).unwrap();
         (w, nick, hall)
+    }
+
+    /// Doc 18 cut IC8: the seam a tick asks before it acts as a principal
+    /// answers from the engine's noted queue and from this outbox's own
+    /// deferred submissions, and forgets the note once it is cleared.
+    #[test]
+    fn ic8_authoritative_pending_sees_the_engine_queue_and_this_outbox() {
+        use crate::mechanics::{
+            DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, OwnerId,
+        };
+        let noted = ObjId(11);
+        let deferring = ObjId(12);
+        let other = ObjId(13);
+        let mut out = Outbox::new();
+        out.note_pending_authoritative([noted]);
+        let action = DefinitionRef::new(
+            DefinitionKey::new(
+                OwnerId::new("toy").unwrap(),
+                DefinitionKind::new("action").unwrap(),
+                DefinitionId::new("toy_act").unwrap(),
+            ),
+            1,
+            DefinitionDigest::from_bytes([7; 32]),
+        )
+        .unwrap();
+        out.defer(Deferred::AuthoritativeSubmit(Box::new(
+            crate::engine::AuthoritativeSubmit {
+                actor: deferring,
+                action,
+                subject: crate::action::PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+                key: crate::action::IdempotencyKeyText::parse_canonical("toy.key").unwrap(),
+            },
+        )));
+        assert!(
+            out.authoritative_pending(noted),
+            "the engine's queue is seen"
+        );
+        assert!(out.authoritative_pending(deferring), "this outbox is seen");
+        assert!(!out.authoritative_pending(other));
+        out.note_pending_authoritative([]);
+        assert!(!out.authoritative_pending(noted), "the note is cleared");
+        assert!(out.authoritative_pending(deferring));
     }
 
     #[test]

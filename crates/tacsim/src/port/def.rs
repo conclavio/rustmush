@@ -18,7 +18,7 @@
 //! | `treasury`, `orgs` | the `PortApplier`'s treasury, orgs and capital (IC3, parts b–c) |
 //! | `area`, `rooms` | the readiness report (IC3); the desks of IC6–IC8 |
 //! | `programme` | the readiness report (IC3); `+coop/enrol` (IC6), the hulls (IC4), buyout and dormancy (IC13) |
-//! | `vendors` | schema only here; the vendors, vaults, clerks and listings of IC8 (parts d–e) |
+//! | `vendors` | the `PortApplier`'s parts d–e (IC8): vendors, storefront vaults, the clerk, grants, plan rows, boards, Wanted bids; the stock arm |
 //! | `routes` | validated here; the passage planner's route list (IC9, D-18-47) |
 //! | `venue` | the routes key; the market venue (IC7/IC8) |
 //! | `faction` (per org) | nothing until the faction cut (carried and validated, L16) |
@@ -111,8 +111,9 @@ pub struct PortDef {
     /// The First Captain programme, where the port runs one (Ceres).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub programme: Option<ProgrammeDef>,
-    /// The vendors: schema now (signatory required), applied from cut IC8. A
-    /// non-empty list is refused by this server's applier.
+    /// The vendors (signatory required), applied by the `PortApplier`'s parts
+    /// d–e from cut IC8: storefront vaults, market vendors, the clerk, its
+    /// grants, the stock plan rows, the boards and the standing bids.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vendors: Vec<VendorDef>,
     /// Destination venue → a non-empty list of route ids of this pack
@@ -175,16 +176,21 @@ pub struct ProgrammeDef {
     pub per_account: u32,
 }
 
-/// **One vendor** (doc 18 §4.7; applied from cut IC8, which owns its
-/// semantics and may amend this schema — no data is authored against it yet).
+/// **One vendor** (doc 18 §4.7, §4.3 "Vendors and buyers"; applied by the
+/// `PortApplier`'s parts d–e from cut IC8): an org of the entry that sells its
+/// finite stock from one storefront vault and posts its standing bids.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VendorDef {
     /// The org that trades: one of this entry's orgs.
     pub org: CanonicalId,
-    /// `"<area>.<entry>"`: the room it trades in.
+    /// `<area>.<entry>` of an `item` in the port's `spine` room: the container
+    /// its storefront vault is backed by.
     pub storefront: String,
-    /// The market agent it trades through.
+    /// **The port's stock clerk** (doc 18 cut IC8, lead ruling L2; D-18-26 "a
+    /// per-port clerk actor"): every vendor of one port names the same agent
+    /// id, and no two ports share one. The applier makes one clerk Thing per
+    /// port under it.
     pub agent: CanonicalId,
     /// `"<area>.<entry>"`: the Warrant signatory, an npc of the area.
     /// **Required** — no serde default.
@@ -222,6 +228,11 @@ pub struct AskDef {
     pub good: CanonicalId,
     /// The price, major units per quote unit, `>= 1`.
     pub price_major: u64,
+    /// The room roles (keys of the entry's `rooms`, never `spine`) whose look
+    /// renders this line on its board (doc 18 cut IC8, lead ruling L15: 18a's
+    /// room-by-room Items entries). Empty: no board shows it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boards: Vec<CanonicalId>,
 }
 
 /// One Wanted bid of a vendor.
@@ -237,6 +248,10 @@ pub struct BidDef {
     /// The name the bid posts under, when not the good's.
     #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
     pub as_name: Option<String>,
+    /// The room roles whose look renders this bid on its board, as
+    /// [`AskDef::boards`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boards: Vec<CanonicalId>,
 }
 
 /// **An institution's capital as tranches** (D-18-14; doc 18 §4.3): greedy
@@ -414,6 +429,92 @@ impl PortDef {
                     vendor.org, bid.good
                 ));
             }
+            // Doc 18 cut IC8 (fixer F3): a bid's intake is its posted remaining, which
+            // the market bounds; refused here, at load, so the applier never makes a
+            // vendor's clerk, vault and grant and then fails at `post_wanted`.
+            if let Some(bid) = vendor
+                .bids
+                .iter()
+                .find(|bid| bid.intake > mush_market::MAX_QUANTITY)
+            {
+                return Err(format!(
+                    "vendor {}: bid {}: intake must be at most {}",
+                    vendor.org,
+                    bid.good,
+                    mush_market::MAX_QUANTITY
+                ));
+            }
+            self.check_vendor_lines(vendor)?;
+        }
+        // Doc 18 cut IC8 (lead ruling L2; D-18-26): one stock clerk per port.
+        if let Some(first) = self.vendors.first()
+            && self
+                .vendors
+                .iter()
+                .any(|vendor| vendor.agent != first.agent)
+        {
+            return Err(
+                "vendors: every vendor of a port names the port's one stock clerk".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    /// **One vendor's lines** (doc 18 cut IC8; §4.3 "Vendors and buyers"):
+    /// stock, ask and bid goods each unique within the vendor; every ask drawn
+    /// from a stock row of the same vendor; no good both asked and bid; every
+    /// `boards` role a key of `rooms` other than `spine`, none repeated in one
+    /// line.
+    fn check_vendor_lines(&self, vendor: &VendorDef) -> Result<(), String> {
+        let org = &vendor.org;
+        let mut stock: BTreeSet<&CanonicalId> = BTreeSet::new();
+        if let Some(row) = vendor.stock.iter().find(|row| !stock.insert(&row.good)) {
+            return Err(format!(
+                "vendor {org}: stock {} is authored twice",
+                row.good
+            ));
+        }
+        let mut asks: BTreeSet<&CanonicalId> = BTreeSet::new();
+        if let Some(ask) = vendor.asks.iter().find(|ask| !asks.insert(&ask.good)) {
+            return Err(format!("vendor {org}: ask {} is authored twice", ask.good));
+        }
+        let mut bids: BTreeSet<&CanonicalId> = BTreeSet::new();
+        if let Some(bid) = vendor.bids.iter().find(|bid| !bids.insert(&bid.good)) {
+            return Err(format!("vendor {org}: bid {} is authored twice", bid.good));
+        }
+        if let Some(ask) = vendor.asks.iter().find(|ask| !stock.contains(&ask.good)) {
+            return Err(format!(
+                "vendor {org}: ask {} has no stock row to draw from",
+                ask.good
+            ));
+        }
+        if let Some(good) = asks.intersection(&bids).next() {
+            return Err(format!("vendor {org}: {good} is both asked and bid"));
+        }
+        let lines = vendor
+            .asks
+            .iter()
+            .map(|ask| ("ask", &ask.good, &ask.boards))
+            .chain(
+                vendor
+                    .bids
+                    .iter()
+                    .map(|bid| ("bid", &bid.good, &bid.boards)),
+            );
+        for (side, good, boards) in lines {
+            let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
+            for role in boards {
+                if role.as_str() == "spine" || !self.rooms.contains_key(role) {
+                    return Err(format!(
+                        "vendor {org}: {side} {good}: board `{role}` is not one of the port's rooms"
+                    ));
+                }
+                if !seen.insert(role) {
+                    return Err(format!(
+                        "vendor {org}: {side} {good}: board `{role}` is named twice"
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -532,9 +633,11 @@ impl PortDef {
 /// - every `routes` key is the venue of **another** port entry, and every
 ///   listed id is a `route` entry from this port's location to that port's;
 /// - a programme's `reference` names a trade good of the goods table (one
-///   with a family and no `consumable`) and an `<entry>/<org>` of this pack.
-///   "That org has an ask for the good" lands with the vendors at cut IC8
-///   (lead ruling L8).
+///   with a family and no `consumable`) and an `<entry>/<org>` of this pack;
+///   in an entry that authors vendors (doc 18 cut IC8, lead ruling L23), that
+///   org is a vendor of that entry whose asks include the good;
+/// - (cut IC8) no stock clerk (`vendors[].agent`) serves two port entries;
+/// - (cut IC8) every stock, ask and bid good is a row of the goods table.
 ///
 /// # Errors
 ///
@@ -555,8 +658,18 @@ pub fn check_ports(
     let mut venues: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
     let mut locations: BTreeSet<&CanonicalId> = BTreeSet::new();
     let mut orgs: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
+    let mut agents: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
     for (id, def) in &ports {
         let fail = |detail: String| Err(((*id).clone(), detail));
+        // Doc 18 cut IC8 (lead ruling L2): a stock clerk is one port's.
+        if let Some(vendor) = def.vendors.first()
+            && let Some(other) = agents.insert(&vendor.agent, id)
+        {
+            return fail(format!(
+                "vendors: agent {} is also port {other}'s stock clerk",
+                vendor.agent
+            ));
+        }
         if !matches!(entries.get(&def.location), Some(PackEntry::Location(_))) {
             return fail(format!(
                 "location {} is not a location entry of this pack",
@@ -603,11 +716,34 @@ pub fn check_ports(
                 }
             }
         }
-        if let Some(programme) = &def.programme
-            && !programme.reference.is_empty()
-        {
-            let goods = crate::definitions::goods::goods_table()
-                .map_err(|error| ((*id).clone(), format!("the goods table: {error}")))?;
+        let references = def
+            .programme
+            .as_ref()
+            .filter(|programme| !programme.reference.is_empty());
+        if references.is_none() && def.vendors.is_empty() {
+            continue;
+        }
+        // One load of the goods table for both rules below.
+        let goods = crate::definitions::goods::goods_table()
+            .map_err(|error| ((*id).clone(), format!("the goods table: {error}")))?;
+        // Doc 18 cut IC8: every stock, ask and bid good is a row of the goods table.
+        for vendor in &def.vendors {
+            let named = vendor
+                .stock
+                .iter()
+                .map(|row| &row.good)
+                .chain(vendor.asks.iter().map(|ask| &ask.good))
+                .chain(vendor.bids.iter().map(|bid| &bid.good));
+            for good in named {
+                if goods.good(good).is_none() {
+                    return fail(format!(
+                        "vendor {}: {good} is not a good of the goods table",
+                        vendor.org
+                    ));
+                }
+            }
+        }
+        if let Some(programme) = references {
             for (good, listing) in &programme.reference {
                 let trade = goods
                     .good(good)
@@ -622,18 +758,35 @@ pub fn check_ports(
                     let entry = CanonicalId::parse_canonical(entry).ok()?;
                     let org = CanonicalId::parse_canonical(org).ok()?;
                     match entries.get(&entry) {
-                        Some(PackEntry::Port(port)) => {
-                            Some(port.orgs.iter().any(|row| row.id == org))
-                        }
+                        Some(PackEntry::Port(port)) => port
+                            .orgs
+                            .iter()
+                            .any(|row| row.id == org)
+                            .then_some((port, org)),
                         _ => None,
                     }
                 });
-                if named != Some(true) {
+                let Some((port, org)) = named else {
                     return fail(format!(
                         "programme {}: reference {good} names `{listing}`, which is not \
                          `<port entry>/<org>` of this pack",
                         programme.id
                     ));
+                };
+                // IC3 L8's deferred rule, landed by doc 18 cut IC8 and scoped to an
+                // entry that authors vendors (lead ruling L23): the published v2
+                // (references, no vendors) keeps loading as a latched or seeded pack.
+                if !def.vendors.is_empty() {
+                    let asks = port.vendors.iter().any(|vendor| {
+                        vendor.org == org && vendor.asks.iter().any(|ask| &ask.good == good)
+                    });
+                    if !asks {
+                        return fail(format!(
+                            "programme {}: reference {good} names `{listing}`, which posts no \
+                             ask for it",
+                            programme.id
+                        ));
+                    }
                 }
             }
         }
@@ -813,6 +966,7 @@ mod tests {
             asks: vec![AskDef {
                 good: cid("metals"),
                 price_major: 0,
+                boards: Vec::new(),
             }],
             bids: Vec::new(),
         };

@@ -123,7 +123,7 @@ fn production_modules() -> Vec<Box<dyn GameModule>> {
     let onboarding = config_ext::onboarding_config(&config.onboarding);
     let game = config_ext::tacsim_economy_config(&config.tacsim)
         .expect("the default [tacsim.economy] converts");
-    let mut mods = modules::server_modules_with(
+    let (mut mods, inventory) = modules::server_modules_with_tacsim(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
         config_ext::atlas_config(&config.atlas, &config.worldgen)
@@ -147,8 +147,12 @@ fn production_modules() -> Vec<Box<dyn GameModule>> {
     // still register (they answer "not enabled on this server"), which is exactly
     // what makes the surface the tripwire watches independent of the operator's
     // switches.
-    mods.push(modules::tacsim_module(
+    // Doc 18 cut IC8: composed as `boot::game_modules` composes it — the layer the
+    // third quantity delegate, holding the inventory cell.
+    mods.push(modules::tacsim_module_wired(
         config_ext::tacsim_config(&config.tacsim).expect("the default [tacsim] converts"),
+        false,
+        inventory,
     ));
     // S1: the content module last, as `build_engine` composes it. It registers no
     // verb; it is here so this is the production roster and not most of it.

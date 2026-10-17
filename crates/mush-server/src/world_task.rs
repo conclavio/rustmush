@@ -19640,6 +19640,141 @@ mod tests {
         );
     }
 
+    /// **Doc 18 cut IC8: the stock clerk's first mint drives through the command
+    /// ingress** (lead 2c-v). On the game roster with `[tacsim].enabled`, the first
+    /// `tacsim.port` fire queues a submission whose actor is the Ceres stock clerk — a
+    /// Thing, not a player and not GOD — and it lands exactly as a command's does:
+    /// `command_ingress` → `preflight` Vacant → `command_offer_submission` →
+    /// `resolve_and_stage_offer` → reserve, reconcile, install, checkpoint. The receipt
+    /// and the lot exist; the same ingress replayed after an epoch change is refused by
+    /// the receipt and mints nothing twice.
+    #[tokio::test]
+    async fn ic8_the_clerks_first_mint_drives_through_the_command_ingress() {
+        let llm = Arc::new(
+            mush_llm::LlmService::builder()
+                .global_enabled(false)
+                .build(),
+        );
+        let mut config = mush_config::config::Config::default();
+        config.tacsim.enabled = true;
+        let roster = crate::boot::game_modules(&config, &llm)
+            .expect("an enabled config composes the game roster");
+        let mut world = mush_testkit::TestWorld::with_modules(roster);
+        world.engine_mut().set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x63; 32]).unwrap(), []).unwrap(),
+        );
+        let lane = mush_core::CanonicalId::new(tacsim::definitions::content::LANE_PACK).unwrap();
+        let ceres = mush_core::CanonicalId::new("ceres_port").unwrap();
+        let clerk = match world
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .expect("the layer")
+            .port_map(&lane, &ceres)
+        {
+            tacsim::port::PortMapState::Present(map) => {
+                ObjId(map.clerk.as_ref().expect("a clerk").thing)
+            }
+            other => panic!("the Ceres map: {other:?}"),
+        };
+        let t = world.world().now().saturating_add(6);
+        world.set_now(t);
+        let _ = world.fire_due(t.saturating_mul(1_000));
+        let submit = *world
+            .engine_mut()
+            .take_authoritative_submit()
+            .expect("the first fire queued a submission");
+        assert_eq!(submit.actor, clerk, "the Ceres stock clerk's");
+        assert_ne!(submit.actor, GOD);
+        assert_eq!(
+            world.world().get(clerk).map(|o| o.kind),
+            Some(mush_core::ObjKind::Thing)
+        );
+        assert_eq!(submit.action.key().id.as_str(), tacsim::port::STOCK_ACTION);
+        let issue = tacsim::port::StockIssueId::parse(
+            submit.parameters["issue"].as_str().expect("an issue key"),
+        )
+        .expect("an issue id");
+        let handles = world
+            .world()
+            .module_state::<tacsim::port::PortHandles>()
+            .cloned()
+            .expect("the port handles");
+        let inventory = handles.inventory.clone().expect("the filled cell");
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+
+        let first = ActionCoordinator::command_ingress(&submit, 1).unwrap();
+        let ActionPreflight::Vacant(permit) =
+            ActionCoordinator::preflight(&store, first).await.unwrap()
+        else {
+            panic!("the first attempt is vacant")
+        };
+        let submission = command_offer_submission(&engine, &submit).expect("offer");
+        let (staged, _) = resolve_and_stage_offer(&mut engine, permit, submission).expect("staged");
+        let (bundle, installation) = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("staged action")
+            .into_parts();
+        assert_eq!(bundle.token(), staged.token);
+        store
+            .reserve_authoritative_intent(*bundle.clone())
+            .await
+            .unwrap();
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        engine
+            .install_prepared_action(installation)
+            .expect("the mint installs");
+        store
+            .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        let receipt = {
+            let mut txn = engine
+                .action_transaction(&handles.families.port_stock)
+                .expect("a tacsim transaction");
+            txn.get(&handles.families.port_stock, &issue)
+                .expect("the receipts read")
+                .cloned()
+                .expect("the receipt exists")
+        };
+        assert_eq!(receipt.clerk, clerk);
+        let lot = {
+            let mut txn = engine
+                .action_transaction(&inventory.lots)
+                .expect("an inventory transaction");
+            txn.get(&inventory.lots, &mush_inventory::LotId(receipt.lot))
+                .expect("the lots read")
+                .cloned()
+        };
+        assert!(lot.is_some(), "the lot exists");
+
+        // A fresh process epoch: the ingress is vacant again, and the receipt refuses.
+        let replay = ActionCoordinator::command_ingress(&submit, 2).unwrap();
+        let ActionPreflight::Vacant(permit) =
+            ActionCoordinator::preflight(&store, replay).await.unwrap()
+        else {
+            panic!("the ingress cannot catch this; the receipt must")
+        };
+        let submission = command_offer_submission(&engine, &submit).expect("offer");
+        let refused = resolve_and_stage_offer(&mut engine, permit, submission)
+            .expect_err("the receipt refuses the replay");
+        assert!(refused.contains("already minted"), "{refused}");
+        let mut txn = engine
+            .action_transaction(&inventory.lots)
+            .expect("an inventory transaction");
+        assert!(
+            txn.get(&inventory.lots, &mush_inventory::LotId(receipt.lot))
+                .expect("the lots read")
+                .is_some(),
+            "minted exactly once"
+        );
+    }
+
     /// The other half of D1: a deliberately **retyped** intent is a new request,
     /// as the player means it. The handler's `key` used to be a constant per-verb
     /// discriminator, so `@inv/move 1/metals:5=2` had one request identity for

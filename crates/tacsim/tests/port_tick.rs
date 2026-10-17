@@ -57,8 +57,15 @@ fn config() -> TacsimConfig {
 /// built-ins, worldgen, npc, the sheet, the layer, the content module last),
 /// composed through `server_modules_with_tacsim` so `tacsim` is the third
 /// quantity delegate and the layer holds the inventory cell. Production couples
-/// `game_content` and the content lane to `[tacsim].enabled`; so does the rig.
-fn wired(test_world: bool, cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
+/// `game_content` and the content lane to `[tacsim].enabled`; a production-coupled
+/// test passes `cfg.enabled`. Doc 18 cut IC8: with game content on, the lane's two
+/// port stock clerks join the walk, so the IC5 probe tests that pin budgets, rotation
+/// and exact per-fire sets pass `game_content = false`.
+fn wired(
+    test_world: bool,
+    cfg: TacsimConfig,
+    game_content: bool,
+) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
     let llm = Arc::new(
@@ -90,7 +97,7 @@ fn wired(test_world: bool, cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModu
     } else {
         mods.push(comp::tacsim_module_wired(cfg, enabled, cell));
     }
-    mods.push(comp::content_module_with(true, enabled).expect("the content module composes"));
+    mods.push(comp::content_module_with(true, game_content).expect("the content module composes"));
     mods
 }
 
@@ -124,7 +131,10 @@ fn unwired(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     mods.extend(comp::sheet_modules(&onboarding, &game));
     let enabled = cfg.enabled;
     mods.push(comp::tacsim_test_world_module(cfg, enabled));
-    mods.push(comp::content_module_with(true, enabled).expect("the content module composes"));
+    // Doc 18 cut IC8: game content off, as the IC5 probe tests run on `wired`: with it
+    // on, the lane's two stock clerks would join the walk (and be refused, holding no
+    // cell) and move the exact per-fire counts this roster's test pins.
+    mods.push(comp::content_module_with(true, false).expect("the content module composes"));
     mods
 }
 
@@ -325,7 +335,7 @@ fn deletes_notice(ops: &[ModuleOp], who: ObjId) -> bool {
 
 #[test]
 fn ic5_a_probe_submitted_from_the_tick_lands() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let agent = thing(&mut tw, "probe one");
     let pilot = tw.spawn_player("Pilot");
@@ -358,7 +368,7 @@ fn ic5_a_probe_submitted_from_the_tick_lands() {
 
 #[test]
 fn ic5_a_thing_principal_lands() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     // IC8's clerk acts as itself: the agent is its own Thing principal.
     let clerk = thing(&mut tw, "stock clerk");
@@ -380,7 +390,7 @@ fn ic5_a_thing_principal_lands() {
 
 #[test]
 fn ic5_two_agents_in_one_fire_do_not_void_each_other() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let (a, b) = (thing(&mut tw, "probe a"), thing(&mut tw, "probe b"));
     let (pa, pb) = (tw.spawn_player("Alpha"), tw.spawn_player("Bravo"));
@@ -397,7 +407,7 @@ fn ic5_two_agents_in_one_fire_do_not_void_each_other() {
 
 #[test]
 fn ic5_one_actor_acts_once_per_fire_and_agents_sharing_it_alternate() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let lo = thing(&mut tw, "probe lo");
     let hi = thing(&mut tw, "probe hi");
@@ -435,7 +445,7 @@ fn ic5_one_actor_acts_once_per_fire_and_agents_sharing_it_alternate() {
 
 #[test]
 fn ic5_god_never_submits() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let agent = thing(&mut tw, "probe god");
     enlist(&mut tw, agent, GOD, 1);
     for _ in 0..2 {
@@ -445,7 +455,7 @@ fn ic5_god_never_submits() {
         assert_eq!((s.refused, s.submitted), (1, 0));
     }
     // A destroyed principal is refused the same way.
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let agent = thing(&mut tw, "probe gone");
     let principal = thing(&mut tw, "gone principal");
     tw.world_mut().destroy(principal).expect("destroyed");
@@ -464,7 +474,7 @@ fn ic5_god_never_submits() {
 
 #[test]
 fn ic5_the_tick_reads_an_inventory_pool_through_action_state() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     assert!(
         handles(&tw).inventory.is_some(),
@@ -591,7 +601,7 @@ fn ic5_an_unwired_layer_refuses_the_read_and_submits_nothing() {
 #[test]
 fn ic5_budgets_bound_a_fire() {
     // (a) 20 agents, each its own principal.
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let agents: Vec<ObjId> = (0..20).map(|n| thing(&mut tw, &format!("a{n}"))).collect();
     for (n, agent) in agents.iter().enumerate() {
@@ -610,7 +620,7 @@ fn ic5_budgets_bound_a_fire() {
     assert_eq!(drain_tacsim(&mut tw).len(), 4);
 
     // (b) 70 agents: the first 64 idle under one principal, the last 6 due.
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let agents: Vec<ObjId> = (0..70).map(|n| thing(&mut tw, &format!("b{n}"))).collect();
     let shared = tw.spawn_player("Shared");
     for (n, agent) in agents.iter().enumerate() {
@@ -633,7 +643,7 @@ fn ic5_budgets_bound_a_fire() {
 
 #[test]
 fn ic5_a_disabled_layer_fires_nothing() {
-    let mut tw = boot(wired(true, TacsimConfig::default()));
+    let mut tw = boot(wired(true, TacsimConfig::default(), false));
     let agent = thing(&mut tw, "probe idle");
     let pilot = tw.spawn_player("Pilot");
     // `enlist_probe` asks for a test world, not for the layer.
@@ -643,9 +653,13 @@ fn ic5_a_disabled_layer_fires_nothing() {
     assert!(drain_tacsim(&mut tw).is_empty());
 }
 
+/// Production registers no probe — and, since doc 18 cut IC8, one production action:
+/// `tacsim_port_stock`, so the crate's action list is no longer empty there.
 #[test]
 fn ic5_production_registers_no_probe() {
-    let mut tw = boot(wired(false, config()));
+    let cfg = config();
+    let content = cfg.enabled;
+    let mut tw = boot(wired(false, cfg, content));
     let agent = thing(&mut tw, "probe");
     let pilot = tw.spawn_player("Pilot");
     assert!(
@@ -674,6 +688,15 @@ fn ic5_production_registers_no_probe() {
     assert!(
         definitions.current(&key).is_none(),
         "no probe action definition"
+    );
+    let stock = mush_core::DefinitionKey {
+        owner: mush_core::OwnerId::new(tacsim::NS).expect("owner"),
+        kind: mush_core::DefinitionKind::new("action").expect("kind"),
+        id: mush_core::DefinitionId::new(tacsim::port::STOCK_ACTION).expect("id"),
+    };
+    assert!(
+        definitions.current(&stock).is_some(),
+        "the production tacsim_port_stock action is registered"
     );
     // The two production families are registered under `tacsim`.
     let families = h.families;
@@ -711,7 +734,7 @@ fn ic5_production_registers_no_probe() {
 
 #[test]
 fn ic5_a_receipt_style_replay_is_refused() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let agent = thing(&mut tw, "probe replay");
     let pilot = tw.spawn_player("Pilot");
@@ -777,7 +800,7 @@ fn disconnect(tw: &mut TestWorld, who: ObjId) {
 
 #[test]
 fn ic5_queued_notices_render_once_on_reconnect() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let agent = thing(&mut tw, "probe notice");
     let principal = offline_player(&mut tw, "Offline");
@@ -794,7 +817,7 @@ fn ic5_queued_notices_render_once_on_reconnect() {
     ops.extend(tw.take_module_ops());
     let boot_data: HashMap<SmolStr, mush_core::ModuleBootData> = fold_module_ops(ops);
     let mut tw = tw
-        .reboot_into(wired(true, config()), boot_data)
+        .reboot_into(wired(true, config(), false), boot_data)
         .expect("the kept world boots");
     assert_eq!(
         pending_notices(tw.world(), principal),
@@ -843,7 +866,7 @@ fn ic5_queued_notices_render_once_on_reconnect() {
 
 #[test]
 fn ic5_a_connected_principal_is_told_live() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let agent = thing(&mut tw, "probe live");
     let pilot = tw.spawn_player("Pilot");
     enlist(&mut tw, agent, pilot, 1);
@@ -864,7 +887,7 @@ fn ic5_a_connected_principal_is_told_live() {
 
 #[test]
 fn ic5_a_corrupt_notice_document_is_dropped_for_that_character() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let (a, b) = (thing(&mut tw, "probe a"), thing(&mut tw, "probe b"));
     let (pa, pb) = (
@@ -888,7 +911,7 @@ fn ic5_a_corrupt_notice_document_is_dropped_for_that_character() {
         .expect("pa's notice document");
     slot.1 = serde_json::json!({ "schema": 1, "who": pa.0, "lines": "x" });
     let mut tw = tw
-        .reboot_into(wired(true, config()), boot_data)
+        .reboot_into(wired(true, config(), false), boot_data)
         .expect("the reboot succeeds over a corrupt notice");
     let events = tw.connect(pa);
     assert!(
@@ -917,7 +940,7 @@ fn ic5_a_corrupt_notice_document_is_dropped_for_that_character() {
 
 #[test]
 fn ic5_a_shared_principal_under_a_biting_budget_starves_no_one() {
-    let mut tw = boot(wired(true, config()));
+    let mut tw = boot(wired(true, config(), false));
     let mut t = Tokens(0);
     let s1 = thing(&mut tw, "s1");
     let s2 = thing(&mut tw, "s2");
@@ -974,4 +997,57 @@ fn ic5_a_shared_principal_under_a_biting_budget_starves_no_one() {
     assert!(fires[0].contains(&s1) && !fires[0].contains(&s2));
     assert!(fires[1].contains(&s2) && !fires[1].contains(&s1));
     assert!(fires[2].contains(&s1) && !fires[2].contains(&s2));
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC8: the core seam — a principal with a submission in flight defers
+// ---------------------------------------------------------------------------
+
+/// **A principal whose submission is still queued from an earlier drain is
+/// deferred** (doc 18 cut IC8, lead 2c-i): the second fire asks the core seam
+/// (`Ctx::authoritative_pending`) before it acts, records a deferral, submits nothing
+/// and draws no back-pressure line; once the queued submission lands, the principal
+/// acts on the next fire.
+#[test]
+fn ic8_a_principal_with_a_queued_submission_is_deferred() {
+    let mut tw = boot(wired(true, config(), false));
+    let mut t = Tokens(0);
+    let agent = thing(&mut tw, "probe");
+    let pilot = tw.spawn_player("Pilot");
+    enlist(&mut tw, agent, pilot, 2);
+    let _ = fire(&mut tw);
+    assert_eq!(stats(&tw).submitted, 1, "the first fire submits");
+    assert!(
+        tw.engine().has_authoritative_submit_for(pilot),
+        "the submission waits in the engine's queue"
+    );
+    // The second fire, with the first submission still queued.
+    let events = fire(&mut tw);
+    let s = stats(&tw);
+    assert_eq!((s.submitted, s.deferred), (0, 1), "deferred, not submitted");
+    assert!(
+        !events
+            .iter()
+            .any(|(_, ev)| text_of(ev).contains("still committing")),
+        "no back-pressure line: the tick never asked"
+    );
+    let queued = drain_tacsim(&mut tw);
+    assert_eq!(
+        queued.len(),
+        1,
+        "only the first fire's submission is queued"
+    );
+    assert_eq!(queued[0].parameters["issue"].as_u64(), Some(0));
+    land_all(&mut tw, &queued, &mut t);
+    // The next fire acts.
+    let _ = fire(&mut tw);
+    assert_eq!(
+        stats(&tw).submitted,
+        1,
+        "the principal acts once nothing is in flight"
+    );
+    let queued = drain_tacsim(&mut tw);
+    assert_eq!(queued[0].parameters["issue"].as_u64(), Some(1));
+    land_all(&mut tw, &queued, &mut t);
+    assert!(mark(&mut tw, agent, 1).is_some());
 }

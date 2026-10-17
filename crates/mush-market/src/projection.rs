@@ -241,6 +241,9 @@ impl MarketStore {
             // them; this is the belt so an in-flight reload can never publish depth in
             // an undefinable good even for a moment.
             && self.entry_of(&l.catalog).is_some()
+            // Doc 18 cut IC8: a standing bid is demand, not supply — it contributes
+            // nothing to band or depth and picks no default venue.
+            && !l.source.is_wanted()
     }
 
     /// Whether a **trade-tape row** is in the public set.

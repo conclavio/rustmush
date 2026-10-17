@@ -103,6 +103,11 @@ pub const PORT_ONLY_ENDPOINT: &str = "That endpoint takes goods only from its po
 pub const CAPACITY_UNREADABLE: &str = "That endpoint's load cannot be read right now, so the sale was not made. Nothing was \
      charged.";
 
+/// Doc 18 cut IC8 (lead ruling L14): `+market/quote` and `+market/accept` on a standing
+/// bid (`Supply::Wanted`) — refused before any write. Selling into a bid is cut IC10's.
+pub const WANTED_IS_A_BID: &str =
+    "That listing is a bid: its house buys that good and sells none. Nothing was charged.";
+
 /// Doc 18 cut IC7: a re-stage asked for after the Draw cutoff.
 pub const DRAW_TOO_LATE: &str =
     "It is too late to ask for those goods again. The deal lapses and your payment comes back.";
@@ -280,6 +285,11 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
     if !may_view_listing(ctx.w, ctx.actor, &listing) {
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     }
+    // Doc 18 cut IC8 (lead ruling L14): a standing bid buys and sells nothing, so it is
+    // never quoted — refused before any write (the lapsed-quote sweep below writes).
+    if listing.source.is_wanted() {
+        return Err(MarketError::bad(WANTED_IS_A_BID));
+    }
     let Some(vendor) = ctx
         .w
         .module_state::<MarketStore>()
@@ -449,7 +459,10 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
             visibility: listing.visibility,
             source: match listing.source {
                 Supply::Market { source } => Some(source),
-                Supply::Stock { .. } | Supply::Procurement { .. } | Supply::Lot { .. } => None,
+                Supply::Stock { .. }
+                | Supply::Procurement { .. }
+                | Supply::Lot { .. }
+                | Supply::Wanted { .. } => None,
             },
             price: unit,
             quantity,
@@ -617,6 +630,16 @@ pub fn accept_at(
     }
     if q.contract.is_some() || q.is_trade() {
         return Err(MarketError::bad("That quote has already been taken up."));
+    }
+    // Doc 18 cut IC8 (lead ruling L14): a quote naming a standing bid is refused before
+    // any write, in the bid's own words (`quote` never writes one; this is the belt).
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(q.listing))
+        .is_some_and(|l| l.source.is_wanted())
+    {
+        return Err(MarketError::bad(WANTED_IS_A_BID));
     }
     // One refusal for every stale reason (D-E6-13): lapsed, re-priced, re-versioned,
     // sold out, halted, retired. Deterministic, and it re-prices nothing.

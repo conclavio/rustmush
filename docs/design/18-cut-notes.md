@@ -3748,3 +3748,462 @@ released by `boot::reconcile_draws` on the market's 60 s sweep (not in the econo
 listing deleted at zero is never re-minted by `restore_quantity`; `+market/accept <q>` and `<q>
 to=<vault>` are one command; `+market/list`/`/depth` default to `venue_of_room` of the actor's room
 when a gate names one.
+
+## IC8
+
+**Finite stock and port commerce** (doc 18 §5, the IC8 row and paragraph), built 2026-10-16 on main
+at d8427081. The two IC lanes join: IC7's market and economy seams get their tacsim implementations
+and the content that uses them. Every unit of trade matter at the two ports is minted once by a
+per-port stock clerk Thing acting on the `tacsim.port` tick, receipted in `tacsim.port_stock`,
+dissolved into its storefront pool and listed as a Draw; the applier writes the plan rows, vaults,
+vendors, grants and Wanted documents and submits nothing. A chartered pilot at the Exchange lists,
+quotes and accepts with no destination and the Draw loads the berthed hold under the port's presence
+gate, the hull's capacity provider and the port institutions' party caps, with every refusal in
+§4.3's own sentences and nothing charged; the boards 18a names count down to SOLD OUT. One commit,
+pushed to origin/main.
+
+### What landed
+
+1. **The core seam** (`mush-core/src/output.rs`, `engine.rs`, `cmd.rs`):
+   `Outbox::note_pending_authoritative`/`authoritative_pending` and `Ctx::authoritative_pending`.
+   `fire_due` notes the engine's queued actors before it pops anything and clears the note after its
+   one `drain_deferred`, so a tick acting as a principal defers instead of drawing the back-pressure
+   refusal or fanning out with an earlier-in-slice submission. A scope extension past the §5 row's
+   crates column (L22), with its unit test
+   `ic8_authoritative_pending_sees_the_engine_queue_and_this_outbox`.
+2. **The tick's two arms** (`tacsim/src/port_tick.rs`): `SwapRefused::Pending` asked first in
+   `Fire::as_principal` (no act, no debt); `Arm::{Stock, Release{listing}, Probe}` in that order;
+   `walk` runs `release_verify`, offers every present lane port map's clerk while the lane is
+   latched, then at most one release agent, then the probes; `PortTickState` gains `stock_action`,
+   `releasing`, `fires`, `paged`, `release_warned` and `release_backoff`; `Step::Worked` is live;
+   `probe_error` became the crate-shared `port_error` so the panic budget did not move;
+   `drift_pages(&World)` reads the boot's pages.
+3. **`tacsim_port_stock`, tacsim's first production action provider** (`tacsim/src/port/stock.rs`):
+   the outcome and action descriptors register on every roster, the `StockProvider` only when the
+   inventory cell is filled. The offer carries the clerk's stock rows as server-authenticated fixed
+   parameters derived from the port map at projection (L4); the prepare re-derives the
+   `StockIssueId`, requires the row's clerk to be the actor and its key and lot to match, refuses a
+   receipted row with `Conflict` ("that stock issue is already minted"), and writes `mint_origin`
+   (`Lineage::Origin`, `ExternalRef{tacsim, port.stock, <pack>/<entry>/<org>/<good>, Some(issue)}`)
+   plus the `StockReceipt` in one bundle. Keys `tacsim.port.stock/<key>` and
+   `tacsim.port.dissolve/<key>`. Every reader re-checks `receipt.issue_id() == key` and fails
+   closed, logged once (`receipt_at`/`receipt_in`; `families.rs`'s key rule narrowed).
+4. **The stock arm** (`stock.rs` `stock_step`): one step per clerk per fire in authored order — mint
+   a row with no receipt, dissolve a minted lot still standing (`inv_dissolve` as the clerk), then,
+   every row seeded, list the first ask with no live listing, no Draw in flight and a pool above 0
+   (`list_goods`, `Supply::Stock` on the storefront, `min(pool, MAX_QUANTITY)`,
+   `MAX_LISTING_TTL_SECS`): L5's one rule seeds, relists after a lapse or a re-price, and relists
+   refunded Draw tonnes. The drift check (`pool < listed`, or `pool > listed + undrawn` under a live
+   listing) pages once per boot per pool with a `runbook` field (L19).
+5. **The lapsed-hold release arm** (`stock.rs` `release_verify`/`release_agent`/`release_step`): the
+   lowest-id lapsed hold-backed listing whose vault a live player owns — org-owned, GOD-owned and
+   gone-owner vaults skipped and logged once, refused listings backed off `RELEASE_GRACE_FIRES`
+   (24), everything filtered through `mush_market::lapsed_holds_where` before the window is taken so
+   nothing starves a later release — is released as the holder through `release_lapsed_hold`;
+   `release_verify` runs at the top of every fire, tells the holder once ("Your market listing #{id}
+   lapsed; the {qty} of {name} it held are free again.") only when the listing is gone (the pull
+   verification), and drops a release not seen to land in 240 fires. The GOD sweep never releases
+   anything.
+6. **`PortApplier` parts d–e** (`tacsim/src/port/vendor.rs` new; `apply.rs`, `def.rs`, `map.rs`):
+   the goods catalog loaded on every apply; per vendor in authored order the port's one stock clerk
+   Thing (DARK, in the staff spine, owned by `ctx.actor`; L2), the board rooms (L15), the storefront
+   item and signatory npc resolved by authored name in their authored room from the station pack on
+   the atlas shelf at first apply only and by map row ever after (L3), the org-owned storefront
+   vault on `CustodyRef::Container`, the market vendor, the clerk's direct `vault.withdraw` grant in
+   the org's root scope (L25), the stock plan rows (`StockRow{good, issue, qty, grade, id, lot}`),
+   the standing bids through `post_wanted` with revise-in-place and the lapsed/exhausted re-post
+   rule, and an ask re-price withdrawing the stale Draw for the arm to relist. `preflight` refuses
+   before any write: market composed, catalogue entries, every price through `minor_of`, every
+   afresh bid's intake, no unrecorded twin, the vendor listing cap, recorded objects live and the
+   storefront in the spine, board rooms, recorded stock-row drift (L6, paged with a runbook) and bid
+   drift. `retire_check` refuses a vendor with an open deal; `retire` withdraws only Draw and Wanted
+   listings, logs any other, and forgets the bid rows it withdrew so a later apply posts them
+   afresh. The allocator reaches stay in `apply.rs` (`alloc_vault_id`/`alloc_grant_id`). `PortMap`
+   gains `clerk`, `vendors` and `boards` (skipped when empty; `PORT_MAP_SCHEMA` stays 1);
+   `AskDef`/`BidDef` gain `boards`; `PortDef::check` and `check_ports` gain the one-clerk,
+   unique-goods, ask-has-stock, no-ask-and-bid, board-role, intake-cap, cross-port-agent,
+   goods-existence and vendor-scoped reference rules.
+7. **`Supply::Wanted`, the lapsed-hold rule and the release entry**
+   (`mush-market/src/{record,store,api,trade,commands,projection,boot,lot,lib}.rs`):
+   `Supply::Wanted{vault, commodity, min_grade}` with price and remaining on the listing (L21),
+   wire-checked, excluded from `lot()`, `lot_matter`, `lot_listings` and the projection;
+   `list_goods` refuses it first; `quote` and `accept_at` refuse it before any write with
+   `WANTED_IS_A_BID`; the `+market/list` row with ` — not buying`, the `+market/show` line;
+   `WantedSpec`, `post_wanted`, `revise_wanted`, `MarketStore::wanted_of`. The sweep keeps a lapsed
+   hold-backed listing while its hold reads Live, Lapsed, Unreadable or None, filtered out before
+   `take(budget)`, and deletes it on Gone (L7). `LapsedHold`, `lapsed_holds`, `lapsed_holds_where`
+   and `release_lapsed_hold` (staged as `ctx.actor` through `lot::stage`, deleting nothing; L20).
+8. **The tacsim market seams** (`tacsim/src/port/market.rs` new; `capacity.rs`;
+   `composition/mod.rs`): `governed_hold` as the one predicate; `PortVenueGate` (`venue_of_room`
+   over the gallery, every room but the spine and the office — L11; `endpoint_for(Here)` the charter
+   hull's hold wherever it lies — L10; `Presence::Ship` wired for IC11; the five texts verbatim);
+   `PortCapacity` (`HoldPlan{v, goods digest, compartments}`, no goods rows — L12; `check` through a
+   `OnceLock` of the compiled-in table, every accepted pool read, `Unreadable` on any failure;
+   `capacity_line` in §4.3's sentences); `compartment_for`; `PortPartyCaps` (vendor orgs and the
+   programme org, no money authority). Wired only where the TacSim layer composes;
+   `MarketFactProvider` wired on every roster as the sixth namespace (L13).
+9. **Readiness and the gate** (`tacsim/src/port/readiness.rs`, `coop.rs`, `commands.rs`):
+   `Binding::{Pools, Listings, Bids, MarketFacts}` and `readiness_in(&Ctx)` splicing the
+   market-facts line after the treasury and, per port, one Pools line per vendor, one Listings line
+   per ask and one Bids line per bid (L9); `@tacsim/port status` and `+coop/enrol` both read it;
+   `enrol_gate` also requires Pools, Listings and MarketFacts Ready, Bids reported only (L8).
+   `+coop/enrol` checks the `Enrolment` document at plan time and again before `put_enrolment`,
+   clamps the laid-up name to 120 bytes on a char boundary (L18), and `BOOKS_UNREADABLE` is reworded
+   (L16).
+10. **The boards** (`tacsim/src/port/board.rs` new; `lib.rs`): a `LookRendered` hook rendering, for
+    a room the port maps record under a board role, every ask then every bid of every vendor whose
+    `boards` names that role — `{price}/{unit}, {q} {unit} left ({house}; signed {signatory})`,
+    `SOLD OUT: seeded {s} {unit}, 0 left`, `not yet on the board`, `wanted, …: {price}/{unit}, {r}
+    {unit} more` and `wanted, …: not buying` — thousands grouped, read through the module's own
+    lens, nothing written.
+11. **Content**: lane v3 (`content/lane/ceres_phobos.json`; `LANE_VERSION = 3`) adds only the two
+    `vendors` arrays (Kasei's intakes D-18-27's 4,000/9,600; the boards transcribed from 18a room by
+    room); Dray v2 (`content/units/dray.json`) drops the Airlock's `lock` alias and every figure and
+    engine word from the room prose (L24) except the `note`, which stays at its v1 wording; Stickney
+    v2 (`content/atlas/neighborhood.stickney_yards.json`) rewrites the P11 fittings card. `hull.rs`
+    re-dresses exits already made (name and aliases follow the template; `interior.exits` are
+    append-only by position). `exit_command_words.rs` walks the Dray's interior exits; `DECIDED` is
+    unchanged.
+12. **Rosters and the two mush-server pins** (`match_/centre.rs`,
+    `mush-contract-tests/tests/legacy_handler_allowlist.rs`,
+    `mush-server/tests/e7r2_proving_loop.rs`, `mush-server/src/{modules,world_task}.rs`): the three
+    rosters moved to `server_modules_with_tacsim` + `tacsim_module_wired`;
+    `ic8_the_game_roster_hands_the_layer_a_filled_inventory_cell`;
+    `ic8_the_clerks_first_mint_drives_through_the_command_ingress` (the clerk's mint through
+    `command_ingress` → preflight Vacant → offer → stage → reserve/reconcile/install/checkpoint,
+    then a replay after an epoch change refused by the receipt).
+13. **Tests**
+    (`tacsim/tests/{commerce,capacity,coop,ports,port_tick,hulls,lane,stations,content}.rs`,
+    `tests/support/vertex.rs`, `mush-market/tests/ic8.rs`): `vertex.rs` (`both_limits_vertex`,
+    `best_integer_load`); the LP test and `compartment_for`; `commerce.rs`'s twenty tests over
+    lenses 1–8 plus the Ship arm, the unreleasable-listing head of line, retire and re-apply, v2→v3
+    by the shelf against `LANE_V2_DIGEST`, the re-price relist and IC7's three gaps; `coop.rs`'s
+    derived gauge fixtures, the stocking loop, the closed-until-stocked and clamp tests;
+    `ports.rs`'s fourteen refusal cases and three drift variants; `port_tick.rs`'s `wired(..,
+    game_content)` and the Pending test; `ic8.rs`'s nine market tests with exact `MarketError`s.
+
+The LP test derives both vertices from `goods.json`, the Dray and the posted prices and asserts them
+optimal; no code, fixture or test stores 20/80 or 55/45.
+
+### Deferred, and why
+
+The owner-critical and owner-reviewable rulings first, then the planner's other lead rulings, the
+builder's one deviation, the residuals and the cuts that inherit the rest.
+
+- **The Dray `note` sentence.** The brief's wording takes the note to 1,046 bytes against
+  `MAX_NOTE_BYTES = 1_024` (`definitions/mod.rs:89`) and every catalog bind refuses the pack, so the
+  note stays at its v1 text while the author notes and figures it describes are gone. The owner owes
+  a wording under 1,024 bytes; a respin follows it. Every other Dray v2 edit is made.
+- **L1 (owner-critical): Kasei's intakes are D-18-27's 4,000 t of metals and 9,600 t of volatiles**,
+  not the lead note's 8,500/3,600; D-18-27 and §4.3/§4.7 are owner-binding and the lead note is not.
+- **L6 (owner-critical, stricter than Q-18-19's default): any change to a recorded stock row's
+  `issue`, `qty` or `grade`, or its removal, is refused as drift and paged, receipted or not.** The
+  applier runs on the content context and cannot read tacsim's receipts, so it cannot tell a minted
+  row from an unminted one. Q-18-19 is the owner's question.
+- **L7 (owner-critical): the market sweep no longer deletes a lapsed hold-backed listing until its
+  hold reads Gone**, on every roster; kept listings never spend the sweep budget; the release is the
+  holder's submission by the tacsim arm, and on a roster without TacSim the seller withdraws by hand
+  (IC0's note). A generic-path behaviour change for D-18-26 and Q-18-31.
+- **L15 (owner-critical): 18a contradicts itself on the Yard's fittings ask** (P11's Items call the
+  card "the one place the figure is written"; P08's Items and P11's Purpose put it on P08's board
+  too). Default: render it on both P08 and P11. The Co-op provisions ask gets no board, because 18a
+  gives none. P07's "funded balance" figure is IC10's.
+- **L17 (owner-critical): the accept line naming the listing's signatory (§4.3) is deferred to
+  IC12**; the market's accept text is generic and IC7's seams are frozen; the boards name each
+  line's signatory now.
+- **L24 (owner-reviewable): the Dray's room prose carries no figures and no engine words** — the
+  lead note's meta-text and the load cells' LIMIT figures are out, the gauges render every figure
+  from `logistics`. The Stickney P11 card text is the brief's. The gate lines, readiness lines,
+  board lines, `BOOKS_UNREADABLE` and the release notice are the brief's voice.
+- **L2: one stock clerk per port**, `VendorDef.agent` kept as its id; §4.7's per-vendor sample
+  agents are illustrative (D-18-26 names a per-port clerk).
+- **L3: storefronts and signatories resolve by authored name in their authored room** from the
+  station pack on the atlas shelf, at first apply only, by map row after; the latch is unreachable
+  inside an apply (IC3 L1) and items and NPCs carry no record key.
+- **L4: the mint's offer carries its rows as server-authenticated fixed parameters** and the prepare
+  re-derives the issue id and refuses a receipted row (the IC7 `paid` precedent).
+- **L5: the list step is one rule** (no listing, no open Draw, pool > 0), closing IC7 L1's un-listed
+  tonnes without a market change.
+- **L8: the enrol gate takes Pools, Listings and MarketFacts Ready and does not gate Bids**;
+  Listings Ready includes the draw-mirror slack; a Pending listing closes it for the fires the arm
+  takes.
+- **L9: `readiness(&World)` stays world-only; `readiness_in(&Ctx)` adds the IC8 lines**, because
+  pools and receipts are typed state.
+- **L10/L11: `endpoint_for(Here)` answers the charter hull's hold wherever it lies and `admit`
+  refuses in the gate's words; "the port's rooms" are the gallery, every `rooms` value but the
+  spine, and the programme office.**
+- **L12: the capacity plan carries the compartments and the goods table's digest, no goods rows**;
+  the check loads the compiled-in table through a `OnceLock` and fails closed on a digest mismatch;
+  the "packs to" figure is the load after the addition.
+- **L13: `MarketFactProvider` on every roster; the gate, the capacity provider and the party-cap
+  source only where the TacSim layer composes.**
+- **L14/L21: `Supply::Wanted` lands as a document `{vault, commodity, min_grade}` with price and
+  remaining on the listing**, a recorded deviation from §4.3's shape so there is one truth for each;
+  selling into it is IC10's.
+- **L16: `BOOKS_UNREADABLE` reworded rather than paged**; no staff-alert path exists for a tacsim
+  command.
+- **L18: the laid-up name is clamped to 120 bytes at plan time, not refused.**
+- **L19: pages are `tracing::error!` with a `runbook` field**, once per boot per pool.
+- **L20: the release is keyed as every market release is** (`market.lot.release.{listing:x}.{ic
+  second:x}`); the IC8 row's "derived reservation id" is the reservation released, not the key; a
+  re-stage past the grace is refused by `require_held`, never double-applied.
+- **L22: the mush-core seam is a scope extension** past the row's crates column, for IC5's residual
+  and lead 2c-i.
+- **L23: the reference-has-an-ask rule applies only to an entry that authors vendors**, so the
+  published v2 keeps loading (test 16 rebuilds its bytes against `LANE_V2_DIGEST`).
+- **L25: the clerk's `vault.withdraw` is a direct grant**, no membership; `authorize` honours direct
+  grants.
+- **`BidRow.expires` added** (a builder deviation): with the brief's three fields an applier cannot
+  tell a bid gone because it lapsed (re-post) from one gone because it was used up ("not buying").
+  Retire now forgets the rows it withdrew, so only the staff-withdraw case reads "its intake is
+  taken" before its expiry — IC10's exhausted marker closes it.
+- **Item 1's residual, stated and not fixed:** a principal's own `@wait` line that fires later in
+  the same `fire_due` slice than the tick still fans out with the arm's submission.
+- **Not covered, latent and content-bound:** a stock row above `MAX_QUANTITY` reads as permanent
+  drift; a port with more than `MAX_CLERK_ROWS` (64) rows, or one row whose mint is always refused,
+  stalls that port's arm; a storefront that already backs a vault is not refused by preflight;
+  standing bids lapse at 90 days with no re-post arm (IC10's call); a retired port entry's clerk
+  still runs while the lane stays latched (a later ruling); the four Pools missing forms and the
+  "its intake is taken" text have no test.
+- **IC10:** the `+market/sell` lot arm into `Supply::Wanted`, `LotOp::Deliver`, `transfer_marked`,
+  the `inventory.transferred` Fact gate, `ProceedsPolicy`, the Wanted `remaining` restore, P07's
+  funded balance. **IC9:** the passage planner, the burn, undock and docking. **IC11:** the orders
+  document, the executor and the callers of `Presence::Ship`. **IC12:** `trade.md`, the signatory
+  accept line, the full readiness gate. **IC13:** buyout, release, revoke, dormancy. **P5:** restock
+  and top-ups.
+
+### Pins re-blessed
+
+- **`tacsim.lane.ceres_phobos` 2 → 3**: digest
+  `3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0` →
+  `8d20125693884a8c6739d6dd032d858e474c015726eab54b05dccb17164d0ad4` in the pack and `tests/lane.rs`
+  `LANE_DIGEST`; `LANE_VERSION = 3`; every `@2`/`Some(2)` lane pin moved one (`tests/lane.rs`
+  :4/:176/:582/:814, `tests/stations.rs`, `mush-server/src/config_ext.rs`, `boot_parity.rs`'s
+  comment); the test-only `lane_v3` helpers in `tests/ports.rs` and `tests/hulls.rs` became
+  `lane_v4` at version 4 with every "Plan for"/"Applied"/"ships @N"/latch pin moved one;
+  `ic3_a_world_on_lane_v1_takes_v2_by_the_shelf` now takes v3 (counts "2 create, 2 update, 0 retire,
+  8 unchanged" unchanged). Reason: v3 adds the vendors; a published version is never edited; the old
+  v2 digest lives on as `LANE_V2_DIGEST` in `tests/commerce.rs` and test 16 rebuilds the published
+  v2 bytes against it.
+- **`tacsim.pack.dray` 1 → 2**: `DRAY_DIGEST` `da86f389…` →
+  `2f11e37f4de1f02df1f5d19aba599c4235c74307c55a6a13201e74184741cabb`; `version() == 2`;
+  `tests/content.rs:2696` `"Airlock <A>;airlock;lock;forward"` → `"Airlock <A>;airlock;forward"`.
+  Reason: the `lock` alias and the prose figures go (L24, IC4 C7); the note edit did not fit
+  `MAX_NOTE_BYTES`.
+- **`neighborhood.stickney_yards` 1 → 2**: `PINNED` digest `6a2cb600…` →
+  `39aab74e2f7a56e2b71ee7cffcdd34168ad706fbc1317240d989d2dc95c42d42`; the "version 1 for every
+  station pack" pins in `tests/stations.rs` (:331/:418/:810/:937) and
+  `mush-server/tests/boot_parity.rs` became a `station_version(pack)` helper (2 for Stickney, 1 for
+  the rest). Reason: the P11 fittings card's text.
+- **The D-18-39 literals**: `src/port/gauges.rs`'s three unit tests and two doc examples moved from
+  `metals 20 / volatiles 80` to the three-good FULL-both load `metals 29, volatiles 61,
+  industrial_parts 10` (`29 t · 11.6 m³`, `61 t · 85.4 m³`, `10 t · 23.0 m³`), which is no two-good
+  vertex; `tests/capacity.rs` `ic2_a_balanced_load…` re-derived from `both_limits_vertex` and
+  `ic2_20_plus_81_is_refused_on_both` renamed `ic2_one_past_the_vertex_is_refused_on_both` with `(d,
+  b+1)` computed; `tests/coop.rs`'s `LOAD_CELLS`, `SUMMARY_BODY` and `seed_outbound` became
+  functions over the vertex. Reason: no code, fixture or test stores 20/80 or 55/45.
+- **The readiness report** (`tests/ports.rs`
+  `ic3_the_readiness_report_lists_every_binding_and_flags_the_rate`): the market-facts line after
+  the treasury and, per port, 3 Pools + 4 Listings + 2 Bids lines read before any tick (Pools
+  Pending "0 of n", Listings "not seeded yet", Bids "not buying until its capital settles"); the
+  total "9" became "9 + 18". Reason: `readiness_in` adds them.
+- **The ports.rs behaviour pins narrowed, then tightened** (`ic3_boot_creates_the_nine_orgs…`,
+  `ic3_an_update_reuses_every_map_row…`, `ic3_a_cancelled_tranche_reads_missing_not_pending`):
+  `!contains("[pending]")` and `ends_with("Ready: every binding above is in place.")` became "every
+  vendor/ask line ends `[pending]`, every other bracketed line `[ready]`, at least one stock line
+  present" and "every pending line is a vendor, ask or bid line". Reason: this file never lands the
+  port tick, so the stock lines wait on it; the capital claim is kept whole and no stock line may
+  read missing or flagged.
+- **First-boot counts**: `tests/stations.rs` `items` 6 → 8 (the two DARK clerk Things in the
+  spines). `mush-inventory/tests/e7r2.rs` `FactProvider` count 5 → 6 (the sixth namespace,
+  `market.*`).
+- **`tests/port_tick.rs`**: `wired(tw, cfg)` gained `game_content`; the IC5 probe tests pass `false`
+  and `unwired` turns game content off (with it on, the two clerks join the walk and move the exact
+  per-fire sets the tests pin); `ic5_production_registers_no_probe` also asserts the production
+  `tacsim_port_stock` definition.
+- **`tests/coop.rs` `ic6_the_desk_closes_at_a_play_world_rate_other_than_24`**: stocks the ports
+  before `set_rate(4)` and asserts the rate line is the only non-ready one, so the rate is the one
+  binding that refuses (fixer T1).
+- **`legacy-handlers.toml`**: the `+market`, `@market` and `@tacsim` notes refreshed (Wanted rows,
+  the lapsed rule, the readiness lines); `PINNED_BASELINE` stays 97 — no new primary verb.
+  **`state-slot-owners.toml`**: one row for `crates/tacsim/tests/commerce.rs`
+  (`World::module_state_mut`, `AccountOracle`, owner `sim`, the coop.rs reason); no row for
+  `vendor.rs` or `stock.rs`, whose allocator reaches stay in `apply.rs`.
+- **Unchanged**: the panic budgets (`tacsim.txt` 5, `mush-market.txt` 2, `mush-core.txt` 121;
+  `port_error` is shared), the module-namespace owners, the composition-edge pin, the CI gated-test
+  inventory, `exit_command_words.rs`'s `DECIDED`, `mush-market/tests/e7r2.rs`'s market-never-mints
+  pin, and `families.rs`'s golden `StockIssueId` pin.
+
+### How it was verified
+
+Three lenses reviewed the uncommitted tree: a correctness lens (the mint's receipt guard, the
+fixed-parameter rows against a submitter, the Draw accounting across readiness/drift/board/IC7's
+restore, the venue gate and plan from one predicate — one must-fix, the release head of line), a
+conformance lens (every brief text checked verbatim against the code, every §3 item against the
+diff, the four declared deviations, the `Presence::Ship` test gap) and a tests lens (vacuous and
+weakened tests: the rate test, the depth test, the plan/governed skip, the missing `PortDef` cases,
+the untested Ship arm). All 23 findings were handled by the fixer — 22 fixed with new or tightened
+tests, and conformance F3's staff-withdraw half deferred to IC10 — and the judge re-read the whole
+diff afterwards (verdict: ship with notes).
+
+**The gate**, run in order from the run's `cuts/IC8/gate1/run.sh`, each command under `timeout
+5400`, all green on the first pass with no rerun, no LNK1104 and no hung binary:
+
+- `cargo fmt --all -- --check` → exit 0, no output.
+- `cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+  debuginfo] target(s) in 0.61s``, exit 0, no warning lines.
+- `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test lane ic2_the_lane_pack_is_pinned` → `test
+  result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out`; `--test content
+  ic2_the_dray_is_pinned_and_checks` → `ok. 1 passed … 28 filtered out`; `--test stations
+  ic1_the_station_packs_load_and_their_digests_are_pinned` → `ok. 1 passed … 12 filtered out`. The
+  sha256 of all 40 files under `crates/tacsim/content` was unchanged by the three re-sign steps: the
+  cut's content was already signed.
+- `cargo test -p mush-core --lib output` → `ok. 13 passed; 0 failed; 383 filtered out`.
+- `cargo test -p mush-market` → lib 21, e7r2 21, ic0 5, ic7 18, ic8 9, projection_bounds 2,
+  projection_cost 1, all `0 failed`; doc-tests 0 passed, 1 ignored.
+- `cargo test -p mush-inventory` → e7c2 65, e7r2 16, `0 failed`. `cargo test -p mush-economy --lib`
+  → `ok. 37 passed`.
+- `cargo test -p tacsim --lib` → `ok. 891 passed; 0 failed`.
+- `cargo test -p tacsim --test commerce --test ports --test hulls --test coop --test port_tick
+  --test capacity` → capacity 17, commerce 20, coop 18, hulls 15, port_tick 16, ports 17, all `0
+  failed`.
+- `cargo test -p tacsim --test lane --test stations --test content --test definitions --test
+  composition_edges` → composition_edges 2, content 29, definitions 25, lane 8, stations 13, `0
+  failed`.
+- `cargo test -p tacsim --test match_lifecycle --test cockpit` → cockpit 180, match_lifecycle 136,
+  `0 failed`.
+- `cargo test -p mush-server --lib world_task::tests::ic8` → `ok. 1 passed; 295 filtered out`;
+  `--lib modules::` → `ok. 32 passed; 264 filtered out`; `--test boot_parity --test
+  e7r2_proving_loop --test market_issuer` → 18, 6, 4, `0 failed`.
+- `cargo test -p mush-contract-tests` → 29 result lines all ok (127 passed, 0 failed, 8 ignored),
+  among them `exit_command_words` 2, `legacy_handler_allowlist` 4, `state_slot_owners` 4,
+  `module_ns_owners` 3, `restriction_lints` 11, `panic_budget` 7.
+- `cargo test -p mushd --test boot_composition` → `ok. 6 passed`.
+- `cargo test --workspace --exclude mush-bot --no-fail-fast` → rc 0, 390 `test result:` lines every
+  one ok (**7,362 passed, 0 failed, 92 ignored**), no FAILED line; the one panic printed is
+  `server_panic_relaunch`'s own armed fault (`WS01-S8`), all 5 of its tests passed. 68 minutes,
+  about 45 of them linking some 300 test binaries under memory pressure (25 parallel link.exe at
+  ~109 GB private on a 64 GB box); progress never stalled.
+- `cargo test -p mush-bot` → 22 result lines all ok (704 passed, 0 failed, 5 ignored): lib 469,
+  arena_e2e 9 (184 s), playtesting 9 (125 s), e2e 49.
+
+No flake was identified.
+
+### Surface for the next cuts
+
+**mush-core** (`output.rs`, `cmd.rs`)
+
+- `Outbox::note_pending_authoritative(&mut self, impl IntoIterator<Item = ObjId>)` (replaces the
+  set; called only by `Engine::fire_due`, once before the pop and once empty after the drain).
+- `#[must_use] Outbox::authoritative_pending(&self, ObjId) -> bool` (true when noted or when this
+  outbox holds a `Deferred::AuthoritativeSubmit` for the actor; blind to a later-in-slice `@wait`).
+- `Ctx::authoritative_pending(&self, ObjId) -> bool`.
+
+**mush-market** (`lib.rs` re-exports)
+
+- `Supply::Wanted { vault: VaultId, commodity: LotCommodity, min_grade: u8 }` (serde
+  `{"wanted":{…}}`; `seller` = the bidding org, `price` = the bid per unit, `quantity` = the intake
+  still wanted; `Supply::is_wanted()`; excluded from `lot()`, `lot_matter`, `lot_listings`,
+  `publishes()`).
+- `pub const WANTED_IS_A_BID = "That listing is a bid: its house buys that good and sells none.
+  Nothing was charged."` (quote and accept_at before any write).
+- `WantedSpec { vendor, catalog, price: Amount, remaining: u64, vault: VaultId, min_grade: u8,
+  ttl_secs: i64 }`; `post_wanted(ctx, WantedSpec) -> Result<ListingId, MarketError>` (refusals in
+  order: NoStanding(NO_SUCH_VENDOR); "That vendor is not trading, so it posts no bid.";
+  NoStanding(NO_SUCH_ENTRY); "A standing bid buys a lot-represented good."; "That catalogue code is
+  not a commodity id."; "A standing bid receives into the vendor's own storefront vault."; "A
+  standing bid offers a positive price."; "That is not a quantity this market buys."; "That grade
+  floor is out of range."; "That vendor already posts a standing bid for that good."; the vendor and
+  market caps; writes revision 1, Public, RealUtc, ttl clamped 60..=MAX_LISTING_TTL_SECS).
+- `revise_wanted(ctx, ListingId, Amount, u64) -> Result<(), MarketError>` (Wanted only, else
+  NoStanding(NO_SUCH_LISTING); revision bumped; expiry unchanged); `MarketStore::wanted_of(VendorId,
+  &CanonicalId) -> Option<ListingId>`.
+- `list_goods` with a Wanted → Bad("A standing bid is posted with post_wanted, never listed.")
+  first; `withdraw_listing` of a Wanted or a Draw deletes and stages nothing.
+- `+market/list` row `#{id} {name} — wanted {q} × {price} [{market}] by {shop}` plus ` — not buying`
+  when `vendor.account` available < price or unreadable; `+market/show` `  supply: a standing bid;
+  the house buys this`.
+- `LapsedHold { listing, endpoint, commodity, quantity, grade, name }`; `lapsed_holds(&World, limit)
+  -> Vec<LapsedHold>` and `lapsed_holds_where(&World, limit, impl FnMut(&LapsedHold) -> bool)` (live
+  hold-backed listings past their RealUtc deadline, ascending id, filtered BEFORE the limit).
+- `release_lapsed_hold(&mut Ctx, ListingId) -> Result<(), MarketError>` (no listing or no custody →
+  NoStanding(NO_SUCH_LISTING); not hold-backed → Bad("That listing holds no stock, so there is
+  nothing to release."); not lapsed → Bad("That listing has not lapsed; withdraw it to give its
+  stock back."); staging failure → Bad; stages a Release as `ctx.actor`, keyed
+  `market.lot.release.{listing:x}.{ic second:x}`, deletes nothing).
+- Sweep rule: a lapsed listing whose `lot_matter` is Hold is deleted only when `hold_standing ==
+  Some(Gone)`; kept otherwise and never counted against `MAX_SWEPT_PER_FIRE`.
+
+**tacsim::port** (re-exports)
+
+- `PortMap.clerk: Option<ClerkRow { agent: CanonicalId, thing: u32 }>`, `PortMap.vendors:
+  BTreeMap<org, VendorRow { storefront: u32, vault: u64, vendor: Option<u64>, signatory: u32, grant:
+  Option<u64>, stock: Vec<StockRow>, bids: BTreeMap<good, BidRow> }>`, `StockRow { good, issue: u32,
+  qty: u64, grade: u8, id: String /*64 hex*/, lot: u64 }`, `BidRow { listing: u64, price_major: u64,
+  intake: u64, expires: i64 }`, `PortMap.boards: BTreeMap<role, u32>` (all deny_unknown_fields,
+  skipped when empty, `PORT_MAP_SCHEMA` 1); `AskDef.boards`/`BidDef.boards: Vec<CanonicalId>`;
+  `VendorDef.agent` = the port's one clerk id (unique across ports).
+- Constants `STOCK_ACTION = "tacsim_port_stock"`, `STOCK_OUTCOME = "tacsim_port_stock_result"`
+  (fields actor, issue, lot, qty, vault), `MAX_CLERK_ROWS = 64`, `STOCK_KEY_PREFIX =
+  "tacsim.port.stock/"`, `DISSOLVE_KEY_PREFIX = "tacsim.port.dissolve/"`, `STOCK_SOURCE_KIND =
+  "port.stock"`; the action payload
+  `{"subject":"self_actor","targets":0,"family":"tacsim.port_stock"}`; the offer's fixed
+  `{"rows":{<issue key>:{pack, entry, org, good, issue, qty, grade, vault, lot, clerk}}}` and one
+  `issue` Choice; a replay refused `Conflict("that stock issue is already minted")`; the minted
+  lot's `ExternalRef { provider: "tacsim", kind: "port.stock", id: "<pack>/<entry>/<org>/<good>",
+  revision: Some(issue) }` with `LotId = StockIssueId::lot_id()`.
+- `pub fn stock::release_notice(listing: u64, qty: u64, name: &str) -> String` = "Your market
+  listing #{id} lapsed; the {qty} of {name} it held are free again.";
+  `port_tick::drift_pages(&World) -> Vec<(u64 /*vault*/, CanonicalId)>`; crate-private
+  `SwapRefused::Pending`, `PortTickState.{stock_action, releasing, fires, paged, release_warned,
+  release_backoff}`, `stock::RELEASE_GRACE_FIRES = 24`, `MAX_RELEASING = 64`.
+- `governed_hold(&World, EndpointRef) -> Option<HullView>` (the vault exists, backing
+  `SpatialInterior(space)`, `space` is a programme hull's stowage); `PortVenueGate`, `PortCapacity`,
+  `PortPartyCaps` (unit structs, `Debug`); `HoldPlan { v: u8, goods: String /*digest hex*/,
+  compartments: Vec<PlanCompartment { id, accepts, limits }> }`, `HOLD_PLAN_VERSION = 1`,
+  `hold_plan(&HullView) -> Option<HoldPlan>`; `capacity::compartment_for(&GoodsTable,
+  &[Compartment], &CanonicalId) -> Option<Compartment>`; `capacity_line(goods, &Compartment, good,
+  qty, &capacity::CapacityRefusal, &Load) -> String` (§4.3's sentences; limits print as whole units,
+  m³ truncated to a tenth of the load after the addition); gate texts `NOT_IN_PORT`,
+  `HOLD_UNDER_WAY`, `HOLD_ELSEWHERE`, `HOLD_NOT_HERE`, `NOT_YOUR_CHARTER` with
+  `{port}`/`{name}`/`{other}` placeholders.
+- Note: a player's `to=` into another pilot's hold is refused by the market's custody rule
+  (NO_SUCH_QUOTE) before the gate; `NOT_YOUR_CHARTER` is reachable through `Presence::Ship` and a
+  hold the asker may take from. No non-stowage hull interior can back a vault (the airlock is a
+  multi-room space, a walked room is no space), so `governed_hold`'s stowage clause is defense in
+  depth.
+- `readiness_in(&Ctx) -> Readiness` with `Binding::{Pools, Listings, Bids, MarketFacts}` and the
+  brief's texts (Pools Ready "{entry} vendor {org}: {name}, storefront vault #{v}; {n} of {n} stock
+  rows seeded."; Listings Ready "… listing #{l} at {price}/{unit}, {q} {unit} listed; the storefront
+  holds {p} {unit}[, {u} {unit} in hand-over]." and "SOLD OUT: seeded {s} {unit}, 0 left."; Pending
+  "not seeded yet." / "{p} {unit} in the storefront wait to be listed."; Flagged "listing #{l} lists
+  {q} {unit} but the storefront holds {p} {unit}."; Bids Ready "listing #{l} at {price}/{unit}, {r}
+  of {intake} {unit} wanted." / Pending "listing #{l}; not buying until its capital settles." /
+  Ready "not buying; its intake is taken." / Missing "no bid is posted."; MarketFacts "market facts:
+  answered, so drawn sales can settle." / "nothing answers the market namespace, so drawn sales
+  refuse."); `enrol_gate` requires Pools, Listings and MarketFacts Ready.
+- `board::BOARD_HEADING = "The board:"` and the five line forms (`  {label}: {price}/{unit}, {q}
+  {unit} left ({house}; signed {signatory}).`, `  {label}: SOLD OUT: seeded {s} {unit}, 0 left
+  ({house}).`, `  {label}: not yet on the board ({house}).`, `  wanted, {label}: {price}/{unit}, {r}
+  {unit} more ({house}; signed {signatory}).`, `  wanted, {label}: not buying ({house}).`),
+  thousands grouped; `board::group_thousands(u64)`.
+- `coop::BOOKS_UNREADABLE = "The Co-op's books for your account cannot be read right now. Ask staff
+  to look at them."`
+
+**Composition and content**
+
+- `server_modules_with_tacsim` + `tacsim_module_wired` carry `PortPartyCaps`, `PortVenueGate` and
+  `PortCapacity`; every roster carries `MarketFactProvider` (six fact namespaces).
+- Pack versions: lane 3 (`8d20125693884a8c6739d6dd032d858e474c015726eab54b05dccb17164d0ad4`), Dray 2
+  (`2f11e37f4de1f02df1f5d19aba599c4235c74307c55a6a13201e74184741cabb`), Stickney 2
+  (`39aab74e2f7a56e2b71ee7cffcdd34168ad706fbc1317240d989d2dc95c42d42`); `LANE_V2_DIGEST =
+  3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0` in `tests/commerce.rs`.
+
+**Test helpers later cuts can copy:** `tests/support/vertex.rs` (`both_limits_vertex`,
+`best_integer_load`, a `#[path]` include); `commerce.rs`'s `stocked()`, `chartered()`,
+`buy_and_land()`, `held_listing()`, `land()`; `coop.rs`'s `ensure_stocked()`/`land_typed()` (the
+desk opens only once the ports are stocked).
+
+**Behaviours to depend on:** the applier makes no Draw listing (the arm lists once a pool exists); a
+retire withdraws Draws and bids and forgets the withdrawn BidRows so a re-apply posts them afresh;
+`interior.exits` are append-only by position and re-dressed on every hull update.

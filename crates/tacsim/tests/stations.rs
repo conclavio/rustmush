@@ -55,6 +55,13 @@ use support::ground::{UNSIGNED, sign};
 // The pins
 // ---------------------------------------------------------------------------
 
+/// **The version each station pack ships at**: 1, but 2 for
+/// `neighborhood.stickney_yards`, which doc 18 cut IC8 re-published (the P11
+/// fittings card's text, lead 2c).
+fn station_version(pack: &str) -> u32 {
+    if pack == STICKNEY_PACK { 2 } else { 1 }
+}
+
 /// The pinned digests, in `STATION_SOURCES` order. An edit to a pack changes its
 /// digest; the failure message prints the new values so a *reviewed* edit is a
 /// line here plus the `digest` field in the pack itself.
@@ -73,7 +80,7 @@ const PINNED: [(&str, &str); 4] = [
     ),
     (
         STICKNEY_PACK,
-        "6a2cb6004dc2c7af9aeba3f3f27b6c1619fc03ed1d83feb02270a30a30def90b",
+        "39aab74e2f7a56e2b71ee7cffcdd34168ad706fbc1317240d989d2dc95c42d42",
     ),
 ];
 
@@ -328,7 +335,7 @@ fn ic1_the_station_packs_load_and_their_digests_are_pinned() {
     for ((name, json), (pack, pinned)) in STATION_SOURCES.iter().zip(PINNED) {
         let parsed = parse_pack(json).expect(name);
         assert_eq!(parsed.manifest().id().as_str(), pack);
-        assert_eq!(parsed.manifest().version(), 1, "{pack}");
+        assert_eq!(parsed.manifest().version(), station_version(pack), "{pack}");
         let actual = parsed.computed_digest().expect("digests").to_hex();
         if actual != pinned {
             report.push(format!("    ({pack:?}, {actual:?}),"));
@@ -415,11 +422,14 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     let events = tw.run(GOD, "@atlas/pack list");
     let out = said(&tw, &events, GOD);
     for (name, _) in STATION_SOURCES {
-        assert!(out.contains(&format!(" {name}@1 (")), "{name}:\n{out}");
+        assert!(
+            out.contains(&format!(" {name}@{} (", station_version(name))),
+            "{name}:\n{out}"
+        );
     }
-    // Doc 18 cut IC2: and the lane after them (at version 2 since cut IC3).
+    // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
-        out.contains(&format!(" {LANE_PACK}@2 (")),
+        out.contains(&format!(" {LANE_PACK}@3 (")),
         "{LANE_PACK}:\n{out}"
     );
 }
@@ -807,7 +817,7 @@ fn ic1_a_fresh_world_boots_the_stations() {
             .latches
             .applied(&id(name))
             .unwrap_or_else(|| panic!("{name} is latched"));
-        assert_eq!(latch.version(), 1, "{name}");
+        assert_eq!(latch.version(), station_version(name), "{name}");
         assert_eq!(latch.anomaly(), None, "{name}");
     }
     let rooms = station_rooms(&tw);
@@ -891,7 +901,9 @@ fn ic1_a_fresh_world_boots_the_stations() {
             o.kind == ObjKind::Thing && (o.location == Some(c15) || o.location == Some(p15))
         })
         .count();
-    assert_eq!(items, 6);
+    // Six storefront items, and since doc 18 cut IC8 each port's stock clerk (a DARK
+    // Thing in the staff spine).
+    assert_eq!(items, 8);
     // A non-staff player in Limbo types `c` and stands in Port Watch Arrivals.
     let pilot = tw.spawn_player("Pilot");
     let events = tw.run(pilot, "c");
@@ -934,10 +946,14 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         );
     }
     for (name, _) in STATION_SOURCES {
-        assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
+        assert_eq!(
+            after.get(name).map(|l| l.0),
+            Some(station_version(name)),
+            "{name}"
+        );
     }
-    // Doc 18 cut IC2: the lane too (was nine latches), at version 2 since cut IC3.
-    assert_eq!(after.get(LANE_PACK).map(|l| l.0), Some(2), "{LANE_PACK}");
+    // Doc 18 cut IC2: the lane too (was nine latches), at version 3 since cut IC8.
+    assert_eq!(after.get(LANE_PACK).map(|l| l.0), Some(3), "{LANE_PACK}");
     assert_eq!(after.len(), 10);
     assert_eq!(
         location(&tw, walker),

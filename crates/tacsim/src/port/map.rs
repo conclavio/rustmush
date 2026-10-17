@@ -1,8 +1,10 @@
 //! **The port map** (doc 18 cut IC3; doc 18 §4.7 "Idempotency"; lead ruling L3):
 //! the `PortApplier`'s record of everything it made for one port entry — the
 //! domain, the treasury account, per institution its org, root scope,
-//! account and every capital tranche obligation, and (cut IC4) per programme
-//! hull the Thing, its rooms and its exits.
+//! account and every capital tranche obligation, (cut IC4) per programme
+//! hull the Thing, its rooms and its exits, and (cut IC8) the stock clerk,
+//! per vendor its storefront, vault, market vendor, signatory, the clerk's
+//! grant, its stock plan rows and its standing bids, and the board rooms.
 //!
 //! One whole typed document per port entry, `tacsim:port:{pack}/{entry}`,
 //! **version-agnostic**: lane v2 writes it and lane v3 (cut IC8) reuses it. It is
@@ -75,6 +77,94 @@ pub struct PortMap {
     /// [`PORT_MAP_SCHEMA`] stays 1 (lead ruling L9).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hulls: Vec<HullRow>,
+    /// **The port's stock clerk** (part e, cut IC8; lead ruling L2), once made.
+    /// Skipped when absent, so a map without vendors encodes as before and
+    /// [`PORT_MAP_SCHEMA`] stays 1 (the IC4 L9 precedent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clerk: Option<ClerkRow>,
+    /// Per authored vendor org id, what part e made for it (cut IC8). Doc 18's
+    /// `content.stock/<pack>/<entry>/<org>/<good>/<issue>` plan rows are this
+    /// map's `vendors[org].stock[i]` (IC3 L3's one-document rule).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vendors: BTreeMap<CanonicalId, VendorRow>,
+    /// Room role → the room's `ObjId.0`, for every role an ask or bid of the
+    /// port names in its `boards` (cut IC8, lead ruling L15): the board hook
+    /// finds its rooms here, never by a scan at look time.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub boards: BTreeMap<CanonicalId, u32>,
+}
+
+/// **The port's stock clerk** (doc 18 cut IC8; D-18-26): the Thing the
+/// `tacsim.port` tick acts as when it mints, dissolves and lists the port's
+/// stock. It never speaks and owns nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClerkRow {
+    /// The authored agent id (`vendors[].agent`).
+    pub agent: CanonicalId,
+    /// The clerk Thing, `ObjId.0`.
+    pub thing: u32,
+}
+
+/// **One vendor's row** (doc 18 §4.7 part e; cut IC8): the objects and records
+/// part e made for it. Objects only; the owners keep the truth (the vault in
+/// the economy, the vendor in the market, the grant in the org).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VendorRow {
+    /// The storefront item Thing, `ObjId.0`.
+    pub storefront: u32,
+    /// The storefront vault, `VaultId.0`.
+    pub vault: u64,
+    /// The market vendor, `VendorId.0`, once registered.
+    pub vendor: Option<u64>,
+    /// The signatory npc, `ObjId.0`.
+    pub signatory: u32,
+    /// The clerk's `vault.withdraw` grant in this org's root scope,
+    /// `GrantId.0`, once submitted.
+    pub grant: Option<u64>,
+    /// The stock plan rows, in authored order.
+    pub stock: Vec<StockRow>,
+    /// Good → the standing bid posted for it.
+    pub bids: BTreeMap<CanonicalId, BidRow>,
+}
+
+/// **One stock plan row** (doc 18 §4.3 "Finite seeded stock"; cut IC8): the
+/// authored row as recorded at first apply. A port update never re-issues or
+/// re-sizes it (Q-18-19; lead ruling L6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StockRow {
+    /// The good.
+    pub good: CanonicalId,
+    /// The issue number.
+    pub issue: u32,
+    /// The quantity to mint.
+    pub qty: u64,
+    /// The grade to mint at.
+    pub grade: u8,
+    /// The `StockIssueId` key text (64 lowercase hexadecimal digits).
+    pub id: String,
+    /// `StockIssueId::lot_id().0`.
+    pub lot: u64,
+}
+
+/// **One standing bid** (doc 18 §4.3 "Bids that take real lots"; cut IC8):
+/// the Wanted listing posted for it and the authored figures it was posted
+/// with, which an update compares the pack against.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BidRow {
+    /// The Wanted listing, `ListingId.0`.
+    pub listing: u64,
+    /// The authored price, major units.
+    pub price_major: u64,
+    /// The authored intake.
+    pub intake: u64,
+    /// The posted listing's real-time (`RealUtc`) deadline, unix seconds: what tells
+    /// a bid that is gone because it lapsed (re-posted by the next apply when its
+    /// intake is unchanged) from one gone before it (exhausted — "not buying").
+    pub expires: i64,
 }
 
 impl PortMap {
@@ -91,6 +181,9 @@ impl PortMap {
             treasury: None,
             orgs: BTreeMap::new(),
             hulls: Vec::new(),
+            clerk: None,
+            vendors: BTreeMap::new(),
+            boards: BTreeMap::new(),
         }
     }
 

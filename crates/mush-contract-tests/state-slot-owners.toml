@@ -273,6 +273,19 @@ fail-closed. The oracle is boot-hydrated by the host from the store, which a
 """
 
 [[site]]
+path = "crates/tacsim/tests/commerce.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 18 cut IC8, for the coop.rs row's reason: the commerce gates charter pilots
+through `+coop/enrol`, whose rule is per gateway account and fails closed on an
+unmapped character. The oracle is boot-hydrated by the host from the store,
+which a `TestWorld` has none of, so the rig installs the fixed account map — the
+`match_lifecycle.rs` precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/deliberation.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

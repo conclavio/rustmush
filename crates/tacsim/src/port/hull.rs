@@ -17,7 +17,11 @@
 //!    with the template's 18a §3.1 text: `desc`, the tree's `short_desc`
 //!    attribute and the details on tacsim's own detail shelf
 //!    ([`HULL_DETAIL_PREFIX`]; hull rooms are not atlas rooms, L14);
-//! 4. **the exits** — the template's pairs, in `open_exit`'s shape;
+//! 4. **the exits** — the template's pairs, in `open_exit`'s shape; an exit
+//!    already made is re-dressed every pass, its name and aliases following the
+//!    template (cut IC8): **`interior.exits` are append-only by position** — an
+//!    exit is the one the map recorded at its index, never re-made, so a later
+//!    template may change a pair's words but never reorder or drop a pair;
 //! 5. **the store** — a single-room interior space anchored on the hull (the
 //!    hold vault's backing, cut IC6);
 //! 6. **the airlock** — the interior space whose `Transition::Members` are the
@@ -425,13 +429,29 @@ fn lay_up_one(
         for (side, (src, dest)) in [(from, to), (to, from)].into_iter().enumerate() {
             let at = i.saturating_mul(2).saturating_add(side);
             let made = map.hulls.get(index).map_or(0, |row| row.exits.len());
-            if made != at {
-                continue;
-            }
             let spec = pair
                 .names
                 .get(side)
                 .ok_or_else(|| format!("{id}: hull {mark} exit pair {i} lacks a name"))?;
+            // Doc 18 cut IC8 (lead 2b(i)): an exit already made is re-dressed the
+            // way `dress` re-dresses a room — its name and aliases follow the
+            // template. **`interior.exits` are append-only by position**: exit `at`
+            // is the one the map recorded at `at`, never re-made or re-linked, so a
+            // template may change an exit's words but never reorder or drop a pair.
+            if at < made {
+                let exit = map
+                    .hulls
+                    .get(index)
+                    .and_then(|row| row.exits.get(at))
+                    .map(|obj| ObjId(*obj))
+                    .ok_or_else(|| format!("{id}: hull {mark} exit {at} has no map row"))?;
+                redress_exit(ctx, exit, spec)
+                    .map_err(|e| format!("{id}: hull {mark} exit {spec}: {e}"))?;
+                continue;
+            }
+            if made != at {
+                continue;
+            }
             let exit = open_exit(ctx, src, spec, dest)
                 .map_err(|e| format!("{id}: hull {mark} exit {spec}: {e}"))?;
             if let Some(row) = map.hulls.get_mut(index) {
@@ -587,6 +607,45 @@ fn dress(ctx: &mut Ctx<'_>, room: ObjId, def: &InteriorRoomDef) -> Result<(), St
         ctx.w
             .set_attr(room, &attr, Attr::text(text.as_str(), ctx.actor))
             .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// **Re-dress one exit already made** (doc 18 cut IC8, lead 2b(i)): its name set to
+/// `spec`'s first segment when it differs, every alias not among the remaining
+/// segments removed, and every missing one added in the case authored. A live exit
+/// only; a gone one is skipped (the hull's own drift check reports it).
+fn redress_exit(ctx: &mut Ctx<'_>, exit: ObjId, spec: &str) -> Result<(), String> {
+    let Some(obj) = ctx.w.get(exit) else {
+        return Ok(());
+    };
+    let mut segments = spec.split(';').map(str::trim).filter(|s| !s.is_empty());
+    let name = segments
+        .next()
+        .ok_or_else(|| "an exit needs a name".to_string())?;
+    let wanted: Vec<&str> = segments.collect();
+    let current_name = obj.name.clone();
+    let stale: Vec<String> = obj
+        .aliases
+        .iter()
+        .filter(|alias| {
+            !wanted
+                .iter()
+                .any(|w| w.eq_ignore_ascii_case(alias.as_str()))
+        })
+        .map(ToString::to_string)
+        .collect();
+    if current_name != name {
+        ctx.w.set_name(exit, name).map_err(|e| e.to_string())?;
+    }
+    for alias in stale {
+        ctx.w
+            .remove_alias(exit, &alias)
+            .map_err(|e| e.to_string())?;
+    }
+    for alias in wanted {
+        // A no-op for an alias the exit already has (case-insensitively).
+        ctx.w.add_alias(exit, alias).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

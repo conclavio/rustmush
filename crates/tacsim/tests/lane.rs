@@ -1,7 +1,7 @@
 //! **Doc 18 cut IC2 acceptance — the lane and the sky seam** (doc 18 §4.4, §4.8;
 //! D-18-43, D-18-45, D-18-48; lead rulings R1–R5 of the IC2 brief).
 //!
-//! `tacsim.lane.ceres_phobos@2` places Ceres, Mars and Pallas at their true
+//! `tacsim.lane.ceres_phobos@3` places Ceres, Mars and Pallas at their true
 //! heliocentric longitudes and distances on one real date (2351-05-13 on the
 //! game calendar, fetched by `content/sky/fetch_horizons.py`) and Kirkwood on
 //! the Ceres–Mars chord at 2.06 AU; its two routes' `base_s` are the legs that
@@ -50,7 +50,7 @@ use support::ground::{UNSIGNED, sign};
 
 /// **The lane's pin**, v2 (doc 18 cut IC3): a new version beside v1's ledger
 /// row, never v1 re-signed in place (lead ruling L0b). IC8's v3 is pinned anew.
-const LANE_DIGEST: &str = "3f7e1a962eedf4bf4fcdd06c83ba893c555c11579dd1b35a20901bef596354e0";
+const LANE_DIGEST: &str = "8d20125693884a8c6739d6dd032d858e474c015726eab54b05dccb17164d0ad4";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -176,7 +176,7 @@ fn ic2_the_lane_pack_is_pinned() {
     let manifest = pack.manifest();
     assert_eq!(manifest.id().as_str(), LANE_PACK);
     assert_eq!(manifest.version(), LANE_VERSION);
-    assert_eq!(manifest.version(), 2);
+    assert_eq!(manifest.version(), 3, "lane v3 since doc 18 cut IC8");
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
     assert_eq!(
@@ -579,7 +579,7 @@ fn ic2_an_operator_seed_cannot_claim_the_lane_id() {
     let refused = verify_sources_with(&cfg, &game_seed_sources())
         .expect_err("the operator file collides with the lane");
     assert!(
-        refused.starts_with("[tacsim] ops/lane.json: declares tacsim.lane.ceres_phobos@2, which "),
+        refused.starts_with("[tacsim] ops/lane.json: declares tacsim.lane.ceres_phobos@3, which "),
         "{refused}"
     );
     assert!(
@@ -811,7 +811,7 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
     let out = tw.seen_by(&events, GOD).join("\n");
     for (line, digest) in [
         (
-            "tacsim.lane.ceres_phobos@2 [seed]",
+            "tacsim.lane.ceres_phobos@3 [seed]",
             lane().manifest().digest().to_hex(),
         ),
         ("tacsim.core@1 [rules]", CORE_DIGEST.to_owned()),

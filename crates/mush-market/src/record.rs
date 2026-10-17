@@ -539,12 +539,33 @@ pub enum Supply {
         /// The grade the listing advertises, carried onto the buyer's lot.
         grade: u8,
     },
+    /// **Doc 18 cut IC8 — a standing bid** (§4.3 "Bids that take real lots"; lead
+    /// ruling L14). The listing's `seller` is the **bidding** org, its `price` the bid
+    /// per unit and its `quantity` the intake still wanted, so an exhausted bid is a
+    /// deleted listing. It sells nothing: it is not a lot sale
+    /// ([`crate::MarketStore::lot_matter`] answers `None`), it is never quoted or
+    /// accepted ([`crate::WANTED_IS_A_BID`]), it is not supply in the projection, and
+    /// selling into it is cut IC10's.
+    ///
+    /// A recorded deviation from doc 18 §4.3's `Supply::Wanted{good, min_grade, price,
+    /// remaining}` (lead ruling L21): the price and the remaining intake ride on the
+    /// listing's own `price` and `quantity`, as every listing's do, so there is one
+    /// truth for each.
+    Wanted {
+        /// The bidder's own vault, where bought matter would be received (its
+        /// storefront).
+        vault: VaultId,
+        /// The commodity it buys.
+        commodity: LotCommodity,
+        /// The lowest grade it takes, `0..=mush_inventory::MAX_GRADE`.
+        min_grade: u8,
+    },
 }
 
 impl Supply {
     /// The lot endpoint, commodity and grade of a `Supply::Lot`, and `None` for every
     /// other arm — the one accessor every lot-aware path reads, so a new arm cannot
-    /// be reached by accident.
+    /// be reached by accident. A standing bid (`Supply::Wanted`) is not a lot sale.
     #[must_use]
     pub fn lot(&self) -> Option<(mush_inventory::EndpointRef, &mush_core::CanonicalId, u8)> {
         match self {
@@ -553,8 +574,17 @@ impl Supply {
                 commodity,
                 grade,
             } => Some((endpoint.0, &commodity.0, *grade)),
-            Supply::Stock { .. } | Supply::Market { .. } | Supply::Procurement { .. } => None,
+            Supply::Stock { .. }
+            | Supply::Market { .. }
+            | Supply::Procurement { .. }
+            | Supply::Wanted { .. } => None,
         }
+    }
+
+    /// Whether this is a standing bid (doc 18 cut IC8).
+    #[must_use]
+    pub const fn is_wanted(&self) -> bool {
+        matches!(self, Supply::Wanted { .. })
     }
 }
 
@@ -727,6 +757,16 @@ impl TryFrom<ListingWire> for Listing {
             // vault it names may be gone, and the listing is then reconciled away by
             // the sweep's own arm rather than refused here.
             let _ = endpoint;
+        }
+        // Doc 18 cut IC8: a standing bid re-runs its own caps on the wire too — a
+        // grade floor past `MAX_GRADE` could never be met, and a bid conveys no object.
+        if let Supply::Wanted { min_grade, .. } = &w.source {
+            if *min_grade > mush_inventory::MAX_GRADE {
+                return Err(RecordError("a standing bid's grade floor is out of range"));
+            }
+            if w.object.is_some() {
+                return Err(RecordError("a standing bid names no object"));
+            }
         }
         Ok(Listing {
             id: ListingId(w.id),

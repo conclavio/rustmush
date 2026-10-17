@@ -258,8 +258,28 @@ impl MarketStore {
                     commodity,
                 })
             }
-            Supply::Market { .. } | Supply::Procurement { .. } => None,
+            // Doc 18 cut IC8: a standing bid sells nothing, so it moves no matter.
+            Supply::Market { .. } | Supply::Procurement { .. } | Supply::Wanted { .. } => None,
         }
+    }
+
+    /// **The live standing bid one vendor posts for one commodity, if any** (doc 18 cut
+    /// IC8): what `post_wanted` refuses a second of. A walk of the vendor's own
+    /// listings, bounded by `MAX_LISTINGS_PER_VENDOR`.
+    #[must_use]
+    pub fn wanted_of(
+        &self,
+        vendor: VendorId,
+        commodity: &mush_core::CanonicalId,
+    ) -> Option<ListingId> {
+        self.by_vendor.get(&vendor).and_then(|set| {
+            set.iter().copied().find(|id| {
+                self.live.contains(id)
+                    && self.listings.get(id).is_some_and(|l| {
+                        matches!(&l.source, Supply::Wanted { commodity: c, .. } if &c.0 == commodity)
+                    })
+            })
+        })
     }
 
     /// Every live **hold-backed** lot listing, for the sweep's hold reconcile arm.

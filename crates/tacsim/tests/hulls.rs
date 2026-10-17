@@ -116,7 +116,7 @@ impl Roster {
                 .expect("the atlas composes");
             mods[at] = Box::new(
                 mush_atlas::AtlasModule::with_config(mush_atlas::AtlasConfig::default())
-                    .with_shelf(shelf.clone()),
+                    .with_shelf(with_stations(shelf)),
             );
         }
         mods.push(comp::worldgen_module_with(
@@ -311,9 +311,10 @@ fn lane_variant(version: u32, edit: impl FnOnce(&mut serde_json::Value)) -> Stri
     sign(&serde_json::to_string_pretty(&doc).expect("serializes"))
 }
 
-/// Lane v3 (test-only data), `ports.rs`'s base edit plus `edit`.
-fn lane_v3(edit: impl FnOnce(&mut serde_json::Value)) -> mush_content::Pack {
-    mush_content::load_pack(&lane_variant(3, |doc| {
+/// Lane v4 (test-only data, one past the shipped v3 since doc 18 cut IC8), `ports.rs`'s
+/// base edit plus `edit`.
+fn lane_v4(edit: impl FnOnce(&mut serde_json::Value)) -> mush_content::Pack {
+    mush_content::load_pack(&lane_variant(4, |doc| {
         doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"] =
             serde_json::json!(8);
         doc["entries"]["stickney_port"]["def"]["orgs"][2]["faction"] =
@@ -807,7 +808,7 @@ fn ic4_a_second_boot_makes_no_hull() {
 /// smaller stake so the floor still fits.
 #[test]
 fn ic4_an_update_creates_only_the_new_hull() {
-    let v3 = lane_v3(|doc| {
+    let v3 = lane_v4(|doc| {
         let programme = &mut doc["entries"]["ceres_port"]["def"]["programme"];
         programme["pool"] = serde_json::json!(9);
         programme["stake_major"] = serde_json::json!(20_000);
@@ -833,7 +834,7 @@ fn ic4_an_update_creates_only_the_new_hull() {
         .collect();
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@3")),
+        apply.contains(&format!("Applied {LANE_PACK}@4")),
         "{apply}\n{plan}"
     );
     let after = ceres_map(&tw);
@@ -879,7 +880,7 @@ fn ic4_an_update_creates_only_the_new_hull() {
 /// stay staff's to repair.
 #[test]
 fn ic4_a_held_hull_document_is_skipped_not_refused() {
-    let v3 = lane_v3(|doc| {
+    let v3 = lane_v4(|doc| {
         let programme = &mut doc["entries"]["ceres_port"]["def"]["programme"];
         programme["pool"] = serde_json::json!(9);
         programme["stake_major"] = serde_json::json!(20_000);
@@ -926,7 +927,7 @@ fn ic4_a_held_hull_document_is_skipped_not_refused() {
         .expect("a held unit record");
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@3")),
+        apply.contains(&format!("Applied {LANE_PACK}@4")),
         "{apply}\n{plan}"
     );
     let after = ceres_map(&tw);
@@ -961,7 +962,7 @@ fn ic4_a_held_hull_document_is_skipped_not_refused() {
 /// **Hull drift is refused before anything is made** (L10).
 #[test]
 fn ic4_hull_drift_is_refused_before_anything_is_made() {
-    let shrink = lane_v3(|doc| {
+    let shrink = lane_v4(|doc| {
         let programme = &mut doc["entries"]["ceres_port"]["def"]["programme"];
         programme["pool"] = serde_json::json!(7);
         programme["hull_names"]
@@ -969,11 +970,11 @@ fn ic4_hull_drift_is_refused_before_anything_is_made() {
             .expect("names")
             .truncate(7);
     });
-    let reprefix = lane_v3(|doc| {
+    let reprefix = lane_v4(|doc| {
         doc["entries"]["ceres_port"]["def"]["programme"]["registry_prefix"] =
             serde_json::json!("FPC-D-05");
     });
-    let plain = lane_v3(|_| {});
+    let plain = lane_v4(|_| {});
     type Prepare = Box<dyn Fn(&mut TestWorld)>;
     let cases: Vec<(&str, mush_content::Pack, Prepare, &str)> = vec![
         ("pool 7", shrink, Box::new(|_| {}), "never retired"),
@@ -998,7 +999,7 @@ fn ic4_hull_drift_is_refused_before_anything_is_made() {
         let (_plan, apply) = plan_and_apply(&mut tw);
         assert!(apply.contains(words), "{name}:\n{apply}");
         assert!(!apply.contains("Applied "), "{name}:\n{apply}");
-        assert_eq!(lane_latch(&tw), Some(2), "{name}");
+        assert_eq!(lane_latch(&tw), Some(3), "{name}");
         assert_eq!(maps(&tw), before_maps, "{name}");
         assert_eq!(tw.world().iter().count(), objects, "{name}");
         assert_eq!(economy(&tw).journal_len(), journal, "{name}");
@@ -1074,4 +1075,14 @@ fn ic4_the_registry_issuer_is_the_programmes() {
     assert!(economy(&tw).is_title_issuer(&issuer));
     assert_eq!(registry_mark("FPC-D-04", 0), "FPC-D-0401");
     assert_eq!(registry_mark("FPC-D-04", 7), "FPC-D-0408");
+}
+
+/// A test shelf with the four station packs ahead of it (doc 18 cut IC8): the
+/// `PortApplier` resolves the vendors' storefront items and signatories from the
+/// station packs on the atlas shelf (lead ruling L3), as the production shelf always
+/// carries them.
+fn with_stations(shelf: &[mush_content::Pack]) -> Vec<mush_content::Pack> {
+    let mut full = tacsim::definitions::content::station_packs().expect("the station packs");
+    full.extend(shelf.iter().cloned());
+    full
 }

@@ -358,6 +358,34 @@ pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String 
     // unmoved, so `+market/list` advertised a price nobody pays.
     let price = crate::trade::price_for(l, ctx.w.module_state::<MarketStore>());
     let instrument = listing_instrument(ctx.w, l);
+    // Doc 18 cut IC8: a standing bid is demand, rendered as such, with " — not buying"
+    // when the bidder's own account cannot fund one unit (or cannot be read).
+    if l.source.is_wanted() {
+        let funded = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.vendor(l.vendor))
+            .and_then(|v| {
+                ctx.w
+                    .module_state::<mush_economy::EconomyStore>()?
+                    .snapshot()
+                    .account(v.account)
+                    .map(|a| {
+                        a.posted_balance
+                            .minor()
+                            .saturating_sub(a.held_amount.minor())
+                    })
+            })
+            .is_some_and(|available| available >= price.minor());
+        return format!(
+            "#{} {name} — wanted {} × {} [{}] by {shop}{}",
+            l.id,
+            l.quantity,
+            money(ctx.w, instrument.as_ref(), price),
+            l.market,
+            if funded { "" } else { " — not buying" }
+        );
+    }
     format!(
         "#{} {name} — {} × {} [{}]{}{}",
         l.id,
@@ -400,6 +428,8 @@ fn show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // already held — which is the honest thing a reserving listing says — and
         // learns no endpoint, no commodity id and no other principal's inventory.
         Supply::Lot { .. } => "held stock, reserved for this listing".to_string(),
+        // Doc 18 cut IC8: a standing bid — opaque like the lot handles.
+        Supply::Wanted { .. } => "a standing bid; the house buys this".to_string(),
     };
     lines(ctx, vec![line, format!("  supply: {extra}")]);
     Ok(())

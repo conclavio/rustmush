@@ -138,7 +138,7 @@ impl Roster {
                 .expect("the atlas composes");
             mods[at] = Box::new(
                 mush_atlas::AtlasModule::with_config(mush_atlas::AtlasConfig::default())
-                    .with_shelf(shelf.clone()),
+                    .with_shelf(with_stations(shelf)),
             );
         }
         mods.push(comp::worldgen_module_with(
@@ -370,10 +370,10 @@ fn content_pack(json: &str) -> mush_content::Pack {
     mush_content::load_pack(json).expect("the variant verifies")
 }
 
-/// Lane v3 (test-only data): both port entries touched — `ceres_port`'s
+/// Lane v4 (test-only data, one past the shipped v3 since doc 18 cut IC8): both port entries touched — `ceres_port`'s
 /// dormancy 8 days and `yard_commissary`'s faction `freeport`.
-fn lane_v3(edit: impl FnOnce(&mut serde_json::Value)) -> mush_content::Pack {
-    content_pack(&lane_variant(3, |doc| {
+fn lane_v4(edit: impl FnOnce(&mut serde_json::Value)) -> mush_content::Pack {
+    content_pack(&lane_variant(4, |doc| {
         doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"] =
             serde_json::json!(8);
         doc["entries"]["stickney_port"]["def"]["orgs"][2]["faction"] =
@@ -586,16 +586,37 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
     assert_eq!(treasury_balance, -820_000_000, "8,200,000.00cr at v2");
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
-    assert!(!after.contains("[pending]"), "{after}");
+    // Doc 18 cut IC8: the stock lines (pools, listings, bids) wait on the port tick,
+    // which this file never lands; the claim is about the capital lines.
+    assert!(
+        !after
+            .lines()
+            .any(|l| l.contains(" org ") && l.ends_with("[pending]")),
+        "{after}"
+    );
     assert!(
         after.contains("ceres_port org freeport_exchange: Freeport Exchange, org #")
             && after.contains("capital 4000000.00cr: 5 of 5 tranches settled. [ready]"),
         "{after}"
     );
+    // Doc 18 cut IC8: every binding is in place but the ports' stock, which the port
+    // tick seeds and lists (`commerce.rs` lands it; this file does not): each pools
+    // and listings line is pending — made, waiting on the tick, never missing or
+    // flagged — and every other line is ready.
+    let stock_line = |l: &str| l.contains(" vendor ") || l.contains(" ask ");
+    let bracketed: Vec<&str> = after.lines().filter(|l| l.ends_with(']')).collect();
     assert!(
-        after.ends_with("Ready: every binding above is in place."),
-        "{after}"
+        bracketed.iter().any(|l| stock_line(l)),
+        "the stock lines are reported: {after}"
     );
+    for line in bracketed {
+        let want = if stock_line(line) {
+            "[pending]"
+        } else {
+            "[ready]"
+        };
+        assert!(line.ends_with(want), "`{line}` is not {want}:\n{after}");
+    }
 }
 
 /// **The applier ensures the credit without the sheet** (L9): on `tests/lane.rs`'s
@@ -677,7 +698,7 @@ fn ic3_a_second_boot_posts_nothing() {
 /// **An update reuses every map row and refuses drift** (doc 18 §4.7; L4, L16).
 #[test]
 fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
-    let v3 = lane_v3(|_| {});
+    let v3 = lane_v4(|_| {});
     let roster = Roster::production().with_shelf(vec![v3]);
     let mut tw = boot(&roster);
     sweep(&mut tw, 3_600);
@@ -688,7 +709,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@3: 0 create, 2 update, 0 retire, 10 unchanged"
+            "Plan for {LANE_PACK}@4: 0 create, 2 update, 0 retire, 10 unchanged"
         )),
         "{plan}"
     );
@@ -701,12 +722,12 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@3: 0 created, 2 updated, 0 retired, 10 unchanged."
+            "Applied {LANE_PACK}@4: 0 created, 2 updated, 0 retired, 10 unchanged."
         )),
         "{apply}\n{plan}"
     );
     assert!(!apply.contains("STOPPED"), "{apply}");
-    assert_eq!(lane_latch(&tw), Some(3));
+    assert_eq!(lane_latch(&tw), Some(4));
     assert_eq!(counts(&tw), snapshot_counts, "the update made nothing");
     assert_eq!(maps(&tw), snapshot_maps);
     let ops = tw.take_module_ops();
@@ -717,13 +738,18 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let out = report(&mut tw);
     assert!(
         out.contains(&format!(
-            "lane: {LANE_PACK}@3 applied; this server ships @2 and does not load @3. [flagged]"
+            "lane: {LANE_PACK}@4 applied; this server ships @3 and does not load @4. [flagged]"
         )),
         "{out}"
     );
     assert!(out.contains("  ceres_port domain: #"), "{out}");
+    // Doc 18 cut IC8: nothing missing; only the ports' stock waits, on the port tick.
     assert!(
-        !out.contains("[missing]") && !out.contains("[pending]"),
+        !out.contains("[missing]")
+            && out
+                .lines()
+                .filter(|l| l.ends_with("[pending]"))
+                .all(|l| l.contains(" vendor ") || l.contains(" ask ")),
         "{out}"
     );
 
@@ -732,7 +758,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     for (name, variant, words) in [
         (
             "v3' (coop capital 3,200,000)",
-            lane_v3(|doc| {
+            lane_v4(|doc| {
                 doc["entries"]["ceres_port"]["def"]["orgs"][1]["capital_major"] =
                     serde_json::json!(3_200_000);
             }),
@@ -740,7 +766,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
         ),
         (
             "v3'' (Kasei Metals renamed)",
-            lane_v3(|doc| {
+            lane_v4(|doc| {
                 doc["entries"]["stickney_port"]["def"]["orgs"][0]["name"] =
                     serde_json::json!("Kasei Metals & Ores");
             }),
@@ -751,11 +777,45 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
             // five of 800,000 and 4,800,000 is six, the first five the same.
             // Refused by the recorded capital, not by a tranche mismatch.
             "v3''' (freeport_exchange capital 4,800,000)",
-            lane_v3(|doc| {
+            lane_v4(|doc| {
                 doc["entries"]["ceres_port"]["def"]["orgs"][3]["capital_major"] =
                     serde_json::json!(4_800_000);
             }),
             ["freeport_exchange", "capital"],
+        ),
+        (
+            // Doc 18 cut IC8 (lead ruling L6, owner-critical; fixer T15): a recorded
+            // stock row is never re-sized by an update.
+            "v4 (the Exchange's concentrate re-sized)",
+            lane_v4(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["stock"][0]["qty"] =
+                    serde_json::json!(4_001);
+            }),
+            [
+                "vendor freeport_exchange stock metals",
+                "issue 1 is already recorded; a port update never re-issues or re-sizes stock",
+            ],
+        ),
+        (
+            // Doc 18 cut IC8 (fixer T15): a recorded bid is never retired by an update.
+            "v4 (the Exchange's alloy bid dropped)",
+            lane_v4(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["bids"] = serde_json::json!([]);
+            }),
+            [
+                "vendor freeport_exchange bid structural_alloys",
+                "no longer authored; bids are never retired by a port update",
+            ],
+        ),
+        (
+            // Doc 18 cut IC8 (fixer F3): a price that cannot be written in minor
+            // units is refused by the preflight, before any write.
+            "v4 (the Exchange's concentrate priced past minor units)",
+            lane_v4(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["asks"][0]["price_major"] =
+                    serde_json::json!(100_000_000_000_000_000_u64);
+            }),
+            ["vendor freeport_exchange ask metals", "the price overflows"],
         ),
     ] {
         let roster = Roster::production().with_shelf(vec![variant]);
@@ -770,7 +830,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
             assert!(apply.contains(word), "{name}: {word}:\n{apply}");
         }
         assert!(!apply.contains("Applied "), "{name}:\n{apply}");
-        assert_eq!(lane_latch(&tw), Some(2), "{name}");
+        assert_eq!(lane_latch(&tw), Some(3), "{name}");
         assert_eq!(counts(&tw), before, "{name}");
         assert_eq!(maps(&tw), before_maps, "{name}");
         assert_eq!(before_maps, snapshot_maps, "{name}");
@@ -783,7 +843,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
 #[test]
 fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     const NEW_CAPITAL: u64 = 900_000;
-    let v3 = lane_v3(|doc| {
+    let v3 = lane_v4(|doc| {
         doc["entries"]["stickney_port"]["def"]["orgs"]
             .as_array_mut()
             .expect("the orgs")
@@ -805,7 +865,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@3: 0 created, 2 updated, 0 retired, 10 unchanged."
+            "Applied {LANE_PACK}@4: 0 created, 2 updated, 0 retired, 10 unchanged."
         )),
         "{apply}\n{plan}"
     );
@@ -882,7 +942,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
 /// that tranche and nothing else.
 #[test]
 fn ic3_a_map_that_stopped_part_way_is_completed() {
-    let v3 = lane_v3(|_| {});
+    let v3 = lane_v4(|_| {});
     let roster = Roster::production().with_shelf(vec![v3]);
     let mut tw = boot(&roster);
     let full = port_map(&tw, "ceres_port");
@@ -932,7 +992,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@3: 0 created, 2 updated, 0 retired, 10 unchanged."
+            "Applied {LANE_PACK}@4: 0 created, 2 updated, 0 retired, 10 unchanged."
         )),
         "{apply}\n{plan}"
     );
@@ -988,7 +1048,20 @@ fn ic3_a_cancelled_tranche_reads_missing_not_pending() {
         )),
         "{out}"
     );
-    assert!(!out.contains("[pending]"), "{out}");
+    // Doc 18 cut IC8: the stock lines (pools, listings, bids) wait on the port tick,
+    // which this file never lands; the claim is about the capital lines — and every
+    // line that is pending is one of those stock lines.
+    assert!(
+        !out.lines()
+            .any(|l| l.contains(" org ") && l.ends_with("[pending]")),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .filter(|l| l.ends_with("[pending]"))
+            .all(|l| l.contains(" vendor ") || l.contains(" ask ") || l.contains(" bid ")),
+        "{out}"
+    );
     assert!(out.lines().any(|l| l.starts_with("Not ready: ")), "{out}");
 }
 
@@ -1005,7 +1078,7 @@ fn ceres_key() -> String {
 #[test]
 fn ic3_a_corrupt_port_map_refuses_re_creation() {
     // (a) A kept world whose map rots.
-    let v3 = lane_v3(|_| {});
+    let v3 = lane_v4(|_| {});
     let roster = Roster::production().with_shelf(vec![v3]);
     let mut tw = boot(&roster);
     let mut folded = fold_module_ops(tw.take_module_ops());
@@ -1031,7 +1104,7 @@ fn ic3_a_corrupt_port_map_refuses_re_creation() {
     let (_plan, apply) = plan_and_apply(&mut tw);
     assert!(apply.contains(&key), "{apply}");
     assert!(apply.contains("never re-created"), "{apply}");
-    assert_eq!(lane_latch(&tw), Some(2));
+    assert_eq!(lane_latch(&tw), Some(3));
     assert_eq!(counts(&tw), before, "nothing was made");
 
     // (b) A fresh store carrying only that corrupt document refuses the first
@@ -1053,7 +1126,7 @@ fn ic3_a_corrupt_port_map_refuses_re_creation() {
         .expect_err("the first boot of the lane is refused")
         .to_string();
     assert!(
-        refused.contains(&format!("content: first-boot pack {LANE_PACK}@2 refused: ")),
+        refused.contains(&format!("content: first-boot pack {LANE_PACK}@3 refused: ")),
         "{refused}"
     );
     assert!(refused.contains(&key), "{refused}");
@@ -1143,7 +1216,7 @@ fn ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made() {
         "the drifted projection froze the economy"
     );
     assert!(
-        refused.contains(&format!("content: first-boot pack {LANE_PACK}@2 refused: ")),
+        refused.contains(&format!("content: first-boot pack {LANE_PACK}@3 refused: ")),
         "{refused}"
     );
     assert!(refused.contains("the economy is frozen"), "{refused}");
@@ -1343,7 +1416,9 @@ fn lane_v1_json() -> String {
     })
 }
 
-/// **A world on lane v1 takes v2 by the shelf** (L0b; lens 7).
+/// **A world on lane v1 takes the shipped lane by the shelf** (L0b; lens 7) — v2 when
+/// cut IC3 wrote it, v3 since cut IC8; its v1 builder drops both port entries, so the
+/// vendors arrive with them.
 #[test]
 fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
     use tacsim::composition as comp;
@@ -1394,7 +1469,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             "the boot pass never upgrades a latch"
         );
         assert!(store(&next).published_digest(&lane_id(), 1).is_some());
-        assert!(store(&next).published_digest(&lane_id(), 2).is_some());
+        assert!(store(&next).published_digest(&lane_id(), 3).is_some());
         for entry in ["ceres_port", "stickney_port"] {
             assert!(matches!(
                 store(&next).port_map(&lane_id(), &cid(entry)),
@@ -1404,7 +1479,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let out = report(&mut next);
         for line in [
             format!(
-                "lane: {LANE_PACK}@1 applied; this server ships @2. Take it with @atlas/pack \
+                "lane: {LANE_PACK}@1 applied; this server ships @3. Take it with @atlas/pack \
                  plan {LANE_PACK}. [flagged]"
             ),
             "  ceres_port: not applied. [missing]".to_owned(),
@@ -1423,7 +1498,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let plan = run(&mut next, GOD, &format!("@atlas/pack plan {LANE_PACK}"));
         assert!(
             plan.contains(&format!(
-                "Plan for {LANE_PACK}@2: 2 create, 2 update, 0 retire, 8 unchanged"
+                "Plan for {LANE_PACK}@3: 2 create, 2 update, 0 retire, 8 unchanged"
             )),
             "{plan}"
         );
@@ -1441,11 +1516,11 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@2: 2 created, 2 updated, 0 retired, 8 unchanged."
+                "Applied {LANE_PACK}@3: 2 created, 2 updated, 0 retired, 8 unchanged."
             )),
             "{apply}"
         );
-        assert_eq!(lane_latch(&next), Some(2));
+        assert_eq!(lane_latch(&next), Some(3));
         let placed_v2 = next
             .world()
             .module_state::<ContentState>()
@@ -1459,7 +1534,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let out = report(&mut next);
         assert!(
             out.contains(&format!(
-                "lane: {LANE_PACK}@2 applied; this server ships @2. [ready]"
+                "lane: {LANE_PACK}@3 applied; this server ships @3. [ready]"
             )),
             "{out}"
         );
@@ -1491,11 +1566,14 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         .collect();
     let treasury = port_map(&tw, "ceres_port").treasury.expect("a treasury");
     let mut want = vec![
-        format!("lane: {LANE_PACK}@2 applied; this server ships @2. [ready]"),
+        format!("lane: {LANE_PACK}@3 applied; this server ships @3. [ready]"),
         format!("sky: constant (rate 0), epoch 2351-05-13, rev {rev} [ready]"),
         "world rate: 24 IC seconds per real second. [ready]".to_owned(),
         format!("treasury: system:tacsim.treasury, account #{treasury}. [ready]"),
+        // Doc 18 cut IC8: the market facts line follows the treasury.
+        "market facts: answered, so drawn sales can settle. [ready]".to_owned(),
     ];
+    let mut commerce_pending = 0;
     for (entry, def) in ports_of(LANE_JSON) {
         let map = port_map(&tw, entry.as_str());
         let refs: BTreeSet<&str> = std::iter::once(def.gallery.as_str())
@@ -1552,10 +1630,56 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 pool = programme.pool
             ));
         }
+        // Doc 18 cut IC8: before any tick, per vendor its pools line (nothing seeded),
+        // per ask its listings line (not seeded yet), per bid its bids line (posted,
+        // but its capital has not settled) — 3 + 4 + 2 at each port.
+        for vendor in &def.vendors {
+            let row = map.vendors.get(&vendor.org).expect("a vendor row");
+            let name = &def
+                .orgs
+                .iter()
+                .find(|o| o.id == vendor.org)
+                .expect("the vendor's org")
+                .name;
+            want.push(format!(
+                "  {entry} vendor {}: {name}, storefront vault #{}; 0 of {} stock rows seeded. \
+                 [pending]",
+                vendor.org,
+                row.vault,
+                vendor.stock.len()
+            ));
+            commerce_pending += 1;
+        }
+        for vendor in &def.vendors {
+            for ask in &vendor.asks {
+                want.push(format!(
+                    "  {entry} ask {} {}: not seeded yet. [pending]",
+                    vendor.org, ask.good
+                ));
+                commerce_pending += 1;
+            }
+        }
+        for vendor in &def.vendors {
+            let row = map.vendors.get(&vendor.org).expect("a vendor row");
+            for bid in &vendor.bids {
+                let listing = row.bids.get(&bid.good).expect("a posted bid").listing;
+                want.push(format!(
+                    "  {entry} bid {} {}: listing #{listing}; not buying until its capital \
+                     settles. [pending]",
+                    vendor.org, bid.good
+                ));
+                commerce_pending += 1;
+            }
+        }
     }
+    assert_eq!(
+        commerce_pending, 18,
+        "3 + 4 + 2 lines at each of the two ports"
+    );
     let total = want.len();
     want.push(format!(
-        "Not ready: 9 of {total} lines are pending, missing or flagged."
+        "Not ready: {} of {total} lines are pending, missing or flagged.",
+        9 + commerce_pending
     ));
     assert_eq!(
         &lines[1..],
@@ -1813,6 +1937,161 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
                 "also authored by port ceres_port",
             ],
         ),
+        // Doc 18 cut IC8: the vendors' rules.
+        (
+            "two stock clerks in one port",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][1]["agent"] =
+                    json!("ceres_port.other_clerk");
+            }),
+            vec![
+                "port entry ceres_port",
+                "every vendor of a port names the port's one stock clerk",
+            ],
+        ),
+        (
+            "one stock clerk in two ports",
+            Box::new(|doc| {
+                for n in 0..3 {
+                    doc["entries"]["stickney_port"]["def"]["vendors"][n]["agent"] =
+                        json!("ceres_port.clerk");
+                }
+            }),
+            vec!["agent ceres_port.clerk is also port ceres_port's stock clerk"],
+        ),
+        (
+            "an ask with no stock row",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["asks"]
+                    .as_array_mut()
+                    .expect("asks")
+                    .push(json!({ "good": "volatiles", "price_major": 1 }));
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: ask volatiles has no stock row to draw from",
+            ],
+        ),
+        (
+            "an unknown good in a stock row",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["stock"]
+                    .as_array_mut()
+                    .expect("stock")
+                    .push(json!({ "good": "unobtainium", "qty": 1, "grade": 50, "issue": 1 }));
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: unobtainium is not a good of the goods table",
+            ],
+        ),
+        (
+            "a board the port has no room for",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["asks"][0]["boards"] =
+                    json!(["customs"]);
+            }),
+            vec![
+                "port entry ceres_port",
+                "ask metals: board `customs` is not one of the port's rooms",
+            ],
+        ),
+        (
+            "a board in the spine",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["bids"][0]["boards"] =
+                    json!(["spine"]);
+            }),
+            vec![
+                "port entry ceres_port",
+                "bid structural_alloys: board `spine` is not one of the port's rooms",
+            ],
+        ),
+        (
+            "a stock row authored twice",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["stock"]
+                    .as_array_mut()
+                    .expect("stock")
+                    .push(json!({ "good": "metals", "qty": 10, "grade": 50, "issue": 2 }));
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: stock metals is authored twice",
+            ],
+        ),
+        (
+            "an ask authored twice",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["asks"]
+                    .as_array_mut()
+                    .expect("asks")
+                    .push(json!({ "good": "metals", "price_major": 201 }));
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: ask metals is authored twice",
+            ],
+        ),
+        (
+            "a bid authored twice",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["bids"]
+                    .as_array_mut()
+                    .expect("bids")
+                    .push(json!({ "good": "structural_alloys", "price_major": 1, "intake": 1 }));
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: bid structural_alloys is authored twice",
+            ],
+        ),
+        (
+            "a good both asked and bid",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["bids"]
+                    .as_array_mut()
+                    .expect("bids")
+                    .push(json!({ "good": "metals", "price_major": 1, "intake": 1 }));
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: metals is both asked and bid",
+            ],
+        ),
+        (
+            "a board named twice in one line",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["asks"][0]["boards"] =
+                    json!(["exchange", "exchange"]);
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: ask metals: board `exchange` is named twice",
+            ],
+        ),
+        (
+            "a bid whose intake the market would not take",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vendors"][0]["bids"][0]["intake"] =
+                    json!(mush_market::MAX_QUANTITY + 1);
+            }),
+            vec![
+                "port entry ceres_port",
+                "vendor freeport_exchange: bid structural_alloys: intake must be at most",
+            ],
+        ),
+        (
+            "a reference to a vendor with no ask for the good",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["programme"]["reference"]["metals"] =
+                    json!("ceres_port/coop");
+            }),
+            vec![
+                "port entry ceres_port",
+                "reference metals names `ceres_port/coop`, which posts no ask for it",
+            ],
+        ),
     ];
     for (name, edit, words) in cases {
         let refused = refusal(edit);
@@ -1820,6 +2099,19 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
             assert!(refused.contains(word), "{name}: {word}:\n{refused}");
         }
     }
+    // Doc 18 cut IC8 (lead ruling L23): the same reference in an entry that authors no
+    // vendors loads — the rule is scoped to an entry with vendors, so the published v2
+    // (references, no vendors) keeps loading.
+    assert_eq!(
+        refusal(|doc| {
+            if let Some(def) = doc["entries"]["ceres_port"]["def"].as_object_mut() {
+                def.remove("vendors");
+            }
+            doc["entries"]["ceres_port"]["def"]["programme"]["reference"]["metals"] =
+                json!("ceres_port/coop");
+        }),
+        "accepted"
+    );
     // One whole message, verbatim.
     let refused = refusal(|doc| {
         doc["entries"]["ceres_port"]["def"]["orgs"][1]["capital_major"] = json!(0);
@@ -1955,4 +2247,14 @@ fn ic3_the_ic_return_table_agrees_with_the_port_entries() {
         let entry = room_key(&def.area, arrival).expect("in the area").entry;
         assert_eq!(entry.as_str(), row.arrival, "{}", row.id);
     }
+}
+
+/// A test shelf with the four station packs ahead of it (doc 18 cut IC8): the
+/// `PortApplier` resolves the vendors' storefront items and signatories from the
+/// station packs on the atlas shelf (lead ruling L3), as the production shelf always
+/// carries them.
+fn with_stations(shelf: &[mush_content::Pack]) -> Vec<mush_content::Pack> {
+    let mut full = tacsim::definitions::content::station_packs().expect("the station packs");
+    full.extend(shelf.iter().cloned());
+    full
 }

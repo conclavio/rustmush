@@ -46,7 +46,7 @@ use crate::port::apply::{credit_scale, minor_of, room_by_key};
 use crate::port::def::{PortDef, ProgrammeDef, room_key};
 use crate::port::map::{HullRow, PortMap, PortMapState};
 use crate::port::readiness::{
-    Binding, LineState, Readiness, ReadinessLine, readiness, report_ports,
+    Binding, LineState, Readiness, ReadinessLine, readiness_in, report_ports,
 };
 use crate::store::{TacsimStore, put_enrolment};
 
@@ -114,7 +114,7 @@ pub const ENROLLED_ONCE: &str =
     "The Registry already has you on its books: the Co-op enrols each pilot once, ever.";
 /// The account's enrolment document does not read.
 pub const BOOKS_UNREADABLE: &str =
-    "The Co-op's books for your account cannot be read right now; staff have been told.";
+    "The Co-op's books for your account cannot be read right now. Ask staff to look at them.";
 /// The readiness gate is shut (L1).
 pub const NOT_OPEN: &str = "The Co-op is not enrolling yet: the programme is still being set up.";
 /// A ship name the Registry refuses.
@@ -499,9 +499,13 @@ pub fn free_hulls<'a>(w: &World, port: &ProgrammePort<'a>) -> Vec<&'a HullRow> {
 }
 
 /// **The enrolment gate** (lead ruling L1; doc 18 §4.7): the first line whose
-/// binding is Lane, Rate, Map, Rooms, Domain, Org, Programme or Hulls and whose
-/// state is not Ready. Sky and Treasury are not gated; cut IC8 adds the pools
-/// and listings.
+/// binding is Lane, Rate, Map, Rooms, Domain, Org, Programme or Hulls — and,
+/// since cut IC8 (§4.7 "IC8 adds pools seeded and listings equal to pools"; its
+/// lead ruling L8), Pools, Listings or MarketFacts — and whose state is not
+/// Ready. Sky, Treasury and Bids are reported, not gated (a bid waits on the
+/// capital sweep the Org lines already gate). A Pending Listings line — seeded
+/// stock the arm has not listed yet — closes enrolment for the fire or two the
+/// arm takes; the draw mirror's lag is inside Ready (`q ≤ p ≤ q + undrawn`).
 ///
 /// # Errors
 ///
@@ -518,6 +522,9 @@ pub fn enrol_gate(r: &Readiness) -> Result<(), &ReadinessLine> {
                 | Binding::Org
                 | Binding::Programme
                 | Binding::Hulls
+                | Binding::Pools
+                | Binding::Listings
+                | Binding::MarketFacts
         ) && line.state != LineState::Ready
     }) {
         Some(line) => Err(line),
@@ -891,7 +898,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         return Err(ENROLLED_ONCE.to_owned());
     }
     // 5. The readiness gate (L1).
-    let report = readiness(w);
+    let report = readiness_in(ctx);
     if let Err(line) = enrol_gate(&report) {
         tracing::info!(line = %line.text, "tacsim: +coop/enrol is closed by the readiness gate");
         return Err(NOT_OPEN.to_owned());
@@ -973,7 +980,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         .presentation
         .map(|g| name_of(w, ObjId(g)))
         .ok_or_else(|| failed("the gallery"))?;
-    Ok(EnrolPlan {
+    let plan = EnrolPlan {
         account,
         trust,
         trust_scope,
@@ -982,7 +989,10 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         hull,
         hull_owner,
         mark: row.mark.clone(),
-        laid_up_name: name_of(w, hull),
+        // Doc 18 cut IC8 (lead 2d; lead ruling L18): a historical label, not an
+        // identity, bounded here so a staff rename past the document's bound can
+        // never strand the lowest free hull.
+        laid_up_name: clamp_label(name_of(w, hull)),
         stowage,
         gallery_name,
         name,
@@ -992,7 +1002,60 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         programme: programme.id.clone(),
         pack: port.pack.clone(),
         entry: port.entry.clone(),
-    })
+    };
+    // Doc 18 cut IC8 (lead 2d): the document's own invariants, checked on every
+    // field the plan already knows, before the first write.
+    if let Err(error) = enrolment_of(&plan, actor, 0, 0, 0, w.now()).check() {
+        tracing::error!(%error, "tacsim: +coop/enrol: the enrolment would not check");
+        return Err(FAILED.to_owned());
+    }
+    Ok(plan)
+}
+
+/// A label cut to [`MAX_ENROLMENT_TEXT_BYTES`] on a char boundary (doc 18 cut IC8).
+fn clamp_label(mut text: String) -> String {
+    if text.len() > MAX_ENROLMENT_TEXT_BYTES {
+        let mut cut = MAX_ENROLMENT_TEXT_BYTES;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut = cut.saturating_sub(1);
+        }
+        text.truncate(cut);
+    }
+    text
+}
+
+/// The enrolment document a plan writes, with the ids the writes mint.
+fn enrolment_of(
+    plan: &EnrolPlan,
+    pilot: ObjId,
+    lease: u64,
+    vault: u64,
+    credit_account: u64,
+    enrolled_at: i64,
+) -> Enrolment {
+    Enrolment {
+        schema: ENROLMENT_SCHEMA,
+        account: plan.account,
+        pilot,
+        programme: plan.programme.clone(),
+        pack: plan.pack.clone(),
+        entry: plan.entry.clone(),
+        hull: plan.hull,
+        mark: plan.mark.clone(),
+        laid_up_name: plan.laid_up_name.clone(),
+        name: plan.name.clone(),
+        lease,
+        vault,
+        credit_account,
+        stake_minor: plan.stake_minor,
+        share_permille: plan.share_permille,
+        buyout_minor: plan.buyout_minor,
+        enrolled_at,
+        status: EnrolmentStatus::Active,
+        sales: 0,
+        margin_minor: 0,
+        shares_minor: 0,
+    }
 }
 
 /// **A refusal after the first write** (L6, L16). Dispatch rolls back only the
@@ -1190,30 +1253,20 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             tracing::error!(hull = plan.hull.0, %error, "tacsim: +coop/enrol could not describe the hull");
         }
     }
-    // 10h. The enrolment document.
-    let enrolment = Enrolment {
-        schema: ENROLMENT_SCHEMA,
-        account: plan.account,
-        pilot: actor,
-        programme: plan.programme.clone(),
-        pack: plan.pack.clone(),
-        entry: plan.entry.clone(),
-        hull: plan.hull,
-        mark: plan.mark.clone(),
-        laid_up_name: plan.laid_up_name.clone(),
-        name: plan.name.clone(),
-        lease: lease.0,
-        vault: vault_id.0,
-        credit_account: pilot_account.0,
-        stake_minor: plan.stake_minor,
-        share_permille: plan.share_permille,
-        buyout_minor: plan.buyout_minor,
-        enrolled_at: ctx.w.now(),
-        status: EnrolmentStatus::Active,
-        sales: 0,
-        margin_minor: 0,
-        shares_minor: 0,
-    };
+    // 10h. The enrolment document, checked again on its final value (doc 18 cut
+    // IC8, lead 2d): past the writes a failure is `failed_after_writes`, logged.
+    let enrolment = enrolment_of(
+        &plan,
+        actor,
+        lease.0,
+        vault_id.0,
+        pilot_account.0,
+        ctx.w.now(),
+    );
+    if let Err(error) = enrolment.check() {
+        tracing::error!(lease = lease.0, %error, "tacsim: +coop/enrol: the enrolment did not check");
+        return Err(failed_after_writes(ctx));
+    }
     put_enrolment(ctx, &enrolment);
     // 11. The reply (doc 18 §2 step 4).
     if opened {

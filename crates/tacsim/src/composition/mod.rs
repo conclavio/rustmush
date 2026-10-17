@@ -379,12 +379,20 @@ fn compose_server_modules(
             // marker (never a status: a sortie that merely started answers
             // unknown). Five crates, one namespace each, and `with_facts`
             // PANICS on a duplicate.
+            //
+            // Doc 18 cut IC8 (lead ruling L13): `market.*` joins them as the SIXTH
+            // namespace — `market.lot.drawn`, doc 18 cut IC7's, answered from the
+            // draw-receipt mirror on the quote (`Quote.drawn_at`), never a status.
+            // On every roster, because the market composes on every roster and the
+            // namespace is its own; a Draw sale whose fact nobody answers would never
+            // settle, and the market refuses one up front when this is missing.
             .with_facts(vec![
                 Arc::new(mush_jobs::JobsFactProvider),
                 Arc::new(mush_inventory::InventoryFactProvider),
                 Arc::new(mush_industry::IndustryFactProvider),
                 Arc::new(mush_campaign::CampaignFactProvider),
                 Arc::new(mush_sim::SimFactProvider),
+                Arc::new(mush_market::MarketFactProvider),
             ])
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
@@ -438,7 +446,14 @@ fn compose_server_modules(
             // `[shadowrun.economy].vendor_orgs`, frozen here — and conferring no
             // money authority whatever: the escrow still posts under the org
             // account's own debit authority and still refuses when it is short.
-            .with_party_caps(Vec::new()),
+            .with_party_caps(Vec::new())
+            // Doc 18 cut IC8 (lead ruling L13; doc 18 cut IC7's seam): on a roster
+            // that composes the TacSim layer, the content-resolved party-cap source —
+            // the port institutions the lane's port maps record (vendors and the
+            // programme org) accept programmatically. Asked only after the table
+            // said no, and conferring no money authority whatever. A roster without
+            // the layer composes none.
+            .with_party_cap_source_if(tacsim_delegate),
         ),
         // E7 cut 2 (10b §3.2, Q13A/Q2D, D-E7-3): the neutral quantity authority.
         // It boots **immediately after `mush-economy`** because its own boot
@@ -605,7 +620,13 @@ fn compose_server_modules(
                 // `settle_sale` would answer `ActionStateError::OwnerMismatch`. Unwired is fail-closed: no lot
                 // action registers and `@market/vendor stock` refuses a
                 // lot-represented good byte-identically to E6c.
-                .with_inventory(Arc::clone(&inventory_handles));
+                .with_inventory(Arc::clone(&inventory_handles))
+                // Doc 18 cut IC8 (lead ruling L13; doc 18 cut IC7's two seams): on a
+                // roster that composes the TacSim layer, the port presence gate and
+                // the hull capacity provider; `plan(..).is_some() == governed(..)` for
+                // every endpoint, because both answer from `port::market::governed_hold`.
+                // A roster without the layer composes neither.
+                .with_port_seams_if(tacsim_delegate);
             // WS04-S7: housing's shape at the top of this list, for housing's reason.
             // Wired unconditionally, `sr.market` was a name the market held and the
             // economy did not list on every non-Shadowrun server, so the one arm that
@@ -620,6 +641,40 @@ fn compose_server_modules(
         Box::new(mush_script::ScriptModule::new()),
     ];
     (modules, Arc::clone(&inventory_handles))
+}
+
+/// **Doc 18 cut IC8's economy seam, composed only where the TacSim layer is**
+/// (lead ruling L13): [`crate::port::market::PortPartyCaps`].
+trait PortPartyCapsExt: Sized {
+    fn with_party_cap_source_if(self, on: bool) -> Self;
+}
+
+impl PortPartyCapsExt for mush_economy::EconomyModule {
+    fn with_party_cap_source_if(self, on: bool) -> Self {
+        if on {
+            self.with_party_cap_source(Arc::new(crate::port::market::PortPartyCaps))
+        } else {
+            self
+        }
+    }
+}
+
+/// **Doc 18 cut IC8's market seams, composed only where the TacSim layer is**
+/// (lead ruling L13): [`crate::port::market::PortVenueGate`] and
+/// [`crate::port::market::PortCapacity`].
+trait PortMarketSeamsExt: Sized {
+    fn with_port_seams_if(self, on: bool) -> Self;
+}
+
+impl PortMarketSeamsExt for mush_market::MarketModule {
+    fn with_port_seams_if(self, on: bool) -> Self {
+        if on {
+            self.with_venue_gate(Arc::new(crate::port::market::PortVenueGate))
+                .with_capacity_provider(Arc::new(crate::port::market::PortCapacity))
+        } else {
+            self
+        }
+    }
 }
 
 /// The economy observer table this server freezes at wiring (16b cut R-b: the one

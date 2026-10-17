@@ -2012,6 +2012,48 @@ mod tests {
         }
     }
 
+    /// **Doc 18 cut IC8 — the game roster hands the layer a filled inventory cell**
+    /// (lead 2c-iv): with `[tacsim].enabled`, `boot::game_modules` composes a layer
+    /// whose `PortHandles` hold the inventory families, registers the production
+    /// `tacsim_port_stock` definition, and answers the `market` fact namespace (the
+    /// sixth, which a drawn sale's contract settles on).
+    #[test]
+    fn ic8_the_game_roster_hands_the_layer_a_filled_inventory_cell() {
+        use mush_testkit::TestWorld;
+        let llm = std::sync::Arc::new(
+            mush_llm::LlmService::builder()
+                .global_enabled(false)
+                .build(),
+        );
+        let mut config = mush_config::config::Config::default();
+        config.tacsim.enabled = true;
+        let roster = crate::boot::game_modules(&config, &llm)
+            .expect("an enabled config composes the game roster");
+        let tw = TestWorld::with_modules(roster);
+        let handles = tw
+            .world()
+            .module_state::<tacsim::port::PortHandles>()
+            .expect("the port handles");
+        assert!(
+            handles.inventory.is_some(),
+            "the layer holds the filled cell"
+        );
+        let definitions = tw.registry().definitions().expect("frozen definitions");
+        let stock = mush_core::DefinitionKey {
+            owner: mush_core::OwnerId::new(tacsim::NS).expect("owner"),
+            kind: mush_core::DefinitionKind::new("action").expect("kind"),
+            id: mush_core::DefinitionId::new(tacsim::port::STOCK_ACTION).expect("id"),
+        };
+        assert!(
+            definitions.current(&stock).is_some(),
+            "the production tacsim_port_stock definition is registered"
+        );
+        assert!(
+            mush_economy::has_fact_provider(tw.world(), "market"),
+            "the market fact namespace is answered"
+        );
+    }
+
     /// E5c-C231 (look-back fold), re-pointed by 16b cut R-b: the
     /// `[tacsim.economy].reserved_rooms` → `server_modules_with` →
     /// `HousingModule::with_reserved_rooms` chain. Housing's store is told every room

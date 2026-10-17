@@ -7,8 +7,10 @@
 //! with its account and capital) and programme. `@tacsim/port status` renders
 //! it; cut IC6 gates `+coop/enrol` on [`Readiness::is_ready`] and reads the
 //! typed [`LineState`]s, never the text. Cut IC4's hulls line has landed
-//! ([`Binding::Hulls`], computed by `crate::port::hull::hull_line`); cut IC8
-//! adds its own (the pools and listings).
+//! ([`Binding::Hulls`], computed by `crate::port::hull::hull_line`). Cut IC8's
+//! lines — the market facts, and per port its pools, listings and bids — read
+//! typed state, so they come from [`readiness_in`], which takes a module context
+//! and splices them into this world-only report (lead ruling L9).
 //!
 //! **The report's lane pack** is the latched version when this server loads it,
 //! else the shipped [`LANE_VERSION`] when loaded, else none — always an exact
@@ -61,6 +63,16 @@ pub enum Binding {
     /// One port's programme hulls (cut IC4): made, interior complete, titled
     /// to the programme org and laid up at a port.
     Hulls,
+    /// Cut IC8: one vendor's storefront and how many of its stock rows are
+    /// seeded (minted and dissolved into the pool).
+    Pools,
+    /// Cut IC8: one ask's listing against its storefront pool.
+    Listings,
+    /// Cut IC8: one standing bid (reported, not gated: lead ruling L8).
+    Bids,
+    /// Cut IC8: whether anything answers the `market` fact namespace, which a
+    /// drawn sale's contract settles on.
+    MarketFacts,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -376,6 +388,375 @@ pub fn readiness(w: &World) -> Readiness {
         port_lines(&mut report, w, store, map_pack, entry, None);
     }
     report
+}
+
+/// **The report with cut IC8's lines** (doc 18 §4.7 "Boot-once acts and the
+/// readiness report"; lead ruling L9): [`readiness`] — its IC3, IC4 and IC6 lines
+/// byte-identical — with the `MarketFacts` line spliced in right after the
+/// treasury line(s), and per port, after its last line (the hulls line when it
+/// has one), one `Pools` line per vendor, one `Listings` line per ask and one
+/// `Bids` line per bid, in authored order. Pools and receipts are typed state,
+/// readable only through a module context, which is why this takes `ctx`;
+/// `@tacsim/port status` and `+coop/enrol`'s gate both call it.
+#[must_use]
+pub fn readiness_in(ctx: &mush_core::Ctx<'_>) -> Readiness {
+    let mut report = readiness(ctx.w);
+    let w: &World = ctx.w;
+    // ---- market facts, after the treasury ----
+    let facts = if mush_economy::has_fact_provider(w, mush_market::NS) {
+        ReadinessLine {
+            port: None,
+            binding: Binding::MarketFacts,
+            state: LineState::Ready,
+            text: "market facts: answered, so drawn sales can settle.".to_owned(),
+        }
+    } else {
+        ReadinessLine {
+            port: None,
+            binding: Binding::MarketFacts,
+            state: LineState::Missing,
+            text: "market facts: nothing answers the market namespace, so drawn sales refuse."
+                .to_owned(),
+        }
+    };
+    let after_treasury = report
+        .lines
+        .iter()
+        .rposition(|line| line.binding == Binding::Treasury)
+        .map_or(report.lines.len(), |i| i.saturating_add(1));
+    report.lines.insert(after_treasury, facts);
+    // ---- per port, after its last line ----
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return report;
+    };
+    let Ok(lane) = CanonicalId::new(LANE_PACK) else {
+        return report;
+    };
+    let (_, ports) = report_ports(store, w);
+    for (entry, def) in &ports {
+        if def.vendors.is_empty() {
+            continue;
+        }
+        let PortMapState::Present(map) = store.port_map(&lane, entry) else {
+            continue;
+        };
+        let lines = commerce_lines(ctx, entry, def, map);
+        let at = report
+            .lines
+            .iter()
+            .rposition(|line| line.port.as_ref() == Some(entry))
+            .map_or(report.lines.len(), |i| i.saturating_add(1));
+        for (offset, line) in lines.into_iter().enumerate() {
+            report.lines.insert(at.saturating_add(offset), line);
+        }
+    }
+    report
+}
+
+/// The word a quantity of `good` is counted in (`t`, `crew-days`).
+fn unit_word(goods: Option<&crate::definitions::GoodsTable>, good: &CanonicalId) -> String {
+    match goods
+        .and_then(|g| g.good(good))
+        .map(|row| row.ledger_unit.as_str())
+    {
+        Some("crew_day") => "crew-days".to_owned(),
+        Some(other) => other.to_owned(),
+        None => "t".to_owned(),
+    }
+}
+
+/// An amount on the credit's render.
+fn money(w: &World, amount: Amount) -> String {
+    match (w.module_state::<EconomyStore>(), credit()) {
+        (Some(economy), Some(instrument)) => {
+            mush_economy::render_amount(economy.snapshot(), &instrument, amount)
+        }
+        _ => format!("{}", amount.minor()),
+    }
+}
+
+/// One vendor's stock rows for `good` (or all of them, `None`): `Ok((seeded rows,
+/// rows, receipted quantity))`, or `Err` when a receipt or a lot cannot be read.
+fn seeded_rows(
+    ctx: &mush_core::Ctx<'_>,
+    row: &crate::port::map::VendorRow,
+    good: Option<&CanonicalId>,
+) -> Result<(usize, usize, u64), ()> {
+    let handles = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .ok_or(())?;
+    let inventory = handles.inventory.as_ref().ok_or(())?;
+    let mut seeded = 0usize;
+    let mut rows = 0usize;
+    let mut total = 0u64;
+    for stock in row
+        .stock
+        .iter()
+        .filter(|s| good.is_none_or(|g| &s.good == g))
+    {
+        rows = rows.saturating_add(1);
+        let id = crate::port::families::StockIssueId::parse(&stock.id).ok_or(())?;
+        let Some(receipt) = crate::port::stock::receipt_at(ctx, &handles.families.port_stock, &id)?
+        else {
+            continue;
+        };
+        total = total.saturating_add(receipt.qty);
+        let standing = ctx
+            .action_state(&inventory.lots, &mush_inventory::record::LotId(receipt.lot))
+            .map_err(|_| ())?;
+        if standing.is_none() {
+            seeded = seeded.saturating_add(1);
+        }
+    }
+    Ok((seeded, rows, total))
+}
+
+/// **One port's IC8 lines** (cut IC8): the `Pools`, `Listings` and `Bids` lines.
+#[allow(clippy::too_many_lines)]
+fn commerce_lines(
+    ctx: &mush_core::Ctx<'_>,
+    entry: &CanonicalId,
+    def: &PortDef,
+    map: &PortMap,
+) -> Vec<ReadinessLine> {
+    let w: &World = ctx.w;
+    let port = Some(entry.clone());
+    let mut out: Vec<ReadinessLine> = Vec::new();
+    let mut push = |binding: Binding, state: LineState, text: String| {
+        out.push(ReadinessLine {
+            port: port.clone(),
+            binding,
+            state,
+            text,
+        });
+    };
+    let goods = w.module_state::<TacsimStore>().and_then(TacsimStore::goods);
+    let market = w.module_state::<mush_market::MarketStore>();
+    let economy = w.module_state::<EconomyStore>();
+    let org_name = |org: &CanonicalId| {
+        def.orgs
+            .iter()
+            .find(|o| &o.id == org)
+            .map_or_else(|| org.to_string(), |o| o.name.clone())
+    };
+    // ---- pools, per vendor ----
+    for vendor in &def.vendors {
+        let org = &vendor.org;
+        let name = org_name(org);
+        let Some(row) = map.vendors.get(org) else {
+            push(
+                Binding::Pools,
+                LineState::Missing,
+                format!("{entry} vendor {org}: not made."),
+            );
+            continue;
+        };
+        let head = format!(
+            "{entry} vendor {org}: {name}, storefront vault #{}",
+            row.vault
+        );
+        let vault_active = economy.is_some_and(|e| {
+            e.snapshot()
+                .vault(mush_economy::VaultId(row.vault))
+                .is_some_and(|v| v.status == mush_economy::VaultStatus::Active)
+        });
+        if !vault_active {
+            push(
+                Binding::Pools,
+                LineState::Missing,
+                format!("{head} is not active."),
+            );
+            continue;
+        }
+        let registered = row.vendor.is_some_and(|v| {
+            market.is_some_and(|m| {
+                m.vendor(mush_market::VendorId(v))
+                    .is_some_and(mush_market::Vendor::is_trading)
+            })
+        });
+        if !registered {
+            push(
+                Binding::Pools,
+                LineState::Missing,
+                format!("{head}; it is not registered with the market."),
+            );
+            continue;
+        }
+        let clerk = map.clerk.as_ref().map_or(0, |c| c.thing);
+        let clerk_live = w
+            .get(mush_core::ObjId(clerk))
+            .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING));
+        if map.clerk.is_none() || !clerk_live {
+            push(
+                Binding::Pools,
+                LineState::Missing,
+                format!("{head}; its stock clerk #{clerk} does not exist."),
+            );
+            continue;
+        }
+        match seeded_rows(ctx, row, None) {
+            Err(()) => push(
+                Binding::Pools,
+                LineState::Flagged,
+                format!("{entry} vendor {org}: its stock cannot be read."),
+            ),
+            Ok((seeded, rows, _)) => push(
+                Binding::Pools,
+                if seeded == rows {
+                    LineState::Ready
+                } else {
+                    LineState::Pending
+                },
+                format!("{head}; {seeded} of {rows} stock rows seeded."),
+            ),
+        }
+    }
+    // ---- listings, per ask ----
+    for vendor in &def.vendors {
+        let org = &vendor.org;
+        for ask in &vendor.asks {
+            let good = &ask.good;
+            let unit = unit_word(goods, good);
+            let head = format!("{entry} ask {org} {good}");
+            let Some(row) = map.vendors.get(org) else {
+                push(
+                    Binding::Listings,
+                    LineState::Pending,
+                    format!("{head}: not seeded yet."),
+                );
+                continue;
+            };
+            let endpoint = mush_inventory::record::EndpointRef(mush_economy::VaultId(row.vault));
+            let Ok(pool) = crate::port_tick::read_pool(ctx, endpoint, good) else {
+                push(
+                    Binding::Listings,
+                    LineState::Flagged,
+                    format!("{head}: its storefront cannot be read."),
+                );
+                continue;
+            };
+            let reading = market
+                .map(|m| crate::port::stock::ask_reading(m, row.vault, good))
+                .unwrap_or_default();
+            let undrawn = reading.undrawn;
+            match reading.listing {
+                Some((listing, q)) => {
+                    let price = market
+                        .and_then(|m| m.listing(listing))
+                        .map_or_else(String::new, |l| money(w, l.price));
+                    let within = q <= pool && pool <= q.saturating_add(undrawn);
+                    if !within {
+                        push(
+                            Binding::Listings,
+                            LineState::Flagged,
+                            format!(
+                                "{head}: listing #{listing} lists {q} {unit} but the storefront \
+                                 holds {pool} {unit}."
+                            ),
+                        );
+                    } else if undrawn == 0 {
+                        push(
+                            Binding::Listings,
+                            LineState::Ready,
+                            format!(
+                                "{head}: listing #{listing} at {price}/{unit}, {q} {unit} listed; \
+                                 the storefront holds {pool} {unit}."
+                            ),
+                        );
+                    } else {
+                        push(
+                            Binding::Listings,
+                            LineState::Ready,
+                            format!(
+                                "{head}: listing #{listing} at {price}/{unit}, {q} {unit} listed; \
+                                 the storefront holds {pool} {unit}, {undrawn} {unit} in hand-over."
+                            ),
+                        );
+                    }
+                }
+                None => match seeded_rows(ctx, row, Some(good)) {
+                    Err(()) => push(
+                        Binding::Listings,
+                        LineState::Flagged,
+                        format!("{head}: its storefront cannot be read."),
+                    ),
+                    Ok((seeded, rows, _)) if seeded < rows || rows == 0 => push(
+                        Binding::Listings,
+                        LineState::Pending,
+                        format!("{head}: not seeded yet."),
+                    ),
+                    Ok((_, _, total)) if pool <= undrawn => push(
+                        Binding::Listings,
+                        LineState::Ready,
+                        format!("{head}: SOLD OUT: seeded {total} {unit}, 0 left."),
+                    ),
+                    Ok(_) => push(
+                        Binding::Listings,
+                        LineState::Pending,
+                        format!("{head}: {pool} {unit} in the storefront wait to be listed."),
+                    ),
+                },
+            }
+        }
+    }
+    // ---- bids, per bid (reported, not gated: lead ruling L8) ----
+    for vendor in &def.vendors {
+        let org = &vendor.org;
+        for bid in &vendor.bids {
+            let good = &bid.good;
+            let unit = unit_word(goods, good);
+            let head = format!("{entry} bid {org} {good}");
+            let recorded = map.vendors.get(org).and_then(|row| row.bids.get(good));
+            let Some(recorded) = recorded else {
+                push(
+                    Binding::Bids,
+                    LineState::Missing,
+                    format!("{head}: no bid is posted."),
+                );
+                continue;
+            };
+            let listing = mush_market::ListingId(recorded.listing);
+            let live = market
+                .and_then(|m| m.listing(listing))
+                .filter(|l| l.source.is_wanted());
+            match (live, market) {
+                (Some(l), Some(m)) => {
+                    if crate::port::board::funds_one(w, m, listing) {
+                        push(
+                            Binding::Bids,
+                            LineState::Ready,
+                            format!(
+                                "{head}: listing #{listing} at {}/{unit}, {} of {} {unit} wanted.",
+                                money(w, l.price),
+                                l.quantity,
+                                bid.intake
+                            ),
+                        );
+                    } else {
+                        push(
+                            Binding::Bids,
+                            LineState::Pending,
+                            format!(
+                                "{head}: listing #{listing}; not buying until its capital settles."
+                            ),
+                        );
+                    }
+                }
+                _ if w.now() < recorded.expires => push(
+                    Binding::Bids,
+                    LineState::Ready,
+                    format!("{head}: not buying; its intake is taken."),
+                ),
+                _ => push(
+                    Binding::Bids,
+                    LineState::Missing,
+                    format!("{head}: no bid is posted."),
+                ),
+            }
+        }
+    }
+    out
 }
 
 /// **The report's lane pack and its port entries** (doc 18 §4.7; factored out

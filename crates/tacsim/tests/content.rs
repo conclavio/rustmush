@@ -2487,7 +2487,7 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "da86f3899788dd9b2ff3141fbf97a5243cb1746b489276173c67dff26caf49fa";
+const DRAY_DIGEST: &str = "2f11e37f4de1f02df1f5d19aba599c4235c74307c55a6a13201e74184741cabb";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
@@ -2546,7 +2546,11 @@ fn ic2_the_dray_is_pinned_and_checks() {
     let pack = tacsim::pack::load_pack(content::DRAY_JSON)
         .unwrap_or_else(|error| panic!("{relative} does not verify: {error}"));
     assert_eq!(pack.manifest().id().as_str(), content::DRAY_PACK);
-    assert_eq!(pack.manifest().version(), 1);
+    assert_eq!(
+        pack.manifest().version(),
+        2,
+        "doc 18 cut IC8 re-published the Dray at v2"
+    );
     assert!(
         pack.manifest().requires().is_empty(),
         "the Dray requires nothing"
@@ -2693,7 +2697,7 @@ fn ic2_the_dray_is_pinned_and_checks() {
                 "passage",
                 vec![
                     "Inner Hatch <I>;inner;in;passage",
-                    "Airlock <A>;airlock;lock;forward"
+                    "Airlock <A>;airlock;forward"
                 ]
             ),
             (

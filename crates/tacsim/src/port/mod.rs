@@ -41,8 +41,22 @@
 //!   text carries a load, D-18-39);
 //! - [`ship`] — `+ship`, `+ship/hold`, `+ship/board` and `+ship/leave`
 //!   (D-18-34), and the hull rooms' status line and gauges on `look`.
+//!
+//! **Doc 18 cut IC8** — finite stock and port commerce:
+//!
+//! - [`vendor`] — the `PortApplier`'s parts d–e helpers: the authored storefront
+//!   and signatory resolved by name in their room at first apply, the clerk, the
+//!   storefront vaults, the market vendors, the clerk's grants, the stock plan rows,
+//!   the boards and the standing bids;
+//! - [`stock`] — `tacsim_port_stock` (mint + receipt), the stock arm and the
+//!   lapsed-hold release arm the port tick drives;
+//! - [`market`] — the TacSim implementations of the market's seams: the presence
+//!   gate, the hull capacity provider and the port institutions' party caps;
+//! - [`board`] — the boards 18a names, room by room: what is left, SOLD OUT and
+//!   "not buying".
 
 pub mod apply;
+pub mod board;
 pub mod capacity;
 pub mod coop;
 pub mod credit;
@@ -51,8 +65,11 @@ pub mod families;
 pub mod gauges;
 pub mod hull;
 pub mod map;
+pub mod market;
 pub mod readiness;
 pub mod ship;
+pub mod stock;
+pub mod vendor;
 
 pub use coop::{
     Charter, Enrolment, EnrolmentState, EnrolmentStatus, ProgrammePort, live_charter,
@@ -67,6 +84,15 @@ pub use families::{
     TicketId,
 };
 pub use map::{
-    HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, TrancheRow, port_map_key,
+    BidRow, ClerkRow, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, StockRow,
+    TrancheRow, VendorRow, port_map_key,
 };
-pub use readiness::{Binding, LineState, Readiness, ReadinessLine, readiness};
+pub use market::{
+    HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_UNDER_WAY, HoldPlan, NOT_IN_PORT, NOT_YOUR_CHARTER,
+    PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate, capacity_line, governed_hold,
+};
+pub use readiness::{Binding, LineState, Readiness, ReadinessLine, readiness, readiness_in};
+pub use stock::{
+    DISSOLVE_KEY_PREFIX, MAX_CLERK_ROWS, STOCK_ACTION, STOCK_KEY_PREFIX, STOCK_OUTCOME,
+    STOCK_SOURCE_KIND,
+};

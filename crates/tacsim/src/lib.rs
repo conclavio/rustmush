@@ -619,6 +619,9 @@ impl GameModule for TacsimRuleset {
         // gauges. Registered unconditionally like its neighbours; the hook
         // itself returns nothing while the layer is disabled.
         port::ship::register_hooks(reg)?;
+        // Doc 18 cut IC8 (§4.3 "Stock and capital"; 18a C07/C08/P07/P08/P09/P11):
+        // the boards. Registered unconditionally; silent while the layer is off.
+        port::board::register_hooks(reg)?;
         Ok(())
     }
 

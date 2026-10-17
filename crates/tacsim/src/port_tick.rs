@@ -18,18 +18,21 @@
 //! the last visited agent. Fairness between agents sharing one principal is a
 //! RAM debt per principal (lead ruling L8, [`arbitrate`]).
 //!
-//! The arms it will carry, in dispatch order ahead of the probe:
+//! The arms it carries, in dispatch order ahead of the probe:
 //!
-//! - IC8 — the stock arm (`tacsim_port_stock`: mint + receipt) and the
-//!   lapsed-hold release: **not yet**;
+//! - IC8 — **the stock arm** (each port's stock clerk: `tacsim_port_stock` mint +
+//!   receipt, the dissolve into the storefront pool, the Draw listing) and **the
+//!   lapsed-hold release** (a player's lapsed lot listing released as its holder,
+//!   at most one per fire, the holder told once after the pull verification):
+//!   [`crate::port::stock`];
 //! - IC9 — the launch and dock arms (the ticket's consumer): **not yet**;
 //! - IC11 — the order arm (the queue's offline execution): **not yet**.
 //!
-//! Today it carries one arm, **the probe** (lead ruling L3), registered only in a
-//! test world: an agent that acts as its principal once per remaining count,
-//! submitting `tacsim_port_probe`, whose provider writes one mark into the
-//! test-only family `tacsim.port_probe`. Production composes the families, the
-//! empty validators, an idle tick and the notice hook (lead rulings L4, L12).
+//! **The probe** (lead ruling L3) is registered only in a test world: an agent
+//! that acts as its principal once per remaining count, submitting
+//! `tacsim_port_probe`, whose provider writes one mark into the test-only family
+//! `tacsim.port_probe`. Production composes the families, the stock provider and
+//! its definitions, the tick and the notice hook (lead rulings L4, L12).
 //!
 //! **Reconnect notices** live here too (§4.4 "Failure handling", lead ruling
 //! L10): [`notify`] tells a connected player at once and otherwise queues a line
@@ -136,8 +139,12 @@ pub fn register(
         outcome_refs.insert(id, reg.definition(descriptor)?);
     }
     let probe_outcome = outcome_refs.get(PROBE_OUTCOME).cloned();
+    let stock_outcome = outcome_refs
+        .get(crate::port::stock::STOCK_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the stock outcome did not register"))?;
     // One `action` validator for the whole crate, likewise.
-    let actions = action_descriptors(probe_outcome.as_ref())?;
+    let actions = action_descriptors(&stock_outcome, probe_outcome.as_ref())?;
     reg.definition_validator(
         kind("action")?,
         crate::definitions::exact_validator(actions.clone()),
@@ -163,12 +170,28 @@ pub fn register(
     // Inventory registers before this layer on every roster that hands a cell,
     // so the cell is filled here; an unfilled cell gives `None` and every read
     // then refuses (`PoolReadError::Unwired`).
+    let inventory_families = inventory.and_then(|cell| cell.get().cloned());
+    // Doc 18 cut IC8: `tacsim_port_stock`, tacsim's first production provider —
+    // registered only when the inventory cell is filled (its prepare mints through
+    // the delegated inventory families); the definitions register regardless.
+    let stock_action = action_refs.get(crate::port::stock::STOCK_ACTION).cloned();
+    if let (Some(action), Some(inventory)) = (stock_action.clone(), inventory_families.clone()) {
+        reg.action_provider(
+            action.clone(),
+            crate::port::stock::StockProvider {
+                action,
+                outcome: stock_outcome,
+                receipts: port_families.port_stock.clone(),
+                inventory,
+            },
+        )?;
+    }
     reg.state(PortHandles {
         families: port_families,
-        inventory: inventory.and_then(|cell| cell.get().cloned()),
+        inventory: inventory_families,
         probe,
     });
-    reg.state(PortTickState::new(probe_action));
+    reg.state(PortTickState::new(probe_action, stock_action));
     reg.tick(
         PORT_TICK,
         TickCadence::Coarse(PORT_TICK_PERIOD),
@@ -194,13 +217,17 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// **Every `outcome` definition this crate registers** — empty in production; the
-/// probe's in a test world. IC8's `tacsim_port_stock` and IC9's
-/// `tacsim.port.burn` add their outcome descriptors to this list, in this same
+/// **Every `outcome` definition this crate registers** — doc 18 cut IC8's
+/// `tacsim_port_stock_result` on every roster, and the probe's in a test world.
+/// IC9's `tacsim.port.burn` adds its outcome descriptor to this list, in this same
 /// order: a second `definition_validator` call for one kind is a registration
 /// conflict, so there is exactly one validator per kind for the crate.
 fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError> {
-    let mut descriptors = Vec::new();
+    let mut descriptors = vec![descriptor(
+        "outcome",
+        crate::port::stock::STOCK_OUTCOME,
+        json!({ "fields": ["actor", "issue", "lot", "qty", "vault"] }),
+    )?];
     if test_world {
         descriptors.push(descriptor(
             "outcome",
@@ -212,14 +239,26 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
 }
 
 /// **Every `action` definition this crate registers**, each referencing its
-/// outcome's exact `DefinitionRef` — empty when no probe outcome is registered
-/// (production). IC8's `tacsim_port_stock` and IC9's `tacsim.port.burn` add
-/// their action descriptors to this list, in this same order (one validator per
-/// kind for the crate).
+/// outcome's exact `DefinitionRef` — doc 18 cut IC8's `tacsim_port_stock` on every
+/// roster, and the probe's when its outcome is registered (a test world). IC9's
+/// `tacsim.port.burn` adds its action descriptor to this list, in this same order
+/// (one validator per kind for the crate).
 fn action_descriptors(
+    stock_outcome: &DefinitionRef,
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
-    let mut descriptors = Vec::new();
+    let mut descriptors = vec![
+        descriptor(
+            "action",
+            crate::port::stock::STOCK_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": families::PORT_STOCK_FAMILY,
+            }),
+        )?
+        .with_references(vec![stock_outcome.clone()]),
+    ];
     if let Some(outcome) = probe_outcome {
         descriptors.push(
             descriptor(
@@ -257,12 +296,35 @@ pub struct PortTickState {
     probe_action: Option<DefinitionRef>,
     /// Test world only.
     probes: BTreeMap<ObjId, ProbeAgent>,
+    /// Doc 18 cut IC8: the registered `tacsim_port_stock` action, set at `register`.
+    pub(crate) stock_action: Option<DefinitionRef>,
+    /// Doc 18 cut IC8: the staged lapsed-hold releases awaiting their pull
+    /// verification, by `ListingId.0`, at most `crate::port::stock::MAX_RELEASING`.
+    pub(crate) releasing: BTreeMap<u64, crate::port::stock::Releasing>,
+    /// Doc 18 cut IC8: fires that found the layer on, this boot.
+    pub(crate) fires: u64,
+    /// Doc 18 cut IC8 (lead ruling L19): the drift pages raised this boot, by
+    /// `(vault, good)` — each pool pages once per boot.
+    pub(crate) paged: BTreeSet<(u64, CanonicalId)>,
+    /// Doc 18 cut IC8: listings the release arm has already logged a skip or a
+    /// refusal for this boot (each is logged once).
+    pub(crate) release_warned: BTreeSet<u64>,
+    /// Doc 18 cut IC8: listings whose release step was refused, by `ListingId.0` ->
+    /// the fire it was refused on. The release agent passes over each for
+    /// `crate::port::stock::RELEASE_GRACE_FIRES`, so one listing that is always refused
+    /// can never hold the head of the line; entries past their grace are pruned every
+    /// fire, so the map holds at most one entry per fire of grace.
+    pub(crate) release_backoff: BTreeMap<u64, u64>,
 }
 
 impl PortTickState {
-    fn new(probe_action: Option<DefinitionRef>) -> PortTickState {
+    fn new(
+        probe_action: Option<DefinitionRef>,
+        stock_action: Option<DefinitionRef>,
+    ) -> PortTickState {
         PortTickState {
             probe_action,
+            stock_action,
             ..PortTickState::default()
         }
     }
@@ -290,6 +352,16 @@ pub fn last_fire(w: &World) -> Option<PortFireStats> {
         .and_then(|state| state.last_fire)
 }
 
+/// **The drift pages the stock arm raised this boot** (doc 18 cut IC8, lead ruling
+/// L19), as `(storefront vault, good)` in order — a status read for tests and later
+/// renders; each pool pages at most once a boot.
+#[must_use]
+pub fn drift_pages(w: &World) -> Vec<(u64, CanonicalId)> {
+    w.module_state::<PortTickState>()
+        .map(|state| state.paged.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
 // ---- the fire ----------------------------------------------------------------
 
 /// One agent's turn this fire (D-18-32: one step per agent per fire).
@@ -297,10 +369,9 @@ pub fn last_fire(w: &World) -> Option<PortFireStats> {
 pub(crate) enum Step {
     /// Nothing due.
     Idle,
-    /// A unit of work that staged nothing authoritative (later arms' pull verification).
-    /// No IC5 arm returns it (the probe either submits or does not); the walk
-    /// already accounts it, so IC8's first pull-verifying arm needs no change there.
-    #[allow(dead_code)]
+    /// A unit of work that staged nothing authoritative: doc 18 cut IC8's stock arm
+    /// publishing a Draw listing (a normal-lane write made as the clerk). It counts as
+    /// worked and as the principal's one act this fire.
     Worked,
     /// The swapped call DEFERRED one submission to the engine's drain. This is NOT "admitted":
     /// the drain may still drop it as back-pressure when the principal already has a pending
@@ -315,10 +386,19 @@ pub(crate) enum Step {
     Refused,
 }
 
-/// The arms, in dispatch order (one step per agent per fire, D-18-32). IC8, IC9
-/// and IC11 add variants ahead of the probe.
+/// The arms, in dispatch order (one step per agent per fire, D-18-32). IC9 and
+/// IC11 add variants ahead of the probe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Arm {
+    /// Doc 18 cut IC8: a port's stock clerk — mint, dissolve, list
+    /// ([`crate::port::stock::stock_step`]).
+    Stock,
+    /// Doc 18 cut IC8: the release of one lapsed player listing's hold, as the
+    /// holder ([`crate::port::stock::release_step`]); at most one per fire.
+    Release {
+        /// The lapsed listing, `ListingId.0`.
+        listing: u64,
+    },
     /// The test world's probe (lead ruling L3).
     Probe,
 }
@@ -340,6 +420,7 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // The slot is taken for the fire and written back whole at its end; nothing
     // the fire calls reads it (the probe's offer is projected at landing, after).
     let mut state = std::mem::take(slot);
+    state.fires = state.fires.saturating_add(1);
     let stats = walk(ctx, &mut state);
     state.last_fire = Some(stats);
     if let Some(slot) = ctx.w.module_state_mut::<PortTickState>() {
@@ -350,6 +431,30 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
 /// Collect, order and walk the agents; returns the fire's stats and leaves the
 /// cursor, the debts and the warned set updated in `state`.
 fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
+    // Doc 18 cut IC8 (D-18-32 step 5): the release arm's pull verification runs
+    // first on every fire, whether or not any agent is offered. A notice pass: no
+    // submission and no swap.
+    crate::port::stock::release_verify(ctx, state);
+    // Doc 18 cut IC8: the stock clerks of every present lane port map whose lane
+    // is latched (a retired lane seeds nothing), then at most one release agent.
+    let clerks: Vec<ObjId> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|store| {
+            let latched = CanonicalId::new(crate::definitions::content::LANE_PACK)
+                .ok()
+                .is_some_and(|lane| store.applied_in(ctx.w, &lane).is_some());
+            if !latched {
+                return Vec::new();
+            }
+            store
+                .port_maps()
+                .filter(|map| map.pack.as_str() == crate::definitions::content::LANE_PACK)
+                .filter_map(|map| map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let release = crate::port::stock::release_agent(ctx.w, state);
     // The agents: the union over the arms, agent -> (principal, arm). An agent
     // id belongs to one arm (hull ids and clerk ids are disjoint objects); a
     // duplicate offered by a later arm is refused and logged.
@@ -366,6 +471,14 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
             agents.insert(agent, (principal, arm));
         }
     };
+    for clerk in clerks {
+        offer(clerk, clerk, Arm::Stock);
+    }
+    // One per fire: a holder already offered this fire is refused by the
+    // duplicate rule above and waits for the next.
+    if let Some((holder, listing)) = release {
+        offer(holder, holder, Arm::Release { listing });
+    }
     if state.probe_action.is_some() {
         for (agent, probe) in &state.probes {
             offer(*agent, probe.principal, Arm::Probe);
@@ -441,8 +554,9 @@ fn next_cursor(last_visited: Option<ObjId>, current: u32) -> u32 {
 }
 
 /// One agent's step: the arms in a fixed order, exhaustively (D-18-32: one step
-/// per agent per fire). IC8, IC9 and IC11 add variants ahead of the probe; the
-/// probe arm runs only when `PortTickState.probe_action` is `Some`.
+/// per agent per fire) — cut IC8's stock and release arms, then the probe; IC9 and
+/// IC11 add variants ahead of the probe. The probe arm runs only when
+/// `PortTickState.probe_action` is `Some`.
 fn step(
     ctx: &mut Ctx<'_>,
     state: &mut PortTickState,
@@ -452,6 +566,10 @@ fn step(
     arm: Arm,
 ) -> Step {
     match arm {
+        Arm::Stock => crate::port::stock::stock_step(ctx, state, fire, agent),
+        Arm::Release { listing } => {
+            crate::port::stock::release_step(ctx, state, fire, principal, listing)
+        }
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,
@@ -460,7 +578,7 @@ fn step(
 }
 
 /// Whether `id` names no live object (absent, or marked `GOING`).
-fn gone(w: &World, id: ObjId) -> bool {
+pub(crate) fn gone(w: &World, id: ObjId) -> bool {
     w.get(id).is_none_or(|obj| obj.flags.contains(Flags::GOING))
 }
 
@@ -472,16 +590,19 @@ fn gone(w: &World, id: ObjId) -> bool {
 /// internally (IC11's `trade::quote` + `accept_into`) can never fan out with a second submission
 /// FROM THIS TICK in the same drain (`engine.rs:4043-4064`).
 ///
-/// The guarantee is per tacsim fire, NOT per drain. `Engine::fire_due` (`engine.rs:3213-3263`)
-/// dispatches every due `@wait` line as its actor and runs every other due module tick into the
-/// same outbox before its ONE `drain_deferred`, and this ledger cannot see their deferred
-/// submissions. A principal whose own `@wait` command (or another module's swapped tick) submits
-/// in the same `fire_due` slice as an arm's swapped call fans out in that drain: the engine voids
-/// both and tells the principal "That command tried to submit more than one authoritative action;
-/// nothing was staged." An arm's step recovers by pull on a later fire (D-18-32), exactly as for
-/// back-pressure ([`Step::Submitted`]); the player's own `@wait` command is the collateral. A
-/// residual for IC8/IC9/IC11, which would need a core seam (the outbox asked whether an actor
-/// already has a deferred submission) to close.
+/// The guarantee is per tacsim fire, NOT per drain. `Engine::fire_due` dispatches every due
+/// `@wait` line as its actor and runs every other due module tick into the same outbox before
+/// its ONE `drain_deferred`. **Doc 18 cut IC8's core seam** (`Ctx::authoritative_pending`, lead
+/// 2c-i) closes two of the cases: [`Fire::as_principal`] asks it first and answers
+/// [`SwapRefused::Pending`] — a deferral, no act recorded, no debt — when the principal already
+/// has a submission queued in the engine from an earlier drain (which would draw the
+/// back-pressure refusal) or deferred in this outbox earlier in the same `fire_due` slice (an
+/// earlier `@wait` line, or another module's swapped tick, which would fan out with it). **The
+/// residual:** a principal's own `@wait` line that fires LATER in the same slice than this tick
+/// still fans out with the arm's submission — the engine voids both and tells the principal
+/// "That command tried to submit more than one authoritative action; nothing was staged." An
+/// arm's step recovers by pull on a later fire (D-18-32), exactly as for back-pressure
+/// ([`Step::Submitted`]); the player's own `@wait` command is the collateral.
 ///
 /// *Why the debt rule is fair* (lead ruling L8): the cursor sweeps the agent set
 /// continuously and every fire visits at least `min(N, 16)` agents (work never
@@ -511,6 +632,10 @@ pub(crate) enum SwapRefused {
     AlreadyActed,
     /// The principal owes its act to another of its agents.
     Owed,
+    /// Doc 18 cut IC8: the principal already has an authoritative submission in flight
+    /// (queued in the engine, or deferred in this outbox): a deferral that records no
+    /// act and no debt.
+    Pending,
 }
 
 impl Fire {
@@ -539,8 +664,9 @@ impl Fire {
     }
 
     /// Run ONE closed call with `ctx.actor = principal`, restoring the previous actor after it
-    /// (the `mush-npc/src/module.rs:1499-1502` and `seed.rs:385-398` precedent). Calls
-    /// [`Fire::turn`] first; on success inserts `principal` into `acted` before the call.
+    /// (the `mush-npc/src/module.rs:1499-1502` and `seed.rs:385-398` precedent). Asks the core
+    /// seam first (doc 18 cut IC8: [`SwapRefused::Pending`] without touching `acted` or the
+    /// debts), then [`Fire::turn`]; on success inserts `principal` into `acted` before the call.
     pub(crate) fn as_principal<R>(
         &mut self,
         ctx: &mut Ctx<'_>,
@@ -548,6 +674,9 @@ impl Fire {
         principal: ObjId,
         call: impl FnOnce(&mut Ctx<'_>) -> R,
     ) -> Result<R, SwapRefused> {
+        if ctx.authoritative_pending(principal) {
+            return Err(SwapRefused::Pending);
+        }
         self.turn(ctx.w, agent, principal)?;
         self.acted.insert(principal);
         let saved = ctx.actor;
@@ -796,7 +925,9 @@ fn probe_step(
     }
     match fire.turn(ctx.w, agent, principal) {
         Ok(()) => {}
-        Err(SwapRefused::AlreadyActed | SwapRefused::Owed) => return Step::Deferred,
+        Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+            return Step::Deferred;
+        }
         Err(SwapRefused::God | SwapRefused::Gone) => return Step::Refused,
     }
     let seen = match &record.pool {
@@ -834,7 +965,9 @@ fn probe_step(
     });
     match submitted {
         Ok(()) => {}
-        Err(SwapRefused::AlreadyActed | SwapRefused::Owed) => return Step::Deferred,
+        Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+            return Step::Deferred;
+        }
         Err(SwapRefused::God | SwapRefused::Gone) => return Step::Refused,
     }
     if let Some(entry) = state.probes.get_mut(&agent) {
@@ -862,22 +995,24 @@ struct ProbeProvider {
     marks: StateFamilyHandle<ProbeKey, ProbeMark>,
 }
 
-/// The file's one `ActionError` builder and its only `.expect` (the bounded
-/// static-message idiom of every provider in the tree, `mush-sim/src/handoff.rs`).
-fn probe_error(code: ActionErrorCode, message: &'static str) -> ActionError {
-    ActionError::new(code, false, message).expect("static port-probe error is bounded")
+/// The crate's one `ActionError` builder and its only `.expect` (the bounded
+/// static-message idiom of every provider in the tree, `mush-sim/src/handoff.rs`),
+/// shared by the probe and doc 18 cut IC8's stock provider
+/// (`crate::port::stock`) so the panic budget does not move.
+pub(crate) fn port_error(code: ActionErrorCode, message: &'static str) -> ActionError {
+    ActionError::new(code, false, message).expect("static port error is bounded")
 }
 
 /// The probe invocation's three parameters, checked.
 fn probe_parameters(invocation: &ActionInvocation) -> Result<(ObjId, u32, u64), ActionError> {
     if invocation.subject() != &PerceivedRef::SelfActor || !invocation.targets().is_empty() {
-        return Err(probe_error(
+        return Err(port_error(
             ActionErrorCode::InvalidRequest,
             "the port probe is self-scoped and takes no targets",
         ));
     }
     let invalid = || {
-        probe_error(
+        port_error(
             ActionErrorCode::InvalidRequest,
             "the port probe takes exactly an agent, an issue and a reading",
         )
@@ -915,7 +1050,7 @@ fn integer_parameter(
 ) -> Result<ProjectedParameter, ActionError> {
     Ok(ProjectedParameter {
         id: CanonicalId::new(id).map_err(|_| {
-            probe_error(
+            port_error(
                 ActionErrorCode::Integrity,
                 "the port probe's parameter id is invalid",
             )
@@ -958,7 +1093,7 @@ impl ActionProvider for ProbeProvider {
             return Ok(None);
         }
         let definitions = engine.registry.definitions().ok_or_else(|| {
-            probe_error(
+            port_error(
                 ActionErrorCode::Integrity,
                 "the port probe's definition registry is unavailable",
             )
@@ -967,7 +1102,7 @@ impl ActionProvider for ProbeProvider {
             .registry
             .server_guard_set_builder(RevisionSet::default())
             .map_err(|_| {
-                probe_error(
+                port_error(
                     ActionErrorCode::Integrity,
                     "the port probe's guard registry is unavailable",
                 )
@@ -975,7 +1110,7 @@ impl ActionProvider for ProbeProvider {
         guards
             .add_definition(action.clone(), definitions)
             .map_err(|_| {
-                probe_error(
+                port_error(
                     ActionErrorCode::Integrity,
                     "the port probe's definition guard is unavailable",
                 )
@@ -988,7 +1123,7 @@ impl ActionProvider for ProbeProvider {
                 integer_parameter("seen", 0, mush_inventory::record::MAX_POOL_QUANTITY)?,
             ])
             .map_err(|_| {
-                probe_error(
+                port_error(
                     ActionErrorCode::Integrity,
                     "the port probe's parameter schema is invalid",
                 )
@@ -1002,13 +1137,13 @@ impl ActionProvider for ProbeProvider {
                 "A test world's port-tick probe.",
             )
             .map_err(|_| {
-                probe_error(
+                port_error(
                     ActionErrorCode::Integrity,
                     "the port probe's presentation is invalid",
                 )
             })?,
             guards: guards.finish().map_err(|_| {
-                probe_error(
+                port_error(
                     ActionErrorCode::Integrity,
                     "the port probe's offer guards are invalid",
                 )
@@ -1024,14 +1159,14 @@ impl ActionProvider for ProbeProvider {
         let (agent, issue, seen) = probe_parameters(invocation)?;
         let key = ProbeKey { agent, issue };
         let prior = txn.get(&self.marks, &key).map_err(|_| {
-            probe_error(
+            port_error(
                 ActionErrorCode::Integrity,
                 "the port probe's marks are unavailable",
             )
         })?;
         if prior.is_some() {
             // The replay guard IC8's receipt copies: one mark per (agent, issue).
-            return Err(probe_error(
+            return Err(port_error(
                 ActionErrorCode::Conflict,
                 "that probe issue has already landed",
             ));
@@ -1048,7 +1183,7 @@ impl ActionProvider for ProbeProvider {
             },
         )
         .map_err(|_| {
-            probe_error(
+            port_error(
                 ActionErrorCode::Integrity,
                 "the port probe's mark did not stage",
             )
@@ -1058,7 +1193,7 @@ impl ActionProvider for ProbeProvider {
             json!({ "actor": actor.0, "agent": agent.0, "issue": issue, "seen": seen }),
         )
         .map_err(|_| {
-            probe_error(
+            port_error(
                 ActionErrorCode::BoundsExceeded,
                 "the port probe's outcome exceeds canonical bounds",
             )

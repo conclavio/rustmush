@@ -17,12 +17,18 @@
 //! data** (lead ruling L6): IC9's `port/passage.rs` writes it, but the ticket's
 //! wire must exist first (D-18-46). Every record is strict
 //! (`deny_unknown_fields`) and carries a `check` its family's validator calls,
-//! so a hand-edited document fails at both gates (the
-//! `mush-inventory/src/module.rs` rule).
+//! so a hand-edited **value** fails at both gates (the
+//! `mush-inventory/src/module.rs` rule). The value validator cannot see the
+//! key, so a value stored under another record's key passes it (doc 18 cut
+//! IC8, lead 2c-iii): **writers derive the key from the value** (the stock
+//! provider re-derives the [`StockIssueId`] it inserts under), and **readers
+//! re-check it** (`receipt.issue_id()? == key`; a mismatch reads as
+//! unreadable, fail closed, `crate::port::stock::receipt_at`).
 //!
-//! These are tacsim's first typed families. Nothing here writes one: IC5 lands
-//! the declarations, the handles ([`PortHandles`], published by
-//! `crate::port_tick::register`) and the probe that proves the lane.
+//! These are tacsim's first typed families. IC5 landed the declarations, the
+//! handles ([`PortHandles`], published by `crate::port_tick::register`) and the
+//! probe that proves the lane; IC8's `tacsim_port_stock`
+//! (`crate::port::stock`) is the first production writer.
 
 use std::collections::BTreeMap;
 
