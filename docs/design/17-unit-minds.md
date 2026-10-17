@@ -1526,6 +1526,14 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
 
 ## 22. Build order (milestones and gates)
 
+**Continuation planned 2026-10-17:** [17d](17d-unit-minds-through-m6-plan.md) sequences
+the rule-language cut, M5r and M6, with M7 held for a separate economy-stability
+review. M5 and L are landed. The owner accepted the recorded performance timing
+misses as nonblocking for this phase; retain regression measurements and all
+deterministic/resource/isolation gates. Historical benchmark results below remain
+the record, rather than an outstanding timing-sign-off prerequisite. The new note's
+implementation and compatibility choices are planned, not as-built amendments.
+
 Each milestone keeps the proposal's content and gate; a line in italics under each says what the
 sortie generalisation (R-B), the OOC boundary (R-A), the character principal (R-C) and the
 procurement condition (R-D) change in it. The arena remains the first and, until the corridor's
