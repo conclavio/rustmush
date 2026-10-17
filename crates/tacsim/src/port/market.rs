@@ -125,8 +125,9 @@ pub(crate) fn port_of_venue<'a>(
 
 /// **The port's named rooms** (lead ruling L11): the gallery, every `rooms` value
 /// except the staff `spine`, and the programme office. A hull's interior is not a
-/// port room: trading is done at the counters (D-18-12).
-fn port_rooms(w: &World, def: &PortDef) -> BTreeSet<ObjId> {
+/// port room: trading is done at the counters (D-18-12). Doc 18 cut IC11: also the
+/// rooms `+ship/order` is filed from when the hull is docked (Q-18-28).
+pub(crate) fn port_rooms(w: &World, def: &PortDef) -> BTreeSet<ObjId> {
     let mut refs: Vec<&str> = vec![def.gallery.as_str()];
     refs.extend(
         def.rooms

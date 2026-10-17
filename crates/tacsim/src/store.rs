@@ -12,6 +12,7 @@
 //! | `tacsim:notice:{obj}` | per-character queue (doc 18 cut IC5: `crate::port_tick`'s reconnect notices) | **dropped loudly** for that character; the key bars nothing, and the next notice rewrites it |
 //! | `tacsim:coop:{account}` | per-gateway-account enrolment (doc 18 cut IC6: `crate::port::coop`) | **skipped loudly, and the key still bars re-enrolment**: that account's `+coop/enrol` refuses, and staff repair the document; the operate gate never reads it (it reads the live lease) |
 //! | `tacsim:voyage:{hull}` | per-hull sailing plan (doc 18 cut IC9: `crate::port::voyage`) — the filed passage and the hull's burn sequence | **skipped loudly, and the key stays claimed**: that hull's `+ship/undock` refuses (its papers cannot be read) and the launch arm skips it, logged once; staff repair the document |
+//! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -294,6 +295,17 @@ pub struct TacsimStore {
     /// [`crate::port::voyage::VoyageState::Unreadable`], which refuses that
     /// hull's undock and is skipped by the launch arm (fail closed).
     pub(crate) voyage_keys: BTreeSet<SmolStr>,
+    /// **Doc 18 cut IC11** (§4.4 "The queued-orders model", D-18-31) —
+    /// `tacsim:orders:{hull}`: each hull's queued sailing plan
+    /// ([`crate::port::orders::Orders`]): the orders, their log, the hold and the
+    /// step in flight. Persisted on the voyage pattern: one whole-document post-image
+    /// per hull through [`put_orders`], which checks it first.
+    pub(crate) orders: BTreeMap<ObjId, crate::port::orders::Orders>,
+    /// **Every `tacsim:orders:` key seen at load or written**, readable or not (the
+    /// R8 rule): a claimed key with no readable body is
+    /// [`crate::port::orders::OrdersState::Unreadable`], which refuses that hull's
+    /// `+ship/orders` and `+ship/order` and is skipped (and paged) by the order arm.
+    pub(crate) orders_keys: BTreeSet<SmolStr>,
 }
 
 impl TacsimStore {
@@ -407,6 +419,36 @@ impl TacsimStore {
     /// Every readable sailing plan, in hull order.
     pub fn voyages(&self) -> impl Iterator<Item = &crate::port::voyage::Voyage> {
         self.voyages.values()
+    }
+
+    /// **One hull's queued sailing plan** (doc 18 cut IC11): absent, readable, or a
+    /// key whose body did not read — the last refuses that hull's plan verbs.
+    #[must_use]
+    pub fn orders_state(&self, hull: ObjId) -> crate::port::orders::OrdersState<'_> {
+        match self.orders.get(&hull) {
+            Some(orders) => crate::port::orders::OrdersState::Present(orders),
+            None if self
+                .orders_keys
+                .contains(&crate::port::orders::orders_key(hull)) =>
+            {
+                crate::port::orders::OrdersState::Unreadable
+            }
+            None => crate::port::orders::OrdersState::Absent,
+        }
+    }
+
+    /// Every readable queued sailing plan, in hull order.
+    pub fn orders_docs(&self) -> impl Iterator<Item = &crate::port::orders::Orders> {
+        self.orders.values()
+    }
+
+    /// Every hull whose queued sailing plan's key is claimed with no readable body,
+    /// in key order (the order arm pages each once a boot).
+    pub fn orders_unreadable(&self) -> impl Iterator<Item = ObjId> + '_ {
+        self.orders_keys
+            .iter()
+            .filter_map(|key| crate::port::orders::orders_key_owner(key))
+            .filter(|hull| !self.orders.contains_key(hull))
     }
 
     /// **The goods table** (doc 18 cut IC6): the layer's parse, the one read the
@@ -1266,6 +1308,51 @@ pub(crate) fn put_voyage(ctx: &mut Ctx<'_>, voyage: &crate::port::voyage::Voyage
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install a queued sailing plan into RAM and queue its document** (doc 18 cut
+/// IC11) — the single write path, [`put_voyage`]'s pattern with one addition
+/// (reviewer F2): **the document is checked first**. A document that breaks a rule
+/// is paged (`tracing::error!` naming the hull and the rule), and nothing is
+/// installed or written; the caller refuses (a verb answers `ORDERS_DARK`, the order
+/// arm treats it as refused — and pre-checks before every closed call so it never
+/// reaches this after staging). A serialize failure, structurally unreachable, logs
+/// and writes a minimal `{schema, hull}` body so the key stays claimed.
+///
+/// # Errors
+///
+/// The broken rule, when [`crate::port::orders::Orders::check`] refuses.
+pub(crate) fn put_orders(
+    ctx: &mut Ctx<'_>,
+    orders: &crate::port::orders::Orders,
+) -> Result<(), String> {
+    if let Err(error) = orders.check() {
+        tracing::error!(
+            hull = orders.hull.0, %error,
+            "tacsim: a sailing plan was refused before it was written (it breaks a rule); nothing was written"
+        );
+        return Err(error);
+    }
+    let key = crate::port::orders::orders_key(orders.hull);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.orders_keys.insert(key.clone());
+        store.orders.insert(orders.hull, orders.clone());
+    }
+    let value = match serde_json::to_value(orders) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                hull = orders.hull.0, %error,
+                "tacsim: a queued sailing plan did not serialize; a minimal document is written so the key stays claimed. Repair the document by hand."
+            );
+            serde_json::json!({
+                "schema": orders.schema,
+                "hull": orders.hull,
+            })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+    Ok(())
+}
+
 /// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
 ///
 /// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
@@ -1456,6 +1543,16 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             };
             store.voyage_keys.insert(SmolStr::new(key));
             load_voyage(&mut store, key, hull, value);
+        } else if key.starts_with(crate::port::orders::ORDERS_PREFIX) {
+            // Doc 18 cut IC11. The claim is the KEY's (the R8 rule): a queued sailing
+            // plan that will not read stays claimed, so that hull's plan verbs refuse
+            // and the order arm skips it (paging once a boot), until staff repair it.
+            let Some(hull) = crate::port::orders::orders_key_owner(key) else {
+                tracing::warn!(%key, "tacsim: a queued sailing plan has an unreadable key; skipped");
+                continue;
+            };
+            store.orders_keys.insert(SmolStr::new(key));
+            load_orders(&mut store, key, hull, value);
         } else if key.starts_with(crate::port::coop::COOP_PREFIX) {
             // Doc 18 cut IC6 (lead ruling L5). The claim is the KEY's (the R8
             // rule): an enrolment that will not read still bars its account's
@@ -1686,6 +1783,32 @@ fn load_voyage(store: &mut TacsimStore, key: &str, hull: ObjId, value: &serde_js
             hull = hull.0,
             %error,
             "tacsim: a sailing plan is unreadable; skipped (its key stays claimed: that hull's +ship/undock refuses and the launch arm skips it; repair the document by hand)"
+        ),
+    }
+}
+
+/// One `tacsim:orders:{hull}` body (doc 18 cut IC11): decoded strictly, checked, and
+/// held to the identity rule (`orders_key(o.hull)` is its key). Any failure skips it
+/// loudly — the page — and its key, already recorded, keeps it `Unreadable`.
+fn load_orders(store: &mut TacsimStore, key: &str, hull: ObjId, value: &serde_json::Value) {
+    let orders = serde_json::from_value::<crate::port::orders::Orders>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|o| o.check().map(|()| o))
+        .and_then(|o| {
+            if crate::port::orders::orders_key(o.hull) == key {
+                Ok(o)
+            } else {
+                Err("the sailing plan disagrees with its own key".to_owned())
+            }
+        });
+    match orders {
+        Ok(o) => {
+            store.orders.insert(o.hull, o);
+        }
+        Err(error) => tracing::error!(
+            hull = hull.0,
+            %error,
+            "tacsim: a queued sailing plan is unreadable; skipped (its key stays claimed: that hull's +ship/orders and +ship/order refuse and the order arm skips it; repair the document by hand)"
         ),
     }
 }

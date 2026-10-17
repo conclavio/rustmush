@@ -30,7 +30,12 @@
 //!   placement write, no submission and no swap — with its pull verification and
 //!   the held-launch backoff ([`crate::port::voyage`]); the dock is mush-sim's own
 //!   arrival (`Direct` on the port's passive domain, D-18-18);
-//! - IC11 — the order arm (the queue's offline execution): **not yet**.
+//! - IC11 — **the order arm** (the queue's offline execution, D-18-32): one agent
+//!   per hull whose queued sailing plan reads and is due, acting as the plan's
+//!   author for ONE closed typed call per step (`mush_market::quote` +
+//!   `accept_at`, `sell_into_bid`, the leg re-stages, or the `tacsim_port_burn`
+//!   submission), with its pull verification at the top of every fire
+//!   ([`crate::port::executor`]); a hull with a filed passage is the launch arm's.
 //!
 //! **The probe** (lead ruling L3) is registered only in a test world: an agent
 //! that acts as its principal once per remaining count, submitting
@@ -379,6 +384,16 @@ pub struct PortTickState {
     /// Doc 18 cut IC10: the bid re-posts the market refused this boot, by `(vault,
     /// good)` — each is logged once.
     pub(crate) bid_warned: BTreeSet<(u64, CanonicalId)>,
+    /// Doc 18 cut IC11: hulls whose unreadable queued sailing plan has paged this
+    /// boot (once each).
+    pub(crate) orders_warned: BTreeSet<u32>,
+    /// Doc 18 cut IC11: hulls whose queued depart met a dark plan this boot (paged
+    /// once each).
+    pub(crate) depart_dark_warned: BTreeSet<u32>,
+    /// Doc 18 cut IC11 (reviewer F12): the order verification's rotation cursor, a
+    /// hull id — the window of [`crate::port::executor::MAX_ORDER_VERIFY_PER_FIRE`]
+    /// starts here, so no hull is starved.
+    pub(crate) order_verify_after: u32,
 }
 
 impl PortTickState {
@@ -450,8 +465,7 @@ pub(crate) enum Step {
     Refused,
 }
 
-/// The arms, in dispatch order (one step per agent per fire, D-18-32). IC11 adds
-/// its variant ahead of the probe.
+/// The arms, in dispatch order (one step per agent per fire, D-18-32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Arm {
     /// Doc 18 cut IC8: a port's stock clerk — mint, dissolve, list
@@ -466,6 +480,13 @@ enum Arm {
     /// Doc 18 cut IC9: one hull's filed passage — find its burned ticket and
     /// launch it, lapse it, or hold it ([`crate::port::voyage::launch_step`]).
     Launch {
+        /// The hull, `ObjId.0`.
+        hull: u32,
+    },
+    /// Doc 18 cut IC11: one hull's queued sailing plan — re-stage its market leg, or
+    /// run its cursor order as the plan's author
+    /// ([`crate::port::executor::order_step`]).
+    Order {
         /// The hull, `ObjId.0`.
         hull: u32,
     },
@@ -510,6 +531,9 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // has no pending passage any more (a launch, a lapse or a staff clear).
     crate::port::voyage::launch_verify(ctx, state);
     crate::port::voyage::launch_prune(ctx.w, state);
+    // Doc 18 cut IC11: the order arm's pull verification, likewise (no swap): every
+    // step in flight judged Landed, Dropped or still pending, unreadable plans paged.
+    crate::port::executor::order_verify(ctx, state);
     // Doc 18 cut IC8: the stock clerks of every present lane port map whose lane
     // is latched (a retired lane seeds nothing), then at most one release agent.
     let clerks: Vec<ObjId> = ctx
@@ -531,6 +555,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
         .unwrap_or_default();
     let release = crate::port::stock::release_agent(ctx.w, state);
     let launches = crate::port::voyage::launch_agents(ctx.w, state);
+    let orders = crate::port::executor::order_agents(ctx.w, state);
     // The agents: the union over the arms, agent -> (principal, arm). An agent
     // id belongs to one arm (hull ids and clerk ids are disjoint objects); a
     // duplicate offered by a later arm is refused and logged.
@@ -559,6 +584,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // hull, principal = the filing pilot), hulls in their backoff skipped.
     for (hull, pilot) in launches {
         offer(hull, pilot, Arm::Launch { hull: hull.0 });
+    }
+    // Doc 18 cut IC11: one order agent per hull whose queued plan is due and has no
+    // filed passage (agent = the hull, principal = the plan's author, L15).
+    for (hull, author) in orders {
+        offer(hull, author, Arm::Order { hull: hull.0 });
     }
     if state.probe_action.is_some() {
         for (agent, probe) in &state.probes {
@@ -635,8 +665,8 @@ fn next_cursor(last_visited: Option<ObjId>, current: u32) -> u32 {
 }
 
 /// One agent's step: the arms in a fixed order, exhaustively (D-18-32: one step
-/// per agent per fire) — cut IC8's stock and release arms, cut IC9's launch arm,
-/// then the probe; IC11 adds its variant ahead of the probe. The probe arm runs only when
+/// per agent per fire) — cut IC8's stock and release arms, cut IC9's launch arm, cut
+/// IC11's order arm, then the probe. The probe arm runs only when
 /// `PortTickState.probe_action` is `Some`.
 fn step(
     ctx: &mut Ctx<'_>,
@@ -652,6 +682,9 @@ fn step(
             crate::port::stock::release_step(ctx, state, fire, principal, listing)
         }
         Arm::Launch { hull } => crate::port::voyage::launch_step(ctx, state, hull),
+        Arm::Order { hull } => {
+            crate::port::executor::order_step(ctx, state, fire, ObjId(hull), principal)
+        }
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,

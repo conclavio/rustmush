@@ -183,17 +183,21 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `+ship/undock` stages exactly one `tacsim_port_burn` submission. The class is
     // declared before the `reg.command` and the module default restored right
     // after. `+ship/plan` is a pure read; `+ship/undock` writes the hull's one
-    // `tacsim:voyage:<hull>` document and submits the burn as the actor.
+    // `tacsim:voyage:<hull>` document and submits the burn as the actor. Doc 18 cut
+    // IC11: `/orders` is a read, `/order` writes the hull's one `tacsim:orders:<hull>`
+    // document (and submits nothing; the port tick's order arm executes it).
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: crate::port::ship::SHIP_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["board", "leave", "hold", "plan", "undock"]
-                .iter()
-                .copied()
-                .map(SmolStr::new)
-                .collect(),
+            switches: [
+                "board", "leave", "hold", "plan", "undock", "orders", "order",
+            ]
+            .iter()
+            .copied()
+            .map(SmolStr::new)
+            .collect(),
             help: crate::port::ship::SHIP_HELP.into(),
             ..CommandSpec::default()
         },

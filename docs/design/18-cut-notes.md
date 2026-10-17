@@ -5054,3 +5054,434 @@ exact lines.
   `Pending::Sale(QuoteId)` in `goods_pending_aboard` (IC11's depart asks it).
 - `Enrolment.{sales, margin_minor, shares_minor}` are now written, once per settled sale, through
   `store::put_enrolment`. No pack version moved: lane v3, Dray v2, goods v1, Stickney v2.
+
+## IC11
+
+**Captain's orders: the first cut with the full daily loop** (doc 18 §5, the IC11 row and paragraph;
+§4.4; D-18-31, D-18-32, D-18-41), built 2026-10-17 on main at 7435f954. A chartered pilot files the
+day's sailing plan with `+ship/order sell|buy|depart|stop` (and `del`, `move`, `clear`, `pause`,
+`resume`, `skip`), reads it with `+ship/orders`, dry-runs it with `+ship/plan` and logs off; the
+port tick's new order arm executes it as the pilot. The plan is one durable legacy document per
+hull, `tacsim:orders:<hull>`, written whole by `put_orders`, which runs `Orders::check` first so no
+writer can store a shape the loader refuses; an unreadable one fails closed and pages once a boot.
+Every rendered log line names the document's author as signatory; the stored text stays bare.
+
+The executor rotates over hulls with no pending voyage, re-checks the live lease before every act,
+pre-checks the next document before any closed call, and swaps to the author for ONE call: `quote`
+then `accept_at` with `Presence::Ship` (the clamp min(qty, stock, room by mass, room by volume,
+funds less the next departure's unmet fuel and stores), every bound logged), `sell_into_bid`,
+`restage_draw`/`restage_deliver` at 60 s and again 160 s after the first re-stage (a second miss
+holds over the step and heals on a landing), or the `tacsim_port_burn` submission keyed
+`tacsim.port.burn/<hull>/<order>/<attempt>` through the one `prepare_departure` that `+ship/undock`
+also uses. The inflight record rides the same outbox; completion is verified by pull on later fires;
+a reboot verifies and never re-runs; a queued depart whose burn produced no ticket is re-filed under
+the next attempt and a fresh seq, never under its old key. `fill` is the joint least fixed point at
+or above what is aboard over the projected load, planned at the depart's `not_before` through the
+moving sky and never now; the cargo clamp reserves that departure's needs. Daily departures resolve
+at the reach the executor records, so one that becomes the cursor under way does not sail on
+arrival. Holds consume nothing and notify; every done, held or skipped step queues a reconnect
+notice under "While you were off watch:". A lapsed lease is a waiting note; `NO_ROUTE`, a past
+window, a consumable short of the passage, three refusals, three drops, a second unverified miss and
+a staff stand-down are stopped holds that need `resume`. The launch arm tells `CLEARANCE_LAPSED`
+only for a live undock and holds a launch whose ticket disagrees with the filed passage (IC9's F2);
+`@tacsim/port clear` records a stood-down queued depart on its plan. One commit, pushed to
+origin/main.
+
+### What landed
+
+1. **The UTC time helper** (`crates/tacsim/src/port/when.rs`, new). `NotBefore::{Now, Utc(i64),
+   UtcDaily("HH:MM")}` as the depart's `not_before` wire; `parse_at` (`now`, `HH:MM` to the next
+   such UTC minute, `daily HH:MM` consuming its next token, `+Nh`/`+Nm`, at most `MAX_AHEAD_SECS` =
+   7 days), `parse_until` (`+Nh`/`+Nm` up to `MAX_WINDOW_SECS` = 24 h), strict `hhmm_minutes`, and
+   `resolve_due`, the one rule for when a depart is due (lead ruling L9): a daily departure resolves
+   at its **reach** and is never missed — inside its window it leaves now, past it, it waits for the
+   next day's hour. `ic_at_utc` and `plan_instant` derive every IC figure live through the current
+   timeline generation (never in the past), so a rate change relabels nothing; `render_due` is the
+   OOC departure clock (`HH:MM UTC today (IC <civil>; in <span>)`, `IC clock stopped` at rate 0,
+   `now` for a past due). Texts `BAD_TIME`, `BAD_UNTIL`. Four unit tests, including two consecutive
+   daily departs resolving at their own reach (reviewer F8).
+2. **The sailing-plan document** (`crates/tacsim/src/port/orders.rs`, new;
+   `crates/tacsim/src/store.rs`). `tacsim:orders:<hull>` (D-18-31): `Orders { schema 1, hull,
+   author, rev, state running|paused|held, hold, cursor, next_id, inflight, orders ≤ 16, log ≤ 32 ×
+   240 bytes }`, the closed vocabulary `What::{Buy, Sell, Depart, Stop}` on the nested wire (L3;
+   `Qty` writes `"all"`, `"fill"` or an integer), `Order { id, state, attempt, refusals: u8 (no
+   serde default, L26), retry_at, announced, reached: Option<Reached{utc, venue}>, what }`,
+   `Inflight { order, attempt, key, refs, staged_utc, issued_ic, restaged ≤ 2, want, qty, bounds,
+   line }`, every struct `deny_unknown_fields`. `Orders::check` names the first broken rule and
+   admits exactly the four hold shapes (stopped, stopped over inflight, waiting, waiting over
+   inflight; reviewer F2), plus one rule the builder added: a `Held` order is named by a stopped
+   note. Helpers `fresh`, `derive_cursor` (clears `reached` off every order but the new cursor),
+   `push_log` (flattened, cut on a char boundary, FIFO), `clear_hold_naming`, `stop_at`, `wait_at`,
+   and `seed_next_id` (the replaced document's `next_id`, else one past the highest order id on the
+   hull's last 64 tickets; L29). The store gains `orders`/`orders_keys`, `orders_state` (`Absent |
+   Present | Unreadable`), `orders_docs`, `orders_unreadable`, the load arm with the identity rule
+   (an unreadable body keeps its key claimed and pages), the module-doc table row, and `put_orders`,
+   the single write path, which **runs `check` first** and installs and writes nothing on a failure.
+   Unit tests: strict keys, every bound, the four shapes round-tripped through serde and `check`,
+   `put_orders` refusing a broken document with nothing written then writing a good one once, and
+   the doc 18 §4.4 example on the nested wire with an extra field refused at every level.
+3. **The verbs** (`orders.rs`; `crates/tacsim/src/port/ship.rs`; `crates/tacsim/src/commands.rs`).
+   `+ship` gains the switches `orders` and `order` on its one Authoritative `CommandSpec`,
+   dispatched ahead of the rest. `+ship/orders` reads anywhere with a live charter: the header with
+   revision and state, each order's summary and state word (`next`, `pending`, `at the counter`,
+   `done`, `skipped`, `held`) with `, at {port}` where it runs elsewhere, `Next due:` in its forms,
+   `Held:`/`Waiting:`, and the last eight log lines each rendered `HH:MM UTC, order n, signed
+   {pilot}: …` from the document's author (Q-18-24, L27; the stored text stays bare). `+ship/order
+   sell|buy|depart|stop|del|move|clear|pause|resume|skip` behind the gates in the brief's order —
+   charter, document (an unreadable one `ORDERS_DARK`; another author's reads as absent unless its
+   step is in flight, `ORDER_INFLIGHT`), where (aboard, or a `port_rooms` room of the berth;
+   `market.rs`'s `port_rooms` made `pub(crate)`), grammar, then ONE checked `put_orders` with `rev`
+   bumped. Goods by id or unique label prefix, `fill` only on a consumable, `depart` with
+   `at=`/`until=`, `via=` refused `VIA_NOT_YET`, the listed passengers taken from `souls_aboard` at
+   filing (L11), a 17th order dropping the oldest finished one, `del`/`skip` clearing a note that
+   names the order, `clear` keeping the inflight order, `resume` re-arming the re-stage clock over
+   an inflight step and "sailing now" past a fixed window. Every text verbatim from the brief;
+   additions `CLEARED_INFLIGHT`, `RESUMED_EMPTY` and `ORDER_FINISHED` (skip of a done or skipped
+   order refuses, writing nothing). `SHIP_HELP` gains the two sentences; `AT_NOT_YET` now names
+   `+ship/order depart <port> at=<time>`.
+4. **The planning core** (`crates/tacsim/src/port/executor.rs`, new; D-18-41, lead note 2i). One
+   module `+ship/plan` and the executor share: `ask_at` (the lowest live Draw ask through
+   `stock::ask_reading`) and `bid_at` (the best standing Wanted bid, else the IC10 exhausted marker,
+   with `house_units`); `Bound` in log order (`stock, hold mass, hold volume, funds`…) and
+   `join_bounds`; `clamp_buy`/`clamp_sell` naming every term that attains a short result;
+   `funds_units`; `room_for` as `capacity::max_more` over the good's compartment, the tank and
+   locker told apart by `compartment_for` over the two consumable goods (never guessed:
+   `CoreError`); `project_cargo` (sells then clamped buys in queue order, explicit consumable buys
+   as extra kilograms, no funds or listing term); `fill_targets`, the joint least fixed point at or
+   above what is aboard in ≤ `FILL_ITERATIONS` (6) with `TankTooSmall`/`LockerTooSmall`;
+   `reserve_for` over the next depart's unmet fuel and stores at this venue's asks, excluding the
+   order's own good (L17); `Planner`/`planner`, `next_depart_targets` (the first open depart at or
+   after `from`, over the projection from `from` inclusive, at its `not_before` through
+   `plan_instant`) and `reserve_at`. Unit tests derive the vertex with `max_more` (never the
+   literals) and reproduce doc 18's 37 t and 19 crew-days for the 73 t projection through the real
+   planner at lane v3.
+5. **`+ship/plan` over the queue, the status line and `+ship`** (`executor.rs::plan_queue`;
+   `crates/tacsim/src/port/voyage.rs::plan_cmd`; `ship.rs`). After the per-destination blocks and
+   before `NOTHING_WRITTEN`, the dry run of the author's queue from the cursor through the first
+   depart over a projection of the live readings and funds: each sell's clamp and the net the
+   `CoopProceeds` policy would pay, each buy's clamp and bound, each fill at the depart's
+   `not_before`, the depart planned on the projected load (a refusal's sentence inlined without
+   "Nothing was burned." and without a second full stop), `Orders a to b run at {port}; they are
+   planned there.`, and the affordable line for every ask on the board less the next departure's
+   reserve (that departure itself when it is the cursor).
+   `STATUS_DOCKED_DEPARTS`/`SHIP_DOCKED_DEPARTS` name the hour of a pending depart at the cursor
+   through `orders::departs_at`, which requires the plan to run under its author's live charter of
+   this hull (L14); unchanged otherwise.
+6. **The shared departure filing, the launch arm's order hooks, the stand-down and IC9's F2**
+   (`voyage.rs`). `undock_cmd`'s body is factored into `prepare_departure(ctx, pilot, hull,
+   dest_word, Queued::{Live, Order{order, attempt}}) -> Result<DepartFiling{voyage, port, key, seq,
+   burn}, DepartRefusal{kind, line}>` with the fifteen `DepartRefusalKind`s in today's order
+   (reviewer F7); `undock_cmd` goes through it byte-identically. The plan is made now — the burn
+   refuses a future `depart_ic` — so a queued `at=` is the executor's due gate (L8). A queued
+   depart's key is `tacsim.port.burn/<hull>/<order>/<attempt>`. `launch_step` sends
+   `CLEARANCE_LAPSED` only for a live undock (a queued depart's lapse is its "not admitted", logged
+   at `info!`, L7/L12) and, before flying, holds the launch when the ticket's plan, order, attempt,
+   route pack, route version or unit definition disagree with the pending (L19, IC9 residual F2
+   closed). `clear_cmd` records a stood-down queued depart on its plan through
+   `executor::stand_down` (a stopped `HELD_STOOD_DOWN` hold, the attempt consumed, the inflight
+   record dropped, `HELD_LINE` logged) and appends ` The sailing plan holds at order {n}.` (L28).
+   `souls_aboard`, `lane_ports`, `venue_name`, `ticket_at`, `launched` are `pub(crate)`; `no_route`
+   returns a `String`.
+7. **The order arm** (`executor.rs`; `crates/tacsim/src/port_tick.rs`; D-18-32). `Arm::Order { hull
+   }` ahead of the probe; `order_verify` at the top of every fire (unreadable plans paged once a
+   boot through `orders_warned`; inflight records judged in hull order rotating from
+   `order_verify_after`, ≤ `MAX_ORDER_VERIFY_PER_FIRE`): a buy Landed at `drawn_at` or `settled`
+   (L5), a sale at settlement, a depart when its ticket reads and `launched`; Dropped on a gone
+   quote or a terminal unsettled contract, or no ticket with the pending gone → `attempt + 1`,
+   `NOT_ADMITTED` logged, `retry_at`, a stopped hold `HELD_UNCONFIRMED` past `MAX_ORDER_ATTEMPTS`; a
+   ticket with the pending gone and no journey → the stand-down fallback; an unreadable ticket with
+   the pending gone → a stopped hold over the step. A Landed step is `Done`, its hold self-heals,
+   its line is logged and told (a depart's `CLEARANCE_GRANTED` line logged only), and the
+   left-behind rule tells the pilot and each listed passenger ashore (L11). `order_agents` offers
+   every readable plan with no pending voyage that has a market leg in flight (plan not held) or
+   runs with a cursor. `order_step` → `decide`: the act due (a re-stage at `staged_utc + 60 s`, the
+   second deadline `ORDER_SETTLE_GRACE_SECS` = 160 s after the **first re-stage**, the clock
+   re-armed by a late first re-stage; or the cursor order past `retry_at`), the lease before any act
+   (a waiting `HELD_CHARTER` note, dropped silently when the charter returns; L25), then ONE closed
+   call as the author inside `Fire::as_principal`: `restage_draw`/`restage_deliver` (a second miss
+   holds over the step and pages; `_TOO_LATE` logs `AWAITING_REFUND`); **sell** through `bid_at`,
+   `read_pool` (a refused read is never 0), `clamp_sell`, skip-or-hold on
+   `NO_BID`/`NOTHING_ABOARD`/`UNDER_MIN`/`INTAKE_TAKEN`/`HOUSE_CANNOT_PAY_SKIP` (the market's
+   `HOUSE_CANNOT_PAY` mapped, never the retry path), then `sell_into_bid(.., Presence::Ship(hull))`;
+   **buy** through `ask_at`, the fill targets or the explicit count, `room_for`, the reserve
+   excluding its own consumable, `clamp_buy` (no live ask → stock alone binds),
+   `HELD_SHORT_FOR_DEPART`, `BOUGHT_NONE`, then `quote` + `accept_at(.., None,
+   Presence::Ship(hull))`; **depart** through the durable reach, `resolve_due`, `DEPART_SET` once,
+   `HELD_WINDOW`, then `prepare_departure` — transient refusals as waiting notes (a dark plan paged
+   once a boot), `NO_ROUTE` a stopped hold, `Ok` → `put_voyage`, the burn submission and the
+   inflight record in the one outbox; **stop** marks itself done and pauses. The pre-check
+   (`staged`) builds the next document and runs `check` before any call; `refs` are filled after.
+   Refused calls count `refusals`, log `REFUSED_RETRY` once and hold at `MAX_ORDER_REFUSALS` with
+   the market's line (`market_line`, never `refuse_market`). Holds and skips narrate the Bridge
+   chime; every Done, Held and Skipped line is a reconnect notice. Every executor text verbatim;
+   additions `BOUGHT_SHORT`, `SHORT_CLAUSE`, `SALE_SHORT`, `HELD_FILL_PLAN`.
+8. **Gates** (`crates/mush-contract-tests/legacy-handlers.toml`, `state-slot-owners.toml`). The
+   `+ship` stanza's note refreshed with the IC11 paragraph ahead of the IC9 text (category and
+   `PINNED_BASELINE` unchanged); one `[[site]]` row for `crates/tacsim/tests/orders.rs`
+   (`World::module_state_mut` / `AccountOracle` / owner `sim`).
+9. **Tests** (`crates/tacsim/tests/orders.rs`, new, 26; `crates/tacsim/tests/voyage.rs`, +1; 16 lib
+   tests across `when.rs`, `orders.rs`, `executor.rs`). Lens 1 in full
+   (`ic11_the_queue_runs_the_day_unattended`: the two burn keys `…/1/1` and `…/8/1`, two settled
+   sales, four Draws from the tick, the hold's pools, the funds path from journals, the nine log
+   lines in order with no waiting line, the alloys cut to 20 t by funds, the reconnect heading once
+   and every notice once in queue order, the render signed); lens 2
+   (`ic11_a_reboot_mid_step_reruns_nothing` phases (a), (b), (c) with every post-boot market
+   submission counted, and (c')); `ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick`; the
+   stand-down; the lapsed charter (waiting over inflight pinned, nothing staged through the refund
+   sweeps, the note moving with the drop and told once); the false second miss (exactly three legs,
+   `since` past the whole grace, told once after the heal); the long downtime; the sold-out partial
+   and the no-ask `BOUGHT_NONE … stock`; the unfunded bid; the house that cannot pay; the depart
+   short of fuel; `NO_ROUTE`; the cargo clamp leaving the reserve (the pilot's real balance read
+   once the alloys are in flight, and the proof the reserve bit); every bound that bit (24 of 55
+   `hold volume`, 85 `hold volume`, `hold mass and hold volume`);
+   `fill_and_clamp_plan_at_the_depart_instant` with the funds set so the not-before and "now"
+   reserves afford different whole tonnages; two pilots at one hour; the pilot ashore; the listed
+   passenger left behind; a rate change; stop and resume; held steps; the dry run with the full
+   depart and affordable lines and no tacsim-namespace op; the status line, the lapsed tenant's
+   clause gone, and another author's plan showing no hour. `voyage.rs`:
+   `ic9_f2_a_ticket_that_disagrees_with_the_filed_plan_holds_the_launch`.
+
+### Deferred, and why
+
+The lead rulings L1–L29 first, then the builder's own forks, the owner items built on the brief's
+defaults, the lead questions this cut raises, and what is not in this cut.
+
+- **L1 Scope and split.** IC11a (items 1–6) and IC11b (items 7–9) both landed; no half-built
+  executor.
+- **L2 The sell order names a good, not a listing** (doc 18 §4.4 "Verbs" over lead note 2k's `sell
+  <listing>=<qty>`): the bid is resolved at the venue when the step runs (`bid_at`); a queue filed
+  at Ceres cannot name a Stickney listing.
+- **L3 Nested wire** for `What` (`deny_unknown_fields` cannot flatten; IC9's `FixedVoyage`
+  precedent); doc 18's field names and values kept.
+- **L4** The buy entry is `quote` then `accept_at(.., None, Presence::Ship(hull))`.
+- **L5 A buy is done when drawn** (`drawn_at` or `settled`), not when its contract settles — a
+  recorded deviation from §4.4's "lot in the endpoint and contract settled": the escrow is posted at
+  accept and the gates read pools, so the settlement leg is skipped per buy; a sale is done only at
+  settlement.
+- **L6 Re-stage cadence**: the first re-stage at `staged_utc + 60 s`, the second deadline 160 s
+  after the first re-stage (the fixer re-arms `staged_utc` on a late first re-stage so the grace
+  always runs from it — a small extension of the brief's "re-armed by resume"); a second miss holds
+  over the step and self-heals on a landing. Lead note 2k's "once per fire" narrowed.
+- **L7 "Not admitted"**: a queued depart whose burn produced no ticket is re-filed under `attempt +
+  1` and a fresh seq, **never re-submitted under its old key** — a recorded deviation from §4.4's
+  "re-staged under the same key" for departs only (a refused burn would replay its refusal; the seq
+  is the ticket's guard); bounded by `MAX_ORDER_ATTEMPTS` = 3.
+- **L8 The queued `at=` is a due gate**; the plan is made now through the one `prepare_departure`;
+  `+ship/undock` keeps `at=now` only.
+- **L9 `daily HH:MM` resolves at the reach**, stored durably as `Order.reached {utc, venue}`.
+- **L10 Holds**: waiting (self-clearing) = a depart's transient refusals and a lapsed lease; stopped
+  (need `resume`) = `short=hold`, a consumable short of the depart's need, an unmeetable fill, a
+  past window, **`NO_ROUTE`** (a deviation: doc 18 lists no such case; only an edit cures it), three
+  refusals, three drops, a second unverified miss, a staff stand-down.
+- **L11 Listed passengers** = aboard at filing, the pilot aside; one ashore at the launch is left
+  behind and both are told.
+- **L12 Notices**: Done, Held and Skipped lines are told; a depart's Done line is logged only;
+  `DEPART_SET` once; deferrals, re-stages and retries never.
+- **L13 `fill`** sized at each fill step from live pools for the first depart after it over the
+  projected span.
+- **L14 One author per document**; a new tenant's first edit replaces it (and no edit while another
+  author's step is in flight).
+- **L15 The order arm's agent is the hull**, offered only with no pending voyage; the depart's fate
+  is learned by pull.
+- **L16 Cursor** = the first unfinished order, checked. **L17 The reserve** at this venue's live
+  asks, excluding the order's own good. **L18 Edits write no log line.** **L19 IC9 F2 closed.**
+- **L20 The verify lens lives in `crates/tacsim/tests/orders.rs`**; `ic_slice_loop.rs` part 2 is
+  IC12's. **L21** The Engineering/Bridge burn and reserve gauge lines go to IC12's content pass.
+- **L22 Money renders without grouping** (`8000.00cr`) where doc 18 prints `8,000.00cr`. **L23**
+  Every lens figure reproduced at lane v3 (36 t, 37 t, 19 crew-days, 73 t, 20 t "funds", 24 t "hold
+  volume", 85 t, and §2 step 7's 42 t / 21 crew-days leaving tank 1 and locker 0); no doc correction
+  owed.
+- **L24 Holds over the inflight step** never discard the record; **L25** the lease gate precedes
+  every act, re-stages included; **L26** refusals counted apart from drops (`refusals: u8`, no serde
+  default); **L27** the signatory rendered, not stored; **L28** a stand-down recorded on the plan;
+  **L29** fresh documents never reuse recent order ids.
+- **Builder's own forks**, all O1-adjacent or conservative: a buy's done line pre-composed at
+  staging into `Inflight.line`; `pause` over a hold drops the note and re-queues a held order;
+  `move` that changes the cursor under a hold re-queues the named order; non-filing sub-verbs with
+  no plan answer `NO_PLAN`; `ORDER_FIRES_NEXT` also requires docked and running; `Next due:` for an
+  inflight cursor reads "order {n} is at the counter."; a depart's `on_fail` honoured as
+  skip-or-hold for `HELD_WINDOW` and `NO_ROUTE`; `Partial` reads as skip for a sale with no bid,
+  nothing aboard, a clamp of 0 or a house that cannot pay; a reserve that cannot be computed is 0
+  (the depart then holds on its own); `HELD_UNCONFIRMED` over an unreadable depart ticket written
+  once; the `HELD_CHARTER` drop written immediately; a deferred depart persists its reach alone.
+- **Owner items, built on the brief's defaults, not decided here:** **O1** every new player-facing
+  text (the verbs, renders, executor lines, `, signed {pilot}`, and the additions
+  `CLEARED_INFLIGHT`, `RESUMED_EMPTY`, `ORDER_FINISHED`, `BOUGHT_SHORT`, `SALE_SHORT`,
+  `HELD_FILL_PLAN`). **O2** a `daily HH:MM` reached after its `until=` window rolls to the next day;
+  a fixed instant reached past `until=` holds. **O3** "listed passenger" = aboard at filing (doc 18
+  §9 refuses a manifest beyond the tenant). **O4** which holds wait and which stop (L10's list) —
+  and, under it, the literal reading taken by the brief and the code that an explicit `buy
+  propellant N` holds under `HELD_SHORT_FOR_DEPART` whenever aboard + clamped < the passage's need,
+  even unclamped and with a `fill` queued after it (doc 18's wording is "when the shortfall would
+  fail the next depart"). **O5** `stop` is a barrier that marks itself done and pauses the plan
+  until `+ship/order resume`; it never discards later orders. **O6** the new limits: `at=`/`+Nh` at
+  most 7 days ahead, `until=` at most 24 h, at most 15 listed passengers, `min=`/`max=` at most
+  1,000,000 major units.
+- **Lead questions raised by this cut, not settled here:** the 60 s/60 s tie between
+  `ORDER_RESTAGE_SECS` and the market sweep (a harmless replay re-stage after a reboot; closing it
+  needs a mush-market read seam for the draw receipt or a later first re-stage); whether a queued
+  depart should match its venue exactly (`def.routes.get(to)`) rather than through the live undock's
+  prefix matcher.
+- **Not in this cut** (per the brief): the story test part 2 and its promotion, `docs/help`
+  (`orders`, `trade`, `ships`), the readiness gate's full form (IC12); the gauge lines and the
+  C14/P05 departure boards (IC12); pruning the plans of ended charters (a waiting `HELD_CHARTER`
+  plan is visited every fire; IC13); buyout, release, revoke, dormancy (IC13, which must refuse
+  while an order is inflight); repeating plans, `via=`, customs, locality on every inventory path;
+  any mush-market, mush-economy, mush-inventory, mush-sim or mush-core change. **The IC10 pre-deploy
+  blocker stands** (inventory_applied retention, IC14's first item).
+
+### Pins re-blessed
+
+- **`crates/mush-contract-tests/legacy-handlers.toml`**, the `+ship` stanza: the note refreshed with
+  the IC11 paragraph ("+ship/orders is a pure read; +ship/order writes ONE bounded whole-document
+  tacsim:orders:<hull> sailing plan … and submits nothing; the plan is executed by the tacsim.port
+  tick's order arm …") ahead of the IC9 and IC6 text. Category stays `authoritative` and
+  `PINNED_BASELINE` does not move: `orders` and `order` are two new switches of the existing verb,
+  not a new primary verb.
+- **`crates/mush-contract-tests/state-slot-owners.toml`**: one new `[[site]]` for
+  `crates/tacsim/tests/orders.rs` (`World::module_state_mut` / `AccountOracle` / owner `sim`), for
+  the voyage.rs row's reason: every sailing-plan test charters its pilot through `+coop/enrol`,
+  whose rule is per gateway account and fails closed on an unmapped character, so the rig installs
+  the fixed account map. Tests that seed an inflight record do it through the folded store
+  (`reboot_editing`), never `module_state_mut::<TacsimStore>()`, so no further row.
+- **Unmoved, asserted by the gate:** `panic_budget/tacsim.txt` (no new `unwrap`/`expect`/`panic!` in
+  non-test code; `port_error` stays the crate's one `.expect`), the restriction-lints census (no
+  indexing, no `as`, only `clippy::too_many_lines`/`too_many_arguments` allows with a reason
+  comment), every content digest (lane v3, Dray v2, goods v1, Stickney v2, Ceres v1 — no file under
+  `crates/tacsim/content/` changed; test lane variants are built in the tests), the composition-edge
+  pin, `module-ns-owners.toml`, the CI gated-test inventory (no `#[ignore]` added), the
+  `families.rs` `StockIssueId` golden.
+- **Existing assertions:** none changed or deleted. `tests/voyage.rs` only gains the F2 test;
+  `AT_NOT_YET`'s one assertion asserts the constant and passes with the new wording; the `+ship`
+  status lines are unchanged without a plan. Two of this cut's own new tests were rewritten in the
+  repair round and are recorded here: `ic11_the_status_line_names_the_departure_hour` dropped
+  `assert_eq!(other_row.hull, row.hull, "the freed Dray is leased again")` because IC6's
+  `coop::hull_is_free` never frees a hull whose hold vault stands (until IC13's recall), and now
+  checks the lapsed tenant's own `look` after the cancel and another author's plan re-signed onto a
+  second hull; `ic11_a_reboot_mid_step_reruns_nothing` phase (c) now mirrors the landing
+  (`drawn_at`) before the reboot, stepping the clock a second at a time so the sweep's fire is not
+  the port tick's, with its "nothing re-staged" assertion unchanged, and the unmirrored case is
+  pinned separately as phase (c').
+
+### How it was verified
+
+On Windows at the working tree over `7435f954`, the brief's §7 commands in order, then the workspace
+sweep — all green on the first run of the second gate, no reruns:
+
+```
+cargo fmt --all -- --check                                        (no output; rc=0)
+cargo clippy --workspace --all-targets -- -D warnings             Finished `dev` profile [unoptimized + debuginfo] target(s)
+cargo test -p tacsim --lib                                        test result: ok. 916 passed; 0 failed; 0 ignored
+cargo test -p tacsim --test orders                                test result: ok. 26 passed; 0 failed; 0 ignored
+cargo test -p tacsim --test voyage --test sale --test ic_slice_loop --test passage
+    voyage 14 passed; sale 15 passed; ic_slice_loop 1 passed; passage 4 passed; 0 failed
+cargo test -p tacsim --test commerce --test coop --test ports --test port_tick --test hulls --test capacity
+    commerce 20; coop 18; ports 17; port_tick 16; hulls 15; capacity 17 passed; 0 failed
+cargo test -p tacsim --test lane --test stations --test content --test definitions --test composition_edges --test e7c1 --test e7r1
+    lane 8; stations 13; content 29; definitions 25; composition_edges 2; e7c1 38; e7r1 21 passed; 0 failed
+cargo test -p mush-contract-tests                                 29 result lines, all ok (legacy_handler_allowlist 4, state_slot_owners 4, panic_budget 7, restriction_lints 11, module_ns_owners 3, ci_gated_test_inventory 6, scale_harness 6 passed 8 ignored, …); 0 failed
+cargo test -p mush-server --lib modules::                         test result: ok. 32 passed; 0 failed
+cargo test -p mush-server --test boot_parity --test e7r2_proving_loop
+    boot_parity 18 passed; e7r2_proving_loop 6 passed; 0 failed
+cargo test -p mushd --test boot_composition                       test result: ok. 6 passed; 0 failed
+CARGO_BUILD_JOBS=8 cargo test --workspace --exclude mush-bot --no-fail-fast
+    399 'test result:' lines, 399 ok, 0 FAILED; passed=7481 failed=0 ignored=92; 31 min
+cargo test -p mush-bot                                            22 result lines ok, 0 failed (lib 469; arena_e2e 9; arena_lane 87; e2e 49; playtesting 9; 5 ignored)
+```
+
+The three lenses (correctness, conformance, tests) each read the whole diff without cargo; their one
+shared must-fix (the missing `put_orders` refusal test) and the tests lens's three further
+must-fixes (lens 2(c) unfalsifiable, the not-before reserve non-discriminating, `restage_draw` never
+shown from the tick) were fixed and re-verified in the code by the judge:
+`orders.rs::ic11_every_hold_shape_the_executor_writes_checks` (a hand-built `Ctx`, `Err`, `Absent`,
+no key, no op, then one write), `tests/orders.rs` phase (c) counting every post-boot market
+submission, `fill_and_clamp_plan_at_the_depart_instant` with the funds set to the larger reserve + k
+tonnes − 1 minor, and `ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick`.
+
+The round-1 gate's two `orders` failures were test-side (the L14 leg expecting a re-charter IC6
+refuses while the hold vault stands; phase (c) racing the market mirror at the 60 s/60 s tie) and
+were repaired without loosening an assertion. One flake identified: `mushd
+sim_solo::one_pilot_alone_starts_a_match_and_fights_the_machine` failed once under load in the first
+gate (the sim_* TUI timing family common-ic.md lists as load-sensitive), passed alone twice (15.15 s
+/ 14.90 s) and in the second gate. The `panicked at crates\mush-server\src\process_fault.rs:197:9`
+line in the sweep log is `tests::a_panicked_world_task_is_a_failure`'s intended panic.
+
+Every market closed call — `quote` + `accept_at(.., Ship)`, `sell_into_bid`, `restage_deliver`,
+`restage_draw` — ran from the tick inside a tacsim-owned context without a module-scope refusal,
+with its effect asserted (contracts, quotes, `drawn_at`, settlement, pools, the bid decrement), so
+the brief's F14 stop never triggered.
+
+### Surface for the next cuts
+
+**Re-exported from `tacsim::port`** (verified in `crates/tacsim/src/port/mod.rs`)
+
+- From `orders`: `Orders`, `PlanState`, `HoldNote`, `Order`, `Reached`, `OrderState`, `What`, `Qty`,
+  `OnShort`, `Inflight`, `InflightRefs`, `LogLine`, `OrdersState`, `orders_key`, `orders_key_owner`,
+  `orders_state(w, hull)`, `ORDERS_PREFIX`, `ORDERS_SCHEMA` (1), `MAX_ORDERS` (16),
+  `MAX_ORDER_LOG_LINES` (32), `MAX_ORDER_LOG_BYTES` (240), `ORDERS_SHOWN_LOG` (8), `MAX_DEPART_CREW`
+  (15), `MAX_PRICE_MAJOR` (1_000_000).
+- From `executor`: `Ask`, `Bid`, `Bound` (+ `word()`), `FillError`, `FillTargets`, `ask_at`,
+  `bid_at`, `clamp_buy`, `clamp_sell`, `funds_units`, `join_bounds`, `project_cargo(goods, readings,
+  &[&What]) -> Result<(BTreeMap<CanonicalId,u64>, u64), CoreError>` (no `aboard` parameter: the
+  readings carry it), `fill_targets(goods, readings, cargo, extra_kg, tank, locker, occupants,
+  allowance_kg, plan_fn)`, `reserve_for(targets, aboard_tank, aboard_locker, ask_tank, ask_locker,
+  excluding)`, `room_for`, `FILL_ITERATIONS` (6), `ORDER_RESTAGE_SECS` (60),
+  `ORDER_SETTLE_GRACE_SECS` (160), `ORDER_RETRY_SECS` (60), `MAX_ORDER_ATTEMPTS` (3),
+  `MAX_ORDER_REFUSALS` (3), `MAX_ORDER_VERIFY_PER_FIRE` (64).
+- From `when`: `NotBefore::{Now, Utc(i64), UtcDaily(String)}`, `MAX_AHEAD_SECS` (7 days),
+  `MAX_WINDOW_SECS` (24 h).
+
+**Not re-exported but `pub` at their module paths**
+
+- `tacsim::port::executor::CoreError` and every executor text (`BOUGHT`, `BOUGHT_SHORT`,
+  `BOUGHT_NONE`, `BOUGHT_FILL_TANK`, `BOUGHT_FILL_LOCKER`, `FILL_ENOUGH`, `SALE_SHORT`,
+  `DEPART_SET`, `STOPPED`, `SKIP_LINE`, `HELD_LINE`, `WAITING_LINE`, `NO_BID`, `NOTHING_ABOARD`,
+  `INTAKE_TAKEN`, `HOUSE_CANNOT_PAY_SKIP`, `UNDER_MIN`, `SHORT_CLAUSE`, `HELD_SHORT_FOR_DEPART`,
+  `HELD_NO_DEPART`, `HELD_FILL`, `HELD_FILL_PLAN`, `HELD_ASHORE`, `HELD_WINDOW`, `HELD_CHARTER`,
+  `HELD_UNCONFIRMED`, `HELD_STOOD_DOWN`, `NOT_ADMITTED`, `AWAITING_REFUND`, `REFUSED_RETRY`,
+  `LEFT_BEHIND_PILOT`, `LEFT_BEHIND_PASSENGER`, `HOLD_NARRATION`, `SKIP_NARRATION`).
+- `tacsim::port::orders::*` texts (`ORDER_USAGE`, `NOT_ORDERABLE`, `ORDERS_WHERE`, `ORDERS_DARK`,
+  `NO_PLAN`, `ORDERS_FULL`, `ORDER_INFLIGHT`, `AHEAD_OF_INFLIGHT`, `NO_SUCH_ORDER`, `UNKNOWN_GOOD`,
+  `FILL_ONLY_CONSUMABLE`, `UNKNOWN_PORT`, `ORDER_FILED`, `ORDER_FIRES_NEXT`, `ORDER_AFTER_DEPART`,
+  `DELETED`, `MOVED`, `SKIPPED`, `ORDER_FINISHED`, `CLEARED`, `CLEARED_INFLIGHT`, `PAUSED`,
+  `RESUMED`, `RESUMED_EMPTY`, `NOT_HELD`); `tacsim::port::when::{BAD_TIME, BAD_UNTIL}`;
+  `tacsim::port::ship::{STATUS_DOCKED_DEPARTS, SHIP_DOCKED_DEPARTS}`; `Orders::{check,
+  first_unfinished, order, position}` are `pub`.
+
+**Store (`TacsimStore`)**
+
+- `orders_state(hull) -> OrdersState<'_>`, `orders_docs()`, `orders_unreadable()` (`pub`);
+  `put_orders(ctx, &Orders) -> Result<(), String>` (`pub(crate)`, runs `check` first).
+
+**`pub(crate)` inside tacsim**
+
+- `orders::{fresh, derive_cursor, push_log, order_mut, clear_hold_naming, stop_at, wait_at,
+  clamp_line, seed_next_id, order_summary, render_reach, depart_due, departs_at, orders_cmd,
+  order_cmd}`.
+- `executor::{Planner, planner, DepartTargets, TargetError, next_depart_targets, reserve_at,
+  no_route_line, plan_queue, fill_reason, market_line, order_agents, order_verify, order_step,
+  stand_down}`.
+- `voyage::{prepare_departure(ctx, pilot, hull, dest_word, Queued) -> Result<DepartFiling,
+  DepartRefusal>, DepartFiling{voyage, port, key, seq, burn}, Queued::{Live, Order{order, attempt}},
+  DepartRefusalKind (15 kinds), DepartRefusal{kind, line} with From<DepartRefusal> for CmdError,
+  souls_aboard, lane_ports, venue_name, ticket_at, launched}`.
+- `market::port_rooms`; `when::{parse_at, parse_until, hhmm_minutes, resolve_due, ic_at_utc,
+  plan_instant, render_due}`.
+
+**Tick, verbs and keys**
+
+- Tick: `Arm::Order { hull }` ahead of `Probe`; `PortTickState::{orders_warned, depart_dark_warned,
+  order_verify_after}` (RAM); `order_verify` after `launch_prune`, `order_agents` offered after the
+  launch agents.
+- Verbs: `+ship/orders`, `+ship/order …` as two new switches on the Authoritative `+ship` spec.
+- Keys: `tacsim:orders:{hull.0}`; a queued depart's burn `tacsim.port.burn/{hull}/{order}/{attempt}`
+  (the live undock keeps `…/undock/{seq}`); a market leg's audit key `market.lot.draw.{contract:x}`
+  / `market.lot.deliver.{contract:x}`.
+
+**Launch-arm behaviour later cuts rely on:** a pending with `order: Some` lapses silently (no
+`CLEARANCE_LAPSED`); a ticket disagreeing with the pending holds the launch; `clear_cmd` writes the
+stopped `HELD_STOOD_DOWN` hold and bumps `attempt` when the plan names the pending in flight.
+
+**For IC13:** a buyout, release or recall must refuse while `Orders.inflight` is `Some`, and the
+lapsed-author plan (waiting `HELD_CHARTER`, visited every fire) is what pruning removes;
+`departs_at` already hides a lapsed author's hour.

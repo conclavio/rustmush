@@ -74,6 +74,18 @@
 //!   margin over the programme's live reference ask paid to the Trust out of a sale
 //!   from an enrolled hold, the sale line, and the enrolment's sale counters folded
 //!   once per settled sale.
+//!
+//! **Doc 18 cut IC11** — captain's orders, the first cut with the full daily loop:
+//!
+//! - [`when`] — the UTC time helper: `at=`, `until=`, the one rule for when a
+//!   depart is due (resolved at its reach) and the OOC departure clock;
+//! - [`orders`] — the queued sailing plan (`tacsim:orders:{hull}`, D-18-31), its
+//!   closed vocabulary, its hold shapes and the verbs `+ship/orders` and
+//!   `+ship/order`;
+//! - [`executor`] — the planning core `+ship/plan` and the order arm share (the
+//!   venue's asks and bids, the clamps and their bound words, the projection,
+//!   `fill` and the reserve, D-18-41) and the order arm the port tick drives
+//!   (D-18-32).
 
 pub mod apply;
 pub mod board;
@@ -82,11 +94,13 @@ pub mod capacity;
 pub mod coop;
 pub mod credit;
 pub mod def;
+pub mod executor;
 pub mod families;
 pub mod gauges;
 pub mod hull;
 pub mod map;
 pub mod market;
+pub mod orders;
 pub mod passage;
 pub mod proceeds;
 pub mod readiness;
@@ -94,6 +108,7 @@ pub mod ship;
 pub mod stock;
 pub mod vendor;
 pub mod voyage;
+pub mod when;
 
 pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
 pub use coop::{
@@ -103,6 +118,12 @@ pub use coop::{
 pub use def::{
     AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,
     ProgrammeDef, StockRowDef, VendorDef, check_ports, room_key, tranches,
+};
+pub use executor::{
+    Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
+    MAX_ORDER_REFUSALS, MAX_ORDER_VERIFY_PER_FIRE, ORDER_RESTAGE_SECS, ORDER_RETRY_SECS,
+    ORDER_SETTLE_GRACE_SECS, ask_at, bid_at, clamp_buy, clamp_sell, fill_targets, funds_units,
+    join_bounds, project_cargo, reserve_for, room_for,
 };
 pub use families::{
     LegPlan, Manifest, PassagePlan, PortFamilies, PortHandles, StockIssueId, StockReceipt, Ticket,
@@ -115,6 +136,12 @@ pub use map::{
 pub use market::{
     HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_UNDER_WAY, HoldPlan, NOT_IN_PORT, NOT_YOUR_CHARTER,
     PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate, capacity_line, governed_hold,
+};
+pub use orders::{
+    HoldNote, Inflight, InflightRefs, LogLine, MAX_DEPART_CREW, MAX_ORDER_LOG_BYTES,
+    MAX_ORDER_LOG_LINES, MAX_ORDERS, MAX_PRICE_MAJOR, ORDERS_PREFIX, ORDERS_SCHEMA,
+    ORDERS_SHOWN_LOG, OnShort, Order, OrderState, Orders, OrdersState, PlanState, Qty, Reached,
+    What, orders_key, orders_key_owner, orders_state,
 };
 pub use passage::{
     DAY_SECS, DriveLaw, HullDrive, INTERCEPT_PASSES, PlanError, choose_route, crew_days,
@@ -133,3 +160,4 @@ pub use voyage::{
     LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, PendingVoyage, VOYAGE_PREFIX, VOYAGE_SCHEMA, Voyage,
     VoyageState, voyage_key, voyage_key_owner,
 };
+pub use when::{MAX_AHEAD_SECS, MAX_WINDOW_SECS, NotBefore};
