@@ -138,16 +138,40 @@ def compare(directory):
     for outcome, name in outcome_names.items():
         require(sum(m[i] == outcome for m in pairs for i in (2, 3)) == embedded[name],
                 "paired outcomes disagree with proving totals")
+    faults_pattern = re.compile(
+        r"Rounds fired \d+; candidate rounds left \d+; rules fired \d+, held \d+; faults (\d+)\.")
+    fault_rows = [faults_pattern.fullmatch(line) for line in proving["summary"]]
+    fault_rows = [m for m in fault_rows if m]
+    require(len(fault_rows) == 1, "exact retained proving fault total is required")
+    # Metrics.motor currently counts every mind in the game. Do not relabel this
+    # as candidate-only or quietly discard an opponent's failures.
+    all_mind_faults = int(fault_rows[0][1])
     embedded, external_counts = counts(embedded), counts(external)
     left, right = embedded["wilson_95"], external_counts["wilson_95"]
     separate = left[1] < right[0] or right[1] < left[0]
+    point_rate = embedded["wins"] / embedded["samples"]
+    inside_external_interval = right[0] <= point_rate <= right[1]
+    failures = []
+    if not inside_external_interval:
+        failures.append("Field Pilot pooled point win rate is outside the fresh external bot's 95% Wilson interval")
+    if all_mind_faults:
+        failures.append(f"actual proving recorded {all_mind_faults} mind faults across both sides")
     result = {"format":1, "run_id":run["run_id"], "revision":run["revision"], "context":context,
               "source_sha256":source["source_sha256"], "embedded_rhai":embedded,
               "fresh_external_bot":external_counts, "intervals_do_not_overlap":separate,
+              "field_pilot_point_win_rate":point_rate,
+              "field_pilot_rate_in_external_wilson_95":inside_external_interval,
+              "proving_faults":{"all_minds":all_mind_faults, "candidate":None, "opponent":None,
+                                "scope":"The retained report counts both sides; separate candidate/opponent totals are unavailable."},
+              "acceptance_passed":not failures, "acceptance_failures":failures,
+              "acceptance_criterion":"Field Pilot pooled point win rate lies inside the fresh external bot's 95% Wilson interval, and actual proving records zero mind faults.",
               "interpretation":"95% intervals do not overlap" if separate else "Intervals overlap; no difference called",
               "sampling":"Each pilot is pooled across both sides. The external live seeds and embedded paired seeds are independent samples."}
     (directory / "comparison.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2))
+    # Preserve the complete measured comparison even when its behavioral gate
+    # fails. Interval overlap remains the separate difference-report rule.
+    require(not failures, "; ".join(failures))
 
 
 def run(directory):

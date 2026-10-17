@@ -104,7 +104,16 @@ frozen-ground SHA, configuration SHA, chassis, opponent class/profile/source and
 startup/duration before comparing results. The embedded run records fifteen paired
 seeds; the external live seeds are fresh independent samples, pooled 15+15 by side.
 All thirty wins/losses/draws/timeouts stay in each denominator. Exact 95% Wilson
-intervals are recomputed; overlapping intervals do not support a difference claim.
+intervals are recomputed. Acceptance requires the Field Pilot's pooled point win
+rate to lie inside the freshly measured external bot's 95% Wilson interval, as
+doc 17 M6 specifies. Interval overlap is a separate reporting rule: overlapping
+intervals do not support a difference claim, but do not replace that acceptance
+criterion. Actual proving must also report zero mind faults; the current retained
+fault metric counts both sides, so the comparison preserves that aggregate and
+marks unavailable candidate/opponent subtotals as null rather than guessing.
+Either behavioral failure returns a failing status after retaining the complete
+`comparison.json`, including both intervals, all outcomes and refusal reasons.
+The owner's report-only host-timing ruling does not waive either requirement.
 The tree must remain clean at the same Git revision before each child command and
 the final comparison. Keep output outside the checkout or under ignored `target/`.
 The story binds the exact retained proving-manifest bytes by SHA-256, and external

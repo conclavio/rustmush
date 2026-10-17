@@ -34,6 +34,7 @@ class ComparisonTests(unittest.TestCase):
         self.write("acceptance-run.json", {**metadata, "started_unix_ms": 1})
         self.proving = {"context": context, "summary": [
             "Won 15; lost 15; drew 0; timed out 0.",
+            "Rounds fired 10; candidate rounds left 20; rules fired 10, held 2; faults 0.",
             *[f"Seed {seed}: normal Win; swapped Some(Loss)." for seed in range(15)],
         ]}
         proof = self.write("author/proving-manifest.json", self.proving)
@@ -75,6 +76,75 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(result["fresh_external_bot"]["samples"], 30)
         self.assertEqual(result["fresh_external_bot"]["timeouts"], 4)
         self.assertFalse(result["intervals_do_not_overlap"])
+        self.assertTrue(result["field_pilot_rate_in_external_wilson_95"])
+        self.assertTrue(result["acceptance_passed"])
+        self.assertEqual(result["proving_faults"]["all_minds"], 0)
+        self.assertIsNone(result["proving_faults"]["candidate"])
+
+    def update_proving(self):
+        proof = self.write("author/proving-manifest.json", self.proving)
+        self.story["proving_manifest_sha256"] = hashlib.sha256(proof).hexdigest()
+        self.write("author/author-story.json", self.story)
+
+    def set_embedded_wins(self, wins):
+        outcomes = ["Win"] * wins + ["Loss"] * (30 - wins)
+        self.proving["summary"] = [
+            f"Won {wins}; lost {30 - wins}; drew 0; timed out 0.",
+            "Rounds fired 10; candidate rounds left 20; rules fired 10, held 2; faults 0.",
+            *[f"Seed {seed}: normal {outcomes[2 * seed]}; swapped Some({outcomes[2 * seed + 1]})."
+              for seed in range(15)],
+        ]
+        self.update_proving()
+
+    def test_overlapping_intervals_do_not_replace_the_point_rate_gate(self):
+        # Both upper and lower misses can have overlapping Wilson intervals.
+        # They must still fail doc 17's port-point-rate-in-bot-interval gate.
+        for wins in [21, 3]:
+            with self.subTest(wins=wins):
+                self.set_embedded_wins(wins)
+                with self.assertRaisesRegex(ValueError, "point win rate is outside"):
+                    self.compare()
+                result = acceptance.read(self.directory / "comparison.json")
+                self.assertFalse(result["intervals_do_not_overlap"])
+                self.assertFalse(result["field_pilot_rate_in_external_wilson_95"])
+                self.assertFalse(result["acceptance_passed"])
+                self.assertEqual(result["embedded_rhai"]["wins"], wins)
+                self.assertEqual(result["fresh_external_bot"]["timeouts"], 4)
+                self.assertEqual(result["context"], self.proving["context"])
+                self.assertEqual(result["interpretation"], "Intervals overlap; no difference called")
+
+    def test_separated_intervals_preserve_the_failed_complete_report(self):
+        self.set_embedded_wins(30)
+        with self.assertRaisesRegex(ValueError, "point win rate is outside"):
+            self.compare()
+        result = acceptance.read(self.directory / "comparison.json")
+        self.assertTrue(result["intervals_do_not_overlap"])
+        self.assertFalse(result["acceptance_passed"])
+        self.assertEqual(result["embedded_rhai"]["samples"], 30)
+        self.assertEqual(result["interpretation"], "95% intervals do not overlap")
+
+    def test_actual_proving_faults_refuse_even_when_the_point_rate_passes(self):
+        self.proving["summary"][1] = (
+            "Rounds fired 10; candidate rounds left 20; rules fired 10, held 2; faults 3.")
+        self.update_proving()
+        with self.assertRaisesRegex(ValueError, "3 mind faults across both sides"):
+            self.compare()
+        result = acceptance.read(self.directory / "comparison.json")
+        self.assertTrue(result["field_pilot_rate_in_external_wilson_95"])
+        self.assertFalse(result["acceptance_passed"])
+        self.assertEqual(result["proving_faults"]["all_minds"], 3)
+        self.assertIsNone(result["proving_faults"]["candidate"])
+        self.assertIsNone(result["proving_faults"]["opponent"])
+
+    def test_missing_or_duplicate_actual_fault_totals_are_not_assumed_zero(self):
+        row = self.proving["summary"].pop(1)
+        self.update_proving()
+        with self.assertRaisesRegex(ValueError, "fault total is required"):
+            self.compare()
+        self.proving["summary"].extend([row, row])
+        self.update_proving()
+        with self.assertRaisesRegex(ValueError, "fault total is required"):
+            self.compare()
 
     def test_rejects_consistent_totals_that_disagree_with_actual_records(self):
         self.external["sides"][0]["wins"] -= 1
