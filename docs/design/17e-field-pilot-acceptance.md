@@ -126,10 +126,12 @@ An existing completed invocation can be checked again with `compare` instead of
 
 ## Evidence status
 
-Preparation only. The actual metadata parser accepts the current source. Rustfmt,
-Python syntax and patch application checks have run. No Class II operation result,
-production author-story pass, thirty-game report or win-rate comparison is claimed
-here until the real Cargo and live acceptance runs produce those artifacts.
+Candidate `34a22ac1` includes the port and production-runner checks. The seven
+Field Pilot tests pass in the fresh Linux library gate; final long acceptance is
+still pending. Validator correction `8ac8f159` passes twelve Python tests and
+enforces the outcome/fault requirements above. The production author story,
+thirty-game report, win-rate comparison and new same-server isolation/proving
+replay additions are not accepted until their actual runs produce the evidence.
 
 The M6 source/API addition needs the normal API 4 inventory/ABI and compatibility
 record. It changes no physics or live source by itself. The M7 economic-stability
