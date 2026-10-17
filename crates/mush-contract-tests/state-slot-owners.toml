@@ -299,6 +299,32 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
+path = "crates/tacsim/tests/sale.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 18 cut IC10, for the voyage.rs row's reason: every sale test charters its
+pilot through `+coop/enrol`, whose rule is per gateway account and fails closed
+on an unmapped character. The oracle is boot-hydrated by the host from the store,
+which a `TestWorld` has none of, so the rig installs the fixed account map — the
+`match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/ic_slice_loop.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 18 cut IC10 (§6 "part 1"), for the voyage.rs row's reason: the story's pilot
+enrols through `+coop/enrol`, whose rule is per gateway account and fails closed
+on an unmapped character. The oracle is boot-hydrated by the host from the store,
+which a `TestWorld` has none of, so the rig installs the fixed account map — the
+`match_lifecycle.rs` precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/deliberation.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -705,6 +731,19 @@ shared admission helper can be exercised with nothing else in the world at all
 index and from nothing else. Test-only, and the slot is this module's own; the
 composed path is `Registrar::state` in `SimulationModule::register`, and
 `crates/mush-sim/tests/deployed.rs` drives that one.
+"""
+
+[[site]]
+path = "crates/mush-market/src/facts.rs"
+accessor = "World::module_state_insert"
+slot = "store"
+owner = ""
+reason = """
+Doc 18 cut IC10 (an IC7 residual): the `#[cfg(test)] mod tests` inside the
+market's fact provider seeds a `MarketStore` holding one Draw quote onto a bare
+world, so `MarketFactProvider::resolve`'s id parsing and revision arms can be
+exercised with nothing else composed. Test-only, and the slot is the market's
+own; the composed path is `Registrar::state` in `MarketModule::register`.
 """
 
 [[site]]

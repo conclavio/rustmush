@@ -562,13 +562,17 @@ fn land_typed(rig: &mut Rig, submit: &mush_core::AuthoritativeSubmit) -> Result<
 }
 
 /// The commerce lines of `@tacsim/port status` (doc 18 cut IC8): every Pools,
-/// Listings and MarketFacts line, with whether it reads `[ready]`.
+/// Listings and MarketFacts line — and, since cut IC10, the InventoryFacts line —
+/// with whether it reads `[ready]`.
 fn commerce_ready(tw: &mut TestWorld) -> (bool, String) {
     let out = run(tw, GOD, "@tacsim/port status");
     let gated: Vec<&str> = out
         .lines()
         .filter(|line| {
-            line.contains(" vendor ") || line.contains(" ask ") || line.starts_with("market facts")
+            line.contains(" vendor ")
+                || line.contains(" ask ")
+                || line.starts_with("market facts")
+                || line.starts_with("inventory facts")
         })
         .collect();
     let ready = !gated.is_empty() && gated.iter().all(|line| line.ends_with("[ready]"));

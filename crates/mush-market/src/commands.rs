@@ -79,7 +79,13 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    so name a vault you may draw from. You may write the endpoint as \
                    to=<vault>. Where the port knows your berthed hold, leave it off and the \
                    goods go there. Taking up a drawn quote whose goods have not moved yet \
-                   asks for the hand-over again.\n\
+                   asks for the hand-over again, and so does naming one of your own sales \
+                   into a bid whose goods have not left yet.\n\
+                   +market/sell <listing>=<qty> [from=<vault>]\n\
+                   \x20                                 sell into a house's standing bid out \
+                   of your own endpoint (in a port, your berthed hold). The house's payment is \
+                   escrowed first and reaches you once the goods have moved into its stores; \
+                   a refusal moves nothing.\n\
                    +market/sell <obj>=<vendor>        offer something you are carrying. The \
                    vendor escrows its payment first; you then accept the contract and \
                    deposit the goods into its vault (@vault/deposit). It buys CUSTODY, so \
@@ -377,6 +383,8 @@ pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String 
                     })
             })
             .is_some_and(|available| available >= price.minor());
+        // Doc 18 cut IC10: an exhausted bid stands at quantity 0 and is not buying.
+        let funded = funded && l.quantity > 0;
         return format!(
             "#{} {name} — wanted {} × {} [{}] by {shop}{}",
             l.id,
@@ -661,6 +669,24 @@ fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Err(e) => return Err(refuse_market(ctx, &e)),
         Ok(None) => {}
     }
+    // ---- doc 18 cut IC10: one of your own sales into a bid, not yet handed over ----
+    //
+    // The same remedy for the seller's leg (`restage_deliver`): the same contract key
+    // and byte-identical parameters, so it moves nothing twice; the same line.
+    match crate::trade::restage_deliver(ctx, id) {
+        Ok(Some(contract)) => {
+            info(
+                ctx,
+                format!(
+                    "Asking again for the hand-over on contract #{contract}. It settles once \
+                     the goods have moved."
+                ),
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(refuse_market(ctx, &e)),
+        Ok(None) => {}
+    }
     // E7r2 P1: `+market/accept <quote>=<vault>` names where a lot-represented purchase
     // is delivered. Every E6c representation ignores it, and a lot purchase that names
     // none — and that no presence gate can place — is refused **before any money
@@ -685,7 +711,75 @@ fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
+/// The lot arm's parsed arguments: the bid listing, the quantity, and the `from=`
+/// endpoint when one was named (doc 18 cut IC10).
+type LotSellArgs = (ListingId, u64, Option<mush_inventory::EndpointRef>);
+
+/// **The lot arm's grammar** (doc 18 cut IC10; doc 18 §6 writes it bare, `+market/sell
+/// 21=20`): the left side is bare ASCII digits naming a listing the actor may view, the
+/// right side's first word a quantity, and an optional second word `from=<vault>`
+/// (digits, optional `#`). `None` when the left side is not that — every `#`-prefixed
+/// left side stays a dbref for the object arm, and a bare number naming no viewable
+/// listing reads exactly as an unknown object does (existence hiding). `Some(Err(..))`
+/// is the lot arm's own refusal: a malformed right side, or an ask rather than a bid.
+fn lot_sell_args(ctx: &Ctx<'_>) -> Option<Result<LotSellArgs, &'static str>> {
+    let lhs = ctx.args.lhs().trim();
+    if lhs.is_empty() || !lhs.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let id = ListingId(lhs.parse::<u64>().ok()?);
+    let listing = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(id).cloned())
+        .filter(|l| api::may_view_listing(ctx.w, ctx.actor, l))?;
+    let rhs = ctx.args.rhs().unwrap_or_default();
+    let mut words = rhs.split_whitespace();
+    let quantity = words.next()?.parse::<u64>().ok()?;
+    let source = match words.next() {
+        None => None,
+        Some(word) => {
+            let vault = word
+                .strip_prefix("from=")
+                .map(|v| v.strip_prefix('#').unwrap_or(v))
+                .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|v| v.parse::<u64>().ok());
+            match vault {
+                Some(v) => Some(mush_inventory::EndpointRef(mush_economy::VaultId(v))),
+                None => return Some(Err(crate::trade::SELL_USAGE)),
+            }
+        }
+    };
+    if words.next().is_some() {
+        return Some(Err(crate::trade::SELL_USAGE));
+    }
+    if !listing.source.is_wanted() {
+        return Some(Err(crate::trade::SELLS_NOT_BUYS));
+    }
+    Some(Ok((id, quantity, source)))
+}
+
 fn sell(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // ---- doc 18 cut IC10: the lot arm — a sale into a standing bid ----
+    match lot_sell_args(ctx) {
+        Some(Ok((listing, quantity, source))) => {
+            let req = crate::trade::BidSaleRequest {
+                listing,
+                quantity,
+                source,
+                presence: crate::module::Presence::Here,
+            };
+            return match crate::trade::sell_into_bid(ctx, &req) {
+                Ok(sale) => {
+                    info(ctx, sale.line);
+                    Ok(())
+                }
+                Err(e) => Err(refuse_market(ctx, &e)),
+            };
+        }
+        Some(Err(why)) => return Err(refuse_market(ctx, &MarketError::bad(why))),
+        None => {}
+    }
     let Ok(object) = mush_core::match_object(ctx.w, ctx.actor, ctx.args.lhs().trim()) else {
         return Err(refuse(ctx, "No such asset."));
     };

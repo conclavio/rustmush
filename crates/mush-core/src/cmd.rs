@@ -340,7 +340,10 @@ impl Ctx<'_> {
     /// Whether `actor` already has an authoritative submission in flight —
     /// queued in the engine by an earlier drain, or deferred in this outbox
     /// (doc 18 cut IC8; [`Outbox::authoritative_pending`]). A tick acting as
-    /// a principal asks before it submits.
+    /// a principal asks before it submits (noted by `Engine::fire_due`), and
+    /// since doc 18 cut IC10 so may a command that stages one (noted by
+    /// `Engine::step` for every inbound message), so it refuses before it
+    /// offers anything rather than after.
     #[must_use]
     pub fn authoritative_pending(&self, actor: ObjId) -> bool {
         self.out.authoritative_pending(actor)

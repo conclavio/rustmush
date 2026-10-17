@@ -147,9 +147,18 @@ fn board_roles(def: &PortDef) -> Vec<CanonicalId> {
 
 /// **Whether part (e).8 posts `bid` afresh on this apply**: it is unrecorded, or its
 /// recorded listing is gone past the deadline it was posted with and its intake is
-/// unchanged (it lapsed; one gone before its deadline had its intake taken and reads
-/// "not buying"). The one rule `preflight` and `put` both read.
-fn posts_afresh(w: &World, recorded: Option<&BidRow>, bid: &crate::port::def::BidDef) -> bool {
+/// unchanged (it lapsed). One gone before its deadline was withdrawn by hand — since
+/// doc 18 cut IC10 an exhausted bid is no longer deleted but stands at quantity 0 —
+/// and is not re-posted until that deadline. The one rule `preflight`, `put`, the
+/// stock clerk's bid re-post (cut IC10) and the readiness Bids line all read. A gone
+/// bid whose authored intake changed is not posted by the apply itself: `put`
+/// records the new terms in its `BidRow` (cut IC10 fixer, review F2), after which
+/// this rule holds again and the clerk posts it once the deadline has passed.
+pub(crate) fn posts_afresh(
+    w: &World,
+    recorded: Option<&BidRow>,
+    bid: &crate::port::def::BidDef,
+) -> bool {
     let Some(recorded) = recorded else {
         return true;
     };
@@ -180,7 +189,8 @@ fn catalog_of(good: &CanonicalId) -> CatalogRef {
 /// is changed or dropped (lead ruling L6, paged); every price converts, and every bid
 /// posted afresh has an in-range intake, no unrecorded twin and room under the
 /// vendor's listing cap (fixer F3); no recorded bid is dropped, and no revision would
-/// take a bid's remaining intake out of range.
+/// take a bid's remaining intake past `MAX_QUANTITY` (cut IC10: a cut below what is
+/// left saturates at 0, the exhausted bid).
 ///
 /// # Errors
 ///
@@ -375,7 +385,9 @@ pub(crate) fn preflight(
             }
         }
         // 7. Bid drift: a recorded bid is never retired by an update, and a revision
-        // keeps the remaining intake in range.
+        // keeps the remaining intake in range. Doc 18 cut IC10 (decision 22): a cut of
+        // the authored intake by more than is left saturates at 0 — the bid stands
+        // exhausted — the same arithmetic the revise arm in `put` makes.
         for (good, bid) in &row.bids {
             let Some(now) = authored.and_then(|v| v.bids.iter().find(|b| &b.good == good)) else {
                 return Err(format!(
@@ -390,8 +402,8 @@ pub(crate) fn preflight(
                 let revised = listing
                     .quantity
                     .checked_add(now.intake)
-                    .and_then(|sum| sum.checked_sub(bid.intake));
-                if !revised.is_some_and(|r| r > 0 && r <= mush_market::MAX_QUANTITY) {
+                    .map(|sum| sum.saturating_sub(bid.intake));
+                if !revised.is_some_and(|r| r <= mush_market::MAX_QUANTITY) {
                     return Err(format!(
                         "{id}: vendor {org} bid {good}: an intake of {} would leave the bid's \
                          remaining intake out of range",
@@ -639,10 +651,15 @@ pub(crate) fn put(
                     if r.price_major == bid.price_major && r.intake == bid.intake {
                         continue;
                     }
+                    // Doc 18 cut IC10 (decision 22): an authored intake that falls by
+                    // more than is left saturates at 0 — the bid stands exhausted —
+                    // rather than failing the whole apply, which before IC10 could not
+                    // happen to an exhausted bid because it was deleted. Overflow of the
+                    // add still errors.
                     let remaining = listing
                         .quantity
                         .checked_add(bid.intake)
-                        .and_then(|sum| sum.checked_sub(r.intake))
+                        .map(|sum| sum.saturating_sub(r.intake))
                         .ok_or_else(|| {
                             format!(
                                 "{id}: vendor {org} bid {}: the intake is out of range",
@@ -665,11 +682,30 @@ pub(crate) fn put(
                 }
                 (Some(r), None) => {
                     // Gone. Re-posted only when it lapsed with its intake unchanged;
-                    // one gone before its deadline was exhausted — "not buying".
-                    if !posts_afresh(ctx.w, Some(&r), bid) {
+                    // one gone before its deadline was withdrawn by hand (cut IC10: an
+                    // exhausted bid stands at 0 and is never gone).
+                    if posts_afresh(ctx.w, Some(&r), bid) {
+                        post_bid(ctx, id, map, org, vendor_id, vault, bid, price)?;
                         continue;
                     }
-                    post_bid(ctx, id, map, org, vendor_id, vault, bid, price)?;
+                    // Doc 18 cut IC10 (fixer, review F2): a gone bid whose authored
+                    // terms changed records them, keeping its listing and deadline, so
+                    // the stock clerk posts it at the new intake once that deadline has
+                    // passed (`posts_afresh` reads the recorded intake) — never a bid
+                    // that no apply and no clerk will ever post again.
+                    if r.price_major != bid.price_major || r.intake != bid.intake {
+                        if let Some(row) = map.vendors.get_mut(org) {
+                            row.bids.insert(
+                                bid.good.clone(),
+                                BidRow {
+                                    price_major: bid.price_major,
+                                    intake: bid.intake,
+                                    ..r
+                                },
+                            );
+                        }
+                        put_port_map(ctx, map);
+                    }
                 }
                 (None, _) => {
                     post_bid(ctx, id, map, org, vendor_id, vault, bid, price)?;
@@ -701,6 +737,27 @@ pub(crate) fn put(
     Ok(())
 }
 
+/// **The one `WantedSpec` a port bid posts with** (doc 18 cut IC8's part (e).8,
+/// factored by cut IC10 so the applier and the stock clerk's re-post build it one
+/// way): the authored good, price and full intake, into the storefront, no grade
+/// floor, for the market's longest listing life.
+pub(crate) fn wanted_spec(
+    vendor: VendorId,
+    vault: VaultId,
+    bid: &crate::port::def::BidDef,
+    price: Amount,
+) -> WantedSpec {
+    WantedSpec {
+        vendor,
+        catalog: catalog_of(&bid.good),
+        price,
+        remaining: bid.intake,
+        vault,
+        min_grade: 0,
+        ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+    }
+}
+
 /// Post one standing bid and record it.
 #[allow(clippy::too_many_arguments)]
 fn post_bid(
@@ -713,19 +770,8 @@ fn post_bid(
     bid: &crate::port::def::BidDef,
     price: Amount,
 ) -> Result<(), String> {
-    let listing = mush_market::post_wanted(
-        ctx,
-        WantedSpec {
-            vendor,
-            catalog: catalog_of(&bid.good),
-            price,
-            remaining: bid.intake,
-            vault,
-            min_grade: 0,
-            ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
-        },
-    )
-    .map_err(|e| format!("{id}: vendor {org} bid {}: {e:?}", bid.good))?;
+    let listing = mush_market::post_wanted(ctx, wanted_spec(vendor, vault, bid, price))
+        .map_err(|e| format!("{id}: vendor {org} bid {}: {e:?}", bid.good))?;
     let expires = ctx
         .w
         .module_state::<MarketStore>()
@@ -752,7 +798,8 @@ fn post_bid(
 
 /// **The vendors' retire refusal** (doc 18 cut IC8): a vendor of the port's map with
 /// an open market deal — a quote with a contract and no settlement, sold by the
-/// vendor's org — keeps the port from retiring.
+/// vendor's org, or (doc 18 cut IC10) **bought** by it: a sale into one of its bids in
+/// progress — keeps the port from retiring.
 pub(crate) fn retire_refusal(w: &World, id: &CanonicalId, map: &PortMap) -> Result<(), String> {
     let Some(market) = w.module_state::<MarketStore>() else {
         return Ok(());
@@ -762,10 +809,9 @@ pub(crate) fn retire_refusal(w: &World, id: &CanonicalId, map: &PortMap) -> Resu
             continue;
         };
         let seller = PrincipalId::Organization(OrgId(row.org));
-        if market
-            .quotes()
-            .any(|q| q.contract.is_some() && q.settled.is_none() && q.seller == seller)
-        {
+        if market.quotes().any(|q| {
+            q.contract.is_some() && q.settled.is_none() && (q.seller == seller || q.buyer == seller)
+        }) {
             return Err(format!(
                 "{id}: vendor {org} has a deal in progress; a port with live contracts cannot be \
                  retired"
@@ -781,6 +827,10 @@ pub(crate) fn retire_refusal(w: &World, id: &CanonicalId, map: &PortMap) -> Resu
 /// staff-stocked hold-backed `Supply::Lot`, say — is left standing and logged, because
 /// withdrawing it would stage a release from the applier. Matter, receipts, orgs,
 /// accounts, vaults, vendors, the clerk and the hulls all stand.
+///
+/// Since doc 18 cut IC10 the market's live set holds an **exhausted** bid (quantity 0)
+/// too, so a retire withdraws it and forgets its row like any other; a re-apply then
+/// posts it afresh at its authored intake (owner item O4(c)).
 ///
 /// **A withdrawn bid's row leaves the map** (reviewer F2 of the IC8 fixer pass): a bid
 /// the retire took down is not one whose intake was taken, so the map must not keep a

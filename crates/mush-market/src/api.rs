@@ -941,6 +941,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
                 commodity,
                 quantity: spec.quantity,
                 grade,
+                destination: None,
                 contract: None,
             },
         );
@@ -1057,6 +1058,7 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
             commodity: commodity.clone(),
             quantity: listing.quantity,
             grade,
+            destination: None,
             contract: None,
         });
     // A Draw (doc 18 cut IC7) and a standing bid (cut IC8) hold no reservation, so
@@ -1099,7 +1101,9 @@ pub struct WantedSpec {
 /// Refused, before any write: a vendor that is not trading or whose org may not trade;
 /// an entry that is not `Representation::Lot` or whose code is not a commodity id; a
 /// vault that is not the vendor's own; a non-positive price, an out-of-range intake or
-/// grade floor; a second live bid of this vendor for this commodity; the listing caps.
+/// grade floor; a second live bid of this vendor for this commodity — an exhausted bid
+/// standing at quantity 0 included (doc 18 cut IC10: no second bid beside an exhausted
+/// one); the listing caps.
 ///
 /// # Errors
 ///
@@ -1218,7 +1222,8 @@ pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, Mar
 /// # Errors
 ///
 /// [`MarketError::NoStanding`] when there is no such bid; [`MarketError::Bad`] for a
-/// non-positive price or an out-of-range intake.
+/// non-positive price or an intake over `MAX_QUANTITY` (an intake of 0 is the
+/// exhausted marker, doc 18 cut IC10).
 pub fn revise_wanted(
     ctx: &mut Ctx<'_>,
     id: ListingId,
@@ -1236,7 +1241,9 @@ pub fn revise_wanted(
     if price.minor() <= 0 {
         return Err(MarketError::bad("A standing bid offers a positive price."));
     }
-    if remaining == 0 || remaining > crate::record::MAX_QUANTITY {
+    // Doc 18 cut IC10: an update that leaves nothing wanted writes the exhausted
+    // marker — the bid stands at 0, not buying (`post_wanted` still refuses 0).
+    if remaining > crate::record::MAX_QUANTITY {
         return Err(MarketError::bad("That is not a quantity this market buys."));
     }
     put_listing(
@@ -1348,7 +1355,8 @@ pub fn visible(
         last = Some(l.id);
         // **The page and the projection agree about what is gone** (independent verify
         // fold, R3 and R6). `MarketStore::reindex` builds `live` from `quantity > 0`
-        // alone, so a lapsed listing stayed in it and the page rendered it as buyable
+        // (and, since doc 18 cut IC10, an exhausted bid at 0, rendered " — not
+        // buying"), so a lapsed listing stayed in it and the page rendered it as buyable
         // while `quote` refused it; and a pack reload that dropped an entry left
         // listings nothing can define, quote or deliver. The sweep deletes both, and
         // this is what makes the render honest between two fires.

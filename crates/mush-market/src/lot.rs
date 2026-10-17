@@ -59,6 +59,18 @@
 //! never a lot — and writes a durable receipt in its own bundle (`market_lot_draws`),
 //! which is the purchase contract's proof the goods moved (the `market.lot.drawn` fact)
 //! and the epoch-free guard against a second Draw for the same contract.
+//!
+//! # Doc 18 cut IC10: the fifth op, `deliver`
+//!
+//! A sale into a standing bid (`Supply::Wanted`) is a quote whose **seller** is the
+//! player and whose buyer is the house. Its matter leg, `deliver`, is the third paid leg
+//! and the only one offered to the **seller**: over the actor's own endpoint (the
+//! quote's frozen source), with the destination (the house's storefront) and the
+//! `inventory.transferred` marker id fixed by the server in the paid entry. Its prepare
+//! calls inventory's own `InventoryFamilies::transfer_marked`, which moves the pool
+//! quantity, carries lineage and writes the marker the sale contract is gated on — so
+//! the house's money is paid out only once the goods are in its stores, and the marker
+//! is the epoch-free replay guard.
 
 use std::collections::BTreeMap;
 
@@ -177,12 +189,14 @@ impl std::fmt::Display for LotError {
 
 impl std::error::Error for LotError {}
 
-/// Which of the four the one action is doing.
+/// Which of the five the one action is doing.
 ///
-/// One action, four ops, because the bundle each stages is the same shape and because
+/// One action, five ops, because the bundle each stages is the same shape and because
 /// **one** market-owned `Authoritative` action is what §15.5 (c′) prescribes. Doc 18 cut
 /// IC7 added `Draw`, with its own authority sentence in `project_offer`: the paid
-/// projection.
+/// projection. Doc 18 cut IC10 added `Deliver`: offered only to the **seller** of a paid
+/// sale into a bid, over the actor's own endpoint, the destination and the marker fixed
+/// by the server.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LotOp {
     /// Place the listing's hold, at `@market/vendor stock`.
@@ -194,6 +208,10 @@ pub enum LotOp {
     /// Doc 18 cut IC7: move a paid Draw's quantity from the vendor's storefront pool
     /// into the buyer's endpoint, at `+market/accept`.
     Draw,
+    /// Doc 18 cut IC10: move a paid sale-into-a-bid's quantity from the seller's own
+    /// endpoint into the house's storefront pool, writing the `inventory.transferred`
+    /// marker its contract is gated on, at `+market/sell <listing>=<qty>`.
+    Deliver,
 }
 
 impl LotOp {
@@ -205,6 +223,7 @@ impl LotOp {
             LotOp::Consume => "consume",
             LotOp::Release => "release",
             LotOp::Draw => "draw",
+            LotOp::Deliver => "deliver",
         }
     }
 
@@ -214,15 +233,17 @@ impl LotOp {
             "consume" => Some(LotOp::Consume),
             "release" => Some(LotOp::Release),
             "draw" => Some(LotOp::Draw),
+            "deliver" => Some(LotOp::Deliver),
             _ => None,
         }
     }
 
-    /// Whether this op moves matter somebody paid for — the two legs offered only over
-    /// the actor's own paid contracts and keyed by the contract (doc 18 cut IC7, L5).
+    /// Whether this op moves matter somebody paid for — the three legs offered only over
+    /// the actor's own paid contracts and keyed by the contract (doc 18 cut IC7, L5; cut
+    /// IC10 added `Deliver`).
     #[must_use]
     pub const fn is_paid(self) -> bool {
-        matches!(self, LotOp::Consume | LotOp::Draw)
+        matches!(self, LotOp::Consume | LotOp::Draw | LotOp::Deliver)
     }
 }
 
@@ -336,6 +357,8 @@ struct PaidLegs {
     entries: serde_json::Map<String, Value>,
     consume: bool,
     draw: bool,
+    /// Doc 18 cut IC10: the actor sells into a bid and owes its hand-over.
+    deliver: bool,
 }
 
 /// One paid entry's JSON: the terms frozen on the quote, plus the capacity plan.
@@ -371,7 +394,12 @@ fn paid_entry(q: &Quote, lot: &crate::record::PaidLot, op: LotOp, plan: Value) -
 ///   `ReadyToSettle` or `Settled` (a `Before`-only hold contract can settle before its
 ///   leg lands; the reservation's own held state, checked in the prepare, is the replay
 ///   guard), destination held; unsettled first, then settled newest-first; its plan is
-///   always `null` (a hold-backed sale never reaches a governed endpoint, lead 2e).
+///   always `null` (a hold-backed sale never reaches a governed endpoint, lead 2e);
+/// - a **deliver entry** (doc 18 cut IC10) is walked over the actor's quotes as
+///   **seller**: an activated, unsettled sale into a bid whose contract is `Active`,
+///   whose cutoff `draw_by` has not passed on the real clock, and whose source the actor
+///   still holds. It carries the `marker` its contract is gated on, server-authenticated
+///   — the prepare reads the marker from the entry, never from the submission.
 fn paid_legs(
     world: &mush_core::World,
     actor: mush_core::ObjId,
@@ -382,6 +410,7 @@ fn paid_legs(
         entries: serde_json::Map::new(),
         consume: false,
         draw: false,
+        deliver: false,
     };
     let (Some(market), Some(economy)) = (
         world.module_state::<crate::store::MarketStore>(),
@@ -438,7 +467,40 @@ fn paid_legs(
                     paid_entry(q, lot, LotOp::Consume, Value::Null),
                 ));
             }
+            // Doc 18 cut IC10: a sale into a bid's buyer is the house, never a player,
+            // and its leg is the seller's — walked below.
+            PaidKind::Deliver => {}
         }
+    }
+    // ---- doc 18 cut IC10: the seller's deliver entries ----
+    let seller = mush_org::PrincipalId::Object(actor);
+    let mut delivers = 0usize;
+    for q in market.quotes_of_seller(&seller) {
+        if delivers >= MAX_PAID_ENTRIES_PER_KIND {
+            break;
+        }
+        let (Some(lot), Some(contract)) = (&q.lot, q.contract) else {
+            continue;
+        };
+        let Some(marker) = lot.marker.as_ref() else {
+            continue;
+        };
+        if lot.kind != PaidKind::Deliver
+            || !q.activated
+            || q.is_trade()
+            || !endpoints.contains(&lot.source.vault())
+            || !matches!(state_of(contract), Some(ContractState::Active))
+            || lot.draw_by.is_none_or(|by| now > by)
+        {
+            continue;
+        }
+        let mut entry = paid_entry(q, lot, LotOp::Deliver, Value::Null);
+        if let Some(map) = entry.as_object_mut() {
+            map.insert("marker".to_owned(), json!(marker.as_str()));
+        }
+        out.entries.insert(contract.0.to_string(), entry);
+        out.deliver = true;
+        delivers = delivers.saturating_add(1);
     }
     // Unsettled first (in quote order), then settled newest-first.
     consumes.sort_by(|a, b| match (a.0, b.0) {
@@ -571,6 +633,9 @@ impl ActionProvider for MarketLotProvider {
         if paid.draw {
             ops.push(LotOp::Draw.word().to_owned());
         }
+        if paid.deliver {
+            ops.push(LotOp::Deliver.word().to_owned());
+        }
         let contracts: Vec<String> = paid.entries.keys().cloned().collect();
         let mut parameters = vec![
             parameter("op", true, ProjectedParameterKind::Choice { choices: ops })?,
@@ -592,6 +657,13 @@ impl ActionProvider for MarketLotProvider {
             // source the listing did not use could not settle anything either.
             parameter(
                 "source",
+                false,
+                ProjectedParameterKind::Text { maximum_bytes: 32 },
+            )?,
+            // Doc 18 cut IC10: the receiving endpoint of a `deliver` (the house's
+            // storefront), a cross-check against the paid entry's fixed destination.
+            parameter(
+                "destination",
                 false,
                 ProjectedParameterKind::Text { maximum_bytes: 32 },
             )?,
@@ -664,10 +736,11 @@ impl ActionProvider for MarketLotProvider {
                     "market definition guard is unavailable",
                 )
             })?;
-        // The fixed parameters' size, stated (doc 18 cut IC7): at most eight draw
-        // entries of ≤ 2,048 plan bytes plus ≤ 512 bytes of terms, and eight consume
-        // entries of ≤ 512 bytes — 8 × 2,560 + 8 × 512 ≈ 25 KiB, under the 64 KiB
-        // `MAX_ACTION_PARAMETER_BYTES` bound.
+        // The fixed parameters' size, stated (doc 18 cut IC7; cut IC10 added a third
+        // kind): at most eight draw entries of ≤ 2,048 plan bytes plus ≤ 512 bytes of
+        // terms, eight consume entries of ≤ 512 bytes and eight deliver entries of
+        // ≤ 512 bytes plus an 80-byte marker — 8 × 2,560 + 8 × 512 + 8 × 600 ≈ 30 KiB,
+        // still well under the 64 KiB `MAX_ACTION_PARAMETER_BYTES` bound.
         Ok(Some(ProviderOfferDraft {
             fixed_parameters: json!({
                 "now": engine.world.world_ic_now(),
@@ -856,6 +929,16 @@ impl ActionProvider for MarketLotProvider {
                 quantity,
                 &mut data,
             )?,
+            LotOp::Deliver => self.prepare_deliver(
+                invocation,
+                txn,
+                &parameters,
+                &now,
+                listing,
+                &commodity,
+                quantity,
+                &mut data,
+            )?,
         };
         data.insert("summary".to_owned(), json!(summary));
         let outcome = RulesValue::new(self.outcome.clone(), json!(data)).map_err(|_| {
@@ -968,6 +1051,79 @@ impl MarketLotProvider {
         data.insert("quantity".to_owned(), json!(quantity));
         Ok(format!(
             "Drew {quantity} {commodity} for contract #{contract}."
+        ))
+    }
+
+    /// **The Deliver prepare** (doc 18 §4.3 "Bids that take real lots", D-18-26; cut
+    /// IC10). The seller's own endpoint is `endpoint`, which must equal the submitted
+    /// `source` and the paid entry's; the destination and the marker are the entry's,
+    /// never the submission's. The move is inventory's own `transfer_marked` — pool
+    /// quantity, lineage carried, the `inventory.transferred` marker written under the
+    /// id the sale contract names — and an existing marker refuses (the replay guard).
+    /// Every refusal is the pinned `LOT_REFUSED` line. No capacity check: the bid's
+    /// vault is ungoverned.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_deliver(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
+        listing: ListingId,
+        commodity: &CanonicalId,
+        quantity: u64,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let endpoint = endpoint_field(parameters, "endpoint")?;
+        let source = endpoint_field(parameters, "source")?;
+        let destination = endpoint_field(parameters, "destination")?;
+        if source != endpoint {
+            return Err(rejected());
+        }
+        let (contract, entry) = paid_entry_of(parameters, LotOp::Deliver)?;
+        if !matches_paid(
+            entry,
+            listing,
+            destination,
+            endpoint,
+            commodity,
+            quantity,
+            None,
+        ) {
+            return Err(rejected());
+        }
+        let quote = entry
+            .get("quote")
+            .and_then(Value::as_u64)
+            .map(QuoteId)
+            .ok_or_else(rejected)?;
+        let marker = entry
+            .get("marker")
+            .and_then(Value::as_str)
+            .filter(|marker| crate::record::is_marker_id(marker))
+            .map(smol_str::SmolStr::new)
+            .ok_or_else(rejected)?;
+        self.families
+            .transfer_marked(
+                txn,
+                endpoint,
+                destination,
+                commodity,
+                quantity,
+                &marker,
+                invocation.actor(),
+                now,
+            )
+            .map_err(|source| refuse(&source))?;
+        data.insert("contract".to_owned(), json!(contract.0));
+        data.insert("quote".to_owned(), json!(quote.0));
+        data.insert("source".to_owned(), json!(source.vault().0));
+        data.insert("endpoint".to_owned(), json!(endpoint.vault().0));
+        data.insert("destination".to_owned(), json!(destination.vault().0));
+        data.insert("quantity".to_owned(), json!(quantity));
+        data.insert("marker".to_owned(), json!(marker.as_str()));
+        Ok(format!(
+            "Delivered {quantity} {commodity} for contract #{contract}."
         ))
     }
 }
@@ -1105,23 +1261,25 @@ pub(crate) fn register(
 /// What one command asks the lot action to do.
 #[derive(Clone, Debug)]
 pub struct LotLeg {
-    /// Which of the four.
+    /// Which of the five.
     pub op: LotOp,
     /// The listing the reservation is scoped to.
     pub listing: ListingId,
-    /// The endpoint the ACTING principal owns — the seller's on a reserve or a
-    /// release, the buyer's on a consume.
+    /// The endpoint the ACTING principal owns — the seller's on a reserve, a release
+    /// or a deliver, the buyer's on a consume or a draw.
     pub endpoint: EndpointRef,
     /// The seller's endpoint on a consume, and the same as `endpoint` otherwise.
     pub source: EndpointRef,
+    /// The receiving endpoint of a `deliver` (doc 18 cut IC10); `None` otherwise.
+    pub destination: Option<EndpointRef>,
     /// The commodity's pool at the source endpoint.
     pub commodity: CanonicalId,
     /// How much.
     pub quantity: u64,
     /// The grade the listing advertises.
     pub grade: u8,
-    /// The paid contract a `consume` or `draw` delivers against (doc 18 cut IC7), and
-    /// `None` on a `reserve` or `release`.
+    /// The paid contract a `consume`, `draw` or `deliver` delivers against (doc 18 cuts
+    /// IC7 and IC10), and `None` on a `reserve` or `release`.
     pub contract: Option<ContractId>,
 }
 
@@ -1130,7 +1288,7 @@ pub struct LotLeg {
 ///
 /// Two key forms (doc 18 §4.4, D-18-32, L5):
 ///
-/// - **a paid leg** (`consume`, `draw`) is one request per contract,
+/// - **a paid leg** (`consume`, `draw`, `deliver`) is one request per contract,
 ///   `market.lot.{op}.{contract:x}`, and writes `"contract"` (decimal) into its
 ///   parameters. The driver's request uid is a digest of the actor, action, subject,
 ///   targets, parameters and key, so an identical re-stage is the same request: after a
@@ -1158,6 +1316,14 @@ pub(crate) fn stage(ctx: &mut mush_core::Ctx<'_>, leg: &LotLeg) -> bool {
         "quantity": leg.quantity,
         "grade": leg.grade,
     });
+    // Doc 18 cut IC10: only a `deliver` names a destination, so every other leg's
+    // parameters stay byte-identical to what they were before IC10.
+    if let (Some(destination), Some(map)) = (leg.destination, parameters.as_object_mut()) {
+        map.insert(
+            "destination".to_owned(),
+            json!(destination.vault().0.to_string()),
+        );
+    }
     let discriminator = if leg.op.is_paid() {
         let Some(contract) = leg.contract else {
             return false;
@@ -1451,6 +1617,7 @@ pub fn release_lapsed_hold(
         commodity: commodity.clone(),
         quantity: listing.quantity,
         grade,
+        destination: None,
         contract: None,
     };
     if !stage(ctx, &leg) {

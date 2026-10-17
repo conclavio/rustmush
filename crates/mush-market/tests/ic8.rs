@@ -853,9 +853,10 @@ fn ic8_post_and_revise_wanted_refusals() {
         (listing.price.minor(), listing.quantity, listing.revision),
         (600, 30, 2)
     );
+    // Doc 18 cut IC10: an intake of 0 is no longer refused here — it writes the
+    // exhausted marker (`tests/ic10.rs` pins it) — so the `(600, 0, ..)` row left.
     for (price, remaining, want) in [
         (0, 30, "A standing bid offers a positive price."),
-        (600, 0, "That is not a quantity this market buys."),
         (
             600,
             mush_market::MAX_QUANTITY + 1,

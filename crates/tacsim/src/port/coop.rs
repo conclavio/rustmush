@@ -520,7 +520,8 @@ pub fn free_hulls<'a>(w: &World, port: &ProgrammePort<'a>) -> Vec<&'a HullRow> {
 /// **The enrolment gate** (lead ruling L1; doc 18 §4.7): the first line whose
 /// binding is Lane, Rate, Map, Rooms, Domain, Org, Programme or Hulls — and,
 /// since cut IC8 (§4.7 "IC8 adds pools seeded and listings equal to pools"; its
-/// lead ruling L8), Pools, Listings or MarketFacts — and whose state is not
+/// lead ruling L8), Pools, Listings or MarketFacts — and, since cut IC10 (lead
+/// 2g), InventoryFacts, which a sale into a bid settles on — and whose state is not
 /// Ready. Sky, Treasury and Bids are reported, not gated (a bid waits on the
 /// capital sweep the Org lines already gate). A Pending Listings line — seeded
 /// stock the arm has not listed yet — closes enrolment for the fire or two the
@@ -544,6 +545,7 @@ pub fn enrol_gate(r: &Readiness) -> Result<(), &ReadinessLine> {
                 | Binding::Pools
                 | Binding::Listings
                 | Binding::MarketFacts
+                | Binding::InventoryFacts
         ) && line.state != LineState::Ready
     }) {
         Some(line) => Err(line),

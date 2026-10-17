@@ -3079,6 +3079,13 @@ impl Engine {
                 OutputEvent::Sys(RichText::tag(OUTPUT_PREFIX_TAG, prefix)),
             );
         }
+        // Doc 18 cut IC10: a command sees the same note a tick does
+        // (`fire_due`, cut IC8) — whose authoritative submission an earlier
+        // drain already queued — so a verb that stages one (the market's lot
+        // sell arm) refuses before it offers anything rather than drawing the
+        // drain's back-pressure refusal after the money is in force
+        // ([`Outbox::authoritative_pending`]). Cleared after the one drain below.
+        out.note_pending_authoritative(self.authoritative_submits.keys().copied());
         let outcome = match msg {
             Inbound::Cmd { conn, actor, line } => {
                 if self.world.get(actor).is_some() {
@@ -3185,6 +3192,7 @@ impl Engine {
             }
         };
         self.drain_deferred(out, fx);
+        out.note_pending_authoritative([]);
         // 16b cut AP.4: the suffix, read now (after the body) and pushed last
         // as a `Trailer` — see the head of this function.
         if let Some(conn) = bracketed
@@ -6160,6 +6168,106 @@ mod tests {
                 }),
             )
         }
+    }
+
+    /// Doc 18 cut IC10: a module command answering `pending=<bool>` from
+    /// [`Ctx::authoritative_pending`] for its own actor.
+    struct PendingProbe;
+
+    impl crate::module::GameModule for PendingProbe {
+        fn name(&self) -> &'static str {
+            "pendingprobe"
+        }
+        fn register(
+            &mut self,
+            reg: &mut crate::module::Registrar<'_>,
+        ) -> Result<(), crate::module::ModError> {
+            reg.classify_commands(crate::CommandCompatibility::ReadOnly);
+            reg.command(
+                crate::cmd::CommandSpec {
+                    name: "+pending".into(),
+                    shape: crate::cmd::ArgShape::Raw,
+                    ..crate::cmd::CommandSpec::default()
+                },
+                std::sync::Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), crate::cmd::CmdError> {
+                    let pending = ctx.authoritative_pending(ctx.actor);
+                    ctx.out.info(ctx.actor, format!("pending={pending}"));
+                    Ok(())
+                }),
+            )
+        }
+    }
+
+    /// **Doc 18 cut IC10: a command sees the engine queue's note** (the
+    /// `step` half of the IC8 seam `fire_due` already had): with no queued
+    /// authoritative submission a command reads `false`; with one queued for
+    /// its actor by an earlier drain it reads `true` (so the market's lot sell
+    /// arm refuses before it offers anything); another actor's queued
+    /// submission is not its own; the note is cleared once the step returns;
+    /// and once the driving loop takes the submission the command reads
+    /// `false` again.
+    #[test]
+    fn ic10_a_command_sees_its_actors_queued_authoritative_submission() {
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let nick = world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        let mut registry = Registry::new();
+        register_core_commands(&mut registry).unwrap();
+        let mut engine =
+            Engine::with_modules(world, registry, vec![Box::new(PendingProbe)]).unwrap();
+        let mut definitions = crate::mechanics::DefinitionRegistryBuilder::new();
+        let action = definitions
+            .register(
+                crate::mechanics::OwnerId::new("pendingprobe").unwrap(),
+                crate::mechanics::DefinitionDescriptor::new(
+                    crate::mechanics::DefinitionKind::new("action").unwrap(),
+                    crate::mechanics::DefinitionId::new("probe_act").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let submit = |actor: ObjId| {
+            Box::new(AuthoritativeSubmit {
+                actor,
+                action: action.clone(),
+                subject: crate::action::PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+                key: crate::action::IdempotencyKeyText::parse_canonical("probe.act").unwrap(),
+            })
+        };
+        let ask = |engine: &mut Engine| -> (Vec<String>, bool) {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::Cmd {
+                    conn: 0,
+                    actor: GOD,
+                    line: "+pending".into(),
+                },
+                &mut out,
+                &mut fx,
+            );
+            (plain_lines(&out), out.authoritative_pending(GOD))
+        };
+
+        assert_eq!(ask(&mut engine), (vec!["pending=false".to_owned()], false));
+        // Another actor's queued submission is not this actor's.
+        engine.queue_authoritative_submit(submit(nick)).unwrap();
+        assert_eq!(ask(&mut engine), (vec!["pending=false".to_owned()], false));
+        // Its own: seen during the step, and the note cleared after it.
+        engine.queue_authoritative_submit(submit(GOD)).unwrap();
+        assert_eq!(
+            ask(&mut engine),
+            (vec!["pending=true".to_owned()], false),
+            "seen by the command; cleared once the step returns"
+        );
+        // Taken by the driving loop: no longer pending.
+        while engine.take_authoritative_submit().is_some() {}
+        assert_eq!(ask(&mut engine), (vec!["pending=false".to_owned()], false));
     }
 
     fn reader_engine() -> Engine {

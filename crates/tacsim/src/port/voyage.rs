@@ -25,7 +25,9 @@
 //!   after its backoff ([`launch_hold`], L29); a burn that never lands lapses
 //!   after [`LAUNCH_GRACE_FIRES`] (L26).
 //! - **The goods-not-yet-aboard rule** ([`goods_pending_aboard`], lead ruling L13):
-//!   promised matter holds the hull, read over mush-market's public reads only.
+//!   promised matter holds the hull, read over mush-market's public reads only —
+//!   and, since doc 18 cut IC10, a sale's goods still leaving the hold
+//!   ([`GOODS_LEAVING`]).
 //! - **The passage renders** ([`passage_of`]): `+ship`'s first line and the hull
 //!   rooms' status line, departing and under way (the leg, the ETA in IC and real
 //!   time), and the carrier hooks' narration texts.
@@ -251,6 +253,9 @@ pub const PORT_CLOSED: &str =
 /// Promised goods not yet aboard: `{quote}`, `{name}`.
 pub const GOODS_COMING: &str =
     "Quote #{quote}'s goods have not come aboard yet; the {name} waits for them.";
+/// A sale's goods not yet out of the hold (doc 18 cut IC10, decision 14): `{quote}`,
+/// `{name}`. The remedy it names is `restage_deliver`, behind `+market/accept`.
+pub const GOODS_LEAVING: &str = "Quote #{quote}'s goods have not left the hold yet; the {name} waits for the hand-over (+market/accept {quote} asks for it again).";
 /// A listing holds goods in the hold: `{listing}`, `{name}`.
 pub const LISTING_HOLDS: &str = "Your listing #{listing} holds goods in the {name}'s hold; withdraw it, or let it lapse and be released, before you undock.";
 /// Over the rail: `{name}`, `{payload}`, `{ceiling}`.
@@ -674,6 +679,8 @@ pub(crate) enum Pending {
     Quote(QuoteId),
     /// A hold-backed listing whose stock sits in the hold, live or lapsed.
     Listing(ListingId),
+    /// Doc 18 cut IC10: a sale into a bid whose goods have not yet left the hold.
+    Sale(QuoteId),
 }
 
 /// **Goods not yet aboard** (lead ruling L13; mush-market unchanged, reviewer F9),
@@ -683,14 +690,45 @@ pub(crate) enum Pending {
 /// lands with its settlement); then (2) a hold-backed listing whose matter sits in
 /// `hold`, live or lapsed. Both `+ship/undock` and IC11's depart ask this one
 /// function.
+///
+/// **Doc 18 cut IC10 (decision 14)** adds the mirror of the first rule: (0) a sale
+/// into a bid out of `hold` — activated, unsettled, its contract non-terminal, inside
+/// its cutoff `draw_by` (past it the leg is never offered, so nothing can leave and
+/// the hull is not held), and whose `inventory.transferred` marker inventory's mirror
+/// has not seen — holds the hull too ([`Pending::Sale`]): the burn's payload and the
+/// hold must not change under a filed passage. After a landing the hull waits at most
+/// one inventory sweep for the mirror.
 #[must_use]
 pub(crate) fn goods_pending_aboard(w: &World, hold: EndpointRef) -> Option<Pending> {
     let market = w.module_state::<MarketStore>()?;
     let economy = w.module_state::<EconomyStore>();
+    let mirror = w.module_state::<mush_inventory::InventoryStore>();
+    let marker_seen = |marker: Option<&smol_str::SmolStr>| {
+        marker.is_some_and(|m| mirror.is_some_and(|s| s.marker(m).is_some()))
+    };
     for quote in market.quotes() {
         let Some(lot) = &quote.lot else {
             continue;
         };
+        // ---- (0) doc 18 cut IC10: a sale's goods still leaving this hold ----
+        if lot.kind == PaidKind::Deliver
+            && lot.source.vault() == hold.vault()
+            && quote.activated
+            && quote.settled.is_none()
+            && lot.draw_by.is_some_and(|by| w.now() <= by)
+            && !marker_seen(lot.marker.as_ref())
+            && quote.contract.is_some_and(|contract| {
+                economy
+                    .and_then(|e| {
+                        e.snapshot()
+                            .contract(contract)
+                            .map(|c| !c.state.is_terminal())
+                    })
+                    .unwrap_or(false)
+            })
+        {
+            return Some(Pending::Sale(quote.id));
+        }
         if lot.destination.vault() != hold.vault() || quote.settled.is_some() {
             continue;
         }
@@ -710,6 +748,9 @@ pub(crate) fn goods_pending_aboard(w: &World, hold: EndpointRef) -> Option<Pendi
         let landed = match lot.kind {
             PaidKind::Draw => quote.drawn_at.is_some(),
             PaidKind::Hold => false,
+            // A sale's destination is the house's ungoverned storefront, so it never
+            // matches a hold in practice; read the same mirror all the same.
+            PaidKind::Deliver => marker_seen(lot.marker.as_ref()),
         };
         if !landed {
             return Some(Pending::Quote(quote.id));
@@ -1283,6 +1324,13 @@ pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     return Err(CmdError::msg(
                         LISTING_HOLDS
                             .replace("{listing}", &listing.to_string())
+                            .replace("{name}", &name),
+                    ));
+                }
+                Some(Pending::Sale(quote)) => {
+                    return Err(CmdError::msg(
+                        GOODS_LEAVING
+                            .replace("{quote}", &quote.to_string())
                             .replace("{name}", &name),
                     ));
                 }

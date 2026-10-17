@@ -4637,3 +4637,420 @@ client in the run environment) and is recorded as owed.
   `composition::sim_routes::{TacsimCarrierHooks, REPLACE_GENERIC_ABOARD_LINES = false}`.
 - The readiness hulls line gains ", {d} departing". No pack version moves: lane v3, Dray v2, goods
   v1.
+
+## IC10
+
+**Selling and the Co-op share: the loop closes interactively** (doc 18 §5, the IC10 row and
+paragraph), built 2026-10-17 on main at 1137c373. A chartered pilot docked at Stickney sells pool
+quantity out of the hold into a house's standing bid with `+market/sell <listing>=<qty> [from=]`.
+Inventory exports the two things the market needs and owns neither: `derived_marker_id`, a pure
+`{at}{sha256}` id of 80 hex a caller can name in a contract before the bundle that writes it exists,
+and `transfer_marked`, a transfer that writes its own `inventory.transferred` marker under that id
+and refuses a replay before any write. The market's `sell_into_bid` runs every refusal before
+`offer_contract`, then offers the sale with the pilot as issuer, writes the quote, accepts in-verb
+as the pilot and as the house through the party-cap source, stages exactly one `market_lot` deliver
+keyed by the contract, and commits the bid's intake; the contract's Exact payouts to the seller and
+at most one proceeds cut are gated on `Before` plus the inventory Fact, so money never moves before
+the matter. The deliver prepare ties listing, destination, source, commodity and quantity to the
+server-built paid entry and reads the marker from it, never from the submission. `restage_deliver`
+re-stages the same leg byte for byte behind `+market/accept`; a dropped leg refunds at the window
+and restores the bid, a landed leg whose contract lapsed pages and does not. An exhausted bid stands
+at quantity 0 as the readiness report's exhausted marker, listed as not buying, kept by the sweep,
+blocking a second bid and withdrawn by a retire; the stock clerk re-posts a lapsed bid at its full
+authored intake and an applier intake cut saturates at 0. tacsim's `CoopProceeds` reads the
+programme's reference ask live at contract build (else the goods table's baseline with a memo),
+floors 250‰ of the margin to the Trust, writes the sale line with the house's signatory, and folds
+sales, margin and shares into the enrolment once per settled sale keyed by pilot and hold; undock
+refuses `GOODS_LEAVING` while a hand-over is pending. `Engine::step` now notes queued authoritative
+submitters for every command so a verb that stages one refuses `SELL_BUSY` before it offers
+anything. The story test's part 1 plays one leg by hand on the production layer with every reply
+computed from the posted prices and the vertex. One commit, pushed to origin/main.
+
+### What landed
+
+1. **The derived marker id and the marked transfer** (`mush-inventory/src/pool.rs`, `src/lib.rs`).
+   `pub const MARKER_CAUSAL_MAX_BYTES = 512` caps the canonical JSON *input* of `pub fn
+   derived_marker_id(at_ic, &Value) -> Result<SmolStr, InventoryError>`, which is `{(at as u64) ^
+   1<<63:016x}{sha256 under "inventory.marker.derived.v1"}` — always 80 lowercase hex, inside the
+   family's 1..=96 rule, so the mirror's newest-kept order holds; any hash error (an over-cap input
+   included) is `Identity`. `InventoryFamilies::transfer_marked(txn, from, to, commodity, amount,
+   marker, actor, now)` refuses `from == to` with the new `InventoryError::SameEndpoint`, a non-hex
+   id with `Identity` and an existing marker with `AlreadyExists` (the replay guard, read before any
+   write), then `transfer` and one `inventory.transferred` applied marker in the same txn. Both are
+   re-exported; `write_marker` and the five verbs are untouched.
+2. **The sale records** (`mush-market/src/record.rs`). `PaidKind::Deliver` (`"deliver"`);
+   `PaidLot.marker: Option<SmolStr>` with `check()` requiring a cutoff and a well-formed marker on
+   exactly the Deliver kind (a Draw keeps its cutoff and no marker; a Hold neither); `ProceedsCut {
+   to, amount, label }` (`deny_unknown_fields`, `check()`: amount > 0, label 1..=32 bytes),
+   `MAX_PROCEEDS_CUTS = 1`, `MAX_PROCEEDS_LABEL_BYTES = 32`; `Quote.cuts` and `Quote.basis` carried
+   on the wire and re-checked on load by `check_proceeds` (≤ 1 cut, every cut checks, cuts or a
+   non-zero basis only on a Deliver, basis ≥ 0, Σ cuts ≤ price × quantity); the listing wire admits
+   `quantity == 0` for `Supply::Wanted` only, and the Wanted doc now says an exhausted bid stands at
+   0.
+3. **The live index and the seller index** (`mush-market/src/store.rs`). `reindex` builds `live`
+   from `quantity > 0 || source.is_wanted()` so a zero bid is listed, blocks a second bid
+   (`wanted_of`) and is withdrawn by a retire; `by_lot_pool` keeps `quantity > 0`; a new `by_seller`
+   index keyed as `by_buyer` is, maintained in `reindex` and compared in `indexes_agree`, with `pub
+   fn quotes_of_seller`.
+4. **The proceeds seam** (`mush-market/src/module.rs`). `ProceedsPolicy { proceeds(&World,
+   &SaleTerms) -> Result<Proceeds, ProceedsRefusal>; settled(&mut Ctx, &SettledSale) {} }`,
+   `SaleTerms`, `Proceeds` (with a `Default` of no cuts, zero basis, the market's line, no memo),
+   `ProceedsRefusal`, `SettledSale`, `MAX_SALE_LINE_BYTES = 512`, `MAX_PROCEEDS_MEMO_BYTES = 24`;
+   `MarketModule::with_proceeds_policy` frozen into `MarketTables.proceeds` (`Debug` reports
+   presence) behind `pub(crate) proceeds_policy(w)`; the IC7 block comment now says the market adds
+   three hooks of its own.
+5. **The lot sell arm** (`mush-market/src/trade.rs`). `pub fn sell_into_bid(ctx, &BidSaleRequest {
+   listing, quantity, source, presence }) -> Result<BidSale { contract, quote, gross, cuts, net,
+   line }, MarketError>`: fourteen refusals in the brief's order, every one before `offer_contract`
+   — listing/viewable/Wanted (`NO_SUCH_LISTING`), house trading (`NOT_BUYING`), deadline
+   (`BID_LAPSED`), quantity against the intake (`NOT_BUYING` at 0, `OVER_INTAKE`), grade
+   (`GRADED_BID`), a queued submission (`SELL_BUSY`), the source named or placed by the gate then
+   `may_take` and not the house's own vault, the gate's own line and `HOLD_ONLY_SOURCE`, the
+   `inventory` fact namespace (`UNSETTLEABLE`), the house's available ≥ gross (`UNFUNDED`), the pool
+   less every in-flight sale (`SELL_SHORT`, `SOURCE_UNREADABLE`) through `pub(crate)
+   delivery_pending` reading the applied family exactly via `Ctx::action_state`, the seller's
+   account, the standing-sales and store caps, and the policy's split validated by `proceeds_valid`
+   (one cut, same instrument, Σ ≤ gross, line and memo caps). Then `alloc_quote`, the Draw's window
+   and cutoff, the marker from `peek_next_contract` + listing + quantity, `sale_spec` (seller
+   issuer, house party and consideration, one outcome `delivered` paying `Exact(net)` to the seller
+   then each cut, remainder to the house, `Before` + `Fact{inventory, inventory.transferred,
+   marker}`, `Expiry::Refund`, `Parties`, deterministic), the id verified against the peek (else
+   cancel + `UNSETTLEABLE`), the quote written before either acceptance, the seller's in-verb
+   `accept_contract` (`SELL_NEEDS_APPROVAL`), the house's `accept_contract_as` (`HOUSE_CANNOT_PAY`),
+   the leg through `paid_leg`'s new Deliver arm, `commit_quantity` (a Wanted is written back at
+   `quantity − sold` including 0), activation, and the policy's line or `SOLD_GENERIC`. `pub fn
+   restage_deliver(ctx, QuoteId) -> Result<Option<ContractId>, MarketError>` mirrors `restage_draw`
+   (`Ok(None)` not re-stageable, `DELIVER_TOO_LATE` past the cutoff, `UNDELIVERABLE`, `Ok(Some)`
+   byte-identical). The settlement ear calls `settled_sale` once behind the `q.settled` guard;
+   `awaits_receipt_read` and `goods_moved` take the Deliver arm (marker read fail-closed);
+   `release_quote` pages `deliver_lapsed_page` instead of restoring over goods the house received.
+   Seventeen texts verbatim from the brief, re-exported.
+6. **The fifth lot op** (`mush-market/src/lot.rs`). `LotOp::Deliver` (`"deliver"`, paid);
+   `PaidLegs.deliver` and the seller-side walk over `quotes_of_seller` (Deliver, activated,
+   unsettled, contract `Active`, `now <= draw_by`, the source among the actor's endpoints, ≤ 8
+   entries, `"marker"` added to the entry); the optional `destination` parameter (Text 32);
+   `prepare_deliver` requiring `endpoint == source`, a matching `deliver` entry through
+   `matches_paid` (listing, destination, source, commodity, quantity), the marker from the entry,
+   then `transfer_marked`; `LotLeg.destination` written by `stage` only when `Some`, so every other
+   leg's parameters are byte-identical to IC9's; the size comment restated for three kinds.
+7. **The bid's lifecycle** (`mush-market/src/{boot,api,commands}.rs`). `reconcile_draws` takes
+   activated, unsettled Deliver quotes and does only the terminal check (Cancelled/Expired/gone →
+   `release_quote`); the sweep keeps a lapsed Wanted at 0, filtered before the budget;
+   `revise_wanted` accepts 0 (the exhausted marker) while `post_wanted` still refuses 0 and its
+   duplicate guard now holds a zero bid; the list row prints ` — not buying` at 0; `+market/accept
+   <quote>` calls `restage_deliver` after `restage_draw` with the same line; the lot arm's grammar
+   `lot_sell_args` (bare digits on the left naming a viewable listing, a quantity, optional
+   `from=<vault>`/`from=#<vault>`; `SELL_USAGE`, `SELLS_NOT_BUYS`; every `#`-prefixed left side
+   stays the object arm); the help entry.
+8. **`Ctx::authoritative_pending` on the command path** (`mush-core/src/engine.rs`, `output.rs`,
+   `cmd.rs` — outside the brief, see Deferred). `Engine::step` notes the engine queue's keys before
+   dispatch and clears the note after its one `drain_deferred`, as `fire_due` already did, so a
+   command that stages a submission can refuse before it offers anything; the docs on
+   `Outbox.pending_authoritative`, `note_pending_authoritative` and `Ctx::authoritative_pending`
+   name both callers.
+9. **`CoopProceeds`** (`tacsim/src/port/proceeds.rs`, new; `port/mod.rs`, `port/market.rs`,
+   `port/board.rs`, `composition/mod.rs`). `pub fn share_of(price, reference, qty, permille) ->
+   Option<(basis, share)>` in checked `i128`, floored. `CoopProceeds::proceeds`: no port for the
+   venue → the market's own line and no cuts; the house from the map's vendor rows, the label and
+   unit from the goods table, the house name through the factored `pub(crate) house_name(def, org,
+   Option<&BidDef>)`, the signatory by name; enrolled iff `governed_hold` → the Trust's live lease →
+   an enrolment with `vault == source` and `Active | BuyoutPending` (`SALE_BOOKS_DARK` for a live
+   lease with dark books, `SALE_NOT_PILOT` for a seller who is not the enrolment's pilot); the
+   reference read live from the programme's `reference[good]` entry's storefront ask through
+   `lot_listing_of`, else the goods table's `reference_major` with `memo "baseline ref"` and one
+   `tracing::warn!`, never zero (`REFERENCE_DARK`); one cut to the Trust's account when the share is
+   positive; `SALE_LINE` / `SALE_LINE_NO_SHARE`. `settled` folds `sales`, `margin_minor`,
+   `shares_minor` once, keyed by `pilot == seller && vault == source`, checked, through
+   `put_enrolment`. Installed by `with_port_seams_if` beside the gate and capacity provider; `ports`
+   and `port_of_venue` made `pub(crate)`; texts re-exported from `tacsim::port`.
+10. **The clerk's bid re-post** (`tacsim/src/port/stock.rs`, `port_tick.rs`, `port/vendor.rs`).
+    `bid_step`, reached when no ask is due: the first authored bid whose `BidRow` exists, whose
+    listing is gone, whose deadline has passed and which `posts_afresh`, posted as the clerk through
+    `post_wanted` with the applier's own factored `wanted_spec`; only that row's `listing` and
+    `expires` rewritten; the actor swap's refusals mapped exactly as the ask list step maps them;
+    one warn per `(vault, good)` per boot through `PortTickState.bid_warned`.
+11. **The applier over a standing or gone bid** (`tacsim/src/port/vendor.rs`). The revise arm and
+    the preflight drift check both saturate at 0 (an intake cut below what is left leaves the bid
+    exhausted instead of failing the apply); a gone bid whose authored price or intake changed has
+    its `BidRow` re-recorded with the new terms (listing and deadline kept) so the clerk posts it
+    once the deadline passes; `posts_afresh` is `pub(crate)` with its comment rewritten;
+    `retire_refusal` also refuses a quote **bought** by a vendor org with a contract and no
+    settlement; a retire withdraws a zero bid and drops its row.
+12. **Readiness, board, enrol gate** (`tacsim/src/port/readiness.rs`, `board.rs`, `coop.rs`).
+    `Binding::InventoryFacts` right after `MarketFacts` ("inventory facts: answered, so sales into
+    bids can settle." / "…nothing answers the inventory namespace, so sales into bids refuse."),
+    required `Ready` by `enrol_gate`; the Bids line arms: a zero bid `Ready` "listing #n not buying;
+    its intake is taken.", absent before its deadline `Missing` "no bid is posted.", absent past it
+    `Pending` "lapsed; the clerk posts it again." when `posts_afresh`, else `Missing` "lapsed; it
+    waits for the next apply."; the board renders a zero bid "wanted, {label}: not buying
+    ({house})." and its head comment defers P07's funded-balance figure to IC12.
+13. **Undock waits for the hand-over** (`tacsim/src/port/voyage.rs`). `Pending::Sale(QuoteId)`;
+    `goods_pending_aboard`'s rule (0): a Deliver quote out of this hold, activated, unsettled,
+    contract non-terminal, `now <= draw_by`, whose marker the inventory mirror has not seen; the
+    destination loop's exhaustive match gains a Deliver arm reading the same mirror; `+ship/undock`
+    refuses `GOODS_LEAVING` naming the quote and the remedy.
+14. **Gates** (`mush-contract-tests/legacy-handlers.toml`, `state-slot-owners.toml`;
+    `mush-market/tests/e7r2.rs`, `ic8.rs`). The `+market` note gains an IC10 paragraph (category and
+    baseline unchanged); three new state-slot rows (`AccountOracle` for `sale.rs` and
+    `ic_slice_loop.rs`; `module_state_insert` slot `store` for the market's fact-provider unit
+    tests); the lot action has exactly five ops; the `(600, 0)` revise-refusal row left ic8 because
+    the behaviour changed.
+
+### Deferred, and why
+
+The lead rulings first, then the builder's and the fixer's own calls, the one change outside the
+brief, the story test's roster, the owner-critical defaults, the residuals, and what IC12's as-built
+pass inherits.
+
+- **Lead rulings taken** (the brief's decisions 1–24, each as written): the sale reuses `Quote`
+  (buyer = house, seller = pilot, `PaidKind::Deliver`) with a `by_seller` index; the marker id is
+  derived at offer time from (peeked contract, listing, qty) by inventory's `derived_marker_id` and
+  verified after the offer; the Fact is inventory's own `inventory.transferred`, no market-side
+  receipt family; the window and cutoff are the Draw's (3,600 / 600 real seconds); "no seller
+  accept" is read as no step **asked** of the seller — the pilot accepts inside the verb before the
+  house's programmatic accept, because `fully_accepted` needs every party; the exhausted marker is
+  the Wanted listing itself at quantity 0, admitted by the wire for Wanted only, kept in `live`,
+  never deleted by the sweep; the clerk re-posts a lapsed bid at its full authored intake and
+  rewrites only the row's listing and deadline; the reference is read at contract build from the
+  origin listing's current price, else the goods table's `reference_major` with a `(baseline ref)`
+  memo and a warn, never zero; the share is floored in minor units at the enrolment's frozen
+  permille; the counters fold through `ProceedsPolicy::settled`, called once by the market's ear
+  behind `q.settled`, keyed by `pilot == seller && vault == source`; the sale line is the policy's;
+  `MAX_PROCEEDS_CUTS = 1`; over-selling counts in-flight sales through `delivery_pending` reading
+  the applied family exactly; undock refuses `GOODS_LEAVING` until the cutoff; `ic_slice_loop.rs`
+  part 1 lives in `crates/tacsim/tests/`; the boards gain only the zero-bid guard and P07's
+  funded-balance figure is deferred again to IC12; the hold-backed player path stays un-gated by any
+  Fact; no pack moves; `restage_deliver` is public behind `+market/accept <quote>` and
+  byte-identical through the one `paid_leg` builder; the lot arm's left side is bare digits and `#n`
+  is always the object arm; the policy refuses `SALE_NOT_PILOT` as a belt behind the gate; an
+  authored intake cut over a standing bid saturates at 0; the clerk's post maps the actor swap's
+  refusals as the ask step does; the readiness Bids line reads `posts_afresh`.
+- **Builder's own calls, recorded**: a missing vendor instrument at check 12 refuses `UNSETTLEABLE`;
+  the quote id is allocated and `persist_meta` run after the policy check, so a later refusal burns
+  an id; "gone" counts as ended for a Deliver quote in `reconcile_draws`; `CoopProceeds` answers
+  `Proceeds::default()` for a venue no port authors or a house that is not a vendor row; the house
+  name is the bid's `as` name, else the org's; a grammar refusal renders as `MarketError::Bad`; B
+  naming A's hold with `from=` is refused by `may_take` ("No such listing."), pinned as the one arm
+  that fires.
+- **Fixer's rulings, recorded**: a **Disputed** sale stays in flight past its cutoff
+  (`delivery_pending` skips the `draw_by` test when the contract is Disputed) so a seller who
+  disputes their own sale cannot sell the same tonnes again while the house's escrow is frozen — the
+  hull is still freed at the cutoff (`goods_pending_aboard` unchanged), which is safe because the
+  count is per source; a gone bid whose authored terms changed has them **recorded in its `BidRow`**
+  by the apply (listing and deadline kept) so the clerk posts it once the deadline passes, and the
+  "waits for the next apply" line is truthful.
+- **Outside the brief — the lead's sign-off is owed**: `Engine::step` now notes the queued
+  authoritative submitters before dispatch and clears the note after the drain
+  (`mush-core/src/engine.rs`). At HEAD only `fire_due` set the note, so a command always read
+  `false`, the sale went through and its leg was dropped by back-pressure with the money already
+  escrowed; brief check 6 and every `SELL_BUSY` test were impossible without it. The change is one
+  line each side of the dispatch with no early return between them, the server's reused Outbox is
+  cleared every step, and `ic10_a_command_sees_its_actors_queued_authoritative_submission` pins all
+  four cases. It applies to every command, not only the sell arm.
+- **The story test's roster**: `ic_slice_loop.rs` composes the production layer
+  (`tacsim_module_wired`), but a TestWorld boots at world rate 1 and the production Rate line gates
+  `+coop/enrol`, so the test types `@tacsim/time rate=24` at boot — doc 18 §4.7's dev1 deploy step —
+  and makes `rate=3600` the one staff act during play, after the enrolment and the purchases (§6's
+  order). Doc 18 §6's "rate 3600 the only staff act, none after boot" cannot hold verbatim on the
+  production composition; the wording and the `build_engine` promotion are IC12's.
+- **Owner items shipped on the brief's defaults** (owner-critical): **O1** every new player-facing
+  text (the sell refusals, `SOLD_GENERIC`, `DELIVER_TOO_LATE`,
+  `SALE_LINE`/`SALE_LINE_NO_SHARE`/`SALE_BOOKS_DARK`/`REFERENCE_DARK`/`SALE_NOT_PILOT`, the
+  readiness and board lines, `GOODS_LEAVING`) is the planner's wording. **O2** a cross-port or
+  under-way sale is refused in `PortVenueGate`'s load-worded IC8 lines (`HOLD_ELSEWHERE` "…so its
+  hold cannot load here. Nothing was charged."), asserted as they are; sale variants through a
+  purpose argument on `VenueGate::admit` are the owner's or IC14's. **O3** an unlanded sale holds
+  Kasei's payment, the bid's intake, the tonnes and the hull for up to the 3,000 s cutoff and
+  refunds at 3,600 s; the remedy is `+market/accept <quote>`. **O4** (a) the clerk re-posts a lapsed
+  bid at full authored intake, (b) a refund of the last tonnes past an exhausted bid's deadline
+  re-opens it, the sweep then deletes it and the clerk re-posts it at full intake (pinned in ic10.rs
+  test 10), (c) a retire withdraws a zero bid and a re-apply posts it afresh — re-posting at the
+  lapsed remainder is a P5 matter. **O5** the share is floored.
+- **Residuals carried** (IC12/IC14 and later): the reference drift between build and settlement, at
+  most 3,600 s; settled sales into bids on the trade tape (pinned); Kasei's 32-live-contract party
+  cap counting unlanded legs for up to an hour; a settlement healed at boot not folded into the
+  counters; no Fact gate on the hold-backed player path; **no retention for `inventory_applied` past
+  4,096 markers — now on the money path, to land before any deploy that enables selling**; a full
+  submit queue still drops a deliver leg after escrow and the sale line does not name the remedy;
+  `restage_deliver` past the cutoff tells a seller whose leg landed in the last ~90 s "Nothing
+  moved" before it settles; the market's duplicate of inventory's marker-id rule (`is_marker_id`,
+  `MAX_MARKER_ID_BYTES`); `settled_sale`'s `i64::MAX` gross fallback; no `+market/orders` view of a
+  seller's own sales; P07's funded-balance board line; `sale.rs` teleports into P07 where the exits
+  allow a walk.
+- **For IC12's as-built pass**: the §5 IC10 row's "70 t … 21,000 / 19,250 / 1,750" are pre-R7
+  figures at a 300 bid; lane v3's 280 bid gives 5,600 / 5,200 / 400. Doc 18 §6's sale line reads
+  "Sold 20 t metal concentrate … 5,600.00cr; … you received 5,200.00cr."; the shipped line reads
+  "Sold 20 t of metal concentrate to Kasei Metals at 280.00cr/t: 5600.00cr; Co-op share 400.00cr;
+  you receive 5200.00cr when the goods are in. Jonas Achterberg-Nkemelu countersigns." (the "of", no
+  thousands grouping in money — the economy's one render — and the future tense because money moves
+  only after the marker). Every Stickney exit word §6 writes is a pack alias; the Ceres words used
+  are `c`, `registry`, `out`, `concourse`, `exchange`, `chandlery`, `arrivals`, `lobby`, `gallery`.
+
+### Pins re-blessed
+
+- **`mush-market/tests/e7r2.rs`**: `e7r2_p1_the_lot_action_has_exactly_four_ops` →
+  `…_exactly_five_ops`, the word list gaining `"deliver"`. Reason: IC10 adds the paid deliver leg
+  (doc 18 §4.3); the market-never-mints pin stays green because `transfer_marked` lives in
+  mush-inventory.
+- **`mush-market/tests/ic8.rs`, `ic8_post_and_revise_wanted_refusals`**: the `(600, 0, "That is not
+  a quantity this market buys.")` row left. Reason: `revise_wanted(.., 0)` now writes the exhausted
+  marker (the brief's item 6.6; item 7 above); `post_wanted`'s refusal of 0 is still pinned there,
+  and `tests/ic10.rs` test 10 pins the new acceptance.
+- **`tacsim/tests/ports.rs`, `ic3_the_readiness_report_lists_every_binding_and_flags_the_rate`**:
+  the exact `want` vector gains `"inventory facts: answered, so sales into bids can settle.
+  [ready]"` right after the market-facts entry. Reason: the new `Binding::InventoryFacts` line (the
+  brief's item 9.5; item 12 above).
+- **`tacsim/tests/commerce.rs` `stock_ready`, `coop.rs` `commerce_ready`, `voyage.rs` `stock`**:
+  each gated-line filter gains `|| line.starts_with("inventory facts")`. Reason: the line now gates
+  enrolment, so a helper that waits for readiness waits for it too (stricter, not weaker).
+- **`mush-contract-tests/legacy-handlers.toml`**: the `+market` stanza's note refreshed with an IC10
+  paragraph; category `authoritative` and `PINNED_BASELINE` unchanged (no new primary verb, no new
+  switch).
+- **`mush-contract-tests/state-slot-owners.toml`**: three new rows — `World::module_state_mut` /
+  `AccountOracle` for `crates/tacsim/tests/sale.rs` and `crates/tacsim/tests/ic_slice_loop.rs` (the
+  voyage.rs reason: `+coop/enrol` is per gateway account and a TestWorld has no store), and
+  `World::module_state_insert` / slot `store` for `crates/mush-market/src/facts.rs`'s unit tests
+  (test-only; the composed path is `Registrar::state`).
+- **Did not move**: the panic budgets, the restriction-lints census, every content digest (lane v3,
+  Dray v2, goods v1, Stickney v2 — no file under `crates/tacsim/content` changed; the test lane
+  variants exist only inside tests), the composition-edge pin, `module-ns-owners.toml`, the CI
+  gated-test inventory (no `#[ignore]` added), the `mush-inventory/tests/e7r2.rs` FactProvider
+  count, `families.rs`'s golden `StockIssueId` pin.
+
+### How it was verified
+
+The judge read the whole uncommitted diff (33 files, +2,410/−148) and the five new files
+(`mush-inventory/tests/ic10.rs`, `mush-market/tests/ic10.rs`, `tacsim/src/port/proceeds.rs`,
+`tacsim/tests/sale.rs`, `tacsim/tests/ic_slice_loop.rs`) against the brief, doc 18
+§4.1/§4.3/§4.7/§5/§6 and D-18-24/26/27, and ran no cargo of its own (verdict: ship with notes).
+Three review lenses ran before the fixer pass (correctness: F1–F5; conformance: C1–C9; tests:
+T1–T10); the fixer took every should-fix and note it could (F1, F2, F3/C2, C1 docs + core test, C3,
+C4, C5, T1–T6) and mutation-checked the two production changes (reverting the Disputed clause fails
+`ic10_a_disputed_sale_keeps_its_tonnes_committed_past_the_cutoff`; reverting the BidRow recording
+fails `ic10_a_gone_bid_with_a_changed_intake_is_posted_at_the_new_intake`).
+
+**The gate**, all green on the first run; logs under the run's `cuts/IC10/gate1/`:
+
+- `cargo fmt --all -- --check` → exit 0, no output.
+- `cargo clippy --workspace --all-targets -- -D warnings` → ``Finished `dev` profile [unoptimized +
+  debuginfo] target(s)``, 0 warnings (the fixer's first run flagged one
+  `clippy::manual_is_multiple_of` in the story test's `grouped`, fixed).
+- `cargo test -p mush-inventory` → e7c2 `ok. 65 passed`; e7r2 `ok. 16 passed`; ic10 `ok. 4 passed`.
+- `cargo test -p mush-market` → lib `ok. 27 passed`; e7r2 `ok. 21 passed`; ic0 `ok. 5 passed`; ic10
+  `ok. 13 passed`; ic7 `ok. 18 passed`; ic8 `ok. 9 passed`; projection_bounds `ok. 2 passed`;
+  projection_cost `ok. 1 passed`; doc `0 passed; 1 ignored` (existing).
+- `cargo test -p mush-economy --lib` → `ok. 37 passed`.
+- `cargo test -p mush-core --lib` → `ok. 397 passed` (the new
+  `ic10_a_command_sees_its_actors_queued_authoritative_submission` included).
+- `cargo test -p tacsim --lib` → `ok. 900 passed`.
+- `cargo test -p tacsim --test sale --test ic_slice_loop` → sale `ok. 15 passed`; ic_slice_loop `ok.
+  1 passed`.
+- `cargo test -p tacsim --test commerce --test coop --test voyage --test ports --test port_tick
+  --test hulls --test capacity` → capacity 17, commerce 20, coop 18, hulls 15, port_tick 16, ports
+  17, voyage 13, all `ok`.
+- `cargo test -p tacsim --test lane --test stations --test content --test definitions --test
+  composition_edges` → composition_edges 2, content 29, definitions 25, lane 8, stations 13, all
+  `ok`.
+- `cargo test -p mush-contract-tests` → 29 binaries all ok, 0 failed (lib 31;
+  legacy_handler_allowlist 4; state_slot_owners 4; module_ns_owners 3; panic_budget 7;
+  restriction_lints 11; scale_harness 6 passed / 8 ignored, existing). The builder's first run
+  failed `every_cross_owner_state_site_is_baselined` on the facts.rs `module_state_insert` site; the
+  row was added and it went green.
+- `cargo test -p mush-server --lib modules::` → `ok. 32 passed`.
+- `cargo test -p mush-server --test boot_parity --test e7r2_proving_loop --test market_issuer` → 18
+  / 6 / 4 passed.
+- `cargo test -p mushd --test boot_composition` → `ok. 6 passed`.
+- `CARGO_BUILD_JOBS=8 cargo test --workspace --exclude mush-bot --no-fail-fast` → 398 `test result:
+  ok` lines, 0 FAILED; **7,438 passed, 0 failed, 92 ignored**; about 30 minutes. None of the known
+  load-sensitive suites failed. The three `panicked` lines in the log are the WS01-S8
+  fault-injection test's own armed panic and two passing process_fault test names.
+- `cargo test -p mush-bot` → all 22 binaries ok (lib 469; arena_e2e 9 in 201 s; playtesting 9 in 125
+  s; 5 ignored across arena_live_commander / arena_muster_rate / arena_win_rate, existing).
+
+No flake was seen; nothing was rerun. The verify lens's figures, confirmed from `sale.rs` test 1's
+assertions: Kasei −560,000 = pilot +520,000 + Trust +40,000 from the settlement journal, summing to
+zero; hold metals 20 → 0 and Kasei's storefront 0 → 20 with the storefront root inheriting the
+hold's root and the applied marker naming from/to/20/the pilot; four sweeps between the sale and the
+landing leave the contract Active with nobody paid and 560,000 held; after the landing `unswept`
+asserts the Fact answers nothing and the contract still stands until the inventory mirror sweeps;
+the bid 4,000 → 3,980 on readiness and the board; enrolment (1, 160,000, 40,000); the statement
+line; the trade-tape row. The share-0 case (test 2), the live reference at 220 (test 2b), the
+baseline fallback with the `(baseline ref)` memo (test 3), and the story test's two sale lines
+computed from the posted bid, the live origin ask and the enrolment's permille are each asserted as
+exact lines.
+
+### Surface for the next cuts
+
+**mush-inventory** (`src/pool.rs`, re-exported from `lib.rs`)
+
+- `pub const MARKER_CAUSAL_MAX_BYTES: usize = 512` (the canonical-input cap).
+- `pub fn derived_marker_id(at_ic: i64, causal: &serde_json::Value) -> Result<SmolStr,
+  InventoryError>` (always 80 lowercase hex; any hash error → `Identity`).
+- `InventoryFamilies::transfer_marked(&self, txn: &mut ActionTxn, from: EndpointRef, to:
+  EndpointRef, commodity: &CanonicalId, amount: u64, marker: &SmolStr, actor: ObjId, now:
+  &ClockStamp) -> Result<Moved, InventoryError>` (refuses `SameEndpoint`, a bad id with `Identity`,
+  an existing marker with `AlreadyExists`; nothing written on error);
+  `InventoryError::SameEndpoint`.
+
+**mush-market** (`lib.rs` re-exports)
+
+- Records: `PaidKind::Deliver` (`"deliver"`), `PaidLot.marker: Option<SmolStr>`, `ProceedsCut { to:
+  AccountId, amount: Amount, label: SmolStr }` with `check()`, `MAX_PROCEEDS_CUTS = 1`,
+  `MAX_PROCEEDS_LABEL_BYTES = 32`, `MAX_MARKER_ID_BYTES = 96`, `is_marker_id(&str) -> bool`,
+  `Quote.cuts: Vec<ProceedsCut>`, `Quote.basis: Amount`; a `Supply::Wanted` listing may stand at
+  `quantity == 0`.
+- Store: `MarketStore::quotes_of_seller(&PrincipalId) -> impl Iterator<Item = &Quote>`; `live`
+  admits a zero Wanted.
+- Seam: `trait ProceedsPolicy { fn proceeds(&self, &World, &SaleTerms<'_>) -> Result<Proceeds,
+  ProceedsRefusal>; fn settled(&self, &mut Ctx<'_>, &SettledSale<'_>) {} }`, `SaleTerms { seller:
+  ObjId, source: EndpointRef, house: &PrincipalId, market: &MarketId, listing: ListingId, commodity:
+  &CanonicalId, quantity: u64, price: Amount, gross: Amount }`, `Proceeds { cuts, basis, line:
+  Option<String>, memo: Option<SmolStr> }` (+ `Default`), `ProceedsRefusal { line: String }`,
+  `SettledSale { quote, contract, seller: &PrincipalId, source, commodity: &CanonicalId, quantity,
+  price, gross, cuts: &[ProceedsCut], basis }`, `MAX_SALE_LINE_BYTES = 512`,
+  `MAX_PROCEEDS_MEMO_BYTES = 24`, `MarketModule::with_proceeds_policy(Arc<dyn ProceedsPolicy>)`.
+- Trade: `pub fn sell_into_bid(&mut Ctx, &BidSaleRequest { listing: ListingId, quantity: u64,
+  source: Option<EndpointRef>, presence: Presence }) -> Result<BidSale { contract: ContractId,
+  quote: QuoteId, gross: Amount, cuts: Vec<ProceedsCut>, net: Amount, line: String }, MarketError>`
+  — IC11's executor calls it with `Presence::Ship(hull)` and `source: None`; `pub fn
+  restage_deliver(&mut Ctx, QuoteId) -> Result<Option<ContractId>, MarketError>` — IC11 verifies an
+  in-flight sale after a restart through it (`Ok(None)` not re-stageable, `Err(DELIVER_TOO_LATE)`
+  past `draw_by`, `Err(UNDELIVERABLE)`, `Ok(Some(contract))` re-staged byte-identically).
+- Texts: `NOT_BUYING`, `BID_LAPSED`, `OVER_INTAKE` (`{remaining}`), `GRADED_BID`, `SELL_BUSY`,
+  `NAME_SOURCE`, `HOLD_ONLY_SOURCE`, `UNSETTLEABLE`, `UNFUNDED`, `SOURCE_UNREADABLE`, `SELL_SHORT`
+  (`{held}`, `{qty}`), `SELL_NEEDS_APPROVAL`, `HOUSE_CANNOT_PAY`, `SELLS_NOT_BUYS`, `SELL_USAGE`,
+  `SOLD_GENERIC`, `DELIVER_TOO_LATE`.
+- Lot action: five ops `reserve, consume, release, draw, deliver`; the `paid` fixed parameter's
+  deliver entry `{op:"deliver", quote, listing, source, destination, commodity, quantity, grade,
+  plan:null, marker}` keyed by contract id in decimal, offered only to the seller while the contract
+  is `Active` and `now <= draw_by`; the staged leg's parameters `{op:"deliver", listing,
+  endpoint:<hold>, source:<hold>, commodity, quantity, grade:0, destination:"<storefront vault>",
+  contract:"<id>"}` under key `market.lot.deliver.{contract:x}`; `LotLeg.destination:
+  Option<EndpointRef>`; `revise_wanted(.., 0)` accepted.
+- The sale contract: name `market sale #{quote} to bid #{listing}` (+ ` ({memo})` when it fits 64
+  bytes), parties `[Organization(house)]`, consideration `(house account, gross)`, outcome
+  `delivered` paying `Exact(net)` to the seller then each cut, remainder to the house, conditions
+  `[Before{RealUtc, accept+3600}, Fact{inventory, inventory.transferred, <marker>, None}]`,
+  `Expiry::Refund`, deterministic; cutoff `draw_by = accept + 3000`.
+
+**mush-core**
+
+- `Ctx::authoritative_pending(actor)` is now true on the command path when the engine's queue
+  already holds that actor's submission (noted by `Engine::step`, cleared after its drain).
+
+**tacsim** (`tacsim::port` re-exports)
+
+- `CoopProceeds` (unit struct, `ProceedsPolicy`), `share_of(price: Amount, reference: Amount,
+  quantity: u64, permille: u32) -> Option<(Amount, Amount)>`, `SALE_LINE`, `SALE_LINE_NO_SHARE`,
+  `SALE_BOOKS_DARK`, `REFERENCE_DARK` (`{label}`), `SALE_NOT_PILOT` (`{name}`), `SHARE_LABEL =
+  "Co-op share"`, `BASELINE_MEMO = "baseline ref"`; `tacsim::port::voyage::GOODS_LEAVING`
+  (`{quote}`, `{name}`); `Binding::InventoryFacts`.
+- Readiness Bids lines `"{head}: listing #{l} not buying; its intake is taken."` [ready], `"{head}:
+  no bid is posted."` [missing], `"{head}: listing #{l} lapsed; the clerk posts it again."`
+  [pending], `"{head}: listing #{l} lapsed; it waits for the next apply."` [missing]; board `"
+  wanted, {label}: not buying ({house})."`.
+- `pub(crate)`: `port::market::{ports, port_of_venue}`, `port::board::{unit_of, label_of, money,
+  house_name}`, `port::vendor::{posts_afresh, wanted_spec}`, `PortTickState.bid_warned`,
+  `Pending::Sale(QuoteId)` in `goods_pending_aboard` (IC11's depart asks it).
+- `Enrolment.{sales, margin_minor, shares_minor}` are now written, once per settled sale, through
+  `store::put_enrolment`. No pack version moved: lane v3, Dray v2, goods v1, Stickney v2.

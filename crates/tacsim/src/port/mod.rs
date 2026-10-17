@@ -67,6 +67,13 @@
 //! - [`voyage`] — the filed sailing plan (`tacsim:voyage:{hull}`), `+ship/plan`,
 //!   `+ship/undock`, the launch arm the port tick drives, the staff terminal for a
 //!   held launch and the passage renders.
+//!
+//! **Doc 18 cut IC10** — selling and the Co-op share:
+//!
+//! - [`proceeds`] — [`CoopProceeds`], the market's proceeds policy: the share of the
+//!   margin over the programme's live reference ask paid to the Trust out of a sale
+//!   from an enrolled hold, the sale line, and the enrolment's sale counters folded
+//!   once per settled sale.
 
 pub mod apply;
 pub mod board;
@@ -81,6 +88,7 @@ pub mod hull;
 pub mod map;
 pub mod market;
 pub mod passage;
+pub mod proceeds;
 pub mod readiness;
 pub mod ship;
 pub mod stock;
@@ -111,6 +119,10 @@ pub use market::{
 pub use passage::{
     DAY_SECS, DriveLaw, HullDrive, INTERCEPT_PASSES, PlanError, choose_route, crew_days,
     intercept_passes, passage_burn, payload_kg, plan_passage,
+};
+pub use proceeds::{
+    BASELINE_MEMO, CoopProceeds, REFERENCE_DARK, SALE_BOOKS_DARK, SALE_LINE, SALE_LINE_NO_SHARE,
+    SALE_NOT_PILOT, SHARE_LABEL, share_of,
 };
 pub use readiness::{Binding, LineState, Readiness, ReadinessLine, readiness, readiness_in};
 pub use stock::{

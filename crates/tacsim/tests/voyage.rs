@@ -434,6 +434,7 @@ fn stock(rig: &mut Rig) {
                 line.contains(" vendor ")
                     || line.contains(" ask ")
                     || line.starts_with("market facts")
+                    || line.starts_with("inventory facts")
             })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {

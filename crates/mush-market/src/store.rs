@@ -128,6 +128,10 @@ pub struct MarketStore {
     /// Keyed by `mush_economy::principal_token` because `PrincipalId` is
     /// `Hash`-but-not-`Ord` — the same reason E6b's `with_party_caps` table is.
     pub(crate) by_buyer: BTreeMap<SmolStr, BTreeSet<QuoteId>>,
+    /// **seller → quotes** (doc 18 cut IC10), keyed exactly as `by_buyer` is: a sale
+    /// into a standing bid is a quote whose seller is the player, so the deliver-leg
+    /// projection and the over-selling check walk the seller's own quotes.
+    pub(crate) by_seller: BTreeMap<SmolStr, BTreeSet<QuoteId>>,
     /// **listing → quotes**, so a re-priced listing finds its outstanding quotes.
     pub(crate) by_listing: BTreeMap<ListingId, BTreeSet<QuoteId>>,
     /// **contract → quote**, so the settlement observer answers in O(log n).
@@ -355,6 +359,14 @@ impl MarketStore {
             .into_iter()
             .flat_map(|set| set.iter().filter_map(|id| self.quotes.get(id)))
     }
+    /// Every quote this principal is the **seller** of, in id order (doc 18 cut IC10:
+    /// the player's sales into standing bids, and a vendor's own sales).
+    pub fn quotes_of_seller<'a>(&'a self, seller: &PrincipalId) -> impl Iterator<Item = &'a Quote> {
+        self.by_seller
+            .get(&mush_economy::principal_token(seller))
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.quotes.get(id)))
+    }
     /// Every quote asked against one listing, in id order.
     pub fn quotes_of_listing(&self, listing: ListingId) -> impl Iterator<Item = &Quote> {
         self.by_listing
@@ -452,10 +464,13 @@ impl MarketStore {
             .iter()
             .map(|(slug, e)| (e.catalog.clone(), slug.clone()))
             .collect();
+        // Doc 18 cut IC10: an exhausted bid stands at quantity 0 and is still open — it
+        // is listed (" — not buying"), it blocks a second bid for the same good, and a
+        // retire withdraws it. Every other listing at 0 is closed.
         self.live = self
             .listings
             .values()
-            .filter(|l| l.quantity > 0)
+            .filter(|l| l.quantity > 0 || l.source.is_wanted())
             .map(|l| l.id)
             .collect();
         self.by_pair = BTreeMap::new();
@@ -489,12 +504,17 @@ impl MarketStore {
                 .insert(id);
         }
         self.by_buyer = BTreeMap::new();
+        self.by_seller = BTreeMap::new();
         self.by_listing = BTreeMap::new();
         self.by_quote_contract = BTreeMap::new();
         self.trades = BTreeMap::new();
         for q in self.quotes.values() {
             self.by_buyer
                 .entry(mush_economy::principal_token(&q.buyer))
+                .or_default()
+                .insert(q.id);
+            self.by_seller
+                .entry(mush_economy::principal_token(&q.seller))
                 .or_default()
                 .insert(q.id);
             self.by_listing.entry(q.listing).or_default().insert(q.id);
@@ -526,6 +546,7 @@ impl MarketStore {
             && probe.by_vendor == self.by_vendor
             && probe.by_lot_pool == self.by_lot_pool
             && probe.by_buyer == self.by_buyer
+            && probe.by_seller == self.by_seller
             && probe.by_listing == self.by_listing
             && probe.by_quote_contract == self.by_quote_contract
             && probe.trades == self.trades
@@ -1231,5 +1252,69 @@ mod tests {
             assert!(store.quote(QuoteId(id)).is_none(), "row {id} survived");
         }
         assert!(store.indexes_agree());
+    }
+
+    #[test]
+    fn ic10_indexes_agree_with_a_zero_bid_and_a_seller_quote() {
+        let bid = serde_json::json!({
+            "id": 4, "seller": { "Organization": 2 }, "vendor": 1, "market": "stickney",
+            "catalog": { "ruleset": "tacsim", "code": "metals" },
+            "source": { "wanted": { "vault": 9, "commodity": "metals", "min_grade": 0 } },
+            "price": 28000, "quantity": 0, "expires": { "clock": "RealUtc", "at": 10_000 },
+            "revision": 2
+        });
+        let quote = serde_json::json!({
+            "id": 1, "listing": 4, "buyer": { "Organization": 2 }, "seller": { "Object": 5 },
+            "catalog": { "ruleset": "tacsim", "code": "metals" }, "market": "stickney",
+            "price": 28000, "quantity": 20,
+            "observed": { "definition_version": 1, "listing": 1, "artefact": null },
+            "expires": { "clock": "RealUtc", "at": 3_700 }, "contract": 3, "activated": true,
+            "lot": { "kind": "deliver", "source": 11, "destination": 9, "commodity": "metals",
+                     "grade": 0, "accepted_at": 100, "draw_by": 3_100,
+                     "marker": "8000000000000064aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+            "revision": 2
+        });
+        let kv = vec![
+            (SmolStr::new("market:listing:4"), bid),
+            (SmolStr::new("market:listing:5"), listing_doc(5)),
+            (SmolStr::new("market:quote:1"), quote),
+        ];
+        let store = load(&kv);
+        assert_eq!(
+            store.listings.len(),
+            2,
+            "the zero bid and the ask both load"
+        );
+        assert!(store.indexes_agree());
+        // The exhausted bid is still open: in `live`, found by `wanted_of`…
+        assert!(store.live.contains(&ListingId(4)));
+        assert!(store.live.contains(&ListingId(5)));
+        let metals = mush_core::CanonicalId::new("metals").expect("id");
+        assert_eq!(store.wanted_of(VendorId(1), &metals), Some(ListingId(4)));
+        // …never in the pool index, and never published to band or depth.
+        assert!(
+            store
+                .by_lot_pool
+                .values()
+                .all(|set| !set.contains(&ListingId(4)))
+        );
+        let zero = store.listing(ListingId(4)).expect("loaded");
+        assert!(!store.publishes(zero, &[], 0));
+        // The seller index finds the sale under the player, and the buyer index under
+        // the house.
+        let seller = PrincipalId::Object(ObjId(5));
+        assert_eq!(
+            store
+                .quotes_of_seller(&seller)
+                .map(|q| q.id)
+                .collect::<Vec<_>>(),
+            vec![QuoteId(1)]
+        );
+        assert_eq!(
+            store
+                .quotes_of_buyer(&PrincipalId::Organization(OrgId(2)))
+                .count(),
+            1
+        );
     }
 }

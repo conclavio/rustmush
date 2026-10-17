@@ -541,11 +541,13 @@ pub enum Supply {
     },
     /// **Doc 18 cut IC8 — a standing bid** (§4.3 "Bids that take real lots"; lead
     /// ruling L14). The listing's `seller` is the **bidding** org, its `price` the bid
-    /// per unit and its `quantity` the intake still wanted, so an exhausted bid is a
-    /// deleted listing. It sells nothing: it is not a lot sale
+    /// per unit and its `quantity` the intake still wanted. An exhausted bid stands at
+    /// quantity 0 — not buying — and is the readiness report's exhausted marker (doc 18
+    /// cut IC10); the sweep never deletes it, and it is the one listing the wire admits
+    /// at quantity 0. It sells nothing: it is not a lot sale
     /// ([`crate::MarketStore::lot_matter`] answers `None`), it is never quoted or
     /// accepted ([`crate::WANTED_IS_A_BID`]), it is not supply in the projection, and
-    /// selling into it is cut IC10's.
+    /// selling into it is cut IC10's lot sell arm ([`crate::sell_into_bid`]).
     ///
     /// A recorded deviation from doc 18 §4.3's `Supply::Wanted{good, min_grade, price,
     /// remaining}` (lead ruling L21): the price and the remaining intake ride on the
@@ -720,7 +722,9 @@ impl TryFrom<ListingWire> for Listing {
         if w.price.minor() <= 0 {
             return Err(RecordError("a listing asks nothing"));
         }
-        if w.quantity == 0 || w.quantity > MAX_QUANTITY {
+        // Doc 18 cut IC10: an exhausted standing bid stands at quantity 0 (the
+        // readiness report's exhausted marker); every other arm still refuses 0.
+        if (w.quantity == 0 && !w.source.is_wanted()) || w.quantity > MAX_QUANTITY {
             return Err(RecordError("a listing's quantity is out of range"));
         }
         if w.catalog.code.trim().is_empty() || w.catalog.code.len() > MAX_CATALOG_CODE_BYTES {
@@ -952,8 +956,55 @@ pub struct Quote {
     /// `Some` only on a Draw quote. The `market.lot.drawn` fact answers from it.
     #[serde(default)]
     pub drawn_at: Option<i64>,
+    /// **Who besides the seller is paid out of a sale into a standing bid** (doc 18
+    /// §4.1 "The share", D-18-24; cut IC10): the proceeds policy's cuts, frozen at the
+    /// offer, each an `Exact` payout of the contract. At most [`MAX_PROCEEDS_CUTS`], and
+    /// only on a Deliver quote.
+    #[serde(default)]
+    pub cuts: Vec<ProceedsCut>,
+    /// What the proceeds policy measured its cuts on — for the Co-op, the margin over
+    /// reference; `Amount::ZERO` otherwise (cut IC10). Only a Deliver quote carries a
+    /// non-zero basis.
+    #[serde(default = "zero")]
+    pub basis: Amount,
     /// Bumped by every write.
     pub revision: u64,
+}
+
+/// The most payees a sale into a bid pays beyond its two parties (doc 18 §4.1, cut
+/// IC10, lead ruling (b)): one — the Co-op First Captain Trust's share.
+pub const MAX_PROCEEDS_CUTS: usize = 1;
+/// The longest label a proceeds cut carries (cut IC10).
+pub const MAX_PROCEEDS_LABEL_BYTES: usize = 32;
+
+/// **One payee of a sale into a standing bid beyond the seller** (doc 18 §4.1 "The
+/// share", D-18-24; cut IC10): an `Exact` payout of `amount` to `to`, named `label` on
+/// the sale line. Game-neutral: the market validates the split, the policy names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProceedsCut {
+    /// The account paid.
+    pub to: AccountId,
+    /// How much (positive).
+    pub amount: Amount,
+    /// The line's name for it, 1..=32 bytes.
+    pub label: SmolStr,
+}
+
+impl ProceedsCut {
+    /// The cut's invariants: a positive amount and a 1..=32-byte label.
+    ///
+    /// # Errors
+    /// [`RecordError`] naming the broken invariant.
+    pub fn check(&self) -> Result<(), RecordError> {
+        if self.amount.minor() <= 0 {
+            return Err(RecordError("a proceeds cut pays nothing"));
+        }
+        if self.label.trim().is_empty() || self.label.len() > MAX_PROCEEDS_LABEL_BYTES {
+            return Err(RecordError("a proceeds cut's label is out of range"));
+        }
+        Ok(())
+    }
 }
 
 /// Which kind of paid lot leg a quote's money was taken for (doc 18 cut IC7).
@@ -964,6 +1015,10 @@ pub enum PaidKind {
     Hold,
     /// A drawn `Supply::Stock` sale on a lot entry: `LotOp::Draw`.
     Draw,
+    /// A sale into a standing bid: `LotOp::Deliver` (doc 18 §4.3 "Bids that take real
+    /// lots", D-18-26; cut IC10). The quote's buyer is the bidding house, its seller the
+    /// player, and the contract is gated on the leg's `inventory.transferred` marker.
+    Deliver,
 }
 
 /// **The frozen terms of one paid lot sale** (doc 18 cut IC7, L4/L12), written on the
@@ -985,16 +1040,37 @@ pub struct PaidLot {
     pub grade: u8,
     /// When the deal came into force (real seconds).
     pub accepted_at: i64,
-    /// The draw cutoff (real seconds): no Draw is offered, and so none is prepared,
-    /// after it (`DRAW_SETTLE_MARGIN_SECS` before the window shuts). `Some` exactly for
-    /// a Draw.
+    /// The leg's cutoff (a Draw's or a Deliver's; real seconds): no such leg is
+    /// offered, and so none is prepared, after it (`DRAW_SETTLE_MARGIN_SECS` before the
+    /// window shuts). `Some` exactly for a Draw and a Deliver.
     #[serde(default)]
     pub draw_by: Option<i64>,
+    /// The `inventory.transferred` applied-marker id a Deliver's contract is gated on
+    /// (`mush_inventory::derived_marker_id`, derived at offer time from the contract,
+    /// the listing and the quantity; doc 18 §4.3, cut IC10). `Some` exactly for a
+    /// Deliver, 1..=96 bytes of lowercase hex.
+    #[serde(default)]
+    pub marker: Option<SmolStr>,
+}
+
+/// The longest applied-marker id inventory's family admits (cut IC10).
+pub const MAX_MARKER_ID_BYTES: usize = 96;
+
+/// Whether `id` is an `inventory_applied` key: 1..=96 bytes of lowercase hex (the
+/// family's key rule, `mush_inventory::module`; cut IC10).
+#[must_use]
+pub fn is_marker_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_MARKER_ID_BYTES
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 impl PaidLot {
-    /// The record's invariants: two distinct endpoints, and a cutoff on exactly the
-    /// Draw kind, never before the deal itself.
+    /// The record's invariants: two distinct endpoints, a cutoff on exactly the Draw
+    /// and Deliver kinds, never before the deal itself, and a well-formed marker on
+    /// exactly the Deliver kind (cut IC10).
     ///
     /// # Errors
     /// [`RecordError`] naming the broken invariant.
@@ -1005,11 +1081,24 @@ impl PaidLot {
         if self.grade > mush_inventory::MAX_GRADE {
             return Err(RecordError("a paid lot's grade is out of range"));
         }
-        match (self.kind, self.draw_by) {
-            (PaidKind::Draw, Some(by)) if by >= self.accepted_at => Ok(()),
-            (PaidKind::Hold, None) => Ok(()),
-            (PaidKind::Draw, _) => Err(RecordError("a paid draw carries a cutoff after its deal")),
-            (PaidKind::Hold, Some(_)) => Err(RecordError("a paid hold sale carries no cutoff")),
+        match (self.kind, self.draw_by, self.marker.as_deref()) {
+            (PaidKind::Draw, Some(by), None) if by >= self.accepted_at => Ok(()),
+            (PaidKind::Deliver, Some(by), Some(marker))
+                if by >= self.accepted_at && is_marker_id(marker) =>
+            {
+                Ok(())
+            }
+            (PaidKind::Hold, None, None) => Ok(()),
+            (PaidKind::Draw, _, Some(_)) => Err(RecordError("a paid draw carries no marker")),
+            (PaidKind::Draw, _, None) => {
+                Err(RecordError("a paid draw carries a cutoff after its deal"))
+            }
+            (PaidKind::Deliver, _, _) => Err(RecordError(
+                "a paid delivery carries a cutoff after its deal and a marker",
+            )),
+            (PaidKind::Hold, _, _) => Err(RecordError(
+                "a paid hold sale carries no cutoff and no marker",
+            )),
         }
     }
 }
@@ -1119,6 +1208,10 @@ struct QuoteWire {
     #[serde(default)]
     drawn_at: Option<i64>,
     #[serde(default)]
+    cuts: Vec<ProceedsCut>,
+    #[serde(default = "zero")]
+    basis: Amount,
+    #[serde(default)]
     revision: u64,
 }
 
@@ -1162,6 +1255,10 @@ impl TryFrom<QuoteWire> for Quote {
         if w.drawn_at.is_some() && !w.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Draw) {
             return Err(RecordError("only a drawn sale records when it was drawn"));
         }
+        // Doc 18 cut IC10: the proceeds split re-runs its caps on load — at most one
+        // payee beyond the parties, every cut well-formed, cuts and a basis only on a
+        // sale into a bid, and the cuts never more than the whole sale.
+        check_proceeds(&w)?;
         Ok(Quote {
             id: QuoteId(w.id),
             listing: ListingId(w.listing),
@@ -1184,9 +1281,43 @@ impl TryFrom<QuoteWire> for Quote {
             settled: w.settled,
             lot: w.lot,
             drawn_at: w.drawn_at,
+            cuts: w.cuts,
+            basis: w.basis,
             revision: w.revision,
         })
     }
+}
+
+/// The proceeds half of a quote's wire check (doc 18 §4.1, cut IC10).
+fn check_proceeds(w: &QuoteWire) -> Result<(), RecordError> {
+    let delivers = w.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Deliver);
+    if w.cuts.len() > MAX_PROCEEDS_CUTS {
+        return Err(RecordError("a quote pays too many proceeds cuts"));
+    }
+    if (!w.cuts.is_empty() || w.basis.minor() != 0) && !delivers {
+        return Err(RecordError("only a sale into a bid carries proceeds cuts"));
+    }
+    if w.basis.minor() < 0 {
+        return Err(RecordError("a quote's proceeds basis is negative"));
+    }
+    let mut cut_total: i64 = 0;
+    for cut in &w.cuts {
+        cut.check()?;
+        cut_total = cut_total
+            .checked_add(cut.amount.minor())
+            .ok_or(RecordError("a quote's proceeds cuts overflow"))?;
+    }
+    if cut_total == 0 {
+        return Ok(());
+    }
+    let gross = i64::try_from(w.quantity)
+        .ok()
+        .and_then(|quantity| w.price.minor().checked_mul(quantity))
+        .ok_or(RecordError("a quote's total overflows"))?;
+    if cut_total > gross {
+        return Err(RecordError("a quote's proceeds cuts exceed the sale"));
+    }
+    Ok(())
 }
 
 // ---- vendors (§5.2, B5) ----------------------------------------------------
@@ -1515,5 +1646,118 @@ mod tests {
         );
         let rolled = m.rolled(m.window_started + m.window + 1);
         assert_eq!(rolled.volume_used, Amount::ZERO);
+    }
+
+    // ---- doc 18 cut IC10: the sale-into-a-bid wire rules ----
+
+    const MARKER: &str =
+        "8000000000000064aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn wanted_json(quantity: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": 4, "seller": { "Organization": 2 }, "vendor": 1, "market": "stickney",
+            "catalog": { "ruleset": "tacsim", "code": "metals" },
+            "source": { "wanted": { "vault": 9, "commodity": "metals", "min_grade": 0 } },
+            "price": 28000, "quantity": quantity, "expires": { "clock": "RealUtc", "at": 10 },
+        })
+    }
+
+    #[test]
+    fn ic10_only_a_standing_bid_stands_at_quantity_zero() {
+        let zero: Listing = serde_json::from_value(wanted_json(0)).expect("a zero bid loads");
+        assert_eq!(zero.quantity, 0);
+        assert!(serde_json::from_value::<Listing>(wanted_json(MAX_QUANTITY + 1)).is_err());
+        let ask = serde_json::json!({
+            "id": 1, "seller": { "Organization": 1 }, "vendor": 1, "market": "seattle",
+            "catalog": { "ruleset": "sr", "code": "ammo" }, "source": { "stock": { "vault": 1 } },
+            "price": 10, "quantity": 0, "expires": { "clock": "RealUtc", "at": 10 },
+        });
+        assert!(
+            serde_json::from_value::<Listing>(ask).is_err(),
+            "an ask at 0 never loads"
+        );
+    }
+
+    fn paid(kind: &str, draw_by: Option<i64>, marker: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "kind": kind, "source": 11, "destination": 12, "commodity": "metals",
+            "grade": 0, "accepted_at": 100, "draw_by": draw_by, "marker": marker,
+        })
+    }
+
+    fn check(v: serde_json::Value) -> Result<(), RecordError> {
+        serde_json::from_value::<PaidLot>(v).expect("shape").check()
+    }
+
+    #[test]
+    fn ic10_a_paid_delivery_carries_a_cutoff_and_a_marker() {
+        assert!(check(paid("deliver", Some(3_100), Some(MARKER))).is_ok());
+        assert!(check(paid("deliver", None, Some(MARKER))).is_err());
+        assert!(check(paid("deliver", Some(99), Some(MARKER))).is_err());
+        assert!(check(paid("deliver", Some(3_100), None)).is_err());
+        assert!(check(paid("deliver", Some(3_100), Some("XYZ"))).is_err());
+        assert!(check(paid("deliver", Some(3_100), Some(&"a".repeat(97)))).is_err());
+        // A Draw keeps its rule and carries no marker; a Hold carries neither.
+        assert!(check(paid("draw", Some(3_100), None)).is_ok());
+        assert!(check(paid("draw", Some(3_100), Some(MARKER))).is_err());
+        assert!(check(paid("hold", None, None)).is_ok());
+        assert!(check(paid("hold", None, Some(MARKER))).is_err());
+        assert!(check(paid("hold", Some(3_100), None)).is_err());
+    }
+
+    fn sale_quote(
+        lot: serde_json::Value,
+        cuts: serde_json::Value,
+        basis: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": 1, "listing": 4, "buyer": { "Organization": 2 }, "seller": { "Object": 5 },
+            "catalog": { "ruleset": "tacsim", "code": "metals" }, "market": "stickney",
+            "price": 28000, "quantity": 20,
+            "observed": { "definition_version": 1, "listing": 1, "artefact": null },
+            "expires": { "clock": "RealUtc", "at": 3_700 }, "contract": 3, "activated": true,
+            "lot": lot, "cuts": cuts, "basis": basis,
+        })
+    }
+
+    fn loads(v: serde_json::Value) -> bool {
+        serde_json::from_value::<Quote>(v).is_ok()
+    }
+
+    #[test]
+    fn ic10_a_quotes_proceeds_split_rides_only_a_sale_into_a_bid() {
+        let deliver = paid("deliver", Some(3_100), Some(MARKER));
+        let share = serde_json::json!([{ "to": 7, "amount": 40000, "label": "Co-op share" }]);
+        let q: Quote = serde_json::from_value(sale_quote(deliver.clone(), share.clone(), 160_000))
+            .expect("a sale with its share loads");
+        assert_eq!(q.cuts.len(), 1);
+        assert_eq!(q.basis, Amount::from_minor(160_000));
+        // Two payees beyond the parties.
+        let two = serde_json::json!([
+            { "to": 7, "amount": 1, "label": "a" }, { "to": 8, "amount": 1, "label": "b" }
+        ]);
+        assert!(!loads(sale_quote(deliver.clone(), two, 0)));
+        // A cut that pays nothing, names no label, carries a label over the cap, or an
+        // unknown field.
+        for bad in [
+            serde_json::json!([{ "to": 7, "amount": 0, "label": "x" }]),
+            serde_json::json!([{ "to": 7, "amount": 5, "label": " " }]),
+            serde_json::json!([{ "to": 7, "amount": 5, "label": "x".repeat(33) }]),
+            serde_json::json!([{ "to": 7, "amount": 5, "label": "x", "extra": 1 }]),
+        ] {
+            assert!(!loads(sale_quote(deliver.clone(), bad, 0)));
+        }
+        // Cuts over the whole sale (20 × 28,000 = 560,000).
+        let over = serde_json::json!([{ "to": 7, "amount": 560_001, "label": "x" }]);
+        assert!(!loads(sale_quote(deliver.clone(), over, 0)));
+        let exact = serde_json::json!([{ "to": 7, "amount": 560_000, "label": "x" }]);
+        assert!(loads(sale_quote(deliver.clone(), exact, 0)));
+        // A negative basis.
+        assert!(!loads(sale_quote(deliver, serde_json::json!([]), -1)));
+        // Cuts or a basis on anything but a Deliver quote.
+        let draw = paid("draw", Some(3_100), None);
+        assert!(!loads(sale_quote(draw.clone(), share, 0)));
+        assert!(!loads(sale_quote(draw.clone(), serde_json::json!([]), 5)));
+        assert!(loads(sale_quote(draw, serde_json::json!([]), 0)));
     }
 }

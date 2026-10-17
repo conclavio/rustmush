@@ -376,6 +376,9 @@ pub struct PortTickState {
     /// was first visited on, by hull; the grace restarts after a reboot, which is
     /// harmless.
     pub(crate) filed_seen: BTreeMap<u32, u64>,
+    /// Doc 18 cut IC10: the bid re-posts the market refused this boot, by `(vault,
+    /// good)` — each is logged once.
+    pub(crate) bid_warned: BTreeSet<(u64, CanonicalId)>,
 }
 
 impl PortTickState {

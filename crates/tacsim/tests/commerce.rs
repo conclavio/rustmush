@@ -490,14 +490,17 @@ fn status(tw: &mut TestWorld) -> String {
     run(tw, GOD, "@tacsim/port status")
 }
 
-/// Whether every Pools and Listings line of `entries` (and the market facts line)
-/// reads `[ready]`.
+/// Whether every Pools and Listings line of `entries` (and the market and, since
+/// cut IC10, the inventory facts lines) reads `[ready]`.
 fn stock_ready(tw: &mut TestWorld) -> (bool, String) {
     let out = status(tw);
     let gated: Vec<&str> = out
         .lines()
         .filter(|line| {
-            line.contains(" vendor ") || line.contains(" ask ") || line.starts_with("market facts")
+            line.contains(" vendor ")
+                || line.contains(" ask ")
+                || line.starts_with("market facts")
+                || line.starts_with("inventory facts")
         })
         .collect();
     let ready = gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]"));

@@ -92,7 +92,7 @@ pub fn governed_hold(w: &World, endpoint: EndpointRef) -> Option<HullView<'_>> {
 
 /// The lane's port entries as the readiness report resolves them, each with its map
 /// when present.
-fn ports(w: &World) -> Vec<(CanonicalId, &PortDef, Option<&PortMap>)> {
+pub(crate) fn ports(w: &World) -> Vec<(CanonicalId, &PortDef, Option<&PortMap>)> {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Vec::new();
     };
@@ -113,7 +113,10 @@ fn ports(w: &World) -> Vec<(CanonicalId, &PortDef, Option<&PortMap>)> {
 }
 
 /// The port entry whose venue is `venue`.
-fn port_of_venue<'a>(w: &'a World, venue: &MarketId) -> Option<(&'a PortDef, Option<&'a PortMap>)> {
+pub(crate) fn port_of_venue<'a>(
+    w: &'a World,
+    venue: &MarketId,
+) -> Option<(&'a PortDef, Option<&'a PortMap>)> {
     ports(w)
         .into_iter()
         .find(|(_, def, _)| def.venue.as_str() == venue.as_str())

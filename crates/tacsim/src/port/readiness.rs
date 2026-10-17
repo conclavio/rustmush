@@ -73,6 +73,9 @@ pub enum Binding {
     /// Cut IC8: whether anything answers the `market` fact namespace, which a
     /// drawn sale's contract settles on.
     MarketFacts,
+    /// Cut IC10: whether anything answers the `inventory` fact namespace, which a
+    /// sale into a bid's contract settles on (lead 2g).
+    InventoryFacts,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -393,7 +396,7 @@ pub fn readiness(w: &World) -> Readiness {
 /// **The report with cut IC8's lines** (doc 18 §4.7 "Boot-once acts and the
 /// readiness report"; lead ruling L9): [`readiness`] — its IC3, IC4 and IC6 lines
 /// byte-identical — with the `MarketFacts` line spliced in right after the
-/// treasury line(s), and per port, after its last line (the hulls line when it
+/// treasury line(s) and (cut IC10) the `InventoryFacts` line right after it, and per port, after its last line (the hulls line when it
 /// has one), one `Pools` line per vendor, one `Listings` line per ask and one
 /// `Bids` line per bid, in authored order. Pools and receipts are typed state,
 /// readable only through a module context, which is why this takes `ctx`;
@@ -419,12 +422,33 @@ pub fn readiness_in(ctx: &mush_core::Ctx<'_>) -> Readiness {
                 .to_owned(),
         }
     };
+    // ---- doc 18 cut IC10: inventory facts, right after the market facts ----
+    let inventory_facts = if mush_economy::has_fact_provider(w, mush_inventory::NS) {
+        ReadinessLine {
+            port: None,
+            binding: Binding::InventoryFacts,
+            state: LineState::Ready,
+            text: "inventory facts: answered, so sales into bids can settle.".to_owned(),
+        }
+    } else {
+        ReadinessLine {
+            port: None,
+            binding: Binding::InventoryFacts,
+            state: LineState::Missing,
+            text: "inventory facts: nothing answers the inventory namespace, so sales into bids \
+                   refuse."
+                .to_owned(),
+        }
+    };
     let after_treasury = report
         .lines
         .iter()
         .rposition(|line| line.binding == Binding::Treasury)
         .map_or(report.lines.len(), |i| i.saturating_add(1));
     report.lines.insert(after_treasury, facts);
+    report
+        .lines
+        .insert(after_treasury.saturating_add(1), inventory_facts);
     // ---- per port, after its last line ----
     let Some(store) = w.module_state::<TacsimStore>() else {
         return report;
@@ -720,7 +744,17 @@ fn commerce_lines(
             let live = market
                 .and_then(|m| m.listing(listing))
                 .filter(|l| l.source.is_wanted());
+            // Doc 18 cut IC10: an exhausted bid stands at quantity 0 — its intake is
+            // taken — and an absent one is either lapsed (the clerk posts it again
+            // while its recorded intake is the authored one; else the next apply
+            // records the authored terms, after which the clerk does) or was
+            // withdrawn by hand before its deadline.
             match (live, market) {
+                (Some(l), Some(_)) if l.quantity == 0 => push(
+                    Binding::Bids,
+                    LineState::Ready,
+                    format!("{head}: listing #{listing} not buying; its intake is taken."),
+                ),
                 (Some(l), Some(m)) => {
                     if crate::port::board::funds_one(w, m, listing) {
                         push(
@@ -745,13 +779,18 @@ fn commerce_lines(
                 }
                 _ if w.now() < recorded.expires => push(
                     Binding::Bids,
-                    LineState::Ready,
-                    format!("{head}: not buying; its intake is taken."),
+                    LineState::Missing,
+                    format!("{head}: no bid is posted."),
+                ),
+                _ if crate::port::vendor::posts_afresh(w, Some(recorded), bid) => push(
+                    Binding::Bids,
+                    LineState::Pending,
+                    format!("{head}: listing #{listing} lapsed; the clerk posts it again."),
                 ),
                 _ => push(
                     Binding::Bids,
                     LineState::Missing,
-                    format!("{head}: no bid is posted."),
+                    format!("{head}: listing #{listing} lapsed; it waits for the next apply."),
                 ),
             }
         }

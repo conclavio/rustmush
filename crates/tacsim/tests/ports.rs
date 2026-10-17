@@ -1572,6 +1572,8 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         format!("treasury: system:tacsim.treasury, account #{treasury}. [ready]"),
         // Doc 18 cut IC8: the market facts line follows the treasury.
         "market facts: answered, so drawn sales can settle. [ready]".to_owned(),
+        // Doc 18 cut IC10: the inventory facts line follows the market facts.
+        "inventory facts: answered, so sales into bids can settle. [ready]".to_owned(),
     ];
     let mut commerce_pending = 0;
     for (entry, def) in ports_of(LANE_JSON) {

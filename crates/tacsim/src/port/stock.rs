@@ -498,7 +498,8 @@ fn swapped(result: Result<(), SwapRefused>) -> Step {
 /// step for the port's clerk this fire — the first that is due, in authored order: mint
 /// a row with no receipt, dissolve a minted lot still standing at the storefront, then
 /// (every row seeded) list an ask whose pool has stock, no live listing and no Draw in
-/// flight. The drift check takes no step. Nothing is notified: the clerk is a Thing.
+/// flight, then (doc 18 cut IC10, lead 2h-ii) re-post a lapsed standing bid. The drift
+/// check takes no step. Nothing is notified: the clerk is a Thing.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn stock_step(
     ctx: &mut Ctx<'_>,
@@ -632,7 +633,7 @@ pub(crate) fn stock_step(
         }
     }
     let Some((vendor, vault, good, price_major, pool)) = due else {
-        return Step::Idle;
+        return bid_step(ctx, state, fire, clerk, &map, &def);
     };
     let Some(price) = ask_price(ctx.w, price_major) else {
         return Step::Refused;
@@ -659,6 +660,95 @@ pub(crate) fn stock_step(
                 vault, good = %good, ?error,
                 "tacsim: the stock clerk could not list an ask"
             );
+            Step::Refused
+        }
+        Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
+        Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
+    }
+}
+
+/// **The clerk's bid re-post** (doc 18 cut IC10, lead 2h-ii; decisions 7 and 23): the
+/// stock arm's last step kind. The **first** bid in authored order whose `BidRow`
+/// exists, whose listing is gone from the market, whose recorded deadline has passed
+/// and which the applier itself would post afresh (`posts_afresh`: the authored intake
+/// unchanged) is posted again as the clerk — at its **full authored intake** and price,
+/// built by the applier's own `wanted_spec` — and only that `BidRow`'s `listing` and
+/// `expires` are rewritten. It submits nothing; a duplicate is refused by
+/// `post_wanted`. The actor swap's refusals map exactly as the ask list step's do.
+fn bid_step(
+    ctx: &mut Ctx<'_>,
+    state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
+    map: &PortMap,
+    def: &PortDef,
+) -> Step {
+    let now = ctx.w.now();
+    let mut due: Option<(
+        CanonicalId,
+        crate::port::def::BidDef,
+        VaultId,
+        mush_market::VendorId,
+    )> = None;
+    'vendors: for vendor in &def.vendors {
+        let Some(row) = map.vendors.get(&vendor.org) else {
+            continue;
+        };
+        let Some(vendor_id) = row.vendor else {
+            continue;
+        };
+        for bid in &vendor.bids {
+            let Some(recorded) = row.bids.get(&bid.good) else {
+                continue;
+            };
+            let gone = ctx
+                .w
+                .module_state::<MarketStore>()
+                .is_some_and(|s| s.listing(ListingId(recorded.listing)).is_none());
+            if gone
+                && now >= recorded.expires
+                && crate::port::vendor::posts_afresh(ctx.w, Some(recorded), bid)
+            {
+                due = Some((
+                    vendor.org.clone(),
+                    bid.clone(),
+                    VaultId(row.vault),
+                    mush_market::VendorId(vendor_id),
+                ));
+                break 'vendors;
+            }
+        }
+    }
+    let Some((org, bid, vault, vendor)) = due else {
+        return Step::Idle;
+    };
+    let Some(price) = ask_price(ctx.w, bid.price_major) else {
+        return Step::Refused;
+    };
+    let spec = crate::port::vendor::wanted_spec(vendor, vault, &bid, price);
+    match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::post_wanted(ctx, spec)) {
+        Ok(Ok(listing)) => {
+            let expires = ctx
+                .w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.listing(listing).map(|l| l.expires.at));
+            let mut map = map.clone();
+            if let (Some(expires), Some(row)) = (expires, map.vendors.get_mut(&org))
+                && let Some(recorded) = row.bids.get_mut(&bid.good)
+            {
+                recorded.listing = listing.0;
+                recorded.expires = expires;
+                crate::store::put_port_map(ctx, &map);
+            }
+            Step::Worked
+        }
+        Ok(Err(error)) => {
+            if state.bid_warned.insert((vault.0, bid.good.clone())) {
+                tracing::warn!(
+                    vault = vault.0, good = %bid.good, ?error,
+                    "tacsim: the stock clerk could not post a lapsed bid again"
+                );
+            }
             Step::Refused
         }
         Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,

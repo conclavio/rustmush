@@ -900,17 +900,28 @@ fn e7r2_p1_the_listing_holder_is_deterministic_scoped_and_inside_the_kernel_cap(
     );
 }
 
-/// **The four ops are exactly four, and their words round-trip** — a new op needs its
+/// **The five ops are exactly five, and their words round-trip** — a new op needs its
 /// own authority sentence in `project_offer`, so the set is pinned. Doc 18 cut IC7 added
 /// the fourth, `draw`, and its sentence is the paid projection: `consume` and `draw` are
-/// offered only over the actor's own paid contracts.
+/// offered only over the actor's own paid contracts. Doc 18 cut IC10 added the fifth,
+/// `deliver`, offered only to the **seller** of a paid sale into a bid, over the actor's
+/// own endpoint, with the destination and the marker fixed by the server.
 #[test]
-fn e7r2_p1_the_lot_action_has_exactly_four_ops() {
-    let words: Vec<&str> = [LotOp::Reserve, LotOp::Consume, LotOp::Release, LotOp::Draw]
-        .iter()
-        .map(|op| op.word())
-        .collect();
-    assert_eq!(words, vec!["reserve", "consume", "release", "draw"]);
+fn e7r2_p1_the_lot_action_has_exactly_five_ops() {
+    let words: Vec<&str> = [
+        LotOp::Reserve,
+        LotOp::Consume,
+        LotOp::Release,
+        LotOp::Draw,
+        LotOp::Deliver,
+    ]
+    .iter()
+    .map(|op| op.word())
+    .collect();
+    assert_eq!(
+        words,
+        vec!["reserve", "consume", "release", "draw", "deliver"]
+    );
     let source = production("mush-market/src/lot.rs");
     assert!(
         source.matches("LotOp::").count() > 0,

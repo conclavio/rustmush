@@ -106,10 +106,11 @@ pub trait DeliveryProvider: Send + Sync + std::fmt::Debug {
 
 // ---- doc 18 cut IC7: the content-port seams ---------------------------------
 //
-// Three more composition-frozen hooks, in the same `with_*` shape as the tables above,
-// and game-neutral in the same way: none of them names a game, and with none installed
-// the market behaves exactly as it did before IC7. The tacsim implementations are cut
-// IC8's.
+// The market adds three composition-frozen hooks of its own — the presence gate, the
+// capacity hook and (cut IC10) the proceeds policy — in the same `with_*` shape as the
+// tables above, and game-neutral in the same way: none of them names a game, and with
+// none installed the market behaves exactly as it did before IC7. The tacsim
+// implementations are cuts IC8's and IC10's.
 
 /// Doc 18 §4.3 "Presence" (D-18-12 extended): how the actor is present for a trade.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -240,6 +241,117 @@ pub trait CapacityProvider: Send + Sync + std::fmt::Debug {
     ) -> Result<(), CapacityRefusal>;
 }
 
+// ---- doc 18 cut IC10: the proceeds seam ------------------------------------------
+
+/// The longest sale line a proceeds policy may return (cut IC10).
+pub const MAX_SALE_LINE_BYTES: usize = 512;
+/// The longest memo a proceeds policy may append to the sale contract's name (cut
+/// IC10) — the ledger entry's own record of, e.g., a baseline reference.
+pub const MAX_PROCEEDS_MEMO_BYTES: usize = 24;
+
+/// What a sale into a standing bid is, as the proceeds policy is asked about it (doc 18
+/// §4.1 "The share", D-18-24; cut IC10). Every refusal of the market's own has already
+/// passed when the policy is asked.
+#[derive(Clone, Debug)]
+pub struct SaleTerms<'a> {
+    /// The seller — the player who typed the sale (or IC11's executor's principal).
+    pub seller: ObjId,
+    /// The endpoint the goods leave from.
+    pub source: mush_inventory::EndpointRef,
+    /// The bidding house (the bid listing's seller).
+    pub house: &'a PrincipalId,
+    /// The venue.
+    pub market: &'a crate::MarketId,
+    /// The bid listing.
+    pub listing: crate::ListingId,
+    /// The commodity sold.
+    pub commodity: &'a mush_core::CanonicalId,
+    /// How much.
+    pub quantity: u64,
+    /// The bid's price per unit.
+    pub price: mush_economy::Amount,
+    /// `price × quantity` — the house's escrow.
+    pub gross: mush_economy::Amount,
+}
+
+/// What the proceeds policy answers for one sale (cut IC10): its cuts (each an `Exact`
+/// payout beside the seller's), the basis it measured them on, the sale line the seller
+/// reads (or `None` for the market's own), and an optional memo for the contract name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proceeds {
+    /// Who besides the seller is paid, at most [`crate::MAX_PROCEEDS_CUTS`].
+    pub cuts: Vec<crate::ProceedsCut>,
+    /// What the cuts were measured on (the margin over reference for the Co-op).
+    pub basis: mush_economy::Amount,
+    /// The line the seller reads, at most [`MAX_SALE_LINE_BYTES`].
+    pub line: Option<String>,
+    /// A memo appended to the contract's name, at most [`MAX_PROCEEDS_MEMO_BYTES`].
+    pub memo: Option<smol_str::SmolStr>,
+}
+
+impl Default for Proceeds {
+    /// No cuts, a zero basis, the market's own line, no memo — the unwired answer.
+    fn default() -> Proceeds {
+        Proceeds {
+            cuts: Vec::new(),
+            basis: mush_economy::Amount::ZERO,
+            line: None,
+            memo: None,
+        }
+    }
+}
+
+/// A proceeds policy's refusal, in its own words; nothing is offered (cut IC10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProceedsRefusal {
+    /// The line the seller reads.
+    pub line: String,
+}
+
+/// One sale into a bid settled (cut IC10): what the policy's `settled` hook is told.
+#[derive(Clone, Debug)]
+pub struct SettledSale<'a> {
+    /// The sale's quote.
+    pub quote: crate::QuoteId,
+    /// Its contract.
+    pub contract: ContractId,
+    /// The seller (the quote's seller principal).
+    pub seller: &'a PrincipalId,
+    /// The endpoint the goods left.
+    pub source: mush_inventory::EndpointRef,
+    /// The commodity.
+    pub commodity: &'a mush_core::CanonicalId,
+    /// How much.
+    pub quantity: u64,
+    /// The bid price per unit.
+    pub price: mush_economy::Amount,
+    /// `price × quantity`.
+    pub gross: mush_economy::Amount,
+    /// The cuts frozen on the quote at the offer.
+    pub cuts: &'a [crate::ProceedsCut],
+    /// The basis frozen on the quote at the offer.
+    pub basis: mush_economy::Amount,
+}
+
+/// Doc 18 §4.1 "The share" (D-18-24), game-neutral: who besides the seller is paid out
+/// of a sale into a standing bid, and the sale's line (cut IC10), installed with
+/// [`MarketModule::with_proceeds_policy`]. **Unwired is: no cuts, the market's own
+/// line.** The tacsim implementation is `CoopProceeds`.
+pub trait ProceedsPolicy: Send + Sync + std::fmt::Debug {
+    /// Asked once per sale, before any contract is offered, reading `w` only.
+    ///
+    /// # Errors
+    /// The policy's own refusal line; the sale is refused before any contract.
+    fn proceeds(
+        &self,
+        w: &mush_core::World,
+        sale: &SaleTerms<'_>,
+    ) -> Result<Proceeds, ProceedsRefusal>;
+    /// One sale into a bid settled: called exactly once per sale, from the market's
+    /// settlement ear after its own idempotency check. Default: nothing.
+    fn settled(&self, _ctx: &mut Ctx<'_>, _sale: &SettledSale<'_>) {}
+}
+
 /// The market [`GameModule`].
 ///
 /// Boots **after** `mush-economy` (it validates listings against real accounts,
@@ -256,6 +368,8 @@ pub struct MarketModule {
     venue_gate: Option<Arc<dyn VenueGate>>,
     /// Doc 18 §4.3 (cut IC7): the capacity hook. `None` = no capacity rule.
     capacity: Option<Arc<dyn CapacityProvider>>,
+    /// Doc 18 §4.1 (cut IC10): the proceeds policy. `None` = no cuts, the market's line.
+    proceeds: Option<Arc<dyn ProceedsPolicy>>,
 }
 
 impl std::fmt::Debug for MarketModule {
@@ -266,6 +380,7 @@ impl std::fmt::Debug for MarketModule {
             .field("delivery_providers", &self.delivery.len())
             .field("venue_gate", &self.venue_gate.is_some())
             .field("capacity_provider", &self.capacity.is_some())
+            .field("proceeds_policy", &self.proceeds.is_some())
             .finish()
     }
 }
@@ -350,6 +465,16 @@ impl MarketModule {
         self.capacity = Some(provider);
         self
     }
+
+    /// Freeze the **proceeds policy** (doc 18 §4.1 "The share", D-18-24; cut IC10).
+    /// Asked once per sale into a standing bid before any contract, and told once per
+    /// settled sale. **Unwired is: no cuts, the market's own line.** The tacsim
+    /// implementation is `CoopProceeds`.
+    #[must_use]
+    pub fn with_proceeds_policy(mut self, policy: Arc<dyn ProceedsPolicy>) -> MarketModule {
+        self.proceeds = Some(policy);
+        self
+    }
 }
 
 /// The frozen tables, parked in the store so a handler can reach them.
@@ -366,6 +491,8 @@ pub(crate) struct MarketTables {
     pub(crate) venue_gate: Option<Arc<dyn VenueGate>>,
     /// Doc 18 cut IC7: the capacity hook, when the composition installed one.
     pub(crate) capacity: Option<Arc<dyn CapacityProvider>>,
+    /// Doc 18 cut IC10: the proceeds policy, when the composition installed one.
+    pub(crate) proceeds: Option<Arc<dyn ProceedsPolicy>>,
     /// Doc 18 cut IC7 item 6: the market-owned draw-receipt family, registered with the
     /// lot action (so `None` exactly when no lot supply is composed).
     pub(crate) draws: Option<DrawReceipts>,
@@ -376,7 +503,9 @@ pub type DrawReceipts = mush_core::StateFamilyHandle<ContractId, crate::record::
 
 impl std::fmt::Debug for MarketTables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MarketTables").finish_non_exhaustive()
+        f.debug_struct("MarketTables")
+            .field("proceeds_policy", &self.proceeds.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -423,6 +552,7 @@ impl GameModule for MarketModule {
                 inventory: inventory.clone(),
                 venue_gate: self.venue_gate.clone(),
                 capacity: self.capacity.clone(),
+                proceeds: self.proceeds.clone(),
                 draws: draws.clone(),
             },
             ..MarketStore::default()
@@ -529,6 +659,13 @@ pub fn venue_gate(w: &mush_core::World) -> Option<Arc<dyn VenueGate>> {
 #[must_use]
 pub(crate) fn capacity_provider(w: &mush_core::World) -> Option<Arc<dyn CapacityProvider>> {
     w.module_state::<MarketStore>()?.tables.capacity.clone()
+}
+
+/// **The proceeds policy, when the composition installed one** (doc 18 §4.1, cut IC10).
+/// `None` is no cuts and the market's own sale line.
+#[must_use]
+pub(crate) fn proceeds_policy(w: &mush_core::World) -> Option<Arc<dyn ProceedsPolicy>> {
+    w.module_state::<MarketStore>()?.tables.proceeds.clone()
 }
 
 /// **The draw-receipt family's handle, when a lot supply is composed** (doc 18 cut IC7

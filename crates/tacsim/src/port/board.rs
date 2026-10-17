@@ -11,7 +11,9 @@
 //! receipts, which the market cannot see — which is why the board is the game's and
 //! `+market/list` stays the market's own render.
 //!
-//! The board prints no recommended mix. P07's "funded balance" figure is cut IC10's.
+//! The board prints no recommended mix. P07's "funded balance" figure (18a P07 Items;
+//! IC8 L15 deferred it to cut IC10) is deferred again, to IC12's readiness/board pass
+//! (doc 18 cut IC10, lead 2h-v). Cut IC10 adds only the exhausted bid's "not buying".
 //! Nothing renders for any other room, nor while the store is absent or the layer is
 //! disabled; nothing is written.
 
@@ -27,7 +29,7 @@ use mush_proto::RichText;
 use crate::definitions::GoodsTable;
 use crate::definitions::content::LANE_PACK;
 use crate::economy::CREDIT;
-use crate::port::def::PortDef;
+use crate::port::def::{BidDef, PortDef};
 use crate::port::families::{PortHandles, StockIssueId};
 use crate::port::map::{PortMap, VendorRow};
 use crate::port::readiness::report_ports;
@@ -54,7 +56,7 @@ pub fn group_thousands(n: u64) -> String {
 
 /// The word a quantity of `good` is counted in: `t`, `crew-days`, else the ledger
 /// unit.
-fn unit_of(goods: &GoodsTable, good: &CanonicalId) -> String {
+pub(crate) fn unit_of(goods: &GoodsTable, good: &CanonicalId) -> String {
     match goods.good(good).map(|row| row.ledger_unit.as_str()) {
         Some("t") => "t".to_owned(),
         Some("crew_day") => "crew-days".to_owned(),
@@ -64,14 +66,14 @@ fn unit_of(goods: &GoodsTable, good: &CanonicalId) -> String {
 }
 
 /// A good's label, else its id.
-fn label_of(goods: &GoodsTable, good: &CanonicalId) -> String {
+pub(crate) fn label_of(goods: &GoodsTable, good: &CanonicalId) -> String {
     goods
         .good(good)
         .map_or_else(|| good.to_string(), |row| row.label.clone())
 }
 
 /// A price in the credit's render (`200.00cr`).
-fn money(w: &World, amount: Amount) -> String {
+pub(crate) fn money(w: &World, amount: Amount) -> String {
     match (w.module_state::<EconomyStore>(), InstrumentId::new(CREDIT)) {
         (Some(economy), Some(instrument)) => {
             mush_economy::render_amount(economy.snapshot(), &instrument, amount)
@@ -84,6 +86,18 @@ fn money(w: &World, amount: Amount) -> String {
 fn name_of(w: &World, obj: u32) -> String {
     w.get(ObjId(obj))
         .map_or_else(String::new, |o| o.name.clone())
+}
+
+/// **The name a house trades under** (doc 18 cut IC8's board, factored for cut IC10's
+/// sale line): the bid's `as` name when it has one, else the org's authored name, else
+/// the org id.
+pub(crate) fn house_name(def: &PortDef, org: &CanonicalId, bid: Option<&BidDef>) -> String {
+    bid.and_then(|b| b.as_name.clone()).unwrap_or_else(|| {
+        def.orgs
+            .iter()
+            .find(|o| &o.id == org)
+            .map_or_else(|| org.to_string(), |o| o.name.clone())
+    })
 }
 
 /// Whether the vendor behind `listing` can fund one unit at `price` from its own
@@ -150,12 +164,7 @@ fn port_lines(
     out: &mut Vec<String>,
 ) {
     let w = hook.world();
-    let house_of = |org: &CanonicalId| {
-        def.orgs
-            .iter()
-            .find(|o| &o.id == org)
-            .map_or_else(|| org.to_string(), |o| o.name.clone())
-    };
+    let house_of = |org: &CanonicalId| house_name(def, org, None);
     for vendor in &def.vendors {
         let Some(row) = map.vendors.get(&vendor.org) else {
             continue;
@@ -206,18 +215,21 @@ fn port_lines(
         {
             let label = label_of(goods, &bid.good);
             let unit = unit_of(goods, &bid.good);
-            let house = bid.as_name.clone().unwrap_or_else(|| house_of(&vendor.org));
+            let house = house_name(def, &vendor.org, Some(bid));
             let live = row
                 .bids
                 .get(&bid.good)
                 .map(|b| ListingId(b.listing))
                 .and_then(|id| market.listing(id).filter(|l| l.source.is_wanted()));
+            // Doc 18 cut IC10: an exhausted bid stands at quantity 0 and is not buying.
             let line = match live {
-                Some(listing) if funds_one(w, market, listing.id) => format!(
-                    "  wanted, {label}: {}/{unit}, {} {unit} more ({house}; signed {signatory}).",
-                    money(w, listing.price),
-                    group_thousands(listing.quantity)
-                ),
+                Some(listing) if listing.quantity > 0 && funds_one(w, market, listing.id) => {
+                    format!(
+                        "  wanted, {label}: {}/{unit}, {} {unit} more ({house}; signed {signatory}).",
+                        money(w, listing.price),
+                        group_thousands(listing.quantity)
+                    )
+                }
                 _ => format!("  wanted, {label}: not buying ({house})."),
             };
             out.push(line);

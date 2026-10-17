@@ -130,6 +130,52 @@ fn derive_u64(class: &str, request: RequestUid, ordinal: u32) -> Result<u64, Inv
     Ok(u64::from_be_bytes(bytes))
 }
 
+/// The cap on the **canonical JSON input** of a [`derived_marker_id`] (doc 18
+/// §4.3, cut IC10): the causal value's canonical bytes, not the digest — the
+/// digest is always 32 bytes, so a derived id is always 80 hex characters.
+pub const MARKER_CAUSAL_MAX_BYTES: usize = 512;
+
+/// Domain tag of a caller-derived applied-marker id (cut IC10).
+const MARKER_DOMAIN: &str = "inventory.marker.derived.v1";
+
+/// ---- Doc 18 §4.3 / D-18-26, cut IC10: an offer-time-derivable marker id ----
+///
+/// The applied-marker id a caller names **before** the bundle that writes it
+/// exists: `{at}{digest}`, the IC second order-preserved in 16 hex bytes (the
+/// `InventoryProvider::marker_id` shape, so the mirror's newest-kept order holds)
+/// followed by the 64-hex SHA-256 of `causal` under its own domain. It is a pure
+/// function of its causal input, so the market can gate a sale's contract on
+/// `Fact{inventory, inventory.transferred, <id>}` at offer time and
+/// [`InventoryFamilies::transfer_marked`] writes the marker under exactly that
+/// id when the goods move. Always 16 + 64 = 80 lowercase hex characters, inside
+/// the `inventory_applied` family's 1..=96 key rule.
+///
+/// # Errors
+/// [`InventoryError::Identity`] if `causal` cannot be hashed — including a
+/// causal value whose canonical bytes exceed [`MARKER_CAUSAL_MAX_BYTES`].
+pub fn derived_marker_id(
+    at_ic: i64,
+    causal: &serde_json::Value,
+) -> Result<smol_str::SmolStr, InventoryError> {
+    let digest =
+        CanonicalHash::for_canonical_value(MARKER_DOMAIN, 1, causal, MARKER_CAUSAL_MAX_BYTES)
+            .map_err(|_| InventoryError::Identity)?;
+    let ordered = (at_ic as u64) ^ (1_u64 << 63);
+    Ok(smol_str::SmolStr::new(format!(
+        "{ordered:016x}{}",
+        digest.to_hex()
+    )))
+}
+
+/// Whether `id` is an applied-marker key: 1..=96 bytes of lowercase hex.
+fn is_marker_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= crate::record::MAX_MARKER_ID_BYTES
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// The deadline a fresh hold carries: [`RESERVATION_TTL_SECS`] past *now* on the
 /// caller's own clock generation.
 ///
@@ -448,6 +494,60 @@ impl InventoryFamilies {
             moved: amount,
             ..moved
         })
+    }
+
+    /// ---- Doc 18 §4.3 / D-18-26, cut IC10 — a transfer that writes its own fact ----
+    ///
+    /// [`Self::transfer`] plus the `inventory.transferred` applied marker under a
+    /// **caller-derived** id ([`derived_marker_id`]) in the same bundle. It exists
+    /// because the market gates a sale into a standing bid on that fact, names the
+    /// id in the contract at offer time, and the provider's own `write_marker` is
+    /// private (doc 18 §4.3: "the verb is exported by inventory").
+    ///
+    /// * `from == to` refuses [`InventoryError::SameEndpoint`]: a marker for a
+    ///   non-move is the E7c2 fold-C6 bug.
+    /// * A marker id that is not 1..=96 lowercase hex refuses
+    ///   [`InventoryError::Identity`].
+    /// * An existing marker under `marker` refuses [`InventoryError::AlreadyExists`]
+    ///   — **the replay guard**, `write_marker`'s rule — read before any write.
+    ///
+    /// # Errors
+    /// Those three, plus every refusal of [`Self::transfer`] and of
+    /// [`AppliedMarker::new`](crate::record::AppliedMarker::new); **nothing is
+    /// written on an error** (`ActionTxn` discards).
+    #[allow(clippy::too_many_arguments)]
+    pub fn transfer_marked(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        to: EndpointRef,
+        commodity: &CanonicalId,
+        amount: u64,
+        marker: &smol_str::SmolStr,
+        actor: mush_core::ObjId,
+        now: &ClockStamp,
+    ) -> Result<Moved, InventoryError> {
+        if from == to {
+            return Err(InventoryError::SameEndpoint);
+        }
+        if !is_marker_id(marker) {
+            return Err(InventoryError::Identity);
+        }
+        if txn.get(&self.applied, marker)?.is_some() {
+            return Err(InventoryError::AlreadyExists);
+        }
+        let record = crate::record::AppliedMarker::new(
+            crate::record::FACT_TRANSFERRED,
+            Some(from),
+            Some(to),
+            commodity.clone(),
+            amount,
+            actor,
+            now.at,
+        )?;
+        let moved = self.transfer(txn, from, to, commodity, amount)?;
+        txn.insert(&self.applied, marker, record)?;
+        Ok(moved)
     }
 
     /// Record, on the destination's root, that `amount` arrived from the
@@ -1512,6 +1612,11 @@ pub enum InventoryError {
     /// A deadline could not be computed on the caller's clock generation.
     #[error("inventory clock arithmetic overflowed")]
     ClockArithmetic,
+    /// A marked transfer named one endpoint for both ends (doc 18 §4.3, cut
+    /// IC10): a fact naming a movement must not exist for a bundle that moved
+    /// nothing (E7c2 fold C6).
+    #[error("a marked transfer moves between two endpoints")]
+    SameEndpoint,
 }
 
 impl From<ReservationBookError> for InventoryError {

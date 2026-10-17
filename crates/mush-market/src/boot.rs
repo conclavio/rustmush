@@ -109,12 +109,21 @@ pub(crate) fn sweep_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core
 /// `release_quote` — which reads the receipt and restores the listing only when nothing
 /// moved. The listing therefore comes back within one lap of the expiry rather than in
 /// the economy's own fire.
+///
+/// **Doc 18 cut IC10: the same lap releases a lapsed sale into a bid.** An activated,
+/// unsettled `PaidKind::Deliver` quote with a contract joins the candidate set (same
+/// budget, same cursor), and for it the arm does **only** the terminal check — its
+/// contract `Cancelled`, `Expired` or gone → `release_quote`, which reads the sale's
+/// `inventory.transferred` marker on this, the market's own context, and restores the
+/// bid only when nothing moved. It never mirrors anything: the sale's fact is
+/// inventory's own.
 fn reconcile_draws(ctx: &mut Ctx<'_>, budget: usize) {
     let candidates: Vec<Quote> = {
         let Some(store) = ctx.w.module_state::<MarketStore>() else {
             return;
         };
-        // The undrawn Draw ids, ascending (the map's order); `MAX_QUOTES` bounds the walk.
+        // The undrawn Draw ids and (cut IC10) the in-flight sale ids, ascending (the
+        // map's order); `MAX_QUOTES` bounds the walk.
         let undrawn: Vec<QuoteId> = store
             .quotes
             .values()
@@ -123,9 +132,12 @@ fn reconcile_draws(ctx: &mut Ctx<'_>, budget: usize) {
                     && q.settled.is_none()
                     && q.drawn_at.is_none()
                     && q.contract.is_some()
-                    && q.lot
-                        .as_ref()
-                        .is_some_and(|l| l.kind == crate::record::PaidKind::Draw)
+                    && q.lot.as_ref().is_some_and(|l| {
+                        matches!(
+                            l.kind,
+                            crate::record::PaidKind::Draw | crate::record::PaidKind::Deliver
+                        )
+                    })
             })
             .map(|q| q.id)
             .collect();
@@ -147,6 +159,19 @@ fn reconcile_draws(ctx: &mut Ctx<'_>, budget: usize) {
             .w
             .module_state::<EconomyStore>()
             .and_then(|s| s.snapshot().contract(contract).map(|c| c.state));
+        // Doc 18 cut IC10: a sale into a bid gets the terminal check only.
+        if q.lot
+            .as_ref()
+            .is_some_and(|l| l.kind == crate::record::PaidKind::Deliver)
+        {
+            if matches!(
+                state,
+                None | Some(ContractState::Cancelled | ContractState::Expired)
+            ) {
+                crate::trade::release_quote(ctx, &q);
+            }
+            continue;
+        }
         if matches!(
             state,
             Some(ContractState::Cancelled | ContractState::Expired)
@@ -325,6 +350,11 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
 /// holder through [`crate::release_lapsed_hold`]; on a roster without a releaser the
 /// seller withdraws the listing by hand, as cut IC0 recorded. Before IC8 this sweep
 /// deleted the document and stranded the hold.
+///
+/// **An exhausted standing bid is never deleted by a lapse** (doc 18 cut IC10; D-18-27
+/// "no restock"): a lapsed `Supply::Wanted` at quantity 0 is kept, filtered out before
+/// the budget like the kept hold-backed listing, so a taken intake is never re-opened.
+/// A lapsed bid with intake left is deleted as before, and the stock clerk re-posts it.
 fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     let now = ctx.w.now();
     let horizon = now.saturating_sub(crate::projection::PROJECTION_WINDOW_SECS);
@@ -339,6 +369,7 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
             .listings
             .values()
             .filter(|l| crate::projection::lapsed(l.expires.at, l.expires.clock, now))
+            .filter(|l| !(l.source.is_wanted() && l.quantity == 0))
             .map(|l| {
                 let held = matches!(
                     store.lot_matter(l),

@@ -153,11 +153,14 @@ pub struct Outbox {
     deferred_pin: usize,
     /// The actors whose authoritative submission already sits in the
     /// **engine's** queue from an earlier drain (doc 18 cut IC8, IC5's
-    /// residual): [`Engine::fire_due`](crate::engine::Engine::fire_due) notes
-    /// them before it pops anything and clears the note after its one
-    /// `drain_deferred`, so a tick acting as a principal can ask
+    /// residual): [`Engine::fire_due`](crate::engine::Engine::fire_due) and
+    /// (doc 18 cut IC10) [`Engine::step`](crate::engine::Engine::step) note
+    /// them before anything runs and clear the note after their one
+    /// `drain_deferred`, so a tick acting as a principal — or a command that
+    /// stages one, the market's lot sell arm — can ask
     /// [`authoritative_pending`](Self::authoritative_pending) before it
-    /// submits and defer instead of drawing the back-pressure refusal.
+    /// submits and defer or refuse instead of drawing the back-pressure
+    /// refusal.
     pending_authoritative: std::collections::BTreeSet<ObjId>,
 }
 
@@ -429,9 +432,9 @@ impl Outbox {
     }
 
     /// Replace the note of actors whose authoritative submission is already
-    /// queued in the engine (doc 18 cut IC8). Only the engine's `fire_due`
-    /// calls it: once with the engine queue's keys before it pops anything,
-    /// once with nothing after its drain.
+    /// queued in the engine (doc 18 cut IC8). Only the engine calls it — its
+    /// `fire_due` and (doc 18 cut IC10) its `step`: once with the engine
+    /// queue's keys before anything runs, once with nothing after the drain.
     pub fn note_pending_authoritative(&mut self, actors: impl IntoIterator<Item = ObjId>) {
         self.pending_authoritative = actors.into_iter().collect();
     }

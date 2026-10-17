@@ -73,3 +73,84 @@ impl FactProvider for MarketFactProvider {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Doc 18 cut IC10 (an IC7 residual): the id parsing and revision arms.
+
+    use super::*;
+
+    fn draw_quote(drawn_at: Option<i64>) -> crate::record::Quote {
+        serde_json::from_value(serde_json::json!({
+            "id": 7, "listing": 1, "buyer": { "Object": 5 }, "seller": { "Organization": 1 },
+            "catalog": { "ruleset": "tacsim", "code": "metals" }, "market": "ceres",
+            "price": 10, "quantity": 2, "activated": true,
+            "observed": { "definition_version": 1, "listing": 1, "artefact": null },
+            "expires": { "clock": "RealUtc", "at": 10_000 }, "contract": 3,
+            "lot": { "kind": "draw", "source": 11, "destination": 12, "commodity": "metals",
+                     "grade": 0, "accepted_at": 100, "draw_by": 3_100 },
+            "drawn_at": drawn_at, "revision": 2,
+        }))
+        .expect("a draw quote loads")
+    }
+
+    fn world(drawn_at: Option<i64>) -> World {
+        let mut w = World::new_minimal();
+        let mut store = MarketStore::default();
+        let q = draw_quote(drawn_at);
+        store.quotes.insert(q.id, q);
+        store.reindex();
+        w.module_state_insert(store);
+        w
+    }
+
+    #[test]
+    fn ic10_the_drawn_fact_refuses_a_malformed_id_and_a_later_revision() {
+        let w = world(Some(150));
+        let provider = MarketFactProvider;
+        for bad in ["x/1", "1", "1/x", "7/100/1", "7/", "/100", ""] {
+            assert!(
+                provider.resolve(&w, FACT_LOT_DRAWN, bad, None).is_none(),
+                "{bad:?} must answer nothing"
+            );
+        }
+        assert!(
+            provider
+                .resolve(&w, FACT_LOT_DRAWN, "7/100", Some(2))
+                .is_none()
+        );
+        // The wrong accept instant names another deal.
+        assert!(
+            provider
+                .resolve(&w, FACT_LOT_DRAWN, "7/101", None)
+                .is_none()
+        );
+        // Another kind is never answered.
+        assert!(
+            provider
+                .resolve(&w, "market.lot.other", "7/100", None)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ic10_the_drawn_fact_answers_from_drawn_at_only() {
+        let provider = MarketFactProvider;
+        let w = world(Some(150));
+        for revision in [None, Some(1)] {
+            let state = provider
+                .resolve(&w, FACT_LOT_DRAWN, "7/100", revision)
+                .expect("a mirrored draw answers");
+            assert!(state.satisfied);
+            assert_eq!(state.at, 150);
+            assert_eq!(state.actor, Some(mush_core::ObjId(5)));
+        }
+        // Not yet mirrored: unknown, which is unsatisfied.
+        let w = world(None);
+        assert!(
+            provider
+                .resolve(&w, FACT_LOT_DRAWN, "7/100", None)
+                .is_none()
+        );
+    }
+}

@@ -666,7 +666,9 @@ impl PortPartyCapsExt for mush_economy::EconomyModule {
 
 /// **Doc 18 cut IC8's market seams, composed only where the TacSim layer is**
 /// (lead ruling L13): [`crate::port::market::PortVenueGate`] and
-/// [`crate::port::market::PortCapacity`].
+/// [`crate::port::market::PortCapacity`] — and, since doc 18 cut IC10, the proceeds
+/// policy [`crate::port::proceeds::CoopProceeds`] (the Co-op's share and the sale
+/// line; unwired on every roster without the layer).
 trait PortMarketSeamsExt: Sized {
     fn with_port_seams_if(self, on: bool) -> Self;
 }
@@ -676,6 +678,7 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
         if on {
             self.with_venue_gate(Arc::new(crate::port::market::PortVenueGate))
                 .with_capacity_provider(Arc::new(crate::port::market::PortCapacity))
+                .with_proceeds_policy(Arc::new(crate::port::proceeds::CoopProceeds))
         } else {
             self
         }
