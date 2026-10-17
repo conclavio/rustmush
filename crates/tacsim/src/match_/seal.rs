@@ -722,7 +722,7 @@ mod tests {
                     card: card.clone(),
                     card_digest,
                     armed: Vec::new(),
-                    abi: SmolStr::new_static("rhai=1.26.0;api=1;stock=1"),
+                    abi: SmolStr::new_static("rhai=1.26.0;api=2;stock=1"),
                     licence: SmolStr::new_static("doctrine"),
                     principal: Some(CharacterRef::Character { id: ObjId(77) }),
                     channels: vec![Channel::Helm, Channel::Sensors, Channel::Fire],
@@ -1025,18 +1025,15 @@ mod m5_tests {
         )
     }
 
-    /// **17b cut M5.2, written FIRST** (the design note's M5.2 risks; D3, F4):
-    /// a default seal — the Line card alone — digests to the bytes it did at
-    /// `5f505c8`, under [`SealTerms::fixture`] ([`MindSeal::fixture`]) and
+    /// Default seal identities, re-blessed at M5rules for API 2 and the stock
+    /// source's API header. The Line card alone is pinned under
+    /// [`SealTerms::fixture`] ([`MindSeal::fixture`]) and
     /// under [`SealTerms::production_fixture`] (what `crate::match_::start`
     /// seals an unchosen hull under), on an armed line tank, the heavy (the
-    /// command core) and the coreless target. The values were read on the base
-    /// tree `4078b9dd` before any seal edit; 17b cut M5.1 changed no byte
-    /// `seal_for` writes (it lifted the floor probe into [`odds_are_lawful`],
-    /// the predicate unchanged), so they are `5f505c8`'s. A default seal's
-    /// JSON carries no `profiles` key. A digest that moves here is a STOP.
+    /// command core) and the coreless target. A default seal's JSON carries
+    /// no `profiles` key. Future identity changes require a declared re-bless.
     #[test]
-    fn m5_a_default_seal_digests_as_it_did_at_5f505c8() {
+    fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
         let mut got = Vec::new();
         for (entry, id) in [(LINE_TANK, 4_u32), (HEAVY_MK1, 5), (TARGET_MK1, 9)] {
@@ -1064,26 +1061,26 @@ mod m5_tests {
                 ));
             }
         }
-        // Read on `4078b9dd` before any seal edit (17b cut M5.2's first step).
+        // M5rules API/source identities; card bytes and seal shape are unchanged.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             a6dc725e3a1bb7499fbc4d693d449f52a0c5367529e757507b736058d9cef9e4",
+             54e6f966a4ac508003f0855cd7c374718a416cd8b3ed9b3c311b19bc57ef0168",
             "tacsim.unit.line_tank production_fixture \
-             a6dc725e3a1bb7499fbc4d693d449f52a0c5367529e757507b736058d9cef9e4",
+             54e6f966a4ac508003f0855cd7c374718a416cd8b3ed9b3c311b19bc57ef0168",
             "tacsim.unit.line_tank production_principal \
-             74eccface52d7ec4f39d56bf115d6d8814033bf3d7bc0df3bcd6cb9201d5a54e",
+             dcf4b8d7298f5a9717d3dccc8ab74f31ee6242e3d02d480ebdff5423f8442e2e",
             "tacsim.unit.heavy_mk1 fixture \
-             52ccdf9d9c93b6be8da3647ea608f4d1a1fbf02fad5bad5e4453f0dbae67f127",
+             2e7d1ede042c7eb4781e840ef61f264be03036798bb10054bf63daffb610c18b",
             "tacsim.unit.heavy_mk1 production_fixture \
-             52ccdf9d9c93b6be8da3647ea608f4d1a1fbf02fad5bad5e4453f0dbae67f127",
+             2e7d1ede042c7eb4781e840ef61f264be03036798bb10054bf63daffb610c18b",
             "tacsim.unit.heavy_mk1 production_principal \
-             3bba7c1e86cdef78be70d2bed91c06e36456504ce529d5f407e0edf75a10a225",
+             114b6a64463a3d06d41f0a940c78557b9071607f85800089a33b4c2509844997",
             "tacsim.unit.target_mk1 fixture \
-             65931484835d262e0522c2961e1d928867b8d3786d94b4e9cbc19e427ac7396e",
+             a52570dc1e9f6ff3d7895389975ebb8465e7ff3697c0fbbedd4051db874fa3df",
             "tacsim.unit.target_mk1 production_fixture \
-             65931484835d262e0522c2961e1d928867b8d3786d94b4e9cbc19e427ac7396e",
+             a52570dc1e9f6ff3d7895389975ebb8465e7ff3697c0fbbedd4051db874fa3df",
             "tacsim.unit.target_mk1 production_principal \
-             4fddc9ec67e9f96f4129ad46101205326acef5737e03813ad0ff08c29fda34f9",
+             8963fe397460f3237a5ab4bf2a197b7968718b2f8cb4f0b4106ae83a7214cbd7",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }

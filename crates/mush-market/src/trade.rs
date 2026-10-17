@@ -1682,7 +1682,7 @@ fn sale_name(quote: QuoteId, listing: ListingId, memo: Option<&SmolStr>) -> Smol
 /// its bid shape, the house, the deadline, the quantity against the remaining intake,
 /// the grade floor, a queued submission, the source and its custody, the presence gate
 /// and the port's hold-only rule, the composed `inventory` fact namespace, the house's
-/// funds, the source pool less every in-flight sale from it ([`delivery_pending`]), the
+/// funds, the source pool less every in-flight sale from it (`delivery_pending`), the
 /// seller's account, the standing-sales and store caps, and the proceeds policy with its
 /// split validated. Then, in `accept_at`'s order: the quote id, the window and cutoff,
 /// the marker id derived from the contract the offer is about to mint

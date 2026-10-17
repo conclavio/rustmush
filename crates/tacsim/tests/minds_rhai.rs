@@ -814,9 +814,9 @@ fn store(ty: &str, getter: &str) -> Store {
         ("View", "receiver" | "heat" | "order")
         | ("Contact", "condition")
         | ("Weapon", "armed") => Store::Handle,
-        ("View", "sections" | "weapons" | "notices" | "contacts") | ("Section", "facets") => {
-            Store::Len
-        }
+        ("View", "sections" | "weapons" | "notices" | "contacts" | "rules")
+        | ("Section", "facets")
+        | ("Rule", "predicates") => Store::Len,
         ("View", "scan_tables") => Store::Tables,
         ("Contact", "fatal") => Store::Words,
         ("Contact", "odds") => Store::Odds,
@@ -825,11 +825,11 @@ fn store(ty: &str, getter: &str) -> Store {
 }
 
 /// **The parity script for one handle**: `x` is the handle at `path`, and
-/// every getter of `ty` is written to the memory under its own name.
-fn parity_source(ty: &str, path: &str) -> String {
+/// one bounded batch of getters is written to memory under its own names.
+fn parity_source(ty: &str, path: &str, getters: &[&str]) -> String {
     let mut body = String::new();
     for (row_ty, getter, _) in PARITY {
-        if *row_ty != ty {
+        if *row_ty != ty || !getters.contains(getter) {
             continue;
         }
         let read = match store(ty, getter) {
@@ -990,7 +990,53 @@ fn expected(
         ("View", "receiver") => handle_mem(key("receiver"), "Receiver"),
         ("View", "heat") => handle_mem(key("heat"), "Heat"),
         ("View", "order") => handle_mem(key("order"), "Order"),
-        ("View", "sections" | "weapons" | "contacts") => len_mem(key(getter)),
+        ("View", "sections" | "weapons" | "contacts" | "rules") => len_mem(key(getter)),
+        ("Rule", "slot") => json_mem(key("slot")),
+        ("Rule", "channel") => MemValue::Str(
+            if obj["rule"]["action"] == "lock" {
+                "sensors"
+            } else {
+                "fire"
+            }
+            .to_owned(),
+        ),
+        ("Rule", "weapon") => json_mem(
+            obj.pointer("/rule/weapon")
+                .or_else(|| obj.pointer("/rule/condition/weapon")),
+        ),
+        ("Rule", "target") => json_mem(obj.pointer("/rule/condition/target/target")),
+        ("Rule", "contact") => obj
+            .pointer("/rule/condition/target/id")
+            .and_then(Json::as_u64)
+            .map_or(MemValue::Unit, |id| {
+                MemValue::Int(contact_int(tacsim::arena::state::ContactId(id)))
+            }),
+        ("Rule", "min_permille" | "aspects" | "min_range_m" | "max_range_m") => json_mem(
+            obj.get("rule")
+                .and_then(|rule| rule.get("condition"))
+                .and_then(|condition| condition.get(getter)),
+        ),
+        ("Rule", "keeps") => json_mem(obj.pointer("/rule/condition/min_rounds_left")),
+        ("Rule", "predicates") => len_mem(obj.pointer("/rule/predicates")),
+        ("Rule", "independent") => MemValue::Bool(
+            obj.pointer("/rule/independent")
+                .and_then(Json::as_bool)
+                .unwrap_or(false),
+        ),
+        ("Rule", _) => json_mem(obj.get("rule").and_then(|rule| rule.get(getter))),
+        ("Predicate", "kind") => json_mem(key("predicate")),
+        ("Predicate", "value") => json_mem(
+            [
+                "min_permille",
+                "mask",
+                "metres",
+                "amount",
+                "below_percent",
+                "above_percent",
+            ]
+            .iter()
+            .find_map(|name| key(name)),
+        ),
         ("View", "notices") => {
             let MemValue::Int(shown) = len_mem(key("notices")) else {
                 panic!("a length")
@@ -1261,6 +1307,38 @@ fn parity_at(moment: &Moment, unit: ObjId) -> Exercised {
             position: i,
         });
     }
+    let rules = kf
+        .get("rules")
+        .and_then(Json::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        rules.len(),
+        view.rules.len(),
+        "every native slot is projected"
+    );
+    for (i, obj) in rules.into_iter().enumerate() {
+        for (j, predicate) in obj
+            .pointer("/rule/predicates")
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            handles.push(Handle {
+                ty: "Predicate",
+                path: format!("v.rules[{i}].predicates[{j}]"),
+                obj: predicate.clone(),
+                position: j,
+            });
+        }
+        handles.push(Handle {
+            ty: "Rule",
+            path: format!("v.rules[{i}]"),
+            obj,
+            position: i,
+        });
+    }
     let sections = kf
         .get("sections")
         .and_then(Json::as_array)
@@ -1324,55 +1402,66 @@ fn parity_at(moment: &Moment, unit: ObjId) -> Exercised {
 
     let mut exercised = Exercised::default();
     for handle in &handles {
-        let source = parity_source(handle.ty, &handle.path);
-        let runner = RhaiRunner::new(&ArenaConfig::default(), &source, digest(&source))
-            .unwrap_or_else(|error| panic!("{source}: {error}"));
-        let job = ThinkJob {
-            unit,
-            think_seq: 0,
-            t_ms: view.t_ms,
-            lands_ms: view.t_ms + SUBSTEP,
-            seed: SEED,
-            dropped: false,
-            profile: &tacsim::arena::core::ClassTable::STOCK.row(tacsim::arena::core::CoreClass::I),
-            view: &moment.view,
-            memory: &[],
-            map: &moment.map,
-            card: &moment.card,
-        };
-        let result = runner.think(&job);
-        assert_eq!(
-            result.fault, None,
-            "{} at {}: {:?}",
-            handle.ty, handle.path, result.trace
-        );
-        let memory = decode_memory(&result.memory);
-        for (ty, getter, rendering) in PARITY {
-            if *ty != handle.ty {
-                continue;
-            }
-            let got = mem(&memory, getter);
-            let want = expected(
-                ty,
-                getter,
-                (&handle.obj, handle.position),
-                &kf,
-                view,
-                empties,
-            );
+        // The API can grow beyond one Class-I memory map. Probe bounded batches
+        // rather than raising the real memory budget or storing opaque handles.
+        let getters: Vec<&str> = PARITY
+            .iter()
+            .filter(|(ty, _, _)| *ty == handle.ty)
+            .map(|(_, getter, _)| *getter)
+            .collect();
+        for batch in getters.chunks(8) {
+            let source = parity_source(handle.ty, &handle.path, batch);
+            let runner = RhaiRunner::new(&ArenaConfig::default(), &source, digest(&source))
+                .unwrap_or_else(|error| panic!("{source}: {error}"));
+            let job = ThinkJob {
+                unit,
+                think_seq: 0,
+                t_ms: view.t_ms,
+                lands_ms: view.t_ms + SUBSTEP,
+                seed: SEED,
+                dropped: false,
+                profile: &tacsim::arena::core::ClassTable::STOCK
+                    .row(tacsim::arena::core::CoreClass::I),
+                view: &moment.view,
+                memory: &[],
+                map: &moment.map,
+                card: &moment.card,
+            };
+            let result = runner.think(&job);
             assert_eq!(
-                got, want,
-                "{ty}.{getter} at {} (the keyframe's {rendering}): {}",
-                handle.path, handle.obj
+                result.fault, None,
+                "{} at {}: {:?}",
+                handle.ty, handle.path, result.trace
             );
-            let row = ((*ty).to_owned(), (*getter).to_owned());
-            // A value only where the keyframe printed one: not `()`, not a
-            // null handle (`"()"`), not a null key read as its default.
-            let printed_null = matches!(handle.obj.get(*getter), Some(Json::Null));
-            if want != MemValue::Unit && want != MemValue::Str("()".to_owned()) && !printed_null {
-                exercised.valued.insert(row.clone());
+            let memory = decode_memory(&result.memory);
+            for (ty, getter, rendering) in PARITY {
+                if *ty != handle.ty || !batch.contains(getter) {
+                    continue;
+                }
+                let got = mem(&memory, getter);
+                let want = expected(
+                    ty,
+                    getter,
+                    (&handle.obj, handle.position),
+                    &kf,
+                    view,
+                    empties,
+                );
+                assert_eq!(
+                    got, want,
+                    "{ty}.{getter} at {} (the keyframe's {rendering}): {}",
+                    handle.path, handle.obj
+                );
+                let row = ((*ty).to_owned(), (*getter).to_owned());
+                // A value only where the keyframe printed one: not `()`, not a
+                // null handle (`"()"`), not a null key read as its default.
+                let printed_null = matches!(handle.obj.get(*getter), Some(Json::Null));
+                if want != MemValue::Unit && want != MemValue::Str("()".to_owned()) && !printed_null
+                {
+                    exercised.valued.insert(row.clone());
+                }
+                exercised.rows.insert(row);
             }
-            exercised.rows.insert(row);
         }
     }
     exercised
@@ -1427,7 +1516,8 @@ fn think(v, c) {
 /// carries either); and a standing order on the hull carrying
 /// `max_range_band` and a deadline — an `Engage` on the hostile live, the same
 /// with its deadline passed, and an `Advance`, a `Screen` and a `Support` of
-/// the wingman. Every one of `PARITY`'s 114 rows is exercised, and every row
+/// the wingman. M5rules adds authored Fire/Hold/Lock and all predicate shapes.
+/// Every one of `PARITY`'s 139 rows is exercised, and every row
 /// is compared at least once on a value the keyframe printed (not `()`, not
 /// a null handle, not a null key read as its default).
 #[test]
@@ -1597,11 +1687,94 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
     );
     exercised.extend(parity_at(&clamped, RED));
 
+    // Complete authored rules are projected beside the old weapon shorthand.
+    // Use the same public frame builders over a real condition table; this is
+    // a projection fixture, so it never advances the arena or evaluates rules.
+    {
+        use tacsim::arena::conditions::{
+            Comparison, LockSelector, Rule, RuleBand, RulePredicate, SectionState, TargetState,
+        };
+        let rules = [
+            Rule::fire_rule(
+                FireCondition {
+                    weapon: "cannon".into(),
+                    target: SlotTarget::Contact { id: blue },
+                    min_permille: 600,
+                    aspects: ASPECTS_ANY,
+                    min_rounds_left: 0,
+                    min_range_m: 0,
+                    max_range_m: u32::MAX,
+                },
+                vec![
+                    RulePredicate::Odds {
+                        weapon: Some("cannon".into()),
+                        min_permille: 600,
+                    },
+                    RulePredicate::Aspect { mask: 14 },
+                    RulePredicate::Range {
+                        comparison: Comparison::Less,
+                        metres: 421,
+                    },
+                    RulePredicate::Target {
+                        state: TargetState::Moving,
+                    },
+                ],
+            ),
+            Rule::hold_rule(
+                "cannon".into(),
+                vec![
+                    RulePredicate::OwnSection {
+                        section: "hull".into(),
+                        below_percent: 50,
+                    },
+                    RulePredicate::Heat { above_percent: 70 },
+                    RulePredicate::Rounds {
+                        weapon: Some("cannon".into()),
+                        comparison: Comparison::AtLeast,
+                        amount: 25,
+                        percent: true,
+                    },
+                    RulePredicate::Lock { present: false },
+                ],
+            ),
+            Rule::lock_rule(
+                LockSelector::Flank,
+                Some("cannon".into()),
+                vec![
+                    RulePredicate::TargetSection {
+                        section: "hull".into(),
+                        state: SectionState::Red,
+                    },
+                    RulePredicate::Band {
+                        band: RuleBand::Effective,
+                    },
+                ],
+            ),
+        ];
+        let mut authored = live.clone();
+        authored.conditions.clear(RED);
+        for (index, rule) in rules.into_iter().enumerate() {
+            authored
+                .conditions
+                .set_rules(
+                    RED,
+                    Some(u8::try_from(index + 1).expect("slot")),
+                    &[rule],
+                    4,
+                )
+                .expect("bounded explicit rule");
+        }
+        exercised.extend(parity_at(
+            &moment(&authored, rig.wall.unwrap_or(0), RED),
+            RED,
+        ));
+    }
+
     let rows: BTreeSet<(String, String)> = PARITY
         .iter()
         .map(|(ty, getter, _)| ((*ty).to_owned(), (*getter).to_owned()))
         .collect();
-    assert_eq!(PARITY.len(), 114);
+    assert_eq!(PARITY.len(), 140);
     assert_eq!(
         exercised.rows,
         rows,
@@ -3252,34 +3425,39 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `4_318_432_734_286_313_969` / `653a8201…` / `47bba202…`,
 /// `8_770_348_364_664_704_415` / `01a0ee5e…` / `3663ed27…`,
 /// `2_386_810_340_480_880_612` / `f85eea28…` / `34da2eef…`.
+///
+/// **M5rules' declared encoding re-bless**: ordered typed rule slots replace
+/// the former fire-only fold, and API 2 changes the Standard source and seal
+/// identities. Blessed on Windows; all four stopping times and the float probe
+/// bitmask remain unchanged. The cross-platform CI lane checks these same pins.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2_350,
         172_250,
-        11_301_631_978_816_508_897,
-        "918acf3d8f40c25777015e2670c00cfe3679463d46a0677a8e0110be0bc5636a",
-        "b0d723fe62a47a49285f1900ca7de3455e1678629472b875fdeab7d95e673bad",
+        18_229_728_250_265_076_985,
+        "3e44eb6bfb25c784e5863581757e9f34c9b111fc9c5a9976021891806c932658",
+        "dd42ef8e1559a43b10a16c70895bf417d7923376b7c2d1243b14f600fa7b324a",
     ),
     (
         2_351,
         193_500,
-        1_504_706_464_276_628_164,
-        "99f648ca15c884f93ebdb0caba33a07de2debb2f381bf362e54bf91074e38223",
-        "ca13f4b5160d143dab9b11307900742c1d2e7875a71a93ee0f00f85896248a18",
+        17_859_357_327_410_629_081,
+        "ab0688f75faa1b1cfeff3dd00abc867f8936943b336ce9d32bb99d65cbe2980b",
+        "54c0235b899d26388be08df4b125eed3740c3ca14eb643fb2bc7d64991809e16",
     ),
     (
         2_352,
         166_500,
-        14_964_229_626_479_385_743,
-        "e03376405adf36cbb52ea86f4d2fcb0504ab464844b941f6dfcf3714a901b93a",
-        "edf0eab9eb6e5b7a2f3438e5d4638c10ad2e49f7904f0e27ec715b9de45e2e9d",
+        4_520_753_297_973_087_154,
+        "5ec4d0582a31904300b619768c597071124301ad6ac42e9bbc447fcba0afb378",
+        "6f204069511dd35ea350b206ca4219c3b8b2fb9c87cecebeb47a20302924aa73",
     ),
     (
         2_350,
         900_000,
-        5_857_976_684_906_297_091,
-        "13db90c893ebdace18165b638ae856a7b1a43333d56447ce524efdc1351bff2e",
-        "3c870cc4c8444f9e02e220ffe38f0fada672f1dc1564cd8c75b09bfd4129171d",
+        15_175_914_709_589_809_411,
+        "6b1e49674422e6c2a6d71d436d10917868311645b800f613566292f90bf29770",
+        "b924e54307fb49aae8db079af61e276698db373a5d94f57adee2e9d31acce063",
     ),
 ];
 
@@ -4516,7 +4694,19 @@ fn m3_the_rom_arms_its_first_gun_where_the_failed_mind_left_another() {
     let mut rows: Vec<(i64, Vec<Option<FireCondition>>)> = Vec::new();
     while rig.arena.now_ms < think_at(RED, last) + SUBSTEP {
         let _ = rig.pulse();
-        rows.push((rig.arena.now_ms, rig.arena.conditions.slots(RED).to_vec()));
+        rows.push((
+            rig.arena.now_ms,
+            rig.arena
+                .conditions
+                .slots(RED)
+                .iter()
+                .map(|rule| {
+                    rule.as_ref()
+                        .and_then(tacsim::arena::conditions::Rule::fire)
+                        .cloned()
+                })
+                .collect(),
+        ));
     }
     assert_eq!(
         rig.arena.minds.get(&RED).and_then(|state| state.dropped),
@@ -4967,7 +5157,11 @@ fn m3_destroy_core_drops_one_at_its_next_landing_at_three_cadences() {
                 .conditions
                 .slots(victim)
                 .iter()
-                .map(|slot| slot.as_ref().map(|cond| cond.weapon.to_string()))
+                .map(|slot| {
+                    slot.as_ref()
+                        .and_then(tacsim::arena::conditions::Rule::fire)
+                        .map(|cond| cond.weapon.to_string())
+                })
                 .collect(),
             arena.motors.row(victim).and_then(|row| row.goal),
             arena
@@ -5405,7 +5599,11 @@ fn m3_degrade_core_lowers_the_next_think_s_row_at_three_cadences() {
                     .conditions
                     .slots(heavy)
                     .iter()
-                    .map(|slot| slot.as_ref().map(|cond| cond.weapon.to_string()))
+                    .map(|slot| {
+                        slot.as_ref()
+                            .and_then(tacsim::arena::conditions::Rule::fire)
+                            .map(|cond| cond.weapon.to_string())
+                    })
                     .collect(),
             ));
         },

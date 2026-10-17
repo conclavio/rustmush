@@ -1241,21 +1241,15 @@ pub fn state_hash(arena: &Arena) -> u64 {
     for (unit, slots) in arena.conditions.rows() {
         fold.bytes(&unit.0.to_le_bytes());
         for (at, slot) in slots.iter().enumerate() {
-            let Some(cond) = slot else {
+            let Some(rule) = slot else {
                 continue;
             };
             let number = u8::try_from(at.saturating_add(1)).unwrap_or(u8::MAX);
             fold.bytes(&[number]);
-            fold.bytes(cond.weapon.as_bytes());
-            fold.bytes(&[cond.target.code()]);
-            if let crate::arena::conditions::SlotTarget::Contact { id } = cond.target {
-                fold.bytes(&id.0.to_le_bytes());
-            }
-            fold.bytes(&cond.min_permille.to_le_bytes());
-            fold.bytes(&[cond.aspects]);
-            fold.bytes(&cond.min_rounds_left.to_le_bytes());
-            fold.bytes(&cond.min_range_m.to_le_bytes());
-            fold.bytes(&cond.max_range_m.to_le_bytes());
+            // M5rules: the complete typed rule, including arbitration and
+            // replacement identity, determines future behavior. The shared
+            // field serializer keeps new predicates in the deterministic fold.
+            fold_value(fold, rule);
         }
     }
     // **17b cut M1b.1** (item 3e): when each slot last said why it held, per row

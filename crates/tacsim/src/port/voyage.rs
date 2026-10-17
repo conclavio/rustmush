@@ -10,25 +10,25 @@
 //!   sequence (`last_seq`; IC11 reuses it as the order queue's minter). The burn's
 //!   offer reads the pending passage from here, so the plan reaches the prepare
 //!   only from the server's own document ([`crate::port::burn`]).
-//! - **`+ship/plan [<port>]`** ([`plan_cmd`]): a write-nothing dry run — both hold
+//! - **`+ship/plan [<port>]`** (`plan_cmd`): a write-nothing dry run — both hold
 //!   slacks with the binding measure, the room per good on this port's board, the
 //!   payload, the burn, the stores and the passage in IC and real time.
-//! - **`+ship/undock <port>`** ([`undock_cmd`]): every refusal before any write
+//! - **`+ship/undock <port>`** (`undock_cmd`): every refusal before any write
 //!   (the launch included, dry-run through `mush_sim::depart_ineligible`, lead
 //!   ruling L28), then the voyage document and ONE authoritative
 //!   `tacsim_port_burn` as the pilot.
-//! - **The launch arm** ([`launch_step`], [`launch_verify`]) on the `tacsim.port`
+//! - **The launch arm** (`launch_step`, `launch_verify`) on the `tacsim.port`
 //!   tick: it finds the burned ticket and calls `mush_sim::depart` with the plan's
 //!   frozen leg times from the plan's own `depart_ic` (lead ruling L3) — a direct
 //!   placement write, no submission and no swap (L7) — atomically with clearing
 //!   the pending; a launch held by a later change pages staff once and retries
-//!   after its backoff ([`launch_hold`], L29); a burn that never lands lapses
+//!   after its backoff (`launch_hold`, L29); a burn that never lands lapses
 //!   after [`LAUNCH_GRACE_FIRES`] (L26).
-//! - **The goods-not-yet-aboard rule** ([`goods_pending_aboard`], lead ruling L13):
+//! - **The goods-not-yet-aboard rule** (`goods_pending_aboard`, lead ruling L13):
 //!   promised matter holds the hull, read over mush-market's public reads only —
 //!   and, since doc 18 cut IC10, a sale's goods still leaving the hold
 //!   ([`GOODS_LEAVING`]).
-//! - **The passage renders** ([`passage_of`]): `+ship`'s first line and the hull
+//! - **The passage renders** (`passage_of`): `+ship`'s first line and the hull
 //!   rooms' status line, departing and under way (the leg, the ETA in IC and real
 //!   time), and the carrier hooks' narration texts.
 //!
@@ -1236,7 +1236,7 @@ fn plan_block(
 
 // ---- +ship/undock ------------------------------------------------------------------
 
-/// **`+ship/undock <port>`** (doc 18 §4.4 "+ship/undock <port> (live, at=now
+/// **`+ship/undock <port>`** (doc 18 §4.4 "`+ship/undock <port>` (live, at=now
 /// only)"; lead rulings L4, L13, L14, L21, L28): every check before any write, in
 /// the brief's order, then the voyage document and ONE `tacsim_port_burn`
 /// submission as the actor.

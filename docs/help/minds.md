@@ -97,8 +97,9 @@ inert too.
 sealed, at most once in ten seconds, and only from the seat; inside the ten
 seconds it answers `MIND refused. One switch in ten seconds; the next in 6 s.`
 The switch changes nothing while you fly: it is what the mind flies when you
-leave. `MIND RULES` says no rules are sealed on your profiles — your own
-armings with `FIRE` are yours, and `WEAPONSTATUS` reads them — and
+leave. `MIND RULES [slot]` reads your live pilot rules, separate from the sealed
+profile. `MIND RULE <slot> <rule or OFF>` replaces or removes one; `FIRE` and
+`LOCK` arm native rules (`help cockpit`). `WEAPONSTATUS` also reads their terms, and
 `MIND TRACE` says this core keeps no trace of its thinks yet. On the TUI and
 the web the same reading, shorter, is the last four rows of the weapons pane,
 and in the browser clicking a profile it is not flying puts
@@ -153,7 +154,7 @@ then read, `Sniper, edited (min_odds 70)`, as it names a switch.
 Every mind on this server is Standard Doctrine, at Class I where the core
 allows it. A mind of your own, rules sealed on a profile, a trace of what the
 core thought, and the eleven inert terms above all come later; nothing on this
-server takes them yet, and `MIND RULES` and `MIND TRACE` say so where you would
-look for them.
+server takes those authored features yet. Native pilot rules are available now;
+`MIND TRACE` still says that this core keeps no trace.
 
 See also: `help simulator`, `help cockpit`.

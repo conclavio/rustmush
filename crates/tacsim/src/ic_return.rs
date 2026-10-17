@@ -9,7 +9,7 @@
 //! out to the OOC area at Stickney could walk straight back in at Ceres and skip a
 //! two-to-three-week passage. Three pieces close that:
 //!
-//! - **the stamp** ([`IcReturnStamp`]): a `Moved` observer that records the port a
+//! - **the stamp** ([`crate::ic_return::IcReturnStamp`]): a `Moved` observer that records the port a
 //!   character last stood in whenever they move from a port room to a room outside
 //!   every port — C03's `x`, Limbo's global `o`/`s`/`c` typed in a station room,
 //!   `home`, a staff `@teleport`. The lead's "the Limbo-bound OOC exit from an IC
@@ -17,17 +17,17 @@
 //!   exactly the skip the rule exists to close. The stamp is one **unregistered**
 //!   object marker per port (`tacsim.last_port.<port>`), so `@set` cannot forge it
 //!   (doc 18 §3-A correction 2) and it needs no state slot, namespace or document.
-//! - **the door** ([`IcDoorHook`]): a `HookPoint::MoveAttempt` veto on the door
+//! - **the door** ([`crate::ic_return::IcDoorHook`]): a `HookPoint::MoveAttempt` veto on the door
 //!   alone — doc 18 §4.5's "tacsim `MoveAttempt` hook", the kernel seam the atlas's
 //!   `TravelHook` and the sim's `PlacementGate` use. It refuses a pilot stamped at a
 //!   port with no foot route, and anyone typing Limbo's global `c` while standing in
 //!   one. No staff exemption: the rule is about where the character left the
 //!   corridor, and staff have `@teleport`.
-//! - **`+ic`** ([`ic_command`]): back to the stamped port's arrival room through the
+//! - **`+ic`** ([`crate::ic_return::ic_command`]): back to the stamped port's arrival room through the
 //!   kernel's non-exit move shape (`go_home`'s: the veto chain, the move, the
 //!   narration, the room, then `Moved`). It writes no document.
 //!
-//! The port table is local to this module ([`PORTS`]). Cut IC3 kept it beside the
+//! The port table is local to this module ([`crate::ic_return::PORTS`]). Cut IC3 kept it beside the
 //! lane's `port` pack entries rather than reading them (lead ruling L10), and pins
 //! its agreement with them — venue, name, area and arrival room — by
 //! `crates/tacsim/tests/ports.rs`'s `ic3_the_ic_return_table_agrees_with_the_port_entries`.

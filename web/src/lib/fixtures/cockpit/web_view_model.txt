@@ -11,8 +11,8 @@ hull  intact  60/60  front 55/80  rear 30/30
 left_track  intact  6/24  left 4/24
 right_track  destroyed  0/24  right 0/24
 turret  intact  30/30  top 18/20
+rules: S1 fire; MIND RULES
 cannon  ready  14/20  62%
-  S1: >=60% side/rear keeps 8
 machine_gun  1 s  380/500  21%
 mind Standard Doctrine · Class I
 > Sniper   Line

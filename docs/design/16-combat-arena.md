@@ -1014,6 +1014,32 @@ See [16b](16b-combat-implementation-plan.md).
 
 ## 11. Supersessions and amendments
 
+**M5rules — implemented on the working branch, integration gate pending
+(2026-10-17; not landed).** [Doc 17 §24](17-unit-minds.md#24-amendments-as-built)
+records the full contract; this is not a completed gate or a revision of the
+historical results below.
+
+- **§3.5, §3.6 and §5: canonical native rules.** Fire, conditional hold and lock
+  actions share one ordered table bounded by the installed core's slots. Fire and
+  hold require Fire authority; lock requires Sensors authority. ORDER hold-fire
+  and matching weapon holds veto automatic shots, then the first matching authored
+  action wins per channel. Standard Doctrine's guns keep their independent cycles
+  in that same table without an authored override. Immediate pilot fire retains
+  its human-trigger behavior. `FIRE <weapon|ALL> [HOLD] WHEN …` and the five lock
+  selectors use at most four native predicates; `ALL` reserves all required slots
+  atomically. `MIND RULES [slot]` reads complete English, and `MIND RULE <slot>
+  <rule|OFF>` replaces or removes one slot. A named contact must be classified at
+  admission and evaluation; firing still requires that contact to be the current
+  lock. Rules read own and earned facts only, with unknown readings false.
+- **§3.1, §4 and §5: compatibility.** Cockpit frame **4** carries ordered typed
+  rules and plotted movement, snapshot format **11** carries the canonical rule
+  table, and mind API **2** uses `rhai=1.26.0;api=2;stock=1`. Older snapshot shapes
+  and ABIs are not migrated. Client fixtures, stock identity, reviewed hash pins
+  and the integration gate remain part of this pending cut; no M5r restoration or
+  M6/M7 completion is implied.
+
+Historical landed amendments follow unchanged.
+
 - **doc 06 §6.3** "no task or channel per unit or domain": amended to "one writer per authority; a
   running arena is an authority for its own facts; the seam is the eight messages of §3.1" (a ninth, the
   durability `Snapshot`, since 16b cut AF.2: the AF.2 entry below).

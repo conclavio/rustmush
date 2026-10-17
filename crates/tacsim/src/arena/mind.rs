@@ -1428,6 +1428,8 @@ pub struct MindView {
     pub sections: Vec<FrameSection>,
     /// Its weapons (`weapons`), empty on a hull with no weapons station.
     pub weapons: Vec<FrameWeapon>,
+    /// All active native rules, at the cockpit keyframe's resolution and order.
+    pub rules: Vec<crate::arena::weapons::FrameRule>,
     /// The contact it is locked on (`lock`).
     pub lock: Option<ContactId>,
     /// Its standing order, re-keyed to its own rows (`order`).
@@ -1475,6 +1477,8 @@ pub struct ViewContact {
     pub class: Classification,
     /// Whether it is on the hull's own side (`friendly`).
     pub friendly: bool,
+    /// Whether the last earned plot showed motion (`moving` on the keyframe).
+    pub moving: bool,
     /// The bearing to its plot, whole degrees (`bearing_deg`).
     pub bearing_deg: u32,
     /// The same off the hull's heading, whole degrees (`relative_deg`).
@@ -2033,6 +2037,7 @@ impl Arena {
                     alias: row.alias,
                     class: held.class,
                     friendly: row.friendly,
+                    moving: held.moving,
                     bearing_deg: row.bearing_deg,
                     relative_deg: row.relative_deg,
                     range_m: row.range_m,
@@ -2073,6 +2078,7 @@ impl Arena {
             sections: frame.sections,
             lock,
             weapons: frame.weapons,
+            rules: frame.rules,
             order: frame.order,
             t_ms: frame.t_ms,
             notices,
@@ -2625,9 +2631,9 @@ impl Arena {
                         t_ms,
                         match source {
                             IntentSource::Mind => FiredBy::Mind { slot: *slot },
-                            IntentSource::Seat | IntentSource::Machine | IntentSource::Cond => {
-                                FiredBy::Machine
-                            }
+                            IntentSource::Seat => FiredBy::Seat,
+                            IntentSource::Machine => FiredBy::Machine,
+                            IntentSource::Cond => slot.map_or(FiredBy::Mind { slot: None }, |slot| FiredBy::Cond { slot }),
                         },
                     )
                     .map(|_| {
@@ -5752,7 +5758,16 @@ mod tests {
             arena.resolve_arming(RED, &Arming::Arm(rom.clone()), 4_000),
             Ok(Some(1))
         );
-        assert_eq!(arena.conditions.slots(RED), &[Some(rom)][..]);
+        assert_eq!(
+            arena
+                .conditions
+                .slots(RED)
+                .iter()
+                .flatten()
+                .filter_map(crate::arena::conditions::Rule::fire)
+                .collect::<Vec<_>>(),
+            vec![&rom]
+        );
         assert!(arena.held_said.is_empty(), "the second gun's stamp went");
         // The second gun is not the ROM's: it takes no slot from it.
         assert_eq!(

@@ -8,7 +8,7 @@
 //! is for, at most one per principal per fire (D-18-32).
 //!
 //! - **`tacsim_port_stock`, tacsim's first production action provider**
-//!   ([`StockProvider`]): one op — refuse when the stock issue's receipt exists,
+//!   (`StockProvider`): one op — refuse when the stock issue's receipt exists,
 //!   otherwise `mint_origin` the authored quantity into the storefront vault as a
 //!   `Lineage::Origin` lot and insert the [`StockReceipt`] **in the same bundle**.
 //!   The receipt is the durable replay guard (idempotency keys do not survive a
@@ -16,14 +16,14 @@
 //!   fixed parameters**, derived from the port map at projection (lead ruling L4, the
 //!   IC7 `paid` precedent): the submission names a row by its issue key only, and the
 //!   prepare re-derives the issue id and refuses a receipted row.
-//! - **The stock arm** ([`stock_step`]): one step per port clerk per fire — mint a
+//! - **The stock arm** (`stock_step`): one step per port clerk per fire — mint a
 //!   row with no receipt, dissolve a minted lot into the storefront pool, and once
 //!   every row is seeded list each ask as a Draw (`Supply::Stock` on the storefront)
 //!   when no listing stands, no Draw on the pool is in flight and the pool holds
 //!   stock (lead ruling L5's one rule). The drift check pages once per boot per pool
 //!   (lead ruling L19). The clerk is a Thing: nobody is notified.
-//! - **The lapsed-hold release arm** ([`release_verify`], [`release_agent`],
-//!   [`release_step`]): a player's hold-backed lot listing that lapsed is released
+//! - **The lapsed-hold release arm** (`release_verify`, `release_agent`,
+//!   `release_step`): a player's hold-backed lot listing that lapsed is released
 //!   by the tick acting **as the vault's owner** through
 //!   `mush_market::release_lapsed_hold` — never by the GOD market sweep (D-18-26,
 //!   Q-18-31; lead ruling L7) — and the holder is told once, on a later fire, after
@@ -32,8 +32,8 @@
 //!
 //! **The typed-family key rule** (lead 2c-iii): the receipt family's value validator
 //! cannot see the key, so a writer derives the key from the value (the prepare
-//! re-derives the [`StockIssueId`]) and every reader re-checks it ([`receipt_at`],
-//! [`receipt_in`]); a mismatch reads as unreadable — fail closed, logged once.
+//! re-derives the [`StockIssueId`]) and every reader re-checks it (`receipt_at`,
+//! `receipt_in`); a mismatch reads as unreadable — fail closed, logged once.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};

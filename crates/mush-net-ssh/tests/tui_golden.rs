@@ -1020,12 +1020,11 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
                 "{w}x{h}: {row:?} is not whole in the Right column:\n{text}"
             );
         }
-        // **17b cut M1b.3**: the scene's cannon is armed in S1, and its arming
-        // line — `arming_words`' line, two spaces in — sits whole under its
-        // row in the weapons pane at every size.
+        // M5rules: the canonical table's S1 summary precedes the guns at
+        // every size; the full terms are available through MIND RULES.
         assert!(
-            right_holds(&text, "\u{2502}  S1: >=60% side/rear keeps 8 ", w),
-            "{w}x{h}: the arming line under the cannon:\n{text}"
+            right_holds(&text, "\u{2502}rules: S1 fire; MIND RULES ", w),
+            "{w}x{h}: the ordered-rule summary before the cannon:\n{text}"
         );
         // **17b cut M5.5**: the mind's rows, in order, directly under the
         // machine gun's row — four at 120 by 34 and 160 by 48, three at 120
@@ -2013,6 +2012,7 @@ fn m5_the_mind_tail_takes_the_weapons_place_on_an_unarmed_hull() {
     if let Some(object) = frame.as_object_mut() {
         object.remove("weapons");
     }
+    frame["rules"] = serde_json::json!([]);
     if let Some(contacts) = frame["contacts"].as_array_mut() {
         for contact in contacts {
             contact["odds"] = serde_json::json!([]);

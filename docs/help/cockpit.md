@@ -55,12 +55,13 @@ else — `help simulator` is how you get there.
                       drive to a named spot or a cell on the machine's own
                       route-finding; HEADING or SPEED takes the helm back. See
                       "Driving".
-  MIND [PROFILE <name>|RULES]
+  MIND [PROFILE <name>|RULES [slot]|RULE <slot> <rule or OFF>]
                       your tank's sealed mind: what it is, its profiles and the
                       one it will fly when you leave the seat, and who holds
                       each channel; it is dormant while you fly. MIND PROFILE
                       <name> switches to another sealed profile, once in ten
-                      seconds; MIND RULES says what rules it carries.
+                      seconds; MIND RULES reads live pilot rules, and MIND RULE
+                      replaces or removes one numbered slot.
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.
@@ -357,99 +358,69 @@ it neither drives nor turns, and the second line ends `the tank cannot move`.
 
 ## Arming a weapon
 
-You decide when a weapon fires; the tank's fire control does the waiting. Arm a
-weapon with conditions and it fires your lock, by itself, every time all of them
-hold — and a typed `FIRE` still fires whenever you type it, armed or not. An
-armed weapon fires only at your lock, and only at a lock your sensors have
-identified: an unknown return is never shot by a slot.
+Native rules wait for the picture you specify. A fire rule shoots only your
+identified lock; a lock rule chooses an identified hostile on your own plot.
+A typed immediate `FIRE` keeps its human-trigger behavior.
 
   FIRE cannon WHEN odds >= 60 AND aspect = side,rear
-                   Arming cannon: fires your lock when your chance to hit is
-                   60% or better and it shows its side or rear.
+  FIRE cannon HOLD WHEN rounds < 25%
+  LOCK nearest WHEN nolock
+  MIND RULES
+  MIND RULE 2 FIRE cannon WHEN target = stopped AND range < 600 m
+  MIND RULE 2 OFF
 
-A rule is up to four conditions joined by AND — there is no OR — and
-these eight are the conditions there are, one example each:
+A rule joins at most four conditions with AND. There is no OR. Native terms are:
 
-  odds >= 60            your chance to hit with this weapon is 60% or better,
-                        in whole per cent from 1 to 100; `odds cannon >= 60`
-                        says the same, naming the weapon being armed
-  aspect = side,rear    the face it shows you: front, side or rear, a comma
-                        between two or three
-  range < 600 m         it is nearer than 600 m; `range > 200 m` farther than
-                        200 m, and the two together are a window. The range
-                        is the one `RANGE` prints for your lock, so a printed
-                        600 m is outside `range < 600 m`. `WEAPONSTATUS`
-                        shows the last metre that fires (`under 599m`), or
-                        the first (`past 201m`). A band and a range term
-                        that disagree are refused: type one or the other
-  band = effective      close, effective or far across your sight, compiled to
-                        fixed metres from the frame you typed it on: the reply
-                        says which metres, and they do not move afterwards
-  rounds > 10           keep ten rounds back; `rounds > 25%` keeps a quarter
-                        of a full load
-  reserve               on a tank you fly, the same as `rounds > 0`
-  target = identified   what every slot asks already, said out loud
-  lock                  your lock, which is what every slot fires at
+  odds >= 60            chance to hit, whole percent; optionally name the weapon
+  aspect = side,rear    front, side or rear, comma-separated
+  range < 600 m         strict rounded metres; range > 200 m is also available
+  band = effective      close, effective or far, using the current plotted range
+  rounds > 10           rounds remaining; < and whole-percent figures also work
+  reserve               rounds > 0 while you fly
+  target = identified   an identified lock
+  target = moving       motion in the last earned plot; stopped is its opposite
+  target = hurt         damage in an earned condition reading
+  target turret = red   an earned section reading: green, yellow, red or destroyed
+  target = BA           this identified contact, only while it is your lock
+  target = best_hostile your lock, only while identified as hostile
+  own turret < 40%      own section internals as a fraction of its maximum
+  heat > 80%            own heat as a fraction of its maximum
+  lock                  an identified lock exists
+  nolock                no identified lock exists
 
-**The Compact floor.** Every condition carries at least the match's Compact
-floor, 10% unless the match says otherwise, so `FIRE cannon WHEN odds >= 5` is
-refused as you type it:
-`FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.`
-A rule with no odds term at all asks for the floor: `FIRE cannon WHEN aspect =
-rear` fires on a rear shot at 10% or better, and its reply says so.
+Missing readings do not satisfy a condition. Percentages of ammunition use the
+weapon's full load without rounding the comparison. Range comparisons use the
+same rounded metres as the plot. A band is evaluated again when the rule runs;
+it is not frozen to the metres shown when you typed the rule.
 
-**Your core's slots.** A tank has as many slots as its core carries: a line
-tank four, the heavy six, a scout two. They are `S1` upward, given in the
-order you arm: the first weapon you arm takes the first free one, and arming a
-weapon again replaces its rule and keeps its slot. The reply names no slot,
-because the slot is given when the order lands: the number shows under the
-weapon's row on `WEAPONSTATUS` —
+`LOCK nearest|best_odds|weakest|flank|newest WHEN ...` ranks only identified
+hostiles. Best odds uses the published weapon odds; weakest requires an earned
+damage reading; flank prefers rear, then side, then front. Newest means the
+freshest published plot. Ties use rounded range, then the stable contact id.
+A lock rule uses Sensors authority; a fire or hold rule uses Fire authority.
 
-  cannon  ready  40 of 40 round(s)  band 1 of 2  62% to hit
-    S1: >=60% side/rear
+Every fire rule keeps at least the match's Compact floor (normally 10%). An odds
+term below that floor is refused. Rules do not bypass the ordinary shot checks.
 
-— on the cockpit screen's weapons pane, and in every line the slot says. Every
-gun on a shipped tank has a slot of its own. Only a hull with fewer slots than
-weapons runs out: there, one more weapon while every slot stands is taken as
-you type it, and the tank refuses it a moment later, as a notice under the
-reply:
-`FIRE cannon refused. Every slot is armed; FIRE <weapon> OFF frees one.`
-Free a slot first and the new rule takes it, even typed straight after
-`FIRE cannon OFF`.
-`FIRE cannon OFF` answers `Cleared: cannon fires only when you say.` and `FIRE
-ALL OFF` answers `Cleared: your guns fire only when you say.` — both said
-whether or not anything was armed.
+**Slots and precedence.** The core's slots are shared across all three actions.
+`MIND RULES [slot]` reads their complete terms. An unnumbered command replaces
+its own shorthand slot; `MIND RULE <slot> <rule>` explicitly installs or replaces
+one slot, allowing several rules for the same weapon. Replacing or removing a
+slot requires its channel. Removing a rule leaves the other numbers unchanged.
+`FIRE ALL WHEN ...` and `FIRE ALL HOLD WHEN ...` reserve all required slots
+atomically: a full core refuses the whole command. `FIRE cannon OFF` clears that
+weapon's fire and hold rules; `FIRE ALL OFF` clears all fire and hold rules while
+leaving Sensors rules armed.
 
-**What a slot tells you.** Every shot a slot fires is announced once, naming
-the slot, the chance and the face it read:
+An ORDER's HOLD FIRE wins, then a matching conditional hold, then the first
+matching authored rule on each channel, then the mind's sliders. A cycling gun
+selected by the first fire rule does not hand its turn to another authored rule.
+Without authored overrides, Standard's weapons retain their independent cycles.
+A pilot's rules are live armings, not saved rules in a sealed profile. The cockpit
+shows every slot and action; `MIND RULES` and `WEAPONSTATUS` read the full terms.
 
-  Cannon fires at BA by S1 (62%, side).
-
-and a shot a slot held is said at most once every ten seconds for a contact,
-with the condition that held it:
-
-  S1 held the cannon: 54% under your 60%.
-  S1 held the cannon: BA shows its front.
-  S1 held the cannon: BA at 650 m, outside 201 to 599.
-  S1 held the cannon: 7 rounds, keeps 8.
-
-The range it quotes is the one `RANGE` prints, and its window is the metres
-the slot keeps, the ones `WEAPONSTATUS` shows: `range > 200 AND range < 600`
-is held as outside 201 to 599. A slot with nothing to shoot at, or whose gun
-is still cycling, says nothing. Nobody else is told any of
-it: not your side, not the target.
-
-**Which wins.** In four lines:
-
-  An ORDER's HOLD FIRE beats everything.
-  FIRE <weapon> OFF clears a slot; a cleared weapon fires only when you say.
-  One slot a weapon: a second FIRE <weapon> WHEN replaces the first.
-  Rules beat sliders.
-
-Anything else is refused in one sentence:
-`FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.`
-— another word, an OR, a fifth condition or a number out of its range. The
-rest of the rule language comes in a later cut.
+`hit within`, `hostiles >=` and `order =` require a thinking mind and are refused
+from the pilot's dormant mind. Authoring those think rules comes with mindcraft.
 
 ## Commanding the machines
 
@@ -569,13 +540,11 @@ Every `FIRE` refusal names the weapon, whichever half answered: `FIRE cannon
 refused. Still cycling: 4 s to go.` So a pilot with two guns is never left
 guessing which breech is busy.
 
-Arming a weapon has three refusals of its own, each naming the weapon:
-`FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.`
-for a rule outside the eight, `FIRE cannon refused. Every slot is armed; FIRE
-<weapon> OFF frees one.` with every slot your core carries taken, and `FIRE
-cannon refused. The Compact floor is 10%; a condition may not ask for less.`
-for a chance under the floor. The full table is always the arena's, a moment
-after the reply; the floor can come from it too, in the same words.
+Invalid native rules are refused with the offending term or bound. A full table
+is refused by the arena; `MIND RULE <slot> OFF` frees a slot. An odds threshold
+below the captured Compact floor reads `FIRE cannon refused. The Compact floor is
+10%; a condition may not ask for less.` A queued rule is checked again when it
+lands, so a lost weapon or a contact that is no longer identified can refuse then.
 
 **Any** order can also be refused by the arena itself a moment after the cockpit
 passed it on — you and the arena are a pulse apart, and the tank may have been

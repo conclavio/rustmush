@@ -410,9 +410,13 @@ wire string `not_reflex` is kept until `Controller::Reflex` is deleted (§17), w
 
 ## 5. The shot decision and the fire law (P1)
 
+The M5rules changes in this section are implemented on the working branch as of
+2026-10-17, pending the integration gate; they are not a landed milestone. The
+bounded native surface is recorded in §24 and [17d §2](17d-unit-minds-through-m6-plan.md#2-m5rules-native-station-rules).
+
 This section is the weapons station's. A hull without one — a miner, a hauler, a builder, an unarmed
-scout — has no `Fire` channel, no condition slots, no odds in its view and no fire law, and nothing
-in the rest of this document depends on it having them.
+scout — has no `Fire` channel, no weapon odds in its view and no fire law. Its core's
+shared rule slots can still hold Sensors rules where it has that channel.
 
 P1 is the centre for an armed hull. Real weapons will have multi-second cycles and precious
 ammunition; there is no auto-fire button; what the engine supports is the *decision* — odds for any
@@ -421,8 +425,13 @@ conditions and the machine implements. The three angle designs put this in three
 slots; rules evaluated at think cadence; a resolver refusal). The synthesis is one mechanism with two
 surfaces and one law.
 
-**The mechanism (D-UM-16).** A **condition slot** is native engine state on an armed unit:
-`FireCondition { weapon: slot, target: Lock | Contact(ContactId) | BestHostile, min_permille: u16,
+**The mechanism (D-UM-16).** A **condition slot** is native engine state on a unit.
+M5rules stores one ordered table of typed `Fire`, `HoldFire` and `Lock` rules in
+`Arena.conditions`, bounded by the installed core's slot count. Fire and hold use
+Fire authority; lock uses Sensors authority. Legacy `arm` calls and Standard
+Doctrine's independent gun armings adapt into this same table. The fire action
+retains the original condition payload:
+`FireCondition { weapon: weapon_id, target: Lock | Contact(ContactId) | BestHostile, min_permille: u16,
 aspects: mask over front/left/right/rear, min_rounds_left: u32, min_range_m: u32, max_range_m: u32 }`
 (as built, 17b cut M1b.1: `min_range_m` so `range > n m` fits), up to the core's `condition_slots`
 (`STOCK_CONDITION_SLOTS = 2` until M3), held per hull in `Arena.conditions` for a hull of any controller
@@ -434,8 +443,8 @@ and aspect the view carries — the plot through `aim_at` and `resolve_seen`, ne
 state. When a condition holds it builds `IntentKind::Fire`, resolves it at that millisecond through
 `apply_intent` (under `IntentSource::Cond`) and `resolve_fire_by` (as built), which charge the cycle and the ammunition as any shot does, and
 the fired ledger line gains `by: cond` plus the slot. Evaluation is bounded by slots × events and
-costs no mind ops: the hardware paid for the slot. A core's slots on a hull with no weapons station
-are simply unused; the class table (§9) does not change by role.
+costs no mind ops: the hardware paid for the slot. Sensors rules use the same
+capacity even on a hull without weapons; the class table (§9) does not change by role.
 
 **The slot and 16c's Q45.** The owner ruled on 16c `Q45` (2026-10-02): no armed trigger and nothing
 that fires for the pilot; cadence parity comes the other way, the machines paying the seat's pulse,
@@ -465,8 +474,9 @@ enters the hull — on the card at the seal, and at the landing of every arming 
 <weapon> WHEN …`, a mind's `arm`) and of every cited fire, ahead of the `Unwarranted` test — against
 the floor the seal captured, so a policy change never touches a sealed sortie; before seals exist
 (M1b) it is the match's configured floor, captured at check-out. A condition under the floor, or
-naming an inadmissible target, is refused with a second new `Refusal` word, `Unlawful`, with the
-floor named: refuse-not-clamp, for a card at the seal and for an arming alike, and the cockpit
+naming an inadmissible target, is refused with a second new `Refusal` word, `Unlawful`.
+The floor is named only for an actual below-floor threshold, not for a lost or
+unclassified target: refuse-not-clamp, for a card at the seal and for an arming alike, and the cockpit
 pre-checks a typed rule off the frame so it is refused as typed. A rule with no odds term compiles
 to the floor. Only an ungoverned core skips the check (D-UM-42), and its unlawful arming is
 journalled. The player angle's `weapons:
@@ -475,36 +485,53 @@ the Line preset arms, and it is printed as a condition like any other.
 
 **The surface (D-UM-18)** is the player angle's rule language, which compiles to slots:
 
-`<ACTION> [<weapon>] WHEN <condition> [AND <condition>]…`, at most four conditions, no `OR` (two
-rules are clearer than one), with the English explanation written back on save
-(as built, 17b cut M1b.4, with no slot number: `Arming cannon: fires your lock when your chance to hit is
-60% or better and it shows its side or rear.`). Conditions: `odds [weapon] >= n`, `aspect = front|side|rear` (a comma list,
-identified contacts only), `range < | > n m`, `band = close|effective|far`, `target =
-identified|moving|stopped|hurt`, `target <section> = green|yellow|red|destroyed` (an earned
-reading), `rounds [weapon] < | > n | n%`, `reserve`, `own <section> < n%`, `hit within n s [from
-front|side|rear]`, `hostiles >= n`, `heat > n%`, `order = …`, `lock`, `no lock`. Actions: `FIRE
-<weapon>`, `HOLD FIRE <weapon|ALL>` (its unconditional form is spelled `FIRE <weapon|ALL> OFF` as built, 17b cut
-M1b.4; the conditional veto is M5's), `LOCK nearest|best_odds|weakest|flank|newest` (not built in M1b; for a `LOCK`
-rule the target conditions are tested on each candidate). The helm actions the player angle listed
+`FIRE <weapon|ALL> [HOLD] WHEN <condition> [AND <condition>]…` or
+`LOCK nearest|best_odds|weakest|flank|newest WHEN …`, at most four conditions, no
+`OR`. The pilot receives complete English beginning `Queued:`; admission is
+checked again at landing. `MIND RULES [slot]` reads the ordered rules;
+`MIND RULE <slot> <rule>` replaces one slot and `MIND RULE <slot> OFF` removes it.
+An unnumbered command replaces its matching shorthand action/weapon slot, leaving
+explicitly numbered rules intact. `ALL` reserves every required slot atomically
+or changes none. `FIRE <weapon|ALL> OFF` clears fire and hold rules, preserving
+Sensors rules; it is not a standing unconditional hold.
+
+Native conditions are `odds [weapon] >= n`, `aspect = front|side|rear` (a comma
+list), `range < | > n m`, `band = close|effective|far`, `target =
+identified|moving|stopped|hurt`, `target <section> = green|yellow|red|destroyed`,
+`rounds [weapon] < | > n | n%`, `reserve`, `own <section> < n%`, `heat > n%`,
+`lock`, and `no lock` (also `nolock`). Unknown earned readings are false. Range
+uses strict comparisons against the plot's rounded metres; band uses the current
+plot and reach, not metres captured at arming. Ammunition percentages use the full
+load without rounding the comparison, own sections use maximum internals, and
+heat uses maximum heat. `reserve` means `rounds > 0` while piloted.
+
+Fire additionally accepts `target = lock|best_hostile|<identified designator>`.
+A named contact must be classified at admission and evaluation, and is a filter
+on the current lock, never an implicit retarget. `LOCK` selectors consider only
+identified hostiles on the caller's plot; their predicates run on each candidate.
+`newest` means the freshest published plot. The helm actions the player angle listed
 (`STAND`, `CLOSE`, `OPEN`, `TURN INTO`, `HUNT`, `BREAK OFF`) are **not** rule actions: they are the
 stock mind's posture sliders (§11) implemented through `goto` and `helm`, because a rule action must
-be a station verb and those are not. A rule whose conditions fit a slot compiles to one; a rule that
-needs a think (`hit within`, `hostiles >=`, `order =`) is evaluated by the stock mind at its think
-and arms or disarms slots. The card says which is which (`R1 … (armed on the core)`,
-`R2 … (checked each think)`). The rule language is the weapons station's in v1; a later station may
+be a station verb and those are not. Think-only conditions (`hit within`,
+`hostiles >=`, `order =`) are refused by the pilot's native grammar: the mind is
+dormant while the pilot flies. Their authored-mind workflow belongs to M6 and is
+not implemented by this native-rule cut. The native language covers Fire and
+Sensors; a later station may
 bring rule actions of its own under the same grammar, each a verb of that station.
 
 Precedence fits in four lines and puts safety first: an `ORDER`'s `hold_fire` beats everything, and
 it is now enforced for `IntentSource::Mind` and for condition fires in `resolve_fire_by` (17b cuts M1b.1 and
 M1b.2: the `Unwarranted` answer after the `Cycling` and `Empty` tests and before `Overheated`; before M1b it
 was honoured only in reflex planning, `reflex.rs:2862`; D-UM-19); a matching `HOLD
-FIRE` beats any `FIRE` on the same weapon; then the first matching rule wins per channel; rules beat
-sliders.
+FIRE` beats any `FIRE` on the same weapon; then the first matching authored rule
+wins per channel, even if its chosen gun is cycling; rules beat sliders. Without
+an authored override, Standard Doctrine's guns retain independent cycles in the
+same table, so a cycling first gun does not starve its other guns.
 
 Pilots get the same slots from the same core: `FIRE cannon WHEN odds >= 60 AND aspect = side,rear`
-typed in the cockpit stages `IntentKind::Condition`, `WEAPONSTATUS` shows the arming on its own
-line under the weapon's row (`  S1: >=60% side/rear keeps 8`, as built in 17b cuts M1b.3 and M1b.4 for the
-120-column floor: the bracket tail this document first drew reached 134 columns on a shipped row), a typed `FIRE` is
+typed in the cockpit stages `IntentKind::Condition`. `WEAPONSTATUS` and
+`MIND RULES` read complete rules in slot order, wrapped at the 120-column floor;
+these live pilot rules are not saved in a sealed profile. A typed `FIRE` is
 arbitrated by the weapon's cycle against a slot's fire (whichever lands first fires; the other reads
 `Cycling`), and every slot shot is announced once (`Cannon fires at BA by S1 (62%, side).` — the slot's number, as built), with a
 held shot said at most once per contact per 10 s (`S1 held the cannon: 54% under your 60%.`). The
@@ -703,8 +730,9 @@ memory keys, `line_to` cap, profiles and the governed bit. As built (17b cut M3.
 read live off the unit by `arena::core::read_core` — the component's `core_class` cell and the
 capability — and never copied into `UnitState` (D-UM-33's `UnitState.core: CoreProfile` is not built: the class is a live fact a hit moves). A hull with no core component is Class
 0: every hull has the ROM, armed or not. Its `InstalledComponent.asset` is a titled object, so IC a
-core is its own economic asset, separable from the hull. `odds_rows` and slots are fire-control
-figures; on a hull with no weapons station they are carried and unused.
+core is its own economic asset, separable from the hull. `odds_rows` is a fire-control
+figure and is unused without a weapons station. M5rules shares the slot count
+between Fire and Sensors actions, so an unarmed hull can use its Sensors slots.
 
 **Placement and damage (D-UM-34).** Content places the core in a section: on the sim's chassis the
 turret on the line tanks (fire control belongs there, and losing the turret loses the guns and the
@@ -1774,6 +1802,44 @@ weapons, after which the slot and cadence measures of M1b are re-run. The Ceres 
 
 Each cut that builds part of this document records here what it built differently and why, in the
 form of doc 16 §11, and a region map's sim task records here any divergence from §2's arena facts.
+
+**M5rules — implemented on the working branch, integration gate pending
+(2026-10-17; not landed).** This amendment records the current implementation of
+[17d §2](17d-unit-minds-through-m6-plan.md#2-m5rules-native-station-rules), not a
+completed gate or a replacement for the historical cut records below.
+
+- **§3–5 and §9: one ordered native table.** `Rule::{Fire, HoldFire, Lock}` shares
+  the installed core's bounded slots. Fire/hold admission and removal use Fire
+  authority; lock uses Sensors authority, with current epochs checked at landing.
+  ORDER hold-fire and a matching weapon hold veto automatic fire, then the first
+  matching authored action wins per channel; a cycling selected gun does not fall
+  through. Standard Doctrine's legacy armings occupy this same table as independent
+  guns and retain their separate cycles when no authored override wins. Immediate
+  pilot fire keeps the human-trigger exception.
+- **§5: native pilot grammar and public facts.** `FIRE <weapon|ALL> [HOLD] WHEN …`,
+  five `LOCK` selectors, `MIND RULES [slot]`, and `MIND RULE <slot> <rule|OFF>` use
+  one parser and canonical English. Unnumbered edits preserve explicit slots;
+  `ALL` reserves its whole batch or changes nothing. Fire/hold OFF preserves
+  Sensors rules. The four-term grammar reads only own or earned facts, with unknown
+  readings false. A named `Contact` must be classified at admission and evaluation
+  and must still be the lock to fire; it never gives Fire retargeting authority.
+  A lost classification or invalid shape says `That rule is not lawful for this
+  unit.`; only an actual below-floor threshold names the Compact floor.
+  Movement comes from the published plot, `newest` from its published age, ranges
+  from rounded metres, and bands from current reach. Think-only conditions are
+  refused while piloted. Live pilot rules are not sealed profile edits.
+- **§3 and §13: compatibility declaration.** The cockpit frame is version **4**,
+  carrying ordered typed rules with canonical English and plotted movement; the
+  mind projection/API is version **2**, with
+  `MIND_ABI = rhai=1.26.0;api=2;stock=1`. Snapshot format **11** carries and hashes
+  the typed ordered table. Its decoder rejects more than six slots, more than four
+  predicates and unknown actions. There is **no migration** from the old snapshot
+  shape or ABI: existing format/ABI refusal boundaries remain closed. The stock
+  source identity, hash pins, client fixtures and full gate results must be
+  reviewed together before this entry is marked landed. M5r, M6 and M7 are not
+  claimed by this amendment.
+
+Historical landed amendments follow unchanged.
 
 - **§4 "The motor" and D-UM-3 (the motor extracted, the reflex kept whole)**: as built (17b cut M1a.1, 2026-10-03, `10a5a0ec`): `arena/motor.rs` holds `MotorRow { goal, route, searched_ms, searched_from, avoid, refused, waypoint, from_waypoint, hold_retry_ms }` with `MotorRow::age_avoid` (the avoid TTL sweep lifted from the head of `decide` and called where it stood) and `MotorTable` (the rows, the path budget window and spent, the A\* scratch) as `Arena.motors` for every controller; `follow(&self, id, t_ms, motors, row, here, policy: Fallback::{Waypoint, Notice}, counters, plan) -> MotorOutcome { arrived, unreachable }` reads `arena_cfg.reflex`, and `decide` performs the B-41/Z.2/E.4 give-ups from the outcome in their old order; `step_is_drivable`, `first_step_is_open`, `line_is_open`, `walk_is_open`, `entry_cell`, `far_entry_cell`, `stand_off_cell`, `patrol_step`, `hold_arrived` and `fall_back_to_waypoint` are `pub` as the audited surface (the five audits: hold the plot and move the truth; the pickers read the ground and the own pose; the walks read terrain and the avoid list and never the index; a stop is learned at the `blocked` event; a pilot row ages its stops). Departures from D-UM-3 as written: `DueKind::ReflexTick` is **not** renamed and stripped of `decide` — it stays as T0's cadence until M4, and `DueKind::MotorTick` (M1a.4) is a new kind beside it for a hull no reflex tick drives; `ReflexCounters` is not renamed `MotorCounters` until M4, so the harness baseline keys do not move; `ReflexUnit` keeps the whole decision half (`state, target, no_line, stand_until_ms, quiet_since_ms, rallied, order, last_plot, unheld_since_ms, hunt`), and `reflex.rs` loses only the driving fields (7,042 → 3,981 lines; 4,138 after M1a.6). `set_controller(Pilot)` releases the machine row and the motor row through `Arena::release_reflex` (§2's table says `reflex.release`, which was `e30b9491`'s code), and the controller guard on the motor's readers (`hold_routeless`, `note_blocked`, `refresh_held_avoid`) is replaced by the row: every transition away from a controller releases its row (M1a.5 made that hold for `Mind` too). The hash fold reads the table in the same byte order, two constants read at HEAD before the move pin it (the 1,000 ms replay's first and last hash, the shipped duel's final hash, re-asserted by M1a.4, M1a.5 and M1a.6), and a per-row section folds motor rows with no reflex row; `SNAPSHOT_FORMAT` 2 → 3 with a `motors` section. §2's and §4's `reflex.rs:` anchors (`:845`, `:1247`, `:1464`, `:2862`, `:3118`, `:3616`, `:4567-4640`, `:5911`) point at moved code and are left as they were at `e30b9491`.
 - **§3 "One formatter" and D-UM-4 (the row formatter moved)**: as built (17b cut M1a.2, 2026-10-03, `b446b918`): `arena/view.rs` holds `frame_contacts`, `frame_contacts_held`, `range_m_rounded`, `held_range_m`, `settle_ranges`, `own_scope`, `class_word`, `relative_mdeg`, `contact_band`, `ContactRow` with `render` and `glyph`, `frame_lock`, `lock_designator`, `fired_by_default` and the four glyph constants, moved verbatim with their tests — a wider list than §3's four; `cockpit.rs` re-exports them in one `pub use`, and `contact_sentence` (the brief's sentence), `CONTACT_RANGE_STEP_M` and `lock_range_step_m` stay where §3 says. Byte identity is pinned two ways (the fixture scene's `CONTACTS` rows against literals read at HEAD, `contact_sentence` against `view_brief.txt`), by the bot's contract test and by `git diff --exit-code` on the fixtures, goldens and help; no sentence moved. §3's `cockpit.rs:824, :1041, :1062, :963` point at other code now.

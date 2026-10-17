@@ -2,6 +2,23 @@
   "blessed": {
     "commit": "16320d7cb7696a2961272462b80b36df0007fdc7",
     "date": "2026-10-12T20:17:57Z",
+    "deterministic_update": {
+      "cut": "M5rules",
+      "date": "2026-10-17",
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.ceiling_authored.final_substep_hash"
+      ],
+      "host": {
+        "hostname": "alien18",
+        "os": "windows"
+      },
+      "reason": "Typed ordered rules, snapshot 11, and Standard source identity under API 2; five deterministic leaves only. Original VPS timing measurements retained.",
+      "source_sha256": "55cabde517b6a08e3d6e8017a43d7231c639c1d8ebfbe6e3777b52ed18115227"
+    },
     "host": {
       "cpus": 4,
       "hostname": "srv1930616",
@@ -51,7 +68,7 @@
     "frames_per_pulse_mean": 21.1,
     "held_at_end": 3,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1637062,
+    "ledger_bytes_streamed": 1636915,
     "ledger_chunks": 102,
     "moving_at_end": 114
   },
@@ -91,7 +108,7 @@
       "fees_total": 9600,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "15373819526431959445",
+      "final_substep_hash": "12219682608223646726",
       "inline_thinks": 1744,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -197,7 +214,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "4202822793512051710",
+      "final_substep_hash": "16306271695136756772",
       "inline_thinks": 1670,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -239,7 +256,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "9143603719061090391",
+      "final_substep_hash": "4151156358722449578",
       "inline_thinks": 1683,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -272,7 +289,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "2630393563764154295",
+      "final_substep_hash": "660001257742320520",
       "inline_thinks": 1693,
       "jitter_ms": 250,
       "jitter_per_mille": 250,

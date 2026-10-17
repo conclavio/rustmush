@@ -49,7 +49,10 @@ use mush_mind::rhai::{Array, Dynamic, EvalAltResult, INT, ImmutableString};
 use super::Registrar;
 use super::context::{REFUSED_TYPE, refused};
 use super::fees::{FEE_READ, charge};
-use crate::arena::conditions::{HeldWhy, SlotTarget};
+use crate::arena::conditions::{
+    Comparison, HeldWhy, LockSelector, Rule, RuleBand, RulePredicate, SectionState, SlotTarget,
+    TargetState,
+};
 use crate::arena::mind::{MindView, ViewContact};
 use crate::arena::perception::{
     DriveOutcome, FrameCondition, FrameNotice, MindObjective, Receiver as FrameReceiver,
@@ -57,7 +60,7 @@ use crate::arena::perception::{
 };
 use crate::arena::state::{Classification, ContactId};
 use crate::arena::step::{FrameFacet, FrameHeat, FrameSection};
-use crate::arena::weapons::{FrameArming, FrameWeapon};
+use crate::arena::weapons::{FrameArming, FrameRule, FrameWeapon};
 
 // ---------------------------------------------------------------------------
 // The handles
@@ -109,6 +112,14 @@ pub struct Condition(pub FrameCondition);
 #[derive(Clone, Debug)]
 pub struct Armed(pub FrameArming);
 
+/// One ordered station rule, sharing the immutable view rather than its row.
+#[derive(Clone, Debug)]
+pub struct RuleView(pub Arc<MindView>, pub u32);
+
+/// One written predicate. Its values are terms, never hidden target state.
+#[derive(Clone, Debug)]
+pub struct Predicate(pub RulePredicate);
+
 /// A `u32` index as a `usize`.
 fn at(index: u32) -> Option<usize> {
     usize::try_from(index).ok()
@@ -132,6 +143,14 @@ impl Weapon {
     #[must_use]
     pub fn row(&self) -> Option<&FrameWeapon> {
         self.0.weapons.get(at(self.1)?)
+    }
+}
+
+impl RuleView {
+    /// The projected rule, or `None` for an index the view does not carry.
+    #[must_use]
+    pub fn row(&self) -> Option<&FrameRule> {
+        self.0.rules.get(at(self.1)?)
     }
 }
 
@@ -350,6 +369,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     ),
     ("View", "scan_tables", "scan_tables"),
     ("View", "odds_floor_permille", "odds_floor_permille"),
+    ("View", "rules", "rules (all active slots, in slot order)"),
     (
         "Contact",
         "id",
@@ -366,6 +386,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     ("Contact", "age_ms", "age_ms"),
     ("Contact", "cell", "cell"),
     ("Contact", "condition", "condition"),
+    ("Contact", "moving", "moving"),
     ("Contact", "fatal", "fatal"),
     ("Contact", "aspect", "aspect"),
     ("Contact", "odds", "odds[weapon = the argument].p_permille"),
@@ -442,6 +463,50 @@ pub const PARITY: &[(&str, &str, &str)] = &[
         "max_range_m",
         "max_range_m (null read as 4294967295)",
     ),
+    ("Rule", "slot", "rules[].slot"),
+    ("Rule", "action", "rules[].rule.action"),
+    ("Rule", "channel", "rules[].rule.action's channel"),
+    ("Rule", "weapon", "rules[].rule.weapon or condition.weapon"),
+    ("Rule", "target", "rules[].rule.condition.target.target"),
+    (
+        "Rule",
+        "contact",
+        "rules[].rule.condition.target.id, as the ContactId's INT",
+    ),
+    ("Rule", "selector", "rules[].rule.selector"),
+    (
+        "Rule",
+        "min_permille",
+        "rules[].rule.condition.min_permille",
+    ),
+    ("Rule", "aspects", "rules[].rule.condition.aspects"),
+    ("Rule", "keeps", "rules[].rule.condition.min_rounds_left"),
+    ("Rule", "min_range_m", "rules[].rule.condition.min_range_m"),
+    ("Rule", "max_range_m", "rules[].rule.condition.max_range_m"),
+    ("Rule", "implicit", "rules[].rule.implicit"),
+    (
+        "Rule",
+        "independent",
+        "rules[].rule.independent (absent on non-fire rules: false)",
+    ),
+    ("Rule", "predicates", "rules[].rule.predicates"),
+    ("Predicate", "kind", "rules[].rule.predicates[].predicate"),
+    ("Predicate", "weapon", "rules[].rule.predicates[].weapon"),
+    (
+        "Predicate",
+        "comparison",
+        "rules[].rule.predicates[].comparison",
+    ),
+    (
+        "Predicate",
+        "value",
+        "predicate's min_permille, mask, metres, amount, below_percent or above_percent",
+    ),
+    ("Predicate", "percent", "rules[].rule.predicates[].percent"),
+    ("Predicate", "section", "rules[].rule.predicates[].section"),
+    ("Predicate", "state", "rules[].rule.predicates[].state"),
+    ("Predicate", "band", "rules[].rule.predicates[].band"),
+    ("Predicate", "present", "rules[].rule.predicates[].present"),
     ("Notice", "kind", "kind"),
     (
         "Notice",
@@ -506,9 +571,12 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     custom_type!(api, Notice, "Notice");
     custom_type!(api, Condition, "Condition");
     custom_type!(api, Armed, "Armed");
+    custom_type!(api, RuleView, "Rule");
+    custom_type!(api, Predicate, "Predicate");
     register_view(api);
     register_contact(api);
     register_weapon(api);
+    register_rules(api);
     register_own(api);
     register_order(api);
     register_notice(api);
@@ -566,6 +634,13 @@ fn register_view(api: &mut Registrar<'_>) {
         Dynamic::from_array(
             indices(&v.0.weapons)
                 .map(|index| Dynamic::from(Weapon(Arc::clone(&v.0), index)))
+                .collect(),
+        )
+    });
+    getter!(api, "View", "rules", |v: &mut View| {
+        Dynamic::from_array(
+            indices(&v.0.rules)
+                .map(|index| Dynamic::from(RuleView(Arc::clone(&v.0), index)))
                 .collect(),
         )
     });
@@ -650,6 +725,9 @@ fn register_contact(api: &mut Registrar<'_>) {
         on(c, |row| {
             opt(row.condition, |reading| Dynamic::from(Condition(reading)))
         })
+    });
+    getter!(api, "Contact", "moving", |c: &mut Contact| {
+        on(c, |row| Dynamic::from_bool(row.moving))
     });
     getter!(api, "Contact", "fatal", |c: &mut Contact| {
         on(c, |row| {
@@ -755,6 +833,203 @@ fn register_weapon(api: &mut Registrar<'_>) {
     });
     getter!(api, "Armed", "max_range_m", |a: &mut Armed| {
         int(a.0.max_range_m)
+    });
+}
+
+/// The complete written station rules. Every getter is a primitive or a
+/// bounded array of predicate records, read from the same rows as the keyframe.
+#[allow(clippy::too_many_lines)]
+fn register_rules(api: &mut Registrar<'_>) {
+    fn on(r: &RuleView, f: impl FnOnce(&FrameRule) -> Dynamic) -> Dynamic {
+        opt(r.row(), f)
+    }
+    getter!(api, "Rule", "slot", |r: &mut RuleView| {
+        on(r, |row| int(row.slot))
+    });
+    getter!(api, "Rule", "action", |r: &mut RuleView| {
+        on(r, |row| {
+            word(match &row.rule {
+                Rule::Fire { .. } => "fire",
+                Rule::HoldFire { .. } => "hold_fire",
+                Rule::Lock { .. } => "lock",
+            })
+        })
+    });
+    getter!(api, "Rule", "channel", |r: &mut RuleView| {
+        on(r, |row| word(row.rule.channel().as_str()))
+    });
+    getter!(api, "Rule", "weapon", |r: &mut RuleView| {
+        on(r, |row| opt(row.rule.weapon(), |weapon| word(weapon)))
+    });
+    getter!(api, "Rule", "target", |r: &mut RuleView| {
+        on(r, |row| {
+            opt(row.rule.fire(), |fire| {
+                word(match fire.target {
+                    SlotTarget::Lock => "lock",
+                    SlotTarget::Contact { .. } => "contact",
+                    SlotTarget::BestHostile => "best_hostile",
+                })
+            })
+        })
+    });
+    getter!(api, "Rule", "contact", |r: &mut RuleView| {
+        on(r, |row| match row.rule.fire().map(|fire| fire.target) {
+            Some(SlotTarget::Contact { id }) => Dynamic::from_int(contact_int(id)),
+            _ => Dynamic::UNIT,
+        })
+    });
+    getter!(api, "Rule", "selector", |r: &mut RuleView| {
+        on(r, |row| match &row.rule {
+            Rule::Lock { selector, .. } => word(match selector {
+                LockSelector::Nearest => "nearest",
+                LockSelector::BestOdds => "best_odds",
+                LockSelector::Weakest => "weakest",
+                LockSelector::Flank => "flank",
+                LockSelector::Newest => "newest",
+            }),
+            _ => Dynamic::UNIT,
+        })
+    });
+    getter!(api, "Rule", "min_permille", |r: &mut RuleView| {
+        on(r, |row| opt(row.rule.fire(), |fire| int(fire.min_permille)))
+    });
+    getter!(api, "Rule", "aspects", |r: &mut RuleView| {
+        on(r, |row| opt(row.rule.fire(), |fire| int(fire.aspects)))
+    });
+    getter!(api, "Rule", "keeps", |r: &mut RuleView| {
+        on(r, |row| {
+            opt(row.rule.fire(), |fire| int(fire.min_rounds_left))
+        })
+    });
+    getter!(api, "Rule", "min_range_m", |r: &mut RuleView| {
+        on(r, |row| opt(row.rule.fire(), |fire| int(fire.min_range_m)))
+    });
+    getter!(api, "Rule", "max_range_m", |r: &mut RuleView| {
+        on(r, |row| opt(row.rule.fire(), |fire| int(fire.max_range_m)))
+    });
+    getter!(api, "Rule", "implicit", |r: &mut RuleView| {
+        on(r, |row| {
+            Dynamic::from_bool(match &row.rule {
+                Rule::Fire { implicit, .. }
+                | Rule::HoldFire { implicit, .. }
+                | Rule::Lock { implicit, .. } => *implicit,
+            })
+        })
+    });
+    getter!(api, "Rule", "independent", |r: &mut RuleView| {
+        on(r, |row| {
+            Dynamic::from_bool(matches!(
+                &row.rule,
+                Rule::Fire {
+                    independent: true,
+                    ..
+                }
+            ))
+        })
+    });
+    getter!(api, "Rule", "predicates", |r: &mut RuleView| {
+        on(r, |row| {
+            Dynamic::from_array(
+                row.rule
+                    .predicates()
+                    .iter()
+                    .cloned()
+                    .map(|predicate| Dynamic::from(Predicate(predicate)))
+                    .collect(),
+            )
+        })
+    });
+    getter!(api, "Predicate", "kind", |p: &mut Predicate| {
+        word(match &p.0 {
+            RulePredicate::Odds { .. } => "odds",
+            RulePredicate::Aspect { .. } => "aspect",
+            RulePredicate::Range { .. } => "range",
+            RulePredicate::Band { .. } => "band",
+            RulePredicate::Target { .. } => "target",
+            RulePredicate::TargetSection { .. } => "target_section",
+            RulePredicate::Rounds { .. } => "rounds",
+            RulePredicate::OwnSection { .. } => "own_section",
+            RulePredicate::Heat { .. } => "heat",
+            RulePredicate::Lock { .. } => "lock",
+        })
+    });
+    getter!(api, "Predicate", "weapon", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::Odds { weapon, .. } | RulePredicate::Rounds { weapon, .. } => {
+                opt(weapon.as_ref(), |weapon| word(weapon))
+            }
+            _ => Dynamic::UNIT,
+        }
+    });
+    getter!(api, "Predicate", "comparison", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::Range { comparison, .. } | RulePredicate::Rounds { comparison, .. } => {
+                word(match comparison {
+                    Comparison::Less => "less",
+                    Comparison::Greater => "greater",
+                    Comparison::AtLeast => "at_least",
+                    Comparison::Equal => "equal",
+                })
+            }
+            _ => Dynamic::UNIT,
+        }
+    });
+    getter!(api, "Predicate", "value", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::Odds { min_permille, .. } => int(*min_permille),
+            RulePredicate::Aspect { mask } => int(*mask),
+            RulePredicate::Range { metres, .. } => int(*metres),
+            RulePredicate::Rounds { amount, .. } => int(*amount),
+            RulePredicate::OwnSection { below_percent, .. } => int(*below_percent),
+            RulePredicate::Heat { above_percent } => int(*above_percent),
+            _ => Dynamic::UNIT,
+        }
+    });
+    getter!(api, "Predicate", "percent", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::Rounds { percent, .. } => Dynamic::from_bool(*percent),
+            _ => Dynamic::UNIT,
+        }
+    });
+    getter!(api, "Predicate", "section", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::TargetSection { section, .. }
+            | RulePredicate::OwnSection { section, .. } => word(section),
+            _ => Dynamic::UNIT,
+        }
+    });
+    getter!(api, "Predicate", "state", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::Target { state } => word(match state {
+                TargetState::Identified => "identified",
+                TargetState::Moving => "moving",
+                TargetState::Stopped => "stopped",
+                TargetState::Hurt => "hurt",
+            }),
+            RulePredicate::TargetSection { state, .. } => word(match state {
+                SectionState::Green => "green",
+                SectionState::Yellow => "yellow",
+                SectionState::Red => "red",
+                SectionState::Destroyed => "destroyed",
+            }),
+            _ => Dynamic::UNIT,
+        }
+    });
+    getter!(api, "Predicate", "band", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::Band { band } => word(match band {
+                RuleBand::Close => "close",
+                RuleBand::Effective => "effective",
+                RuleBand::Far => "far",
+            }),
+            _ => Dynamic::UNIT,
+        }
+    });
+    getter!(api, "Predicate", "present", |p: &mut Predicate| {
+        match &p.0 {
+            RulePredicate::Lock { present } => Dynamic::from_bool(*present),
+            _ => Dynamic::UNIT,
+        }
     });
 }
 
@@ -1097,6 +1372,8 @@ mod tests {
         shared::<Receiver>();
         shared::<Condition>();
         shared::<Armed>();
+        shared::<RuleView>();
+        shared::<Predicate>();
         shared::<super::super::card::Card>();
         shared::<super::super::kernels::Ranges>();
         shared::<super::super::kernels::Walk>();
@@ -1150,6 +1427,7 @@ mod tests {
             ("type_of(v.heat)", "\"Heat\"".into()),
             ("v.sections.len()", "1".into()),
             ("v.weapons.len()", "2".into()),
+            ("v.rules.len()", "1".into()),
             ("v.lock", hostile.clone()),
             ("type_of(v.order)", "\"Order\"".into()),
             ("v.t_ms", "5000".into()),
@@ -1222,6 +1500,7 @@ mod tests {
             // The fixture's 755 at the keyframe's resolution (75%).
             ("v.receiver.reach_permille", "750".into()),
             ("v.contacts[0].condition.table", "0".into()),
+            ("v.contacts[0].moving", "false".into()),
             ("v.contacts[0].condition.bands", "\"gy\"".into()),
             ("v.contacts[0].condition.age_ms", "1000".into()),
             // The order: an Engage on the hostile.
@@ -1278,6 +1557,11 @@ mod tests {
         }
         // Every getter of every view type is read above.
         for (ty, getter, _) in PARITY {
+            if matches!(*ty, "Rule" | "Predicate") {
+                // These require authored rules and are read by the dedicated
+                // complete-rule projection fixture below.
+                continue;
+            }
             let dotted = format!(".{getter}");
             assert!(
                 reads.iter().any(|(expr, _)| expr.contains(&dotted)),
@@ -1304,6 +1588,8 @@ mod tests {
             "Notice",
             "Condition",
             "Armed",
+            "Rule",
+            "Predicate",
         ];
         let registered: BTreeSet<String> = registered_names()
             .into_iter()
@@ -1318,13 +1604,182 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), PARITY.len(), "a parity row written twice");
         // The table's size, for 17b cut M2.4's parity test to count on.
-        assert_eq!(PARITY.len(), 114);
+        assert_eq!(PARITY.len(), 140);
         assert_eq!(
             registered, rows,
             "a view getter without a parity row, or a row without a getter"
         );
         for (ty, getter, rendering) in PARITY {
             assert!(!rendering.is_empty(), "{ty}.{getter} names no rendering");
+        }
+    }
+
+    /// All action kinds and predicate payloads cross the same observation
+    /// boundary. Slot gaps and two fire rules for one weapon stay visible;
+    /// fields belonging to another action or predicate return unit, not a
+    /// guessed default or a target-state lookup.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn ordered_rules_and_their_predicates_are_read_at_keyframe_resolution() {
+        use crate::arena::conditions::FireCondition;
+
+        let mut seen = fixture::view();
+        let fire = FireCondition {
+            weapon: "cannon".into(),
+            target: SlotTarget::Contact { id: HOSTILE },
+            min_permille: 600,
+            aspects: 14,
+            min_rounds_left: 2,
+            min_range_m: 50,
+            max_range_m: 420,
+        };
+        seen.rules = vec![
+            FrameRule {
+                slot: 1,
+                rule: Rule::Fire {
+                    condition: fire.clone(),
+                    predicates: vec![
+                        RulePredicate::Odds {
+                            weapon: Some("cannon".into()),
+                            min_permille: 600,
+                        },
+                        RulePredicate::Aspect { mask: 14 },
+                        RulePredicate::Range {
+                            comparison: Comparison::Less,
+                            metres: 421,
+                        },
+                        RulePredicate::Target {
+                            state: TargetState::Moving,
+                        },
+                    ],
+                    implicit: false,
+                    independent: false,
+                },
+            },
+            FrameRule {
+                slot: 3,
+                rule: Rule::HoldFire {
+                    weapon: "cannon".into(),
+                    predicates: vec![
+                        RulePredicate::OwnSection {
+                            section: "hull".into(),
+                            below_percent: 50,
+                        },
+                        RulePredicate::Heat { above_percent: 70 },
+                        RulePredicate::Rounds {
+                            weapon: None,
+                            comparison: Comparison::AtLeast,
+                            amount: 25,
+                            percent: true,
+                        },
+                    ],
+                    implicit: true,
+                },
+            },
+            FrameRule {
+                slot: 4,
+                rule: Rule::Lock {
+                    selector: LockSelector::BestOdds,
+                    weapon: Some("cannon".into()),
+                    predicates: vec![
+                        RulePredicate::TargetSection {
+                            section: "hull".into(),
+                            state: SectionState::Red,
+                        },
+                        RulePredicate::Band {
+                            band: RuleBand::Effective,
+                        },
+                        RulePredicate::Lock { present: false },
+                    ],
+                    implicit: false,
+                },
+            },
+            FrameRule {
+                slot: 5,
+                rule: Rule::Fire {
+                    condition: FireCondition {
+                        target: SlotTarget::BestHostile,
+                        ..fire
+                    },
+                    predicates: vec![],
+                    implicit: true,
+                    independent: true,
+                },
+            },
+        ];
+        let read = |expr: &str| {
+            shown(
+                &fixture::eval_in(fixture::context_on(seen.clone()), expr)
+                    .unwrap_or_else(|error| panic!("{expr}: {error}")),
+            )
+        };
+        let reads = [
+            ("v.rules.len()", "4"),
+            ("type_of(v.rules[0])", "\"Rule\""),
+            ("v.rules[1].slot", "3"),
+            ("v.rules[0].action", "\"fire\""),
+            ("v.rules[1].action", "\"hold_fire\""),
+            ("v.rules[2].action", "\"lock\""),
+            ("v.rules[0].channel", "\"fire\""),
+            ("v.rules[2].channel", "\"sensors\""),
+            ("v.rules[0].weapon", "\"cannon\""),
+            ("v.rules[0].target", "\"contact\""),
+            ("v.rules[3].target", "\"best_hostile\""),
+            ("v.rules[2].target", "()"),
+            ("v.rules[0].selector", "()"),
+            ("v.rules[2].selector", "\"best_odds\""),
+            ("v.rules[0].min_permille", "600"),
+            ("v.rules[0].aspects", "14"),
+            ("v.rules[0].keeps", "2"),
+            ("v.rules[0].min_range_m", "50"),
+            ("v.rules[0].max_range_m", "420"),
+            ("v.rules[1].min_permille", "()"),
+            ("v.rules[1].implicit", "true"),
+            ("v.rules[0].independent", "false"),
+            ("v.rules[1].independent", "false"),
+            ("v.rules[3].independent", "true"),
+            ("v.rules[0].predicates.len()", "4"),
+            ("type_of(v.rules[0].predicates[0])", "\"Predicate\""),
+            ("v.rules[0].predicates[0].kind", "\"odds\""),
+            ("v.rules[0].predicates[0].weapon", "\"cannon\""),
+            ("v.rules[0].predicates[0].value", "600"),
+            ("v.rules[0].predicates[1].value", "14"),
+            ("v.rules[0].predicates[2].comparison", "\"less\""),
+            ("v.rules[0].predicates[2].value", "421"),
+            ("v.rules[0].predicates[3].state", "\"moving\""),
+            ("v.rules[1].predicates[0].section", "\"hull\""),
+            ("v.rules[1].predicates[0].value", "50"),
+            ("v.rules[1].predicates[1].value", "70"),
+            ("v.rules[1].predicates[2].weapon", "()"),
+            ("v.rules[1].predicates[2].comparison", "\"at_least\""),
+            ("v.rules[1].predicates[2].value", "25"),
+            ("v.rules[1].predicates[2].percent", "true"),
+            ("v.rules[2].predicates[0].state", "\"red\""),
+            ("v.rules[2].predicates[1].band", "\"effective\""),
+            ("v.rules[2].predicates[2].present", "false"),
+            ("v.rules[2].predicates[2].value", "()"),
+            ("v.rules[0].predicates[0].percent", "()"),
+            ("v.rules[0].predicates[0].state", "()"),
+            ("v.rules[0].predicates[0].section", "()"),
+            ("v.rules[0].predicates[0].band", "()"),
+            ("v.rules[0].predicates[0].present", "()"),
+        ];
+        for (expr, expected) in reads {
+            assert_eq!(read(expr), expected, "{expr}");
+        }
+        assert_eq!(read("v.rules[0].contact"), contact_int(HOSTILE).to_string());
+        assert_eq!(read("v.rules[2].contact"), "()");
+        for (ty, getter, _) in PARITY
+            .iter()
+            .filter(|(ty, _, _)| matches!(*ty, "Rule" | "Predicate"))
+        {
+            assert!(
+                getter == &"contact"
+                    || reads
+                        .iter()
+                        .any(|(expr, _)| expr.contains(&format!(".{getter}"))),
+                "{ty}.{getter} is never read"
+            );
         }
     }
 

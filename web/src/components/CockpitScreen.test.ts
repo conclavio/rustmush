@@ -414,8 +414,8 @@ describe("CockpitScreen, 17b cut M5.5", () => {
   it("draws the mind's four lines as the weapons section's tail", async () => {
     await seated();
     expect(weaponsSection()).toEqual([
+      "rules: S1 fire; MIND RULES",
       "cannon  ready  14/20  62%",
-      "  S1: >=60% side/rear keeps 8",
       "machine_gun  1 s  380/500  21%",
       ...TAIL,
     ]);
@@ -453,6 +453,7 @@ describe("CockpitScreen, 17b cut M5.5", () => {
     const m = mount();
     const drone = json("cockpit_frame.json");
     delete drone.weapons;
+    drone.rules = [];
     drone.contacts = (drone.contacts as Record<string, unknown>[]).map((c) => ({ ...c, odds: [] }));
     drone.mind = {
       name: "Standard Doctrine",

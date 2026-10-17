@@ -1399,6 +1399,9 @@ type PinnedLine = (i64, &'static str, &'static [(&'static str, u64)], u64);
 ///
 /// **Hash v2** (16c T-104, 2026-10-12): the state hash's fold moved — `Fold`, eight bytes a multiply, the notices by `fold_value` — so every `hash` moved and nothing else did (30 lines to 30): every line's `hash` re-blessed, every other field
 /// byte-equal, the draws included (the RNG kept its fold).
+/// 17d M5rules compatibility update: only the two Standard Doctrine source
+/// identifiers change. All 30 timestamps, actions, draws and hashes are equal
+/// to the preceding pin; a seat with no rules gains no rule-state hash bytes.
 const M1B0_SEAT_LINES: &[PinnedLine] = &[
     (
         0,
@@ -1408,13 +1411,13 @@ const M1B0_SEAT_LINES: &[PinnedLine] = &[
     ),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"102cc7d27eb411c4","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"55cabde517b6a08e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine"}"#,
         &[],
         16_864_243_904_418_883_163,
     ),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"102cc7d27eb411c4","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"55cabde517b6a08e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine"}"#,
         &[],
         16_864_243_904_418_883_163,
     ),

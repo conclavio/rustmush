@@ -149,7 +149,7 @@ impl CustodyProvider for InteriorCustodyProvider {
     ///
     /// **A multi-room space is never a backing** (cut IC4; doc 18 §4.2 (d)):
     /// its member rooms are walked by people, and the bay principle above
-    /// ([`interior_contents`]: a space's custody is what is placed in it) would
+    /// (`interior_contents`: a space's custody is what is placed in it) would
     /// then count a walker as vault custody. A hull's hold is a separate
     /// single-room store space; only a record with at most one room answers
     /// `Some(true)`.

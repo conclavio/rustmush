@@ -3404,8 +3404,8 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = install_standard(&mut arena);
     let run = run(&mut arena, Drive::Every(1_000), 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
-    assert_eq!(run.hashes.first().copied(), Some(0x6d99_9a2c_d37b_179d));
-    assert_eq!(run.hashes.last().copied(), Some(0xef15_99c8_e01f_1022));
+    let first_hash = run.hashes.first().copied();
+    let last_hash = run.hashes.last().copied();
     assert_eq!(
         run.counters.thinks, 60,
         "the two minds' thinks over 30 s at Class I's second"
@@ -3433,12 +3433,24 @@ fn m1a5_the_production_hash_does_not_move() {
         "every hull sealed on the production engine"
     );
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
-    assert_eq!(
-        tacsim::arena::hash::state_hash(&duel),
-        0xa4cd_3db1_3485_19ef,
-        "the shipped duel's hash moved"
-    );
     assert_eq!(duel.minds.len(), 4, "four minds");
+    // M5rules folds the shared typed rule table and the reviewed source/API
+    // identity. Keep all three encoding pins together so a declared format
+    // change exposes every actual in one run; behavior assertions above remain.
+    let actual = [
+        first_hash,
+        last_hash,
+        Some(tacsim::arena::hash::state_hash(&duel)),
+    ];
+    assert_eq!(
+        actual,
+        [
+            Some(0xee55_a270_46eb_bd76),
+            Some(0x2d8c_edcf_c95f_ce9f),
+            Some(0x81b3_3391_16fe_cdaa)
+        ],
+        "production encoding pins (first, last, shipped duel): {actual:x?}"
+    );
 }
 
 /// **A mind mustered on the proving ground** (17b cut M1a.5): the rig's
@@ -4355,6 +4367,9 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
             .filter_map(|arming| match arming {
                 Arming::Arm(cond) => Some(cond),
                 Arming::Disarm { .. } => None,
+                Arming::Rules { .. } | Arming::Remove { .. } => {
+                    panic!("Standard emits shorthand armings")
+                }
             })
             .collect();
         if arms.is_empty() && !rows.is_empty() {
@@ -4514,12 +4529,25 @@ fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing() {
         else {
             continue;
         };
-        let slots = rig.arena.conditions.slots(RED).to_vec();
+        let slots: Vec<Option<FireCondition>> = rig
+            .arena
+            .conditions
+            .slots(RED)
+            .iter()
+            .map(|rule| {
+                rule.as_ref()
+                    .and_then(tacsim::arena::conditions::Rule::fire)
+                    .cloned()
+            })
+            .collect();
         let arms: Vec<Option<FireCondition>> = armings(&result.intents)
             .into_iter()
             .filter_map(|arming| match arming {
                 Arming::Arm(cond) => Some(Some(cond.clone())),
                 Arming::Disarm { .. } => None,
+                Arming::Rules { .. } | Arming::Remove { .. } => {
+                    panic!("Standard emits shorthand armings")
+                }
             })
             .collect();
         if arms.is_empty() {
@@ -6174,6 +6202,9 @@ fn arms_after(kept: &[Kept], unit: ObjId, after_ms: i64) -> Vec<(i64, Vec<u16>)>
                     .filter_map(|arming| match arming {
                         Arming::Arm(cond) => Some(cond.min_permille),
                         Arming::Disarm { .. } => None,
+                        Arming::Rules { .. } | Arming::Remove { .. } => {
+                            panic!("Standard emits shorthand armings")
+                        }
                     })
                     .collect(),
             )
@@ -6687,19 +6718,22 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
 /// here from 47 lines to 50: three `mind_sealed` lines after `match_started`
 /// (the record carries no hash; the run does not end and no turret dies), every
 /// other line byte-equal.
+/// M5rules updates only the three Standard source prefixes from 102cc7d27eb411c4
+/// to 55cabde517b6a08e (the bounded complete-rule API and Standard adapter).
+/// The 50 event timestamps and every other payload byte remain identical.
 const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"102cc7d27eb411c4\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"55cabde517b6a08e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"102cc7d27eb411c4\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"55cabde517b6a08e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"102cc7d27eb411c4\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"55cabde517b6a08e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         4,

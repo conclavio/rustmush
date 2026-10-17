@@ -116,6 +116,8 @@ export interface CockpitContact {
   range_m: number;
   age_ms: number;
   age_s: number;
+  /** Movement in the held plot, never a live read of the target. */
+  moving: boolean;
   /** The ABSOLUTE arena cell the contact last plotted at, or `null`. */
   cell: [number, number] | null;
   friendly: boolean;
@@ -144,6 +146,16 @@ export interface CockpitOdds {
   p_permille: number;
   percent: number;
 }
+
+/** The visible slot/action summary of one ordered rule. Full terms remain
+ * available through MIND RULES; raw contact ids are not retained here. */
+export interface CockpitRule {
+  slot: number;
+  action: "fire" | "hold" | "lock";
+}
+
+/** The widest core's rule table; every active slot fits in two summary rows. */
+export const MAX_RULE_SLOTS = 6;
 
 /** A standing order as the keyframe spells it (17b cut M1a.3): `target` and
  * `of` are the designators of the hull's own rows, never an id. Every piloted
@@ -419,6 +431,7 @@ export interface CockpitFrame {
   lock_percent: number | null;
   sections: CockpitSection[];
   weapons: CockpitWeapon[];
+  rules: CockpitRule[];
   contacts: CockpitContact[];
   /** The distinct section-id lists a `condition.table` indexes (16b cut Q.2). */
   scan_tables: string[][];
@@ -565,6 +578,7 @@ function decodeContact(raw: unknown): CockpitContact | null {
     range_m: int(raw.range_m, 0),
     age_ms: int(raw.age_ms, 0),
     age_s: int(raw.age_s, 0),
+    moving: raw.moving === true,
     cell: cellPair(raw.cell),
     friendly: raw.friendly === true,
     condition: decodeCondition(raw.condition),
@@ -599,6 +613,36 @@ function decodeOdds(raw: unknown): CockpitOdds | null {
     p_permille,
     percent: Math.max(0, int(raw.percent, Math.trunc(p_permille / 10))),
   };
+}
+
+/** Ordered slot/action pairs only, tolerant of old frames and malformed rows.
+ * A repeated slot cannot hide a later slot or add an unbounded display row. */
+export function decodeRules(raw: unknown): CockpitRule[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<number>();
+  const rules: CockpitRule[] = [];
+  for (const row of raw) {
+    if (!isObj(row) || !isObj(row.rule)) {
+      continue;
+    }
+    const slot = typeof row.slot === "number" && Number.isInteger(row.slot) ? row.slot : null;
+    const action = row.rule.action === "hold_fire" ? "hold"
+      : row.rule.action === "fire" || row.rule.action === "lock" ? row.rule.action : null;
+    if (
+      slot === null ||
+      slot < 1 ||
+      slot > MAX_RULE_SLOTS ||
+      seen.has(slot) ||
+      action === null
+    ) {
+      continue;
+    }
+    seen.add(slot);
+    rules.push({ slot, action });
+  }
+  return rules.sort((a, b) => a.slot - b.slot);
 }
 
 /** The facet words a slot's mask may carry, in mask order (17b cut M1b.3). */
@@ -946,6 +990,7 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
       const weapon = decodeWeapon(w);
       return weapon ? [weapon] : [];
     }),
+    rules: decodeRules(data.rules),
     contacts: (Array.isArray(data.contacts) ? data.contacts : []).flatMap((c) => {
       const contact = decodeContact(c);
       return contact ? [contact] : [];
@@ -1242,8 +1287,8 @@ const REFUSAL_WORDS: ReadonlyMap<string, string> = new Map([
   // 17b cut M1b.1's three words (said here since 17b cut M1b.3): a shot with
   // no warrant, a slot count full, an arming under the Compact floor.
   ["unwarranted", "no warrant"],
-  ["no_slot", "every slot armed"],
-  ["unlawful", "under the floor"],
+  ["no_slot", "every rule slot occupied"],
+  ["unlawful", "that rule is not lawful for this unit"],
   // 17b cut M5.2: a `MIND PROFILE` the arena could not take.
   ["profile", "that profile cannot be switched to now"],
 ]);
@@ -1704,20 +1749,38 @@ export function damageText(row: CockpitDamageRow): string {
     .join("")}`;
 }
 
-/** The weapons rows: readiness, rounds, and each weapon's OWN chance — and,
- * under an armed weapon (17b cut M1b.3), one more line: two spaces and
- * `armingWords`' line, the one line mode's `WEAPONSTATUS` and the TUI pane
- * print under the row. */
+/** The ordered rule summary, then each weapon's readiness, rounds and chance.
+ * Older frames without canonical rules retain the per-weapon arming line.
+ * A first-fire convenience row cannot express authored predicate terms. */
 export function weaponLines(frame: CockpitFrame): string[] {
+  const rules = ruleSummaryLines(frame);
   if (frame.weapons.length === 0) {
-    return ["(no weapon)"];
+    return [...rules, "(no weapon)"];
   }
-  return frame.weapons.flatMap((w) => {
+  return [...rules, ...frame.weapons.flatMap((w) => {
     const ready = w.ready ? "ready" : `${Math.ceil(Math.max(0, w.ready_in_ms) / 1000)} s`;
     const chance = w.percent === null ? "" : `  ${w.percent}%`;
     const row = `${w.id}  ${ready}  ${w.rounds}/${w.rounds_max}${chance}`;
-    return w.armed === null ? [row] : [row, `  ${armingWords(w.armed)}`];
-  });
+    return w.armed === null || frame.rules.length > 0 ? [row] : [row, `  ${armingWords(w.armed)}`];
+  })];
+}
+
+/** Every active slot/action, including holds and Sensors rules on unarmed
+ * hulls. Three slots per line leave room for the full-reading command at the
+ * 120-column TUI floor; both clients draw exactly these words. */
+export function ruleSummaryLines(frame: CockpitFrame): string[] {
+  if (!frame.seated || frame.rules.length === 0) {
+    return [];
+  }
+  const rows: string[] = [];
+  for (let at = 0; at < frame.rules.length; at += 3) {
+    rows.push(
+      `${at === 0 ? "rules: " : ""}${frame.rules.slice(at, at + 3)
+        .map((rule) => `S${rule.slot} ${rule.action}`).join(" ")}`,
+    );
+  }
+  rows[rows.length - 1] += "; MIND RULES";
+  return rows;
 }
 
 /** One sealed profile on the mind tail's profile row (17b cut M5.5): its name,
@@ -2034,7 +2097,8 @@ export function cockpitView(
     damage: damageRows(frame),
     // 17b cut M5.5: on a hull with no weapons station, the mind's rows take
     // `(no weapon)`'s place.
-    weapons: frame.weapons.length === 0 && frame.mind !== null ? [] : weaponLines(frame),
+    weapons: frame.weapons.length === 0 && frame.mind !== null
+      ? ruleSummaryLines(frame) : weaponLines(frame),
     mind: mindLines(frame),
     profiles: mindProfiles(frame),
     contacts: contactRows(frame),

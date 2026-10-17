@@ -314,7 +314,11 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// `Screen`), so the inner shapes doc 17 §24's index named as unwalked —
 /// the route and avoid elements, `Refusal`, `RangeBand`, the other
 /// objectives — are under it.
-pub const SNAPSHOT_FORMAT: u32 = 10;
+///
+/// **11 since M5rules:** condition rows contain ordered typed fire, hold and
+/// Sensors rules, with stable slot identity and bounded native predicates.
+/// Format 10 is refused rather than migrated; saved in-flight matches restart.
+pub const SNAPSHOT_FORMAT: u32 = 11;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -1085,6 +1089,21 @@ impl ArenaState {
             mode,
             hold,
         } = self;
+        // M5rules carries bounded typed rows. A digest authenticates bytes;
+        // it does not substitute for validating their supported shape.
+        for (unit, slots) in conditions.rows() {
+            if slots.len() > crate::arena::core::MAX_CONDITION_SLOTS
+                || !units.iter().any(|state| state.id == *unit)
+            {
+                return Err(SnapshotError::Malformed(
+                    "invalid native rule row".to_owned(),
+                ));
+            }
+            for rule in slots.iter().flatten() {
+                crate::arena::conditions::validate_rule_shape(rule)
+                    .map_err(|_| SnapshotError::Malformed("invalid native rule".to_owned()))?;
+            }
+        }
         // 17b cut M4.3: the doctrine's cached state, re-derived from each
         // row's memory (never carried).
         let mut minds = minds;
@@ -1677,7 +1696,10 @@ mod tests {
                 .slots,
         );
         let text = round_trip(&slots);
-        assert!(text.starts_with(r#"{"4":[{"weapon":"cannon""#), "{text}");
+        assert!(
+            text.starts_with(r#"{"4":[{"action":"fire","condition":{"weapon":"cannon""#),
+            "{text}"
+        );
         // `UnitState.ready_at_ms`, `UnitState.ammo`, `HeatState.per_shot`.
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), -1_i64)]));
         round_trip(&BTreeMap::from([(SmolStr::new("cannon"), 40_u32)]));

@@ -5,7 +5,7 @@
 //! For a port entry whose `programme` names a pool (Ceres: eight Drays), the
 //! `PortApplier` instantiates every hull from the programme unit's `interior`
 //! template, in pool order, each act recorded in the port map before the next
-//! ([`lay_up`]):
+//! (`lay_up`):
 //!
 //! 1. **the Thing** — named from `hull_names`, aliased with its registry mark
 //!    ([`registry_mark`]), owned by the applying content owner (never a pilot,
@@ -37,7 +37,7 @@
 //! from their owners (L9). A re-apply creates nothing; a later version that
 //! grows the pool creates only the new hulls; a shrunk pool, a changed prefix,
 //! a recorded object gone or an exit the template no longer authors is refused
-//! by [`preflight`] before any write (L10). [`hull_line`] is the readiness
+//! by `preflight` before any write (L10). `hull_line` is the readiness
 //! report's hulls line (L17).
 
 use std::collections::{BTreeMap, BTreeSet};

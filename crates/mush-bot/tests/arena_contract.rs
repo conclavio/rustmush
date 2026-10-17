@@ -176,6 +176,7 @@ fn friendly_frame() -> Frame {
         range_cm: 12_000,
         age_ms: 0,
         cell: Some((100, 85)),
+        moving: false,
         condition: None,
         // 17b cut M1a.3: a classified friend, nearer than BA. **17b cut
         // M1b.3** (Q2): the odds rows never carry one of the hull's own side,
@@ -252,6 +253,7 @@ fn frame() -> Frame {
                 range_cm: 45_000,
                 age_ms: 1_200,
                 cell: Some((145, 99)),
+                moving: false,
                 condition: None,
                 // 17b cut M1a.3: broadside, and the lock's own figures below.
                 aspect: Aspect::Left,
@@ -267,6 +269,7 @@ fn frame() -> Frame {
                 range_cm: 25_300,
                 age_ms: 3_500,
                 cell: Some((82, 115)),
+                moving: false,
                 condition: None,
                 // 17b cut M1a.3: an aspect is told, odds never are.
                 aspect: Aspect::Rear,
@@ -276,6 +279,7 @@ fn frame() -> Frame {
         ],
         scan_tables: Vec::new(),
         notices: Vec::new(),
+        rules: Vec::new(),
         lock: Some(BA_ID),
         weapons: vec![
             FrameWeapon {
@@ -1907,6 +1911,218 @@ async fn live_centre() {
 }
 
 // ---------------------------------------------------------------------------
+// Native ordered rules through the player-facing SSH station
+// ---------------------------------------------------------------------------
+
+/// Native rules remain player-facing terminal text. Their acknowledgements and
+/// complete readbacks are neutral to the independent pilot; a Sensors refusal
+/// names LOCK without inventing a weapon or a successful lock. Exercise the
+/// actual station over SSH, including its own wrapping and asynchronous frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m5rules_the_bot_reads_native_rules_over_its_own_ssh_client() {
+    tokio::time::timeout(Duration::from_secs(90), native_rule_lines())
+        .await
+        .expect("the native-rule contract finishes inside 90 s");
+}
+
+async fn native_rule_lines() {
+    let rig = arena_rig::boot(arena_rig::arena_config(), &[("pilot", "Pilot")]).await;
+    let client = arena_rig::Client::login(&rig, "pilot", arena_rig::PILOT_PASSWORD, "Pilot").await;
+    let mut live = Live {
+        client,
+        assembler: Assembler::default(),
+        picture: Picture::default(),
+        started: Instant::now(),
+        lines: Vec::new(),
+        phases: vec![Phase::Unknown],
+    };
+    live.read();
+    live.say("ooc", "Welcome Hall").await;
+    live.say("simulator", "Simulator Lobby").await;
+    live.say("SIM TEAM red", "takes red slot").await;
+    live.say("SIM START", "is boarding").await;
+    live.say("red", "Red Room").await;
+    live.say("BOARD", "You climb into").await;
+    live.wait_for("Good hunting", Duration::from_secs(30)).await;
+    live.say("STARTUP", "power comes online shortly").await;
+    live.wait_for("Power online.", Duration::from_secs(30))
+        .await;
+
+    // Heat guards keep all three rules inert; this contract observes their
+    // public words without teaching the bot a controller or issuing a shot.
+    for (command, echo) in [
+        (
+            "MIND RULE 1 FIRE cannon WHEN odds>=60 AND range<700 AND target=moving AND heat>99%",
+            "Queued: cannon fires at your identified lock",
+        ),
+        (
+            "MIND RULE 2 FIRE cannon HOLD WHEN heat>80%",
+            "Queued: cannon holds fire",
+        ),
+        (
+            "MIND RULE 3 LOCK nearest WHEN heat>99%",
+            "Queued: lock the nearest identified hostile",
+        ),
+    ] {
+        let from = live.lines.len();
+        live.say(command, echo).await;
+        assert!(
+            live.lines[from..]
+                .iter()
+                .any(|line| matches!(line, Line::Other(text) if text.starts_with(echo))),
+            "the queued rule is neutral: {command}"
+        );
+    }
+    let readback = native_rules_until(
+        &mut live,
+        &[
+            "S1: cannon fires",
+            "S2: cannon holds fire",
+            "S3: lock the nearest",
+        ],
+        &[],
+    )
+    .await;
+    let whole = readback.split_whitespace().collect::<Vec<_>>().join(" ");
+    for term in [
+        "Pilot rules (not saved in the sealed profile):",
+        "its chance to hit is at least 60%",
+        "its rounded range is less than 700 m",
+        "the target is moving",
+        "your heat is above 99% of its maximum",
+        "S2: cannon holds fire when your heat is above 80% of its maximum",
+        "S3: lock the nearest identified hostile when your heat is above 99% of its maximum",
+    ] {
+        assert!(whole.contains(term), "missing {term:?}: {readback}");
+    }
+    for line in readback.lines().filter(|line| {
+        line.starts_with("Pilot rules (")
+            || line.starts_with("S1:")
+            || line.starts_with("S2:")
+            || line.starts_with("S3:")
+    }) {
+        assert!(matches!(classify(line), Line::Other(_)), "{line}");
+    }
+
+    let single = live.ask_whole("MIND RULES 2").await;
+    assert!(single.contains("S2: cannon holds fire"), "{single}");
+    assert!(
+        !single.contains("S1:") && !single.contains("S3:"),
+        "{single}"
+    );
+    let weapons = live.ask_whole("WEAPONSTATUS").await;
+    assert!(weapons.contains("S1: cannon fires"), "{weapons}");
+    assert!(weapons.contains("S2: cannon holds fire"), "{weapons}");
+    assert!(weapons.contains("S3: lock the nearest"), "{weapons}");
+    let settled_ms = live.now() + 1_000;
+    live.picture.settle(settled_ms);
+    let ids: Vec<&str> = live
+        .picture
+        .weapons
+        .iter()
+        .map(|weapon| weapon.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["cannon", "machine_gun"],
+        "rules must not replace weapon rows"
+    );
+    assert!(live.picture.open.contacts.is_none());
+    assert!(live.picture.open.status.is_none());
+    assert!(!live.picture.open.lock_line && !live.picture.open.brief);
+    assert_eq!(live.picture.tally.shots, 0);
+
+    let from = live.lines.len();
+    live.say("LOCK nearest WHEN nope", "LOCK refused.").await;
+    assert!(
+        live.lines[from..].iter().any(|line| matches!(line,
+            Line::Refused { order, weapon: None, cycling_s: None, said }
+                if order == "LOCK" && said == "That rule does not fit this core's native grammar."
+        )),
+        "a Sensors rule refusal names the ordering verb"
+    );
+    assert_eq!(live.picture.tally.shots, 0);
+    assert_eq!(live.picture.tally.refused_shots, 0);
+    assert_eq!(live.picture.tally.refused_orders, 1);
+    assert!(
+        live.picture.lock.is_none(),
+        "a rule echo must not read as a lock"
+    );
+
+    live.say("MIND RULE 2 OFF", "Clearing rule S2.").await;
+    native_rules_until(&mut live, &["S1:", "S3:"], &["S2:"]).await;
+    live.say("FIRE ALL OFF", cockpit::CLEARED_ALL).await;
+    native_rules_until(&mut live, &["S3:"], &["S1:", "S2:"]).await;
+    live.say("MIND RULE 3 OFF", "Clearing rule S3.").await;
+    native_rules_until(&mut live, &["None armed."], &["S1:", "S2:", "S3:"]).await;
+    live.say("SIM ABORT", "aborts match").await;
+    live.client.close().await;
+    drop(rig);
+}
+
+/// Wait for the station's public mirror after a queued mutation. The bot never
+/// inspects the arena's rules, scheduler, memory or authority tables.
+async fn native_rules_until(live: &mut Live, present: &[&str], absent: &[&str]) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let answer = live.ask_whole("MIND RULES").await;
+        if present.iter().all(|word| answer.contains(word))
+            && absent.iter().all(|word| !answer.contains(word))
+        {
+            return answer;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the rules never settled: {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// A landing can reject a rule whose named contact is no longer classified.
+/// Only explicit floor detail may claim an odds-floor violation; Sensors
+/// refusals stay weaponless in the independent reader.
+#[test]
+fn m5rules_a_landing_refusal_does_not_invent_an_odds_floor() {
+    let frame = frame();
+    let rows = cockpit::frame_contacts(&frame);
+    let mut reader = Reader::new();
+    for (order, weapon) in [("fire", Some("cannon")), ("lock", None)] {
+        for (detail, why) in [
+            (
+                RefusalDetail::None,
+                "That rule is not lawful for this unit.",
+            ),
+            (
+                RefusalDetail::Floor { permille: 100 },
+                "The Compact floor is 10%; a condition may not ask for less.",
+            ),
+        ] {
+            let line = cockpit::notice_line(
+                &frame,
+                &FrameNotice::Refused {
+                    order: order.into(),
+                    refusal: Refusal::Unlawful,
+                    weapon: weapon.map(Into::into),
+                    detail,
+                },
+                &rows,
+            );
+            assert_eq!(
+                reader.one(&line),
+                Line::Refused {
+                    order: order.to_ascii_uppercase(),
+                    weapon: weapon.map(str::to_owned),
+                    said: why.to_owned(),
+                    cycling_s: None,
+                },
+                "{line}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cut AN.2: `VIEW BRIEF`'s header
 // ---------------------------------------------------------------------------
 
@@ -2626,7 +2842,7 @@ fn m1b4_the_arming_its_line_and_its_sentences_read_as_the_bot_reads_them() {
     assert_eq!(
         outside,
         "FIRE cannon refused. That condition is not one this core takes; help cockpit lists the \
-         eight it does."
+         supported native rules."
     );
     for line in [&unlawful, &count, &outside] {
         let mut picture = Picture::default();

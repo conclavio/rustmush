@@ -1250,7 +1250,7 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 3,
+            "version": 4,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -2463,14 +2463,14 @@ mod fixture {
     use tacsim::arena::card::ProfileSet;
     use tacsim::arena::clock::Tempo;
     use tacsim::arena::condition::{Condition, ConditionBand};
-    use tacsim::arena::conditions::{SlotTarget, aspect_mask};
+    use tacsim::arena::conditions::{FireCondition, Rule, SlotTarget, aspect_mask};
     use tacsim::arena::core::CoreClass;
     use tacsim::arena::perception::{
         Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind,
     };
     use tacsim::arena::state::{Classification, ContactId, Designator, Power, Team};
     use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameMind, FrameSection};
-    use tacsim::arena::weapons::{FrameArming, FrameBand, FrameWeapon};
+    use tacsim::arena::weapons::{FrameArming, FrameBand, FrameRule, FrameWeapon};
     use tacsim::arena_task::MatchId;
     use tacsim::match_::cockpit;
 
@@ -2584,6 +2584,7 @@ mod fixture {
                     },
                     alias: Some(1),
                     class: Classification::Classified { team: Team::Blue },
+                    moving: false,
                     bearing_mdeg: 45_000,
                     range_cm: 43_000,
                     age_ms: 1_200,
@@ -2610,6 +2611,7 @@ mod fixture {
                     },
                     alias: None,
                     class: Classification::Classified { team: Team::Red },
+                    moving: false,
                     bearing_mdeg: 270_000,
                     range_cm: 12_000,
                     age_ms: 400,
@@ -2627,6 +2629,7 @@ mod fixture {
                     designator: Designator::Provisional(3),
                     alias: None,
                     class: Classification::Unknown,
+                    moving: false,
                     bearing_mdeg: 315_000,
                     range_cm: 22_000,
                     age_ms: 3_500,
@@ -2645,6 +2648,7 @@ mod fixture {
                     designator: Designator::Provisional(4),
                     alias: None,
                     class: Classification::Unknown,
+                    moving: false,
                     bearing_mdeg: 30_000,
                     range_cm: 58_000,
                     age_ms: 6_000,
@@ -2684,6 +2688,23 @@ mod fixture {
                 },
             ],
             lock: Some(HOSTILE),
+            rules: vec![FrameRule {
+                slot: 1,
+                rule: Rule::Fire {
+                    condition: FireCondition {
+                        weapon: "cannon".into(),
+                        target: SlotTarget::Lock,
+                        min_permille: 600,
+                        aspects: aspect_mask(&[Aspect::Left, Aspect::Right, Aspect::Rear]),
+                        min_rounds_left: 8,
+                        min_range_m: 0,
+                        max_range_m: u32::MAX,
+                    },
+                    predicates: Vec::new(),
+                    implicit: true,
+                    independent: true,
+                },
+            }],
             weapons: vec![
                 FrameWeapon {
                     id: SmolStr::new_static("cannon"),
@@ -3837,7 +3858,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 3, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 4, "retain": "latest" },
             "seated": false,
         })
     );
@@ -4397,6 +4418,7 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
         designator,
         alias: None,
         class,
+        moving: false,
         bearing_mdeg: 45_000,
         range_cm: 12_000,
         age_ms: 0,
@@ -13834,11 +13856,11 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     ))
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
-    // 17b cut M1b.3 bumped it to 3.
-    assert_eq!(cockpit::FRAME_VERSION, 3);
+    // M5rules publishes ordered native rules and plotted movement at version 4.
+    assert_eq!(cockpit::FRAME_VERSION, 4);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(3))
+        Some(&serde_json::json!(4))
     );
     assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
     assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
@@ -14420,10 +14442,10 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     use tacsim::arena::weapons::FrameArming;
     let frame = fixture::frame();
     let payload = cockpit::status_frame(fixture::MATCH, &frame);
-    assert_eq!(cockpit::FRAME_VERSION, 3);
+    assert_eq!(cockpit::FRAME_VERSION, 4);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(3))
+        Some(&serde_json::json!(4))
     );
     assert_eq!(
         payload.pointer("/weapons/0/armed"),
@@ -14506,7 +14528,8 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     let mut floored = fixture::frame();
     floored.odds_floor_permille = 50;
     assert!(frame.same_as(&floored, 1_000), "the floor is not compared");
-    // The one formatter, and the two renderers that print its line.
+    // The weapon convenience field still has its short formatter. M5rules
+    // readers show the shared ordered-rule summary above the weapons instead.
     let armed = frame
         .weapons
         .first()
@@ -14516,20 +14539,13 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     assert_eq!(words, "S1: >=60% side/rear keeps 8");
     let web = include_str!("../../../web/src/lib/fixtures/cockpit/web_view_model.txt");
     let lines: Vec<&str> = web.lines().collect();
-    let cannon = lines
-        .iter()
-        .position(|line| line.starts_with("cannon  "))
-        .expect("the web prints the cannon's row");
-    assert_eq!(
-        lines.get(cannon + 1).copied(),
-        Some(format!("  {words}").as_str()),
-        "the web's arming line is the formatter's, under the cannon"
-    );
+    assert!(lines.contains(&"rules: S1 fire; MIND RULES"));
+    assert!(lines.iter().any(|line| line.starts_with("cannon  ")));
     let tui = include_str!("../../mush-net-ssh/tests/golden/tui_cockpit_120x34.txt");
     assert!(
         tui.lines()
-            .any(|line| line.contains(&format!("\u{2502}  {words} "))),
-        "the TUI's weapons pane prints the formatter's line"
+            .any(|line| line.contains("rules: S1 fire; MIND RULES")),
+        "the TUI's weapons pane prints the ordered-rule summary"
     );
 }
 
@@ -14874,7 +14890,7 @@ const M1B4_FLOOR: &str =
 
 /// The outside sentence's said-half.
 const M1B4_OUTSIDE: &str =
-    "That condition is not one this core takes; help cockpit lists the eight it does.";
+    "That condition is not one this core takes; help cockpit lists the supported native rules.";
 
 /// The gate's rule's reply.
 const M1B4_GATE_REPLY: &str = "Arming cannon: fires your lock when your chance to hit is 60% or \
@@ -15403,31 +15419,29 @@ fn m2_a_range_term_is_strict_and_the_reply_reads_the_typed_figure() {
             "{rule}"
         );
     }
-    // The help says so.
+    // The compatibility adapter above retains its captured-metre bounds and
+    // echo. Actual pilot rules now keep typed strict predicates and reevaluate
+    // bands against the current plot, as the native-rule help explains.
     let help: String = include_str!("../../../docs/help/cockpit.md")
         .split_whitespace()
         .collect::<Vec<&str>>()
         .join(" ");
     for words in [
-        "range < 600 m it is nearer than 600 m; `range > 200 m` farther than 200 m",
-        "so a printed 600 m is outside `range < 600 m`",
-        "`WEAPONSTATUS` shows the last metre that fires (`under 599m`)",
-        "A band and a range term that disagree are refused",
-        // 17b cut M3.2: "Your core's slots." — the count reached only on a
-        // hull with fewer slots than weapons.
-        "one more weapon while every slot stands is taken as you type it, and the tank \
-         refuses it a moment later",
+        "range < 600 m strict rounded metres; range > 200 m is also available",
+        "Range comparisons use the same rounded metres as the plot.",
+        "A band is evaluated again when the rule runs; it is not frozen to the metres shown when you typed the rule.",
+        "`MIND RULES [slot]` reads their complete terms.",
+        "A full table is refused by the arena; `MIND RULE <slot> OFF` frees a slot.",
     ] {
         assert!(help.contains(words), "help cockpit: {words:?}");
     }
 }
 
 /// **`WEAPONSTATUS`' arming line** (17b cut M1b.4; doc 17 §5 as built for the
-/// 120-column floor): `arming_words` over every shape, the line indented two
-/// spaces under an armed row and absent under an unarmed one — on the real
-/// verb over a pushed frame — the fixture's `  S1: >=60% side/rear keeps 8`,
-/// T1's `  S1: best >=10% under 420m`; and the widest arming line and the
-/// widest weapon row any shipped weapon can print, each under 120 columns.
+/// 120-column floor): the compatibility `arming_words` formatter over every
+/// shape, including the fixture's `  S1: >=60% side/rear keeps 8` and T1's
+/// `  S1: best >=10% under 420m`. The live verb reads the full native rule
+/// after its unchanged weapon rows. Every published line fits 120 columns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m1b4_weaponstatus_prints_the_arming_line_under_the_row() {
     use tacsim::arena::conditions::{ASPECTS_ANY, SlotTarget, aspect_mask};
@@ -15557,6 +15571,7 @@ async fn m1b4_weaponstatus_prints_the_arming_line_under_the_row() {
         "an unarmed row prints no line: {unarmed}"
     );
     frame.weapons[cannon].armed = Some(armed.clone());
+    frame.rules = scene.rules.clone();
     rig.push_frame(0, frame.clone());
     let said = rig.say(0, "weaponstatus");
     let lines: Vec<&str> = said.lines().collect();
@@ -15564,19 +15579,28 @@ async fn m1b4_weaponstatus_prints_the_arming_line_under_the_row() {
         .iter()
         .position(|line| line.starts_with("cannon  "))
         .unwrap_or_else(|| panic!("the cannon's row: {said}"));
-    assert_eq!(
-        lines.get(row + 1).copied(),
-        Some("  S1: >=60% side/rear keeps 8"),
+    let rule_start = lines
+        .iter()
+        .position(|line| line.starts_with("S1:"))
+        .unwrap_or_else(|| panic!("the complete rule: {said}"));
+    assert!(
+        rule_start > row,
+        "the complete rule follows the weapon rows: {said}"
+    );
+    assert!(
+        said.split_whitespace().collect::<Vec<_>>().join(" ").contains(
+            "S1: cannon fires at your identified lock when its chance to hit is at least 60% and the target shows its side or rear and cannon keeps 8 round(s)"
+        ),
         "{said}"
     );
-    // Every other row is printed as it was: the rows with the arming lines
-    // taken out are the unarmed answer's rows.
-    let rows: Vec<&str> = lines
-        .iter()
-        .copied()
-        .filter(|line| !line.starts_with("  S"))
-        .collect();
-    assert_eq!(rows, unarmed.lines().collect::<Vec<&str>>());
+    assert_eq!(
+        &lines[..rule_start],
+        unarmed
+            .lines()
+            .filter(|line| !line.starts_with("[panel "))
+            .collect::<Vec<_>>(),
+        "the weapon rows are unchanged"
+    );
     for line in &lines {
         assert!(line.chars().count() < 120, "{line}");
     }
@@ -15653,7 +15677,7 @@ async fn m1b4_fire_off_clears_and_says_so() {
     m1b4_next_second(&mut rig).await;
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 60"),
-        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 60%"
     );
     m1b4_until(&mut rig, "the cannon armed", |rig| {
         m1b4_armed(rig, 0, "cannon").is_some()
@@ -15669,11 +15693,11 @@ async fn m1b4_fire_off_clears_and_says_so() {
     m1b4_next_second(&mut rig).await;
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 60"),
-        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 60%"
     );
     assert_eq!(
         rig.say(0, "fire mg when odds >= 30"),
-        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+        "Queued: machine_gun fires at your identified lock when its chance to hit is at least 30%"
     );
     m1b4_until(&mut rig, "both armed", |rig| {
         m1b4_armed(rig, 0, "cannon").is_some() && m1b4_armed(rig, 0, "machine_gun").is_some()
@@ -15948,7 +15972,7 @@ async fn m1b4_fire_when_under_the_floor_is_refused_unlawful_as_typed_and_at_the_
     // At the floor: armed.
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 10"),
-        "Arming cannon: fires your lock when your chance to hit is 10% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 10%"
     );
     m1b4_until(&mut rig, "the cannon armed", |rig| {
         m1b4_armed(rig, 0, "cannon").is_some()
@@ -15964,7 +15988,7 @@ async fn m1b4_fire_when_under_the_floor_is_refused_unlawful_as_typed_and_at_the_
     rig.push_frame(0, low);
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 5"),
-        "Arming cannon: fires your lock when your chance to hit is 5% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 5%"
     );
 
     // A match checked out at 50: the cockpit and the arena both take 5.
@@ -15976,7 +16000,7 @@ async fn m1b4_fire_when_under_the_floor_is_refused_unlawful_as_typed_and_at_the_
     assert_eq!(rig.held_frame(0).odds_floor_permille, 50);
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 5"),
-        "Arming cannon: fires your lock when your chance to hit is 5% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 5%"
     );
     assert_eq!(
         rig.say(0, "fire mg when odds >= 4"),
@@ -16029,23 +16053,28 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     rig.say(1, "board");
     assert_eq!(rig.state(), MatchState::Running);
 
-    // Before the first frame (nothing pumped, so the world holds none): an
-    // arming has no floor to be read against and no lock to fire, so it is
-    // answered as the typed `FIRE` is on a mirror holding no rows — the same
-    // bytes, the weapon still resolved first — and nothing is armed.
+    // Before the first frame an arming has no captured floor or weapon rows.
+    // Native-rule commands wait for that frame; immediate FIRE keeps its own
+    // no-lock answer. No rule can be queued from an absent projection.
     assert!(rig.frame(0).is_none(), "nothing has been pumped yet");
     let dark = format!("FIRE cannon refused. {}", cockpit::NO_LOCK);
     assert_eq!(rig.say(0, "fire cannon"), dark);
-    assert_eq!(rig.say(0, "FIRE cannon WHEN odds >= 60"), dark);
-    assert_eq!(rig.say(0, "fire cannon when odds >= 5"), dark);
+    assert_eq!(
+        rig.say(0, "FIRE cannon WHEN odds >= 60"),
+        cockpit::NO_FRAME_YET
+    );
+    assert_eq!(
+        rig.say(0, "fire cannon when odds >= 5"),
+        cockpit::NO_FRAME_YET
+    );
     assert_eq!(
         rig.say(0, "fire ghost when odds >= 60"),
-        "That unit carries no weapon called `ghost`."
+        cockpit::NO_FRAME_YET
     );
     assert_eq!(
         rig.say(0, "fire all when odds >= 60"),
-        "That unit carries no weapon called `all`.",
-        "`all` names no gun to arm"
+        cockpit::NO_FRAME_YET,
+        "ALL is a native-rule expansion, which also needs a captured frame"
     );
 
     assert!(rig.frame_for(0).await, "the arena sends a frame");
@@ -16057,7 +16086,7 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
         .map(|gun| gun.id.to_string())
         .collect();
     assert_eq!(guns, ["cannon", "machine_gun", "missiles"]);
-    let count = "Every slot is armed; FIRE <weapon> OFF frees one.";
+    let count = "Every rule slot is occupied; MIND RULE <slot> OFF frees one.";
 
     // Every existing `FIRE` line, byte for byte (no lock here).
     let no_lock = format!("FIRE cannon refused. {}", cockpit::NO_LOCK);
@@ -16079,7 +16108,7 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     // The gate's rule.
     assert_eq!(
         rig.say(0, "FIRE cannon WHEN odds >= 60 AND aspect = side,rear"),
-        M1B4_GATE_REPLY
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 60% and the target shows its side or\nrear"
     );
     m1b4_until(&mut rig, "the cannon in S1", |rig| {
         m1b4_armed(rig, 0, "cannon").is_some()
@@ -16087,11 +16116,15 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     .await;
     assert_eq!(m1b4_armed(&rig, 0, "cannon"), Some((1, 600)));
     let said = rig.say(0, "weaponstatus");
-    assert!(said.contains("\n  S1: >=60% side/rear"), "{said}");
+    assert!(
+        said.contains("S1: cannon fires at your identified lock"),
+        "{said}"
+    );
+    assert!(said.contains("the target shows its side or rear"), "{said}");
     // The second gun takes S2.
     assert_eq!(
         rig.say(0, "fire mg when odds >= 30"),
-        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+        "Queued: machine_gun fires at your identified lock when its chance to hit is at least 30%"
     );
     m1b4_until(&mut rig, "the machine gun in S2", |rig| {
         m1b4_armed(rig, 0, "machine_gun").is_some()
@@ -16103,7 +16136,8 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     // transcript lives on the degraded heavy in `tests/conditions.rs`).
     m1b4_next_second(&mut rig).await;
     let mark = rig.log.len();
-    let accepted = "Arming missiles: fires your lock when your chance to hit is 40% or better.";
+    let accepted =
+        "Queued: missiles fires at your identified lock when its chance to hit is at least 40%";
     assert_eq!(rig.say(0, "fire missiles when odds >= 40"), accepted);
     let full = format!("FIRE missiles refused. {count}");
     m1b4_until(&mut rig, "the missiles in S3", |rig| {
@@ -16113,14 +16147,11 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     assert_eq!(m1b4_armed(&rig, 0, "missiles"), Some((3, 400)));
     assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
     let said = rig.say(0, "weaponstatus");
-    let missiles_row = said
-        .lines()
-        .position(|line| line.trim_start().starts_with("missiles"))
-        .unwrap_or_else(|| panic!("a missiles row: {said}"));
-    assert_eq!(
-        said.lines().nth(missiles_row + 1).map(str::trim),
-        Some("S3: >=40%"),
-        "S3 under the missiles' row: {said}"
+    assert!(
+        said.contains(
+            "S3: missiles fires at your identified lock when its chance to hit is at least 40%"
+        ),
+        "the full S3 rule follows the weapon rows: {said}"
     );
     let heard = m1a4_said_since(&rig, pilot, mark);
     assert_eq!(
@@ -16137,7 +16168,7 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     m1b4_next_second(&mut rig).await;
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 70"),
-        "Arming cannon: fires your lock when your chance to hit is 70% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 70%"
     );
     m1b4_until(&mut rig, "the cannon re-armed in place", |rig| {
         m1b4_armed(rig, 0, "cannon") == Some((1, 700))
@@ -16146,7 +16177,7 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     // The outside rule: one sentence, nothing forwarded.
     assert_eq!(
         rig.say(0, "FIRE cannon WHEN hit within 5 s"),
-        format!("FIRE cannon refused. {M1B4_OUTSIDE}")
+        "FIRE cannon refused. That condition needs a thinking mind; a pilot's mind is dormant."
     );
 
     m1b4_next_second(&mut rig).await;
@@ -16169,11 +16200,11 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     let mark = rig.log.len();
     assert_eq!(
         rig.say(0, "fire mg when odds >= 30"),
-        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+        "Queued: machine_gun fires at your identified lock when its chance to hit is at least 30%"
     );
     assert_eq!(
         rig.say(0, "fire missiles when odds >= 45"),
-        "Arming missiles: fires your lock when your chance to hit is 45% or better."
+        "Queued: missiles fires at your identified lock when its chance to hit is at least 45%"
     );
     m1b4_until(
         &mut rig,
@@ -16218,7 +16249,7 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     m1b4_next_second(&mut rig).await;
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 60"),
-        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 60%"
     );
     m1b4_until(&mut rig, "the cannon back in S1", |rig| {
         m1b4_armed(rig, 0, "cannon").is_some()
@@ -16237,7 +16268,7 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
     assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
     assert_eq!(
         rig.say(0, "fire missiles when odds >= 20"),
-        "Arming missiles: fires your lock when your chance to hit is 20% or better."
+        "Queued: missiles fires at your identified lock when its chance to hit is at least 20%"
     );
     m1b4_until(&mut rig, "the missiles re-armed in S3, S2 freed", |rig| {
         m1b4_armed(rig, 0, "missiles") == Some((3, 200))
@@ -16295,13 +16326,13 @@ async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
     assert_eq!(rig.state(), MatchState::Running);
     assert!(rig.frame_for(0).await, "the arena sends a frame");
     let pilot = rig.pilot(0);
-    let count = "Every slot is armed; FIRE <weapon> OFF frees one.";
+    let count = "Every rule slot is occupied; MIND RULE <slot> OFF frees one.";
     let full = format!("FIRE missiles refused. {count}");
 
     // The table filled: the cannon in S1, the machine gun in S2.
     assert_eq!(
         rig.say(0, "fire cannon when odds >= 60"),
-        "Arming cannon: fires your lock when your chance to hit is 60% or better."
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 60%"
     );
     m1b4_until(&mut rig, "the cannon in S1", |rig| {
         m1b4_armed(rig, 0, "cannon").is_some()
@@ -16309,7 +16340,7 @@ async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
     .await;
     assert_eq!(
         rig.say(0, "fire mg when odds >= 30"),
-        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+        "Queued: machine_gun fires at your identified lock when its chance to hit is at least 30%"
     );
     m1b4_until(&mut rig, "the machine gun in S2", |rig| {
         m1b4_armed(rig, 0, "machine_gun").is_some()
@@ -16321,7 +16352,8 @@ async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
     // The third: the cockpit's acceptance, then the arena's count.
     m1b4_next_second(&mut rig).await;
     let mark = rig.log.len();
-    let accepted = "Arming missiles: fires your lock when your chance to hit is 40% or better.";
+    let accepted =
+        "Queued: missiles fires at your identified lock when its chance to hit is at least 40%";
     assert_eq!(rig.say(0, "fire missiles when odds >= 40"), accepted);
     m1b4_until(&mut rig, "the arena's count on a full table", |rig| {
         m1a4_said_since(rig, pilot, mark).contains(&full)
@@ -16354,7 +16386,7 @@ async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
     let mark = rig.log.len();
     assert_eq!(
         rig.say(0, "fire mg when odds >= 30"),
-        "Arming machine_gun: fires your lock when your chance to hit is 30% or better."
+        "Queued: machine_gun fires at your identified lock when its chance to hit is at least 30%"
     );
     assert_eq!(rig.say(0, "fire missiles when odds >= 40"), accepted);
     m1b4_until(&mut rig, "the arena's count in the race", |rig| {
@@ -16379,7 +16411,7 @@ async fn m3_the_count_is_two_lines_through_the_verb_on_a_two_slot_heavy() {
     assert_eq!(m1b4_armed(&rig, 0, "machine_gun"), Some((2, 300)));
     assert_eq!(
         rig.say(0, "fire missiles when odds >= 20"),
-        "Arming missiles: fires your lock when your chance to hit is 20% or better."
+        "Queued: missiles fires at your identified lock when its chance to hit is at least 20%"
     );
     m1b4_until(&mut rig, "the missiles in the freed S2", |rig| {
         m1b4_armed(rig, 0, "missiles").is_some()
@@ -17200,7 +17232,7 @@ async fn m5_mind_profile_switches_a_sealed_profile_at_most_once_in_ten_seconds()
     );
     assert_eq!(
         rig.say(0, "mind rules"),
-        "No rules are sealed on Sniper or Line; your own armings are under WEAPONSTATUS.\n\
+        "Pilot rules (not saved in the sealed profile):\nNone armed.\n\
          [panel arena.cockpit]"
     );
     assert_eq!(
@@ -17597,14 +17629,14 @@ async fn m5_mind_reads_the_seal_and_after_a_substitution_names_what_flies() {
 ///   bare `MIND` and `MIND RULES` say [`cockpit::NO_FRAME_YET`] and push
 ///   nothing, `MIND PROFILE line` says it after `MIND refused.`, and `MIND
 ///   TRACE` is refused in its own form;
-/// * on the sealed frame: `MIND PROFILE` with no name, `MIND RULES` with a
-///   word after it and a form `MIND` does not take each say
-///   [`cockpit::MIND_USAGE`]; a word no preset answers is refused without
+/// * on the sealed frame: `MIND PROFILE` with no name and a form `MIND`
+///   does not take each say [`cockpit::MIND_USAGE`]; `MIND RULES` validates
+///   its optional slot, and a word no preset answers is refused without
 ///   an echo; the profile already flown is refused; `MI` and `MIN` (the
 ///   prefix shift) dispatch to the same answers as `MIND`;
 /// * on a frame that carries no `mind` (a hull no seal reached), bare `MIND`
-///   and `MIND RULES` say [`cockpit::NO_SEAL`] with the frame and `MIND
-///   PROFILE` says it after the prefix;
+///   says [`cockpit::NO_SEAL`] with the frame and `MIND PROFILE` says it
+///   after the prefix; live pilot rules remain readable through `MIND RULES`;
 /// * on a wreck the wreck is refused first, in `MIND refused.`'s prefix —
 ///   before the no-seal check and before a switch the frame would allow
 ///   (D-B3) — while bare `MIND` still reads the block, as every read verb
@@ -17635,12 +17667,15 @@ async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
     for form in [
         "mind profile",
         "MIND PROFILE",
-        "mind rules now",
         "mind bogus",
         "mind profiles line",
     ] {
         assert_eq!(rig.say(0, form), cockpit::MIND_USAGE, "{form}");
     }
+    assert_eq!(
+        rig.say(0, "mind rules now"),
+        "MIND RULE refused. A rule slot is a whole number from 1 to 6."
+    );
     assert_eq!(
         rig.say(0, "mind profile berserker"),
         "MIND refused. No profile of that name is sealed on this mind; it carries Line."
@@ -17669,7 +17704,11 @@ async fn m5_every_mind_form_answers_through_the_verb_in_its_order() {
     rig.push_frame(0, unsealed);
     let no_seal = format!("{}\n[panel arena.cockpit]", cockpit::NO_SEAL);
     assert_eq!(rig.say(0, "mind"), no_seal);
-    assert_eq!(rig.say(0, "mind rules"), no_seal);
+    assert_eq!(
+        rig.say(0, "mind rules"),
+        "Pilot rules (not saved in the sealed profile):\nNone armed.\n[panel arena.cockpit]",
+        "live pilot rules are readable independently of a sealed mind"
+    );
     assert_eq!(
         rig.say(0, "mind profile line"),
         "MIND refused. This hull carries no seal."
@@ -17948,4 +17987,321 @@ async fn m5_a_bare_standard_choice_is_named_on_line_in_the_pilots_block() {
         ]
     );
     assert!(m5_block_now(&rig, 1).is_empty());
+}
+
+mod m5rules_station {
+    use super::*;
+    use tacsim::arena::conditions::Rule;
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn every_native_predicate_and_selector_round_trips_through_the_station() {
+        let mut rig = Rig::boot(2);
+        rig.fly().await;
+        assert!(rig.frame_for(0).await);
+        let normalized = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        // These are prospective rules: absent target readings do not prevent
+        // admission, and a cold hull with no lock supplies no hidden target.
+        // Each command replaces the same Fire slot through the real verb,
+        // then reads the authoritative frame back through MIND RULES.
+        for (command, words) in [
+            (
+                "FIRE cannon WHEN odds mg>=50 AND aspect=side,rear",
+                "machine_gun's chance to hit is at least 50% and the target shows its side or rear",
+            ),
+            (
+                "FIRE cannon WHEN range>200m AND range<600m",
+                "its rounded range is more than 200 m and its rounded range is less than 600 m",
+            ),
+            (
+                "FIRE cannon WHEN band=effective",
+                "its range band is effective",
+            ),
+            (
+                "FIRE cannon WHEN rounds<25%",
+                "the selected weapon has less than 25% of its full load",
+            ),
+            (
+                "FIRE cannon WHEN rounds mg>3",
+                "machine_gun has more than 3 rounds",
+            ),
+            (
+                "FIRE cannon WHEN reserve",
+                "the selected weapon has more than 0 rounds",
+            ),
+            (
+                "FIRE cannon WHEN target=identified AND target=moving AND target=hurt",
+                "the target is identified and the target is moving and the target is hurt",
+            ),
+            ("FIRE cannon WHEN target=stopped", "the target is stopped"),
+            (
+                "FIRE cannon WHEN target turret=red",
+                "the earned turret reading is red",
+            ),
+            (
+                "FIRE cannon WHEN own turret<40% AND heat>80%",
+                "your turret internals are below 40% of their maximum and your heat is above 80% of its maximum",
+            ),
+            ("FIRE cannon WHEN lock", "you have an identified lock"),
+            (
+                "FIRE cannon HOLD WHEN nolock",
+                "you have no identified lock",
+            ),
+            (
+                "FIRE cannon WHEN target=best_hostile",
+                "cannon fires at your identified hostile lock",
+            ),
+            (
+                "FIRE cannon HOLD WHEN target=stopped AND rounds>0",
+                "cannon holds fire when the target is stopped",
+            ),
+        ] {
+            m1b4_next_second(&mut rig).await;
+            let said = rig.say(0, &format!("MIND RULE 1 {command}"));
+            assert!(normalized(&said).contains(words), "{command}: {said}");
+            m1b4_until(&mut rig, command, |rig| {
+                rig.frame(0).is_some_and(|frame| {
+                    frame.rules.iter().any(|entry| {
+                        entry.slot == 1
+                            && entry.rule.channel() == Channel::Fire
+                            && tacsim::arena::rules::rule_words(&entry.rule, None).contains(words)
+                    })
+                })
+            })
+            .await;
+            let said = rig.say(0, "MIND RULES 1");
+            assert!(normalized(&said).contains(words), "{command}: {said}");
+            assert!(
+                said.lines()
+                    .all(|line| line.len() <= cockpit::WATCH_COLUMNS),
+                "{said}"
+            );
+        }
+        for (selector, words) in [
+            ("nearest", "lock the nearest identified hostile"),
+            (
+                "best_odds",
+                "lock the identified hostile with the best hit chance",
+            ),
+            (
+                "weakest",
+                "lock the identified hostile with the most observed damage",
+            ),
+            (
+                "flank",
+                "lock the identified hostile showing the most exposed face",
+            ),
+            (
+                "newest",
+                "lock the identified hostile with the freshest plot",
+            ),
+        ] {
+            m1b4_next_second(&mut rig).await;
+            let command = format!("MIND RULE 2 LOCK {selector} WHEN nolock");
+            assert!(rig.say(0, &command).contains(words), "{command}");
+            m1b4_until(&mut rig, &command, |rig| {
+                rig.frame(0).is_some_and(|frame| {
+                    frame.rules.iter().any(|entry| {
+                        entry.slot == 2
+                            && entry.rule.channel() == Channel::Sensors
+                            && tacsim::arena::rules::rule_words(&entry.rule, None)
+                                .starts_with(words)
+                    })
+                })
+            })
+            .await;
+            let said = rig.say(0, "MIND RULES 2");
+            assert!(
+                said.contains(words) && said.contains("you have no identified lock"),
+                "{said}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_contact_citation_accepted_from_a_stale_mirror_is_refused_at_landing() {
+        let mut rig = Rig::boot(2);
+        rig.fly().await;
+        assert!(rig.frame_for(0).await);
+        // Model the world mirror trailing contact expiry in the arena. The
+        // real station still resolves the permitted name and queues its intent.
+        let mut frame = rig.held_frame(0);
+        let mut contact = fixture::frame().contacts[0].clone();
+        contact.id = tacsim::arena::state::ContactId(0x0bad_cafe);
+        contact.class = tacsim::arena::state::Classification::Classified { team: Team::Blue };
+        let name = contact.designator.to_string();
+        frame.contacts = vec![contact];
+        rig.push_frame(0, frame);
+        let panels_before = rig.panels(tacsim::arena_bridge::FRAME_FEED).len();
+        let said = rig.say(0, &format!("MIND RULE 1 FIRE cannon WHEN target={name}"));
+        assert!(said.contains("fires"), "the mirrored name parsed: {said}");
+        m1b4_until(
+            &mut rig,
+            "the stale citation refused by the authoritative arena",
+            |rig| {
+                rig.panels(tacsim::arena_bridge::FRAME_FEED)
+                    .into_iter()
+                    .skip(panels_before)
+                    .flat_map(|(_, data)| data["notices"].as_array().cloned().unwrap_or_default())
+                    .any(|notice| notice["refusal"] == "unlawful")
+            },
+        )
+        .await;
+        let refusal = rig
+            .panels(tacsim::arena_bridge::FRAME_FEED)
+            .into_iter()
+            .skip(panels_before)
+            .flat_map(|(_, data)| data["notices"].as_array().cloned().unwrap_or_default())
+            .find(|notice| notice["refusal"] == "unlawful")
+            .expect("the landing refusal");
+        assert!(
+            refusal["detail"].is_null(),
+            "classification loss must not claim the odds were below the Compact floor: {refusal}"
+        );
+        assert!(rig.frame(0).expect("fresh frame").rules.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_rules_round_trip_through_real_station_commands() {
+        let mut rig = Rig::boot(2);
+        rig.fly().await;
+        assert!(rig.frame_for(0).await);
+        assert!(rig.frame_for(1).await);
+        let said = rig.say(
+            0,
+            "MIND RULE 1 FIRE cannon HOLD WHEN heat>80% AND target=moving",
+        );
+        assert!(said.contains("holds fire"), "{said}");
+        let said = rig.say(0, "MIND RULE 2 LOCK nearest WHEN no lock");
+        assert!(said.contains("nearest"), "{said}");
+        m1b4_until(&mut rig, "two different-channel native rules", |rig| {
+            rig.frame(0).is_some_and(|frame| frame.rules.len() == 2)
+        })
+        .await;
+        let frame = rig.frame(0).expect("own frame");
+        assert!(matches!(&frame.rules[0].rule, Rule::HoldFire { .. }));
+        assert!(matches!(&frame.rules[1].rule, Rule::Lock { .. }));
+        assert_eq!(frame.rules[0].rule.channel(), Channel::Fire);
+        assert_eq!(frame.rules[1].rule.channel(), Channel::Sensors);
+        let said = rig.say(0, "MIND RULES");
+        assert!(said.contains("not saved in the sealed profile"), "{said}");
+        assert!(
+            said.contains("holds fire") && said.contains("nearest"),
+            "{said}"
+        );
+        let said = rig.say(0, "MIND RULES 1");
+        assert!(
+            said.contains("holds fire") && !said.contains("nearest"),
+            "{said}"
+        );
+        let other = rig.say(1, "MIND RULES");
+        assert!(
+            !other.contains("holds fire") && !other.contains("nearest"),
+            "{other}"
+        );
+        let said = rig.say(0, "FIRE cannon WHEN hostiles>=2");
+        assert!(
+            said.contains("thinking mind") && said.contains("dormant"),
+            "{said}"
+        );
+        let said = rig.say(0, "FIRE cannon WHEN target=ZZ");
+        assert!(said.contains("not on your plot"), "{said}");
+
+        m1b4_next_second(&mut rig).await;
+        let said = rig.say(
+            0,
+            "MIND RULE 1 FIRE cannon WHEN target=stopped AND rounds>25%",
+        );
+        assert!(said.contains("fires"), "{said}");
+        m1b4_until(
+            &mut rig,
+            "slot one replaced without moving slot two",
+            |rig| {
+                rig.frame(0).is_some_and(|frame| {
+                    frame.rules.len() == 2
+                        && matches!(&frame.rules[0].rule, Rule::Fire { .. })
+                        && matches!(&frame.rules[1].rule, Rule::Lock { .. })
+                })
+            },
+        )
+        .await;
+        let said = rig.say(0, "MIND RULE 2 OFF");
+        assert!(said.contains('2'), "{said}");
+        m1b4_until(&mut rig, "Sensors rule removed by its own channel", |rig| {
+            rig.frame(0)
+                .is_some_and(|frame| frame.rules.len() == 1 && frame.rules[0].slot == 1)
+        })
+        .await;
+        let said = rig.say(0, "MIND RULES 2");
+        assert!(said.contains("No active rule"), "{said}");
+
+        m1b4_next_second(&mut rig).await;
+        // The production line core grants four slots. Leave exactly one free
+        // before asking ALL to reserve two, so this tests atomic refusal.
+        let _ = rig.say(0, "MIND RULE 3 LOCK nearest WHEN no lock");
+        let _ = rig.say(0, "MIND RULE 4 FIRE cannon HOLD WHEN rounds>0");
+        m1b4_until(&mut rig, "only one of four slots free", |rig| {
+            rig.frame(0).is_some_and(|frame| frame.rules.len() == 3)
+        })
+        .await;
+        let before = rig.frame(0).expect("own frame").rules.clone();
+        let _ = rig.say(0, "FIRE ALL HOLD WHEN rounds>0");
+        m1b4_next_second(&mut rig).await;
+        assert_eq!(
+            rig.frame(0).expect("own frame").rules,
+            before,
+            "a batch that cannot fit changes no existing rule"
+        );
+
+        // OFF removes both Fire actions but keeps Sensors authority intact.
+        assert_eq!(rig.say(0, "FIRE ALL OFF"), cockpit::CLEARED_ALL);
+        m1b4_until(
+            &mut rig,
+            "the Sensors rule survives clearing all guns",
+            |rig| {
+                rig.frame(0).is_some_and(|frame| {
+                    frame.rules.len() == 1
+                        && frame.rules[0].slot == 3
+                        && matches!(&frame.rules[0].rule, Rule::Lock { .. })
+                })
+            },
+        )
+        .await;
+        m1b4_next_second(&mut rig).await;
+        let said = rig.say(0, "FIRE ALL WHEN rounds>0");
+        assert_eq!(
+            said.lines()
+                .filter(|line| line.starts_with("Queued:"))
+                .count(),
+            2,
+            "one readback for each gun: {said}"
+        );
+        m1b4_until(
+            &mut rig,
+            "ALL atomically fills the two free gun slots",
+            |rig| {
+                rig.frame(0).is_some_and(|frame| {
+                    frame.rules.len() == 3
+                        && frame.rules[0].slot == 1
+                        && matches!(&frame.rules[0].rule, Rule::Fire { .. })
+                        && frame.rules[1].slot == 2
+                        && matches!(&frame.rules[1].rule, Rule::Fire { .. })
+                        && frame.rules[2].slot == 3
+                        && matches!(&frame.rules[2].rule, Rule::Lock { .. })
+                })
+            },
+        )
+        .await;
+        let said = rig.say(0, "MIND RULES");
+        assert!(
+            said.contains("cannon fires")
+                && said.contains("machine_gun fires")
+                && said.contains("nearest"),
+            "{said}"
+        );
+        assert!(
+            said.lines()
+                .all(|line| line.len() <= cockpit::WATCH_COLUMNS),
+            "full readback stays within the terminal floor: {said}"
+        );
+    }
 }

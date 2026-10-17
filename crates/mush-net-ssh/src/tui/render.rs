@@ -2770,7 +2770,8 @@ fn pack_facet_cells(cells: &[String], width: usize) -> Vec<String> {
 /// F.2's item 4) where a lock gives one.
 ///
 /// **17b cut M1b.3** (doc 17 §5; D-UM-4): under a weapon whose row carries an
-/// `armed` object, ONE more plain row — two spaces and `arming_line`'s words,
+/// `armed` object and no canonical rules, one more plain row — two spaces and
+/// `arming_line`'s words,
 /// the same line line mode's `WEAPONSTATUS` prints under the row and the web's
 /// `weaponLines` draws (`  S1: >=60% side/rear keeps 8`). A row past the
 /// pane's 46 columns wraps onto a second pane row by the pane's own rule
@@ -2785,7 +2786,11 @@ fn pack_facet_cells(cells: &[String], width: usize) -> Vec<String> {
 /// (no seal reached the hull, or an older server) prints exactly as before.
 /// The tail is the pane's last rows, so where the pane is short (six inner
 /// rows at 120 by 30 under the scene's three) it loses its own last row, the
-/// channels, from the bottom, and the weapon rows above it are never displaced.
+/// channels, from the bottom. Canonical rule summaries precede the weapon rows.
+///
+/// M5rules: before the weapons, every ordered rule's slot and action in at
+/// most two rows. Holds and Sensors rules remain visible on an unarmed hull;
+/// `MIND RULES` supplies their full terms without consuming contact rows.
 #[must_use]
 pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
@@ -2802,15 +2807,20 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
         .and_then(Value::as_array)
         .map_or(&[][..], Vec::as_slice);
     let tail = render_cockpit_mind_tail(data, ctx);
+    let mut rows: Vec<_> = rule_summary_lines(data)
+        .into_iter()
+        .map(|text| PaneRow::plain(Line::from(Span::raw(text))))
+        .collect();
+    let has_rules = !rows.is_empty();
     if weapons.is_empty() {
         // 17b cut M5.5: the mind's rows take the weapons' place.
-        return if tail.rows.is_empty() {
-            PaneRows::one("(no weapon)")
+        if tail.rows.is_empty() {
+            rows.extend(PaneRows::one("(no weapon)").rows);
         } else {
-            tail
-        };
+            rows.extend(tail.rows);
+        }
+        return PaneRows { rows };
     }
-    let mut rows = Vec::with_capacity(weapons.len() + tail.rows.len());
     for weapon in weapons {
         let ready = if weapon.get("ready").and_then(Value::as_bool) == Some(true) {
             "ready".to_string()
@@ -2838,14 +2848,71 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
                 .and_then(Value::as_i64)
                 .unwrap_or(0),
         )))));
-        // 17b cut M1b.3: the arming, on its own row under the weapon's.
-        if let Some(words) = weapon.get("armed").and_then(arming_line) {
+        // Older frames retain the first-fire convenience line. Canonical
+        // rules carry predicates that this shortened line cannot express.
+        if let Some(words) = weapon
+            .get("armed")
+            .filter(|_| !has_rules)
+            .and_then(arming_line)
+        {
             rows.push(PaneRow::plain(Line::from(Span::raw(format!("  {words}")))));
         }
     }
     // 17b cut M5.5: the mind's rows, last.
     rows.extend(tail.rows);
     PaneRows { rows }
+}
+
+/// The core's six slots, summarized at the 44-column floor. Match the web's
+/// `decodeRules` + `ruleSummaryLines`: accept known actions, one per valid
+/// slot, and always draw them in slot order. Arbitrary rule text is never
+/// copied into a summary row.
+fn rule_summary_lines(data: &Value) -> Vec<String> {
+    let Some(rules) = data.get("rules").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut slots = [None; 6];
+    for row in rules {
+        let Some(slot) = row.get("slot").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Ok(at) = usize::try_from(slot.saturating_sub(1)) else {
+            continue;
+        };
+        if slot == 0 || at >= slots.len() || slots[at].is_some() {
+            continue;
+        }
+        slots[at] = match row
+            .get("rule")
+            .and_then(|rule| rule.get("action"))
+            .and_then(Value::as_str)
+        {
+            Some("fire") => Some("fire"),
+            Some("hold_fire") => Some("hold"),
+            Some("lock") => Some("lock"),
+            _ => None,
+        };
+    }
+    let words: Vec<_> = slots
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, action)| action.map(|action| format!("S{} {action}", at + 1)))
+        .collect();
+    let mut rows: Vec<_> = words
+        .chunks(3)
+        .enumerate()
+        .map(|(at, chunk)| {
+            format!(
+                "{}{}",
+                if at == 0 { "rules: " } else { "" },
+                chunk.join(" ")
+            )
+        })
+        .collect();
+    if let Some(last) = rows.last_mut() {
+        last.push_str("; MIND RULES");
+    }
+    rows
 }
 
 /// **The mind's four rows, the weapons pane's tail** (17b cut M5.5; doc 17
@@ -3207,8 +3274,8 @@ const REFUSAL_WORDS: &[(&str, &str)] = &[
     // 17b cut M1b.1's three words (said here since 17b cut M1b.3): a shot with
     // no warrant, a slot count full, an arming under the Compact floor.
     ("unwarranted", "no warrant"),
-    ("no_slot", "every slot armed"),
-    ("unlawful", "under the floor"),
+    ("no_slot", "every rule slot occupied"),
+    ("unlawful", "that rule is not lawful for this unit"),
     // 17b cut M5.2: a `MIND PROFILE` the arena could not take.
     ("profile", "that profile cannot be switched to now"),
 ];
@@ -6385,7 +6452,13 @@ mod tests {
         });
         assert_eq!(
             notice_words(&floorless),
-            "FIRE cannon refused: under the floor"
+            "FIRE cannon refused: that rule is not lawful for this unit"
+        );
+        let mut under_floor = floorless;
+        under_floor["detail"] = serde_json::json!({ "floor_permille": 100 });
+        assert_eq!(
+            notice_words(&under_floor),
+            "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less"
         );
     }
 
@@ -6943,6 +7016,83 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn ordered_rules_show_every_slot_at_the_pane_floor_even_on_an_unarmed_hull() {
+        let row = |slot, action| serde_json::json!({ "slot": slot, "rule": { "action": action } });
+        let frame = serde_json::json!({
+            "rules": [row(6, "fire"), row(1, "fire"), row(2, "hold_fire"),
+                row(3, "lock"), row(4, "fire"), row(5, "hold_fire")],
+        });
+        let summary = [
+            "rules: S1 fire S2 hold S3 lock",
+            "S4 fire S5 hold S6 fire; MIND RULES",
+        ];
+        assert_eq!(rule_summary_lines(&frame), summary);
+        assert!(
+            rule_summary_lines(&frame)
+                .iter()
+                .all(|row| row.chars().count() <= 44)
+        );
+        for utf8 in [true, false] {
+            assert_eq!(
+                weapons_text(&frame, utf8),
+                [summary[0], summary[1], "(no weapon)"]
+            );
+        }
+        let sparse = serde_json::json!({
+            "rules": [row(1, "fire"), row(3, "hold_fire"), row(6, "lock")],
+            "mind": scene_mind(),
+        });
+        assert_eq!(
+            weapons_text(&sparse, true)[0],
+            "rules: S1 fire S3 hold S6 lock; MIND RULES"
+        );
+        assert_eq!(weapons_text(&sparse, true).len(), 5);
+        assert!(weapons_text(&sparse, true)[0].chars().count() <= 44);
+        let mut cleared = frame;
+        cleared["seated"] = Value::Bool(false);
+        assert!(weapons_text(&cleared, true).is_empty());
+    }
+
+    #[test]
+    fn ordered_rule_summaries_drop_invalid_slots_and_duplicate_or_unknown_actions() {
+        let row = |slot, action| serde_json::json!({ "slot": slot, "rule": { "action": action } });
+        let frame = serde_json::json!({
+            "rules": [Value::Null, {}, row(0, "fire"), row(7, "fire"),
+                { "slot": 1.5, "rule": { "action": "fire" } },
+                row(1, "unknown"), row(2, "hold"), row(1, "fire"), row(1, "lock"),
+                { "slot": 3, "rule": { "action": "lock", "contact": "ffffffffffffffff" },
+                    "text": "\u{1b}hidden" }],
+        });
+        assert_eq!(
+            rule_summary_lines(&frame),
+            ["rules: S1 fire S3 lock; MIND RULES"]
+        );
+        for rules in [Value::Null, serde_json::json!({}), serde_json::json!([])] {
+            assert!(rule_summary_lines(&serde_json::json!({ "rules": rules })).is_empty());
+        }
+    }
+
+    #[test]
+    fn canonical_rules_replace_the_incomplete_first_fire_convenience_line() {
+        let weapon = serde_json::json!({
+            "id": "cannon", "ready": true, "rounds": 14, "rounds_max": 20,
+            "armed": { "slot": 1, "target": "lock", "min_permille": 100,
+                "percent": 10, "aspects": [], "keeps": 0 },
+        });
+        let current = serde_json::json!({
+            "weapons": [weapon.clone()],
+            "rules": [{ "slot": 1, "rule": { "action": "fire" } }],
+        });
+        assert_eq!(
+            weapons_text(&current, true),
+            ["rules: S1 fire; MIND RULES", "cannon  ready  14/20"]
+        );
+        let older = serde_json::json!({ "weapons": [weapon] });
+        assert_eq!(weapons_text(&older, true).len(), 2);
+        assert!(weapons_text(&older, true)[1].contains("S1:"));
+    }
+
     /// **17b cut M5.5** (doc 17 §12; the M5 design note's M5.5 item 1): the
     /// mind's four rows under the weapon rows, in their order and words; the
     /// readings each row has; on an unarmed hull the four rows in `(no
@@ -7166,8 +7316,11 @@ mod tests {
     fn m1b3_the_three_new_refusals_are_said() {
         for (word, said) in [
             ("unwarranted", "FIRE cannon refused: no warrant"),
-            ("no_slot", "FIRE cannon refused: every slot armed"),
-            ("unlawful", "FIRE cannon refused: under the floor"),
+            ("no_slot", "FIRE cannon refused: every rule slot occupied"),
+            (
+                "unlawful",
+                "FIRE cannon refused: that rule is not lawful for this unit",
+            ),
         ] {
             let refused = serde_json::json!({
                 "kind": "refused", "order": "fire", "weapon": "cannon", "refusal": word,

@@ -65,7 +65,7 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// Q.7's clock instead of going Patrol on its first think), mirrored in
 /// `NativeStockMind::decide` and pinned by Gate A; M2.6's was `8b3ec78c…d74996`.
 pub const STANDARD_SHA256: &str =
-    "102cc7d27eb411c493b2402b20a589e37330bc36bad6eeef0eadffd0eb6e80ec";
+    "55cabde517b6a08e3d6e8017a43d7231c639c1d8ebfbe6e3777b52ed18115227";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the

@@ -32,6 +32,7 @@ import {
   decodeCatchup,
   decodeCockpitFrame,
   decodeMind,
+  decodeRules,
   labelledAt,
   labelPlan,
   markerLegend,
@@ -40,6 +41,7 @@ import {
   mindProfiles,
   noticeLine,
   noticeLines,
+  ruleSummaryLines,
   scanChips,
   scanText,
   sideWord,
@@ -78,6 +80,68 @@ function theMap(): ArenaMap {
   }
   return map;
 }
+
+describe("ordered rule summaries", () => {
+  const rule = (slot: number, action: string) => ({ slot, rule: { action }, text: "full terms" });
+
+  it("shows every slot, including holds and Sensors rules, in order at the pane floor", () => {
+    const frame = decodeCockpitFrame({
+      rules: [rule(6, "fire"), rule(1, "fire"), rule(2, "hold_fire"),
+        rule(3, "lock"), rule(4, "fire"), rule(5, "hold_fire")],
+    })!;
+    const lines = ruleSummaryLines(frame);
+    expect(lines).toEqual([
+      "rules: S1 fire S2 hold S3 lock",
+      "S4 fire S5 hold S6 fire; MIND RULES",
+    ]);
+    expect(lines.every((line) => [...line].length <= 44)).toBe(true);
+    expect(weaponLines(frame)).toEqual([...lines, "(no weapon)"]);
+    expect(ruleSummaryLines({ ...frame, seated: false })).toEqual([]);
+
+    const sparse = decodeCockpitFrame({
+      rules: [rule(1, "fire"), rule(3, "hold_fire"), rule(6, "lock")],
+    })!;
+    expect(ruleSummaryLines(sparse)).toEqual(["rules: S1 fire S3 hold S6 lock; MIND RULES"]);
+    expect(ruleSummaryLines(sparse)[0]!.length).toBeLessThanOrEqual(44);
+
+    const unarmed = { ...sparse, mind: {
+      name: "Standard Doctrine", profiles: ["Line"], active: 0,
+      class: "I", core: "II", channels: ["helm", "sensors"],
+      next_switch_ms: null, off: false,
+    } };
+    expect(cockpitView(unarmed, null, []).weapons).toEqual(ruleSummaryLines(sparse));
+  });
+
+  it("rejects invalid slots, unknown actions and duplicates without retaining raw terms", () => {
+    expect(decodeRules(null)).toEqual([]);
+    expect(decodeRules({})).toEqual([]);
+    expect(decodeRules([
+      null, {}, rule(0, "fire"), rule(7, "fire"), rule(1.5, "fire"),
+      rule(1, "unknown"), rule(2, "hold"), rule(1, "fire"), rule(1, "lock"),
+      { slot: 3, rule: { action: "lock", contact: "ffffffffffffffff" }, text: "\u001bhidden" },
+    ])).toEqual([{ slot: 1, action: "fire" }, { slot: 3, action: "lock" }]);
+    const old = decodeCockpitFrame({})!;
+    expect(old.rules).toEqual([]);
+    expect(weaponLines(old)).toEqual(["(no weapon)"]);
+  });
+
+  it("uses canonical rules instead of an incomplete first-fire convenience line", () => {
+    const weapon = { id: "cannon", ready: true, rounds: 14, rounds_max: 20,
+      armed: { slot: 1, target: "lock", min_permille: 100, aspects: [], keeps: 0 } };
+    const current = decodeCockpitFrame({ weapons: [weapon], rules: [rule(1, "fire")] })!;
+    expect(weaponLines(current)).toEqual(["rules: S1 fire; MIND RULES", "cannon  ready  14/20"]);
+    const older = decodeCockpitFrame({ weapons: [weapon] })!;
+    expect(weaponLines(older)).toHaveLength(2);
+    expect(weaponLines(older)[1]).toContain("S1:");
+  });
+
+  it("decodes movement from the held plot as a strict boolean", () => {
+    const frame = decodeCockpitFrame({
+      contacts: [{ moving: true }, { moving: false }, {}, { moving: "true" }],
+    })!;
+    expect(frame.contacts.map((contact) => contact.moving)).toEqual([true, false, false, false]);
+  });
+});
 
 describe("the decoders", () => {
   it("read the committed cockpit frame", () => {
@@ -536,9 +600,8 @@ describe("the view model", () => {
       "Lock BA  440 m  62%",
     ]);
     expect(weaponLines(frame)).toEqual([
+      "rules: S1 fire; MIND RULES",
       "cannon  ready  14/20  62%",
-      // 17b cut M1b.3: the scene's cannon is armed in S1.
-      "  S1: >=60% side/rear keeps 8",
       "machine_gun  1 s  380/500  21%",
     ]);
     const view = cockpitView(frame, null, []);
@@ -583,7 +646,7 @@ describe("the view model", () => {
       "No lock",
     ]);
     expect(statusLines({ ...frame, heat: null })).not.toContain("heat 40/100");
-    expect(weaponLines({ ...frame, weapons: [] })).toEqual(["(no weapon)"]);
+    expect(weaponLines({ ...frame, weapons: [], rules: [] })).toEqual(["(no weapon)"]);
     expect(cockpitViewLines(cockpitView({ ...frame, contacts: [] }, null, []))).toContain(
       "(no contacts)",
     );
@@ -965,7 +1028,16 @@ describe("16b cut B.1", () => {
         refusal: "unlawful",
         detail: null,
       }),
-    ).toBe("FIRE cannon refused: under the floor");
+    ).toBe("FIRE cannon refused: that rule is not lawful for this unit");
+    expect(
+      decode({
+        kind: "refused",
+        order: "fire",
+        weapon: "cannon",
+        refusal: "unlawful",
+        detail: { floor_permille: 100 },
+      }),
+    ).toBe("FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less");
     // Every other notice decodes to exactly the keys it always had.
     const plain = decodeCockpitFrame({
       ...(json("cockpit_frame.json") as Record<string, unknown>),
@@ -1185,6 +1257,7 @@ describe("17b cut M1a.3", () => {
       }),
     };
     delete unarmed.weapons;
+    unarmed.rules = [];
     const frame = decodeCockpitFrame(unarmed);
     expect(frame?.armed).toBe(false);
     expect(frame?.weapons).toEqual([]);
@@ -1374,10 +1447,10 @@ describe("17b cut M1b.3", () => {
       "FIRE cannon refused: no warrant",
     );
     expect(notice({ kind: "refused", order: "fire", weapon: "cannon", refusal: "no_slot" })).toBe(
-      "FIRE cannon refused: every slot armed",
+      "FIRE cannon refused: every rule slot occupied",
     );
     expect(notice({ kind: "refused", order: "fire", weapon: "cannon", refusal: "unlawful" })).toBe(
-      "FIRE cannon refused: under the floor",
+      "FIRE cannon refused: that rule is not lawful for this unit",
     );
   });
 
@@ -1516,6 +1589,7 @@ describe("17b cut M5.5", () => {
     // its channels `helm` and `sensors`.
     const drone = raw();
     delete drone.weapons;
+    drone.rules = [];
     drone.contacts = (drone.contacts as Record<string, unknown>[]).map((c) => ({ ...c, odds: [] }));
     drone.mind = {
       name: "Standard Doctrine",

@@ -228,6 +228,8 @@ pub struct Frame {
     /// state per weapon*), in component order, with the lock's band where there is a
     /// lock. It is what `WEAPONSTATUS` prints while a match runs.
     pub weapons: Vec<FrameWeapon>,
+    /// Every active native rule in stable slot order, including Sensors rules.
+    pub rules: Vec<crate::arena::weapons::FrameRule>,
     /// **What the tank has left** (16b cut F.2; doc 16 §5's status block: *armor
     /// and internals per section as current over max*), in **section-id order**:
     /// [`mush_tactics::TacticalUnit`] holds its sections and their facets in
@@ -687,6 +689,7 @@ impl Frame {
             // — and a status block that lagged a pulse behind the tank would be
             // the same lie the heat gauge would be.
             && self.sections == other.sections
+            && self.rules == other.rules
             && self.weapons.len() == other.weapons.len()
             && self
                 .weapons
@@ -1206,7 +1209,7 @@ impl Arena {
                     // reads `FIRE cannon refused. …` as every `FIRE` refusal does.
                     IntentKind::Condition(ref arming) => {
                         match self.resolve_arming(id, arming, at_ms) {
-                            Ok(Some(_)) => {
+                            Ok(_) => {
                                 let _ = self.evaluate_conditions(
                                     id,
                                     at_ms,
@@ -1215,7 +1218,6 @@ impl Arena {
                                     &mut reflex,
                                 );
                             }
-                            Ok(None) => {}
                             Err(refusal) => {
                                 let notice =
                                     self.arming_refusal_notice(id, arming, refusal, self.now_ms);
@@ -2008,7 +2010,8 @@ impl Arena {
                     // millisecond, its slots read the new plot now. A hull with
                     // no slot asks one map miss and nothing else.
                     if !self.conditions.is_empty_for(unit)
-                        && self.own_pass_wrote_lock(unit, event.t_ms)
+                        && (self.own_pass_wrote_lock(unit, event.t_ms)
+                            || self.has_sensor_rules(unit))
                     {
                         let _ = self.evaluate_conditions(
                             unit,
@@ -2048,6 +2051,7 @@ impl Arena {
                             .filter(|(mate, contact)| {
                                 self.unit(*mate)
                                     .is_some_and(|state| state.lock == Some(*contact))
+                                    || self.has_sensor_rules(*mate)
                             })
                             .map(|(mate, _)| *mate)
                             .collect();
@@ -2586,6 +2590,7 @@ impl Arena {
                 .unwrap_or_default(),
             lock,
             weapons: self.frame_weapons(unit.id, aim.as_ref()),
+            rules: self.frame_rules(unit.id),
             // 16b cut F.2: doc 16 §5's status block, off the same M32
             // cells the impact writes. 16c T-110a: off the unit in hand,
             // not a second search for it.
@@ -3951,6 +3956,7 @@ impl Arena {
                 designator: self.designator_for(platform, held),
                 alias: self.alias_for(platform, held),
                 class: held.class,
+                moving: held.seen_at.speed_cms != 0,
                 bearing_mdeg: held.seen_at.bearing_from(&from.pose),
                 range_cm: held.seen_at.range_from(&from.pose),
                 age_ms: self.now_ms.saturating_sub(held.last_seen_ms),
@@ -6506,6 +6512,7 @@ mod tests {
             designator: crate::arena::state::Designator::Provisional(1),
             alias: None,
             class: Classification::Unknown,
+            moving: false,
             bearing_mdeg: 90_000,
             range_cm: 43_400,
             age_ms,

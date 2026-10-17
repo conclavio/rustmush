@@ -2088,6 +2088,10 @@ pub struct FrameContact {
     /// since first detection, which told a pilot nothing about whether the plot
     /// in front of them was a live track or a dying one.
     pub age_ms: i64,
+    /// Whether the held plot was moving when it was acquired. This is the
+    /// same earned observation used by station-rule moving/stopped predicates;
+    /// a target stopping outside sight does not change it.
+    pub moving: bool,
     /// **The cell the target was last seen in** (16b cut S.2), for the marker
     /// `VIEW` draws. `None` for a plot off the window.
     ///
@@ -2408,6 +2412,7 @@ impl FrameContact {
             bearing_mdeg,
             range_cm,
             age_ms,
+            moving,
             cell,
             condition,
             aspect,
@@ -2422,6 +2427,7 @@ impl FrameContact {
             bearing_mdeg: their_bearing_mdeg,
             range_cm: their_range_cm,
             age_ms: their_age_ms,
+            moving: their_moving,
             cell: their_cell,
             condition: their_condition,
             aspect: their_aspect,
@@ -2434,6 +2440,7 @@ impl FrameContact {
             && class == their_class
             && bearing_mdeg == their_bearing_mdeg
             && range_cm == their_range_cm
+            && moving == their_moving
             && cell == their_cell
             && aspect == their_aspect
             && reads_dead == their_reads_dead

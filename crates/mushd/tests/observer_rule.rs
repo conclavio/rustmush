@@ -748,9 +748,9 @@ fn unseated(feed: &str) -> Value {
             "seated": false,
         }),
         // 17b cut M1a.3 bumped the cockpit frame to version 2, 17b cut M1b.3
-        // to 3.
+        // to 3, and M5rules to 4 for ordered rules.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 3, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 4, "retain": "latest" },
             "seated": false,
         }),
     }
@@ -2462,13 +2462,13 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "an empty scope, before detection: {cockpit}"
     );
     // **17b cut M1a.3** (doc 17 §3): the frame's own clock and a piloted
-    // hull's order, which is none; version 2 — 3 since 17b cut M1b.3.
+    // hull's order, which is none; version 4 since M5rules exposes every ordered rule.
     assert!(
         cockpit.get("t_ms").is_some_and(Value::is_i64),
         "the frame carries its arena millisecond: {cockpit}"
     );
     assert_eq!(cockpit.get("order"), Some(&Value::Null), "{cockpit}");
-    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(3)));
+    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(4)));
     assert_eq!(
         cockpit.get("callsign").and_then(Value::as_str),
         Some("RA"),
@@ -4388,6 +4388,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         notices: Vec::new(),
         lock: Some(lock),
         weapons: Vec::new(),
+        rules: Vec::new(),
         sections: Vec::new(),
         heat: None,
         receiver: None,
@@ -4553,6 +4554,7 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         },
         alias: Some(2),
         class: Classification::Classified { team: Team::Blue },
+        moving: false,
         bearing_mdeg: 45_000,
         range_cm: 45_000,
         age_ms: 0,
@@ -7929,9 +7931,9 @@ async fn m1b4_slot_notices(mut ws: Ws) -> Vec<Value> {
 /// * Cy, who flies nothing, types the rule and reads the gate's one line;
 /// * Ada, powered and seven hundred metres from Bo — past her sight — types
 ///   `FIRE cannon WHEN odds >= 60` before her platform holds anything: it
-///   arms, `Arming cannon: …`, and once told apart and locked the same rule
+///   arms, `Queued: cannon fires …`, and once told apart and locked the same rule
 ///   answers the SAME bytes, so the verb is no oracle on what is out there;
-///   her `WEAPONSTATUS` arming line is her own slot alone (`  S1: >=60%`);
+///   her `WEAPONSTATUS` arming line is her own slot alone (`S1: cannon fires at your identified lock ...`);
 /// * her `odds >= 5` is refused naming the floor and nothing else;
 /// * locked on `BA` showing its front, an `aspect = side,rear` slot says `S1
 ///   held the cannon: BA shows its front.` — her slot, her gun and the
@@ -7939,14 +7941,15 @@ async fn m1b4_slot_notices(mut ws: Ws) -> Vec<Value> {
 ///   fires at BA by S1 (NN%, front).`; both keyframe notice objects carry her
 ///   slot, her gun and `BA`, and no tank name or object number;
 /// * Bo, the target, reads none of it — no slot word, no `fires by`, no
-///   `held the`, no `Arming` — on his terminal from the first arming to the
+///   `held the`, no `Queued:` — on his terminal from the first arming to the
 ///   last.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
     use tacsim::match_::cockpit::OUTSIDE_COCKPIT;
     const FLOOR: &str =
         "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.";
-    const ARMED: &str = "Arming cannon: fires your lock when your chance to hit is 60% or better.";
+    const ARMED: &str =
+        "Queued: cannon fires at your identified lock when its chance to hit is at least 60%";
 
     let server = boot("observer-arming-said").await;
     let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
@@ -7973,21 +7976,24 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
         held.contains(NO_CONTACTS),
         "the premise: nothing held\n{held}"
     );
-    let before = ask(&mut ada, "FIRE cannon WHEN odds >= 60", "Arming cannon").await;
+    let before = ask(&mut ada, "FIRE cannon WHEN odds >= 60", "Queued: cannon").await;
     names_nothing(&before, red, blue, "the arming before detection");
-    assert_eq!(m1b4_lines(&before, "Arming"), vec![ARMED.to_owned()]);
+    assert_eq!(m1b4_lines(&before, "Queued:"), vec![ARMED.to_owned()]);
     // Her own slot, on her own `WEAPONSTATUS`, once the arena has given it.
     wait_until(STEP_TIMEOUT, "the slot on WEAPONSTATUS", async || {
         ask_whole(&mut ada, "WEAPONSTATUS")
             .await
-            .contains("\n  S1: >=60%")
+            .contains("S1: cannon fires at your identified lock")
     })
     .await;
     let listing = ask_whole(&mut ada, "WEAPONSTATUS").await;
     names_nothing(&listing, red, blue, "WEAPONSTATUS");
     assert_eq!(
         m1b4_lines(&listing, "S1:"),
-        vec!["S1: >=60%".to_owned()],
+        vec![
+            "S1: cannon fires at your identified lock when its chance to hit is at least 60%"
+                .to_owned()
+        ],
         "her own slot, its own terms: {listing}"
     );
     // The floor, refused naming the floor alone.
@@ -8022,10 +8028,10 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
 
     // After detection: the same bytes. (No lock yet, so the slot has nothing
     // to fire at: a slot fires only the lock.)
-    let after = ask(&mut ada, "FIRE cannon WHEN odds >= 60", "Arming cannon").await;
+    let after = ask(&mut ada, "FIRE cannon WHEN odds >= 60", "Queued: cannon").await;
     assert_eq!(
-        m1b4_lines(&after, "Arming"),
-        m1b4_lines(&before, "Arming"),
+        m1b4_lines(&after, "Queued:"),
+        m1b4_lines(&before, "Queued:"),
         "the arming answered other bytes once BA was held"
     );
 
@@ -8034,7 +8040,7 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
     let _ = ask(
         &mut ada,
         "FIRE cannon WHEN aspect = side,rear",
-        "Arming cannon",
+        "Queued: cannon",
     )
     .await;
     let mark = ada.mark();
@@ -8056,7 +8062,7 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
     say(
         &mut ada,
         &format!("FIRE cannon WHEN rounds > {keep}"),
-        "Arming cannon",
+        "Queued: cannon",
     )
     .await;
     ada.expect_after(mark, "Cannon fires at BA by S1 (").await;
@@ -8107,7 +8113,7 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
         "S1",
         "fires by",
         "held the",
-        "Arming",
+        "Queued:",
         "Cleared:",
         "Compact floor",
     ] {

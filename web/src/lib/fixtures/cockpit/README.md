@@ -6,6 +6,13 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 `include_str!`s these files (the way `mush-net-ssh`'s TUI reads
 `../run-allowlist.json`); vitest reads them natively.
 
+M5rules advances the frame to version 4. Both keyframes now carry the ordered
+`rules` table and each contact's observed `moving` flag. The scene's S1 Fire rule
+is also the source of its legacy `armed` convenience field. Current clients show
+`rules: S1 fire; MIND RULES` before the weapons; the complete terms are read through
+`MIND RULES`, and the older per-weapon arming line is suppressed. The historical
+entries below describe when the remaining fields joined the fixture.
+
 | file | what it is | built by |
 |---|---|---|
 | `cockpit_frame.json` | the per-pulse cockpit keyframe, feed `arena.cockpit`; since 16b cut O.2 it carries `"ecm": null` (the scene's platform carries no jamming pod); since 17b cut M1a.3 it carries `aspect`, `reads_dead`, `odds`, `fatal` per contact, `bands_cm` per weapon and `t_ms`, `order` at the top (`FRAME_VERSION` 2) — the scene's armed platform (cannon, machine gun) holds `BA` (blue, hostile, 450 m) and `RB` (red, friendly, 100 m) as its two classified contacts; since 17b cut M1b.3 (`FRAME_VERSION` 3; Q2) BA alone carries odds: RB is red's own, and the rows never carry a friend's — so `RB`, `X3` and `X4` carry `[]`; and since the same cut each weapon carries `armed` (the cannon armed in S1 on the lock at 60 per cent, on `left`, `right` or `rear`, keeping 8 rounds, both range bounds `null`; the machine gun `null`) and the top level `odds_floor_permille: 100`; since 17b cut M5.4 the top level carries `mind` — the hull's sealed mind for the person in the seat, `{ name, profiles, active, class, core, channels, next_switch_ms, off }`: the scene's pilot sealed Standard Doctrine on Sniper and Line and has not switched, the mind thinking at Class I on the line tank's Class II core, the armed platform's channels `helm`, `sensors` and `fire` — added WITHOUT a version (`FRAME_VERSION` stays 3: a field added for the person in the seat is not a version; every decoder ignored the key until 17b cut M5.5, which draws it as the weapons pane's tail on the TUI and the web) | `tacsim::match_::cockpit::status_frame` |

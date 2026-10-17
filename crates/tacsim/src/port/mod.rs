@@ -1,7 +1,7 @@
 //! **The trade run's port code** (doc 18 cut IC2; doc 18 §4.2 "Compartments",
 //! §4.3 "The capacity function", §4.4, §4.7).
 //!
-//! [`capacity`] is the one pure function a hull's stowage compartments are
+//! [`crate::port::capacity`] is the one pure function a hull's stowage compartments are
 //! checked through, everywhere a load is asked about: the market lot leg's
 //! pre-check and the Draw prepare (cuts IC7/IC8), `+ship/plan` and
 //! `+ship/hold`, the room gauges (IC6) and the queue's buy clamp and `fill`
@@ -11,66 +11,66 @@
 //!
 //! **Doc 18 cut IC3** binds the corridor's ports into the world:
 //!
-//! - [`def`] — the `port` pack entry ([`PortDef`]) and its checks;
-//! - [`map`] — the applier's fail-closed record of what it made, one
+//! - [`crate::port::def`] — the `port` pack entry ([`crate::port::PortDef`]) and its checks;
+//! - [`crate::port::map`] — the applier's fail-closed record of what it made, one
 //!   `tacsim:port:{pack}/{entry}` document per port entry;
-//! - [`apply`] — the `PortApplier`: the domain, the treasury, the orgs and
+//! - [`crate::port::apply`] — the `PortApplier`: the domain, the treasury, the orgs and
 //!   their capital (doc 18 §4.7 parts a–c), once, under the content latch;
-//! - [`readiness`] — the readiness report `@tacsim/port status` renders and
+//! - [`mod@crate::port::readiness`] — the readiness report `@tacsim/port status` renders and
 //!   cut IC6 gates `+coop/enrol` on;
-//! - [`credit`] — `+credit`, the pilot's own account.
+//! - [`crate::port::credit`] — `+credit`, the pilot's own account.
 //!
 //! **Doc 18 cut IC4** makes the programme's hulls places people stand in:
 //!
-//! - [`hull`] — `PortApplier` part (f): each hull Thing, its unit, its seven
+//! - [`crate::port::hull`] — `PortApplier` part (f): each hull Thing, its unit, its seven
 //!   rooms and five exit pairs from the Dray's `interior` template, the store
 //!   and airlock spaces with the airlock's member rooms and berths, the laid-up
 //!   placement and the title under `tacsim.registry`; and the readiness
 //!   report's hulls line.
 //!
-//! Doc 18 cut IC5 — [`families`]: the stock-issue receipt and the departure
+//! Doc 18 cut IC5 — [`crate::port::families`]: the stock-issue receipt and the departure
 //! ticket, with the `PassagePlan` they freeze; [`crate::port_tick`] is the tick.
 //!
 //! **Doc 18 cut IC6** — the Co-op's First Captain programme and boarding:
 //!
-//! - [`coop`] — `+coop`, `+coop/enrol` and `+coop/statement`; the enrolment
+//! - [`crate::port::coop`] — `+coop`, `+coop/enrol` and `+coop/statement`; the enrolment
 //!   document (one per gateway account, ever, D-18-25), the operate gate
-//!   ([`live_charter`]: the live lease, never the document, D-18-23), the
+//!   ([`crate::port::live_charter`]: the live lease, never the document, D-18-23), the
 //!   free-hull rule and the observer that folds a staff-ended lease;
-//! - [`gauges`] — the pure gauge renders over the capacity function (no pack
+//! - [`crate::port::gauges`] — the pure gauge renders over the capacity function (no pack
 //!   text carries a load, D-18-39);
-//! - [`ship`] — `+ship`, `+ship/hold`, `+ship/board` and `+ship/leave`
+//! - [`crate::port::ship`] — `+ship`, `+ship/hold`, `+ship/board` and `+ship/leave`
 //!   (D-18-34), and the hull rooms' status line and gauges on `look`.
 //!
 //! **Doc 18 cut IC8** — finite stock and port commerce:
 //!
-//! - [`vendor`] — the `PortApplier`'s parts d–e helpers: the authored storefront
+//! - [`crate::port::vendor`] — the `PortApplier`'s parts d–e helpers: the authored storefront
 //!   and signatory resolved by name in their room at first apply, the clerk, the
 //!   storefront vaults, the market vendors, the clerk's grants, the stock plan rows,
 //!   the boards and the standing bids;
-//! - [`stock`] — `tacsim_port_stock` (mint + receipt), the stock arm and the
+//! - [`crate::port::stock`] — `tacsim_port_stock` (mint + receipt), the stock arm and the
 //!   lapsed-hold release arm the port tick drives;
-//! - [`market`] — the TacSim implementations of the market's seams: the presence
+//! - [`crate::port::market`] — the TacSim implementations of the market's seams: the presence
 //!   gate, the hull capacity provider and the port institutions' party caps;
-//! - [`board`] — the boards 18a names, room by room: what is left, SOLD OUT and
+//! - [`crate::port::board`] — the boards 18a names, room by room: what is left, SOLD OUT and
 //!   "not buying".
 //!
 //! **Doc 18 cut IC9** — undock and fly, the first player-runnable flight:
 //!
-//! - [`passage`] — the passage planner over the sky at departure (§4.4, §4.8):
+//! - [`crate::port::passage`] — the passage planner over the sky at departure (§4.4, §4.8):
 //!   `plan_passage`, `choose_route`, the intercept passes, the Coast burn, the
 //!   crew-day rule and the payload;
-//! - [`burn`] — `tacsim_port_burn`: the burn's prepare recomputes the payload,
+//! - [`crate::port::burn`] — `tacsim_port_burn`: the burn's prepare recomputes the payload,
 //!   the burn and the crew-days from the filed plan and the drive table it holds,
 //!   debits the tank and the locker and writes the ticket, matter first, in one
 //!   bundle (D-18-11, D-18-46);
-//! - [`voyage`] — the filed sailing plan (`tacsim:voyage:{hull}`), `+ship/plan`,
+//! - [`crate::port::voyage`] — the filed sailing plan (`tacsim:voyage:{hull}`), `+ship/plan`,
 //!   `+ship/undock`, the launch arm the port tick drives, the staff terminal for a
 //!   held launch and the passage renders.
 //!
 //! **Doc 18 cut IC10** — selling and the Co-op share:
 //!
-//! - [`proceeds`] — [`CoopProceeds`], the market's proceeds policy: the share of the
+//! - [`crate::port::proceeds`] — [`crate::port::CoopProceeds`], the market's proceeds policy: the share of the
 //!   margin over the programme's live reference ask paid to the Trust out of a sale
 //!   from an enrolled hold, the sale line, and the enrolment's sale counters folded
 //!   once per settled sale.

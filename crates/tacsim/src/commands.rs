@@ -441,7 +441,7 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
 pub const PORT_USAGE: &str = "Usage: @tacsim/port status | @tacsim/port clear #<hull>";
 
 /// `@tacsim/port [status]` (doc 18 §4.7; staff): the port readiness report
-/// ([`crate::port::readiness`]), a pure read of the port maps, the economy, org
+/// ([`crate::port::readiness()`]), a pure read of the port maps, the economy, org
 /// and sim state and the live rate. Writes nothing.
 ///
 /// `@tacsim/port clear #<hull>` (doc 18 cut IC9, lead ruling L29; staff): the

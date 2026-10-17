@@ -3766,11 +3766,11 @@ mod tests {
                 |l| matches!(l, Line::Refused { order, weapon: Some(w), .. } if order == "FIRE" && w == "cannon"),
             ),
             (
-                "FIRE cannon refused. Every slot is armed; FIRE <weapon> OFF frees one.",
+                "FIRE cannon refused. Every rule slot is occupied; MIND RULE <slot> OFF frees one.",
                 |l| matches!(l, Line::Refused { weapon: Some(w), .. } if w == "cannon"),
             ),
             (
-                "FIRE cannon refused. That condition is not one this core takes; help cockpit lists the eight it does.",
+                "FIRE cannon refused. That condition is not one this core takes; help cockpit lists the supported native rules.",
                 |l| matches!(l, Line::Refused { weapon: Some(w), .. } if w == "cannon"),
             ),
             ("Cleared: cannon fires only when you say.", |l| {

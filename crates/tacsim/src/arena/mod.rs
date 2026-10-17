@@ -318,6 +318,7 @@ pub mod path;
 pub mod perception;
 pub mod resolution;
 pub mod rng;
+pub mod rules;
 pub mod slope;
 pub mod snapshot;
 pub mod state;

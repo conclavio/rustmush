@@ -5,10 +5,17 @@ Draft 0.1, 2026-10-17, initially checked at `1137c373` and rebased onto
 This is the next implementation sequence for [doc 17](17-unit-minds.md): finish the
 rule language and the behavior deferred from M5, then deliver M6's authoring,
 proving and debugging tools. [17b](17b-unit-minds-implementation-plan.md) remains
-the programme's build ledger. No implementation in this note is marked landed.
+the programme's build ledger. M5rules' implementation and Windows gate are
+recorded in [17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17);
+Linux verification is in progress before acceptance. Later scratch preparation
+is not a landed milestone.
 
 The owner requested this plan through M6 on 2026-10-17 and deferred M7 until a
-separate check that the economy code has stabilized. The owner also accepted the
+separate check that the economy code has stabilized. Later that day the owner
+authorized implementation through M5rules, M5r, M6 and M7, choosing obvious forks
+without another approval. M7 still begins with the economy-stability checkpoint
+and its own design note; a passing checkpoint permits implementation to continue.
+The owner also accepted the
 recorded timing misses as nonblocking: the 300-unit target exceeds expected launch
 scale, and isolated misses on the development machine or VPS can reflect host
 variability. Timing remains regression evidence; deterministic correctness,
@@ -33,10 +40,12 @@ bench re-simulation do not. The current `MIND TRACE` refusal is deliberate.
 | M5rules | Complete native station-rule language and its pilot surfaces | Landed M5 |
 | M5r | Restore the named doctrine and motor behavior | M5rules; landed hash v2 |
 | M6 | Authors can save, fly, test and debug their own minds | Both post-M5 cuts |
-| M7 checkpoint | Review stabilized economy seams and prepare M7's design note | M6 accepted; separate review, not automatic implementation |
+| M7 checkpoint and implementation | Review stabilized economy seams, prepare M7's design note, then implement its lifecycle | M6 accepted and checkpoint passed |
 
 M7 filing, titles, licences, paid services, royalties, market listings and core
-installation are outside this phase. M8 contraband and procurement still require
+installation follow this plan's detailed M6 cuts and the checkpoint; their design
+note will specify the stabilized economic interfaces before that work starts.
+M8 contraband and procurement still require
 IC mind sorties. Doc 18's carrier journey and captain's order queue do not supply
 that lifecycle. ASSIST, per-channel mind leases, new non-combat stations and the
 IC region-sortie implementation remain later work.
@@ -160,6 +169,13 @@ projection, not just additional parser branches.
 | M5rules.2 | Pilot grammar, authoritative refusals, English readback, multi-rule frame/keyframe and all readers | Every grammar form through the real cockpit; matching line/UI state; bot parser and fog contracts |
 | M5rules.3 | Integration gate, compatibility declarations, help and as-built record | Default doctrine and new-rule fixtures, twin equality, snapshot/resume, full applicable sweep |
 
+Implementation sequencing: M5rules.1 and M5rules.2 are one coupled code cut,
+followed by the integrated M5rules.3 gate in that commit. The typed slot changes
+replace the old slot element across storage, snapshots, mind citations, parser
+and every reader; an intermediate deployed representation would require a second
+compatibility lane. Review remains independent by file ownership, and every gate
+listed above applies before the combined cut is accepted.
+
 Implement `FIRE`, conditional hold-fire and `LOCK nearest|best_odds|weakest|flank|newest`
 with at most four predicates and no `OR`. Use `FIRE <weapon|ALL> HOLD WHEN ...` for
 the conditional veto; preserve `FIRE <weapon|ALL> OFF` as disarming, and declare the
@@ -231,8 +247,10 @@ loss, and test overlapping weapons with movement between launches and impacts.
 Consume the motor's arrival outcome instead of guessing from proximity. Both
 runners make the same decisions from the same public facts.
 
-Review the fourteen deleted tests at `3a3c469^`; restore tests for behavior that
-returns, adapted to the mind seam. Update Hold help, SUPPORT acknowledgement,
+Review the fourteen deleted tests at `3a3c469^`; restore the twelve for returning
+A/F/G/I/K behavior, adapted to the mind seam. The two D/J tests stay excluded.
+The K regression includes both same-side hunters reaching the far zone without
+learning avoid cells from their arrival. Update Hold help, SUPPORT acknowledgement,
 drone description and leader prompt only where the corresponding behavior has
 returned. Fix the stale stock-script header/key count with its digest change.
 
@@ -532,8 +550,8 @@ save, select, seal, release, trace, report, prove, bench, edit again and show th
 earlier seal remains unchanged. Include an unarmed hull, a faulting mind falling
 to ROM, two characters sharing an account, an unrelated observer and an opposing
 human. Finish `help mindcraft`, `help proving`, pilot help and the first-save hint.
-Record the sub-cut ledger and the exact compatibility/deploy effects. Then stop
-at the M7 checkpoint in §7.
+Record the sub-cut ledger and the exact compatibility/deploy effects. Then run
+the M7 checkpoint in §7 before continuing into its separately specified work.
 
 ## 5. Compatibility and release discipline
 
@@ -660,6 +678,6 @@ feature is not itself the readiness criterion. Check:
    with authoritative typed licences without moving ownership or creating another
    registry. Resolve Q-UM-17 and Q-UM-18's written defaults in that design note.
 
-Record that checkpoint in 17b with the checked commit and test evidence. M6 finishing
-does not automatically launch M7. No calendar delay or arbitrary quiet period is a
+Record that checkpoint in 17b with the checked commit and test evidence. The owner's
+continuation authorization permits M7 after this checkpoint passes. No calendar delay or arbitrary quiet period is a
 substitute for this interface and correctness review.

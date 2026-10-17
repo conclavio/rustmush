@@ -852,7 +852,7 @@ fn fired_objects(ledger: &str) -> Vec<String> {
 /// `FIRE cannon WHEN odds >= 5` is refused in the floor's one sentence and
 /// arms nothing; `FIRE cannon WHEN odds >= 60 AND aspect = side,rear` is
 /// written back in English with no slot number, and `WEAPONSTATUS` then
-/// reads the cannon's row and `  S1: >=60% side/rear` under it. For a cannon
+/// reads the cannon's row and the complete ordered S1 rule. For a cannon
 /// cycle nothing fires by the slot and Ada is told once that it held, naming
 /// her lock: `S1 held the cannon: BA shows its front.` A typed `FIRE cannon`
 /// fires (`Firing cannon.`), the slot notwithstanding. Bo turns side-on and,
@@ -864,8 +864,8 @@ fn fired_objects(ledger: &str) -> Vec<String> {
 async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still_fires() {
     const FLOOR: &str =
         "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less.";
-    const GATE: &str = "Arming cannon: fires your lock when your chance to hit is 60% or better \
-                        and it shows its side or rear.";
+    const GATE: &str = "Queued: cannon fires at your identified lock when its chance to hit is at least 60% \
+                        and the target shows its side or";
     let began = std::time::Instant::now();
     let server = boot("sim-weapons-m1b4").await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
@@ -908,29 +908,26 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     let seen = ask(
         &mut ada,
         "FIRE cannon WHEN odds >= 60 AND aspect = side,rear",
-        "Arming cannon",
+        "Queued: cannon",
     )
     .await;
     assert_eq!(
-        lines_opening(&seen, "Arming cannon"),
+        lines_opening(&seen, "Queued: cannon"),
         vec![GATE.to_owned()],
         "{seen}"
     );
     let mut listing = String::new();
     wait_until(STEP_TIMEOUT, "the slot on WEAPONSTATUS", async || {
         listing = ask_whole(&mut ada, "WEAPONSTATUS").await;
-        listing.contains("\n  S1: >=60% side/rear")
+        listing.contains("S1: cannon fires at your identified lock")
     })
     .await;
-    let rows: Vec<&str> = listing.lines().collect();
-    let cannon = rows
-        .iter()
-        .position(|line| line.starts_with("cannon  "))
-        .unwrap_or_else(|| panic!("the cannon's row: {listing}"));
-    assert_eq!(
-        rows.get(cannon + 1).map(|line| line.trim_end()),
-        Some("  S1: >=60% side/rear"),
-        "{listing}"
+    assert!(listing.lines().any(|line| line.starts_with("cannon  ")));
+    assert!(
+        listing.contains(
+            "S1: cannon fires at your identified lock when its chance to hit is at least 60%"
+        ) && listing.contains("the target shows its side or rear"),
+        "the ordered rule reads its full terms: {listing}"
     );
 
     // A cannon cycle and more with the front shown: held, said once, and no
@@ -1025,7 +1022,7 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
         "S1",
         "fires by",
         "held the",
-        "Arming",
+        "Queued:",
         "Cleared:",
         "Compact floor",
     ] {

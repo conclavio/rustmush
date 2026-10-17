@@ -378,7 +378,8 @@ impl IntentKind {
             | IntentKind::Profile { .. } => Channel::Helm,
             IntentKind::Lock { .. } | IntentKind::Emcon { .. } => Channel::Sensors,
             // 17b cut M1b.1: an arming is the weapons station's.
-            IntentKind::Fire { .. } | IntentKind::Condition(_) => Channel::Fire,
+            IntentKind::Fire { .. } => Channel::Fire,
+            IntentKind::Condition(arming) => arming.channel(),
         }
     }
 
@@ -392,7 +393,11 @@ impl IntentKind {
             IntentKind::Lock { .. } => "lock",
             // 17b cut M1b.1: the pilot typed `FIRE <weapon> WHEN …`, so a staged
             // refusal of an arming reads `FIRE cannon refused. …`.
-            IntentKind::Fire { .. } | IntentKind::Condition(_) => "fire",
+            IntentKind::Fire { .. } => "fire",
+            IntentKind::Condition(arming) => match arming.channel() {
+                Channel::Sensors => "lock",
+                _ => "fire",
+            },
             IntentKind::Order(_) => "order",
             IntentKind::ReleaseOrder { .. } => "release",
             IntentKind::Place { .. } => "place",
@@ -3805,6 +3810,44 @@ mod tests {
             serde_json::to_string(&Refusal::Unlawful).expect("serialises"),
             "\"unlawful\""
         );
+    }
+
+    /// A native lock rule requires Sensors and its current epoch even when
+    /// the sender holds Fire. Removing a Sensors slot takes the same channel.
+    #[test]
+    fn m5rules_lock_rules_cannot_borrow_fire_authority() {
+        use crate::arena::conditions::{Arming, LockSelector, Rule};
+        let kind = IntentKind::Condition(Arming::Rules {
+            slot: Some(1),
+            rules: vec![Rule::lock_rule(LockSelector::Nearest, None, Vec::new())],
+        });
+        assert!(kind.is_discrete());
+        assert_eq!(kind.channel_required(), Channel::Sensors);
+        assert_eq!(kind.as_str(), "lock");
+        let mut arena = two_tanks(1);
+        online(&mut arena, RED);
+        let mut order = intent(RED, 1, 0, kind);
+        order.channel = Channel::Fire;
+        assert_eq!(
+            apply_intent(&mut arena, &order, IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Channel)
+        );
+        order.channel = Channel::Sensors;
+        order.epoch = 0;
+        assert_eq!(
+            apply_intent(&mut arena, &order, IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Epoch)
+        );
+        order.epoch = 1;
+        assert_eq!(
+            apply_intent(&mut arena, &order, IntentSource::Seat),
+            IntentOutcome::Queued
+        );
+        let remove = IntentKind::Condition(Arming::Remove {
+            slot: 1,
+            channel: Channel::Sensors,
+        });
+        assert_eq!(remove.channel_required(), Channel::Sensors);
     }
 
     /// **17b cut M5.2: the profile switch's intent and word** (doc 17 §11,

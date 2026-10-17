@@ -153,7 +153,7 @@ pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 
 /// **The stock content's version** (doc 17 §13): the `stock=` part of
 /// [`MIND_ABI`]; 17b cut M2.5's `standard.rhai` is version 1.
@@ -163,7 +163,7 @@ pub const STOCK_VERSION: u32 = 1;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] — `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=1;stock=1";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=2;stock=1";
 
 /// **The stock class's op ceiling per think** (doc 17 §9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -326,7 +326,7 @@ pub(crate) mod fixture {
     use super::{MIND_ABI, STOCK_OPS_PER_THINK, register_api, standard_sandbox};
     use crate::arena::card::{StockCard, line};
     use crate::arena::condition::Condition;
-    use crate::arena::conditions::{HeldWhy, SlotTarget};
+    use crate::arena::conditions::{FireCondition, HeldWhy, Rule, RulePredicate, SlotTarget};
     use crate::arena::intents::Refusal;
     use crate::arena::mind::{MindView, STOCK_MEMORY_LIMITS, ViewContact};
     use crate::arena::motion::BlockedCause;
@@ -338,7 +338,7 @@ pub(crate) mod fixture {
         ArenaDefinition, Classification, ContactId, Designator, Power, Team,
     };
     use crate::arena::step::{FrameFacet, FrameHeat, FrameSection};
-    use crate::arena::weapons::{FrameArming, FrameBand, FrameWeapon};
+    use crate::arena::weapons::{FrameArming, FrameBand, FrameRule, FrameWeapon};
     use crate::config::ReflexConfig;
     use crate::deliberation::order::RangeBand;
 
@@ -392,6 +392,24 @@ pub(crate) mod fixture {
             wreck: false,
             immobile: false,
             sight_m: 800,
+            rules: vec![FrameRule {
+                slot: 1,
+                rule: Rule::fire_rule(
+                    FireCondition {
+                        weapon: SmolStr::new("cannon"),
+                        target: SlotTarget::BestHostile,
+                        min_permille: 100,
+                        aspects: 0b1111,
+                        min_rounds_left: 2,
+                        min_range_m: 0,
+                        max_range_m: 420,
+                    },
+                    vec![RulePredicate::Odds {
+                        weapon: None,
+                        min_permille: 100,
+                    }],
+                ),
+            }],
             ecm: Some(false),
             receiver: Some(Receiver {
                 budget: 3,
@@ -564,6 +582,7 @@ pub(crate) mod fixture {
                     alias: Some(3),
                     class: Classification::Classified { team: Team::Blue },
                     friendly: false,
+                    moving: false,
                     bearing_deg: 90,
                     relative_deg: 0,
                     range_m: 300,
@@ -592,6 +611,7 @@ pub(crate) mod fixture {
                     alias: None,
                     class: Classification::Classified { team: Team::Red },
                     friendly: true,
+                    moving: false,
                     bearing_deg: 0,
                     relative_deg: 270,
                     range_m: 450,
@@ -610,6 +630,7 @@ pub(crate) mod fixture {
                     alias: None,
                     class: Classification::Unknown,
                     friendly: false,
+                    moving: false,
                     bearing_deg: 135,
                     relative_deg: 45,
                     range_m: 600,
@@ -786,7 +807,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=1;stock=1");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=2;stock=1");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -900,7 +921,7 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 226] = [
+    const PINNED: [&str; 254] = [
         "type View",
         "type Contact",
         "type Weapon",
@@ -912,6 +933,8 @@ mod tests {
         "type Notice",
         "type Condition",
         "type Armed",
+        "type Rule",
+        "type Predicate",
         "View.unit",
         "View.callsign",
         "View.team",
@@ -931,6 +954,7 @@ mod tests {
         "View.heat",
         "View.sections",
         "View.weapons",
+        "View.rules",
         "View.lock",
         "View.order",
         "View.t_ms",
@@ -950,6 +974,7 @@ mod tests {
         "Contact.age_ms",
         "Contact.cell",
         "Contact.condition",
+        "Contact.moving",
         "Contact.fatal",
         "Contact.aspect",
         "Contact.odds",
@@ -972,6 +997,30 @@ mod tests {
         "Armed.keeps",
         "Armed.min_range_m",
         "Armed.max_range_m",
+        "Rule.slot",
+        "Rule.action",
+        "Rule.channel",
+        "Rule.weapon",
+        "Rule.target",
+        "Rule.contact",
+        "Rule.selector",
+        "Rule.min_permille",
+        "Rule.aspects",
+        "Rule.keeps",
+        "Rule.min_range_m",
+        "Rule.max_range_m",
+        "Rule.implicit",
+        "Rule.independent",
+        "Rule.predicates",
+        "Predicate.kind",
+        "Predicate.weapon",
+        "Predicate.comparison",
+        "Predicate.value",
+        "Predicate.percent",
+        "Predicate.section",
+        "Predicate.state",
+        "Predicate.band",
+        "Predicate.present",
         "Section.id",
         "Section.condition",
         "Section.internals",
@@ -1130,7 +1179,7 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 194] = [
+    const CALLS: [(&str, &str); 220] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.team", "v.team"),
@@ -1150,6 +1199,7 @@ mod tests {
         ("View.heat", "v.heat"),
         ("View.sections", "v.sections"),
         ("View.weapons", "v.weapons"),
+        ("View.rules", "v.rules"),
         ("View.lock", "v.lock"),
         ("View.order", "v.order"),
         ("View.t_ms", "v.t_ms"),
@@ -1161,6 +1211,7 @@ mod tests {
         ("Contact.designator", "v.contacts[0].designator"),
         ("Contact.alias", "v.contacts[0].alias"),
         ("Contact.identified", "v.contacts[0].identified"),
+        ("Contact.moving", "v.contacts[0].moving"),
         ("Contact.friendly", "v.contacts[0].friendly"),
         ("Contact.bearing_deg", "v.contacts[0].bearing_deg"),
         ("Contact.relative_deg", "v.contacts[0].relative_deg"),
@@ -1191,6 +1242,33 @@ mod tests {
         ("Armed.keeps", "v.weapons[0].armed.keeps"),
         ("Armed.min_range_m", "v.weapons[0].armed.min_range_m"),
         ("Armed.max_range_m", "v.weapons[0].armed.max_range_m"),
+        ("Rule.slot", "v.rules[0].slot"),
+        ("Rule.action", "v.rules[0].action"),
+        ("Rule.channel", "v.rules[0].channel"),
+        ("Rule.weapon", "v.rules[0].weapon"),
+        ("Rule.target", "v.rules[0].target"),
+        ("Rule.contact", "v.rules[0].contact"),
+        ("Rule.selector", "v.rules[0].selector"),
+        ("Rule.min_permille", "v.rules[0].min_permille"),
+        ("Rule.aspects", "v.rules[0].aspects"),
+        ("Rule.keeps", "v.rules[0].keeps"),
+        ("Rule.min_range_m", "v.rules[0].min_range_m"),
+        ("Rule.max_range_m", "v.rules[0].max_range_m"),
+        ("Rule.implicit", "v.rules[0].implicit"),
+        ("Rule.independent", "v.rules[0].independent"),
+        ("Rule.predicates", "v.rules[0].predicates"),
+        ("Predicate.kind", "v.rules[0].predicates[0].kind"),
+        ("Predicate.weapon", "v.rules[0].predicates[0].weapon"),
+        (
+            "Predicate.comparison",
+            "v.rules[0].predicates[0].comparison",
+        ),
+        ("Predicate.value", "v.rules[0].predicates[0].value"),
+        ("Predicate.percent", "v.rules[0].predicates[0].percent"),
+        ("Predicate.section", "v.rules[0].predicates[0].section"),
+        ("Predicate.state", "v.rules[0].predicates[0].state"),
+        ("Predicate.band", "v.rules[0].predicates[0].band"),
+        ("Predicate.present", "v.rules[0].predicates[0].present"),
         ("Section.id", "v.sections[0].id"),
         ("Section.condition", "v.sections[0].condition"),
         ("Section.internals", "v.sections[0].internals"),

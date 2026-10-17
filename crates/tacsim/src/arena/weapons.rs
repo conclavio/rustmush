@@ -74,7 +74,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::conditions::condition_is_lawful;
+use crate::arena::conditions::{Rule, condition_is_lawful};
 use crate::arena::index::range_cm;
 use crate::arena::intents::Refusal;
 use crate::arena::ledger::EventKind;
@@ -716,7 +716,7 @@ pub struct FrameWeapon {
     /// sent: it is read off the content at check-out and never moves inside a
     /// match.
     pub heat_per_shot: u32,
-    /// **The condition slot this weapon is armed in, and its terms** (17b cut
+    /// **The first fire slot for this weapon, and its terms** (17b cut
     /// M1b.3; doc 17 §3's parity rule, D-UM-4, D-UM-16), or `None` for a weapon
     /// no slot holds.
     ///
@@ -756,6 +756,21 @@ pub struct FrameArming {
     pub min_range_m: u32,
     /// The furthest rounded range it fires at, metres (`u32::MAX` for none).
     pub max_range_m: u32,
+}
+
+/// One active station rule in the platform's observation, in stable slot order.
+///
+/// The rule is copied from the sole condition table. It carries only the
+/// principal's written terms, never a target's live state. Fire, hold-fire and
+/// Sensors lock rules all use this projection; a weapon's `armed` field is only
+/// the first fire rule for that weapon and is not the complete rule list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameRule {
+    /// The stable, one-based slot number, including gaps left by removals.
+    pub slot: u8,
+    /// The written action, predicates and arbitration mode.
+    pub rule: Rule,
 }
 
 impl FrameArming {
@@ -929,7 +944,9 @@ impl Arena {
     /// is what a crew with four rounds of belt left would do.
     ///
     /// **Who fired** (17b cut M1b.1; doc 17 §5, D-UM-14, D-UM-17, D-UM-19).
-    /// [`FiredBy::Seat`] and [`FiredBy::Machine`] are never gated by the law.
+    /// [`FiredBy::Seat`] retains the human trigger. Every automatic source
+    /// respects standing and conditional hold-fire; [`FiredBy::Machine`]
+    /// otherwise retains its uncited compatibility path.
     /// The law's gates sit **after the `Empty` gate and before the
     /// `Overheated` one** — so a cited or a slot's shot on a cycling or an
     /// empty weapon reads `Cycling`/`Empty` (doc 17 §5's arbitration: whichever
@@ -954,9 +971,9 @@ impl Arena {
     /// another gun is `Unwarranted` here, ahead of the floor's test), hold-fire
     /// (`Unwarranted`), the warrant (`Unwarranted`), `Overheated`,
     /// `PowerNotOnline` — 17b cut M1b.2, which landed the law for minds with
-    /// T1's arming and citation in one change. A [`FiredBy::Cond`] reads (3b)
-    /// alone: its (3a) was answered at its arming's landing and the floor is a
-    /// per-match constant, and its (3c) by the evaluator.
+    /// T1's arming and citation in one change. A [`FiredBy::Cond`] reads the
+    /// standing and conditional vetoes here; its floor and warrant were checked
+    /// by the native evaluator immediately before dispatch.
     ///
     /// The accepted shot's `fired` line carries the attribution: `by: "cond"`
     /// and the slot for [`FiredBy::Cond`], `by: "mind"` and the slot for a
@@ -1013,10 +1030,15 @@ impl Arena {
         // (3a)–(3c) **17b cut M1b.1** (doc 17 §5, D-UM-17, D-UM-19): the law,
         // after the weapon's own two refusals and before the platform's — so a
         // law-gated shot on a cycling or empty gun reads `Cycling`/`Empty`.
-        // A seat's and a machine's shot are never gated; a mind's from 17b cut
-        // M1b.2.
+        // All automatic sources honor vetoes. Cited mind shots additionally
+        // verify their slot identity, law and warrant at this final boundary.
         match by {
-            FiredBy::Seat | FiredBy::Machine => {}
+            FiredBy::Seat => {}
+            FiredBy::Machine | FiredBy::Cond { .. } => {
+                if self.holds_fire(unit) || self.rule_vetoed(unit, weapon, at_ms) {
+                    return Err(Refusal::Unwarranted);
+                }
+            }
             // **17b cut M1b.2** (D-UM-17 as amended, D-UM-19): a mind's shot.
             FiredBy::Mind { slot } => {
                 // (3a) the floor, ahead of every `Unwarranted` test: the cited
@@ -1028,7 +1050,11 @@ impl Arena {
                     self.conditions.slots(unit).get(at).cloned().flatten()
                 });
                 if slot.is_some() {
-                    let Some(cond) = cited.as_ref().filter(|cond| cond.weapon == weapon) else {
+                    let Some(cond) = cited
+                        .as_ref()
+                        .and_then(Rule::fire)
+                        .filter(|cond| cond.weapon == weapon)
+                    else {
                         return Err(Refusal::Unwarranted);
                     };
                     condition_is_lawful(cond, self.odds_floor_permille)?;
@@ -1036,26 +1062,18 @@ impl Arena {
                 // (3b) hold-fire: the hull's standing order (the ARENA's row —
                 // a mind that ended its order early is still held until the row
                 // expires; 17b's Q-M7, `hold_after_end`).
-                if self.holds_fire(unit) {
+                if self.holds_fire(unit) || self.rule_vetoed(unit, weapon, at_ms) {
                     return Err(Refusal::Unwarranted);
                 }
                 // (3c) the warrant: an uncited shot has none; a cited one meets
                 // its slot's WARRANT terms on the plot at this millisecond —
                 // never readiness or the magazine, which (2) and (3) answered.
-                let Some(cond) = cited else {
+                let Some(slot) = slot.filter(|_| cited.is_some()) else {
                     return Err(Refusal::Unwarranted);
                 };
-                if self.warrant(unit, &cond, at_ms).is_err() {
+                if self.rule_warrant(unit, slot, at_ms).is_err() {
                     return Err(Refusal::Unwarranted);
                 }
-            }
-            FiredBy::Cond { .. } => {
-                // (3a) a slot's own shot was armed lawful at its landing and the
-                // floor is a per-match constant: nothing to read again. (3b):
-                if self.holds_fire(unit) {
-                    return Err(Refusal::Unwarranted);
-                }
-                // (3c) the evaluator has just held the warrant.
             }
         }
         let Some(state) = self.unit(unit) else {
@@ -1295,16 +1313,35 @@ impl Arena {
                         .heat
                         .as_ref()
                         .map_or(0, |heat| heat.per_shot(&weapon.id)),
-                    // **17b cut M1b.3** (D-UM-4): the slot this weapon is
-                    // armed in, under its stable 1-based number — the
-                    // number the arena gave at the arming and a cited `FIRE`
-                    // names. A hull with no slot pays one map miss.
+                    // The first fire slot for this weapon, for stock-mind
+                    // readers. `frame_rules` publishes the complete ordered
+                    // list, including further fire slots, vetoes and locks.
                     armed: slots.iter().enumerate().find_map(|(at, slot)| {
-                        let cond = slot.as_ref().filter(|cond| cond.weapon == weapon.id)?;
+                        let cond = slot
+                            .as_ref()
+                            .and_then(Rule::fire)
+                            .filter(|cond| cond.weapon == weapon.id)?;
                         let n = u8::try_from(at.saturating_add(1)).ok()?;
                         Some(FrameArming::of(n, cond))
                     }),
                 }
+            })
+            .collect()
+    }
+
+    /// Every active station rule, in stable slot order. Runtime admission and
+    /// core degradation own capacity; projection never silently hides a row.
+    #[must_use]
+    pub fn frame_rules(&self, platform: ObjId) -> Vec<FrameRule> {
+        self.conditions
+            .slots(platform)
+            .iter()
+            .enumerate()
+            .filter_map(|(at, rule)| {
+                Some(FrameRule {
+                    slot: u8::try_from(at.checked_add(1)?).ok()?,
+                    rule: rule.as_ref()?.clone(),
+                })
             })
             .collect()
     }
@@ -1326,6 +1363,68 @@ mod tests {
             scout(RED, Team::Red, pose(1_500, 1_500)),
             scout(BLUE, Team::Blue, pose(1_500, 5_500)),
         ])
+    }
+
+    #[test]
+    fn the_frame_carries_every_rule_in_slot_order_and_the_first_fire_convenience() {
+        use crate::arena::conditions::{LockSelector, RulePredicate};
+        let mut arena = two_scouts();
+        let fire = Rule::fire_rule(on_lock("cannon", 600), vec![]);
+        let veto = Rule::hold_rule(
+            "cannon".into(),
+            vec![RulePredicate::Heat { above_percent: 70 }],
+        );
+        let lock = Rule::lock_rule(LockSelector::Nearest, None, vec![]);
+        for (slot, rule) in [(1, fire.clone()), (3, veto), (4, lock), (6, fire)] {
+            arena
+                .conditions
+                .set_rules(RED, Some(slot), &[rule], 6)
+                .expect("a slot");
+        }
+        let rows = arena.frame_rules(RED);
+        assert_eq!(
+            rows.iter().map(|row| row.slot).collect::<Vec<_>>(),
+            vec![1, 3, 4, 6]
+        );
+        assert!(matches!(
+            rows.get(1).map(|row| &row.rule),
+            Some(Rule::HoldFire { .. })
+        ));
+        assert!(matches!(
+            rows.get(2).map(|row| &row.rule),
+            Some(Rule::Lock { .. })
+        ));
+        let gun = arena
+            .frame_weapons(RED, None)
+            .into_iter()
+            .next()
+            .expect("cannon");
+        assert_eq!(gun.armed.map(|arming| arming.slot), Some(1));
+        let wire = serde_json::to_value(&rows).expect("projected rules");
+        assert_eq!(wire[1]["rule"]["action"], "hold_fire");
+        assert_eq!(wire[2]["rule"]["action"], "lock");
+        assert_eq!(
+            serde_json::from_value::<Vec<FrameRule>>(wire).expect("round trip"),
+            rows
+        );
+        arena
+            .conditions
+            .remove_slot(RED, 1, crate::arena::state::Channel::Fire)
+            .expect("remove");
+        let gun = arena
+            .frame_weapons(RED, None)
+            .into_iter()
+            .next()
+            .expect("cannon");
+        assert_eq!(gun.armed.map(|arming| arming.slot), Some(6));
+        assert_eq!(
+            arena
+                .frame_rules(RED)
+                .iter()
+                .map(|row| row.slot)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 6]
+        );
     }
 
     /// Hand `viewer` a classified contact on `target` and answer its id.
@@ -2119,15 +2218,63 @@ mod tests {
             text.contains("\"by\":\"mind\"") && text.contains("\"slot\":1"),
             "{text}"
         );
-        // A seat's and a machine's shot on the same hull are never gated.
+        // Neither a seat nor the legacy machine path needs a citation, but
+        // every automatic source now respects a standing hold-fire order.
         for by in [FiredBy::Seat, FiredBy::Machine] {
             assert!(
-                holding_fire(nothing_armed_at_nought(&base))
+                nothing_armed_at_nought(&base)
                     .resolve_fire_by(RED, "cannon", 0, by)
                     .is_ok(),
                 "{by:?}"
             );
         }
+        assert!(
+            holding_fire(base.clone())
+                .resolve_fire_by(RED, "cannon", 0, FiredBy::Seat)
+                .is_ok()
+        );
+        assert_eq!(
+            holding_fire(base).resolve_fire_by(RED, "cannon", 0, FiredBy::Machine),
+            Err(Refusal::Unwarranted)
+        );
+    }
+
+    #[test]
+    fn every_automatic_source_obeys_conditional_hold() {
+        use crate::arena::conditions::RulePredicate;
+        let base = a_minds_lock();
+        let mut held = base.clone();
+        held.conditions
+            .set_rules(
+                RED,
+                Some(2),
+                &[Rule::hold_rule(
+                    "cannon".into(),
+                    vec![RulePredicate::Lock { present: true }],
+                )],
+                2,
+            )
+            .expect("conditional veto");
+        for by in [
+            FiredBy::Machine,
+            FiredBy::Cond { slot: 1 },
+            FiredBy::Mind { slot: Some(1) },
+        ] {
+            assert_eq!(
+                held.clone().resolve_fire_by(RED, "cannon", 0, by),
+                Err(Refusal::Unwarranted),
+                "{by:?}"
+            );
+        }
+        assert!(
+            held.resolve_fire_by(RED, "cannon", 0, FiredBy::Seat)
+                .is_ok()
+        );
+        assert!(
+            base.clone()
+                .resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 })
+                .is_ok()
+        );
     }
 
     /// `arena` with nothing armed and the odds at nought: what the law would

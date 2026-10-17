@@ -5,7 +5,7 @@
 //! obeys the tick-cadence rule (`mush-campaign/src/tick.rs:28-37`): a tick runs
 //! as GOD and submits nothing authoritative itself, because two GOD submissions
 //! in one drain void each other. So every authoritative act this tick makes is
-//! made by [`Fire::as_principal`], which swaps `ctx.actor` to the principal an
+//! made by `Fire::as_principal`, which swaps `ctx.actor` to the principal an
 //! agent acts for (the `mush-npc` precedent) for ONE closed call, and counts that
 //! call as the principal's one act this fire (D-18-32: at most one authoritative
 //! submission per actor per fire). **Nothing in the tick calls
@@ -13,10 +13,10 @@
 //! the tick's own actor, therefore never submits.
 //!
 //! The walk is the campaign rotation (`mush-campaign/src/tick.rs:94-157`): a
-//! cursor over agent ids, at most [`MAX_AGENTS_VISITED_PER_FIRE`] visits and
-//! [`MAX_AGENTS_WORKED_PER_FIRE`] units of work per fire, the cursor moved past
+//! cursor over agent ids, at most [`crate::port_tick::MAX_AGENTS_VISITED_PER_FIRE`] visits and
+//! [`crate::port_tick::MAX_AGENTS_WORKED_PER_FIRE`] units of work per fire, the cursor moved past
 //! the last visited agent. Fairness between agents sharing one principal is a
-//! RAM debt per principal (lead ruling L8, [`arbitrate`]).
+//! RAM debt per principal (lead ruling L8, `arbitrate`).
 //!
 //! The arms it carries, in dispatch order ahead of the probe:
 //!
@@ -39,10 +39,10 @@
 //! its definitions, the tick and the notice hook (lead rulings L4, L12).
 //!
 //! **Reconnect notices** live here too (§4.4 "Failure handling", lead ruling
-//! L10): [`notify`] tells a connected player at once and otherwise queues a line
+//! L10): [`crate::port_tick::notify`] tells a connected player at once and otherwise queues a line
 //! in a bounded per-player document (`tacsim:notice:{obj}`), and
-//! [`ReconnectNotices`] renders the queue once on `Connected` under
-//! [`NOTICE_HEADING`], then deletes it.
+//! [`crate::port_tick::ReconnectNotices`] renders the queue once on `Connected` under
+//! [`crate::port_tick::NOTICE_HEADING`], then deletes it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

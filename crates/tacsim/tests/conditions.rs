@@ -49,6 +49,444 @@
 
 mod support;
 
+mod m5rules {
+    use super::*;
+    use tacsim::arena::core::CoreClass;
+    use tacsim::arena::rules::{RuleCommand, RuleContact, RuleContext, RuleWeapon, parse_command};
+
+    fn parsed(text: &str) -> Arming {
+        let weapons = [
+            RuleWeapon {
+                id: "cannon".into(),
+                rounds_max: 40,
+            },
+            RuleWeapon {
+                id: "machine_gun".into(),
+                rounds_max: 300,
+            },
+            RuleWeapon {
+                id: "missiles".into(),
+                rounds_max: 20,
+            },
+        ];
+        let contacts = [RuleContact {
+            name: "BA".into(),
+            id: contact_of(RED, BLUE),
+            classified: true,
+        }];
+        let RuleCommand::Arm(arming) = parse_command(
+            text,
+            &RuleContext {
+                weapons: &weapons,
+                floor_permille: 100,
+                contacts: &contacts,
+            },
+        )
+        .expect("native grammar") else {
+            panic!("an arming");
+        };
+        arming
+    }
+
+    fn station(text: &str, seq: u64) -> Intent {
+        intent(RED, IntentKind::Condition(parsed(text)), seq)
+    }
+
+    fn field(class: CoreClass, weapons: Vec<WeaponSummary>) -> Arena {
+        let mut red = unit(
+            RED,
+            Team::Red,
+            facing(5, 8, 90_000),
+            weapons,
+            Some(sight(0)),
+        );
+        red.unit = tactical_unit_classed(RED, class);
+        arena_of(vec![
+            red.sealed(),
+            unit(BLUE, Team::Blue, facing(9, 8, 0), Vec::new(), None),
+        ])
+    }
+
+    #[test]
+    fn sensors_rule_and_fire_rule_keep_exact_event_times_at_every_cadence() {
+        let run = at_every_drive(
+            || field(CoreClass::I, vec![cannon()]),
+            10_000,
+            || {
+                vec![
+                    beat(0, vec![intent(RED, IntentKind::Startup, 1)]),
+                    beat(
+                        5_000,
+                        vec![
+                            station("RULE 1 LOCK nearest WHEN no lock", 2),
+                            station(
+                                "RULE 2 FIRE cannon WHEN target=stopped AND odds>=40 AND rounds>0",
+                                3,
+                            ),
+                        ],
+                    ),
+                ]
+            },
+        );
+        assert_eq!(
+            cond_shots(&run),
+            vec![(5_000, 2, u64::from(BLUE.0)), (9_000, 2, u64::from(BLUE.0))]
+        );
+        assert!(
+            run.notices
+                .iter()
+                .all(|notice| !matches!(notice, FrameNotice::Refused { .. })),
+            "{:?}",
+            run.notices
+        );
+    }
+
+    #[test]
+    fn veto_precedes_ordered_fire_and_never_blocks_the_manual_trigger() {
+        let run = at_every_drive(
+            || field(CoreClass::II, vec![cannon()]),
+            20_000,
+            || {
+                vec![
+                    beat(0, vec![intent(RED, IntentKind::Startup, 1)]),
+                    beat(
+                        5_000,
+                        vec![
+                            intent(
+                                RED,
+                                IntentKind::Lock {
+                                    contact: contact_of(RED, BLUE),
+                                },
+                                2,
+                            ),
+                            station("RULE 1 FIRE cannon HOLD WHEN rounds>0", 3),
+                            station("RULE 2 FIRE cannon WHEN target=stopped", 4),
+                            station("RULE 3 FIRE cannon WHEN lock", 5),
+                        ],
+                    ),
+                    beat(
+                        10_000,
+                        vec![
+                            intent(RED, IntentKind::fire("cannon"), 6),
+                            intent(
+                                RED,
+                                IntentKind::Condition(Arming::Remove {
+                                    slot: 1,
+                                    channel: Channel::Fire,
+                                }),
+                                7,
+                            ),
+                        ],
+                    ),
+                ]
+            },
+        );
+        assert_eq!(
+            run.fired().first().map(|(at, _)| *at),
+            Some(10_000),
+            "the veto held every automatic shot"
+        );
+        assert_eq!(
+            cond_shots(&run),
+            vec![
+                (14_000, 2, u64::from(BLUE.0)),
+                (18_000, 2, u64::from(BLUE.0))
+            ]
+        );
+        assert!(
+            run.fired()
+                .iter()
+                .any(|(at, event)| *at == 10_000 && event["by"].is_null())
+        );
+    }
+
+    #[test]
+    fn removing_a_veto_rechecks_a_ready_rule_at_the_removal_millisecond() {
+        let (mut arena, wall) = locked_duel(100);
+        let at = arena.now_ms;
+        assert_eq!(
+            arena.resolve_arming(RED, &parsed("RULE 1 FIRE cannon HOLD WHEN rounds>0"), at),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            arena.resolve_arming(RED, &parsed("RULE 2 FIRE cannon WHEN lock"), at),
+            Ok(Some(2))
+        );
+        assert!(arena.rule_warrant(RED, 2, at).is_err());
+        let refused = refused_now(
+            &mut arena,
+            wall,
+            vec![IntentKind::Condition(Arming::Remove {
+                slot: 1,
+                channel: Channel::Fire,
+            })],
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(
+            fired_lines(&mut arena),
+            vec![(at, u64::from(BLUE.0), Some("cond".into()))]
+        );
+    }
+
+    #[test]
+    fn all_admission_is_atomic_and_explicit_same_weapon_slots_survive_shorthand() {
+        let mut arena = field(
+            CoreClass::I,
+            vec![
+                cannon(),
+                machine_gun(),
+                WeaponSummary {
+                    id: "missiles".into(),
+                    ..cannon()
+                },
+            ],
+        );
+        assert_eq!(
+            arena.resolve_arming(RED, &Arming::Arm(cond("cannon", 100, ASPECTS_ANY)), 0),
+            Ok(Some(1))
+        );
+        let before = arena.conditions.clone();
+        assert_eq!(
+            arena.resolve_arming(RED, &parsed("FIRE ALL HOLD WHEN rounds>0"), 0),
+            Err(Refusal::NoSlot)
+        );
+        assert_eq!(
+            arena.conditions, before,
+            "no first or second weapon changed after the batch failed"
+        );
+
+        let mut arena = field(CoreClass::II, vec![cannon()]);
+        assert_eq!(
+            arena.resolve_arming(RED, &parsed("RULE 1 FIRE cannon WHEN odds>=20"), 0),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            arena.resolve_arming(RED, &parsed("RULE 2 FIRE cannon WHEN odds>=30"), 0),
+            Ok(Some(2))
+        );
+        assert_eq!(
+            arena.resolve_arming(RED, &parsed("FIRE cannon WHEN odds>=40"), 0),
+            Ok(Some(3))
+        );
+        assert_eq!(
+            arena.resolve_arming(RED, &parsed("FIRE cannon WHEN odds>=50"), 0),
+            Ok(Some(3))
+        );
+        let floors = arena
+            .conditions
+            .slots(RED)
+            .iter()
+            .map(|slot| {
+                slot.as_ref()
+                    .and_then(Rule::fire)
+                    .map(|condition| condition.min_permille)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(floors, vec![Some(200), Some(300), Some(500), None]);
+        let before = arena.conditions.clone();
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &Arming::Remove {
+                    slot: 2,
+                    channel: Channel::Sensors
+                },
+                0
+            ),
+            Err(Refusal::Channel)
+        );
+        assert_eq!(arena.conditions, before);
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &Arming::Remove {
+                    slot: 2,
+                    channel: Channel::Fire
+                },
+                0
+            ),
+            Ok(None)
+        );
+        assert!(arena.conditions.slots(RED)[1].is_none());
+        assert!(
+            arena.conditions.slots(RED)[2].is_some(),
+            "removal does not renumber later slots"
+        );
+    }
+
+    #[test]
+    fn named_target_and_motion_predicate_read_the_earned_plot_then_fail_closed() {
+        let (mut arena, _) = locked_duel(100);
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &parsed("RULE 1 FIRE cannon WHEN target=BA AND target=stopped"),
+                arena.now_ms
+            ),
+            Ok(Some(1))
+        );
+        assert!(arena.rule_warrant(RED, 1, arena.now_ms).is_ok());
+        arena.unit_mut(BLUE).expect("blue").speed_cms = 900;
+        assert!(
+            arena.rule_warrant(RED, 1, arena.now_ms).is_ok(),
+            "unobserved live motion changes no earned predicate"
+        );
+        let contact = contact_of(RED, BLUE);
+        arena
+            .contacts
+            .get_mut(RED, contact)
+            .expect("plot")
+            .seen_at
+            .speed_cms = 900;
+        assert!(
+            arena.rule_warrant(RED, 1, arena.now_ms).is_err(),
+            "a refreshed plot changes the predicate"
+        );
+        arena.contacts.get_mut(RED, contact).expect("plot").class = Classification::Unknown;
+        assert!(arena.rule_warrant(RED, 1, arena.now_ms).is_err());
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &parsed("RULE 1 FIRE cannon WHEN target=BA"),
+                arena.now_ms
+            ),
+            Err(Refusal::Unlawful),
+            "classification is checked again at landing"
+        );
+        arena.contacts.get_mut(RED, contact).expect("plot").class =
+            Classification::Classified { team: Team::Blue };
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &parsed("RULE 1 FIRE cannon WHEN target nonexistent=red"),
+                arena.now_ms
+            ),
+            Ok(Some(1))
+        );
+        assert!(
+            arena.rule_warrant(RED, 1, arena.now_ms).is_err(),
+            "a missing earned section is false"
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_more_than_six_native_slots_before_accepting_state() {
+        let document = malformed_rule_snapshot(|row| {
+            row.resize(7, serde_json::Value::Null);
+        });
+        assert!(matches!(Snapshot::decode(&document, definition()),
+            Err(SnapshotError::Malformed(message)) if message == "invalid native rule row"));
+    }
+
+    #[test]
+    fn snapshot_rejects_more_than_four_native_predicates_before_accepting_state() {
+        let document = malformed_rule_snapshot(|row| {
+            let predicate = row[0]["predicates"][0].clone();
+            row[0]["predicates"] = serde_json::json!(vec![predicate; 5]);
+        });
+        assert!(matches!(Snapshot::decode(&document, definition()),
+            Err(SnapshotError::Malformed(message)) if message == "invalid native rule"));
+    }
+
+    #[test]
+    fn snapshot_rejects_an_unknown_native_action_instead_of_skipping_it() {
+        let document = malformed_rule_snapshot(|row| {
+            row[0]["action"] = serde_json::json!("unknown_station_action");
+        });
+        assert!(matches!(Snapshot::decode(&document, definition()),
+            Err(SnapshotError::Malformed(message))
+                if message.contains("unknown variant") && message.contains("unknown_station_action")));
+    }
+
+    fn malformed_rule_snapshot(
+        edit: impl FnOnce(&mut Vec<serde_json::Value>),
+    ) -> serde_json::Value {
+        use sha2::{Digest, Sha256};
+
+        let mut arena = field(CoreClass::III, vec![cannon()]);
+        for command in [
+            "RULE 1 FIRE cannon WHEN lock",
+            "RULE 2 FIRE cannon HOLD WHEN heat>80%",
+            "RULE 3 LOCK nearest WHEN no lock",
+        ] {
+            arena
+                .resolve_arming(RED, &parsed(command), 0)
+                .expect("typed rule admitted");
+        }
+        let mut document = Snapshot::encode(&arena)
+            .expect("native rule snapshot")
+            .document;
+        assert!(
+            Snapshot::decode(&document, definition()).is_ok(),
+            "the unmodified typed snapshot is valid"
+        );
+        let mut state: serde_json::Value =
+            serde_json::from_str(document["state"].as_str().expect("state string"))
+                .expect("state JSON");
+        let row = state["conditions"][RED.0.to_string()]
+            .as_array_mut()
+            .expect("the unit's ordered slots");
+        assert_eq!(row.len(), 6);
+        edit(row);
+        let state = serde_json::to_string(&state).expect("edited state serializes");
+        // A correct byte digest must not bypass typed schema/bounds checks.
+        // Keep the semantic hash: these cases must fail as Malformed before
+        // they can reach a mere HashMismatch refusal.
+        let digest: [u8; 32] = Sha256::digest(state.as_bytes()).into();
+        document["state_digest"] = serde_json::json!(tacsim::arena::snapshot::digest_text(&digest));
+        document["state"] = serde_json::json!(state);
+        assert!(Snapshot::head(&document).is_ok());
+        document
+    }
+
+    #[test]
+    fn ordered_rules_snapshot_resume_preserves_slots_events_and_hashes() {
+        let mut arena = field(CoreClass::II, vec![cannon()]);
+        let _ = replay(
+            &mut arena,
+            Drive::Every(500),
+            5_000,
+            &[
+                beat(0, vec![intent(RED, IntentKind::Startup, 1)]),
+                beat(
+                    5_000,
+                    vec![
+                        station("RULE 1 LOCK nearest WHEN no lock", 2),
+                        station("RULE 2 FIRE cannon HOLD WHEN own hull<10%", 3),
+                        station("RULE 3 FIRE cannon WHEN target=stopped AND rounds>25%", 4),
+                    ],
+                ),
+            ],
+        );
+        let snapshot = Snapshot::encode(&arena).expect("ordered rule snapshot");
+        let mut resumed =
+            Snapshot::decode(&snapshot.document, definition()).expect("ordered rule restore");
+        assert_eq!(resumed.conditions, arena.conditions);
+        resumed.resume_at(5_000);
+        let mut original_bytes = Vec::new();
+        let mut resumed_bytes = Vec::new();
+        for wall in (5_500..=15_000).step_by(500) {
+            arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+            resumed.clock.pin_tempo_for_tests(Tempo::Quiet);
+            let original = arena.step(wall, &[], &[]);
+            let restored = resumed.step(wall, &[], &[]);
+            assert_eq!(arena.substep_hashes, resumed.substep_hashes, "at {wall}");
+            assert_eq!(arena.conditions, resumed.conditions);
+            for chunk in original.ledger_chunks {
+                original_bytes.extend_from_slice(&chunk.bytes);
+            }
+            for chunk in restored.ledger_chunks {
+                resumed_bytes.extend_from_slice(&chunk.bytes);
+            }
+        }
+        assert_eq!(
+            lines(&mut arena, &mut original_bytes),
+            lines(&mut resumed, &mut resumed_bytes)
+        );
+        assert_eq!(original_bytes, resumed_bytes);
+    }
+}
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -63,7 +501,8 @@ use mush_tactics::{
 use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::conditions::{
-    ASPECTS_ANY, Arming, FireCondition, HeldWhy, STOCK_CONDITION_SLOTS, SlotTarget, aspect_mask,
+    ASPECTS_ANY, Arming, FireCondition, HeldWhy, Rule, STOCK_CONDITION_SLOTS, SlotTarget,
+    aspect_mask,
 };
 use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind, Refusal};
 use tacsim::arena::ledger::LedgerEvent;
@@ -1226,11 +1665,11 @@ fn sentence(refused: &(FrameNotice, tacsim::arena::step::Frame)) -> String {
 /// floor named — `FIRE cannon refused. The Compact floor is 10%; a condition
 /// may not ask for less.` — and arms nothing; at 100 it lands as S1. An arena
 /// whose captured floor is 50 takes 50 and refuses 40 (the arena's floor, not
-/// a constant). A `Contact` target is refused `unlawful` with the fallback
-/// sentence for a held id and an unheld one alike. A slot armed AT the floor
+/// a constant). M5rules admits an earned classified `Contact` target and
+/// refuses an unheld id with the fallback sentence. A slot armed AT the floor
 /// fires at the floor's odds and holds under them.
 #[test]
-fn m1b1_an_arming_under_the_floor_is_refused_unlawful_at_the_landing_and_a_contact_target_too() {
+fn m1b1_an_arming_under_the_floor_is_refused_and_a_contact_must_be_earned() {
     let (mut arena, wall) = locked_duel(100);
     // Hold the slot back from firing: no aspect at all would be unlawful? No —
     // the aspect term is not a law term, so a front-only slot on a flank holds.
@@ -1290,9 +1729,28 @@ fn m1b1_an_arming_under_the_floor_is_refused_unlawful_at_the_landing_and_a_conta
         "FIRE cannon refused. The Compact floor is 5%; a condition may not ask for less."
     );
 
-    // A `Contact` target: one word and one sentence, held id or not.
+    // M5rules deliberately opens classified contact citations. A citation
+    // filters the current lock; it never retargets the Fire station itself.
     let (mut arena, wall) = locked_duel(100);
-    for id in [contact_of(RED, BLUE), ContactId(0x0bad_cafe)] {
+    let named = FireCondition {
+        target: SlotTarget::Contact {
+            id: contact_of(RED, BLUE),
+        },
+        ..cond("cannon", 100, front)
+    };
+    assert!(refused_now(&mut arena, wall, vec![arm(named.clone())]).is_empty());
+    assert_eq!(
+        arena
+            .conditions
+            .slots(RED)
+            .first()
+            .and_then(Option::as_ref)
+            .and_then(Rule::fire),
+        Some(&named)
+    );
+    let (mut arena, wall) = locked_duel(100);
+    {
+        let id = ContactId(0x0bad_cafe);
         let refused = refused_now(
             &mut arena,
             wall,
@@ -1314,7 +1772,7 @@ fn m1b1_an_arming_under_the_floor_is_refused_unlawful_at_the_landing_and_a_conta
         ));
         assert_eq!(
             sentence(notice),
-            "FIRE cannon refused. The Compact floor forbids that condition."
+            "FIRE cannon refused. That rule is not lawful for this unit."
         );
     }
     assert!(arena.conditions.is_empty_for(RED));
@@ -1335,9 +1793,9 @@ fn m1b1_an_arming_under_the_floor_is_refused_unlawful_at_the_landing_and_a_conta
             .conditions
             .slots(RED)
             .first()
-            .cloned()
-            .flatten()
-            .map(|slot| arena.warrant(RED, &slot, arena.now_ms));
+            .and_then(Option::as_ref)
+            .and_then(Rule::fire)
+            .map(|slot| arena.warrant(RED, slot, arena.now_ms));
         if !fires {
             assert!(
                 matches!(
@@ -1638,7 +2096,7 @@ fn m1b1_a_slot_is_idle_on_an_unclassified_lock_and_fires_only_on_its_lock() {
 /// is two — the shipped command core holds six and refuses nothing, which
 /// `m3_the_condition_row_is_the_cores_slots` pins) arms two and the third is
 /// refused from phase 4 as `FIRE
-/// missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.`, while
+/// missiles refused. Every rule slot is occupied; MIND RULE <slot> OFF frees one.`, while
 /// an under-floor third is `Unlawful` (the law before the count); a re-arm
 /// keeps the slot's number, replaces its terms and clears its
 /// `held_said` rows; a disarm of S1 leaves S2 numbered 2 and a new arming
@@ -1694,7 +2152,7 @@ fn m1b1_arming_counts_on_the_seat_window_and_a_third_weapon_is_no_slot() {
     assert_eq!(notice.0.refusal(), Some(Refusal::NoSlot));
     assert_eq!(
         sentence(notice),
-        "FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one."
+        "FIRE missiles refused. Every rule slot is occupied; MIND RULE <slot> OFF frees one."
     );
     assert_eq!(
         (
@@ -1718,8 +2176,13 @@ fn m1b1_arming_counts_on_the_seat_window_and_a_third_weapon_is_no_slot() {
         Ok(Some(1))
     );
     assert_eq!(
-        arena.conditions.slots(RED).first().cloned().flatten(),
-        Some(cond("cannon", 300, front))
+        arena
+            .conditions
+            .slots(RED)
+            .first()
+            .and_then(Option::as_ref)
+            .and_then(Rule::fire),
+        Some(&cond("cannon", 300, front))
     );
     assert_eq!(
         arena.held_said.keys().copied().collect::<Vec<_>>(),
@@ -1996,7 +2459,10 @@ fn m3_the_count_is_told_in_two_lines_on_a_degraded_heavy() {
             .filter(|(notice, _)| matches!(notice, FrameNotice::Refused { .. }))
             .map(sentence)
             .collect::<Vec<_>>(),
-        vec!["FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.".to_owned()],
+        vec![
+            "FIRE missiles refused. Every rule slot is occupied; MIND RULE <slot> OFF frees one."
+                .to_owned()
+        ],
         "the one refusal"
     );
     transcript.extend(about_missiles(&heard(&told)));
@@ -2004,7 +2470,8 @@ fn m3_the_count_is_told_in_two_lines_on_a_degraded_heavy() {
         transcript,
         vec![
             "Arming missiles: fires your lock when your chance to hit is 40% or better.".to_owned(),
-            "FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.".to_owned(),
+            "FIRE missiles refused. Every rule slot is occupied; MIND RULE <slot> OFF frees one."
+                .to_owned(),
         ],
         "the acceptance, then the arena's refusal: two lines and no more"
     );
@@ -2029,8 +2496,10 @@ fn m3_the_count_is_told_in_two_lines_on_a_degraded_heavy() {
             arm(missiles_cond.clone()),
         ],
     );
-    let raced =
-        vec!["FIRE missiles refused. Every slot is armed; FIRE <weapon> OFF frees one.".to_owned()];
+    let raced = vec![
+        "FIRE missiles refused. Every rule slot is occupied; MIND RULE <slot> OFF frees one."
+            .to_owned(),
+    ];
     assert_eq!(
         told.iter()
             .filter(|(notice, _)| matches!(notice, FrameNotice::Refused { .. }))
@@ -2423,8 +2892,8 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     }
     let snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
-    // to 10.
-    assert_eq!(snapshot.document["format"], 10);
+    // to 10; M5rules moves the ordered rule tree to 11.
+    assert_eq!(snapshot.document["format"], 11);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -2490,14 +2959,14 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 10
+            expected: 11
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 10
+            expected: 11
         })
     ));
 }
@@ -4149,7 +4618,11 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
             .conditions
             .slots(RED)
             .iter()
-            .map(|slot| slot.as_ref().map(|cond| cond.weapon.as_str()))
+            .map(|slot| {
+                slot.as_ref()
+                    .and_then(Rule::fire)
+                    .map(|cond| cond.weapon.as_str())
+            })
             .collect();
         // 17b cut M3.2: the row is the HULL's (the laser tank's line core,
         // Class II: four wide) while the mind, thinking at Class I, arms its
@@ -4190,6 +4663,9 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
             .filter_map(|arming| match arming {
                 Arming::Arm(cond) => Some(cond.weapon.clone()),
                 Arming::Disarm { .. } => None,
+                Arming::Rules { .. } | Arming::Remove { .. } => {
+                    panic!("stock doctrine emitted an authored-rule edit")
+                }
             })
             .collect();
         let order = [SmolStr::new("laser"), SmolStr::new("machine_gun")];

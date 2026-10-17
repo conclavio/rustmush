@@ -541,7 +541,14 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
         !seen.contains("Blue Tank"),
         "the contact list never names another unit: {seen}"
     );
-    let seen = ask(&mut ada, "VIEW", "Arena window").await;
+    // Boarding can finish before the first frame reaches the world. A dark
+    // panel is a real transient; wait for the whole window within one deadline.
+    let mut seen = String::new();
+    wait_until(STEP_TIMEOUT, "the first solo window", async || {
+        seen = ask_whole(&mut ada, "VIEW").await;
+        seen.contains("Arena window")
+    })
+    .await;
     assert!(
         !seen.contains("Blue Tank"),
         "the window never names another unit: {seen}"
@@ -556,8 +563,7 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // The Ford (64, 97) is 36 cells west of (100, 97) and off every window
     // there. Nothing waits for a contact and no designator is compared across
     // reads: the Q.1 rename and the fight's end both race such a wait. The
-    // `VIEW` above was read on its title, so the slice is measured from the
-    // brief's own header.
+    // `VIEW` above was read whole; measure this slice from the brief's own header.
     let seen = ask_whole(&mut ada, "VIEW BRIEF").await;
     let at = seen
         .find("Window around RA:")

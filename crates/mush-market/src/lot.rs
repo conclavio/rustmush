@@ -1569,7 +1569,7 @@ pub fn lapsed_holds_where(
 /// and L20; D-18-26, Q-18-31: never by the GOD lapse sweep). The listing must exist, be
 /// hold-backed and be lapsed, and `ctx.actor` must be able to take from its endpoint
 /// (`mush_inventory::may_take`). It stages the one `release` leg through
-/// [`stage`] **as `ctx.actor`**, keyed exactly as every release is
+/// `stage` **as `ctx.actor`**, keyed exactly as every release is
 /// (`market.lot.release.{listing:x}.{ic second:x}`); the reservation it releases is the
 /// derived [`listing_reservation`]. It **does not delete the document**: the market
 /// sweep deletes it once the hold reads `Gone`, which is the releaser's pull

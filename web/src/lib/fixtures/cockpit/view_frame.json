@@ -32,6 +32,7 @@
       ],
       "friendly": false,
       "id": "1111111111111111",
+      "moving": false,
       "odds": [
         {
           "p_permille": 624,
@@ -65,6 +66,7 @@
       "fatal": null,
       "friendly": true,
       "id": "2222222222222222",
+      "moving": false,
       "odds": [],
       "range_m": 100,
       "reads_dead": false,
@@ -87,6 +89,7 @@
       "fatal": null,
       "friendly": false,
       "id": "3333333333333333",
+      "moving": false,
       "odds": [],
       "range_m": 200,
       "reads_dead": false,
@@ -109,6 +112,7 @@
       "fatal": null,
       "friendly": false,
       "id": "4444444444444444",
+      "moving": false,
       "odds": [],
       "range_m": 600,
       "reads_dead": false,
@@ -412,6 +416,29 @@
       ]
     ]
   ],
+  "rules": [
+    {
+      "rule": {
+        "action": "fire",
+        "condition": {
+          "aspects": 14,
+          "max_range_m": 4294967295,
+          "min_permille": 600,
+          "min_range_m": 0,
+          "min_rounds_left": 8,
+          "target": {
+            "target": "lock"
+          },
+          "weapon": "cannon"
+        },
+        "implicit": true,
+        "independent": true,
+        "predicates": []
+      },
+      "slot": 1,
+      "text": "cannon fires at your identified lock when its chance to hit is at least 60% and the target shows its side or rear and cannon keeps 8 round(s)"
+    }
+  ],
   "scan_tables": [
     [
       "engine",
@@ -425,7 +452,7 @@
     "id": "arena.cockpit",
     "retain": "latest",
     "shape": "grid",
-    "version": 3
+    "version": 4
   },
   "scope": "hostile",
   "sections": [
