@@ -1994,7 +1994,7 @@ async fn native_rule_lines() {
     .await;
     let whole = readback.split_whitespace().collect::<Vec<_>>().join(" ");
     for term in [
-        "Pilot rules (not saved in the sealed profile):",
+        "Current station rules (manual changes are not saved):",
         "its chance to hit is at least 60%",
         "its rounded range is less than 700 m",
         "the target is moving",
@@ -2005,7 +2005,7 @@ async fn native_rule_lines() {
         assert!(whole.contains(term), "missing {term:?}: {readback}");
     }
     for line in readback.lines().filter(|line| {
-        line.starts_with("Pilot rules (")
+        line.starts_with("Current station rules (")
             || line.starts_with("S1:")
             || line.starts_with("S2:")
             || line.starts_with("S3:")
@@ -3311,7 +3311,8 @@ fn m5_6_the_your_mind_block_and_the_release_line_read_as_neutral_lines() {
 ///   the design note's item 5 gives every one the `MIND refused.` prefix,
 ///   which the reader reads as a refusal of the verb, as it reads the
 ///   arena's own);
-/// * `MIND TRACE refused. This core keeps no trace of its thinks yet.` — a
+/// * `MIND TRACE refused. No mind trace is available.` — the shared unavailable
+///   or unauthorized trace refusal introduced in M6 — a
 ///   form refused, two words before `refused` and the second no weapon id —
 ///   reads `Line::Other`;
 ///
@@ -3396,7 +3397,7 @@ fn m5_4_the_mind_lines_read_as_the_bot_reads_them() {
         "No rules are sealed on Sniper or Line; your own armings are under WEAPONSTATUS.",
         "This hull carries no seal.",
         "Profile Sniper: the mind will fly it when you leave the seat.",
-        "MIND TRACE refused. This core keeps no trace of its thinks yet.",
+        "MIND TRACE refused. No mind trace is available.",
     ] {
         assert!(
             neutral.iter().any(|said| said == line),

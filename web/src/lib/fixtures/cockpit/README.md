@@ -6,7 +6,14 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 `include_str!`s these files (the way `mush-net-ssh`'s TUI reads
 `../run-allowlist.json`); vitest reads them natively.
 
-M5rules advances the frame to version 4. Both keyframes now carry the ordered
+M6 advances the frame to version 6. Both keyframes carry the sealed mind's
+generic card schema and complete active-profile values in `mind.card`, with
+full authored rule wording in `mind.sealed_rules`. This scene uses the captured
+Sniper card and has no authored sealed rules; its current S1 automatic rule stays
+in the station `rules` table. Mind name, selected profile order and active index
+remain part of the same payload. Source and private memory are absent.
+
+M5rules advanced the frame to version 4. Both keyframes carry the ordered
 `rules` table and each contact's observed `moving` flag. The scene's S1 Fire rule
 is also the source of its legacy `armed` convenience field. Current clients show
 `rules: S1 fire; MIND RULES` before the weapons; the complete terms are read through

@@ -406,9 +406,9 @@ incomplete. Retain full seals with the tape, since result summaries alone do not
 contain every original mind seal.
 
 Tie eviction to the centre's `HISTORY_DEPTH` of 20 and reference accounting in
-M6.1. Proposed initial `tape_max_bytes`: 16 MiB per match, configurable with a
-bounded validated range, confirmed against a full-duration recording fixture
-before this cut lands. On overflow, keep live play correct and mark that match's
+M6.1. The initial 16 MiB proposal was superseded by the measured 64 MiB default
+and validated 4–128 MiB range in the implementation record below. On overflow,
+keep live play correct and mark that match's
 bench recording unavailable/incomplete in words; never accept a truncated tape as
 replayable. This makes doc 17's "every kept match" promise conditional on a complete
 recording: demonstrate sufficient capacity at supported duration/admission bounds
@@ -716,6 +716,14 @@ run through 900 simulated seconds completed and re-simulated all 86,376 thinks a
 in 791 chunks. This is actual runner evidence, separate from the wide-number byte
 envelope fixture. It remains to be repeated on the final committed tree on both
 supported hosts. Timing is reported and does not determine acceptance.
+
+`snapshot_max_bytes` defaults to 480 MiB and validates 16–480 MiB. This is the
+encoded recovery-document admission ceiling, including the escaped state string,
+below the store's 512 MiB RESP limit. Admission conservatively reserves possible
+future growth; the ceiling is neither an immediate allocation nor measured
+resident memory. It is separate from the existing 7 MiB report-only harness
+snapshot threshold. The measured Linux harness maximum at candidate `34a22ac1`
+was 5,088,487 bytes; final-candidate measurements are still required.
 
 The first full Field Pilot checks pass all seven tests; measured maximum is 1,682
 operations plus 36 host fees within Class II's 3,000-operation ceiling. The new

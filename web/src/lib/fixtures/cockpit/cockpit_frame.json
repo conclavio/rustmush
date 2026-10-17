@@ -134,6 +134,396 @@
   "match": 7,
   "mind": {
     "active": 0,
+    "card": {
+      "schema": {
+        "sections": [
+          {
+            "fields": [
+              {
+                "id": "close_m",
+                "label": "Close distance",
+                "widget": {
+                  "default": 200,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "m"
+                }
+              },
+              {
+                "id": "engage_band_permille",
+                "label": "Engage band",
+                "widget": {
+                  "default": 1000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "opening",
+                "label": "Opening",
+                "widget": {
+                  "choices": [
+                    "wait",
+                    "search",
+                    "advance"
+                  ],
+                  "default": "wait",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "orbit_sense",
+                "label": "Orbit direction",
+                "widget": {
+                  "choices": [
+                    "cw",
+                    "ccw",
+                    "auto"
+                  ],
+                  "default": "auto",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "screen_arc",
+                "label": "Screen arc",
+                "widget": {
+                  "default": 120,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 360,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "degrees"
+                }
+              },
+              {
+                "id": "screen_bearing",
+                "label": "Screen bearing",
+                "widget": {
+                  "default": 0,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 359,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "degrees"
+                }
+              },
+              {
+                "id": "stance",
+                "label": "Stance",
+                "widget": {
+                  "choices": [
+                    "hold",
+                    "close",
+                    "orbit",
+                    "hunt",
+                    "screen"
+                  ],
+                  "default": "hold",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "turn_into_hits",
+                "label": "Turn into hits",
+                "widget": {
+                  "default": true,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "toggle"
+                }
+              },
+              {
+                "id": "turn_s",
+                "label": "Turn duration",
+                "widget": {
+                  "default": 4,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "s"
+                }
+              }
+            ],
+            "id": "posture",
+            "label": "Posture",
+            "station": "helm"
+          },
+          {
+            "fields": [
+              {
+                "id": "aspect",
+                "label": "Aspect",
+                "widget": {
+                  "choices": [
+                    "any",
+                    "flank",
+                    "rear"
+                  ],
+                  "default": "any",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "min_odds_permille",
+                "label": "Minimum odds",
+                "widget": {
+                  "default": 650,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "reserve_odds_pct",
+                "label": "Reserve odds",
+                "widget": {
+                  "default": 75,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 100,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "reserve_pct",
+                "label": "Reserve",
+                "widget": {
+                  "default": 30,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 100,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "%"
+                }
+              }
+            ],
+            "id": "fire",
+            "label": "Fire discipline",
+            "station": "fire"
+          },
+          {
+            "fields": [
+              {
+                "id": "prefer",
+                "label": "Target preference",
+                "widget": {
+                  "choices": [
+                    "nearest",
+                    "exposed",
+                    "hurt",
+                    "balanced",
+                    "best_odds"
+                  ],
+                  "default": "balanced",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "switch_m",
+                "label": "Lock switch advantage",
+                "widget": {
+                  "default": 100,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "m"
+                }
+              },
+              {
+                "id": "weight_facet",
+                "label": "Facet weight",
+                "widget": {
+                  "default": 40,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": ""
+                }
+              },
+              {
+                "id": "weight_health",
+                "label": "Health weight",
+                "widget": {
+                  "default": 30,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": ""
+                }
+              },
+              {
+                "id": "weight_range",
+                "label": "Range weight",
+                "widget": {
+                  "default": 100,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": ""
+                }
+              }
+            ],
+            "id": "targeting",
+            "label": "Targeting",
+            "station": "sensors"
+          },
+          {
+            "fields": [
+              {
+                "id": "hunt_after_ms",
+                "label": "Hunt delay",
+                "widget": {
+                  "default": 90000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1000,
+                  "step": 1,
+                  "unit": "s"
+                }
+              },
+              {
+                "id": "rally_ms",
+                "label": "Rally delay",
+                "widget": {
+                  "default": 20000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1000,
+                  "step": 1,
+                  "unit": "s"
+                }
+              },
+              {
+                "id": "search_ms",
+                "label": "Search duration",
+                "widget": {
+                  "default": 60000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1000,
+                  "step": 1,
+                  "unit": "s"
+                }
+              },
+              {
+                "id": "stand_min_permille",
+                "label": "Fight home health",
+                "widget": {
+                  "default": 175,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "stop_unseen",
+                "label": "Stop unseen",
+                "widget": {
+                  "default": true,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "toggle"
+                }
+              },
+              {
+                "id": "withdraw_permille",
+                "label": "Break off health",
+                "widget": {
+                  "default": 350,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              }
+            ],
+            "id": "survival",
+            "label": "Survival and search",
+            "station": "helm"
+          }
+        ]
+      },
+      "values": {
+        "aspect": "any",
+        "close_m": 200,
+        "engage_band_permille": 1000,
+        "hunt_after_ms": 90000,
+        "min_odds_permille": 650,
+        "opening": "wait",
+        "orbit_sense": "auto",
+        "prefer": "balanced",
+        "rally_ms": 20000,
+        "reserve_odds_pct": 75,
+        "reserve_pct": 30,
+        "screen_arc": 120,
+        "screen_bearing": 0,
+        "search_ms": 60000,
+        "stance": "hold",
+        "stand_min_permille": 175,
+        "stop_unseen": true,
+        "switch_m": 100,
+        "turn_into_hits": true,
+        "turn_s": 4,
+        "weight_facet": 40,
+        "weight_health": 30,
+        "weight_range": 100,
+        "withdraw_permille": 350
+      }
+    },
     "channels": [
       "helm",
       "sensors",
@@ -147,7 +537,8 @@
     "profiles": [
       "Sniper",
       "Line"
-    ]
+    ],
+    "sealed_rules": []
   },
   "mode": "skirmish",
   "motor": null,
@@ -223,7 +614,7 @@
   "schema": {
     "id": "arena.cockpit",
     "retain": "latest",
-    "version": 5
+    "version": 6
   },
   "scope": "hostile",
   "sections": [

@@ -5848,10 +5848,16 @@ fn af1_catalog_shape_ignores_identity_but_walks_every_definition_field() {
 /// M5r, snapshot format 12: the motor's requested goal, terminal outcome and
 /// retained entry-zone fan add three nullable paths at this fixture's opening.
 /// The measured shape is 559 lines; all existing paths retain their types.
-/// M6 uses format 13; the literals below still await the reviewed M6 shape walk.
-const AF1_SHAPE_DIGEST: &str = "ec7b85a1dbd3b7588a2843377d6da6ac468f2e270675cbf4de37a8d8374262d3";
+/// M6, snapshot format 13: 693 measured paths. The four copied stock cards lose
+/// 100 paths; numeric profile codes lose one. The canonical catalog adds 56,
+/// per-unit profile runtimes 122, expanded seal bindings 15, capacity settings
+/// three, and the tape cursor and own-hit timestamp one each. The corrected
+/// chosen-profile fixture's fitted Class I core adds another 37 component and
+/// capability paths. All 458 surviving paths retain their types:
+/// 559 - 101 + 235 = 693. Catalog digest keys alone are normalized, as above.
+const AF1_SHAPE_DIGEST: &str = "ee1b4473fd844452c5df2e05314db98df315f231b080e9e9afeacf3405213238";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 559;
+const AF1_SHAPE_LINES: usize = 693;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5935,7 +5941,7 @@ fn af1_the_snapshot_shape_is_pinned() {
     use tacsim::arena::state::{Classification, SeenPose, ShadowContact};
     use tacsim::deliberation::order::{Objective, RangeBand};
     // 17b cut M5.2: the mover sealed with a chosen set, Sniper then Line, so
-    // `SealRef::profiles` is walked as a set of two codes.
+    // `SealRef::profiles` is walked as two immutable selected-profile bindings.
     let mut squadded = af1_mind_squad_arena_sealing(&["Sniper", "Line"]);
     // 17b cut M4.6c: a mind's check-out lays no motor row, so the walked
     // arena is given one here — through the table's own door, as the motor

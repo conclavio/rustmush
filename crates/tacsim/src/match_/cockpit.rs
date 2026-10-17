@@ -3447,9 +3447,9 @@ pub fn profile_ack(name: &str) -> String {
 ///   [`IntentKind::Profile`] is staged through the seat on helm (the arena
 ///   takes it from a seat alone, `apply_profile`), and [`profile_ack`] is
 ///   said;
-/// * `TRACE [n]`, refused in one sentence until 17b cut M6's think ring:
-///   `MIND TRACE refused. This core keeps no trace of its thinks yet.` — a
-///   form refused, not an intent, so it names its form;
+/// * `TRACE [n]`, the authorized retained think ring in M6; unavailable and
+///   unauthorized reads share `MIND TRACE refused. No mind trace is available.`
+///   A refusal names the form rather than a station intent;
 /// * anything else, [`MIND_USAGE`].
 fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let (form, tail) = first_word(rest.trim());

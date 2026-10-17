@@ -167,17 +167,21 @@ fn clean(ctx: &mut Ctx<'_>, runtime: &mut Runtime, account: AccountId) -> Result
     ) {
         return Ok(());
     }
-    super::bench_roots::change(
-        ctx,
-        None,
-        row.source_root
-            .iter()
-            .chain(row.pending_root.iter())
-            .cloned()
-            .collect(),
-    )?;
+    let releases = row
+        .source_root
+        .iter()
+        .chain(row.pending_root.iter())
+        .cloned()
+        .collect();
     if let Some(run) = row.pin {
-        pin(ctx, row.connection, run, false)?;
+        let change = ctx
+            .w
+            .module_state::<BulkStore>()
+            .ok_or(BulkError::Missing)?
+            .prepare_pin(row.connection.account, row.connection.character, run, false)?;
+        publication::release_bench(ctx, change, releases)?;
+    } else {
+        super::bench_roots::change(ctx, None, releases)?;
     }
     let row = entry.remove();
     runtime.benches.close(row.connection);
@@ -1133,6 +1137,389 @@ impl mush_core::StoreReadCompletion for Reads {
 mod tests {
     use super::*;
     use mush_core::ObjId;
+
+    struct CleanupAccounts(AccountId);
+    impl mush_core::AccountIdentity for CleanupAccounts {
+        fn account_of(&self, actor: ObjId) -> Option<AccountId> {
+            (actor == mush_core::GOD).then_some(self.0)
+        }
+    }
+    struct CleanupModule {
+        owner: BulkStore,
+        service: BenchService,
+        account: AccountId,
+        root: mush_roll::ReferenceKey,
+    }
+    impl mush_core::GameModule for CleanupModule {
+        fn name(&self) -> &'static str {
+            crate::store::NS
+        }
+        fn register(
+            &mut self,
+            reg: &mut mush_core::Registrar<'_>,
+        ) -> Result<(), mush_core::ModError> {
+            reg.state(self.owner.clone());
+            reg.state(Artifacts::default());
+            reg.state(self.service.clone());
+            reg.state(mush_sim::AccountOracle::new(Arc::new(CleanupAccounts(
+                self.account,
+            ))));
+            reg.command(
+                mush_core::CommandSpec {
+                    name: "bench".into(),
+                    shape: mush_core::ArgShape::Raw,
+                    ..Default::default()
+                },
+                Arc::new(command),
+            )?;
+            let root = self.root.clone();
+            reg.command(
+                mush_core::CommandSpec {
+                    name: "publish-then-refuse".into(),
+                    shape: mush_core::ArgShape::Raw,
+                    ..Default::default()
+                },
+                Arc::new(move |ctx: &mut Ctx<'_>| {
+                    let (connection, _) = current(ctx).map_err(|e| CmdError::msg(e.to_string()))?;
+                    pin(ctx, connection, RunId(1), true)
+                        .map_err(|e| CmdError::msg(e.to_string()))?;
+                    super::super::bench_roots::change(ctx, None, vec![root.clone()])
+                        .map_err(|e| CmdError::msg(e.to_string()))?;
+                    // Model a later read/queue refusal through the real command
+                    // boundary, which ordinarily truncates all deferred writes.
+                    Err(CmdError::msg("later queue refused"))
+                }),
+            )?;
+            Ok(())
+        }
+    }
+    fn cleanup_rig(
+        quarantined: bool,
+        pinned: bool,
+    ) -> (
+        mush_core::Engine,
+        BenchService,
+        mush_roll::ReferenceKey,
+        Vec<(smol_str::SmolStr, serde_json::Value)>,
+    ) {
+        use super::super::model::{Account, Artifact, Opponent, Run, Scenario};
+        use mush_core::{Effects, Engine, GOD, Inbound, ModuleBootData, ModuleWrite, Outbox};
+        let account = AccountId::mint("bench-cleanup", 1).unwrap();
+        let root = super::super::bench_roots::key(account, 1, 1);
+        let mut roll = mush_roll::RollStore::default();
+        let working = mush_roll::WorkingCopy {
+            source: "fn think(view, card) {}".into(),
+            envelope: mush_roll::Envelope {
+                schema: serde_json::json!({"sections": []}),
+                presets: serde_json::json!({}),
+                profiles: serde_json::json!({"Default": {}}),
+                rules: serde_json::json!({}),
+                declared_class: "I".into(),
+                mind_abi: crate::minds::MIND_ABI.into(),
+            },
+        };
+        let mut operations = Vec::new();
+        let change = roll.prepare_create(GOD, "retained", working).unwrap();
+        roll.publish_with(change, |ops| operations.extend_from_slice(ops))
+            .unwrap();
+        let saved = roll
+            .prepare_save(
+                GOD,
+                "retained",
+                roll.mind(GOD, "retained").unwrap().base(),
+                "",
+                None,
+                &crate::minds::authoring::RevisionRules,
+                &crate::TacsimStore::default(),
+            )
+            .unwrap();
+        let (change, _, revision) = saved.into_parts();
+        roll.publish_with(change, |ops| operations.extend_from_slice(ops))
+            .unwrap();
+        let change = roll
+            .prepare_reference(crate::store::NS, root.clone(), vec![revision])
+            .unwrap();
+        roll.publish_with(change, |ops| operations.extend_from_slice(ops))
+            .unwrap();
+        let mut documents = BTreeMap::new();
+        for operation in operations {
+            if let ModuleWrite::JsonSet { key, value } = operation.op {
+                documents.insert(key, value);
+            } else {
+                panic!("fixture creates immutable records only");
+            }
+        }
+        let documents = documents.into_iter().collect::<Vec<_>>();
+        let mut record = Account::empty(account, 0);
+        record.request_watermark = 1;
+        record.next_run = 2;
+        record.runs.insert(
+            RunId(1),
+            Run {
+                id: RunId(1),
+                character: GOD,
+                nonce: 1,
+                created_ms: 0,
+                finished_ms: Some(1),
+                plan: Plan {
+                    kind: WorkKind::Proving,
+                    scenario: Scenario::Duel,
+                    opponent: Opponent::Mirror,
+                    per_side: 1,
+                    unit_count: 2,
+                    games: 10,
+                    seeds: (0..5).collect(),
+                    limit_ms: 60_000,
+                    native_substep_ms: 250,
+                    start: Artifact {
+                        sha256: [1; 32],
+                        bytes: 100,
+                    },
+                    result_reservation_bytes: 1_000,
+                },
+                status: Status::Complete,
+                charged_unit_ms: 0,
+                next_sequence: 1,
+                flight: None,
+                result: Some(Artifact {
+                    sha256: [2; 32],
+                    bytes: 100,
+                }),
+                pins: u8::from(pinned),
+            },
+        );
+        let mut owner = BulkStore::new(BulkConfig::default()).unwrap();
+        owner
+            .load(account, &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        if quarantined {
+            assert_eq!(
+                owner.load(account, b"unreadable"),
+                Err(BulkError::Quarantined)
+            );
+        }
+        let (wake, _rx) = tokio::sync::mpsc::channel(1);
+        let service = BenchService::new(BulkConfig::default(), wake).unwrap();
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![
+                Box::new(CleanupModule {
+                    owner,
+                    service: service.clone(),
+                    account,
+                    root: root.clone(),
+                }),
+                Box::new(mush_roll::RollModule::with_writers([crate::store::NS])),
+            ],
+        )
+        .unwrap();
+        engine
+            .modules_loaded(
+                std::collections::HashMap::from([(
+                    mush_roll::NS.into(),
+                    ModuleBootData {
+                        kv: documents.clone(),
+                        ..Default::default()
+                    },
+                )]),
+                &mut Outbox::new(),
+                &mut Effects::new(),
+            )
+            .unwrap();
+        engine.step(
+            Inbound::ConnUp {
+                conn: 7,
+                actor: GOD,
+                caps_structured: true,
+                from_linkdead: false,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+        let (_, lease) = engine.world.connection_binding(7).unwrap();
+        let mut row = running();
+        row.connection = Connection {
+            account,
+            character: GOD,
+            lease,
+        };
+        row.phase = Phase::Stopped;
+        row.touched = world::now_ms();
+        row.source_root = Some(root.clone());
+        service.0.lock().unwrap().entries.insert(account, row);
+        assert!(engine.take_module_ops().is_empty());
+        (engine, service, root, documents)
+    }
+    fn cleanup_command(engine: &mut mush_core::Engine, line: &str) -> mush_core::Outbox {
+        let mut out = mush_core::Outbox::new();
+        engine.step(
+            mush_core::Inbound::Cmd {
+                conn: 7,
+                actor: mush_core::GOD,
+                line: line.into(),
+            },
+            &mut out,
+            &mut mush_core::Effects::new(),
+        );
+        out
+    }
+    fn replay_cleanup_writes(
+        initial: Vec<(smol_str::SmolStr, serde_json::Value)>,
+        operations: &[mush_core::ModuleOp],
+    ) -> (mush_roll::RollStore, Option<BulkStore>) {
+        let mut roll = initial.into_iter().collect::<BTreeMap<_, _>>();
+        let mut quota = None;
+        for operation in operations {
+            match (&*operation.ns, &operation.op) {
+                (mush_roll::NS, mush_core::ModuleWrite::JsonSet { key, value }) => {
+                    roll.insert(key.clone(), value.clone());
+                }
+                (mush_roll::NS, mush_core::ModuleWrite::Del { key }) => {
+                    roll.remove(key);
+                }
+                (crate::store::NS, mush_core::ModuleWrite::JsonSet { value, .. }) => {
+                    let record: super::super::model::Account =
+                        serde_json::from_value(value.clone()).unwrap();
+                    let mut owner = BulkStore::new(BulkConfig::default()).unwrap();
+                    owner
+                        .load(record.id, &serde_json::to_vec(value).unwrap())
+                        .unwrap();
+                    quota = Some(owner);
+                }
+                _ => panic!("unexpected cleanup write"),
+            }
+        }
+        (
+            mush_roll::RollStore::load(&mush_core::ModuleBootData {
+                kv: roll.into_iter().collect(),
+                ..Default::default()
+            })
+            .unwrap(),
+            quota,
+        )
+    }
+    #[test]
+    fn command_cleanup_refusal_preserves_roots_and_session_before_first_owner_write() {
+        let (mut engine, service, root, _) = cleanup_rig(true, true);
+        let out = cleanup_command(&mut engine, "BENCH CLOSE");
+        assert!(format!("{:?}", out.events()).contains("unreadable"));
+        assert!(engine.take_module_ops().is_empty());
+        assert_eq!(
+            engine
+                .world
+                .module_state::<mush_roll::RollStore>()
+                .unwrap()
+                .reference_keys(crate::store::NS, mush_roll::ReferenceKind::OpenSeal),
+            vec![root.clone()]
+        );
+        let runtime = service.0.lock().unwrap();
+        let row = runtime.entries.values().next().unwrap();
+        assert_eq!(row.source_root.as_ref(), Some(&root));
+        assert_eq!(row.pin, Some(RunId(1)));
+        assert!(row.closing);
+        assert!(matches!(row.phase, Phase::Stopped));
+    }
+    #[test]
+    fn command_cleanup_publishes_root_release_and_unpin_together() {
+        let (mut engine, service, _, documents) = cleanup_rig(false, true);
+        let account = service
+            .0
+            .lock()
+            .unwrap()
+            .entries
+            .keys()
+            .next()
+            .copied()
+            .unwrap();
+        cleanup_command(&mut engine, "BENCH CLOSE");
+        assert!(service.0.lock().unwrap().entries.is_empty());
+        assert!(
+            engine
+                .world
+                .module_state::<mush_roll::RollStore>()
+                .unwrap()
+                .reference_keys(crate::store::NS, mush_roll::ReferenceKind::OpenSeal)
+                .is_empty()
+        );
+        assert_eq!(
+            engine
+                .world
+                .module_state::<BulkStore>()
+                .unwrap()
+                .run(account, mush_core::GOD, RunId(1))
+                .unwrap()
+                .pins,
+            0
+        );
+        let operations = engine.take_module_ops();
+        assert_eq!(
+            operations.len(),
+            2,
+            "one root deletion and one account image"
+        );
+        let (roll, quota) = replay_cleanup_writes(documents, &operations);
+        assert!(
+            roll.reference_keys(crate::store::NS, mush_roll::ReferenceKind::OpenSeal)
+                .is_empty()
+        );
+        assert_eq!(
+            quota
+                .unwrap()
+                .run(account, mush_core::GOD, RunId(1))
+                .unwrap()
+                .pins,
+            0
+        );
+    }
+    #[test]
+    fn later_command_refusal_keeps_each_complete_owner_publication_durable() {
+        let (mut engine, service, _, documents) = cleanup_rig(false, false);
+        let account = service
+            .0
+            .lock()
+            .unwrap()
+            .entries
+            .keys()
+            .next()
+            .copied()
+            .unwrap();
+        let out = cleanup_command(&mut engine, "publish-then-refuse");
+        assert!(format!("{:?}", out.events()).contains("later queue refused"));
+        let operations = engine.take_module_ops();
+        assert_eq!(
+            operations.len(),
+            2,
+            "both complete publications survive run_handler truncation"
+        );
+        let (roll, quota) = replay_cleanup_writes(documents, &operations);
+        assert_eq!(
+            roll.reference_keys(crate::store::NS, mush_roll::ReferenceKind::OpenSeal),
+            engine
+                .world
+                .module_state::<mush_roll::RollStore>()
+                .unwrap()
+                .reference_keys(crate::store::NS, mush_roll::ReferenceKind::OpenSeal)
+        );
+        assert_eq!(
+            quota
+                .unwrap()
+                .run(account, mush_core::GOD, RunId(1))
+                .unwrap()
+                .pins,
+            1
+        );
+        assert_eq!(
+            engine
+                .world
+                .module_state::<BulkStore>()
+                .unwrap()
+                .run(account, mush_core::GOD, RunId(1))
+                .unwrap()
+                .pins,
+            1
+        );
+    }
     fn connection() -> Connection {
         Connection {
             account: AccountId::mint("bench", 1).unwrap(),

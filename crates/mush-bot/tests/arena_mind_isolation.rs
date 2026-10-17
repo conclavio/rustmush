@@ -77,21 +77,39 @@ async fn live_time(server: &rig::Rig) -> Option<i64> {
         serde_json::from_str(value["state"].as_str().expect("canonical snapshot")).unwrap();
     state["now_ms"].as_i64()
 }
-async fn status_sample(pilot: &mut rig::Client) -> u64 {
+struct StatusSample {
+    elapsed_us: u64,
+    transient_retries: [usize; 4],
+}
+async fn status_sample(pilot: &mut rig::Client) -> StatusSample {
     let start = Instant::now();
-    pilot.send("STATUS").await;
-    let text = pilot.expect("m north;", rig::STEP_TIMEOUT).await;
+    let from = pilot.seen.len();
+    // A commit barrier can explicitly refuse this read. Use the same bounded
+    // public retry contract as the other commands; include all waiting/retries
+    // in the sample and retain their counts instead of reporting only the
+    // eventual successful request's latency.
+    pilot.say("STATUS", "m north;").await;
+    let text = &pilot.seen[from..];
     assert!(
         !text.contains("DESTROYED"),
         "the live pilot still has a working hull: {text}"
     );
-    u64::try_from(start.elapsed().as_micros()).unwrap()
+    StatusSample {
+        elapsed_us: u64::try_from(start.elapsed().as_micros()).unwrap(),
+        transient_retries: rig::TRANSIENTS.map(|needle| text.matches(needle).count()),
+    }
 }
-fn timings(samples: &[u64]) -> Value {
+fn timings(samples: &[StatusSample]) -> Value {
     assert!(!samples.is_empty());
-    let mut sorted = samples.to_vec();
+    let elapsed = samples.iter().map(|s| s.elapsed_us).collect::<Vec<_>>();
+    let retries = samples
+        .iter()
+        .map(|s| s.transient_retries)
+        .collect::<Vec<_>>();
+    let mut sorted = elapsed.clone();
     sorted.sort_unstable();
-    json!({"samples_us":samples,"p50_us":sorted[(sorted.len()-1)/2],
+    json!({"samples_us":elapsed,"transient_kinds":rig::TRANSIENTS,
+        "transient_retries":retries,"p50_us":sorted[(sorted.len()-1)/2],
         "p99_us":sorted[(sorted.len()*99).div_ceil(100)-1],"max_us":sorted.last()})
 }
 

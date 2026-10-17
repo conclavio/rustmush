@@ -71,6 +71,10 @@ pub(super) fn change(
     for op in ops {
         ctx.persist(op);
     }
+    // Keep an accepted root transition even when a later queue refusal reports
+    // an error. Cleanup either publishes its own complete inverse or retains
+    // the original root for repair; neither may lose its durable counterpart.
+    ctx.out.pin_deferred();
     Ok(())
 }
 pub(super) fn recover(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
