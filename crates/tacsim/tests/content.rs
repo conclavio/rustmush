@@ -1281,8 +1281,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 4),
         (content::BIPED_MK1_JSON, "tacsim.pack.biped_mk1", 2),
         (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2),
-        // 17b cut M5.6: version 3, its note made true of a Hold match (was 2).
-        (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 3),
+        // M5r: version 4, its note describes the restored public Hold goal.
+        (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 4),
     ] {
         let pack = tacsim::pack::load_pack(json).unwrap_or_else(|error| panic!("{id}: {error}"));
         assert_eq!(pack.manifest().id().as_str(), id);
@@ -1959,7 +1959,7 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
 /// cut M2.5, the helm half).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "55cabde517b6a08e3d6e8017a43d7231c639c1d8ebfbe6e3777b52ed18115227";
+    "92987a0c26bc442ef87640f026dfea16dc0934739b5788607f4d3322b24e07ab";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2015,8 +2015,8 @@ fn m2_the_standard_doctrine_source_is_pinned() {
         MindManifest {
             name: "Standard Doctrine".to_owned(),
             role: "combat".to_owned(),
-            api: 2,
-            stock: 1,
+            api: 3,
+            stock: 2,
             rated_class: "I".to_owned(),
             ops_ceiling: 1_500,
         }
@@ -2029,7 +2029,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
     assert!(
         header.starts_with("// Standard Doctrine \u{2014} the combat role's stock mind")
             && header.contains(
-                "name: Standard Doctrine; role: combat; api: 2; stock: 1; rated: class I \
+                "name: Standard Doctrine; role: combat; api: 3; stock: 2; rated: class I \
                  (1,500 ops a think)"
             )
             && header.contains("T1 is the oracle (Gate A)"),

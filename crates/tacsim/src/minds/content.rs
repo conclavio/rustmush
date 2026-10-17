@@ -65,7 +65,7 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// Q.7's clock instead of going Patrol on its first think), mirrored in
 /// `NativeStockMind::decide` and pinned by Gate A; M2.6's was `8b3ec78c…d74996`.
 pub const STANDARD_SHA256: &str =
-    "55cabde517b6a08e3d6e8017a43d7231c639c1d8ebfbe6e3777b52ed18115227";
+    "92987a0c26bc442ef87640f026dfea16dc0934739b5788607f4d3322b24e07ab";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the
@@ -161,9 +161,8 @@ pub fn standard_runner(cfg: &ArenaConfig) -> Result<Arc<dyn MindRunner>, Compile
 /// answer it checks is the one the native fixture checks there. **The whole
 /// intent list is compared, the fire half with it** (17b cut M2.6: the
 /// slots, the disarm and the citation are ported, so the `Condition`/`Fire`
-/// filter M2.5 held on an armed hull is gone). The Hold fixtures are not
-/// mirrored: no Hold objective reaches a production think (the view carries
-/// no match mode; M4).
+/// filter M2.5 held on an armed hull is gone). M5r also mirrors the Hold
+/// fixtures through the public objective geometry on the production view.
 ///
 /// Beside the mirrors, five fixtures of the twin's own hold the arms the
 /// lanes reach seldom or never under Gate A: the order cap off the obeyed
@@ -378,6 +377,10 @@ mod tests {
         online(&mut arena, RED);
         let failed = (6, 4);
         let mut view = view_of(&arena, RED);
+        view.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: failed,
+            outcome: Some(DriveOutcome::NoRoute),
+        });
         view.notices = vec![FrameNotice::Drive {
             outcome: DriveOutcome::NoRoute,
         }];
@@ -452,6 +455,10 @@ mod tests {
             Vec::<IntentKind>::new()
         );
         assert_eq!(on.hunt, Some(named));
+        view.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: named,
+            outcome: Some(DriveOutcome::Arrived),
+        });
         view.notices = vec![FrameNotice::Drive {
             outcome: DriveOutcome::Arrived,
         }];
@@ -947,6 +954,7 @@ mod tests {
         assert_eq!(standing.state, MachineState::Engage);
         assert!(stand.contains(&IntentKind::Goal(MotorGoal::Hold)));
         view.notices = vec![FrameNotice::Miss {
+            launch_cell: view.cell,
             contact: None,
             reason: SmolStr::new(BLOCKED),
         }];
@@ -1071,7 +1079,12 @@ mod tests {
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x11));
-        let cornered = hurt(&view_of(&arena, RED));
+        let mut cornered = hurt(&view_of(&arena, RED));
+        // Arrival is the motor's persistent fact, never inferred from pose.
+        cornered.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: (20, 20),
+            outcome: Some(crate::arena::perception::DriveOutcome::Arrived),
+        });
         assert!(health_permille(&cornered) < arena.arena_cfg.reflex.withdraw_permille);
         let mut quiet = cornered.clone();
         quiet.contacts.clear();
@@ -1340,7 +1353,12 @@ mod tests {
             quiet_since_ms: Some(i64::MIN),
             ..StockMemory::default()
         };
-        let _ = think(&alone, &hurt(&view), &mut quiet, 1_000);
+        let mut arrived_home = hurt(&view);
+        arrived_home.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: (20, 20),
+            outcome: Some(crate::arena::perception::DriveOutcome::Arrived),
+        });
+        let _ = think(&alone, &arrived_home, &mut quiet, 1_000);
         assert_eq!(quiet.state, MachineState::Patrol, "past any rally_ms");
         assert!(quiet.rallied);
     }

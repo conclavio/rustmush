@@ -903,7 +903,39 @@ pub struct HoldState {
     pub held_by: Option<(Team, i64)>,
 }
 
+/// Public objective geometry. Ownership and capture clocks never enter a view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HoldObjective {
+    /// The objective's cell.
+    pub spot: (u16, u16),
+    /// Its public map letter.
+    pub letter: Option<char>,
+    /// The half-side of the objective square, in cells.
+    pub radius_cells: u16,
+}
+
+impl HoldObjective {
+    /// Whether the cell is inside the public objective square.
+    #[must_use]
+    pub fn square_contains(&self, cell: (u16, u16)) -> bool {
+        cell.0
+            .abs_diff(self.spot.0)
+            .max(cell.1.abs_diff(self.spot.1))
+            <= self.radius_cells
+    }
+}
+
 impl HoldState {
+    /// Copy only the geometry that the pilot and mind may read.
+    #[must_use]
+    pub const fn objective(&self) -> HoldObjective {
+        HoldObjective {
+            spot: self.spot,
+            letter: self.letter,
+            radius_cells: self.radius_cells,
+        }
+    }
+
     /// **Whether `cell` is on the spot**: within [`HoldState::radius_cells`] of
     /// [`HoldState::spot`] on both axes (Chebyshev) — one comparison, which is
     /// what makes the presence test one comparison per unit per substep.

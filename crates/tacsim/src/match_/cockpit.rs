@@ -987,7 +987,9 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
         // carries no reason (`Arena::stage_pilot_notice` stages it empty), so it
         // is the one word: where the target went and what stood round it are
         // not the gunner's to know once the contact is gone. `Hit.` is its twin.
-        FrameNotice::Miss { contact, reason } => match contact {
+        FrameNotice::Miss {
+            contact, reason, ..
+        } => match contact {
             Some(contact) => format!("Miss on {}: {}.", contact.designator, miss_words(reason)),
             None if reason.is_empty() => "Miss.".to_owned(),
             None => format!("Miss: {}.", miss_words(reason)),
@@ -6128,7 +6130,7 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// **17b cut M5.4 kept it at 3** while adding the top-level `mind` object
 /// (doc 17 §12; F7 of the M5 design note): a field added for the person in
 /// the seat is not a version, and a mind's view never carries it.
-pub const FRAME_VERSION: u32 = 4;
+pub const FRAME_VERSION: u32 = 5;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].
@@ -6466,13 +6468,17 @@ pub fn status_frame_held(
                 "spent": notice.spent(),
                 "text": text,
             });
-            // **17b cut M1b.1** (doc 17 §5; 17b cut M1b.4 stages them): a slot
-            // notice's own parts, on its own object only — every other notice's
-            // object is byte for byte what it was. The pilot's own slot, the
+            // Variant-specific own facts: M5r's firing cell and 17b M1b.1's
+            // slot notice's own parts, on their own objects only. The own slot, the
             // chance and the facet word the row earned; the weapon and the
             // designator ride the keys above.
             if let Some(map) = object.as_object_mut() {
                 match notice {
+                    FrameNotice::Miss { launch_cell, .. } => {
+                        // The gunner's own firing cell is still known after
+                        // contact loss redacts the target and miss reason.
+                        map.insert("launch_cell".to_owned(), serde_json::json!(launch_cell));
+                    }
                     FrameNotice::SlotFired {
                         slot,
                         p_permille,
@@ -6653,6 +6659,32 @@ pub fn status_frame_held(
         // it and the line client was sent the same lines as one `Sys` block.
         "catchup": frame.catchup.as_ref().map(catchup_json),
     });
+    // Keep the public objective and own motor facts together. Inserting this
+    // block separately keeps the large frame macro within its recursion bound.
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("mode".into(), frame.mode.as_str().into());
+        object.insert(
+            "objective".into(),
+            frame
+                .objective
+                .map_or(serde_json::Value::Null, |objective| {
+                    serde_json::json!({
+                        "cell": objective.spot,
+                        "letter": objective.letter.map(|letter| letter.to_string()),
+                        "radius_cells": objective.radius_cells,
+                    })
+                }),
+        );
+        object.insert(
+            "motor".into(),
+            frame.motor.map_or(serde_json::Value::Null, |motor| {
+                serde_json::json!({
+                    "goal": motor.requested_goal,
+                    "outcome": motor.outcome.map(|outcome| outcome.as_str()),
+                })
+            }),
+        );
+    }
     // **17b cut M1a.3** (doc 17 §22's italic line): *the keyframe drops the
     // weapons block on one without*. `lock`, `lock_*`, `heat`, `scan_tables`
     // and each contact's `fatal` stay: the lock is the sensors station's.
@@ -12561,6 +12593,34 @@ mod tests {
             fire_refused("cannon", &CockpitError::Unlawful { floor_pct: 10 }).to_string(),
             "FIRE cannon refused. The Compact floor is 10%; a condition may not ask for less."
         );
+    }
+
+    /// A miss's launch cell is the gunner's own fact even when its target and
+    /// reason were redacted. The line stays bare; the keyframe carries the cell.
+    #[test]
+    fn m5r_miss_keyframes_keep_the_own_launch_cell_after_target_redaction() {
+        let mut frame = ap3_scene();
+        frame.notices = vec![
+            FrameNotice::Miss {
+                contact: None,
+                reason: SmolStr::new_static(""),
+                launch_cell: Some((2, 7)),
+            },
+            FrameNotice::Miss {
+                contact: None,
+                reason: SmolStr::new_static(""),
+                launch_cell: None,
+            },
+        ];
+        let keyframe = status_frame(crate::arena_task::MatchId(1), &frame);
+        let notices = keyframe["notices"].as_array().expect("notices");
+        assert_eq!(notices.len(), 2);
+        assert_eq!(notices[0]["launch_cell"], serde_json::json!([2, 7]));
+        assert_eq!(notices[1]["launch_cell"], serde_json::Value::Null);
+        for notice in notices {
+            assert_eq!(notice["text"], "Miss.");
+            assert_eq!(notice["contact"], serde_json::Value::Null);
+        }
     }
 
     /// **17b cut M1b.1**: the two slot notices' sentences (defined here,

@@ -2687,6 +2687,7 @@ mod tests {
 
     fn miss(n: usize) -> FrameNotice {
         FrameNotice::Miss {
+            launch_cell: None,
             contact: None,
             reason: SmolStr::new(format!("n{n}")),
         }

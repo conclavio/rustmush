@@ -8,8 +8,9 @@ proving and debugging tools. [17b](17b-unit-minds-implementation-plan.md) remain
 the programme's build ledger. M5rules is accepted at `e93a4a1c`; its implementation
 and passing Windows/Linux gates are
 recorded in [17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17);
-the cut has not been deployed. Later scratch preparation
-is not a landed milestone.
+M5r is also accepted on 2026-10-17, with behavior, compatibility and final
+verification in [17b §5](17b-unit-minds-implementation-plan.md#5-m5r-continuation-gate--2026-10-17).
+Neither cut has been deployed. M6 scratch preparation is not a landed milestone.
 
 The owner requested this plan through M6 on 2026-10-17 and deferred M7 until a
 separate check that the economy code has stabilized. Later that day the owner

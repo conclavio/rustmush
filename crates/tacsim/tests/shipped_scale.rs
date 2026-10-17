@@ -1213,3 +1213,168 @@ fn no_float(value: &serde_json::Value, path: &str) -> usize {
         _ => 0,
     }
 }
+
+// M5r: restored behavior regressions (historical 3a3c469^).
+mod m5r {
+    use super::*;
+    use std::sync::Arc;
+    use support::scripted::Stock;
+    use tacsim::arena::Snapshot;
+
+    /// STOP K restored on stock minds. Boot the shipped world once, then run the
+    /// two-hull column at three pulse cadences and Rhai alone. The 90-second
+    /// checkpoint is just before the hunt starts, so the resumed suffix covers
+    /// fan assignment as well as terminal motor completion.
+    #[test]
+    fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
+        let world = booted_world();
+        let one = support::tank(&world, Team::Red, 1);
+        let two = support::tank(&world, Team::Red, 2);
+        let mut baseline = None;
+        for (lane, cadence) in [(1, 5_000_i64), (0, 1_000), (0, 500), (2, 1_000)] {
+            let mut arena = shipped_arena(
+                &world,
+                &[&[Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)]],
+            );
+            arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+            if lane == 1 {
+                support::with_twin(&mut arena);
+            }
+            if lane == 2 {
+                support::with_rhai(&mut arena);
+            }
+            let stock = Stock::over(Arc::clone(&arena.mind_runner));
+            arena.mind_runner = stock.clone();
+            let opened: Vec<_> = arena.units.iter().map(|unit| unit.pose.x_cm).collect();
+            let mut bytes = Vec::new();
+            let mut hashes = Vec::new();
+            let mut learned = Vec::new();
+            let mut motor_trace = std::collections::VecDeque::new();
+            let mut motor_last = [None, None];
+            let mut crossed = [false, false];
+            let mut checkpoint = None;
+            let mut wall = 0;
+            while arena.now_ms < 240_000 {
+                assert!(
+                    arena.ended.is_none(),
+                    "the fixture must remain live until its observation bound"
+                );
+                let out = arena.step_settled(wall, &[], &[]);
+                for chunk in &out.ledger_chunks {
+                    bytes.extend_from_slice(&chunk.bytes);
+                }
+                hashes.extend(arena.substep_hashes.iter().copied());
+                for (at, id) in [one, two].into_iter().enumerate() {
+                    if let Some(row) = arena.motors.row(id) {
+                        let status = (row.goal, row.requested_goal, row.outcome);
+                        if motor_last[at] != Some(status) {
+                            motor_last[at] = Some(status);
+                            if motor_trace.len() == 24 {
+                                motor_trace.pop_front();
+                            }
+                            let memory = arena
+                                .minds
+                                .get(&id)
+                                .map(|mind| StockMemory::from(&decode_memory(&mind.memory)));
+                            motor_trace.push_back(format!(
+                                "{} {id:?}: motor={status:?} cell={:?} memory={memory:?}",
+                                arena.now_ms,
+                                arena
+                                    .unit(id)
+                                    .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+                            ));
+                        }
+                        for (cell, _) in &row.avoid {
+                            if !learned.contains(&(id, *cell)) {
+                                learned.push((id, *cell));
+                            }
+                        }
+                    }
+                    crossed[at] |= arena.unit(id).is_some_and(|unit| {
+                        unit.pose.x_cm > 67 * i64::from(arena.definition.terrain.cell_cm())
+                    });
+                }
+                if arena.now_ms == 90_000 && lane == 1 {
+                    arena.ledger.flush();
+                    for chunk in arena.ledger.take_chunks() {
+                        bytes.extend(chunk.bytes);
+                    }
+                    checkpoint = Some((
+                        Snapshot::encode(&arena).expect("pre-hunt checkpoint"),
+                        bytes.len(),
+                        hashes.len(),
+                    ));
+                }
+                wall += cadence;
+            }
+            arena.ledger.flush();
+            for chunk in arena.ledger.take_chunks() {
+                bytes.extend(chunk.bytes);
+            }
+            if let Some((snapshot, prefix, prefix_hashes)) = checkpoint {
+                let mut restored =
+                    Snapshot::decode(&snapshot.document, (*arena.definition).clone())
+                        .expect("pre-hunt restore");
+                restored.resume_at(90_000);
+                restored.clock.pin_tempo_for_tests(Tempo::Quiet);
+                let suffix = run_on(&mut restored, 90_000, cadence, 240_000);
+                assert_eq!(suffix.0, bytes[prefix..], "resume ledger bytes");
+                assert_eq!(suffix.1, hashes[prefix_hashes..], "resume hashes");
+                assert_eq!(suffix.2, tacsim::arena::state_hash(&arena));
+                assert_eq!(suffix.3, arena.ledger.digest());
+                assert_eq!(suffix.4, arena.ledger.shipped_digest());
+            }
+            let log = ledger_events(&mut arena, &mut bytes);
+            let stops: Vec<_> = log
+                .iter()
+                .filter(|event| event.kind.as_str() == "blocked")
+                .map(|event| (event.t_ms, support::unit_of_event(event)))
+                .collect();
+            assert!(
+                stops.is_empty(),
+                "same-side column stopped: {stops:?}\nmotor transitions: {motor_trace:#?}"
+            );
+            assert!(
+                learned.is_empty(),
+                "the column learned a false obstacle: {learned:?}"
+            );
+            assert_eq!(
+                crossed,
+                [true, true],
+                "both hulls actually crossed the river band"
+            );
+            assert!(
+                arena.units.iter().any(|unit| opened
+                    .iter()
+                    .all(|from| (unit.pose.x_cm - *from).abs() > 10_000)),
+                "the original displacement claim"
+            );
+            assert!(
+                stock.kept().iter().any(|(_, _, view, _)| view
+                    .motor
+                    .as_ref()
+                    .is_some_and(|motor| motor.outcome
+                        == Some(tacsim::arena::perception::DriveOutcome::Arrived))),
+                "a real later think reads persistent motor arrival"
+            );
+            let result = (
+                log.iter()
+                    .map(|event| {
+                        (
+                            event.t_ms,
+                            serde_json::to_string(&event.kind).expect("event"),
+                            event.hash,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                hashes,
+                tacsim::arena::state_hash(&arena),
+            );
+            if let Some(first) = &baseline {
+                assert_eq!(&result, first, "ford cadence {cadence}");
+            } else {
+                baseline = Some(result);
+            }
+        }
+    }
+}

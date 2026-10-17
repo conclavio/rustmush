@@ -1,7 +1,7 @@
-// Standard Doctrine — the combat role's stock mind (doc 17 §11, §17; 17b cut M2.5). name: Standard Doctrine; role: combat; api: 2; stock: 1; rated: class I (1,500 ops a think). Ported arm for arm from crates/tacsim/src/arena/stock_mind.rs: T1 is the oracle (Gate A).
+// Standard Doctrine — the combat role's stock mind (doc 17 §11, §17; 17b cut M2.5). name: Standard Doctrine; role: combat; api: 3; stock: 2; rated: class I (1,500 ops a think). Ported arm for arm from crates/tacsim/src/arena/stock_mind.rs: T1 is the oracle (Gate A).
 //
 // `decide_on_card`, re-expressed over the TacSim API (17b cuts M2.3 and
-// M2.4): the SAME order, edges, clocks and fourteen memory keys as the native
+// M2.4): the SAME order, edges, clocks and fifteen memory keys as the native
 // stock mind, every score, trace, picker and reach reader a registered kernel
 // over the one free function T1 calls (no second kernel). Gate A is T1 == T2
 // exactly: every think's intent list and memory bytes equal
@@ -125,7 +125,7 @@
 // **One think** (T1's `decide_on_card`): walk the memory (`this`) one step
 // over `view` on `card` and push the intents, in emission order.
 fn think(view, card) {
-    // ---- the prologue: a fresh sortie writes all fourteen keys, so the
+    // ---- the prologue: a fresh sortie writes all fifteen keys, so the
     //      first think's bytes are T1's (an empty memory reads as the
     //      default `StockMemory`) ----
     if !("state" in this) {
@@ -138,13 +138,11 @@ fn think(view, card) {
     // and its `unreachable` edge from the drive it runs itself; a mind reads
     // all three off its notice buffer (D-UM-8).
     let words = this.read_notices(view);
-    let goal_was = this.goal;
-    let reached = if words[0] { goal_was } else { () };
     // What the motor holds now, as far as the mind knows: the goal it was
     // handed, and nothing once it said no route reached it.
-    let held = if words[1] { () } else { goal_was };
+    let held = if words[1] { () } else { this.goal };
     let p = #{
-        here: view.cell, reached: reached, held: held, goal: held,
+        here: view.cell, reached: words[0], held: held, goal: held,
         stop: false, heading: (), lock: (), stood: (), arm_ceiling: (), fire: (),
         view_order: view.order, order: (), objective: (),
         health: 1000, dry: false, ranges: (),
@@ -161,8 +159,9 @@ fn think(view, card) {
 
     // ---- the `unreachable` edge's decision half, a think late
     //      (departure (i)) ----
-    if words[1] && this.goal != () {
-        p.goal = this.unreachable(view, p);
+    // A matching NoRoute already proves this.goal is the motor's cell.
+    if words[1] {
+        p.goal = this.unreachable(view, card, p);
     }
 
     // ---- the standing order (16b cut N.2; 17b cut M1b.5) ----
@@ -276,33 +275,30 @@ fn fresh() {
     this.ordered = false;
 }
 
-// **The notices' reading**: `[arrived_word, no_route]` off the motor's
-// `drive_arrived` / `drive_no_route`, and `no_line` set by a `miss` whose
-// reason is `blocked()` or `cover()` (a round of its own stopped by the
-// ground).
+// `[reached_goal, no_route]` reads the persistent requested-goal result.
+// A blocked/cover miss teaches no_line only while still at its launch cell.
 fn read_notices(view) {
-    let arrived_word = false;
+    let reached = ();
     let no_route = false;
-    // 17b cut M2.6: one `switch` on the kind word, not an else-if chain —
-    // the same three readings at a third of the operations a notice (a
-    // busy twelve-a-side view carries sixteen notices).
+    let motor = view.motor;
+    if motor != () {
+        switch motor.outcome {
+            "arrived" => { reached = motor.goal; }
+            "no_route" => { no_route = motor.goal == this.goal; }
+        }
+    }
     for notice in view.notices {
         switch notice.kind {
-            "drive_arrived" => {
-                arrived_word = true;
-            }
-            "drive_no_route" => {
-                no_route = true;
-            }
             "miss" => {
                 let reason = notice.reason;
-                if reason == blocked() || reason == cover() {
+                let origin = notice.launch_cell;
+                if origin != () && origin == view.cell && (reason == blocked() || reason == cover()) {
                     this.no_line = true;
                 }
             }
         }
     }
-    [arrived_word, no_route]
+    [reached, no_route]
 }
 
 // ---------------------------------------------------------------------------
@@ -354,13 +350,8 @@ fn range_cm(row) {
     }
 }
 
-// **Arrival at `cell`** (T1's `Drive::arrived`): the hull's own cell within
-// `arrive_cells()` (Chebyshev), or the motor's word for that goal.
+// Arrival names the requested cell in the motor's persistent completion.
 fn arrived(p, cell) {
-    let here = p.here;
-    if here != () && max(abs(here[0] - cell[0]), abs(here[1] - cell[1])) <= arrive_cells() {
-        return true;
-    }
     p.reached == cell
 }
 
@@ -373,7 +364,7 @@ fn arrived(p, cell) {
 // edge read off it, in the reflex's order — the order's own ends, the
 // search's and the hunt's give-ups, and the fallback waypoint as the next
 // goal (answered).
-fn unreachable(view, p) {
+fn unreachable(view, card, p) {
     let failed = this.goal;
     // 17b cut M1b.5: the view's order unless this hull ended it.
     let live = obeyed(p.view_order, this.ignore_until_ms);
@@ -394,8 +385,11 @@ fn unreachable(view, p) {
         this.hunt = ();
         this.unheld_since_ms = t_ms();
     }
-    // 16b cut O.1's Hold retry: no Hold objective reaches a production think
-    // (the view carries no match mode; M4).
+    let objective = view.objective;
+    if objective != () && objective.cell == failed {
+        let retry = max(card.hunt_after_ms, repath_ms());
+        this.hold_retry_ms = min(t_ms(), 9223372036854775807 - retry) + retry;
+    }
     if p.here == () {
         return ();
     }
@@ -435,11 +429,10 @@ fn standing_order(view, card, p) {
     if p.order != () {
         switch p.order.objective {
             // 16b cut AA.1 (`B-76`): an `Advance` a hull that cannot close
-            // can never carry out. (16b cut O.1's `Advance` into the Hold
-            // square: no Hold objective reaches a production think — the
-            // view carries no match mode; M4.)
+            // can never carry out; an Advance into the Hold square also
+            // ends once the hull reaches it. End remains mind-side ignore.
             "advance" => {
-                ends = view.immobile;
+                ends = view.immobile || hold_advance_arrived(view, p.order.to);
             }
             // 16b cut Z.2: a `Support` whose charge this hull's own row
             // reads dead.
@@ -794,18 +787,39 @@ fn keep_station(view, p) {
     p
 }
 
-// **`Patrol`'s list, past the orders**: the search, then the hunt, then the
-// walk.
+// Patrol searches, then pursues the Hold objective or hunts, then walks.
 fn look(view, card, p) {
     let cell = this.search_goal(card, p);
     if cell == () {
-        cell = this.hunt_goal(view, card, p);
+        if view.objective != () {
+            let held = this.hold_goal(view, p);
+            if held != () { return held; }
+        } else {
+            cell = this.hunt_goal(view, card, p);
+        }
     }
     if cell != () {
         p.goal = cell;
         return p;
     }
     p.goal = this.walk(view, p);
+    p
+}
+
+// Hold geometry is public; capture ownership and clocks never reach the mind.
+fn hold_goal(view, p) {
+    if this.hold_retry_ms != () && t_ms() < this.hold_retry_ms {
+        return ();
+    }
+    this.hold_retry_ms = ();
+    if hold_arrived(view) {
+        p.goal = p.here;
+        p.stop = true;
+    } else {
+        p.goal = view.objective.cell;
+    }
+    this.hunt = ();
+    this.unheld_since_ms = t_ms();
     p
 }
 
@@ -880,9 +894,8 @@ fn walk(view, p) {
 }
 
 // **`Approach`**: every range, goal and heading off the hull's own row of
-// its target — the plot, at the view's resolution. (16b cut O.1's inside
-// rule: no Hold square reaches a production think — the view carries no
-// match mode; M4.)
+// its target — the plot, at the view's resolution. Inside the public Hold
+// square it holds its ground and uses the release band.
 fn approach_arm(view, p) {
     let target = this.target;
     if target == () {
@@ -891,7 +904,8 @@ fn approach_arm(view, p) {
     let row = contact(view, target);
     let range = range_cm(row);
     let band = p.ranges;
-    let close_edge = if view.immobile { band.release_cm } else { band.engage_cm };
+    let inside = hold_contains(view, p.here);
+    let close_edge = if view.immobile || inside { band.release_cm } else { band.engage_cm };
     if band.limit_cm != 0 && range <= max(close_edge, 1) {
         let line = if row == () { true } else { line_to(view, target) };
         if line {
@@ -900,11 +914,15 @@ fn approach_arm(view, p) {
             if row != () {
                 p = engage_orders(view, row, band.release_cm, p);
             }
+        } else if inside {
+            p.goal = p.here;
         } else if row != () && row.cell != () {
             p.goal = row.cell;
         } else {
             p.goal = p.here;
         }
+    } else if inside {
+        p.goal = p.here;
     } else {
         let want = stand_off_want(band.engage_cm, max(cell_cm(), 1), range);
         let cell = if row == () { () } else { stand_off_cell(view, target, want) };

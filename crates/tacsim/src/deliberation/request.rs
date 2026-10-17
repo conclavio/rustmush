@@ -542,10 +542,10 @@ fn order_of(brief: &SquadBrief, payload: &OrderPayload) -> Result<Order, String>
 /// "drives the squad to the key spot and fights from it". A machine is flown
 /// by its own doctrine (the reflex controller went at 17b cut M4.6); a
 /// supporter fights what it finds at its station, since nothing it reads says
-/// what its charge is shooting (D-UM-15); and no production think is handed
-/// the key spot (no match mode reaches a mind), so a squad goes there only
-/// when ordered to advance on it. The tool's `support` description says the
-/// same. The prompt is no hashed state and no harness pins its bytes.
+/// what its charge is shooting (D-UM-15). M5r restores public key-spot
+/// geometry to production thinks: Standard drives there while idle and an
+/// Advance into its square hands back to doctrine on arrival. Support still
+/// reads no charge targeting facts. The prompt is no hashed state.
 #[must_use]
 pub fn system_prompt() -> String {
     format!(
@@ -553,8 +553,8 @@ pub fn system_prompt() -> String {
 on the nearest worthwhile hostile, holds a firing band and breaks off when it is hurt. Give an \
 order only to change that. A screen holds an arc without giving chase; support keeps station on \
 one of your own members and fights what it finds there, and the member named fights on. In a \
-key-spot match: the squad does not drive for the key spot unless it is ordered to advance on it; \
-engage keeps doctrine and fights what it finds; advance to the spot arrives and does not fire; \
+key-spot match: doctrine drives for the spot while idle and fights what it finds; \
+engage keeps doctrine; advance into the spot's square hands back to doctrine on arrival; \
 hold parks the squad where it stands. Prefer a short time to live when the situation is moving."
     )
 }
@@ -1277,14 +1277,11 @@ mod tests {
         let skirmish = SquadBrief::from_signal(7, &signal(), 2, leader());
         assert_eq!(skirmish.objective, None);
         assert!(!user_prompt(&skirmish).contains("objective:"));
-        // The system turn maps the vocabulary onto a key-spot match. It said
-        // `engage keeps doctrine, which drives the squad to the key spot and
-        // fights from it;` until 17b cut M5.6 (OQ-6; STOP A, the text made
-        // true: no production think is handed the spot).
+        // M5r restores public Hold geometry and the arrival handover.
         assert!(system_prompt().contains(
-            "In a key-spot match: the squad does not drive for the key spot unless it is \
-             ordered to advance on it; engage keeps doctrine and fights what it finds; advance \
-             to the spot arrives and does not fire; hold parks the squad where it stands."
+            "In a key-spot match: doctrine drives for the spot while idle and fights what it finds; \
+             engage keeps doctrine; advance into the spot's square hands back to doctrine on arrival; \
+             hold parks the squad where it stands."
         ));
     }
 

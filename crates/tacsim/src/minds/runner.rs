@@ -146,6 +146,8 @@ pub struct RhaiRunner {
     stand_in: NativeStockMind,
     /// The doctrine's think cadence, ms (`decide_ms()` in a script).
     decide_ms: u32,
+    /// The motor's frozen re-plan interval, ms (`repath_ms()` in a script).
+    repath_ms: u32,
     /// The figures, when recording ([`RhaiRunner::recording`]).
     stats: Option<Mutex<Vec<ThinkStat>>>,
 }
@@ -189,6 +191,7 @@ impl RhaiRunner {
             compiled,
             stand_in: NativeStockMind::with(&cfg.reflex),
             decide_ms: cfg.reflex.decide_ms,
+            repath_ms: cfg.reflex.repath_ms,
             stats: None,
         })
     }
@@ -219,7 +222,7 @@ impl RhaiRunner {
         &self,
         job: &ThinkJob<'_>,
     ) -> (Result<mush_mind::Outcome, Fault>, Vec<String>, ThinkContext) {
-        context::set(ThinkContext::of(job, self.decide_ms));
+        context::set(ThinkContext::of(job, self.decide_ms, self.repath_ms));
         // 17b cut M3.1 (doc 17 §9, D-UM-35): the row the think is held to —
         // its op ceiling and its memory keys (the shape bounds are every
         // class's). Class I's 1,500 and 32 on every shipped chassis.
@@ -241,7 +244,8 @@ impl RhaiRunner {
         // The context was set above on this thread and nothing between takes
         // it; a context function never removes it. Should it be gone, a fresh
         // one answers no intents and no flag — the think's own result stands.
-        let ctx = context::take().unwrap_or_else(|| ThinkContext::of(job, self.decide_ms));
+        let ctx = context::take()
+            .unwrap_or_else(|| ThinkContext::of(job, self.decide_ms, self.repath_ms));
         (result, trace, ctx)
     }
 }

@@ -2919,6 +2919,10 @@ pub enum FrameNotice {
         /// empty when the platform no longer holds the target (16b cut AE.2),
         /// which is not one of [`crate::arena::damage::MISS_REASONS`].
         reason: SmolStr,
+        /// This platform's own cell when this particular shot was accepted.
+        /// It remains its own fact after contact loss; it reveals no target
+        /// position. `None` means the shot was accepted outside the map.
+        launch_cell: Option<(u16, u16)>,
     },
     /// **A round of this platform's finished the target** (16b cut F.2).
     Kill {
@@ -3082,6 +3086,17 @@ pub enum DriveOutcome {
     /// No route from where the hull stands; the goal is dropped and the hull
     /// holds.
     NoRoute,
+}
+
+impl DriveOutcome {
+    /// The motor outcome's wire word, shared by the keyframe and mind view.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Arrived => "arrived",
+            Self::NoRoute => "no_route",
+        }
+    }
 }
 
 impl FrameNotice {

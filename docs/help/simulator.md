@@ -254,12 +254,11 @@ fight inside the square stops the clock — it starts again from nothing when on
 side is alone there once more. Elimination still ends a hold match, and so do a
 concede and the clock.
 
-The machines do not play for it: they do not drive for the spot, they fight
-what they find wherever they find it, and the spot is the pilots' to take. A
-squad goes there when it is ordered to — `ORDER 1 ADVANCE B`, as
-`help cockpit` says — and a tank whose pilot has left flies its mind, which
-does not drive for the spot either. The board says the rule while a match is
-being set up, boarding and running:
+Standard Doctrine drives for the spot when it has no hostile to fight, then
+holds inside the square. An Advance order into the square hands back to doctrine
+on arrival; a Hold order parks where the squad stands. A tank whose pilot has left
+uses the same doctrine. A drone can drive there but cannot hold or contest it.
+The board says the rule while a match is being set up, boarding and running:
 
   mode: hold — keep The Crossroads (B) uncontested for 120 s
 

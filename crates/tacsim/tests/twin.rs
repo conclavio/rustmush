@@ -1155,28 +1155,31 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// and `first_divergence_ms=101377` is the M1b.5 record's first millisecond
 /// too; red wins 13 of 15, the proving ground's lean the
 /// retired control recorded too (26 red wins of 30 for T0 on both sides).
+/// M5r re-records the pool after requested-goal arrival and formation continuity.
+/// Every native/Rhai answer still matches; these behavior changes move match ends,
+/// shots and core-loss counts, so this is not a hash-only update.
 const M4_5_POOLED_RECORD: [&str; 21] = [
-    "twin_match: seed=2350 end=elimination_red t_ms=172250",
-    "twin_match: seed=2351 end=elimination_red t_ms=193500",
+    "twin_match: seed=2350 end=elimination_red t_ms=168250",
+    "twin_match: seed=2351 end=elimination_red t_ms=184500",
     "twin_match: seed=2352 end=elimination_red t_ms=166500",
     "twin_match: seed=2353 end=elimination_red t_ms=188000",
     "twin_match: seed=2354 end=elimination_red t_ms=195750",
-    "twin_match: seed=2355 end=elimination_blue t_ms=181500",
+    "twin_match: seed=2355 end=elimination_red t_ms=174500",
     "twin_match: seed=2356 end=elimination_red t_ms=174750",
-    "twin_match: seed=2357 end=elimination_red t_ms=193750",
+    "twin_match: seed=2357 end=elimination_red t_ms=175750",
     "twin_match: seed=2358 end=elimination_red t_ms=172000",
     "twin_match: seed=2359 end=elimination_red t_ms=181500",
     "twin_match: seed=2360 end=elimination_blue t_ms=214750",
     "twin_match: seed=2361 end=elimination_red t_ms=211000",
-    "twin_match: seed=2362 end=elimination_red t_ms=180000",
-    "twin_match: seed=2363 end=elimination_red t_ms=175000",
-    "twin_match: seed=2364 end=elimination_red t_ms=173750",
-    "twin_pooled: n=15 red_wins=13 blue_wins=2 draws=0",
-    "twin_divergences: tiebreak=87 line=0 reads_dead=0 landing=10352 no_line=0 fan=11 order_end=0 deg_round=0 fallback=0 cond_fire=2549 cond_stale=8 unwarranted=0 unlawful=0 floor_held=0 slot_parallel=416 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=10352 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
-    "twin_gate_b: side=red shots=1622 shots_per_min=35.083 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=19,withdraw=0,disabled=10] wrecked=10 cond_shots=1565 parallel=257",
-    "twin_gate_b: side=blue shots=1023 shots_per_min=22.127 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=0,approach=0,engage=13,withdraw=0,disabled=17] wrecked=17 cond_shots=984 parallel=159",
-    "twin_gate_b_pool: path_queries=598 corner_refusals=0",
+    "twin_match: seed=2362 end=elimination_red t_ms=174000",
+    "twin_match: seed=2363 end=elimination_red t_ms=182000",
+    "twin_match: seed=2364 end=elimination_red t_ms=178750",
+    "twin_pooled: n=15 red_wins=14 blue_wins=1 draws=0",
+    "twin_divergences: tiebreak=101 line=0 reads_dead=0 landing=10298 no_line=0 fan=11 order_end=0 deg_round=0 fallback=0 cond_fire=2496 cond_stale=8 unwarranted=0 unlawful=0 floor_held=0 slot_parallel=407 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=10298 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_gate_b: side=red shots=1601 shots_per_min=35.033 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=3,approach=0,engage=21,withdraw=0,disabled=6] wrecked=6 cond_shots=1544 parallel=254",
+    "twin_gate_b: side=blue shots=988 shots_per_min=21.619 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=0,approach=0,engage=12,withdraw=0,disabled=18] wrecked=18 cond_shots=952 parallel=153",
+    "twin_gate_b_pool: path_queries=596 corner_refusals=0",
 ];
 
 /// **The stock pool, pinned to its record** (17b cut M4.5; until then the
@@ -1728,14 +1731,14 @@ impl Coverage {
 /// at eight rows, measured unmoved too); every figure it prints,
 /// per seed and in total, reads the same with the seat and without it.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
-    ("pooled", (10_098, 254)),
-    ("mixed", (12_442, 321)),
-    ("lance", (6_099, 145)),
+    ("pooled", (10_042, 256)),
+    ("mixed", (12_492, 310)),
+    ("lance", (6_054, 154)),
 ];
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
 /// reason at [`COVERAGE`]): the matches whose record line may move.
-const POOLED_MATCHES_WITH_STAND_IN: usize = 11;
+const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
 
 /// **Gate A on unarmed hulls, under fire — and since 17b cut M2.6 on the
 /// armed hulls beside them** (17b cuts M2.5 and M2.6; doc 17 §17 "Gate A",

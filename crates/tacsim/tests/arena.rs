@@ -5742,9 +5742,12 @@ fn shape(value: &serde_json::Value, path: &str, out: &mut std::collections::BTre
 /// `null`, 0) — the `Support` and the `Engage` re-keyed against classified
 /// rows laid for their landings and dropped before the walk. 542 + 7 + 7 =
 /// 556.
-const AF1_SHAPE_DIGEST: &str = "811a1ce79c8ae983ad8cce0c67b41765449341e76f0811c9596f3b14777d5611";
+/// M5r, snapshot format 12: the motor's requested goal, terminal outcome and
+/// retained entry-zone fan add three nullable paths at this fixture's opening.
+/// The measured shape is 559 lines; all existing paths retain their types.
+const AF1_SHAPE_DIGEST: &str = "ec7b85a1dbd3b7588a2843377d6da6ac468f2e270675cbf4de37a8d8374262d3";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 556;
+const AF1_SHAPE_LINES: usize = 559;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -6009,7 +6012,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        11,
+        12,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -6173,7 +6176,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     // to 6, 17b cut M1b.1 to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b
     // cut M5.2 to 10 (the sealed set, the active profile, STOP E's charge); a
     // format-2 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 11);
+    assert_eq!(SNAPSHOT_FORMAT, 12);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -6257,7 +6260,7 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     // 17b cut M1a.5 moved the format to 5, 17b cut L.1 to 6, 17b cut M1b.1
     // to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b cut M5.2 to 10; a
     // format-3 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 11);
+    assert_eq!(SNAPSHOT_FORMAT, 12);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -6326,6 +6329,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
         notices: vec![
             FrameNotice::PowerOnline,
             FrameNotice::Miss {
+                launch_cell: None,
                 contact: None,
                 reason: SmolStr::new("moved"),
             },
@@ -6444,7 +6448,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     // what the first reload onto M5.2 finds and voids), a format-8 one (17b
     // cut M3.2's to M4.6's), a format-7 one (17b cut M1b.1's) and a format-4
     // one are refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 11);
+    assert_eq!(SNAPSHOT_FORMAT, 12);
     for old in [10_u32, 9, 8, 7, 4] {
         let mut stale = snapshot.document.clone();
         stale["format"] = serde_json::json!(old);
@@ -6550,7 +6554,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
     };
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
     // to 10.
-    assert_eq!(SNAPSHOT_FORMAT, 11);
+    assert_eq!(SNAPSHOT_FORMAT, 12);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),

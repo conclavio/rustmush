@@ -1729,6 +1729,7 @@ fn m1a5_the_notice_buffer_is_bounded_hashed_snapshotted_and_drained_per_think() 
     let mind = ScriptedMind::new(&[]);
     rig.arena.mind_runner = mind.clone();
     let miss = |reason: &str| FrameNotice::Miss {
+        launch_cell: None,
         contact: None,
         reason: SmolStr::new(reason),
     };
@@ -3434,7 +3435,7 @@ fn m1a5_the_production_hash_does_not_move() {
     );
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(duel.minds.len(), 4, "four minds");
-    // M5rules folds the shared typed rule table and the reviewed source/API
+    // M5r adds persistent motor facts and the reviewed source/API
     // identity. Keep all three encoding pins together so a declared format
     // change exposes every actual in one run; behavior assertions above remain.
     let actual = [
@@ -3445,9 +3446,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0xee55_a270_46eb_bd76),
-            Some(0x2d8c_edcf_c95f_ce9f),
-            Some(0x81b3_3391_16fe_cdaa)
+            Some(0xd0ee_55ca_1865_76de),
+            Some(0x108c_a512_43c9_efb0),
+            Some(0x5585_302e_6fd5_db4c)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6665,6 +6666,10 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
     let mut view = base.clone();
     view.contacts.clear();
     view.order = Some(advance(failed, 20_000));
+    view.motor = Some(tacsim::arena::step::FrameMotor {
+        requested_goal: failed,
+        outcome: Some(DriveOutcome::NoRoute),
+    });
     view.notices = vec![FrameNotice::Drive {
         outcome: DriveOutcome::NoRoute,
     }];
@@ -6719,21 +6724,21 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
 /// (the record carries no hash; the run does not end and no turret dies), every
 /// other line byte-equal.
 /// M5rules updates only the three Standard source prefixes from 102cc7d27eb411c4
-/// to 55cabde517b6a08e (the bounded complete-rule API and Standard adapter).
+/// to 92987a0c26bc442e (the bounded complete-rule API and Standard adapter).
 /// The 50 event timestamps and every other payload byte remain identical.
 const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"55cabde517b6a08e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"92987a0c26bc442e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"55cabde517b6a08e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"92987a0c26bc442e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"55cabde517b6a08e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"92987a0c26bc442e\",\"card_digest\":\"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         4,

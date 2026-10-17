@@ -1286,31 +1286,43 @@ fn z1_a_lance_of_five_is_one_grouping_at_three_cadences() {
 // (1) An order steers a squad
 // ---------------------------------------------------------------------------
 
-/// **An `advance` moves the patrol target** — 17b cut M4.5a, on the unit
-/// mind: red-1's minds take the order through `IntentKind::Order` (the row's
-/// re-keyed `FrameOrder`) and make for the cell at their next landing (`#6`'s
-/// think at 2,004 lands at 2,254, `#4`'s at 2,482 lands at 2,732: both inside
-/// the 4,000 the original read at). What moved: doctrine's patrol goal is read
-/// as the node the mind NAMED (its memory's `goal`), because the motor fans a
-/// goal that lands inside the other side's entry zone off a squadmate's
-/// (`Arena::fan_goal`, the M1a plan's departure (d)) — red's two minds both
-/// walk to the east node (14, 8) and the second hull's motor row holds the
-/// fanned (14, 11) — while the hull still drives (its motor holds a goal).
-/// The ordered cell is in no entry zone, so it is the motor row's goal too.
+/// An advance replaces a live doctrine patrol leg for both squad members.
+/// Setup proves the west-node completion was consumed and east was requested.
+/// Both ordered goals are read after their first landing, before the hostile
+/// damages the commander and its lawful health withdrawal takes precedence.
 #[test]
 fn an_advance_order_moves_the_patrol_target() {
     let cfg = arena_cfg(30_000);
     let mut arena = field(&cfg);
+    let stock = Stock::on(&arena);
+    arena.mind_runner = stock.clone();
     let mut bytes = Vec::new();
-    // Online, and patrolling its own graph: the west node of row 8.
-    run(&mut arena, 2_000, &mut bytes);
+    // Observe the named west arrival, then the actual eastbound motor request.
+    run(&mut arena, 3_000, &mut bytes);
     assert_eq!(state_of(&arena, RED_A), Some(MachineState::Patrol));
-    let doctrine = named_goal(&arena, RED_A);
+    let arrived = stock.kept().iter().any(|(unit, _, view, _)| {
+        *unit == RED_A
+            && view.motor.is_some_and(|motor| {
+                motor.requested_goal == (1, 8)
+                    && motor.outcome == Some(tacsim::arena::perception::DriveOutcome::Arrived)
+            })
+    });
     assert!(
-        doctrine == Some((1, 8)) || doctrine == Some((14, 8)),
-        "doctrine walks the authored graph, not {doctrine:?}"
+        arrived,
+        "patrol consumed the motor's named west-node arrival"
     );
-    assert!(goal_of(&arena, RED_A).is_some(), "and the hull drives it");
+    assert_eq!(named_goal(&arena, RED_A), Some((14, 8)));
+    assert!(
+        goal_of(&arena, RED_A).is_some(),
+        "the fanned east leg is active"
+    );
+    assert!(
+        arena
+            .motors
+            .row(RED_A)
+            .is_some_and(|motor| motor.requested_goal == Some((14, 8)) && motor.outcome.is_none()),
+        "the active motor request retains the logical east node"
+    );
 
     let told = order(Objective::Advance { to: (9, 3) }, 60_000);
     assert!(
@@ -1392,49 +1404,22 @@ fn a_hold_order_parks_the_squad_and_a_movement_order_does_not_pursue() {
     );
 }
 
-/// **A `withdraw` withdraws, and a cornered tank stands** — 17b cut M4.5a, on
-/// the unit mind. Two things moved, under the orchestrator's ruling that Q17's
-/// `Goal(Hold)` departure EXTENDS to the cornered `Withdraw` stand.
-///
-/// * **The stand lets the goal go.** The reflex kept its home goal on the
-///   motor row through the stand, so the original read `#4`'s at 4,000 (cols
-///   0..=1) and the Q.7 comment said the stand shoots back "without touching
-///   the goal". The stock mind's `Withdraw` arm, cornered, sets `plan.stop`:
-///   it emits `Goal(Hold)` (stop here, face there) and its memory's goal goes
-///   to `None` (`stock_mind.rs`, the emission after `withdraw_stand`). `#4`,
-///   holding the planted hostile, is cornered at its very first `Withdraw`
-///   think (2,482, home already beside its zone) and never names a cell, so
-///   no mind can show its home cell. `#4`'s stand is re-pinned as the
-///   departure — no goal on its motor row, none named, a desired speed of 0
-///   — and **the "goal untouched through the stand" half is LOST** (it is
-///   the reflex's; recorded here, not re-asserted).
-/// * **"It makes for its OWN entry zone" is read on its squadmate** under the
-///   same order, and discriminates on both ends: before the order `#6`'s mind
-///   names the EAST node (14, 8) and its motor drives it (so a home cell in
-///   columns 0..=1 is the order's doing — the west node (1, 8) would pass a
-///   bare `x <= 1`); `#6` reads the order at 2,004 before it holds a
-///   classified hostile, names its zone's cell abreast of it, (1, 9), and is
-///   read at the 2,500 pulse (its next landing, 3,254, is its own stand).
-///   That the hull DRIVES the named cell is read off the motor's own word,
-///   not its row: `#6` stands at (2, 9), within `ARRIVE_CELLS` of (1, 9), so
-///   the goal's landing (2,254) drives it once at that millisecond, arrives
-///   and drops it (`Fallback::Notice`) — measured at 1 ms resolution, the
-///   motor row holds (14, 8) through 2,253 and nothing from 2,254, so a
-///   `goal_of == named_goal` read exists at no millisecond. Instead: the
-///   motor row has let the patrol leg go, and `#6`'s next think (3,004)
-///   reads the motor's `drive_arrived` (and no `drive_no_route`), which its
-///   previous think (2,004, the patrol leg) did not — the only goal the
-///   motor held between them that a hull at (2, 9) can reach is (1, 9).
-/// * **The shot** needs the presenting profile (ruling 1): `#4`'s first
-///   `Withdraw` think locks and fires at its landing (2,732), inside the 4,000.
+/// A withdrawal redirects a real eastbound patrol leg to the squad's own
+/// entry zone, and its cornered member stands and shoots. The uncornered
+/// member has a narrow scope so the extra arrival-confirmation think cannot
+/// turn this homeward-drive fixture into a second cornered stand. The commander
+/// keeps its wide scope and the actual accepted shot remains required.
 #[test]
 fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
     let cfg = arena_cfg(30_000);
     let mut arena = field(&cfg);
+    arena.unit_mut(RED_B).expect("member").sensor = Some(sight(NARROW_SIGHT_CELLS));
     let stock = Stock::on(&arena);
     arena.mind_runner = stock.clone();
     let mut bytes = Vec::new();
-    run(&mut arena, 2_000, &mut bytes);
+    // M5r advances patrol only after the motor reports the named arrival.
+    // The next real think settles that west-node arrival and starts east.
+    run(&mut arena, 3_000, &mut bytes);
     // Before the order `#6` patrols its graph to the EAST node, off red's
     // zone, and its hull drives it.
     let patrolling = named_goal(&arena, RED_B);
@@ -1453,11 +1438,30 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
     let told = order(Objective::Withdraw, 60_000);
     issue(&mut arena, &told);
     // `#6`'s first `Withdraw` landing is in, its stand is not.
-    let first = lands_at(&arena, RED_B, 2);
-    let stand = lands_at(&arena, RED_B, 3);
+    let first = lands_at(&arena, RED_B, 3);
+    let stand = lands_at(&arena, RED_B, 4);
     run(&mut arena, first.saturating_add(1), &mut bytes);
     assert!(arena.now_ms < stand, "read before #6's second landing");
     assert_eq!(state_of(&arena, RED_B), Some(MachineState::Withdraw));
+    let first_view = stock
+        .kept()
+        .into_iter()
+        .find(|(unit, at_ms, _, _)| *unit == RED_B && *at_ms == think_at(RED_B, 3))
+        .expect("first ordered think")
+        .2;
+    assert!(
+        first_view
+            .motor
+            .is_some_and(|motor| motor.requested_goal == (14, 8) && motor.outcome.is_none()),
+        "withdraw begins while the named patrol leg is still driving"
+    );
+    assert!(
+        !first_view
+            .contacts
+            .iter()
+            .any(|row| matches!(row.class, Classification::Classified { team: Team::Blue })),
+        "this member is uncornered; its commander is the cornered control"
+    );
     let goal = named_goal(&arena, RED_B).expect("a withdrawing tank has somewhere to be");
     assert_ne!(
         Some(goal),
@@ -1479,7 +1483,7 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
         "the motor let the patrol leg go: it drove the home cell at the landing \
          and, one cell off it, arrived"
     );
-    run(&mut arena, 4_000, &mut bytes);
+    run(&mut arena, 5_000, &mut bytes);
     let arrived = |t_ms: i64| {
         stock
             .kept()
@@ -1507,14 +1511,25 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
             })
     };
     assert_eq!(
-        arrived(think_at(RED_B, 2)),
+        arrived(think_at(RED_B, 3)),
         Some((false, false)),
         "the think that named the home cell had not arrived anywhere"
     );
     assert_eq!(
-        arrived(think_at(RED_B, 3)),
+        arrived(think_at(RED_B, 4)),
         Some((true, false)),
         "and the next one reads the motor's word that the hull reached it"
+    );
+    let reached = stock
+        .kept()
+        .iter()
+        .find(|(unit, t_ms, _, _)| *unit == RED_B && *t_ms == think_at(RED_B, 4))
+        .and_then(|(_, _, view, _)| view.motor)
+        .map(|motor| (motor.requested_goal, motor.outcome));
+    assert_eq!(
+        reached,
+        Some((goal, Some(tacsim::arena::perception::DriveOutcome::Arrived))),
+        "the completed motor request is the ordered home cell, not a stale patrol arrival"
     );
 
     assert_eq!(
@@ -1651,12 +1666,10 @@ fn hold_fire_stops_the_trigger_and_leaves_the_lock() {
     );
 }
 
-/// **17b cut M4.5a — on the unit mind.** The claim is about the band's edge, so
-/// under ruling 1 it is asserted on the figure the mind READS as well: every
-/// think of `#4` after the order read its target inside the ordered ceiling
-/// (the true 11,000 cm publishes 100 m; it then closes to 50 m and engages at
-/// seven tenths of the ceiling), and it shoots — which needs the presenting
-/// profile. The window (6,000) holds `#4`'s engaging landing (5,732).
+/// The ordered close ceiling is enforced on the ranges the mind reads.
+/// A target inside that band must still be shot after the normal approach;
+/// M5r's named motor-arrival and firing-cell progression is allowed to settle
+/// within this bounded eight-second observation window.
 #[test]
 fn a_close_range_band_keeps_the_squad_from_shooting_across_the_window() {
     let cfg = arena_cfg(30_000);
@@ -1675,7 +1688,11 @@ fn a_close_range_band_keeps_the_squad_from_shooting_across_the_window() {
     let mut told = order(Objective::Engage { target_hint: None }, 60_000);
     told.constraints.max_range_band = Some(RangeBand::Close);
     issue(&mut arena, &told);
-    run(&mut arena, 6_000, &mut bytes);
+    // Include the subsequent approach after the motor-confirmed initial
+    // patrol arrival, rather than pinning the old 5,732 ms shot. This remains
+    // a bounded observation: every recorded target must obey the original
+    // close ceiling and an actual shot must occur before eight seconds.
+    run(&mut arena, 8_000, &mut bytes);
     let read: Vec<u64> = stock
         .kept()
         .iter()
@@ -1697,7 +1714,9 @@ fn a_close_range_band_keeps_the_squad_from_shooting_across_the_window() {
     );
     assert!(
         fired_by(&events(&mut arena, &mut bytes), RED_A) > 0,
-        "a target inside the ordered band is still shot at"
+        "a target inside the ordered band is still shot at; ranges {read:?}, state {:?}, goal {:?}",
+        state_of(&arena, RED_A),
+        named_goal(&arena, RED_A),
     );
 }
 
@@ -2292,7 +2311,7 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             );
             // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
-            assert_eq!(SNAPSHOT_FORMAT, 11);
+            assert_eq!(SNAPSHOT_FORMAT, 12);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -3986,34 +4005,12 @@ fn e2_b41_a_failed_goal_that_is_not_the_ordered_cell_drops_nothing() {
     assert!(expiries(&log).is_empty(), "{:?}", expiries(&log));
 }
 
-/// **17b cut M4.5a — on the unit mind** (Q15, D7). Every claim is kept; what
-/// moved is the mind's latency and its end.
-///
-/// * **The searches.** The reflex replaced its patrol goal with the ordered
-///   cell inside the tick that read the order, so the only searches the
-///   remembered stop failed in the window were the ordered cell's — two. A
-///   mind's order lands a substep after its think (`#6` 2,254, `#4` 2,732), and
-///   until then the motor follows the patrol node it was walking, whose route
-///   through the gap the same remembered stop has just sealed: that search
-///   fails first. So the window counts **four**, and the stock recorder
-///   attributes every one: each mind's first think after the order reads a
-///   `NoRoute` for its patrol node, and its next reads one for the ordered
-///   cell — exactly one per unit, as the row says — and ends the order. The
-///   window is cut to `at + 1,000` (both ordered-cell searches in, `#6`'s
-///   fallback landing at 3,254 out): past it the far-side fallback waypoints
-///   are unreachable too, doctrine's own business, as before. **The pinned
-///   count moved 2 -> 4 under the orchestrator's recorded ruling** (2 stale
-///   patrol + 2 ordered cell), and the split is pinned directly rather than
-///   leaning on the motor dropping a failed goal: the window is counted in two
-///   halves cut at `#4`'s order landing (2,732) — `[at, 2,732)` holds both
-///   stale-node failures and `#6`'s ordered cell (**3**), `[2,732, at +
-///   1,000]` holds `#4`'s ordered cell alone (**1**) — so `#4`'s ordered-cell
-///   failure is proved inside the counted window.
-/// * **The end** (`order_end`): the ending thinks (`#6` 3,004, `#4` 3,482) write
-///   the order's `expires_ms` to `ignore_until_ms` — read at `at + 1,750`,
-///   past `#4`'s landing (3,732) — with no `order_expired` line and the order
-///   still standing on the rows. The commander is not told until the TTL
-///   (Q15's production consequence).
+/// A remembered stop seals a reachable gap and ends the ordered advance.
+/// First wait for both real eastbound patrol legs (M5r requires the motor's
+/// named arrival at west). The split still counts four failed searches: two
+/// stale patrol legs and two ordered cells. The recorder must attribute both
+/// failures to each unit, and only the ordered cell may end its order. The
+/// arena retains the order until its TTL; no expiry notice is forged early.
 #[test]
 fn e2_b41_a_cell_sealed_only_by_a_remembered_stop_ends_the_order_too() {
     // **The recorded cost of the rule.** The search that fails runs with the
@@ -4035,7 +4032,10 @@ fn e2_b41_a_cell_sealed_only_by_a_remembered_stop_ends_the_order_too() {
     let stock = Stock::on(&arena);
     arena.mind_runner = stock.clone();
     let mut bytes = Vec::new();
-    run_counted(&mut arena, 2_000, &mut bytes);
+    // M5r consumes the motor's named west-node arrival before choosing east.
+    // Give that actual arrival one think to settle; pose proximity alone is
+    // no longer a completed patrol leg.
+    run_counted(&mut arena, 3_000, &mut bytes);
     // Each mind walks its graph, east past the gap (the precondition that makes
     // its stale route the remembered stop's to seal).
     let walking: Vec<(u16, u16)> = [RED_A, RED_B]
@@ -4069,7 +4069,7 @@ fn e2_b41_a_cell_sealed_only_by_a_remembered_stop_ends_the_order_too() {
     // this row's.
     // Split at `#4`'s order landing: everything before it, then the landing
     // itself to the window's end.
-    let split = lands_at(&arena, RED_A, 2);
+    let split = lands_at(&arena, RED_A, 3);
     assert!(
         at < split && split < at + 1_000,
         "the split falls inside the window"
@@ -4096,7 +4096,7 @@ fn e2_b41_a_cell_sealed_only_by_a_remembered_stop_ends_the_order_too() {
         // failures: the stale patrol node, then the ordered cell.
         let read: Vec<Option<(u16, u16)>> = no_routes_read(&kept, unit)
             .into_iter()
-            .filter(|(t_ms, _)| *t_ms > at && *t_ms <= think_at(unit, 3))
+            .filter(|(t_ms, _)| *t_ms > at && *t_ms <= think_at(unit, 4))
             .map(|(_, going_in)| going_in)
             .collect();
         assert_eq!(
@@ -4109,7 +4109,7 @@ fn e2_b41_a_cell_sealed_only_by_a_remembered_stop_ends_the_order_too() {
             ending_think(&kept, unit, expires).expect("a transiently sealed route kept the order");
         assert_eq!(
             (ended, going_in),
-            (think_at(unit, 3), Some((13, 3))),
+            (think_at(unit, 4), Some((13, 3))),
             "#{}: the ordered cell's failure ended it",
             unit.0
         );
@@ -5306,13 +5306,11 @@ async fn o1_a_hold_arenas_first_signal_tells_the_commander_the_objective() {
         ),
         "{user}"
     );
-    // `In a key-spot match: engage keeps doctrine, which drives the squad to
-    // the key spot …` until 17b cut M5.6 (OQ-6; STOP A, the text made true).
+    // M5r restores the idle key-spot objective to the shared public mind view.
     let system = request.system.clone().unwrap_or_default();
     assert!(
         system.contains(
-            "In a key-spot match: the squad does not drive for the key spot unless it is \
-             ordered to advance on it;"
+            "In a key-spot match: doctrine drives for the spot while idle and fights what it finds;"
         ),
         "{system}"
     );

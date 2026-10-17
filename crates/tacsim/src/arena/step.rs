@@ -101,6 +101,12 @@ pub struct Frame {
     /// is: it is what a panel's map draws the pilot's own marker at without
     /// having to divide a pose by a cell size it would have to be told.
     pub cell: Option<(u16, u16)>,
+    /// The public match mode.
+    pub mode: crate::arena::state::MatchMode,
+    /// Public Hold geometry, excluding ownership and capture clocks.
+    pub objective: Option<crate::arena::state::HoldObjective>,
+    /// This hull's requested motor goal and latest outcome.
+    pub motor: Option<FrameMotor>,
     /// **The side it is on** (16b cut S.2), so the cockpit can draw a classified
     /// contact as a friend or as a hostile without asking the world which team the
     /// pilot's slot was on. The platform's own side is never a secret from its
@@ -570,6 +576,15 @@ impl FrameHeat {
     }
 }
 
+/// A hull's own motor status. Formation-adjusted internal goals stay private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameMotor {
+    /// The requested cell, before formation fan-out.
+    pub requested_goal: (u16, u16),
+    /// None while driving; the retained result until a new request or disengagement.
+    pub outcome: Option<crate::arena::perception::DriveOutcome>,
+}
+
 impl Frame {
     /// Whether this frame says the same thing as `other`: the unit, the four pose
     /// integers, the speed, the power, the block, the tempo and the contact list.
@@ -639,6 +654,9 @@ impl Frame {
             // not already have been sent.
             && self.callsign == other.callsign
             && self.cell == other.cell
+            && self.mode == other.mode
+            && self.objective == other.objective
+            && self.motor == other.motor
             && self.pose.x_cm == other.pose.x_cm
             && self.pose.y_cm == other.pose.y_cm
             && self.pose.z_cm == other.pose.z_cm
@@ -1574,6 +1592,10 @@ impl Arena {
         reflex: &mut MotorCounters,
     ) -> bool {
         let mut notices: Vec<Notice> = Vec::new();
+        // Shot origins survive removal at impact until this substep's journal
+        // projects their own notices. This scratch holds only resolving shots,
+        // keyed by the actual shot rather than the shooter's latest launch.
+        let mut shot_origins = BTreeMap::new();
         // **16b cut F.2**: the stops this substep's motion produced, in unit-id
         // order, collected inside the borrow of `self.units` and staged after it.
         // A pilot's blocked notice is staged here and not from the journal scan
@@ -2077,6 +2099,9 @@ impl Arena {
                 // shot's sequence, so which pulse the round lands in cannot change
                 // whether it hits.
                 DueKind::Impact { shot_seq } => {
+                    if let Some(cell) = self.shots.get(&shot_seq).and_then(|shot| shot.from_cell) {
+                        shot_origins.insert(shot_seq, cell);
+                    }
                     self.resolve_impact(shot_seq, event.t_ms, &mut notices);
                     // **16b cut U.2** (16c `T-29`): a round can wreck the hull a
                     // pod rides on, which turns its power off and stops it
@@ -2280,7 +2305,14 @@ impl Arena {
             // 16b cut S.2: the pilot's notice and the ledger's event come off the
             // same journal entry, in the same order, so a line a pilot read is a
             // line the black box can be searched for.
-            if let Some(window) = self.stage_pilot_notice(t_ms, &kind, &mut in_flight) {
+            let launch_cell = match &kind {
+                EventKind::Hit { shot_seq, .. } | EventKind::Miss { shot_seq, .. } => {
+                    shot_origins.remove(shot_seq)
+                }
+                _ => None,
+            };
+            if let Some(window) = self.stage_pilot_notice(t_ms, &kind, &mut in_flight, launch_cell)
+            {
                 closing.push(window);
             }
             refused |= !self.journal_drawn(t_ms, kind, draws, hash);
@@ -2562,6 +2594,17 @@ impl Arena {
             // it is standing in.
             callsign: unit.callsign,
             cell: self.definition.terrain.cell_of(&unit.pose),
+            mode: self.mode,
+            objective: self
+                .hold
+                .as_ref()
+                .map(crate::arena::state::HoldState::objective),
+            motor: self.motors.row(unit.id).and_then(|row| {
+                row.requested_goal.map(|requested_goal| FrameMotor {
+                    requested_goal,
+                    outcome: row.outcome,
+                })
+            }),
             pose: unit.pose.clone(),
             speed_cms: unit.speed_cms,
             power: unit.power,
@@ -2772,6 +2815,7 @@ impl Arena {
         t_ms: i64,
         kind: &EventKind,
         in_flight: &mut Option<(ObjId, ObjId)>,
+        launch_cell: Option<(u16, u16)>,
     ) -> Option<(i64, ObjId, ContactId)> {
         let window_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
         match *kind {
@@ -3074,6 +3118,7 @@ impl Arena {
                         FrameNotice::Miss {
                             contact: held,
                             reason,
+                            launch_cell,
                         },
                     );
                 }
@@ -3590,7 +3635,27 @@ impl Arena {
             Some(from) => self.index.move_unit(unit, from, (x, y)),
             None => self.index.rebuild(&self.definition.terrain, &self.units),
         }
+        // PLACE invalidates both a former completion and the private formation
+        // assignment. Resume the principal's request with a fresh fan from the
+        // new pose, without touching the mind's memory.
+        let restart = self
+            .motors
+            .row(unit)
+            .and_then(|motor| motor.requested_goal.or(motor.goal));
         self.motors.forget_route(unit);
+        if let Some(requested) = restart {
+            let goal = self.fan_goal(unit, requested);
+            let motor = self.motors.ensure(unit);
+            motor.goal = Some(goal);
+            motor.fan = crate::arena::motor::GoalFan::between(requested, goal);
+        }
+        if self
+            .motors
+            .row(unit)
+            .is_some_and(|motor| motor.goal.is_some())
+        {
+            self.engage_motor(unit);
+        }
         let (from_x, from_y) = from.unwrap_or((u16::MAX, u16::MAX));
         let _ = self.journal(
             at_ms,
@@ -5112,7 +5177,7 @@ mod tests {
             arena.spent_hits.insert(shot_seq);
         }
         let mut in_flight: Option<(ObjId, ObjId)> = None;
-        arena.stage_pilot_notice(t_ms, &hit(shot_seq, section), &mut in_flight);
+        arena.stage_pilot_notice(t_ms, &hit(shot_seq, section), &mut in_flight, None);
     }
 
     /// What the victim has been told since the last drain.
@@ -5281,6 +5346,7 @@ mod tests {
                 consequences: Vec::new(),
             },
             &mut in_flight,
+            None,
         );
         let told = victims_notices(&mut arena);
         assert!(
@@ -5302,6 +5368,7 @@ mod tests {
             0,
             &EventKind::UnitDisabled { unit: ObjId(9) },
             &mut in_flight,
+            None,
         );
         assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDisabled]);
         arena.stage_pilot_notice(
@@ -5312,6 +5379,7 @@ mod tests {
                 by: None,
             },
             &mut in_flight,
+            None,
         );
         assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDestroyed]);
         assert!(
@@ -5330,6 +5398,7 @@ mod tests {
                 by: Some(A),
             },
             &mut in_flight,
+            None,
         );
         assert_eq!(
             arena.pending_notices.remove(&A).unwrap_or_default(),
@@ -5392,9 +5461,10 @@ mod tests {
                 target: ObjId(9),
             },
             &mut in_flight,
+            None,
         );
         assert_eq!(in_flight, Some((A, ObjId(9))));
-        arena.stage_pilot_notice(0, &hit(1, "hull"), &mut in_flight);
+        arena.stage_pilot_notice(0, &hit(1, "hull"), &mut in_flight, None);
         assert_eq!(in_flight, None, "the `hit` did not clear the pair");
         let _ = gunners_notices(&mut arena);
         let _ = victims_notices(&mut arena);
@@ -5411,6 +5481,7 @@ mod tests {
                 consequences: Vec::new(),
             },
             &mut in_flight,
+            None,
         );
         assert!(
             gunners_notices(&mut arena).is_empty(),
@@ -5437,6 +5508,7 @@ mod tests {
                 by: None,
             },
             &mut in_flight,
+            None,
         );
         assert!(
             gunners_notices(&mut arena).is_empty(),
@@ -5463,6 +5535,7 @@ mod tests {
                 consequences: Vec::new(),
             },
             &mut in_flight,
+            None,
         );
         assert!(
             matches!(
@@ -5485,6 +5558,7 @@ mod tests {
                 by: Some(A),
             },
             &mut in_flight,
+            None,
         );
         assert!(
             matches!(
@@ -5509,6 +5583,7 @@ mod tests {
                 target: ObjId(9),
             },
             &mut in_flight,
+            None,
         );
         arena.stage_pilot_notice(
             0,
@@ -5517,6 +5592,7 @@ mod tests {
                 reason: SmolStr::new("dispersion"),
             },
             &mut in_flight,
+            None,
         );
         assert!(
             matches!(
@@ -5535,6 +5611,7 @@ mod tests {
                 reason: SmolStr::new("dispersion"),
             },
             &mut in_flight,
+            None,
         );
         assert!(
             gunners_notices(&mut arena).is_empty(),
@@ -5560,29 +5637,31 @@ mod tests {
             reason: SmolStr::new(crate::arena::damage::BLOCKED),
         };
         // Held: the reason, as ever.
-        arena.stage_pilot_notice(0, &impact(ObjId(9)), &mut in_flight);
-        arena.stage_pilot_notice(0, &miss(), &mut in_flight);
+        arena.stage_pilot_notice(0, &impact(ObjId(9)), &mut in_flight, None);
+        arena.stage_pilot_notice(0, &miss(), &mut in_flight, Some((2, 7)));
         assert!(
             matches!(
                 gunners_notices(&mut arena).first(),
-                Some(FrameNotice::Miss { contact: Some(_), reason })
+                Some(FrameNotice::Miss { contact: Some(_), reason, launch_cell: Some((2, 7)) })
                     if reason == crate::arena::damage::BLOCKED
             ),
             "a held target's miss keeps its reason"
         );
-        // Not held: no contact and no reason.
-        arena.stage_pilot_notice(0, &impact(ObjId(77)), &mut in_flight);
-        arena.stage_pilot_notice(0, &miss(), &mut in_flight);
+        // Not held: no contact and no reason. The launch cell remains the
+        // gunner's own fact, independent of the target's held classification.
+        arena.stage_pilot_notice(0, &impact(ObjId(77)), &mut in_flight, None);
+        arena.stage_pilot_notice(0, &miss(), &mut in_flight, Some((2, 7)));
         assert_eq!(
             gunners_notices(&mut arena),
             vec![FrameNotice::Miss {
                 contact: None,
                 reason: SmolStr::new_static(""),
+                launch_cell: Some((2, 7)),
             }],
             "an unheld target's miss says nothing of why"
         );
         // And the unheld hit is the bare `Hit.` it always was.
-        arena.stage_pilot_notice(0, &impact(ObjId(77)), &mut in_flight);
+        arena.stage_pilot_notice(0, &impact(ObjId(77)), &mut in_flight, None);
         arena.stage_pilot_notice(
             0,
             &EventKind::Hit {
@@ -5600,6 +5679,7 @@ mod tests {
                 cause: SmolStr::new("test"),
             },
             &mut in_flight,
+            None,
         );
         assert!(matches!(
             gunners_notices(&mut arena).first(),
@@ -5745,6 +5825,60 @@ mod tests {
             .unwrap_or_else(|refusal| panic!("the shot was refused: {refusal:?}"));
         let impact_at = arena.shot(seq).map_or(0, |shot| shot.impact_at_ms);
         (journal, seq, impact_at)
+    }
+
+    /// Two rounds accepted from different cells resolve in reverse order in
+    /// one substep, after the shooter has moved to a third cell. Each notice
+    /// retains its own round's acceptance cell after `resolve_impact` removes
+    /// both shots; neither current position nor latest launch can stand in.
+    #[test]
+    fn m5r_overlapping_misses_keep_their_own_launch_cells() {
+        let mut arena = m2_pair(60_000);
+        let (_, first, _) = m2_fire(&mut arena);
+        assert_eq!(
+            arena.shot(first).and_then(|shot| shot.from_cell),
+            Some((0, 0))
+        );
+        {
+            let shooter = arena.unit_mut(A).expect("gunner");
+            shooter.pose = pose(1_500, 500);
+            // Give the fixture a second round in flight. Its acceptance still
+            // captures the actual firing cell through the production resolver.
+            shooter.ready_at_ms.insert(SmolStr::new("cannon"), 0);
+        }
+        let second = arena.resolve_fire(A, "cannon", 3_020).expect("second shot");
+        assert_eq!(
+            arena.shot(second).and_then(|shot| shot.from_cell),
+            Some((1, 0))
+        );
+        arena.unit_mut(A).expect("gunner").pose = pose(2_500, 500);
+
+        // Isolate origin bookkeeping from dispersion and damage. Both rounds
+        // lose their predictions, and the later shot arrives first.
+        let _ = arena
+            .due
+            .retain(|kind| !matches!(kind, DueKind::Impact { .. }));
+        for (seq, at_ms) in [(first, 3_200), (second, 3_100)] {
+            let shot = arena.shots.get_mut(&seq).expect("accepted shot");
+            shot.aim_cell = None;
+            shot.impact_at_ms = at_ms;
+            arena.due.schedule(at_ms, DueKind::Impact { shot_seq: seq });
+        }
+        let _ = gunners_notices(&mut arena);
+        assert!(!arena.substep(
+            250,
+            &mut PerceptionCounters::default(),
+            &mut MotorCounters::default(),
+        ));
+        assert!(arena.shot(first).is_none() && arena.shot(second).is_none());
+        let cells: Vec<_> = gunners_notices(&mut arena)
+            .into_iter()
+            .filter_map(|notice| match notice {
+                FrameNotice::Miss { launch_cell, .. } => Some(launch_cell),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cells, vec![Some((1, 0)), Some((0, 0))]);
     }
 
     /// Every `match_ended` line in `log`, with its millisecond.
@@ -6084,6 +6218,7 @@ mod tests {
                 target: B,
             },
             &mut in_flight,
+            None,
         );
         assert_eq!(
             arena.held_losses.get(&(A, contact)).map(|(at, _)| *at),
@@ -6169,9 +6304,9 @@ mod tests {
             arena.held_losses.insert((A, contact), (5_000, was));
             let _ = arena.pending_notices.remove(&A);
             let mut in_flight = None;
-            let _ = arena.stage_pilot_notice(1_100, &detected, &mut in_flight);
+            let _ = arena.stage_pilot_notice(1_100, &detected, &mut in_flight, None);
             if arena.contacts.resolve(A, contact).is_some() {
-                let _ = arena.stage_pilot_notice(1_100, &classified, &mut in_flight);
+                let _ = arena.stage_pilot_notice(1_100, &classified, &mut in_flight, None);
             }
             assert!(
                 !arena.held_losses.contains_key(&(A, contact)),

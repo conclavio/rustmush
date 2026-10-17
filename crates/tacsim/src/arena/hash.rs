@@ -1210,6 +1210,22 @@ pub fn state_hash(arena: &Arena) -> u64 {
     // unchanged.
     for (unit, motor) in arena.motors.rows() {
         fold.bytes(&unit.0.to_le_bytes());
+        // The original requested goal and its retained completion decide later
+        // thinks even after the active fanned goal has been cleared.
+        let (rx, ry) = motor.requested_goal.unwrap_or((u16::MAX, u16::MAX));
+        fold.bytes(&rx.to_le_bytes());
+        fold.bytes(&ry.to_le_bytes());
+        fold.bytes(&[match motor.outcome {
+            None => 0,
+            Some(crate::arena::perception::DriveOutcome::Arrived) => 1,
+            Some(crate::arena::perception::DriveOutcome::NoRoute) => 2,
+        }]);
+        fold.bytes(&[u8::from(motor.fan.is_some())]);
+        if let Some(fan) = motor.fan {
+            for coordinate in [fan.origin.0, fan.origin.1, fan.assigned.0, fan.assigned.1] {
+                fold.bytes(&coordinate.to_le_bytes());
+            }
+        }
         let (gx, gy) = motor.goal.unwrap_or((u16::MAX, u16::MAX));
         fold.bytes(&gx.to_le_bytes());
         fold.bytes(&gy.to_le_bytes());
@@ -2417,7 +2433,7 @@ mod tests {
             until_ms: 31_000,
         };
         let mut seen: Vec<u64> = vec![base];
-        for edit in 0_u8..=8 {
+        for edit in 0_u8..=15 {
             let mut arena = build();
             let motor = arena.motors.ensure(ObjId(4));
             match edit {
@@ -2429,7 +2445,20 @@ mod tests {
                 5 => motor.avoid = vec![((3, 4), 1_000)],
                 6 => motor.hold_retry_ms = Some(9_000),
                 7 => motor.searched_from = Some((1, 1)),
-                _ => motor.refused = Some(refusal),
+                8 => motor.refused = Some(refusal),
+                9 => motor.requested_goal = Some((3, 4)),
+                10 => motor.requested_goal = Some((4, 3)),
+                11 => {
+                    motor.requested_goal = Some((3, 4));
+                    motor.outcome = Some(crate::arena::perception::DriveOutcome::Arrived);
+                }
+                12 => {
+                    motor.requested_goal = Some((3, 4));
+                    motor.outcome = Some(crate::arena::perception::DriveOutcome::NoRoute);
+                }
+                13 => motor.fan = crate::arena::motor::GoalFan::between((6, 3), (6, 6)),
+                14 => motor.fan = crate::arena::motor::GoalFan::between((7, 3), (6, 6)),
+                _ => motor.fan = crate::arena::motor::GoalFan::between((6, 3), (7, 6)),
             }
             let hash = crate::arena::hash::state_hash(&arena);
             assert!(
@@ -3140,14 +3169,27 @@ mod tests {
             FrameNotice::Miss {
                 contact: None,
                 reason: s("deflected"),
+                launch_cell: None,
             },
             FrameNotice::Miss {
                 contact: None,
                 reason: s("wide"),
+                launch_cell: None,
             },
             FrameNotice::Miss {
                 contact: None,
                 reason: s("deflected"),
+                launch_cell: None,
+            },
+            FrameNotice::Miss {
+                contact: None,
+                reason: s("deflected"),
+                launch_cell: Some((1, 2)),
+            },
+            FrameNotice::Miss {
+                contact: None,
+                reason: s("deflected"),
+                launch_cell: Some((2, 1)),
             },
             FrameNotice::Kill { contact: None },
             FrameNotice::Hit {

@@ -21,7 +21,7 @@
 //!
 //! The per-think facts and the doctrine's constants a stock mind reads are
 //! **zero-argument native functions** — `lands_ms()`, `t_ms()`,
-//! `decide_ms()`, `cell_cm()`, `leash_cells()`, `station_cells()`,
+//! `decide_ms()`, `repath_ms()`, `cell_cm()`, `leash_cells()`, `station_cells()`,
 //! `screen_half_arc_mdeg()`, `stand_ticks()`, `exposure_front()`,
 //! `exposure_flank()`, `exposure_rear()`, `arrive_cells()`, `slots()` (since
 //! 17b cut M3.1 the think's own row's, `ThinkJob::profile`), `blocked()`,
@@ -97,6 +97,8 @@ pub struct ThinkContext {
     /// The doctrine's think cadence, ms (`decide_ms()`): the stand's dwell is
     /// `stand_ticks() × decide_ms()`.
     pub decide_ms: u32,
+    /// The motor's frozen minimum re-plan interval, used by Hold retry.
+    pub repath_ms: u32,
     /// The draws taken so far: the next `rand`'s `n`.
     pub draws: u32,
     /// The `line_to` traces asked for so far.
@@ -128,7 +130,7 @@ impl ThinkContext {
     /// `decide_ms`: the job's view, map, seed, hull, sequence and clocks;
     /// nothing drawn, traced, pushed or refused.
     #[must_use]
-    pub fn of(job: &ThinkJob<'_>, decide_ms: u32) -> ThinkContext {
+    pub fn of(job: &ThinkJob<'_>, decide_ms: u32, repath_ms: u32) -> ThinkContext {
         ThinkContext {
             view: Arc::clone(job.view),
             map: Arc::clone(job.map),
@@ -138,6 +140,7 @@ impl ThinkContext {
             t_ms: job.t_ms,
             lands_ms: job.lands_ms,
             decide_ms,
+            repath_ms,
             draws: 0,
             line_to_calls: 0,
             line_to_max: job.profile.line_to,
@@ -230,6 +233,9 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     function!(api, "decide_ms", || {
         read(|ctx| INT::from(ctx.decide_ms))
     });
+    function!(api, "repath_ms", || {
+        read(|ctx| INT::from(ctx.repath_ms))
+    });
     function!(api, "cell_cm", || {
         read(|ctx| INT::from(ctx.map.terrain.cell_cm()))
     });
@@ -278,7 +284,7 @@ mod tests {
     fn the_context_functions_answer_the_context_inside_a_helper() {
         let source = "
             fn deep() {
-                [lands_ms(), t_ms(), decide_ms(), cell_cm(), leash_cells(), station_cells(),
+                [lands_ms(), t_ms(), decide_ms(), repath_ms(), cell_cm(), leash_cells(), station_cells(),
                  screen_half_arc_mdeg(), stand_ticks(), exposure_front(), exposure_flank(),
                  exposure_rear(), arrive_cells(), slots()]
             }
@@ -296,6 +302,7 @@ mod tests {
             5_100,
             5_000,
             1_000,
+            4_000,
             1_000,
             i64::from(SUPPORT_LEASH_CELLS),
             i64::from(SUPPORT_STATION_CELLS),

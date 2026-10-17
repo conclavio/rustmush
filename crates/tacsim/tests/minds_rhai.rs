@@ -811,7 +811,7 @@ enum Store {
 /// holds INTs, bools, words, INT arrays and `()` only).
 fn store(ty: &str, getter: &str) -> Store {
     match (ty, getter) {
-        ("View", "receiver" | "heat" | "order")
+        ("View", "receiver" | "heat" | "order" | "objective" | "motor")
         | ("Contact", "condition")
         | ("Weapon", "armed") => Store::Handle,
         ("View", "sections" | "weapons" | "notices" | "contacts" | "rules")
@@ -990,6 +990,8 @@ fn expected(
         ("View", "receiver") => handle_mem(key("receiver"), "Receiver"),
         ("View", "heat") => handle_mem(key("heat"), "Heat"),
         ("View", "order") => handle_mem(key("order"), "Order"),
+        ("View", "objective") => handle_mem(key("objective"), "Objective"),
+        ("View", "motor") => handle_mem(key("motor"), "Motor"),
         ("View", "sections" | "weapons" | "contacts" | "rules") => len_mem(key(getter)),
         ("Rule", "slot") => json_mem(key("slot")),
         ("Rule", "channel") => MemValue::Str(
@@ -1369,6 +1371,8 @@ fn parity_at(moment: &Moment, unit: ObjId) -> Exercised {
         ("Heat", "v.heat", "heat"),
         ("Receiver", "v.receiver", "receiver"),
         ("Order", "v.order", "order"),
+        ("Objective", "v.objective", "objective"),
+        ("Motor", "v.motor", "motor"),
     ] {
         if let Some(obj) = kf.get(key).filter(|obj| !obj.is_null()) {
             handles.push(Handle {
@@ -1517,7 +1521,7 @@ fn think(v, c) {
 /// `max_range_band` and a deadline — an `Engage` on the hostile live, the same
 /// with its deadline passed, and an `Advance`, a `Screen` and a `Support` of
 /// the wingman. M5rules adds authored Fire/Hold/Lock and all predicate shapes.
-/// Every one of `PARITY`'s 139 rows is exercised, and every row
+/// Every one of `PARITY`'s 149 rows is exercised, and every row
 /// is compared at least once on a value the keyframe printed (not `()`, not
 /// a null handle, not a null key read as its default).
 #[test]
@@ -1606,6 +1610,9 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
         expires_ms: now + 20_000,
     };
     let stage = |arena: &mut Arena, order: FrameOrder| {
+        let launch_cell = arena
+            .unit(RED)
+            .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose));
         if let Some(state) = arena.unit_mut(RED) {
             state.jammer = Some(Jammer {
                 radius_cm: 10_000,
@@ -1624,6 +1631,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
                 state.push_notice(notice.clone());
             }
             state.push_notice(FrameNotice::Miss {
+                launch_cell,
                 contact: Some(Named {
                     id: blue,
                     designator,
@@ -1770,11 +1778,38 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
         ));
     }
 
+    // These facts come through the real arena projection in a public Hold
+    // scenario. Hidden capture ownership/time are deliberately populated too:
+    // the parity read can compare only the published objective geometry.
+    let mut holding = live.clone();
+    holding.mode = tacsim::arena::state::MatchMode::Hold;
+    holding.hold = Some(tacsim::arena::state::HoldState {
+        spot: (6, 3),
+        letter: Some('A'),
+        radius_cells: 2,
+        hold_ms: 60_000,
+        held_by: Some((Team::Red, now)),
+    });
+    for outcome in [
+        None,
+        Some(tacsim::arena::perception::DriveOutcome::Arrived),
+        Some(tacsim::arena::perception::DriveOutcome::NoRoute),
+    ] {
+        let motor = holding.motors.ensure(RED);
+        motor.requested_goal = Some((6, 3));
+        motor.outcome = outcome;
+        motor.goal = outcome.is_none().then_some((6, 3));
+        exercised.extend(parity_at(
+            &moment(&holding, rig.wall.unwrap_or(0), RED),
+            RED,
+        ));
+    }
+
     let rows: BTreeSet<(String, String)> = PARITY
         .iter()
         .map(|(ty, getter, _)| ((*ty).to_owned(), (*getter).to_owned()))
         .collect();
-    assert_eq!(PARITY.len(), 140);
+    assert_eq!(PARITY.len(), 149);
     assert_eq!(
         exercised.rows,
         rows,
@@ -3430,34 +3465,36 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// the former fire-only fold, and API 2 changes the Standard source and seal
 /// identities. Blessed on Windows; all four stopping times and the float probe
 /// bitmask remain unchanged. The cross-platform CI lane checks these same pins.
+/// M5r: persistent arrival and private formation continuity alter paths.
+/// Captured on Windows; the same literal corpus must pass Linux before acceptance.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
-        2_350,
-        172_250,
-        18_229_728_250_265_076_985,
-        "3e44eb6bfb25c784e5863581757e9f34c9b111fc9c5a9976021891806c932658",
-        "dd42ef8e1559a43b10a16c70895bf417d7923376b7c2d1243b14f600fa7b324a",
+        2350,
+        168250,
+        14440128034688845893,
+        "a4f7a1ad8d9dd2025635f3ec616538873fcefc9f9f20c92aa25f3e87d7c468a6",
+        "86be1fd53cf611b1d515c0885dfaf2f199f8af881f28f58ba1321985b2094476",
     ),
     (
-        2_351,
-        193_500,
-        17_859_357_327_410_629_081,
-        "ab0688f75faa1b1cfeff3dd00abc867f8936943b336ce9d32bb99d65cbe2980b",
-        "54c0235b899d26388be08df4b125eed3740c3ca14eb643fb2bc7d64991809e16",
+        2351,
+        184500,
+        5130159094666486969,
+        "f9788fbf1954f79fc14b3d276694810f69fdd5121d6ff7c41ea7a86543634f6c",
+        "eb9cbcf54986863edfab08b024fa18fe84b9d9e550113df5c84be748c73545d1",
     ),
     (
-        2_352,
-        166_500,
-        4_520_753_297_973_087_154,
-        "5ec4d0582a31904300b619768c597071124301ad6ac42e9bbc447fcba0afb378",
-        "6f204069511dd35ea350b206ca4219c3b8b2fb9c87cecebeb47a20302924aa73",
+        2352,
+        166500,
+        16233255927734374331,
+        "f4145a2dc590cfc3253f526c7ecc23d89c8cae03b244491408fd129dae7f90d4",
+        "5ae8ba07373287c75b4d5ca52ede1390632bdf329b405dcd051d671d6016898a",
     ),
     (
-        2_350,
-        900_000,
-        15_175_914_709_589_809_411,
-        "6b1e49674422e6c2a6d71d436d10917868311645b800f613566292f90bf29770",
-        "b924e54307fb49aae8db079af61e276698db373a5d94f57adee2e9d31acce063",
+        2350,
+        900000,
+        15830171828511126067,
+        "4898d9e28bda302ebe5f4311654d62f7fbbfb2aec4e8cd8fd17e99b11f48ad6c",
+        "0c5b20a3362c1069b854387288f8aaa8d1e6fed0f845a7036fb57d3d951e1a8c",
     ),
 ];
 

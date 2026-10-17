@@ -153,17 +153,17 @@ pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;
 
 /// **The stock content's version** (doc 17 §13): the `stock=` part of
-/// [`MIND_ABI`]; 17b cut M2.5's `standard.rhai` is version 1.
-pub const STOCK_VERSION: u32 = 1;
+/// [`MIND_ABI`]; M5r's restored Hold/motor/origin behavior is version 2.
+pub const STOCK_VERSION: u32 = 2;
 
 /// **The ABI a compiled mind is cached and sealed under** (doc 17 §7, §13;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] — `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=2;stock=1";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=3;stock=2";
 
 /// **The stock class's op ceiling per think** (doc 17 §9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -382,6 +382,16 @@ pub(crate) mod fixture {
             },
             team: Team::Red,
             cell: Some((1, 4)),
+            mode: crate::arena::state::MatchMode::Hold,
+            objective: Some(crate::arena::state::HoldObjective {
+                spot: (6, 4),
+                letter: Some('A'),
+                radius_cells: 2,
+            }),
+            motor: Some(crate::arena::step::FrameMotor {
+                requested_goal: (6, 4),
+                outcome: Some(DriveOutcome::Arrived),
+            }),
             x_cm: 1_500,
             y_cm: 4_500,
             z_cm: 0,
@@ -488,6 +498,7 @@ pub(crate) mod fixture {
             t_ms: 5_000,
             notices: vec![
                 FrameNotice::Miss {
+                    launch_cell: Some((1, 4)),
                     contact: Some(hostile),
                     reason: SmolStr::new("blocked"),
                 },
@@ -686,6 +697,7 @@ pub(crate) mod fixture {
             t_ms: 5_000,
             lands_ms: 5_100,
             decide_ms: 1_000,
+            repath_ms: 4_000,
             draws: 0,
             line_to_calls: 0,
             line_to_max: super::STOCK_LINE_TO_PER_THINK,
@@ -807,7 +819,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=2;stock=1");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=3;stock=2");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -921,8 +933,10 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 254] = [
+    const PINNED: [&str; 269] = [
         "type View",
+        "type Objective",
+        "type Motor",
         "type Contact",
         "type Weapon",
         "type Section",
@@ -939,6 +953,14 @@ mod tests {
         "View.callsign",
         "View.team",
         "View.cell",
+        "View.mode",
+        "View.objective",
+        "View.motor",
+        "Objective.cell",
+        "Objective.letter",
+        "Objective.radius_cells",
+        "Motor.goal",
+        "Motor.outcome",
         "View.x_cm",
         "View.y_cm",
         "View.z_cm",
@@ -1071,6 +1093,7 @@ mod tests {
         "Notice.friendly",
         "Notice.spent",
         "Notice.reason",
+        "Notice.launch_cell",
         "Notice.outcome",
         "Notice.slot",
         "Notice.percent",
@@ -1123,6 +1146,9 @@ mod tests {
         "far_entry_cell",
         "stand_off_cell",
         "patrol_step",
+        "hold_arrived",
+        "hold_contains",
+        "hold_advance_arrived",
         "fall_back_to_waypoint",
         "sin_m",
         "cos_m",
@@ -1134,6 +1160,7 @@ mod tests {
         "lands_ms",
         "t_ms",
         "decide_ms",
+        "repath_ms",
         "cell_cm",
         "leash_cells",
         "station_cells",
@@ -1179,11 +1206,19 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 220] = [
+    const CALLS: [(&str, &str); 233] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.team", "v.team"),
         ("View.cell", "v.cell"),
+        ("View.mode", "v.mode"),
+        ("View.objective", "v.objective"),
+        ("View.motor", "v.motor"),
+        ("Objective.cell", "v.objective.cell"),
+        ("Objective.letter", "v.objective.letter"),
+        ("Objective.radius_cells", "v.objective.radius_cells"),
+        ("Motor.goal", "v.motor.goal"),
+        ("Motor.outcome", "v.motor.outcome"),
         ("View.x_cm", "v.x_cm"),
         ("View.y_cm", "v.y_cm"),
         ("View.z_cm", "v.z_cm"),
@@ -1319,6 +1354,7 @@ mod tests {
         ("Notice.friendly", "v.notices[0].friendly"),
         ("Notice.spent", "v.notices[0].spent"),
         ("Notice.reason", "v.notices[0].reason"),
+        ("Notice.launch_cell", "v.notices[0].launch_cell"),
         ("Notice.outcome", "v.notices[0].outcome"),
         ("Notice.slot", "v.notices[0].slot"),
         ("Notice.percent", "v.notices[0].percent"),
@@ -1380,6 +1416,9 @@ mod tests {
         ("far_entry_cell", "far_entry_cell(v)"),
         ("stand_off_cell", "stand_off_cell(v, v.lock, 500)"),
         ("patrol_step", "patrol_step(v, false, (), (), ())"),
+        ("hold_arrived", "hold_arrived(v)"),
+        ("hold_contains", "hold_contains(v, [6, 4])"),
+        ("hold_advance_arrived", "hold_advance_arrived(v, [6, 4])"),
         (
             "fall_back_to_waypoint",
             "fall_back_to_waypoint(v, [6, 4], (), ())",
@@ -1394,6 +1433,7 @@ mod tests {
         ("lands_ms", "lands_ms()"),
         ("t_ms", "t_ms()"),
         ("decide_ms", "decide_ms()"),
+        ("repath_ms", "repath_ms()"),
         ("cell_cm", "cell_cm()"),
         ("leash_cells", "leash_cells()"),
         ("station_cells", "station_cells()"),

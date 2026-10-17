@@ -1391,6 +1391,12 @@ pub struct MindView {
     pub team: Team,
     /// The cell it stands in (`cell`).
     pub cell: Option<(u16, u16)>,
+    /// Public match mode (`mode`).
+    pub mode: crate::arena::state::MatchMode,
+    /// Public objective geometry (`objective`), never capture state.
+    pub objective: Option<crate::arena::state::HoldObjective>,
+    /// Its own requested drive and retained outcome (`motor`).
+    pub motor: Option<crate::arena::step::FrameMotor>,
     /// Its own pose, centimetres (`x_cm`, `y_cm`, `z_cm`).
     pub x_cm: i64,
     /// North.
@@ -2062,6 +2068,9 @@ impl Arena {
             callsign: frame.callsign,
             team: frame.team,
             cell: frame.cell,
+            mode: frame.mode,
+            objective: frame.objective,
+            motor: frame.motor,
             x_cm: frame.pose.x_cm,
             y_cm: frame.pose.y_cm,
             z_cm: i64::from(frame.pose.z_cm),
@@ -3270,6 +3279,7 @@ mod tests {
             expires_ms: 30_000,
         };
         let miss = |reason: &str| FrameNotice::Miss {
+            launch_cell: None,
             contact: None,
             reason: SmolStr::new(reason),
         };

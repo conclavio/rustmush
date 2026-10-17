@@ -1,8 +1,8 @@
 {
   "name": "Standard Doctrine",
   "role": "combat",
-  "api": 2,
-  "stock": 1,
+  "api": 3,
+  "stock": 2,
   "rated_class": "I",
   "ops_ceiling": 1500
 }

@@ -35,11 +35,9 @@
 //!   `doctrine::arc_between`, `stand_off_want` → `doctrine::stand_off_want`;
 //! * `rand(k)` → `rng::draw` under `DrawLabel::Mind` (D-UM-29).
 //!
-//! **Not registered: `hold_goal` and `hold_arrived`** (17b §1's departure
-//! (1)). No production think carries a Hold objective — `NativeStockMind`
-//! passes `hold: None`, because the view carries no match mode — so a
-//! registered kernel would have no caller and no Gate A oracle; 17b cut M4 or
-//! a ruling adds them with the match mode on the view.
+//! `hold_arrived`, `hold_contains`, and `hold_advance_arrived` read public
+//! objective geometry and the own hull only, using the same pure native
+//! helpers. Each charges `FEE_READ`; no capture state is exposed.
 //!
 //! A kernel's required INT arguments are typed INT; a call that no registered
 //! signature matches (a FLOAT weight) is rhai's own error and rhai's own `type`
@@ -460,6 +458,37 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     function!(api, "far_entry_cell", far_entry_cell);
     function!(api, "stand_off_cell", stand_off_cell);
     function!(api, "patrol_step", patrol_step);
+    function!(api, "hold_arrived", |v: &mut View| -> bool {
+        charge(FEE_READ);
+        v.0.objective
+            .as_ref()
+            .is_some_and(|objective| motor::hold_arrived(objective, v.0.immobile, v.0.cell))
+    });
+    function!(api, "hold_contains", |v: &mut View,
+                                     at: Dynamic|
+     -> Result<
+        bool,
+        Box<EvalAltResult>,
+    > {
+        let at = opt_cell_arg(&at, "hold_contains takes a cell or ()")?;
+        charge(FEE_READ);
+        Ok(v.0
+            .objective
+            .as_ref()
+            .is_some_and(|objective| at.is_some_and(|cell| objective.square_contains(cell))))
+    });
+    function!(api, "hold_advance_arrived", |v: &mut View,
+                                            to: Dynamic|
+     -> Result<
+        bool,
+        Box<EvalAltResult>,
+    > {
+        let to = cell_arg(&to, "hold_advance_arrived takes a cell")?;
+        charge(FEE_READ);
+        Ok(v.0.objective.as_ref().is_some_and(|objective| {
+            stock_mind::advance_reached_the_hold(objective, to, v.0.cell, v.0.motor.as_ref())
+        }))
+    });
     function!(api, "fall_back_to_waypoint", fall_back_to_waypoint);
 
     // The integer helpers, free (doc 17 §7). `sin_m`/`cos_m` answer
@@ -514,6 +543,9 @@ mod tests {
             ),
             ("health_permille(v)", FEE_HEALTH),
             ("is_dry(v)", FEE_READ),
+            ("hold_arrived(v)", FEE_READ),
+            ("hold_contains(v, [6, 4])", FEE_READ),
+            ("hold_advance_arrived(v, [6, 4])", FEE_READ),
             ("holds_a_hostile(v)", FEE_READ + FEE_HOLDS_ROW * 3),
             ("would_overheat(v, \"cannon\")", FEE_READ),
             ("fight_limit_cm(v)", FEE_READ),
@@ -580,7 +612,7 @@ mod tests {
             let a = sin_m(90000); let b = cos_m(-90000); let d = bearing_to(v, [4, 4]);
             let e = range_to(v, [4, 4]); let f = arc(350000, 10000);
             let g = stand_off_want(4000, 1000, 300); let h = v.unit; let i = c.stance;
-            let j = t_ms(); let k = abs(-1); let l = clamp(5, 0, 3); let m = isqrt(17);
+            let j = t_ms(); let r = repath_ms(); let k = abs(-1); let l = clamp(5, 0, 3); let m = isqrt(17);
         }";
         assert_eq!(think(free).result.expect("clean").fee, FEE_THINK);
 

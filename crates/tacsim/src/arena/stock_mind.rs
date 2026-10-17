@@ -30,12 +30,9 @@
 //!   between thinks;
 //! * **`Goal(Hold)`** where `decide` stopped the hull (`speed 0`): the motor
 //!   lets its goal go and the hull stops (the memory's `goal` is null);
-//! * **arrival** is the hull's own cell within [`ARRIVE_CELLS`] of the goal,
-//!   **or** a `drive_arrived` notice since the last think for the memory's
-//!   goal: the motor's fan (the M1a plan's departure (d)) may have landed the
-//!   hull on another square than the one named, and the mind reads the
-//!   motor's word for it;
-//! * a **`drive_no_route`** notice for the memory's goal performs the
+//! * **arrival** is the motor's persistent completion for the requested
+//!   goal, even when formation assigned a different physical destination;
+//! * a **NoRoute outcome** matching the memory's current goal performs the
 //!   reflex's `unreachable` edge in its order — the `Advance` and `Support`
 //!   ends, the search's and the hunt's give-ups, the Hold retry — and then the
 //!   waypoint fallback ([`fallback_waypoint`]) as the next goal, one think
@@ -85,18 +82,11 @@
 //! late (`fallback`). `crates/tacsim/tests/twin.rs` counts every one of them
 //! against the reflex's own readers.
 //!
-//! Two residuals, recorded for 17b cut M4: no cost row, so every picker is
-//! asked for [`CostRow::Tracked`] (the twin lane fields stock line tanks
-//! only); and no match mode, so a think does not know a Hold match from a
-//! skirmish and the Hold arms below run only for a caller that hands them
-//! the objective — this module's own tests do, and no production think can
-//! until the mode is on the view (the owner carried it to the residues cut
-//! after 17b's M5: doc 17 §24, STOP A; re-pointed by 17b cut M5.7). A third,
-//! the view carrying no authored speed, is closed since 17b cut M4.6b (the
-//! owner's STOP B ruling, 2026-10-09): the view's
-//! `immobile` is motion disabled, or `cannot_close` once the power is
-//! `Online` (`Arena::mind_view`) — so the range's target starts up, then
-//! reads the `Disabled` edge and parks.
+//! The cost-row residual remains: every picker asks for [`CostRow::Tracked`].
+//! M5r supplies public Hold geometry and the unit's current motor result to
+//! production thinks. Match ownership, capture progress and the private fan
+//! destination remain outside the view. The accepted mind-side `order_end`
+//! behavior remains: an ended order is ignored by its expiry identity.
 //!
 //! # No draw, no clock
 //!
@@ -120,12 +110,12 @@ use crate::arena::mind::{
     encode_memory,
 };
 use crate::arena::motor::{
-    ARRIVE_CELLS, Walk, entry_cell, fallback_waypoint, far_entry_cell, hold_arrived, patrol_step,
-    stand_off_cell,
+    Walk, entry_cell, fallback_waypoint, far_entry_cell, hold_arrived, patrol_step, stand_off_cell,
 };
 use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
 use crate::arena::state::{
-    ArenaDefinition, Classification, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldState, Power,
+    ArenaDefinition, Classification, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldObjective,
+    Power,
 };
 use crate::arena::weapons::{
     FrameArming, FrameWeapon, fight_inner_cm_of, fight_limit_cm_of, loaded_weapon_of,
@@ -137,7 +127,7 @@ use crate::deliberation::order::RangeBand;
 // The memory (D-UM-30's shape)
 // ---------------------------------------------------------------------------
 
-/// **The fourteen keys of the stock mind's memory** (17b cut M1a.6), in the
+/// **The fifteen keys of the stock mind's memory** (17b cut M1a.6), in the
 /// order [`StockMemory`]'s fields are declared — and nothing else: a test
 /// pins the list.
 pub const STOCK_MEMORY_KEY_NAMES: [&str; 15] = [
@@ -683,11 +673,6 @@ pub(crate) fn contact(view: &MindView, id: ContactId) -> Option<&ViewContact> {
     view.contacts.iter().find(|row| row.id == id)
 }
 
-/// Whether `a` is within [`ARRIVE_CELLS`] of `b` (Chebyshev).
-fn near(a: (u16, u16), b: (u16, u16)) -> bool {
-    a.0.abs_diff(b.0).max(a.1.abs_diff(b.1)) <= ARRIVE_CELLS
-}
-
 /// The contact an order points the hull at: an `Engage`'s re-keyed hint. A
 /// `Support`'s charge designation is not on the view (the divergence
 /// `support`), so a supporter prefers nothing.
@@ -709,10 +694,21 @@ fn obeyed<'v>(view: &'v MindView, mem: &StockMemory) -> Option<&'v FrameOrder> {
 
 /// **Whether an `Advance { to }` has reached the Hold square** (the reflex's
 /// `advance_reached_the_hold`): `to` inside the square, and the hull inside
-/// it too or within [`ARRIVE_CELLS`] of `to`.
-fn advance_reached_the_hold(hold: &HoldState, to: (u16, u16), here: Option<(u16, u16)>) -> bool {
+/// it too or the motor has completed that requested goal. An outside hull
+/// merely near the edge has not completed a possibly fanned destination.
+pub(crate) fn advance_reached_the_hold(
+    hold: &HoldObjective,
+    to: (u16, u16),
+    here: Option<(u16, u16)>,
+    motor: Option<&crate::arena::step::FrameMotor>,
+) -> bool {
     hold.square_contains(to)
-        && here.is_some_and(|cell| hold.square_contains(cell) || near(cell, to))
+        && here.is_some_and(|cell| {
+            hold.square_contains(cell)
+                || motor.is_some_and(|motor| {
+                    motor.requested_goal == to && motor.outcome == Some(DriveOutcome::Arrived)
+                })
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -749,8 +745,8 @@ impl Default for NativeStockMind {
 
 impl MindRunner for NativeStockMind {
     /// One think: the memory decoded, `decide` ported, the memory encoded.
-    /// The match mode is not on the view, so no Hold objective is handed in
-    /// (see the module head's residuals). **17b cut M1b.2**: `job.card` is
+    /// The public Hold objective comes from the view. **17b cut M1b.2**:
+    /// `job.card` is
     /// read for the fire discipline ([`arming_for`]); **17b cut M1b.5**: and
     /// for every mapped term, through the overlay (`decide`'s head).
     ///
@@ -764,7 +760,7 @@ impl MindRunner for NativeStockMind {
             job.view,
             &mut memory,
             job.map,
-            None,
+            job.view.objective.as_ref(),
             job.t_ms,
             job.lands_ms,
             job.card,
@@ -806,7 +802,7 @@ struct Plan {
     slots: usize,
 }
 
-/// One think's reading of the motor's two notices.
+/// One think's reading of the motor's retained, goal-keyed completion.
 #[derive(Clone, Copy, Debug)]
 struct Drive {
     /// The goal the motor said it reached, or `None`.
@@ -814,18 +810,17 @@ struct Drive {
 }
 
 impl Drive {
-    /// Arrival at `cell`: the hull's own cell within [`ARRIVE_CELLS`], or the
-    /// motor's word for that goal.
-    fn arrived(self, here: Option<(u16, u16)>, cell: (u16, u16)) -> bool {
-        here.is_some_and(|here| near(here, cell)) || self.reached == Some(cell)
+    /// Arrival at the requested cell is the motor's retained completion,
+    /// including when formation assigned a different physical destination.
+    fn arrived(self, cell: (u16, u16)) -> bool {
+        self.reached == Some(cell)
     }
 }
 
 impl NativeStockMind {
     /// **`decide`, re-expressed** (see the module head): walk the memory one
     /// step over `view` and answer the intents, in emission order. `hold` is
-    /// the match's Hold objective, which a think is never handed (the view
-    /// does not carry the mode); `t_ms` is the think's lattice millisecond,
+    /// the public Hold geometry from the view; `t_ms` is the think's lattice millisecond,
     /// the clock every memory stamp is written on, as the reflex writes its
     /// tick's; `lands_ms` is the think's landing millisecond
     /// ([`ThinkJob::lands_ms`]), the one its shot is resolved at; `card` is
@@ -850,7 +845,7 @@ impl NativeStockMind {
         view: &MindView,
         mem: &mut StockMemory,
         def: &ArenaDefinition,
-        hold: Option<&HoldState>,
+        hold: Option<&HoldObjective>,
         t_ms: i64,
         lands_ms: i64,
         card: &StockCard,
@@ -870,7 +865,7 @@ impl NativeStockMind {
         view: &MindView,
         mem: &mut StockMemory,
         def: &ArenaDefinition,
-        hold: Option<&HoldState>,
+        hold: Option<&HoldObjective>,
         t_ms: i64,
         lands_ms: i64,
         card: &StockCard,
@@ -892,27 +887,27 @@ impl NativeStockMind {
         // buffer (D-UM-8): a `blocked` or `cover` miss of its own round, and
         // the motor's `drive_arrived` / `drive_no_route` for the goal it
         // handed over.
-        let mut arrived_word = false;
-        let mut no_route = false;
+        let drive = Drive {
+            reached: view.motor.as_ref().and_then(|motor| {
+                (motor.outcome == Some(DriveOutcome::Arrived)).then_some(motor.requested_goal)
+            }),
+        };
+        let no_route = view.motor.as_ref().is_some_and(|motor| {
+            motor.outcome == Some(DriveOutcome::NoRoute) && Some(motor.requested_goal) == mem.goal
+        });
         for notice in &view.notices {
-            match notice {
-                FrameNotice::Drive {
-                    outcome: DriveOutcome::Arrived,
-                } => arrived_word = true,
-                FrameNotice::Drive {
-                    outcome: DriveOutcome::NoRoute,
-                } => no_route = true,
-                FrameNotice::Miss { reason, .. }
-                    if reason.as_str() == BLOCKED || reason.as_str() == COVER =>
-                {
-                    mem.no_line = true;
-                }
-                _ => {}
+            if let FrameNotice::Miss {
+                reason,
+                launch_cell,
+                ..
+            } = notice
+                && launch_cell.is_some()
+                && *launch_cell == view.cell
+                && (reason.as_str() == BLOCKED || reason.as_str() == COVER)
+            {
+                mem.no_line = true;
             }
         }
-        let drive = Drive {
-            reached: if arrived_word { mem.goal } else { None },
-        };
         // What the motor holds now, as far as the mind knows: the goal it was
         // handed — which it keeps past an arrival, as the reflex's row does —
         // and nothing once it said no route reached it.
@@ -1025,7 +1020,9 @@ impl NativeStockMind {
             Some(MindObjective::Advance { .. }) if view.immobile => true,
             // 16b cut O.1: an `Advance` into the Hold square, arrived.
             Some(MindObjective::Advance { to })
-                if hold.is_some_and(|hold| advance_reached_the_hold(hold, to, here)) =>
+                if hold.is_some_and(|hold| {
+                    advance_reached_the_hold(hold, to, here, view.motor.as_ref())
+                }) =>
             {
                 true
             }
@@ -1325,7 +1322,7 @@ impl NativeStockMind {
                                 } else {
                                     let station = stand_off_of(def, view, plot, station_cm);
                                     let at_station =
-                                        station.is_some_and(|cell| drive.arrived(here, cell));
+                                        station.is_some_and(|cell| drive.arrived(cell));
                                     let next = if at_station {
                                         plot.cell.or(station)
                                     } else {
@@ -1341,7 +1338,7 @@ impl NativeStockMind {
                         // The search, then the Hold spot or the hunt, then the
                         // waypoint walk (16b cuts E.4, O.1).
                         _ => {
-                            if !self.search_goal(t_ms, mem, &mut goal, here, drive) {
+                            if !self.search_goal(t_ms, mem, &mut goal, drive) {
                                 if let Some(hold) = hold {
                                     if !hold_goal(view, hold, t_ms, mem, &mut goal, here, &mut plan)
                                     {
@@ -1439,7 +1436,7 @@ impl NativeStockMind {
                     }
                     let arrived = view.immobile
                         || match (here, goal) {
-                            (Some(_), Some(cell)) => drive.arrived(here, cell),
+                            (Some(_), Some(cell)) => drive.arrived(cell),
                             (_, None) => true,
                             _ => false,
                         };
@@ -1551,7 +1548,6 @@ impl NativeStockMind {
         t_ms: i64,
         mem: &mut StockMemory,
         goal: &mut Option<(u16, u16)>,
-        here: Option<(u16, u16)>,
         drive: Drive,
     ) -> bool {
         let Some((cell, at_ms)) = mem.last_plot else {
@@ -1561,7 +1557,7 @@ impl NativeStockMind {
             mem.last_plot = None;
             return false;
         }
-        if drive.arrived(here, cell) {
+        if drive.arrived(cell) {
             mem.last_plot = None;
             return false;
         }
@@ -1592,7 +1588,7 @@ impl NativeStockMind {
             return false;
         }
         if let Some(cell) = mem.hunt {
-            if drive.arrived(here, cell) {
+            if drive.arrived(cell) {
                 // It went and looked: the walk resumes from the nearest node.
                 mem.hunt = None;
                 mem.unheld_since_ms = Some(t_ms);
@@ -1697,7 +1693,7 @@ impl NativeStockMind {
 #[allow(clippy::too_many_arguments)]
 fn hold_goal(
     view: &MindView,
-    hold: &HoldState,
+    hold: &HoldObjective,
     t_ms: i64,
     mem: &mut StockMemory,
     goal: &mut Option<(u16, u16)>,
@@ -2093,11 +2089,11 @@ mod tests {
         assert!(intents.len() <= MIND_INTENTS_MAX);
     }
 
-    /// **`StockMemory` is fourteen keys and round-trips** (17b cut M1a.6;
+    /// **`StockMemory` is fifteen keys and round-trips** (17b cut M1a.6;
     /// D-UM-30): every field set — a target id with its top bit set among
     /// them — writes exactly [`STOCK_MEMORY_KEY_NAMES`], passes
     /// `memory_check`, reads back to itself, and `encode(decode(encode(m)))
-    /// == encode(m)`; the default writes the same fourteen keys, its nulls
+    /// == encode(m)`; the default writes the same fifteen keys, its nulls
     /// included, and an empty memory reads as the default.
     #[test]
     fn m1a6_the_stock_memory_is_fifteen_keys_and_round_trips() {
@@ -2336,22 +2332,23 @@ mod tests {
         assert_eq!(fight.goal, None, "a stand holds no goal");
     }
 
-    /// **The `drive_no_route` port** (departure (i)): a view carrying the
-    /// notice for the memory's goal performs the reflex's `unreachable` edge a
+    /// **The NoRoute port** (departure (i)): a view carrying the
+    /// matching motor result for the memory's goal performs the reflex's `unreachable` edge a
     /// think late — the search's plot and the hunt's cell on that goal given
     /// up (the hunt's clock restarted), an `Advance` to it ended by
     /// `ignore_until_ms` (its `expires_ms`) — and hands the motor the fallback waypoint
     /// ([`fallback_waypoint`]: from (3, 4) the nearest node, west at (1, 4))
     /// as the next `Goal(Cell)`.
     #[test]
-    fn m1a6_a_drive_no_route_notice_performs_the_give_ups_and_the_fallback() {
+    fn m5r_a_matching_no_route_result_performs_the_give_ups_and_the_fallback() {
         let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
         online(&mut arena, RED);
         let failed = (6, 4);
         let mut view = view_of(&arena, RED);
-        view.notices = vec![FrameNotice::Drive {
-            outcome: DriveOutcome::NoRoute,
-        }];
+        view.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: failed,
+            outcome: Some(DriveOutcome::NoRoute),
+        });
         let start = StockMemory {
             state: MachineState::Patrol,
             goal: Some(failed),
@@ -2385,7 +2382,7 @@ mod tests {
         assert_eq!((memory.waypoint, memory.from_waypoint), (Some(0), Some(1)));
         assert_eq!(memory.goal, Some((1, 4)));
         assert_eq!(memory.ignore_until_ms, None);
-        // The same notice under an `Advance` to the failed cell ends the order.
+        // The same result under an `Advance` to the failed cell ends the order.
         view.order = Some(FrameOrder {
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Advance { to: failed },
@@ -2400,7 +2397,7 @@ mod tests {
             Some(60_000),
             "the order is over for this hull, by its deadline"
         );
-        // No notice, no give-up: the hull drives on to the goal it holds.
+        // No completion, no give-up: the hull drives on to the goal it holds.
         let mut quiet = StockMemory {
             state: MachineState::Patrol,
             goal: Some((1, 4)),
@@ -2418,9 +2415,9 @@ mod tests {
     /// motor fanned the hull off — the hull nowhere near the named cell — is
     /// over when the motor says it arrived: the hunt is spent, its clock
     /// restarted, the walk forgotten and resumed from the nearest node, which
-    /// is the next goal. Without the notice the hull drives on.
+    /// is the next goal. Without completion the hull drives on.
     #[test]
-    fn m1a6_a_drive_arrived_notice_is_arrival_wherever_the_fan_landed() {
+    fn m5r_motor_completion_is_arrival_wherever_the_fan_landed() {
         let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
         online(&mut arena, RED);
         let named = (50, 40);
@@ -2441,9 +2438,10 @@ mod tests {
             "driving on"
         );
         assert_eq!(on.hunt, Some(named));
-        view.notices = vec![FrameNotice::Drive {
-            outcome: DriveOutcome::Arrived,
-        }];
+        view.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: named,
+            outcome: Some(DriveOutcome::Arrived),
+        });
         let mut arrived = start;
         let intents = think(&arena, &view, &mut arrived, 5_000);
         assert_eq!(arrived.hunt, None);
@@ -2453,6 +2451,68 @@ mod tests {
             intents,
             vec![IntentKind::Goal(MotorGoal::Cell { x: 1, y: 4 })]
         );
+    }
+
+    #[test]
+    fn m5r_nearby_cells_and_stale_drive_notices_do_not_complete_a_new_goal() {
+        let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+        online(&mut arena, RED);
+        let goal = (3, 4);
+        let start = StockMemory {
+            state: MachineState::Patrol,
+            goal: Some(goal),
+            hunt: Some(goal),
+            unheld_since_ms: Some(0),
+            ..StockMemory::default()
+        };
+        let mut view = view_of(&arena, RED);
+        view.notices = vec![
+            FrameNotice::Drive {
+                outcome: DriveOutcome::Arrived,
+            },
+            FrameNotice::Drive {
+                outcome: DriveOutcome::NoRoute,
+            },
+        ];
+        for outcome in [DriveOutcome::Arrived, DriveOutcome::NoRoute] {
+            view.motor = Some(crate::arena::step::FrameMotor {
+                requested_goal: (50, 40),
+                outcome: Some(outcome),
+            });
+            let mut memory = start.clone();
+            let _ = think(&arena, &view, &mut memory, 5_000);
+            assert_eq!(memory.hunt, Some(goal));
+            assert_eq!(memory.goal, Some(goal));
+            assert_eq!(memory.unheld_since_ms, Some(0));
+        }
+    }
+
+    #[test]
+    fn m5r_motor_completion_survives_withdraw_dwell_without_repeated_notices() {
+        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        online(&mut arena, RED);
+        let mut view = view_of(&arena, RED);
+        let home = (1, 4);
+        view.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: home,
+            outcome: Some(DriveOutcome::Arrived),
+        });
+        let mut memory = StockMemory {
+            state: MachineState::Withdraw,
+            goal: Some(home),
+            ordered: false,
+            ..StockMemory::default()
+        };
+        let _ = think(&arena, &view, &mut memory, 1_000);
+        assert_eq!(memory.quiet_since_ms, Some(1_000));
+        assert!(view.notices.is_empty());
+        let rally = i64::from(arena.arena_cfg.reflex.rally_ms);
+        let _ = think(&arena, &view, &mut memory, 1_000 + rally - 1);
+        assert_eq!(memory.quiet_since_ms, Some(1_000));
+        assert_eq!(memory.state, MachineState::Withdraw);
+        let _ = think(&arena, &view, &mut memory, 1_000 + rally);
+        assert_eq!(memory.state, MachineState::Patrol);
+        assert!(memory.rallied);
     }
 
     /// A [`NativeStockMind`] that keeps every answer it gives.
@@ -2564,13 +2624,11 @@ mod tests {
     }
 
     /// The Hold objective on the spot `(30, 20)`, a three-cell square.
-    fn spot() -> HoldState {
-        HoldState {
+    fn spot() -> HoldObjective {
+        HoldObjective {
             spot: (30, 20),
             letter: Some('A'),
             radius_cells: 3,
-            hold_ms: 60_000,
-            held_by: None,
         }
     }
 
@@ -2579,7 +2637,7 @@ mod tests {
         arena: &Arena,
         view: &MindView,
         memory: &mut StockMemory,
-        hold: &HoldState,
+        hold: &HoldObjective,
         t_ms: i64,
     ) -> Vec<IntentKind> {
         NativeStockMind::with(&arena.arena_cfg.reflex).decide(
@@ -2628,9 +2686,10 @@ mod tests {
         assert_eq!(memory.hold_retry_ms, None);
         // No route reaches it: the retry clock, and the fallback waypoint.
         let mut refused = view.clone();
-        refused.notices = vec![FrameNotice::Drive {
-            outcome: DriveOutcome::NoRoute,
-        }];
+        refused.motor = Some(crate::arena::step::FrameMotor {
+            requested_goal: hold.spot,
+            outcome: Some(DriveOutcome::NoRoute),
+        });
         let retry = {
             let cfg = &arena.arena_cfg.reflex;
             2_000 + i64::from(cfg.hunt_after_ms.max(cfg.repath_ms))
@@ -2745,6 +2804,64 @@ mod tests {
         assert!(
             matches!(out.as_slice(), [IntentKind::Goal(MotorGoal::Cell { .. })]) && out != inside,
             "on a skirmish it drives for the stand-off cell: {out:?}"
+        );
+    }
+
+    #[test]
+    fn m5r_an_advance_outside_the_hold_edge_waits_for_its_motor_completion() {
+        use crate::arena::step::FrameMotor;
+
+        let hold = spot();
+        let edge = (27, 20);
+        let mut arena = field(vec![minded(RED, Team::Red, 26_500, 20_500)]);
+        online(&mut arena, RED);
+        let mut view = view_of(&arena, RED);
+        view.order = Some(order_of(MindObjective::Advance { to: edge }));
+        assert!(!hold.square_contains(view.cell.expect("own cell")));
+        for motor in [
+            None,
+            Some(FrameMotor {
+                requested_goal: edge,
+                outcome: None,
+            }),
+            Some(FrameMotor {
+                requested_goal: (26, 20),
+                outcome: Some(DriveOutcome::Arrived),
+            }),
+        ] {
+            view.motor = motor;
+            let mut memory = patrolling(0);
+            let _ = think_holding(&arena, &view, &mut memory, &hold, 1_000);
+            assert_eq!(
+                memory.ignore_until_ms, None,
+                "proximity or stale completion cannot end Advance"
+            );
+            assert_eq!(memory.goal, Some(edge));
+        }
+        view.motor = Some(FrameMotor {
+            requested_goal: edge,
+            outcome: Some(DriveOutcome::Arrived),
+        });
+        let mut memory = patrolling(0);
+        let intents = think_holding(&arena, &view, &mut memory, &hold, 1_000);
+        assert_eq!(memory.ignore_until_ms, Some(60_000));
+        assert_eq!(
+            intents,
+            vec![IntentKind::Goal(MotorGoal::Cell { x: 30, y: 20 })]
+        );
+        let failed = FrameMotor {
+            requested_goal: edge,
+            outcome: Some(DriveOutcome::NoRoute),
+        };
+        assert!(!advance_reached_the_hold(
+            &hold,
+            edge,
+            view.cell,
+            Some(&failed)
+        ));
+        assert!(
+            advance_reached_the_hold(&hold, edge, Some((28, 20)), None),
+            "inside-square handover stays geometric"
         );
     }
 
@@ -2996,6 +3113,7 @@ mod tests {
         view.notices = vec![FrameNotice::Miss {
             contact: None,
             reason: SmolStr::new(BLOCKED),
+            launch_cell: view.cell,
         }];
         let mut blocked = engaged;
         let closed = think(&arena, &view, &mut blocked, 1_000);

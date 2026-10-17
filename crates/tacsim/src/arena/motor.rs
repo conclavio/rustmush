@@ -65,8 +65,8 @@ use crate::arena::path::{
 use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::slope;
 use crate::arena::state::{
-    Arena, ArenaDefinition, ArenaTerrain, Channel, CostRow, DueKind, HoldState, Power, SeenPose,
-    Team, UnitState,
+    Arena, ArenaDefinition, ArenaTerrain, Channel, CostRow, DueKind, HoldObjective, Power,
+    SeenPose, Team, UnitState,
 };
 use crate::config::ReflexConfig;
 
@@ -215,6 +215,18 @@ pub const STEER_LOOKAHEAD_CELLS: usize = 8;
 pub struct MotorRow {
     /// The cell it is making for.
     pub goal: Option<(u16, u16)>,
+    /// The principal's requested cell, before the formation fan. Retained with
+    /// a terminal outcome until another request or disengagement replaces it.
+    pub requested_goal: Option<(u16, u16)>,
+    /// The last request's terminal outcome. `None` while driving; the active
+    /// fanned `goal` is spent when an outcome is recorded.
+    pub outcome: Option<DriveOutcome>,
+    /// The private formation offset assigned in an opposing entry zone. It
+    /// continues through goals within that same zone so a completed hunter
+    /// does not immediately merge back onto another hunter's arrival lane.
+    /// A goal outside the zone, disengagement, ownership change or PLACE
+    /// clears it. Neither the assignment nor its offset is projected to minds.
+    pub fan: Option<GoalFan>,
     /// The route to [`MotorRow::goal`], nearest cell first; consumed as the unit
     /// crosses each one.
     pub route: Vec<(u16, u16)>,
@@ -305,6 +317,31 @@ pub struct MotorRow {
     /// `Fallback::Waypoint` branch no production path takes. Folded into the state hash (item 3b;
     /// beside the reflex row's other clocks in item 3 until 17b cut M4.6).
     pub hold_retry_ms: Option<i64>,
+}
+
+/// A motor's formation assignment, retained after the active goal is spent.
+/// The two cells identify both the offset and the immutable entry zone that
+/// owns it; no other hull or private position is recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalFan {
+    /// The requested cell whose entry zone owns this assignment.
+    pub origin: (u16, u16),
+    /// The physical cell assigned for that request.
+    pub assigned: (u16, u16),
+}
+
+impl GoalFan {
+    /// Keep only actual offsets. A normal goal carries no formation memory.
+    pub(crate) fn between(origin: (u16, u16), assigned: (u16, u16)) -> Option<Self> {
+        (origin != assigned).then_some(Self { origin, assigned })
+    }
+
+    fn shifted(self, cell: (u16, u16)) -> Option<(u16, u16)> {
+        let x = i32::from(cell.0) + i32::from(self.assigned.0) - i32::from(self.origin.0);
+        let y = i32::from(cell.1) + i32::from(self.assigned.1) - i32::from(self.origin.1);
+        Some((u16::try_from(x).ok()?, u16::try_from(y).ok()?))
+    }
 }
 
 /// **A stop the machine remembers** (16b cut AI.1; 16c `B-84`): where it
@@ -466,36 +503,18 @@ impl MotorTable {
         true
     }
 
-    /// **Forget where one machine was going, and not why** (16b cut I.3; 16c
-    /// N10): a staff `@arena/place` moved the unit, so the route it was
-    /// following starts somewhere it no longer stands.
-    ///
-    /// Clears the row's `goal`, `route` and `searched_ms` — the last so the next
-    /// tick searches at once rather than waiting out `repath_ms`, as a stop
-    /// against an occupied cell does ([`Arena::note_blocked`]) — and keeps
-    /// everything that is a decision rather than a path: the state, the standing
-    /// order, `waypoint` and `from_waypoint`, the target and the avoid list. A
-    /// placed reflex machine therefore re-derived its goal from its state and
-    /// its order at its next tick, from where it then stood (until 17b cut
-    /// M4.6; below). A unit with no machine is left alone.
-    ///
-    /// **16b cut AI.1**: and the remembered stop ([`MotorRow::refused`]),
-    /// which was a fact about the cell the unit no longer stands in.
-    ///
-    /// **17b cut M1a.1** moved it here from the reflex memory with the four
-    /// fields it clears, so a placed hull forgets its route whoever is
-    /// steering it; the decision half it kept was the reflex row, untouched.
-    /// **Since 17b cut M4.6** the decision half is a mind's memory, which this
-    /// does not reach and no notice tells: a placed mind keeps its goal and
-    /// stands where staff put it until that goal next changes (the owner's
-    /// STOP F, carried to the residues cut after 17b's M5; doc 17 §24;
-    /// re-pointed by 17b cut M5.7).
+    /// Forget a path invalidated by staff PLACE, preserving the requested
+    /// and active destinations. The next tick searches from the new cell at
+    /// once; a former completion no longer proves arrival there. PLACE first
+    /// reactivates a terminal request, because its active goal was spent.
     pub fn forget_route(&mut self, unit: ObjId) {
         if let Some(row) = self.rows.get_mut(&unit) {
-            row.goal = None;
             row.route.clear();
             row.searched_ms = None;
+            row.searched_from = None;
             row.refused = None;
+            row.outcome = None;
+            row.fan = None;
         }
     }
 
@@ -508,6 +527,9 @@ impl MotorTable {
     pub fn forget_goal(&mut self, unit: ObjId) {
         if let Some(row) = self.rows.get_mut(&unit) {
             row.goal = None;
+            row.requested_goal = None;
+            row.outcome = None;
+            row.fan = None;
             row.route.clear();
             // 16b cut AI.1: a remembered stop belongs to the goal it was making
             // for.
@@ -1953,11 +1975,11 @@ impl Arena {
             &self.definition,
             id.0,
             here,
-            false,
+            row.outcome == Some(DriveOutcome::Arrived),
             Walk {
                 waypoint: row.waypoint,
                 from_waypoint: row.from_waypoint,
-                goal: row.goal,
+                goal: row.requested_goal.or(row.goal),
             },
         );
         row.waypoint = step.walk.waypoint;
@@ -1993,7 +2015,7 @@ impl Arena {
             return false;
         };
         hold_arrived(
-            hold,
+            &hold.objective(),
             self.unit(unit).is_some_and(UnitState::cannot_close),
             here,
         )
@@ -2173,13 +2195,11 @@ pub struct WalkStep {
 
 /// **`Patrol`'s waypoint walk** (16b cut N.1's `patrol_goal`; the motor's
 /// `Arena::patrol_step` since 17b cut M1a.1; lifted here by 17b cut M1a.6):
-/// the node the walk holds, advanced when the hull standing in `here` has
-/// arrived within [`ARRIVE_CELLS`] of it — or when `arrived` says so, which is
-/// the stock mind's reading of a `drive_arrived` notice for a goal the motor
-/// fanned off its node (the M1a plan's departure (d)); the reflex controller
-/// passed `false` until 17b cut M4.6 (as `Arena::patrol_step` still does). The next node is `choices[unit % choices.len()]` over the
-/// node's neighbours other than the one it came from (all of them when that
-/// leaves none), keyed on the hull's own object number (departure (e)).
+/// the node the walk holds, advanced only when `arrived` names completion of
+/// the requested waypoint. Merely passing within the arrival radius does not
+/// advance the walk before the motor has completed its physical destination.
+/// The next node is `choices[unit % choices.len()]` over the neighbours other
+/// than the one it came from (all of them when that leaves none).
 ///
 /// It reads the definition's waypoint graph, the hull's own number and cell
 /// and the walk, and nothing else: no graph authored is a goal of `None` and
@@ -2219,10 +2239,9 @@ pub fn patrol_step(
             node
         }
     };
-    let arrived = graph.node(node).is_some_and(|at| {
-        at.x.abs_diff(x).max(at.y.abs_diff(y)) <= ARRIVE_CELLS
-            || (arrived && step.walk.goal == Some((at.x, at.y)))
-    });
+    let arrived = graph
+        .node(node)
+        .is_some_and(|at| arrived && step.walk.goal == Some((at.x, at.y)));
     if arrived {
         let neighbours = graph.neighbours(node);
         let onward: Vec<u16> = neighbours
@@ -2302,7 +2321,7 @@ pub fn fallback_waypoint(
 /// hull that `cannot_close`, or one whose cell is within `radius_cells − 1` of
 /// the spot (Chebyshev).
 #[must_use]
-pub fn hold_arrived(hold: &HoldState, cannot_close: bool, here: Option<(u16, u16)>) -> bool {
+pub fn hold_arrived(hold: &HoldObjective, cannot_close: bool, here: Option<(u16, u16)>) -> bool {
     cannot_close
         || here.is_some_and(|cell| {
             cell.0
@@ -2514,6 +2533,28 @@ impl Arena {
         }) else {
             return cell;
         };
+        let in_zone = |at: (u16, u16)| {
+            (zone.x0.min(zone.x1)..=zone.x0.max(zone.x1)).contains(&at.0)
+                && (zone.y0.min(zone.y1)..=zone.y0.max(zone.y1)).contains(&at.1)
+        };
+        // Continue an already assigned lane within its original zone. This
+        // survives terminal arrival; otherwise the next patrol waypoint would
+        // put the leading hunter straight back in front of the following one.
+        // Only own assignment and public ground are read. Invalid or out-of-
+        // zone offsets fall back to the ordinary bounded fan below.
+        let cell = self
+            .motors
+            .row(unit)
+            .and_then(|row| row.fan)
+            .filter(|fan| in_zone(fan.origin))
+            .and_then(|fan| fan.shifted(cell))
+            .filter(|at| in_zone(*at))
+            .filter(|at| {
+                self.definition
+                    .terrain
+                    .passable_for(me.cost_row, at.0, at.1)
+            })
+            .unwrap_or(cell);
         // Every goal the rest of the side holds, in unit-id order (the table's
         // own); a goal is a fact about ground, never a pose.
         let taken: Vec<(u16, u16)> = self
@@ -2639,6 +2680,12 @@ impl Arena {
         let Some(goal) = self.motors.row(unit).and_then(|motor| motor.goal) else {
             return MotorOutcome::default();
         };
+        // A completion names the principal's request, never the private fan.
+        // Older direct motor fixtures have only an active goal; adopt it here.
+        let requested = {
+            let motor = self.motors.ensure(unit);
+            *motor.requested_goal.get_or_insert(goal)
+        };
         // A hull that cannot move — an engine killed under a standing goal
         // (`Consequence::DisableMotion` leaves no wreck), or one authored with
         // no speed — reaches no goal, and its pilot cannot let go of one: the
@@ -2648,6 +2695,9 @@ impl Arena {
         // goal it never reaches every `decide_ms` for the rest of the match.
         if cannot_close {
             self.motors.forget_goal(unit);
+            let motor = self.motors.ensure(unit);
+            motor.requested_goal = Some(requested);
+            motor.outcome = Some(DriveOutcome::NoRoute);
             self.stage_notice(
                 unit,
                 FrameNotice::Drive {
@@ -2674,6 +2724,11 @@ impl Arena {
             counters,
             &mut plan,
         );
+        if outcome.arrived {
+            motor.outcome = Some(DriveOutcome::Arrived);
+        } else if outcome.unreachable.is_some() {
+            motor.outcome = Some(DriveOutcome::NoRoute);
+        }
         motors.put(unit, motor);
         self.motors = motors;
         self.apply_motor_plan(unit, &plan, counters);
@@ -3162,6 +3217,49 @@ mod tests {
     use crate::arena::state::{Controller, Team};
     use crate::arena::test_support::{arena_of, pose, tank};
 
+    #[test]
+    fn m5r_patrol_waits_for_the_requested_waypoints_completion() {
+        let def = crate::arena::test_support::definition();
+        let walk = Walk {
+            waypoint: Some(0),
+            from_waypoint: None,
+            goal: Some((1, 4)),
+        };
+        let nearby = patrol_step(&def, 4, Some((1, 4)), false, walk);
+        assert_eq!(nearby.walk.waypoint, Some(0));
+        assert_eq!(nearby.walk.goal, Some((1, 4)));
+        assert!(!nearby.clear_route);
+        let complete = patrol_step(&def, 4, Some((1, 4)), true, walk);
+        assert_eq!(complete.walk.waypoint, Some(1));
+        assert_eq!(complete.walk.from_waypoint, Some(0));
+        assert_eq!(complete.walk.goal, Some((6, 4)));
+        assert!(complete.clear_route);
+    }
+
+    #[test]
+    fn m5r_route_invalidation_keeps_the_principals_destination() {
+        let unit = ObjId(4);
+        let mut table = MotorTable::default();
+        let row = table.ensure(unit);
+        row.goal = Some((6, 5));
+        row.requested_goal = Some((6, 4));
+        row.route = vec![(3, 4), (4, 4)];
+        row.searched_ms = Some(1_000);
+        row.searched_from = Some((2, 4));
+        table.forget_route(unit);
+        let row = table.row(unit).expect("the same motor row");
+        assert_eq!(row.goal, Some((6, 5)));
+        assert_eq!(row.requested_goal, Some((6, 4)));
+        assert!(row.route.is_empty());
+        assert_eq!(row.searched_ms, None);
+        assert_eq!(row.searched_from, None);
+        table.forget_goal(unit);
+        let row = table.row(unit).expect("disengagement keeps the row");
+        assert_eq!(row.goal, None);
+        assert_eq!(row.requested_goal, None);
+        assert_eq!(row.outcome, None);
+    }
+
     /// **The motor names no contact store and no fire line** (17b cut M1a.1;
     /// doc 17 §4's audit): this file's own text, comments included, holds none
     /// of the three readers a hull's driving must never consult — the contact
@@ -3566,9 +3664,9 @@ mod tests {
         }
     }
 
-    /// **16b cut I.3**: a placed machine forgets where it was going and not why
-    /// — the goal, the route and the search stamp go; the state, the standing
-    /// order, the waypoints, the target and the avoid list stay.
+    /// **16b cut I.3, restored by M5r**: PLACE invalidates the path without
+    /// cancelling the principal's destination. The route, search stamp and old
+    /// completion go; active/requested goals, decision, waypoints and avoid stay.
     ///
     /// **17b cut M4.5a**: the machine is a mind. Its decision is its mind row —
     /// the stock memory's `state` (`Approach`) and `target` (its own row's
@@ -3628,6 +3726,9 @@ mod tests {
         {
             let row = arena.motors.ensure(unit);
             row.goal = Some((6, 6));
+            row.requested_goal = Some((6, 6));
+            row.outcome = Some(DriveOutcome::Arrived);
+            row.fan = GoalFan::between((6, 3), (6, 6));
             row.route = vec![(2, 2), (3, 3)];
             row.searched_ms = Some(4_000);
             row.waypoint = Some(1);
@@ -3638,7 +3739,13 @@ mod tests {
         arena.motors.forget_route(unit);
         let motor = arena.motors.row(unit).expect("the motor row");
         let mind = arena.minds.get(&unit).expect("the mind's row");
-        assert_eq!(motor.goal, None);
+        assert_eq!(motor.goal, Some((6, 6)));
+        assert_eq!(motor.requested_goal, Some((6, 6)));
+        assert_eq!(motor.fan, None, "PLACE invalidates the old lane");
+        assert_eq!(
+            motor.outcome, None,
+            "the old position's completion is invalid"
+        );
         assert!(motor.route.is_empty());
         assert_eq!(motor.searched_ms, None, "the next tick searches at once");
         assert_eq!(mind, &mind_before, "the mind's row is untouched");

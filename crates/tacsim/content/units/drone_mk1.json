@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.drone_mk1",
-    "version": 3,
+    "version": 4,
     "kind": "rules_definition",
-    "digest": "8ea3796156bd19baeb9b5c7dd70151f76c2114d8d345726a93c6c841911a9689",
+    "digest": "59a0a26f39a582243de8c88fc6afd61cd5d3ac7ca9ccd336cbfd42b31bf1db50",
     "requires": [
       {
         "id": "tacsim.pack.visual_mk1",
@@ -87,7 +87,7 @@
           { "band": "top", "width_cm": 250, "height_cm": 150 }
         ],
         "sensor_height_cm": 250,
-        "note": "The ground drone of 16b cut AE.3 (16c N15; doc 16 section 2 W2): a small tracked sensor platform with no gun. What it sees its side sees, through the mesh like any teammate's plot, and a laser kills it: 60 on the bow is under one 105 round, and its silhouette is a fifth of a tank's. One section, the body, which destroy_unit ends: no mast section, because no closed consequence kills a sight and this cut adds none, so a drone is killed or it is not. Its eye sits on a 250 cm mast. Tracked at 2,000 cm/s so it goes where a tank goes, quicker. It is class drone, and a side fields at most one. Under the machine it patrols, crosses to the far zone like any machine holding no hostile, and in a Hold match neither drives for the spot nor holds it; a side whose guns are all gone is out of the match though its drone still runs. Version 2 (17b cut M3.1): a doctrine core in the body. Version 3 (17b cut M5.6): this note made true of a Hold match, where no machine drives for the spot unless ordered to advance on it."
+        "note": "The ground drone of 16b cut AE.3 (16c N15; doc 16 section 2 W2): a small tracked sensor platform with no gun. What it sees its side sees, through the mesh like any teammate's plot, and a laser kills it: 60 on the bow is under one 105 round, and its silhouette is a fifth of a tank's. One section, the body, which destroy_unit ends: no mast section, because no closed consequence kills a sight and this cut adds none, so a drone is killed or it is not. Its eye sits on a 250 cm mast. Tracked at 2,000 cm/s so it goes where a tank goes, quicker. It is class drone, and a side fields at most one. Under the machine it patrols, crosses to the far zone like any machine holding no hostile, and in a Hold match drives for the spot while idle but neither holds nor contests it; a side whose guns are all gone is out of the match though its drone still runs. Version 2 (17b cut M3.1): a doctrine core in the body. Version 4 (M5r): public Hold geometry restores the idle drive to the spot; holding and contesting stay disabled."
       }
     }
   }

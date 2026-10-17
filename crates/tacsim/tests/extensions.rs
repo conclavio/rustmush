@@ -10795,9 +10795,11 @@ fn ae2_the_round_is_traced_from_where_it_left() {
 /// "drives to the spot but holds nothing", which no production think does —
 /// it now reads that it neither drives for the spot nor holds it. A note is
 /// no hashed state: nothing in a match reads it. Was `1bfeca3a…` at version 2.
+/// M5r publishes version 4: the idle Hold drive is restored; its note still
+/// says a drone cannot hold or contest the square. No mechanical values change.
 const DIGESTS_DRONE: [(&str, &str); 1] = [(
     "tacsim.pack.drone_mk1",
-    "8ea3796156bd19baeb9b5c7dd70151f76c2114d8d345726a93c6c841911a9689",
+    "59a0a26f39a582243de8c88fc6afd61cd5d3ac7ca9ccd336cbfd42b31bf1db50",
 )];
 
 /// The drone's pack file, by its path under `content/`.
@@ -10842,7 +10844,7 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
         );
         // 17b cut M3.1: version 2, for its core (was 1); 17b cut M5.6:
         // version 3, for its note made true (was 2).
-        assert_eq!(pack.manifest().version(), 3, "{id}'s version");
+        assert_eq!(pack.manifest().version(), 4, "{id}'s version");
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_DRONE.len());
 
@@ -11196,4 +11198,222 @@ fn m3_a_unit_with_two_cores_is_refused() {
         refused.contains("a unit carries at most one core; 2 are declared"),
         "{refused}"
     );
+}
+
+// M5r: restored behavior regressions (historical 3a3c469^).
+#[path = "support/mod.rs"]
+mod m5r_support;
+
+mod m5r {
+    use super::m5r_support as support;
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tacsim::arena::clock::Tempo;
+    use tacsim::arena::doctrine::MachineState;
+    use tacsim::arena::mind::{Memory, MindRunner, MindView, ThinkJob, ThinkResult, encode_memory};
+    use tacsim::arena::stock_mind::StockMemory;
+
+    /// Records the actual production job/answer. The counterfactual removes only
+    /// Miss notices from that same job and cannot affect the live arena's answer.
+    #[derive(Debug)]
+    struct LessonProbe {
+        inner: Arc<dyn MindRunner>,
+        seen: Mutex<Vec<(MindView, ThinkResult, ThinkResult)>>,
+    }
+
+    impl MindRunner for LessonProbe {
+        fn think(&self, job: &ThinkJob<'_>) -> ThinkResult {
+            let answer = self.inner.think(job);
+            let mut without = (**job.view).clone();
+            without
+                .notices
+                .retain(|notice| !matches!(notice, FrameNotice::Miss { .. }));
+            let without = Arc::new(without);
+            let control = self.inner.think(&ThinkJob {
+                view: &without,
+                ..*job
+            });
+            self.seen
+                .lock()
+                .expect("probe")
+                .push(((**job.view).clone(), answer.clone(), control));
+            answer
+        }
+    }
+
+    fn collect(arena: &mut Arena, wall: i64, bytes: &mut Vec<u8>, hashes: &mut Vec<u64>) {
+        let out = arena.step_settled(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+    }
+
+    fn drain(arena: &mut Arena, bytes: &mut Vec<u8>) {
+        arena.ledger.flush();
+        for chunk in arena.ledger.take_chunks() {
+            bytes.extend(chunk.bytes);
+        }
+    }
+
+    /// STOP I restored: a real next think learns a blocked shot only when still
+    /// at that shot's launch cell. A later overlapping shot from another cell
+    /// must not replace the first shot's origin. Three pulse cadences, the twin,
+    /// Rhai alone, and a snapshot with both shots in flight cover the seam.
+    #[test]
+    fn ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i() {
+        let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("fielded content");
+        for moved in [false, true] {
+            let mut baseline = None;
+            for (lane, cadence) in [(1, 5_000), (0, 1_000), (0, 500), (2, 1_000)] {
+                let mut arena = ae2_duel(
+                    &catalog,
+                    content::HEAVY_MK1,
+                    AE2_BEHIND,
+                    AE2_TRACE_MARK,
+                    ae2_ridged(),
+                    tacsim::arena::state::Controller::Mind,
+                );
+                arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+                if lane == 1 {
+                    support::with_twin(&mut arena);
+                }
+                if lane == 2 {
+                    support::with_rhai(&mut arena);
+                }
+                let probe = Arc::new(LessonProbe {
+                    inner: arena.mind_runner.clone(),
+                    seen: Mutex::new(Vec::new()),
+                });
+                arena.mind_runner = probe.clone();
+                let target = arena.unit(RED).expect("shooter").lock;
+                assert!(target.is_some());
+                arena.minds.get_mut(&RED).expect("mind").memory =
+                    encode_memory(&Memory::from(StockMemory {
+                        state: MachineState::Engage,
+                        target,
+                        goal: Some(AE2_BEHIND),
+                        ..StockMemory::default()
+                    }));
+                let first = arena.resolve_fire(RED, "missiles", 0).expect("first shot");
+                ae2_certain(&mut arena, first);
+                arena.unit_mut(RED).expect("shooter").pose = pose(AE2_CREST);
+                let second = arena
+                    .resolve_fire(RED, "cannon", 0)
+                    .expect("overlapping second shot");
+                ae2_certain(&mut arena, second);
+                assert_eq!(
+                    arena.shot(first).expect("first").from_cell,
+                    Some(AE2_BEHIND)
+                );
+                assert_eq!(
+                    arena.shot(second).expect("second").from_cell,
+                    Some(AE2_CREST)
+                );
+                if !moved {
+                    arena.unit_mut(RED).expect("shooter").pose = pose(AE2_BEHIND);
+                }
+                let mut bytes = Vec::new();
+                let mut hashes = Vec::new();
+                collect(&mut arena, 0, &mut bytes, &mut hashes);
+                assert!(
+                    arena.shot(first).is_some() && arena.shot(second).is_some(),
+                    "resume checkpoint precedes both impacts"
+                );
+                drain(&mut arena, &mut bytes);
+                let snapshot = tacsim::arena::Snapshot::encode(&arena).expect("shots encode");
+                let mut resumed = if lane == 1 {
+                    let mut decoded = tacsim::arena::Snapshot::decode(
+                        &snapshot.document,
+                        (*arena.definition).clone(),
+                    )
+                    .expect("shots decode");
+                    decoded.resume_at(0);
+                    decoded.clock.pin_tempo_for_tests(Tempo::Quiet);
+                    Some(decoded)
+                } else {
+                    None
+                };
+                let prefix = bytes.len();
+                let prefix_hashes = hashes.len();
+                while arena.now_ms < 5_000 {
+                    assert!(
+                        arena.ended.is_none(),
+                        "the fixture must remain live until its observation bound"
+                    );
+                    let next = (arena.now_ms + cadence).min(5_000);
+                    collect(&mut arena, next, &mut bytes, &mut hashes);
+                }
+                drain(&mut arena, &mut bytes);
+                let seen = probe.seen.lock().expect("probe");
+                let (view, answer, control) = seen.iter().find(|(view, _, _)| view.notices.iter().any(|notice|
+                matches!(notice, FrameNotice::Miss { reason, launch_cell, .. }
+                    if reason.as_str() == tacsim::arena::damage::BLOCKED && *launch_cell == Some(AE2_BEHIND))))
+                .expect("the actual next think receives the first shot's stored origin");
+                assert_eq!(view.cell, Some(if moved { AE2_CREST } else { AE2_BEHIND }));
+                assert!(answer.fault.is_none() && control.fault.is_none());
+                if moved {
+                    assert_eq!(
+                        answer.intents, control.intents,
+                        "an obsolete line teaches no intent"
+                    );
+                    assert_eq!(
+                        answer.memory, control.memory,
+                        "an obsolete line teaches no memory"
+                    );
+                } else {
+                    assert_ne!(
+                        answer.intents, control.intents,
+                        "the actual stationary think learns the blocked line"
+                    );
+                    let learned =
+                        StockMemory::from(&tacsim::arena::mind::decode_memory(&answer.memory));
+                    assert_eq!(learned.state, MachineState::Approach);
+                    assert_eq!(learned.goal, Some(AE2_TRACE_MARK));
+                }
+                drop(seen);
+                if let Some(resumed) = resumed.as_mut() {
+                    let mut suffix = Vec::new();
+                    let mut suffix_hashes = Vec::new();
+                    while resumed.now_ms < 5_000 {
+                        assert!(
+                            resumed.ended.is_none(),
+                            "the fixture must remain live until its observation bound"
+                        );
+                        let next = (resumed.now_ms + cadence).min(5_000);
+                        collect(resumed, next, &mut suffix, &mut suffix_hashes);
+                    }
+                    drain(resumed, &mut suffix);
+                    assert_eq!(suffix, bytes[prefix..]);
+                    assert_eq!(suffix_hashes, hashes[prefix_hashes..]);
+                    assert_eq!(
+                        tacsim::arena::state_hash(resumed),
+                        tacsim::arena::state_hash(&arena)
+                    );
+                }
+                let log = ledger_of(&mut arena, &mut bytes);
+                assert!(log.iter().any(|event| matches!(&event.kind,
+                tacsim::arena::ledger::EventKind::Miss { shot_seq, reason }
+                    if *shot_seq == first && reason.as_str() == tacsim::arena::damage::BLOCKED)));
+                let result = (
+                    log.iter()
+                        .map(|event| {
+                            (
+                                event.t_ms,
+                                serde_json::to_string(&event.kind).expect("event"),
+                                event.hash,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                    hashes,
+                    tacsim::arena::state_hash(&arena),
+                );
+                if let Some(first) = &baseline {
+                    assert_eq!(&result, first, "moved={moved}, cadence={cadence}");
+                } else {
+                    baseline = Some(result);
+                }
+            }
+        }
+    }
 }

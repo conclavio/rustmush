@@ -1554,6 +1554,9 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
 
 ## 22. Build order (milestones and gates)
 
+M5rules and M5r are accepted on 2026-10-17; see 17b §3 rows M5rules/M5r and
+§4–5 for the implementation and gates. M6 preparation is not yet accepted.
+
 **Continuation planned 2026-10-17:** [17d](17d-unit-minds-through-m6-plan.md) sequences
 the rule-language cut, M5r and M6, with M7 held for a separate economy-stability
 review. M5 and L are landed. The owner accepted the recorded performance timing
@@ -1802,6 +1805,20 @@ weapons, after which the slot and cadence measures of M1b are re-run. The Ceres 
 
 Each cut that builds part of this document records here what it built differently and why, in the
 form of doc 16 §11, and a region map's sim task records here any divergence from §2's arena facts.
+
+**M5r — accepted 2026-10-17 (not deployed).** The post-M5 behavior cut
+restores the public Hold objective geometry, goal-keyed motor completion and
+retry, retained entry-zone spacing, and shot-origin-based blocked-cell learning.
+Arrival is a motor result; nearby pose alone no longer advances a patrol goal.
+Twelve removed A/F/G/I/K cases are restored; D/J and the optional M4.5a expiry
+policy remain outside this cut. The native and Rhai runners agree across the
+whole pooled replay on Windows and Linux. Snapshot 12, frame 5, API 3 and stock 2
+change together; no old snapshot/ABI migration is supplied. Standard's source
+digest and the deterministic harness changes are explicitly reviewed in
+[17b §5](17b-unit-minds-implementation-plan.md#5-m5r-continuation-gate--2026-10-17),
+which records the full repository, reader, cross-host and performance evidence.
+The 89 deterministic baseline changes reflect the restored behavior; historical
+host timings remain intact and nonblocking under the owner's direction.
 
 **M5rules — accepted at `e93a4a1c` (2026-10-17; not deployed).** This amendment
 records the completed implementation of

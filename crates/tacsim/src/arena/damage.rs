@@ -1294,6 +1294,9 @@ impl Arena {
             state.receiver = None;
         }
         self.contacts.clear_viewer(target);
+        // A wreck owns no destination. Release its reservation before another
+        // same-side request chooses a formation fan cell.
+        self.motors.release(target);
         // **17b cut M1b.1** (doc 17 §5): a wreck fires nothing, so its condition
         // slots and their held-shot rows go beside its weapons and its scheduled
         // work — before the retain below takes its `WeaponReady`s off the heap.

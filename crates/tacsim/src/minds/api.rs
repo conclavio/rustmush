@@ -70,6 +70,14 @@ use crate::arena::weapons::{FrameArming, FrameRule, FrameWeapon};
 #[derive(Clone, Debug)]
 pub struct View(pub Arc<MindView>);
 
+/// Public Hold geometry, copied from the same cockpit field.
+#[derive(Clone, Copy, Debug)]
+pub struct Objective(pub crate::arena::state::HoldObjective);
+
+/// A hull's requested drive and retained result, copied from its cockpit field.
+#[derive(Clone, Copy, Debug)]
+pub struct Motor(pub crate::arena::step::FrameMotor);
+
 /// **One contact row** (`Contact`): the view and the row's index in
 /// `contacts`.
 #[derive(Clone, Debug)]
@@ -327,6 +335,14 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     ("View", "callsign", "callsign"),
     ("View", "team", "the callsign's side (red / blue)"),
     ("View", "cell", "cell"),
+    ("View", "mode", "mode"),
+    ("View", "objective", "objective"),
+    ("View", "motor", "motor"),
+    ("Objective", "cell", "objective.cell"),
+    ("Objective", "letter", "objective.letter"),
+    ("Objective", "radius_cells", "objective.radius_cells"),
+    ("Motor", "goal", "motor.goal"),
+    ("Motor", "outcome", "motor.outcome"),
     ("View", "x_cm", "x_cm"),
     ("View", "y_cm", "y_cm"),
     ("View", "z_cm", "z_cm"),
@@ -539,6 +555,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     ),
     ("Notice", "spent", "spent"),
     ("Notice", "reason", "text (the miss's reason word)"),
+    ("Notice", "launch_cell", "launch_cell"),
     ("Notice", "outcome", "kind (drive_arrived / drive_no_route)"),
     ("Notice", "slot", "slot"),
     (
@@ -561,6 +578,8 @@ pub const PARITY: &[(&str, &str, &str)] = &[
 #[allow(clippy::too_many_lines)]
 pub(crate) fn register(api: &mut Registrar<'_>) {
     custom_type!(api, View, "View");
+    custom_type!(api, Objective, "Objective");
+    custom_type!(api, Motor, "Motor");
     custom_type!(api, Contact, "Contact");
     custom_type!(api, Weapon, "Weapon");
     custom_type!(api, Section, "Section");
@@ -592,6 +611,32 @@ fn register_view(api: &mut Registrar<'_>) {
         word(v.0.team.as_str())
     });
     getter!(api, "View", "cell", |v: &mut View| { cell(v.0.cell) });
+    getter!(api, "View", "mode", |v: &mut View| {
+        word(v.0.mode.as_str())
+    });
+    getter!(api, "View", "objective", |v: &mut View| {
+        opt(v.0.objective, |objective| {
+            Dynamic::from(Objective(objective))
+        })
+    });
+    getter!(api, "View", "motor", |v: &mut View| {
+        opt(v.0.motor, |motor| Dynamic::from(Motor(motor)))
+    });
+    getter!(api, "Objective", "cell", |o: &mut Objective| {
+        cell(Some(o.0.spot))
+    });
+    getter!(api, "Objective", "letter", |o: &mut Objective| {
+        opt(o.0.letter, |letter| word(&letter.to_string()))
+    });
+    getter!(api, "Objective", "radius_cells", |o: &mut Objective| {
+        int(o.0.radius_cells)
+    });
+    getter!(api, "Motor", "goal", |m: &mut Motor| {
+        cell(Some(m.0.requested_goal))
+    });
+    getter!(api, "Motor", "outcome", |m: &mut Motor| {
+        opt(m.0.outcome, |outcome| word(outcome.as_str()))
+    });
     getter!(api, "View", "x_cm", |v: &mut View| { int(v.0.x_cm) });
     getter!(api, "View", "y_cm", |v: &mut View| { int(v.0.y_cm) });
     getter!(api, "View", "z_cm", |v: &mut View| { int(v.0.z_cm) });
@@ -1312,6 +1357,12 @@ fn register_notice(api: &mut Registrar<'_>) {
             _ => Dynamic::UNIT,
         })
     });
+    getter!(api, "Notice", "launch_cell", |n: &mut Notice| {
+        on(n, |notice| match notice {
+            FrameNotice::Miss { launch_cell, .. } => cell(*launch_cell),
+            _ => Dynamic::UNIT,
+        })
+    });
     getter!(api, "Notice", "outcome", |n: &mut Notice| {
         on(n, |notice| match notice {
             FrameNotice::Drive { outcome } => word(outcome_word(*outcome)),
@@ -1362,6 +1413,8 @@ mod tests {
     fn every_custom_type_is_shared_and_sendable() {
         fn shared<T: Clone + Send + Sync + 'static>() {}
         shared::<View>();
+        shared::<Objective>();
+        shared::<Motor>();
         shared::<Contact>();
         shared::<Weapon>();
         shared::<Section>();
@@ -1412,6 +1465,14 @@ mod tests {
             ("v.callsign", "\"RA\"".into()),
             ("v.team", "\"red\"".into()),
             ("v.cell", "[1, 4]".into()),
+            ("v.mode", "\"hold\"".into()),
+            ("type_of(v.objective)", "\"Objective\"".into()),
+            ("v.objective.cell", "[6, 4]".into()),
+            ("v.objective.letter", "\"A\"".into()),
+            ("v.objective.radius_cells", "2".into()),
+            ("type_of(v.motor)", "\"Motor\"".into()),
+            ("v.motor.goal", "[6, 4]".into()),
+            ("v.motor.outcome", "\"arrived\"".into()),
             ("v.x_cm", "1500".into()),
             ("v.y_cm", "4500".into()),
             ("v.z_cm", "0".into()),
@@ -1522,6 +1583,7 @@ mod tests {
             ("v.notices[1].kind", "\"drive_arrived\"".into()),
             ("v.notices[1].outcome", "\"arrived\"".into()),
             ("v.notices[1].reason", "()".into()),
+            ("v.notices[1].launch_cell", "()".into()),
             ("v.notices[2].refusal", "\"cycling\"".into()),
             ("v.notices[2].order", "\"fire\"".into()),
             ("v.notices[2].weapon", "\"cannon\"".into()),
@@ -1578,6 +1640,8 @@ mod tests {
     fn every_view_getter_has_a_parity_row() {
         let view_types = [
             "View",
+            "Objective",
+            "Motor",
             "Contact",
             "Weapon",
             "Section",
@@ -1604,7 +1668,7 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), PARITY.len(), "a parity row written twice");
         // The table's size, for 17b cut M2.4's parity test to count on.
-        assert_eq!(PARITY.len(), 140);
+        assert_eq!(PARITY.len(), 149);
         assert_eq!(
             registered, rows,
             "a view getter without a parity row, or a row without a getter"
@@ -1839,6 +1903,46 @@ mod tests {
             assert_eq!(read("v.order.target"), target, "{word}");
             assert_eq!(read("v.order.facing_mdeg"), facing, "{word}");
             assert_eq!(read("v.order.of"), of, "{word}");
+        }
+    }
+
+    /// A miss carries only its own launch cell, including after target facts
+    /// are redacted. Missing origins and other notice variants read `()`.
+    #[test]
+    fn a_miss_launch_cell_is_read_without_target_facts() {
+        use smol_str::SmolStr;
+
+        let mut seen = fixture::view();
+        seen.notices = vec![
+            FrameNotice::Miss {
+                contact: None,
+                reason: SmolStr::new_static(""),
+                launch_cell: Some((2, 7)),
+            },
+            FrameNotice::Miss {
+                contact: None,
+                reason: SmolStr::new_static(""),
+                launch_cell: None,
+            },
+            FrameNotice::Drive {
+                outcome: DriveOutcome::Arrived,
+            },
+        ];
+        for (expr, want) in [
+            ("v.notices[0].launch_cell", "[2, 7]"),
+            ("v.notices[0].reason", "\"\""),
+            ("v.notices[0].contact", "()"),
+            ("v.notices[1].launch_cell", "()"),
+            ("v.notices[2].launch_cell", "()"),
+        ] {
+            assert_eq!(
+                shown(
+                    &fixture::eval_in(fixture::context_on(seen.clone()), expr)
+                        .unwrap_or_else(|error| panic!("{expr}: {error}")),
+                ),
+                want,
+                "{expr}",
+            );
         }
     }
 

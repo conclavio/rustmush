@@ -1056,10 +1056,9 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             // seat's order did not reach, until 17b cut M4.6 deleted it.)
             IntentKind::Heading { .. } | IntentKind::Speed { .. }
                 if matches!(source, IntentSource::Seat | IntentSource::Mind)
-                    && arena
-                        .motors
-                        .row(i.unit)
-                        .is_some_and(|motor| motor.goal.is_some()) =>
+                    && arena.motors.row(i.unit).is_some_and(|motor| {
+                        motor.goal.is_some() || motor.requested_goal.is_some()
+                    }) =>
             {
                 arena.motors.forget_goal(i.unit);
             }
@@ -1338,9 +1337,21 @@ fn journal_released(
 fn land_goal(arena: &mut Arena, unit: ObjId, goal: MotorGoal, source: IntentSource) {
     match goal {
         MotorGoal::Cell { x, y } => {
+            // Reasserting a live request or its successful completion is
+            // idempotent. A failed request may be retried explicitly.
+            if arena.motors.row(unit).is_some_and(|motor| {
+                motor.requested_goal == Some((x, y))
+                    && (motor.goal.is_some()
+                        || motor.outcome == Some(crate::arena::perception::DriveOutcome::Arrived))
+            }) {
+                return;
+            }
             let cell = arena.fan_goal(unit, (x, y));
             let motor = arena.motors.ensure(unit);
             motor.goal = Some(cell);
+            motor.fan = crate::arena::motor::GoalFan::between((x, y), cell);
+            motor.requested_goal = Some((x, y));
+            motor.outcome = None;
             motor.route.clear();
             motor.refused = None;
             if source == IntentSource::Seat {
@@ -3472,6 +3483,135 @@ mod tests {
             .iter()
             .filter(|event| event.kind == DueKind::MotorTick { unit })
             .count()
+    }
+
+    #[test]
+    fn m5r_reasserted_goals_keep_completion_until_a_real_override() {
+        use crate::arena::perception::DriveOutcome;
+
+        let mut arena = two_tanks(1);
+        online(&mut arena, RED);
+        let requested = MotorGoal::Cell { x: 5, y: 5 };
+        land_goal(&mut arena, RED, requested, IntentSource::Seat);
+        arena.motors.ensure(RED).route = vec![(2, 2), (3, 3)];
+        land_goal(&mut arena, RED, requested, IntentSource::Seat);
+        assert_eq!(arena.motors.ensure(RED).route, vec![(2, 2), (3, 3)]);
+        assert_eq!(m1a4_motor_ticks(&arena, RED), 1);
+
+        let completed = arena.motors.ensure(RED);
+        completed.goal = None;
+        completed.route.clear();
+        completed.outcome = Some(DriveOutcome::Arrived);
+        land_goal(&mut arena, RED, requested, IntentSource::Seat);
+        let completed = arena.motors.ensure(RED);
+        assert_eq!(completed.requested_goal, Some((5, 5)));
+        assert_eq!(completed.goal, None);
+        assert_eq!(completed.outcome, Some(DriveOutcome::Arrived));
+
+        // A machine's steering is the motor itself, so it keeps completion;
+        // a principal's heading disengages even when the active goal is spent.
+        let heading = intent(RED, 1, 1, IntentKind::Heading { mdeg: 90_000 });
+        assert_eq!(
+            apply_intent(&mut arena, &heading, IntentSource::Machine),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(
+            arena.motors.ensure(RED).outcome,
+            Some(DriveOutcome::Arrived)
+        );
+        assert_eq!(
+            apply_intent(&mut arena, &heading, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        let cleared = arena.motors.ensure(RED);
+        assert_eq!(cleared.requested_goal, None);
+        assert_eq!(cleared.outcome, None);
+
+        // Failure can be retried at the same requested cell.
+        let failed = arena.motors.ensure(RED);
+        failed.requested_goal = Some((5, 5));
+        failed.outcome = Some(DriveOutcome::NoRoute);
+        land_goal(&mut arena, RED, requested, IntentSource::Seat);
+        let retried = arena.motors.ensure(RED);
+        assert_eq!(retried.requested_goal, Some((5, 5)));
+        assert_eq!(retried.goal, Some((5, 5)));
+        assert_eq!(retried.outcome, None);
+    }
+
+    #[test]
+    fn m5r_fanned_goals_keep_their_lane_until_zone_exit_or_disengagement() {
+        use crate::arena::motor::GoalFan;
+        use crate::arena::perception::DriveOutcome;
+
+        let mut arena = two_tanks(1);
+        arena.unit_mut(BLUE).expect("second hull").team = Team::Red;
+        arena.motors.ensure(BLUE).goal = Some((6, 3));
+        land_goal(
+            &mut arena,
+            RED,
+            MotorGoal::Cell { x: 6, y: 3 },
+            IntentSource::Seat,
+        );
+        let first = arena.motors.row(RED).expect("fanned hull");
+        assert_eq!(first.goal, Some((6, 6)));
+        assert_eq!(first.requested_goal, Some((6, 3)));
+        assert_eq!(first.fan, GoalFan::between((6, 3), (6, 6)));
+
+        // The physical destination is spent at arrival, but the next logical
+        // waypoint inside this zone must retain the private three-row lane.
+        arena.motors.release(BLUE);
+        let arrived = arena.motors.ensure(RED);
+        arrived.goal = None;
+        arrived.outcome = Some(DriveOutcome::Arrived);
+        land_goal(
+            &mut arena,
+            RED,
+            MotorGoal::Cell { x: 7, y: 3 },
+            IntentSource::Seat,
+        );
+        let continued = arena.motors.row(RED).expect("continued drive");
+        assert_eq!(continued.goal, Some((7, 6)));
+        assert_eq!(continued.requested_goal, Some((7, 3)));
+        assert_eq!(continued.fan, GoalFan::between((7, 3), (7, 6)));
+        assert_eq!(continued.outcome, None);
+
+        // A retry keeps the lane; a normal goal outside its original zone does
+        // not carry the offset into unrelated ground.
+        let failed = arena.motors.ensure(RED);
+        failed.goal = None;
+        failed.outcome = Some(DriveOutcome::NoRoute);
+        land_goal(
+            &mut arena,
+            RED,
+            MotorGoal::Cell { x: 7, y: 3 },
+            IntentSource::Seat,
+        );
+        assert_eq!(arena.motors.row(RED).and_then(|row| row.goal), Some((7, 6)));
+        land_goal(
+            &mut arena,
+            RED,
+            MotorGoal::Cell { x: 3, y: 3 },
+            IntentSource::Seat,
+        );
+        let exited = arena.motors.row(RED).expect("normal drive");
+        assert_eq!(exited.goal, Some((3, 3)));
+        assert_eq!(exited.fan, None);
+        for goal in [MotorGoal::Hold, MotorGoal::Off] {
+            arena.motors.ensure(RED).fan = GoalFan::between((6, 3), (6, 6));
+            land_goal(&mut arena, RED, goal, IntentSource::Seat);
+            assert_eq!(arena.motors.row(RED).and_then(|row| row.fan), None);
+        }
+        // An offset falling outside the zone cannot clamp an unrelated request
+        // into the lane or escape the zone's bounds.
+        arena.motors.ensure(RED).fan = GoalFan::between((6, 3), (6, 6));
+        land_goal(
+            &mut arena,
+            RED,
+            MotorGoal::Cell { x: 6, y: 6 },
+            IntentSource::Seat,
+        );
+        assert_eq!(arena.motors.row(RED).and_then(|row| row.goal), Some((6, 6)));
+        assert_eq!(arena.motors.row(RED).and_then(|row| row.fan), None);
     }
 
     /// **The goal lands on the motor row, a seat's helm order takes it back,

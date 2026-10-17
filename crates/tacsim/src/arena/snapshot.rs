@@ -318,7 +318,7 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// **11 since M5rules:** condition rows contain ordered typed fire, hold and
 /// Sensors rules, with stable slot identity and bounded native predicates.
 /// Format 10 is refused rather than migrated; saved in-flight matches restart.
-pub const SNAPSHOT_FORMAT: u32 = 11;
+pub const SNAPSHOT_FORMAT: u32 = 12;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -1644,6 +1644,15 @@ mod tests {
         )]));
         // `MotorTable.rows` (17b cut M1a.1): keyed by the unit, an integer key.
         round_trip(&BTreeMap::from([(unit, MotorRow::default())]));
+        round_trip(&BTreeMap::from([(
+            unit,
+            MotorRow {
+                requested_goal: Some((6, 3)),
+                outcome: Some(crate::arena::perception::DriveOutcome::Arrived),
+                fan: crate::arena::motor::GoalFan::between((6, 3), (6, 6)),
+                ..MotorRow::default()
+            },
+        )]));
         // `Arena.minds` (17b cut M1a.5), keyed by the unit, and inside each row
         // `MindState.ranges`, keyed by a contact id at the top of `u64` — and
         // (17b cut M3.2) a pending answer with an intent of each carried

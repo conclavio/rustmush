@@ -228,6 +228,9 @@ fn frame() -> Frame {
             slot: 1,
         },
         cell: Some((100, 97)),
+        mode: tacsim::arena::state::MatchMode::Skirmish,
+        objective: None,
+        motor: None,
         team: Team::Red,
         pose: mush_sim::data::Pose {
             x_cm: 100_000,
@@ -555,15 +558,18 @@ fn every_notice() -> Vec<FrameNotice> {
     }
     for reason in MISS_REASONS {
         notices.push(FrameNotice::Miss {
+            launch_cell: None,
             contact: Some(named(BA_ID, ba())),
             reason: reason.into(),
         });
         notices.push(FrameNotice::Miss {
+            launch_cell: None,
             contact: None,
             reason: reason.into(),
         });
     }
     notices.push(FrameNotice::Miss {
+        launch_cell: None,
         contact: None,
         reason: "".into(),
     });
@@ -1132,7 +1138,9 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
                 "{}",
                 fail()
             ),
-            FrameNotice::Miss { contact, reason } => assert!(
+            FrameNotice::Miss {
+                contact, reason, ..
+            } => assert!(
                 matches!(&read, Line::Missed { designator, words }
                     if *designator == contact.as_ref().map(|c| c.designator.to_string())
                         && words.is_some() == (contact.is_some() || !reason.is_empty())),

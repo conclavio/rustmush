@@ -194,6 +194,8 @@
       "Line"
     ]
   },
+  "mode": "skirmish",
+  "motor": null,
   "notices": [
     {
       "cause": null,
@@ -226,6 +228,7 @@
       "weapon": null
     }
   ],
+  "objective": null,
   "odds_floor_permille": 100,
   "order": null,
   "origin": [
@@ -452,7 +455,7 @@
     "id": "arena.cockpit",
     "retain": "latest",
     "shape": "grid",
-    "version": 4
+    "version": 5
   },
   "scope": "hostile",
   "sections": [

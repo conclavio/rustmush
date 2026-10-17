@@ -1014,6 +1014,21 @@ See [16b](16b-combat-implementation-plan.md).
 
 ## 11. Supersessions and amendments
 
+**M5r — accepted 2026-10-17 (not deployed).** The post-M5 behavior cut
+restores the public Hold objective geometry, goal-keyed motor completion and
+retry, retained entry-zone spacing, and shot-origin-based blocked-cell learning.
+Arrival is a motor result; nearby pose alone no longer advances a patrol goal.
+Twelve removed A/F/G/I/K cases are restored; D/J and the optional M4.5a expiry
+policy remain outside this cut. The native and Rhai runners agree across the
+whole pooled replay on Windows and Linux. Snapshot 12, frame 5, API 3 and stock 2
+change together; no old snapshot/ABI migration is supplied. Standard's source
+digest and the deterministic harness changes are explicitly reviewed in
+[17b §5](17b-unit-minds-implementation-plan.md#5-m5r-continuation-gate--2026-10-17),
+which records the full repository, reader, cross-host and performance evidence.
+The 89 deterministic baseline changes reflect the restored behavior; historical
+host timings remain intact and nonblocking under the owner's direction.
+
+
 **M5rules — accepted at `e93a4a1c` (2026-10-17; not deployed).**
 [Doc 17 §24](17-unit-minds.md#24-amendments-as-built) records the full contract;
 [17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17)

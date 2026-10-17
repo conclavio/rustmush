@@ -1336,12 +1336,12 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
     assert_eq!(
         run.hashes.first().copied(),
-        Some(0xee55_a270_46eb_bd76),
+        Some(0xd0ee_55ca_1865_76de),
         "the first substep's hash moved"
     );
     assert_eq!(
         run.hashes.last().copied(),
-        Some(0x2d8c_edcf_c95f_ce9f),
+        Some(0x108c_a512_43c9_efb0),
         "the last substep's hash moved"
     );
 }
@@ -1392,57 +1392,59 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
 /// shape is hashed and the mind API/source identity moved. The 50 observed
 /// lines were compared field by field: only `hash` and the Standard Doctrine
 /// `source` identifiers changed; timestamps, poses, actions and draws did not.
+/// M5r adds persistent motor facts and changes the source/API identity.
+/// All 50 event payloads remain identical apart from hash/source.
 const M1B0_J_LINES: &[&str] = &[
-    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":14777687045357174471}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"55cabde517b6a08e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":14777687045357174471}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"55cabde517b6a08e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":14777687045357174471}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"55cabde517b6a08e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":14777687045357174471}"#,
-    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":17173811357157145974}"#,
-    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":17173811357157145974}"#,
-    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":17173811357157145974}"#,
-    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":17173811357157145974}"#,
-    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":12196382425934786000}"#,
-    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":3135315473714147673}"#,
-    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":3135315473714147673}"#,
-    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":4283428275904850428}"#,
-    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":13013680444582165423}"#,
-    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":14262197006137651847}"#,
-    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":7704043667924316204}"#,
-    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":7704043667924316204}"#,
-    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":7704043667924316204}"#,
-    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":7704043667924316204}"#,
-    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":1988411635938870743}"#,
-    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":1988411635938870743}"#,
-    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":1617790544969414229}"#,
-    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":1617790544969414229}"#,
-    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":2766741456350493967}"#,
-    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":2766741456350493967}"#,
-    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":2766741456350493967}"#,
-    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":6304931387505248911}"#,
-    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":5163006775353371182}"#,
-    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":5461252792053358534}"#,
-    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":15450189042279379672}"#,
-    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":15450189042279379672}"#,
-    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":16441169256837659290}"#,
-    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":17651231505334306699}"#,
-    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":14755776009261219010}"#,
-    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":14755776009261219010}"#,
-    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":16412142440304699894}"#,
-    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":7429083664202157236}"#,
-    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":9952681885770603740}"#,
-    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":9952681885770603740}"#,
-    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":2607077079367560423}"#,
-    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":806279383973745091}"#,
-    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":806279383973745091}"#,
-    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":806279383973745091}"#,
-    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":4220082744619278765}"#,
-    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":7453760430037581393}"#,
-    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":7453760430037581393}"#,
-    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":15306535274535671488}"#,
-    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":13720252533386848723}"#,
-    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":5298178480455221205}"#,
-    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":5298178480455221205}"#,
-    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":3282259705138761375}"#,
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":14974988526948735111}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"92987a0c26bc442e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":14974988526948735111}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"92987a0c26bc442e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":14974988526948735111}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"92987a0c26bc442e","card_digest":"1a04f1f74acd80a328e492b698b258f521ba884bd390eaac1ad432fb41d5686b","class":"I","governed":true,"licence":"doctrine","hash":14974988526948735111}"#,
+    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":15055064930827204318}"#,
+    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":15055064930827204318}"#,
+    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":15055064930827204318}"#,
+    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":15055064930827204318}"#,
+    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":5899104183467721094}"#,
+    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":4392704541629034169}"#,
+    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":4392704541629034169}"#,
+    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":13951988885057510326}"#,
+    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":5386623055796084523}"#,
+    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":4397030845024558509}"#,
+    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":6290295332488594900}"#,
+    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":6290295332488594900}"#,
+    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":6290295332488594900}"#,
+    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":6290295332488594900}"#,
+    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":9257906218005406902}"#,
+    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":9257906218005406902}"#,
+    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":17293956552380475439}"#,
+    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":17293956552380475439}"#,
+    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":17605619597661493377}"#,
+    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":17605619597661493377}"#,
+    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":17605619597661493377}"#,
+    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":6634569956636986393}"#,
+    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":7611400625081520187}"#,
+    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":16029377487081708250}"#,
+    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":6332014705243969835}"#,
+    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":6332014705243969835}"#,
+    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":740954226161058777}"#,
+    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":11395931726031335309}"#,
+    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":11426904407582570882}"#,
+    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":11426904407582570882}"#,
+    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":16792525332819944340}"#,
+    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":9844803194762050014}"#,
+    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":3714127678724693579}"#,
+    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":3714127678724693579}"#,
+    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":17459270981215210307}"#,
+    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":13275892318471546651}"#,
+    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":13275892318471546651}"#,
+    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":13275892318471546651}"#,
+    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":975351573321877253}"#,
+    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":9273794656194319407}"#,
+    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":9273794656194319407}"#,
+    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":8669868378982311146}"#,
+    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":6829400686045400535}"#,
+    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":5959273254569844684}"#,
+    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":5959273254569844684}"#,
+    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":1192509499211640752}"#,
 ];
 
 /// **17b cut M1b.0: the production line-hash pin, the reflex shots.** The (j)
@@ -6875,10 +6877,22 @@ fn t1_withdraw_forgets_the_search_and_a_stand_writes_one() {
     let until = arena.now_ms + tacsim::arena::mind::STOCK_THINK_MS;
     run_settled(&mut arena, until, &mut bytes);
     assert_eq!(stock_memory_of(&arena, RED).last_plot, None);
-    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    // Arrival now spends only the active path. The mind's requested waypoint
+    // remains authoritative even if that short walk completed before this read.
+    let goal = stock_memory_of(&arena, RED)
+        .goal
+        .expect("a patrol has a requested node to walk to");
     assert!(
         waypoint_cells().contains(&goal),
         "a rallied mind walks the graph, and it is driving at {goal:?}"
+    );
+    assert!(
+        arena.motors.row(RED).is_some_and(|motor| {
+            motor.requested_goal == Some(goal)
+                && (motor.goal.is_some()
+                    || motor.outcome == Some(tacsim::arena::perception::DriveOutcome::Arrived))
+        }),
+        "the requested graph node is active or actually completed by the motor"
     );
 
     // (b) A commander's `Withdraw`, on a healthy mind: the tank reads 5,000 cm
@@ -10762,4 +10776,1339 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
         drive.goal
     );
     never_fights(&arena, RED);
+}
+
+// M5r: restored behavior regressions (historical 3a3c469^).
+mod m5r {
+    // M5r: restored behavior tests read the public objective and motor result
+    // on actual scheduled mind jobs, then compare cadence and resumed histories.
+    use super::*;
+    use std::sync::Arc;
+    use tacsim::arena::Snapshot;
+    use tacsim::arena::intents::{Intent, IntentKind};
+    use tacsim::arena::state::{CustodyOut, Pilot};
+    use tacsim::config::SensorsConfig;
+
+    #[derive(Clone, Copy)]
+    enum Lane {
+        Native,
+        Twin,
+        Rhai,
+    }
+
+    fn recorded(arena: &mut Arena, lane: Lane) -> Arc<Stock> {
+        match lane {
+            Lane::Native => {}
+            Lane::Twin => {
+                support::with_twin(arena);
+            }
+            Lane::Rhai => {
+                support::with_rhai(arena);
+            }
+        }
+        let stock = Stock::over(Arc::clone(&arena.mind_runner));
+        arena.mind_runner = stock.clone();
+        stock
+    }
+
+    #[derive(Default)]
+    struct Run {
+        bytes: Vec<u8>,
+        hashes: Vec<u64>,
+        pulses: usize,
+    }
+
+    fn step(arena: &mut Arena, at: i64, intents: &[Intent], run: &mut Run) {
+        let out = arena.step_settled(at, &[], intents);
+        absorb(&out, &mut run.bytes);
+        run.hashes.extend(arena.substep_hashes.iter().copied());
+        run.pulses += 1;
+    }
+
+    fn to(arena: &mut Arena, until: i64, cadence: i64, run: &mut Run) {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        if arena.now_ms == 0 {
+            step(arena, 0, &[], run);
+        }
+        while arena.now_ms < until && arena.ended.is_none() {
+            let next = (arena.now_ms + cadence).min(until);
+            step(arena, next, &[], run);
+        }
+    }
+
+    fn flush(arena: &mut Arena, run: &mut Run) {
+        arena.ledger.flush();
+        for chunk in arena.ledger.take_chunks() {
+            run.bytes.extend(chunk.bytes);
+        }
+    }
+
+    fn signature(arena: &mut Arena, run: &mut Run) -> (Vec<(i64, String, u64)>, Vec<u64>, u64) {
+        let events = events(arena, &mut run.bytes)
+            .into_iter()
+            .map(|event| {
+                (
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).expect("event JSON"),
+                    event.hash,
+                )
+            })
+            .collect();
+        (events, run.hashes.clone(), tacsim::arena::state_hash(arena))
+    }
+
+    // Replay only the suffix from a transition checkpoint. In-flight, settled
+    // answers are deliberately preserved; a decode must not re-think them.
+    fn resume_suffix(arena: &mut Arena, until: i64, cadence: i64, run: &mut Run) {
+        flush(arena, run);
+        let snapshot = Snapshot::encode(arena).expect("settled transition encodes");
+        let mut restored = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
+            .expect("transition decodes");
+        restored.resume_at(arena.now_ms);
+        restored.clock.pin_tempo_for_tests(Tempo::Quiet);
+        // Native resumes independently of the original's asserting twin.
+        let mut resumed = Run::default();
+        let mut uninterrupted = Run::default();
+        to(arena, until, cadence, &mut uninterrupted);
+        to(&mut restored, until, cadence, &mut resumed);
+        flush(arena, &mut uninterrupted);
+        flush(&mut restored, &mut resumed);
+        assert_eq!(uninterrupted.bytes, resumed.bytes, "resume ledger bytes");
+        assert_eq!(
+            uninterrupted.hashes, resumed.hashes,
+            "resume substep hashes"
+        );
+        assert_eq!(
+            tacsim::arena::state_hash(arena),
+            tacsim::arena::state_hash(&restored)
+        );
+        assert_eq!(arena.ledger.digest(), restored.ledger.digest());
+        assert_eq!(
+            arena.ledger.shipped_digest(),
+            restored.ledger.shipped_digest()
+        );
+        run.bytes.extend(uninterrupted.bytes);
+        run.hashes.extend(uninterrupted.hashes);
+        run.pulses += uninterrupted.pulses;
+    }
+
+    fn native_matrix() -> [(Lane, i64); 4] {
+        [
+            (Lane::Twin, 5_000),
+            (Lane::Native, 1_000),
+            (Lane::Native, 500),
+            (Lane::Rhai, 1_000),
+        ]
+    }
+
+    #[test]
+    fn i3_a_placed_machine_re_plans() {
+        let mut baseline = None;
+        for (lane, cadence) in native_matrix() {
+            let definition = ArenaDefinition {
+                terrain: ArenaTerrain::uniform(32, 32, CELL_CM, ground()).expect("wide ground"),
+                entry_zones: vec![
+                    EntryZone {
+                        team: Team::Red,
+                        x0: 0,
+                        y0: 0,
+                        x1: 1,
+                        y1: 31,
+                    },
+                    EntryZone {
+                        team: Team::Blue,
+                        x0: 30,
+                        y0: 0,
+                        x1: 31,
+                        y1: 31,
+                    },
+                ],
+                ..definition(&[])
+            };
+            let mut arena = arena_on(
+                definition,
+                vec![tank(
+                    RED,
+                    Team::Red,
+                    centre(2, 3),
+                    Vec::new(),
+                    Controller::Mind,
+                )],
+                &arena_cfg(reflex_cfg()),
+                &[],
+            );
+            let stock = recorded(&mut arena, lane);
+            let goal = (28, 3);
+            let mut run = Run::default();
+            t1_order(
+                &mut arena,
+                RED,
+                tacsim::deliberation::Objective::Advance { to: goal },
+                600_000,
+                &mut run.bytes,
+            );
+            to(&mut arena, 10_000, cadence, &mut run);
+            let drive = motor(&arena, RED);
+            assert_eq!(drive.requested_goal, Some(goal));
+            assert!(!drive.route.is_empty(), "the mind was driving before PLACE");
+            let (x, y) = arena.index.cell_of_unit(RED).expect("on ground");
+            assert!(x > 2);
+            let aside = (x, y + 20);
+            let intent = Intent {
+                unit: RED,
+                channel: Channel::Helm,
+                epoch: arena.epochs.current(RED, Channel::Helm),
+                kind: IntentKind::Place {
+                    x: aside.0,
+                    y: aside.1,
+                },
+                seq: 991,
+            };
+            let now = arena.now_ms;
+            step(&mut arena, now, &[intent], &mut run);
+            assert_eq!(arena.index.cell_of_unit(RED), Some(aside));
+            let placed = motor(&arena, RED);
+            assert_eq!(
+                placed.requested_goal,
+                Some(goal),
+                "PLACE preserves the request"
+            );
+            assert_eq!(
+                placed.goal, drive.goal,
+                "PLACE preserves the active fanned goal"
+            );
+            assert!(placed.route.is_empty() && placed.searched_ms.is_none());
+            assert!(
+                arena
+                    .minds
+                    .get(&RED)
+                    .is_some_and(|mind| mind.order.is_some())
+            );
+            if matches!(lane, Lane::Twin) {
+                resume_suffix(&mut arena, 70_000, cadence, &mut run);
+            } else {
+                to(&mut arena, 70_000, cadence, &mut run);
+            }
+            assert!(
+                stock.kept().iter().any(|(_, at, view, _)| *at > 10_000
+                    && view
+                        .motor
+                        .as_ref()
+                        .is_some_and(|motor| motor.requested_goal == goal
+                            && motor.outcome
+                                == Some(tacsim::arena::perception::DriveOutcome::Arrived))
+                    && view.cell.is_some_and(|cell| cell
+                        .0
+                        .abs_diff(goal.0)
+                        .max(cell.1.abs_diff(goal.1))
+                        <= tacsim::arena::motor::ARRIVE_CELLS)),
+                "the machine reached its preserved request after replanning from PLACE"
+            );
+            assert!(
+                stock.kept().iter().any(|(_, at, view, _)| *at > 10_000
+                    && view
+                        .motor
+                        .as_ref()
+                        .is_some_and(|motor| motor.requested_goal == goal)),
+                "an actual later think reads the preserved request"
+            );
+            let result = signature(&mut arena, &mut run);
+            assert_eq!(
+                result
+                    .0
+                    .iter()
+                    .filter(|(_, kind, _)| kind.contains("\"placed\""))
+                    .count(),
+                1
+            );
+            if let Some(first) = &baseline {
+                assert_eq!(&result, first, "PLACE cadence {cadence}");
+            } else {
+                baseline = Some(result);
+            }
+        }
+    }
+
+    #[test]
+    fn a_wreck_and_a_disabled_tank_order_nothing_at_all() {
+        let mut baseline = None;
+        for (lane, cadence) in native_matrix() {
+            let mut arena = arena_of(
+                vec![
+                    tank(
+                        RED,
+                        Team::Red,
+                        centre(2, 3),
+                        vec![cannon()],
+                        Controller::Mind,
+                    ),
+                    tank(RED2, Team::Red, centre(2, 12), Vec::new(), Controller::Mind),
+                ],
+                &[],
+                &arena_cfg(reflex_cfg()),
+                &[],
+            );
+            let stock = recorded(&mut arena, lane);
+            let mut run = Run::default();
+            to(&mut arena, 5_000, cadence, &mut run);
+            assert!(arena.motors.row(RED).is_some());
+            let survivor = motor(&arena, RED2).requested_goal;
+            assert!(survivor.is_some());
+            let before = stock
+                .kept()
+                .iter()
+                .filter(|(unit, ..)| *unit == RED)
+                .count();
+            let mut journal = Vec::new();
+            arena.destroy_unit(RED, 5_000, None, &mut journal);
+            assert!(
+                arena.motors.row(RED).is_none(),
+                "production destruction releases the row immediately"
+            );
+            assert_eq!(
+                motor(&arena, RED2).requested_goal,
+                survivor,
+                "another hull's request survives"
+            );
+            if matches!(lane, Lane::Twin) {
+                resume_suffix(&mut arena, 10_000, cadence, &mut run);
+            } else {
+                to(&mut arena, 10_000, cadence, &mut run);
+            }
+            assert!(arena.motors.row(RED).is_none());
+            assert_eq!(
+                stock
+                    .kept()
+                    .iter()
+                    .filter(|(unit, ..)| *unit == RED)
+                    .count(),
+                before,
+                "the destroyed hull never thinks again"
+            );
+            assert!(
+                arena
+                    .unit(RED)
+                    .is_some_and(|unit| unit.speed_cms == 0 && unit.lock.is_none())
+            );
+            let result = signature(&mut arena, &mut run);
+            if let Some(first) = &baseline {
+                assert_eq!(&result, first, "wreck cadence {cadence}");
+            } else {
+                baseline = Some(result);
+            }
+        }
+        // Disabled is a different edge: a live, unarmed, immobile hull still
+        // thinks once and answers Disabled with no intent.
+        let mut arena = arena_of(
+            vec![tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            )],
+            &[],
+            &arena_cfg(reflex_cfg()),
+            &[],
+        );
+        let stock = recorded(&mut arena, Lane::Twin);
+        let mut run = Run::default();
+        to(&mut arena, 5_000, 500, &mut run);
+        arena.unit_mut(RED).expect("hull").limits.motion_disabled = true;
+        to(&mut arena, 8_000, 500, &mut run);
+        assert!(stock.kept().iter().any(|(_, at, view, result)| {
+            *at > 5_000
+                && view.immobile
+                && result.intents.is_empty()
+                && tacsim::arena::stock_mind::StockMemory::from(
+                    &tacsim::arena::mind::decode_memory(&result.memory),
+                )
+                .state
+                    == MachineState::Disabled
+        }));
+    }
+
+    const O1_RED3: ObjId = ObjId(7);
+
+    /// The pilot who types the O.1 `ORDER … HOLD` and its `RELEASE`.
+    const O1_PILOT: ObjId = ObjId(1_500);
+
+    /// **This file's window with a Hold declared**: one key spot at `spot`,
+    /// `radius_cells` round it, `hold_ms` long, over `paint`ed ground.
+    fn o1_ground(
+        paint: &[(u16, u16, TerrainCell)],
+        spot: (u16, u16),
+        radius_cells: u16,
+        hold_ms: u32,
+    ) -> ArenaDefinition {
+        ArenaDefinition {
+            key_spots: vec![tacsim::arena::state::KeySpot {
+                name: SmolStr::new("The Spot"),
+                x: spot.0,
+                y: spot.1,
+            }],
+            modes: vec![tacsim::arena::ArenaMode::Hold(tacsim::arena::HoldRule {
+                spot: 0,
+                radius_cells,
+                hold_ms,
+            })],
+            ..definition(paint)
+        }
+    }
+
+    /// [`arena_on`] at `MatchMode::Hold`.
+    fn o1_arena(
+        definition: ArenaDefinition,
+        units: Vec<CustodyUnit>,
+        cfg: &ArenaConfig,
+        seated: &[ObjId],
+    ) -> Arena {
+        let pilots = seated
+            .iter()
+            .enumerate()
+            .map(|(seat, unit)| Pilot {
+                unit: *unit,
+                pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+                station: SmolStr::new("cockpit"),
+                epoch: 1,
+            })
+            .collect();
+        Arena::new(
+            CustodyOut {
+                definition,
+                units,
+                pilots,
+                resolution: tacsim::match_::stock_resolution(),
+                seed: SEED,
+                mode: tacsim::arena::MatchMode::Hold,
+            },
+            cfg,
+            &match_cfg(),
+            &SensorsConfig::default(),
+        )
+        .expect("the hold arena")
+    }
+
+    /// Whether `unit` stands inside the arena's Hold square.
+    fn o1_inside(arena: &Arena, unit: ObjId) -> bool {
+        arena
+            .unit(unit)
+            .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+            .is_some_and(|cell| arena.hold.is_some_and(|hold| hold.square_contains(cell)))
+    }
+
+    /// **16b cut O.1 (16c N11; plan items 2, 16)**: in a Hold match the machines
+    /// drive to the key spot and park anywhere inside `radius − 1`, and then stop
+    /// searching; one under a pilot-shaped `ORDER … HOLD` stays where it stands
+    /// until the `RELEASE`, and then drives to the spot too.
+    ///
+    /// Red's three machines against a blue tank that stands cold and out of every
+    /// red sight (so no engagement interrupts), under an hour-long `hold_ms` (so no
+    /// win does): every free machine ends INSIDE the square, the searches of the
+    /// second minute are a small fraction of the first's, and the ordered machine
+    /// has not moved a cell until its release.
+    #[test]
+    fn o1_hold_mode_machines_drive_to_the_spot_and_park_inside_the_radius() {
+        let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
+        let mut arena = o1_arena(
+            ground,
+            vec![
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(1, 4),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                tank(
+                    RED2,
+                    Team::Red,
+                    centre(1, 12),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                tank(
+                    O1_RED3,
+                    Team::Red,
+                    centre(1, 8),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(15, 0),
+                    vec![cannon()],
+                    Controller::Pilot,
+                ),
+            ],
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        );
+        let squad = arena
+            .squad_of(O1_RED3)
+            .map(|roster| roster.id)
+            .expect("the machine is in a squad");
+        let hold =
+            tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
+                squad,
+                objective: tacsim::deliberation::Objective::Hold,
+                target: None,
+                horizon_ms: 600_000,
+                constraints: tacsim::deliberation::Constraints {
+                    hold_fire: false,
+                    max_range_band: None,
+                },
+                ttl_ms: 600_000,
+                issued_ms: 0,
+                issuer: Some(O1_PILOT),
+                by: author(squad, Some(O1_PILOT)),
+                spot: None,
+            }));
+        let intent = |arena: &Arena, kind: &tacsim::arena::intents::IntentKind| {
+            tacsim::arena::intents::Intent {
+                unit: O1_RED3,
+                channel: Channel::Helm,
+                epoch: arena.epochs.current(O1_RED3, Channel::Helm),
+                kind: kind.clone(),
+                seq: 1,
+            }
+        };
+        let mut bytes: Vec<u8> = Vec::new();
+        let order = intent(&arena, &hold);
+        absorb(&arena.step_settled(0, &[], &[order]), &mut bytes);
+        let first = run_settled(&mut arena, 60_000, &mut bytes);
+        let second = run_settled(&mut arena, 120_000, &mut bytes);
+        for unit in [RED, RED2] {
+            assert!(
+                o1_inside(&arena, unit),
+                "{unit} did not park inside the square: {:?}",
+                arena
+                    .unit(unit)
+                    .map(|state| (state.pose.x_cm, state.pose.y_cm))
+            );
+            let row = stock_memory_of(&arena, unit);
+            assert_eq!(row.state, MachineState::Patrol);
+            assert_eq!(
+                row.goal, None,
+                "{unit} emitted Hold and released its request"
+            );
+            assert!(
+                arena
+                    .motors
+                    .row(unit)
+                    .is_none_or(|motor| motor.requested_goal.is_none())
+            );
+            assert_eq!(
+                arena.unit(unit).map(|state| state.desired_speed_cms),
+                Some(0)
+            );
+            assert!(row.hunt.is_none(), "no hunt in a Hold match");
+        }
+        assert!(first.path_queries > 0, "{first:?}");
+        assert!(
+            second.path_queries * 5 <= first.path_queries,
+            "the searches did not plateau once the side had arrived: {} then {}",
+            first.path_queries,
+            second.path_queries
+        );
+        assert_eq!(
+            arena.unit(BLUE).map(|state| state.power),
+            Some(Power::Off),
+            "blue stood cold throughout"
+        );
+        // The ordered machine stood where it was told to.
+        assert_eq!(
+            arena
+                .unit(O1_RED3)
+                .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
+            Some((1, 8)),
+            "a machine under a pilot's HOLD does not drive to the spot"
+        );
+        // The release hands it back to doctrine, and doctrine drives it there.
+        let release = tacsim::arena::intents::IntentKind::ReleaseOrder {
+            squad,
+            issuer: Some(O1_PILOT),
+        };
+        let order = intent(&arena, &release);
+        let wall = arena.now_ms;
+        absorb(&arena.step_settled(wall, &[], &[order]), &mut bytes);
+        run_settled(&mut arena, 180_000, &mut bytes);
+        assert!(
+            o1_inside(&arena, O1_RED3),
+            "the released machine did not drive to the spot"
+        );
+        let log = events(&mut arena, &mut bytes);
+        assert_eq!(count(&log, "match_ended"), 0, "no win inside an hour");
+    }
+
+    /// **16b cut O.1 (plan item 32): a holder fights from inside the square.** A
+    /// machine parked on the spot, and an armed hostile it holds past its
+    /// `engage_cm` and inside its `release_cm` with a line — the band in which a
+    /// machine outside the square drives toward a stand-off cell. The holder takes
+    /// `release_cm` as its edge instead, as a machine that cannot close does: it
+    /// fires within seconds without leaving its cell. The same field at a
+    /// skirmish is the control — that machine drives out of the cell to close.
+    /// (This file's window is 160 m across, so the band is the file's own seven to
+    /// ten cells rather than the shipped tank's 420 to 600 m.)
+    #[test]
+    fn o1_a_holder_fights_from_inside_the_square() {
+        let units = || {
+            vec![
+                with_sight(
+                    tank(
+                        RED,
+                        Team::Red,
+                        centre(4, 8),
+                        vec![cannon()],
+                        Controller::Mind,
+                    ),
+                    SIGHT_CELLS,
+                ),
+                presenting(tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(13, 8),
+                    vec![cannon()],
+                    Controller::Pilot,
+                )),
+            ]
+        };
+        // Drive a field for up to fifteen arena seconds with the hostile held,
+        // answering when the machine first fired and every cell it stood in.
+        let fight = |arena: &mut Arena| -> (Option<i64>, Vec<Option<(u16, u16)>>) {
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut fired_at: Option<i64> = None;
+            let mut cells = Vec::new();
+            let mut wall = 0_i64;
+            while arena.now_ms < 15_000 && fired_at.is_none() {
+                assert!(
+                    arena.ended.is_none(),
+                    "the fixture must remain live until its observation bound"
+                );
+                let now = arena.now_ms;
+                plant_contact(arena, RED, BLUE, Team::Blue, now);
+                let out = arena.step_settled(wall, &[], &[]);
+                absorb(&out, &mut bytes);
+                cells.push(
+                    arena
+                        .unit(RED)
+                        .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
+                );
+                if out.motor.shots > 0 {
+                    fired_at = Some(arena.now_ms);
+                }
+                wall += 500;
+            }
+            (fired_at, cells)
+        };
+        let mut arena = o1_arena(
+            o1_ground(&[], (4, 8), 1, 3_600_000),
+            units(),
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        );
+        let range = plot_range(&arena, RED, BLUE);
+        assert!(
+            range > ENGAGE_CM && range <= RELEASE_CM,
+            "the fixture needs the hostile between the two edges: {range}"
+        );
+        let (fired_at, cells) = fight(&mut arena);
+        let fired_at = fired_at.expect("the holder fired within fifteen arena seconds");
+        assert!(fired_at <= 10_000, "it fired at {fired_at} ms");
+        assert!(
+            cells.iter().all(|cell| *cell == Some((4, 8))),
+            "the holder never left its cell on the spot: {cells:?}"
+        );
+        assert!(o1_inside(&arena, RED));
+        assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Engage));
+        // The control: at a skirmish the same machine closes, leaving the cell.
+        let mut skirmish = arena_of(units(), &[], &arena_cfg(reflex_cfg()), &[BLUE]);
+        let (_, cells) = fight(&mut skirmish);
+        assert!(
+            cells.iter().any(|cell| cell.is_some_and(|(x, _)| x > 5)),
+            "a machine with no spot to hold closes on the hostile: {cells:?}"
+        );
+    }
+
+    /// **16b cut O.1 (plan item 33): an `Advance` into the square ends on
+    /// arrival.** A machine sent by its commander to the key spot from outside the
+    /// square: the moment it stands inside the square its order ends — one
+    /// `order_expired` line, the row back on doctrine — and doctrine's Hold goal
+    /// takes it from there, parking it inside the square with its goal where it
+    /// stands and its speed ordered to nought.
+    #[test]
+    fn o1_an_advance_into_the_square_ends_on_arrival() {
+        let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
+        let mut arena = o1_arena(
+            ground,
+            vec![
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(1, 8),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(15, 0),
+                    vec![cannon()],
+                    Controller::Pilot,
+                ),
+            ],
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        );
+        let squad = arena
+            .squad_of(RED)
+            .map(|roster| roster.id)
+            .expect("the machine is in a squad");
+        let advance =
+            tacsim::arena::intents::IntentKind::Order(Box::new(tacsim::deliberation::Order {
+                squad,
+                objective: tacsim::deliberation::Objective::Advance { to: (10, 8) },
+                target: None,
+                horizon_ms: 600_000,
+                constraints: tacsim::deliberation::Constraints {
+                    hold_fire: false,
+                    max_range_band: None,
+                },
+                ttl_ms: 600_000,
+                issued_ms: 0,
+                issuer: None,
+                by: author(squad, None),
+                spot: None,
+            }));
+        let order = tacsim::arena::intents::Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(RED, Channel::Helm),
+            kind: advance,
+            seq: 1,
+        };
+        let mut bytes: Vec<u8> = Vec::new();
+        absorb(&arena.step_settled(0, &[], &[order]), &mut bytes);
+        // Drive until the order ends, reading where the machine stood when it did.
+        let mut ended_inside: Option<bool> = None;
+        let mut wall = 500_i64;
+        while arena.now_ms < 30_000 && ended_inside.is_none() {
+            assert!(
+                arena.ended.is_none(),
+                "the fixture must remain live until its observation bound"
+            );
+            let out = arena.step_settled(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            if stock_memory_of(&arena, RED).ignore_until_ms.is_some() {
+                ended_inside = Some(o1_inside(&arena, RED));
+            }
+            wall += 500;
+        }
+        assert_eq!(
+            ended_inside,
+            Some(true),
+            "the order ended on arrival in the square"
+        );
+        assert!(
+            arena
+                .minds
+                .get(&RED)
+                .is_some_and(|mind| mind.order.is_some()),
+            "accepted order_end divergence: the arena keeps the order until TTL"
+        );
+        // Doctrine's Hold goal parks it inside the square.
+        run_settled(&mut arena, 40_000, &mut bytes);
+        assert!(arena.minds.contains_key(&RED), "a machine");
+        assert!(o1_inside(&arena, RED));
+        assert_eq!(
+            stock_memory_of(&arena, RED).goal,
+            None,
+            "Hold released its request"
+        );
+        assert!(
+            arena
+                .motors
+                .row(RED)
+                .is_none_or(|motor| motor.requested_goal.is_none())
+        );
+        assert_eq!(
+            arena.unit(RED).map(|state| state.desired_speed_cms),
+            Some(0)
+        );
+        let log = events(&mut arena, &mut bytes);
+        assert_eq!(
+            count(&log, "order_expired"),
+            0,
+            "no new early order authority"
+        );
+    }
+
+    /// **16b cut O.1 (plan items 16, 34; `B-41`'s lesson): a spot no route reaches
+    /// is given up after one search and tried again** — `max(hunt_after_ms,
+    /// repath_ms)` later, with the fallback waypoint holding in between; and at
+    /// `hunt_after_ms` 0 (the documented "off") the retry is `repath_ms` after each
+    /// failure, with the fallback still holding between two of them.
+    #[test]
+    fn o1_a_sealed_spot_is_given_up_after_one_search_and_tried_again() {
+        // Preserve the claim: one failed search, a waypoint while waiting, and
+        // a later retry. The retry clock belongs to the next actual mind think,
+        // not the earlier native motor failure millisecond.
+        for retry in [90_000_i64, 4_000] {
+            let arena = o1_sealed_spot();
+            // The card and runner must be authored from the same configuration.
+            // Rebuild rather than changing only the live cfg beneath their copy.
+            let definition = (*arena.definition).clone();
+            let cfg = ReflexConfig {
+                hunt_after_ms: if retry == 4_000 { 0 } else { 90_000 },
+                repath_ms: 4_000,
+                ..reflex_cfg()
+            };
+            let mut arena = o1_arena(
+                definition,
+                vec![tank(
+                    RED,
+                    Team::Red,
+                    centre(2, 3),
+                    vec![cannon()],
+                    Controller::Mind,
+                )],
+                &arena_cfg(cfg),
+                &[],
+            );
+            let stock = recorded(&mut arena, Lane::Twin);
+            let mut run = Run::default();
+            let mut failures = 0;
+            let mut deadlines = Vec::new();
+            let mut between = 0;
+            let until = if retry == 4_000 { 25_000 } else { 100_000 };
+            arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+            while arena.now_ms < until {
+                assert!(
+                    arena.ended.is_none(),
+                    "the fixture must remain live until its observation bound"
+                );
+                let next = if run.pulses == 0 {
+                    0
+                } else {
+                    arena.now_ms + 500
+                };
+                let out = arena.step_settled(next, &[], &[]);
+                absorb(&out, &mut run.bytes);
+                run.pulses += 1;
+                failures += out.motor.path_failures;
+                let memory = stock_memory_of(&arena, RED);
+                if let Some(deadline) = memory.hold_retry_ms {
+                    if deadlines.last() != Some(&deadline) {
+                        deadlines.push(deadline);
+                    }
+                    if arena.now_ms < deadline {
+                        between += 1;
+                        assert!(
+                            memory.goal.is_some_and(|goal| arena
+                                .definition
+                                .waypoints
+                                .nodes()
+                                .iter()
+                                .any(|node| goal == (node.x, node.y))),
+                            "waiting at a fallback waypoint: {memory:?}"
+                        );
+                    }
+                }
+            }
+            assert!(deadlines.len() >= 2, "the spot was retried: {deadlines:?}");
+            assert!(deadlines.windows(2).all(|pair| pair[1] - pair[0] >= retry));
+            assert!(between >= 10, "the fallback persisted between attempts");
+            assert!(
+                failures >= 2 && failures <= if retry == 4_000 { 6 } else { 2 },
+                "one search per retry, not per pulse: {failures}"
+            );
+            assert!(
+                stock
+                    .kept()
+                    .iter()
+                    .any(
+                        |(_, _, view, result)| view.motor.as_ref().is_some_and(|row| matches!(
+                            row.outcome,
+                            Some(tacsim::arena::perception::DriveOutcome::NoRoute)
+                        )) && tacsim::arena::stock_mind::StockMemory::from(
+                            &tacsim::arena::mind::decode_memory(&result.memory)
+                        )
+                        .hold_retry_ms
+                        .is_some()
+                    ),
+                "an actual think reads NoRoute and answers a retry deadline"
+            );
+        }
+    }
+
+    /// What [`o1_a_holder_with_no_line_waits_on_the_spot`] reads of one field: every
+    /// cell the machine stood in, the states it was in, and the rounds it fired.
+    type O1Wait = (Vec<Option<(u16, u16)>>, Vec<MachineState>, u32);
+
+    /// **16b cut O.1 (plan item 32): a holder with no line waits on the spot.**
+    /// A machine parked on the key spot holds a hostile between its `engage_cm`
+    /// and its `release_cm`, with a wall cell squarely between them. Inside the
+    /// square its edge is `release_cm`, so the hostile is inside it; with no line
+    /// there, a machine off the spot closes on the plot's own cell (E.1's reading)
+    /// — and a holder that did would walk off the square cell by cell. It stands
+    /// instead, in `Approach`, for as long as the line is blocked. The same field
+    /// at a skirmish is the control: that machine leaves its cell.
+    #[test]
+    fn o1_a_holder_with_no_line_waits_on_the_spot() {
+        let units = || {
+            vec![
+                with_sight(
+                    tank(
+                        RED,
+                        Team::Red,
+                        centre(4, 8),
+                        vec![cannon()],
+                        Controller::Mind,
+                    ),
+                    SIGHT_CELLS,
+                ),
+                presenting(tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(12, 8),
+                    vec![cannon()],
+                    Controller::Pilot,
+                )),
+            ]
+        };
+        let curtain = [(8_u16, 8_u16, wall())];
+        // Fifteen arena seconds with the hostile held: every cell the machine
+        // stood in, the states it was in, and the rounds it fired.
+        let wait = |arena: &mut Arena| -> O1Wait {
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut cells = Vec::new();
+            let mut states = Vec::new();
+            let mut shots = 0_u32;
+            let mut wall = 0_i64;
+            while arena.now_ms < 15_000 {
+                assert!(
+                    arena.ended.is_none(),
+                    "the fixture must remain live until its observation bound"
+                );
+                let now = arena.now_ms;
+                plant_contact(arena, RED, BLUE, Team::Blue, now);
+                let out = arena.step_settled(wall, &[], &[]);
+                absorb(&out, &mut bytes);
+                shots += out.motor.shots;
+                cells.push(
+                    arena
+                        .unit(RED)
+                        .and_then(|state| arena.definition.terrain.cell_of(&state.pose)),
+                );
+                states.extend(machine_state_of(arena, RED));
+                wall += 500;
+            }
+            (cells, states, shots)
+        };
+        let mut arena = o1_arena(
+            o1_ground(&curtain, (4, 8), 1, 3_600_000),
+            units(),
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        );
+        let range = plot_range(&arena, RED, BLUE);
+        assert!(
+            range > ENGAGE_CM && range <= RELEASE_CM,
+            "the fixture needs the hostile between the two edges: {range}"
+        );
+        let (cells, states, shots) = wait(&mut arena);
+        assert_eq!(shots, 0, "no line, no shot");
+        assert!(
+            states.contains(&MachineState::Approach),
+            "the machine never took the hostile: {states:?}"
+        );
+        assert!(
+            !states.contains(&MachineState::Engage),
+            "the wall is between them: {states:?}"
+        );
+        assert!(
+            cells.iter().all(|cell| *cell == Some((4, 8))),
+            "the holder left its cell on the spot: {cells:?}"
+        );
+        assert!(o1_inside(&arena, RED));
+        // The control: at a skirmish the same machine closes on the hostile.
+        let mut skirmish = arena_of(units(), &curtain, &arena_cfg(reflex_cfg()), &[BLUE]);
+        let (cells, _, _) = wait(&mut skirmish);
+        assert!(
+            cells.iter().any(|cell| cell.is_some_and(|(x, _)| x > 5)),
+            "a machine with no spot to hold closes on the hostile: {cells:?}"
+        );
+    }
+
+    /// **16b cut O.1 (plan item 33): an `Advance` to a cell on the square's edge
+    /// hands over one cell short of it.** The ordered cell is the west edge of the
+    /// square; a machine driving at it from the west stops within
+    /// [`tacsim::arena::motor::ARRIVE_CELLS`] of it — which can be outside the
+    /// square — and an order ended only by standing inside would then stand for
+    /// its whole TTL. Ended at `follow`'s own arrival instead: one
+    /// mind-side completion, and doctrine's Hold goal drives it the last cells in.
+    /// The arena retains the accepted order until its ordinary TTL.
+    #[test]
+    fn o1_an_advance_to_the_squares_edge_hands_over_where_it_stops() {
+        let ground = o1_ground(&[], (10, 8), 3, 3_600_000);
+        let mut arena = o1_arena(
+            ground,
+            vec![
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(1, 8),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(15, 0),
+                    vec![cannon()],
+                    Controller::Pilot,
+                ),
+            ],
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        );
+        let stock = recorded(&mut arena, Lane::Twin);
+        let edge = (7_u16, 8_u16);
+        assert!(arena.hold.is_some_and(
+            |hold| hold.square_contains(edge) && !hold.square_contains((edge.0 - 1, edge.1))
+        ));
+        let order = o1_advance(&arena, RED, edge);
+        let mut bytes: Vec<u8> = Vec::new();
+        absorb(&arena.step_settled(0, &[], &[order]), &mut bytes);
+        let mut ended_at: Option<(u16, u16)> = None;
+        let mut wall = 500_i64;
+        while arena.now_ms < 30_000 && ended_at.is_none() {
+            assert!(
+                arena.ended.is_none(),
+                "the fixture must remain live until its observation bound"
+            );
+            let out = arena.step_settled(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            if stock_memory_of(&arena, RED).ignore_until_ms.is_some() {
+                ended_at = arena
+                    .unit(RED)
+                    .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+            }
+            wall += 500;
+        }
+        let ended_at = ended_at.expect("the order ended within thirty arena seconds");
+        let kept = stock.kept();
+        let (_, _, view, _) = kept
+            .iter()
+            .find(|(_, _, _, answer)| {
+                tacsim::arena::stock_mind::StockMemory::from(&tacsim::arena::mind::decode_memory(
+                    &answer.memory,
+                ))
+                .ignore_until_ms
+                .is_some()
+            })
+            .expect("an actual scheduled think handed Advance over");
+        if !view
+            .cell
+            .is_some_and(|cell| arena.hold.is_some_and(|hold| hold.square_contains(cell)))
+        {
+            assert!(
+                view.motor
+                    .as_ref()
+                    .is_some_and(|motor| motor.requested_goal == edge
+                        && motor.outcome == Some(tacsim::arena::perception::DriveOutcome::Arrived)),
+                "outside the square, handover needs this request's completed motor result"
+            );
+        }
+        assert!(
+            ended_at.0.abs_diff(edge.0).max(ended_at.1.abs_diff(edge.1))
+                <= tacsim::arena::motor::ARRIVE_CELLS,
+            "it ended where `follow` stops: {ended_at:?}"
+        );
+        assert!(
+            arena.minds.get(&RED).is_some_and(|row| row.order.is_some()),
+            "accepted order_end divergence: the order is ignored, not expired early"
+        );
+        run_settled(&mut arena, 45_000, &mut bytes);
+        assert!(o1_inside(&arena, RED), "doctrine drove it into the square");
+        assert!(arena.minds.contains_key(&RED), "a machine");
+        assert_eq!(
+            stock_memory_of(&arena, RED).goal,
+            None,
+            "Hold released its request"
+        );
+        assert!(
+            arena
+                .motors
+                .row(RED)
+                .is_none_or(|motor| motor.requested_goal.is_none())
+        );
+        assert_eq!(
+            arena.unit(RED).map(|state| state.desired_speed_cms),
+            Some(0)
+        );
+        let log = events(&mut arena, &mut bytes);
+        assert_eq!(
+            count(&log, "order_expired"),
+            0,
+            "no new early order authority"
+        );
+    }
+
+    /// A squad `Advance { to }` for `unit`, on the helm, as the commander sends it.
+    fn o1_advance(arena: &Arena, unit: ObjId, to: (u16, u16)) -> tacsim::arena::intents::Intent {
+        let squad = arena
+            .squad_of(unit)
+            .map(|roster| roster.id)
+            .expect("the machine is in a squad");
+        tacsim::arena::intents::Intent {
+            unit,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(unit, Channel::Helm),
+            kind: tacsim::arena::intents::IntentKind::Order(Box::new(
+                tacsim::deliberation::Order {
+                    squad,
+                    objective: tacsim::deliberation::Objective::Advance { to },
+                    target: None,
+                    horizon_ms: 600_000,
+                    constraints: tacsim::deliberation::Constraints {
+                        hold_fire: false,
+                        max_range_band: None,
+                    },
+                    ttl_ms: 600_000,
+                    issued_ms: 0,
+                    issuer: None,
+                    by: author(squad, None),
+                    spot: None,
+                },
+            )),
+            seq: 1,
+        }
+    }
+
+    /// **The Hold machines' two fields for the cross-tempo property** (16b cut
+    /// O.1; 16b §11): (a) a machine on doctrine driving to the spot and parking,
+    /// beside one sent there by an `Advance` at pulse `0` that hands over on
+    /// arrival; (b) a machine whose spot is sealed, giving it up and retrying
+    /// every `max(hunt_after_ms, repath_ms)` with the fallback between.
+    fn o1_drive_and_hand_over() -> Arena {
+        o1_arena(
+            o1_ground(&[], (10, 8), 3, 3_600_000),
+            vec![
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(1, 4),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                tank(
+                    RED2,
+                    Team::Red,
+                    centre(1, 12),
+                    vec![cannon()],
+                    Controller::Mind,
+                ),
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(15, 0),
+                    vec![cannon()],
+                    Controller::Pilot,
+                ),
+            ],
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        )
+    }
+
+    fn o1_sealed_spot() -> Arena {
+        let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
+        for x in 8..=12_u16 {
+            paint.push((x, 6, wall()));
+            paint.push((x, 10, wall()));
+        }
+        for y in 6..=10_u16 {
+            paint.push((8, y, wall()));
+            paint.push((12, y, wall()));
+        }
+        o1_arena(
+            o1_ground(&paint, (10, 8), 1, 3_600_000),
+            vec![tank(
+                RED,
+                Team::Red,
+                centre(2, 3),
+                vec![cannon()],
+                Controller::Mind,
+            )],
+            &arena_cfg(ReflexConfig {
+                hunt_after_ms: 10_000,
+                repath_ms: 4_000,
+                ..reflex_cfg()
+            }),
+            &[],
+        )
+    }
+
+    /// The original Hold cadence property, now native/twin/Rhai with a resumed
+    /// suffix. The two independent fixtures prove arrival/hand-over and retry.
+    #[test]
+    fn o1_the_hold_machines_are_one_event_list_and_one_hash_sequence_at_three_cadences() {
+        for sealed in [false, true] {
+            let mut baseline = None;
+            for (lane, cadence) in native_matrix() {
+                let mut arena = if sealed {
+                    o1_sealed_spot()
+                } else {
+                    o1_drive_and_hand_over()
+                };
+                let stock = recorded(&mut arena, lane);
+                let mut run = Run::default();
+                if !sealed {
+                    let advance = o1_advance(&arena, RED2, (10, 8));
+                    step(&mut arena, 0, &[advance], &mut run);
+                }
+                to(&mut arena, 20_000, cadence, &mut run);
+                if matches!(lane, Lane::Twin) {
+                    resume_suffix(&mut arena, 40_000, cadence, &mut run);
+                } else {
+                    to(&mut arena, 40_000, cadence, &mut run);
+                }
+                let result = signature(&mut arena, &mut run);
+                assert!(result.1.len() >= 100, "many real substeps");
+                assert!(
+                    stock.kept().iter().all(|(_, _, view, _)| view.mode
+                        == tacsim::arena::MatchMode::Hold
+                        && view
+                            .objective
+                            .as_ref()
+                            .is_some_and(|hold| hold.spot == (10, 8))),
+                    "each real think receives the public Hold objective"
+                );
+                if sealed {
+                    let mut deadlines: Vec<_> = stock
+                        .kept()
+                        .iter()
+                        .filter_map(|(_, _, _, answer)| {
+                            tacsim::arena::stock_mind::StockMemory::from(
+                                &tacsim::arena::mind::decode_memory(&answer.memory),
+                            )
+                            .hold_retry_ms
+                        })
+                        .collect();
+                    deadlines.dedup();
+                    assert!(
+                        deadlines.len() >= 2,
+                        "at least two completed failures: {deadlines:?}"
+                    );
+                } else {
+                    assert!(o1_inside(&arena, RED) && o1_inside(&arena, RED2));
+                    assert!(stock_memory_of(&arena, RED2).ignore_until_ms.is_some());
+                    assert!(
+                        arena
+                            .minds
+                            .get(&RED2)
+                            .is_some_and(|mind| mind.order.is_some())
+                    );
+                    assert!(
+                        result
+                            .0
+                            .iter()
+                            .all(|(_, kind, _)| !kind.contains("order_expired"))
+                    );
+                }
+                if let Some(first) = &baseline {
+                    assert_eq!(&result, first, "Hold sealed={sealed}, cadence={cadence}");
+                } else {
+                    baseline = Some(result);
+                }
+            }
+        }
+    }
+
+    // Restored STOP A: released unarmed drone reaches the public Hold objective.
+    #[test]
+    fn ae3_a_released_drone_in_a_hold_match_drives_to_the_spot_and_holds_nothing() {
+        let never_fights = |arena: &Arena, unit: ObjId| {
+            let state = machine_state_of(arena, unit);
+            assert!(
+                !matches!(state, Some(MachineState::Approach | MachineState::Engage)),
+                "a drone has no gun to close with: {state:?} at {} ms",
+                arena.now_ms
+            );
+            assert_eq!(
+                arena.unit(unit).and_then(|state| state.lock),
+                None,
+                "and it locks nothing"
+            );
+        };
+        let mut arena = o1_arena(
+            o1_ground(&[], (10, 8), 3, 3_600_000),
+            vec![
+                ae3_drone(RED, Team::Red, (1, 4), 3, 0),
+                tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(15, 0),
+                    vec![cannon()],
+                    Controller::Pilot,
+                ),
+            ],
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        );
+        let stock = recorded(&mut arena, Lane::Twin);
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut wall = arena.now_ms;
+        let mut reached = false;
+        while arena.now_ms < 60_000 {
+            assert!(
+                arena.ended.is_none(),
+                "the fixture must remain live until its observation bound"
+            );
+            let out = arena.step_settled(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            never_fights(&arena, RED);
+            if o1_inside(&arena, RED) {
+                reached = true;
+                break;
+            }
+            wall += 500;
+        }
+        assert!(
+            reached,
+            "the drone never drove onto the square: it stands at {:?}",
+            arena
+                .unit(RED)
+                .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+        );
+        // On it, and on it for a while: no presence, no clock, no end.
+        let until = arena.now_ms + 20_000;
+        run_settled(&mut arena, until, &mut bytes);
+        assert!(o1_inside(&arena, RED), "the drone left the square");
+        assert_eq!(
+            arena.hold_presence(),
+            None,
+            "a drone alone on the square holds nothing"
+        );
+        assert_eq!(
+            arena.hold.and_then(|hold| hold.held_by),
+            None,
+            "no Hold clock opened for red"
+        );
+        assert!(
+            stock.kept().iter().any(|(_, _, view, answer)| view.mode
+                == tacsim::arena::MatchMode::Hold
+                && view
+                    .objective
+                    .as_ref()
+                    .is_some_and(|hold| hold.spot == (10, 8))
+                && answer.fault.is_none()),
+            "the drone really thinks with the public Hold objective"
+        );
+        let log = events(&mut arena, &mut bytes);
+        assert_eq!(count(&log, "match_ended"), 0, "and nothing ended");
+        assert_eq!(count(&log, "fired"), 0, "a drone fires nothing");
+    }
 }

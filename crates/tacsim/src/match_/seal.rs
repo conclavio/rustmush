@@ -722,7 +722,7 @@ mod tests {
                     card: card.clone(),
                     card_digest,
                     armed: Vec::new(),
-                    abi: SmolStr::new_static("rhai=1.26.0;api=2;stock=1"),
+                    abi: SmolStr::new_static("rhai=1.26.0;api=3;stock=2"),
                     licence: SmolStr::new_static("doctrine"),
                     principal: Some(CharacterRef::Character { id: ObjId(77) }),
                     channels: vec![Channel::Helm, Channel::Sensors, Channel::Fire],
@@ -1061,26 +1061,26 @@ mod m5_tests {
                 ));
             }
         }
-        // M5rules API/source identities; card bytes and seal shape are unchanged.
+        // M5r API/source identities; card bytes and seal shape are unchanged.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             54e6f966a4ac508003f0855cd7c374718a416cd8b3ed9b3c311b19bc57ef0168",
+             f43574cdf7d9db2d442579090ce24724ca0c5b89b220be2854e1b3b02ef2cb0e",
             "tacsim.unit.line_tank production_fixture \
-             54e6f966a4ac508003f0855cd7c374718a416cd8b3ed9b3c311b19bc57ef0168",
+             f43574cdf7d9db2d442579090ce24724ca0c5b89b220be2854e1b3b02ef2cb0e",
             "tacsim.unit.line_tank production_principal \
-             dcf4b8d7298f5a9717d3dccc8ab74f31ee6242e3d02d480ebdff5423f8442e2e",
+             c65378815d221daed6d5a92798442a5f167b20d84d3a0d5a088afcb3f2f83daf",
             "tacsim.unit.heavy_mk1 fixture \
-             2e7d1ede042c7eb4781e840ef61f264be03036798bb10054bf63daffb610c18b",
+             f4e5727194862e9d8d3bd8a7f8a7024705dbf805abfcdbacb5c437748ae238d4",
             "tacsim.unit.heavy_mk1 production_fixture \
-             2e7d1ede042c7eb4781e840ef61f264be03036798bb10054bf63daffb610c18b",
+             f4e5727194862e9d8d3bd8a7f8a7024705dbf805abfcdbacb5c437748ae238d4",
             "tacsim.unit.heavy_mk1 production_principal \
-             114b6a64463a3d06d41f0a940c78557b9071607f85800089a33b4c2509844997",
+             3a98946b5cc79330f92203359d62786378cfeb6c842bd771396d1aa0be8b8645",
             "tacsim.unit.target_mk1 fixture \
-             a52570dc1e9f6ff3d7895389975ebb8465e7ff3697c0fbbedd4051db874fa3df",
+             86a58d015d834ed5cb8400422050b2c70ed4993882c52904ab2d80c905736f03",
             "tacsim.unit.target_mk1 production_fixture \
-             a52570dc1e9f6ff3d7895389975ebb8465e7ff3697c0fbbedd4051db874fa3df",
+             86a58d015d834ed5cb8400422050b2c70ed4993882c52904ab2d80c905736f03",
             "tacsim.unit.target_mk1 production_principal \
-             8963fe397460f3237a5ab4bf2a197b7968718b2f8cb4f0b4106ae83a7214cbd7",
+             0e8b6a9d941d96df94fe1c1ec33274f70c678958a26492de429e1cc9454f2eda",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }
