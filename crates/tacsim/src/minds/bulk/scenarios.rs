@@ -383,12 +383,13 @@ impl ScenarioFactory {
                         let cell = i64::from(definition.terrain.cell_cm());
                         let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
                             .map_err(|e| invalid(e.to_string()))?;
-                        let proposed = Pose::at(
+                        let mut proposed = Pose::at(
                             i64::from(x) * cell + cell / 2,
                             i64::from(y) * cell + cell / 2,
-                            if team == Team::Red { 90_000 } else { 270_000 },
+                            0,
                             posture,
                         );
+                        proposed.heading_mdeg = if team == Team::Red { 90_000 } else { 270_000 };
                         let pose = crate::match_::opening_pose(
                             &definition,
                             team,
@@ -524,6 +525,67 @@ mod tests {
     use mush_atlas::{AtlasModule, AtlasState};
     use mush_content::{Appliers, ContentModule};
     use mush_testkit::TestWorld;
+
+    #[test]
+    fn m6_proving_frozen_openings_face_the_opposing_side() {
+        let mut appliers = Appliers::new();
+        mush_atlas::register_appliers(&mut appliers).unwrap();
+        let atlas = mush_content::parse_pack(content::PROVING_GROUND_ATLAS_JSON).unwrap();
+        let world = TestWorld::with_modules(vec![
+            Box::new(AtlasModule::new()),
+            Box::new(
+                ContentModule::new()
+                    .with_appliers(appliers)
+                    .with_boot_packs(vec![atlas]),
+            ),
+        ]);
+        let records = world
+            .world()
+            .module_state::<AtlasState>()
+            .unwrap()
+            .records
+            .clone();
+        let factory = ScenarioFactory::new(
+            Arc::new(Catalog::build_game(&[], crate::NS).unwrap()),
+            Arc::new(records),
+            TacsimConfig::default(),
+        );
+        // Reopen actual compressed starts from the production factory. Both
+        // paired sides and all shipped placement recipes must preserve facing;
+        // checking only the eventual elevation would miss Pose::at's z argument.
+        for scenario in [Scenario::Duel, Scenario::Muster, Scenario::Hold] {
+            let recipe = Recipe::owned(
+                &RollStore::default(),
+                &crate::store::TacsimStore::default(),
+                ObjId(99),
+                "Standard/Line",
+                "Standard/Line",
+                scenario,
+                1,
+                10,
+                1,
+            )
+            .unwrap();
+            let mut prepared = factory.prepare(&recipe).unwrap();
+            let starts = FrozenStarts::decode(prepared.bytes_mut().bytes()).unwrap();
+            assert_eq!(starts.games.len(), 10);
+            for index in 0..10 {
+                let header = starts.header(index).unwrap();
+                let arena = crate::minds::resimulation::open_frozen_header(&header).unwrap();
+                assert_eq!(arena.units.len(), 2);
+                for team in [Team::Red, Team::Blue] {
+                    let unit = arena.units.iter().find(|unit| unit.team == team).unwrap();
+                    let expected = if team == Team::Red { 90_000 } else { 270_000 };
+                    assert_eq!(
+                        unit.pose.heading_mdeg, expected,
+                        "{scenario:?} game{index} {team:?}"
+                    );
+                    assert_eq!(unit.desired_heading_mdeg, expected);
+                    assert_eq!(unit.power, crate::arena::Power::Off);
+                }
+            }
+        }
+    }
 
     #[test]
     fn m6_frozen_v2_prepares_all_one_hundred_stock_muster_6v6_games_under_existing_cap() {
