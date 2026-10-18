@@ -1191,6 +1191,47 @@ pub fn set_vault_status(
     true
 }
 
+/// **Re-own a vault** (doc 18 cut IC13): a doc-authority record write, like
+/// [`set_vault_status`] — not journaled, `revision` bumped, persisted. The owner index
+/// follows (`EconomySnapshot::put_vault`'s re-owned-vault rule); the backing and the
+/// status are untouched, so the pools keyed by the vault's endpoint stay where they are.
+/// Returns `false` (nothing written) when the vault is unknown or `owner` is a
+/// `System` principal (nobody acts for one, so its vault could never be emptied).
+///
+/// A re-home moves no allocator, so only the vault document is persisted (the
+/// allocator `meta` doc is [`create_vault`]'s write because `alloc_vault` moved it).
+pub fn rehome_vault(
+    ctx: &mut Ctx<'_>,
+    id: VaultId,
+    owner: PrincipalId,
+    scope: Option<OrgScopeId>,
+    name: SmolStr,
+) -> bool {
+    if matches!(owner, PrincipalId::System(_)) {
+        return false;
+    }
+    let doc = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return false;
+        };
+        let Some(prev) = store.snapshot.vault(id) else {
+            return false;
+        };
+        let next = Vault {
+            owner,
+            scope,
+            name,
+            revision: prev.revision.saturating_add(1),
+            ..prev.clone()
+        };
+        // Through `put_vault`, never `vault_mut`: the owner index moves with it.
+        store.snapshot.put_vault(next.clone());
+        next
+    };
+    persist_vault(ctx.out, &doc);
+    true
+}
+
 // ---- the money seam -------------------------------------------------------
 
 /// The result of a post.

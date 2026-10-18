@@ -395,6 +395,39 @@ impl TacsimStore {
         self.enrolments.values().find(|e| e.lease == lease)
     }
 
+    /// The readable enrolment whose buyout contract is `contract` (`ContractId.0`;
+    /// doc 18 cut IC13).
+    #[must_use]
+    pub fn enrolment_for_buyout(&self, contract: u64) -> Option<&crate::port::coop::Enrolment> {
+        self.enrolments
+            .values()
+            .find(|e| e.buyout == Some(contract))
+    }
+
+    /// **The enrolment governing a hull** (doc 18 cut IC13): the one standing
+    /// `Active`, `BuyoutPending` or `Graduated` for that hull, else the `Revoked`
+    /// one with the greatest `ended_at`. One hull carries at most one non-Revoked
+    /// enrolment and any number of Revoked ones (one per past tenant).
+    #[must_use]
+    pub fn enrolment_for_hull(&self, hull: ObjId) -> Option<&crate::port::coop::Enrolment> {
+        use crate::port::coop::EnrolmentStatus;
+        let mut on_hull = self.enrolments.values().filter(|e| e.hull == hull);
+        let mut latest_revoked: Option<&crate::port::coop::Enrolment> = None;
+        for e in on_hull.by_ref() {
+            match e.status {
+                EnrolmentStatus::Active
+                | EnrolmentStatus::BuyoutPending
+                | EnrolmentStatus::Graduated => return Some(e),
+                EnrolmentStatus::Revoked => {
+                    if latest_revoked.is_none_or(|best| e.ended_at > best.ended_at) {
+                        latest_revoked = Some(e);
+                    }
+                }
+            }
+        }
+        latest_revoked
+    }
+
     /// Every readable enrolment, in account order.
     pub fn enrolments(&self) -> impl Iterator<Item = &crate::port::coop::Enrolment> {
         self.enrolments.values()

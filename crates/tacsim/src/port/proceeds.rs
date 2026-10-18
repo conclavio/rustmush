@@ -25,6 +25,13 @@
 //! - **The counters** fold at settlement (lead ruling (e)), keyed by the pair
 //!   `(pilot == seller, vault == source)` — never by the vault alone, since a hull's
 //!   hold outlives a charter once cut IC13's recall frees a revoked Dray (reviewer F3).
+//!   A **graduated** enrolment folds nothing (cut IC13, lead ruling L10): the hull is
+//!   the pilot's and the lay has ended. A Revoked one still folds a programme sale
+//!   accepted before its charter ended, which settles on programme terms.
+//! - **The residual** (cut IC13): a settlement healed at boot through
+//!   `reconcile_contracts` is not folded (the IC10 residual); the counters are the
+//!   Trust's bookkeeping only, and the buyout price is the enrolment's frozen
+//!   `buyout_minor`, never derived from them.
 //!
 //! The policy reads `&World` only when it prices a sale, and writes only the
 //! enrolment, through the store's single write path, when it is told one settled.
@@ -169,6 +176,18 @@ fn reference_of(
     ))
 }
 
+/// **Whether an enrolment in this status takes the Co-op's share** (doc 18 §4.1, cut
+/// IC13, lead ruling L10): `Active` and `BuyoutPending` do; `Graduated` and `Revoked`
+/// do not. A graduated hull carries no Trust lease, so [`enrolled`] already answers
+/// `Ok(None)` before it reads a status; this arm is the belt (lead 2h).
+#[must_use]
+pub(crate) const fn takes_share(status: EnrolmentStatus) -> bool {
+    match status {
+        EnrolmentStatus::Active | EnrolmentStatus::BuyoutPending => true,
+        EnrolmentStatus::Graduated | EnrolmentStatus::Revoked => false,
+    }
+}
+
 /// Whether the sale's source is an enrolled hold, and if so the enrolment's frozen
 /// permille. `Err` for a live charter with dark books or another pilot.
 fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefusal> {
@@ -188,13 +207,7 @@ fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefu
     let enrolment = w
         .module_state::<TacsimStore>()
         .and_then(|s| s.enrolment_for_lease(lease.id.0))
-        .filter(|e| {
-            e.vault == sale.source.vault().0
-                && matches!(
-                    e.status,
-                    EnrolmentStatus::Active | EnrolmentStatus::BuyoutPending
-                )
-        });
+        .filter(|e| e.vault == sale.source.vault().0 && takes_share(e.status));
     let Some(enrolment) = enrolment else {
         return Err(refuse(SALE_BOOKS_DARK.to_owned()));
     };
@@ -293,6 +306,15 @@ impl ProceedsPolicy for CoopProceeds {
             );
             return;
         };
+        // Cut IC13 (lead ruling L10): a graduate's lay has ended; nothing folds.
+        if e.status == EnrolmentStatus::Graduated {
+            tracing::debug!(
+                quote = sale.quote.0,
+                pilot = pilot.0,
+                "tacsim: a graduate's sale settled; the Co-op's counters do not move"
+            );
+            return;
+        }
         let shares = sale
             .cuts
             .iter()
@@ -334,6 +356,15 @@ mod tests {
 
     fn cr(major: i64) -> Amount {
         Amount::from_minor(major * 100)
+    }
+
+    /// Doc 18 cut IC13 (lead ruling L10): the share stops at graduation.
+    #[test]
+    fn ic13_a_graduate_takes_no_share() {
+        assert!(takes_share(EnrolmentStatus::Active));
+        assert!(takes_share(EnrolmentStatus::BuyoutPending));
+        assert!(!takes_share(EnrolmentStatus::Graduated));
+        assert!(!takes_share(EnrolmentStatus::Revoked));
     }
 
     #[test]

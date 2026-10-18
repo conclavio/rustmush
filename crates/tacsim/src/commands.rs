@@ -166,7 +166,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: crate::port::coop::COOP_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["enrol", "statement"]
+            switches: ["enrol", "statement", "buyout", "release"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -175,6 +175,23 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(crate::port::coop::coop_cmd),
+    )?;
+    // ---- Doc 18 cut IC13 (§4.1 "Losses, dormancy and release"; D-18-25; lead ruling
+    // L9): `@coop/revoke`, staff ----
+    //
+    // The name doc 18 §4.1 and 18a §4 give (R8) outranks the common preference for a
+    // switch on an existing verb. Under the module's `LegacyPostImage` class: the
+    // recall's writes are the enrolment document, `end_lease`, `rehome_vault`, the
+    // sailing plan, the hull's name and the placements — no authoritative submission.
+    reg.command(
+        CommandSpec {
+            name: crate::port::recall::COOP_STAFF_VERB.into(),
+            shape: ArgShape::EqPair,
+            switches: ["revoke"].iter().copied().map(SmolStr::new).collect(),
+            help: crate::port::recall::COOP_STAFF_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::recall::revoke_cmd),
     )?;
     // ---- Doc 18 cut IC9 (§4.2, §4.4; D-18-11, D-18-23, D-18-46): `+ship`, Authoritative ----
     //
@@ -219,12 +236,12 @@ fn lines(ctx: &mut Ctx<'_>, rows: Vec<String>) {
 }
 
 /// Staff, on `mush-market`'s exact test.
-fn is_staff(w: &World, who: ObjId) -> bool {
+pub(crate) fn is_staff(w: &World, who: ObjId) -> bool {
     mush_core::perm::has_power(w, who, mush_core::Powers::SIM_ADMIN)
         || mush_core::perm::has_role(w, who, mush_core::Role::Royalty)
 }
 
-fn require_staff(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+pub(crate) fn require_staff(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     if is_staff(ctx.w, ctx.actor) {
         Ok(())
     } else {
@@ -238,7 +255,7 @@ fn store<'a>(ctx: &'a Ctx<'_>) -> Result<&'a TacsimStore, CmdError> {
         .ok_or_else(|| CmdError::msg(NOT_ENABLED))
 }
 
-fn require_enabled(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+pub(crate) fn require_enabled(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     if store(ctx)?.enabled() {
         Ok(())
     } else {

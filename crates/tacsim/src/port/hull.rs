@@ -757,6 +757,12 @@ pub(crate) fn hull_line(
     // the voyage pendings (World-only; the ticket is typed state).
     let mut departing = 0_usize;
     let mut leased: Vec<String> = Vec::new();
+    // Doc 18 cut IC13 (lead ruling L8, lead 2j): graduated hulls, buyouts being
+    // entered and charters ended whose hold is not yet back. None is free; none ever
+    // closes the gate.
+    let mut graduated: Vec<String> = Vec::new();
+    let mut buying: Vec<String> = Vec::new();
+    let mut recalled: Vec<String> = Vec::new();
     for row in &map.hulls {
         let mark = &row.mark;
         let gone = std::iter::once(row.hull)
@@ -781,15 +787,26 @@ pub(crate) fn hull_line(
         if !complete {
             return missing(format!("{mark}'s interior is incomplete."));
         }
-        let titled = economy
-            .and_then(|e| {
-                e.snapshot()
-                    .asset(ObjId(row.hull))
-                    .map(|a| a.title_owner.clone())
-            })
-            .is_some_and(|owner| Some(owner) == trust);
-        if !titled {
-            return missing(format!("{mark} is not titled to {org_name}."));
+        let title = economy.and_then(|e| {
+            e.snapshot()
+                .asset(ObjId(row.hull))
+                .map(|a| a.title_owner.clone())
+        });
+        match title {
+            Some(owner) if Some(&owner) == trust.as_ref() => {}
+            // Cut IC13: a hull titled to a player is a graduate's — counted, and never
+            // free, leased or recalled.
+            Some(PrincipalId::Object(owner))
+                if w.get(owner)
+                    .is_some_and(|o| o.kind == mush_core::ObjKind::Player) =>
+            {
+                graduated.push(format!(
+                    "{mark} to {}",
+                    mush_core::output::display_name(w, owner)
+                ));
+                continue;
+            }
+            Some(_) | None => return missing(format!("{mark} is not titled to {org_name}.")),
         }
         let hull = ObjId(row.hull);
         let moving = journeys.is_some_and(|book| book.under_way(hull));
@@ -818,12 +835,31 @@ pub(crate) fn hull_line(
                 );
                 leased.push(format!("{mark} to {tenant}"));
             }
+            // Cut IC13: no lease, but the stowage's hold is still someone's (the same
+            // predicate as `hull_is_free`): a buyout being entered, or a charter ended
+            // whose hull is not yet back in the pool. Neither is free.
+            None if held(economy, trust.as_ref(), interior, row) => {
+                let pending = store
+                    .enrolment_for_hull(hull)
+                    .is_some_and(|e| e.status == crate::port::coop::EnrolmentStatus::BuyoutPending);
+                if pending {
+                    buying.push(mark.clone());
+                } else {
+                    recalled.push(mark.clone());
+                }
+            }
             // Doc 18 cut IC9 (the IC6 residual): a moving hull is never free.
             None if laid_up && !moving => free = free.saturating_add(1),
             None => {}
         }
     }
-    if leased.is_empty() && under_way == 0 && departing == 0 {
+    if leased.is_empty()
+        && under_way == 0
+        && departing == 0
+        && graduated.is_empty()
+        && buying.is_empty()
+        && recalled.is_empty()
+    {
         return Some((
             LineState::Ready,
             format!("{entry} hulls: {pool} of {pool} made, titled to {org_name} and laid up."),
@@ -844,14 +880,50 @@ pub(crate) fn hull_line(
     } else {
         String::new()
     };
+    // Cut IC13: each clause only when its count is above zero, so every earlier text
+    // stays byte-identical.
+    let clause = |what: &str, rows: &[String]| {
+        if rows.is_empty() {
+            String::new()
+        } else {
+            format!(", {} {what} ({})", rows.len(), rows.join(", "))
+        }
+    };
+    let grad = clause("graduated", &graduated);
+    let buying = clause("being bought out", &buying);
+    let recalled = clause("recalled, not yet returned", &recalled);
+    let head = if graduated.is_empty() {
+        format!("{entry} hulls: {pool} of {pool} made and titled to {org_name};")
+    } else {
+        let titled = usize::try_from(pool)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(graduated.len());
+        format!("{entry} hulls: {pool} of {pool} made, {titled} titled to {org_name};")
+    };
     Some((
         LineState::Ready,
         format!(
-            "{entry} hulls: {pool} of {pool} made and titled to {org_name}; {free} laid up and \
-             free, {} leased{leases}{under}{leaving}.",
+            "{head} {free} laid up and free, {} leased{leases}{grad}{buying}{recalled}{under}\
+             {leaving}.",
             leased.len()
         ),
     ))
+}
+
+/// Whether a hull row's stowage hold is still someone's (cut IC13): the readiness
+/// line's reading of [`crate::port::coop::stowage_held`].
+fn held(
+    economy: Option<&EconomyStore>,
+    trust: Option<&PrincipalId>,
+    interior: Option<&InteriorDef>,
+    row: &HullRow,
+) -> bool {
+    let (Some(economy), Some(trust), Some(interior)) = (economy, trust, interior) else {
+        return false;
+    };
+    row.rooms
+        .get(&interior.store)
+        .is_some_and(|stowage| crate::port::coop::stowage_held(economy, trust, ObjId(*stowage)))
 }
 
 #[cfg(test)]

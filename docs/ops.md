@@ -1059,6 +1059,61 @@ is told once, staff are paged. When the cause clears it launches the frozen plan
 at its own instant. `@tacsim/port clear #<hull>` stands the clearance down: the
 ticket stays as the record, nothing burned is refunded, and the pilot is told.
 
+### Buyout, release, revocation and dormancy (doc 18 cut IC13)
+
+**`@coop/revoke <pilot>=<why>`** (staff) ends a First Captain's charter now and
+takes the Dray back into the Co-op's pool. `<pilot>` resolves anywhere in the
+world, wherever you stand: a name or alias (`Ash`), `*Ash`, or `#<dbref>`, and it
+must be a player. `<why>` is 1 to 200 bytes; it is recorded on the enrolment with
+your name and **shown to the pilot** in the revocation notice. The revocation runs
+the same recall a week without a departure makes, under the same rule: the hull
+docked at Ceres, her cargo hold empty, nothing filed or at the counter, no goods
+moving. Otherwise it refuses with the reason ("Not revoked: …") and writes nothing.
+To end only the lease, anywhere, use `@contract/cancel #<lease>`; the tick's
+return arm then takes the hull back once she is docked at Ceres with an empty hold.
+
+**The recall arm's pages** (each once per hull per boot, then re-checked every 24
+fires):
+
+- *"the hull is dormant but cannot be recalled where it is"*: a chartered Dray
+  has gone a week without a departure but is away from Ceres, carries cargo, or
+  has something in flight. Her sailing plan is held (the pilot is told). Get her
+  docked at Ceres with an empty hold — the pilot's own departure resets the week —
+  or `@coop/revoke` once she is.
+- *"a revoked hull is not back in the pool"*: a charter ended elsewhere (staff
+  `@contract/cancel`, a lease end that retried, a refunded buyout whose re-lease
+  failed) and the hull is not docked at Ceres with an empty hold. Staff move her
+  cargo or the hull by hand; the arm returns her once she is.
+- An unreadable dormancy read (a voyage, ticket or sailing plan that does not
+  read) never recalls; it pages once and waits for the document to be repaired.
+
+A dormant hull with a **filed voyage** is never touched by the recall arm: the
+launch arm's held-launch page (above) is the page, and its runbook is
+`@tacsim/port clear #<hull>`. A burned ticket counts as a departure, and an
+unburned filing lapses on its own, so the recall arm adds no second page.
+
+**The buyout's error pages.** Both self-heal; neither needs a staff act unless the
+economy sweep keeps failing:
+
+- *"the lease end is retrying"*: `end_lease` returned `Retrying`. The verb
+  cancelled its own buyout (the pilot's money comes back) and left the enrolment
+  buyout-pending; when the sweep finishes the lease, the observer re-charters the
+  pilot on the same hull. `@contract/show #<lease>`.
+- *"the buyout's refund is retrying in the economy sweep"*: `cancel_contract`
+  answered that its own refund unwind was refused, so the escrow is still reserved
+  and the contract is still in force while the sweep retries. The pilot was told
+  the money is on its way back. `@contract/show #<id>`. When the refund lands the
+  contract goes Cancelled and the observer re-charters the pilot.
+
+**The recall's Retrying window.** When a recall's `end_lease` returns `Retrying`,
+the enrolment is already revoked but the lease is still Active with a pending
+terminal. During that window the pilot can still board, undock and run the queue
+(the operate gate reads the lease, as for every lease end that retries), every
+sale refuses with the "books cannot be read" line, and `+coop` still prints the
+charter line. Once the sweep ends the lease, the return arm takes the hull back if
+she is docked at Ceres with an empty hold, and otherwise pages "a revoked hull is
+not back in the pool".
+
 ### The play rate: the rate-24 deploy line
 
 Play runs at **24 IC seconds per real second**, and the Rate line refuses

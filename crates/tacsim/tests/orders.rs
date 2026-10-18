@@ -43,9 +43,9 @@ use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::executor::{
     BOUGHT, BOUGHT_FILL_LOCKER, BOUGHT_FILL_TANK, BOUGHT_NONE, BOUGHT_SHORT, DEPART_SET,
-    HELD_ASHORE, HELD_CHARTER, HELD_LINE, HELD_STOOD_DOWN, HELD_UNCONFIRMED, HELD_WINDOW,
-    HOUSE_CANNOT_PAY_SKIP, LEFT_BEHIND_PASSENGER, LEFT_BEHIND_PILOT, NOT_ADMITTED,
-    ORDER_RESTAGE_SECS, SKIP_LINE, STOPPED, WAITING_LINE,
+    HELD_ASHORE, HELD_LINE, HELD_STOOD_DOWN, HELD_UNCONFIRMED, HELD_WINDOW, HOUSE_CANNOT_PAY_SKIP,
+    LEFT_BEHIND_PASSENGER, LEFT_BEHIND_PILOT, NOT_ADMITTED, ORDER_RESTAGE_SECS, SKIP_LINE, STOPPED,
+    WAITING_LINE,
 };
 use tacsim::port::orders::{
     AHEAD_OF_INFLIGHT, CLEARED, DELETED, FILL_ONLY_CONSUMABLE, MOVED, NO_PLAN, NOT_HELD,
@@ -2310,12 +2310,18 @@ fn ic11_a_staff_stand_down_holds_the_order_and_files_nothing() {
     );
 }
 
-/// **A lapsed charter waits and stages nothing** (reviewer F5/F16; L10, L25): with a
+/// **A lapsed charter holds and stages nothing** (reviewer F5/F16; L10, L25): with a
 /// sale in flight and its leg lost, the charter ended — past the re-stage deadline
-/// nothing is re-staged, the waiting note is logged and told once, and when the
-/// contract refunds the order reads Dropped with nothing filed again.
+/// nothing is re-staged, and when the contract refunds the order reads Dropped with
+/// nothing filed again.
+///
+/// Doc 18 cut IC13 (lead 2i, lead ruling L4): the staff-ended charter's hull is not
+/// back in the pool (she lies at Stickney with cargo), so the port tick's Return arm
+/// holds the lapsed author's plan — a *stopped* hold over the inflight step
+/// ([`HELD_RECALLED`]), logged and told once — where IC11's order arm wrote a waiting
+/// note; the drop then leaves the order Held under it.
 #[test]
-fn ic11_a_lapsed_charter_waits_and_stages_nothing() {
+fn ic11_a_lapsed_charter_holds_and_stages_nothing() {
     let mut rig = stocked();
     let (pilot, row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
     let hull = ObjId(row.hull);
@@ -2346,24 +2352,27 @@ fn ic11_a_lapsed_charter_waits_and_stages_nothing() {
         market_legs, 0,
         "nothing re-staged while the charter is ended"
     );
-    let waits = WAITING_LINE
-        .replace("{n}", "1")
-        .replace("{reason}", &HELD_CHARTER.replace("{name}", "Salt Moth"));
+    let waits = HELD_LINE.replace("{n}", "1").replace(
+        "{reason}",
+        &tacsim::port::recall::HELD_RECALLED.replace("{name}", "Salt Moth"),
+    );
     let log = log_texts(&rig.tw, hull);
     assert_eq!(log.iter().filter(|l| **l == waits).count(), 1, "{log:#?}");
     let told = pending_notices(rig.tw.world(), pilot);
     assert_eq!(told.iter().filter(|l| **l == waits).count(), 1, "{told:#?}");
-    // The shape is "waiting over inflight": the step and its record stand, the
-    // contract is still open (so "nothing re-staged" is the lease gate's doing, not a
-    // terminal contract's), and the note waits.
+    // The shape is "stopped over inflight": the step and its record stand, the
+    // contract is still open (so "nothing re-staged" is the Return arm's stopped hold
+    // doing it — the order arm never re-stages a Held plan, and L12 takes the hull off
+    // its agents — not a terminal contract's), and the hold stands.
     let doc = orders(&rig.tw, hull);
     assert_eq!(doc.order(1).map(|o| o.state), Some(OrderState::Inflight));
     assert!(doc.inflight.is_some(), "the record stands");
     assert!(
-        doc.hold.as_ref().is_some_and(|h| h.retry && h.order == 1),
+        doc.hold.as_ref().is_some_and(|h| !h.retry && h.order == 1),
         "{:?}",
         doc.hold
     );
+    assert_eq!(doc.state, PlanState::Held);
     assert!(
         state_of(&rig.tw, contract).is_some_and(|s| !s.is_terminal()),
         "{:?}",
@@ -2399,17 +2408,17 @@ fn ic11_a_lapsed_charter_waits_and_stages_nothing() {
     let doc = orders(&rig.tw, hull);
     assert!(doc.inflight.is_none(), "the drop is read");
     let order1 = doc.order(1).cloned().expect("order 1");
-    assert_eq!((order1.state, order1.attempt), (OrderState::Pending, 2));
+    assert_eq!((order1.state, order1.attempt), (OrderState::Held, 2));
     assert!(
         market(&rig.tw)
             .quotes_of_seller(&PrincipalId::Object(pilot))
             .all(|q| q.contract == Some(contract)),
         "no second sale"
     );
-    // The note moved with the drop onto the pending order, and was neither logged nor
-    // told a second time.
+    // The hold stands over the dropped order, and was neither logged nor told a
+    // second time.
     assert!(
-        doc.hold.as_ref().is_some_and(|h| h.retry && h.order == 1),
+        doc.hold.as_ref().is_some_and(|h| !h.retry && h.order == 1),
         "{:?}",
         doc.hold
     );

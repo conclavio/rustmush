@@ -1494,6 +1494,15 @@ fn ic6_the_stamp_follows_leave_and_the_ceres_door() {
 fn ic6_eight_simulated_days_raise_no_stale_contract_page() {
     let (mut rig, who) = enrolled();
     let lease = lease_of(&rig.tw, who);
+    // Doc 18 cut IC13: eight idle days are past the programme's seven, so a docked,
+    // empty Dray at Ceres would be taken back by the port tick's dormancy recall in
+    // the same drain as the stale scan — and a Cancelled lease is never scanned, which
+    // would make this guard vacuous. The hull is re-placed at Stickney, where the
+    // recall is blocked (`RecallBlock::NotAtPort`), so the lease is still live and
+    // eight days quiet when the economy's stale scan reads it.
+    let hull = ObjId(ceres_map(&rig.tw).hulls[0].hull);
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    replace_hull(&mut rig.tw, hull, stickney);
     sweep(&mut rig.tw, 8 * 86_400 + 1);
     let paged = economy(&rig.tw)
         .escalations()
@@ -1507,6 +1516,16 @@ fn ic6_eight_simulated_days_raise_no_stale_contract_page() {
             .expect("the lease")
             .state,
         ContractState::Active
+    );
+    let e = store(&rig.tw).enrolment_of(who).expect("the enrolment");
+    assert_eq!(e.status, EnrolmentStatus::Active);
+    assert_eq!(e.ended, None);
+    // The recall arm did judge her dormant (the eight days were real to it) and was
+    // blocked where she lies: its page names the hull.
+    assert_eq!(
+        tacsim::port_tick::recall_pages(rig.tw.world()),
+        vec![hull.0],
+        "the dormant hull away from Ceres is paged by the recall arm"
     );
 }
 
@@ -1572,6 +1591,150 @@ fn ic6_staff_cancel_revokes_the_charter_and_the_gate_reads_the_lease() {
     teleport(&mut rig.tw, who, desk);
     let out = enrol(&mut rig, who, "Second Wind");
     assert!(out.contains(ENROLLED_ONCE), "{out}");
+}
+
+/// The readiness report's Ceres hulls line.
+fn hulls_line(rig: &mut Rig) -> String {
+    let report = run(&mut rig.tw, GOD, "@tacsim/port status");
+    report
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("ceres_port hulls: "))
+        .unwrap_or_else(|| {
+            panic!(
+                "a hulls line:
+{report}"
+            )
+        })
+        .to_owned()
+}
+
+/// Doc 18 cut IC13 item 3 (lead ruling L2): the operate gate is the live charter, else
+/// the title; `helm_holder` names the charter's tenant or the title holder, and nobody
+/// for a laid-up Trust hull. The title arm is reached here through a staff
+/// `@asset/transfer` of a laid-up unleased hull; the readiness line counts it as a
+/// graduate and stays Ready.
+#[test]
+fn ic13_the_helm_is_the_charter_or_the_title() {
+    use tacsim::port::{Helm, Standing, helm_holder, helm_of};
+    let (mut rig, who) = enrolled();
+    let charter = tacsim::port::live_charter(rig.tw.world(), who).expect("a charter");
+    assert_eq!(
+        helm_of(rig.tw.world(), who),
+        Some(Helm {
+            hull: charter.hull,
+            standing: Standing::Charter(charter.contract),
+        })
+    );
+    assert_eq!(helm_holder(rig.tw.world(), charter.hull), Some(who));
+    let map = ceres_map(&rig.tw);
+    let mut laid_up = map
+        .hulls
+        .iter()
+        .map(|row| ObjId(row.hull))
+        .filter(|hull| *hull != charter.hull);
+    let titled = laid_up.next().expect("a second hull");
+    let idle = laid_up.next().expect("a third hull");
+    // A Trust-titled unleased hull has no holder.
+    assert_eq!(helm_holder(rig.tw.world(), titled), None);
+    assert_eq!(helm_holder(rig.tw.world(), idle), None);
+    let other = pilot(&mut rig, "Other", 2);
+    assert_eq!(helm_of(rig.tw.world(), other), None);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", titled.0, other.0),
+    );
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .asset(titled)
+            .map(|a| a.title_owner.clone()),
+        Some(PrincipalId::Object(other)),
+        "{out}"
+    );
+    assert_eq!(
+        helm_of(rig.tw.world(), other),
+        Some(Helm {
+            hull: titled,
+            standing: Standing::Title,
+        })
+    );
+    assert_eq!(helm_holder(rig.tw.world(), titled), Some(other));
+    assert_eq!(helm_holder(rig.tw.world(), idle), None);
+    // The chartered pilot's helm is unchanged.
+    assert_eq!(
+        helm_of(rig.tw.world(), who).map(|h| h.standing),
+        Some(Standing::Charter(charter.contract))
+    );
+    // The hulls line counts the title holder's hull as graduated, and stays Ready.
+    let mark = map
+        .hulls
+        .iter()
+        .find(|row| row.hull == titled.0)
+        .map(|row| row.mark.clone())
+        .expect("the mark");
+    assert_eq!(
+        hulls_line(&mut rig),
+        format!(
+            "ceres_port hulls: 8 of 8 made, 7 titled to Co-op First Captain Trust; 6 laid up and free, 1 leased (FPC-D-0401 to Pilot), 1 graduated ({mark} to Other). [ready]"
+        )
+    );
+    assert!(enrol_gate(&readiness(rig.tw.world())).is_ok());
+}
+
+/// Doc 18 cut IC13 items 7–8 (lead ruling L4; closes IC6's residual 3): a staff-cancelled
+/// charter leaves its hull "recalled, not yet returned" on the hulls line (Ready, never
+/// free), until the port tick's Return arm, finding her docked at Ceres with an empty
+/// hold, re-homes the hold vault to the Trust, restores the laid-up name and puts her
+/// back in the pool.
+#[test]
+fn ic13_a_staff_cancelled_hull_reads_recalled_until_the_return_arm_takes_it_back() {
+    let (mut rig, who) = enrolled();
+    let lease = lease_of(&rig.tw, who);
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let _ = rig.tw.run(GOD, &format!("@contract/cancel #{}", lease.0));
+    let e = store(&rig.tw)
+        .enrolment_of(who)
+        .expect("the enrolment")
+        .clone();
+    assert_eq!(e.status, EnrolmentStatus::Revoked);
+    assert_eq!(e.ended, Some(tacsim::port::EndCause::LeaseEnded));
+    assert!(e.ended_at.is_some());
+    assert_eq!(
+        hulls_line(&mut rig),
+        "ceres_port hulls: 8 of 8 made and titled to Co-op First Captain Trust; 7 laid up and free, 0 leased, 1 recalled, not yet returned (FPC-D-0401). [ready]"
+    );
+    assert!(enrol_gate(&readiness(rig.tw.world())).is_ok());
+    // The Return arm on the next port-tick fire.
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let events = rig.tw.fire_due(t.saturating_mul(1_000));
+    let told = said(&rig.tw, &events, who);
+    let v = economy(&rig.tw)
+        .snapshot()
+        .vault(vault)
+        .expect("the hold vault")
+        .clone();
+    assert_eq!(v.owner, trust(&rig.tw));
+    assert_eq!(v.status, mush_economy::VaultStatus::Active);
+    assert_eq!(name(&rig.tw, hull), "Slack Water");
+    let returned = "The Co-op has taken the Salt Moth (FPC-D-0401) back into its pool.";
+    assert!(
+        told.contains(returned)
+            || pending_notices(rig.tw.world(), who)
+                .iter()
+                .any(|n| n == returned),
+        "the pilot was not told: {told}"
+    );
+    assert_eq!(
+        hulls_line(&mut rig),
+        "ceres_port hulls: 8 of 8 made, titled to Co-op First Captain Trust and laid up. [ready]"
+    );
+    let out = run(&mut rig.tw, who, "+coop");
+    assert!(out.contains("Drays free: 8 of 8."), "{out}");
 }
 
 // ---------------------------------------------------------------------------

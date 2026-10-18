@@ -1531,3 +1531,127 @@ fn maintenance_points_at_a_related_account_and_clears() {
     );
     assert!(a.assignment.is_none());
 }
+
+// ======================================================================
+// Doc 18 cut IC13 — the `rehome_vault` seam
+// ======================================================================
+
+/// A test-only module with one command, `@testrehome <vault>=<#obj|system>`: it
+/// calls [`mush_economy::rehome_vault`] (the test kit gives tests no `Ctx`, so the
+/// seam is reached through a command, e2b's `TestPostMod` pattern) and prints
+/// `true` or `false`.
+struct RehomeMod;
+
+impl GameModule for RehomeMod {
+    fn name(&self) -> &'static str {
+        "e3btestrehome"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
+        reg.command(
+            mush_core::CommandSpec {
+                name: "@testrehome".into(),
+                shape: mush_core::ArgShape::Raw,
+                help: "@testrehome <vault>=<#obj|system>   test: re-own a vault".into(),
+                ..mush_core::CommandSpec::default()
+            },
+            Arc::new(
+                |ctx: &mut mush_core::Ctx<'_>| -> Result<(), mush_core::CmdError> {
+                    let raw = ctx.args.raw().to_string();
+                    let (vault, owner) = raw
+                        .split_once('=')
+                        .ok_or_else(|| mush_core::CmdError::msg("Usage: @testrehome <v>=<o>"))?;
+                    let vault: u64 = vault
+                        .trim()
+                        .parse()
+                        .map_err(|_| mush_core::CmdError::msg("bad vault"))?;
+                    let owner = match owner.trim() {
+                        "system" => mush_org::PrincipalId::System(
+                            mush_org::SystemPrincipalId::new("economy.escrow")
+                                .ok_or_else(|| mush_core::CmdError::msg("bad system id"))?,
+                        ),
+                        other => mush_org::PrincipalId::Object(ObjId(
+                            other
+                                .trim_start_matches('#')
+                                .parse()
+                                .map_err(|_| mush_core::CmdError::msg("bad owner"))?,
+                        )),
+                    };
+                    let done = mush_economy::rehome_vault(
+                        ctx,
+                        VaultId(vault),
+                        owner,
+                        None,
+                        SmolStr::new_static("rehomed"),
+                    );
+                    let actor = ctx.actor;
+                    ctx.out.sys_to_actor(actor, "test", done.to_string());
+                    Ok(())
+                },
+            ),
+        )?;
+        Ok(())
+    }
+}
+
+/// Doc 18 cut IC13 item 1: a re-home moves the owner index and nothing else, bumps
+/// the revision by exactly one, persists the vault document (and only that), and
+/// survives a reboot; a `System` owner and an unknown vault write nothing.
+#[test]
+fn ic13_rehome_vault_moves_the_owner_and_keeps_the_backing() {
+    let mut tw = boot_with(vec![], vec![Box::new(RehomeMod)]);
+    let (chest, _widget) = vault_fixture(&mut tw);
+    let mut kv = fold_kv(&mut tw);
+    let pat = tw.spawn_player("Pat");
+    let before = snap(&tw).vault(VaultId(0)).expect("the vault").clone();
+    let old = before.owner.clone();
+    let new = mush_org::PrincipalId::Object(pat);
+    assert_ne!(old, new);
+
+    let ev = tw.run(GOD, &format!("@testrehome 0=#{}", pat.0));
+    assert_eq!(texts(&ev), "true");
+    let ops = fold_kv(&mut tw);
+    assert_eq!(
+        ops.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>(),
+        vec![mush_economy::vault_key(VaultId(0)).to_string()],
+        "only the vault document is written (no allocator move)"
+    );
+    merge(&mut kv, ops);
+
+    // 1. The owner index moved.
+    assert!(snap(&tw).vaults_of(&old).all(|v| v.id != VaultId(0)));
+    assert!(snap(&tw).vaults_of(&new).any(|v| v.id == VaultId(0)));
+    // 2. The backing index still names it; status and backing are unchanged.
+    let after = snap(&tw).vault(VaultId(0)).expect("the vault").clone();
+    assert_eq!(
+        snap(&tw).vault_by_backing(&before.backing).map(|v| v.id),
+        Some(VaultId(0))
+    );
+    assert_eq!(after.backing, before.backing);
+    assert_eq!(after.backing, CustodyRef::Container(chest));
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.owner, new);
+    assert_eq!(after.name.as_str(), "rehomed");
+    // 3. The revision went up by exactly one.
+    assert_eq!(after.revision, before.revision + 1);
+
+    // 4. A System owner and an unknown vault print false and write nothing.
+    let ev = tw.run(GOD, "@testrehome 0=system");
+    assert_eq!(texts(&ev), "false");
+    assert!(fold_kv(&mut tw).is_empty(), "a System re-home wrote");
+    let ev = tw.run(GOD, &format!("@testrehome 99=#{}", pat.0));
+    assert_eq!(texts(&ev), "false");
+    assert!(
+        fold_kv(&mut tw).is_empty(),
+        "an unknown vault's re-home wrote"
+    );
+    assert_eq!(snap(&tw).vault(VaultId(0)), Some(&after));
+
+    // 5. A reboot reads the new owner back.
+    reboot(&mut tw, kv);
+    let back = snap(&tw).vault(VaultId(0)).expect("the vault after reboot");
+    assert_eq!(back.owner, new);
+    assert_eq!(back.revision, after.revision);
+    assert!(snap(&tw).vaults_of(&new).any(|v| v.id == VaultId(0)));
+    assert!(snap(&tw).vaults_of(&old).all(|v| v.id != VaultId(0)));
+}

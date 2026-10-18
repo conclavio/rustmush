@@ -40,7 +40,7 @@ use serde_json::{Map, Value, json};
 
 use crate::definitions::goods::Consumable;
 use crate::definitions::{Catalog, GoodsTable};
-use crate::port::coop::live_charter;
+use crate::port::coop::helm_of;
 use crate::port::families::{Manifest, Ticket, TicketId};
 use crate::port::passage::{HullDrive, PlanError, crew_days, passage_burn, payload_kg};
 use crate::port::ship::{Berth, berth_of};
@@ -239,12 +239,12 @@ fn parameters(
 }
 
 /// **Whether `actor` may burn now, and the pending voyage it would burn** — the
-/// offer's whole gate, read from the world at landing: the actor's live charter
-/// names the hull; the hull's voyage is readable with a pending filed by the
+/// offer's whole gate, read from the world at landing: the actor's title or live
+/// charter names the hull (cut IC13, `helm_of`); the hull's voyage is readable with a pending filed by the
 /// actor; the actor is `Interior`-placed in the hull's airlock space; the hull is
 /// docked.
 pub(crate) fn burnable(w: &mush_core::World, actor: ObjId) -> Option<(ObjId, PendingVoyage)> {
-    let hull = live_charter(w, actor)?.hull;
+    let hull = helm_of(w, actor)?.hull;
     let store = w.module_state::<TacsimStore>()?;
     let pending = match store.voyage_state(hull) {
         VoyageState::Present(voyage) => voyage.pending.clone()?,

@@ -5855,3 +5855,414 @@ that run" was written against Draft 0.2's cut numbering. Read it as: cut IC7 bui
 stock → quote → accept → settle gate is `crates/tacsim/tests/commerce.rs` — as
 `crates/mush-market/tests/ic0.rs:19-25` and `crates/mush-server/tests/e7r2_proving_loop.rs:34-40`
 now word it. IC0's text is left as written (history is not rewritten); this note is the re-point.
+
+## IC13
+
+**Buyout, graduation and dormancy** (doc 18 §5, the IC13 row and paragraph), built 2026-10-17 on
+main at 715151c4. A First Captain can now buy the hull out, hand it back, or lose it to a week
+without a departure, and staff can revoke a charter; the economy's contracts stay the record and the
+enrolment document follows them. The hand-played smoke owed since IC12 is still owed (no Redis on
+the build machine). One commit, pushed to origin/main.
+
+### What landed
+
+1. **The economy's one seam to re-own a vault** (`mush-economy/src/api.rs` `rehome_vault`,
+   re-exported from `lib.rs`). A doc-authority record write beside `set_vault_status`: through
+   `put_vault` so the owner index moves, `revision` bumped with `saturating_add(1)`, only the vault
+   document persisted (no allocator moved, so no meta write), `false` and nothing written for a
+   `System` owner, an unknown vault or no `EconomyStore`. Reached in tests through a test-only
+   `@testrehome` module on e2b's `TestPostMod` pattern (`mush-economy/tests/e3b.rs` `RehomeMod`).
+2. **The enrolment record grows** (`tacsim/src/port/coop.rs`). `Enrolment` gains `leased_at`,
+   `buyout: Option<u64>`, `ended_at: Option<i64>` and `ended: Option<EndCause>` after `status`;
+   `EndCause { BoughtOut, Released, Dormant, Revoked { by, why }, LeaseEnded }` (snake_case,
+   `deny_unknown_fields`); `MAX_REVOKE_WHY_BYTES = 200`; `check()` holds them together
+   (`leased_at >= enrolled_at`; `ended_at` and `ended` set together; an end iff Graduated or
+   Revoked; Graduated ⇒ `BoughtOut` with a buyout, and `BoughtOut` only on a Graduated enrolment;
+   BuyoutPending ⇒ a buyout; a revocation's reason 1..=200 bytes). `ENROLMENT_SCHEMA` stays 1: no
+   kept world holds an enrolment (dev1 runs 4ab3d30d, before IC6). The IC6 observer's fold now
+   stamps `ended_at` and `LeaseEnded`. The store gains `enrolment_for_buyout` and
+   `enrolment_for_hull` (the governing enrolment: the Active, BuyoutPending or Graduated one, else
+   the Revoked one with the greatest `ended_at`; `tacsim/src/store.rs`).
+3. **The operate gate is the title or a live charter** (`coop.rs` `Standing { Charter(ContractId),
+   Title }`, `Helm`, `helm_of`, `helm_holder`, the private `titled_to`). `helm_of` replaces
+   `live_charter` at every operate site: `burn.rs` `burnable`; `executor.rs` `decide`'s per-step
+   check; `market.rs` `hull_admits` and `endpoint_for`; `orders.rs` `departs_at`, `orders_cmd`,
+   `order_cmd`; `ship.rs` `status`, `hold`, `board`; `voyage.rs` `plan_cmd`, `undock_cmd` and the
+   launch re-check (its log now "the pilot neither holds this hull's title nor a charter of it");
+   `tell_absent_tenant` reads `helm_holder`. `live_charter` stays for the programme's own charter
+   lines. `+ship` prints `SHIP_GRADUATED` on `Standing::Title` (`ship.rs`).
+4. **`+coop/buyout`** (new `tacsim/src/port/buyout.rs`; the switch on `+coop` in `commands.rs`,
+   dispatched from `coop_cmd`). Checks 0–8 in L14's order (books by gateway account, the berth,
+   nothing filed or at the counter or moving, the office, the economy and parties, the funds), each
+   with its verbatim refusal, before the first write. Then L1's write order: the pilot offers the
+   market's asset-purchase shape (`buyout_spec`: `TitleHeld{hull, Trust}` + a real-clock
+   `Before(now + BUYOUT_WINDOW_SECS = 3600)`, one `Exact` payout to the Trust's account,
+   `TitleTransfer` Trust → pilot, `deterministic`, `Refund` on expiry, the pilot author and payer);
+   `accept_contract` places the pilot's escrow; the enrolment is written `BuyoutPending` **before**
+   `end_lease` so the IC6 fold ignores the lease's Cancelled event; `end_lease`;
+   `accept_contract_as(Trust)` through `PortPartyCaps` activates it last. Every cancel goes through
+   `cancel_own`, which treats `cancel_contract`'s `Ok(false)` as not done and answers
+   `BUYOUT_REFUND_PENDING`; every refusal after a write pins the deferred queue. The interim reply
+   is `BUYOUT_FILED`; nothing settles in the verb.
+5. **The observer's verdict** (`coop.rs` `on_terminal`; `buyout.rs` `settle_buyout`,
+   `buyout_verdict`, `graduate`, `relet`). On a lease or buyout reaching Settled, Cancelled or
+   Expired, a `BuyoutPending` enrolment's outcome is read from both contracts in the snapshot, never
+   the event: Settled → Graduated with `BoughtOut`, the pilot told doc 18 §2 step 19's line verbatim
+   (`GRADUATED`, the price through the economy's one render) via `port_tick::notify`; Cancelled or
+   Expired with the lease terminal → the Trust re-offers the lease byte-for-byte on `enrol`'s 10c
+   terms, the pilot accepts through a plain save/set/restore of `ctx.actor` (never
+   `Fire::as_principal`), the enrolment is Active again with the new lease id and `leased_at = now`
+   (`BUYOUT_REFUNDED`); otherwise wait. A failed relet ends the half-made lease and writes
+   Revoked/`LeaseEnded` (`BUYOUT_UNLEASED`).
+6. **The share after graduation** (`tacsim/src/port/proceeds.rs`): `takes_share(status)` in
+   `enrolled()`'s filter (belt: a graduated hull has no Trust lease, so `enrolled()` already answers
+   `Ok(None)`); `settled()` folds nothing for a Graduated enrolment; a Revoked one still folds a
+   programme sale accepted before its charter ended.
+7. **The recall in two halves** (new `tacsim/src/port/recall.rs`). `recall_block` (the berth at
+   Ceres, nothing in flight through `buyout::in_flight`, an empty cargo pool read good by good
+   through `port_tick::read_pool`, the economy), `recall` (the enrolment written Revoked with its
+   `EndCause` **first**, then `end_lease`, then the return; on `Retrying` stop with
+   `lease_retrying`, the Return arm finishes it), `return_hull`/`return_unchecked` (the pilot's plan
+   stopped once with `HELD_RECALLED`, everyone aboard put ashore at the gallery through
+   `ship::put_ashore` with `PUT_ASHORE` and the gallery line, the hold vault **re-homed to the
+   Trust** with the fuel and stores forfeit inside it and never closed, the laid-up name restored).
+   `+coop/release` (the switch on `+coop`; `RELEASED` + `FORFEIT_LINE`, the stake untouched) and
+   staff **`@coop/revoke <pilot>=<why>`** (a new `@coop` primary, `EqPair`, `LegacyPostImage`; the
+   pilot resolved globally by `#N` or `World::resolve_player` after one leading `*`, never
+   `match_object`; attributed in the record, the notice and a `tracing::warn!`) run the same path
+   under the same rule. `hull_is_free`'s last clause is now `stowage_held` ("a vault that is not the
+   Trust's own Active vault"), so a recalled hull is free again; `+coop/enrol` proves an existing
+   Trust vault in step 9 (`EnrolPlan.existing`), allocates no id for it in 10b and re-owns it to the
+   pilot in 10f after the stake post (IC6 L6 holds; a `false` there is a logged invariant breach, no
+   unwind). `ship.rs` `put_ashore` and `gallery_line` are factored out of `+ship/leave`, whose three
+   lines keep their order through a `narrate` callback.
+8. **The recall arm on the tick** (`tacsim/src/port_tick.rs` `Arm::Recall`,
+   `PortTickState.recall_warned` / `recall_backoff`, `recall_pages`; `recall.rs` `recall_agents`,
+   `recall_step`, `dormant`, `idle`; `when.rs` `ic_at_real`). The agents are offered after the
+   launches and before the orders, and their hulls are dropped from the order agents that fire
+   (L12). Dormancy reads durable departures only (L3): the latest burned ticket scanned down from
+   `Voyage.last_seq` (at most `DORMANCY_TICKET_SCAN = 16`), its IC `burned_at` against
+   `ic_at_real(now − D)` under the epoch then in force, the pilot's plan's Done departs'
+   `reached.utc`, and `leased_at`; `Err` never recalls and pages once. A dormant hull that cannot be
+   recalled where she is has her Running plan stopped once (`HELD_DORMANT`), is paged once per boot
+   and backed off `RECALL_RECHECK_FIRES = 24`; a revoked hull not back in the pool is returned when
+   docked empty at Ceres (`RETURNED_NOTICE`) or held (`HELD_RECALLED`), paged and backed off. No
+   authoritative submission, no actor swap.
+9. **The hulls readiness line** (`tacsim/src/port/hull.rs` `hull_line`, the private `held`): a hull
+   titled to a player is a graduate (`", {g} graduated ({mark} to {owner})"`, the head becoming
+   `"{pool} of {pool} made, {pool − g} titled to {org};"`), a lease-less hull whose hold is still
+   someone's is `being bought out` or `recalled, not yet returned`; always Ready, byte-identical with
+   every count zero. `+coop` gains `GRADUATED_LINE` and `BUYOUT_PENDING_LINE`; `+coop/statement`
+   "Charter: bought out; the hull is yours." and "Charter: buyout being entered."
+10. **The buyout window's waiting note** (`tacsim/src/port/executor.rs` `buying_out`,
+    `HELD_BUYOUT`; the fixer's correctness F2). Between `+coop/buyout` and the settlement a due plan
+    step waits under "your buyout of the {name} is being entered; she sails on your title once it
+    passes." instead of the lapsed charter's note, and the leased branch drops either note silently
+    once the title has passed.
+11. **The acceptance tests** (new `crates/mush-server/tests/ic_buyout_dormancy.rs`, 2,286 lines, the
+    `ic_slice_loop.rs` rig copied file-local on `build_engine` at rate 24; seven tests):
+    `ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share` (title passed exactly
+    once with the lease Cancelled, the Trust up by exactly the price, a restart, and the graduate's
+    Stickney sale with no share and no counter moved);
+    `ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving` (the five refusals
+    writing nothing, `INFLIGHT_WAIT` reached with an order-arm buy staged);
+    `ic13_a_refunded_buyout_re_leases` (a staff-cancelled buyout refunding and re-leasing, then
+    graduating);
+    `ic13_seven_idle_days_recall_a_docked_empty_hull_and_the_next_enrolment_charters_it` (seven idle
+    days recalling a docked empty hull, the forfeit riding with the re-homed vault to the next
+    captain of that very hull, a restart and the reconnect notice);
+    `ic13_a_departure_keeps_the_charter_and_a_dormant_hull_with_cargo_holds_its_plan` (a burn
+    resetting the clock, and a dormant hull at Stickney with cargo holding its plan once and paging
+    once); `ic13_release_and_revoke_recall_through_one_path` (three pilot spellings, every refusal,
+    Bo put ashore with the Ceres stamp replacing a Stickney one);
+    `ic13_a_queued_order_waits_out_the_buyout_and_runs_on_the_title`. Plus `tacsim/tests/coop.rs`
+    `ic13_the_helm_is_the_charter_or_the_title` and
+    `ic13_a_staff_cancelled_hull_reads_recalled_until_the_return_arm_takes_it_back` (the exact hulls
+    lines), and unit tests in `coop.rs`, `buyout.rs`, `proceeds.rs`, `when.rs`, `recall.rs` and
+    `e3b.rs`.
+12. **Gates, help and ops**: `legacy-handlers.toml` (`+coop` and `+ship` notes refreshed, the
+    `@coop` stanza in byte order, baseline 97); `docs/help/coop.md` ("The charter" ends three ways;
+    "Buying the hull out", "Handing the hull back", "A week without a departure"; `@coop/revoke` not
+    named); `docs/ops.md` "Buyout, release, revocation and dormancy" (the revoke runbook, the arm's
+    two pages, the launch arm's page for a filed hull, the buyout's two error pages, the recall's
+    Retrying window).
+
+### Deferred, and why
+
+**Lead rulings the planner took** (recorded as taken, not chosen):
+
+- **L1** — the buyout's step order is offer → the pilot's escrow → `BuyoutPending` → `end_lease` →
+  the Trust's acceptance, which **wins over doc 18 §4.1's (3)(4)(5)**: `cancel_contract` refuses an
+  Active contract with deliverables (`contract_live.rs:5418-5435`), so "on Retrying the verb cancels
+  its own contract" is buildable only while the contract is still Offered. The economy is unchanged.
+- **L2** — `helm_of` (live charter, else title) at every former `live_charter` operate site; the
+  programme's own lines keep `live_charter` (lead 2b/2i, D-18-23 read for a graduate).
+- **L3** — dormancy reads durable departures only: the latest burned ticket (16-deep scan,
+  `burned_at` vs `ic_at_real(now − D)`), Done departs' `reached.utc`, `leased_at`; a read error
+  never recalls (lead 2f/2i).
+- **L4** — the recall has two halves; the tick's Return arm finishes every charter ended elsewhere
+  (staff `@contract/cancel`, a Retrying lease end, a failed re-lease), closing IC6's residual 3.
+- **L5** — the hold vault is **re-homed** to the Trust through the new `rehome_vault` seam, never
+  closed or emptied: the Trust has no vault, moving pools needs multi-fire authoritative
+  submissions, and a Closed vault keeps its backing index so the hull could never be chartered
+  again. Re-homed after the post on the next enrolment, so IC6 L6 holds.
+- **L6** — `leased_at`, `buyout`, `ended_at`, `ended: Option<EndCause>` replace the lead's
+  `graduated_at`/`revoked_at`; schema stays 1 (lead 2j).
+- **L7** — the observer decides from the economy's state, never the event alone; the re-lease is a
+  plain `ctx.actor` save/set/restore around one `accept_contract` (not `Fire::as_principal`) and
+  skips the readiness gate; every verb cancel through `cancel_own`.
+- **L8** — the hulls line counts graduated, being-bought-out and recalled hulls and is always
+  Ready; `free` excludes a non-Trust-Active stowage vault but still differs from `hull_is_free` on
+  place (IC6 L9 kept).
+- **L9** — `@coop` is a new primary with one staff switch (doc 18 §4.1 and 18a §4 name
+  `@coop/revoke`, R8); `+coop/buyout` and `+coop/release` are switches.
+- **L10** — no lease = no share; `takes_share(Graduated) == false`; a graduate folds no counters;
+  Revoked still folds a settling programme sale (lead 2h).
+- **L11** — `BUYOUT_WINDOW_SECS = 3_600` real.
+- **L12** — recall agents after the launches, before the orders; their hulls removed from the order
+  agents; hulls with a pending voyage skipped (the launch arm's `launch_hold` page is lead 2f's
+  `@tacsim/port clear` page; no second page).
+- **L13** — the acceptance tests are a sibling file with a copied rig; `ic_slice_loop.rs` untouched.
+- **L14** — the buyout's check order: books, berth, voyage, in flight, goods, office, funds (makes
+  "under way" reachable).
+- **L15** — the recall restores the laid-up name.
+- **L16** — `@coop/revoke` and `+coop/release` use the full recall rule (docked at Ceres, empty
+  cargo, nothing in flight); the Revoked-but-lease-Retrying window is documented in ops.md, not
+  gated (changing `helm_of` for a pending terminal would alter every retrying lease end).
+
+**Owner-critical defaults taken** (for the owner's read; none changed in the cut):
+
+- **O1 / Q-18-66** — the forfeited fuel and stores ride with the hull: the hold vault is re-homed to
+  the Trust with its propellant and provisions, also on a voluntary `+coop/release`, and the next
+  captain inherits them. Doc 18 §4.1 says "no confiscation of matter in the slice" (`:1063`); the
+  lead's 2(c) says fuel and stores are forfeit. The cut reads the doc's words as covering cargo
+  only. **Contradicts the doc's plain text; the owner should rule.**
+- **O2 / Q-18-67** — revoke and release use the full recall rule; a charter ended away from Ceres
+  leaves the hull out of the pool with nobody to fly her home; no staff "bring her home" verb in
+  this cut.
+- **O3 / Q-18-68** — the staff reason is shown to the pilot in `REVOKED_NOTICE`.
+- **O4** — every player-facing text this cut writes is the builder's voice (the fixer's
+  `HELD_BUYOUT` included) except `GRADUATED`, doc 18 §2 step 19's owner-reviewed line used
+  verbatim. Step 19 shows it as the reply to `+coop/buyout`; the cut sends it as the **settlement
+  notice**, because the title passes at the next sweep, and answers the verb with the interim
+  `BUYOUT_FILED`. The owner should rule where step 19's line belongs.
+- **O5 / Q-18-69** — the laid-up name comes back at the recall; the mark is untouched.
+- **O6** — between `+coop/buyout` and the next sweep (at most 30 s) the pilot holds neither charter
+  nor title: board, undock and the queue refuse (a due plan step waits under `HELD_BUYOUT`). Follows
+  from doc 18 §4.1's end_lease-before-settlement design.
+- **O7 / Q-18-70** — a graduated hull leaves the Trust's pool for ever; the pool of eight shrinks
+  per graduate and the desk answers `NO_HULL` once every hull is chartered or graduated; the slice
+  buys no replacements.
+
+**Builder's and fixer's technical choices** (declared): blocked plan holds now tell the pilot once
+(`hold_plan(tell = true)`, as the executor's stopped holds do); the cause notice is sent from
+`recall()` also on Retrying; `recall_warned` is shared by all the arm's pages; an Unreadable
+sailing plan fails the dormancy read safe; `put_ashore` takes `reason` and a `narrate` callback so
+`+ship/leave`'s output order is unchanged; `buyout_spec` takes `mark` as an eighth argument;
+`recall_agents` takes `&mut PortTickState`; `@coop/revoke` checks the programme port after staff;
+an extra `check()` rule (`BoughtOut` only on a Graduated enrolment).
+
+**Deferred, and why:**
+
+- **The per-fire enrolment scan** in `recall_agents` (every lifetime enrolment, `live_charter` per
+  Active one, `enrolment_for_hull` + `trust_lease_on` per Revoked one). Correct and pre-launch
+  cheap; a rewrite over the programme map's hull rows (bounded by the pool) when records
+  accumulate.
+- **`snapshot.rs:56`'s "Vault.owner is immutable"** is now false (`rehome_vault` re-owns through
+  `put_vault`), and the Trust owns a hull's hold vault between a recall and the next enrolment, so
+  `owner_home(Trust)` would route a Trust object deposit into a laid-up Dray's stowage. Comment to
+  refresh; the routing is a latent surprise, not a present defect.
+- **A failed relet with cargo aboard** strands it: `+coop/buyout` never required an empty cargo
+  pool, the Return arm does, and a Revoked pilot can neither sell nor fly. ops.md's "staff move her
+  cargo or the hull by hand" covers it; no verb does.
+- **`put_ashore` unplaces before `move_to`** (inherited from `+ship/leave`): a refused move on a
+  tick-driven recall leaves the person unplaced in a hull the recall then returns. Low; staff fix
+  by hand as the brief says.
+- **The buyout's failure residues** (escrow refused after the offer; `end_lease` Retrying →
+  `BUYOUT_HELD`; `end_lease` Err → back to Active; the Trust's acceptance not activating; a relet
+  failure) and `RELEASE_RETRYING` / `REVOKED_RETRYING` have no test; the paths were read against the
+  brief's residue table.
+- **Wire strictness**: `buyout`, `ended_at` and `ended` deserialize as `None` when absent (serde's
+  `Option` rule); only `leased_at` is required on the wire. `check()` refuses every
+  status-incoherent omission.
+- **Test 5** proves the 24-fire backoff, not `hold_plan`'s written-once rule on a re-check; the
+  cross-epoch cutoff and the Done-depart arm are proven by pure unit tests only; e3b's "writes
+  nothing" checks look through `fold_kv`, which drops `StreamAppend` and other namespaces.
+- **The exact graduated and recalled hulls lines** are asserted on the IC6 rig, not the production
+  root (test 1 uses contains-fragments).
+- **Stale comments**: `orders.rs:992` "left for IC13 to prune"; `commands.rs:154-164` names only
+  `enrol` as `+coop`'s writing switch; `coop::row_of` widened to `pub(crate)` with no outside
+  caller.
+- **A recall whose `end_lease` returns `Err`** (unreachable past check 6 by the brief) leaves the
+  enrolment Revoked with the lease live and no pending terminal; the Return arm never fires and the
+  pilot keeps operating until staff `@contract/cancel` the lease.
+- **The hand-played smoke**, owed since IC12 (no Redis on the build machine).
+- **Not in this cut** (the brief's §5): Q-18-60's bid gate, the P-cuts, IC14's registry and
+  berth-board `LookRendered` lines, a staff bring-her-home verb, Q-18-14's cooldown, every pack
+  version.
+
+### Pins re-blessed
+
+- **`crates/mush-contract-tests/legacy-handlers.toml`**: the `+coop` note refreshed ("REFRESHED (not
+  joined) by doc 18 cut IC13: two switches, /buyout … and /release …; PINNED_BASELINE does not
+  move"), the `+ship` note gaining "Doc 18 cut IC13: the operate gate is the title OR a live charter
+  (`helm_of`)", and a new non-baseline `@coop` stanza (`legacy-post-image`, family `tacsim.coop`)
+  between `@contract` and `@corridor` in byte order. `PINNED_BASELINE` stays **97**: the two `+coop`
+  switches are arguments to an existing verb, and `@coop` is a new non-baseline handler under the
+  module's class (L9).
+- **Existing assertions changed, each as the brief directs**:
+  - (a) `tacsim/src/port/coop.rs` `ic6_enrolment_wire_is_strict`'s `sample()` gains the four fields
+    (an addition).
+  - (b) `tacsim/tests/coop.rs` `ic6_eight_simulated_days_raise_no_stale_contract_page` re-places the
+    hull at Stickney so the recall is blocked and the lease stays live across the eight days; the
+    lease and enrolment are asserted Active (the pre-IC13 claim restored after the builder's interim
+    Cancelled/Dormant version) and `recall_pages == [hull]` is added — a stronger guard,
+    mutation-checked by the fixer (with `exempt_from_stale_page` forced false it fails "the live
+    lease was paged as stale").
+  - (c) `tacsim/tests/orders.rs` `ic11_a_lapsed_charter_waits_and_stages_nothing` →
+    `ic11_a_lapsed_charter_holds_and_stages_nothing`: the Return arm now reaches the staff-ended
+    charter's hull at Stickney with cargo and stops the lapsed author's plan (`HELD_LINE` with
+    `HELD_RECALLED`, `!h.retry`, `PlanState::Held`, the dropped order `(Held, 2)`) where IC11's
+    order arm wrote a waiting note (`WAITING_LINE` with `HELD_CHARTER`, `h.retry`, `(Pending, 2)`);
+    L4/L12 direct this, and "nothing re-staged", "nothing filed again" and "no second sale" are
+    unchanged. `ic6_staff_cancel…`'s "Drays free: 7 of 8." did not change (it never fires the tick).
+- **Unchanged, run and green**: `state-slot-owners.toml` (no new foreign `module_state_mut`; the
+  economy writes go through `rehome_vault`, `end_lease`, `offer_*`, `accept_*`, `cancel_contract`),
+  `matcher-call-sites.toml` (no `match_object` call: the pilot resolves by `#N` or
+  `World::resolve_player`), the panic budgets, the restriction-lints census, `module-ns-owners.toml`,
+  the composition-edge pin, every content digest (lane v3, Dray v2, goods v1, Ceres v2, Stickney v3,
+  the starter and regions unmoved), `help-commands-allowlist.toml` (T-45; `+ship/order resume` is
+  already named in `docs/help/orders.md`), the CI gated-test inventory, `ports.rs` test 8's hulls
+  Ready text, `boot_parity`.
+
+### How it was verified
+
+On Windows at the working tree over `715151c4` with the cut uncommitted, the final gate — all 18
+commands green on the first run, nothing rerun, no LNK1104, no hung binary:
+
+```
+cargo fmt --all -- --check                                        (no output; exit 0; twice)
+cargo clippy --workspace --all-targets -- -D warnings             Finished `dev` profile … in 27.66s; 0 warning/error lines (again 0.58s)
+cargo test -p mush-economy --lib                                  37 passed
+cargo test -p mush-economy --test e3b --test e4b1 --test e4b2 --test e4c
+    e3b 36; e4b1 85; e4b2 117; e4c 44; all passed
+cargo test -p tacsim --lib                                        926 passed
+cargo test -p tacsim --test coop --test sale --test orders --test voyage --test commerce
+    coop 20; sale 15; orders 27; voyage 15; commerce 20; all passed
+cargo test -p tacsim --test hulls --test ports --test port_tick --test stations --test content --test lane
+    hulls 15; ports 19; port_tick 16; stations 18; content 29; lane 8; all passed
+cargo test -p mush-server --test ic_buyout_dormancy               test result: ok. 7 passed; 0 failed
+cargo test -p mush-server --test ic_slice_loop --test boot_parity ic_slice_loop 5; boot_parity 18; all passed
+cargo test -p mush-market --lib                                   27 passed
+cargo test -p mush-contract-tests                                 every binary ok (legacy_handler_allowlist 4, panic_budget 7, restriction_lints 11, state_slot_owners 4, module_ns_owners 3, matcher_call_sites 2, help_commands 4, scale_harness 6 passed with 8 ignored as before)
+cargo test -p mush-housing --no-fail-fast                         1, 54, 81, 1 passed
+cargo test -p mush-campaign --no-fail-fast                        54, 58, 15, 85, 28, 5 passed
+CARGO_BUILD_JOBS=8 cargo test --workspace --exclude mush-bot --no-fail-fast
+    400 result lines; 7521 passed, 0 failed, 92 ignored
+cargo test -p mush-bot                                            lib 469; arena_e2e 9; e2e 49; playtesting 9; every other binary ok
+```
+
+`ipc_authoritative_action` (8 passed) and `arena_story` (1 passed) passed inside the saturated
+sweep; the one panic in the log is the WS01-S8 injected world-turn fault, whose tests passed. No
+load-sensitive suite flaked. The fixer's mutation check: with `exempt_from_stale_page` forced
+false, `ic6_eight_simulated_days` fails with "the live lease was paged as stale"; `contract.rs`
+restored, diff empty, the test re-run ok.
+
+Three review lenses on the uncommitted tree (correctness, conformance with a 40-item checklist,
+tests), twelve should-fix/note findings across them; the fixer fixed all six should-fix findings
+and rebutted none (correctness F1 + conformance F1: the ic6 stale-page test; correctness F2: the O6
+window's `HELD_CHARTER` → `HELD_BUYOUT`; conformance F2: the help page's dormant-hold wording;
+tests F1: Bo's vacuous last-port stamp; tests F2: the executor gate's lost coverage → test 7 and
+the IC11 rename). The judge re-read the whole diff and the three new files and verified each
+disposition against the code; the notes left standing are recorded under "Deferred, and why".
+Verdict: ship with notes.
+
+### Surface for the next cuts
+
+Public items later cuts (IC14, the P-cuts) build on:
+
+- **Economy** (`crates/mush-economy/src/api.rs`, re-exported from `lib.rs`): `pub fn
+  rehome_vault(ctx: &mut Ctx<'_>, id: VaultId, owner: PrincipalId, scope: Option<OrgScopeId>, name:
+  SmolStr) -> bool` — re-owns through `put_vault` (index follows), `revision.saturating_add(1)`,
+  persists the vault only; `false` and nothing written for a `System` owner, an unknown vault or no
+  store. Note: `Vault.owner` is no longer immutable, and the Trust owns a hull's hold vault between
+  a recall and the next enrolment.
+- **Enrolment** (`crates/tacsim/src/port/coop.rs`, re-exported from `port/mod.rs`): `Enrolment {
+  …, status, leased_at: i64, buyout: Option<u64>, ended_at: Option<i64>, ended: Option<EndCause>,
+  sales, margin_minor, shares_minor }` (`ENROLMENT_SCHEMA = 1`; the three Option fields read as
+  `None` when absent, `leased_at` is required); `pub enum EndCause { BoughtOut, Released, Dormant,
+  Revoked { by: ObjId, why: String }, LeaseEnded }` (snake_case wire: `"dormant"`,
+  `{"revoked":{"by":1,"why":"…"}}`); `pub const MAX_REVOKE_WHY_BYTES: usize = 200`; `check()` holds
+  the end/status/buyout rules together. `pub const GRADUATED_LINE`, `BUYOUT_PENDING_LINE`. Now
+  `pub(crate)`: `money_minor`, `say`, `office_of`, `own_enrolment`, `Books`, `account_books`,
+  `row_of`, `titled_to(w, hull, &PrincipalId) -> bool`, `stowage_held(&EconomyStore, &PrincipalId
+  /*trust*/, stowage: ObjId) -> bool` (the one predicate `hull_is_free` and `hull_line` share).
+- **The operate gate** (`coop.rs`, re-exported): `pub enum Standing { Charter(ContractId), Title }`;
+  `pub struct Helm { pub hull: ObjId, pub standing: Standing }`; `pub fn helm_of(w: &World, pilot:
+  ObjId) -> Option<Helm>` (live charter first, else the lowest-id programme-map hull whose Active
+  asset is titled `Object(pilot)`); `pub fn helm_holder(w: &World, hull: ObjId) -> Option<ObjId>`
+  (`charter_tenant`, else the `Object` title holder of a programme-map hull). `live_charter` and
+  `charter_tenant` remain for the programme's own lines.
+- **Store** (`crates/tacsim/src/store.rs`): `TacsimStore::enrolment_for_buyout(&self, contract:
+  u64) -> Option<&Enrolment>`; `TacsimStore::enrolment_for_hull(&self, hull: ObjId) ->
+  Option<&Enrolment>` (the governing enrolment: Active | BuyoutPending | Graduated, else the Revoked
+  one with the greatest `ended_at`).
+- **Buyout** (`crates/tacsim/src/port/buyout.rs`, `pub mod buyout`): `pub const BUYOUT_WINDOW_SECS:
+  i64 = 3_600`; `pub(crate) fn buyout_spec(pilot_account, trust: &PrincipalId, trust_account, hull,
+  pilot, mark: &str, price: Amount, now: i64) -> ContractSpec`; `pub(crate) fn buyout_cmd(ctx) ->
+  Result<(), CmdError>`; `pub(crate) enum Busy { Cleared, Inflight, Goods }` and `pub(crate) fn
+  in_flight(w, &Enrolment) -> Option<(Busy, String)>` (shared by the recall); `pub(crate) enum
+  Verdict { Graduate, Relet, Wait }`, `pub(crate) const fn buyout_verdict(ContractStateKind,
+  lease_terminal: bool) -> Verdict`; `pub(crate) fn settle_buyout(ctx, &Enrolment)`. Texts (pub,
+  verbatim): `BUYOUT_USAGE`, `ALREADY_GRADUATED`, `BUYOUT_PENDING`, `BUYOUT_UNDER_WAY`,
+  `BUYOUT_NOT_HERE`, `CLEARED_WAIT`, `INFLIGHT_WAIT`, `GOODS_WAIT`, `BUYOUT_WHERE`,
+  `BUYOUT_FAILED`, `BUYOUT_FUNDS`, `BUYOUT_REFUND_PENDING`, `BUYOUT_HELD`, `BUYOUT_FILED`,
+  `GRADUATED` (doc 18 §2 step 19's line), `BUYOUT_REFUNDED`, `BUYOUT_UNLEASED`.
+- **Recall** (`crates/tacsim/src/port/recall.rs`, `pub mod recall`): `pub const COOP_STAFF_VERB =
+  "@coop"`, `COOP_STAFF_HELP`, `DORMANCY_TICKET_SCAN: u32 = 16`, `RECALL_RECHECK_FIRES: u64 = 24`;
+  `pub(crate) enum RecallCause { Released, Dormant, Revoked { by, why } }`; `pub(crate) enum
+  RecallBlock { UnderWay, NotAtPort, Cleared, Inflight, GoodsMoving, Cargo, Unreadable, Economy }`;
+  `pub(crate) struct RecallDone { tank: u64, locker: u64, ashore: Vec<ObjId>, lease_retrying: bool
+  }`; `pub(crate) fn recall_block(&Ctx, &Enrolment) -> Option<(RecallBlock, String)>`; `pub(crate)
+  fn recall(&mut Ctx, &Enrolment, RecallCause) -> Result<RecallDone, (RecallBlock, String)>`;
+  `pub(crate) fn return_hull(&mut Ctx, &Enrolment) -> Result<RecallDone, (RecallBlock, String)>`;
+  `pub(crate) fn release_cmd(ctx)`, `pub(crate) fn revoke_cmd(ctx)`; `pub(crate) fn idle(now,
+  leased_at, days: u32, last_burn_ic: Option<i64>, cutoff_ic: i64, last_reach_utc: Option<i64>) ->
+  bool`; `pub(crate) fn dormant(&Ctx, &Enrolment, days: u32) -> Result<bool, ()>`; `pub(crate) fn
+  recall_agents(&Ctx, &mut PortTickState) -> Vec<(ObjId /*hull*/, ObjId /*pilot*/)>`; `pub(crate)
+  fn recall_step(&mut Ctx, &mut PortTickState, hull: ObjId) -> Step`. Texts (pub, verbatim):
+  `RECALL_UNDER_WAY`, `RECALL_NOT_AT_PORT`, `RECALL_CARGO`, `RECALL_HOLD_DARK`, `RECALL_ECONOMY`,
+  `HELD_RECALLED`, `HELD_DORMANT`, `PUT_ASHORE`, `DORMANT_NOTICE`, `REVOKED_NOTICE`,
+  `RETURNED_NOTICE`, `RELEASE_USAGE`, `RELEASE_WHERE`, `RELEASED`, `FORFEIT_LINE`,
+  `RELEASE_RETRYING`, `REVOKE_USAGE`, `REVOKE_WHY_BOUNDS`, `NO_SUCH_PILOT`, `NO_COOP_CHARTER`,
+  `NOT_REVOKED`, `REVOKED_REPLY`, `REVOKED_RETRYING`.
+- **Ship** (`crates/tacsim/src/port/ship.rs`, not `recall.rs`): `pub const SHIP_GRADUATED`;
+  `pub(crate) fn put_ashore(ctx, person, hull, gallery, reason: &str, narrate: impl FnOnce(&mut
+  Ctx<'_>)) -> Result<(), String>` (unplace, move_to, narrate, show_room, `Moved`, the last-port
+  stamp); `pub(crate) fn gallery_line(ctx, who, gallery, name: &str)`.
+- **Executor** (`crates/tacsim/src/port/executor.rs`): `pub const HELD_BUYOUT: &str = "your buyout
+  of the {name} is being entered; she sails on your title once it passes."`; `decide()` waits under
+  it when the author's governing enrolment is BuyoutPending and drops either note silently on the
+  leased branch.
+- **Share** (`crates/tacsim/src/port/proceeds.rs`): `pub(crate) const fn
+  takes_share(EnrolmentStatus) -> bool`; `settled()` folds nothing for a Graduated enrolment.
+- **Time and the tick** (`when.rs`, `port_tick.rs`): `pub(crate) fn when::ic_at_real(w: &World,
+  real: i64) -> i64` (the epoch in force at `real`); `pub fn port_tick::recall_pages(w: &World) ->
+  Vec<u32>`; `Arm::Recall { hull: u32 }` offered after `Launch`, before `Order`, with recall hulls
+  removed from the order agents; `PortTickState.recall_warned: BTreeSet<u32>`,
+  `PortTickState.recall_backoff: BTreeMap<u32, u64>`.
+- **Verbs and gates**: `+coop` switches `enrol | statement | buyout | release`; new `@coop`
+  CommandSpec (`ArgShape::EqPair`, switch `revoke`, `LegacyPostImage`, staff; `commands.rs`
+  `is_staff`, `require_staff`, `require_enabled` now `pub(crate)`); `legacy-handlers.toml` `@coop`
+  stanza, baseline 97. **Hulls line clauses** (after `{k} leased{leases}`): `, {g} graduated ({mark}
+  to {owner}, …)`, `, {b} being bought out ({mark}, …)`, `, {r} recalled, not yet returned ({mark},
+  …)`; with g > 0 the head is `{entry} hulls: {pool} of {pool} made, {pool−g} titled to {org};`;
+  always Ready.
+- **Test rig** (`crates/mush-server/tests/ic_buyout_dormancy.rs`): file-local copies of
+  `ic_slice_loop.rs`'s rig plus `top_up_to`, `title_moves`, `title_owner`, `vault_owner`,
+  `untouched`/`assert_untouched`, `hulls_line`, `registry_from_chandlery`, `gallery_from_registry`,
+  `launch`, `arrive`; `tacsim/tests/coop.rs` gains `hulls_line(rig)`. IC14 and later cuts that need
+  a tacsim `Ctx`-level economy write should follow `e3b.rs`'s `RehomeMod` pattern.
+- **Doc conventions**: this cut's owner items O1/O2/O3/O5/O7 take the numbers Q-18-66..Q-18-70 in
+  this note only; doc 18 and 18a are not edited by this cut, so §8 does not yet list them and the
+  next docs pass adds them (the next cut-raised question is Q-18-71).

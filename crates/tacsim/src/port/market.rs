@@ -44,7 +44,7 @@ use crate::port::apply::room_by_key;
 use crate::port::capacity::{
     self, Admission, Compartment, Load, compartment_for, format_m3, format_tonnes,
 };
-use crate::port::coop::{live_charter, name_of, port_name};
+use crate::port::coop::{helm_of, name_of, port_name};
 use crate::port::def::{PortDef, room_key};
 use crate::port::map::{PortMap, PortMapState};
 use crate::port::readiness::report_ports;
@@ -155,10 +155,10 @@ fn refusal(line: String) -> VenueRefusal {
 }
 
 /// **The hull checks** both presences make on a governed hold (lead ruling L10): the
-/// hull is the actor's live charter's, and it is docked at the port whose venue this
+/// hull is the actor's (its title or live charter, cut IC13's `helm_of`), and it is docked at the port whose venue this
 /// is.
 fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
-    if live_charter(w, actor).is_none_or(|charter| charter.hull != hull) {
+    if helm_of(w, actor).is_none_or(|helm| helm.hull != hull) {
         return Err(refusal(NOT_YOUR_CHARTER.to_owned()));
     }
     let port = port_name(def);
@@ -216,7 +216,7 @@ impl VenueGate for PortVenueGate {
         presence: Presence,
     ) -> Option<EndpointRef> {
         port_of_venue(w, venue)?;
-        let charter = live_charter(w, actor)?;
+        let charter = helm_of(w, actor)?;
         match presence {
             // L10: the charter hull's hold wherever the hull lies; `admit` says why it
             // may not load, in the gate's own words.

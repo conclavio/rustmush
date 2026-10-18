@@ -86,10 +86,24 @@
 //!   venue's asks and bids, the clamps and their bound words, the projection,
 //!   `fill` and the reserve, D-18-41) and the order arm the port tick drives
 //!   (D-18-32).
+//!
+//! **Doc 18 cut IC13** — buyout, graduation and dormancy:
+//!
+//! - [`buyout`] — `+coop/buyout`: the pilot-issued asset-purchase contract
+//!   (`TitleHeld{hull, Trust}` + `Before`, `TitleTransfer` Trust → pilot), the
+//!   pilot's escrow, the charter closed with `end_lease` and the Trust's
+//!   acceptance last (lead ruling L1); the observer's verdict that graduates on
+//!   settlement and re-charters the pilot on a refund (L7);
+//! - [`recall`] — the recall in two halves (end the charter; return the hull,
+//!   L4): `+coop/release`, staff `@coop/revoke`, and the port tick's recall arm
+//!   (dormancy after `dormancy_real_days` without a departure, L3, and the
+//!   return of a hull whose charter ended elsewhere); the hold vault is re-homed
+//!   to the Trust, never closed (L5).
 
 pub mod apply;
 pub mod board;
 pub mod burn;
+pub mod buyout;
 pub mod capacity;
 pub mod coop;
 pub mod credit;
@@ -104,6 +118,7 @@ pub mod orders;
 pub mod passage;
 pub mod proceeds;
 pub mod readiness;
+pub mod recall;
 pub mod ship;
 pub mod stock;
 pub mod vendor;
@@ -112,8 +127,8 @@ pub mod when;
 
 pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
 pub use coop::{
-    Charter, Enrolment, EnrolmentState, EnrolmentStatus, ProgrammePort, charter_tenant, enrol_gate,
-    gated, live_charter, programme_port,
+    Charter, EndCause, Enrolment, EnrolmentState, EnrolmentStatus, Helm, ProgrammePort, Standing,
+    charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port,
 };
 pub use def::{
     AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,

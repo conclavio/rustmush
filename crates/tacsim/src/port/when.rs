@@ -174,6 +174,27 @@ pub(crate) fn ic_at_utc(w: &World, utc: i64) -> i64 {
     w.world_timeline().current().ic_at(utc)
 }
 
+/// **The IC second at real second `real` under the epoch then in force** (doc 18 cut
+/// IC13, the dormancy clock): the last epoch whose `real_anchor <= real`, else the
+/// first, evaluated with `WorldTimelineEpoch::ic_at`. Unlike [`ic_at_utc`], which
+/// evaluates only the current generation, this is correct for an instant before a
+/// rate change and across a rate-0 epoch. Pure.
+#[must_use]
+pub(crate) fn ic_at_real(w: &World, real: i64) -> i64 {
+    ic_at_real_in(w.world_timeline(), real)
+}
+
+/// [`ic_at_real`] over a timeline.
+fn ic_at_real_in(timeline: &mush_core::WorldTimeline, real: i64) -> i64 {
+    let epochs = timeline.epochs();
+    epochs
+        .iter()
+        .rev()
+        .find(|epoch| epoch.real_anchor <= real)
+        .or_else(|| epochs.first())
+        .map_or(0, |epoch| epoch.ic_at(real))
+}
+
 /// **The IC instant a passage due at `due_utc` is planned at**: never in the past
 /// (`max(world IC now, ic_at_utc(due))`; D-18-41: "the plan at the depart order's
 /// `not_before`, never now").
@@ -359,6 +380,54 @@ mod tests {
         assert_eq!(
             render_due(&stopped, now + 3_600),
             "20:00 UTC today (IC clock stopped; in 1 h 0 m)"
+        );
+    }
+
+    /// Doc 18 cut IC13: the dormancy cutoff is read under the epoch in force at that
+    /// real instant — 24, then 3600, then a stopped clock.
+    #[test]
+    fn ic13_ic_at_real_reads_the_epoch_in_force() {
+        use mush_core::clock::WorldTimelineEpoch;
+        let first = WorldTimelineEpoch {
+            real_anchor: 1_000,
+            ic_anchor: 50_000,
+            rate: 24,
+            generation: 1,
+        };
+        let second = WorldTimelineEpoch {
+            real_anchor: 2_000,
+            ic_anchor: first.ic_at(2_000),
+            rate: 3_600,
+            generation: 2,
+        };
+        let third = WorldTimelineEpoch {
+            real_anchor: 3_000,
+            ic_anchor: second.ic_at(3_000),
+            rate: 0,
+            generation: 3,
+        };
+        let timeline =
+            mush_core::WorldTimeline::from_epochs(vec![first, second, third]).expect("contiguous");
+        // Inside each epoch.
+        assert_eq!(ic_at_real_in(&timeline, 1_500), 50_000 + 500 * 24);
+        assert_eq!(
+            ic_at_real_in(&timeline, 2_500),
+            50_000 + 1_000 * 24 + 500 * 3_600
+        );
+        let stopped = 50_000 + 1_000 * 24 + 1_000 * 3_600;
+        assert_eq!(ic_at_real_in(&timeline, 3_500), stopped);
+        assert_eq!(ic_at_real_in(&timeline, 9_999_999), stopped);
+        // On each anchor (continuous, so either neighbour agrees).
+        assert_eq!(ic_at_real_in(&timeline, 1_000), 50_000);
+        assert_eq!(ic_at_real_in(&timeline, 2_000), 50_000 + 1_000 * 24);
+        assert_eq!(ic_at_real_in(&timeline, 3_000), stopped);
+        // Before the first: the first epoch, extrapolated backwards.
+        assert_eq!(ic_at_real_in(&timeline, 900), 50_000 - 100 * 24);
+        // The current-epoch reading `ic_at_utc` would give is wrong before the last
+        // rate change; this one is not.
+        assert_ne!(
+            timeline.current().ic_at(1_500),
+            ic_at_real_in(&timeline, 1_500)
         );
     }
 }

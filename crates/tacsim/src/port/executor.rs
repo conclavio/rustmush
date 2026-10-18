@@ -43,7 +43,7 @@ use crate::pack::RulesPack;
 use crate::port::board::{house_name, label_of, money, unit_of};
 use crate::port::burn::{HullSpec, consumable_good, hull_spec_of};
 use crate::port::capacity::{self, Compartment};
-use crate::port::coop::live_charter;
+use crate::port::coop::helm_of;
 use crate::port::coop::{name_of, port_name};
 use crate::port::def::PortDef;
 use crate::port::families::PassagePlan;
@@ -2291,6 +2291,17 @@ fn restaged(
     commit(ctx, out, step)
 }
 
+/// Whether the plan's author is buying this hull out (cut IC13): their governing
+/// enrolment for the hull is `BuyoutPending` (owner item O6's window).
+fn buying_out(w: &World, hull: ObjId, pilot: ObjId, doc: &Orders) -> bool {
+    doc.author == pilot
+        && w.module_state::<TacsimStore>()
+            .and_then(|store| store.enrolment_for_hull(hull))
+            .is_some_and(|e| {
+                e.pilot == pilot && e.status == crate::port::coop::EnrolmentStatus::BuyoutPending
+            })
+}
+
 /// **What is due for one hull this fire**, read under a shared borrow: the re-stage,
 /// the lease gate, then the cursor order by kind.
 #[allow(clippy::too_many_lines)] // the brief's step list, in order
@@ -2325,9 +2336,12 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
     if restage.is_none() && !fresh {
         return Plan::Idle;
     }
-    // 3. The lease, before any act (D-18-23, D-18-32; reviewer F5).
-    let leased = live_charter(w, pilot).is_some_and(|c| c.hull == hull) && doc.author == pilot;
+    // 3. The title or the live charter, before any act (D-18-23, D-18-32; reviewer F5;
+    // cut IC13's `helm_of`).
+    let leased = helm_of(w, pilot).is_some_and(|c| c.hull == hull) && doc.author == pilot;
     let name = name_of(w, hull);
+    let charter_note = HELD_CHARTER.replace("{name}", &name);
+    let buyout_note = HELD_BUYOUT.replace("{name}", &name);
     let mut doc = doc;
     if !leased {
         if doc.state == PlanState::Paused {
@@ -2336,19 +2350,25 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
         let Some(id) = doc.cursor else {
             return Plan::Idle;
         };
+        // Cut IC13 (owner item O6): between `+coop/buyout` and the settlement the author
+        // holds neither charter nor title, so the step waits — under the buyout's own
+        // note, not the lapsed charter's — and runs on the title once it passes.
+        let reason = if buying_out(w, hull, pilot, &doc) {
+            &buyout_note
+        } else {
+            &charter_note
+        };
         let mut out = Outcome::new(doc);
-        if wait_with(w, &mut out, id, &HELD_CHARTER.replace("{name}", &name)) {
+        if wait_with(w, &mut out, id, reason) {
             return Plan::Write(Box::new(out));
         }
         return Plan::Idle;
     }
-    let charter_note = HELD_CHARTER.replace("{name}", &name);
-    if doc
-        .hold
-        .as_ref()
-        .is_some_and(|note| note.retry && note.reason == charter_note)
-    {
-        // "Re-checked silently each fire": the note drops without a line.
+    if doc.hold.as_ref().is_some_and(|note| {
+        note.retry && (note.reason == charter_note || note.reason == buyout_note)
+    }) {
+        // "Re-checked silently each fire": the note drops without a line (the lapsed
+        // charter's, or the buyout window's once the title has passed).
         doc.hold = None;
         if put_orders(ctx, &doc).is_err() {
             return Plan::Refused;
@@ -2961,6 +2981,9 @@ pub const HELD_WINDOW: &str =
     "the hour for {port} passed at {hhmm} UTC; +ship/order resume sails now.";
 /// The lease lapsed: `{name}`.
 pub const HELD_CHARTER: &str = "your charter of the {name} is no longer in force.";
+/// The buyout window (cut IC13, owner item O6): `{name}`.
+pub const HELD_BUYOUT: &str =
+    "your buyout of the {name} is being entered; she sails on your title once it passes.";
 /// The second unverified miss.
 pub const HELD_UNCONFIRMED: &str = "the counter has not confirmed it; staff have been told.";
 /// A staff stand-down: `{port}`.
