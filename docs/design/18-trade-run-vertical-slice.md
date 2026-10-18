@@ -2502,7 +2502,7 @@ runnable.**
   funded-balance board figure (IC8, IC10); the accept line naming the listing's signatory (IC8 L17).
 
 Post-loop cuts, named and ordered: **P-B** the Bids readiness line gates `+coop/enrol` on a Missing bid
-only, a funds-Pending house paged once a boot (Q-18-60, R10; S; **landed 2026-10-18**, the cut note in
+only, a funds-Pending house paged once a boot (Q-18-60, R10; S; **landed 2026-10-18 at `313415e2`**, the cut note in
 [18-cut-notes.md](18-cut-notes.md) "P-B"); **P-G** real gangway exits (outer door relinked at dock, a station
 exit named by berth and hull, `BerthLink`, the Moved observer, atlas `on_moved` ordering tests, boot
 reconcile; M); **P-F** berth slots, berth-holder markers, the six freight-deck rooms, `ExitDef`
@@ -3302,7 +3302,7 @@ every open ruling in this document and in 16c §5; recorded here, binding):
 - **Q-18-60 — gate on Missing only.** A hand-withdrawn or apply-waiting bid closes `+coop/enrol`; a
   funds-Pending or re-posting bid does not: the sales skip with `HOUSE_CANNOT_PAY_SKIP` as before IC12,
   and the port tick pages once a boot while a house cannot fund a tonne. **Built as the post-loop cut
-  P-B, landed 2026-10-18** (the commit on top of `29230ff5`; its hash is named by cut AQ's commit, the
+  P-B, landed 2026-10-18 at `313415e2`** (on top of `29230ff5`; the hash written by cut AQ's commit, the
   next on the same branch, since a commit cannot carry its own) — after the deploy, as ruled: a playtest
   cannot reach the fifty round trips that drain Kasei. The record is
   [18-cut-notes.md](18-cut-notes.md) "P-B".

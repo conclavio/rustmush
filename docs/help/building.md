@@ -12,7 +12,10 @@ Rooms and exits:
                     @dig Hall = north;n , south;s
   @open <exit name>[;alias...][=<destination>]
                     Open a new exit in your current room, optionally
-                    linked at once.
+                    linked at once. An exit's name or alias may not be
+                    a word that is a command in every room (look, l,
+                    inv, home ...): the exit would swallow it, so @dig,
+                    @open and @name refuse it and say which command.
   @link <exit>=<destination>
                     Link (or relink) an exit to a room; also sets things'
                     homes: @link me=here sets your home.

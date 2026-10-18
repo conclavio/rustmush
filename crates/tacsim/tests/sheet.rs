@@ -405,8 +405,20 @@ fn the_gate_refuses_an_unlisted_verb_and_allows_the_chargen_set() {
 #[test]
 fn the_gate_refuses_an_exit_even_aliased_like_an_onboarding_verb() {
     let mut tw = gated_world();
-    // An exit in Limbo whose alias `l` collides with `look`/`l`.
-    tw.run(GOD, "@dig Nowhere=Somewhere;l,back");
+    // An exit in Limbo whose alias `l` collides with `look`/`l` — made through
+    // the world API, since cut AQ (16c B-75) refuses `@dig Nowhere=Somewhere;l`
+    // at the verb; the gate this pins is dispatch's, not the builder's.
+    {
+        let w = tw.world_mut();
+        let nowhere = w
+            .create(ObjKind::Room, "Nowhere", GOD, None)
+            .expect("a room");
+        let somewhere = w
+            .create(ObjKind::Exit, "Somewhere", GOD, Some(LIMBO))
+            .expect("an exit");
+        w.add_alias(somewhere, "l").expect("the alias");
+        w.link_exit(somewhere, Some(nowhere)).expect("linked");
+    }
     let nick = tw.spawn_player("Nick");
 
     let ev = tw.run(nick, "l");
