@@ -75,7 +75,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use mush_config::config::Config;
@@ -88,6 +88,7 @@ use mush_server::staff::StaffOpKind;
 use mush_sim::RouteCatalog;
 use mush_store::{InMemoryStore, ObjectStore};
 use tacsim::TacsimStore;
+use tracing::instrument::WithSubscriber;
 
 // ---- rig -------------------------------------------------------------------
 
@@ -349,6 +350,43 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
     fn make_writer(&'a self) -> Capture {
         self.clone()
     }
+}
+
+/// Keep callsite registration independent of which parallel test reaches it
+/// first. With just one registered dispatcher, tracing-core 0.1.36 consults
+/// only the registering thread's default: an unsubscribed sibling can cache
+/// `never` for a callsite this capture needs. A second, inert dispatcher keeps
+/// registration on the path that considers every live subscriber.
+fn capture_dispatch(capture: Capture, level: tracing::Level) -> tracing::Dispatch {
+    static REGISTRATION_ANCHOR: OnceLock<tracing::Dispatch> = OnceLock::new();
+    REGISTRATION_ANCHOR
+        .get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
+    tracing::Dispatch::new(
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(level)
+            .with_writer(capture)
+            .finish(),
+    )
+}
+
+#[test]
+fn a_callsite_first_reached_without_a_subscriber_is_still_captured() {
+    fn shared_callsite() {
+        tracing::info!("boot capture shared-callsite regression");
+    }
+    let capture = Capture::default();
+    let dispatch = capture_dispatch(capture.clone(), tracing::Level::INFO);
+    std::thread::spawn(shared_callsite).join().unwrap();
+    tracing::dispatcher::with_default(&dispatch, shared_callsite);
+    assert_eq!(
+        capture
+            .text()
+            .matches("boot capture shared-callsite regression")
+            .count(),
+        1,
+        "the sibling's event is excluded and this capture's event is retained"
+    );
 }
 
 // ---- 1: the order ----------------------------------------------------------
@@ -782,14 +820,8 @@ async fn split_build_engine_composes_the_tacsim_layer() {
 /// so the log is what these read.
 async fn boot_saying(tag: &str, mutate: impl FnOnce(&mut Config)) -> (String, Fixture) {
     let capture = Capture::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
-        .with_writer(capture.clone())
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    let fx = boot_fixture(tag, mutate).await;
-    drop(guard);
+    let dispatch = capture_dispatch(capture.clone(), tracing::Level::INFO);
+    let fx = boot_fixture(tag, mutate).with_subscriber(dispatch).await;
     (capture.text(), fx)
 }
 
@@ -1220,8 +1252,8 @@ async fn the_store_knobs_are_read_where_the_store_is_opened() {
 ///
 /// The warn is emitted on the thread that drives `serve_with_store`'s future to
 /// the bind point, which is this test's own server thread under its own scoped
-/// subscriber — and no other case in this binary reaches that callsite, so the
-/// interest cache cannot be poisoned by a sibling running first.
+/// subscriber. Both log readers use `capture_dispatch`, so parallel boot
+/// callsites remain visible even when a sibling first reaches them uncaptured.
 #[tokio::test]
 async fn a_caller_supplied_store_says_the_archive_tier_is_ignored() {
     let mut cfg = stock_config("archive-ignored");
@@ -1240,18 +1272,11 @@ async fn a_caller_supplied_store_says_the_archive_tier_is_ignored() {
             .enable_all()
             .build()
             .unwrap();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::WARN)
-            .with_writer(sink)
-            .finish();
-        let served = tracing::subscriber::with_default(subscriber, || {
-            runtime.block_on(mush_server::serve_with_store(
-                cfg,
-                Some(bound_tx),
-                Some(store),
-            ))
-        });
+        let dispatch = capture_dispatch(sink, tracing::Level::WARN);
+        let served = runtime.block_on(
+            mush_server::serve_with_store(cfg, Some(bound_tx), Some(store))
+                .with_subscriber(dispatch),
+        );
         let _ = done_tx.send(served);
     });
     let endpoint = tokio::time::timeout(Duration::from_secs(60), bound_rx)
