@@ -311,3 +311,12 @@ export tests all pass. A separate local Cargo build made the guarded wrapper
 stop after Rustdoc; the subsequent guarded invocation ran only formatting and
 protocol export. Both records are retained. This completes the Windows gates;
 M6 acceptance still awaits the explicit parity decision.
+
+A bounded read-only audit of the same retained external run reverified all 29
+indexed artifacts and found no actionable bot execution defect. All 30 matches
+completed; all 1,077 public FIRE commands pair with firing acknowledgements or
+explicit still-cycling refusals. The 14 losses are combat eliminations, without
+an observed lost cockpit, unanswered firing command or midfight busy stall.
+Independent polling and native-intent timing differ, but this evidence does
+not justify retuning the bot or rerunning seeds. No source, tactics, criterion
+or acceptance result changed; the parity decision remains outstanding.
