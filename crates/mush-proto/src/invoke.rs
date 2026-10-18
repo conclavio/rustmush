@@ -519,7 +519,8 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_remove_is_closed_and_keeps_its_wire_shape() -> Result<(), serde_json::Error> {
+    fn lifecycle_remove_is_closed_and_keeps_its_wire_shape()
+    -> Result<(), Box<dyn std::error::Error>> {
         let request = InvokeRequest::Mind(MindRequest::Lifecycle {
             name: "mine".into(),
             base: MindEditBase {
@@ -536,8 +537,12 @@ mod tests {
                 "edit": {"kind": "remove"}
             }
         });
-        assert_eq!(serde_json::to_value(&request)?, wire);
-        assert_eq!(serde_json::from_value::<InvokeRequest>(wire)?, request);
+        if serde_json::to_value(&request)? != wire {
+            return Err("lifecycle remove changed its valid wire shape".into());
+        }
+        if serde_json::from_value::<InvokeRequest>(wire)? != request {
+            return Err("lifecycle remove did not round-trip".into());
+        }
         for edit in [
             r#"{"kind":"remove","actor":7}"#,
             r#"{"kind":"remove","account":"foreign"}"#,
@@ -545,11 +550,17 @@ mod tests {
             r#"{"kind":"remove","source":"private"}"#,
             r#"{"kind":"remove","new_name":"other"}"#,
         ] {
-            assert!(serde_json::from_str::<MindLifecycle>(edit).is_err());
+            if serde_json::from_str::<MindLifecycle>(edit).is_ok() {
+                return Err(format!("lifecycle remove accepted an extra field: {edit}").into());
+            }
             let nested = format!(
                 r#"{{"service":"mind","request":{{"op":"lifecycle","name":"mine","base":{{"edit":1,"revision":null}},"edit":{edit}}}}}"#
             );
-            assert!(serde_json::from_str::<InvokeRequest>(&nested).is_err());
+            if serde_json::from_str::<InvokeRequest>(&nested).is_ok() {
+                return Err(
+                    format!("nested lifecycle remove accepted an extra field: {edit}").into(),
+                );
+            }
         }
         Ok(())
     }
