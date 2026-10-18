@@ -243,3 +243,14 @@ are unchanged. The lifecycle-remove protocol also rejects extra nested fields
 with the same valid JSON shape and existing connection/edit authority. Its direct
 and nested decoding regression, actual TypeScript export and final acceptance run
 remain part of the next committed-source gate.
+
+The Linux run at `0a2cfe71` passes the seven Field Pilot checks and both isolation
+tests (328.09 seconds after compilation). Preparations take 143.953 and 141.826
+seconds; the fresh loaded sortie advances 18,001 ms with settled progress for
+both accounts and both artifacts below 16 MiB. The next author test fails after
+6.86 seconds in fixture account setup: `@newchar Alt` was sent through the bot
+transport, which correctly refuses account management commands. The fixture now
+uses a narrow runner-owned public SSH character-creation helper with explicit
+busy retries and success acknowledgement. Bot command restrictions are unchanged.
+The correction still needs execution. This failed invocation reached neither the
+signed author workflow nor the external interval and is not full acceptance.

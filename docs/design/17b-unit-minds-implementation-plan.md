@@ -549,3 +549,21 @@ deployment is claimed. A fresh fetch still resolves `origin/main` to IC12
 `715151c4`, already included here; the post-acceptance M7 economy checkpoint remains
 separate. Local Rust gates use one build job and wait for the host's other Rust
 builds before starting, because parallel MSVC linkers exhaust memory.
+
+**Linux acceptance follow-up at `0a2cfe71`:** all seven Field Pilot tests and both
+isolation tests pass. The isolation run takes 328.09 seconds after compilation;
+preparations take 143.953 and 141.826 seconds. The loaded sortie advances 18,001 ms,
+both accounts make settled progress, and the frozen artifacts measure 13,866,730
+and 13,864,038 bytes under the unchanged 16 MiB cap. The author story then fails
+after 6.86 seconds because fixture account creation went through the bot transport's
+correct account-command refusal. A narrow runner-owned helper now sends that
+setup command through the existing public SSH session. The bot guard is unchanged;
+the fixture correction and remaining author/external acceptance still need their
+actual runs. The retained failed-run archive has SHA-256
+`87b8a5da815467da266f3c5a0829484933a8aad711c0b46fe6bc9b878864cb03`.
+
+The owner's 2026-10-17 paid-derivative ruling is recorded in doc 17 Q-UM-17:
+existing paid licences remain usable through their own term, while new sales and
+renewals wait for the issuer's parent rights to return. The separate dependent
+owner-use restriction remains. This policy clarification does not start M7;
+M6 acceptance and the fresh economy checkpoint remain required.

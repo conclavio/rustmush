@@ -688,6 +688,10 @@ substitute for this interface and correctness review.
 sealed sorties may finish, but new sorties and filings are blocked until the
 parent licence is restored. This supersedes the earlier "still runs and seals"
 default in doc 17; the M7 design must enforce the same rule at checkout and filing.
+The owner's separate paid-customer ruling on the same date keeps existing paid
+derivative licences usable through their own term under their own restrictions,
+without ancestor licences. New sales and renewals wait for the issuer's qualifying
+parent rights to return, rechecked before settlement; no existing term is extended.
 
 ## 8. Implementation record: M6 acceptance in progress
 
@@ -779,3 +783,12 @@ still failed its live-match fixture after preparation, so the author story and
 fresh external interval remain unrun. The two-sortie fixture correction, first
 cockpit-frame wait and strict lifecycle-remove request shape require fresh gates,
 along with the full Windows test sweep. M6 and the later M7 checkpoint remain open.
+
+The next Linux invocation at `0a2cfe71` passes all seven Field Pilot checks and both
+isolation tests. Both accounts make settled progress while a fresh loaded sortie
+advances 18,001 ms; both frozen artifacts remain below 16 MiB. The author story
+then fails in account setup because it sent `@newchar` through the bot's command
+guard. The runner now creates that fixture character through its existing public
+SSH session, preserving the bot's refusal of account commands. That correction
+still needs execution; the signed author workflow and external interval were not
+reached, and M6 remains unaccepted.

@@ -1207,6 +1207,11 @@ dependent owner's licence lapses at the same moment: existing sealed sorties may
 new sortie may be sealed and no new revision may be filed until the parent licence is restored.
 The fork remains source-sealed during that interval. This is the owner's 2026-10-17 Q-UM-17 ruling,
 superseding the earlier default that allowed the last filed revision to seal new sorties.
+Existing paid derivative licences remain usable through their own term, including new sorties,
+subject to their own validity and Registry restrictions; buyers need no separate ancestor licences.
+New derivative sales and renewals are blocked until the issuer's qualifying parent rights return,
+with that authority checked again before settlement. This separate owner ruling on 2026-10-17
+does not extend any existing term or restore the dependent owner's self-use rights.
 Charters are refused between characters of one account as licences are.
 
 **Listing and sale.** A filed line is a `mush-market` listing of `Representation::Entitlement`
@@ -1457,7 +1462,7 @@ dropped.
 | D-UM-54 | (*R-D*) Player minds may fly NPC organisations' hulls only under a licence the author released through a listing (sealed, open or open-resale); procurement buys such a licence like any holder (budget, trial rating per credit, standing filter, 40 percent diversity cap; seats are its concurrent sealed sorties). A player mind on an organisation's hull without one is contraband. |
 | D-UM-55 | (*R-D*) **Quirk recognition** is an earned-evidence channel for the contraband loop: an author who recognises their own mind's behaviour in an organisation's hulls, from what their own sensors earned, may file a claim with the Registry; the engine never confirms or denies a likeness, and the claim is testimony that opens a custody inspection or a black-box read of the suspects' seal lines, which alone establish the fact. Published as `minds.claimed`. |
 | D-UM-56 | (*Proposed 2026-10-04 after review, finding 5; pending the owner*) Filing and listing are separate acts: `@mind/file` files a revision with the same conformance and fee and a public Roll entry offering no forms; filing is not R-D's release (procurement buys only a listed line); filing issues the charter owner a priced-at-nothing, non-transferable **owner's licence** on the audit term renewed by attestation, following the charter's title; an unfiled draft runs IC only on an ungoverned core (contraband). |
-| D-UM-57 | (*Proposed 2026-10-04 after review, finding 5; pending the owner*) An `open` fork is a derivative draft filed privately only while the holder's parent licence is Active or Grace, under a lineage check (parent live and held, chain depth ≤3, royalty cap); its owner's licence is **dependent** on the parent's and lapses with it, the fork becoming source-sealed (last filed revision runs, no new revision) until the parent line is held again — the default of Q-UM-17; `open-resale` additionally allows listing; charters are refused between one account's characters. |
+| D-UM-57 | (*Proposed 2026-10-04 after review, finding 5; parent-loss rules ruled by the owner 2026-10-17*) An `open` fork is a derivative draft filed privately only while the holder's parent licence is Active or Grace, under a lineage check (parent live and held, chain depth ≤3, royalty cap); its owner's licence is **dependent** on the parent's and lapses with it. Existing sealed sorties finish, but new owner-use sorties and filings are blocked and the fork becomes source-sealed until parent rights return (Q-UM-17). Existing paid derivative licences remain usable through their own term under their own restrictions, without separate ancestor licences; new sales and renewals wait for the issuer's parent rights to return. `open-resale` additionally allows listing; charters are refused between one account's characters. |
 
 ---
 
@@ -1541,9 +1546,13 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
     slot grammar lands in the rule-language cut right after 17b's M5 gate, not in M5 (§24).
 17. **Q-UM-17, the fate of an `open` fork whose parent licence ends** (raised 2026-10-04 after review, finding 5;
     D-UM-56, D-UM-57). **Ruled by the owner 2026-10-17:** finish existing sorties, but block new
-    sorties and filings until the parent licence is restored. The fork becomes source-sealed;
+    owner-use sorties and filings until the parent licence is restored. The fork becomes source-sealed;
     the earlier default allowing the last filed revision to seal new sorties is superseded.
     The author's self-use runs through a free owner's licence that filing issues, and filing never lists.
+    **Paid-customer follow-up, also ruled 2026-10-17:** existing paid derivative licences remain
+    usable through their own term, subject to their own validity and Registry restrictions; buyers
+    need no ancestor licences. New sales and renewals wait for the issuer's qualifying parent rights
+    to return, rechecked before settlement. No existing term is extended.
 18. **Q-UM-18, the PendingTransfer parameters** (raised 2026-10-04 after review, finding 7; D-UM-40). **Default:**
     settlement at the last admitted sortie's close or at the earlier of the term's end and 3 IC days (the
     Grace length), and sorties still out keep their seats until they close so open sealed sorties never
@@ -1684,7 +1693,7 @@ mind; a second character of another account buys it IC, and the line appears in 
 OOC sim set at no cost with no seat taken and nothing posted, and flies there sealed (card and
 traces, never source); the buyer resells the licence with a balanced ledger and the line leaves the
 buyer's sim set at the next sim seal; an alt-to-alt sale is refused; a lapse falls to doctrine at the
-next seal with the line shown only to its principals; a derivative's settlement pays its parent chain exactly; a filed-but-unlisted mind flies its author's own hull and is never bought by procurement; a privately filed `open` fork runs and stops accepting revisions when its parent licence lapses; a two-seat licence resold with one sortie out settles once, as D-UM-40's PendingTransfer says (review 2026-10-04 after review, findings 5 and 7, the D-UM-56/57 and Q-UM-18 defaults pending the owner).
+next seal with the line shown only to its principals; a derivative's settlement pays its parent chain exactly; a filed-but-unlisted mind flies its author's own hull and is never bought by procurement; a privately filed `open` fork finishes existing sorties but blocks new owner-use sorties and filings when its parent licence lapses; existing paid derivative licences remain usable through their own term while new sales and renewals wait for parent rights to return; a two-seat licence resold with one sortie out settles once, as D-UM-40's PendingTransfer says. The parent-loss cases follow the owner's 2026-10-17 rulings; the remaining private-filing and Q-UM-18 details retain their written defaults, selected for implementation under the owner's continuation authorization rather than represented as explicit policy rulings.
 *Sortie and stations, and the OOC boundary: the purchase is IC only and never "for the sim"; seats
 count concurrent sealed sorties; the lapse rule is tested against a sealed sortie that outlives the
 term; flying a bought mind on an IC hull's sortie is added to the gate when IC sorties exist.*

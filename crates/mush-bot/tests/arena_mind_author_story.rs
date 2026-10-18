@@ -483,7 +483,7 @@ async fn field_pilot_complete_production_author_story() {
     )
     .await;
     let mut author = rig::Client::login(&server, "author", rig::PILOT_PASSWORD, "Pilot").await;
-    author.say("@newchar Alt", "created Alt").await;
+    author.create_character("Alt").await;
     register_key(&server, "author").await;
     let mut observer =
         rig::Client::login(&server, "observer", rig::PILOT_PASSWORD, "Observer").await;

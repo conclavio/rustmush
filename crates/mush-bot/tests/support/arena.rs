@@ -421,6 +421,45 @@ impl Client {
             .expect("the QUIT line is written");
     }
 
+    /// Runner-owned account setup through the public SSH channel, like login
+    /// and quit. The bot's gameplay sender must keep refusing this command.
+    pub async fn create_character(&mut self, name: &str) {
+        assert!(
+            !name.is_empty() && !name.chars().any(char::is_control),
+            "one fixture character name"
+        );
+        let command = format!("@newchar {name}");
+        assert!(mush_bot::transport::validate_command(&command).is_err());
+        let created = format!("@newchar: created {name} (");
+        for _ in 0..RETRY_BUDGET {
+            self.mark = self.seen.len();
+            self.session
+                .channel
+                .data(format!("{command}\r").as_bytes())
+                .await
+                .expect("the runner's character-creation line is written");
+            match self
+                .until(
+                    self.mark,
+                    &[
+                        &created,
+                        "@newchar: the world is committing another action; please retry shortly.",
+                    ],
+                    STEP_TIMEOUT,
+                )
+                .await
+            {
+                Some(0) => return,
+                Some(1) => tokio::time::sleep(Duration::from_millis(200)).await,
+                _ => panic!(
+                    "runner character creation did not succeed: {}",
+                    &self.seen[self.mark..]
+                ),
+            }
+        }
+        panic!("runner character creation remained explicitly busy");
+    }
+
     /// Wait until one of `needles` has arrived since `from`; its index, or
     /// `None` at the deadline or when the channel closes. A needle already
     /// read still counts after the close; otherwise a closed session answers
