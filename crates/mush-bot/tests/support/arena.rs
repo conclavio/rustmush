@@ -157,13 +157,47 @@ fn module_list(
     onboarding: &mush_core::OnboardingConfig,
     llm: &Arc<LlmService>,
 ) -> Vec<Box<dyn GameModule>> {
-    let mut mods = modules::server_modules();
+    // Keep server_modules()'s module-config defaults, but use the production
+    // roster that delegates to TacSim and returns its shared inventory cell.
+    let (mut mods, inventory) = modules::server_modules_with_tacsim(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        &Default::default(),
+        &Default::default(),
+        Default::default(),
+    );
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(cfg));
+    // The old tacsim_module(cfg) used game_content=false; preserve that pack
+    // choice while wiring the same owner capabilities as the production root.
+    mods.push(modules::tacsim_module_wired(cfg, false, inventory));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
+}
+
+#[test]
+fn m6_server_fixture_declares_roll_writer_before_preparation() {
+    let mock: Arc<dyn LlmProvider> = Arc::new(MockProvider::new("openrouter"));
+    let llm = Arc::new(
+        LlmService::builder()
+            .provider("openrouter", mock)
+            .global_enabled(false)
+            .build(),
+    );
+    let composition = Engine::compose_modules(
+        world_task::base_registry(),
+        module_list(arena_config(), &Default::default(), &llm),
+    )
+    .expect("the actual arena fixture composes");
+    assert!(
+        composition
+            .registry()
+            .persist_delegation("tacsim", "roll")
+            .is_some(),
+        "the arena fixture needs the production TacSim-to-Roll publication authority"
+    );
 }
 
 /// **Boot the server under test**: an in-memory store holding `boss` (God) and
@@ -231,6 +265,13 @@ pub async fn boot(cfg: tacsim::TacsimConfig, pilots: &[(&str, &str)]) -> Rig {
 
     let mut engine = Engine::with_modules(world, registry, module_list(cfg, &onboarding, &llm))
         .expect("modules");
+    assert!(
+        engine
+            .registry
+            .persist_delegation("tacsim", "roll")
+            .is_some(),
+        "the arena fixture must authorize mind publication before boot or long preparation"
+    );
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");

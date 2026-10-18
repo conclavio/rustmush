@@ -103,6 +103,14 @@ checks bounded worker/queue admission, duplicate and overflow refusal, settled
 compute progress for both jobs, continued live snapshots, and cancellation with
 quota refund. Baseline and loaded STATUS latency samples are retained in
 `live-isolation.log` as `M6_LIVE_PROVING_ISOLATION` JSON; host timing is report-only.
+The rig waits for the first public cockpit frame before its baseline samples.
+Its loaded-progress anchor is taken after both jobs are admitted, so progress
+during preparation cannot satisfy the live-under-load assertion. Each preparation
+duration is retained separately from the baseline and loaded STATUS samples.
+Preparation has a finite 180-second liveness guard per request and the complete
+isolation case has a 480-second guard; explicit preparation refusals fail
+immediately with their reason. These guards are distinct from the retained timing
+measurements, which remain report-only.
 
 `crates/mush-bot/tests/arena_mind_port_rate.rs` launches two real external bot
 processes concurrently for fifteen unposed MUSTER matches on each side. Each has
@@ -180,3 +188,13 @@ Python tests, and the IC12 normal/build dependency graph confirms that `mush-bot
 still depends on no other RustMUSH package. The complete measurements are in 17b §6.
 Final merged-source Linux verification, the complete author story, isolation and
 external comparison remain pending; no final acceptance revision is claimed.
+
+The first Windows live run after the capacity correction exposed two fixture
+problems: `Good hunting` can precede the first cockpit frame, and the arena rig's
+neutral module roster omitted the production TacSim-to-Roll publication grant.
+The latter correctly refused publication after preparation completed. The rig now
+waits for the public first frame and uses `server_modules_with_tacsim` with
+`tacsim_module_wired`, preserving its existing module defaults and content choices.
+A composition regression and a pre-boot assertion check the grant before expensive
+work. The production authority check is unchanged. These corrections still require
+the complete live isolation run; the earlier refusals are not acceptance passes.

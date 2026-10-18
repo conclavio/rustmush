@@ -9,6 +9,10 @@ mod rig;
 
 const PROVE: &str = "@mind/prove Standard/Line VS Standard/Line 100 MUSTER 6v6 SEED 713";
 const DAILY_MINUTES: u64 = 2_000;
+// Finite liveness guards for two complete 100-game custody/compression jobs on
+// variable hosts. Measured latency stays evidence, not a performance threshold.
+const PREPARATION_TIMEOUT: Duration = Duration::from_secs(180);
+const ISOLATION_TIMEOUT: Duration = Duration::from_secs(480);
 
 async fn books(server: &rig::Rig) -> Vec<Value> {
     server
@@ -81,6 +85,63 @@ struct StatusSample {
     elapsed_us: u64,
     transient_retries: [usize; 4],
 }
+async fn warm_cockpit(pilot: &mut rig::Client) {
+    let from = pilot.seen.len();
+    // Good hunting precedes the asynchronous first cockpit frame. Retry that
+    // explicit public not-ready answer; waiting on the same reply cannot help.
+    tokio::time::timeout(rig::STEP_TIMEOUT, async {
+        loop {
+            let (answer, text) = pilot
+                .answer(
+                    "STATUS",
+                    &["m north;", "The panel has told you nothing yet."],
+                )
+                .await;
+            let warmup = &pilot.seen[from..];
+            assert!(
+                !warmup.contains("DESTROYED"),
+                "the live pilot has a working hull: {warmup}"
+            );
+            match answer {
+                Some(0) => break,
+                Some(1) => tokio::time::sleep(Duration::from_millis(75)).await,
+                _ => panic!("STATUS did not return a ready or explicitly pending panel: {text}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "first public cockpit frame did not arrive: {}",
+            &pilot.seen[from..]
+        )
+    });
+}
+async fn retained_preparation(client: &mut rig::Client, from: usize, account: &str) {
+    let deadline = tokio::time::Instant::now() + PREPARATION_TIMEOUT;
+    loop {
+        let text = &client.seen[from..];
+        assert!(
+            !text.contains("Proving preparation refused:"),
+            "{account}'s proving preparation was explicitly refused:\n{text}"
+        );
+        if text.contains("Proving run 1 retained and queued.") {
+            return;
+        }
+        assert!(
+            !client.closed,
+            "{account}'s SSH channel closed before proving admission:\n{text}"
+        );
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "{account}'s proving preparation exceeded its liveness guard:\n{text}"
+        );
+        // Read without resubmitting PROVE. A short bounded read also notices
+        // a refusal whose final newline arrives in a later SSH packet.
+        client.pump(left.min(Duration::from_millis(100))).await;
+    }
+}
 async fn status_sample(pilot: &mut rig::Client) -> StatusSample {
     let start = Instant::now();
     let from = pilot.seen.len();
@@ -115,7 +176,7 @@ fn timings(samples: &[StatusSample]) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progressing() {
-    tokio::time::timeout(Duration::from_secs(150), async {
+    tokio::time::timeout(ISOLATION_TIMEOUT, async {
         let mut cfg = rig::mind_acceptance_config();
         assert_eq!(
             cfg.minds.proving_workers, 1,
@@ -144,6 +205,7 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         pilot.say("red", "Red Room").await;
         pilot.say("BOARD", "climb into").await;
         pilot.expect("Good hunting", rig::STEP_TIMEOUT).await;
+        warm_cockpit(&mut pilot).await;
         let mut baseline = Vec::new();
         for _ in 0..16 {
             baseline.push(status_sample(&mut pilot).await);
@@ -157,12 +219,15 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
             .await
             .expect("live arena snapshot before proving");
 
+        let one_preparing = Instant::now();
+        let one_from = one.seen.len();
         one.say(PROVE, "Proving preparation queued").await;
-        one.expect(
-            "Proving run 1 retained and queued.",
-            Duration::from_secs(40),
-        )
-        .await;
+        retained_preparation(&mut one, one_from, "one").await;
+        let one_preparation_ms = u64::try_from(one_preparing.elapsed().as_millis()).unwrap();
+        println!(
+            "M6_LIVE_PROVING_PREPARATION {}",
+            json!({"account":"one", "elapsed_ms":one_preparation_ms})
+        );
         // The second job must enter behind an already-running first account,
         // not race its preparation into the single queued slot.
         loop {
@@ -173,12 +238,15 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        let two_preparing = Instant::now();
+        let two_from = two.seen.len();
         two.say(PROVE, "Proving preparation queued").await;
-        two.expect(
-            "Proving run 1 retained and queued.",
-            Duration::from_secs(40),
-        )
-        .await;
+        retained_preparation(&mut two, two_from, "two").await;
+        let two_preparation_ms = u64::try_from(two_preparing.elapsed().as_millis()).unwrap();
+        println!(
+            "M6_LIVE_PROVING_PREPARATION {}",
+            json!({"account":"two", "elapsed_ms":two_preparation_ms})
+        );
         one.say(PROVE, "An account already has an admitted bulk job.")
             .await;
         overflow
@@ -193,6 +261,11 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         );
         assert_ne!(initial[0]["id"], initial[1]["id"]);
         assert_ne!(run(&initial[0])["character"], run(&initial[1])["character"]);
+        // Preparation may take substantial wall time. Progress before both
+        // accounts were admitted cannot prove live progress under their load.
+        let loaded_before = live_time(&server)
+            .await
+            .expect("live arena snapshot after both proving admissions");
         let starts = initial
             .iter()
             .map(|book| {
@@ -231,7 +304,7 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
                 && fair
                 && live_time(&server)
                     .await
-                    .is_some_and(|now| now >= before + 2_000)
+                    .is_some_and(|now| now >= loaded_before + 2_000)
             {
                 progressed = rows;
                 break;
@@ -240,7 +313,7 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         }
         let after = live_time(&server).await.unwrap();
         assert!(
-            after > before,
+            after >= loaded_before + 2_000,
             "the real live arena advanced while both private runs advanced"
         );
         assert!(
@@ -257,6 +330,8 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
             "M6_LIVE_PROVING_ISOLATION {}",
             json!({"servers":1,"proving_workers":1,
             "queued_limit":1,"daily_unit_minutes":DAILY_MINUTES,"live_before_ms":before,
+            "live_loaded_before_ms":loaded_before,
+            "preparation_ms":{"one":one_preparation_ms,"two":two_preparation_ms},
             "live_after_ms":after,"baseline":timings(&baseline),"loaded":timings(&loaded),
             "initial_accounts":initial,"progressed_accounts":progressed})
         );
