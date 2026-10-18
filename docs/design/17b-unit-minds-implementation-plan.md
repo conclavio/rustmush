@@ -629,3 +629,12 @@ The same owner decision selects current Republic membership as Coprates Drill's
 launch standing requirement through the existing standing service, without a
 new reputation metric. Its actual enforcement and membership-race tests remain
 M7 implementation work.
+
+**Accepted work merged to main, 2026-10-18:** at the owner's request, a fresh
+fetch confirmed `origin/main` at `a690412e`. The accepted M5rules/M5r/M6 branch
+fast-forwarded main to `6fafaa11dfa6765c0b3a56ef81bc3a2f6e44e4fa`, verified by
+a subsequent remote-ref read. Its executable bytes are identical to the
+49-stage/1,508-test IC14 checkpoint `eafe0064`; the later changes are only the
+five design/acceptance documents. The incomplete M7 implementation remains
+isolated from that merge. [17f](17f-mind-commerce-implementation-plan.md) records
+its separate continuation and evidence.

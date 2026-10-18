@@ -6,21 +6,48 @@ exception; [17e](17e-field-pilot-acceptance.md) preserves the failed raw compari
 and the passing functional evidence. The current economy checkpoint is IC14
 merge `eafe0064caa86411dadb08d4c24ae17488a2bd69`, tree
 `2262fd9eb65a765fbbd2ae4d69df8c3ddcd82697`: 49 stages and 1,508 tests pass,
-including actual Redis recovery. A fresh fetch still resolves main to `a690412e`.
+including actual Redis recovery. On 2026-10-18, the owner requested the accepted
+through-M6 work land before M7. A fresh fetch confirmed main at `a690412e`, then
+a normal fast-forward push advanced it to `6fafaa11dfa6765c0b3a56ef81bc3a2f6e44e4fa`;
+an independent remote-ref read verified that result. Executable tracked bytes
+are unchanged from the passing IC14/M6 checkpoint; later commits only updated
+the five design/acceptance documents. No M7 implementation was in that merge.
 [17b §6](17b-unit-minds-implementation-plan.md#6-m6-candidate-and-acceptance-work--2026-10-17)
 records the archive and exact provenance. Both implementation prerequisites are
 complete. The owner has authorized progress through M7 and progressive pushes.
 
 This note promotes the reviewed isolated design into the programme's tracked
 implementation plan. The substantial prepared code remains under active
-integration and testing; it is not M7 acceptance or deployment. The frozen N35
-preparation passed its compile and 215 fast tests (one ignored), then its genuine
-purchase story aborted at a nested test-future stack overflow. Its independent
-server custody story remains under investigation. N36 freezes the reviewed
-future-allocation repair, unfunded renewal offers and marked-draft retirement
-for the next serialized Linux run. Neither parsing nor those partial gates
-establishes the complete author/buyer story. Each further commit records its
-actual passing, failing and unexecuted scope.
+integration and testing; it is not M7 acceptance or deployment. N35 passed
+compile and 215 fast tests (one ignored), then its genuine purchase story aborted
+at a nested test-future stack overflow. Its independent server story was
+diagnostically cancelled after sustained Registry waiting without an execution
+cursor. Recovery of its disconnected runner preserved the original terminal
+stage outcomes and separately recorded source verification. N36 was superseded
+without execution. N37 failed compilation on a private constant; the narrow
+visibility repair allowed N38 to compile.
+
+N38 (`c4f5317d9b5af6464200870f2bd9bb2deed59207`) finished with 392 passing
+tests, two failures and one ignored test. The failures were an obsolete
+fork-only deletion assertion after retirement support and an unmatched expected
+boot-refusal message. Both expensive stories remained unexecuted. All 13 retained
+files verify, with unchanged source; archive SHA-256 is
+`2a49296d82bf60eb4d29701056bce316d4f11b1ec1358d98c92797d1009d4f2d`.
+The source-only F2 renewal capacity prerequisite has independent review and
+seven prepared coordinator tests, but no Cargo result yet.
+
+N39 freezes 180 reviewed packages at
+`2500edb31d3b2e199d3fe4f9b13574d7a9bb147f`: the retirement assertion repair,
+a bounded boot diagnostic preserving the original refusal criterion, inactive
+funded-renewal groundwork, first-generation personal entitlements, and captured
+retirement entry. Its first startup refused before applying input or compiling:
+the host already had an unrelated server release build in
+`/opt/rustmush/dev1/build`. That build remains untouched; the same frozen N39
+input awaits a clear host lane. No stage result is inferred from this startup
+refusal. Generated client bindings still require the actual exporter
+before frontend validation. Neither parsing nor partial gates establish the
+complete author/buyer story. Each further commit records its actual passing,
+failing and unexecuted scope.
 
 The detailed cuts below state the complete intended result. Existing inert
 components can land with focused evidence; public paid services require their
