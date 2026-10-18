@@ -2498,7 +2498,8 @@ runnable.**
   C14 and P05 departure boards and the C01/P01 berth boards as `LookRendered` lines (IC9, IC11); P07's
   funded-balance board figure (IC8, IC10); the accept line naming the listing's signatory (IC8 L17).
 
-Post-loop cuts, named and ordered: **P-G** real gangway exits (outer door relinked at dock, a station
+Post-loop cuts, named and ordered: **P-B** the Bids readiness line gates `+coop/enrol` on a Missing bid
+only, a funds-Pending house paged once a boot (Q-18-60, R10; S); **P-G** real gangway exits (outer door relinked at dock, a station
 exit named by berth and hull, `BerthLink`, the Moved observer, atlas `on_moved` ordering tests, boot
 reconcile; M); **P-F** berth slots, berth-holder markers, the six freight-deck rooms, `ExitDef`
 fail/succ, the `+move` restricted fix (M); **P-H** locality and the under-way seal on every inventory
@@ -3290,6 +3291,38 @@ items are merged; the cut notes carry each default's full reasoning.
 - **Q-18-70 The pool shrinks per graduate.** Default: a graduated hull leaves the Trust's pool for
   ever; the slice buys no replacements, so the desk answers `NO_HULL` once all eight are chartered or
   graduated (IC13 O7).
+
+**Answered on 2026-10-18, third round (R10), before the first dev1 playtest** (the owner, taken through
+every open ruling in this document and in 16c §5; recorded here, binding):
+
+- **Q-18-60 — gate on Missing only.** A hand-withdrawn or apply-waiting bid closes `+coop/enrol`; a
+  funds-Pending or re-posting bid does not: the sales skip with `HOUSE_CANNOT_PAY_SKIP` as before IC12,
+  and the port tick pages once a boot while a house cannot fund a tonne. Built as the post-loop cut
+  **P-B** (S; after the deploy — a playtest cannot reach the fifty round trips that drain Kasei).
+- **Q-18-71 A failed relet.** Six retries under a doubling backoff (2 min to 1 h), then the revoke IC13
+  built; the pilot told `RELET_PENDING` once, the plan waiting under `HELD_RELET`; no `@coop/unload`.
+  **Ratified as built (IC14 O4).**
+- **Q-18-72 The `Markers` line never gates** `+coop/enrol`; only an actually incomplete mirror (the
+  `InventoryFacts` line) closes it. **Ratified as built (IC14 O8)** — the same reading as Q-18-60's.
+- **Q-18-73 An unreadable sailing plan** keeps that hull out of the pool and pages; it never closes
+  enrolment world-wide. **Ratified as built (IC14 O9).**
+- **Q-18-74 Marker retention past E7c2's D1.** The applied marker stays the reboot-surviving replay
+  guard for at least one real day and at least the newest 32 per endpoint; a request replayed after
+  both is no longer refused by it; a ring of 128 young markers refuses the next move from that endpoint.
+  **Ratified as built (IC14 O7)**; the un-pruned rings of endpoints that stop writing (IC14 O10) stay
+  the remaining bound of §9 risk 19.
+- **Q-18-42 to Q-18-70 — every default as the tree took it is ratified**, including the three IC14
+  changed: a seller cannot dispute their own sale into a bid (Q-18-64, O2); an explicit consumable buy
+  holds under `HELD_SHORT_FOR_DEPART` only when the later consumable orders before the next depart would
+  still leave it short (Q-18-51, O3); the accept-line signatory, P07's funded balance and the
+  Engineering/Bridge burn line built, the C14/P05 departure boards and the C01/P01 berth boards to a
+  content P-cut (Q-18-47, O5).
+- **Q-18-35 to Q-18-41 stay open for cut P-A**; the slice flies the constant sky and states no bound
+  outside it. Kirkwood's placeholder period stands in prose only (Q-18-36).
+- **The playtest deploy (Q-18-16's "next owner-approved redeploy"):** dev1 on a **fresh store** at
+  `IC_RATIO=24` (no pack applies by hand, no `@tacsim/time` flip, the staff account bootstrapped again),
+  with the unit-minds programme through M6 merged first (main fast-forwarded onto
+  `codex/unit-minds-through-m6` at `6fafaa11`).
 
 ---
 
