@@ -430,3 +430,211 @@ fn field_pilot_search_uses_public_b_then_eight_hundred_metres_beyond_and_back() 
         |intent| matches!(intent, IntentKind::Heading { mdeg } if (180_000..270_000).contains(mdeg))
     ));
 }
+
+#[test]
+fn field_pilot_hold_keeps_requested_hysteresis_through_acceleration_and_braking() {
+    let harness = Harness::new("Hold");
+    let mut view = healthy();
+    let mut bytes = Vec::new();
+    // No bot implementation is imported. These are literal public range/speed
+    // sequences around the shipped 450 m band: start at 525/375, stop at 500/400.
+    for (seq, (distance, actual, wanted)) in [
+        (550, 0, 1500),
+        (510, 0, 1500), // acceleration has not yet moved the hull
+        (500, 800, 0),
+        (510, 500, 0), // braking must not re-enter Ahead inside the deadband
+        (550, 0, 1500),
+        (350, 800, -750), // a range jump can reverse in the same decision
+        (390, 0, -750),
+        (400, -600, 0),
+        (390, -200, 0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        view.t_ms = 5000 + i64::try_from(seq).unwrap() * 500;
+        view.contacts[0].range_m = distance;
+        view.speed_cms = actual;
+        let (result, _) = harness.think(view.clone(), &bytes, seq as u64);
+        assert_eq!(
+            memory::decode(&result.memory).unwrap().get("command_speed"),
+            Some(&Value::Int(wanted)),
+            "distance={distance}, actual={actual}"
+        );
+        if seq == 2 || seq == 7 {
+            assert!(result.intents.contains(&IntentKind::Speed { cms: 0 }));
+        }
+        bytes = result.memory;
+    }
+}
+
+#[test]
+fn field_pilot_hold_state_resets_when_a_higher_motion_branch_flies() {
+    let harness = Harness::new("Hold");
+    let mut view = healthy();
+    view.contacts[0].range_m = 550;
+    let (ahead, _) = harness.think(view.clone(), &[], 0);
+    view.t_ms += 500;
+    view.held = true;
+    let (escaped, _) = harness.think(view.clone(), &ahead.memory, 1);
+    assert_eq!(
+        memory::decode(&escaped.memory).unwrap().get("hold_motion"),
+        Some(&Value::Int(0))
+    );
+    view.t_ms += 500;
+    view.held = false;
+    view.speed_cms = 1500;
+    view.contacts[0].range_m = 510;
+    let (stopped, _) = harness.think(view, &escaped.memory, 2);
+    assert!(stopped.intents.contains(&IntentKind::Speed { cms: 0 }));
+}
+
+#[test]
+fn field_pilot_damage_retreat_runs_once_and_ends_at_its_time_or_range() {
+    for reaches_band in [false, true] {
+        let harness = Harness::new("Hold");
+        let mut view = healthy();
+        view.t_ms = 5000;
+        view.sections[0].internals = Some((25, 50));
+        view.contacts[0].range_m = 425;
+        let (retreat, _) = harness.think(view.clone(), &[], 0);
+        assert!(retreat.intents.contains(&IntentKind::Speed { cms: -750 }));
+        view.t_ms += if reaches_band { 500 } else { 10000 };
+        view.contacts[0].range_m = if reaches_band { 450 } else { 425 };
+        let (ended, _) = harness.think(view.clone(), &retreat.memory, 1);
+        assert!(ended.intents.contains(&IntentKind::Speed { cms: 0 }));
+        view.t_ms += 500;
+        view.contacts[0].range_m = 425;
+        let (still_hurt, _) = harness.think(view, &ended.memory, 2);
+        let mem = memory::decode(&still_hurt.memory).unwrap();
+        assert_eq!(mem.get("fallen_back"), Some(&Value::Bool(true)));
+        assert_eq!(mem.get("mode"), Some(&Value::Int(0)));
+        assert_eq!(mem.get("command_speed"), Some(&Value::Int(0)));
+        assert!(
+            !still_hurt
+                .intents
+                .contains(&IntentKind::Speed { cms: -750 })
+        );
+    }
+}
+
+fn struck(facet: &str, armor_left: u32, armor_max: u32) -> crate::arena::perception::FrameNotice {
+    crate::arena::perception::FrameNotice::Struck {
+        section: "hull".into(),
+        armor_section: "hull".into(),
+        facet: facet.into(),
+        armor_left,
+        armor_max,
+        internals_left: 50,
+        internals_max: 50,
+    }
+}
+
+#[test]
+fn field_pilot_front_hit_keeps_the_held_targets_bearing() {
+    let harness = Harness::new("Hold");
+    let mut view = healthy();
+    view.t_ms = 5000;
+    view.heading_mdeg = 0;
+    view.contacts[0].range_m = 550;
+    view.contacts[0].bearing_deg = 30;
+    let (before, _) = harness.think(view.clone(), &[], 0);
+    view.t_ms += 500;
+    view.sections[0].facets[0].armor -= 1;
+    view.notices = vec![struck("front", 99, 100)];
+    let (after, _) = harness.think(view, &before.memory, 1);
+    let mem = memory::decode(&after.memory).unwrap();
+    assert_eq!(mem.get("command_heading"), Some(&Value::Int(30000)));
+    assert_eq!(mem.get("command_speed"), Some(&Value::Int(1500)));
+    assert!(!after.intents.contains(&IntentKind::Heading { mdeg: 0 }));
+}
+
+#[test]
+fn field_pilot_side_or_rear_threat_requires_another_earned_contact_and_stops() {
+    for (facet, bearing) in [("right", 90_u32), ("rear", 180_u32)] {
+        for other_earned in [false, true] {
+            let harness = Harness::new("Hold");
+            let mut view = healthy();
+            view.t_ms = 5000;
+            view.heading_mdeg = 0;
+            view.contacts[0].range_m = 550;
+            view.contacts[0].bearing_deg = 0;
+            view.sections[0].facets[1].id = facet.into();
+            let mut other = view.contacts[0].clone();
+            other.id = ContactId(800);
+            other.range_m = 600;
+            other.bearing_deg = bearing;
+            if !other_earned {
+                other.class = Classification::Unknown;
+            }
+            view.contacts.push(other);
+            let (before, _) = harness.think(view.clone(), &[], 0);
+            view.t_ms += 500;
+            view.sections[0].facets[1].armor -= 1;
+            view.notices = vec![struck(facet, 59, 60)];
+            let (after, _) = harness.think(view.clone(), &before.memory, 1);
+            let mem = memory::decode(&after.memory).unwrap();
+            assert_eq!(
+                mem.get("command_heading"),
+                Some(&Value::Int(if other_earned {
+                    i64::from(bearing) * 1000
+                } else {
+                    0
+                }))
+            );
+            assert_eq!(
+                mem.get("command_speed"),
+                Some(&Value::Int(if other_earned { 0 } else { 1500 }))
+            );
+            if other_earned {
+                assert!(after.intents.contains(&IntentKind::Speed { cms: 0 }));
+                assert!(after.intents.contains(&IntentKind::Heading {
+                    mdeg: bearing * 1000
+                }));
+                view.t_ms += 4000;
+                view.notices.clear();
+                let (expired, _) = harness.think(view, &after.memory, 2);
+                assert_eq!(
+                    memory::decode(&expired.memory)
+                        .unwrap()
+                        .get("command_heading"),
+                    Some(&Value::Int(0))
+                );
+                assert!(expired.intents.contains(&IntentKind::Speed { cms: 1500 }));
+            }
+        }
+    }
+}
+
+#[test]
+fn field_pilot_supported_threat_with_sixteen_rows_stays_in_class_ii() {
+    let harness = Harness::new("Hold");
+    let mut view = healthy();
+    view.t_ms = 5000;
+    view.heading_mdeg = 0;
+    let first = view.contacts[0].clone();
+    view.contacts = (0..16)
+        .map(|i| {
+            let mut contact = first.clone();
+            contact.id = ContactId(100 + i);
+            contact.range_m = 550 + i * 50;
+            contact.bearing_deg = if i == 0 { 0 } else { 180 };
+            contact.age_ms = 0;
+            if i >= 4 {
+                contact.odds.clear();
+            }
+            contact
+        })
+        .collect();
+    let (before, _) = harness.think(view.clone(), &[], 0);
+    view.t_ms += 500;
+    view.sections[0].facets[1].armor -= 1;
+    view.notices = vec![struck("rear", 59, 60)];
+    let (after, _) = harness.think(view, &before.memory, 1);
+    assert!(
+        after
+            .intents
+            .contains(&IntentKind::Heading { mdeg: 180000 })
+    );
+    assert!(after.intents.contains(&IntentKind::Speed { cms: 0 }));
+}

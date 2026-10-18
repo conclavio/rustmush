@@ -1,7 +1,7 @@
 // Field Pilot: an independent public-picture port of mush-bot's shipped pilot.
 // No stock planning helper, server pose, hidden target heading or shared bot code.
 // Class II: 500 ms, 3000 charged operations, four native gun slots.
-// Memory is flat (52 keys); all persisted arrays contain at most 16 INTs.
+// Memory is flat (55 keys); all persisted arrays contain at most 16 INTs.
 // terrain_at returns [public_kind, tracked_passable], never occupancy/slope.
 const MIND = #{name:"Field Pilot", api:4, class:"discretion", role:"combat", core:"II"};
 
@@ -13,10 +13,11 @@ fn point(v, h, metres) {
 }
 fn init(v) {
     this.born = t_ms(); this.target = (); this.last = (); this.before = ();
-    this.lock_at = -1500; this.hit_at = -10000; this.hit_heading = ();
+    this.lock_at = -1500; this.hit_at = -10000; this.hit_heading = (); this.hit_heading_at = -10000;
     this.armor = [0,0,0,0]; this.damage_seen = false; this.dead_track = 0;
     this.turn_until = 0; this.turn_heading = 0; this.hurt = false;
     this.mode = 0; this.until_ms = 0; this.follow = false; this.hits = 0;
+    this.fallen_back = false; this.hold_motion = 0;
     this.broken = false; this.stopped_at = (); this.last_range = 0;
     this.range_at = 0; this.goal = (); this.goal_at = 0; this.sweep = 0;
     this.open = v.power != "online"; this.open_goal = (); this.open_at = 0;
@@ -44,7 +45,7 @@ fn observe(v) {
                 if i >= 0 {
                     armor[i] = f.armor;
                     if f.armor_max > 0 && f.armor * 4 <= f.armor_max { this.hurt = true; }
-                    if this.damage_seen && f.armor < this.armor[i] { this.hit_heading = turn(v.heading_mdeg + i * 90000); }
+                    if i > 0 && this.damage_seen && f.armor < this.armor[i] { this.hit_heading = turn(v.heading_mdeg + i * 90000); this.hit_heading_at=t_ms(); }
                 }
             }
         }
@@ -54,6 +55,10 @@ fn observe(v) {
         }
     }
     this.armor = armor; this.damage_seen = true;
+    // Damage starts one retreat per sortie, even before a target is held.
+    if this.hurt && !this.fallen_back {
+        this.fallen_back = true; this.mode = 1; this.until_ms = t_ms()+10000;
+    }
     for n in v.notices {
         if n.kind == "struck" { this.hit_at = t_ms(); this.open = false; }
         if n.contact == this.target {
@@ -122,11 +127,15 @@ fn guns(v, target, authored) {
         }
     }
 }
-fn band_speed(v, distance, band, forward, reverse) {
-    if v.speed_cms > 0 { if distance > band + 50 { forward } else { 0 } }
-    else if v.speed_cms < 0 { if distance < band - 50 { -reverse } else { 0 } }
-    else if distance > band + 75 { forward }
-    else if distance < band - 75 { -reverse }
+// Hysteresis follows the requested movement, not acceleration or braking.
+fn band_speed(distance, band, forward, reverse) {
+    if (this.hold_motion == 1 && distance <= band+50) || (this.hold_motion == -1 && distance >= band-50) { this.hold_motion=0; }
+    if this.hold_motion == 0 {
+        if distance > band+75 { this.hold_motion=1; }
+        else if distance < band-75 { this.hold_motion=-1; }
+    }
+    if this.hold_motion == 1 { forward }
+    else if this.hold_motion == -1 { -reverse }
     else { 0 }
 }
 fn arrived(v, goal) { v.motor != () && v.motor.goal == goal && v.motor.outcome == "arrived" }
@@ -256,11 +265,34 @@ fn lost(v, forward, reverse) {
     }
     this.drive(v,goal); true
 }
-fn fight(v, target, card, forward, reverse) {
+// A front hit is not a turn. A held target already owns the bow unless a
+// different earned hostile supports the struck side/rear arc. No shooter pose.
+fn threat_heading(v, target, stance) {
+    if stance == "orbit" || this.hit_heading == () || t_ms()-this.hit_heading_at >= 4000 { return (); }
+    let other=();
+    for c in v.contacts {
+        if c.identified && !c.friendly && c.reads_dead != true && c.age_ms <= 6000 && (target == () || c.id != target.id) && arc(c.bearing_deg*1000,this.hit_heading) <= 45000 {
+            if other == () || c.range_m < other.range_m { other=c; }
+        }
+    }
+    if other == () && target != () { return (); }
+    let h=if other == () { this.hit_heading } else { other.bearing_deg*1000 };
+    if target != () && arc(h,target.bearing_deg*1000) <= 30000 { return (); }
+    let delta=turn(h-v.heading_mdeg+180000)-180000;
+    if this.dead_track != 0 && delta*this.dead_track > 0 && abs(delta) < 180000 { return (); }
+    h
+}
+fn fight(v, target, card, forward, reverse, previous_hold) {
     let h=target.bearing_deg*1000; let band=card.get("band_m");
     let stance=card.get("stance"); let velocity=0;
-    if this.hurt && (this.mode != 1 || t_ms() >= this.until_ms) { this.mode=1; this.until_ms=t_ms()+10000; }
-    if this.mode == 1 && t_ms() < this.until_ms && target.range_m < min(450,band+150) { this.motion(v,h,-reverse); return; }
+    if this.fallen_back {
+        band=max(band,min(450,band+150));
+        if stance == "close" { stance="hold"; }
+    }
+    if this.mode == 1 {
+        if t_ms() >= this.until_ms || target.range_m >= band { this.mode=0; }
+        else { this.motion(v,h,-reverse); return; }
+    }
     if stance == "withdraw" && this.hurt { this.motion(v,h,-reverse); return; }
     if card.get("reapproach") && this.hurt && this.reapproaches < 2 && t_ms() >= this.reapproach_next {
         this.mode=2; this.until_ms=t_ms()+60000; this.reapproaches+=1; this.reapproach_next=t_ms()+135000;
@@ -270,12 +302,13 @@ fn fight(v, target, card, forward, reverse) {
         else { this.motion(v,h,-reverse); return; }
     }
     if this.mode == 3 && t_ms() < this.until_ms { this.motion(v,h,0); return; }
+    let threat=this.threat_heading(v,target,stance);
+    if threat != () { this.motion(v,threat,0); return; }
     if this.mode == 4 {
         if target.range_m < this.last_range { this.range_at=t_ms(); this.last_range=target.range_m; }
         if target.range_m <= band || t_ms() >= this.until_ms || t_ms()-this.range_at >= 6000 || this.hit_at >= this.born { this.mode=0; }
         else { this.motion(v,h,0); return; }
     }
-    if this.hit_heading != () && t_ms()-this.hit_at < 4000 && stance != "orbit" { h=this.hit_heading; }
     if card.get("follow") && (this.broken || this.hits >= 8) && target.moving {
         if this.range_at == 0 { this.range_at=t_ms(); this.last_range=target.range_m; }
         if t_ms()-this.range_at >= 2000 && target.range_m-this.last_range >= 100 { this.follow=true; }
@@ -310,7 +343,7 @@ fn fight(v, target, card, forward, reverse) {
         if this.dead_track != 0 { sign=-this.dead_track; }
         h=turn(h+sign*(90000-clamp((target.range_m-band)*60000/150,-60000,60000)));
         velocity=forward;
-    } else { velocity=band_speed(v,target.range_m,band,forward,reverse); }
+    } else { this.hold_motion=previous_hold; velocity=this.band_speed(target.range_m,band,forward,reverse); }
     if velocity > 0 { h=this.detour(v,h); }
     this.motion(v,h,velocity);
 }
@@ -329,6 +362,8 @@ fn search(v, forward) {
 }
 fn think(v,card) {
     if !("born" in this) { this.init(v); }
+    // Any branch which does not fly the hold leaves it stopped next think.
+    let previous_hold=this.hold_motion; this.hold_motion=0;
     if v.wreck || v.cell == () { return; }
     if v.power != "online" { if v.power == "off" { startup(); } return; }
     let authored=stock::rules();
@@ -339,7 +374,9 @@ fn think(v,card) {
     if v.immobile { return; }
     if this.escape(v,forward,reverse) { return; }
     if this.opening(v,target,card.get("opening")) { return; }
-    if target != () { this.fight(v,target,card,forward,reverse); return; }
+    if target != () { this.fight(v,target,card,forward,reverse,previous_hold); return; }
+    let threat=this.threat_heading(v,(),card.get("stance"));
+    if threat != () { this.motion(v,threat,0); return; }
     if t_ms() < this.unknown_until { this.motion(v,this.unknown_heading,0); return; }
     if this.lost(v,forward,reverse) { return; }
     if v.mode == "hold" && v.objective != () {
