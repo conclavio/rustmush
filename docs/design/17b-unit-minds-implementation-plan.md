@@ -592,3 +592,18 @@ SHA-256 is `a4d62cbd86ce80b9385b93d3946115c93fd3ddb182924fb57c73277cdffa1792`.
 This establishes the merged economy checkpoint, including real Redis recovery,
 IC13 buyout/dormancy and the existing E3/E4/Market contracts. M7 remains isolated
 preparation while the M6 parity decision is pending.
+
+**IC14 checkpoint, 2026-10-18 UTC:** fetched `origin/main` `a690412e`
+(IC14 code `2f268ee3`) is merged as `eafe0064caa86411dadb08d4c24ae17488a2bd69`,
+tree `2262fd9eb65a765fbbd2ae4d69df8c3ddcd82697`. The four merge conflicts
+preserve both M6 and IC14 coverage and the checked intra-document links.
+A fresh, clean checkout of that exact tracked merge passes all 49 stages /
+1,508 tests in one invocation: core, Economy E3/E4, Inventory IC14, Market,
+server recovery/authoritative boot/trade, Tacsim commerce and voyages, spatial
+transitions, and the state/namespace/fault/lens contracts. This run contains
+no isolated M7 implementation. Its disposable Redis explicitly loads and
+verifies JSON/Search and is stopped after completion. All 59 retained evidence
+files independently verify; archive SHA-256 is
+`15956f8d6de16212ca5c7a486e64936ddb3bf8cca88a62793bd82d51d1689a62`.
+This supersedes IC13 as the current merged economy checkpoint; it does not
+waive the outstanding M6 parity decision or activate M7.

@@ -807,3 +807,13 @@ stages required a setup-only rerun with explicit JSON/Search modules; all 59
 outer-indexed evidence files verify, and both disposable listeners are stopped.
 The exact consolidated provenance is in 17b §6. M6 remains unaccepted and M7
 preparation remains inactive pending the parity decision.
+
+The subsequent IC14 fetch `a690412e` (code `2f268ee3`) is merged as
+`eafe0064caa86411dadb08d4c24ae17488a2bd69`, tree
+`2262fd9eb65a765fbbd2ae4d69df8c3ddcd82697`. All 49 affected checkpoint stages /
+1,508 tests pass in one invocation against a clean checkout of that exact
+tracked merge, without the isolated M7 implementation. The real Redis
+recovery/authoritative-boot cases use an owned JSON/Search listener, now
+stopped. All 59 retained files independently verify; 17b §6 records the archive
+hash and scope. IC14 is now the current merged economy checkpoint. The M6
+parity exception remains pending and M7 remains inactive preparation.
