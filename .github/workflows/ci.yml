@@ -40,11 +40,7 @@ jobs:
   mind-full-replay:
     name: M6 full-duration Class III replay
     if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -54,22 +50,24 @@ jobs:
       - name: Recompute all thinks and substeps for twenty-four Class III hulls over 900 seconds
         run: cargo test -p tacsim --lib m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep -- --ignored --nocapture
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
-      # The workspace builds 392 test binaries (2026-10-18: 176 MB each at
-      # opt-level 0, plus a PDB or DWARF beside each), which is more than a hosted
+      # The workspace builds 392 test binaries (2026-10-18: 157 MB each at
+      # opt-level 0 with line-table debuginfo), which is more than a hosted
       # runner's default disk: every run since the account could run jobs at
-      # all died in the Build step with 0 MB free on both hosts. Linux gets the
-      # LVM volume easimon's action spans across the root and the temp disk,
-      # mounted at the workspace (so it runs BEFORE checkout), with the
-      # preinstalled toolchains this job never uses removed; Windows moves the
-      # target dir off the 14 GB D: temp disk the workspace lives on, onto C:.
-      - name: Maximize build space (Linux)
-        if: runner.os == 'Linux'
+      # all died in the Build step with 0 MB free. The job gets the LVM volume
+      # easimon's action spans across the root and the temp disk, mounted at the
+      # workspace (so it runs BEFORE checkout), with the preinstalled toolchains
+      # this job never uses removed.
+      #
+      # This job runs on Linux only (owner, 2026-10-18): development happens on
+      # the owner's Windows box, so a Windows-only break is seen first-hand
+      # before any push, and production is Linux; the Windows leg of the matrix
+      # also hit the PDB format's ceiling (LNK1318/LNK1140) on the biggest test
+      # binaries under full debuginfo. The cross-platform mind-hash gates below
+      # still hold: their pins are blessed on Windows, so the Linux run is the
+      # cross-platform comparison.
+      - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 2048
@@ -81,10 +79,6 @@ jobs:
           remove-codeql: 'true'
           remove-docker-images: 'true'
       - uses: actions/checkout@v4
-      - name: Target dir on the large drive (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo "CARGO_TARGET_DIR=C:\cargo-target" >> "$GITHUB_ENV"
       # WS01-S11B: rust-toolchain.toml at the repo root is the only place in
       # this repo that names a Rust version. `rustup toolchain install` with no
       # argument installs the toolchain that file pins, with the `clippy` and
@@ -109,7 +103,8 @@ jobs:
       # The stock corpus flown by the Rhai Standard Doctrine and a float-probe
       # mind, each match's end, final state hash, substep-hash digest and
       # ledger digest pinned on the Windows blessing host; this step runs it
-      # on BOTH matrix hosts, so a Linux divergence fails here by name. The
+      # on the Linux host against those pins, so a Linux divergence fails here
+      # by name. The
       # test is #[ignore]d so the workspace run below does not run it twice;
       # naming it here is what covers it in the gated-test inventory.
       - name: Cross-platform mind hashes (17b cut M2.7; D-UM-28)
@@ -119,8 +114,7 @@ jobs:
       # Doctrine alone, every substep hash equal (fifteen T1-v-T1 matches since
       # 17b cut M4.5 retired the twin's T0 column; thirty before). Thirty debug
       # match plays pass the thirty seconds a lane may spend in the workspace
-      # run (17b §1 (iii)), so the test is #[ignore]d and run here, on both
-      # hosts, by name.
+      # run (17b §1 (iii)), so the test is #[ignore]d and run here by name.
       - name: Whole-match mind hashes (17b cut M2.7; Gate A)
         run: cargo test -p tacsim --test twin m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -- --ignored --exact --nocapture
       # 17b cut M4.1 (doc 17 §6 "Execution policy", D-UM-22; the M4 row's
@@ -148,8 +142,7 @@ jobs:
         run: cargo test -p mush-testkit --features mush-testkit/toy-ruleset
       - name: Panic hook and per-half log files (WS01-S13; the child half is #[ignore]d and spawned by its sibling)
         run: cargo test -p mushd --test world_panic_exit
-      - name: TS bindings drift check (Linux only)
-        if: runner.os == 'Linux'
+      - name: TS bindings drift check
         run: |
           cargo test -p mush-proto --features ts --test ts_export
           git diff --exit-code web/src/lib/proto
