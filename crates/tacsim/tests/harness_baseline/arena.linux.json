@@ -107,6 +107,100 @@
       "cpus": 4,
       "hostname": "srv1930616",
       "os": "linux"
+    },
+    "m6_deterministic_update": {
+      "cut": "M6",
+      "recorded_utc": "2026-10-18T02:40:21.715018+00:00",
+      "measured_revision": "6375d6e6c0324d46f9a69ee68d8df987606c9b1c",
+      "source_sha256": "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
+      "mind_abi": "rhai=1.26.0;api=4;stock=2",
+      "snapshot_format": 13,
+      "frame_version": 6,
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "minds.ceiling_authored.final_substep_hash",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash"
+      ],
+      "reason": "Canonical catalog/profile/runtime/ROM identities and API 4 source identity; five reviewed deterministic leaves agree on Windows and Linux. Ledger byte delta is consistent with decimal hash encoding; no raw byte-width proof claimed.",
+      "timing_policy": "Original timings and host retained. Timing misses are reported separately; no harness thresholds or hostname comparison changed.",
+      "review": {
+        "path": "target/m6-harness-delta-review-6375d6e6.md",
+        "bytes": 5296,
+        "sha256": "9031fe5138a845f8eb4bdd86dc59c6b485932169e2d9823ddd44d8120d5aeaa7"
+      },
+      "capture_attribution": "Revision and host labels are operator-supplied; report files do not embed binary provenance. Retained logs and exact report hashes follow.",
+      "captures": {
+        "windows": {
+          "evidence": {
+            "path": "target/m6-final-windows-harness-combined-6375d6e6/consolidation-manifest.json",
+            "bytes": 18358,
+            "sha256": "d9c523736b0918e49b5911a926f96636109bc77b1ef22347a2b0cd5456ffd5b3"
+          },
+          "reports": [
+            {
+              "path": "target/m6-final-windows-harness-combined-6375d6e6/windows-arena.json",
+              "bytes": 6051,
+              "sha256": "48918de1d5a07d5ace6293710c83495edf177b9396ff7f65adf42ef884540028"
+            },
+            {
+              "path": "target/m6-final-windows-harness-combined-6375d6e6/windows-minds-stock_ci.json",
+              "bytes": 6376,
+              "sha256": "1424293335facb9d3af770f8974df5488be35536322ccca1cf0743cf6b37dd35"
+            },
+            {
+              "path": "target/m6-final-windows-harness-combined-6375d6e6/windows-minds-stock_authored.json",
+              "bytes": 6407,
+              "sha256": "31b72c060da2e093273db2c6e937ad3184a93ded50242d0c11068ee83c42cb9f"
+            },
+            {
+              "path": "target/m6-final-windows-harness-combined-6375d6e6/windows-minds-fill_authored.json",
+              "bytes": 7846,
+              "sha256": "e8f737435eac5b58d70835e2e24e29b960433905f78a807b4900dcde4d110c19"
+            },
+            {
+              "path": "target/m6-final-windows-harness-combined-6375d6e6/windows-minds-ceiling_authored.json",
+              "bytes": 6555,
+              "sha256": "d894c637f1e897bae17647570965f68407a959123dbadb0288b804f50348d3cf"
+            }
+          ]
+        },
+        "linux": {
+          "evidence": {
+            "path": "target/m6-linux-evidence-6375d6e6/m6-final-6375d6e6/run-status.json",
+            "bytes": 5287,
+            "sha256": "34cbed4b1166c22c16fd7b0eabb240c0fc9719243c0a249d8fc6f11aa1522d84"
+          },
+          "reports": [
+            {
+              "path": "target/m6-linux-evidence-6375d6e6/m6-final-6375d6e6/harness-report-arena.json",
+              "bytes": 6065,
+              "sha256": "042d718068b3cf77a18d526b98615a2c998de4ea154330c6c23c75a3e3870fec"
+            },
+            {
+              "path": "target/m6-linux-evidence-6375d6e6/m6-final-6375d6e6/harness-report-minds-stock_ci.json",
+              "bytes": 6689,
+              "sha256": "8a65a31627e090158b4c403f88319e9e7c5de89b8586c7a6d3bff440cb5373b3"
+            },
+            {
+              "path": "target/m6-linux-evidence-6375d6e6/m6-final-6375d6e6/harness-report-minds-stock_authored.json",
+              "bytes": 6588,
+              "sha256": "48f344ffed48a6a277fffa1d2dccfe1430dd347a576c42d825a114bb3e94bb18"
+            },
+            {
+              "path": "target/m6-linux-evidence-6375d6e6/m6-final-6375d6e6/harness-report-minds-fill_authored.json",
+              "bytes": 8152,
+              "sha256": "59bf66357a49afc6593b75197170d78db9f696b3649c9e12d10d8f1ed7aadc50"
+            },
+            {
+              "path": "target/m6-linux-evidence-6375d6e6/m6-final-6375d6e6/harness-report-minds-ceiling_authored.json",
+              "bytes": 6868,
+              "sha256": "07c1b4860ac85ea4958c08b5d5feaad8165b4ad8304947f24a1aa691b349a54a"
+            }
+          ]
+        }
+      }
     }
   },
   "classes": {
@@ -152,7 +246,7 @@
     "frames_per_pulse_mean": 21.25,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1642255,
+    "ledger_bytes_streamed": 1642437,
     "ledger_chunks": 103,
     "moving_at_end": 123
   },
@@ -192,7 +286,7 @@
       "fees_total": 9600,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "2263405700832825135",
+      "final_substep_hash": "14062196396185489584",
       "inline_thinks": 1747,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -298,7 +392,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "12790158129511398926",
+      "final_substep_hash": "14629505131114303637",
       "inline_thinks": 1672,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -340,7 +434,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "327933824277722968",
+      "final_substep_hash": "10692920777587841370",
       "inline_thinks": 1687,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -373,7 +467,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "13140937837533234016",
+      "final_substep_hash": "5894298730668762494",
       "inline_thinks": 1691,
       "jitter_ms": 250,
       "jitter_per_mille": 250,

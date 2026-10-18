@@ -19,8 +19,9 @@ const DAILY_MINUTES: u64 =
     (PROVING_UNITS * (PROVING_LIMIT_MS + PROVING_STEP_MS) * PROVING_GAMES).div_ceil(60_000);
 // Finite liveness guards for two complete 100-game custody/compression jobs on
 // variable hosts. Measured latency stays evidence, not a performance threshold.
-const PREPARATION_TIMEOUT: Duration = Duration::from_secs(180);
-const ISOLATION_TIMEOUT: Duration = Duration::from_secs(480);
+// Allow two full preparation guards plus 300 seconds for the functional checks.
+const PREPARATION_TIMEOUT: Duration = Duration::from_secs(600);
+const ISOLATION_TIMEOUT: Duration = Duration::from_secs(1_500);
 
 async fn books(server: &rig::Rig) -> Vec<Value> {
     server
@@ -90,16 +91,111 @@ fn settled_charge(book: &Value) -> u64 {
         .checked_sub(prepaid)
         .expect("a current prepayment is part of the charged total")
 }
-async fn live_time(server: &rig::Rig) -> Option<i64> {
+async fn live_time(server: &rig::Rig, match_id: u64) -> Option<i64> {
     let value = server
         .store
-        .module_json_get("tacsim", "tacsim:snapshot:1")
+        .module_json_get("tacsim", &format!("tacsim:snapshot:{match_id}"))
         .await
         .unwrap()?;
     let state: Value =
         serde_json::from_str(value["state"].as_str().expect("canonical snapshot")).unwrap();
     state["now_ms"].as_i64()
 }
+async fn require_live_time(
+    server: &rig::Rig,
+    pilot: &mut rig::Client,
+    match_id: u64,
+    phase: &str,
+) -> i64 {
+    if let Some(now) = live_time(server, match_id).await {
+        return now;
+    }
+    pilot.pump(Duration::from_millis(100)).await;
+    let result = server
+        .store
+        .module_json_get("tacsim", &format!("tacsim:match:{match_id}"))
+        .await
+        .unwrap();
+    panic!(
+        "{phase}: match {match_id} has no live snapshot; retained result={result:?}; pilot transcript:\n{}",
+        pilot.seen
+    );
+}
+
+async fn start_live(server: &rig::Rig, pilot: &mut rig::Client) -> u64 {
+    pilot.say("SIM TEAM red", "takes red slot 1").await;
+    pilot.say("SIM START", "is boarding").await;
+    pilot.say("red", "Red Room").await;
+    pilot.say("BOARD", "climb into").await;
+    pilot.expect("Good hunting", rig::STEP_TIMEOUT).await;
+    warm_cockpit(pilot).await;
+    tokio::time::timeout(rig::STEP_TIMEOUT, async {
+        let mut match_id = None;
+        loop {
+            if match_id.is_none() {
+                let rows = server.store.module_json_list("tacsim").await.unwrap();
+                let ids = rows
+                    .iter()
+                    .filter_map(|(key, _)| key.strip_prefix("tacsim:live:"))
+                    .map(|id| id.parse::<u64>().expect("actual retained match identity"))
+                    .collect::<Vec<_>>();
+                assert!(ids.len() <= 1, "one live public sortie on this server");
+                match_id = ids.first().copied();
+            }
+            if let Some(id) = match_id {
+                // A public frame and live custody can precede deferred snapshot
+                // persistence. Only the first durable snapshot starts measuring.
+                if live_time(server, id).await.is_some() {
+                    return id;
+                }
+                let result = server
+                    .store
+                    .module_json_get("tacsim", &format!("tacsim:match:{id}"))
+                    .await
+                    .unwrap();
+                assert!(
+                    result.is_none(),
+                    "match {id} ended before its first durable snapshot; result={result:?}; pilot transcript:\n{}",
+                    pilot.seen
+                );
+            }
+            pilot.pump(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "public boarding produced no durable live snapshot:\n{}",
+            pilot.seen
+        )
+    })
+}
+
+async fn close_baseline(server: &rig::Rig, pilot: &mut rig::Client, match_id: u64) -> Value {
+    pilot.say("SIM CONCEDE", "concedes").await;
+    let result = tokio::time::timeout(rig::STEP_TIMEOUT, async {
+        loop {
+            if let Some(result) = server
+                .store
+                .module_json_get("tacsim", &format!("tacsim:match:{match_id}"))
+                .await
+                .unwrap()
+            {
+                return result;
+            }
+            pilot.pump(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("baseline concession was not retained:\n{}", pilot.seen));
+    assert!(
+        live_time(server, match_id).await.is_none(),
+        "baseline teardown completed before private preparation"
+    );
+    pilot.say("out", "Simulator Lobby").await;
+    result
+}
+
 struct StatusSample {
     elapsed_us: u64,
     transient_retries: [usize; 4],
@@ -219,12 +315,7 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         let mut overflow =
             rig::Client::login(&server, "overflow", rig::PILOT_PASSWORD, "Overflow").await;
         rig::walk_to_lobby(&mut pilot).await;
-        pilot.say("SIM TEAM red", "takes red slot 1").await;
-        pilot.say("SIM START", "is boarding").await;
-        pilot.say("red", "Red Room").await;
-        pilot.say("BOARD", "climb into").await;
-        pilot.expect("Good hunting", rig::STEP_TIMEOUT).await;
-        warm_cockpit(&mut pilot).await;
+        let baseline_match = start_live(&server, &mut pilot).await;
         let mut baseline = Vec::new();
         for _ in 0..16 {
             baseline.push(status_sample(&mut pilot).await);
@@ -234,9 +325,11 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
             books(&server).await.is_empty(),
             "baseline has no private work"
         );
-        let before = live_time(&server)
-            .await
-            .expect("live arena snapshot before proving");
+        let before = require_live_time(&server, &mut pilot, baseline_match, "baseline").await;
+        // Preparation is not the workload under measurement. Close the normal
+        // baseline sortie publicly, then open a fresh normal sortie once both
+        // jobs are admitted, so two long preparations cannot consume its life.
+        let baseline_result = close_baseline(&server, &mut pilot, baseline_match).await;
 
         let one_preparing = Instant::now();
         let one_from = one.seen.len();
@@ -271,8 +364,15 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         overflow
             .say(PROVE, "The bounded compute queue is full.")
             .await;
+        let loaded_match = start_live(&server, &mut pilot).await;
+        assert_ne!(loaded_match, baseline_match, "a fresh normal loaded sortie");
         let initial = books(&server).await;
         check_bounds(&initial);
+        assert!(
+            initial.iter().all(|book| book["active"] == 1
+                && matches!(run(book)["status"].as_str(), Some("queued" | "running"))),
+            "both private jobs remain active after loaded boarding: {initial:?}"
+        );
         assert_eq!(
             initial.len(),
             2,
@@ -280,11 +380,10 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         );
         assert_ne!(initial[0]["id"], initial[1]["id"]);
         assert_ne!(run(&initial[0])["character"], run(&initial[1])["character"]);
-        // Preparation may take substantial wall time. Progress before both
-        // accounts were admitted cannot prove live progress under their load.
-        let loaded_before = live_time(&server)
-            .await
-            .expect("live arena snapshot after both proving admissions");
+        // Anchor every measurement after fresh boarding and both admissions.
+        // Neither baseline nor preparation progress can satisfy loaded progress.
+        let loaded_before =
+            require_live_time(&server, &mut pilot, loaded_match, "loaded start").await;
         let starts = initial
             .iter()
             .map(|book| {
@@ -319,18 +418,15 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
                         && settled_charge(book) > *charged
                 })
             });
-            if loaded.len() >= 16
-                && fair
-                && live_time(&server)
-                    .await
-                    .is_some_and(|now| now >= loaded_before + 2_000)
-            {
+            let loaded_now =
+                require_live_time(&server, &mut pilot, loaded_match, "loaded measurement").await;
+            if loaded.len() >= 16 && fair && loaded_now >= loaded_before + 2_000 {
                 progressed = rows;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
         }
-        let after = live_time(&server).await.unwrap();
+        let after = require_live_time(&server, &mut pilot, loaded_match, "loaded finish").await;
         assert!(
             after >= loaded_before + 2_000,
             "the real live arena advanced while both private runs advanced"
@@ -338,7 +434,7 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         assert!(
             server
                 .store
-                .module_json_get("tacsim", "tacsim:match:1")
+                .module_json_get("tacsim", &format!("tacsim:match:{loaded_match}"))
                 .await
                 .unwrap()
                 .is_none(),
@@ -348,7 +444,8 @@ async fn two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progre
         println!(
             "M6_LIVE_PROVING_ISOLATION {}",
             json!({"servers":1,"proving_workers":1,
-            "queued_limit":1,"daily_unit_minutes":DAILY_MINUTES,"live_before_ms":before,
+            "baseline_match":baseline_match,"loaded_match":loaded_match,
+            "baseline_result":baseline_result,"queued_limit":1,"daily_unit_minutes":DAILY_MINUTES,"live_before_ms":before,
             "live_loaded_before_ms":loaded_before,
             "preparation_ms":{"one":one_preparation_ms,"two":two_preparation_ms},
             "live_after_ms":after,"baseline":timings(&baseline),"loaded":timings(&loaded),

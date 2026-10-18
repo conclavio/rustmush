@@ -134,7 +134,7 @@ pub(super) fn lifecycle(
             }
             roll.prepare_rename(actor, name, base, new_name)
         }
-        mush_proto::MindLifecycle::Remove => roll.prepare_remove(actor, name, base),
+        mush_proto::MindLifecycle::Remove {} => roll.prepare_remove(actor, name, base),
         mush_proto::MindLifecycle::VersionRename { old, new } => {
             roll.prepare_rename_version(actor, name, base, old, new)
         }

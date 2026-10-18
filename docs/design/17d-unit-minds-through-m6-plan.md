@@ -768,3 +768,14 @@ The earlier correction failures remain recorded in 17b §6. Final merged-source
 Linux codec/capacity, integration and long public acceptance evidence is still
 required; these development passes neither accept M6 nor start M7. No final
 acceptance revision is claimed here.
+
+The subsequent `6375d6e6` gate completes the real tape replay on both hosts and
+matches all 302 compared harness leaves and complete selected objects. The five
+reviewed deterministic baseline values are now recorded with both captures;
+original timings and M5r provenance remain unchanged. Windows quality and replay
+groups pass at that revision; Linux's focused corrections pass at `44800557`.
+See 17b §6 for exact scope and provenance. The Linux public acceptance attempt
+still failed its live-match fixture after preparation, so the author story and
+fresh external interval remain unrun. The two-sortie fixture correction, first
+cockpit-frame wait and strict lifecycle-remove request shape require fresh gates,
+along with the full Windows test sweep. M6 and the later M7 checkpoint remain open.

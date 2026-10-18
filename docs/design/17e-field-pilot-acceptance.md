@@ -97,19 +97,26 @@ reading seals. They preserve the canonical snapshot state string and all existin
 identity/card/outcome assertions. Old private format 1 is explicitly refused;
 there is no migration, and tape format 1/proving-result format 2 are unchanged.
 
-`crates/mush-bot/tests/arena_mind_isolation.rs` exercises one live sortie and two
-proving jobs on the same production server through separate SSH accounts. It
+`crates/mush-bot/tests/arena_mind_isolation.rs` exercises baseline and loaded
+normal sorties and two proving jobs on the same production server through separate SSH accounts. It
 checks bounded worker/queue admission, duplicate and overflow refusal, settled
 compute progress for both jobs, continued live snapshots, and cancellation with
 quota refund. Baseline and loaded STATUS latency samples are retained in
 `live-isolation.log` as `M6_LIVE_PROVING_ISOLATION` JSON; host timing is report-only.
 The rig waits for the first public cockpit frame before its baseline samples.
-Its loaded-progress anchor is taken after both jobs are admitted, so progress
-during preparation cannot satisfy the live-under-load assertion. Each preparation
-duration is retained separately from the baseline and loaded STATUS samples.
-Preparation has a finite 180-second liveness guard per request and the complete
-isolation case has a 480-second guard; explicit preparation refusals fail
-immediately with their reason. These guards are distinct from the retained timing
+It then publicly concedes that normal baseline sortie and waits for the retained
+terminal result before preparation. After both jobs are admitted it starts and
+boards a fresh normal sortie on the same server, with the same configuration.
+Both actual match IDs and the baseline terminal result are retained. The loaded
+progress and compute anchors are taken after fresh boarding and both admissions,
+so neither baseline nor preparation progress can satisfy the live-under-load
+assertion. A missing loaded snapshot prints its retained terminal result and the
+pilot transcript rather than hiding the teardown behind an Option failure. Each
+preparation duration is retained separately from the baseline and loaded STATUS samples.
+Preparation has a finite 600-second liveness guard per request and the complete
+isolation case has a 1,500-second guard (two preparation guards plus 300 seconds
+for the functional checks); explicit preparation refusals and closed channels
+fail immediately with their reason. These guards are distinct from the retained timing
 measurements, which remain report-only.
 Its account quota covers the complete retained plan, including one final native
 step per game: 100 games × 12 units × 600,250 ms = 12,005 unit-minutes. A faster
@@ -209,3 +216,30 @@ above still requires its actual run, and final Linux acceptance remains pending;
 the earlier refusals are not acceptance passes. The author story also stops
 immediately on explicit proving refusal or terminal failure, preserving its
 existing finite completion guards and all retained-evidence checks.
+
+The Linux invocation at `6375d6e6` passed both proving preparations (147.243 and
+144.341 seconds) but failed isolation after 307.33 seconds because the original
+live snapshot was absent after preparation. The log did not retain the terminal
+match reason, so it does not establish timeout rather than another normal end.
+The two-sortie correction above removes that preparation-lifetime dependency and
+adds explicit teardown diagnostics without changing normal match behavior or
+the live-under-load assertions. It remains pending actual execution; the failed
+invocation did not reach the author story or external interval.
+
+The observed 147.243/144.341-second preparations used most of the former
+180-second guard. The generous finite 600/1,500-second guards above avoid treating
+ordinary host timing variation as a performance gate. The failed Linux invocation
+did not exceed its old preparation guard; the separate two-sortie correction
+addresses its missing live snapshot. Actual preparation/STATUS timings, immediate
+refusal and closed-channel failures, first-frame/STATUS guards, resource limits,
+both-account settled progress, loaded live progress and cancellation refunds
+remain unchanged. The smaller author-story 30-game 1v1 preparation keeps its
+60-second guard. These fixture changes still require actual acceptance execution.
+
+The author story now waits for its first ready public STATUS frame before reading
+MIND. It retries only the explicit pending-panel response within the existing
+20-second guard and refuses a destroyed hull; source, seal and privacy assertions
+are unchanged. The lifecycle-remove protocol also rejects extra nested fields
+with the same valid JSON shape and existing connection/edit authority. Its direct
+and nested decoding regression, actual TypeScript export and final acceptance run
+remain part of the next committed-source gate.

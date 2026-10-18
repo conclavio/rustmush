@@ -414,6 +414,39 @@ fn selected_seal(live: &Value, name: &str) -> (String, Value) {
         })
         .expect("the requested authored mind is sealed")
 }
+async fn warm_cockpit(pilot: &mut rig::Client) {
+    let from = pilot.seen.len();
+    // Good hunting precedes the asynchronous first cockpit frame. Retry that
+    // explicit public not-ready answer; waiting on the same reply cannot help.
+    tokio::time::timeout(rig::STEP_TIMEOUT, async {
+        loop {
+            let (answer, text) = pilot
+                .answer(
+                    "STATUS",
+                    &["m north;", "The panel has told you nothing yet."],
+                )
+                .await;
+            let warmup = &pilot.seen[from..];
+            assert!(
+                !warmup.contains("DESTROYED"),
+                "the live pilot has a working hull: {warmup}"
+            );
+            match answer {
+                Some(0) => break,
+                Some(1) => tokio::time::sleep(Duration::from_millis(75)).await,
+                _ => panic!("STATUS did not return a ready or explicitly pending panel: {text}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "first public cockpit frame did not arrive: {}",
+            &pilot.seen[from..]
+        )
+    });
+}
+
 async fn wait_snapshot(server: &rig::Rig, match_id: u64, ready: impl Fn(&Value) -> bool) -> Value {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -554,6 +587,7 @@ async fn field_pilot_complete_production_author_story() {
     author.say("red", "Red Room").await;
     author.say("BOARD", "climb into").await;
     author.expect("Good hunting", rig::STEP_TIMEOUT).await;
+    warm_cockpit(&mut author).await;
     author.say("MIND", "FieldPilot").await;
     let live = document(&server, "tacsim:live:1").await;
     let (unit, sealed) = selected_seal(&live, "FieldPilot");

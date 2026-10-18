@@ -166,7 +166,9 @@ pub enum MindLifecycle {
         new_name: String,
     },
     /// Remove the working entry; named and retained revisions remain rooted.
-    Remove,
+    // A tagged unit variant ignores unknown fields in serde; keep an empty
+    // struct variant so the closed request grammar rejects extra fields.
+    Remove {},
     /// Rename an existing local version label.
     VersionRename {
         /// Existing version label.
@@ -514,5 +516,41 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<InvokeRequest>(json).is_err());
         }
+    }
+
+    #[test]
+    fn lifecycle_remove_is_closed_and_keeps_its_wire_shape() -> Result<(), serde_json::Error> {
+        let request = InvokeRequest::Mind(MindRequest::Lifecycle {
+            name: "mine".into(),
+            base: MindEditBase {
+                edit: 1,
+                revision: None,
+            },
+            edit: MindLifecycle::Remove {},
+        });
+        let wire = serde_json::json!({
+            "service": "mind",
+            "request": {
+                "op": "lifecycle", "name": "mine",
+                "base": {"edit": 1, "revision": null},
+                "edit": {"kind": "remove"}
+            }
+        });
+        assert_eq!(serde_json::to_value(&request)?, wire);
+        assert_eq!(serde_json::from_value::<InvokeRequest>(wire)?, request);
+        for edit in [
+            r#"{"kind":"remove","actor":7}"#,
+            r#"{"kind":"remove","account":"foreign"}"#,
+            r#"{"kind":"remove","validated":true}"#,
+            r#"{"kind":"remove","source":"private"}"#,
+            r#"{"kind":"remove","new_name":"other"}"#,
+        ] {
+            assert!(serde_json::from_str::<MindLifecycle>(edit).is_err());
+            let nested = format!(
+                r#"{{"service":"mind","request":{{"op":"lifecycle","name":"mine","base":{{"edit":1,"revision":null}},"edit":{edit}}}}}"#
+            );
+            assert!(serde_json::from_str::<InvokeRequest>(&nested).is_err());
+        }
+        Ok(())
     }
 }

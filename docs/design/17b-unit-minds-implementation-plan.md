@@ -508,3 +508,44 @@ This is measured development proof, not final merged-source acceptance. Linux
 codec/capacity and integration checks, the committed-source author story,
 same-server isolation and fresh external interval remain pending. The final
 acceptance revision has not yet been designated.
+
+**Cross-host deterministic gate and acceptance follow-up:** the completed runs at
+`6375d6e6c0324d46f9a69ee68d8df987606c9b1c` match on the complete real 24-unit Class III
+900-second tape: 49,509,957 bytes, 791 chunks, 86,376 thinks, 3,600 substeps,
+21,611 replay slices, final hash `b9bc11feacbabcf2` and the ledger digest recorded
+above. Windows also passes the corpus, all 15 whole-match twins and all 45 real
+worker-pool matches. Its locked workspace/all-target Clippy, private-item rustdoc,
+workspace formatting and two TypeScript export tests pass at that revision.
+The earlier Linux focused run at `44800557` passes 18 stages / 57 tests, including
+the codec/capacity, boot, snapshot, lifecycle, overlay and IC12 corrections.
+Those are the actual measured revisions, not claims about later changes.
+
+Windows and Linux `6375d6e6` harness reports agree on all 302 deterministic leaves
+and the complete selected objects. The reviewed baseline update changes exactly
+five leaves: ledger bytes `1642255` → `1642437`, and the stock CI, stock authored,
+fill authored and ceiling authored final hashes. The baseline's separate M6
+record retains their exact values, capture/review hashes and source/ABI identity;
+the original host, timings, thresholds and M5r provenance are unchanged. The
+Linux raw delta exited 101 before this update; its timing misses remain report-only.
+Windows arena and minds passed in separate guarded invocations: the first wrapper
+stopped before minds when another Cargo build appeared, and the second ran minds
+alone. The retained consolidation records that distinction rather than claiming
+the first wrapper completed successfully.
+
+The Linux acceptance attempt at `6375d6e6` failed isolation after both successful
+preparations because its live snapshot was gone; it did not reach the author story
+or external interval. The fixture now publicly closes the baseline sortie before
+preparation and starts a fresh normal loaded sortie after both admissions. It
+retains both match IDs, teardown diagnostics, settled progress for both accounts,
+bounded queue/quota checks and fresh live progress. Preparation guards are generous
+finite hang guards, not performance thresholds. The author story also waits for
+its first public cockpit frame. Separately, the lifecycle `remove` request now
+rejects unknown nested fields while retaining its valid wire shape and existing
+actor/edit authority. These corrections still need actual gates.
+
+Full Windows workspace/bot tests, checks covering these final corrections and the
+complete Linux public acceptance invocation remain required. No M6 acceptance or
+deployment is claimed. A fresh fetch still resolves `origin/main` to IC12
+`715151c4`, already included here; the post-acceptance M7 economy checkpoint remains
+separate. Local Rust gates use one build job and wait for the host's other Rust
+builds before starting, because parallel MSVC linkers exhaust memory.

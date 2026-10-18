@@ -183,7 +183,7 @@ impl WorkshopCommands {
                 let prepared = super::lifecycle(roll(ctx)?, actor, &name, base, &edit)?;
                 publish(ctx, prepared)?;
                 ctx.out.info(actor, match edit {
-                    mush_proto::MindLifecycle::Remove =>
+                    mush_proto::MindLifecycle::Remove {} =>
                         "Working library entry removed. Named versions, recent history and external references remain retained.",
                     _ => "Library lifecycle change saved.",
                 });
@@ -667,7 +667,7 @@ fn lifecycle_edit(
         }
         "remove" => Ok((
             mush_roll::canonical_name(text.trim())?,
-            MindLifecycle::Remove,
+            MindLifecycle::Remove {},
         )),
         "version-name" | "version-forget" => {
             let (reference, new) = if switch == "version-name" {
@@ -841,7 +841,7 @@ mod tests {
         use mush_proto::MindLifecycle;
         assert_eq!(
             lifecycle_edit("remove", " long mind ").unwrap(),
-            ("long mind".into(), MindLifecycle::Remove)
+            ("long mind".into(), MindLifecycle::Remove {})
         );
         assert_eq!(
             lifecycle_edit("rename", "long mind=next mind").unwrap(),

@@ -92,7 +92,7 @@ impl WorkshopCommands {
                 let base = from_base(*base);
                 let prepared = super::lifecycle(roll(ctx)?, ctx.actor, name, base, edit)?;
                 let response = match edit {
-                    mush_proto::MindLifecycle::Remove => MindResponse::Removed {
+                    mush_proto::MindLifecycle::Remove {} => MindResponse::Removed {
                         name: mush_roll::canonical_name(name)?,
                     },
                     mush_proto::MindLifecycle::Rename { new_name } => edited(new_name, base)?,
@@ -848,7 +848,7 @@ mod tests {
         };
         assert!(
             matches!(invoke(&mut engine, 9, other, 102, MindRequest::Lifecycle {
-            name: "mine".into(), base: saved, edit: MindLifecycle::Remove,
+            name: "mine".into(), base: saved, edit: MindLifecycle::Remove {},
         }), MindResponse::Error { code, .. } if code == "missing")
         );
         let MindResponse::Edited {
@@ -921,12 +921,12 @@ mod tests {
         };
         assert!(
             matches!(invoke(&mut engine, 8, GOD, 106, MindRequest::Lifecycle {
-            name: "renamed mind".into(), base: saved, edit: MindLifecycle::Remove,
+            name: "renamed mind".into(), base: saved, edit: MindLifecycle::Remove {},
         }), MindResponse::Error { code, .. } if code == "stale")
         );
         assert!(
             matches!(invoke(&mut engine, 7, GOD, 107, MindRequest::Lifecycle {
-            name: "renamed mind".into(), base: current, edit: MindLifecycle::Remove,
+            name: "renamed mind".into(), base: current, edit: MindLifecycle::Remove {},
         }), MindResponse::Removed { name } if name == "renamed mind")
         );
         assert!(matches!(
@@ -1029,7 +1029,7 @@ mod tests {
                 MindRequest::Lifecycle {
                     name: "mine".into(),
                     base,
-                    edit: MindLifecycle::Remove,
+                    edit: MindLifecycle::Remove {},
                 }
             ),
             MindResponse::Removed { .. }

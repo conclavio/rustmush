@@ -895,7 +895,7 @@ impl MindWorkshop {
             Action::RemoveMind => MindRequest::Lifecycle {
                 name,
                 base,
-                edit: MindLifecycle::Remove,
+                edit: MindLifecycle::Remove {},
             },
             Action::VersionForget => MindRequest::Lifecycle {
                 name,
@@ -1849,7 +1849,7 @@ mod tests {
             InvokeRequest::Mind(MindRequest::Lifecycle {
                 name: name.clone(),
                 base,
-                edit: MindLifecycle::Remove
+                edit: MindLifecycle::Remove {}
             })
         );
         state.accept(
