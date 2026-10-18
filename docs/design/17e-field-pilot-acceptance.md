@@ -111,6 +111,11 @@ Preparation has a finite 180-second liveness guard per request and the complete
 isolation case has a 480-second guard; explicit preparation refusals fail
 immediately with their reason. These guards are distinct from the retained timing
 measurements, which remain report-only.
+Its account quota covers the complete retained plan, including one final native
+step per game: 100 games × 12 units × 600,250 ms = 12,005 unit-minutes. A faster
+first worker cannot exhaust an artificially smaller quota while the second job
+prepares. Worker/queue bounds, settled-charge fairness and cancellation refunds
+remain asserted; this fixture setting does not change the production default.
 
 `crates/mush-bot/tests/arena_mind_port_rate.rs` launches two real external bot
 processes concurrently for fifteen unposed MUSTER matches on each side. Each has
@@ -196,5 +201,11 @@ The latter correctly refused publication after preparation completed. The rig no
 waits for the public first frame and uses `server_modules_with_tacsim` with
 `tacsim_module_wired`, preserving its existing module defaults and content choices.
 A composition regression and a pre-boot assertion check the grant before expensive
-work. The production authority check is unchanged. These corrections still require
-the complete live isolation run; the earlier refusals are not acceptance passes.
+work. The production authority check is unchanged. Candidate `44800557` passes
+both the composition regression and the complete Windows live isolation case in
+148.68 seconds, with preparations of 68.426 and 66.133 seconds and 7,089 ms of
+fresh live progress after both admissions. The follow-up fixture quota correction
+above still requires its actual run, and final Linux acceptance remains pending;
+the earlier refusals are not acceptance passes. The author story also stops
+immediately on explicit proving refusal or terminal failure, preserving its
+existing finite completion guards and all retained-evidence checks.

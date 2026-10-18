@@ -8,7 +8,15 @@ use std::time::{Duration, Instant};
 mod rig;
 
 const PROVE: &str = "@mind/prove Standard/Line VS Standard/Line 100 MUSTER 6v6 SEED 713";
-const DAILY_MINUTES: u64 = 2_000;
+const PROVING_GAMES: u64 = 100;
+const PROVING_UNITS: u64 = 12;
+const PROVING_LIMIT_MS: u64 = 600_000;
+const PROVING_STEP_MS: u64 = 250;
+// Cover Plan::maximum_unit_ms for the complete requested workload, including
+// its final native step: 100 * 12 * (600_000 + 250) / 60_000 = 12_005.
+// A valid fast first run must not stall on quota while the second prepares.
+const DAILY_MINUTES: u64 =
+    (PROVING_UNITS * (PROVING_LIMIT_MS + PROVING_STEP_MS) * PROVING_GAMES).div_ceil(60_000);
 // Finite liveness guards for two complete 100-game custody/compression jobs on
 // variable hosts. Measured latency stays evidence, not a performance threshold.
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(180);
@@ -41,8 +49,19 @@ fn check_bounds(rows: &[Value]) {
     );
     for book in rows {
         let row = run(book);
-        assert_eq!(row["plan"]["unit_count"], 12);
-        assert_eq!(row["plan"]["games"], 100);
+        let plan = &row["plan"];
+        assert_eq!(number(plan, "unit_count"), PROVING_UNITS);
+        assert_eq!(number(plan, "games"), PROVING_GAMES);
+        assert_eq!(number(plan, "limit_ms"), PROVING_LIMIT_MS);
+        assert_eq!(number(plan, "native_substep_ms"), PROVING_STEP_MS);
+        let plan_unit_ms = number(plan, "unit_count")
+            * (number(plan, "limit_ms") + number(plan, "native_substep_ms"))
+            * number(plan, "games");
+        assert_eq!(
+            plan_unit_ms.div_ceil(60_000),
+            DAILY_MINUTES,
+            "the quota covers the actual retained plan's complete workload"
+        );
         assert!(
             number(book, "spent_unit_ms") + number(book, "reserved_unit_ms")
                 <= DAILY_MINUTES * 60_000,

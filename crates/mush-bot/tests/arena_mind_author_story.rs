@@ -178,6 +178,44 @@ async fn save(server: &rig::Rig, name: &str, base: MindEditBase) -> (MindEditBas
     };
     (base, revision, digest)
 }
+// Observe only this PROVE request. A known terminal refusal must not consume
+// the long completion guard, and waiting never resubmits the public command.
+async fn proving_progress(
+    client: &mut rig::Client,
+    from: usize,
+    expected: &str,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let text = client
+            .seen
+            .get(from..)
+            .expect("the current PROVE transcript");
+        for failure in [
+            "Proving preparation refused:",
+            "Proving run 1 is Failed.",
+            "Proving run 1 is Interrupted.",
+            "Proving run 1 is Cancelled.",
+        ] {
+            assert!(
+                !text.contains(failure),
+                "proving failed explicitly:\n{text}"
+            );
+        }
+        if text.contains(expected) {
+            return;
+        }
+        assert!(!client.closed, "SSH closed before {expected:?}:\n{text}");
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "proving exceeded its liveness guard waiting for {expected:?}:\n{text}"
+        );
+        client.pump(left.min(Duration::from_millis(100))).await;
+    }
+}
+
 async fn document(server: &rig::Rig, key: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -247,7 +285,9 @@ fn frozen_hex(value: &str, maximum: usize) -> Result<Vec<u8>, &'static str> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             std::str::from_utf8(pair)
                 .ok()
@@ -612,21 +652,27 @@ async fn field_pilot_complete_production_author_story() {
     author.say("SIM REPORT 1", "Match 1 on").await;
     // The first immutable revision, matching the independent external default,
     // is what the thirty-game acceptance proves. Later edits remain independent.
+    let proving_from = author.seen.len();
     author
         .say(
             "@mind/prove FieldPilot@1/Hold VS Standard/Line 30 MUSTER 1v1 SEED 1",
             "Proving preparation queued",
         )
         .await;
-    author
-        .expect(
-            "Proving run 1 retained and queued.",
-            Duration::from_secs(60),
-        )
-        .await;
-    author
-        .expect("Proving run 1 is Complete.", Duration::from_secs(30 * 60))
-        .await;
+    proving_progress(
+        &mut author,
+        proving_from,
+        "Proving run 1 retained and queued.",
+        Duration::from_secs(60),
+    )
+    .await;
+    proving_progress(
+        &mut author,
+        proving_from,
+        "Proving run 1 is Complete.",
+        Duration::from_secs(30 * 60),
+    )
+    .await;
     let report = author.say("@mind/report 1", "Win rate").await;
     assert!(report.contains("of 30") && report.contains("Wilson"));
     let (denied, observer_report) = observer
