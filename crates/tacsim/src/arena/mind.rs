@@ -2040,7 +2040,11 @@ impl Arena {
         let overflowed = result.intents.len() > MIND_INTENTS_MAX;
         let sample_bad = result.rule_sample.as_ref().is_some_and(|sample| {
             let mut checked = crate::arena::profile_rules::RuleLease::default();
-            sample.sampled_ms != think.t_ms
+            // Due events retain their scheduled millisecond, while the public
+            // picture is captured after motion at the substep boundary. An
+            // off-grid think therefore legitimately has view.t_ms > t_ms.
+            // Bind the sample to the picture it actually read, not its timer.
+            sample.sampled_ms != think.view.t_ms
                 || checked
                     .land(
                         Some(sample.clone()),

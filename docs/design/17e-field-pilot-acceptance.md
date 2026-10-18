@@ -254,3 +254,19 @@ uses a narrow runner-owned public SSH character-creation helper with explicit
 busy retries and success acknowledgement. Bot command restrictions are unchanged.
 The correction still needs execution. This failed invocation reached neither the
 signed author workflow nor the external interval and is not full acceptance.
+
+Focused author diagnostics then exposed canonical-name assertions (`ac861084`)
+and a live rule-sample clock mismatch (`5eb49643`). The latter is a real execution
+bug: due events retain their scheduled time while the captured public picture
+uses the substep boundary. Settlement incorrectly compared the sample's picture
+time with the timer, counted valid samples as faults and dropped Field Pilot to
+ROM. Admission now compares against the exact captured view, preserving program,
+generation, landing and expiry checks. A regression covers three off-grid thinks
+through actual collection, Rhai execution and landing, plus rejection of a sample
+forged with the timer time. The live story also requires zero strikes and no ROM
+drop. These corrections still require their actual test runs.
+
+`EXIT` intentionally relinquishes side leadership. The two released sorties now
+close through their retained participant's public `SIM ABORT`; their terminal
+results and complete tapes remain the reference BENCH inputs. The third sortie
+keeps `SIM CONCEDE` while seated. No production participant authority changes.

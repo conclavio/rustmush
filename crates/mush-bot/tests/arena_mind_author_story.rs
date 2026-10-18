@@ -629,6 +629,15 @@ async fn field_pilot_complete_production_author_story() {
             >= 2,
         "release really schedules the authored runner"
     );
+    assert_eq!(
+        state(&snapshot)["minds"][&unit]["strikes"],
+        0,
+        "the released Field Pilot must not accrue live execution faults"
+    );
+    assert!(
+        state(&snapshot)["minds"][&unit]["dropped"].is_null(),
+        "the released Field Pilot must still be flying its authored seal"
+    );
 
     let unit_selector = format!("#{}", unit.trim_start_matches('#'));
     let trace = author
@@ -682,10 +691,10 @@ async fn field_pilot_complete_production_author_story() {
     assert_eq!(status, 1);
     assert!(matches!(stale, MindResponse::Error { .. }));
 
-    // Close the actual sortie before the private workloads. Concession is a
-    // public lead action; durable terminal state, not an old transcript match,
-    // establishes that custody and the recording have closed.
-    author.say("SIM CONCEDE", "concedes").await;
+    // EXIT relinquishes side leadership, but the retained participant may
+    // publicly abort. Its normal terminal result/tape closes custody before
+    // private workloads and remains available to the reference BENCH below.
+    author.say("SIM ABORT", "aborts match 1").await;
     let first_result = document(&server, "tacsim:match:1").await;
     author.say("SIM REPORT 1", "Match 1 on").await;
     // The first immutable revision, matching the independent external default,
@@ -949,7 +958,7 @@ async fn field_pilot_complete_production_author_story() {
     })
     .await;
     assert_eq!(state(&faulted)["minds"][&fault_unit]["dropped"], "strikes");
-    author.say("SIM CONCEDE", "concedes").await;
+    author.say("SIM ABORT", "aborts match 2").await;
     let _ = document(&server, "tacsim:match:2").await;
 
     // Opposing humans preserve the accepted discretion-to-Doctrine substitution.
