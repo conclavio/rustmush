@@ -6809,7 +6809,7 @@ Public items later cuts (the P-cuts) build on:
 **The Bids line gates on Missing alone** (doc 18 §5's post-loop list; §8 Q-18-60, the owner's
 third-round ruling R10 of 2026-10-18), built 2026-10-18 on the playtest branch over `29230ff5`
 (IC14 landed; dev1 redeployed from main without this cut, as ruled: a playtest cannot reach the
-fifty round trips that drain Kasei). One commit, `313415e2`, not pushed by its builder; cut AQ (16c
+fifty round trips that drain Kasei). One commit, `e682a7ec`, not pushed by its builder; cut AQ (16c
 `B-75`) is the next commit on the same branch and wrote this hash here and in §8.
 
 ### What landed
