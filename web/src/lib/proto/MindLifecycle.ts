@@ -7,7 +7,7 @@ export type MindLifecycle = { "kind": "rename",
 /**
  * New library name.
  */
-new_name: string, } | { "kind": "remove" } | { "kind": "version_rename",
+new_name: string, } | { "kind": "remove", } | { "kind": "version_rename",
 /**
  * Existing version label.
  */

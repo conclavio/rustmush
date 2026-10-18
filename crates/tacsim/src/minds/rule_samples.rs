@@ -179,7 +179,8 @@ mod tests {
             .expect("real sample")
             .sampled_ms = think.t_ms;
         let settled = arena.settle_collected(&think, answer.result);
-        assert_eq!(settled.written, 0);
+        // A fault is still one settled/journalled answer; it lands no intents.
+        assert_eq!(settled.written, 1);
         assert_eq!(settled.faults, 1);
         let mind = arena.minds.get(&OWN).expect("mind");
         assert_eq!(mind.strikes, 1);
